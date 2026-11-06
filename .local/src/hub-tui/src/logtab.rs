@@ -128,6 +128,13 @@ mod tests {
     }
 
     #[test]
+    fn the_header_is_hub_cores_columns() {
+        use hub_core::table::Row;
+        let lower: Vec<String> = HEADER.iter().map(|h| h.to_lowercase()).collect();
+        assert_eq!(lower, Action::COLUMNS);
+    }
+
+    #[test]
     fn actions_stop_at_the_fold_cap_and_count_the_rest() {
         let p = Palette { no_color: true };
         let g = Gathered {

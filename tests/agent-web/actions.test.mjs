@@ -16,7 +16,7 @@ const el = () => new Proxy({}, {
 });
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const box = Object.assign(part(), { addEventListener: (ev, f) => { on[ev] = f; } });
+const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ??= []).push(f); } });
 const parts = { "actions-head": part(), "actions-facets": part(), "actions-chips": part(), "actions-body": part(), "sec-actions": part() };
 const doc = { getElementById: (id) => (id === "actions" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
@@ -32,7 +32,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "actions.js", "table.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "actions.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const ast = run("ast");
 
@@ -41,16 +41,16 @@ const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort:
 const table = {
   q: "actor:shepherd", state: "", sort: "", dir: "", total: 3, shown: 2,
   states: [{ name: "all", n: 2 }, { name: "loud", n: 0 }, { name: "failed", n: 1 }],
-  columns: ["when", "actor", "verb", "priority", "source", "text"].map((k) => col(k)),
+  columns: ["when", "actor", "verb", "prio", "source", "text"].map((k) => col(k)),
   facets: [{ key: "actor", on: "shepherd", clear: "", values: [{ value: "shepherd", n: 2, q: "actor:shepherd" }, { value: "notify", n: 1, q: "actor:notify" }] }],
 };
 const act = (i, o = {}) => ({ at: 1793942659 - i, actor: "shepherd", verb: "nudge", text: `agent-${i} <stalled>`, priority: null, reference: null, source: "shepherd", ...o });
 const data = { actions: [act(1), act(2, { verb: "failed", priority: "high" })], counts: { shepherd: { nudge: 1, failed: 1 }, notify: { page: 1 } }, errors: [], table };
 
 const target = (attrs) => ({ dataset: attrs, closest: (sel) => { const k = /^\[data-(.*)\]$/.exec(sel)?.[1].replace(/-(.)/g, (m, c) => c.toUpperCase()); return k in attrs ? { dataset: attrs } : null; } });
-const click = (attrs) => on.click({ target: target(attrs), type: "click" });
+const click = (attrs) => on.click.forEach((f) => f({ target: target(attrs), type: "click" }));
 const settle = () => new Promise((r) => setImmediate(r));
-const fresh = () => { Object.assign(ast, { data, err: null, read: null, all: false }); asked = []; body = data; run("st.tab = 'log'; st.views.log = ''"); };
+const fresh = () => { Object.assign(ast, { data, err: null, read: null, all: false }); asked = []; body = data; run("st.tab = 'log'; st.views.log = ''; lst.hist = []"); };
 
 test("the table draws the server's rows, chips and dropdowns with no day headings", () => {
   fresh();
@@ -94,6 +94,12 @@ test("another tab's link lands on the filtered view and opens its section", asyn
   assert.equal(run("st.views.log"), "q=actor%3Ashepherd+verb%3Askip");
   assert.equal(parts["sec-actions"].open, true);
   assert.match(asked.at(-1), /q=actor%3Ashepherd\+verb%3Askip&hours=24$/);
+});
+
+test("a link keeps the window and drops the rest of the view", () => {
+  fresh();
+  run("st.views.log = 's=loud&sort=when&hours=72'; showActions('dispatch')");
+  assert.equal(run("st.views.log"), "hours=72&q=actor%3Adispatch");
 });
 
 test("the view already read does not reopen a section the human folded", async () => {

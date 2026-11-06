@@ -2296,7 +2296,6 @@ impl App {
                 ""
             };
             l.push(head(format!("{title}{count}  {key} {verb} it{filters}")));
-
             if !open {
                 continue;
             }

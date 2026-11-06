@@ -22,23 +22,24 @@ const refreshActions = coalesce(async () => {
 // Open Log at its Actions section filtered to one actor (and verb), from another tab's link.
 function showActions(actor, verb) {
   st.section = "actions";
-  setTab("log", undefined, tblSet("", { q: [actor && `actor:${actor}`, verb && `verb:${verb}`].filter(Boolean).join(" ") }));
+  const q = [actor && `actor:${actor}`, verb && `verb:${verb}`].filter(Boolean).join(" ");
+  setTab("log", undefined, tblSet(st.views.log, { q, s: "", sort: "", dir: "" }));
 }
 
 const chipBtn = (on, attr, val, label, n) =>
   `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
 
-const ACTION_COLS = { when: ["when", "n"], actor: ["actor"], verb: ["verb"], priority: ["priority"], source: ["source"], text: ["text"] };
+const ACTION_COLS = { when: ["when", "n"], actor: ["actor"], verb: ["verb"], prio: ["prio"], source: ["source"], text: ["text"] };
 
 const actionRow = (a) => `<tr><td class="n" title="${esc(new Date(a.at * 1e3).toISOString())}">${stamp(a.at)}</td>` +
   `<td>${esc(a.actor)}</td><td><b>${esc(a.verb)}</b></td><td>${esc(a.priority || "")}</td>` +
   `<td class="muted">${esc(a.source)}</td><td class="wrap">${esc(a.text)}</td></tr>`;
 
 function actionsHead(d) {
-  const inWindow = Object.values(d.counts).reduce((s, v) => s + sumOf(v), 0);
+  const inWindow = sumOf(Object.values(d.counts).map(sumOf));
   const hours = actionHours();
   const newest = d.table.total < inWindow ? `, newest ${d.table.total}` : "";
-  const errs = (ast.err ? [`<div class="card err">${esc(ast.err)}</div>`] : []).concat(d.errors.map((e) => `<div class="card err">unread: ${esc(e)}</div>`)).join("");
+  const errs = [ast.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
   return `<div class="bhead"><span>what the machinery did, ${d.table.shown} of ${inWindow} in ${hours}h${newest}</span></div>` +
     `<div class="seg fseg">` + ACTION_WINDOWS.map(([h, l]) => `<button class="${hours === h ? "on" : ""}" data-hours="${h}">${l}</button>`).join("") + `</div>${errs}`;
 }
@@ -47,7 +48,7 @@ function actionsBody(d) {
   const shown = d.actions, rows = ast.all ? shown : shown.slice(0, LOG_ROWS), more = shown.length - rows.length;
   return shown.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(d.table, ACTION_COLS)}${rows.map(actionRow).join("")}</table>` +
-      (more ? `<button class="btn sm" data-all="1">+${more} older</button>` : "") + `</div>`
+      tblMore(more) + `</div>`
     : `<div class="empty">${d.table.total ? "No action matches." : "Nothing recorded in the window."}</div>`;
 }
 
@@ -69,11 +70,8 @@ $("actions").addEventListener("click", (e) => {
   if (t.dataset.all) { ast.all = true; renderActions(); return; }
   const h = t.closest("[data-hours]");
   if (h) { actionsView({ hours: h.dataset.hours === String(ACTION_HOURS) ? "" : h.dataset.hours }); return; }
-  const v = tblPatch(e);
-  if (v) actionsView(v);
 });
-// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
-for (const ev of ["input", "change"]) $("actions").addEventListener(ev, (e) => { const v = tblPatch(e); if (!v) return; if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.(); actionsView(v); });
+tblBind($("actions"), actionsView);
 
 // The shepherd's log and agent-notify's push "actions"; the dispatch log and the run ledger
 // arrive as "fleet", the queue as "queue".

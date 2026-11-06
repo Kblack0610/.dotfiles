@@ -50,8 +50,7 @@ pub struct Action {
 const LOUD: [&str; 2] = ["high", "urgent"];
 
 impl Row for Action {
-    const COLUMNS: &'static [&'static str] =
-        &["when", "actor", "verb", "priority", "source", "text"];
+    const COLUMNS: &'static [&'static str] = &["when", "actor", "verb", "prio", "source", "text"];
     const STATES: &'static [&'static str] = &["all", "loud", "failed"];
     const FACETS: &'static [&'static str] = &["actor", "verb"];
 
@@ -61,7 +60,7 @@ impl Row for Action {
             "when" => Val::Num(self.at as f64),
             "actor" => text(&self.actor),
             "verb" => text(&self.verb),
-            "priority" => self.priority.as_deref().map_or(Val::None, text),
+            "prio" => self.priority.as_deref().map_or(Val::None, text),
             "source" => text(&self.source),
             "text" => text(&self.text),
             _ => Val::None,

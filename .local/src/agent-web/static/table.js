@@ -61,6 +61,9 @@ function tblHead(t, labels) {
   }).join("") + "</tr>";
 }
 
+// The button a capped body ends in; the view's own click listener answers `data-all`.
+const tblMore = (n) => (n > 0 ? `<button class="btn sm" data-all="1">+${n} older</button>` : "");
+
 // The view patch an event on the bar or a header asks for, or null when it is not one of theirs.
 function tblPatch(e) {
   const t = e.target;
@@ -73,4 +76,15 @@ function tblPatch(e) {
   const chip = t.closest("[data-ts]");
   if (chip) return { s: chip.dataset.ts };
   return null;
+}
+
+// Send every view change in `el` to `view(patch)`. A picked dropdown lets go of focus, so the
+// answer redraws it with the new counts.
+function tblBind(el, view) {
+  for (const ev of ["click", "input", "change"]) el.addEventListener(ev, (e) => {
+    const v = tblPatch(e);
+    if (!v) return;
+    if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
+    view(v);
+  });
 }
