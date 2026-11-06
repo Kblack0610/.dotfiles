@@ -407,20 +407,48 @@ repo_slug() {
   printf '%s' "$url" | tr -c 'A-Za-z0-9' _
 }
 
+# A PR's statusCheckRollup -> NONE, PENDING, FAIL or PASS: red only once every check has finished.
+CI_JQ='def ci: .statusCheckRollup // [] | map(.conclusion // .state // "") as $c
+  | if ($c | length) == 0 then "NONE"
+    elif any($c[]; test("^$|PENDING|QUEUED|IN_PROGRESS|EXPECTED")) then "PENDING"
+    elif any($c[]; test("FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED")) then "FAIL"
+    else "PASS" end;'
+
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid".
 prs_for() {
   local dir="$1" key
   key="$CACHE/$(repo_slug "$dir")" || return 0
   [ -f "$key" ] || (cd "$dir" && gh pr list --state all --limit 100 \
-      --json number,state,headRefName,headRefOid,statusCheckRollup -q '.[] | [
-        .headRefName, .number, .state,
-        (.statusCheckRollup // [] | map(.conclusion // .state // "") as $c
-          | if ($c | length) == 0 then "NONE"
-            elif any($c[]; test("^$|PENDING|QUEUED|IN_PROGRESS|EXPECTED")) then "PENDING"
-            elif any($c[]; test("FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED")) then "FAIL"
-            else "PASS" end),
-        .headRefOid ] | @tsv' 2>/dev/null) > "$key" || echo "gh pr list ($(basename "$dir"))" >> "$CACHE/unreadable"
+      --json number,state,headRefName,headRefOid,statusCheckRollup \
+      -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid] | @tsv' 2>/dev/null) > "$key" \
+    || echo "gh pr list ($(basename "$dir"))" >> "$CACHE/unreadable"
   cat "$key"
+}
+
+# sibling_pr <dir> <session_prs JSON> -> "repo \t number \t ci \t head_oid" for the last OPEN PR
+# this session opened in a repo other than <dir>'s, or nothing. A session that works in one clone
+# can open its PR from another (ar-349, read STALLED "no PR" while that PR ran CI). Its CI is one
+# `gh pr view` reused for FLEET_MAIN_TTL seconds across passes, as pr_states is; a failed call is
+# (or an answer that is not a PR) is not cached, nor retried in this pass, and is named unreadable so tick does not log the blink.
+sibling_pr() {
+  local own repo n file failed view
+  own="$(git -C "$1" remote get-url origin 2>/dev/null | sed -E 's#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#')"
+  IFS=$'\t' read -r repo n < <(jq -r --arg own "${own,,}" \
+    'map(select(.state == "OPEN" and (.repo | ascii_downcase) != $own)) | last // empty | [.repo, .number] | @tsv' <<<"$2")
+  [ -n "${n:-}" ] || return 0
+  file="$MAIN_CACHE/view_${repo//\//_}_$n.json"
+  failed="$CACHE/view_failed_${repo//\//_}_$n"
+  if [ -s "$file" ] && [ $(( $(date +%s) - $(date -r "$file" +%s) )) -lt "$FLEET_MAIN_TTL" ]; then
+    view="$(cat "$file")"
+  elif [ ! -f "$failed" ] && view="$(gh pr view "$n" --repo "$repo" --json statusCheckRollup,headRefOid 2>/dev/null)" \
+       && jq -e 'has("headRefOid")' <<<"$view" >/dev/null 2>&1; then
+    mkdir -p "$MAIN_CACHE"
+    printf '%s\n' "$view" > "$file.$$" && mv "$file.$$" "$file"
+  else
+    [ -f "$failed" ] || { : > "$failed"; echo "gh pr view $repo#$n" >> "$CACHE/unreadable"; }
+    return 0
+  fi
+  jq -r --arg r "$repo" --argjson n "$n" "$CI_JQ"' [$r, $n, ci, (.headRefOid // "-")] | @tsv' <<<"$view"
 }
 
 # default_base <dir> -> origin/<default branch>, cached per repo per pass. GitHub's answer
@@ -741,6 +769,13 @@ collect() {
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
+    # No PR for this branch here: an open PR of its own in another repo is the row's PR. Its
+    # conflict is not this clone's to measure, so it is unknown (-).
+    local xr=- xpr xci xoid
+    if [ "$g" = 1 ] && [ "$pr" = - ]; then
+      IFS=$'\t' read -r xr xpr xci xoid < <(sibling_pr "$cwd" "$prs")
+      if [ -n "${xpr:-}" ]; then pr="$xpr" state=OPEN ci="$xci" oid="$xoid" conflicts=-; else xr=-; fi
+    fi
     IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
     if [ "$planf" = - ] || [ ! -f "$planf" ]; then phases=-
     elif [ "$ptotal" = - ]; then phases=none
@@ -770,6 +805,8 @@ collect() {
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item")"
+    # A sibling repo's PR is named the way GitHub cross-references it, so the nudge says where it is.
+    [ "$xr" = - ] || { bucket="${bucket//PR #$pr/PR $xr#$pr}"; blk="${blk//PR #$pr/PR $xr#$pr}"; }
     # An open PR's fact carries its head commit, so a push that is still red is a new fact
     # and gets a new nudge, while the same commit is never nudged twice. A conflict's fact
     # carries the merge base instead: a push that leaves it unresolved is the same fact, and
