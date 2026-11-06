@@ -351,7 +351,7 @@ EOF
   assert_output 0
 }
 
-@test "--item: the item gets the PR and moves to done; a human item closes no row" {
+@test "--item: the item gets the PR and moves to done; an item with no row closes none" {
   item tidy-loader
   CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
   assert_success
@@ -361,6 +361,17 @@ EOF
   assert_output 0
   run agent-queue show tidy-loader --json
   assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.sessions)"' <<<"$output")" 'done ok o/r#42 sid-l'
+}
+
+@test "a human item closes the story row agent-queue add filed for it, like a board item" {
+  # NEGATIVE CONTROL: before P2 agent-land closed only `from: board:` rows, so this row stayed open.
+  item menus human agent bnb
+  agent-queue set menus row=db:db-12
+  run "$LAND" 42 --item menus
+  assert_success
+  assert_line --index 7 'board: closed "db-12" with pr:42 commit:fedcba987654'
+  run grep '^notes' "$LOG"
+  assert_output 'notes --profile bnb ptask db --agent done db-12 --proof pr:42 commit:fedcba987654'
 }
 
 @test "a hand-started session's own item is the record: no --item needed" {
@@ -515,6 +526,32 @@ EOF
   assert_output --partial 'fix the crash on save'
   refute_output --partial 'stop the load crash'
   grep -qE -- '- \[x\] stop the load crash .*id:gm-1' "$sheet" || fail "the edited row did not close: $(cat "$sheet")"
+}
+
+@test "end to end: a hand item's story is filed started under its epic by add and closed by agent-land" {
+  [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
+  ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  dir="$HOME/.notes/lab/projects/current/game"
+  mkdir -p "$dir" "$HOME/.config/notes"
+  : >"$dir/summary.md"
+  printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
+  printf '%s\n' '# game' '' 'Version: v1.0.0 #beta' '' '## Inbox' '' '## Tasks' '' '- [ ] epic(menu): live menus #size/xl <!-- id:gm-1 -->' >"$dir/README.md"
+  export PROJECT_MAP_FILE="$SANDBOX/map.json" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
+  export AGENT_QUEUE_PROJECT_MAP="$PROJECT_MAP_FILE"
+  unset NOTES_PROFILE
+  jq -n '{paths: {"/x/game": "game"}, trackers: {game: {code: "gm", lab: "personal"}}}' >"$PROJECT_MAP_FILE"
+
+  run agent-queue add --running --project game --epic gm-1 --slug title "feat(menu): the title screen"
+  assert_success
+  assert_line 'story gm-2 on the game agent board, under gm-1'
+  grep -qE -- '^- \[/\] feat\(menu\): the title screen #size/s #of/gm-1 .*id:gm-2' "$dir/agent/README.md" ||
+    fail "no started story: $(cat "$dir/agent/README.md")"
+
+  run "$LAND" 42 --item title
+  assert_success
+  assert_output --partial 'board: closed "gm-2" with pr:42'
+  grep -qE -- '^- \[x\] feat\(menu\): the title screen .*gm-2' "$dir/agent/README.md" ||
+    fail "the story did not close: $(cat "$dir/agent/README.md")"
 }
 
 @test "the PR's changed files credit the item to the game whose path owns the most" {
