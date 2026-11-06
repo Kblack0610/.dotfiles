@@ -72,6 +72,6 @@ if [ "$DRY" = 1 ]; then
     echo "docs-cleanup: would queue: $task"
     exit 0
 fi
-agent-queue add --project dotfiles --slug "$SLUG" --priority low "$task" \
+agent-queue add --project dotfiles --slug "$SLUG" --priority low --tags night "$task" \
     || fail "could not queue the pass ($summary)"
 report WORKED "queued $SLUG ($summary)"
