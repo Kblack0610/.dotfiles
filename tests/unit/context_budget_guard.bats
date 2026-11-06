@@ -87,3 +87,23 @@ payload() { printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","new_stri
   run bash "$HOOK" <<< "$(payload "$repo/sub/CLAUDE.md")"
   assert_success
 }
+
+@test "a lessons file over budget warns only on an edit that grows it" {
+  L="$BATS_TEST_TMPDIR/home/.agent/lessons/proj.md"
+  mkdir -p "${L%/*}"
+  fill "$L" 300
+  grow=$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","old_string":"a","new_string":"abc"}}' "$L")
+  shrink=$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","old_string":"abc","new_string":"a"}}' "$L")
+  CONTEXT_BUDGET_LESSONS=200 run bash "$HOOK" <<< "$grow"
+  assert_failure 2
+  assert_output --partial "lessons file"
+  assert_output --partial "lessons archive --dry-run"
+  CONTEXT_BUDGET_LESSONS=200 run bash "$HOOK" <<< "$shrink"
+  assert_success
+  run bash "$HOOK" <<< "$grow"
+  assert_success
+  # Archived lessons are not a lessons file.
+  mkdir -p "${L%/*}/_archive"; fill "${L%/*}/_archive/proj-stale.md" 300
+  CONTEXT_BUDGET_LESSONS=200 run bash "$HOOK" <<< "$(payload "${L%/*}/_archive/proj-stale.md")"
+  assert_success
+}

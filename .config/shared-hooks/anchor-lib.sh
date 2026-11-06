@@ -9,8 +9,8 @@
 # only a 2 KB preview reaches the model, so the log is not injected at all: the
 # preflight prints one pointer line and the log stays one Read away in the file.
 #
-# The preflight also places the generated `Active plans` and `Recent lessons` sections
-# in its own priority order, so this lib can emit the anchor without them
+# The preflight also places the generated `Active plans` section in its own priority
+# order, so this lib can emit the anchor without it
 # (anchor_inject's drop pattern) and emit any one section alone (anchor_section).
 # The AUTO:START/END marker comments are for editors of the file, not for a reader,
 # and are left out of both.

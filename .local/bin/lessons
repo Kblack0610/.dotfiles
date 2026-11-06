@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# lessons - hand a session the lessons that fit its work, and archive the ones nothing uses.
+#
+#   lessons pick [-n N] FILE [TEXT...]
+#       N lessons (default 5) from FILE: the ones sharing the most distinctive words with TEXT
+#       first, then the newest, each cut to 200 chars.
+#   lessons log PROJECT FILE < DIGEST      record the digest lines pick matched to the work
+#   lessons archive [--days N] [--dry-run] [DIR]
+#       Move dated lessons older than N days (90) that no pick matched to a session and no session
+#       repeated (sig hit) to DIR/_archive/<project>-stale.md; DIR defaults to ~/.agent/lessons.
+#       Moves nothing until the delivery log covers the window.
+#
+# A lesson is a `## ` section, or a `- ` bullet that starts with a date or stands before any
+# section; its key hashes its first line. Delivery log, sig hits and the nightly caller:
+# ~/.config/agentctl/DREAMING.md "Lesson delivery and archive".
+set -euo pipefail
+
+LESSONS_DIR_DEFAULT="$HOME/.agent/lessons"
+
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# The parser every mode shares. Bytes, not characters (LC_ALL=C), so the hash is the same
+# under any locale. Per line: own[NR] is the lesson it belongs to (0 for a `# ` title or
+# text before the first lesson). Per lesson r: key, date, title (first line), text
+# (lowercased, one line), sig (each `<!-- sig:DATE REGEX -->` regex, after a newline).
+# shellcheck disable=SC2016
+PARSE='
+BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
+function cut(s,   c) {
+  if (length(s) <= 200) return s
+  c = substr(s, 1, 197); sub(/[[:space:]]+[^[:space:]]*$/, "", c); return c "..."
+}
+function hash(s,   i, h) { h = 5381; for (i = 1; i <= length(s); i++) h = (h * 33 + ord[substr(s, i, 1)]) % 4294967296; return sprintf("%08x", h) }
+function open_lesson(t,   k) {
+  n++; cur = n; title[n] = t
+  k = t; gsub(/[[:space:]]+/, " ", k); sub(/^ /, "", k); sub(/ $/, "", k)
+  key[n] = hash(substr(k, 1, 160))
+  date[n] = match(t, /20[0-9][0-9]-[01][0-9]-[0-3][0-9]/) ? substr(t, RSTART, RLENGTH) : ""
+}
+/^# / { cur = 0; insec = 0 }
+/^## / { open_lesson(substr($0, 4)); insec = 1 }
+/^- / && (!insec || /^- (\*\*)?20[0-9][0-9]-[01][0-9]-[0-3][0-9]/) { open_lesson(substr($0, 3)) }
+{
+  own[NR] = cur; raw[NR] = $0
+  if (cur) {
+    text[cur] = text[cur] " " tolower($0)
+    # The grammar of so_lesson_sigs (session-outcomes.sh), whose sigs key lesson_hits: the
+    # last marker on the line, a YYYY-MM-DD date, the regex up to the first " -->".
+    if ((i = index($0, "<!-- sig:"))) {
+      s = $0; while ((i = index(s, "<!-- sig:"))) s = substr(s, i + 9)
+      if (s ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] ./ && (i = index(substr(s, 12), " -->")) > 1)
+        sig[cur] = sig[cur] "\n" substr(s, 12, i - 1)
+    }
+  }
+}
+'
+
+# pick: BM25 over the query's distinctive words (4+ chars, not a stopword, plural cut so
+# "lessons" finds "lesson"), a word in the lesson's first line counting twice, so a long
+# multi-topic section does not outrank a lesson that is about the word. Ties go to the newer.
+# shellcheck disable=SC2016
+PICK='
+END {
+  split("this that with from into when then than only have does each what which their there they will would should could about after before every instead also been were being make made more most must need over some such them these those under until upon very your just like same other where while last first next phase plan task item file files work using used uses true false none feat chore docs refactor main master", sw, " ")
+  for (i in sw) stop[sw[i]] = 1
+  q = tolower(query); gsub(/[^a-z0-9]+/, " ", q); nt = split(q, w, " ")
+  for (i = 1; i <= nt; i++) {
+    t = w[i]; if (t ~ /(ch|sh|x|ss)es$/) sub(/es$/, "", t); else if (length(t) > 4) sub(/s$/, "", t)
+    if (length(t) < 4 || t ~ /^[0-9]+$/ || (t in stop) || (t in seen)) continue
+    seen[t] = 1; terms[++m] = t
+    if (m == 12) break
+  }
+  for (r = 1; r <= n; r++) { len[r] = length(text[r]); avg += len[r] / n; head[r] = tolower(title[r]) }
+  for (j = 1; j <= m; j++) {
+    df = 0; re = "(^|[^a-z0-9])" terms[j]
+    for (r = 1; r <= n; r++) if (index(text[r], terms[j]) && text[r] ~ re) { hit[r, j] = (head[r] ~ re) ? 2 : 1; df++ }
+    idf[j] = df ? log((n + 1) / df) : 0
+  }
+  for (r = 1; r <= n; r++) {
+    sc[r] = 0; norm = 1.2 * (0.25 + 0.75 * len[r] / avg)
+    for (j = 1; j <= m; j++) if ((r, j) in hit) sc[r] += idf[j] * hit[r, j] * 2.2 / (hit[r, j] + norm)
+  }
+  # A match shares two of the query words (one, for a one-word query) and scores at least
+  # half the best: one shared word is as often chance as topic.
+  for (r = 1; r <= n; r++) { nh = 0; for (j = 1; j <= m; j++) if ((r, j) in hit) nh++; if (nh < (m > 1 ? 2 : 1)) sc[r] = 0 }
+  best = 0; for (r = 1; r <= n; r++) if (sc[r] > best) best = sc[r]
+  got = 0
+  while (got < want) {
+    top = 0
+    for (r = n; r >= 1; r--) if (!(r in taken) && sc[r] > 1 && sc[r] >= best / 2 && (!top || sc[r] > sc[top])) top = r
+    if (!top) break
+    taken[top] = 1; order[++got] = top
+    for (j = 1; j <= m; j++) if ((top, j) in hit) used[terms[j]] = 1
+  }
+  matched = got
+  for (r = n; r >= 1 && got < want; r--) if (!(r in taken)) { taken[r] = 1; order[++got] = r }
+  if (!got) exit
+  on = ""; k = 0
+  for (j = 1; j <= m && k < 6; j++) if (terms[j] in used) { on = on (k++ ? ", " : "") terms[j] }
+  if (matched) printf "## Lessons for this work (%d matched on: %s; %d newest)\n", matched, on, got - matched
+  else printf "## Lessons (newest %d; nothing matched this work)\n", got
+  for (i = 1; i <= got; i++) print cut("- " title[r = order[i]])
+}
+'
+
+# log: the keys of the lessons whose digest line (as pick prints it) is in the digest.
+# shellcheck disable=SC2016
+LOG='
+END {
+  # Only the lines pick matched to the work count; the newest-N fill is exposure, not retrieval.
+  nd = split(digest, d, "\n"); nm = (match(d[1], /\(([0-9]+) matched/) ? substr(d[1], RSTART + 1) + 0 : 0)
+  for (i = 2; i <= nm + 1 && i <= nd; i++) given[d[i]] = 1
+  for (r = 1; r <= n; r++) if (cut("- " title[r]) in given && !(key[r] in out)) { out[key[r]] = 1; keys = keys (keys != "" ? "," : "") key[r] }
+  if (keys != "") printf "%s\t%s\t%s\n", today, project, keys
+}
+'
+
+# archive: one lessons file in, the kept lines to keepto and the moved lessons to archto.
+# A lesson is stale when it is dated before cutoff, its key is not in the delivered set and
+# its sig (if any) is not in the hit set. --dry-run prints "<key> <date> <title>" instead.
+# shellcheck disable=SC2016
+ARCHIVE='
+BEGIN {
+  while ((getline l < dfile) > 0) delivered[l] = 1
+  while ((getline l < hfile) > 0) hits[l] = 1
+}
+END {
+  for (r = 1; r <= n; r++) {
+    stale[r] = date[r] != "" && date[r] < cutoff && !(key[r] in delivered)
+    ns = split(sig[r], sg, "\n"); for (i = 2; i <= ns; i++) if (sg[i] in hits) stale[r] = 0
+  }
+  if (dry) { for (r = 1; r <= n; r++) if (stale[r]) printf "%s %s %s\n", key[r], date[r], substr(title[r], 1, 100); exit }
+  moved = 0
+  for (l = 1; l <= NR; l++) {
+    r = own[l]
+    if (r && stale[r]) { print raw[l] > archto; if (!(r in done)) { done[r] = 1; moved++ } }
+    else print raw[l] > keepto
+  }
+  print moved
+}
+'
+
+cmd_pick() {
+  local want=5 file
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -n) want="$2"; shift 2 ;;
+      -h|--help) usage ;;
+      *) break ;;
+    esac
+  done
+  file="${1:-}"; [ -n "$file" ] || usage 2
+  shift
+  [ -r "$file" ] || return 0
+  LC_ALL=C awk -v want="$want" -v query="$*" "$PARSE$PICK" "$file"
+}
+
+# Appends one delivery line; the month file is append-only, so concurrent preflights are safe.
+cmd_log() {
+  local project="${1:-}" file="${2:-}" digest line d
+  [ -n "$project" ] && [ -n "$file" ] || usage 2
+  [ -r "$file" ] || return 0
+  digest=$(cat)
+  line=$(LC_ALL=C awk -v digest="$digest" -v project="$project" -v today="$(date +%F)" \
+    "$PARSE$LOG" "$file")
+  [ -n "$line" ] || return 0
+  d="${LESSONS_DELIVERED_DIR:-$(dirname "$file")/_delivered}"
+  mkdir -p "$d" && printf '%s\n' "$line" >> "$d/$(date +%Y-%m).tsv"
+}
+
+cmd_archive() {
+  local days=90 dry=0 dir
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="$2"; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      -h|--help) usage ;;
+      *) break ;;
+    esac
+  done
+  dir="${1:-$LESSONS_DIR_DEFAULT}"
+  local deliv="${LESSONS_DELIVERED_DIR:-$dir/_delivered}"
+  local outcomes="${LESSONS_OUTCOMES_DIR:-$HOME/.agent/outcomes}"
+  local cutoff since=''
+  cutoff=$(date -d "-$days days" +%F)
+
+  # Coverage: a lesson "nobody picked in N days" means something only once the log is N days
+  # old. Before that a real run moves nothing and says when it will start.
+  local first
+  for first in "$deliv"/20[0-9][0-9]-[01][0-9].tsv; do
+    [ -f "$first" ] && since=$(head -1 "$first" | cut -f1)
+    break
+  done
+  if [ "$dry" = 0 ] && { [ -z "$since" ] || [[ "$since" > "$cutoff" ]]; }; then
+    echo "lessons archive: the delivery log starts ${since:-today (empty)}; nothing moves until it covers $days days (from $(date -d "${since:-today} +$days days" +%F))"
+    return 0
+  fi
+
+  local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/lessons-archive.XXXXXX")
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" RETURN
+  # Keys picked inside the window, and sigs that hit in a session updated inside it.
+  { cat "$deliv"/20[0-9][0-9]-[01][0-9].tsv 2>/dev/null || true; } |
+    awk -F'\t' -v c="$cutoff" '$1 >= c { n = split($3, k, ","); for (i = 1; i <= n; i++) print k[i] }' |
+    sort -u > "$tmp/delivered"
+  { cat "$outcomes"/*/20[0-9][0-9]-[01][0-9].jsonl 2>/dev/null || true; } |
+    jq -r --arg c "$cutoff" 'select((.updated // "") >= $c) | (.lesson_hits // {}) | keys[]' 2>/dev/null |
+    sort -u > "$tmp/hits"
+
+  local f proj total=0 moved
+  for f in "$dir"/*.md; do
+    [ -f "$f" ] || continue
+    proj=$(basename "$f" .md)
+    # Work on a snapshot and replace the file only if nothing wrote to it meanwhile: sessions
+    # append lessons at any hour, and a lost lesson is worse than one archived a night late.
+    cp -p "$f" "$tmp/snap"
+    moved=$(LC_ALL=C awk -v cutoff="$cutoff" -v dry="$dry" -v keepto="$tmp/keep" -v archto="$tmp/arch" \
+      -v dfile="$tmp/delivered" -v hfile="$tmp/hits" "$PARSE$ARCHIVE" "$tmp/snap")
+    if [ "$dry" = 1 ]; then
+      [ -z "$moved" ] || printf '%s\n' "$moved" | sed "s|^|$proj |"
+      continue
+    fi
+    if [ "${moved:-0}" -gt 0 ]; then
+      if cmp -s "$tmp/snap" "$f"; then
+        mkdir -p "$dir/_archive"
+        { printf '\n## Archived %s: no preflight pick and no sig hit in %s days\n\n' "$(date +%F)" "$days"
+          cat "$tmp/arch"; } >> "$dir/_archive/$proj-stale.md"
+        cp "$tmp/keep" "$tmp/keep.final" && chmod --reference="$f" "$tmp/keep.final" &&
+          mv "$tmp/keep.final" "$f"
+        echo "lessons archive: $proj: moved $moved to _archive/$proj-stale.md"
+        total=$((total + moved))
+      else
+        echo "lessons archive: $proj: changed while reading, left for the next run"
+      fi
+    fi
+    rm -f "$tmp/keep" "$tmp/arch"
+  done
+  [ "$dry" = 1 ] && return 0
+  # Months wholly before the window are no longer read.
+  local m cutm=${cutoff:0:7}
+  for m in "$deliv"/20[0-9][0-9]-[01][0-9].tsv; do
+    [ -f "$m" ] || continue
+    [[ "$(basename "$m" .tsv)" < "$cutm" ]] && rm -f "$m"
+  done
+  echo "lessons archive: moved $total lesson(s) not picked or repeated since $cutoff"
+}
+
+case "${1:-}" in
+  pick) shift; cmd_pick "$@" ;;
+  log) shift; cmd_log "$@" ;;
+  archive) shift; cmd_archive "$@" ;;
+  -h|--help|'') usage ;;
+  *) echo "lessons: unknown command '$1'" >&2; usage 2 ;;
+esac
