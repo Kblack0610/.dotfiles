@@ -762,7 +762,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting finished session window account model plan pr merged ticket cost_usd work_min report note status area origin lane profile from touches row "
+SETTABLE=" project mode priority tags type after agent started waiting finished session window account model lane_run plan pr merged ticket cost_usd work_min report note status area origin lane profile from touches row "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -825,7 +825,7 @@ cmd_attribute() {
 # moment ago never undoes a move made since (a requeue, the session's own close).
 cmd_move() {
   local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
-  local status="" expect="" f from dest deps
+  local status="" expect="" f from dest deps run
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -848,11 +848,13 @@ cmd_move() {
     deps="$(dependents "$slug")"
     [ -z "$deps" ] || echo "$slug releases: $(paste -sd' ' <<<"$deps")"
   fi
+  run="$(fm_get "$f" lane_run)"
   case "$to" in
     # Back in the queue, the item runs nowhere: the next start launches a fresh session and
     # records it, and until then a stale `session:` points shepherd and fleet-sessions at a window
     # that no longer works it. `sessions:` stays: it is the history of who worked the item.
-    queued) header_del "$f" session window started waiting origin ;;
+    # lane_run goes too: the next start logs a run of its own.
+    queued) header_del "$f" session window started waiting origin lane_run ;;
     running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)" ;;
     waiting) header_set "$f" waiting "$(now_utc)" ;;
     done) header_set "$f" status "$status"; header_set "$f" finished "$(now_utc)" ;;
@@ -860,8 +862,25 @@ cmd_move() {
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}"
   echo "$slug: $from -> $to"
+  lane_outcome "$run" "$from" "$to" "$status"
   [ "$to" = done ] && [ "$status" = ok ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   start_next "$slug"
+}
+
+# lane_outcome <lane_run> <from> <to> <status> -- the model-lane run a dispatch start logged gets
+# what became of it: done ok is ok, done failed is failed, and a started item put back in the queue
+# is redo. Every close goes through move (agent-land, the reap, a hand close), so this is the one
+# place outcomes are reported. A cancel says nothing about the model; a model-lane error never
+# fails the move.
+lane_outcome() {
+  local o=''
+  [ -n "$1" ] || return 0
+  case "$3:$4" in
+    done:ok) o=ok ;;
+    done:failed) o=failed ;;
+    queued:) case "$2" in running | waiting) o=redo ;; esac ;;
+  esac
+  [ -z "$o" ] || model-lane outcome "$1" "$o" >/dev/null 2>&1 || echo "agent-queue: model-lane outcome $1 $o failed" >&2
 }
 
 # dependents <slug> -> the slugs of the queued items `after:` it, oldest first.

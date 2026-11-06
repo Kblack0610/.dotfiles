@@ -13,7 +13,7 @@
 # again, so a fixed detector reaches sessions already past their final observation. Lib + field meanings:
 # ~/.local/lib/session-outcomes.sh. A headless session (`claude -p`, a runner) files under
 # project `_runner` with no corrections: nobody is there to correct it, so a lesson it
-# writes is its job, not a redirect. Every run ends with `langfuse`: rows observed since the
+# writes is its job, not a redirect. Its `agent` is the runner calls.jsonl names for it. Every run ends with `langfuse`: rows observed since the
 # last push go to Langfuse as session scores (so_langfuse_events), so its trace view filters
 # by them, and each judge verdict that names its call goes as a score on that call's session
 # (judge.sh, its own mark). URL: SO_LF_URL (the private runner conf sets it). Key: rbw entry
@@ -146,13 +146,19 @@ cmd_run() {
       | from_entries' "$work/bench.jsonl" > "$work/bench.json" 2>/dev/null \
     || { printf '{}' > "$work/bench.json"; bench_note="; fleet-bench stats unreadable"; }
 
+  # Which runner a headless session was: calls.jsonl names the agent of every call that
+  # went through agentctl-run, keyed by its session id. A session with no call line (a
+  # runner still outside the contract) keeps agent null.
+  jq -cn '[inputs | select(.session_id and .agent) | {key: .session_id, value: .agent}] | from_entries' \
+    "$AGENTCTL_CALLS" > "$work/agents.json" 2>/dev/null || printf '{}' > "$work/agents.json"
+
   local observed
   observed="$(date -u -d "@$NOW" +%Y-%m-%dT%H:%M:%SZ)"
   : > "$work/lines.jsonl"
   while IFS= read -r row; do
     sid="$(jq -r .session_id <<<"$row")"
     jq -c --argjson row "$row" --slurpfile idx "$work/index.json" --slurpfile time_use "$work/t.$sid.json" \
-       --slurpfile bench "$work/bench.json" --arg observed "$observed" '
+       --slurpfile bench "$work/bench.json" --slurpfile agents "$work/agents.json" --arg observed "$observed" '
       . as $m | $idx[0] as $ix
       | ($m // {}) as $mm
       | ($mm.entrypoint == "sdk-cli") as $runner
@@ -162,6 +168,7 @@ cmd_run() {
       | { session_id: $row.session_id,
           project: (if $runner then "_runner" else $row.project end),
           runner: $runner,
+          agent: (if $runner then ($agents[0][$row.session_id] // null) else null end),
           title: ($row.title // $row.first_prompt // ""),
           updated: ($row.updated | todate),
           updated_epoch: $row.updated,
