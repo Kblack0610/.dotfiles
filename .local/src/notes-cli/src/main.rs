@@ -14,6 +14,7 @@ mod comms;
 mod config;
 mod daily;
 mod doctor;
+mod epics;
 mod focus;
 mod focus_move;
 mod focus_sweep;
@@ -313,7 +314,8 @@ enum Cmd {
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
         /// Print a project's roadmap: the open version, then the releases rows are aimed at
-        /// (TSV: `version<TAB>state<TAB>open<TAB>done`)
+        /// (TSV: `version<TAB>state<TAB>open<TAB>done<TAB>open_weight<TAB>done_weight<TAB>
+        /// unsized_open`, both lanes' leaf rows; --json adds closes, scope growth and epics)
         #[arg(long, value_name = "NAME")]
         roadmap: Option<String>,
         /// Every profile's indexed projects with their open work, for the projects popup
@@ -322,10 +324,10 @@ enum Cmd {
         /// is the rows aimed at a later release, agent is the agent board's)
         #[arg(long)]
         stats: bool,
-        /// With --stats: one JSON array instead, adding each project's dir, done count, STATUS line and date, and summary path
-        #[arg(long, requires = "stats")]
+        /// With --stats or --roadmap: one JSON array instead. For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
+        #[arg(long)]
         json: bool,
-        /// Print a project's maturity stage; with --set, declare it.
+        /// Print a project's maturity stage; with --set, declare it (a move up runs project-stage-check first).
         /// One of the ladder `--stages` prints (requirements: ~/.local/src/docs/stages.md)
         #[arg(long, value_name = "NAME")]
         stage: Option<String>,
@@ -1300,6 +1302,9 @@ fn main() -> Result<()> {
                 lab_refresh::kick();
                 std::process::exit(0);
             }
+            if json && !stats && roadmap.is_none() {
+                anyhow::bail!("--json goes with --stats or --roadmap");
+            }
             if stats {
                 projects::stats(json)?;
                 std::process::exit(0);
@@ -1339,7 +1344,7 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 (_, _, _, _, _, Some(n), ..) => projects::show_version(&prof, &n)?,
-                (_, _, _, _, _, _, Some(n), ..) => projects::show_roadmap(&prof, &n)?,
+                (_, _, _, _, _, _, Some(n), ..) => projects::show_roadmap(&prof, &n, json)?,
                 (_, _, _, _, _, _, _, Some(n), ..) => {
                     projects::show_agent_note(&prof, &n, version.as_deref())?
                 }

@@ -22,37 +22,46 @@ A project with no stage sorts between dev and draft and is dispatched like a dra
 
 ## Requirements
 
-Entering a stage means meeting its rows and every row of the stages below it. In `Applies`, `base` means every type. `Checked by` names the check that exists today; `not yet (ar-322)` rows are the standard the `notes projects --check` gate will enforce, and until then they are reviewed by hand when the stage is set. A row that starts with `human:` is something only the human can do or attest.
+Entering a stage means meeting its rows and every row of the stages below it. In `Applies`, `base` means every type. `project-stage-check <name> [--stage s]` runs the rows: `notes projects --stage <name> --set <s>` runs it on a move up and refuses to move the tag on a blocking FAIL (a move down is never gated), and `project-map-doctor` runs it for every staged project each night.
 
-| Stage | Applies | Requirement | Checked by |
+Enforced from: 2026-11-19
+
+Before that date a FAIL is reported and blocks nothing, so a row that turns out too strict can be fixed before it stops real work.
+
+The `Check` cell is one of three things:
+- a backticked shell predicate, run in a subshell from the project's root with `NAME`, `TYPE`, `REPO`, `ROOT` and `LAB` set and `project-name.sh` loaded. `ROOT` is the project's folder in its repo (`trackers.<name>.path`, as `apps/<app>` in a monorepo), else the repo; with no repo it runs from an empty directory, so a repo file reads as missing rather than matching a lab file. A repo the map names but this machine has not cloned is not judged (exit 2). Exit 0 is PASS. It reads local files and git only, never the network, so a night run is quick and repeatable. Write a literal pipe as `\|`.
+- `human`: only the human can attest it, so the gate lists it and never fails on it.
+- anything else: no predicate yet. The gate lists it as TODO with this text, which names what checks it today, if anything.
+
+| Stage | Applies | Requirement | Check |
 | --- | --- | --- | --- |
-| draft | base | A `project-map.json` entry with a `type`, and a lab sheet | `project-map-doctor` |
-| draft | base | A brief (`one-pager`) that names the type standard it will meet and a target load as a number: CCU, users, rows | not yet (ar-322) |
-| draft | game | Repo or folder cut from the unity-core template on the `com.blacknbrown.*` packages | not yet (ar-322) |
-| draft | app | Repo cut from the platform generator (`pnpm create:mobile-app`, `create:package`) on `packages/ui` and the shared config | not yet (ar-322) |
-| dev | base | CI green on the default branch | not yet (ar-322) |
-| dev | base | README with build, run and test; `docs/architecture.md`; a standards file or a link to the shared one | not yet (ar-322) |
-| dev | game | A build profile in `scripts/build/games/<id>.json` and a headless test class | not yet (ar-322) |
-| dev | app | Typecheck, lint and unit tests in the shared CI config | not yet (ar-322) |
-| alpha | base | A deploy workflow green to the private target on every merge | not yet (ar-322) |
-| alpha | base | Its secrets listed by name and synced to every destination | not yet (P4 `secrets-sync --check`) |
-| alpha | base | A perf baseline measured on the real deploy target | not yet (ar-322) |
-| alpha | base | `docs/overview.md` (what it is, its features, status) and `docs/operations/deploy.md` | not yet (ar-322) |
-| alpha | game | Plays start to finish; `perf-round` numbers recorded; a multiplayer smoke if networked | not yet (ar-322) |
-| alpha | app | Critical-path e2e in CI; a preview environment that deploys itself | not yet (ar-322) |
-| alpha | game, app | Its store listing set up through the internal channel, by the procedure in `~/.notes/lab/bnb/practices/release/stores.md`; console forms go through the `store-console` skill | not yet (ar-322) |
-| beta | base | Releases enabled | `notes projects --release` refuses below beta |
-| beta | base | A CHANGELOG; the external-channel pipeline green; one rollback actually done; a load test at the brief's number | not yet (ar-322) |
-| beta | base | A Sentinel health watch | not yet (ar-322) |
+| draft | base | A `project-map.json` entry with a `type`, and a lab sheet | `[ -n "$TYPE" ] && [ -f "$LAB/README.md" ]` |
+| draft | base | A brief (`one-pager`) that names the type standard it will meet and a target load as a number: CCU, users, rows | `grep -qil 'target load' "$LAB"/docs/briefs/*.md` |
+| draft | game | Repo or folder cut from the unity-core template on the `com.blacknbrown.*` packages | `grep -q '"com.blacknbrown\.' "$REPO/Packages/manifest.json"` |
+| draft | app | Repo cut from the platform generator (`pnpm create:mobile-app`, `create:package`) on `packages/ui` and the shared config | not yet |
+| dev | base | CI green on the default branch | not yet: needs the forge API |
+| dev | base | README with build, run and test; `docs/architecture.md`; a standards file or a link to the shared one | `[ -f README.md ] && [ -f docs/architecture.md ] && grep -rqil --include='*.md' standards README.md docs` |
+| dev | game | A build profile in `scripts/build/games/<id>.json` and a headless test class | not yet |
+| dev | app | Typecheck, lint and unit tests in the shared CI config | `jq -e '.scripts.typecheck and .scripts.lint and .scripts.test' "$REPO/package.json"` |
+| alpha | base | A deploy workflow green to the private target on every merge | not yet: needs the forge API |
+| alpha | base | Its secrets listed by name and synced to every destination | not yet: P4 `secrets-sync --check` |
+| alpha | base | A perf baseline measured on the real deploy target | not yet |
+| alpha | base | `docs/overview.md` (what it is, its features, status) and `docs/operations/deploy.md` | `[ -f docs/overview.md ] && [ -f docs/operations/deploy.md ]` |
+| alpha | game | Plays start to finish; `perf-round` numbers recorded; a multiplayer smoke if networked | human |
+| alpha | app | Critical-path e2e in CI; a preview environment that deploys itself | not yet |
+| alpha | game, app | Its store listing set up through the internal channel, by the procedure in `~/.notes/lab/bnb/practices/release/stores.md`; console forms go through the `store-console` skill | not yet |
+| beta | base | A CHANGELOG | `[ -f CHANGELOG.md ]` |
+| beta | base | The external-channel pipeline green; one rollback actually done; a load test at the brief's number | human |
+| beta | base | A Sentinel health watch | not yet |
 | beta | base | A STATUS line under 14 days old | `regen-anchor.sh` marks it STALE |
-| beta | game | Content rating done (`content-rating`) | not yet (ar-322) |
-| beta | game | human: a finished playtest on this version | not yet (ar-322) |
-| beta | app | A privacy and compliance check when it holds regulated data; the store listing via `mobile-store-metadata` | not yet (ar-322) |
-| beta | game, app | Its external tester channel live (TestFlight external, Play closed, Steam `beta`), by the same `stores.md` procedure | not yet (ar-322) |
-| prod | base | A shipped version tag | `project-map-doctor` |
-| prod | base | A prod smoke suite; an incident and rollback runbook; a credentials inventory with an expiry alarm | not yet (ar-322) |
-| prod | base | human: approve the public publish | not yet (ar-322) |
-| prod | game | Live on Steam `default` or a public store channel | not yet (ar-322) |
+| beta | game | Content rating done (`content-rating`) | not yet |
+| beta | game | A finished playtest on this version | human |
+| beta | app | A privacy and compliance check when it holds regulated data; the store listing via `mobile-store-metadata` | not yet |
+| beta | game, app | Its external tester channel live (TestFlight external, Play closed, Steam `beta`), by the same `stores.md` procedure | not yet |
+| prod | game, app | A shipped version tag | `[ -n "$(project_release_version "$NAME")" ]` |
+| prod | base | A prod smoke suite; an incident and rollback runbook; a credentials inventory with an expiry alarm | not yet |
+| prod | base | Approval of the public publish | human |
+| prod | game | Live on Steam `default` or a public store channel | not yet |
 
 Infra projects (dotfiles, agent-runtime, home-config) skip the store rows: their alpha means deployed by stow or Flux from main, and beta and prod mean others depend on it, so a health watch and a runbook.
 
@@ -71,7 +80,7 @@ Each doc comes from an existing skill. There are no doc types beyond these.
 
 ## What stays with the human
 
-These are never automated; each one is a `human:` row, filed on the human sheet when the gate runs.
+These are never automated; each one is a `human` row, which the gate lists for the human to attest.
 
 - Logins and 2FA on store consoles, payment, legal attestations, Apple and Play review, console dev-kit NDAs.
 - A finished playtest before a game enters beta.
