@@ -15,6 +15,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `sessionizer.sh` | `Prefix+f` | Jump to a repo or a worktree. The list is git repos under the search roots, the directories the manifests declare, and everything in `~/.worktrees` - not every directory under the roots. |
 | `worktree.sh` (`wt`) | `Prefix+F` / `Prefix+X` | One worktree per piece of work. `F` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `X` tears the current one down - kills the session and reaps the worktree, safe to press from inside it. No pickers. |
 | `servers.sh` (`tmx`) | `Prefix+H` / `C-h` / `N` | Server layer: one tree of every world, session and window (collapsed to the worlds); toggle hub <-> lab; today's daily |
+| `scratch.sh` | `Prefix+A` / `Prefix+F` in it | One scratch Claude in a full-screen popup to paste into; `F` inside sends the conversation to its own lab session and takes you there |
 | `sesh` (Go, AUR `sesh-bin`) | `Prefix+S` | Session picker, scoped to the current server. Its list is the world's manifest rows plus live sessions |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). Cross-platform binary; see `../agent-panel/`. |
 | `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
@@ -36,12 +37,13 @@ Every key `.tmux.conf` binds, and nothing it does not: `tests/unit/tmux_keys_doc
 | `Prefix+P` | Open PRs from the configured repos, with their status |
 | `Prefix+Space` | This session's editor (window 1); again goes back where you were |
 | `Prefix+f` | Find a repo or a worktree and open it as a session |
-| `Prefix+F` | Cut a fresh worktree off this repo, in its own session |
+| `Prefix+F` | Cut a fresh worktree off this repo, in its own session; inside the scratch, send it to lab |
 | `Prefix+X` | Kill this session and reap its worktree, from inside it |
 | `Prefix+S` | Sessions of the current world |
 | `Prefix+H` | Every world as a tree, collapsed to the worlds: Enter or a click opens a world, Enter or a click on a session or window goes there, typing searches all (bare `tmx` too) |
 | `Prefix+C-h` | The other world: hub -> lab, anywhere else -> hub, back where you left off |
 | `Prefix+N` | Today's daily on hub, put back if you wandered off it |
+| `Prefix+A` | The scratch Claude, full screen; again inside it closes the popup and the scratch keeps running |
 | `Prefix+g` | Agent windows (`agent-panel`) |
 | `Prefix+G` | Jump to the next agent that needs you |
 | `Prefix+y` | The question card of the session you are on; with none asked here, every pending ask |
@@ -467,6 +469,21 @@ had no preview.
 session first, so a tool that skips an existing session exits 0 and builds
 nothing. sesh's own `[[window]]` has no panes; its native layout hooks are the
 `tmuxinator` / `tmuxp` session fields.
+
+## Scratch (`Prefix+A`)
+
+`Prefix+A` opens one scratch Claude in a full-screen popup: paste into it, ask it things, close it with `Prefix+A` again. It is a real session, `hub:scratch`, so it keeps running while closed and `capture-pane`, agent-panel and the picker see it like any other. It starts in the directory of the pane you pressed from, the first time; after that it is the same scratch until you send it.
+
+`Prefix+F` inside the scratch sends it on: `scratch.sh send` stops the scratch Claude, resumes the same conversation in a new lab session through `fleet-dispatch start --resume <id> --server lab`, closes the scratch, and hops the client there. The lab session is named after Claude's own name for the conversation, with the first four characters of its id appended when lab already has that name. From lab it dispatches, or cuts a worktree when it starts editing. The next `Prefix+A` starts a fresh scratch.
+
+| What you see | Why | What to do |
+|---|---|---|
+| "the scratch is mid-turn" | send refuses while Claude is working: one transcript would have two writers | wait for the turn to end, press `Prefix+F` again |
+| "no Claude is running in the scratch" | the scratch pane is a shell, or Claude has not written its session file yet | start `claude` in it, or wait a moment |
+| "send failed, the scratch is back" | `fleet-dispatch start` failed; the scratch resumed the conversation in place | read `fleet-dispatch` logs; by hand, `claude --resume <id>` from the printed id |
+| `Prefix+A` detaches your terminal | you attached `hub:scratch` directly, not through the popup, and the close half of the toggle is a detach | attach hub's other sessions, or open the scratch with `Prefix+A` |
+
+`scratch.sh popup` opens it from outside tmux, on the client `tmx client` names, for a desktop key.
 
 ## Status Line Integration
 
