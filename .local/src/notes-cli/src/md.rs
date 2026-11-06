@@ -1109,10 +1109,32 @@ pub fn default_priority() -> &'static str {
 /// forever. Prose is excluded for a simpler reason - it is not a task and cannot have a
 /// priority - which is what keeps the untagged bucket alive for the lines that belong there.
 pub fn with_default_priority(line: &str) -> String {
-    if !is_task(line) || is_empty_unchecked(line) || task_priority(line).is_some() {
+    if !is_task(line) || is_empty_unchecked(line) {
         return line.to_string();
     }
+    if task_priority(line).is_some() {
+        return one_priority(line);
+    }
     normalize_tags(&add_tag(line, default_priority()))
+}
+
+/// A task line with several priority tags (`#urgent #high`, `#low #low`) rewritten to carry
+/// only its most urgent one, in canonical place; a line with one or none is returned as is,
+/// so a write that runs this never moves a tag nobody doubled. Why: every reader here takes
+/// the most urgent, but a reader that takes the first tag would sort the row differently.
+pub fn one_priority(line: &str) -> String {
+    let mut n = 0;
+    for_each_tag(line, |_, tag_start, _, end| {
+        let tag = line[tag_start..end].to_lowercase();
+        if PRIORITIES.iter().any(|(t, _, _)| *t == tag) {
+            n += 1;
+        }
+    });
+    if n > 1 {
+        normalize_tags(line)
+    } else {
+        line.to_string()
+    }
 }
 
 /// Strip every priority hashtag (`#urgent`/`#high`/`#low`, case-insensitive)
@@ -2081,6 +2103,30 @@ after
         // prose is not a task and cannot carry a priority
         assert_eq!(with_default_priority("just a line"), "just a line");
         assert_eq!(with_default_priority("## Tasks"), "## Tasks");
+    }
+
+    // A row with two priority tags is written with one: the most urgent, which is what every
+    // reader already sorts it by. A row with one tag keeps its bytes.
+    #[test]
+    fn one_priority_keeps_the_most_urgent_of_several() {
+        assert_eq!(
+            one_priority("- [ ] perf(ci): trims #tier/3 #urgent #high #c1029 <!-- id:ucp-467 -->"),
+            "- [ ] perf(ci): trims #tier/3 #c1029 #urgent <!-- id:ucp-467 -->"
+        );
+        assert_eq!(
+            one_priority("- [ ] fix(x): y #size/m #low #low #c1102 <!-- id:nc-38 -->"),
+            "- [ ] fix(x): y #size/m #c1102 #low <!-- id:nc-38 -->"
+        );
+        let one = "- [ ] fix(x): y #high #c1102 <!-- id:nc-1 -->";
+        assert_eq!(one_priority(one), one);
+        assert_eq!(
+            one_priority("- [ ] a #high-priority #c1 #high"),
+            "- [ ] a #high-priority #c1 #high"
+        );
+        assert_eq!(
+            with_default_priority("- [ ] new #urgent #low"),
+            "- [ ] new #urgent"
+        );
     }
 
     // The tag lands in canonical position, before the marker and before the release tag, so a
