@@ -31,6 +31,7 @@ use notify::{RecursiveMode, Watcher};
 const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab TAB
        hub tab projects [NAME]
+       hub tab fleet [RUNNER]
        hub actions --since WHEN [--json | --records]
        hub phone --json
        hub needs --json | --page
@@ -44,10 +45,11 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
-          over its open rows)
+          over its open rows, 'fleet RUNNER' that runner's page)
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
-          no card has opens every project's rows searched for it, as `/` would)
+          no card has opens every project's rows searched for it, as `/` would); fleet takes
+          a runner: `hub tab fleet inbox-triage` opens its page
   tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
@@ -301,8 +303,18 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
                 &hub_core::session_actions::System,
             ));
         }
+        // `--tab 'fleet NAME'` prints that runner's page in place of the tab.
         if t == Tab::Fleet {
-            a.fleet = Some(hub_core::fleet::collect());
+            match section.as_deref().and_then(fleettab::runner_arg) {
+                Some(name) => {
+                    a.fleet_page = Some(name.to_string());
+                    a.fleet_runner = Some(hub_core::fleet::runner::read(
+                        &hub_core::fleet::Paths::from_env(),
+                        name,
+                    ));
+                }
+                None => a.fleet = Some(hub_core::fleet::collect()),
+            }
         }
         a.tab = t;
         for l in a.page_lines(w) {
