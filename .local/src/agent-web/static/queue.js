@@ -6,6 +6,8 @@
 // over `fleet-dispatch suggest`), each with a Promote that is the board's Start.
 
 const Q_PRIORITIES = ["urgent", "high", "low"];
+// The pipeline line reads 10-minute fleet-bench gauges; a minute is plenty.
+const PIPELINE_REFRESH_MS = 60e3;
 // The queue form's modes in the human's words; the option values stay what agent-queue takes.
 const Q_MODE = { oneshot: "Run to PR", plan: "Plan first" };
 const Q_SECTIONS = [
@@ -47,7 +49,7 @@ const refreshPipeline = coalesce(async () => {
   try { qpl.data = await api("/api/pipeline"); qpl.err = null; } catch (e) { qpl.err = e.message; }
   if (st.tab === "queue") renderQueueList();
 });
-const pollPipeline = poll("queue", refreshPipeline, INFRA_REFRESH_MS);
+const pollPipeline = poll("queue", refreshPipeline, PIPELINE_REFRESH_MS);
 
 function qPipeline() {
   const d = qpl.data;
