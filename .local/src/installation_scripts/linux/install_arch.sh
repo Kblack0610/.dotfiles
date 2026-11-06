@@ -806,7 +806,6 @@ install_all() {
     step shell       install_fonts
     step dotfiles    setup_git
     step dev         install_npm_packages
-    step dev         install_rtk
     step dotfiles    apply_dotfiles
 
     # Must come after apply_dotfiles

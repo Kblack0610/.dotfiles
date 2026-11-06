@@ -237,19 +237,19 @@ row_tier() {
 # its autonomy `rung` (build, propose, human), its `exit` (pr, doc+ask), the `stages` it dispatches
 # at, `enabled`, and an optional `off` list of projects. A row with no type, or one the registry
 # lacks, ranks 1, dispatches and starts /one-shot; with no registry every kind does.
-declare -gA KIND_RANK=() KIND_LABEL=() KIND_ENTRY=() KIND_ON=() KIND_STAGES=() KIND_OFF=()
+declare -gA KIND_RANK=() KIND_LABEL=() KIND_ENTRY=() KIND_ON=() KIND_STAGES=() KIND_OFF=() KIND_EXIT=()
 KINDS_LOADED=0
 load_kinds() {
-  local k r l e on st off
+  local k r l e on st off x
   [ "$KINDS_LOADED" = 1 ] && return 0
   KINDS_LOADED=1
   [ -r "$DISPATCH_KINDS" ] || { say "no kind registry at $DISPATCH_KINDS: every kind ranks alike and dispatches"; return 0; }
   # "-" stands for empty, because read collapses empty tab fields.
-  while IFS=$'\t' read -r k r l e on st off; do
-    KIND_RANK[$k]=$r KIND_LABEL[$k]=${l#-} KIND_ENTRY[$k]=${e#-} KIND_ON[$k]=$on KIND_STAGES[$k]=$st KIND_OFF[$k]=$off
+  while IFS=$'\t' read -r k r l e on st off x; do
+    KIND_RANK[$k]=$r KIND_LABEL[$k]=${l#-} KIND_ENTRY[$k]=${e#-} KIND_ON[$k]=$on KIND_STAGES[$k]=$st KIND_OFF[$k]=$off KIND_EXIT[$k]=${x#-}
   done < <(jq -r 'def d: if . == "" then "-" else . end;
     to_entries[] | [.key, (.value.rank // 1), (.value.label // "" | d), (.value.entry // "" | d), (.value.enabled // false),
-      ((.value.stages // []) | join(",") | d), ((.value.off // []) | join(",") | d)] | @tsv' "$DISPATCH_KINDS")
+      ((.value.stages // []) | join(",") | d), ((.value.off // []) | join(",") | d), (.value.exit // "" | d)] | @tsv' "$DISPATCH_KINDS")
 }
 
 # row_kind <text> -> the row's type, its `type(area):` or `type:` prefix; nothing for a bare row.
@@ -1283,6 +1283,10 @@ item_brief() {
   [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
   row=$(item_row "$it")
   key=$(cut -d$'\x1f' -f4 <<<"$row")
+  if [ -n "$kind" ] && [ "${KIND_EXIT[$kind]:-}" = doc+ask ]; then
+    doc_ask_brief "$slug" "$kind" "$row" "$(jq -r .project <<<"$it")"
+    return
+  fi
   if [ -n "$row" ] && [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, promoted from a board row that is already started. Open the PR and do not merge: the human's merge closes the row."
     echo "When the PR is open: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok"
@@ -1304,6 +1308,24 @@ item_brief() {
   # A question blocks only the step that needs it. Reap moves the item to waiting/ once the session
   # stops with its ask pending, so the session never moves it itself.
   echo "If a step needs a decision from the human, only that step is blocked, not the task: ask it here and file it with agent-ask post (your recommendation in --recommend), build the rest with that step switched off, and end your turn on the question only when nothing else is left, leaving this window open."
+}
+
+# doc_ask_brief <slug> <kind> <item_row> <project> -- how a doc+ask kind (kinds.json `exit`, the
+# propose rung) closes: a doc in the project's lab docs/ and one ask, recorded on the item, its row
+# closed on the doc, never a PR, a merge or a publish. fleet-sessions reads the session DONE once
+# the item holds both (handoff_of), so the ask is handed over, not waited on.
+doc_ask_brief() {
+  local slug="$1" kind="$2" prof project lane key docs flag='' pf=''
+  IFS=$'\x1f' read -r prof project lane key <<<"$3"
+  project=${project:-$4}
+  docs=$(np "$prof" projects 2>/dev/null | awk -F'\t' -v p="$project" '$1 == p { print $2; exit }')
+  docs=${docs:+${docs%/*}/docs}
+  [ "${lane:-agent}" = agent ] && flag=' --agent'
+  [ -z "$prof" ] || pf=" --profile $prof"
+  echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, a $kind row: it ends on a doc and an ask, never a PR, a merge or a publish."
+  echo "Write the doc under ${docs:-the docs/ dir beside the project summary.md}, then file one agent-ask post for the decision it leads to, with --options, --recommend and a --context that names the doc."
+  echo "Then, in the same turn: agent-queue set $slug report=<doc path> ask=<ask id>${key:+; notes$pf ptask $project$flag done \"$key\" --proof doc:<doc path>}; agent-queue move $slug done --status ok; then /wind-down auto."
+  echo "That ask is the deliverable, not a wait: once the item holds both, the shepherd reads this session as done."
 }
 
 # item_row <item json> -> "<profile> <project> <lane> <key>", joined by the unit separator, of an
@@ -1403,14 +1425,15 @@ unstart_orphans() {
 # Still open, it goes by its PR's state, read from gh for an <owner>/<repo>#<N> pr: MERGED is done
 # ok (and a board row still started closes on merge proof, close_row), OPEN waits in waiting/ for
 # the merge, CLOSED is failed; a state gh cannot read leaves it for the next pass. A bare-number
-# pr: names no repo, so it is taken as merged, as before. No PR is failed, the reason in note.
+# pr: names no repo, so it is taken as merged, as before. No PR but a `report` (a doc+ask kind's
+# doc, a stack-review report) is done ok: that was the deliverable. Neither is failed, the reason in note.
 # Every move is a compare-and-set on the state read here (`--if`), and the note or merged: is
 # written only after it: an item its session closed or a human requeued meanwhile is left as it is.
 settle_item() {
-  local st pr info state oid; st=$(item_state "$1")
+  local st pr report info state oid; st=$(item_state "$1")
   case "$st" in running | waiting | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   dispatch_event reaped "$(agent-queue show "$1" --json 2>/dev/null | jq -r '.project // empty')" "session $2 gone" --item "$1" --why "item was $st"
-  pr=$(agent-queue show "$1" --json 2>/dev/null | jq -r '.pr // empty')
+  IFS=$'\x1f' read -r pr report < <(agent-queue show "$1" --json 2>/dev/null | jq -r '[.pr // "", .report // ""] | join("\u001f")')
   if [[ "$pr" == */*#* ]]; then
     info=$(gh pr view "${pr##*#}" -R "${pr%#*}" --json state,mergeCommit -q '.state + " " + (.mergeCommit.oid // "")' 2>/dev/null) || info=''
     read -r state oid <<<"$info"
@@ -1436,6 +1459,9 @@ settle_item() {
   elif [ -n "$pr" ]; then
     agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
     logline "reaped $2: session gone, queue item $1 done with PR $pr"
+  elif [ -n "$report" ]; then
+    agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
+    logline "reaped $2: session gone, queue item $1 done with its report $report"
   else
     agent-queue move "$1" "done" --status failed --if "$st" >/dev/null || return 0
     agent-queue set "$1" "note=session $2 ended before it closed the item" >/dev/null

@@ -787,6 +787,34 @@ kinds_match() {
   assert_line --index 0 'Read ~/.claude/skills/fix-skill/SKILL.md and follow it for this task:'
 }
 
+@test "item_brief: a doc+ask kind ends on a doc in the lab docs and an ask recorded on the item, never a PR" {
+  export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
+  project game beta "$SANDBOX/repos/game"
+  it='{"slug": "r", "mode": "oneshot", "project": "game", "title": "research(game): which engine", "task": "research(game): which engine", "type": "research", "row": "game:ar-9", "lane": "agent"}'
+  run item_brief "$it"
+  assert_line --index 0 '/deep-research-code research(game): which engine'
+  assert_output --partial 'a research row: it ends on a doc and an ask, never a PR'
+  assert_output --partial 'agent-queue set r report=<doc path> ask=<ask id>; notes ptask game --agent done "ar-9" --proof doc:<doc path>; agent-queue move r done --status ok'
+  refute_output --partial 'agent-land'
+  refute_output --partial 'Item: r'
+  # a code kind still lands a PR (negative control)
+  run item_brief '{"slug": "f", "mode": "oneshot", "project": "game", "title": "fix(game): x", "task": "fix(game): x"}'
+  assert_output --partial 'Merge with agent-land <N>'
+  refute_output --partial 'report=<doc path>'
+}
+
+@test "reap: a gone session with no PR but its report recorded closes its item ok, not failed" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug d "research(game): which engine"
+  stub wt 'echo "game-d"'
+  cmd_start --item d >/dev/null
+  agent-queue set d report="$SANDBOX/doc.md" ask=abc123
+  run cmd_reap
+  assert_success
+  refute_output --partial 'failed queue item d'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-d.md)" status)" ok
+}
+
 @test "picks: a focus project's row goes before a more urgent row elsewhere, one area each" {
   c() { jq -cn --arg p "$1" --arg k "$2" --argjson pr "$3" --arg pp "$4" \
     "$RANK_JQ"'{project: $p, stage: "beta", lane: "agent", key: $k, wrank: 1, prio: $pr, tier: 1, line: "", text: "- [ ] \($k)"} | rank_fields("2026-11-05"; $pp)'; }
