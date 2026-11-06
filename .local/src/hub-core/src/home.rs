@@ -119,7 +119,10 @@ impl Score {
             words.push("session".to_string());
         }
         if phases > 0 {
-            words.push(format!("{phases} phase{}", if phases == 1 { "" } else { "s" }));
+            words.push(format!(
+                "{phases} phase{}",
+                if phases == 1 { "" } else { "s" }
+            ));
         }
         if dependents > 0 {
             words.push(format!("{dependents} queued"));
@@ -131,7 +134,9 @@ impl Score {
             phases,
             dependents,
             age_min,
-            value: i64::try_from(holds).unwrap_or(i64::MAX).saturating_mul(age_min),
+            value: i64::try_from(holds)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(age_min),
             holds: words.join(", "),
             priority: None,
         }
@@ -250,7 +255,9 @@ fn needs_the_human(r: &Row) -> bool {
     r.lane == "human"
         && r.state == "open"
         && SHEET_PRIORITIES.contains(&r.priority.as_str())
-        && r.r#type.as_deref().is_some_and(|t| HUMAN_TYPES.contains(&t))
+        && r.r#type
+            .as_deref()
+            .is_some_and(|t| HUMAN_TYPES.contains(&t))
 }
 
 fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -327,10 +334,7 @@ pub fn needs(
     infra: Option<&Infra>,
 ) -> Vec<Need> {
     let now = state["generated_epoch"].as_i64();
-    let age_min = |since: Option<i64>| {
-        now.zip(since)
-            .map_or(0, |(n, s)| (n - s).max(0) / 60)
-    };
+    let age_min = |since: Option<i64>| now.zip(since).map_or(0, |(n, s)| (n - s).max(0) / 60);
     let sessions: Vec<&Value> = state["sessions"]
         .as_array()
         .map(|a| a.iter().collect())
@@ -395,7 +399,10 @@ pub fn needs(
         }
         work(
             &mut worked,
-            items.iter().copied().find(|i| !task.is_empty() && i.slug == task),
+            items
+                .iter()
+                .copied()
+                .find(|i| !task.is_empty() && i.slug == task),
         );
         work(&mut worked, item_of(session));
         out.push(Need {
@@ -424,9 +431,7 @@ pub fn needs(
         shown.insert(name.to_string());
         let item = item_of(name);
         work(&mut worked, item);
-        let since = now
-            .zip(s["idle_min"].as_i64())
-            .map(|(g, m)| g - m * 60);
+        let since = now.zip(s["idle_min"].as_i64()).map(|(g, m)| g - m * 60);
         out.push(Need {
             kind: Kind::Session,
             project: item.map_or_else(|| dir_name(str_of(s, "cwd")), |i| i.project.clone()),
@@ -733,7 +738,14 @@ mod tests {
 
     fn score(n: &Need) -> (bool, bool, u64, u64, i64, i64) {
         let s = n.score.as_ref().unwrap();
-        (s.human, s.session, s.phases, s.dependents, s.age_min, s.value)
+        (
+            s.human,
+            s.session,
+            s.phases,
+            s.dependents,
+            s.age_min,
+            s.value,
+        )
     }
 
     #[test]
@@ -769,11 +781,21 @@ mod tests {
         let ids: Vec<&str> = h.needs.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["lab/big-agent-1:1", "old", "parent", "gate", "undated", "auto"]
+            [
+                "lab/big-agent-1:1",
+                "old",
+                "parent",
+                "gate",
+                "undated",
+                "auto"
+            ]
         );
         // (1 + session + 3 phases left) * 30 min.
         assert_eq!(score(&h.needs[0]), (true, true, 3, 0, 30, 150));
-        assert_eq!(h.needs[0].score.as_ref().unwrap().holds, "session, 3 phases");
+        assert_eq!(
+            h.needs[0].score.as_ref().unwrap().holds,
+            "session, 3 phases"
+        );
         assert_eq!(score(&h.needs[1]), (true, false, 0, 0, 60, 60));
         // (1 + 2 queued after it) * 20 min.
         assert_eq!(score(&h.needs[2]), (true, false, 0, 2, 20, 60));
@@ -791,10 +813,7 @@ mod tests {
         let i = infra(vec![], &["watch:a"]);
         let h = build(&state(), None, None, Some(&i));
         let kinds: Vec<Kind> = h.needs.iter().map(|n| n.kind).collect();
-        assert_eq!(
-            kinds,
-            [Kind::Ask, Kind::Session, Kind::Nightly, Kind::Red]
-        );
+        assert_eq!(kinds, [Kind::Ask, Kind::Session, Kind::Nightly, Kind::Red]);
         assert!(h.needs[2..].iter().all(|n| n.score.is_none()));
         // An ask from the future (a skewed clock) waits zero minutes, never negative.
         let mut st = state();
@@ -913,8 +932,16 @@ mod tests {
             .map(|n| n.id)
             .collect();
         assert_eq!(ids, ["tr-51", "tr-117"]);
-        let h = build(&state(), None, Some(&Err("notes board --json: boom".into())), None);
-        assert!(h.errors.iter().any(|e| e.starts_with("notes board --json: boom")));
+        let h = build(
+            &state(),
+            None,
+            Some(&Err("notes board --json: boom".into())),
+            None,
+        );
+        assert!(h
+            .errors
+            .iter()
+            .any(|e| e.starts_with("notes board --json: boom")));
         assert!(h.needs.iter().all(|n| n.kind != Kind::Sheet));
     }
 

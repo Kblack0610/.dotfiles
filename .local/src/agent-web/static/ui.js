@@ -77,7 +77,11 @@ const sumOf = (o) => Object.values(o || {}).reduce((a, v) => a + (v || 0), 0);
 const pct = (v) => (v == null ? "-" : Math.round(v * 100) + "%");
 const secs = (s) => (s == null || !(s > 0) ? "-" : s < 60 ? Math.round(s) + "s" : dur(s / 60));
 // A headline number with its label, coloured by --c.
-const tile = (l, v, c, sub) => `<div class="tile" style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}</div>`;
+// A tile with an href is a link to that page.
+const tile = (l, v, c, sub, href) => {
+  const [open, close] = href ? [`<a class="tile" href="${href}"`, "</a>"] : ['<div class="tile"', "</div>"];
+  return `${open} style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}${close}`;
+};
 
 // Card pieces for the tabs whose rows are cards (Queue, Waiting): a title row with chips, one
 // quiet line, then folds for what the human rarely needs. Every argument named html is already

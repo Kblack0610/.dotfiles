@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # `tmx pick` (Prefix+H): the collapsible tree over `tmx rows`.
 #
-# integ tier: tree-rows and tree-enter read a rows file and an open list, so a fixture rows
+# integ tier: tree-rows, tree-enter and tree-fold read a rows file and an open list, so a fixture rows
 # file drives them with no tmux server. The rows themselves are pinned by the ui tier
 # (servers_isolation.bats); this pins what the tree does with them.
 
@@ -43,8 +43,8 @@ shown() { "$TMX" tree-rows "$@" | cut -f4; }
   refute_output --partial 'loose'
 }
 
-@test "Enter on a world opens it: its sessions and windows, and no other world's" {
-  run "$TMX" tree-enter hub
+@test "Tab on a world opens it: its sessions and windows, and no other world's" {
+  run "$TMX" tree-fold hub
   assert_output --partial 'reload:'
   run shown
   assert_line --index 0 '- hub  2 sessions'
@@ -53,27 +53,50 @@ shown() { "$TMX" tree-rows "$@" | cut -f4; }
   refute_output --partial 'dotfiles-agent-3'
 }
 
-@test "Enter on an open world closes it again" {
-  "$TMX" tree-enter lab >/dev/null
-  "$TMX" tree-enter lab >/dev/null
+@test "Tab on an open world closes it again" {
+  "$TMX" tree-fold lab >/dev/null
+  "$TMX" tree-fold lab >/dev/null
   run shown
   refute_output --partial 'dotfiles-agent-3'
   assert_line --index 1 '+ lab  1 session'
 }
 
+@test "Enter on a world goes to it, and folds nothing" {
+  run "$TMX" tree-enter hub
+  assert_output 'accept'
+  run shown
+  refute_output --partial 'daily  nvim'
+}
+
 @test "Enter on a session, a window or a world that is down goes there" {
-  # Negative control for the toggle: a row with no key never reloads.
   run "$TMX" tree-enter ''
   assert_output 'accept'
   run bash -c "'$TMX' tree-rows | awk -F'\t' '\$1==\"work\" {print \$5}'"
   assert_output ''
 }
 
-@test "STRANDED opens like a world" {
+@test "Tab on a session or window row does nothing" {
+  run "$TMX" tree-fold ''
+  assert_success
+  assert_output ''
+}
+
+@test "STRANDED is a group, not a place: Enter or Tab opens it" {
   "$TMX" tree-enter STRANDED >/dev/null
   run shown
   assert_output --partial '- STRANDED'
   assert_output --partial 'loose  stranded'
+  "$TMX" tree-fold STRANDED >/dev/null
+  run shown
+  refute_output --partial 'loose  stranded'
+}
+
+@test "the picker binds Enter and a click to go, Tab and a right-click to fold" {
+  run grep -E 'bind "(enter|left-click|tab|right-click):' "$TMX"
+  assert_line --partial 'enter:transform:$q tree-enter {5}'
+  assert_line --partial 'left-click:transform:$q tree-enter {5}'
+  assert_line --partial 'tab:transform:$q tree-fold {5}'
+  assert_line --partial 'right-click:transform:$q tree-fold {5}'
 }
 
 @test "a search shows every row, open or not" {
@@ -84,7 +107,7 @@ shown() { "$TMX" tree-rows "$@" | cut -f4; }
 }
 
 @test "a picked row keeps its target in the first three fields" {
-  "$TMX" tree-enter hub >/dev/null
+  "$TMX" tree-fold hub >/dev/null
   run bash -c "'$TMX' tree-rows | awk -F'\t' '\$4 ~ /1\\* main/ {print \$1\"/\"\$2\"/\"\$3}'"
   assert_output 'hub/dotfiles/1'
 }

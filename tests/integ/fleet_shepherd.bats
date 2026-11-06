@@ -109,7 +109,9 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial r2
 }
 
-@test "due lists an unescalated shared red with the escalate call that answers it" {
+@test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
+  # no item could be filed (the add fails), so the red is the human's, as before ar-623
+  stub agent-queue '[ "$1" = add ] && { echo "agent-queue: unknown project: x" >&2; exit 2; }; exit 0'
   jq -n '{schema: 1, sessions: [], main: [], shared: [
       {test: "T.A", id: "shared-T_A", reason: "T.A red on 3 branches in 2h: a, b, c", fact: "SHARED T.A @100", escalated: false},
       {test: "T.B", id: "shared-T_B", reason: "T.B red on 3 branches in 2h: a, b, c", fact: "SHARED T.B @100", escalated: true}]}' > "$FLEET_STATE_FILE"
@@ -121,6 +123,58 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   "$SH" check >/dev/null
   run awk -F'\t' '$4 ~ /^shared red/ { print $2 "|" $1 }' "$FLEET_SHEPHERD_DIR/.due"
   assert_output 'shepherd|shared red: T.A red on 3 branches in 2h: a, b, c'
+}
+
+# shared_doc <owners-json> [nudged]: one shared red on three branches, test P.Tests.FooTests.Bar("x")
+shared_doc() {
+  jq -n --argjson o "$1" --argjson n "${2:-false}" '{schema: 1, sessions: [], main: [], shared: [
+    {test: "P.Tests.FooTests.Bar(\"x\")", id: "shared-P_Tests", reason: "P.Tests.FooTests.Bar(\"x\") red on 3 branches in 2h: a, b, c",
+     fact: "SHARED P.Tests.FooTests.Bar(\"x\") @100", nudged: $n, escalated: false, owners: $o}]}' > "$FLEET_STATE_FILE"
+}
+
+@test "check files one owner item per shared red episode, and the pass tells its sessions once instead of paging" {
+  # ar-623: before, every branch's session gated again into a shared red alone and the human was paged
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) printf "%s\n" "${STUB_ACTIVE:-}" ;;
+  add) echo "queued shared-red-footests -> /q/x.md" ;;
+esac'
+  shared_doc '["sid-1","sid-2"]'
+  run "$SH" check
+  assert_success
+  assert_line 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by queue item shared-red-footests; tell sid-1,sid-2: do not gate again on it, merge main once shared-red-footests lands; then: fleet-sessions mark shared-P_Tests "SHARED P.Tests.FooTests.Bar("x") @100"'
+  refute_output --partial 'shared red:'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  run grep '^add ' "$HOME/aq.calls"
+  assert_output --partial '--project unity-core-playground'
+  assert_output --partial '--slug shared-red-FooTests'
+  assert_output --partial 'scripts/test/quarantine.txt'
+  grep -q 'owned by queue item shared-red-footests' "$FLEET_SHEPHERD_DIR/log.md"
+  # the same episode on the next check files nothing more
+  "$SH" check >/dev/null
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  # once the pass marks it (nudged), nothing is due; nothing was paged at any point
+  shared_doc '["sid-1","sid-2"]' true
+  run "$SH" due
+  refute_output --partial FooTests
+  [ ! -s "$HOME/pages" ] || ! grep -q FooTests "$HOME/pages"
+}
+
+@test "a shared red a live item already names is owned by that item, and one with no sessions in it is not due" {
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+[ "$1" = list ] && printf "%s\n" "{\"slug\":\"other\",\"task\":\"fix the BarTests class\"}" "{\"slug\":\"nightly-fix-foo-ucp-9\",\"task\":\"fix FooTests on the nightly\"}"
+exit 0'
+  shared_doc '["sid-1"]'
+  run "$SH" check
+  assert_line --partial 'is owned by queue item nightly-fix-foo-ucp-9; tell sid-1'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # negative control: no live session in the failing worktrees, so there is no one to tell
+  shared_doc '[]'
+  run "$SH" due
+  refute_output --partial FooTests
 }
 
 @test "a manual row is never due, and an all-quiet document exits 1" {
