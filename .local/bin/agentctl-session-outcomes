@@ -140,11 +140,12 @@ cmd_run() {
     sid="$(jq -r .session_id <<<"$row")"
     tr="$(jq -r '.transcript // ""' <<<"$row")"
     if [ -n "$tr" ] && [ -f "$tr" ]; then
-      so_transcript_metrics "$tr" "$sigs" > "$work/m.$sid.json" || printf 'null' > "$work/m.$sid.json"
-      "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null' > "$work/t.$sid.json"
+      so_transcript_metrics "$tr" "$sigs" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
+      "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null\n' > "$work/t.$sid.json"
     else
-      printf 'null' > "$work/m.$sid.json"
-      printf 'null' > "$work/t.$sid.json"
+      # Newline-ended: the repo list below cats every m file into one jq stream, and nullnull is not JSON.
+      printf 'null\n' > "$work/m.$sid.json"
+      printf 'null\n' > "$work/t.$sid.json"
     fi
     n=$((n + 1))
   done < "$work/due.jsonl"
