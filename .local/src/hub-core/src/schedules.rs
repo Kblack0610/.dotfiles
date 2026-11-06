@@ -232,7 +232,7 @@ pub fn cron_words(cron: &str, off: i32) -> String {
         if h == "*" {
             return hourly(min);
         }
-        if let Some(n) = h.strip_prefix("*/") {
+        if let (Some(n), 0) = (h.strip_prefix("*/"), min) {
             return format!("every {n}h");
         }
     }
@@ -258,14 +258,15 @@ pub fn cron_words(cron: &str, off: i32) -> String {
     }
 }
 
-/// Whether `v` is in one cron field: `*`, `N`, `A-B`, a `/step` on any of them, or a list.
-fn fits(field: &str, v: u32) -> bool {
+/// Whether `v` is in one cron field: `*`, `N`, `A-B`, a `/step` on any of them, or a list. `first`
+/// is the field's lowest value, where a `*/N` counts from: days and months start at 1.
+fn fits(field: &str, v: u32, first: u32) -> bool {
     field.split(',').any(|p| {
         let (range, step) = p.split_once('/').unwrap_or((p, "1"));
         let step = step.parse::<u32>().unwrap_or(1).max(1);
         let (lo, hi) = match range.split_once('-') {
             Some((a, b)) => (a.parse().unwrap_or(u32::MAX), b.parse().unwrap_or(0)),
-            None if range == "*" => (0, u32::MAX),
+            None if range == "*" => (first, u32::MAX),
             None => {
                 let n = range.parse().unwrap_or(u32::MAX);
                 (n, if p.contains('/') { u32::MAX } else { n })
@@ -284,11 +285,16 @@ fn cron_next(cron: &str, at: i64) -> Option<i64> {
     let start = at - at.rem_euclid(60) + 60;
     (0..NEXT_MINUTES).map(|i| start + i * 60).find(|&t| {
         DateTime::from_timestamp(t, 0).is_some_and(|d| {
-            fits(m, d.minute())
-                && fits(h, d.hour())
-                && fits(dom, d.day())
-                && fits(mon, d.month())
-                && fits(dow, d.weekday().num_days_from_sunday())
+            let w = d.weekday().num_days_from_sunday();
+            let on_date = fits(dom, d.day(), 1);
+            let on_weekday = fits(dow, w, 0) || (w == 0 && fits(dow, 7, 0));
+            // Cron runs on either when both are restricted, and on both otherwise.
+            let on_day = if dom != "*" && dow != "*" {
+                on_date || on_weekday
+            } else {
+                on_date && on_weekday
+            };
+            fits(m, d.minute(), 0) && fits(h, d.hour(), 0) && fits(mon, d.month(), 1) && on_day
         })
     })
 }
@@ -1090,6 +1096,7 @@ mod tests {
         assert_eq!(cron_words("0 * * * *", PST), "hourly");
         assert_eq!(cron_words("*/15 * * * *", PST), "every 15m");
         assert_eq!(cron_words("0 */6 * * *", PST), "every 6h");
+        assert_eq!(cron_words("30 */6 * * *", PST), "30 */6 * * * UTC");
         assert_eq!(cron_words("0 3 1 * *", PST), "0 3 1 * * UTC");
         assert_eq!(cron_words("nonsense", PST), "nonsense UTC");
     }
@@ -1108,6 +1115,36 @@ mod tests {
         assert_eq!(cron_next("15 4 * * 0", AT), Some(AT + 30 * 3600 + 15 * 60));
         assert_eq!(cron_next("*/15 * * * *", AT), Some(AT + 15 * 60));
         assert_eq!(cron_next("bad", AT), None);
+        // Sunday is 7 as well as 0.
+        assert_eq!(cron_next("15 4 * * 7", AT), Some(AT + 30 * 3600 + 15 * 60));
+    }
+
+    #[test]
+    fn cron_next_counts_days_and_months_from_one_and_takes_either_day_field() {
+        let at = |y, m, d| {
+            chrono::NaiveDate::from_ymd_opt(y, m, d)
+                .and_then(|x| x.and_hms_opt(0, 0, 0))
+                .map(|x| x.and_utc().timestamp())
+                .unwrap()
+        };
+        // Odd days and January, April...: a */N from zero would land on even days and March.
+        assert_eq!(
+            cron_next("0 0 */2 * *", at(2026, 11, 1)),
+            Some(at(2026, 11, 3))
+        );
+        assert_eq!(
+            cron_next("0 0 1 */3 *", at(2026, 12, 15)),
+            Some(at(2027, 1, 1))
+        );
+        // The 15th, or the next Monday, whichever comes first.
+        assert_eq!(
+            cron_next("0 0 15 * 1", at(2026, 11, 3)),
+            Some(at(2026, 11, 9))
+        );
+        assert_eq!(
+            cron_next("0 0 15 * 1", at(2026, 11, 11)),
+            Some(at(2026, 11, 15))
+        );
     }
 
     #[test]

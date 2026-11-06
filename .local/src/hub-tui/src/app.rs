@@ -552,8 +552,8 @@ impl App {
     }
 
     /// Schedules come from systemd, Prometheus and files with no one thing to watch, so the tab
-    /// reads on entering, on `r` and on the tick while it is shown, at most every
-    /// `SCHEDULES_REFRESH`.
+    /// reads on entering, on `r`, and on the tick while it is shown once `SCHEDULES_REFRESH` has
+    /// passed.
     pub fn read_schedules(&mut self) {
         if self.schedules_read.want() {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
@@ -563,6 +563,14 @@ impl App {
                 let _ = tx.send(Msg::Schedules(Box::new(s)));
             });
         }
+    }
+
+    /// A read still going is not due: asking now would queue a second one behind it.
+    fn schedules_due(&self) -> bool {
+        !self.schedules_read.busy
+            && self
+                .schedules_at
+                .is_none_or(|t| t.elapsed() >= SCHEDULES_REFRESH)
     }
 
     /// The actions ledger has no one file to watch, so Log's Actions section reads it when it
@@ -995,11 +1003,7 @@ impl App {
                 if self.tab == Tab::Fleet {
                     self.read_fleet_shown();
                 }
-                if self.tab == Tab::Schedules
-                    && self
-                        .schedules_at
-                        .is_none_or(|t| t.elapsed() >= SCHEDULES_REFRESH)
-                {
+                if self.tab == Tab::Schedules && self.schedules_due() {
                     self.read_schedules();
                 }
                 if self.tab == Tab::Queue {
@@ -4072,6 +4076,19 @@ mod tests {
         let mut r = Schedule::default();
         (r.kind, r.name, r.page) = (kind.into(), name.into(), page.into());
         r
+    }
+
+    #[test]
+    fn a_schedules_read_still_going_is_not_due_again() {
+        let mut a = app(Tab::Schedules);
+        assert!(a.schedules_due(), "never read");
+        a.schedules_read.busy = true;
+        assert!(
+            !a.schedules_due(),
+            "a tick must not queue a read behind this one"
+        );
+        a.handle(Msg::Schedules(Box::default()));
+        assert!(!a.schedules_due(), "just read");
     }
 
     #[test]
