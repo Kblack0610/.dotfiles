@@ -4,7 +4,7 @@
 // draws its answer and turns a click into the view keys (by, w, q, sort, dir) in the URL, so
 // `#costs?by=model&w=7d&q=harness:codex` is a link to that view. Trends are Grafana's.
 
-const cost = { data: null, err: null };
+const cost = { data: null, err: null, open: {} };
 
 // Every source is a file written nightly or per call, and none pushes, so the open tab re-reads
 // on the Infra cadence; the server folds reads inside two minutes into one.
@@ -72,10 +72,49 @@ function costsTiles(d) {
     tile("LAZER POOL", usd(lz.lazer_spend), "var(--c3)", pool) + `</div>`;
 }
 
+// The Burn section (hub_core::burn, the hub's coststab.rs `burn`): the headline coloured by the
+// fleet's level, then the drip, when the accounts are back on pace and one row per account. Green
+// folds to its headline (dashboards rule 4); amber and red start open until the reader folds it.
+function burnPace(b) {
+  const p = b.pace;
+  if (p.on_pace) return "every account is on pace";
+  const burn = p.at_burn.length ? p.at_burn.map(([n, t]) => `${esc(n)} ${when(t)}`).join(", ") : "not before the reset";
+  const idle = p.idle_all_by == null ? "" : `; if idle: all by ${when(p.idle_all_by)}${p.idle_rest_after_reset ? ", the rest after the reset" : ""}`;
+  return `at this burn: ${burn}${idle}`;
+}
+
+// A back-on-pace cell: on pace, the time, or after the reset (Account::on_pace).
+const burnCell = (a, t, at) => (!(a.used > a.gone) || (t != null && t <= at) ? "on pace" : t == null ? "after reset" : when(t));
+
+function burnRow(a, at) {
+  if (a.state === "unreadable") return `<tr><td>${esc(a.name)}</td><td colspan="9" class="bad">usage unreadable</td></tr>`;
+  if (a.state === "idle") return `<tr><td>${esc(a.name)}</td><td colspan="9" class="muted">idle, token refreshes on launch</td></tr>`;
+  const pc = (v) => (v == null ? "-" : Math.floor(v) + "%");
+  const rate = (v) => (v == null ? "-" : v.toFixed(2));
+  return `<tr><td>${esc(a.name)}</td><td class="n">${a.live}</td><td class="n">${pc(a.used)}</td><td class="n">${pc(a.gone)}</td>` +
+    `<td class="n${a.sustain != null && a.burn > a.sustain ? " warn" : ""}">${rate(a.burn)}</td><td class="n">${rate(a.sustain)}</td>` +
+    `<td>${burnCell(a, a.burn_at, at)}</td><td>${burnCell(a, a.idle_at, at)}</td><td>${when(a.run_out)}</td><td>${when(a.resets)}</td></tr>`;
+}
+
+function costsBurn(d) {
+  const b = d.burn;
+  if (!b || !b.accounts.length) return `<h2 class="sec" id="sec-burn">Burn</h2><div class="panel muted">no data from claude-acct</div>`;
+  const cls = b.level === "bad" ? "bad" : b.level === "warn" ? "warn" : "ok";
+  const held = b.drip.held ? ` <a class="warn" href="#sessions" title="${esc(b.drip.held)}">dispatch held -> Sessions</a>` : "";
+  const open = cost.open.burn != null ? cost.open.burn : b.level !== "ok";
+  const th = (t) => `<th class="n">${t}</th>`;
+  return `<details class="csec" data-k="burn" id="sec-burn"${open ? " open" : ""}><summary><h2 class="sec">Burn <span class="burn ${cls}">${esc(b.head)}</span></h2></summary>` +
+    `<div class="panel"><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
+    `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
+    `<div class="panel scroll"><table class="tbl"><tr><th>account</th>${["live", "used", "gone", "burn/h", "keeps/h"].map(th).join("")}<th>at burn</th><th>if idle</th><th>runs out</th><th>resets</th></tr>` +
+    b.accounts.map((a) => burnRow(a, b.at)).join("") + `</table></div>` +
+    `<div class="muted fold">burn/h is the last 6h rate per live session; keeps/h is what the rest of the week can carry to the reset.</div></details>`;
+}
+
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
-  let html = `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`;
+  let html = `${costsBurn(d)}<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`;
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -103,7 +142,7 @@ function renderCosts() {
   paint(el, `<div id="costs-head">${costsHead(d)}</div>` +
     `<div id="sec-table">${costsSwitch("window", d.windows, d.window, "w")}${costsSwitch("by", d.cuts, d.by, "by")}</div>` +
     `${tblBar("costs", d.table, "search, or harness:codex -model:opus project:dotfiles")}` +
-    `<div id="costs-body">${costsBody(d)}</div><div id="costs-tail">${costsTail(d)}</div>`);
+    `<div id="costs-body">${costsBody(d)}</div><div id="costs-tail">${costsTail(d)}</div>`, cost.open);
   seekSection();
 }
 
