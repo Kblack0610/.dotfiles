@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop check: the fast-tier test files a change can affect (unit + integ), plus shellcheck.
+# Stop check: the fast-tier test files a change can affect (unit + integ).
 # Exit codes: 0=pass, 1=warn, 2=block.
 #
 # Only the fast tier runs here, and that is not just a latency call. The fast tier never
