@@ -147,7 +147,9 @@ so_transcript_metrics() {
 # has no Stop hook, and its own DB already holds cost and tokens. `session_v2` is the live table;
 # `session` and `part` stopped being written at 2.1.4. Times are milliseconds. A child session (a
 # subagent) adds to its root and gets no line. PRs follow the rule at the top of this file: a
-# `gh pr create|merge` call's own output printed it. No DB is no rows; a schema it cannot read is rc 1.
+# `gh pr create|merge` call's own output printed it. `provider` is the session model's providerID:
+# `lazer` went to Lazer direct, which the gateway's lazer-pool never sees. No DB is no rows; a schema
+# it cannot read is rc 1.
 so_opencode_rows() {
   local db="$1" work="$2" tree dir
   [ -e "$db" ] || return 0
@@ -178,9 +180,11 @@ so_opencode_rows() {
                      | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ] | unique})
      | from_entries) as $prs
     | ($s[0] // [])[]
+    | ((.model // "{}") | fromjson) as $model
     | { session_id, harness: "opencode", project: $p[0][.directory], title,
         updated: (.updated_ms / 1000 | floor), duration_s: ((.updated_ms - .created_ms) / 1000 | floor),
-        edits: (.edits // 0), cost_usd, models: [(.model // "{}") | fromjson | .id // empty],
+        edits: (.edits // 0), cost_usd, models: [$model.id // empty],
+        provider: $model.providerID,
         tokens: {input, output, cacheCreation: .cache_write, cacheRead: .cache_read,
                  total: (.input + .output + .reasoning + .cache_read + .cache_write)},
         prs: ($prs[.session_id] // []) }'
