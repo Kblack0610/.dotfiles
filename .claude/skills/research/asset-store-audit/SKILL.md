@@ -30,7 +30,7 @@ For what the account owns but has not downloaded, read the asset library's `docs
 
 Scripts are in `~/.claude/skills/asset-store-audit/scripts/`. Work in `OUT=~/.cache/asset-store-audit/<date>` on disk, not the session scratchpad: `/tmp` is RAM on this machine and an unpack runs to many GB. When the report is published, delete `$OUT/pkgs`.
 
-1. **Unpack without importing.** Cache on Linux: `~/.local/share/unity3d/Asset Store-5.x/<publisher>/<category>/` <!-- skill-drift: ignore: the space in the cache dir name cuts the path check -->. Skip `*.tmp` (partial downloads) and tell the user which ones are still in progress.
+1. **Unpack without importing.** Cache on Linux: `<publisher>/<category>/` under the `Asset Store-5.x` directory in `~/.local/share/unity3d/`. Skip `*.tmp` (partial downloads) and tell the user which ones are still in progress.
    `python3 scripts/unpack.py "<cache>" "$OUT" -j 12` - streams every package, writes `pkgs/<Pack>/manifest.json` and text assets, and unpacks nested URP / effect sub-packages into `pkgs/<Pack>/nested/`. About 3 minutes for 14 GB.
 2. **Fact sheets.** `python3 scripts/facts.py "$OUT"` -> `facts/<Pack>.json`: type counts and MB, material shaders by GUID with a remap summary, custom shaders, script namespaces and flags, asmdefs, prefab components, FBX scale and rig, serialization and authoring version.
 3. **Refresh the rubric's view of the stack.** Read `references/rubric.md`, then re-check unity-core's `packages/` and `third-party/` and `packages/com.blacknbrown.asset-ingest/Editor/ShaderRemap.cs` + `PackIngestor.cs`. Copy the rubric to `$OUT/RUBRIC.md` with anything that changed.

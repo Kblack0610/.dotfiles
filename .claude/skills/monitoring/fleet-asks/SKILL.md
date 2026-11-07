@@ -37,7 +37,7 @@ Not for what is waiting on the human across the fleet (`fleet-bench`), or moving
 ## Read an answer
 
 - `agent-ask list [project|--all] [--pending|--answered] [--since 3d]`, then `agent-ask show <id>`. The `answered_by` field says human, judge or shepherd.
-- An answer is typed into the live session when there is one. Otherwise `ask-resume <id>` starts a headless run of the ask's `resume` command (`agentctl-run --agent ask-resume`, max turns `ASK_RESUME_MAX_TURNS`, log `~/.local/state/agentctl/ask-resume/<project>.log`). <!-- skill-drift: ignore: ask-resume makes the log dir on its first run -->
+- An answer is typed into the live session when there is one. Otherwise `ask-resume <id>` starts a headless run of the ask's `resume` command (`agentctl-run --agent ask-resume`, max turns `ASK_RESUME_MAX_TURNS`, log `ask-resume/<project>.log` under `~/.local/state/agentctl/`, made on its first run).
 
 ## Stuck asks
 

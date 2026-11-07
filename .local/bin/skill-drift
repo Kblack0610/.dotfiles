@@ -410,10 +410,14 @@ at_line() {
 # Without those, `bump the version` reports a missing tool called "bump".
 check_cmds() {
   local skill="$1" f="$2" c defined
-  # A shell function the doc defines (`mem0() {`) is called by the steps after it, not
-  # looked up on PATH.
-  defined=$(grep -oE '^[[:space:]]*(function[[:space:]]+)?[a-z][a-z0-9_-]*[[:space:]]*\(\)' "$f" \
-    | sed -E 's/^[[:space:]]*(function[[:space:]]+)?//; s/[[:space:]]*\(\)$//')
+  # A shell function a shell fence of the doc defines (`mem0() {`, `function mem0 {`) is
+  # called by the steps after it, not looked up on PATH.
+  defined=$(awk '
+      /^[[:space:]]*```(bash|sh|shell|console)[[:space:]]*$/ { inblock=1; next }
+      /^[[:space:]]*```/ { inblock=0; next }
+      inblock && match($0, /^[[:space:]]*(function[[:space:]]+[a-z][a-z0-9_-]*|[a-z][a-z0-9_-]*[[:space:]]*\(\))/) {
+        d = substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*(function[[:space:]]+)?/, "", d); sub(/[[:space:]]*\(\)$/, "", d); print d
+      }' "$f")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     is_common "$c" && continue

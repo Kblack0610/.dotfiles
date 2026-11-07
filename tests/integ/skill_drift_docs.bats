@@ -73,11 +73,17 @@ setup() {
   printf '%s\n' '```bash' \
     'mem0() { curl -fsS "$@"; }' \
     'mem0 -X POST "$URL/search"' \
-    'function ui-bounds() { :; }' \
+    'function ui-bounds { :; }' \
     'ui-bounds --text x' \
     'no-such-tool-xyz --flag' \
-    '```' > "$HOME/doc.md"
+    'deploy-xyz --now' \
+    '```' \
+    '```js' \
+    'deploy-xyz() { }' \
+    '```' \
+    'Prose naming lint-xyz() is not a definition either.' > "$HOME/doc.md"
   DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
-  run jq -r '.findings[] | select(.type == "NOCMD") | .item' <<< "$output"
-  assert_output 'no-such-tool-xyz'
+  run jq -r '[.findings[] | select(.type == "NOCMD") | .item] | sort | join(" ")' <<< "$output"
+  # a definition in a js fence does not excuse deploy-xyz in the bash fence
+  assert_output 'deploy-xyz no-such-tool-xyz'
 }
