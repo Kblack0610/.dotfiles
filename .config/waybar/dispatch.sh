@@ -162,6 +162,9 @@ else
     cl="capacity: no headroom from a pass in the last 45 minutes"
   fi
   [ -n "$paused" ] && cl+=$'\n'"paused by: $(paint "$C_YEL" "$paused")"
+  # The human's #prio/only focus: names are on the hub Projects tab and in `fleet-dispatch headroom`.
+  fn="$(get dispatch.focus_projects)"
+  ((${fn:-0} > 0)) && cl+=$'\n'"focus: $(paint "$C_YEL" "only $fn project(s)"), $(d held_focus) queued held off it (reds, urgent and #requested still run)"
   disp+=$'\n'"$cl"
   cs="${could:--}"; ((${could:-0} > 0)) && cs="$(paint "$C_YEL" "$could")"
   disp+=$'\n'"can start now: $cs more; last pass $(prom_dur "$pass_age") ago, last start $start_age ago"

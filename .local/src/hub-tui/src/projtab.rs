@@ -175,7 +175,7 @@ fn head(c: &Card, p: Palette, w: usize) -> Line<'static> {
             } else {
                 format!(", prio {}", c.prio)
             },
-            if c.prio == "focus" { p.head() } else { p.dim() },
+            if matches!(c.prio.as_str(), "focus" | "only") { p.head() } else { p.dim() },
         ),
     ];
     clip_line(Line::from(spans), w)
@@ -327,7 +327,7 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
         dash(c.version.as_deref().unwrap_or_default()).into(),
         cell(
             dash(&c.prio),
-            if c.prio == "focus" { p.head() } else { p.dim() },
+            if matches!(c.prio.as_str(), "focus" | "only") { p.head() } else { p.dim() },
         ),
         c.progress.open.to_string().into(),
         c.progress.done.to_string().into(),

@@ -41,7 +41,7 @@ pub struct Stats {
     pub profile: String,
     pub name: String,
     pub stage: String,
-    /// `focus`, `high`, `low`, empty for normal: the sheet's `#prio/<word>`.
+    /// `only`, `focus`, `high`, `low`, empty for normal: the sheet's `#prio/<word>`.
     pub prio: String,
     pub version: Option<String>,
     pub goal: String,
@@ -50,11 +50,14 @@ pub struct Stats {
     pub status_date: String,
 }
 
-/// The priority after `cur` in the cycle a key steps through: normal, focus, high, low.
+/// The priority after `cur` in the cycle a key steps through: normal, focus, only, high, low.
+/// `focus` comes before `only` so one press ranks a project first and a second press makes the
+/// fleet work on it alone.
 pub fn next_prio(cur: &str) -> &'static str {
     match cur {
         "" => "focus",
-        "focus" => "high",
+        "focus" => "only",
+        "only" => "high",
         "high" => "low",
         _ => "normal",
     }
@@ -87,7 +90,7 @@ pub fn set_prio(
 ) -> Result<String, String> {
     if !safe_name(profile)
         || !safe_name(name)
-        || !["focus", "high", "low", "normal"].contains(&value)
+        || !["only", "focus", "high", "low", "normal"].contains(&value)
     {
         return Err(format!("refusing prio {value} for {profile}/{name}"));
     }
@@ -532,7 +535,8 @@ mod tests {
     #[test]
     fn the_prio_key_cycles_and_writes_through_the_cli_only() {
         assert_eq!(next_prio(""), "focus");
-        assert_eq!(next_prio("focus"), "high");
+        assert_eq!(next_prio("focus"), "only");
+        assert_eq!(next_prio("only"), "high");
         assert_eq!(next_prio("high"), "low");
         assert_eq!(next_prio("low"), "normal");
         let r = Argv(Default::default());
