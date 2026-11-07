@@ -85,7 +85,7 @@ BUCKET_ORDER="NEEDS STALLED DONE LANDED CHAT WORKING PARKED"
 BUCKET_FINISHED="DONE LANDED"
 BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 
-# session_bucket <status> <plan_mode 0|1> <asks> <heavy 0|1> <idle_min> <git 0|1> \
+# session_bucket <status> <plan: 1 while an ExitPlanMode approval is pending, else 0> <asks> <heavy 0|1> <idle_min> <git 0|1> \
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
@@ -847,6 +847,10 @@ collect() {
        (.time_use.parked_min // 0), (.compactions // 0), (.summary | text), (.doing | text), (.said | text),
        (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text), (.account | text)]
       | map(tostring) | join("\t")' <<<"$line")
+    # plan_mode alone is only a mode: an idle session in it with no plan written is not waiting
+    # on anyone (2026-11-06 hub/dotfiles:1 read NEEDS for an unsent draft). The approval is
+    # pending only while ExitPlanMode is the open tool call, its dialog on screen.
+    [ "$plan" = 1 ] && [[ "$doing" != ExitPlanMode* ]] && plan=0
     prs="$(session_prs "$transcript")"
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
