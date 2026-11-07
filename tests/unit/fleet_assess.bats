@@ -249,15 +249,43 @@ slot_fixture() {
 LOCKS
 }
 
+# Parents of the fixture editors (pids 101-103): 101 runs under slot 1's holder (pid 11), 102
+# under slot 3's holder (12) two levels up, 103 under a shell (900) that holds no slot.
+editor_parents() {
+  parent_of() { case "$1" in 101) echo 11 ;; 102) echo 50 ;; 50) echo 12 ;; 103) echo 900 ;; 900) echo 1 ;; esac; }
+}
+
 @test "textfile: slots, busy and queued come from slots.sh's files and /proc/locks" {
   textfile_fixture
   slot_fixture
+  editor_parents
+  gate_rows() { printf '%s\t%s\t%s\t%s\n' 2160 "$PROJ" PlayMode 101 30 "$PROJ" PlayMode 102; }
   write_textfile "$OUT"
   run cat "$OUT/fleet_local.prom"
   assert_line 'fleet_local_slots{kind="open"} 2'
   assert_line 'fleet_local_slots{kind="burst"} 8'
   assert_line 'fleet_local_slots_busy 2'
   assert_line 'fleet_local_queued 2'
+}
+
+@test "textfile: a batch editor started outside slots.sh counts as busy beside the held slots" {
+  textfile_fixture
+  slot_fixture
+  editor_parents
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_local_slots_busy 3'
+}
+
+@test "unslotted_editors: a slot held with no editor yet adds none, and an editor with no parent chain is unslotted" {
+  slot_fixture
+  parent_of() { :; }
+  gate_rows() { :; }
+  run unslotted_editors 11,12
+  assert_output 0
+  gate_rows() { printf '%s\t%s\t%s\t%s\n' 5 /p editor 7; }
+  run unslotted_editors 11,12
+  assert_output 1
 }
 
 @test "textfile: no capacity file publishes no slot series, never a guessed count" {
