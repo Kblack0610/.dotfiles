@@ -148,7 +148,36 @@ function tokensSection(d) {
     `<div class="muted more">counted by claude-recall tool-output, nightly; dollars per tool on <a href="#costs?by=tool&w=7d">Costs</a></div></div></details>`;
 }
 
-const fleetTail = (d) => `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>${tokensSection(d)}`;
+// A duration in ms as the tool table reads it: 99ms, 17.5s.
+const lfMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
+const lfClasses = (cs) => cs.length ? cs.map((c) => `${esc(c.name)} ${c.n.toLocaleString()}`).join(", ") : "none";
+
+// What Langfuse sees: the figures only it has (tool latency, tool errors by class, gateway errors
+// and cost), the newest snapshot's `.langfuse` through hub-core's `fleet::tokens`. Shut while it
+// reads, open and amber when the reader failed that night or the snapshot is stale (rule 4). The
+// gateway's dollars are the gateway's alone; session cost stays on Costs, so none is summed here.
+function langfuseSection(d) {
+  const t = d.tokens, lf = t?.langfuse;
+  if (!t) return "";
+  const f = lf?.figures, bad = !f || t.stale, key = bad ? "langfuse-stale" : "langfuse", open = fst.open[key] ?? bad;
+  const title = `<h2 class="sec">What Langfuse sees `;
+  if (!f) {
+    return `<details class="sec-d" data-k="${key}" id="sec-langfuse"${open ? " open" : ""}><summary>${title}<span class="warn">no figures in snapshot ${esc(t.date)}</span></h2></summary>` +
+      `<div class="panel"><div class="warn">${esc(lf?.why || "the snapshot has no langfuse section: written before the reader, or the run stopped")}</div>` +
+      `<div class="muted more">read nightly by agent-usage langfuse; the Sentinel watch langfuse-read trips after two nights</div></div></details>`;
+  }
+  const head = `tool errors ${pct(f.tool_error_share)}, gateway errors ${pct(f.gateway_error_share)}, ${usd(f.gateway_cost_usd)} gateway`;
+  const rows = f.tools.map((x) => `<tr><td>${esc(x.tool)}</td><td class="n">${x.calls.toLocaleString()}</td><td class="n">${lfMs(x.p50_ms)}</td><td class="n">${lfMs(x.p95_ms)}</td><td class="n">${secs(x.total_s)}</td></tr>`).join("");
+  const models = f.gateway_models.map((m) => `${esc(m.model)} ${usd(m.cost_usd)}`).join(", ") + (f.gateway_other_models ? `, ${f.gateway_other_models} more` : "");
+  const trunc = f.truncated ? `<span class="warn"> (classes partial: more errors than were paged)</span>` : "";
+  return `<details class="sec-d" data-k="${key}" id="sec-langfuse"${open ? " open" : ""}><summary>${title}<span class="${t.stale ? "warn" : "muted"}">${head}${t.stale ? `, stale: newest snapshot ${esc(t.date)}` : ""}</span></h2></summary>` +
+    `<div class="panel scroll"><table class="tbl"><tr><th>slowest tools, by total time</th><th class="n">calls</th><th class="n">p50</th><th class="n">p95</th><th class="n">total</th></tr>${rows}</table>` +
+    `<div class="muted">tool errors: ${f.tool_errors.toLocaleString()} of ${f.tool_executions.toLocaleString()} executions (${lfClasses(f.tool_error_classes)})${trunc}</div>` +
+    `<div class="muted">gateway: ${f.gateway_calls.toLocaleString()} calls, ${f.gateway_errors.toLocaleString()} errors (${lfClasses(f.gateway_error_classes)}), ${kfmt(f.gateway_tokens)} tokens; dearest: ${models || "none"}</div>` +
+    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is on <a href="#costs?by=runner&w=24h">Costs</a></div></div></details>`;
+}
+
+const fleetTail = (d) => `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>${tokensSection(d)}${langfuseSection(d)}`;
 
 const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--c-other)", failed: "var(--b-needs)", error: "var(--b-needs)" };
 const verdictColor = (v) => VERDICT_COLOR[v] || "var(--c1)";

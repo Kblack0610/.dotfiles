@@ -90,6 +90,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 | Number | Owner |
 |--------|-------|
 | Responses, input, cache write, cache read, output; context per response; tool output and its carried cost by project, tool and command head; `long_runs` | `claude-recall tool-output` |
+| Tool latency (slowest tools by total time), tool errors by class, gateway calls, errors by class, cost and tokens per upstream model: `langfuse`, null when Langfuse could not answer | `agent-usage langfuse` |
 | Cost (registry), sessions, merged PRs and cost per merged PR, start context (first-turn median), compactions, tokens by model, sessions by kind and account | `agent-usage burn` |
 
 - `carried_share` is carried tool output (about 4 chars a token) over all context read; `carried_x` is how many times its own size a tool result is re-read before a compaction drops it.
@@ -97,9 +98,12 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 - `long_runs` lists the stretches between compactions that ran 150 or more responses (`claude-recall tool-output --long-turns N` to change it), top 10 by carried cost.
 - `agent-usage tokens line` prints the one-line row that `day-log` and the `fleet-bench` scorecard show; `tokens json --date D` is the day's snapshot, which `day-log` copies into `.agents`.
 - `agent-usage tokens check` compares context per response, carried share and the start-context median with the median of the 7 days before. It exits 1 on a rise past 25% (worse) or a drop past 50% (measurement suspect; a drop inside that is an improvement and stays quiet), and 2 when the newest snapshot is more than 2 days old. The Sentinel watch `token-usage-drift` runs it every 6 hours. It only alerts; nothing caps or slows a session.
+- The `langfuse` section is the gateway's figures alone (LiteLLM calls, not Claude sessions): session cost stays `agent-usage burn`, so the two are never summed. The Fleet tab shows it as "What Langfuse sees" (hub `l`), from the newest snapshot.
+- `agent-usage tokens check --langfuse` is the read-health watch (`langfuse-read`): exit 1 when the newest two snapshots both carry a null `langfuse` section, naming the reader's reason from `.errors`. One null night is quiet; a snapshot with no `langfuse` key at all (written before the reader) is not a null night.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
+| The `langfuse-read` watch trips | The reader failed two nights running: no rbw key, Langfuse down or a changed API | `jq '.errors' ~/.agent/token-usage/<date>.json` for the reason; run `agent-usage langfuse --since T --until T` by hand; re-run `agent-usage tokens snapshot --date D` once it reads |
 | The watch says the nightly run stopped | No snapshot in 2 days | `agentctl status token-usage`; run `agent-usage tokens snapshot` by hand for each missing day (`--date D`) |
 | A row ends in "N source errors" | burn or one recall query failed; the rest of the day is still written | `jq .errors ~/.agent/token-usage/<date>.json` names the source |
 | The row reads "unreadable" | `claude-recall tool-output` gave no totals, so the day has no numbers | Run the recall command from `.errors` by hand; re-run the snapshot for that day |
