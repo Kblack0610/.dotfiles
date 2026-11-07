@@ -152,7 +152,7 @@ impl crate::table::Row for Row {
 
 /// `v0.10.0` as text that sorts after `v0.9.0`; a playtest game's name stays itself. All text, so
 /// the two kinds still compare in one total order.
-fn release_order(v: &str) -> String {
+pub(crate) fn release_order(v: &str) -> String {
     let parts = v.strip_prefix('v').map(|n| {
         n.split('.')
             .map(str::parse::<u32>)
