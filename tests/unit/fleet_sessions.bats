@@ -1061,6 +1061,41 @@ research_item() {
   [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
 }
 
+@test "end to end: an ask a queued item holds through its ask: tag is handed over, not the posting session's open ask" {
+  # 2026-11-06: hub/dotfiles:7 queued its next phase behind its own ask, as the LANDED nudge says,
+  # and wind-down auto refused it because that ask still read as the session's (ar-764).
+  landed_fixture
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue" ASK_ROOT="$HOME/.agent/asks"
+  mkdir -p "$ASK_ROOT/apociseum" "$HOME/.agent/queue/queued"
+  printf 'id: Ob1\nstatus: pending\nsession: s1\nclaude_session: sid-9\n' > "$ASK_ROOT/apociseum/Ob1.md"
+  queue_item running lab:s1
+  "$SANDBOX/bin/agent-queue" move fix-wave-save done --status ok >/dev/null
+  # rollout_item <tags>: phase 2 queued with these tags
+  rollout_item() {
+    printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\ntags: %s\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\nPhase 2 of %s: rollout\n' \
+      "$1" "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  }
+  # negative control: queued with no ask tag, the ask is still the session's open question
+  rollout_item night
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s)' ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  # an item held on another ask does not hand this one over
+  rollout_item 'night ask:Zz9=b'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s)' ]
+  # held on this ask, with an option or without: DONE, finished, nothing blocks
+  for tag in 'ask:Ob1=a' 'ask:Ob1'; do
+    rollout_item "night $tag"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .bucket <<<"$output")" = DONE ]
+    [ "$(jq -r .finished <<<"$output")" = true ]
+    [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+    [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
+  done
+}
+
 @test "end to end: a landed session whose next phases are other queue items is DONE once its own item is done; that item is not a next phase" {
   landed_fixture
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
