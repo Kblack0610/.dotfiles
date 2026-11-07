@@ -106,8 +106,98 @@ pub struct Item {
     pub finished: Option<String>,
     #[serde(default)]
     pub task: String,
+    /// The `type` of a `type(area): title` task (feat, fix, chore), the Queue table's KIND.
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area: Option<String>,
+    /// The Claude account (or a gateway harness's) it ran on, written at start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// The model alias it ran on, written at start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// `s`, `m` or `l`: the task's `#size/` tag, which `fleet-dispatch start` writes as `size:`.
+    /// None for an item added by hand or started before it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+    /// `heavy` or `light`: the run units it holds; agent-queue derives one when the item has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<String>,
+    /// When it moved to `waiting/`, the human's turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
+    /// The merge commit `agent-land` proved, beside `pr`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged: Option<String>,
+    /// When it could first start: queued, or its `after:` item's finish when later; None while
+    /// that still holds it (agent-queue's one rule, the one `stats` medians its wait by).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready: Option<String>,
+    /// Dollars the nightly outcomes pass summed over its sessions; a header is text, so this
+    /// reads text or a number and drops junk rather than the item.
+    #[serde(
+        default,
+        deserialize_with = "lenient_num",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cost_usd: Option<f64>,
+    /// Dollars the gateway metered, for a gateway harness; wins over `cost_usd`.
+    #[serde(
+        default,
+        deserialize_with = "lenient_num",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gateway_cost_usd: Option<f64>,
+    /// Working minutes over its sessions, from the same pass.
+    #[serde(
+        default,
+        deserialize_with = "lenient_num",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub work_min: Option<f64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+/// A number from a header: agent-queue prints every header as text, a test or an older reader a
+/// number; anything that is neither is None, so one bad header never drops its item.
+fn lenient_num<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Number(n) => n.as_f64(),
+        Value::String(t) => t.trim().parse().ok(),
+        _ => None,
+    })
+}
+
+/// A header's text, trimmed, or None when it is blank.
+fn said(v: &Option<String>) -> Option<&str> {
+    v.as_deref().map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// One of the ledger's UTC stamps (`2026-11-03T10:00:00Z`, or an older `2026-11-03T10:00`).
+fn stamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s.trim())
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(s.trim(), "%Y-%m-%dT%H:%M").map(|t| t.and_utc())
+        })
+        .ok()
+}
+
+/// How long an item took at each stage, in whole minutes, from its stamps and an injected `now`
+/// (the one place a view's durations come from). None where the item has not reached the stage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Timing {
+    /// In its current state: queued since `queued`, running since `started`, waiting since
+    /// `waiting`; None once done.
+    pub in_state: Option<i64>,
+    /// From ready to started: the time it could have run and did not.
+    pub wait: Option<i64>,
+    /// From started to finished, or to now while it runs; a waiting item's run stops at `waiting`.
+    pub run: Option<i64>,
+    /// From queued to finished, or to now while it is active.
+    pub lead: Option<i64>,
 }
 
 impl Item {
@@ -122,6 +212,32 @@ impl Item {
             headline(&self.task).0
         } else {
             cap(self.title.trim(), TITLE_MAX)
+        }
+    }
+
+    /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
+    /// (a clock step, a re-run predecessor) counts 0, never a negative span.
+    pub fn timing(&self, now: chrono::DateTime<chrono::Utc>) -> Timing {
+        let at = |v: &Option<String>| said(v).and_then(stamp);
+        type At = Option<chrono::DateTime<chrono::Utc>>;
+        let mins = |a: At, b: At| Some((b? - a?).num_minutes().max(0));
+        let (queued, started, finished) = (at(&self.queued), at(&self.started), at(&self.finished));
+        let waiting = at(&self.waiting);
+        let done = self.state == State::Done;
+        let end = if done { finished } else { Some(now) };
+        Timing {
+            in_state: match self.state {
+                State::Done => None,
+                State::Queued => mins(queued, Some(now)),
+                State::Running => mins(started, Some(now)),
+                State::Waiting => mins(waiting.or(started), Some(now)),
+            },
+            wait: mins(at(&self.ready).or(queued), started),
+            run: match self.state {
+                State::Waiting => mins(started, waiting.filter(|w| Some(*w) >= started).or(end)),
+                _ => mins(started, end),
+            },
+            lead: mins(queued, end),
         }
     }
 
@@ -141,7 +257,7 @@ impl Item {
 
     /// The harness and, when the item names one, its model alias: `codex sol`, `opencode glm`.
     pub fn harness_label(&self) -> String {
-        match self.extra_str("model") {
+        match said(&self.model) {
             Some(m) => format!("{} {m}", self.harness()),
             None => self.harness().to_string(),
         }
@@ -151,13 +267,9 @@ impl Item {
     /// nightly outcomes pass's `cost_usd`. None for an item neither priced: a ledger `0` is
     /// "no session row had a cost" (the pass sums a missing cost as 0), never a claim of free.
     pub fn cost(&self) -> Option<f64> {
-        ["gateway_cost_usd", "cost_usd"]
-            .iter()
-            .filter_map(|k| match self.extra.get(*k)? {
-                Value::String(s) => s.trim().parse::<f64>().ok(),
-                Value::Number(n) => n.as_f64(),
-                _ => None,
-            })
+        [self.gateway_cost_usd, self.cost_usd]
+            .into_iter()
+            .flatten()
             .find(|c| *c > 0.0)
     }
 
@@ -201,7 +313,7 @@ impl Item {
     /// Whether the ledger recorded the merge: `agent-land` writes `merged` (the merge commit)
     /// beside `pr`, so a PR without it is one nobody proved landed.
     pub fn merged(&self) -> bool {
-        self.extra_str("merged").is_some()
+        said(&self.merged).is_some()
     }
 
     /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
@@ -279,6 +391,29 @@ pub struct Stats {
     pub by_project: BTreeMap<String, Outcomes>,
     pub by_source: BTreeMap<String, Outcomes>,
     pub done_by_tag: BTreeMap<String, u64>,
+    /// What moved in the last 1, 6 and 24 hours; None from an agent-queue older than the field.
+    pub recent: Option<Recent>,
+}
+
+/// `stats.recent`: items added (by `queued`), started, done and failed (by `finished`) in the
+/// last 1, 6 and 24 hours, and the ok items done since local midnight. Added against done over a
+/// window is the drain: whether the queue shrinks or grows.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Recent {
+    pub added_1h: u64,
+    pub started_1h: u64,
+    pub done_1h: u64,
+    pub failed_1h: u64,
+    pub added_6h: u64,
+    pub started_6h: u64,
+    pub done_6h: u64,
+    pub failed_6h: u64,
+    pub added_24h: u64,
+    pub started_24h: u64,
+    pub done_24h: u64,
+    pub failed_24h: u64,
+    pub done_today: u64,
 }
 
 /// Minutes as the views print them: `-` for none, hours from two hours up.
@@ -413,15 +548,10 @@ impl DayTotal {
 }
 
 /// The local date (`YYYY-MM-DD`) of one of the ledger's UTC stamps, the day an item counts on.
-pub fn day_of(stamp: &str) -> Option<String> {
-    let utc = chrono::DateTime::parse_from_rfc3339(stamp)
-        .map(|t| t.with_timezone(&chrono::Utc))
-        .or_else(|_| {
-            chrono::NaiveDateTime::parse_from_str(stamp, "%Y-%m-%dT%H:%M").map(|t| t.and_utc())
-        })
-        .ok()?;
+pub fn day_of(at: &str) -> Option<String> {
     Some(
-        utc.with_timezone(&chrono::Local)
+        stamp(at)?
+            .with_timezone(&chrono::Local)
             .format("%Y-%m-%d")
             .to_string(),
     )
@@ -541,6 +671,85 @@ impl Queue {
 
     pub fn count(&self, s: State) -> usize {
         self.in_state(s).count()
+    }
+}
+
+/// One Queue table row: an item and its stage times at the `now` the view was read at, so the
+/// table filters, sorts and draws one set of numbers (P1's `table::Row`; there is no
+/// queue-only filter).
+#[derive(Clone, Copy, Debug)]
+pub struct QueueRow<'a> {
+    pub item: &'a Item,
+    pub timing: Timing,
+}
+
+impl Queue {
+    /// Every item as a table row, timed at `now`.
+    pub fn rows(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<QueueRow<'_>> {
+        self.items
+            .iter()
+            .map(|item| QueueRow {
+                item,
+                timing: item.timing(now),
+            })
+            .collect()
+    }
+}
+
+impl crate::table::Row for QueueRow<'_> {
+    const COLUMNS: &'static [&'static str] = &[
+        "state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "title",
+    ];
+    /// `all` first, because the first chip keeps every row; then the states in the order the
+    /// Queue sections list them.
+    const STATES: &'static [&'static str] = &["all", "needs you", "running", "up next", "done"];
+    const FACETS: &'static [&'static str] = &["project", "kind", "size", "acct"];
+
+    fn val(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        let text = |s: Option<&str>| s.map_or(Val::None, |s| Val::Text(s.to_string()));
+        let num = |m: Option<i64>| m.map_or(Val::None, |m| Val::Num(m as f64));
+        let i = self.item;
+        match col {
+            "state" => Val::Text(
+                match i.state {
+                    State::Waiting => "needs",
+                    State::Running => "running",
+                    State::Queued => "queued",
+                    State::Done => "done",
+                }
+                .into(),
+            ),
+            "in" => num(self.timing.in_state),
+            "wait" => num(self.timing.wait),
+            "run" => num(self.timing.run),
+            "project" => text(Some(i.project.trim()).filter(|p| !p.is_empty())),
+            "kind" => text(said(&i.kind)),
+            "size" => text(said(&i.size)),
+            "acct" => text(said(&i.account)),
+            "pr" => text(said(&i.pr)),
+            "title" => Val::Text(i.title()),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        let want = match s {
+            "needs you" => State::Waiting,
+            "running" => State::Running,
+            "up next" => State::Queued,
+            "done" => State::Done,
+            _ => return false,
+        };
+        self.item.state == want
+    }
+
+    /// A bare word also finds the slug, the tags and the task the title was cut from.
+    fn text(&self) -> String {
+        let i = self.item;
+        [i.title.as_str(), &i.slug, &i.project, &i.tags, &i.task]
+            .join("\n")
+            .to_lowercase()
     }
 }
 
@@ -815,8 +1024,13 @@ mod tests {
     #[test]
     fn the_harness_is_the_items_agent_else_claude_with_its_model_alias() {
         let item = |kv: &[(&str, &str)]| Item {
+            model: kv
+                .iter()
+                .find(|(k, _)| *k == "model")
+                .map(|(_, v)| v.to_string()),
             extra: kv
                 .iter()
+                .filter(|(k, _)| *k != "model")
                 .map(|(k, v)| (k.to_string(), Value::from(*v)))
                 .collect(),
             ..Item::default()
@@ -1264,5 +1478,196 @@ mod tests {
         // NEGATIVE CONTROL: normal is retired, so an old item carrying it does not step.
         i.priority = "normal".into();
         assert_eq!(i.bumped(true), None);
+    }
+    fn at(s: &str) -> chrono::DateTime<chrono::Utc> {
+        stamp(s).unwrap()
+    }
+
+    fn timed(json: &str) -> Timing {
+        parse(json)[0].timing(at("2026-11-06T12:00:00Z"))
+    }
+
+    #[test]
+    fn timing_reads_each_stage_from_the_stamps_at_an_injected_now() {
+        let none = Timing::default();
+        assert_eq!(
+            timed(
+                r#"{"slug":"r","state":"running","queued":"2026-11-06T09:00:00Z","ready":"2026-11-06T10:00:00Z","started":"2026-11-06T10:30:00Z","task":"t"}"#
+            ),
+            Timing {
+                in_state: Some(90),
+                wait: Some(30),
+                run: Some(90),
+                lead: Some(180)
+            },
+            "running: wait from ready, not queued; run and lead to now"
+        );
+        assert_eq!(
+            timed(r#"{"slug":"q","state":"queued","queued":"2026-11-06T11:15:00Z","task":"t"}"#),
+            Timing {
+                in_state: Some(45),
+                lead: Some(45),
+                ..none
+            },
+            "queued: no wait or run until it starts"
+        );
+        assert_eq!(
+            timed(
+                r#"{"slug":"d","state":"done","queued":"2026-11-06T08:00","started":"2026-11-06T08:20","finished":"2026-11-06T09:00","task":"t"}"#
+            ),
+            Timing {
+                in_state: None,
+                wait: Some(20),
+                run: Some(40),
+                lead: Some(60)
+            },
+            "done: spans end at finished, the older minute stamps read too"
+        );
+        assert_eq!(
+            timed(
+                r#"{"slug":"w","state":"waiting","queued":"2026-11-06T09:00:00Z","started":"2026-11-06T09:10:00Z","waiting":"2026-11-06T11:00:00Z","task":"t"}"#
+            ),
+            Timing {
+                in_state: Some(60),
+                wait: Some(10),
+                run: Some(110),
+                lead: Some(180)
+            },
+            "waiting: its run stops when it went to the human"
+        );
+        assert_eq!(
+            timed(
+                r#"{"slug":"c","state":"done","status":"cancelled","queued":"2026-11-06T09:00:00Z","finished":"2026-11-06T09:05:00Z","task":"t"}"#
+            ),
+            Timing {
+                lead: Some(5),
+                ..none
+            },
+            "a requeued then cancelled item with no started has no wait or run"
+        );
+        assert_eq!(
+            timed(
+                r#"{"slug":"s","state":"running","queued":"2026-11-06T12:30:00Z","started":"junk","task":"t"}"#
+            ),
+            Timing {
+                lead: Some(0),
+                ..none
+            },
+            "a stamp after now counts 0, never negative, and a bad one counts nothing"
+        );
+    }
+
+    #[test]
+    fn typed_headers_parse_from_the_ledgers_keys() {
+        let i = &parse(
+            r#"{"slug":"a","state":"running","type":"feat","area":"hub","account":"k2","model":"sol","size":"m","weight":"heavy","merged":"abc","ready":"2026-11-06T10:00:00Z","work_min":"42","cost_usd":"junk","other":"kept","task":"t"}"#,
+        )[0];
+        assert_eq!(
+            (
+                i.kind.as_deref(),
+                i.area.as_deref(),
+                i.account.as_deref(),
+                i.size.as_deref()
+            ),
+            (Some("feat"), Some("hub"), Some("k2"), Some("m"))
+        );
+        assert_eq!(
+            (i.work_min, i.cost_usd),
+            (Some(42.0), None),
+            "junk drops the field, not the item"
+        );
+        assert!(i.merged() && !i.extra.contains_key("type"));
+        assert_eq!(i.extra.get("other"), Some(&Value::from("kept")));
+        let back = serde_json::to_value(i).unwrap();
+        assert_eq!(
+            back["type"], "feat",
+            "it serializes under the ledger's own key"
+        );
+    }
+
+    #[test]
+    fn stats_reads_recent_and_an_older_agent_queue_without_it() {
+        let s: Stats = serde_json::from_str(
+            r#"{"since":"2026-10-30","recent":{"added_6h":80,"done_6h":84,"failed_24h":5,"done_today":280}}"#,
+        )
+        .unwrap();
+        let r = s.recent.unwrap();
+        assert_eq!(
+            (r.added_6h, r.done_6h, r.failed_24h, r.done_today),
+            (80, 84, 5, 280)
+        );
+        let old: Stats = serde_json::from_str(r#"{"since":"2026-10-30"}"#).unwrap();
+        assert_eq!(old.recent, None);
+    }
+
+    fn table() -> Queue {
+        Queue {
+            items: parse(concat!(
+                r#"{"slug":"a","state":"running","project":"dotfiles","type":"fix","size":"s","account":"k1","started":"2026-11-06T11:00:00Z","task":"fix(hub): sort the queue"}"#,
+                "\n",
+                r#"{"slug":"b","state":"queued","project":"playground","type":"feat","queued":"2026-11-06T09:00:00Z","task":"feat(ci): nightly table"}"#,
+                "\n",
+                r#"{"slug":"c","state":"done","project":"dotfiles","type":"feat","size":"m","account":"k2","started":"2026-11-06T08:00:00Z","finished":"2026-11-06T10:00:00Z","task":"feat(hub): timing"}"#,
+                "\n",
+                r#"{"slug":"d","state":"waiting","project":"dotfiles","type":"fix","started":"2026-11-06T10:00:00Z","task":"fix(ask): pick one"}"#,
+            )),
+            ..Queue::default()
+        }
+    }
+
+    #[test]
+    fn the_queue_filters_sorts_and_counts_on_the_shared_table() {
+        use crate::table::View;
+        let q = table();
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        let slugs = |v: View| {
+            v.apply(&rows)
+                .iter()
+                .map(|r| r.item.slug.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            slugs(View::new::<QueueRow>(
+                "project:dotfiles kind:fix",
+                "",
+                "",
+                ""
+            )),
+            ["a", "d"]
+        );
+        assert_eq!(
+            slugs(View::new::<QueueRow>("-acct:k1 hub", "", "", "")),
+            ["c"],
+            "a bare word finds the task"
+        );
+        assert_eq!(
+            slugs(View::new::<QueueRow>("", "", "run", "")),
+            ["c", "d", "a", "b"],
+            "run sorts biggest first, none last"
+        );
+        assert_eq!(slugs(View::new::<QueueRow>("", "up next", "", "")), ["b"]);
+        let chips: Vec<(&str, usize)> = View::new::<QueueRow>("project:dotfiles", "", "", "")
+            .states(&rows)
+            .iter()
+            .map(|c| (c.name, c.n))
+            .collect();
+        assert_eq!(
+            chips,
+            [
+                ("all", 3),
+                ("needs you", 1),
+                ("running", 1),
+                ("up next", 0),
+                ("done", 1)
+            ]
+        );
+        let kinds = View::new::<QueueRow>("project:dotfiles", "", "", "").facets(&rows);
+        let kind = kinds.iter().find(|f| f.key == "kind").unwrap();
+        let counts: Vec<(&str, usize)> = kind
+            .values
+            .iter()
+            .map(|v| (v.value.as_str(), v.n))
+            .collect();
+        assert_eq!(counts, [("feat", 1), ("fix", 2)]);
     }
 }

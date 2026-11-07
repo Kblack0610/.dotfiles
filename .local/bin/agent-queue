@@ -212,6 +212,30 @@ memo() {
   MEMO_V="${LIST_MEMO[$k]}"
 }
 
+# after_fin <slug> -> sets AFIN to when the slug's latest done item finished, or nothing: the
+# `ready` of an item `after:` it. A listing (collect, stats) reads every done header once into
+# DONE_FIN, where a lookup per slug doubled `list` (0.57s to 1.25s for 140 after: items); a lone
+# item (show) looks its one slug up.
+after_fin() {
+  local s t f
+  if [ -z "${LIST_MEMO_ON-}" ]; then
+    f="$(latest_done "$1")"
+    AFIN="${f:+$(fm_get "$f" finished)}"
+    return 0
+  fi
+  if [ -z "$DONE_FIN_READ" ]; then
+    DONE_FIN_READ=1
+    while IFS=$'\t' read -r s t; do
+      [[ "$t" > "${DONE_FIN[$s]-}" ]] && DONE_FIN[$s]="$t"
+    done < <([ -d "$AQ_DIR/done" ] && find "$AQ_DIR/done" -mindepth 2 -maxdepth 2 -name '*.md' -exec awk '
+      FNR == 1 { s = ""; t = "" }
+      $0 == "---" { if (s != "" && t != "") print s "\t" t; nextfile }
+      index($0, "slug:") == 1 { s = $2 }
+      index($0, "finished:") == 1 { t = $2 }' {} +)
+  fi
+  AFIN="${DONE_FIN[$1]-}"
+}
+
 # after_status <slug> -> what an `after:` waits on: empty while the slug has a live item (queued,
 # running or waiting), else its latest done status. A re-queued slug is work again, whatever done/ holds.
 after_status() {
@@ -316,13 +340,14 @@ pr_state() {
   echo "$state"
 }
 
-# item_rec <file> -> the item as one record for ITEM_JQ: state, file, task, hold and weight, then
-# its header keys and values; fields end in \x1f and the record in \x1e. One read of the file in
-# bash, so a listing costs one jq in all, not a handful of processes per item (1.7s for 70 items).
+# item_rec <file> -> the item as one record for ITEM_JQ: state, file, task, hold, weight and the
+# finish of its `after:` item (for `ready`), then its header keys and values; fields end in \x1f
+# and the record in \x1e. One read of the file in bash, so a listing costs one jq in all, not a
+# handful of processes per item (1.7s for 70 items).
 # Header keys as fm_get reads them: up to the first colon, the value's leading spaces dropped; the
 # object keeps the last of a repeated key and the rules (after, tags, weight) read the first.
 item_rec() {
-  local f="$1" line k v state d hold="" task="" in_body="" weight="" HOLD MEMO_V
+  local f="$1" line k v state d hold="" task="" in_body="" weight="" afin AFIN HOLD MEMO_V
   local -a kv=()
   local -A first=()
   case "$f" in "$AQ_DIR"/done/*) state=done ;; *) d="${f%/*}"; state="${d##*/}" ;; esac
@@ -345,19 +370,25 @@ item_rec() {
       item_weight "${first[project]-}" "${first[mode]-}" "${first[phases]-}"
     weight="$MEMO_V"
   fi
-  printf '%s\x1f' "$state" "$f" "$task" "$hold" "$weight" "${kv[@]}"
+  afin=""
+  if [ -n "${first[after]-}" ]; then after_fin "${first[after]}"; afin="$AFIN"; fi
+  printf '%s\x1f' "$state" "$f" "$task" "$hold" "$weight" "$afin" "${kv[@]}"
   printf '\x1e'
 }
 
-# item_rec records -> a JSON array of items: every header key, plus state, file, task and, for a
-# held queued item, hold. An item with no weight line gets item_weight's answer, so every reader
-# sees a weight. `row` is the "<project>:<key>" of the sheet row the item closes on merge: its
+# item_rec records -> a JSON array of items: every header key, plus state, file, task, ready and,
+# for a held queued item, hold. `ready` is when the item could first start: queued, or the finish of
+# its `after:` item when that came later, so a deliberate hold is not read as waiting; none while an
+# `after:` still holds it. The one rule for an item's wait: `stats` medians it, the hub shows it.
+# An item with no weight line gets item_weight's answer, so every reader sees a weight. `row` is the "<project>:<key>" of the sheet row the item closes on merge: its
 # own story (`row:`, file_story), else the board row it was promoted from (`from: board:`). The
 # one definition agent-land and fleet-dispatch read, whatever the item's origin.
 ITEM_JQ='split("\u001e")[:-1] | map(split("\u001f")[:-1] as $f
-  | ([range(5; $f | length; 2) as $i | {($f[$i]): $f[$i + 1]}] | add // {})
+  | ([range(6; $f | length; 2) as $i | {($f[$i]): $f[$i + 1]}] | add // {})
     + {weight: $f[4], state: $f[0], file: $f[1], task: $f[2]}
     + (if $f[3] == "" then {} else {hold: $f[3]} end)
+  | (if (.hold // "") | startswith("after ") then null else [.queued, ($f[5] | select(. != ""))] | max end) as $ready
+  | (if $ready then .ready = $ready else . end)
   | if (.row // "") == "" and (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:")) else . end)'
 
 # item_json <file> -> that item as one JSON object.
@@ -384,7 +415,7 @@ done_recs() {
 # collect <states...> [--date D] [--since D] -> a JSON array of items. --since wins for done items.
 collect() {
   local states=() date="" since="" s f
-  local -A LIST_MEMO=(); local LIST_MEMO_ON=1
+  local -A LIST_MEMO=() DONE_FIN=(); local LIST_MEMO_ON=1 DONE_FIN_READ=
   while [ $# -gt 0 ]; do
     case "$1" in --date) date="$2"; shift 2 ;; --since) since="$2"; shift 2 ;; *) states+=("$1"); shift ;; esac
   done
@@ -833,7 +864,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting finished session window account model lane_run plan pr merged cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row "
+SETTABLE=" project mode priority tags type after agent started waiting finished session window account model size lane_run plan pr merged cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -1086,22 +1117,19 @@ cmd_stats() {
     esac
   done
   local stats
-  local -A LIST_MEMO=(); local LIST_MEMO_ON=1
+  local -A LIST_MEMO=() DONE_FIN=(); local LIST_MEMO_ON=1 DONE_FIN_READ=
   lock_read
   stats="$({
     for s in $ACTIVE; do while IFS= read -r f; do item_rec "$f"; done < <(items_in "$AQ_DIR/$s"); done
     done_recs "$since"
   } | jq -Rsc "$ITEM_JQ" | jq -c --arg since "$since" --argjson flow "$flow" '
-    (map(select(.finished)) | map({key: .slug, value: .finished}) | from_entries) as $closed
-    | def mins($a; $b): if $a and $b then ((($b | fromdateiso8601) - ($a | fromdateiso8601)) / 60 | floor) else empty end;
+    def mins($a; $b): if $a and $b then ((($b | fromdateiso8601) - ($a | fromdateiso8601)) / 60 | floor) else empty end;
     def median: sort | if length == 0 then null else .[length / 2 | floor] end;
     def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;
     def age: ((now - (. | fromdateiso8601)) / 60 | floor);
-    # Wait runs from ready: queued, or the finish of its `after:` item when that came later, so a
-    # deliberate hold is not read as dispatch latency. A `--running` or plan item starts the minute
-    # it is added; counting its 0 hid every real wait.
-    def ready: [.queued, ($closed[.after // ""] // empty)] | max;
-    def waits: [.[] | mins(ready; .started)];
+    # Wait runs from ready (ITEM_JQ), so a deliberate hold is not read as dispatch latency. A
+    # `--running` or plan item starts the minute it is added; counting its 0 hid every real wait.
+    def waits: [.[] | mins(.ready; .started)];
     def waited: waits | map(select(. > 0));
     # A hold_reason line by its first word: "after x", "night (..)", "at:HH:MM", "pr:o/r#N not merged",
     # "nightly:repo (..)".

@@ -104,16 +104,17 @@ function qChip(i) {
     const [cls, word] = s === "ok" ? ["ok", "Done"] : s === "failed" ? ["bad", "Failed"] : ["off", "Cancelled"];
     return cchip(cls, word);
   }
-  const since = i.state === "waiting" ? i.waiting || i.started : i.state === "running" ? i.started : i.queued;
-  return cchip(esc(i.state), `${Q_STATE[i.state] || esc(i.state)}${since ? ` ${ago(since)}` : ""}`);
+  const t = i.timing || {};
+  return cchip(esc(i.state), `${Q_STATE[i.state] || esc(i.state)}${t.in_state != null ? ` ${ageMin(t.in_state)}` : ""}`);
 }
 
 // When it will be done: the session's estimate (fleet-bench through fleet-sessions), late when
-// it has passed; a queued item's typical run; a done item's run time.
+// it has passed; a queued item's typical run; a done item's run time. Every duration is the
+// item's `timing`, which hub-core computes; the page does no time math of its own.
 function qEta(i, a) {
   if (i.state === "done") {
-    const m = (tms(i.finished) - tms(i.started)) / 60000;
-    return m >= 0 ? `took ${dur(m)}` : "";
+    const t = i.timing || {};
+    return t.run != null ? `took ${dur(t.run)}` : "";
   }
   const eta = etaText(a && a.phases);
   if (eta) return eta;

@@ -959,6 +959,30 @@ EOF
   assert_equal "$(jq -c '.wait_minutes_median' <<<"$output")" '250'
 }
 
+# ar-617: the Queue table shows each item's wait, so list carries the same ready stats medians.
+@test "list --json carries ready: queued, else its after: item's finish when later, none while that holds it" {
+  "$AQ" add --project game --slug p "p"
+  "$AQ" add --project game --slug f --after p "f"
+  "$AQ" add --project game --slug plain "plain"
+  f="$(item queued f)"; sed -i 's/^queued: .*/queued: 2026-11-03T08:00:00Z/' "$f"
+  f="$(item queued plain)"; sed -i 's/^queued: .*/queued: 2026-11-03T09:00:00Z/' "$f"
+  run "$AQ" list --json --state all
+  assert_success
+  assert_equal "$(jq -r 'select(.slug == "plain") | .ready' <<<"$output")" 2026-11-03T09:00:00Z
+  # f is held after p: it is not ready yet
+  assert_equal "$(jq -r 'select(.slug == "f") | .ready // "none"' <<<"$output")" none
+  "$AQ" move p running; "$AQ" move p done --status ok
+  "$AQ" set p finished=2026-11-03T12:00:00Z
+  run "$AQ" list --json --state all
+  assert_equal "$(jq -r 'select(.slug == "f") | .ready' <<<"$output")" 2026-11-03T12:00:00Z
+  run "$AQ" show f --json
+  assert_equal "$(jq -r .ready <<<"$output")" 2026-11-03T12:00:00Z
+  # a predecessor that finished before the item was queued leaves ready at queued
+  "$AQ" set p finished=2026-11-03T07:00:00Z
+  run "$AQ" list --json --state queued
+  assert_equal "$(jq -r 'select(.slug == "f") | .ready' <<<"$output")" 2026-11-03T08:00:00Z
+}
+
 @test "stats flow: each stage counts on the local day it was reached, with lead, wait and run time" {
   export TZ=America/Los_Angeles
   "$AQ" add --project game --slug a "a"

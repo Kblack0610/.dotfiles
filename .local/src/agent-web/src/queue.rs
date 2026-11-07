@@ -48,7 +48,8 @@ pub async fn list() -> ApiResult<Json<Vec<serde_json::Value>>> {
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map(|items| {
         let days = hub_queue::done_days(&items);
-        Json(items.iter().map(|i| item_view(i, &days)).collect())
+        let now = chrono::Utc::now();
+        Json(items.iter().map(|i| item_view(i, &days, now)).collect())
     })
     .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
@@ -56,9 +57,15 @@ pub async fn list() -> ApiResult<Json<Vec<serde_json::Value>>> {
 /// The item as agent-queue printed it plus what a row shows: `harness` (`Item::harness_label`,
 /// `claude` when the item names no agent), `cost` (dollars, absent when unknown), the PR's
 /// label and link, `pr_merged` (the merge was recorded), `unproven`, and for a done item its
-/// `day`, its `day_label` and that day's `day_total` line, so the page sums and words nothing.
-fn item_view(i: &Item, days: &BTreeMap<String, DayTotal>) -> serde_json::Value {
+/// `day`, its `day_label` and that day's `day_total` line, so the page sums and words nothing;
+/// and its `timing` now (`Item::timing`), so the page does no duration math.
+fn item_view(
+    i: &Item,
+    days: &BTreeMap<String, DayTotal>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> serde_json::Value {
     let mut v = serde_json::to_value(i).unwrap_or_default();
+    v["timing"] = serde_json::to_value(i.timing(now)).unwrap_or_default();
     v["harness"] = i.harness_label().into();
     if let Some(c) = i.cost() {
         v["cost"] = c.into();
@@ -260,7 +267,7 @@ mod tests {
     #[test]
     fn a_row_view_adds_cost_pr_flag_and_the_days_total() {
         let items = hub_queue::parse(concat!(
-            r#"{"slug":"a","state":"done","status":"ok","pr":"o/r#7","merged":"abc","cost_usd":"6.1","finished":"2026-11-06T12:00:00Z","task":"t"}"#,
+            r#"{"slug":"a","state":"done","status":"ok","pr":"o/r#7","merged":"abc","cost_usd":"6.1","started":"2026-11-06T11:00:00Z","finished":"2026-11-06T12:00:00Z","task":"t"}"#,
             "\n",
             r#"{"slug":"b","state":"done","status":"ok","cost_usd":"0","finished":"2026-11-06T12:05:00Z","task":"t"}"#,
             "\n",
@@ -268,7 +275,7 @@ mod tests {
             "\n",
         ));
         let days = hub_queue::done_days(&items);
-        let [a, b, c] = [0, 1, 2].map(|n| item_view(&items[n], &days));
+        let [a, b, c] = [0, 1, 2].map(|n| item_view(&items[n], &days, chrono::Utc::now()));
         assert_eq!(
             (a["cost"].as_f64(), a["cost_label"].as_str()),
             (Some(6.1), Some("$6.10"))
@@ -279,6 +286,8 @@ mod tests {
         );
         assert_eq!(a["pr_url"], "https://github.com/o/r/pull/7");
         assert_eq!(a["merged"], "abc", "the ledger's own key is left alone");
+        assert_eq!(a["timing"]["run"], 60, "the page renders hub-core's timing");
+        assert!(b["timing"]["run"].is_null(), "no started, no run");
         assert_eq!(a["day_total"], "2 done, $6.10, 1 unpriced");
         assert_eq!(a["day_total"], b["day_total"]);
         assert_eq!(
