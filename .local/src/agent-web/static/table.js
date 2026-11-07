@@ -32,6 +32,9 @@ const tblOf = (e) => e.target?.closest?.("[data-tbl]")?.dataset.tbl || "";
 // One dropdown per facet, each option the whole query that picks its value.
 const tblFacets = (t) => t.facets.map((f) => `<select data-tq title="${esc(f.key)}"><option value="${esc(f.clear)}">every ${esc(f.key)}</option>` +
   f.values.map((v) => `<option value="${esc(v.q)}"${v.value === f.on ? " selected" : ""}>${esc(v.value)} (${v.n})</option>`).join("") + `</select>`).join("");
+// One count chip, here and on the tabs that still filter their own lists.
+const chipBtn = (on, attr, val, label, n) =>
+  `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
 // The state chips with their counts; the first keeps every row.
 const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
 
@@ -75,6 +78,9 @@ function tblHead(t, labels, pre = "t") {
     return `<th${cls ? ` class="${cls}"` : ""}${aria}><button class="thsort" data-${pre}sort="${esc(c.next_sort)}" data-${pre}dir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
   }).join("") + "</tr>";
 }
+
+// The button a capped body ends in; the view's own click listener answers `data-all`.
+const tblMore = (n) => (n > 0 ? `<button class="btn sm" data-all="1">+${n} older</button>` : "");
 
 // The view patch an event on the bar or a header asks for, or null when it is not one of theirs.
 function tblPatch(e) {

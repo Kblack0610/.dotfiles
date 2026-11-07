@@ -734,17 +734,18 @@ impl Queue {
         self.in_state(s).count()
     }
 
-    /// `1 running, 2 up next (1 held)`: the phone widget's queue line.
+    /// `1 running, 1 ready, 1 held`: the phone widget's queue line. Ready is queued with no hold.
     pub fn counts_line(&self) -> String {
         let held = self
             .in_state(State::Queued)
             .filter(|i| i.hold.is_some())
             .count();
-        let mut next = format!("{} up next", self.count(State::Queued));
+        let ready = self.count(State::Queued) - held;
+        let mut s = format!("{} running, {ready} ready", self.count(State::Running));
         if held > 0 {
-            next += &format!(" ({held} held)");
+            s += &format!(", {held} held");
         }
-        format!("{} running, {next}", self.count(State::Running))
+        s
     }
 }
 
