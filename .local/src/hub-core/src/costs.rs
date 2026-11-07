@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::burn::{self, Burn};
+use crate::sections::{self, Sections};
 use crate::session_actions::Runner;
 use crate::table::{Row, Summary, Val, View};
 
@@ -152,6 +153,8 @@ pub struct Costs {
     pub live: Live,
     /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
     pub burn: Burn,
+    /// `fleet-bench sections --json`; empty when it failed (named in `errors`).
+    pub sections: Sections,
     pub grafana: Option<String>,
 }
 
@@ -212,6 +215,13 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
             Err(e) => c.errors.push(format!("fleet-bench models: {e}")),
         },
         Err(e) => c.errors.push(format!("fleet-bench models: {e}")),
+    }
+    match runner
+        .run(&argv(&["fleet-bench", "sections", "--json"]))
+        .and_then(|out| sections::parse(&out))
+    {
+        Ok(s) => c.sections = s,
+        Err(e) => c.errors.push(format!("fleet-bench sections: {e}")),
     }
     match std::fs::read_to_string(&paths.calls) {
         Ok(text) => c.calls = calls(&text, now - longest()),
@@ -871,6 +881,7 @@ pub struct Board {
     pub totals: Vec<Total>,
     pub live: Live,
     pub burn: Burn,
+    pub sections: sections::Block,
     pub sources: Vec<Source>,
     pub errors: Vec<String>,
     /// This cut's columns, the only ones drawn.
@@ -907,7 +918,17 @@ pub fn window(w: &str) -> (&'static str, i64) {
 }
 
 /// The view `by`/`w`/`q`/`sort`/`dir` over one read.
-pub fn board(c: &Costs, by: &str, w: &str, q: &str, sort: &str, dir: &str) -> Board {
+///
+/// `sec` is the Sections block's own `(sort, dir)`, which the main table's sort does not touch.
+pub fn board(
+    c: &Costs,
+    by: &str,
+    w: &str,
+    q: &str,
+    sort: &str,
+    dir: &str,
+    sec: (&str, &str),
+) -> Board {
     let by = cut(by);
     let (w, secs) = window(w);
     let since = c.at - secs;
@@ -991,6 +1012,7 @@ pub fn board(c: &Costs, by: &str, w: &str, q: &str, sort: &str, dir: &str) -> Bo
         totals: totals(&c.sessions, c.at),
         live: c.live.clone(),
         burn: c.burn.clone(),
+        sections: sections::board(&c.sections, sec.0, sec.1),
         sources: sources(c),
         errors: c.errors.clone(),
         columns: cols,
@@ -1025,6 +1047,39 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_800_000_000;
+
+    #[test]
+    fn the_board_carries_the_sections_block_under_its_own_sort() {
+        let c = Costs {
+            at: NOW,
+            sections: sections::parse(
+                r#"{"days":7,"all":{"prs":3,"with_session":1,"gate_h":9},"sections":[
+                {"section":"a","prs":1,"gate_h":5},{"section":"b","prs":2,"gate_h":4}]}"#,
+            )
+            .unwrap(),
+            ..Costs::default()
+        };
+        let names = |sec| {
+            board(&c, "model", "7d", "", "cost", "asc", sec)
+                .sections
+                .rows
+                .iter()
+                .map(|r| r[0].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(("", "")), ["a", "b"], "fleet-bench's order");
+        assert_eq!(names(("prs", "desc")), ["b", "a"]);
+        assert_eq!(names(("prs", "asc")), ["a", "b"]);
+        let b = board(&c, "model", "7d", "", "cost", "asc", ("prs", "asc"));
+        assert_eq!(b.table.sort, "cost", "the main table's sort is its own");
+        assert_eq!(b.sections.all[0], "All PRs");
+        assert!(
+            board(&Costs::default(), "model", "7d", "", "", "", ("", ""))
+                .sections
+                .table
+                .is_none()
+        );
+    }
 
     #[test]
     fn a_hold_needs_a_kind_and_nothing_runnable_is_not_one() {
@@ -1197,14 +1252,14 @@ mod tests {
         let mut c = costs();
         c.sessions[0].cost_usd = None;
         c.sessions[0].cost_by_model = Some(BTreeMap::from([("claude-opus-5-5".into(), 4.0)]));
-        let b = board(&c, "session", "24h", "", "", "");
+        let b = board(&c, "session", "24h", "", "", "", ("", ""));
         assert_eq!(b.totals[0].usd, b.shown_usd, "the tile and the table agree");
         assert_eq!(b.totals[0].unpriced, 0);
     }
 
     #[test]
     fn the_model_cut_splits_a_session_by_its_cost_by_model_and_joins_the_evaluation() {
-        let b = board(&costs(), "model", "7d", "", "", "");
+        let b = board(&costs(), "model", "7d", "", "", "", ("", ""));
         assert_eq!(names(&b, "model"), ["opus-5-5", "haiku-4-5", "gpt-5.4"]);
         let opus = &b.rows[0];
         assert!((opus.cost - 12.0).abs() < 1e-9, "8 of s1 and all of s2");
@@ -1222,17 +1277,17 @@ mod tests {
     #[test]
     fn each_cut_groups_by_its_own_key() {
         let c = costs();
-        let b = board(&c, "session", "30d", "", "", "");
+        let b = board(&c, "session", "30d", "", "", "", ("", ""));
         assert_eq!(names(&b, "session"), ["s1", "s2", "s3", "s4"]);
         assert_eq!(b.rows[0].model.as_deref(), Some("opus-5-5, haiku-4-5"));
-        let b = board(&c, "harness", "30d", "", "", "");
+        let b = board(&c, "harness", "30d", "", "", "", ("", ""));
         assert_eq!(names(&b, "harness"), ["claude", "codex", "claude-lazer"]);
         assert_eq!(b.rows[0].landed, Some(0.9));
-        let b = board(&c, "project", "30d", "", "", "");
+        let b = board(&c, "project", "30d", "", "", "", ("", ""));
         assert_eq!(names(&b, "project"), ["dotfiles", "playground", "_runner"]);
-        let b = board(&c, "kind", "30d", "", "", "");
+        let b = board(&c, "kind", "30d", "", "", "", ("", ""));
         assert_eq!(names(&b, "kind"), ["human", "automated"]);
-        let b = board(&c, "runner", "24h", "", "", "");
+        let b = board(&c, "runner", "24h", "", "", "", ("", ""));
         assert_eq!(names(&b, "runner"), ["dream", "ask-judge"]);
         assert_eq!(
             b.rows[0].calls,
@@ -1240,7 +1295,7 @@ mod tests {
             "the 2-day-old call is outside 24h"
         );
         assert_eq!(b.rows[0].model.as_deref(), Some("opus-5-5"));
-        let b = board(&c, "tool", "7d", "", "", "");
+        let b = board(&c, "tool", "7d", "", "", "", ("", ""));
         assert_eq!(names(&b, "tool"), ["Bash", "Read", "(no tool)"]);
         assert!(
             (b.shown_usd - 10.0).abs() < 1e-9,
@@ -1253,12 +1308,14 @@ mod tests {
         }
         old.snapshots[0].unallocated_usd = None;
         assert!(
-            board(&old, "tool", "7d", "", "", "").unpriced.is_some(),
+            board(&old, "tool", "7d", "", "", "", ("", ""))
+                .unpriced
+                .is_some(),
             "a snapshot from before the allocation"
         );
         let mut stale = costs();
         stale.snapshots[0].date = "2026-12-01".into();
-        let b = board(&stale, "tool", "7d", "", "", "");
+        let b = board(&stale, "tool", "7d", "", "", "", ("", ""));
         assert!(
             b.rows.is_empty(),
             "a snapshot from before the window is not in it"
@@ -1268,20 +1325,20 @@ mod tests {
     #[test]
     fn a_sort_goes_both_ways_and_the_default_is_the_costliest_first() {
         let c = costs();
-        let up = board(&c, "project", "30d", "", "cost", "asc");
+        let up = board(&c, "project", "30d", "", "cost", "asc", ("", ""));
         assert_eq!(names(&up, "project"), ["_runner", "playground", "dotfiles"]);
-        let down = board(&c, "project", "30d", "", "cost", "");
+        let down = board(&c, "project", "30d", "", "cost", "", ("", ""));
         assert_eq!(
             names(&down, "project"),
             ["dotfiles", "playground", "_runner"]
         );
-        let by_name = board(&c, "project", "30d", "", "project", "asc");
+        let by_name = board(&c, "project", "30d", "", "project", "asc", ("", ""));
         assert_eq!(
             names(&by_name, "project"),
             ["_runner", "dotfiles", "playground"]
         );
         // A column the cut does not show sorts nothing.
-        let off = board(&c, "project", "30d", "", "landed", "asc");
+        let off = board(&c, "project", "30d", "", "landed", "asc", ("", ""));
         assert_eq!(off.table.sort, "");
         assert!(off
             .table
@@ -1293,7 +1350,7 @@ mod tests {
     #[test]
     fn the_query_filters_the_slices_before_they_are_grouped() {
         let c = costs();
-        let b = board(&c, "project", "7d", "harness:codex", "", "");
+        let b = board(&c, "project", "7d", "harness:codex", "", "", ("", ""));
         assert_eq!(names(&b, "project"), ["dotfiles"]);
         assert!((b.shown_usd - 1.5).abs() < 1e-9, "only s3's cost");
         assert_eq!(
@@ -1301,9 +1358,9 @@ mod tests {
             (1, 2),
             "rows of the cut, not slices"
         );
-        let b = board(&c, "model", "7d", "-model:opus", "", "");
+        let b = board(&c, "model", "7d", "-model:opus", "", "", ("", ""));
         assert_eq!(names(&b, "model"), ["haiku-4-5", "gpt-5.4"]);
-        let b = board(&c, "session", "7d", "-model:opus", "", "");
+        let b = board(&c, "session", "7d", "-model:opus", "", "", ("", ""));
         assert!(
             (b.rows[0].cost - 2.0).abs() < 1e-9,
             "s1 without its opus share"
@@ -1313,7 +1370,7 @@ mod tests {
 
     #[test]
     fn a_query_with_no_match_is_an_empty_table_that_says_so() {
-        let b = board(&costs(), "model", "7d", "harness:nope", "", "");
+        let b = board(&costs(), "model", "7d", "harness:nope", "", "", ("", ""));
         assert!(b.rows.is_empty());
         assert_eq!(b.table.shown, 0);
         assert!(b.table.total > 0, "the surfaces say no match, not no data");
@@ -1322,7 +1379,7 @@ mod tests {
 
     #[test]
     fn a_stale_link_opens_the_default_view() {
-        let b = board(&costs(), "nope", "1y", "", "", "");
+        let b = board(&costs(), "nope", "1y", "", "", "", ("", ""));
         assert_eq!(
             (b.by.as_str(), b.window.as_str()),
             (DEFAULT_CUT, DEFAULT_WINDOW)
