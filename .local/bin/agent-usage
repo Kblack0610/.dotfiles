@@ -618,11 +618,12 @@ cmd_tokens() {
 
 # --- spend -----------------------------------------------------------------
 
-# spend check <window> <max-usd>: fleet-wide Claude Code cost over the last <window> (Prometheus
-# duration, 1h, 24h, 7d) against a ceiling. The one check behind both the claude-spend-hourly
-# and claude-spend-daily watches; each watch passes its own window and number in its
-# expect_cmd. Exit 0 under or at the ceiling, 1 over, 2 when Prometheus cannot be read (a
-# watch must trip then too: a blind spend alarm is a failed alarm). No series counts as $0.
+# spend check <window> <max-usd>: fleet-wide Claude Code cost over the last <window> (one
+# Prometheus unit: 30m, 1h, 24h, 7d) against a ceiling. The one check behind both the
+# claude-spend-hourly and claude-spend-daily watches; each watch passes its own window and
+# number in its expect_cmd. Exit 0 at or under the ceiling, 1 over, 2 when Prometheus cannot
+# be read or answers with anything but a vector (a watch must trip then too: a blind spend
+# alarm is a failed alarm), 64 for bad arguments. An empty vector counts as $0.
 cmd_spend() {
   local verb="${1:-}" win="${2:-}" max="${3:-}" v
   if [ "$verb" != check ] || ! [[ "$win" =~ ^[0-9]+[smhdw]$ ]] || ! [[ "$max" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
@@ -631,10 +632,10 @@ cmd_spend() {
   [ -n "$PROM_URL" ] || { echo "spend: no PROM_URL (set it or $AU_CONF)" >&2; return 2; }
   v="$(curl -sf -m 20 --get "$PROM_URL/api/v1/query" \
          --data-urlencode "query=sum(increase(claude_code_cost_usage_USD_total[$win]))" 2>/dev/null \
-       | jq -er '.data.result | if length == 0 then 0 else (.[0].value[1] | tonumber) end' 2>/dev/null)" \
-    || { echo "spend: Prometheus unreadable" >&2; return 2; }
-  printf 'last %s: $%.0f (alert at $%s)\n' "$win" "$v" "$max"
-  awk -v v="$v" -v m="$max" 'BEGIN { exit (v + 0 <= m + 0) ? 0 : 1 }'
+       | jq -er '.data.result | if type != "array" then error("not a vector") elif length == 0 then "0" else .[0].value[1] end' 2>/dev/null)" \
+    && [[ "$v" =~ ^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$ ]] \
+    || { echo "spend: Prometheus unreadable or not a number" >&2; return 2; }
+  LC_ALL=C awk -v v="$v" -v m="$max" -v w="$win" 'BEGIN { printf "last %s: $%.1f (alert at $%s)\n", w, v, m; exit (v + 0 <= m + 0) ? 0 : 1 }'
 }
 
 # --- langfuse --------------------------------------------------------------
