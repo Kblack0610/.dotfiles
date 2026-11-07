@@ -839,6 +839,98 @@ done_from_inside() {
   [ -f "$WT/sub/wip.txt" ]
 }
 
+# -- the hold: a slot cut by `new` is git-locked until `reap` frees it --
+
+held_slot() {
+  make_repo
+  SLOT="$WT_ROOT/repo-agent-1"
+  wt_prepare "$MAIN" "$SLOT" 1 fresh 2>/dev/null
+}
+
+@test "a raw git worktree remove cannot take a slot, forced or not" {
+  held_slot
+  run git -C "$MAIN" worktree remove "$SLOT"
+  assert_failure
+  assert_output --partial 'wt reap'
+  run git -C "$MAIN" worktree remove --force "$SLOT"
+  assert_failure
+  run git -C "$MAIN" worktree move "$SLOT" "$SANDBOX/moved"
+  assert_failure
+  [ -f "$SLOT/file.txt" ]
+}
+
+@test "a recycled slot is held, whether or not it was before" {
+  held_slot
+  run wt_prepare "$MAIN" "$SLOT" 1 recycle
+  assert_success
+  refute_output --partial 'could not lock'
+  git -C "$MAIN" worktree unlock "$SLOT"
+  wt_prepare "$MAIN" "$SLOT" 1 recycle 2>/dev/null
+  run git -C "$MAIN" worktree remove "$SLOT"
+  assert_failure
+  assert_output --partial 'wt reap'
+}
+
+@test "reap frees a held slot, and takes its branch" {
+  held_slot
+  run cmd_reap "$SLOT"
+  assert_success
+  assert_output --partial 'reaped repo-agent-1 (branch agent-1 deleted)'
+  [ ! -d "$SLOT" ]
+}
+
+@test "reap frees a held slot with a submodule through the forced path" {
+  make_drifted_submodule
+  wt_hold "$WT"
+  run cmd_reap "$WT"
+  assert_success
+  [ ! -d "$WT" ]
+}
+
+@test "a reap refused for a live session leaves the hold on" {
+  held_slot
+  rm "$NOTES_FIXTURE/tmux.no-session"
+  run cmd_reap "$SLOT"
+  assert_failure
+  assert_output --partial 'its tmux session is live'
+  run git -C "$MAIN" worktree remove "$SLOT"
+  assert_failure
+  assert_output --partial 'wt reap'
+}
+
+@test "a reap git refuses after the policy passed puts the hold back" {
+  # git's own dirty check is the second door, for a tree that changed since the policy looked.
+  held_slot
+  printf 'late\n' > "$SLOT/late.txt"
+  wt_reap_reason() { return 0; }
+  run cmd_reap "$SLOT"
+  assert_failure
+  assert_output --partial 'git worktree remove refused'
+  [ -f "$SLOT/late.txt" ]
+  run git -C "$MAIN" worktree remove --force "$SLOT"
+  assert_failure
+  assert_output --partial 'wt reap'
+}
+
+@test "a hold that outlived its directory frees the slot for the next new" {
+  held_slot
+  rm -rf "$SLOT"
+  run wt_next_slot repo "$MAIN" origin/main
+  assert_success
+  assert_output "1${PANEL_TAB}fresh"
+  run wt_prepare "$MAIN" "$SLOT" 1 fresh
+  assert_success
+  [ -f "$SLOT/file.txt" ]
+}
+
+@test "a live session keeps the hold on a slot whose directory is gone" {
+  held_slot
+  rm -rf "$SLOT"
+  rm "$NOTES_FIXTURE/tmux.no-session"
+  run wt_next_slot repo "$MAIN" origin/main
+  git -C "$MAIN" worktree list --porcelain | grep -q '^locked'
+}
+
 # -- husks: a dir with no .git left behind after its worktree went --
 
 @test "a husk holding only Unity caches is reaped" {
