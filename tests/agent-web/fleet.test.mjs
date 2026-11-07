@@ -19,7 +19,7 @@ const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll:
 let logClick = null;
 const logBox = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") logClick = f; } });
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const parts = { "fleet-body": part(), "fleet-chips": part(), "fleet-facets": part(), "fleet-head": part(), "fleet-tail": part() };
+const parts = { "fleet-body": part(), "fleet-chips": part(), "fleet-facets": part(), "fleet-head": part() };
 const doc = { getElementById: (id) => (id === "fleet" ? box : id === "log-verdicts" ? logBox : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
 const ctx = vm.createContext({
   console,
@@ -55,7 +55,7 @@ const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, 
     { id: "c", project: "ucp", question: "quarantine it?", type: "ci_capacity_ops", rule: "ci_capacity_ops", said: "would answer", judge: "a", reason: "rule says so", evidence: "", you: "b", score: "wrong", at: 1793942500 },
   ] };
 const data = {
-  at: 1793942659, errors: [], accounts: [], judge,
+  at: 1793942659, errors: [], judge,
   dispatch: { counts_24h: {}, counts_7d: {}, log_24h: {}, recent: [], partial: false },
   workers: [
     worker("ask-judge", {
@@ -181,30 +181,17 @@ test("typing repaints the rows and leaves the search box in place", () => {
   ctx.renderFleet();
   assert.equal(box.innerHTML, before, "the page around the box is not rebuilt");
   assert.match(parts["fleet-body"].innerHTML, /dotfiles-agent-12/);
-  assert.match(parts["fleet-tail"].innerHTML, /Claude accounts/);
   doc.activeElement = null;
 });
 
-test("the accounts table prints the server's room verdict, and a stale textfile says stale per account", () => {
-  const sr = (name, account, value) => ({ labels: { __name__: `claude_account_${name}`, account }, value });
-  const inst = {
-    accounts: [
-      sr("week_used_percent", "main", 22), sr("week_gone_percent", "main", 16),
-      sr("week_used_percent", "alt", 18), sr("week_gone_percent", "alt", 16),
-    ],
-    rooms: {
-      main: { ok: false, reasons: ["pace"], headroom: -1, text: "no room: pace 1 point past the line" },
-      alt: { ok: true, reasons: [], headroom: 3, text: "room, 3 points spare" },
-    },
-  };
-  const h = ctx.accountsTable(inst);
-  assert.match(h, /no room: pace 1 point past the line/);
-  assert.match(h, /room, 3 points spare/);
-  assert.doesNotMatch(h, />(over|under)</, "over and under are not words of the verdict");
-  const stale = ctx.accountsTable({ ...inst, accounts_stale: "stale, claude-acct's textfile is not fresh" });
-  assert.match(stale, /<td>main<\/td><td class="bad">stale, claude-acct/);
-  assert.match(stale, /<td>alt<\/td><td class="bad">stale, claude-acct/);
-  assert.doesNotMatch(stale, /22%/, "old figures are not shown");
+test("the page is the one table: the accounts, tokens and Langfuse are Costs'", () => {
+  const f = vm.runInContext("fst", ctx);
+  f.data = { ...fleetData, tokens: { date: "2026-11-05" } };
+  doc.activeElement = null;
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /dotfiles-agent-12/, "the control: the table drew");
+  for (const id of ["sec-accounts", "sec-tokens", "sec-langfuse"]) assert.doesNotMatch(box.innerHTML, new RegExp(`id="${id}"`));
+  assert.doesNotMatch(box.innerHTML, /Claude accounts|Where the tokens go|What Langfuse sees/);
 });
 
 test("a search with no hit says so, and an unconfigured fleet says where runners are", () => {
@@ -313,115 +300,4 @@ test("a judge has no tile on the Fleet tab, and Log's verdict headers link to th
   ctx.renderLogVerdicts();
   assert.match(logBox.innerHTML, /<h3 class="sub">Dispatch judge <span/);
   st.tab = "fleet";
-});
-
-// Where the tokens go: hub_core::fleet::tokens's sums, folded while fresh.
-const tokenRow = (name, chars, share, other = false) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other });
-const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15, tools: [tokenRow("Bash", 331000000, 0.823), tokenRow("Other (22)", 10000000, 0.026, true)], commands: [tokenRow("sed", 89000000, 0.221)] });
-const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
-const tail = (t) => { const f = vm.runInContext("fst", ctx); f.open = {}; f.tokWin = "week"; return ctx.tokensSection({ tokens: t }); };
-
-test("the tokens section is folded while fresh, with the week on its head", () => {
-  const h = tail(tokens());
-  assert.match(h, /<details class="sec-d" data-k="tokens" id="sec-tokens"><summary>/);
-  assert.match(h, /Where the tokens go <span class="muted">7d 18\.0B, tool output 15%/);
-  assert.match(h, /by tool/);
-  assert.match(h, /by Bash command/);
-  assert.match(h, /82\.3%/);
-  assert.match(h, /href="#costs\?by=tool&w=7d"/);
-});
-
-test("a named row takes its chart slot and Other its grey", () => {
-  const h = tail(tokens());
-  assert.match(h, /background:var\(--c1\)/);
-  assert.match(h, /background:var\(--c-other\)/);
-  assert.doesNotMatch(h, /background:var\(--c2\)/);
-});
-
-test("a stale snapshot opens the section with an amber head, until the human shuts it", () => {
-  const h = tail(tokens({ stale: true }));
-  assert.match(h, /id="sec-tokens" open>/);
-  assert.match(h, /class="warn">7d 18\.0B, tool output 15%, stale: newest snapshot 2026-11-05/);
-  vm.runInContext("fst", ctx).open["tokens-stale"] = false;
-  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
-});
-
-test("no snapshot is an amber head with nothing to open", () => {
-  const h = tail(null);
-  assert.match(h, /class="warn">no snapshot/);
-  assert.doesNotMatch(h, /<details/);
-});
-
-test("the window switch picks yesterday, and a partial window says so", () => {
-  const f = vm.runInContext("fst", ctx);
-  tail(tokens());
-  f.data = { ...data, table: table(), who: people, hidden: 0, errors: [], tokens: tokens({ day: { ...tokenSplit(3900000000), days: 1, partial: 1 } }) };
-  click({ target: { closest: (sel) => (sel === "[data-tokwin]" ? { dataset: { tokwin: "day" } } : null) } });
-  assert.equal(f.tokWin, "day");
-  const h = ctx.tokensSection(f.data);
-  assert.match(h, /yesterday: 3\.9B context/);
-  assert.match(h, /class="warn">, 1 of 1 partial/);
-  f.tokWin = "week";
-});
-
-test("a stale day names its date, not yesterday", () => {
-  const f = vm.runInContext("fst", ctx);
-  f.open = {};
-  f.tokWin = "day";
-  const h = ctx.tokensSection({ tokens: tokens({ stale: true }) });
-  assert.match(h, /2026-11-05: 3\.9B context/);
-  assert.doesNotMatch(h, /yesterday: /);
-  f.tokWin = "week";
-});
-
-test("the fold keeps what paint remembered, and going stale still opens it", () => {
-  const f = vm.runInContext("fst", ctx);
-  f.open = { tokens: true };
-  assert.match(ctx.tokensSection({ tokens: tokens() }), /id="sec-tokens" open>/);
-  f.open = { tokens: false };
-  assert.match(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /data-k="tokens-stale" id="sec-tokens" open>/);
-  f.open = { tokens: false, "tokens-stale": false };
-  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
-  f.open = {};
-});
-
-// What Langfuse sees: the newest snapshot's `.langfuse`, folded while it reads.
-const lfFigures = () => ({
-  tools: [{ tool: "Bash", calls: 35243, p50_ms: 99, p95_ms: 17487, total_s: 224341 }],
-  tool_executions: 38947, tool_errors: 854, tool_error_share: 0.0219, tool_error_classes: [{ name: "ShellError", n: 781 }],
-  gateway_calls: 194, gateway_errors: 26, gateway_error_share: 0.134, gateway_error_classes: [{ name: "invalid_key", n: 16 }],
-  gateway_cost_usd: 3.59, gateway_tokens: 2271863, gateway_models: [{ model: "claude-sonnet-5.5", calls: 33, errors: 0, cost_usd: 3.45 }], gateway_other_models: 14, truncated: false,
-});
-const lfTail = (t) => { const f = vm.runInContext("fst", ctx); f.open = {}; return ctx.langfuseSection({ tokens: t }); };
-
-test("the langfuse section is folded while it reads, with both error shares and the gateway's cost on its head", () => {
-  const h = lfTail(tokens({ langfuse: { figures: lfFigures(), why: null } }));
-  assert.doesNotMatch(h, /id="sec-langfuse" open>/);
-  assert.match(h, /tool errors 2%, gateway errors 13%, \$3\.59 gateway/);
-});
-
-test("open, it draws the slowest tools, the error classes and the dearest models", () => {
-  const f = vm.runInContext("fst", ctx);
-  f.open = { langfuse: true };
-  const h = ctx.langfuseSection({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }) });
-  assert.match(h, /<td>Bash<\/td><td class="n">35,243<\/td><td class="n">99ms<\/td><td class="n">17\.5s<\/td>/);
-  assert.match(h, /854 of 38,947 executions \(ShellError 781\)/);
-  assert.match(h, /194 calls, 26 errors \(invalid_key 16\)/);
-  assert.match(h, /claude-sonnet-5\.5 \$3\.45, 14 more/);
-  f.open = {};
-});
-
-test("no figures opens the section amber and says why; a stale snapshot opens it too", () => {
-  const none = lfTail(tokens({ langfuse: { figures: null, why: "no key (rbw langfuse-api)" } }));
-  assert.match(none, /data-k="langfuse-stale" id="sec-langfuse" open>/);
-  assert.match(none, /class="warn">no figures in snapshot 2026-11-05/);
-  assert.match(none, /no key \(rbw langfuse-api\)/);
-  const stale = lfTail(tokens({ stale: true, langfuse: { figures: lfFigures(), why: null } }));
-  assert.match(stale, /data-k="langfuse-stale" id="sec-langfuse" open>/);
-  assert.match(stale, /stale: newest snapshot 2026-11-05/);
-});
-
-test("a snapshot from before the reader has no langfuse key and still draws the amber head", () => {
-  assert.match(lfTail(tokens()), /no figures in snapshot/);
-  assert.equal(ctx.langfuseSection({ tokens: null }), "");
 });

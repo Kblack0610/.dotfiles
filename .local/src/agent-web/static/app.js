@@ -255,6 +255,8 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
 const TAB_NAMES = ["home", "daily", "queue", "projects", "sessions", "infra", "log", "fleet", "schedules", "costs"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily" };
+// layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
+const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"] };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
@@ -277,6 +279,8 @@ function route(hash) {
   let arg = at < 0 ? "" : h.slice(at + 1);
   try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
   if (name === "outbox" && !arg) arg = "outbox";
+  const moved = MOVED[name + "/" + arg.toLowerCase()];
+  if (moved) return { name, tab: moved[0], arg: "", query, section: moved[1] };
   return { name, tab: tabOf(name), arg, query };
 }
 // Show tab t; arg is what it opens (blank for its front), query its view state, which a tab
@@ -361,6 +365,7 @@ function connect() {
 // Back and Forward, and every in-app link, change the fragment; show what it names.
 window.addEventListener("hashchange", () => {
   const r = route(location.hash);
+  if (r.section) st.section = r.section;
   if (r.tab !== st.tab || r.arg !== st.arg || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query);
 });
 
@@ -368,6 +373,7 @@ window.addEventListener("hashchange", () => {
 document.addEventListener("DOMContentLoaded", () => {
   const r = route(location.hash);
   if (RETIRED_TABS[r.name]) st.section = r.name;
+  if (r.section) st.section = r.section;
   setTab(r.tab, r.arg, r.query);
   connect();
 });
