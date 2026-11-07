@@ -186,7 +186,8 @@ set -uo pipefail
 : "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
 : "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together
-: "${TRIAGE_FIX_DAYS:=7}"           # triage: days a queued fix keeps its cause from being queued again
+: "${TRIAGE_FIX_DAYS:=7}"           # triage: the window a cause's fix items are counted in
+: "${TRIAGE_FIX_TRIES:=2}"          # triage: fix items a cause gets in the window before it goes to the human
 : "${REDS_DAYS:=7}"                 # reds: days of red fixes the report and its KPIs read
 : "${HOLD_HOURS:=24}"               # reds: hours after a cleanup merge that a new red counts against it
 : "${TRIAGE_HOLD_CMD:=agent-hold check dispatch}"   # triage: a dispatch hold stops queueing, never filing
@@ -2943,15 +2944,37 @@ triage_human() {
   echo "$n"
 }
 
+# cause_tries <items> <cause> -> -1 while an item stands for the cause: queued, running or waiting,
+# or closed with a PR that is not merged (it waits on a merge, and a second session would only
+# repeat it). Else how many items the window queued for it. Every row triage reads is red now, so
+# an item that closed cancelled, failed, or merged with its red still here did not hold.
+cause_tries() {
+  jq --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))]
+    | if any(.[]; .state == "queued" or .state == "running" or .state == "waiting"
+                or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled"))
+      then -1 else length end' <<<"$1"
+}
+
+# cause_slugs <items> <cause> -> the slugs of the window's items for the cause, oldest first, comma-joined
+cause_slugs() {
+  jq -r --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))] | sort_by(.queued // "") | map(.slug) | join(",")' <<<"$1"
+}
+
+# triage_items -> the queue items of the last TRIAGE_FIX_DAYS as one array; rc 1 when unreadable
+triage_items() {
+  $TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .
+}
+
 # triage_promote <rows> -> how many agent routes were queued as red fixes. A red fix opens its PR at
 # any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
-# dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day, and one item
-# stands for a cause across the window. An item that closed with the red still here counts too: its
-# PR waits on the human or it failed, and a second session would only repeat it.
+# dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day, an item in hand
+# stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in the window.
+# A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold; a cause
+# whose tries are spent goes to the human (triage_spent).
 triage_promote() {
-  local board key raw route cause tags items used n=0 seen=' '
+  local board key raw route cause tags items used tries more n=0 seen=' '
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
-  items=$($TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .) || { echo 0; return 0; }
+  items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
     '[.[] | select(((" " + (.tags // "") + " ") | contains(" red ")) and (.queued // "" | startswith($d)))] | length' <<<"$items")
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
@@ -2960,12 +2983,29 @@ triage_promote() {
     [ $((used + n)) -lt "$TRIAGE_FIX_CAP" ] || break
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
-    jq -e --arg c " cause:$cause " 'any(.[]; (" " + (.tags // "") + " ") | contains($c))' <<<"$items" >/dev/null && continue
+    tries=$(cause_tries "$items" "$cause")
+    [ "$tries" -ge 0 ] && [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || continue
+    more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause")"
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
     [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red cause:$cause${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 && n=$((n + 1))
+    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 && n=$((n + 1))
   done <<<"$1"
   echo "$n"
+}
+
+# triage_spent <rows> -> a human route row on the KPI board's sheet for each agent route whose cause
+# had TRIAGE_FIX_TRIES items in the window and is red still: those sessions did not hold it, so the
+# next step is the human's. triage_human files it and pages once.
+triage_spent() {
+  local items key text pri route cause seen=' '
+  items=$(triage_items) || return 0
+  while IFS=$'\t' read -r key text pri route cause _; do
+    [ "$route" = agent ] || continue
+    [[ "$seen" != *" $cause "* ]] || continue
+    seen+="$cause "
+    [ "$(cause_tries "$items" "$cause")" -ge "$TRIAGE_FIX_TRIES" ] || continue
+    printf '%s\t%s (red fixes that did not hold: %s)\t%s\thuman:%s\n' "$key" "$text" "$(cause_slugs "$items" "$cause")" "$pri" "$KPI_BOARD"
+  done <<<"$1"
 }
 
 # triage_coverage -> each standing watch and each runner no TRIAGE_ROUTES line resolves, and each
@@ -3261,7 +3301,7 @@ cmd_triage() {
   fi
   filed=$(triage_filed "$rows")
   if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
-  h=$(triage_human "$rows")
+  h=$(triage_human "$rows"$'\n'"$(triage_spent "$rows")")
   q=$(triage_promote "$rows")
   upsert_report "$rows" "$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}" | sed 's/^ //')"
 }

@@ -72,14 +72,16 @@ test("the header is hub-core's parts: a stopped timer is amber with a Start, and
   assert.doesNotMatch(html, /data-start/);
 });
 
-test("the table is the server's rows in its order, with the chips and the facet", () => {
+test("the table is the server's rows in its order, with the overview tiles and the facet", () => {
   setup();
   run("sst.render()");
   const html = boxes.scroll.innerHTML;
   const order = ["hub/b:1", "lab/x:1", "ucp-394"].map((k) => html.indexOf(`data-key="${k}"`));
   assert.ok(order.every((i) => i >= 0), html);
   assert.deepEqual([...order].sort((a, b) => a - b), order);
-  assert.match(html, /data-ts="done today">done today <span class="n">1/);
+  assert.match(html, /<button class="tile" data-ts="done today" style="--c:var\(--b-done\)"><span class="tl">DONE TODAY<\/span><span class="tv">1<\/span>/);
+  assert.doesNotMatch(html, /data-ts="all"|sessions-chips/, "the tiles are the chips, so the small chip row is gone");
+  assert.ok(html.indexOf("stiles") < html.indexOf("capline"), "the overview row leads the tab");
   assert.match(html, /<option value="project:dotfiles">dotfiles \(3\)/);
   assert.match(html, /#12 open <b class="ci pass">PASS<\/b>/);
   assert.match(html, /<td class="n">2\/4<\/td><td class="n">3m<\/td><td class="n">\$1\.20<\/td>/);
@@ -100,6 +102,22 @@ test("a row says what the columns do not: parked, no session here, and where an 
 
 const PAGE = { name: "ucp-394", session_id: "s9", target: "", bucket: "DONE", task: "the <task>", idle: "ended", errors: ["notes board: exit 1"], outcome: "card of s9",
   parts: [{ label: "Queue item", text: "ucp-394 (done, high)", link: "#queue", warn: false }, { label: "PR", text: "#1915 merged", link: "https://github.com/o/r/pull/1915", warn: false }, { label: "Asks", text: "1 open: ship?", link: null, warn: true }] };
+
+test("the overview spend is the server's sum, and the tile in force clears the filter", () => {
+  setup();
+  run(`sst.data = { ...sst.data, spend_usd: 41.2, table: { ...sst.data.table, state: "stalled", shown: 1 } }`);
+  run("sst.render()");
+  const html = boxes.scroll.innerHTML;
+  assert.match(html, /SPEND<\/span><span class="tv">\$41\.20<\/span><span class="ts1">1 shown/);
+  assert.match(html, /<button class="tile on" data-ts="" style="--c:var\(--b-stalled\)">/);
+});
+
+test("an opened session starts on its conversation, not its Details page", () => {
+  setup();
+  run(`__load = load; load = () => {}; select({ target: "hub/a:1", session: "hub/a:1-id", status: "idle", actions: [] })`);
+  assert.equal(run("st.view"), "transcript");
+  run(`load = __load`);
+});
 
 test("every row is a link to its page, keeping the table's view for Back", () => {
   setup();
@@ -148,7 +166,7 @@ test("a page draws hub-core's parts: links, amber, errors, the open outcome card
   assert.match(html, /the &lt;task&gt;/, "text is escaped");
   assert.match(html, /card err">notes board: exit 1/);
   assert.match(html, /data-k="page-outcome" open.*card of s9/s);
-  assert.match(html, /data-transcript/);
+  assert.doesNotMatch(html, /data-transcript/, "the conversation is the default view, so Details has no Load row");
   assert.doesNotMatch(html, /page-state/, "a session out of the state document has no state fold");
   assert.equal(run("st.sel.name"), "ucp-394");
   assert.equal(run("st.sel.summary"), "the <task>");

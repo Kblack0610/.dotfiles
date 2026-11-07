@@ -39,10 +39,11 @@ const chipBtn = (on, attr, val, label, n) =>
 const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
 
 // The search box, the dropdowns and the chips. `id` names the parts a repaint while the search
-// box has focus replaces around it: `<id>-facets` and `<id>-chips`.
-function tblBar(id, t, hint) {
+// box has focus replaces around it: `<id>-facets` and `<id>-chips`. A tab whose overview tiles are
+// its chips (Sessions) passes `chips` false.
+function tblBar(id, t, hint, chips = true) {
   return `<div class="card bfilter qcfilter"><div class="opts"><input id="${id}-q" data-tsearch placeholder="${esc(hint)}" value="${esc(t.q)}" title="key:value matches a column, a repeated key is any of them, -key:value excludes, a word searches the text">` +
-    `<span id="${id}-facets">${tblFacets(t)}</span></div></div><div class="seg fseg" id="${id}-chips">${tblChips(t)}</div>`;
+    `<span id="${id}-facets">${tblFacets(t)}</span></div></div>` + (chips ? `<div class="seg fseg" id="${id}-chips">${tblChips(t)}</div>` : "");
 }
 
 // The header row. `labels` maps a column key to [text, class]; a column it leaves out is not drawn.
@@ -81,7 +82,8 @@ function tblPatch(e) {
 //   pre    the view keys' prefix (tblParams), for a tab's second table; its block carries data-tbl
 //   api    the path read with the view keys, plus what params(p, t) adds; with no api the tab reads
 //          itself and `refresh` is that read
-//   hint   the search box's placeholder; wait: what shows before the first read
+//   hint   the search box's placeholder; wait: what shows before the first read; chips: false
+//          for a tab whose overview tiles are its chips
 //   head, body, tail (t)  the html above the bar, the rows and below them; table(t): the summary
 //          (data.table); shown(): whether it is on screen (the tab is open)
 //   got(t) after a good read; after(t): after every read, once drawn; reset(t): on a view change
@@ -110,7 +112,7 @@ function tblTab(o) {
     if (!v || !$(id + "-body")) return false;
     if (f?.id !== id + "-q" && (f?.dataset?.tq === undefined || !f.closest?.(`#${id}-facets`))) return false;
     if (f.id === id + "-q") paint($(id + "-facets"), tblFacets(v));
-    paint($(id + "-chips"), tblChips(v));
+    if ($(id + "-chips")) paint($(id + "-chips"), tblChips(v));
     paint($(id + "-body"), o.body(t));
     around();
     return true;
@@ -123,7 +125,7 @@ function tblTab(o) {
     paint($(id + "-body"), o.body(t));
     around();
   };
-  t.html = () => part("head", o.head) + tblBar(id, table(), o.hint) + part("body", o.body) + part("tail", o.tail);
+  t.html = () => part("head", o.head) + tblBar(id, table(), o.hint, o.chips !== false) + part("body", o.body) + part("tail", o.tail);
   t.render = () => {
     const el = $(o.el), m = open();
     if (!el || !shown()) return;

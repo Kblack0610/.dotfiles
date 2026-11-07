@@ -3,6 +3,7 @@ name: analysis
 description: Run comprehensive repo analysis (security, quality, dependencies) with auto-fixes; logs findings to notes inbox; optional GitHub issue creation
 argument-hint: [--dry-run?] [--skip-pr?] [--github-issues?]
 allowed-tools: Bash, Read, Grep, Glob, Write, Edit, Task
+disable-model-invocation: true
 ---
 
 # Daily Repository Analysis

@@ -3,6 +3,7 @@ name: standup
 description: Generate a concise standup update (yesterday, today, blockers)
 argument-hint: [format?]
 allowed-tools: Bash
+disable-model-invocation: true
 ---
 
 # Daily Standup Generator

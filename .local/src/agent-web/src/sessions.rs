@@ -46,6 +46,8 @@ struct Shown<'a> {
     buckets: &'a [String],
     errors: &'a [String],
     table: Summary,
+    /// What the shown rows cost (`session_table::spend`), for the overview row.
+    spend_usd: f64,
 }
 
 #[derive(Default)]
@@ -60,6 +62,7 @@ fn render(r: &Read, q: &TableQuery) -> String {
     let view = View::new::<SessionRow>(&q.q, &q.s, &q.sort, &q.dir);
     let (rows, table) = view.summary(&r.rows);
     let out = Shown {
+        spend_usd: session_table::spend(rows.iter().copied()),
         rows,
         buckets: &r.buckets,
         errors: &r.errors,
