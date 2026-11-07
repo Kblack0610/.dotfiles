@@ -52,7 +52,7 @@ const board = (o = {}) => ({
   ],
   shown_usd: 40,
   table: { q: "", state: "", sort: "cost", dir: "asc", total: 2, shown: 2, states: [], columns: MODEL_COLS.map((k) => (k === "cost" ? col(k, "asc", ["", "desc"]) : col(k))), facets: [{ key: "harness", on: null, clear: "", values: [{ value: "codex", n: 1, q: "harness:codex" }] }] },
-  grafana: "https://grafana.example", ...o,
+  grafana: "https://grafana.example/d/kb-agents-overview", ...o,
 });
 const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("renderCosts()"); return box.innerHTML; };
 const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) ? { dataset: attrs } : null });

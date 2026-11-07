@@ -53,7 +53,12 @@ pub fn page(
     out.push(clip_line(
         heading(
             "FLEET",
-            format!("  {} of {} rows, spend: 9 Costs", rows.len(), f.who.len(),),
+            format!(
+                "  {} of {} rows, {}",
+                rows.len(),
+                f.who.len(),
+                hub_core::costs::SPEND_BADGE
+            ),
             p,
         ),
         w,

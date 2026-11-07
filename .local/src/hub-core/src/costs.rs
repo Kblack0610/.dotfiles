@@ -37,6 +37,8 @@ pub const DEFAULT_WINDOW: &str = "7d";
 pub const STALE_SECS: i64 = 36 * 3600;
 /// The Grafana board with the spend trends; the tab draws no chart (dashboards rule 3).
 pub const DASHBOARD: &str = "kb-agents-overview";
+/// The line a TUI tab prints where it would show spend: the Costs tab and its key.
+pub const SPEND_BADGE: &str = "spend: 9 Costs";
 
 /// What the tool cut says when its snapshots predate the allocation, on both surfaces.
 pub const UNPRICED: &str =
@@ -535,26 +537,43 @@ pub fn source(cut: &str) -> &'static str {
     }
 }
 
-/// Sum a group's slices into one line; `key` fills the cut's own columns.
-fn group(
-    slices: &[&Slice],
+/// Sum a group's slices into one line, with the slices it summed; `key` fills the cut's own
+/// columns and names the group.
+fn group<'a>(
+    slices: &[&'a Slice],
     key: impl Fn(&Slice) -> (Line, String),
-) -> Vec<(Line, BTreeSet<String>)> {
-    let mut by: BTreeMap<String, (Line, BTreeSet<String>, f64)> = BTreeMap::new();
-    for s in slices {
+) -> Vec<(Line, Vec<&'a Slice>)> {
+    let mut by: BTreeMap<String, (Line, Vec<&Slice>)> = BTreeMap::new();
+    for &s in slices {
         let (line, k) = key(s);
-        let e = by.entry(k).or_insert_with(|| (line, BTreeSet::new(), 0.0));
-        e.0.cost += s.cost;
-        e.2 += s.tokens;
-        e.1.insert(s.session.clone());
+        by.entry(k).or_insert_with(|| (line, vec![])).1.push(s);
     }
     by.into_values()
-        .map(|(mut l, ids, tok)| {
-            l.tokens = Some(tok.round());
+        .map(|(mut l, members)| {
+            l.cost = members.iter().map(|s| s.cost).sum();
+            l.tokens = Some(members.iter().map(|s| s.tokens).sum::<f64>().round());
+            let ids: BTreeSet<&str> = members.iter().map(|s| s.session.as_str()).collect();
             l.sessions = Some(ids.len() as u64);
-            (l, ids)
+            (l, members)
         })
         .collect()
+}
+
+/// A cut by one field of the slice: one line per value, `set` putting it in its column.
+fn by_field(
+    kept: &[&Slice],
+    field: fn(&Slice) -> &str,
+    set: fn(&mut Line, Option<String>),
+) -> Vec<Line> {
+    group(kept, |s| {
+        let v = field(s).to_string();
+        let mut l = Line::default();
+        set(&mut l, Some(v.clone()).filter(|v| !v.is_empty()));
+        (l, v)
+    })
+    .into_iter()
+    .map(|(l, _)| l)
+    .collect()
 }
 
 /// fleet-bench's figures summed over `evals`: counts add, and the rates are the ratio of the sums.
@@ -585,99 +604,58 @@ fn evaluate(l: &mut Line, evals: &[&Eval]) {
 fn outcome_lines(cut: &str, kept: &[&Slice], evals: &[Eval]) -> Vec<Line> {
     let of = |s: &str| Some(s.to_string()).filter(|s| !s.is_empty());
     match cut {
-        "session" => {
-            let mut lines: Vec<Line> = group(kept, |s| {
-                let l = Line {
-                    session: of(&s.session),
-                    title: of(&s.title),
-                    project: of(&s.project),
-                    harness: of(&s.harness),
-                    runner: of(&s.runner),
-                    kind: of(&s.kind),
-                    pr: s.pr.clone(),
-                    at: Some(s.at),
-                    ..Line::default()
-                };
-                (l, s.session.clone())
-            })
-            .into_iter()
-            .map(|(l, _)| l)
-            .collect();
-            // A session's models, the costliest first, as one cell.
-            for l in &mut lines {
-                let mut ms: Vec<&&Slice> = kept
-                    .iter()
-                    .filter(|s| Some(&s.session) == l.session.as_ref())
-                    .collect();
-                ms.sort_by(|a, b| b.cost.total_cmp(&a.cost));
-                l.model = Some(
-                    ms.iter()
-                        .map(|s| s.model.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                )
-                .filter(|m| !m.is_empty());
-                l.sessions = None;
-            }
-            lines
-        }
-        "harness" => group(kept, |s| {
+        "session" => group(kept, |s| {
             let l = Line {
+                session: of(&s.session),
+                title: of(&s.title),
+                project: of(&s.project),
                 harness: of(&s.harness),
+                runner: of(&s.runner),
+                kind: of(&s.kind),
+                pr: s.pr.clone(),
+                at: Some(s.at),
                 ..Line::default()
             };
-            (l, s.harness.clone())
+            (l, s.session.clone())
         })
         .into_iter()
-        .map(|(mut l, _)| {
-            let h = l.harness.clone().unwrap_or_default();
-            evaluate(
-                &mut l,
-                &evals.iter().filter(|e| e.harness == h).collect::<Vec<_>>(),
-            );
+        .map(|(mut l, mut ms)| {
+            // A session's models, the costliest first, as one cell.
+            ms.sort_by(|a, b| b.cost.total_cmp(&a.cost));
+            let names: Vec<&str> = ms.iter().map(|s| s.model.as_str()).collect();
+            l.model = of(&names.join(", "));
+            l.sessions = None;
             l
         })
         .collect(),
-        "project" => group(kept, |s| {
-            let l = Line {
-                project: of(&s.project),
-                ..Line::default()
-            };
-            (l, s.project.clone())
-        })
-        .into_iter()
-        .map(|(l, _)| l)
-        .collect(),
-        "kind" => group(kept, |s| {
-            let l = Line {
-                kind: of(&s.kind),
-                ..Line::default()
-            };
-            (l, s.kind.clone())
-        })
-        .into_iter()
-        .map(|(l, _)| l)
-        .collect(),
+        "harness" => by_field(kept, |s| &s.harness, |l, v| l.harness = v)
+            .into_iter()
+            .map(|mut l| {
+                let h = l.harness.clone().unwrap_or_default();
+                evaluate(
+                    &mut l,
+                    &evals.iter().filter(|e| e.harness == h).collect::<Vec<_>>(),
+                );
+                l
+            })
+            .collect(),
+        "project" => by_field(kept, |s| &s.project, |l, v| l.project = v),
+        "kind" => by_field(kept, |s| &s.kind, |l, v| l.kind = v),
         _ => group(kept, |s| {
             let l = Line {
                 model: of(&s.model),
                 harness: of(&s.harness),
-                // The alias rides in `src` until the join below replaces it.
-                src: of(&s.alias),
                 ..Line::default()
             };
             (l, format!("{}\u{0}{}", s.model, s.harness))
         })
         .into_iter()
-        .map(|(mut l, _)| {
-            let (a, h) = (
-                l.src.take().unwrap_or_default(),
-                l.harness.clone().unwrap_or_default(),
-            );
-            let m = l.model.clone().unwrap_or_default();
+        .map(|(mut l, ms)| {
+            // Every slice in the group has the group's model, so the first one's alias is its.
+            let (s0, h) = (ms[0], l.harness.clone().unwrap_or_default());
             let mine: Vec<&Eval> = evals
                 .iter()
-                .filter(|e| e.harness == h && names_eval(e, &a, &m))
+                .filter(|e| e.harness == h && names_eval(e, &s0.alias, &s0.model))
                 .collect();
             evaluate(&mut l, &mine);
             l
@@ -834,6 +812,7 @@ pub struct Board {
     /// What the shown rows add up to, under the query.
     pub shown_usd: f64,
     pub table: Summary,
+    /// The trends board, `DASHBOARD` on the Grafana the hub links to.
     pub grafana: Option<String>,
 }
 
@@ -947,17 +926,13 @@ pub fn board(c: &Costs, by: &str, w: &str, q: &str, sort: &str, dir: &str) -> Bo
         rows,
         shown_usd,
         table,
-        grafana: c.grafana.clone(),
+        grafana: c.grafana.as_ref().map(|g| format!("{g}/d/{DASHBOARD}")),
     }
 }
 
-/// `$1,288.40` style money for the tiles and cells; `-` for none.
+/// Money as the queue prints it (`queue::money`): whole dollars from $100; `-` for none.
 pub fn usd(v: Option<f64>) -> String {
-    match v {
-        None => "-".into(),
-        Some(x) if x.abs() >= 100.0 => format!("${x:.0}"),
-        Some(x) => format!("${x:.2}"),
-    }
+    v.map_or("-".into(), crate::queue::money)
 }
 
 /// A token count as the table prints it: 1.9B, 61M, 12k.
@@ -1105,6 +1080,14 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn the_spend_badge_names_the_costs_key() {
+        let at = crate::layout::TABS.iter().position(|t| t.id == "costs");
+        assert_eq!(
+            at.map(|i| format!("spend: {} Costs", i + 1)).as_deref(),
+            Some(SPEND_BADGE)
+        );
+    }
     #[test]
     fn the_totals_are_the_outcomes_cost_per_window() {
         let t = totals(&costs().sessions, NOW);

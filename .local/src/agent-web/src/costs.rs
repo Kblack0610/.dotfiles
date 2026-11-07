@@ -6,7 +6,7 @@
 //! every figure in it moves nightly or per call, so every open tab and view shares one read for
 //! `COSTS_TTL`. The lock is held across the read, so tabs that refresh together wait on one.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::Query;
@@ -20,7 +20,7 @@ use crate::{bad, ApiResult};
 
 const COSTS_TTL: Duration = Duration::from_secs(120);
 
-static LAST: Mutex<Option<(Instant, Costs)>> = Mutex::new(None);
+static LAST: Mutex<Option<(Instant, Arc<Costs>)>> = Mutex::new(None);
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -32,20 +32,20 @@ pub struct CostsQuery {
     pub dir: String,
 }
 
-fn cached() -> Costs {
+fn cached() -> Arc<Costs> {
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((at, c)) = last.as_ref() {
         if at.elapsed() < COSTS_TTL {
-            return c.clone();
+            return Arc::clone(c);
         }
     }
     let now = chrono::Utc::now().timestamp();
-    let c = costs::read(&System, &costs::Paths::from_env(), now);
+    let c = Arc::new(costs::read(&System, &costs::Paths::from_env(), now));
     // A read with no outcomes is not kept: the next refresh tries again.
     if c.sessions.is_empty() && !c.errors.is_empty() {
         return c;
     }
-    *last = Some((Instant::now(), c.clone()));
+    *last = Some((Instant::now(), Arc::clone(&c)));
     c
 }
 

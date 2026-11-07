@@ -145,8 +145,6 @@ pub struct DayRow {
     pub repos: usize,
     /// The `TOTAL` row of `usage`, when the day has one.
     pub sessions: Option<u64>,
-    pub cost_usd: Option<f64>,
-    pub tokens: Option<u64>,
 }
 
 pub fn day_row(date: &str, rec: &Value) -> DayRow {
@@ -171,8 +169,6 @@ pub fn day_row(date: &str, rec: &Value) -> DayRow {
         areas,
         repos: repos.len(),
         sessions: total.and_then(|t| t["sessions"].as_u64()),
-        cost_usd: total.and_then(|t| t["cost_usd"].as_f64()),
-        tokens: total.and_then(|t| t["tokens"].as_u64()),
     }
 }
 
@@ -846,17 +842,14 @@ mod tests {
         assert_eq!(r.repos, 2);
         assert_eq!(r.areas["Games"], 2);
         assert_eq!(r.areas["other"], 1);
-        assert_eq!(
-            (r.sessions, r.cost_usd, r.tokens),
-            (Some(5), Some(2.25), Some(20))
-        );
+        assert_eq!(r.sessions, Some(5));
         assert!(r.live);
     }
 
     #[test]
     fn day_row_tolerates_an_old_or_partial_record() {
         let r = day_row("2026-10-14", &serde_json::json!({"schema": 1}));
-        assert_eq!((r.merged, r.repos, r.cost_usd, r.live), (0, 0, None, false));
+        assert_eq!((r.merged, r.repos, r.sessions, r.live), (0, 0, None, false));
     }
 
     #[test]

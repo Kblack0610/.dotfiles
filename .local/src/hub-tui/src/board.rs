@@ -344,7 +344,7 @@ impl<'a> Board<'a> {
                 self.num("cc:watches_tripped"),
                 self.num("cc:watches_total")
             ),
-            "spend: 9 Costs".into(),
+            hub_core::costs::SPEND_BADGE.into(),
         ];
         if self.get("cc:agent_sessions_running").is_some() {
             items.push(format!(

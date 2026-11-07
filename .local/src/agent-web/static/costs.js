@@ -9,8 +9,6 @@ const cost = { data: null, err: null };
 // Every source is a file written nightly or per call, and none pushes, so the open tab re-reads
 // on the Infra cadence; the server folds reads inside two minutes into one.
 const COSTS_REFRESH_MS = INFRA_REFRESH_MS;
-// The trends board the tab links to (hub_core::costs::DASHBOARD).
-const COSTS_DASHBOARD = "kb-agents-overview";
 
 // A column key as its header, the TUI's words (coststab.rs `header`); [text, class].
 const COST_COLS = {
@@ -74,7 +72,7 @@ function costsTiles(d) {
 
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
-  const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}/d/${COSTS_DASHBOARD}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
+  const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
   let html = `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`;
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
