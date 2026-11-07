@@ -2006,17 +2006,22 @@ PROM
 }
 
 
-# open_pr_gh <json rollup> [main runs page]: a gh whose `pr list` answers one OPEN PR for feat/x
-# at the worktree's HEAD, folded by fleet-sessions' own -q filter, so the fold itself is under
-# test. `api` answers the main runs page (see page) when given, else no runs.
+# open_pr_gh <json rollup> [main runs page] [feat/x runs page]: a gh whose `pr list` answers one
+# OPEN PR for feat/x at the worktree's HEAD, folded by fleet-sessions' own -q filter, so the fold
+# itself is under test. `api` answers the main runs page (see page) when given, else no runs, and
+# a feat/x runs query the third page, else no runs.
 open_pr_gh() {
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   printf '[{"number":9,"state":"OPEN","headRefName":"feat/x","headRefOid":"%s","statusCheckRollup":%s}]' \
     "$oid" "$1" > "$SANDBOX/prs.json"
   printf '%s' "${2:-}" > "$SANDBOX/runs.json"
+  printf '%s' "${3:-}" > "$SANDBOX/branch_runs.json"
   cat > "$SANDBOX/bin/gh" <<GH
 #!/usr/bin/env bash
-if [ "\$1" = api ]; then [ -s "$SANDBOX/runs.json" ] && jq -c "\${@: -1}" "$SANDBOX/runs.json" || echo "[]"; exit 0; fi
+if [ "\$1" = api ]; then
+  f="$SANDBOX/runs.json"; case "\$*" in *branch=feat/x*) f="$SANDBOX/branch_runs.json" ;; esac
+  [ -s "\$f" ] && jq -c "\${@: -1}" "\$f" || echo "[]"; exit 0
+fi
 while [ \$# -gt 0 ]; do [ "\$1" = -q ] && { jq -r "\$2" "$SANDBOX/prs.json"; exit; }; shift; done
 GH
   chmod +x "$SANDBOX/bin/gh"
@@ -2031,6 +2036,35 @@ GH
   open_pr_gh '[{"conclusion":"FAILURE"},{"conclusion":"SUCCESS"}]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
+# gate <workflow> <status> <conclusion> <sha> <minute> [event]: one actions/runs row on feat/x
+gate() { printf '{"name":"%s","event":"%s","status":"%s","conclusion":%s,"head_sha":"%s","created_at":"2026-10-29T10:%02d:00Z"}' \
+  "$1" "${6:-workflow_dispatch}" "$2" "$( [ "$3" = - ] && echo null || echo "\"$3\"")" "$4" "$5"; }
+
+@test "end to end: Checks green does not make a PR green while its dispatched gate is queued or red (ar-191)" {
+  landed_fixture
+  local oid old; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)" old="$(git -C "$SANDBOX/wt" rev-parse HEAD~1)"
+  export FLEET_MAIN_TTL=0
+  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' queued - "$oid" 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+
+  # a red gate newer than a green one is red; an older green does not hide it
+  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed success "$old" 1),$(gate 'Tests (affected)' completed failure "$oid" 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+
+  # a cancelled run decides nothing, a pull_request run is the rollup's, and a run on a commit the
+  # head does not hold (a reused slot branch's old PR) is not this PR's gate
+  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed success "$oid" 1),$(gate 'Tests (affected)' completed cancelled "$oid" 3),$(gate Checks completed failure "$oid" 4 pull_request),$(gate Shots completed failure 0000000000000000000000000000000000000000 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+
+  # a rollup still running stays running, whatever the gate says
+  open_pr_gh '[{"status":"IN_PROGRESS","conclusion":""}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed failure "$oid" 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
 }
 
 @test "end to end: an open PR's fact carries its head, so a new push that is still red is nudged again" {
