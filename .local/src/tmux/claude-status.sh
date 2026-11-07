@@ -6,84 +6,44 @@
 
 get_session_status() {
     local target_session="$1"
-    local attention=0
-    local working=0
-    local idle=0
-    local total=0
 
-    # A newline-delimited set, NOT an associative array. tmux runs status-left through
-    # its own environment, which does not source the shell rc - so on macOS this script
-    # gets /bin/bash 3.2 (no `declare -A`) no matter where Homebrew sits in an
-    # interactive PATH, and the whole status bar rendered as a `declare: -A: invalid
-    # option` error instead of the glyphs. Newline-delimited so a session name
-    # containing spaces still matches exactly.
-    local seen_windows=$'\n'
+    # Where an agent stands is decided once, elsewhere (.local/src/docs/fleet-states.md):
+    # agent-panel's live glyph (! prompt or dialog waiting, ~ busy or on a background shell,
+    # check = idle) and the bucket in the fleet state document, joined by target. A session
+    # with an open ask or a question left for the human is bucket NEEDS even while its pane
+    # looks idle or busy, so NEEDS counts as "needs you" here. This script reads both and
+    # classifies nothing from pane text.
+    #
+    # awk and a tagged stream, NOT an associative array: tmux runs status-left through its
+    # own environment, so on macOS this gets /bin/bash 3.2 (no `declare -A`), and the status
+    # bar once rendered a `declare: -A: invalid option` error instead of the glyphs.
+    local server state counts
+    server=$(tmux display-message -p '#{socket_path}' 2>/dev/null)
+    server="${server##*/}"
+    state="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 
-    while IFS=: read -r session window_idx window_name pane_cmd pane_pid pane_path; do
-        # Filter to target session if specified
-        [[ -n "$target_session" && "$session" != "$target_session" ]] && continue
-
-        window_key="${session}:${window_idx}"
-        case "$seen_windows" in *$'\n'"$window_key"$'\n'*) continue ;; esac
-
-        if [[ "$pane_cmd" == "claude" ]]; then
-            seen_windows="${seen_windows}${window_key}"$'\n'
-            ((total++))
-
-            # Capture last lines to detect state
-            local last_lines=$(tmux capture-pane -t "${session}:${window_idx}" -p -S -15 2>/dev/null | tail -15)
-
-            # Check recent activity first - determines if Claude is actively outputting
-            local last_activity=$(tmux display-message -p -t "${session}:${window_idx}" "#{window_activity}" 2>/dev/null)
-            local now=$(date +%s)
-            local activity_diff=9999
-            if [ -n "$last_activity" ]; then
-                activity_diff=$((now - last_activity))
-            fi
-
-            # Priority 1: Interactive questions needing input (Allow/Deny, Y/n)
-            if echo "$last_lines" | grep -qE '\[Y/n\]|\[y/N\]|yes.*no.*:|proceed\?'; then
-                ((attention++))
-            # Priority 2: Permission prompts with Allow/Deny options
-            elif echo "$last_lines" | grep -qE 'Allow.*once|Allow.*always|Deny|Do you want to'; then
-                ((attention++))
-            # Priority 3: Check if actively working (recent output within 3 seconds)
-            elif [ $activity_diff -lt 3 ]; then
-                ((working++))
-            # Priority 3b: At the prompt but a background shell is still running. The
-            # footer reads "· N shell(s) ·" - Claude is waiting on it, not done.
-            elif echo "$last_lines" | grep -qE '· [0-9]+ shells? ·'; then
-                ((working++))
-            # Priority 4: At prompt waiting for input (DONE state)
-            # Claude shows "> " prompt line and "bypass permissions" or "Context left" in status
-            elif echo "$last_lines" | grep -qE '^> |^❯ '; then
-                # Has prompt - check if it's waiting (not mid-typing with recent activity)
-                if echo "$last_lines" | grep -qE 'bypass permissions|Context left'; then
-                    ((idle++))
-                else
-                    ((idle++))
-                fi
-            # Priority 5: Shows status bar indicators (Claude is idle/waiting)
-            elif echo "$last_lines" | grep -qE '⏵⏵|bypass permissions|Context left until'; then
-                ((idle++))
-            # Fallback: If no recent activity, assume idle
-            elif [ $activity_diff -gt 10 ]; then
-                ((idle++))
-            else
-                ((working++))
-            fi
-        fi
-    done < <(tmux list-panes -a -F "#{session_name}:#{window_index}:#{window_name}:#{pane_current_command}:#{pane_pid}:#{pane_current_path}" 2>/dev/null)
-
-    # A pending ask from this session waits on the human like an open prompt does. The ask file
-    # is the record (agent-ask); the screen only shows prompts and dialogs.
-    if [[ -n "$target_session" ]]; then
-        local f
-        for f in "$HOME"/.agent/asks/*/*.md; do
-            [ -f "$f" ] || continue
-            grep -qxF "session: $target_session" "$f" && grep -qx 'status: pending' "$f" && ((attention++))
-        done
-    fi
+    # agent-panel targets are <server>/<session>:<window>; only this tmux server's rows count.
+    counts=$(
+        {
+            jq -r '.sessions[]? | [.target, .bucket] | @tsv' "$state" 2>/dev/null | awk '{ print "B\t" $0 }'
+            agent-panel list 2>/dev/null | awk '{ print "R\t" $0 }'
+        } | awk -F'\t' -v srv="$server" -v want="$target_session" '
+            $1 == "B" { bucket[$2] = $3; next }
+            $1 == "R" {
+                t = $2; rest = t; tsrv = ""
+                if (i = index(t, "/")) { tsrv = substr(t, 1, i - 1); rest = substr(t, i + 1) }
+                if (srv != "" && tsrv != "" && tsrv != srv) next
+                sess = rest; sub(/:[^:]*$/, "", sess)
+                if (want != "" && sess != want) next
+                total++
+                if ($3 == "!" || bucket[t] == "NEEDS") attention++
+                else if ($3 == "~") working++
+                else idle++
+            }
+            END { print total + 0, attention + 0, working + 0, idle + 0 }'
+    )
+    local total attention working idle
+    read -r total attention working idle <<< "$counts"
 
     # Return compact status
     if [ $total -eq 0 ]; then
