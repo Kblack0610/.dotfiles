@@ -57,6 +57,8 @@ The human sets these, and dotfiles `CLAUDE.md` "Agent runtime" holds them: no de
 
    Publish it as an Artifact page and page the human with the link: `agent-notify -p normal -t usage-cleanup '<link>'`. With no Artifact tool (the Artifact tool is off by default; a session started with `CLAUDE_CODE_ARTIFACT=1` has it), page the report's path instead.
 
+8. **Queue the next pass,** unless the report left nothing for the next: `agent-queue add --project agent-runtime --priority low --tags "at:$(date -d '+7 days' +%F)T09:00" --slug usage-cleanup-p<N+1> "usage-cleanup pass <N+1>: run the usage-cleanup skill; the baseline is ~/.notes/lab/projects/current/agent-runtime/docs/usage-cleanup-p<N>.md"`. That is how passes recur without a runner; the slug is refused while that pass is still in the queue, so a rerun of this one cannot queue it twice. Queue it before `agent-land`, so it is filed even when the session ends at the merge.
+
 ## Do NOT
 
 - Do not quote a number `agent-usage burn` or a named source did not print this session.

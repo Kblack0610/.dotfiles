@@ -43,6 +43,8 @@ Siblings: token spend is `usage-cleanup`; CI pass rate and CI time are `ci-clean
 6. **Re-measure the same way** once a lever's merge is in the main checkout (stow serves `~/.dotfiles`). Use the same window length, after the landing. If only the measuring waits on new data, queue it as an `at:` item naming the plan file, close this pass's item, and wind down.
 7. **Report.** Write `~/.notes/lab/projects/current/agent-runtime/docs/pipeline-eval-p<N>.md` with these sections: a table with one row per stage and one column per measured point (the baseline, then each pass); the top waits with their numbers; what was fixed, with the PR and what it moved; what is left, as board rows with owners. Publish it as an Artifact page and page the human with the link: `agent-notify -p normal -t pipeline-eval '<link>'`.
 
+8. **Queue the next pass,** unless the report left nothing for the next: `agent-queue add --project agent-runtime --priority low --tags "at:$(date -d '+7 days' +%F)T09:00" --slug pipeline-eval-p<N+1> "pipeline-eval pass <N+1>: run the pipeline-eval skill; the baseline is ~/.notes/lab/projects/current/agent-runtime/docs/pipeline-eval-p<N>.md"`. That is how passes recur without a runner; the slug is refused while that pass is still in the queue, so a rerun of this one cannot queue it twice. Queue it before `agent-land`, so it is filed even when the session ends at the merge.
+
 ## Do NOT
 
 - Do not quote a number a named source did not print this session.
