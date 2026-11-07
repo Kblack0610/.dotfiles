@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# pool-test-failures sync - the runner pool's failing-test ledger, read from each red Tests run's
+# summary artifacts.
+#
+# A local gate writes ~/.local/state/unity-test-runs/test-failures.tsv (playground
+# scripts/test/slots.sh). A gate on the runner pool (playground #1256) leaves its names only in its
+# artifacts, as summary.txt files: playmode-summary (a full run), playmode-shard-<n> (each shard; a
+# scoped gate uploads no playmode-summary, test.yml) and editmode-summary. Each FAIL line ends in a
+# tab, "cases:", and each failed case after a tab (playground scripts/test/failed-cases.py).
+# sync appends one line per failed case per run to pool-failures.tsv beside the local ledger, in its
+# columns: the epoch the run ended, the local worktree on that branch (- when none), the branch,
+# the full test name. fleet-sessions reads both ledgers for its SHARED rows.
+#
+# fleet-state.service runs it before each tick: GitHub has no event a user unit can await. Each run
+# is read once (its id and attempt go to pool-runs.seen), so a minute with no new red costs one call.
+# Exit: 0 read (or another sync holds the lock), 1 gh could not list the runs, 2 usage or no checkout.
+set -uo pipefail
+
+: "${POOL_FAILURES_PROJECT:=unity-core-playground}" # project-map.json name; its checkout's origin is the repo read
+: "${POOL_FAILURES_WORKFLOW:=test.yml}"
+: "${POOL_FAILURES_RUNS:=20}" # red runs listed per sync; a new one is read once, so this only bounds a backfill
+LEDGER="${UNITY_POOL_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/pool-failures.tsv}"
+SEEN="$(dirname "$LEDGER")/pool-runs.seen"
+ARTIFACTS='^(playmode-summary|playmode-shard-[0-9]+|editmode-summary)$'
+GH_SECS=60 # guard on each gh call: the unit's TimeoutStartSec is 120 for the whole tick
+
+die() { echo "pool-test-failures: $*" >&2; exit "${2:-2}"; }
+
+# failed_cases <dir>: each failed case the summary.txt files under <dir> name, once.
+# A full run's playmode-summary repeats its shards' lines, hence the sort -u.
+failed_cases() {
+  find "$1" -name summary.txt -exec cat {} + 2>/dev/null | awk -F'\t' '
+    /^FAIL / { for (i = 2; i <= NF; i++) if ($i == "cases:") { for (j = i + 1; j <= NF; j++) if ($j != "") print $j; next } }' |
+    sort -u
+}
+
+# worktrees <checkout>: "branch <TAB> worktree basename" for each checked-out branch.
+worktrees() {
+  git -C "$1" worktree list --porcelain 2>/dev/null | awk '
+    /^worktree / { n = split(substr($0, 10), p, "/"); wt = p[n] }
+    /^branch refs\/heads\// { print substr($2, 12) "\t" wt }'
+}
+
+# read_run <id> <ended epoch> <branch> <worktrees file>: append the run's failed cases.
+# Returns 1 when its artifacts could not be read, so the next sync tries it again.
+read_run() {
+  local id="$1" end="$2" branch="$3" names dir wt n args=()
+  names="$(timeout "$GH_SECS" gh api "repos/{owner}/{repo}/actions/runs/$id/artifacts?per_page=100" \
+    --jq '.artifacts[] | select(.expired | not) | .name')" || return 1
+  names="$(grep -E "$ARTIFACTS" <<<"$names")"
+  # A red with no summary (the plan failed, a runner died before reporting) names no test.
+  [ -n "$names" ] || return 0
+  while IFS= read -r n; do args+=(-n "$n"); done <<<"$names"
+  dir="$(mktemp -d)"
+  if ! timeout "$GH_SECS" gh run download "$id" -D "$dir" "${args[@]}" >/dev/null 2>&1; then
+    rm -rf "$dir"; return 1
+  fi
+  wt="$(awk -F'\t' -v b="$branch" '$1 == b { print $2; exit }' "$4")"
+  failed_cases "$dir" | awk -v OFS='\t' -v e="$end" -v w="${wt:--}" -v b="$branch" '{ print e, w, b, $0 }' >> "$LEDGER"
+  rm -rf "$dir"
+}
+
+sync() {
+  local here checkout runs id attempt end branch wts
+  here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+  # shellcheck source=/dev/null
+  . "$here/../../.config/shared-hooks/project-name.sh" || die "cannot load project-name.sh"
+  checkout="$(project_repo_path "$POOL_FAILURES_PROJECT")"
+  [ -d "$checkout" ] || die "no checkout of $POOL_FAILURES_PROJECT in project-map.json"
+  mkdir -p "$(dirname "$LEDGER")"
+  exec 9>"$SEEN.lock"
+  flock -n 9 || return 0 # another sync is reading the same runs
+  cd "$checkout" || die "cannot enter $checkout"
+  runs="$(timeout "$GH_SECS" gh run list -w "$POOL_FAILURES_WORKFLOW" --status failure -L "$POOL_FAILURES_RUNS" \
+    --json databaseId,attempt,headBranch,updatedAt \
+    --jq '.[] | [.databaseId, .attempt, (.updatedAt | fromdateiso8601), .headBranch] | @tsv')" ||
+    die "gh run list failed in $checkout" 1
+  touch "$SEEN"
+  wts="$(mktemp)"; worktrees "$checkout" > "$wts"
+  # Oldest first, so the ledger stays in time order.
+  while IFS=$'\t' read -r id attempt end branch; do
+    [ -n "$id" ] || continue
+    grep -qxF "$id.$attempt" "$SEEN" && continue
+    read_run "$id" "$end" "$branch" "$wts" && echo "$id.$attempt" >> "$SEEN"
+  done < <(sort -t$'\t' -k3,3n <<<"$runs")
+  rm -f "$wts"
+  # Keep the seen list to the runs a listing can still return.
+  tail -n $((POOL_FAILURES_RUNS * 10)) "$SEEN" > "$SEEN.tmp" && mv "$SEEN.tmp" "$SEEN"
+}
+
+case "${1:-}" in
+  sync) sync ;;
+  cases) [ -d "${2:-}" ] || die "usage: pool-test-failures cases <artifact dir>"; failed_cases "$2" ;;
+  *) echo "usage: pool-test-failures sync | cases <artifact dir>" >&2; exit 2 ;;
+esac
