@@ -264,22 +264,17 @@ impl Pick {
             .copied()
             .filter(|l| self.hits(l))
             .collect();
-        self.sole_among(rows.into_iter(), sheet)
+        self.sole_among(&rows, sheet)
     }
 
-    /// The pick for the open rows `rows` it hits, all on `sheet`: unchanged for one or none,
+    /// The pick for the open rows `hits` it hits, all on `sheet`: unchanged for one or none,
     /// the whole-words row when exactly one is those words whole, else refused naming each
     /// row's id. The one rule behind [`Pick::resolve_in`] and the playtest verbs.
-    pub(crate) fn sole_among<'a>(
-        self,
-        rows: impl Iterator<Item = &'a str>,
-        sheet: &Path,
-    ) -> Result<Pick> {
-        let hits: Vec<&str> = rows.collect();
+    pub(crate) fn sole_among(&self, hits: &[&str], sheet: &Path) -> Result<Pick> {
         if hits.len() < 2 {
-            return Ok(self);
+            return Ok(self.clone());
         }
-        if let Pick::Words(q) = &self {
+        if let Pick::Words(q) = self {
             let whole: Vec<&&str> = hits.iter().filter(|l| md::task_key(l) == *q).collect();
             if let [one] = whole[..] {
                 return Ok(Pick::Exact(one.trim_end().to_string()));
@@ -296,7 +291,7 @@ impl Pick {
             })
             .collect();
         bail!(
-            "'{self}' matches {} open rows in {}, so nothing was written; name one by its id, or pass --exact with its whole line:\n{}",
+            "'{self}' matches {} open rows in {}, so nothing was written; name one by its id or pass --exact with its whole line (twin lines: edit one by hand):\n{}",
             hits.len(),
             sheet.display(),
             named.join("\n")

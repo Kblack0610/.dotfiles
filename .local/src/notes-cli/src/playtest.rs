@@ -237,17 +237,13 @@ where
     }
     let content = fs::read_to_string(&file)?;
     // Words on two open checks act on neither (nc-47), as the sheet verbs do.
-    let pick = &pick.clone().sole_among(
-        open_rows(&content)
-            .into_iter()
-            .map(|(_, _, l)| l)
-            .filter(|l| pick.hits(l)),
-        &file,
-    )?;
-    let hit = open_rows(&content)
-        .into_iter()
+    let open = open_rows(&content);
+    let hits: Vec<&str> = open.iter().map(|r| r.2).filter(|l| pick.hits(l)).collect();
+    let pick = &pick.sole_among(&hits, &file)?;
+    let hit = open
+        .iter()
         .find(|(_, _, l)| pick.hits(l))
-        .and_then(|(_, g, _)| md::edit_first_in_section(&content, &g, |l| pick.hits(l), f));
+        .and_then(|(_, g, _)| md::edit_first_in_section(&content, g, |l| pick.hits(l), f));
     match hit {
         Some((new, matched)) => {
             md::write_atomic(&file, &new)?;
