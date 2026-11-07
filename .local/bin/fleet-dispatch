@@ -1662,6 +1662,7 @@ run_queue() {
   if [ -n "$why" ]; then
     RUN_GATED=1
     # A red the machine gates hold may still start on the red floor; then only reds start this pass.
+    # Its start goes past those gates without proving them open, so the hold stands (start_item).
     if is_red "$head" && RED_PASS=1 red_floor_open && [ -z "$(RED_PASS=1 gate)" ]; then
       say "$why; red items start on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"
       RED_PASS=1; start_items "$(jq -c 'select((" " + (.tags // "") + " ") | contains(" red "))' <<<"$items")" "$2"
@@ -1866,7 +1867,7 @@ eval_log() {
 # launch, and the pass goes on. rc 5 when no account has room and this item may not spill (an Opus
 # lane, a tier past the ceiling): the pass goes on to the next item, which may.
 start_item() {
-  local it="$1" slug acct err why rc verdict='' floor='' harness=claude no spill
+  local it="$1" slug acct err why rc verdict='' floor='' keep=0 harness=claude no spill
   slug=$(jq -r .slug <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
   # Asked again here, as launch does: the gate's answer may be minutes old. Its last stderr line
@@ -1874,8 +1875,13 @@ start_item() {
   err=$(mktemp)
   if acct=$(acct_room 2>"$err"); then
     rm -f "$err"
-    if red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"
-    elif floor_open; then floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"; fi
+    # A floor start leaves the hold standing (keep, settle): a red-floor one went past the machine
+    # gates, and a run-floor one past an account over its pace has no room either.
+    if red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"; keep=1
+    elif floor_open; then
+      floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
+      claude-acct room >/dev/null 2>&1 || keep=1
+    fi
     # cmd_start picks the model through model-lane and logs the pick (lane_pick, lane_log).
     START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug"
   else
@@ -1913,8 +1919,9 @@ start_item() {
   fi
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
-    # A spill goes past the account hold without ending it, like a run-floor start (settle).
-    [ "$harness" = claude ] || { SPILLED=$(( ${SPILLED:-0} + 1 )); FLOOR_HELD=1; }
+    # A spill goes past the account hold without ending it, like a floor start.
+    [ "$harness" = claude ] || { SPILLED=$(( ${SPILLED:-0} + 1 )); keep=1; }
+    [ "$keep" = 0 ] || FLOOR_HELD=1
     settle WORKED "started queue item $slug$floor"
   elif [ "$(item_state "$slug")" != queued ]; then
     say "queue item $slug was started by another start"; return 4
@@ -2013,9 +2020,11 @@ cmd_starved() {
   board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
   [ -n "$stopped$items$board$low" ] || return 0
-  # Held by load only when every closed gate is a load gate: one other (an account) still starves.
+  # Held by load only when every closed gate is a load gate; an account with no room still starves,
+  # and gate leaves that one out while a spill may start, so room is asked here as gate asks it.
   why=$(gate)
-  if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load |real idle )'; then
+  if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load |real idle )' &&
+    acct_room >/dev/null 2>&1; then
     echo "held by load ($why), so nothing is starved"; return 0
   fi
   # shellcheck source=/dev/null
@@ -2366,10 +2375,9 @@ settle() {
   esac
   say "$2"
   [ "$DRY" = 0 ] || return 0
-  # A start the run floor or a spill let past an account over its pace leaves the hold standing
-  # (held_since): neither is room. FLOOR_HELD carries it to the pass's later WORKED (under-used).
-  [ "$1" = WORKED ] && [[ "$2" == *"on the run floor"* || "$2" == *"on the red floor"* ]] && ! claude-acct room >/dev/null 2>&1 && FLOOR_HELD=1
-  [ "$1" = WORKED ] && [ "${FLOOR_HELD:-0}" = 1 ] && local PROOF_HELD_KEEP=1
+  # A pass that started an item past a closed gate (start_item sets FLOOR_HELD) leaves the hold
+  # standing (held_since): its WORKED and any later NOOP prove no gate open.
+  [ "${FLOOR_HELD:-0}" = 1 ] && local PROOF_HELD_KEEP=1
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
   proof_outcome fleet-dispatch "$1" "$2" 2>/dev/null || true
@@ -2401,7 +2409,7 @@ cmd_run() {
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
-  QUEUE_HELD='' STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= SPILLED=0 NO_ROOM=
+  QUEUE_HELD='' STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_HELD=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= SPILLED=0 NO_ROOM=
   NO_SPILL=()
   [ "$DRY" = 1 ] || triage_pass
   # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and
