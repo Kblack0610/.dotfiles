@@ -4038,6 +4038,28 @@ board_item() {
   assert_not_called 'set-option'
 }
 
+# ar-70: on 2026-11-03 a hand resume of an unapproved plan item came back in bypass with no item.
+@test "start --resume with no --item finds the item that lists the conversation, and a plan item with no mode on record stays in plan" {
+  project game beta "$SANDBOX/repos/game"
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  CLAUDE_CODE_SESSION_ID=conv-plan agent-queue add --project game --running --mode plan --slug plan-work "plan work" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session planned \
+    --cwd "$SANDBOX/repos/game" --resume conv-plan
+  assert_success
+  assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
+  assert_called 'set-option -t =planned: @dispatch game: plan-work'
+  f=$(qitem running plan-work)
+  assert_equal "$(qfield "$f" session) $(qfield "$f" origin)" 'default:planned resume'
+
+  # Once the transcript shows the plan approved, the resume goes on in the mode it ran in.
+  transcript conv-plan '{"permissionMode":"plan"}
+{"permissionMode":"bypassPermissions"}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session planned2 \
+    --cwd "$SANDBOX/repos/game" --resume conv-plan
+  assert_success
+  assert_called "AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-plan"
+}
+
 @test "start --resume --window makes the session when it is not there yet, named as asked" {
   project game beta "$SANDBOX/repos/game"
   : > "$NOTES_FIXTURE/tmux.sessions.default"

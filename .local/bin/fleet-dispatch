@@ -1116,6 +1116,13 @@ last_mode() {
   tac "$t" | grep -m1 -o '"permissionMode":"[A-Za-z]*"' | cut -d'"' -f4
 }
 
+# resume_mode <id> <item mode> -> the mode a resume reopens in: the transcript's last one, else plan
+# for a plan item (a resume must not skip its approval), else bypassPermissions.
+resume_mode() {
+  local m; m=$(last_mode "$1")
+  if [ -n "$m" ]; then echo "$m"; elif [ "$2" = plan ]; then echo plan; else echo bypassPermissions; fi
+}
+
 # start_ready <server> <session> <pane> <ready text> -- an account that never opened this folder asks "Do you
 # trust this folder?" first, defaulting to "No, exit". claude-acct trust answers it once and waits
 # for claude's mode footer.
@@ -1207,10 +1214,12 @@ headless() { case "$(harness_launcher "$1")" in opencode|codex) return 0 ;; esac
 #                           its task, and start that item as --item does.
 #   --resume ID             a new session --session NAME in --cwd DIR running claude --resume.
 #                           The sheet is not touched: the row was claimed before the reboot.
-#                           --item SLUG re-attaches the started item that session was working.
+#                           --item SLUG re-attaches the started item that session was working;
+#                           without it, the running or waiting item that lists ID (`agent-queue mine --sid`).
 #                           --window NAME opens it as a window of --session instead, which may
 #                           already hold others: a world session like hub:dotfiles.
-#                           It reopens in the mode its transcript last shows, bypass when none.
+#                           It reopens in the mode its transcript last shows; with none, plan for
+#                           a plan item, else bypass.
 cmd_start() {
   local project='' prof='' lane=human key='' server='' model='' brief_file='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' brief cmd label origin acct mode rec size
@@ -1260,6 +1269,8 @@ cmd_start() {
     say "start: give exactly one of --brief, --item or --resume"
     return 2
   fi
+  # A resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM too.
+  [ -z "$resume" ] || [ -n "$item" ] || item=$(agent-queue mine --sid "$resume" 2>/dev/null) || item=''
   if [ -n "$item" ] && [ -z "$resume" ]; then
     # Before the lock: model-lane may ask an LLM (20s timeout), and another start must not wait on it.
     verdict=${START_VERDICT:-}; [ -n "$verdict" ] || [ -n "$model" ] || verdict=$(lane_pick "$item" "$harness")
@@ -1296,8 +1307,7 @@ cmd_start() {
       joined=1
     fi
     origin=${START_ORIGIN:-resume}
-    mode=$(last_mode "$resume")
-    launch_mode "${mode:-bypassPermissions}"
+    launch_mode "$(resume_mode "$resume" "$(jq -r '.mode // empty' <<<"${it:-null}")")"
     lane_sandbox "$cwd" || return 1
     cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
     if [ -n "$joined" ]; then
@@ -1442,9 +1452,8 @@ restore_world() {
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
     if conversation_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
     if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
-    mode=$(last_mode "$id")
-    mode=${mode:-bypassPermissions}
     item=$(agent-queue mine --sid "$id" 2>/dev/null) || item=''
+    mode=$(resume_mode "$id" "$([ -z "$item" ] || agent-queue show "$item" --json 2>/dev/null | jq -r '.mode // empty')")
     if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}"; continue; fi
     project=$(resolve_project_name "$cwd")
     if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
