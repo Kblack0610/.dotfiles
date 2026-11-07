@@ -45,6 +45,7 @@ manifest CRUD; the running service does the watching.
   `~/.local/state/watch-companion/<name>.state`.
 - Runbook (schema, probe types, cost model): `~/.config/agentctl/SENTINEL.md`.
 - Copy-ready templates: `~/.config/agentctl/sentinel-watches.examples/`.
+- One signal per failure: a failed `agentctl@<runner>.service` is reported by `fleet-liveness` (the runner's FAILED outcome), so `systemd-user-failed` skips `agentctl@*` and watches the other agent units.
 
 ## Hard constraints (read first, non-negotiable)
 
