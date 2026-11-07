@@ -18,6 +18,14 @@ if [ -r "$ANCHOR_LIB" ]; then
   # shellcheck source=/dev/null
   . "$ANCHOR_LIB"
 fi
+# Startup timing, guarded the same way; without it the marks are no-ops.
+STARTUP_LIB="$(dirname "$0")/startup-telemetry.sh"
+if [ -r "$STARTUP_LIB" ]; then
+  # shellcheck source=/dev/null
+  . "$STARTUP_LIB"
+else
+  startup_mark() { :; }; startup_record() { :; }
+fi
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 # AGENT_PLANS_DIR overrides where plans live.
 PLAN_DIR="${AGENT_PLANS_DIR:-$HOME/.agent/plans}/$PROJECT_NAME"
@@ -51,6 +59,7 @@ fi
 if [ -n "${AGENT_QUEUE_ITEM:-}" ] && [ -n "$HOOK_SID" ] && command -v agent-queue >/dev/null 2>&1; then
   agent-queue claim "$AGENT_QUEUE_ITEM" --sid "$HOOK_SID" >/dev/null 2>&1 || true
 fi
+startup_mark setup
 
 HEADER=$(
   echo "=== Session Preflight: $PROJECT_NAME ==="
@@ -112,6 +121,7 @@ HEADER=$(
     fi
   fi
 )
+startup_mark header
 
 # Everything below HEADER is a SECTION, built into its own variable and then assembled
 # in priority order under one byte budget (see the end of the file). Each one keeps the
@@ -134,6 +144,7 @@ if [ -f "$ANCHOR_FILE" ]; then
     echo "=== end anchor ==="
   )
 fi
+startup_mark facts
 
 # The agent board - what a previous session left IN FLIGHT on this repo, at turn 1.
 #
@@ -198,6 +209,7 @@ if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2
     )
   fi
 fi
+startup_mark board
 
 # No Focus block: today's `## Focus` is the human's list, and every session paid about
 # 850 chars of turn 1 (629 of 630 sessions, 2026-11-05) to be told it was not theirs.
@@ -229,6 +241,7 @@ SEC_LESSONS="$PICK" PARENT_BODY="${PARENT_PICK#*$'\n'}"
 [ -z "$PARENT_PICK" ] ||
   SEC_LESSONS+="${PICK:+$'\n'}Parent (repo-wide) lessons from $PARENT_LESSONS:"$'\n'"  ${PARENT_BODY//$'\n'/$'\n'  }"
 SEC_PLANS=$(declare -F anchor_section >/dev/null 2>&1 && anchor_section "$ANCHOR_FILE" '^Active plans' || true)
+startup_mark lessons
 
 # Commits only for one app of a monorepo, scoped to its subtree. Claude Code's own
 # gitStatus already lists the repo's last 5 commits in every session that ran this
@@ -262,6 +275,7 @@ if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     )
   fi
 fi
+startup_mark git
 
 # One size budget, here and nowhere else. Past Claude Code's ~10 KB hook-output cap the
 # whole preflight is saved to a file and the model gets a 2 KB preview, which on
@@ -298,5 +312,8 @@ add_section "commits" "git log" "$SEC_COMMITS"
 add_section "PRs" "gh pr list --state=all" "$SEC_PRS"
 [ -n "$OMITTED" ] && CONTEXT+=$'\n\n'"+ omitted to fit the ${PREFLIGHT_BUDGET} B turn-1 budget: $OMITTED"
 CONTEXT+=$'\n'"==="
+
+startup_mark render
+startup_record session-preflight "$HOOK_SID" "$HOOK_SOURCE" "$PROJECT_NAME"
 
 jq -n --arg ctx "$CONTEXT" '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}'
