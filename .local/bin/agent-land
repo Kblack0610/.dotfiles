@@ -293,17 +293,15 @@ score_body() {
   esac
 }
 
-# origin_repo -> this checkout's origin as <owner>/<repo> (fleet-sessions' parse); nothing with no origin.
-origin_repo() {
-  git remote get-url origin 2>/dev/null | sed -E 's#/+$##; s#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#' || true
-}
+# shellcheck source=../lib/origin-repo.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/origin-repo.sh"
 
 # own_repo: git, the merge proof and autopull all read this checkout, so a PR in another repo is
 # refused here, before anything is touched: from the wrong checkout its merge proof would test the
 # wrong graph, or pass on an unrelated PR that shares the number.
 own_repo() {
   local here want=${pr_ref%#*}
-  here=$(origin_repo)
+  here=$(origin_repo .) || here=""
   [ -n "$here" ] || { echo "repo: not checked, this checkout has no origin"; return 0; }
   [[ "$pr_ref" == */*#* && "${here,,}" != "${want,,}" ]] || return 0
   fail repo "#$pr is $pr_ref (${repo_from:-the repo gh picks here}), but this checkout's origin is $here: run from a checkout of ${pr_ref%#*}${repo_from:+, or pass --repo $here for $here#$pr}"

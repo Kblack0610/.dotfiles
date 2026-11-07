@@ -35,7 +35,7 @@ const ctx = vm.createContext({
     return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => a ?? [] };
   },
 });
-for (const f of ["ui.js", "charts.js", "app.js", "actions.js", "table.js", "board.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "board.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const card = (o) => ({
   profile: "bnb", name: "demo", stage: "alpha", version: "v0.1.0", goal: "ship the menu",

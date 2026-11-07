@@ -49,7 +49,7 @@ function jobsBody(d) {
   const more = shown.length - rows.length;
   return shown.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, JOB_COLS)}${rows.map(jobRow).join("")}</table>` +
-      (more ? `<button class="btn sm" data-all="1">+${more} older</button>` : "") + `</div>`
+      tblMore(more) + `</div>`
     : `<div class="panel">${t.total ? "No jobs match." : "No jobs in the window."}</div>`;
 }
 
