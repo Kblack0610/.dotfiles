@@ -4,9 +4,10 @@
 // plus, with md(text, { notes: true }) for a note on the Daily tab, `[[target|label]]` as an
 // in-app `#daily/<target>` link and `#p:<name>` as `#projects/<name>` and any other `#tag` as a tag chip, with HTML comments dropped.
 // With { notes: true, ack: true } (the inbox page only), a task item ending `<!-- ack:<key> -->`
-// gets a live checkbox carrying `data-ack="<key>"`. With { notes: true, rows: <n> } (a block of
-// the Daily note that starts on the note's line n), every task row carries `data-ln`, its line in
-// the note, on a live checkbox and on a remove button; every other checkbox stays disabled.
+// gets a live checkbox carrying `data-ack="<key>"`. With { notes: true, rows: [<n>, ...] } (a block
+// of the Daily note whose line i is the note's line rows[i], hub-core focus `lines`), every task
+// row carries `data-ln`, its line in the note, on a live checkbox and on a remove button; every
+// other checkbox stays disabled.
 // Covers what Claude writes (headings, lists, task lists, code, tables, quotes, emphasis), not
 // all of CommonMark. Newlines inside a paragraph are kept as line breaks, as in a chat.
 // Unit tests: tests/agent-web/md.test.mjs.
@@ -86,7 +87,7 @@ const md = (() => {
       const key = ACK.exec(raw), text = key ? raw.slice(0, key.index) : raw;
       const task = /^\[([ xX/])\]\s+(.*)$/.exec(text);
       const ack = acks && key && task && task[1] !== "/" ? key[1] : null;
-      const row = task && rows != null ? rows + ln : null;
+      const row = task && rows && Number.isInteger(rows[ln]) ? rows[ln] : null;
       const box = ack ? ` data-ack="${escape(ack)}"` : row != null ? ` data-ln="${row}"` : " disabled";
       const rm = row != null ? `<button class="trm" data-rm="${row}" title="Remove this row" aria-label="Remove this row">-</button>` : "";
       html += !task ? `<li>${inline(text)}`
@@ -160,7 +161,7 @@ const md = (() => {
   return (text, opts) => {
     notes = !!(opts && opts.notes);
     acks = notes && !!opts.ack;
-    rows = notes && Number.isInteger(opts.rows) ? opts.rows : null;
+    rows = notes && Array.isArray(opts.rows) ? opts.rows : null;
     try {
       let t = String(text == null ? "" : text).replace(/\r\n?/g, "\n");
       // A dropped comment keeps its newlines, so every line after it keeps its number.

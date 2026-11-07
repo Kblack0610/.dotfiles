@@ -24,7 +24,9 @@ const ctx = vm.createContext({
 });
 for (const f of ["ui.js", "md.js", "app.js", "outbox.js", "focus.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
-const lane = (name, markdown, open, done) => ({ name, markdown, items: [], open, done });
+// `line` is the note line of the lane's heading and `lines` the note line of each markdown line
+// (hub-core focus); a fixture without them draws no live rows.
+const lane = (name, markdown, open, done, line, lines) => ({ name, markdown, items: [], open, done, line, lines });
 const day = {
   note: {
     target: "daily", profile: "personal", path: "/n/journal/daily/2026-11-05.md", rel: "journal/daily/2026-11-05",
@@ -39,13 +41,15 @@ const day = {
     rollup: "### bnb\n- [ ] a bnb row", open: 2, done: 1,
   },
   sections: [{ title: "Morning", markdown: "See [[journal/refs/2026-11-05/briefing|the briefing]]." }],
+  brief: null,
 };
+day.places = day.note.links;
 
 const run = (code) => vm.runInContext(code, ctx);
 const reply = (status, body) => async () => ({ ok: status < 300, status, statusText: "", headers: { get: () => "application/json" }, json: async () => body, text: async () => JSON.stringify(body) });
-function draw(data, { raw = false, arg = "", keepBrief = false } = {}) {
-  ctx.input = { data, raw, arg, keepBrief };
-  vm.runInContext(`st.tab = "daily"; st.arg = input.arg; fcs.data = input.data; fcs.err = null; fcs.raw = input.raw; fcs.open = {}; fcs.undo = null; if (!input.keepBrief) fcs.brief = null; renderFocus();`, ctx);
+function draw(data, { raw = false, arg = "" } = {}) {
+  ctx.input = { data, raw, arg };
+  vm.runInContext(`st.tab = "daily"; st.arg = input.arg; fcs.data = input.data; fcs.err = null; fcs.raw = input.raw; fcs.open = {}; fcs.undo = null; renderFocus();`, ctx);
   return box("d-note").innerHTML;
 }
 
@@ -131,7 +135,8 @@ test("a hash routes to its tab and the note it opens, decoded", () => {
 test("Daily writes nothing to the outbox; #daily/outbox shows the outbox view in the note's place", () => {
   assert.doesNotMatch(draw(day), /Add to outbox|f-out/);
   const was = ctx.fetch;
-  ctx.fetch = async (url) => reply(200, url.includes("outbox") ? { doc: { text: "", hash: "h", waiting: 0 }, handled: [], counts: "" } : day)();
+  const outboxNote = { ...day, note: { ...day.note, target: "outbox", rel: "outbox", date: null }, focus: null, sections: [] };
+  ctx.fetch = async (url) => reply(200, url.startsWith("/api/focus") ? (url.includes("outbox") ? outboxNote : day) : { doc: { text: "", hash: "h", waiting: 0 }, handled: [], counts: "" })();
   run(`st.tab = "daily"; st.arg = "outbox"; TABS.daily.show()`);
   assert.equal(box("d-note").hidden, true);
   assert.equal(box("outbox").hidden, false);
@@ -142,6 +147,28 @@ test("Daily writes nothing to the outbox; #daily/outbox shows the outbox view in
   assert.equal(box("outbox").hidden, true);
   ctx.fetch = was;
   run(`obx.view = null`);
+});
+
+test("a page opened straight on the outbox reads once for the nav's places and draws them beside it", async () => {
+  const was = ctx.fetch;
+  // A read still in flight from the last test makes this one's wait for it, so each is awaited
+  // by its call, and both are answered here.
+  const called = {};
+  const seen = (k) => new Promise((res) => { called[k] = res; });
+  const focusRead = seen("/api/focus"), outboxRead = seen("/api/outbox");
+  ctx.fetch = async (url) => {
+    const k = url.split("?")[0];
+    if (called[k]) called[k](url);
+    return reply(200, k === "/api/focus" ? { ...day, note: { ...day.note, target: "outbox", date: null } } : { doc: { text: "", hash: "h", waiting: 0 }, handled: [], counts: "" })();
+  };
+  run(`fcs.data = null; fcs.links = null; st.tab = "daily"; st.arg = "outbox"; TABS.daily.show()`);
+  assert.equal(await focusRead, "/api/focus?t=outbox");
+  await outboxRead;
+  run(`fcs.data = { ...fcs.data, ...${JSON.stringify({ note: { target: "outbox", date: null }, places: day.places })} }; redraw()`);
+  assert.match(box("d-nav").innerHTML, /href="#daily\/lab\/projects\/index"[^>]*>Projects<\/a>/, "today's links, from the read");
+  assert.ok(run("fcs.links.length"), "kept, so the next show reads no note");
+  ctx.fetch = was;
+  run(`obx.view = null; st.arg = ""`);
 });
 
 // Edit and Save: the page's side of `notes put --base` (the CLI's compare-and-swap is tested in
@@ -259,8 +286,8 @@ const NOTE = "---\ndate: 2026-11-05\n---\n# 2026-11-05\n\n## Focus\n\n### Urgent
 const live = {
   ...day,
   note: { ...day.note, markdown: NOTE },
-  focus: { lanes: [lane("Urgent", "- [ ] fix the menu #p:demo #urgent\n  - [ ] a child\n- [/] wire the bar", 2, 0), lane("High", "", 0, 0), lane("Done", "- [x] water plants", 0, 1)], rollup: "", open: 2, done: 1 },
-  sections: [{ title: "Morning", markdown: "- [ ] call back" }],
+  focus: { lanes: [lane("Urgent", "- [ ] fix the menu #p:demo #urgent\n  - [ ] a child\n- [/] wire the bar", 2, 0, 7, [8, 9, 10]), lane("High", "", 0, 0, 12, []), lane("Done", "- [x] water plants", 0, 1, 14, [15])], rollup: "", open: 2, done: 1 },
+  sections: [{ title: "Morning", markdown: "- [ ] call back", line: 17, lines: [18] }],
 };
 const lines = (t) => t.split("\n");
 function putting(status = 200) {
@@ -335,6 +362,26 @@ test("+ adds an open task at the end of its lane, tagged as the lane unless it n
   assert.deepEqual(lines(sent[1].text).slice(10, 12), ["- [/] wire the bar", "- [ ] ship it #low"]);
 });
 
+test("a lane's rows past a placeholder row it leaves out carry their own lines, and + goes below the last", async () => {
+  const note = "## Focus\n### Urgent\n- [ ] a\n- [ ]\n- [ ] b\n\n### Low\n";
+  const v = { ...live, note: { ...live.note, markdown: note }, sections: [],
+    focus: { lanes: [lane("Urgent", "- [ ] a\n- [ ] b", 2, 0, 1, [2, 4]), lane("Low", "", 0, 0, 6, [])], rollup: "", open: 2, done: 0 } };
+  const h = draw(v);
+  assert.match(h, /data-ln="2"> a/);
+  assert.match(h, /data-ln="4"> b/);
+  const sent = [];
+  ctx.fetch = async (url, opts) => { sent.push(JSON.parse(opts.body)); return reply(200, v)(); };
+  await run(`addTask("Urgent", "c")`);
+  assert.deepEqual(lines(sent[0].text).slice(2, 6), ["- [ ] a", "- [ ]", "- [ ] b", "- [ ] c #urgent"]);
+  draw(v);
+  await run(`addTask("Low", "d")`);
+  assert.deepEqual(lines(sent[1].text).slice(6, 8), ["### Low", "- [ ] d #low"]);
+  // Lines that are not this note's write nothing.
+  draw({ ...v, note: { ...v.note, markdown: "- [ ] other\n" } });
+  assert.equal(await run(`addTask("Low", "e")`), false);
+  assert.equal(sent.length, 2);
+});
+
 test("a note changed since the read writes nothing and is shown as it is now; a moved row writes nothing", async () => {
   draw(live);
   const sent = putting(409);
@@ -350,32 +397,14 @@ test("a note changed since the read writes nothing and is shown as it is now; a 
   assert.match(box("d-note").innerHTML, /That row is not where the page drew it/);
 });
 
-test("the day's briefing is read with it and drawn as one open fold after the lanes, a part of the note in the nav", async () => {
+test("the day's briefing comes with the day and is drawn as one open fold after the lanes, a part of the note in the nav", () => {
   const brief = { note: { ...day.note, target: "journal/refs/2026-11-05/briefing", rel: "journal/refs/2026-11-05/briefing", date: null, links: [] }, focus: null,
     sections: [{ title: "", markdown: "As of 06:45: 2 things need you." }, { title: "Needs you", markdown: "- a red" }] };
-  let asked = null;
-  ctx.fetch = async (url) => { asked = url; return reply(200, brief)(); };
-  ctx.input = day.note.links;
-  await run("readBrief(input)");
-  assert.equal(asked, "/api/focus?t=journal%2Frefs%2F2026-11-05%2Fbriefing", "the day's own briefing link");
-  const h = draw(day, { keepBrief: true });
+  const h = draw({ ...day, brief });
   assert.match(h, /<details class="cfold" data-k="brief" open><summary><b>Briefing<\/b> <a class="muted" href="#daily\/journal\/refs\/2026-11-05\/briefing">open<\/a><\/summary>.*<p>As of 06:45: 2 things need you\.<\/p><h3>Needs you<\/h3><ul><li>a red/s);
   assert.ok(h.indexOf('data-k="brief"') > h.indexOf('data-k="lane:Done"'), "after the lanes");
   const nav = box("d-nav").innerHTML;
   assert.match(nav, /data-jump="brief">Briefing</);
   assert.doesNotMatch(nav, /href="#daily\/journal\/refs\/2026-11-05\/briefing"/, "drawn on the page, so not a place too");
-  ctx.input = day.note.links.filter((l) => !/briefing/.test(l.target));
-  await run("readBrief(input)");
-  assert.equal(run("fcs.brief"), null, "a day with no briefing draws none");
-});
-
-test("a briefing read that finishes after the page moved to another day is not drawn on it", async () => {
-  const release = {};
-  ctx.fetch = (url) => new Promise((res) => { release[/2026-11-0\d/.exec(url)[0]] = () => res(reply(200, { note: { target: url, exists: true }, sections: [] })()); });
-  const link = (d) => [{ target: `journal/refs/${d}/briefing`, exists: true }];
-  ctx.a = link("2026-11-04"); ctx.b = link("2026-11-05");
-  const slow = run("readBrief(a)"), fast = run("readBrief(b)");
-  release["2026-11-05"](); await fast;
-  release["2026-11-04"](); await slow;
-  assert.match(run("fcs.brief.note.target"), /2026-11-05/);
+  assert.doesNotMatch(draw(day), /data-k="brief"/, "a day with no briefing draws none");
 });

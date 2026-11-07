@@ -4,6 +4,10 @@
 //! the unheaded lines above them), the rollup block another profile's Focus is mirrored into
 //! comes out on its own, and every other `##` section, plus the link footer, is a section to
 //! fold. A note that is not a daily note has no Focus and is all sections.
+//! Each lane and section carries the note line it starts on and the note line of every line of
+//! its markdown, so a surface that edits one row changes that line of the note as read.
+//! A day note's view also carries its briefing (`notes show --json` names it) and the links the
+//! web nav lists as places.
 
 use crate::session_actions::Runner;
 use serde::{Deserialize, Serialize};
@@ -37,6 +41,8 @@ pub struct Note {
     pub hash: String,
     pub markdown: String,
     pub links: Vec<Link>,
+    /// The day's briefing as a link target, on a daily note whose day has one.
+    pub brief: Option<String>,
 }
 
 /// One task line: `state` is `' '` open, `'/'` doing, `'x'` done; `depth` its indent level.
@@ -48,10 +54,14 @@ pub struct Item {
 }
 
 /// A lane of Focus: its heading (`""` for the lines above the first one) and its lines, both
-/// as markdown for the web and as items for the terminal.
+/// as markdown for the web and as items for the terminal. `line` is the note line (from 0) of
+/// its heading (the `## Focus` line for the unheaded lane), and `lines[i]` the note line of line
+/// `i` of `markdown`, which skips the placeholder rows and the blank ends it leaves out.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Lane {
     pub name: String,
+    pub line: usize,
+    pub lines: Vec<usize>,
     pub markdown: String,
     pub items: Vec<Item>,
     pub open: usize,
@@ -59,10 +69,13 @@ pub struct Lane {
 }
 
 /// A `##` section of the note other than Focus (`""` for what comes before the first one,
-/// `"Links"` for the footer).
+/// `"Links"` for the footer). `line` is the note line of its heading (of the footer's `---`, of
+/// the first line below any front matter for the untitled top), `lines` as a lane's.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Section {
     pub title: String,
+    pub line: usize,
+    pub lines: Vec<usize>,
     pub markdown: String,
 }
 
@@ -81,12 +94,34 @@ pub struct View {
     /// None for a note with no `## Focus` section.
     pub focus: Option<Focus>,
     pub sections: Vec<Section>,
+    /// The day's briefing, read whole, under a day note whose day has one.
+    pub brief: Option<Box<View>>,
+    /// The links the web nav lists as places: a day note's own, else today's note's.
+    pub places: Vec<Link>,
 }
 
-/// Read the note `target` names (`daily`, `daily:YYYY-MM-DD`, or a wikilink target).
+fn show(runner: &dyn Runner, target: &str) -> Result<String, String> {
+    runner.run(&["notes", "show", "--json", "--", target].map(String::from))
+}
+
+/// Read the note `target` names (`daily`, `daily:YYYY-MM-DD`, or a wikilink target), with what
+/// `around` adds.
 pub fn read(runner: &dyn Runner, target: &str) -> Result<View, String> {
-    let argv = ["notes", "show", "--json", "--", target].map(String::from);
-    parse(&runner.run(&argv)?)
+    Ok(around(runner, parse(&show(runner, target)?)?))
+}
+
+/// A view with its briefing and places read: the day's briefing under a day note, and the nav's
+/// places (a day note's own links, else today's). A briefing or a today that cannot be read is
+/// left out, never an error: the note itself was read.
+pub fn around(runner: &dyn Runner, mut v: View) -> View {
+    let read_bare = |t: &str| show(runner, t).and_then(|j| parse(&j)).ok();
+    if v.note.date.is_some() {
+        v.places = v.note.links.clone();
+        v.brief = v.note.brief.as_deref().and_then(read_bare).map(Box::new);
+    } else {
+        v.places = read_bare("daily").map(|d| d.note.links).unwrap_or_default();
+    }
+    v
 }
 
 /// The view of one `notes show --json` object, the shape `notes put` prints too.
@@ -113,41 +148,69 @@ fn item(l: &str) -> Option<Item> {
     })
 }
 
-fn lane(name: &str, lines: &[&str]) -> Lane {
-    let placeholder = |l: &&&str| l.trim() == "- [ ]";
-    let lines: Vec<&str> = lines.iter().filter(|l| !placeholder(l)).copied().collect();
-    let items: Vec<Item> = lines.iter().filter_map(|l| item(l)).collect();
+/// A note line: its number in the note (from 0) and its text.
+type Ln<'a> = (usize, &'a str);
+
+/// A block's lines as markdown and the note line of each, the blank lines at either end left out.
+fn block(lines: &[Ln]) -> (String, Vec<usize>) {
+    let words = |l: &Ln| !l.1.trim().is_empty();
+    let start = lines.iter().position(words).unwrap_or(lines.len());
+    let end = lines.iter().rposition(words).map_or(start, |i| i + 1);
+    let kept = &lines[start..end];
+    let text: Vec<&str> = kept.iter().map(|l| l.1).collect();
+    (
+        text.join("\n").trim().to_string(),
+        kept.iter().map(|l| l.0).collect(),
+    )
+}
+
+fn lane(name: &str, line: usize, lines: &[Ln]) -> Lane {
+    let mut lines: Vec<Ln> = lines
+        .iter()
+        .filter(|l| l.1.trim() != "- [ ]")
+        .copied()
+        .collect();
+    // The `---` that sets Done apart is layout, not a line of any lane.
+    while lines
+        .last()
+        .is_some_and(|l| matches!(l.1.trim(), "" | "---"))
+    {
+        lines.pop();
+    }
+    let items: Vec<Item> = lines.iter().filter_map(|l| item(l.1)).collect();
     let tops = items.iter().filter(|i| i.depth == 0);
     let done = tops.clone().filter(|i| i.state == 'x').count();
+    let (markdown, lines) = block(&lines);
     Lane {
         name: name.to_string(),
-        markdown: lines.join("\n").trim().to_string(),
+        line,
+        lines,
+        markdown,
         open: tops.count() - done,
         done,
         items,
     }
 }
 
-fn focus(lines: &[&str]) -> Focus {
-    let (authored, rollup) = match lines.iter().position(|l| l.trim() == ROLLUP_START) {
-        Some(i) => (&lines[..i], lines[i + 1..].join("\n").trim().to_string()),
+/// `## Focus` from its heading's note line `head` and the lines below it.
+fn focus(head: usize, lines: &[Ln]) -> Focus {
+    let (authored, rollup) = match lines.iter().position(|l| l.1.trim() == ROLLUP_START) {
+        Some(i) => (&lines[..i], block(&lines[i + 1..]).0),
         None => (lines, String::new()),
     };
     let mut lanes = Vec::new();
     let mut name = "";
+    let mut line = head;
     let mut start = 0;
     for (i, l) in authored.iter().enumerate() {
-        if let Some(h) = l.strip_prefix("### ") {
-            lanes.push(lane(name, &authored[start..i]));
+        if let Some(h) = l.1.strip_prefix("### ") {
+            lanes.push(lane(name, line, &authored[start..i]));
             name = h.trim();
+            line = l.0;
             start = i + 1;
         }
     }
-    lanes.push(lane(name, &authored[start..]));
-    // The `---` that sets Done apart is layout, not a line of any lane.
-    for l in &mut lanes {
-        l.markdown = l.markdown.trim_end_matches("---").trim().to_string();
-    }
+    lanes.push(lane(name, line, &authored[start..]));
     lanes.retain(|l| !l.name.is_empty() || !l.items.is_empty() || !l.markdown.is_empty());
     let open = lanes.iter().map(|l| l.open).sum();
     let done = lanes.iter().map(|l| l.done).sum();
@@ -162,63 +225,76 @@ fn focus(lines: &[&str]) -> Focus {
 /// Split a note into its Focus and its other sections.
 pub fn build(note: Note) -> View {
     let md = note.markdown.clone();
-    let mut lines: Vec<&str> = md.lines().collect();
+    let mut lines: Vec<Ln> = md.lines().enumerate().collect();
     // Front matter is for tools, not for reading.
-    if lines.first().map(|l| l.trim()) == Some("---") {
-        if let Some(end) = lines.iter().skip(1).position(|l| l.trim() == "---") {
+    if lines.first().map(|l| l.1.trim()) == Some("---") {
+        if let Some(end) = lines.iter().skip(1).position(|l| l.1.trim() == "---") {
             lines.drain(..end + 2);
         }
     }
     let mut focus_view = None;
     let mut sections = Vec::new();
     let mut title = String::new();
+    let mut head = lines.first().map_or(0, |l| l.0);
     let mut start = 0;
-    let flush =
-        |title: &str, body: &[&str], sections: &mut Vec<Section>, fv: &mut Option<Focus>| {
-            if title.eq_ignore_ascii_case("focus") {
-                *fv = Some(focus(body));
-                return;
-            }
-            let markdown = body.join("\n").trim().to_string();
-            let markdown = if title.is_empty() {
-                // The note's `# title` is the page heading already.
-                markdown
-                    .lines()
-                    .filter(|l| !l.starts_with("# "))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .trim()
-                    .to_string()
-            } else {
-                markdown
-            };
-            if !markdown.is_empty() {
-                sections.push(Section {
-                    title: title.to_string(),
-                    markdown,
-                });
-            }
-        };
-    let mut i = 0;
-    while i < lines.len() {
-        let l = lines[i];
-        let footer = l.trim() == "---" && lines.get(i + 1).is_some_and(|n| n.contains("[["));
-        if let Some(h) = l.strip_prefix("## ") {
-            flush(&title, &lines[start..i], &mut sections, &mut focus_view);
-            title = h.trim().to_string();
-            start = i + 1;
-        } else if footer {
-            flush(&title, &lines[start..i], &mut sections, &mut focus_view);
-            title = "Links".to_string();
-            start = i + 1;
+    let flush = |title: &str,
+                 head: usize,
+                 body: &[Ln],
+                 sections: &mut Vec<Section>,
+                 fv: &mut Option<Focus>| {
+        if title.eq_ignore_ascii_case("focus") {
+            *fv = Some(focus(head, body));
+            return;
         }
-        i += 1;
+        // The note's `# title` is the page heading already.
+        let body: Vec<Ln> = body
+            .iter()
+            .filter(|l| !(title.is_empty() && l.1.starts_with("# ")))
+            .copied()
+            .collect();
+        let (markdown, lines) = block(&body);
+        if !markdown.is_empty() {
+            sections.push(Section {
+                title: title.to_string(),
+                line: head,
+                lines,
+                markdown,
+            });
+        }
+    };
+    for i in 0..lines.len() {
+        let l = lines[i];
+        let footer = l.1.trim() == "---" && lines.get(i + 1).is_some_and(|n| n.1.contains("[["));
+        let next = if let Some(h) = l.1.strip_prefix("## ") {
+            h.trim().to_string()
+        } else if footer {
+            "Links".to_string()
+        } else {
+            continue;
+        };
+        flush(
+            &title,
+            head,
+            &lines[start..i],
+            &mut sections,
+            &mut focus_view,
+        );
+        title = next;
+        head = l.0;
+        start = i + 1;
     }
-    flush(&title, &lines[start..], &mut sections, &mut focus_view);
+    flush(
+        &title,
+        head,
+        &lines[start..],
+        &mut sections,
+        &mut focus_view,
+    );
     View {
         note,
         focus: focus_view,
         sections,
+        ..Default::default()
     }
 }
 
@@ -278,6 +354,8 @@ mod tests {
             v.sections[0],
             Section {
                 title: "".into(),
+                line: 0,
+                lines: vec![2],
                 markdown: "One per line.".into()
             }
         );
@@ -294,21 +372,109 @@ mod tests {
         assert!(f.lanes[0].markdown.contains("pasted prose"));
     }
 
-    struct Fake(Result<String, String>);
-    impl Runner for Fake {
-        fn run(&self, argv: &[String]) -> Result<String, String> {
-            assert_eq!(argv, ["notes", "show", "--json", "--", "status/inbox"]);
-            self.0.clone()
+    /// Each line of every lane's and section's markdown is the note line its map names.
+    fn lines_match(v: &View) {
+        let note: Vec<&str> = v.note.markdown.lines().collect();
+        let f = v.focus.as_ref().map_or(vec![], |f| f.lanes.clone());
+        let blocks = f
+            .iter()
+            .map(|l| (&l.markdown, &l.lines))
+            .chain(v.sections.iter().map(|s| (&s.markdown, &s.lines)));
+        for (md, lines) in blocks {
+            assert_eq!(md.lines().count(), lines.len(), "{md:?}");
+            for (m, &n) in md.lines().zip(lines) {
+                assert_eq!(note[n].trim(), m.trim(), "line {n}");
+            }
         }
     }
 
     #[test]
-    fn read_passes_the_target_as_one_argument_and_carries_the_cli_error() {
-        let ok = Fake(Ok(
-            r##"{"rel":"status/inbox","exists":true,"markdown":"# Inbox\n"}"##.into(),
+    fn each_lane_and_section_knows_its_lines_in_the_note() {
+        let v = build(note(NOTE));
+        lines_match(&v);
+        let f = v.focus.as_ref().unwrap();
+        let at = |i: usize| (f.lanes[i].line, f.lanes[i].lines.clone());
+        assert_eq!(at(0), (13, vec![14, 15, 16]), "Urgent");
+        assert_eq!(at(1), (18, vec![]), "High is empty");
+        assert_eq!(at(2), (20, vec![]), "Low ends at the Done rule");
+        assert_eq!(at(3), (23, vec![24, 25]), "Done");
+        let s: Vec<(usize, Vec<usize>)> = v
+            .sections
+            .iter()
+            .map(|s| (s.line, s.lines.clone()))
+            .collect();
+        assert_eq!(s, [(7, vec![8]), (30, vec![31]), (33, vec![34, 35])]);
+    }
+
+    #[test]
+    fn a_placeholder_row_inside_a_lane_is_skipped_by_the_line_map() {
+        let v = build(note(
+            "# Fri\n## Focus\n- [ ] loose\n### Urgent\n- [ ]\n- [ ] a\n- [ ]\n\n- [ ] b\n",
         ));
+        lines_match(&v);
+        let f = v.focus.unwrap();
+        assert_eq!((f.lanes[0].name.as_str(), f.lanes[0].line), ("", 1));
+        assert_eq!(f.lanes[0].lines, [2]);
+        assert_eq!(f.lanes[1].markdown, "- [ ] a\n\n- [ ] b");
+        assert_eq!(f.lanes[1].lines, [5, 7, 8]);
+    }
+
+    /// `notes show --json` for each target it knows; any other target is the CLI's error.
+    struct Fake(Vec<(&'static str, &'static str)>);
+    impl Runner for Fake {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            assert_eq!(&argv[..4], ["notes", "show", "--json", "--"]);
+            let t = argv[4].as_str();
+            let found = self.0.iter().find(|(k, _)| *k == t);
+            found
+                .map(|(_, j)| j.to_string())
+                .ok_or(format!("'{t}' is outside the notes"))
+        }
+    }
+
+    const DAY: &str = r##"{"rel":"journal/daily/2026-11-05","date":"2026-11-05","exists":true,"markdown":"# Thu\n","brief":"journal/refs/2026-11-05/briefing","links":[{"target":"outbox","exists":true}]}"##;
+    const BRIEF: &str = r##"{"rel":"journal/refs/2026-11-05/briefing","exists":true,"markdown":"# Briefing\n## Needs you\n- one\n"}"##;
+
+    #[test]
+    fn read_passes_the_target_as_one_argument_and_carries_the_cli_error() {
+        let ok = Fake(vec![(
+            "status/inbox",
+            r##"{"rel":"status/inbox","exists":true,"markdown":"# Inbox\n"}"##,
+        )]);
         assert_eq!(read(&ok, "status/inbox").unwrap().note.rel, "status/inbox");
-        let bad = Fake(Err("'status/inbox' is outside the notes".into()));
-        assert!(read(&bad, "status/inbox").unwrap_err().contains("outside"));
+        assert!(read(&ok, "gone").unwrap_err().contains("outside"));
+    }
+
+    #[test]
+    fn a_day_reads_its_briefing_and_lists_its_own_links_as_places() {
+        let v = read(
+            &Fake(vec![
+                ("daily", DAY),
+                ("journal/refs/2026-11-05/briefing", BRIEF),
+            ]),
+            "daily",
+        )
+        .unwrap();
+        assert_eq!(v.places[0].target, "outbox");
+        let b = v.brief.expect("the briefing");
+        assert_eq!(b.sections[0].title, "Needs you");
+        assert!(b.brief.is_none() && b.places.is_empty(), "read bare");
+        // A briefing that cannot be read is left out; the day still reads.
+        let v = read(&Fake(vec![("daily", DAY)]), "daily").unwrap();
+        assert!(v.brief.is_none());
+    }
+
+    #[test]
+    fn another_note_lists_todays_links_as_places_and_has_no_briefing() {
+        let inbox = r##"{"rel":"status/inbox","exists":true,"markdown":"# Inbox\n"}"##;
+        let v = read(
+            &Fake(vec![("status/inbox", inbox), ("daily", DAY)]),
+            "status/inbox",
+        )
+        .unwrap();
+        assert_eq!(v.places[0].target, "outbox");
+        assert!(v.brief.is_none());
+        let v = read(&Fake(vec![("status/inbox", inbox)]), "status/inbox").unwrap();
+        assert!(v.places.is_empty(), "no today, no places, no error");
     }
 }
