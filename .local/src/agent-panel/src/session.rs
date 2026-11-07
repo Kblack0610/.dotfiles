@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -31,27 +31,35 @@ pub fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Load every `~/.claude/sessions/<pid>.json` into a pid-keyed map. Unreadable
-/// or malformed files are silently skipped — a stale file shouldn't break the
-/// whole panel.
-pub fn load_all() -> HashMap<u32, Session> {
-    let mut out = HashMap::new();
-    let Ok(rd) = fs::read_dir(sessions_dir()) else {
-        return out;
+/// Load every `~/.claude/sessions/<pid>.json` into a pid-keyed map, and the pids (from the
+/// file names) whose file would not read or parse. A stale file must not break the panel, so
+/// the caller decides: one whose pid is live may be a file Claude was rewriting, and the read
+/// that skipped it is missing that session (ar-916).
+pub fn load_all() -> (HashMap<u32, Session>, Vec<u32>) {
+    load_dir(&sessions_dir())
+}
+
+/// A file that will not parse is read once more before it counts: Claude rewrites it on each
+/// status change, so a read that met the write half done gets the whole file the next time.
+fn load_dir(dir: &Path) -> (HashMap<u32, Session>, Vec<u32>) {
+    let read = |p: &Path| fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Session>(&t).ok());
+    let (mut out, mut unreadable) = (HashMap::new(), Vec::new());
+    let Ok(rd) = fs::read_dir(dir) else {
+        return (out, unreadable);
     };
     for entry in rd.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        if let Ok(sess) = serde_json::from_str::<Session>(&text) {
-            out.insert(sess.pid, sess);
+        match read(&path).or_else(|| read(&path)) {
+            Some(sess) => {
+                out.insert(sess.pid, sess);
+            }
+            None => unreadable.extend(path.file_stem().and_then(|s| s.to_str()?.parse::<u32>().ok())),
         }
     }
-    out
+    (out, unreadable)
 }
 
 /// Status glyph: `waiting`→`!` (needs input), `busy`/`shell`→`~`, anything
@@ -82,6 +90,20 @@ pub fn jsonl_path(session_id: &str, cwd: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unreadable_file_is_named_by_its_pid() {
+        let dir = std::env::temp_dir().join(format!("agent-panel-sessions-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("10.json"), r#"{"pid":10,"sessionId":"s10","cwd":"/w"}"#).unwrap();
+        fs::write(dir.join("11.json"), r#"{"pid":11,"sess"#).unwrap(); // met mid-write
+        fs::write(dir.join("notes.json"), "{").unwrap(); // no pid in the name: not a session
+        let (sessions, unreadable) = load_dir(&dir);
+        assert_eq!(sessions.keys().copied().collect::<Vec<_>>(), vec![10]);
+        assert_eq!(unreadable, vec![11]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn glyphs() {
