@@ -319,7 +319,7 @@ landed #42
 EOF
   run cat "$LOG"
   assert_output - <<'EOF'
-gh pr view 42 --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q .state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + .isCrossRepository + " " + .headRefName
+gh pr view 42 --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q .state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + (.isCrossRepository | tostring) + " " + .headRefName
 git rev-parse HEAD
 gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
