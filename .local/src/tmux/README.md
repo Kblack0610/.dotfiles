@@ -335,7 +335,7 @@ breaking all three at once.
 | `wt --list` | every worktree on the machine, TSV |
 | `wt` (no verb) | an fzf picker over that list. Typed, not bound to a key. |
 
-**Worktree states.** `wt gc` gives every entry under `~/.worktrees` one state word, derived each pass from `wt_reap_reason`, git and tmux, never stored. `WT_GC_STATES` in `worktree.sh` lists the same words, and `tests/unit/worktree.bats` fails when this table and that list differ.
+**Worktree states.** `wt gc` gives every entry under `~/.worktrees` one state word from `wt_state`, which runs the same two checks as `wt_reap_reason` each pass and stores nothing. `WT_GC_STATES` in `worktree.sh` lists the same words, and `tests/unit/worktree.bats` fails when this table and that list differ.
 
 | state | what it is | gc does | left by |
 |---|---|---|---|
@@ -345,7 +345,7 @@ breaking all three at once.
 | `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, or a submodule worktree lives off it | keeps it and names it every night | commit and push, `ingest-worktree`, or the human |
 | `not-a-worktree` | a symlink, a main checkout, a dir with no `.git` holding more than caches, or a `.git` git cannot resolve | skips it, and does not count it as held | the human |
 
-A plain file in `~/.worktrees` is not listed at all. `wt new` creates a tree (or recycles an idle agent-N in place) and its session claims it at once, so `created` and `recycled` are moments, not states gc can see.
+A plain file in `~/.worktrees` is not listed at all. `wt new` creates a tree (or recycles an idle agent-N in place) and its session claims it at once, so `created` and `recycled` are moments, not states gc can see. The picker and `wt --list` still show their own work column (`dirty`, `unlanded`, `reapable`), not these words.
 
 **Reaping is the load-bearing half.** Cheap creation with no reaper is how
 `~/dev/bnb/platform` reached 35 worktrees. `reap` refuses - with the reason, and there is no

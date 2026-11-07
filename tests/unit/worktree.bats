@@ -35,6 +35,8 @@ setup() {
   # how the live-session refusal gets covered.
   : > "$NOTES_FIXTURE/tmux.no-session"
 
+  # Read at source time; lets a test match a gc line's shape.
+  export PANEL_NO_COLOR=1
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/src/tmux/worktree.sh"
 }
@@ -52,9 +54,6 @@ make_repo() {
   git -C "$MAIN" push --quiet -u origin main
   export ORIGIN MAIN
 }
-
-# no_color -- blank panel-lib's colours, so a test can match a gc line's shape.
-no_color() { C_SEL='' C_INP='' C_DIM='' C_OFF=''; }
 
 # ── Naming: the basename IS the identity ─────────────────────────────────────
 
@@ -659,7 +658,6 @@ orphan_tree() {
 
 @test "gc ends an orphan daemon and reaps the tree it pinned" {
   orphan_tree
-  no_color
   run cmd_gc
   assert_success
   assert_line --regexp '^reaped +repo-agent-1 +landed +\(orphan daemon 500\)$'
@@ -670,7 +668,6 @@ orphan_tree() {
 
 @test "gc -n names the orphan daemon and signals nothing" {
   orphan_tree
-  no_color
   run cmd_gc -n
   assert_success
   assert_line --regexp '^would reap +repo-agent-1 +landed +\(orphan daemon 500\)$'
@@ -766,7 +763,6 @@ orphan_tree() {
 @test "a dirty tree held only by an orphan reads held and the orphan lives" {
   orphan_tree
   echo edit > "$T/wip"
-  no_color
   run cmd_gc
   assert_line --regexp '^kept +repo-agent-1 +held +dirty'
   [ -d "$T" ]
@@ -919,7 +915,6 @@ done_from_inside() {
   make_repo
   git -C "$MAIN" worktree add --quiet "$SANDBOX/elsewhere" -b landed
   ln -s "$SANDBOX/elsewhere" "$WT_ROOT/repo-agent-3"
-  no_color
   run cmd_gc
   assert_line --regexp '^skipped +repo-agent-3 +not-a-worktree'
   assert_output --partial '0 of 1 reapable, 0 kept, 1 skipped;'
@@ -941,7 +936,6 @@ done_from_inside() {
   mkdir -p "$WT_ROOT/clone/.git" "$WT_ROOT/broken"
   git init --quiet "$WT_ROOT/clone"
   printf 'gitdir: %s/no/such/dir\n' "$SANDBOX" > "$WT_ROOT/broken/.git"
-  no_color
   run cmd_gc -n
   assert_success
   assert_line --regexp '^skipped +broken +not-a-worktree'
