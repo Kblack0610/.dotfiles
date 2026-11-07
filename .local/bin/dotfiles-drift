@@ -181,7 +181,8 @@ cat <<'EOF'
             next private commit - that loop is why this drift kept coming back.
             Replace the duplicate with a link to the repo that OWNS the file, so
             there is one source of truth and it cannot disagree with itself:
-              ln -sfn ~/.dotfiles-private/<path> ~/.dotfiles/<path>
+              dotfiles-deploy --apply   (writes the relative link stow owns; an
+              absolute one aborts `stow .`)
   LINK   -> run `stow --no-folding .` in the repo, then re-check.
             Check `stow --simulate` first: stow deploys the FILESYSTEM, not the
             git index, so untracked junk in the tree gets linked into $HOME too.

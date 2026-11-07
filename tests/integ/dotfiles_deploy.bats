@@ -28,6 +28,8 @@ setup() {
   PUB="$HOME/.dotfiles"
   PRIV="$HOME/.dotfiles-private"
   export DEPLOY PUB PRIV
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/stow-link.sh"
 }
 
 # ── fixture builders ─────────────────────────────────────────────────────────
@@ -78,11 +80,11 @@ radd() {
   git -C "$repo" add -- "$path"
 }
 
-# link <path> <repo> — deploy a path correctly, the way stow would.
+# link <path> <repo> - deploy a path correctly, the way stow would: a RELATIVE link.
 link() {
   local path="$1" repo="$2"
   mkdir -p "$HOME/$(dirname "$path")"
-  ln -sfn "$repo/$path" "$HOME/$path"
+  stow_link "$HOME/$path" "$repo/$path"
 }
 
 # copy <path> <repo> [content] — the BUG: a physical copy in the public tree of a path the
@@ -94,7 +96,7 @@ mirror_into_public() {
   if [ -n "$content" ]; then printf '%s\n' "$content" > "$PUB/$path"
   else cp -- "$PRIV/$path" "$PUB/$path"; fi
   mkdir -p "$HOME/$(dirname "$path")"
-  ln -sfn "$PUB/$path" "$HOME/$path"
+  stow_link "$HOME/$path" "$PUB/$path"
 }
 
 # world — the baseline: two repos, both correctly deployed, nothing wrong.
@@ -314,6 +316,71 @@ world_wt_private() {
   assert_failure
   assert_output --partial 'AGENTS.md'
   assert_output --partial 'dangles'
+}
+
+@test "--apply writes the RELATIVE link stow writes, not an absolute one" {
+  world
+  radd "$PUB" .local/bin/never-stowed 'v1'
+  run "$DEPLOY" --apply
+  assert_success
+  assert_equal "$(readlink "$HOME/.local/bin/never-stowed")" '../../.dotfiles/.local/bin/never-stowed'
+}
+
+# -- ABSLINK: the right file, by a link stow does not own --
+
+@test "an absolute link to the tracked source is ABSLINK, and --apply rewrites it relative" {
+  world
+  ln -sfn "$PUB/.local/bin/pubtool" "$HOME/.local/bin/pubtool"
+  run "$DEPLOY" --check
+  assert_failure
+  assert_output --partial 'ABSLINK'
+  assert_output --partial '.local/bin/pubtool'
+  run "$DEPLOY" --apply
+  assert_success
+  assert_equal "$(readlink "$HOME/.local/bin/pubtool")" '../../.dotfiles/.local/bin/pubtool'
+  run "$DEPLOY" --check
+  assert_success
+}
+
+@test "an absolute FOLDED directory link is one ABSLINK, not one per file" {
+  world
+  radd "$PUB" .config/tool/a 'a'
+  radd "$PUB" .config/tool/b 'b'
+  ln -sfn "$PUB/.config/tool" "$HOME/.config/tool"
+  run "$DEPLOY" --check
+  assert_failure
+  assert_equal "$(grep -c 'ABSLINK' <<< "$output")" 2   # the finding plus the legend line
+  run "$DEPLOY" --apply
+  assert_success
+  assert_equal "$(readlink "$HOME/.config/tool")" '../.dotfiles/.config/tool'
+}
+
+@test "an absolute link to some OTHER file is not ABSLINK: only a link to the same path is rewritten" {
+  world
+  radd "$PRIV" .local/bin/shared 'private copy'
+  mkdir -p "$HOME/elsewhere"; cp "$PRIV/.local/bin/shared" "$HOME/elsewhere/shared"
+  ln -sfn "$HOME/elsewhere/shared" "$HOME/.local/bin/shared"
+  run "$DEPLOY" --check
+  assert_failure
+  assert_output --partial 'MIRROR'
+  refute_output --regexp 'ABSLINK +private'
+}
+
+# The ground truth is stow itself. Before --apply an absolute link aborts the whole run, so a
+# new file never deploys; after it, stow owns every link and the next new file deploys.
+@test "after --apply, stow no longer aborts and a new file deploys" {
+  command -v stow >/dev/null || skip 'stow not installed'
+  world
+  ln -sfn "$PUB/.local/bin/pubtool" "$HOME/.local/bin/pubtool"
+  run stow -d "$PUB" -t "$HOME" --no-folding -n -v .
+  assert_failure
+  assert_output --partial 'not owned by stow'
+  run "$DEPLOY" --apply
+  assert_success
+  radd "$PUB" .local/bin/brand-new 'v1'
+  run stow -d "$PUB" -t "$HOME" --no-folding -v .
+  assert_success
+  assert_equal "$(readlink -f "$HOME/.local/bin/brand-new")" "$(readlink -f "$PUB/.local/bin/brand-new")"
 }
 
 # ── things that must never enter the manifest ────────────────────────────────
