@@ -1375,6 +1375,24 @@ STUB
   [ "$(jq -r .row <<<"$("$AQ" show menus --json)")" = level:lv-9 ]
 }
 
+@test "a want's channel reaches the story row's writer only when --want names it" {
+  story_notes
+  run "$AQ" add --project game --epic lv-3 --slug voiced --want voice "feat(menu): a"
+  assert_success
+  run "$AQ" add --project game --epic lv-3 --slug own --from human "feat(menu): c"
+  assert_success
+  run grep 'ptask level --agent add' "$NOTES_FIXTURE/calls.log"
+  assert_line --index 0 --partial 'add --want voice -- feat(menu): a #size/s #high #of/lv-3'
+  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): c #size/s #high #of/lv-3'
+}
+
+@test "--want is refused with --plan: plan items are agent-made and carry no channel" {
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/w.md"
+  run "$AQ" add --plan "$SANDBOX/w.md" --project game --slug wp --want voice
+  assert_failure
+  assert_output --partial '--want names a human'
+}
+
 @test "a plan item's story takes the plan's epic and a heavy item is sized m" {
   story_notes
   printf '%s\n' 'epic: lv-3' '## Phases' '- [ ] P1 one' > "$SANDBOX/lv.md"

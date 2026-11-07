@@ -170,7 +170,7 @@ pub struct BoardFiles {
     pub proposals: PathBuf,
     pub shepherd: PathBuf,
     pub daylog: PathBuf,
-    /// The nightly token snapshots behind Fleet's Where the tokens go.
+    /// The nightly token snapshots behind Costs' Where the tokens go.
     pub tokens: PathBuf,
 }
 
@@ -253,6 +253,8 @@ pub enum Msg {
     ProposalActed(Result<String, String>),
     /// A job source's file changed (a run started or ended).
     Files,
+    /// The nightly token run wrote a snapshot (`~/.agent/token-usage`): Costs' token folds.
+    TokenFiles,
     /// The fleet state, watch.log or a day record changed.
     BoardFiles,
     /// `hub tab <name> [words]` asked for a page (tabreq.rs); the words name a project to open.
@@ -364,10 +366,6 @@ pub struct App {
     pub fleet_page: Option<String>,
     /// That page's read; None until it comes back.
     pub fleet_runner: Option<Result<hub_core::fleet::runner::Runner, String>>,
-    /// The tokens fold: open or shut, and which window.
-    pub fleet_tokens: fleettab::TokensView,
-    /// The Langfuse fold: open or shut, None while it follows its amber state.
-    pub fleet_langfuse: Option<bool>,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -500,8 +498,6 @@ impl App {
             fleet_sel: 0,
             fleet_page: None,
             fleet_runner: None,
-            fleet_tokens: Default::default(),
-            fleet_langfuse: None,
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -623,8 +619,9 @@ impl App {
         }
     }
 
-    /// The Costs tab's sources have no file watch, so it reads them on entering, on `r` and on
-    /// the tick while it is shown, at most every `COSTS_REFRESH`.
+    /// The Costs tab reads on entering, on `r`, on a new token snapshot (`Msg::TokenFiles`) and
+    /// on the tick while it is shown, at most every `COSTS_REFRESH`: its other sources have no
+    /// file to watch.
     pub fn read_costs(&mut self) {
         if self.costs_read.want() {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
@@ -694,14 +691,14 @@ impl App {
         }
     }
 
-    /// The Fleet tab mixes Prometheus (no push) with agentctl's ledger, the dispatch and ask
-    /// files and the token snapshots, so it reads on entering, on `r`, on the tick and on an
-    /// agentctl or snapshot file event while it is shown.
+    /// The Fleet tab reads agentctl's ledger and the dispatch and ask files, so it reads on
+    /// entering, on `r`, on the tick and on an agentctl file event while it is shown.
     pub fn read_fleet(&mut self) {
         if self.fleet_read.want() {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::Fleet(Box::new(hub_core::fleet::collect())));
+                let f = hub_core::fleet::files(&hub_core::fleet::Paths::from_env());
+                let _ = tx.send(Msg::Fleet(Box::new(f)));
             });
         }
     }
@@ -1246,6 +1243,8 @@ impl App {
                     self.read_fleet();
                 }
             }
+            Msg::TokenFiles if self.tab == Tab::Costs => self.read_costs(),
+            Msg::TokenFiles => {}
             Msg::BoardFiles => self.read_boards(),
             Msg::ProposalFiles => self.read_proposals(),
             Msg::Tab(t, q) => {
@@ -1533,10 +1532,16 @@ impl App {
             && !k
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && self.cv.key(k.code)
         {
-            self.scroll = 0;
-            return;
+            let t = self.costs.as_ref().and_then(|c| c.tokens.as_ref());
+            if let Some(seek) = self.cv.fold(k.code, t) {
+                self.seek = seek;
+                return;
+            }
+            if self.cv.key(k.code) {
+                self.scroll = 0;
+                return;
+            }
         }
         let n = self.page.max(1);
         let tabs = Tab::SHOWN.len();
@@ -1635,9 +1640,7 @@ impl App {
     /// The Fleet tab's own keys; false leaves the key to the page's defaults. On a runner's page
     /// `[ ]` step to the previous or next runner and Esc goes back to the tab; on the tab the
     /// table keys (`/ f s S x`), j/k pick a row, Enter opens it (a runner's page, or a session on
-    /// the Sessions tab) and `z` folds a tier 1 row's children. `t` opens or folds Where the
-    /// tokens go and `w` switches its window, `l` opens or folds What Langfuse sees; none moves
-    /// the row, so the view stays put.
+    /// the Sessions tab) and `z` folds a tier 1 row's children.
     fn fleet_key(&mut self, k: KeyEvent) -> bool {
         if let Some(page) = self.fleet_page.clone() {
             let names = self.fleet_runners();
@@ -1669,28 +1672,6 @@ impl App {
             }
             Took::Typing => return true,
             Took::No => {}
-        }
-        let tokens = self.fleet.as_ref().and_then(|f| f.tokens.as_ref());
-        match k.code {
-            KeyCode::Char('t') if tokens.is_some() => {
-                let open = !self.fleet_tokens.is_open(tokens);
-                self.fleet_tokens.open = Some(open);
-                self.seek = open.then_some("tokens");
-                return true;
-            }
-            KeyCode::Char('w') if tokens.is_some() => {
-                self.fleet_tokens.day = !self.fleet_tokens.day;
-                return true;
-            }
-            KeyCode::Char('l') if tokens.is_some() => {
-                let shown = self.fleet_langfuse.unwrap_or_else(|| {
-                    tokens.is_some_and(|t| t.langfuse.figures.is_none() || t.stale)
-                });
-                self.fleet_langfuse = Some(!shown);
-                self.seek = (!shown).then_some("langfuse");
-                return true;
-            }
-            _ => {}
         }
         let rows: Vec<(Opens, String)> = self.fleet.as_ref().map_or(vec![], |f| {
             fleettab::shown(f, &self.fleet_table, &self.fleet_folded)
@@ -1751,7 +1732,8 @@ impl App {
                     self.open_section(sec);
                 }
             }
-            // Fleet's own section names (`accounts`) scroll there; any other word is a runner.
+            // Fleet's own section names (`workers`) scroll there; any other word is a runner. A
+            // section that moved off Fleet (`tokens`) never gets here: tabreq::parse sends it on.
             (Tab::Fleet, Some(q)) if !q.trim().is_empty() => {
                 match crate::fleettab::runner_arg(&q) {
                     Some(name) => self.open_runner(name),
@@ -1764,7 +1746,15 @@ impl App {
                     }
                 }
             }
-            (Tab::Costs, Some(q)) => self.cv.open(&q),
+            // A section's name opens its fold and scrolls to it; other words set the view.
+            (Tab::Costs, Some(q)) => {
+                self.cv.open(&q);
+                let secs =
+                    hub_core::layout::resolve(self.tab.title()).map_or(&[][..], |t| t.sections);
+                if let Some(sec) = secs.iter().find(|s| s.eq_ignore_ascii_case(q.trim())) {
+                    self.seek = Some(sec);
+                }
+            }
             (Tab::Queue, Some(q)) => self.qv.open(&q),
             (_, q) => self.open_project(q),
         }
@@ -1779,12 +1769,6 @@ impl App {
         {
             self.log_open.push(sec);
             self.read_log_folds();
-        }
-        if self.tab == Tab::Fleet && sec == "tokens" {
-            self.fleet_tokens.open = Some(true);
-        }
-        if self.tab == Tab::Fleet && sec == "langfuse" {
-            self.fleet_langfuse = Some(true);
         }
         if !self.infra_jobs && !self.log_days {
             self.seek = Some(sec);
@@ -2589,7 +2573,7 @@ impl App {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Costs => format!(
-                "b/B cut  w window  / query  s sort  S asc/desc  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "b/B cut  w window  / query  s sort  S asc/desc  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
                 "type a query (tier:3 state:failed -who:x), Enter applies, Esc drops it".into()
@@ -2598,7 +2582,7 @@ impl App {
                 "[ ] runner  Esc all runners  j/k PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Fleet => format!(
-                "j/k pick  Enter open  z fold  t tokens  w window  l langfuse  / query  f state  s/S sort  x clear  PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
+                "j/k pick  Enter open  z fold  / query  f state  s/S sort  x clear  PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
@@ -2788,9 +2772,9 @@ impl App {
             // Every dollar, cut seven ways (coststab.rs, the same board agent-web draws).
             (Tab::Costs, ..) => match &self.costs {
                 None => reading("the costs"),
-                Some(c) => (self.cv.lines(c, self.p, w), vec![]),
+                Some(c) => self.cv.lines(c, self.p, now, w),
             },
-            // Who is working (runners by tier, then the live sessions), then who pays.
+            // Who is working: runners by tier, then the live sessions.
             (Tab::Fleet, ..) if self.fleet_page.is_some() => (
                 fleettab::runner_page(
                     self.fleet_page.as_deref().unwrap_or_default(),
@@ -2803,8 +2787,8 @@ impl App {
             ),
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
-                Some(f) => {
-                    let mut l = fleettab::page(
+                Some(f) => (
+                    fleettab::page(
                         f,
                         &self.fleet_table,
                         &self.fleet_folded,
@@ -2812,25 +2796,9 @@ impl App {
                         self.p,
                         now,
                         w,
-                    );
-                    l.push(Line::raw(""));
-                    let at = l.len();
-                    l.extend(fleettab::tokens(
-                        f.tokens.as_ref(),
-                        self.fleet_tokens,
-                        self.p,
-                        now,
-                        w,
-                    ));
-                    let lf_at = l.len();
-                    l.extend(fleettab::langfuse(
-                        f.tokens.as_ref(),
-                        self.fleet_langfuse,
-                        self.p,
-                        w,
-                    ));
-                    (l, vec![("tokens", at), ("langfuse", lf_at)])
-                }
+                    ),
+                    vec![("workers", 0)],
+                ),
             },
             // Daily's outbox view: the outbox and today's intake steps (outboxtab.rs); Enter
             // edits the file.
@@ -4592,106 +4560,27 @@ mod tests {
     }
 
     #[test]
-    fn the_fleet_tab_draws_the_table_and_the_accounts() {
+    fn the_fleet_tab_draws_the_table_and_a_moved_section_opens_on_costs() {
         let mut a = app(Tab::Fleet);
         assert!(screen(&mut a, 120, 10).contains("Reading the fleet..."));
         a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
         let s = screen(&mut a, 160, 40);
         assert!(s.lines().next().unwrap().contains("7 Fleet"), "{s}");
-        for want in ["FLEET", "TIER", "dotfiles-agent-11", "CLAUDE ACCOUNTS"] {
-            assert!(s.contains(want), "{want} missing from\n{s}");
-        }
         assert!(
-            !s.contains("DISPATCH JUDGE"),
-            "the judges moved to their pages and Log\n{s}"
+            !s.contains("WHERE THE TOKENS GO"),
+            "tokens are Costs' now\n{s}"
         );
-    }
-
-    /// A page read in flight that is never started again, so no test reads this machine's
-    /// agentctl state.
-    fn hold_runner(a: &mut App) {
-        a.fleet_runner_read.busy = true;
-        a.fleet_runner_read.again = false;
-    }
-
-    #[test]
-    fn enter_opens_the_picked_row_brackets_step_runners_and_esc_goes_back() {
-        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
-        let mut a = app(Tab::Fleet);
-        hold_runner(&mut a);
-        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
-        assert!(screen(&mut a, 160, 40).contains("j/k pick  Enter open"));
-
-        // The pick starts on the first row; j moves it and k goes back.
-        a.handle(k(KeyCode::Char('j')));
-        assert_eq!(a.fleet_sel, 1);
-        a.handle(k(KeyCode::Char('k')));
-        assert_eq!(a.fleet_sel, 0);
-
-        a.handle(k(KeyCode::Enter));
-        assert_eq!(a.fleet_page.as_deref(), Some("dream"));
-        assert!(screen(&mut a, 160, 40).contains("Reading dream..."));
-        // A read for another runner (the page moved on meanwhile) draws nothing.
-        a.handle(Msg::Runner(Box::new((
-            "idle-one".into(),
-            Err("late".into()),
-        ))));
-        assert!(a.fleet_runner.is_none());
-        hold_runner(&mut a);
-        a.handle(Msg::Runner(Box::new((
-            "dream".into(),
-            Ok(fleettab::tests::runner_fixture()),
-        ))));
-        let s = screen(&mut a, 160, 40);
-        assert!(
-            s.contains("DREAM  memory") && s.contains("status: retry 17:30"),
-            "{s}"
-        );
-        assert!(s.contains("Esc all runners"), "{s}");
-
-        // ] steps to the next runner's page and drops the last one's read.
-        hold_runner(&mut a);
-        a.handle(k(KeyCode::Char(']')));
-        assert_eq!(a.fleet_page.as_deref(), Some("idle-one"));
-        assert!(a.fleet_runner.is_none());
-
-        a.handle(k(KeyCode::Esc));
-        assert!(a.fleet_page.is_none() && a.tab == Tab::Fleet && !a.quit);
-        assert!(screen(&mut a, 160, 40).contains("FLEET"));
-    }
-
-    #[test]
-    fn z_folds_a_tier_one_row_and_enter_on_a_session_opens_it_on_the_sessions_tab() {
-        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
-        let mut a = app(Tab::Fleet);
-        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
-        assert!(screen(&mut a, 160, 40).contains("dotfiles-agent-11"));
-        a.handle(k(KeyCode::Char('z')));
-        assert!(a.fleet_folded.contains("dream"));
-        assert!(!screen(&mut a, 160, 40).contains("dotfiles-agent-11"));
-        a.handle(k(KeyCode::Char('z')));
-        assert!(a.fleet_folded.is_empty());
-        // Enter on the session row leaves the Fleet tab for Sessions.
-        a.handle(k(KeyCode::Char('G')));
-        assert_eq!(a.fleet_sel, 2);
-        a.handle(k(KeyCode::Enter));
-        assert_eq!(a.tab, Tab::Sessions);
-    }
-
-    #[test]
-    fn hub_tab_fleet_with_a_runner_opens_its_page_and_a_section_name_scrolls() {
-        let mut a = app(Tab::Home);
-        hold_runner(&mut a);
         a.fleet_read.busy = true;
         let (t, q) = crate::tabreq::parse("fleet inbox-triage").unwrap();
         a.handle(Msg::Tab(t, q));
         assert!(a.tab == Tab::Fleet);
         assert_eq!(a.fleet_page.as_deref(), Some("inbox-triage"));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        a.costs_read.busy = true;
         let (t, q) = crate::tabreq::parse("fleet accounts").unwrap();
         a.handle(Msg::Tab(t, q));
         assert!(a.fleet_page.is_none());
-        assert_eq!(a.seek, Some("accounts"));
+        assert_eq!((a.tab, a.seek), (Tab::Costs, Some("burn")));
     }
 
     #[test]
@@ -4705,66 +4594,102 @@ mod tests {
         assert!(!f.is_token_file(Path::new("/a/other/2027-01-15.json")));
     }
 
+    /// Costs with a token snapshot read, no read left to start.
+    fn costs_app(tokens: bool) -> App {
+        let mut a = app(Tab::Costs);
+        a.costs_read.busy = true;
+        let c = hub_core::costs::Costs {
+            tokens: tokens.then(Default::default),
+            ..Default::default()
+        };
+        a.handle(Msg::Costs(Box::new(c)));
+        a.costs_read.busy = true;
+        a
+    }
+
     #[test]
-    fn t_opens_the_tokens_fold_and_goes_to_it_w_switches_its_window_and_the_row_stays() {
+    fn u_opens_the_tokens_fold_on_costs_and_goes_to_it_and_big_u_switches_its_window() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
-        let mut a = app(Tab::Fleet);
-        let mut f = fleettab::tests::fixture();
-        f.tokens = Some(Default::default());
-        a.handle(Msg::Fleet(Box::new(f)));
-        a.handle(k(KeyCode::Char('j')));
-        let sel = a.fleet_sel;
-        a.handle(k(KeyCode::Char('t')));
-        assert_eq!(a.fleet_tokens.open, Some(true));
+        let mut a = costs_app(true);
+        let s = screen(&mut a, 100, 60);
+        assert!(
+            s.contains("+ WHERE THE TOKENS GO") && s.contains("u opens it"),
+            "{s}"
+        );
+        a.handle(k(KeyCode::Char('u')));
+        assert_eq!(a.cv.tokens.open, Some(true));
         assert_eq!(a.seek, Some("tokens"));
-        let s = screen(&mut a, 80, 12);
+        let s = screen(&mut a, 100, 12);
         assert!(s.contains("WHERE THE TOKENS GO"), "{s}");
         assert_eq!(a.seek, None, "the section is on the page, so seek lands");
-        a.handle(k(KeyCode::Char('w')));
-        assert!(a.fleet_tokens.day);
-        assert!(screen(&mut a, 80, 12).contains("yesterday:"));
-        a.handle(k(KeyCode::Char('t')));
-        assert_eq!(a.fleet_tokens.open, Some(false));
-        assert_eq!(a.fleet_sel, sel);
+        a.handle(k(KeyCode::Char('U')));
+        assert!(a.cv.tokens.day);
+        assert!(screen(&mut a, 100, 60).contains("yesterday:"));
+        a.handle(k(KeyCode::Char('u')));
+        assert_eq!(a.cv.tokens.open, Some(false));
+        // x clears the view, not the folds.
+        a.handle(k(KeyCode::Char('x')));
+        assert!(a.cv.tokens.day && a.cv.tokens.open == Some(false));
     }
 
     #[test]
-    fn l_opens_the_langfuse_fold_and_goes_to_it_and_waits_for_a_snapshot() {
+    fn l_opens_the_langfuse_fold_on_costs_and_typing_keeps_u_and_l_as_text() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
-        let mut a = app(Tab::Fleet);
-        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
+        let mut a = costs_app(true);
         a.handle(k(KeyCode::Char('l')));
-        assert_eq!(a.fleet_langfuse, None, "no snapshot, no fold");
-        let mut f = fleettab::tests::fixture();
-        f.tokens = Some(Default::default());
-        a.handle(Msg::Fleet(Box::new(f)));
+        assert_eq!(
+            a.cv.langfuse,
+            Some(false),
+            "no figures opens it by default, so l folds it"
+        );
         a.handle(k(KeyCode::Char('l')));
-        assert_eq!(a.fleet_langfuse, Some(false), "no figures opens it by default, so l folds it");
-        a.handle(k(KeyCode::Char('l')));
-        assert_eq!(a.fleet_langfuse, Some(true));
-        assert_eq!(a.seek, Some("langfuse"));
+        assert_eq!((a.cv.langfuse, a.seek), (Some(true), Some("langfuse")));
+        a.handle(k(KeyCode::Char('/')));
+        for c in "ul".chars() {
+            a.handle(k(KeyCode::Char(c)));
+        }
+        assert_eq!(a.cv.typing.as_deref(), Some("ul"), "a query types u and l");
+        assert_eq!((a.cv.langfuse, a.cv.tokens.open), (Some(true), None));
     }
 
     #[test]
-    fn t_and_w_wait_for_a_snapshot_so_the_first_one_lands_folded() {
+    fn u_and_l_wait_for_a_snapshot_so_the_first_one_lands_folded() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
-        let mut a = app(Tab::Fleet);
-        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
-        a.handle(k(KeyCode::Char('t')));
-        a.handle(k(KeyCode::Char('w')));
-        assert_eq!(a.fleet_tokens.open, None);
-        assert!(!a.fleet_tokens.day);
+        let mut a = costs_app(false);
+        a.handle(k(KeyCode::Char('u')));
+        a.handle(k(KeyCode::Char('U')));
+        a.handle(k(KeyCode::Char('l')));
+        assert_eq!(
+            (a.cv.tokens.open, a.cv.tokens.day, a.cv.langfuse),
+            (None, false, None)
+        );
+        assert!(screen(&mut a, 100, 60).contains("no snapshot in ~/.agent/token-usage"));
     }
 
     #[test]
-    fn hub_tab_fleet_tokens_opens_the_fold() {
+    fn hub_tab_fleet_tokens_opens_the_fold_on_costs() {
         let mut a = app(Tab::Home);
-        a.fleet_read.busy = true;
+        a.costs_read.busy = true;
         let (t, q) = crate::tabreq::parse("fleet tokens").unwrap();
         a.handle(Msg::Tab(t, q));
+        assert_eq!(a.tab, Tab::Costs);
         assert!(a.fleet_page.is_none());
-        assert_eq!(a.fleet_tokens.open, Some(true));
+        assert_eq!(a.cv.tokens.open, Some(true));
         assert_eq!(a.seek, Some("tokens"));
+        assert!(a.cv.q.is_empty(), "a section's name is no query");
+    }
+
+    #[test]
+    fn a_new_token_snapshot_rereads_costs_only_while_it_is_shown() {
+        let mut a = costs_app(true);
+        a.handle(Msg::TokenFiles);
+        assert!(a.costs_read.again, "Costs asks for its read again");
+        // Negative control: on Fleet a snapshot is nothing to read.
+        let mut a = app(Tab::Fleet);
+        a.fleet_read.busy = true;
+        a.costs_read.busy = true;
+        a.handle(Msg::TokenFiles);
+        assert!(!a.costs_read.again && !a.fleet_read.again);
     }
 
     #[test]

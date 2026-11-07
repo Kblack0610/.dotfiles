@@ -1,21 +1,19 @@
 //! The Fleet tab, read once for both surfaces (agent-web's Fleet tab and the hub TUI's): who
-//! pays, what each agentctl runner did, and how the two judges call it. Nothing here keeps a
+//! is working, what each agentctl runner did, and how the two judges call it. What it costs (the
+//! accounts, where the tokens go) is `crate::costs`. Nothing here keeps a
 //! copy; each part reads the file or series its writer owns:
 //!
 //! | part         | source                                                                   |
 //! |--------------|--------------------------------------------------------------------------|
-//! | accounts     | `claude_account_*`, claude-acct's textfile, in Prometheus                 |
 //! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` and standing hold `held_since`/`held_why` (agent-proof), and the user timers (else the runner's own status `next=`); what each runner spent is `crate::costs` |
 //! | who          | the workers and `state.json`'s live sessions, one row each, tiered (`who::build`)  |
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
 //! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
-//! | tokens       | the nightly `~/.agent/token-usage/<day>.json` (`TOKENS_DIR`), summed by `tokens::read` |
 //!
 //! One runner's page (`#fleet/<name>`, read only when opened) is `runner::read`.
 //!
-//! The file parts are read fresh (judge-eval takes about a second); the Prometheus part (`prom`) is the slow one, so a
-//! server can cache it apart and `apply` it to a fresh file read.
+//! Every part is a file read, fresh each time (judge-eval takes about a second).
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
@@ -26,10 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::jobs::systemd::AGENTCTL_PREFIX;
 use crate::jobs::{self, Job, State};
-use crate::prom::{self, Series};
 
 pub mod runner;
-pub mod tokens;
 pub mod who;
 
 const DAY: i64 = 24 * 3600;
@@ -47,12 +43,6 @@ const CALLS_TAIL: u64 = 2 << 20;
 /// Calls listed under a runner's row, newest first; the rest are `agentctl-run` lines on disk.
 const RECENT_CALLS: usize = 5;
 
-/// claude-acct's textfile, however old, plus one series for its age (`claude_account_textfile_age_seconds`,
-/// no account label, the oldest file when a second host exposes one) so a surface says "stale" past `burn::STALE_AFTER_SECS` instead of showing
-/// nothing; no `max without`, which would drop the metric names the table reads. An empty
-/// answer makes the table say no data.
-pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} or label_replace(max(time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"}), "__name__", "claude_account_textfile_age_seconds", "", "")"#;
-
 #[derive(Clone, Debug)]
 pub struct Paths {
     /// agentctl's runner configs, one `<name>.conf` each (agentctl's `CONFIG_DIR`).
@@ -69,8 +59,6 @@ pub struct Paths {
     pub notes_state: PathBuf,
     /// fleet-sessions' `state.json`: the live sessions, tier 3 of the table.
     pub state: PathBuf,
-    /// `agent-usage tokens snapshot`'s day records.
-    pub tokens: PathBuf,
 }
 
 impl Paths {
@@ -89,7 +77,6 @@ impl Paths {
             judge_eval: std::env::var("JUDGE_EVAL").unwrap_or_else(|_| "judge-eval".into()),
             notes_state: home.join(".local/state/notes"),
             state: crate::boards::fleet_state(),
-            tokens: crate::boards::token_usage_dir(),
         }
     }
 }
@@ -100,20 +87,11 @@ pub struct Fleet {
     pub at: i64,
     /// `<part>: <why>` for each part that could not be read; the rest still show.
     pub errors: Vec<String>,
-    /// claude-acct's series as Prometheus gave them.
-    pub accounts: Vec<Series>,
-    /// Each account's published room verdict, worded by `burn::Room`, for a surface that cannot
-    /// call Rust (agent-web).
-    pub rooms: std::collections::BTreeMap<String, crate::burn::Room>,
-    /// Set when the textfile is not fresh: the surfaces say this in place of the figures.
-    pub accounts_stale: Option<&'static str>,
     pub workers: Vec<Worker>,
     /// The Fleet tab's one table: runners by tier, then the live sessions (`who`).
     pub who: Vec<who::Who>,
     pub dispatch: Dispatch,
     pub judge: Judge,
-    /// Where the tokens go; None until the first snapshot.
-    pub tokens: Option<tokens::Tokens>,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -387,21 +365,7 @@ impl AskVerdict {
     }
 }
 
-/// The Prometheus part, cached apart by a server.
-#[derive(Serialize, Debug, Default, Clone)]
-pub struct Prom {
-    pub accounts: Vec<Series>,
-    pub errors: Vec<String>,
-}
-
-/// Both parts, for a caller with no cache (the TUI).
-pub fn collect() -> Fleet {
-    let mut f = files(&Paths::from_env());
-    f.apply(&prom());
-    f
-}
-
-/// The file-backed parts.
+/// Every part, read fresh.
 pub fn files(paths: &Paths) -> Fleet {
     let at = jobs::now();
     let mut errors = vec![];
@@ -470,7 +434,6 @@ pub fn files(paths: &Paths) -> Fleet {
     };
     let who = who::build(&workers, &sessions, at);
     let dispatch = read_dispatch(&paths.dispatch, at, &mut errors);
-    let tokens = tokens::read(&paths.tokens, at, &mut errors);
     Fleet {
         at,
         errors,
@@ -478,8 +441,6 @@ pub fn files(paths: &Paths) -> Fleet {
         who,
         dispatch,
         judge,
-        tokens,
-        ..Default::default()
     }
 }
 
@@ -497,32 +458,6 @@ fn read_dispatch(dir: &Path, at: i64, errors: &mut Vec<String>) -> Dispatch {
         Err(e) => errors.push(format!("dispatch log: {e}")),
     }
     dispatch
-}
-
-/// The Prometheus part: the accounts. What each runner spent is on the Costs tab.
-pub fn prom() -> Prom {
-    let mut out = Prom::default();
-    match prom::base().and_then(|base| prom::instant(&base, ACCOUNTS)) {
-        Ok(s) => out.accounts = s,
-        Err(e) => out.errors.push(format!("accounts: {e}")),
-    }
-    out
-}
-
-impl Fleet {
-    /// Lay a Prometheus read over the file read.
-    pub fn apply(&mut self, p: &Prom) {
-        self.accounts = p.accounts.clone();
-        let read = crate::burn::Accounts::read(&self.accounts);
-        self.rooms = read
-            .by
-            .keys()
-            .filter_map(|n| read.room(n).map(|r| (n.to_string(), r)))
-            .collect();
-        self.accounts_stale =
-            (!read.by.is_empty() && read.stale()).then_some(crate::burn::STALE_NOTE);
-        self.errors.extend(p.errors.iter().cloned());
-    }
 }
 
 /// One runner's config: only what the tab shows.

@@ -354,6 +354,10 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 /// the task sheet if the project has none. `--to` tags it for that release, which is the whole
 /// roadmap-forward loop: plan into `v1.14.0` while `v1.13.0` is still running.
 ///
+/// `want` is the channel a human's want came in by ([`projects::WANT_CHANNELS`]): an agent-lane
+/// row then gets `#requested` from this writer, so no caller composes the tag, and the ingest
+/// event names the channel. A human-lane row is the human's by its sheet, so it takes no tag.
+///
 /// The row is stamped as README "The task row" says: its created tag (`#cMMDD`), the default
 /// priority when it has none, and its id (`<!-- id:<code>-<n> -->`, [`next_id`]) when the
 /// registry gives the project a `code`. Each of `details` becomes an indented line under it.
@@ -361,6 +365,7 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 /// On the human sheet, text with no `type(area): ` prefix is the human's own words, so it goes
 /// to `## Inbox` as typed (plus the `--to` tag), unstamped, for the triager to file
 /// ([`file`]). Nothing raw lands on the board. Agent-lane adds are typed by their writers.
+#[allow(clippy::too_many_arguments)]
 pub fn add(
     p: &Profile,
     log: &Logger,
@@ -368,12 +373,14 @@ pub fn add(
     text: &str,
     details: &[String],
     to: Option<&str>,
+    want: Option<&str>,
     lane: Lane,
 ) -> Result<i32> {
     let text = text.trim();
     if text.is_empty() {
         bail!("nothing to add (provide task text)");
     }
+    let want = want.map(projects::want_channel).transpose()?;
     let proj_dir = projects::project_dir(p, name)?;
     let to = to.map(parse_to).transpose()?;
     let cur = open_version_for(&lane.dir(&proj_dir));
@@ -400,10 +407,9 @@ pub fn add(
         block.extend(md::detail_lines("", details));
         let path = inbox_put(p, &proj_dir, name, &block)?;
         log.info("ptask", &format!("inboxed in {} ({name})", path.display()));
-        crate::ingest::record(
-            p,
-            &crate::ingest::Event::row("added", name, "", lane.name(), &block[0]),
-        );
+        let mut ev = crate::ingest::Event::row("added", name, "", lane.name(), &block[0]);
+        ev.want = want.map(str::to_string);
+        crate::ingest::record(p, &ev);
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
@@ -419,7 +425,10 @@ pub fn add(
         );
         return Ok(3);
     }
-    let block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
+    let mut block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
+    if want.is_some() && lane == Lane::Agent {
+        block[0] = md::add_tag(&block[0], WANT_TAG);
+    }
     if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
         bail!("{why}, so nothing was added");
     }
@@ -427,10 +436,9 @@ pub fn add(
     md::write_atomic(&path, &new)?;
     note_ids(&proj_dir, &block)?;
     log.info("ptask", &format!("added to {} ({name})", path.display()));
-    crate::ingest::record(
-        p,
-        &crate::ingest::Event::row("added", name, "", lane.name(), &block[0]),
-    );
+    let mut ev = crate::ingest::Event::row("added", name, "", lane.name(), &block[0]);
+    ev.want = want.map(str::to_string);
+    crate::ingest::record(p, &ev);
     for l in &block {
         println!("{l}");
     }
@@ -525,6 +533,9 @@ pub(crate) fn inbox_changed(p: &Profile) {
     }
     let _ = fs::write(&flag, format!("{}\n", chrono::Local::now().to_rfc3339()));
 }
+
+/// The tag a human's want carries on the agent board, put there by the writer.
+const WANT_TAG: &str = "#requested";
 
 /// Does `text` open with a well-formed `type(area): ` (README "The task row")?
 fn is_typed(text: &str) -> bool {
@@ -645,6 +656,8 @@ pub fn inbox(p: &Profile, name: &str, json: bool, lane: Lane) -> Result<i32> {
 pub(crate) struct Filing {
     pub project: Option<String>,
     pub lane: Lane,
+    /// The channel the line came in by: its agent-lane rows get `#requested`.
+    pub want: Option<&'static str>,
     pub how: How,
 }
 
@@ -747,7 +760,7 @@ pub(crate) fn file(
                 &texts.iter().map(String::as_str).collect::<Vec<_>>(),
             )?;
             let today = chrono::Local::now().date_naive();
-            let block = new_rows(
+            let mut block = new_rows(
                 dest_name,
                 &dest_proj,
                 &texts,
@@ -756,6 +769,11 @@ pub(crate) fn file(
                 &[filed_token(today)],
                 &details,
             )?;
+            if how.want.is_some() && dest_lane == Lane::Agent {
+                for l in block.iter_mut().filter(|l| md::is_open_task(l)) {
+                    *l = md::add_tag(l, WANT_TAG);
+                }
+            }
             if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
                 bail!("{why}, so nothing was filed");
             }
@@ -806,6 +824,7 @@ pub(crate) fn file(
         &line.text,
     );
     ev.lane = dest_lane.name().into();
+    ev.want = how.want.map(str::to_string);
     ev.id = match &how.how {
         How::Dup(id) => Some(id.clone()),
         How::Rows { .. } => written
@@ -2891,6 +2910,7 @@ mod inbox_tests {
         Filing {
             project: None,
             lane: Lane::Human,
+            want: None,
             how: How::Rows {
                 texts: texts.iter().map(|t| t.to_string()).collect(),
                 to: None,
@@ -2909,6 +2929,7 @@ mod inbox_tests {
             "the gun sound is off",
             &[],
             None,
+            None,
             Lane::Human,
         )
         .unwrap();
@@ -2918,6 +2939,7 @@ mod inbox_tests {
             "scratch",
             "fix(audio): gun sound",
             &[],
+            None,
             None,
             Lane::Human,
         )
@@ -3024,6 +3046,7 @@ mod inbox_tests {
         let dup = |id: &str| Filing {
             project: None,
             lane: Lane::Human,
+            want: None,
             how: How::Dup(id.into()),
         };
         assert!(file(&v.p, &v.log, "scratch", &pick, &dup("sc-9"), Lane::Human).is_err());
@@ -3036,6 +3059,42 @@ mod inbox_tests {
             "{s}"
         );
         assert!(!s.split("## Tasks").next().unwrap().contains("gun"), "{s}");
+    }
+
+    #[test]
+    fn a_want_is_stamped_by_the_writer_and_its_channel_recorded() {
+        let v = vault("want", "- the gun sound is off #agent\n", "");
+        let agent = || {
+            fs::read_to_string(task_sheet(&v.root.join("projects/scratch/agent")).unwrap()).unwrap()
+        };
+        let ingest = || fs::read_to_string(crate::ingest::path(&v.p)).unwrap_or_default();
+        let add_as = |text: &str, want: Option<&str>| {
+            add(&v.p, &v.log, "scratch", text, &[], None, want, Lane::Agent)
+        };
+        // A bad channel writes nothing; no channel is no stamp.
+        assert!(add_as("fix(audio): a #size/s", Some("shout")).is_err());
+        add_as("fix(audio): b #size/s", None).unwrap();
+        add_as("fix(audio): c #size/s", Some("voice")).unwrap();
+        let s = agent();
+        assert!(!s.contains("a #size"), "{s}");
+        let row = |w: &str| s.lines().find(|l| l.contains(w)).unwrap().to_string();
+        assert!(!row("audio): b").contains("#requested"), "{s}");
+        assert!(row("audio): c").contains("#requested"), "{s}");
+        assert!(ingest().contains(r#""want":"voice""#), "{}", ingest());
+        // File: the line's words stay as `was:`, each row is stamped, the channel is recorded.
+        let pick = Pick::new("gun sound", false).unwrap();
+        let mut how = rows(&["fix(audio): d #size/s", "fix(audio): e #size/s"]);
+        how.want = Some("outbox");
+        file(&v.p, &v.log, "scratch", &pick, &how, Lane::Human).unwrap();
+        let s = agent();
+        for w in ["audio): d", "audio): e"] {
+            assert!(
+                s.lines().any(|l| l.contains(w) && l.contains("#requested")),
+                "{s}"
+            );
+        }
+        assert!(s.contains("was: the gun sound is off"), "{s}");
+        assert!(ingest().contains(r#""want":"outbox""#), "{}", ingest());
     }
 
     #[test]

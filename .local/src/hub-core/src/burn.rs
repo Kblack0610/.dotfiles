@@ -77,6 +77,12 @@ pub struct Accounts<'a> {
     pub age: Option<f64>,
 }
 
+/// claude-acct's textfile, however old, plus one series for its age (`claude_account_textfile_age_seconds`,
+/// no account label, the oldest file when a second host exposes one) so a surface says "stale" past `burn::STALE_AFTER_SECS` instead of showing
+/// nothing; no `max without`, which would drop the metric names the table reads. An empty
+/// answer makes the table say no data.
+pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} or label_replace(max(time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"}), "__name__", "claude_account_textfile_age_seconds", "", "")"#;
+
 /// What a surface says in place of an account's figures when the textfile is not fresh.
 pub const STALE_NOTE: &str = "stale, claude-acct's textfile is not fresh (timer claude-acct-usage)";
 
@@ -159,6 +165,11 @@ pub struct Account {
     pub burn_at: Option<i64>,
     pub run_out: Option<i64>,
     pub resets: Option<i64>,
+    /// The 5-hour window: percent used and when it resets.
+    pub five_hour: Option<f64>,
+    pub five_hour_resets: Option<i64>,
+    /// What the account's sessions cost at list price over the last 24 hours.
+    pub cost_24h: Option<f64>,
 }
 
 impl Account {
@@ -265,6 +276,9 @@ fn account(name: &str, a: &BTreeMap<&str, f64>, room: Option<Room>, stale: bool)
         burn_at: epoch("on_pace_burn_timestamp_seconds"),
         run_out: epoch("run_out_timestamp_seconds"),
         resets: epoch("resets_timestamp_seconds"),
+        five_hour: get("five_hour_percent"),
+        five_hour_resets: epoch("five_hour_resets_timestamp_seconds"),
+        cost_24h: get("cost_24h_usd"),
     }
 }
 
