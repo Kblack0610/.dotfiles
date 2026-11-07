@@ -31,7 +31,7 @@ startup_mark() {
 # _ST_F[1] is the ppid, _ST_F[19] the start time in clock ticks
 _st_stat() {
   local s
-  [ -r "/proc/$1/stat" ] && read -r s <"/proc/$1/stat" || return 1
+  [ -r "/proc/$1/stat" ] && read -r s 2>/dev/null <"/proc/$1/stat" || return 1
   read -ra _ST_F <<<"${s##*) }"
   [ -n "${_ST_F[19]:-}" ]
 }
@@ -49,7 +49,7 @@ _st_claude_pid() {
   local p=$PPID comm
   if [ -n "${CLAUDE_PID:-}" ] && [ -r "/proc/$CLAUDE_PID/stat" ]; then printf '%s' "$CLAUDE_PID"; return 0; fi
   for _ in 1 2 3 4 5; do
-    [ -r "/proc/$p/comm" ] && read -r comm <"/proc/$p/comm" || return 1
+    [ -r "/proc/$p/comm" ] && read -r comm 2>/dev/null <"/proc/$p/comm" || return 1
     [ "$comm" = claude ] && { printf '%s' "$p"; return 0; }
     _st_stat "$p" || return 1
     p=${_ST_F[1]}
@@ -66,7 +66,7 @@ _st_mcp() {
   [ -r "$cfg" ] || { echo '[]'; return 0; }
   for c in $(cat "/proc/$1"/task/*/children 2>/dev/null); do
     age=$(_st_start_ms "$c") && [ -r "/proc/$c/cmdline" ] || continue
-    mapfile -d '' -t a <"/proc/$c/cmdline"
+    mapfile -d '' -t a 2>/dev/null <"/proc/$c/cmdline"
     kids+="$(( $2 - age ))"$'\t'"${a[*]}"$'\n'
   done
   jq -c --arg kids "$kids" '
@@ -84,7 +84,8 @@ startup_record() {
   _ST_TCK=$(getconf CLK_TCK 2>/dev/null) && [ "${_ST_TCK:-0}" -gt 0 ] 2>/dev/null || _ST_TCK=100
   hook_age=$(_st_start_ms $$) || hook_age=null
   if claude=$(_st_claude_pid) && claude_age=$(_st_start_ms "$claude"); then
-    mcp=$(_st_mcp "$claude" "$claude_age" "${CLAUDE_PROJECT_DIR:-$PWD}")
+    # MCP servers spawn once per process, so only a cold start pays for the scan.
+    [ "$3" != startup ] || mcp=$(_st_mcp "$claude" "$claude_age" "${CLAUDE_PROJECT_DIR:-$PWD}")
   else
     claude_age=null
   fi
@@ -102,5 +103,5 @@ startup_record() {
      process_ms: (if $c != null and $h != null then $c - $h else null end),
      hook_ms: $hook_ms, ready_ms: $c,
      hooks: [{name: $hook, ms: $hook_ms, phases: $phases}], mcp: $mcp}' \
-    >>"$CLAUDE_STARTUP_LOG" 2>/dev/null || true
+    2>/dev/null >>"$CLAUDE_STARTUP_LOG" || true   # 2> first: a failed open is quiet too
 }

@@ -3732,7 +3732,7 @@ start_rows() {
   assert_failure 1
 }
 
-@test "startup --check: exit 2 when no start was recorded, or none in startup_stale_h" {
+@test "startup --check: exit 2 when no start was recorded, none in startup_stale_h, or the newest has no ready time" {
   export CLAUDE_STARTUP_LOG="$SANDBOX/startup.jsonl" BENCH_NOW=$((T0 + 60))
   run "$SUBJECT" startup --check
   assert_failure 2
@@ -3745,6 +3745,11 @@ start_rows() {
   jq -nc --argjson e $((T0 + 48 * 3600)) '{epoch: $e, source: "resume", ready_ms: null}' >> "$CLAUDE_STARTUP_LOG"
   BENCH_NOW=$((T0 + 49 * 3600)) run "$SUBJECT" startup --check
   assert_success
+  # A start whose claude process was not found is a blind recorder, not a fast one.
+  jq -nc --argjson e $((T0 + 48 * 3600)) '{epoch: $e, source: "startup", ready_ms: null}' >> "$CLAUDE_STARTUP_LOG"
+  BENCH_NOW=$((T0 + 49 * 3600)) run "$SUBJECT" startup --check
+  assert_failure 2
+  assert_output --partial 'the newest start has no ready time'
   start_rows 5 1000 > "$CLAUDE_STARTUP_LOG"
   printf '%s\n' startup_stale_h=72 > "$KPI_THRESHOLDS"
   BENCH_NOW=$((T0 + 49 * 3600)) run "$SUBJECT" startup --check

@@ -4,6 +4,7 @@
 # the claude-startup watch read it, so a row that goes missing is a watch that goes blind.
 
 setup() {
+  bats_require_minimum_version 1.5.0
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
@@ -75,4 +76,9 @@ EOF
   run start
   assert_success
   assert_output --partial 'Session Preflight'
+  # A log path that cannot be opened says nothing on the hook's stderr either.
+  rm "$HOME/.agent/telemetry"; mkdir -p "$CLAUDE_STARTUP_LOG"
+  run --separate-stderr start
+  assert_success
+  assert_equal "$stderr" ''
 }

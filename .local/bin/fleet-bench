@@ -43,7 +43,8 @@
 #   fleet-bench startup [--json|--check]
 #                                Claude Code start times (CLAUDE_STARTUP_LOG): medians over the last
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
-#                                2 with no SessionStart row in startup_stale_h (the claude-startup watch)
+#                                2 with no SessionStart row in startup_stale_h or a start with no ready
+#                                time (the claude-startup watch)
 #   fleet-bench pipeline [--json]
 #                                where every item sits, inbox to done: WIP and age per step, in and out,
 #                                dwell, the bottleneck step and the record's drift from the queue folders
@@ -2236,7 +2237,8 @@ cmd_chain() {
 # the medians of ready, process (harness boot) and hook ms, each hook phase and each MCP server's
 # spawn. The threshold and window are kpi-thresholds keys, the same startup_ready_ms_p50_max the KPI
 # table uses. --check is the claude-startup watch's probe: exit 1 past the threshold, 2 when no
-# SessionStart row (a resume counts) is newer than startup_stale_h (48): a quiet recorder trips too.
+# SessionStart row (a resume counts) is newer than startup_stale_h (48) or the newest start has no
+# ready time: a quiet or blind recorder trips too.
 cmd_startup() {
   local lim='{}' json
   case "${1:-}" in ""|--json|--check) ;; *) say "usage: fleet-bench startup [--json|--check]"; return 2 ;; esac
@@ -2253,6 +2255,7 @@ cmd_startup() {
        mcp_spawn_ms_p50: p50by($w[] | .mcp[]? | {key: .name, value: .spawn_ms}),
        threshold: $max, window: $n, stale_h: $stale,
        status: (if $newest == null or $newest < $t - $stale * 3600 then "stale"
+                elif ([$r[] | select(.source == "startup")] | last | .ready_ms | type) != "number" then "blind"
                 elif $max != null and $ready > $max then "past" else "ok" end)}') || return 1
   [ "${1:-}" = --json ] && { printf '%s\n' "$json"; return 0; }
   jq -r "$JQ_LIB"'
@@ -2260,6 +2263,7 @@ cmd_startup() {
     if .status == "stale" then
       if .newest_epoch == null then "startup: no Claude Code start recorded, is startup-telemetry.sh deployed?"
       else "startup: no Claude Code start recorded in \(.stale_h)h (newest \(.newest_epoch | todate))" end
+    elif .status == "blind" then "startup: rows are written but the newest start has no ready time: is its claude process found?"
     else "startup: ready p50 \(.ready_ms_p50 | s) over the last \(.starts) starts"
          + (if .threshold == null then ", no startup_ready_ms_p50_max"
             elif .status == "past" then ", past startup_ready_ms_p50_max \(.threshold | s)"
