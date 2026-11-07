@@ -443,7 +443,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 # ar-900: reap failed a live item on one agent-panel read, and the shepherd had to mv its file back by hand.
-@test "reopen puts a falsely-done item back with its session and starts its row again; an active or landed slug is refused" {
+@test "reopen puts a failed item back with its session and note and starts its row again; an active, ok or cancelled one is refused" {
   printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/notes"
   chmod +x "$SANDBOX/bin/notes"
   "$AQ" add --project game --running --slug cut "cut the beta" >/dev/null
@@ -463,7 +463,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -z "$(field "$f" finished)" ] || fail "finished: survived the reopen"
   [ "$(field "$f" session)" = "lab:game-agent-1" ] || fail "session: was lost"
   [ "$(field "$f" sessions)" = e4347d61 ] || fail "sessions: was lost"
-  [ "$(field "$f" note)" = "reopened from done (failed): reap read live e4347d61 as gone" ] || fail "note: $(field "$f" note)"
+  [ "$(field "$f" note)" = "reopened from done (failed: session lab:game-agent-1 ended before it closed the item): reap read live e4347d61 as gone" ] || fail "note: $(field "$f" note)"
   # A human-lane row, so no --agent: started again on its own board.
   run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
   assert_output "notes --profile bnb ptask game start gm-7"
@@ -476,15 +476,20 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -n "$(field "$(item waiting cut)" waiting)" ] || fail "--to waiting did not stamp waiting:"
   run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
   assert_output "notes ptask game --agent start gm-7"
-  # A cancel was a decision, and a landed item is new work: neither is a reopen.
+  # A row that will not start again fails the reopen, after the item is back.
+  "$AQ" move cut done --status failed >/dev/null
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/notes"
+  run "$AQ" reopen cut
+  assert_failure; assert_output --partial "could not be started again"
+  [ -n "$(item running cut)" ] || fail "a failed row restart left the item done"
+  # A cancel was a decision and an ok close may have started the items after it: neither is a reopen.
   "$AQ" cancel cut >/dev/null
   run "$AQ" reopen cut
-  assert_failure; assert_output --partial "cancelled"
+  assert_failure; assert_output --partial "closed cancelled, not failed"
   "$AQ" add --project game --running --slug cut "cut the beta again" >/dev/null
-  "$AQ" set cut "pr=Org/game#3" "merged=abc123" >/dev/null
   "$AQ" move cut done --status ok >/dev/null
   run "$AQ" reopen cut
-  assert_failure; assert_output --partial "landed"
+  assert_failure; assert_output --partial "closed ok, not failed"
   run "$AQ" reopen nosuch
   assert_failure; assert_output --partial "no finished item"
 }

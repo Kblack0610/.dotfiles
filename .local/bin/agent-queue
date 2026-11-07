@@ -1332,11 +1332,14 @@ cmd_requeue() {
 # such as a reap that read a live session as gone (ar-900, 2026-11-07: the shepherd had to move the
 # file under the lock by hand). The latest done item with the slug goes to running (or waiting) with
 # its session: and sessions: as they were, so the next reap reads it live again; status: and
-# finished: go, note: says why. Its board row, which the close un-started, is started again.
-# Refused for a slug still active, and for a landed item (merged:): new work under it is add --repeat.
+# finished: go, note: says why and keeps the close's own note. Its board row, which the close
+# un-started, is started again, after the queue lock is let go. Only a failed close is reopened: an ok
+# one may have started the items after: it (start_next) and a cancel closed its session, so either is
+# new work under the slug. A reap that parked a live item in waiting/ needs none: the next reap that
+# lists its Claude moves it back to running.
 cmd_reopen() {
   local usage="usage: agent-queue reopen <slug> [--to running|waiting] [--why text]"
-  local slug="${1:?$usage}" to=running why="" f dest status row prof flag=()
+  local slug="${1:?$usage}" to=running why="" f dest status note row prof flag=()
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1350,13 +1353,11 @@ cmd_reopen() {
   lock
   [ -z "$(find_item "$slug")" ] || die "$slug is still active: nothing to reopen"
   f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
-  [ -z "$(fm_get "$f" merged)" ] || die "$slug landed (merged: $(fm_get "$f" merged)); new work under it is agent-queue add --repeat"
-  status="$(fm_get "$f" status)"
-  # A cancel was someone's decision, and it closed the item's session: that is new work, not a false close.
-  [ "$status" != cancelled ] || die "$slug was cancelled, which closed its session: add it again instead"
+  status="$(fm_get "$f" status)" note="$(fm_get "$f" note)"
+  [ "$status" = failed ] || die "$slug closed $status, not failed: that is new work under the slug (agent-queue add${status:+ --repeat})"
   header_del "$f" status finished
   [ "$to" = running ] || header_set "$f" waiting "$(now_utc)"
-  header_set "$f" note "reopened from done ($status)${why:+: $why}"
+  header_set "$f" note "reopened from done (failed${note:+: $note})${why:+: $why}"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "done ($status) -> $to: reopened${why:+: $why}"
   echo "$slug: done -> $to (reopened, was $status)"
@@ -1365,11 +1366,10 @@ cmd_reopen() {
   row="$(fm_get "$dest" row)" prof="$(fm_get "$dest" profile)"
   [ -n "$row" ] || return 0
   case "$(fm_get "$dest" lane)" in '' | agent) flag=(--agent) ;; esac
-  if notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1; then
-    echo "$slug: board row ${row#*:} started again"
-  else
-    echo "agent-queue: $slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again" >&2
-  fi
+  exec 8>&-
+  notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1 ||
+    die "$slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} start ${row#*:}"
+  echo "$slug: board row ${row#*:} started again"
 }
 
 # lane_outcome <lane_run> <from> <to> <status> -- the model-lane run a dispatch start logged gets
