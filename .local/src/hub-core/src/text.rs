@@ -66,6 +66,17 @@ pub fn age(secs: i64) -> String {
     }
 }
 
+/// Unix seconds at the local midnight that starts the day holding `now`.
+pub fn local_day_start(now: i64) -> i64 {
+    use chrono::{Local, TimeZone};
+    Local
+        .timestamp_opt(now, 0)
+        .single()
+        .and_then(|t| t.date_naive().and_hms_opt(0, 0, 0))
+        .and_then(|d| Local.from_local_datetime(&d).earliest())
+        .map_or(now, |t| t.timestamp())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

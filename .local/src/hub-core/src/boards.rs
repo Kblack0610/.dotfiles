@@ -46,8 +46,19 @@ pub fn is_proposal_file(dir: &Path, p: &Path) -> bool {
 /// `state.json` (null when missing or unreadable) with its `asks` read live from agent-ask. The
 /// file is a pass behind (fleet-state.timer: a minute after the last ~30s run), and an ask's one
 /// home is agent-ask's store, so a board shows what the questions panel shows. A failed read
-/// leaves no asks and names agent-ask in `unreadable`, as fleet-sessions does.
+/// leaves no asks and names agent-ask in `unreadable`, as fleet-sessions does. The sources only
+/// NEEDS YOU reads (critical mail, janitor lines, budget stops) join here too (`signals::join`).
 pub fn state(path: &Path, r: &dyn Runner) -> Value {
+    state_with(
+        path,
+        r,
+        &crate::signals::Paths::from_env(),
+        chrono::Utc::now().timestamp(),
+    )
+}
+
+/// `state` with the signal sources and clock given, for a test.
+pub fn state_with(path: &Path, r: &dyn Runner, signals: &crate::signals::Paths, now: i64) -> Value {
     let mut state = std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -66,6 +77,7 @@ pub fn state(path: &Path, r: &dyn Runner) -> Value {
             }
         }
     }
+    crate::signals::join(&mut state, signals, r, now);
     state
 }
 
@@ -880,6 +892,9 @@ mod tests {
     struct Fixed(Result<String, String>);
     impl Runner for Fixed {
         fn run(&self, argv: &[String]) -> Result<String, String> {
+            if argv[0] == "notes" {
+                return Ok("/nonexistent".into());
+            }
             assert_eq!(argv.join(" "), "agent-ask list --all --pending");
             self.0.clone()
         }
@@ -898,6 +913,13 @@ mod tests {
         .unwrap();
         let tsv = "new\tdotfiles\t\tpending\tquestion\tWhich one?\ta|b\t\t\t\ta\t\
                    2026-11-05T14:00:00-0800\tdotfiles-agent-1\t\t\t\ttake-recommend\n";
+        std::fs::create_dir_all(dir.join("surface")).unwrap();
+        let signals = crate::signals::Paths {
+            comms: dir.clone(),
+            confs: dir.clone(),
+            agentctl: dir.clone(),
+        };
+        let state = |f: &Path, r: &Fixed| state_with(f, r, &signals, 0);
         let s = state(&f, &Fixed(Ok(tsv.into())));
         assert_eq!(s["asks"].as_array().unwrap().len(), 1);
         assert_eq!(s["asks"][0]["id"], "new");

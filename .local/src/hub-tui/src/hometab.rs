@@ -15,6 +15,10 @@ fn kind(k: Kind) -> &'static str {
         Kind::Session => "session",
         Kind::Queue => "queue",
         Kind::Sheet => "sheet",
+        Kind::Budget => "budget",
+        Kind::Night => "night",
+        Kind::Janitor => "janitor",
+        Kind::Mail => "mail",
         Kind::Nightly => "nightly",
         Kind::Red => "red",
     }
@@ -77,7 +81,8 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
                     // below every row only the human can act on).
                     let machine = n.score.as_ref().is_some_and(|s| !s.human);
                     let (mark, style) = match n.kind {
-                        Kind::Stopped | Kind::Nightly | Kind::Red => ("", p.bad()),
+                        // A condition: no score, nothing a wait counted.
+                        _ if n.score.is_none() => ("", p.bad()),
                         _ if machine => ("~", p.dim()),
                         _ => ("", ratatui::style::Style::new()),
                     };
