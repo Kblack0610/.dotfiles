@@ -203,7 +203,7 @@ impl CostsView {
             out.push(clip_line(
                 Line::styled(
                     format!(
-                        "LANDED, REDO, REV and $/PR are fleet-bench models{d}, queue items only"
+                        "LANDED, REDO, REV and $/PR are fleet-bench models{d}, per family (opus), queue items only"
                     ),
                     p.dim(),
                 ),

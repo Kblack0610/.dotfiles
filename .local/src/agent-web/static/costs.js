@@ -51,7 +51,9 @@ function costsBody(d) {
   const t = d.table, rows = d.rows || [];
   if (!rows.length) return `<div class="panel">${t.total ? "Nothing matches the query." : "Nothing spent in this window."}</div>`;
   const shown = rows.slice(0, LOG_ROWS);
-  return `<div class="panel scroll"><table class="tbl">${tblHead(t, Object.fromEntries(d.columns.map((k) => [k, COST_COLS[k]])))}` +
+  // The table sends every Line column in one order; each cut draws its own (model before harness).
+  const head = { ...t, columns: d.columns.map((k) => t.columns.find((c) => c.key === k)).filter(Boolean) };
+  return `<div class="panel scroll"><table class="tbl">${tblHead(head, Object.fromEntries(d.columns.map((k) => [k, COST_COLS[k]])))}` +
     shown.map((r) => `<tr>${d.columns.map((k) => costCell(r, k, d)).join("")}</tr>`).join("") + `</table>${older(rows.length - shown.length)}</div>`;
 }
 
@@ -82,7 +84,7 @@ function costsHead(d) {
 // The note under the table, the TUI's lines (coststab.rs `lines`).
 function costsTail(d) {
   const ev = d.by === "model" || d.by === "harness"
-    ? ` Landed, redo, rev and $/PR are fleet-bench models${d.eval_days ? ` over ${d.eval_days}d` : ""}, queue items only.` : "";
+    ? ` Landed, redo, rev and $/PR are fleet-bench models${d.eval_days ? ` over ${d.eval_days}d` : ""}, per family (opus), queue items only.` : "";
   return `<div class="muted fold">${d.unpriced ? `<span class="warn">${esc(d.unpriced)}.</span> ` : ""}Rows: ${esc(d.source)}.${ev} ` +
     `${d.table.shown} of ${d.table.total} rows, ${d.unpriced ? "-" : usd(d.shown_usd)}.</div>`;
 }

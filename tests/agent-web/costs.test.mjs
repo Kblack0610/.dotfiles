@@ -39,6 +39,8 @@ const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort:
 const line = (o) => ({ session: null, title: null, tool: null, kind: null, project: null, harness: null, model: null, runner: null, sessions: null, calls: null, tokens: null, cost: 0, share: 0, landed: null, redo: null, reverts: null, per_pr: null, src: null, pr: null, at: null, ...o });
 // The shape hub_core::costs::Board serializes to: the model cut over 7d, sorted by cost ascending.
 const MODEL_COLS = ["model", "harness", "sessions", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
+// The table's columns are every Line column in Line::COLUMNS order, whatever the cut.
+const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src", "pr", "at"];
 const board = (o = {}) => ({
   at: 1794000000, by: "model", window: "7d",
   cuts: ["session", "model", "harness", "tool", "project", "runner", "kind"], windows: ["24h", "7d", "30d"],
@@ -51,7 +53,7 @@ const board = (o = {}) => ({
     line({ model: "opus-5-5", harness: "claude", sessions: 7, tokens: 9e9, cost: 36, share: 0.9, landed: 0.875, redo: 0, reverts: 1, per_pr: 5.14, src: "outcomes" }),
   ],
   shown_usd: 40,
-  table: { q: "", state: "", sort: "cost", dir: "asc", total: 2, shown: 2, states: [], columns: MODEL_COLS.map((k) => (k === "cost" ? col(k, "asc", ["", "desc"]) : col(k))), facets: [{ key: "harness", on: null, clear: "", values: [{ value: "codex", n: 1, q: "harness:codex" }] }] },
+  table: { q: "", state: "", sort: "cost", dir: "asc", total: 2, shown: 2, states: [], columns: LINE_COLS.map((k) => (k === "cost" ? col(k, "asc", ["", "desc"]) : col(k))), facets: [{ key: "harness", on: null, clear: "", values: [{ value: "codex", n: 1, q: "harness:codex" }] }] },
   grafana: "https://grafana.example/d/kb-agents-overview", ...o,
 });
 const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("renderCosts()"); return box.innerHTML; };
@@ -61,13 +63,15 @@ test("the model cut draws the server's columns, order and sort, with its evaluat
   const h = show(board());
   for (const k of ["model", "harness", "sess", "tokens", "landed", "redo", "rev", "\\$/PR", "src"]) assert.match(h, new RegExp(`>${k}</button></th>`), `header ${k}`);
   assert.doesNotMatch(h, /data-tsort="runner"/, "a column the cut does not name is not drawn");
+  const heads = [...h.matchAll(/title="sort by ([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(heads.slice(0, 2), ["model", "harness"], "the header is in the cut's order, as the cells are");
   assert.match(h, /aria-sort="ascending"><button class="thsort" data-tsort="" data-tdir="desc" title="sort by cost">cost \^/, "the sorted header says its direction");
   assert.ok(h.indexOf("gpt-5-codex") < h.indexOf("opus-5-5"), "the server's order is kept");
   assert.match(h, /<td class="n">\$5\.14<\/td>/, "$ per PR");
   assert.match(h, /<td class="n">0\.88<\/td>/, "landed rate");
   assert.match(h, /<td class=" warn">mixed<\/td>/, "a joined evaluation is flagged");
   assert.match(h, /<td class="n">9\.0B<\/td>/);
-  assert.match(h, /fleet-bench models over 7d, queue items only/);
+  assert.match(h, /fleet-bench models over 7d, per family \(opus\), queue items only/);
   assert.match(h, /2 of 2 rows, \$40\.00\./);
   assert.match(h, /<button class="on" data-cv="by" data-cval="model">model<\/button>/);
   assert.match(h, /<button class="on" data-cv="w" data-cval="7d">7d<\/button>/);
@@ -85,7 +89,7 @@ test("the head says spend, the live gauges and how old each source is", () => {
 
 test("the tool cut with no allocated dollars prints no dollars", () => {
   const note = "no snapshot in this window allocates dollars to tools yet: calls and tokens only";
-  const h = show(board({ by: "tool", columns: ["tool", "calls", "tokens", "cost", "share"], unpriced: note, rows: [line({ tool: "Bash", calls: 40, tokens: 2e6, cost: 0, share: 0 })], table: { ...board().table, columns: ["tool", "calls", "tokens", "cost", "share"].map((k) => col(k)), sort: "", dir: "desc", total: 1, shown: 1 } }));
+  const h = show(board({ by: "tool", columns: ["tool", "calls", "tokens", "cost", "share"], unpriced: note, rows: [line({ tool: "Bash", calls: 40, tokens: 2e6, cost: 0, share: 0 })], table: { ...board().table, columns: LINE_COLS.map((k) => col(k)), sort: "", dir: "desc", total: 1, shown: 1 } }));
   assert.match(h, /<td class="n">-<\/td><td class="n">-<\/td><\/tr>/, "cost and share are unknown, not zero");
   assert.match(h, new RegExp(`<span class="warn">${note}\\.</span>`));
   assert.match(h, /1 of 1 rows, -\./);

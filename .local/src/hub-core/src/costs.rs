@@ -381,8 +381,12 @@ fn shares(s: &Spent) -> Vec<(String, f64)> {
             return pos.into_iter().map(|(m, v)| (m.clone(), v / sum)).collect();
         }
     }
-    let mut names: Vec<&String> = s.models.iter().filter(real).collect();
-    names.dedup();
+    let mut seen = BTreeSet::new();
+    let names: Vec<&String> = s
+        .models
+        .iter()
+        .filter(|m| real(m) && seen.insert(*m))
+        .collect();
     match names.as_slice() {
         [] => vec![("unrecorded".into(), 1.0)],
         [one] => vec![((*one).clone(), 1.0)],
@@ -394,6 +398,16 @@ fn shares(s: &Spent) -> Vec<(String, f64)> {
 }
 
 /// The window's sessions as slices.
+/// What a session cost: its `cost_usd`, else the sum of its split, which is what it measured;
+/// none when it records neither. The tiles and the table both price a session by this.
+fn cost(s: &Spent) -> Option<f64> {
+    s.cost_usd.or_else(|| {
+        s.cost_by_model
+            .as_ref()
+            .map(|m| m.values().filter(|v| **v > 0.0).sum())
+    })
+}
+
 pub fn slices(sessions: &[Spent], since: i64) -> Vec<Slice> {
     let mut out = Vec::new();
     for s in sessions {
@@ -401,12 +415,7 @@ pub fn slices(sessions: &[Spent], since: i64) -> Vec<Slice> {
         if at < since {
             continue;
         }
-        // A row with no cost but a split books the split, which is what it measured.
-        let whole = s.cost_usd.unwrap_or_else(|| {
-            s.cost_by_model
-                .as_ref()
-                .map_or(0.0, |m| m.values().filter(|v| **v > 0.0).sum())
-        });
+        let whole = cost(s).unwrap_or(0.0);
         for (model, frac) in shares(s) {
             let alias = if model.contains('+') {
                 String::new()
@@ -695,11 +704,23 @@ fn runner_lines(calls: &[Call], since: i64) -> Vec<Line> {
         .collect()
 }
 
-/// The token snapshots inside the window: a day's file covers that day, so 24h is the newest.
-fn tool_lines(snaps: &[Snapshot], days: usize) -> Vec<Line> {
+/// The token snapshots inside the window, newest first: a day's file covers that day, so 24h is
+/// the newest. The nightly writer runs a day behind, so the oldest kept is dated one day before
+/// the window opens; a snapshot older than that is not this window's, however few there are.
+fn in_window(snaps: &[Snapshot], at: i64, secs: i64) -> impl Iterator<Item = &Snapshot> {
+    let oldest = chrono::DateTime::from_timestamp(at - secs - DAY, 0)
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_default();
+    snaps
+        .iter()
+        .take((secs / DAY) as usize)
+        .filter(move |s| s.date >= oldest)
+}
+
+fn tool_lines<'a>(snaps: impl Iterator<Item = &'a Snapshot>) -> Vec<Line> {
     let mut by: BTreeMap<String, Line> = BTreeMap::new();
     let mut unallocated: Option<f64> = None;
-    for s in snaps.iter().take(days) {
+    for s in snaps {
         for t in &s.tools {
             let l = by.entry(t.tool.clone()).or_insert_with(|| Line {
                 tool: Some(t.tool.clone()),
@@ -747,9 +768,9 @@ pub fn totals(sessions: &[Spent], now: i64) -> Vec<Total> {
                 .collect();
             Total {
                 window: w,
-                usd: inw.iter().map(|s| s.cost_usd.unwrap_or(0.0)).sum(),
+                usd: inw.iter().filter_map(|s| cost(s)).sum(),
                 sessions: inw.len(),
-                unpriced: inw.iter().filter(|s| s.cost_usd.is_none()).count(),
+                unpriced: inw.iter().filter(|s| cost(s).is_none()).count(),
             }
         })
         .collect()
@@ -851,7 +872,7 @@ pub fn board(c: &Costs, by: &str, w: &str, q: &str, sort: &str, dir: &str) -> Bo
             let all = if by == "runner" {
                 runner_lines(&c.calls, since)
             } else {
-                tool_lines(&c.snapshots, (secs / DAY) as usize)
+                tool_lines(in_window(&c.snapshots, c.at, secs))
             };
             let v = View::new::<Line>(q, "", "", "");
             let (kept, s) = v.summary(&all);
@@ -874,7 +895,7 @@ pub fn board(c: &Costs, by: &str, w: &str, q: &str, sort: &str, dir: &str) -> Bo
     // No snapshot in the window carries the allocation yet, so the tool cut has calls and
     // tokens but no dollars: the surfaces print "-" and say why, never $0.
     let unpriced = by == "tool"
-        && !c.snapshots.iter().take((secs / DAY) as usize).any(|s| {
+        && !in_window(&c.snapshots, c.at, secs).any(|s| {
             s.unallocated_usd.is_some() || s.tools.iter().any(|t| t.allocated_cost_usd.is_some())
         });
     let shown_usd: f64 = lines.iter().map(|l| l.cost).sum();
@@ -1094,6 +1115,13 @@ mod tests {
         let usd: Vec<f64> = t.iter().map(|t| t.usd).collect();
         assert_eq!(usd, [10.0, 15.5, 16.0]);
         assert_eq!(t[1].sessions, 3);
+        // A row with a split and no cost_usd is priced by its split, as the table prices it.
+        let mut c = costs();
+        c.sessions[0].cost_usd = None;
+        c.sessions[0].cost_by_model = Some(BTreeMap::from([("claude-opus-5-5".into(), 4.0)]));
+        let b = board(&c, "session", "24h", "", "", "");
+        assert_eq!(b.totals[0].usd, b.shown_usd, "the tile and the table agree");
+        assert_eq!(b.totals[0].unpriced, 0);
     }
 
     #[test]
@@ -1149,6 +1177,13 @@ mod tests {
         assert!(
             board(&old, "tool", "7d", "", "", "").unpriced.is_some(),
             "a snapshot from before the allocation"
+        );
+        let mut stale = costs();
+        stale.snapshots[0].date = "2026-12-01".into();
+        let b = board(&stale, "tool", "7d", "", "", "");
+        assert!(
+            b.rows.is_empty(),
+            "a snapshot from before the window is not in it"
         );
     }
 
@@ -1228,6 +1263,12 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].model, "opus-5-5+haiku-4-5");
         assert_eq!(v[0].alias, "", "a joined model has no evaluation");
+        s.models.push("claude-opus-5-5".into());
+        assert_eq!(
+            slices(&[s.clone()], 0)[0].model,
+            "opus-5-5+haiku-4-5",
+            "a model named twice is joined once"
+        );
         s.models.clear();
         assert_eq!(slices(&[s], 0)[0].model, "unrecorded");
         assert_eq!(alias("claude-opus-5-5"), "opus");

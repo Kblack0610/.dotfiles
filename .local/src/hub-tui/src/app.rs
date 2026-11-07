@@ -1321,7 +1321,13 @@ impl App {
         if self.tab == Tab::Fleet && self.fleet_key(k) {
             return;
         }
-        if self.tab == Tab::Costs && self.cv.key(k.code) {
+        // A Ctrl or Alt chord is never one of the tab's letters, nor text for its query.
+        if self.tab == Tab::Costs
+            && !k
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && self.cv.key(k.code)
+        {
             self.scroll = 0;
             return;
         }
