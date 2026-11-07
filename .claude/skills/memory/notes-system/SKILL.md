@@ -64,7 +64,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | Linux | `notes-watch.service` (inotifywait + 3s debounce) | `notes-mqtt.service` (mosquitto_sub) | `git-sync-notes.timer` 5min |
 | macOS | `com.kblack.notes-watch.plist` (launchd `WatchPaths`) | `com.kblack.notes-mqtt.plist` | `com.kblack.git-sync-notes.plist` 5min |
 | Windows | `notes-watch` Scheduled Task (FileSystemWatcher) | `notes-mqtt` Scheduled Task (mosquitto_sub.exe) | `notes-sync-fallback` Scheduled Task 5min |
-| Termux | `~/.termux/boot/notes-watch.sh` (inotifywait) | ntfy Android app (FCM-backed) | crond 5min |
+| Termux | `~/.termux/boot/notes-watch.sh` (inotifywait) | ntfy Android app (FCM-backed) | crond 5min <!-- skill-drift: ignore: a path on the Termux phone --> |
 
 ## Profiles
 
@@ -154,11 +154,11 @@ Thin wrapper that `exec`s `~/.local/src/git/git-sync-notes.sh`. Pulls from origi
 
 ### `notes-termux-bootstrap`
 
-Android-specific variant of `notes-bootstrap`. Use on Termux when the auto-detection needs an override. Also installs `neovim`/`tmux`/`rust` and writes the `~/.shortcuts/notes` Termux:Widget shortcut.
+Android-specific variant of `notes-bootstrap`. Use on Termux when the auto-detection needs an override. Also installs `neovim`/`tmux`/`rust` and writes the `~/.shortcuts/notes` Termux:Widget shortcut. <!-- skill-drift: ignore: a path on the Termux phone -->
 
 ### `notes-mobile`
 
-One-tap entry into today's daily note: pull, open `notes path daily` in neovim inside a persistent `notes` tmux session (reattaches on reopen), push on exit. On Termux it is wired to a home-screen icon via the `~/.shortcuts/notes` Termux:Widget shortcut (install the Termux:Widget add-on APK, then place the widget). Runs on desktop/macOS too for testing.
+One-tap entry into today's daily note: pull, open `notes path daily` in neovim inside a persistent `notes` tmux session (reattaches on reopen), push on exit. On Termux it is wired to a home-screen icon via the `~/.shortcuts/notes` Termux:Widget shortcut (install the Termux:Widget add-on APK, then place the widget). Runs on desktop/macOS too for testing. <!-- skill-drift: ignore: a path on the Termux phone -->
 
 ### `journal-create` (deprecated)
 

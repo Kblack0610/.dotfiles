@@ -68,3 +68,16 @@ setup() {
   # negative control: the real missing tool after them is still found
   assert_output 'no-such-tool-xyz'
 }
+
+@test "a shell function the doc defines is not NOCMD, a missing tool beside it is" {
+  printf '%s\n' '```bash' \
+    'mem0() { curl -fsS "$@"; }' \
+    'mem0 -X POST "$URL/search"' \
+    'function ui-bounds() { :; }' \
+    'ui-bounds --text x' \
+    'no-such-tool-xyz --flag' \
+    '```' > "$HOME/doc.md"
+  DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
+  run jq -r '.findings[] | select(.type == "NOCMD") | .item' <<< "$output"
+  assert_output 'no-such-tool-xyz'
+}

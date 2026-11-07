@@ -38,6 +38,8 @@ Use this skill when you need to:
 
 This skill is relevant for Meta VR Glasses and Meta Quest headsets (Quest 2, Quest 3, Quest 3S, Quest Pro) running Horizon OS.
 
+Not for frame timing from a trace (`hz-perfetto-debug`) or CPU hotspots (`hz-simpleperf-debug`). An unclear build path is `hz-quest-verify-first`.
+
 ## Prerequisites
 
 Before using this skill, ensure the following are in place:
