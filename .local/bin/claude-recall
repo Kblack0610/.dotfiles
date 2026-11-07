@@ -1418,6 +1418,7 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
                 fc = fail_class(text)
                 emit("n", kind, project, "failed", 1, nctx)
                 emit("group", "fail", fc, 1, len(text) * later, nctx)
+                emit("group", "fail_tool", "__".join(name.split("__")[:2]) if name.startswith("mcp__") else name, 1, len(text) * later, nctx)
                 masked = re.sub(r"\d+", "N", re.sub(r"^Exit code \d+\s*", "", text)[:56]).replace("\n", " ")
                 emit("group", "fail_text", f"{fc}: {head}: {masked}", 1, 0, nctx)
                 if nxt and any(n == name for _, n, _ in nxt["calls"]):
@@ -1551,6 +1552,7 @@ def cmd_tool_calls(a):
         print(f"  {t['calls']:>8,} {t['next_ctx']:>14,} {t['carried'] // 4:>12,}  {t['key']}")
     titles = (("serial", "serial reads one response could have carried (upper bound), by the later call"),
               ("repeat", "exact repeats in one stretch, by call"), ("fail", "failed calls, by class"),
+              ("fail_tool", "failed calls, by tool (MCP by server)"),
               ("fail_text", "failed calls, by message"), ("retry", "the response after a failure"),
               ("background", "background shells and how they are waited on"),
               ("bg_wait", "background shells by run time; ctx is the start ack plus the wake"),

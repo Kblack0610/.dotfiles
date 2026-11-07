@@ -390,6 +390,8 @@ def main():
     ap.add_argument("--since", help="start of the window (YYYY-MM-DD, an ISO time, or 90m/12h/2d ago); overrides --days")
     ap.add_argument("--before", help="end of the window (YYYY-MM-DD or ISO time), default now")
     ap.add_argument("--top", type=int, default=15, help="sessions in the by-session table (all in --json)")
+    ap.add_argument("--sort", choices=("cost", "turns", "context"), default="cost",
+                    help="order of the by-session table and its --json: registry cost (default), turns, or context tokens")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     end = ts(a.before) if a.before else dt.datetime.now().timestamp()
@@ -467,7 +469,10 @@ def main():
             "wait_share": round(v["wait_context"] / v["context"], 3) if v["context"] else None,
             "compactions": v["compactions"], "first_turn_context": v.get("first_turn_context"),
             "merged_prs": sp, "cost_per_merged_pr": round(c / len(sp), 2) if sp and c is not None else None}
-    sessions = dict(sorted(sessions.items(), key=lambda x: (-(x[1]["cost_usd"] or 0), -x[1]["context"])))
+    by_field = {"cost": lambda x: (-(x[1]["cost_usd"] or 0), -x[1]["context"]),
+                "turns": lambda x: (-x[1]["turns"], -x[1]["context"]),
+                "context": lambda x: (-x[1]["context"], -x[1]["turns"])}
+    sessions = dict(sorted(sessions.items(), key=by_field[a.sort]))
     turns_all = sum(v["turns"] for v in acc["mix"].values())
 
     def q(p):
@@ -549,7 +554,7 @@ def main():
     print(f"wait-style calls: {wt['calls']:,}, context {m(wt['context'])} ({wt['share']} of all)")
     print("turn mix: " + ", ".join(f"{k} {v['turns']:,} ({v['share']})" for k, v in out["turn_mix"].items()))
     print(f"compactions: {out['compactions']}\n")
-    print(f"by session (top {a.top} of {len(sessions)}; cost is the session's whole run, from the registry)")
+    print(f"by session (top {a.top} of {len(sessions)} by {a.sort}; cost is the session's whole run, from the registry)")
     print("  " + "\t".join(["session", "project", "origin", "model", "cost_usd", "turns", "context", "inv/wait/write/reply",
                             "wait_share", "compactions", "first_turn", "merged_prs", "per_pr"]))
     for sid, v in list(sessions.items())[:a.top]:

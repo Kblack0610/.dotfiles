@@ -2,7 +2,7 @@
 # agentctl-session-outcomes - nightly, model-free record of what each session did.
 #
 #   agentctl-session-outcomes [run] [--all]                observe due sessions (--all: every one)
-#   agentctl-session-outcomes worst [--project P] [--days N] [-n N] [--json]
+#   agentctl-session-outcomes worst [--by hook|skill] [--project P] [--days N] [-n N] [--json]
 #   agentctl-session-outcomes card <session-id prefix> [--json]   one session's full card
 #   agentctl-session-outcomes ended [--days N]             the sessions that stopped that recently, one JSON line each, newest first
 #   agentctl-session-outcomes costs [--days N]             what each session in the window cost and on what, runners too (the hub's Costs tab)
@@ -457,11 +457,43 @@ cmd_langfuse() {
   echo
 }
 
-# worst: the sessions to look at first over the last N days, as a markdown table.
+# so_worst_by KIND PROJECT DAYS TOP JSON: outcome rows on stdin, names ranked by calls (see cmd_worst).
+so_worst_by() {
+  jq -rn --arg by "$1" --arg p "$2" --argjson days "$3" --argjson top "$4" --argjson json "$5" \
+      --argjson now "$NOW" "$(so_friction_def)$FMT_DEF"'
+    [inputs
+     | select($p == "" or .project == $p)
+     | select(.updated_epoch >= $now - $days * 86400)
+     | . + {friction: friction}
+     | . as $r
+     | ((if $by == "hook" then .guards else .uses.skills end) // {} | to_entries[])
+     | {name: .key, calls: .value, session: $r.session_id, project: $r.project,
+        cost: $r.cost_usd, friction: ($r.friction > 0)}]
+    | group_by(.name)
+    | map({name: .[0].name, calls: (map(.calls) | add), sessions: length,
+           projects: (map(.project) | unique | length), friction_sessions: (map(select(.friction)) | length),
+           mean_session_cost: (map(.cost | select(. != null)) | if length == 0 then null else (add / length) * 100 | round / 100 end)})
+    | sort_by(-.calls, -.sessions, .name) | .[:$top]
+    | if $json then .[] | tojson
+      elif length == 0 then "_(no \($by) in the last \($days) days)_"
+      else
+        (["| \($by) | calls | sessions | projects | sessions with friction | mean session cost |", "|---|---|---|---|---|---|"]
+         + map("| `\(.name)` | \(.calls) | \(.sessions) | \(.projects) | \(.friction_sessions) | \(.mean_session_cost | usd) |"))
+        | join("\n")
+      end'
+}
+
+# worst: the sessions to look at first over the last N days, as a markdown table. --by hook or
+# skill ranks names instead, from each outcome row's `guards` (hook denials by hook name) and
+# `uses.skills` (Skill calls): calls, the sessions that made them, their projects, how many of those
+# sessions had friction (the one `friction` sum, which does not count a hook's own denials), and
+# their mean cost over the sessions that have one (the whole session's, so a skill is not charged for it).
 cmd_worst() {
-  local project="" days=7 top=5 json=false
+  local project="" days=7 top=5 json=false by="" by_given=false
   while [ $# -gt 0 ]; do
     case "$1" in
+      --by) [ $# -ge 2 ] || { echo "$NAME worst: --by takes hook or skill" >&2; return 2; }
+            by="$2"; by_given=true; shift 2 ;;
       --project) project="${2:-}"; shift 2 ;;
       --days) days="${2:-7}"; shift 2 ;;
       -n) top="${2:-5}"; shift 2 ;;
@@ -469,6 +501,12 @@ cmd_worst() {
       *) echo "$NAME worst: unknown arg $1" >&2; return 2 ;;
     esac
   done
+  if $by_given; then
+    case "$by" in
+      hook|skill) so_latest "$OUT" | so_worst_by "$by" "$project" "$days" "$top" "$json"; return ;;
+      *) echo "$NAME worst: --by takes hook or skill" >&2; return 2 ;;
+    esac
+  fi
   so_latest "$OUT" | jq -rn --arg p "$project" --argjson now "$NOW" --argjson json "$json" \
       --argjson days "$days" --argjson top "$top" "$(so_friction_def)$FMT_DEF"'
     [inputs
@@ -708,5 +746,5 @@ case "${1:-run}" in
   backfill-harness) shift; cmd_backfill_harness "$@" ;;
   rework) shift; cmd_rework "$@" ;;
   -h|--help) sed -n '2,39p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | costs [--days N] | langfuse [--all] | backfill-harness YYYY-MM | rework DIR [--days N] [--until T] [--sample N]" >&2; exit 2 ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--by hook|skill] [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | costs [--days N] | langfuse [--all] | backfill-harness YYYY-MM | rework DIR [--days N] [--until T] [--sample N]" >&2; exit 2 ;;
 esac
