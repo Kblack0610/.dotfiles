@@ -2,7 +2,7 @@
 # pin.sh stop: the pin is the pid `modules.sh pin-up` recorded in $XDG_RUNTIME_DIR/waybar-pin.shown,
 # killed by that pid. What these pin: the recorded waybar dies and the handoff is released; a shell
 # whose command line holds "waybar ... config.pin" (what the old pkill -f pattern also hit) lives;
-# a recorded pid that is no longer a waybar is never signalled. No test starts a pin: start writes
+# a recorded pid that is no longer a pin (any other process, or the main bar) is never signalled. No test starts a pin: start writes
 # the size to a fixed /tmp state file, which is the live desktop's.
 
 setup() {
@@ -16,8 +16,11 @@ setup() {
   # modules.sh is the handoff; the stub logs its verbs.
   printf '#!/usr/bin/env bash\necho "$*" >> "%s/modules.calls"\n' "$BATS_TEST_TMPDIR" > "$XDG_CONFIG_HOME/waybar/modules.sh"
   chmod +x "$XDG_CONFIG_HOME/waybar/modules.sh"
-  # A process whose /proc/<pid>/comm reads "waybar": sleep, exec'd through a link of that name.
-  ln -s "$(command -v sleep)" "$BATS_TEST_TMPDIR/waybar"
+  # Processes whose /proc/<pid>/comm reads "waybar": sleep, exec'd through a link of that name.
+  # The pin's link sits in a dir named like a pin config, so its command line holds config.pin.
+  mkdir "$BATS_TEST_TMPDIR/config.pin-min" "$BATS_TEST_TMPDIR/main"
+  ln -s "$(command -v sleep)" "$BATS_TEST_TMPDIR/config.pin-min/waybar"
+  ln -s "$(command -v sleep)" "$BATS_TEST_TMPDIR/main/waybar"
   PIDS=()
 }
 
@@ -34,7 +37,7 @@ spawn() {  # spawn <cmd...>: background a process this test owns; its pid in $SP
 }
 
 @test "toggle on a live pin kills it by its recorded pid and releases the handoff; a shell naming the pin lives" {
-  spawn "$BATS_TEST_TMPDIR/waybar" 300
+  spawn "$BATS_TEST_TMPDIR/config.pin-min/waybar" 300
   pin=$SPAWNED
   printf '%s\ncustom/x\n' "$pin" > "$XDG_RUNTIME_DIR/waybar-pin.shown"
   spawn sh -c 'sleep 300; : waybar -c config.pin-min'
@@ -52,14 +55,17 @@ spawn() {  # spawn <cmd...>: background a process this test owns; its pid in $SP
   assert_equal "$(cat "$BATS_TEST_TMPDIR/modules.calls")" 'pin-down'
 }
 
-@test "a recorded pid that is no longer a waybar is not signalled" {
+@test "a recorded pid that is no longer a pin, another process or the main bar, is not signalled" {
   spawn sleep 300
   other=$SPAWNED
-  printf '%s\n' "$other" > "$XDG_RUNTIME_DIR/waybar-pin.shown"
-  run "$PIN" off
-  assert_success
-  run kill -0 "$other"
-  assert_success
-
-  assert_equal "$(cat "$BATS_TEST_TMPDIR/modules.calls")" 'pin-down'
+  spawn "$BATS_TEST_TMPDIR/main/waybar" 300
+  bar=$SPAWNED
+  for p in "$other" "$bar"; do
+    printf '%s\n' "$p" > "$XDG_RUNTIME_DIR/waybar-pin.shown"
+    run "$PIN" off
+    assert_success
+    run kill -0 "$p"
+    assert_success
+  done
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/modules.calls")" $'pin-down\npin-down'
 }
