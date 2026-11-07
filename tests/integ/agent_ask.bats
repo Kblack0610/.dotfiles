@@ -149,6 +149,25 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_output 1
 }
 
+@test "settle-session: a free-text ask takes a statement as its answer, a question or slash command only closes it" {
+  local a msg
+  # 2026-11-03 "were you going to post which ones i could close out" became the answer to a runner-pool ask.
+  for msg in "were you going to post which ones i could close out" "whats going on here" "ok, but is it safe?" "/one-shot do the next row"; do
+    a="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'which runner pool?')"
+    "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    run "$AGENT_ASK" show "$a"
+    assert_line 'status: cancelled'
+    assert_line "closed_reason: replied in session: $msg"
+    assert_line 'answer: '
+  done
+  # Negative control: a plain statement still answers.
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'which runner pool?')"
+  "$AGENT_ASK" settle-session sid-1 answered "the big pool, ci-x"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: answered'
+  assert_line 'answer: in session: the big pool, ci-x'
+}
+
 @test "settle-session closes only that session's pending asks" {
   local mine other done_
   done_="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'old?')"
