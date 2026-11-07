@@ -1498,3 +1498,127 @@ L
   run "$SUBJECT" lessons --days 0
   assert_failure 2
 }
+
+# add_prs ARRAY [JQ_ARG...] - append the PRs in jq ARRAY to the o/r gh fixture.
+add_prs() { local f="$1"; shift; jq "$@" ". + $f" "$GH_FIXTURE/prs.o-r" > "$SANDBOX/prs" && mv "$SANDBOX/prs" "$GH_FIXTURE/prs.o-r"; }
+
+# link_fixture - PR bodies that name claude.ai/code session links, and a clone of o/r whose merge
+# commits change: #20 apps/app1 (link of A's transcript), #21 apps/app1 and apps/app2 (link of A's
+# subagent), #22 infra/flux/apps/prod/app2 and docs (a link no transcript recorded; C only quotes it
+# in a string), #23 the same shape merged 80 days back (outside the band). app1 and app2 are the
+# repo's apps in the project map, credited by the real `agent-queue credit-of`.
+link_fixture() {
+  R="$SANDBOX/r"; export GIT_SSH_COMMAND=false
+  git init -q -b main "$R"; git -C "$R" remote add origin git@github.com:o/r.git
+  c() { mkdir -p "$R/$(dirname "$2")"; echo "$1" > "$R/$2"; [ -z "${3:-}" ] || { mkdir -p "$R/$(dirname "$3")"; echo "$1" > "$R/$3"; }
+        git -C "$R" add -A; git -C "$R" -c user.name=t -c user.email=t@t commit -qm "$1"; git -C "$R" rev-parse HEAD; }
+  c init README >/dev/null
+  O20=$(c "feat: one (#20)" apps/app1/x); O21=$(c "feat: both (#21)" apps/app1/y apps/app2/z)
+  O22=$(c "chore: infra (#22)" infra/flux/apps/prod/app2/y docs/z); O23=$(c "chore: old (#23)" infra/flux/apps/prod/app2/w)
+  git -C "$R" update-ref refs/remotes/origin/main HEAD
+  jq -cn --arg d "$R" '{paths: {($d): "proj"}, trackers: {_comment: "a string value",
+      app1: {repo: "proj", path: "apps/app1"}, app2: {repo: "proj", path: "apps/app2/"}}}' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_PROJECT_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
+  export SO_TRANSCRIPT_ROOTS="$TR" SO_QUEUE=queue-credit
+  printf '#!/usr/bin/env bash\n[ "$1" = credit-of ] || exit 1\nexec %q "$@"\n' "$REPO_ROOT/.local/bin/agent-queue" > "$SANDBOX/bin/queue-credit"
+  chmod +x "$SANDBOX/bin/queue-credit"
+  link() { printf '{"type":"attachment","attachment":{"type":"remote_session_change","url":"https://claude.ai/code/%s","pr":"https://claude.ai/code/%s"}}\n' "$1" "$1"; }
+  link session_AAA >> "$TR/a.jsonl"
+  mkdir -p "$TR/a/subagents"; link session_SUB > "$TR/a/subagents/agent-1.jsonl"
+  printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q","content":"{\"type\":\"remote_session_change\",\"url\":\"https://claude.ai/code/session_CLOUD\"}"}]}}' >> "$TR/c.jsonl"
+  add_prs '[
+      {number: 20, state: "MERGED", title: "feat: one", mergedAt: "2026-10-19T03:00:00Z", mergeCommit: {oid: $a}, body: "x\n\nhttps://claude.ai/code/session_AAA"},
+      {number: 21, state: "MERGED", title: "feat: both", mergedAt: "2026-10-19T04:00:00Z", mergeCommit: {oid: $b}, body: "https://claude.ai/code/session_SUB"},
+      {number: 22, state: "MERGED", title: "chore: infra", mergedAt: "2026-10-19T05:00:00Z", mergeCommit: {oid: $c}, body: "https://claude.ai/code/session_CLOUD"},
+      {number: 24, state: "OPEN", title: "chore: more infra", mergedAt: null, body: "https://claude.ai/code/session_CLOUD"},
+      {number: 23, state: "MERGED", title: "chore: old", mergedAt: "2026-07-31T05:00:00Z", mergeCommit: {oid: $d}, body: "https://claude.ai/code/session_OLD"}]' \
+    --arg a "$O20" --arg b "$O21" --arg c "$O22" --arg d "$O23"
+}
+
+@test "links: a PR whose body names the session's link, or its subagent's, is its PR, attributed by changed path" {
+  link_fixture
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '[.prs[] | "\(.number):\(.project)"] | join(",")')" "10:null,20:app1,21:proj"
+  assert_equal "$(field a .prs_merged)" 3
+  assert_equal "$(field a '.project + " " + (.projects | join(","))')" "proj app1,proj"
+  assert_equal "$(field c '.prs | length')" 0   # a link quoted in a string is not C's
+  # worst --project reaches a session of another project through its PRs: B (a revert, so it has
+  # friction) ran in proj and its linked #25 changed app1; C has friction and no app1 PR.
+  link session_BBB >> "$TR/b.jsonl"
+  add_prs '[{number: 25, state: "MERGED", title: "feat: b app1", mergedAt: "2026-10-19T06:00:00Z", mergeCommit: {oid: $o}, body: "https://claude.ai/code/session_BBB"}]' --arg o "$O20"
+  SO_NOW=$((SO_NOW + 60)) "$SUBJECT" run --all
+  run "$SUBJECT" worst --project app1 --days 30
+  assert_output --partial '`sess-b`'
+  refute_output --partial '`sess-c`'
+  run "$SUBJECT" worst --project proj --days 30
+  assert_output --partial '`sess-c`'
+}
+
+@test "links: a cloud session split evenly between projects goes to the one with more PRs overall" {
+  link_fixture
+  jq '.trackers.zz = {repo: "proj", path: "zz"}' "$SANDBOX/map.json" > "$SANDBOX/m" && mv "$SANDBOX/m" "$SANDBOX/map.json"
+  O26=$(c "feat: zz (#26)" zz/notes); O27=$(c "docs: notes (#27)" docs/notes)   # #27 is under no app: proj
+  add_prs '[{number: 26, state: "MERGED", title: "feat: zz", mergedAt: "2026-10-19T07:00:00Z", mergeCommit: {oid: $a}, body: "https://claude.ai/code/session_CLOUD"},
+            {number: 27, state: "MERGED", title: "docs: notes", mergedAt: "2026-10-19T08:00:00Z", mergeCommit: {oid: $b}, body: "https://claude.ai/code/session_CLOUD"}]' \
+    --arg a "$O26" --arg b "$O27"
+  run "$SUBJECT" run
+  assert_success
+  # one merged PR each for app2, zz and proj; the open #24 counts for proj, so proj wins over the
+  # alphabetically last zz
+  assert_equal "$(jq -r 'select(.harness == "claude-cloud") | .project + " " + (.projects | join(","))' "$SO_OUT"/proj/2026-10.jsonl)" "proj app2,proj,zz"
+}
+
+@test "links: a link no transcript recorded is a cloud session's line, under the app its PRs changed; an old one gets none" {
+  link_fixture
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(jq -r '[.session_id, .project, .harness, .prs_merged, .prs_open, (.projects | join(","))] | join(" ")' "$SO_OUT"/app2/2026-10.jsonl)" \
+    "session_CLOUD app2 claude-cloud 1 1 app2"
+  assert_equal "$(jq -r '[.prs[] | "\(.number):\(.project)"] | join(",")' "$SO_OUT"/app2/2026-10.jsonl)" "22:app2,24:null"
+  ! grep -rq session_OLD "$SO_OUT" || fail "a link merged outside the band got a line"
+  SO_NOW=$((SO_NOW + 60)) run "$SUBJECT" run
+  assert_equal "$(cat "$SO_OUT"/app2/*.jsonl | wc -l)" 1   # seen, nothing changed: not observed again
+  SO_NOW=$((SO_NOW + 7 * 86400)) run "$SUBJECT" run
+  assert_equal "$(jq -s 'last | .final' "$SO_OUT"/app2/2026-10.jsonl)" true
+}
+
+@test "links: a clone repo no due session names that cannot be listed is skipped and reported" {
+  link_fixture
+  X="$SANDBOX/x"; git init -q -b main "$X"; git -C "$X" remote add origin git@github.com:o/x.git
+  jq --arg d "$X" '.paths[$d] = "xproj"' "$SANDBOX/map.json" > "$SANDBOX/m" && mv "$SANDBOX/m" "$SANDBOX/map.json"
+  printf '#!/usr/bin/env bash\ncase " $* " in *" -R o/x "*) echo "HTTP 404" >&2; exit 1;; esac\nexec gh "$@"\n' > "$SANDBOX/bin/gh-x"
+  chmod +x "$SANDBOX/bin/gh-x"
+  SO_GH=gh-x run "$SUBJECT" run
+  assert_success
+  assert_output --partial "1 clone repo(s) unlisted, last o/x"
+  assert_equal "$(field a '[.prs[].number] | join(",")')" "10,20,21"
+}
+
+@test "links: an unreadable transcript makes no cloud line, since a link in it would read as one" {
+  link_fixture
+  link session_CLOUD > "$TR/locked.jsonl"; chmod 000 "$TR/locked.jsonl"
+  run "$SUBJECT" run
+  chmod 644 "$TR/locked.jsonl"
+  assert_success
+  [ ! -d "$SO_OUT/app2" ] || fail "a cloud line was made with a transcript unread"
+  assert_output --partial "a transcript unreadable, cloud sessions unread"
+}
+
+@test "links: a transcript root holding no link at all is read, not unreadable" {
+  link_fixture
+  mkdir -p "$SANDBOX/nolinks"; echo '{}' > "$SANDBOX/nolinks/x.jsonl"
+  SO_TRANSCRIPT_ROOTS="$SANDBOX/nolinks" run "$SUBJECT" run
+  assert_success
+  refute_output --partial "cloud sessions unread"
+  [ -d "$SO_OUT/app2" ] || fail "the cloud session got no line"
+}
+
+@test "links negative control: with no transcript root to read, no link becomes a cloud line, and the report says so" {
+  link_fixture
+  SO_TRANSCRIPT_ROOTS="$SANDBOX/none" run "$SUBJECT" run
+  assert_success
+  [ ! -d "$SO_OUT/app2" ] || fail "a cloud line was made without knowing the local links"
+  assert_equal "$(field a '[.prs[].number] | join(",")')" "10,20,21"   # the due session's own links still join
+  assert_output --partial "no transcript root, cloud sessions unread"
+}

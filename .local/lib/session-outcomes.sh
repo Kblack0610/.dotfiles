@@ -38,7 +38,8 @@ SO_PR_JQ='
 # viewed or pasted is not claimed, or when Claude Code wrote a pr-link record for it: that
 # record is how a PR made in a subagent, or whose output was persisted to a file, reaches
 # this transcript, since neither prints its URL in a tool result here. A pr-link is the
-# session's own record (none carries another session's id), so it is not a viewed PR.
+# session's own record (none carries another session's id), so it is not a viewed PR. (`run`
+# also claims a PR whose body names the session's own claude.ai/code link: so_session_links.)
 # lessons_written counts corrections (the rule is "after ANY correction, update lessons");
 # most land as `cat >>` through Bash, not Edit, so both are counted. Malformed lines are skipped, not fatal:
 # a transcript cut off by a crash is the session this feed most needs to see.
@@ -343,7 +344,9 @@ so_forgejo_hosts() {
 }
 
 # so_pr_index FINAL_DAYS - stdin: a `gh pr list --json number,state,title,mergedAt,body,mergeCommit`
-# array for ONE repo. stdout: {"<number>": {state, merged_at, merge_oid, reverted}}.
+# array for ONE repo. stdout: {"<number>": {state, merged_at, merge_oid, reverted, links}}. links are
+# the claude.ai/code session ids the body names, the link Claude Code's attribution puts in every PR
+# it opens (so_session_links reads the same id from the session's side).
 # reverted = a merged PR, merged within FINAL_DAYS after this one, that is titled
 # `Revert "<title>"` (GitHub's button), has a title or body line where a revert word comes
 # before `#N` ("Reverts #240", `Revert "x (#5)"`), or says "This reverts commit <sha>" of
@@ -366,6 +369,7 @@ so_pr_index() {
     | map(. as $p
         | { key: ($p.number | tostring),
             value: { state: $p.state, merged_at: $p.mergedAt, merge_oid: ($p.mergeCommit.oid // null),
+                     links: ([($p.body // "") | scan("claude\\.ai/code/(session_[A-Za-z0-9]+)")[0]] | unique),
                      reverted: ( $p.state == "MERGED" and $p.mergedAt != null
                        and (($p.mergedAt | fromdateiso8601) as $at
                             | ($p.mergeCommit.oid // "") as $oid
@@ -460,6 +464,21 @@ so_rework_repos() {
   done
 }
 
+# so_session_links PATH... - the claude.ai/code session ids the transcripts under PATH (files or
+# dirs, subagents/ included) recorded, one per line. A session records its link as a
+# `remote_session_change` attachment; matched as raw JSON with unescaped quotes, so a transcript that
+# quotes one inside a string does not count. A subagent records its own link, and the PRs it opens
+# carry that one, so a session's links are its transcript's and its subagents'. A missing PATH is
+# skipped; a file that could not be read fails it.
+so_session_links() {
+  local p paths=()
+  for p; do [ -e "$p" ] && paths+=("$p"); done
+  [ "${#paths[@]}" -gt 0 ] || return 0
+  grep -rhoE --include='*.jsonl' '\{"type":"remote_session_change","url":"https://claude\.ai/code/session_[A-Za-z0-9]+' "${paths[@]}" 2>/dev/null |
+    sed 's|.*/code/||' | sort -u
+  [ "${PIPESTATUS[0]}" -le 1 ]
+}
+
 # so_latest OUT_DIR - the newest observation of every session, one JSON line each.
 # Prints nothing (and succeeds) when no outcome has been written yet.
 so_latest() {
@@ -481,6 +500,7 @@ so_latest() {
 # reads it out (`worst`, `card`), so the words always add up to the number.
 so_friction_def() {
   cat <<'EOF'
+def in_project($p): $p == "" or .project == $p or any((.projects // [])[]; . == $p);
 def friction_terms:
   [ [5, (.reverted_7d // 0), "reverted"],
     [2, (.prs_closed_unmerged // 0), "closed unmerged"],
