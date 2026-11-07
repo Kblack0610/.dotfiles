@@ -21,7 +21,8 @@ set -uo pipefail
 : "${FLEET_HOLD_MEM_PCT:=10}"    # MemAvailable % below this -> HOLD
 : "${FLEET_CLEAR_MEM_PCT:=25}"   # at or above this -> may CLEAR
 : "${FLEET_HOLD_STALL_PCT:=20}"  # memory stall (PSI some avg10, %) at or above this -> HOLD: swapping hard while MemAvailable
-                                 # still reads fine (2026-11-06: 48% free, 63G in zram, kswapd0 at 95% CPU). Provisional.
+                                 # still reads fine (2026-11-06: 48% free, 63G in zram, kswapd0 at 95% CPU).
+                                 # Provisional: revisit if fleet-thermal pages on a stall HOLD with no swap-in activity.
 : "${FLEET_CLEAR_STALL_PCT:=5}"  # stall under this -> may CLEAR
 : "${FLEET_HOT_TCTL:=95}"        # Tctl at the throttle point ...
 : "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD
@@ -31,6 +32,7 @@ set -uo pipefail
 : "${FLEET_GH_LOW:=1000}"        # GitHub REST calls left under this, with over 20 min to the reset -> LOW
                                  # (2026-10-29 the fleet spent all 5,000 and every gh call failed 40 min)
 : "${FLEET_GH_PROBE_REPO:=Kblack0610/.dotfiles}" # any repo the token reads: both buckets are per user
+PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
@@ -48,7 +50,8 @@ fleet_verdict() {
     if (s >= hs)  { printf "HOLD memory stall %.1f%% >= %s%% (swapping)\n", s, hs; exit }
     if (hot)      { printf "HOLD tctl %s C at %.1fx cores\n", t, x; exit }
     low = (x < cx && m >= cm && s < cs)
-    if (held && low)  { printf "CLEAR load %.1fx < %sx, memory %d%% free\n", x, cx, m; exit }
+    if (held && low)  { printf "CLEAR load %.1fx < %sx, memory %d%% free, stall %.1f%%\n", x, cx, m, s; exit }
+    if (held && s >= cs) { printf "HOLD held, memory stall %.1f%% not yet under %s%%\n", s, cs; exit }
     if (held)         { printf "HOLD held, load %.1fx not yet under %sx\n", x, cx; exit }
     printf "OK load %.1fx cores\n", x
   }'
@@ -80,12 +83,12 @@ read_mem_pct() {
 # Percent of the last 10 s that some task stalled on memory (PSI some avg10); 0 when the kernel has no PSI.
 read_mem_stall() {
   awk '/^some / { for (i = 2; i <= NF; i++) if ($i ~ /^avg10=/) { sub(/avg10=/, "", $i); print $i; found = 1 } }
-       END { if (!found) print 0 }' /proc/pressure/memory 2>/dev/null || echo 0
+       END { if (!found) print 0 }' "$PSI_MEM" 2>/dev/null || echo 0
 }
 
 # Swap in use, in GiB (zram here): shown beside the stall, not gated on, since cold pages sit there harmlessly.
 read_swap_used_gb() {
-  awk '/^SwapTotal:/ { t = $2 } /^SwapFree:/ { f = $2 } END { printf "%.0f\n", (t - f) / 1048576 }' /proc/meminfo 2>/dev/null || echo 0
+  awk '/^SwapTotal:/ { t = $2 } /^SwapFree:/ { f = $2 } END { printf "%.1f\n", (t - f) / 1048576 }' /proc/meminfo 2>/dev/null || echo 0
 }
 
 # A hold on a machine resource (unity, cpu) keeps the verdict at HOLD until CLEAR. A hold
