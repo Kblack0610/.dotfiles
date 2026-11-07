@@ -11,32 +11,33 @@
 # every 3s. Each `gh run view` spends one call from the actions REST bucket (fleet-assess
 # gh_budget), so the cadence is slow.
 #
-# Exit: 0 success, neutral or skipped; 1 any other conclusion; 2 usage; 3 MAX_ERRORS reads failed
-# in a row; 4 still open after MAX_SECS.
+# Exit: 0 success, neutral or skipped; 1 any other conclusion; 2 usage; 3 the first read failed
+# (wrong repo or id, auth) or MAX_ERRORS later reads failed in a row; 4 still open after MAX_SECS.
 set -uo pipefail
 
 POLL_SECS=60            # the one cadence: a CI run takes minutes, and every read costs a call
 MAX_SECS=$((12 * 3600)) # guard, not a cadence: a run still open after 12h is not worth a session's wait
-MAX_ERRORS=5            # consecutive failed reads (network, auth, rate limit) before giving up
+MAX_ERRORS=15           # consecutive failed reads after a good one (network, rate limit): 15 min of outage
 
 case "${1:-}" in
-  '' | -h | --help) echo "usage: gh-run-wait <run-id> [label]" >&2; exit 2 ;;
+  '' | -h | --help) echo "usage: [GH_REPO=<owner>/<repo>] gh-run-wait <run-id> [label]" >&2; exit 2 ;;
 esac
 [[ "$1" =~ ^[0-9]+$ ]] || { echo "gh-run-wait: run id must be a number, got '$1'" >&2; exit 2; }
 id="$1" label="${2:-run $1}"
 
 echo "$label: waiting on run $id, one read every ${POLL_SECS}s"
-errors=0 status=unread
+errors=0 status=unread read_ok=
 while :; do
   if out="$(gh run view "$id" --json status,conclusion,url \
-              --jq '"\(.status) \(.conclusion // "-") \(.url)"')"; then
-    errors=0
-    read -r status conclusion url <<<"$out"
+              --jq '"\(.status) \(.url) \(.conclusion)"')"; then
+    errors=0 read_ok=1
+    read -r status url conclusion <<<"$out"   # an open run's conclusion is "", so it goes last
     if [ "$status" = completed ]; then
       echo "$label: run $id $conclusion $url"
       case "$conclusion" in success | neutral | skipped) exit 0 ;; *) exit 1 ;; esac
     fi
   else
+    [ -n "$read_ok" ] || { echo "gh-run-wait: cannot read run $id (gh's error above; another repo needs GH_REPO)" >&2; exit 3; }
     errors=$((errors + 1))
     if [ "$errors" -ge "$MAX_ERRORS" ]; then
       echo "gh-run-wait: $MAX_ERRORS reads of run $id failed in a row (gh's errors above)" >&2
