@@ -56,11 +56,11 @@ pub const DIRECT_NOTE: &str = "opencode lazer/*, nightly; other direct use unsee
 
 /// The gauges the live tiles read: Claude Code's 24h cost, the Lazer pool's spend and cap, and the
 /// reserve key's cap, what is left of it and the hours to its reset, as LiteLLM exports them.
-const LIVE_Q: &str = concat!(
-    r#"{__name__=~"cc:claude_code_cost_24h_usd|cc:lazer_spend_usd|cc:lazer_budget_usd"} or "#,
-    r#"{__name__=~"litellm_(api_key_max_budget|remaining_api_key_budget|api_key_budget_remaining_hours)_metric","#,
-    r#"api_key_alias="claude-reserve"}"#
-);
+fn live_q() -> String {
+    format!(
+        r#"{{__name__=~"cc:claude_code_cost_24h_usd|cc:lazer_spend_usd|cc:lazer_budget_usd"}} or {{__name__=~"litellm_(api_key_max_budget|remaining_api_key_budget|api_key_budget_remaining_hours)_metric",api_key_alias="{RESERVE_KEY}"}}"#
+    )
+}
 
 /// One session's newest outcomes row, as `agentctl-session-outcomes costs` prints it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -155,12 +155,12 @@ pub struct Live {
     pub reserve_reset_hours: Option<f64>,
 }
 
-/// The live gauges out of `LIVE_Q`'s series. A key with no cap exports +Inf, which is no cap.
+/// The live gauges out of `live_q`'s series. A key with no cap exports +Inf, which `prom` reads as none.
 pub fn live(series: &[crate::prom::Series]) -> Live {
     let mut l = Live::default();
     let mut left = None;
     for s in series {
-        let v = s.value.filter(|v| v.is_finite());
+        let v = s.value;
         match s.label("__name__") {
             "cc:claude_code_cost_24h_usd" => l.claude_24h = v,
             "cc:lazer_spend_usd" => l.lazer_spend = v,
@@ -183,10 +183,8 @@ pub fn live(series: &[crate::prom::Series]) -> Live {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Direct {
     pub usd: f64,
-    pub sessions: usize,
     /// Sessions that used tokens on a model opencode has no price for: spend unknown, never $0.
     pub unpriced: usize,
-    pub since: i64,
     pub note: &'static str,
 }
 
@@ -201,23 +199,23 @@ pub fn month_start(now: i64) -> i64 {
 
 pub fn direct(sessions: &[Spent], now: i64) -> Direct {
     let since = month_start(now);
-    let on: Vec<&Spent> = sessions
+    // a fold from 0.0, not `sum`: an empty f64 sum is -0.0, which prints as $-0.00
+    let init = Direct {
+        note: DIRECT_NOTE,
+        ..Direct::default()
+    };
+    sessions
         .iter()
         .filter(|s| s.provider.as_deref() == Some("lazer"))
         .filter(|s| s.updated_epoch.unwrap_or(0) >= since)
-        .collect();
-    let priced = |s: &&Spent| cost(s).filter(|c| *c > 0.0);
-    Direct {
-        // a fold from 0.0: an empty f64 `sum` is -0.0, which prints as $-0.00
-        usd: on.iter().filter_map(priced).fold(0.0, |a, c| a + c),
-        sessions: on.len(),
-        unpriced: on
-            .iter()
-            .filter(|s| priced(s).is_none() && s.tokens_total.unwrap_or(0.0) > 0.0)
-            .count(),
-        since,
-        note: DIRECT_NOTE,
-    }
+        .fold(init, |mut d, s| {
+            match cost(s).filter(|c| *c > 0.0) {
+                Some(c) => d.usd += c,
+                None if s.tokens_total.unwrap_or(0.0) > 0.0 => d.unpriced += 1,
+                None => {}
+            }
+            d
+        })
 }
 
 /// Everything one read gathered, over the longest window. `board` cuts it for a view.
@@ -295,7 +293,7 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         Err(e) => c.errors.push(format!("{}: {e}", paths.calls.display())),
     }
     c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize);
-    match crate::prom::base().and_then(|b| crate::prom::instant(&b, LIVE_Q)) {
+    match crate::prom::base().and_then(|b| crate::prom::instant(&b, &live_q())) {
         Ok(series) => c.live = live(&series),
         Err(e) => c.errors.push(format!("Prometheus: {e}")),
     }
@@ -1431,12 +1429,11 @@ not json
         assert_eq!(l.reserve_budget, Some(100.0));
         assert!((l.reserve_spend.unwrap() - 19.52).abs() < 1e-9);
         assert_eq!(l.reserve_reset_hours, Some(575.0));
-        // negative control: an uncapped key exports +Inf, and no remaining gauge is no spend
-        let l = live(&[gauge(
-            "litellm_api_key_max_budget_metric",
-            RESERVE_KEY,
-            f64::INFINITY,
-        )]);
+        // negative control: an uncapped key's +Inf reaches here as no value, and no remaining gauge
+        // is no spend
+        let mut uncapped = gauge("litellm_api_key_max_budget_metric", RESERVE_KEY, 0.0);
+        uncapped.value = None;
+        let l = live(&[uncapped]);
         assert_eq!((l.reserve_budget, l.reserve_spend), (None, None));
     }
 
@@ -1464,11 +1461,10 @@ not json
             ],
             NOW,
         );
-        assert_eq!((d.usd, d.sessions, d.unpriced), (1.25, 3, 1));
-        assert_eq!((d.since, d.note), (since, DIRECT_NOTE));
+        assert_eq!((d.usd, d.unpriced, d.note), (1.25, 1, DIRECT_NOTE));
         // negative control: no session on Lazer direct is $0 over none, not a missing figure
         let d = direct(&[oc("gw", "litellm", 4.0, 900.0, NOW)], NOW);
-        assert_eq!((d.usd, d.sessions, d.unpriced), (0.0, 0, 0));
+        assert_eq!((d.usd, d.unpriced), (0.0, 0));
         assert!(d.usd.is_sign_positive(), "{}", d.usd);
     }
 
@@ -1485,7 +1481,7 @@ not json
             ..Spent::default()
         });
         let b = board(&c, "harness", "7d", "", "", "");
-        assert_eq!((b.direct.usd, b.direct.sessions), (2.5, 1));
+        assert_eq!((b.direct.usd, b.direct.unpriced), (2.5, 0));
         let j = serde_json::to_value(&b).unwrap();
         assert_eq!(j["direct"]["note"], DIRECT_NOTE);
         assert!(j["live"].get("reserve_spend").is_some());

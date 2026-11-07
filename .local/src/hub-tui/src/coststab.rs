@@ -239,10 +239,10 @@ fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
 fn of_cap(spent: Option<f64>, cap: Option<f64>) -> String {
     match (spent, cap) {
         (Some(sp), Some(cap)) if cap > 0.0 => format!(
-            "{} of {} ({:.0}%)",
+            "{} of {} ({})",
             costs::usd(Some(sp)),
             costs::usd(Some(cap)),
-            sp / cap * 100.0
+            crate::fmt::pct(Some(sp / cap))
         ),
         (sp, _) => costs::usd(sp),
     }

@@ -64,7 +64,7 @@ function costsSwitch(name, all, on, key) {
 }
 
 // "of $cap (pct%)" under a spend tile, or nothing when there is no cap.
-const ofCap = (spent, cap) => spent != null && cap ? `of ${usd(cap)} (${Math.round(spent / cap * 100)}%)` : "";
+const ofCap = (spent, cap) => spent != null && cap ? `of ${usd(cap)} (${pct(spent / cap)})` : "";
 
 // The Lazer tiles, the TUI's `lazer` and `direct` lines: the gateway pool, the reserve key against its
 // cap, and direct use with what it cannot see beside it, so a low figure never reads as all of it.

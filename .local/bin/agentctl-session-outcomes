@@ -89,7 +89,7 @@ queue_index() {
 HARNESS_DEF='def harness_of($i):
   ($i.agent // "claude") as $a | ($a == "claude-lazer" or $a == "lazer-reserve") as $gw
   | .harness // (
-      if has("base_url") then (if .base_url then (if $gw then $a else "claude-lazer" end) else "claude" end)
+      if has("base_url") then (if .base_url == null then "claude" elif $gw then $a else "claude-lazer" end)
       elif $gw and ((.account // (.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a)) // "claude") != "claude" then "claude"
       else $a end);'
 
@@ -224,7 +224,7 @@ cmd_run() {
           project: (if $runner then "_runner" else $row.project end),
           runner: $runner,
           harness: $row.harness,
-          provider: ($row.provider // null),
+          provider: $row.provider,
           items: ($row.items // []),
           agent: (if $runner then ($agents[0][$row.session_id] // null) else null end),
           title: ($row.title // $row.first_prompt // ""),
