@@ -594,13 +594,24 @@ item_json() {
     jq -Rsc "$ITEM_JQ | .[]"
 }
 
-# Queue order: a `red` item first (something is broken), then priority, then a `cleanup` item within
-# its priority (the fleet fixes itself before it adds), then queued time. The one queue order: every
-# reader (next, list, fleet-dispatch next_items) takes it as is. `after` and other tags hold, not reorder.
-# A red outranks urgent on purpose: the human's rule is that anything broken goes first.
+# Queue order: a `red` item first (something is broken), then priority, then the project's place in
+# the project map's `queue_rank` (listed projects in list order, then every other), then a `cleanup`
+# item within that, then queued time. The one queue order: every reader (next, list, fleet-dispatch
+# next_items) takes it as is. `after` and other tags hold, not reorder.
+# A red outranks urgent on purpose: the human's rule is that anything broken goes first. The rank
+# sits under priority, so an urgent fix still jumps it, and over cleanup, so a ranked project's work
+# is not queued behind the fleet's own housekeeping (the human: games go first).
 ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
     | [splits("\\s+")] | index([$t])) == null;
-  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority] // 1), untagged("cleanup"), .queued)'
+  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority] // 1),
+    ((.project // "") as $p | $rank | index([$p]) // length), untagged("cleanup"), .queued)'
+# order_filter -> ORDER with the map's queue_rank bound to $rank. A map without one, or with one
+# that is not a list of names, ranks nothing (project-map-doctor fails it).
+order_filter() {
+  local rank
+  rank="$(jq -c '.queue_rank | if type == "array" then map(strings) else [] end' "$AQ_MAP" 2>/dev/null)" || rank='[]'
+  printf '%s as $rank | %s' "$rank" "$ORDER"
+}
 
 # list_files <states...> [--date D] [--since D] -> appends the caller's FILES with the item files in
 # those states, each state oldest first; done is one day (--date, today by default) or every day
@@ -629,7 +640,7 @@ list_files() {
 collect() {
   local FILES=()
   list_files "$@"
-  items_json "$ORDER" "${FILES[@]}"
+  items_json "$(order_filter)" "${FILES[@]}"
 }
 
 # header_set <file> <key> <value> -> rewrite the header field in place, atomically.
@@ -1321,11 +1332,14 @@ cmd_requeue() {
 # such as a reap that read a live session as gone (ar-900, 2026-11-07: the shepherd had to move the
 # file under the lock by hand). The latest done item with the slug goes to running (or waiting) with
 # its session: and sessions: as they were, so the next reap reads it live again; status: and
-# finished: go, note: says why. Its board row, which the close un-started, is started again.
-# Refused for a slug still active, and for a landed item (merged:): new work under it is add --repeat.
+# finished: go, note: says why and keeps the close's own note. Its board row, which the close
+# un-started, is started again, after the queue lock is let go. Only a failed close is reopened: an ok
+# one may have started the items after: it (start_next) and a cancel closed its session, so either is
+# new work under the slug. A reap that parked a live item in waiting/ needs none: the next reap that
+# lists its Claude moves it back to running.
 cmd_reopen() {
   local usage="usage: agent-queue reopen <slug> [--to running|waiting] [--why text]"
-  local slug="${1:?$usage}" to=running why="" f dest status row prof flag=()
+  local slug="${1:?$usage}" to=running why="" f dest status note row prof flag=()
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1339,13 +1353,11 @@ cmd_reopen() {
   lock
   [ -z "$(find_item "$slug")" ] || die "$slug is still active: nothing to reopen"
   f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
-  [ -z "$(fm_get "$f" merged)" ] || die "$slug landed (merged: $(fm_get "$f" merged)); new work under it is agent-queue add --repeat"
-  status="$(fm_get "$f" status)"
-  # A cancel was someone's decision, and it closed the item's session: that is new work, not a false close.
-  [ "$status" != cancelled ] || die "$slug was cancelled, which closed its session: add it again instead"
+  status="$(fm_get "$f" status)" note="$(fm_get "$f" note)"
+  [ "$status" = failed ] || die "$slug closed $status, not failed: that is new work under the slug (agent-queue add${status:+ --repeat})"
   header_del "$f" status finished
   [ "$to" = running ] || header_set "$f" waiting "$(now_utc)"
-  header_set "$f" note "reopened from done ($status)${why:+: $why}"
+  header_set "$f" note "reopened from done (failed${note:+: $note})${why:+: $why}"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "done ($status) -> $to: reopened${why:+: $why}"
   echo "$slug: done -> $to (reopened, was $status)"
@@ -1354,11 +1366,10 @@ cmd_reopen() {
   row="$(fm_get "$dest" row)" prof="$(fm_get "$dest" profile)"
   [ -n "$row" ] || return 0
   case "$(fm_get "$dest" lane)" in '' | agent) flag=(--agent) ;; esac
-  if notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1; then
-    echo "$slug: board row ${row#*:} started again"
-  else
-    echo "agent-queue: $slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again" >&2
-  fi
+  exec 8>&-
+  notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1 ||
+    die "$slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} start ${row#*:}"
+  echo "$slug: board row ${row#*:} started again"
 }
 
 # lane_outcome <lane_run> <from> <to> <status> -- the model-lane run a dispatch start logged gets
