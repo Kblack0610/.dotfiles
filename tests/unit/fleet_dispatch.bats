@@ -5148,7 +5148,7 @@ remote_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
   assert_success
   assert_equal "$(jq -r '"\(.name) \(.dest) \(.free) \(.why)"' <<<"$output")" 'razer-laptop kb@192.0.2.26 1 '
-  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -p 22 kb@192.0.2.26'
+  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
 }
 
 @test "run places a light queue item on a fleet worker when this machine is over its load pace" {
@@ -5164,7 +5164,7 @@ remote_item() {
   [ -n "$f" ] || fail "fix-menu is not running"
   assert_equal "$(qfield "$f" host) $(qfield "$f" session)" 'razer-laptop lab:game-agent-1'
   # Its @dispatch mark goes to the worker's tmux, not this machine's.
-  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env tmux -L lab set'
+  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env tmux -L lab set'
 }
 
 @test "negative control: a fleet worker over its own load pace gets no session, and the pass says why" {
@@ -5229,6 +5229,9 @@ remote_item() {
   run cmd_reap
   assert_success
   [ -n "$(qitem running fix-crash)" ] || fail "reaped an item whose worker did not answer"
+  # cannot-tell is live to every reader: its unit stays held on the worker.
+  run live_runs
+  assert_output 'game/ light razer-laptop'
   rm "$NOTES_FIXTURE/ssh.rc"
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run cmd_reap
@@ -5239,6 +5242,16 @@ remote_item() {
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
   run cmd_reap
   [ -z "$(qitem running fix-crash)" ] || fail "kept an item whose remote session is gone"
+}
+
+@test "a worker gone from the roster cannot answer for its item, so reap settles it by its PR" {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1'
+  remote_item fix-crash
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  sed -i 's/^\( *\)razer-laptop:$/\1other-laptop:/' "$FLEET_INVENTORY"; unset FLEET_HOSTS_JSON
+  run cmd_reap
+  [ -z "$(qitem running fix-crash)" ] || fail "held an item whose host left the roster"
 }
 
 @test "start --host refuses what a worker cannot run" {

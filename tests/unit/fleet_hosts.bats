@@ -69,10 +69,47 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_run hp-victus printf '%s\n' 'a b' "it's"
   assert_failure 3
-  assert_called "ssh -n -o BatchMode=yes -o ConnectTimeout=5 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" exec env printf %s\\\\n a\\ b it\\'s  <<none"
+  assert_called "ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" exec env printf %s\\\\n a\\ b it\\'s  <<none"
   run fleet_host_run nowhere true
   assert_failure 255
   assert_output --partial 'nowhere is not in fleet_workers'
+}
+
+@test "a host's own vars win over a group's, even one listed after it; that group's other vars still apply" {
+  cat >> "$FLEET_INVENTORY" <<'EOF'
+    later:
+      vars:
+        fleet_max_live: 9
+        ansible_port: 2200
+      hosts:
+        razer-laptop:
+EOF
+  assert_equal "$(fleet_host razer-laptop | jq -r '"\(.max_live) \(.port)"')" '2 2200'
+}
+
+@test "cancel closes a worker's session on that worker, never one here; a requeue forgets the host" {
+  local q="$REPO_ROOT/.local/bin/agent-queue"
+  stub tmux-close-here 'echo "here $*" >> "$NOTES_FIXTURE/calls.log"'
+  export TMUX_CLOSE="$SANDBOX/bin/tmux-close-here"
+  "$q" add --project game --slug fix-menu "Fix the menu" >/dev/null
+  "$q" set fix-menu session=lab:agent-1 origin=run host=hp-victus >/dev/null
+  "$q" move fix-menu running >/dev/null
+  run "$q" cancel fix-menu
+  assert_success
+  assert_called '-p 2222 kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" exec env tmux-close -L lab session agent-1'
+  assert_not_called 'here -L'
+  # negative control: the same item with no host closes here.
+  "$q" add --project game --slug fix-hud "Fix the hud" >/dev/null
+  "$q" set fix-hud session=lab:agent-2 origin=run >/dev/null
+  "$q" move fix-hud running >/dev/null
+  run "$q" cancel fix-hud
+  assert_called 'here -L lab session agent-2'
+  "$q" add --project game --slug fix-map "Fix the map" >/dev/null
+  "$q" set fix-map session=lab:agent-3 origin=run host=hp-victus >/dev/null
+  "$q" move fix-map running >/dev/null
+  "$q" move fix-map queued >/dev/null
+  run grep -h '^host:' "$AGENT_QUEUE_DIR"/queued/*-fix-map.md
+  assert_failure
 }
 
 @test "state_forward does nothing without AGENT_STATE_HOST" {
@@ -87,7 +124,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
   run "$REPO_ROOT/.local/bin/agent-queue" set fix-menu pr=12
   assert_success
   assert_output 'set on state'
-  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_QUEUE_ITEM=fix-menu agent-queue set fix-menu pr=12  <<none'
+  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_QUEUE_ITEM=fix-menu agent-queue set fix-menu pr=12  <<none'
   assert_not_called TMUX
   [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
   # `add` reads its task from stdin, so that verb keeps it.

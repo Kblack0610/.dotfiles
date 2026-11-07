@@ -471,12 +471,16 @@ np() {
   if [ -n "$p" ]; then notes --profile "$p" "$@"; else notes "$@"; fi
 }
 
-# session_live <session> <server> [host] -- rc 0 when the tmux session is there, 1 when it is not,
-# 2 when its fleet worker did not answer over ssh: cannot tell, which no reader may take for gone.
+# session_live <session> <server> [host] -- rc 1 only on evidence the tmux session is gone: tmux
+# says so, or its fleet worker left the roster, so nothing could ever answer for it (reap then reads
+# its PR). A worker that does not answer, or fails some other way, cannot tell, and cannot-tell is
+# live: every reader counts its units and reap leaves it be.
 session_live() {
   [ -n "${3:-}" ] || { tmux -L "$2" has-session -t "=$1" 2>/dev/null; return; }
+  fleet_hosts >/dev/null
+  fleet_host "$3" >/dev/null || return 1
   fleet_host_run "$3" tmux -L "$2" has-session -t "=$1" 2>/dev/null
-  case $? in 0) return 0 ;; 255) return 2 ;; *) return 1 ;; esac
+  [ $? -ne 1 ]
 }
 
 # on_host <host> <command> [args...] -- run it on that fleet worker, or here when <host> is empty.
@@ -2640,6 +2644,7 @@ cmd_stats() {
 cmd_reap() {
   local s d slug server sess origin project area state _weight agent started sids host want waits='' seen='' gone live active=()
   unset REAP_PANEL
+  fleet_hosts >/dev/null   # once, so each session_live subshell inherits the roster
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
     [ -n "$d" ] || continue
@@ -2657,8 +2662,7 @@ cmd_reap() {
     # its pane ends with its claude (wt's _prepare), so its tmux session is the witness.
     gone='' live=0
     [ -z "$sess" ] || { session_live "$sess" "$server" "$host"; live=$?; }
-    if [ "$live" = 2 ]; then continue
-    elif [ "$live" = 1 ]; then gone=1
+    if [ "$live" = 1 ]; then gone=1
     elif [ -n "$host" ]; then continue
     elif claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then reap_confirm "$slug" || continue; gone=1
     else reap_seen "$slug"
@@ -2913,6 +2917,7 @@ triage_pass() {
 
 cmd_run() {
   local why live room
+  fleet_hosts >/dev/null   # once, so each subshell of the pass inherits the roster
   DRY=0
   [ "${1:-}" = --dry-run ] && DRY=1
   mkdir -p "$DIR"
@@ -2940,7 +2945,8 @@ cmd_run() {
   SPILL_LIVE=$(spill_live)
   UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
   # Room is this machine's units plus every placed worker's.
-  local h remote=0; for h in "${!HOST_FREE[@]}"; do [ "${HOST_FREE[$h]}" -le 0 ] || remote=$(( remote + HOST_FREE[$h] )); done
+  # A worker adds room only when it takes a session now (host_why), not merely by being placed.
+  local h remote=0; for h in "${!HOST_FREE[@]}"; do [ -n "$(host_why "$h")" ] || remote=$(( remote + HOST_FREE[$h] )); done
   room=$UNITS_FREE; [ "$room" -ge 0 ] || room=0
   room=$(( room + remote ))
   [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS

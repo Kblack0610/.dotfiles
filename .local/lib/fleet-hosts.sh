@@ -16,7 +16,7 @@
 
 _fh_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${FLEET_HOSTS_GROUP:=fleet_workers}"
-: "${FLEET_SSH_TIMEOUT:=5}"   # seconds an ssh to a worker or the state host may take to connect
+: "${FLEET_SSH_TIMEOUT:=5}"   # seconds an ssh to a worker or the state host may take to connect, and may go silent
 
 # fleet_inventory -> the inventory file: FLEET_INVENTORY, else home-config's from the project map.
 fleet_inventory() {
@@ -29,8 +29,9 @@ fleet_inventory() {
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
 #   {name, dest: user@host, port, max_live, place, repos: [dir], state_host}
-# Vars merge as Ansible reads them for this file's shape: all.vars, then each group's vars, then
-# each host entry, later ones winning, so ansible_host may sit in another group. Nothing when the
+# Vars merge as Ansible reads them for this file's shape: all.vars, then group vars (a child group
+# over its parent), then the host's own entries over every group, a later entry winning among
+# equals, so ansible_host may sit in another group. Nothing when the
 # file or group is missing. Read once per shell (FLEET_HOSTS_JSON): a caller that loops over it, or
 # runs fleet_host_run in one, calls fleet_hosts >/dev/null first, so the subshells inherit it.
 fleet_hosts() {
@@ -50,17 +51,17 @@ inv, group = sys.argv[1], sys.argv[2]
 doc = yaml.safe_load(open(inv)) or {}
 root = doc.get("all") or {}
 base = dict(root.get("vars") or {})
-merged, members = {}, {}
+gmerged, hmerged, members = {}, {}, {}
 
 def walk(name, node, chain):
     node = node or {}
     gvars = dict(node.get("vars") or {})
     path = chain + [(name, gvars)]
     for h, hv in (node.get("hosts") or {}).items():
-        m = merged.setdefault(h, {})
+        gm = gmerged.setdefault(h, {})
         for _, gv in path:
-            m.update(gv)
-        m.update(hv or {})
+            gm.update(gv)
+        hmerged.setdefault(h, {}).update(hv or {})
         for g, _ in path:
             members.setdefault(g, [])
             if h not in members[g]:
@@ -71,7 +72,8 @@ def walk(name, node, chain):
 walk("all", root, [])
 for h in members.get(group, []):
     v = dict(base)
-    v.update(merged.get(h, {}))
+    v.update(gmerged.get(h, {}))
+    v.update(hmerged.get(h, {}))
     user = v.get("ansible_user")
     host = v.get("ansible_host", h)
     repos = [os.path.expanduser(str(r.get("dest") if isinstance(r, dict) else r)) for r in (v.get("fleet_repos") or [])]
@@ -115,7 +117,8 @@ _fh_ssh() {
   shift
   [ "${FLEET_SSH_STDIN:-0}" != 1 ] || n=''
   # shellcheck disable=SC2016 # $HOME and $PATH are the remote shell's
-  ssh $n -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" "${opts[@]}" "$dest" \
+  # ServerAlive ends a link that went half-open mid-command (a laptop asleep) in about two timeouts.
+  ssh $n -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
     'PATH="$HOME/.local/bin:$PATH" exec env' "$(printf '%q ' "$@")"
 }
 
