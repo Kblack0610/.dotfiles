@@ -57,7 +57,7 @@ fn needs(h: &Home, view: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Line
     }
     let t = Table {
         // No sort asked for: the rank is the order.
-        mark: view.mark::<Need>().or(Some((0, " v"))),
+        mark: view.mark::<Need>().or(Some((0, " ^"))),
         // `hub_core::table::Row::COLUMNS` for Need, then the id the row acts on, which this
         // surface has no opened record to show.
         header: vec!["RANK", "KIND", "PROJECT", "WAITED", "HOLDS", "WHAT", "ID"],
@@ -487,7 +487,7 @@ mod tests {
     fn needs_draw_in_rank_with_the_columns_of_the_shared_table() {
         let out = text(&three());
         assert!(
-            out.contains("RANK v") && out.contains("KIND") && out.contains("WAITED"),
+            out.contains("RANK ^") && out.contains("KIND") && out.contains("WAITED"),
             "{out}"
         );
         assert!(

@@ -1433,6 +1433,14 @@ mod tests {
         assert_eq!(names(&v), ["all", "Question", "Your turn", "Failing"]);
         let v = View::new::<Need>("kind:ask", "Blocked", "", "");
         assert_eq!(names(&v), ["all", "Question", "Blocked"]);
+        // The TUI's `f` steps over the same chips, never onto a hidden one.
+        let mut v = View::default();
+        let mut seen = vec![];
+        for _ in 0..4 {
+            v.cycle_shown(&rows);
+            seen.push(v.state.clone());
+        }
+        assert_eq!(seen, ["Question", "Your turn", "Failing", ""]);
     }
 
     #[test]

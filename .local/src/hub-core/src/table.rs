@@ -423,9 +423,21 @@ impl View {
         }
     }
 
-    /// The TUI's `f`: the next state chip, back to every row after the last.
+    /// The TUI's `f`: the next state chip, back to every row after the last. A table that hides
+    /// its empty chips steps with `cycle_shown`, which has the rows.
     pub fn cycle_state<R: Row>(&mut self) {
+        debug_assert!(
+            !R::HIDE_EMPTY,
+            "{} hides empty chips: use cycle_shown",
+            R::COLUMNS[0]
+        );
         self.state = next_of(&R::STATES[1.min(R::STATES.len())..], &self.state);
+    }
+
+    /// `f` over the chips `states` draws for these rows, so a hidden empty chip is never stepped on.
+    pub fn cycle_shown<R: Row>(&mut self, rows: &[R]) {
+        let shown: Vec<&str> = self.states(rows).iter().skip(1).map(|c| c.name).collect();
+        self.state = next_of(&shown, &self.state);
     }
 
     /// The TUI's `s`: sort by the next column, descending, back to the table's order after the last.

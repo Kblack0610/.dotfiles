@@ -43,6 +43,9 @@ const refreshHome = coalesce(async () => {
     const d = await api("/api/home" + (view ? "?" + view : ""));
     if (seq !== homeSeq && hst.data) for (const k of PROP_KEYS) d[k] = hst.data[k];
     hst.data = d; hst.err = null;
+    // A row that left the list closes, so a returning id never comes back open or holds the cap.
+    const keys = new Set((d.needs || []).map(needKey));
+    for (const k of hst.open) if (!keys.has(k)) hst.open.delete(k);
   } catch (e) { hst.err = e.message; }
   if (st.tab === "home") renderHome();
   await night;
@@ -155,7 +158,7 @@ function needRow(n) {
 
 // The rows in the server's order (hub_core::home::needs ranks them; nothing here re-sorts), the
 // rank marked as the sort when none is asked for.
-const needCols = (t) => ({ rank: [t.sort ? "rank" : "rank v", "n"], kind: ["kind"], project: ["project"], waited: ["waited", "n"], holds: ["holds"], what: ["what"] });
+const needCols = (t) => ({ rank: [t.sort ? "rank" : "rank ^", "n"], kind: ["kind"], project: ["project"], waited: ["waited", "n"], holds: ["holds"], what: ["what"] });
 
 // The first `shown` rows (dashboards: capped lists), or down to the last opened one, so a refresh
 // that reranks never takes an answer being typed off the page.
@@ -166,7 +169,7 @@ function needsBody(h) {
   const cap = hst.all ? rows.length : Math.max(h.shown, last);
   const more = rows.length - cap;
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, needCols(t))}${rows.slice(0, cap).map(needRow).join("")}</table>` +
-    (more > 0 ? `<button class="btn sm" data-all="1">+${more} more</button>` : "") + `</div>`;
+    tblMore(more, "more") + `</div>`;
 }
 
 function runningCard(r) {
@@ -241,10 +244,13 @@ function drawHome() {
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.
+// The table without focus repaints whole, so a search in one never leaves the other stale.
 const renderHome = () => {
   const h = hst.data;
-  if (h?.proposals_table.total && $("home-prop-body") && tblRepaint("home-prop", h.proposals_table, () => propBody(h))) return;
-  if (h && $("home-need-body") && tblRepaint("home-need", h.table, () => needsBody(h))) { paint($("home-nhead"), needsHead(h.table)); return; }
+  const need = () => { paint($("home-nhead"), needsHead(h.table)); tblRedraw("home-need", h.table, () => needsBody(h)); };
+  const prop = () => tblRedraw("home-prop", h.proposals_table, () => propBody(h));
+  if (h?.proposals_table.total && $("home-prop-body") && tblRepaint("home-prop", h.proposals_table, () => propBody(h))) { if ($("home-need-body")) need(); return; }
+  if (h && $("home-need-body") && tblRepaint("home-need", h.table, () => needsBody(h))) { paint($("home-nhead"), needsHead(h.table)); if ($("home-prop-body")) prop(); return; }
   keepTyping("#home .card", drawHome);
 };
 

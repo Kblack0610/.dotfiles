@@ -49,6 +49,13 @@ function tblRepaint(id, t, body) {
   return true;
 }
 
+// The same parts repainted with focus elsewhere: the dropdowns too, with their new counts.
+function tblRedraw(id, t, body) {
+  if ($(id + "-facets")) paint($(id + "-facets"), tblFacets(t));
+  if ($(id + "-chips")) paint($(id + "-chips"), tblChips(t));
+  paint($(id + "-body"), body());
+}
+
 // A picked dropdown lets go of focus, so the answer redraws it with the new counts. `onView`
 // gets the event too, for a tab with two tables (tblOf).
 function tblListen(el, onView) {
@@ -80,7 +87,7 @@ function tblHead(t, labels, pre = "t") {
 }
 
 // The button a capped body ends in; the view's own click listener answers `data-all`.
-const tblMore = (n) => (n > 0 ? `<button class="btn sm" data-all="1">+${n} older</button>` : "");
+const tblMore = (n, word = "older") => (n > 0 ? `<button class="btn sm" data-all="1">+${n} ${word}</button>` : "");
 
 // The view patch an event on the bar or a header asks for, or null when it is not one of theirs.
 function tblPatch(e) {

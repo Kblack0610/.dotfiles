@@ -67,7 +67,7 @@ test("Needs you is the shared table: the columns, the server's chips, the rank a
   assert.match(html, /<h2 class="sec">Needs you <span class="muted">2<\/span><\/h2>/);
   assert.match(html, /id="home-need-q" data-tsearch placeholder="search, or kind:ask project:dotfiles -kind:red"/);
   assert.match(html, /data-ts="Question">Question <span class="n">1<\/span>/);
-  assert.match(html, /<th class="n"><button class="thsort" data-tsort="rank"[^>]*>rank v<\/button><\/th>/);
+  assert.match(html, /<th class="n"><button class="thsort" data-tsort="rank"[^>]*>rank \^<\/button><\/th>/);
   assert.match(html, /data-tsort="waited"[^>]*>waited<\/button>/);
   const row = /<tr class="jr" data-need="ask:a1"><td class="n">1<\/td><td>Question<\/td><td>p<\/td><td class="n" title="(\d{4}-\d\d-\d\dT[^"]+Z)">1h 5m<\/td><td class="wrap muted">session, 2 phases<\/td><td class="wrap">Ship it\?<\/td><\/tr>/.exec(html);
   assert.ok(row, html);
@@ -200,7 +200,7 @@ test("each table's bar changes only its own view keys: Needs you's n-prefixed, P
   vm.runInContext(`st.tab = input; st.views.home = ""; hst.night = null; hst.nightErr = null`, ctx);
 });
 
-test("a dropdown in use in one table repaints that table alone", () => {
+test("a dropdown in use in one table repaints around it, and the other table whole", () => {
   const needs = [{ kind: "ask", need: "ask", project: "p", text: "Ship it?", id: "a1" }];
   const first = draw(home({ needs, proposals: [prop("a1")], proposals_table: table(1) }));
   delete parts["home-prop-body"];
@@ -210,7 +210,8 @@ test("a dropdown in use in one table repaints that table alone", () => {
   doc.activeElement = undefined;
   assert.equal(again, first);
   assert.match(parts["home-need-body"].innerHTML, /Second/);
-  assert.notEqual(typeof parts["home-prop-body"].innerHTML, "string", "Proposals is not repainted for Needs you's dropdown");
+  assert.match(parts["home-prop-body"].innerHTML, /a1/, "Proposals is repainted, so it is never left stale");
+  assert.equal(typeof parts["home-need-facets"]?.innerHTML, "undefined", "the dropdown in use is left alone");
 });
 
 test("a refresh repaints around the search box in use and leaves it alone", () => {
@@ -526,4 +527,18 @@ test("after a failed proposals read the next search goes to the full read, so th
   assert.ok(!seen.some((p) => p.startsWith("/api/home/proposals")), seen.join());
   assert.equal(vm.runInContext("hst.data.proposals_failed", ctx), undefined);
   assert.doesNotMatch(vm.runInContext("$('home').innerHTML", ctx), /Could not read proposals/);
+});
+
+test("a row that leaves Needs you closes, so its id never comes back open", async () => {
+  const before = ctx.fetch;
+  const a = (id) => ({ kind: "ask", need: "ask", project: "p", text: id, id });
+  let answer = home({ needs: [a("a1"), a("a2")] });
+  ctx.fetch = async (path) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (path === "/api/briefing" ? { error: "off" } : answer) });
+  ctx.URLSearchParams = URLSearchParams;
+  try {
+    vm.runInContext(`hst.open = new Set(["ask:a1", "ask:a2"])`, ctx);
+    answer = home({ needs: [a("a2")] });
+    await vm.runInContext("refreshHome()", ctx);
+    assert.equal(vm.runInContext("JSON.stringify([...hst.open])", ctx), '["ask:a2"]');
+  } finally { ctx.fetch = before; delete ctx.URLSearchParams; vm.runInContext("hst.open = new Set()", ctx); }
 });
