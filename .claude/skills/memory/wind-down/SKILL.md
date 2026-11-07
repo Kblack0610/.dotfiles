@@ -189,8 +189,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    branch switch.
 5. **Clean up after yourself.** `/tmp` is a tmpfs on this machine, so anything left there is
    RAM, not disk. The session scratchpad is removed for you: `fire` deletes it after the kill,
-   and `claude-scratch-sweep.timer` (`wind-down.sh sweep`) reclaims the scratchpads of sessions
-   that never wound down. What no script can know, and so is yours:
+   and `agentctl-tmp-gc` (hourly) reclaims the scratchpads of sessions that never wound down. What no script can know, and so is yours:
    - **Stop the background processes this session started**: anything launched with
      `run_in_background`, `nohup`, `setsid` or `&`, such as dev servers, `kubectl port-forward`,
      `pw-record`, emulators, Unity `-batchMode` editors, `docker run` containers. Stop them by
