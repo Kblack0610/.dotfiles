@@ -2672,6 +2672,43 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   [ ! -e "$mark" ] || fail "a stale mark survived a reap that read active items"
 }
 
+# steam-beta-cut-1106 was failed "session ended" while its Claude worked: agent-panel left it out.
+@test "reap keeps an item whose recorded Claude process is running though agent-panel leaves it out, and settles it once the process is gone" {
+  project game beta "$SANDBOX/repos/game"
+  started_item busy lab:game-agent-1
+  sed -i 's/^agent: claude/agent: claude\nsessions: s1 s2/' "$AGENT_QUEUE_DIR"/running/*-busy.md
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-ask 'exit 0'
+  stub agent-panel 'echo "{\"target\":\"lab/other-agent-9:1\",\"status\":\"busy\",\"session_id\":\"s9\"}"'
+  export DISPATCH_REAP_CONFIRM=0
+  tail -f /dev/null >/dev/null 2>&1 3>&- & pid=$!   # sleep is a stub here
+  mkdir -p "$HOME/.claude-bnb/sessions"
+  jq -nc --argjson p "$pid" '{pid: $p, sessionId: "s2"}' > "$HOME/.claude-bnb/sessions/$pid.json"
+  cmd_reap >/dev/null; cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(qitem running busy)" ] || { kill "$pid"; fail "reaped an item whose Claude process is running"; }
+  # procStart is the pid's /proc start time: a match keeps the item, a different one is a reused pid.
+  st=$(sed 's/.*) //' "/proc/$pid/stat" | cut -d' ' -f20)
+  jq -nc --argjson p "$pid" --arg s "$st" '{pid: $p, sessionId: "s2", procStart: $s}' > "$HOME/.claude-bnb/sessions/$pid.json"
+  echo '{"pid": 1' > "$HOME/.claude-bnb/sessions/0.json"   # a half-written file hides no other
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(qitem running busy)" ] || { kill "$pid"; fail "a matching procStart did not keep the item"; }
+  jq -nc --argjson p "$pid" '{pid: $p, sessionId: "s2", procStart: "1"}' > "$HOME/.claude-bnb/sessions/$pid.json"
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-busy.md 2>/dev/null)" ] || { kill "$pid"; fail "a reused pid kept the item"; }
+  rm -f "$FLEET_DISPATCH_DIR"/reap-miss/*
+  agent-queue reopen busy --why test >/dev/null
+  # A pid file for another session id, or a dead pid, is not this item's Claude.
+  jq -nc --argjson p "$pid" '{pid: $p, sessionId: "other"}' > "$HOME/.claude-bnb/sessions/$pid.json"
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-busy.md 2>/dev/null)" ] || { kill "$pid"; fail "another session's process kept the item"; }
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  rm -f "$FLEET_DISPATCH_DIR"/reap-miss/*
+  agent-queue reopen busy --why test >/dev/null
+  jq -nc --argjson p "$pid" '{pid: $p, sessionId: "s2"}' > "$HOME/.claude-bnb/sessions/$pid.json"
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-busy.md 2>/dev/null)" ] || fail "a dead pid kept the item"
+}
+
 # Confirmed gone stays gone: settle_item leaves an item whose PR is open waiting, and it must not
 # re-enter the mark-then-confirm cycle, logging a fresh miss and settling half as often.
 @test "reap keeps a confirmed miss for an item it leaves waiting on its open PR" {
@@ -4044,6 +4081,38 @@ hold_for() {
   run cmd_starved
   assert_success
   assert_output --partial 'held by load (fleet-assess says HOLD)'
+}
+
+# 2026-11-07: stats reached real_idle through cmd_starved and slept out a 60s sample, so
+# agent-mqtt-publish --full hit its TimeoutStartSec=60 whenever no pass had sampled in the last minute.
+@test "starved and stats read the last pass's idle sample and never wait out a new one" {
+  queued_item stuck high "$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
+  cpu 85 5 0 10
+  rm -f "$FLEET_DISPATCH_DIR/idle" "$NOTES_FIXTURE/calls.log"
+  # No sample in the window: idle names no hold, so the queue reads starved.
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+  refute_output --partial 'real idle'
+  run cmd_stats
+  jq -e '.runnable == 1 and .starved' <<<"$output"
+  assert_not_called 'sleep'
+  # A pass's sample ten minutes old is still the verdict's: under the floor, it holds by load.
+  mkdir -p "$FLEET_DISPATCH_DIR"; echo "$(( $(date +%s) - 600 )) 10.0" > "$FLEET_DISPATCH_DIR/idle"
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by load (real idle 10.0% is under 30%)'
+  assert_not_called 'sleep'
+  # One older than the verdict's window is no sample: starved again, still without waiting.
+  echo "$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 )) 10.0" > "$FLEET_DISPATCH_DIR/idle"
+  run cmd_starved
+  assert_failure
+  refute_output --partial 'real idle'
+  assert_not_called 'sleep'
+  # Negative control: a pass's gate with the same ten-minute sample samples anew.
+  run gate
+  assert_output --partial 'real idle 10.0% is under 30%'
+  assert_called "sleep $DISPATCH_IDLE_WINDOW"
 }
 
 @test "stats: held_s is how long the hold has stood, 0 with none" {
