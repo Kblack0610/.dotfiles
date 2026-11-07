@@ -128,6 +128,7 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
 AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finished ok (its finished_ok)
+AQ_EX_HELD=5       # agent-queue add's exit when admission held an automated add (its admit)
 LOG="$DIR/log.md"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
@@ -2340,18 +2341,21 @@ cmd_reap() {
 # `night` items: a plan's phases carry no tier, so unattended they stop at an open PR. Once only: a
 # plan the queue has held before is its items' to finish, or a failing phase would re-queue every
 # pass. One still open after that shows in plans_unqueued. `- [-]` is how a human drops a phase.
+# They are an automated filer's (`from: auto:plans`), so a queue a day of drain deep holds them
+# (agent-queue admit), and the next pass tries again.
 reconcile_plans() {
   [ "$DISPATCH_PLAN_RECONCILE" = 1 ] || return 0
-  local orphans c plan project held out
+  local orphans c plan project held out rc
   orphans=$(plans_orphaned) || return 0
   [ -n "$orphans" ] || return 0
   held=$(agent-queue list --json --state done --since "$(date -d "$PLAN_LEDGER_DAYS days ago" +%F)" 2>/dev/null | jq -r '.plan // empty') || return 0
   while IFS= read -r c; do
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
     grep -qxF -- "$plan" <<<"$held" && continue
-    if out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --tags night --from shepherd 2>&1); then
+    out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --tags night --from auto:plans 2>&1); rc=$?
+    if [ "$rc" -eq 0 ]; then
       logline "queued the open phases of $(basename "$plan") for the night: its session is gone"
-    else
+    elif [ "$rc" -ne "$AQ_EX_HELD" ]; then
       say "could not queue the phases of $plan: $out"
     fi
   done <<<"$orphans"

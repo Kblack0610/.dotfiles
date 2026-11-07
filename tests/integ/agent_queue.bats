@@ -1300,7 +1300,7 @@ STUB
   [ "$(field "$(item queued r1)" from)" = research:dotfiles-hooks ]
   run "$AQ" add --project game --from robot --slug c2 "x"
   assert_failure
-  assert_output --partial 'human, shepherd, canary, research:<facet> or board'
+  assert_output --partial 'human, shepherd, canary, research:<facet>, auto:<filer> or board'
   run "$AQ" add --project game --from research: --slug c3 "x"
   assert_failure
 }
@@ -1449,4 +1449,110 @@ OUT
   run "$AQ" move sturdy running
   assert_success
   assert_output "sturdy: queued -> running"
+}
+
+# --- admission (ar-697) ------------------------------------------------------------------
+
+# started_item <state dir> <slug> <queued> <started> -- an item file as a dispatcher leaves it.
+started_item() {
+  mkdir -p "$AGENT_QUEUE_DIR/$1"
+  printf 'slug: %s\nproject: game\nmode: oneshot\npriority: high\nfrom: human\nqueued: %s\nstarted: %s\n---\n%s\n' \
+    "$2" "$3" "$4" "$2" > "$AGENT_QUEUE_DIR/$1/$2.md"
+}
+
+@test "admission holds a machine filer's add once the runnable items reach the limit, writes nothing and logs the hold" {
+  export AGENT_QUEUE_ADMIT_MIN=2
+  "$AQ" add --project game --slug one "one" >/dev/null
+  run "$AQ" add --project game --from auto:docs-cleanup --slug machine-a "machine a"
+  assert_success
+  [ "$(field "$(item queued machine-a)" from)" = auto:docs-cleanup ]
+  run "$AQ" add --project game --from research:costs --slug machine-b "machine b"
+  assert_failure 5
+  assert_output --partial "held by admission, nothing was added: 2 items can start now against a limit of 2"
+  assert_output --partial "notes ptask game --agent add"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-machine-b.md 2>/dev/null)" ] || fail "a held add wrote an item"
+  run jq -c '{from, slug, runnable, limit}' "$AGENT_QUEUE_DIR/admission.jsonl"
+  assert_output '{"from":"research:costs","slug":"machine-b","runnable":2,"limit":2}'
+  # A held item does not count: an `after:` one leaves room.
+  "$AQ" cancel one >/dev/null
+  "$AQ" add --project game --slug later --after machine-a "later" >/dev/null
+  run "$AQ" add --project game --from research:costs --slug machine-b "machine b"
+  assert_success
+}
+
+@test "admission never holds a human, #requested, red, urgent or --running add, at or over the limit" {
+  export AGENT_QUEUE_ADMIT_MIN=1
+  "$AQ" add --project game --slug one "one" >/dev/null
+  run "$AQ" add --project game --from auto:x --slug held "held"
+  assert_failure 5
+  "$AQ" add --project game --slug human "human" >/dev/null
+  "$AQ" add --project game --from auto:x --tags '#requested' --slug asked "asked" >/dev/null
+  "$AQ" add --project game --from auto:x --tags red --slug broken "broken" >/dev/null
+  "$AQ" add --project game --from auto:x --priority urgent --slug urgent "urgent" >/dev/null
+  "$AQ" add --project game --from auto:x --running --session s1 --slug mine "mine" >/dev/null
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "asked,broken,human,mine,one,urgent"
+  [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 1 ]
+}
+
+@test "a queue item's session adding without --from files item:<its slug>, held at the limit; its deferral and --from human are not" {
+  export AGENT_QUEUE_ADMIT_MIN=1 AGENT_QUEUE_ITEM=parent
+  run "$AQ" add --project game --slug first "first follow-up"
+  assert_success
+  [ "$(field "$(item queued first)" from)" = item:parent ]
+  run "$AQ" add --project game --slug second "second follow-up"
+  assert_failure 5
+  assert_output --partial "an automated add (item:parent) waits"
+  "$AQ" add --project game --slug after-one --after first "after first" >/dev/null
+  "$AQ" add --project game --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
+  "$AQ" add --project game --slug asked --from human "the human asked" >/dev/null
+  "$AQ" add --project game --slug own --running --session s1 "own work" >/dev/null
+  [ "$(field "$(item queued dated)" from)" = item:parent ]
+  [ "$(field "$(item queued asked)" from)" = human ]
+  [ "$(field "$(item running own)" from)" = human ]
+}
+
+@test "admission's limit is a day of measured drain, the items started out of the queue in 7 days, never under the floor" {
+  local i now old
+  now="$(date -u -d '1 hour ago' +%FT%TZ)"; old="$(date -u -d '10 days ago' +%FT%TZ)"
+  # 21 started out of the queue in the window: 3 a day. Not counted: one started 10 days ago,
+  # and one started the minute it was added (--running), which never sat in the queue.
+  for i in $(seq 1 21); do started_item "done/$(date +%F)" "d$i" "$(date -u -d '2 hours ago' +%FT%TZ)" "$now"; done
+  started_item running r-old "$old" "$old"
+  started_item running r-now "$now" "$now"
+  run env AGENT_QUEUE_ADMIT_MIN=1 "$AQ" admission --json
+  assert_success
+  assert_output '{"on":true,"runnable":0,"limit":3,"drain_per_day":3,"held_7d":0,"admits":true}'
+  run env AGENT_QUEUE_ADMIT_MIN=1 AGENT_QUEUE_ADMIT_DAYS=2 "$AQ" admission --json
+  assert_equal "$(jq .limit <<<"$output")" 6
+  run "$AQ" admission --json
+  assert_equal "$(jq .limit <<<"$output")" 10
+  run env AGENT_QUEUE_ADMIT_DAYS=0 "$AQ" admission
+  assert_output --partial "admission: off,"
+}
+
+@test "admission holds a machine filer's --plan as a whole, and admitted, queues every phase" {
+  printf '# P\n\n## Phases\n\n- [ ] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/orphan.md"
+  export AGENT_QUEUE_ADMIT_MIN=1 AGENT_QUEUE_START=0
+  run "$AQ" add --plan "$SANDBOX/orphan.md" --project game --from auto:plans --tags night
+  assert_success
+  run bash -c "'$AQ' list --json | jq -r .slug | paste -sd,"
+  assert_output "orphan-p1,orphan-p2,orphan-p3"
+  "$AQ" add --project game --slug runnable "runnable" >/dev/null
+  printf '# Q\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/other.md"
+  run "$AQ" add --plan "$SANDBOX/other.md" --project game --from auto:plans --tags night
+  assert_failure 5
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-other-p1.md 2>/dev/null)" ] || fail "a held plan queued a phase"
+}
+
+@test "admission is off at AGENT_QUEUE_ADMIT_DAYS=0, and admission --json counts the holds of the last 7 days" {
+  export AGENT_QUEUE_ADMIT_MIN=1
+  "$AQ" add --project game --slug one "one" >/dev/null
+  AGENT_QUEUE_ADMIT_DAYS=0 run "$AQ" add --project game --from auto:x --slug free "free"
+  assert_success
+  run "$AQ" add --project game --from auto:x --slug held "held"
+  assert_failure 5
+  printf '{"at":"2000-01-01T00:00:00Z","from":"auto:x"}\n' >> "$AGENT_QUEUE_DIR/admission.jsonl"
+  run "$AQ" admission --json
+  assert_equal "$(jq -c '[.held_7d, .admits]' <<<"$output")" '[1,false]'
 }
