@@ -254,10 +254,12 @@ hold_resource() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$1" != . ] && [ "$1" != 
 # at: time: on 2026-11-06 a store-forms item needed mac-desktop while a session with no queue item
 # held it, so there was nothing to put it after:. A failing agent-hold holds.
 hold_pending() {
-  local out
-  out="$(cd / && TMUX='' "$AQ_HOLD" check "$1" 2>/dev/null)" && return 0
-  out="${out#held: "$1" }"
-  printf '%s\n' "${out:-agent-hold check failed}"
+  local out rc dir
+  dir="$(realpath -m "${AGENT_HOLD_DIR:-$HOME/.agent/holds}")"
+  out="$(cd / && TMUX='' AGENT_HOLD_DIR="$dir" "$AQ_HOLD" check "$1" 2>/dev/null)"; rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  [ "$rc" -eq 1 ] && [ -n "$out" ] || { echo "agent-hold check failed, exit $rc"; return; }
+  printf '%s\n' "${out#held: "$1" }"
 }
 
 # ask_pending <id>[=<option>] -> why that agent-ask still holds an item, or nothing once the human
@@ -543,17 +545,7 @@ cmd_add() {
   case "$from" in human | shepherd | canary | board:?*:?*) ;; *) die "--from is human, shepherd, canary or board:<project>:<key>, not $from" ;; esac
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   [ -z "$epic" ] || [[ "$epic" =~ ^[a-z0-9]+-[0-9]+$ ]] || die "--epic is a row id, <code>-<N>, not $epic"
-  for tag in $tags; do
-    case "$tag" in
-      at:*) [[ "$tag" =~ ^at:([0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T)?([01][0-9]|2[0-3]):[0-5][0-9]$ ]] ||
-        die "a time tag is at:HH:MM or at:YYYY-MM-DDTHH:MM, not $tag" ;;
-      pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
-      nightly:*) [[ "$tag" =~ ^nightly:[A-Za-z0-9_.-]+$ ]] || die "a nightly tag is nightly:<repo>, the repo's name, not $tag" ;;
-      ask:*) [[ "$tag" =~ ^ask:[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "an ask tag is ask:<id>[=<option>], not $tag"
-        aid="${tag#ask:}"; compgen -G "$AQ_ASKS/*/${aid%%=*}.md" >/dev/null || die "$tag: no agent-ask has that id; post the ask first" ;;
-      hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
-    esac
-  done
+  check_tags "$tags"
   # A hand-started session records itself and its window, on the agent world only.
   local window=''
   if [ -n "$running" ] && [ -z "$session" ]; then
@@ -844,6 +836,7 @@ cmd_set() {
     k="${kv%%=*}"
     [ "$k" != "$kv" ] || die "not key=value: $kv"
     case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
+    [ "$k" != tags ] || check_tags "${kv#*=}"
     if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then
       die "unknown project: ${kv#*=} (not a canonical project in $AQ_MAP)"
     fi
@@ -922,7 +915,7 @@ cmd_move() {
   if [ "$to" = "done" ]; then
     case "$status" in ok | failed | cancelled) ;; *) die "move to done needs --status ok, failed or cancelled" ;; esac
   fi
-  lock
+  [ -n "${AQ_LOCKED-}" ] || lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   from="$(state_of "$f")"
   [ -z "$expect" ] || [ "$from" = "$expect" ] || { echo "agent-queue: $slug is $from, not $expect: left as it is" >&2; return 3; }
@@ -951,10 +944,27 @@ cmd_move() {
   start_next "$slug"
 }
 
+# check_tags <tags> -- die on a hold tag the queue could not read, so a gate is never silently
+# open or shut: add and `set tags=` both check.
+check_tags() {
+  local tag aid
+  for tag in $1; do
+    case "$tag" in
+      at:*) [[ "$tag" =~ ^at:([0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T)?([01][0-9]|2[0-3]):[0-5][0-9]$ ]] ||
+        die "a time tag is at:HH:MM or at:YYYY-MM-DDTHH:MM, not $tag" ;;
+      pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
+      nightly:*) [[ "$tag" =~ ^nightly:[A-Za-z0-9_.-]+$ ]] || die "a nightly tag is nightly:<repo>, the repo's name, not $tag" ;;
+      ask:*) [[ "$tag" =~ ^ask:[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "an ask tag is ask:<id>[=<option>], not $tag"
+        aid="${tag#ask:}"; compgen -G "$AQ_ASKS/*/${aid%%=*}.md" >/dev/null || die "$tag: no agent-ask has that id; post the ask first" ;;
+      hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
+    esac
+  done
+}
+
 # requeue <slug> --hold <resource> -- put an item back in the queue behind an agent-hold resource,
 # for a session that finds a resource it needs held by another (`agent-hold claim` said busy): it
 # requeues and winds down, and the item starts again once the resource is free. Not a redo: the
-# model did nothing wrong, so its lane run is dropped, not reported to model-lane.
+# model did nothing wrong, so its lane run is dropped, not reported to model-lane, as a cancel is.
 cmd_requeue() {
   local slug="${1:?usage: agent-queue requeue <slug> --hold <resource>}" res="" f tags
   shift
@@ -974,6 +984,8 @@ cmd_requeue() {
     *) header_set "$f" tags "${tags:+$tags }hold:$res"; item_event item-set "$f" --why "tags=${tags:+$tags }hold:$res" ;;
   esac
   header_del "$f" lane_run
+  # The move runs under this lock, so no writer closes or moves the item between the edit and it.
+  local AQ_LOCKED=1
   cmd_move "$slug" queued
 }
 

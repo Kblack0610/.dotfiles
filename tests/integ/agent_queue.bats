@@ -243,7 +243,14 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output --partial "by unity-agent-6: steam forms)"
   run env TMUX=x "$AQ" next --json
   assert_failure
-  (cd "$SANDBOX" && mkdir -p unity-agent-6 && cd unity-agent-6 && run "$AQ" next --json && [ "$status" -ne 0 ])
+  # Asked from the claimer's own directory with no tmux, agent-hold would name the caller unity-agent-6.
+  mkdir -p "$SANDBOX/unity-agent-6"; cd "$SANDBOX/unity-agent-6"
+  run env -u TMUX "$AQ" next --json
+  assert_failure
+  cd "$SANDBOX"
+  # set tags= is checked like add.
+  run "$AQ" set forms "tags=hold:a/b"
+  assert_failure; assert_output --partial "hold:<resource>"
   "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = forms ]
