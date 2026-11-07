@@ -14,6 +14,7 @@ mod assets;
 mod auth;
 mod board;
 mod briefing;
+mod cache;
 mod cli;
 mod cloud;
 mod costs;
