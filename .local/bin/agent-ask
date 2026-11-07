@@ -1084,13 +1084,16 @@ in_session_picks() {
                   | [.id, .options, .answer] | @tsv' <<<"$1") | jq -sc 'add // {}'
 }
 
-# not_an_answer <message>: true when a message to the session cannot answer a free-text ask: it is
-# a question (ends in ?, or opens with an interrogative or "were you going to") or a slash command.
-# Words alone cannot tell a reply from a new topic, so this only rules out the shapes that are never one.
+# not_an_answer <message>: true when a message to the session cannot answer a free-text ask: a
+# slash command (/name, not a path), a message ending in ?, or one opening with a question word.
+# A hedged answer ending in ? is cancelled too: the session asks again, which costs less than
+# a question recorded as an answer. Words alone cannot tell a reply from a new topic.
 not_an_answer() {
-  local m="${1,,}" lead='^(what|what.s|whats|why|how|when|where|who|which|were you|are you|did you|do you|can you|could you|is it|is there)[[:space:]]'
+  local m="${1,,}"
+  local lead='^(why|what|whats|what.s|how many|how much|were you|are you|did you|do you|can you|could you|is it|is there)([[:space:]]|$)'
+  local cmd='^/[a-z][a-z0-9:_-]*([[:space:]]|$)'
   m="${m#"${m%%[![:space:]]*}"}"
-  [[ "$m" == /* || "$m" == *"?" || "$m" =~ $lead ]]
+  [[ "$m" =~ $cmd || "$m" == *"?" || "$m" =~ $lead ]]
 }
 
 # settle-session <claude_session> answered [text...]: the human typed into the session (the
