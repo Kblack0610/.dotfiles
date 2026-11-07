@@ -51,16 +51,24 @@ artifacts() {
 @test "cases: each failed case once, from FAIL lines only, across a full run's summary and its shards" {
   mkdir -p "$SANDBOX/a/playmode-summary" "$SANDBOX/a/playmode-shard-1"
   printf 'ok    APlayTests  ==> 3/3 passed\nFAIL  BPlayTests  ==> 1/3 passed\tcases:\tP.B.One\tP.B.Two\nFAIL  CPlayTests  crashed\nUNCONFIRMED DPlayTests  did not pass in its batch\nNOT RUN EPlayTests  after the first FAIL\n' > "$SANDBOX/a/playmode-summary/summary.txt"
-  printf 'FAIL  BPlayTests  ==> 1/3 passed\tcases:\tP.B.One\n' > "$SANDBOX/a/playmode-shard-1/summary.txt"
+  # no final newline: the next file's first line must not run into it
+  printf 'FAIL  BPlayTests  ==> 1/3 passed\tcases:\tP.B.One' > "$SANDBOX/a/playmode-shard-1/summary.txt"
+  mkdir -p "$SANDBOX/a/playmode-shard-2"
+  printf 'FAIL  FPlayTests  ==> 0/1 passed\tcases:\tP.F.One\n' > "$SANDBOX/a/playmode-shard-2/summary.txt"
   run "$SUBJECT" cases "$SANDBOX/a"
   assert_success
-  assert_output $'P.B.One\nP.B.Two'
+  assert_output $'P.B.One\nP.B.Two\nP.F.One'
 }
 
 @test "sync: each red run's failed cases land once, keyed by branch and its worktree here" {
-  local t1=1794000000 t2=1794000600
-  jq -n --arg a "$(date -u -d "@$t1" +%FT%TZ)" --arg b "$(date -u -d "@$t2" +%FT%TZ)" \
-    '[{databaseId: 202, attempt: 1, headBranch: "feat/y", updatedAt: $b}, {databaseId: 101, attempt: 1, headBranch: "feat/x", updatedAt: $a}]' > "$GHD/runs.json"
+  local now t1 t2
+  now="$(date +%s)" t1=$((now - 1200)) t2=$((now - 600))
+  # a nightly (schedule) is NIGHTLY's, and a run past MAX_AGE_H is not read: neither is asked about
+  jq -n --arg a "$(date -u -d "@$t1" +%FT%TZ)" --arg b "$(date -u -d "@$t2" +%FT%TZ)" --arg old "$(date -u -d "@$((now - 90000))" +%FT%TZ)" \
+    '[{databaseId: 202, attempt: 1, event: "workflow_dispatch", headBranch: "feat/y", updatedAt: $b},
+      {databaseId: 101, attempt: 1, event: "workflow_dispatch", headBranch: "feat/x", updatedAt: $a},
+      {databaseId: 505, attempt: 1, event: "schedule", headBranch: "main", updatedAt: $b},
+      {databaseId: 606, attempt: 1, event: "workflow_dispatch", headBranch: "feat/w", updatedAt: $old}]' > "$GHD/runs.json"
   artifacts 101 playmode-shard-1 playmode-shard-2 test-runs-playmode-1 playmode-plan
   artifacts 202 editmode-summary
   printf 'FAIL  BPlayTests  ==> 1/3 passed\tcases:\tP.B.One\n' > "$GHD/101.playmode-shard-1.txt"
@@ -77,6 +85,8 @@ artifacts() {
   refute_output --partial 'test-runs'
   refute_output --partial 'playmode-plan'
   refute_output --partial 'shard-9'
+  run grep -E 'runs/(505|606)|download (505|606)' "$GHD/calls.log"
+  assert_failure
 
   # a second sync reads no run again
   : > "$GHD/calls.log"
@@ -87,9 +97,13 @@ artifacts() {
   assert_output 0
 }
 
-@test "sync: a run whose artifacts could not be read is tried again; a red with no summary is read as none" {
-  jq -n '[{databaseId: 303, attempt: 1, headBranch: "feat/z", updatedAt: "2026-11-07T08:00:00Z"},
-          {databaseId: 404, attempt: 1, headBranch: "feat/z", updatedAt: "2026-11-07T08:10:00Z"}]' > "$GHD/runs.json"
+@test "sync: a run whose artifacts could not be read is tried again, up to TRIES; a red with no summary is read as none" {
+  local at; at="$(date -u -d '-10 min' +%FT%TZ)"
+  jq -n --arg at "$at" '[{databaseId: 303, attempt: 1, event: "workflow_dispatch", headBranch: "feat/z", updatedAt: $at},
+          {databaseId: 404, attempt: 1, event: "workflow_dispatch", headBranch: "feat/z", updatedAt: $at},
+          {databaseId: 707, attempt: 1, event: "workflow_dispatch", headBranch: "feat/v", updatedAt: $at}]' > "$GHD/runs.json"
+  artifacts 707 playmode-shard-1
+  touch "$GHD/download.707.fail"
   artifacts 303 playmode-shard-1
   artifacts 404 playmode-plan
   printf 'FAIL  BPlayTests  ==> 1/3 passed\tcases:\tP.B.One\n' > "$GHD/303.playmode-shard-1.txt"
@@ -103,6 +117,13 @@ artifacts() {
   [ "$(cut -f3,4 "$LEDGER")" = "$(printf 'feat/z\tP.B.One')" ]
   # 404 left no summary, so it was marked read and is not asked about again
   run grep -c 'runs/404' "$GHD/calls.log"
+  assert_output 0
+  # 707 never downloads: its third failed read gives it up, and a fourth sync does not ask
+  run "$SUBJECT" sync
+  assert_output --partial 'run 707 unreadable 3 times, given up'
+  : > "$GHD/calls.log"
+  run "$SUBJECT" sync
+  run grep -c 'runs/707' "$GHD/calls.log"
   assert_output 0
 }
 
