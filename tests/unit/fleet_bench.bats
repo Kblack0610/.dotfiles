@@ -1417,6 +1417,16 @@ log_triage_setup() {
   [ ! -s "$PLOG" ]
 }
 
+@test "triage: reading a run's stderr range writes no Broken pipe when SIGPIPE is ignored, as under systemd" {
+  log_triage_setup
+  # a later run big enough that a reader stopping at the range end would cut a pipe mid-write
+  errlog alpha -100 $(seq 1 60000)
+  run bash -c 'trap "" PIPE; exec "$1" triage --dry-run' _ "$SUBJECT"
+  assert_success
+  refute_output --partial 'Broken pipe'
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
+}
+
 # route <ERE> <route> <skill> <fix> [tags]: one line of the route table
 route() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:--}" >> "$TRIAGE_ROUTES"; }
 lock_route() { route 'lock .* held by pid' agent fix-red 'clear the stale lock #2 in alpha' "${1:--}"; }
