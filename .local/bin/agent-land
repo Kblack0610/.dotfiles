@@ -144,17 +144,17 @@ catch_up() {
     echo "fetch: current with origin/$base"
     return 0
   fi
+  # Before the merge, so a refusal leaves the checkout as it was. A fork head is not origin's branch.
+  [ "$cross" != true ] || fail push "the PR head is on a fork: git push HEAD to that fork's $head_ref, then re-run"
   if ! out=$(git merge -q --no-edit "origin/$base" 2>&1); then
     git merge --abort >/dev/null 2>&1 || true
     printf 'agent-land: behind origin/%s by %s and merging it conflicts: resolve the merge and re-run\n' "$base" "$behind" >&2
     exit 3
   fi
-  # Push HEAD to the ref the branch tracks: a bare `git push` under push.default=simple refuses
-  # when the local name differs from its upstream (agent-11 -> feat/x, PR #1252).
-  local remote ref
-  read -r remote ref < <(git for-each-ref --format='%(upstream:remotename) %(upstream:remoteref)' "$(git symbolic-ref -q HEAD)" 2>/dev/null)
-  [ -n "${remote:-}" ] && [ -n "${ref:-}" ] || fail push "the checked-out branch tracks no upstream: git push -u <remote> HEAD:$head_ref, then re-run"
-  out=$(git push -q "$remote" "HEAD:$ref" 2>&1) || fail push "$(lastline "$out")"
+  # Push HEAD to the PR's own head branch: a bare `git push` under push.default=simple refuses when
+  # the local branch name differs from its upstream (agent-11 -> feat/x, PR #1252), and the upstream
+  # itself can be the base (a worktree cut from origin/main tracks it).
+  out=$(git push -q origin "HEAD:refs/heads/$head_ref" 2>&1) || fail push "$(lastline "$out")"
   echo "fetch: merged origin/$base ($behind behind) into the green head and pushed it"
   # GitHub works out whether a pushed head merges after the push and refuses the merge until then
   # ("not mergeable"). No event says when, so the PR is polled at the checks cadence until it

@@ -70,9 +70,6 @@ rev-list)
   # behind.seq: one count per call, popped as read; then behind
   q="$NOTES_FIXTURE/behind.seq"
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
-# upstream.none: the branch tracks nothing; else its upstream is origin refs/heads/feat/x under another local name
-symbolic-ref) echo refs/heads/agent-11 ;;
-for-each-ref) [ -f "$NOTES_FIXTURE/upstream.none" ] || echo 'origin refs/heads/feat/x' ;;
 rev-parse) case "$2" in --show-toplevel) cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;; *) echo 0123456789abcdef ;; esac ;;
 # worktree.list: what `git worktree list --porcelain` prints (nothing when absent)
 worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
@@ -202,9 +199,9 @@ item() {
   assert_output 1
   run grep -c '^gh api repos/o/r/rules/branches/main$\|^gh api repos/o/r/branches/main/protection$' "$LOG"
   assert_output 2
-  run grep -A4 '^git merge -q --no-edit origin/main$' "$LOG"
-  assert_line --index 3 'git push -q origin HEAD:refs/heads/feat/x'
-  assert_line --index 4 'git rev-parse HEAD'
+  run grep -A2 '^git merge -q --no-edit origin/main$' "$LOG"
+  assert_line --index 1 'git push -q origin HEAD:refs/heads/pr-42'
+  assert_line --index 2 'git rev-parse HEAD'
   run grep -c 'pr merge 42 --squash --match-head-commit 0123456789abcdef' "$LOG"
   assert_output 1
 }
@@ -216,7 +213,7 @@ second_wait() {
   assert_line 'landed #42'
   run grep -c 'pr checks' "$LOG"
   assert_output 2
-  [ "$(grep -n '^git push -q origin HEAD:refs/heads/feat/x$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
+  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
   [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
 }
 
@@ -267,7 +264,7 @@ second_wait() {
   echo '{"required_status_checks":{"strict":true}}' >"$NOTES_FIXTURE/protection.json"
   run "$LAND" 42 --item ship
   assert_success
-  run grep -c '^git push -q origin HEAD:refs/heads/feat/x$' "$LOG"
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
   assert_output 2
   run grep -c 'pr checks' "$LOG"
   assert_output 3
@@ -286,12 +283,22 @@ second_wait() {
   [ "$(grep -n 'headRefOid,mergeable' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
 }
 
-@test "behind after a green gate on a branch with no upstream: names the push to run, nothing pushed or merged" {
+@test "behind after a green gate: the catch-up pushes to the PR's head branch, whatever the local branch tracks" {
   printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
-  : >"$NOTES_FIXTURE/upstream.none"
+  printf 'feat/x\n' >"$NOTES_FIXTURE/head.ref"
+  printf '%s\n' 'worktree /srv/here' 'HEAD 0123456789abcdef' 'branch refs/heads/agent-11' >"$NOTES_FIXTURE/worktree.list"
+  run "$LAND" 42 --item ship
+  assert_success
+  run grep '^git push' "$LOG"
+  assert_output 'git push -q origin HEAD:refs/heads/feat/x'
+}
+
+@test "behind after a green gate with a fork head: names the push to run, nothing pushed or merged" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  printf 'true\n' >"$NOTES_FIXTURE/head.cross"
   run "$LAND" 42 --item ship
   assert_failure
-  assert_output --partial 'tracks no upstream'
+  assert_output --partial 'on a fork'
   run grep -c '^git push\|pr merge' "$LOG"
   assert_output 0
 }
