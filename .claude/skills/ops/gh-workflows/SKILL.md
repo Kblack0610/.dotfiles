@@ -68,7 +68,7 @@ gh run list -L 10
 gh run list --workflow=ci.yml --branch=main
 gh run view <run-id>
 gh run view <run-id> --log-failed
-gh run watch <run-id> --exit-status   # wait on the run; exit code is its result
+gh-run-wait <run-id> [label]          # wait on the run in the background; exit code is its result (gh run watch is denied by block-poll)
 gh pr checks <number> --watch --fail-fast
 gh run cancel <run-id>
 

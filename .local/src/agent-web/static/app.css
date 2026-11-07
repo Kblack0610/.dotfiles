@@ -148,7 +148,7 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .qtag { display: inline-block; padding: 0 6px; margin-left: 4px; border-radius: 9px; background: var(--tool); }
 .qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
 .qbad { color: var(--b-needs); font-weight: 600; }
-.qpipe { margin: 0 0 10px; overflow-wrap: anywhere; } .qwarn { color: var(--b-stalled); font-weight: 600; }
+.flow { margin: 0 0 10px; overflow-wrap: anywhere; } .flow .fchip { text-decoration: none; margin: 0 4px 4px 0; } .flow a.fchip:hover { text-decoration: underline; } .fnote { font-size: var(--fs-sm); } .qwarn { color: var(--b-stalled); font-weight: 600; }
 .qhold { font-size: 12px; color: var(--b-stalled); margin-bottom: 6px; }
 .badge-line { margin: 6px 0; }
 .more { padding: 4px 8px; }

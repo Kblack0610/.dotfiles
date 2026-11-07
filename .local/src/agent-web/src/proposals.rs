@@ -27,6 +27,8 @@ pub struct HomePage {
     #[serde(flatten)]
     home: Home,
     proposals_table: Summary,
+    /// Grafana's base for the flow strip's graph link, as `/api/flow` sends it.
+    grafana: Option<String>,
 }
 
 pub fn page(mut home: Home, q: &ViewQuery) -> HomePage {
@@ -37,6 +39,7 @@ pub fn page(mut home: Home, q: &ViewQuery) -> HomePage {
     HomePage {
         home,
         proposals_table,
+        grafana: hub_core::infra::grafana(),
     }
 }
 

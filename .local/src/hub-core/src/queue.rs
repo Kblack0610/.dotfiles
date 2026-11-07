@@ -733,6 +733,19 @@ impl Queue {
     pub fn count(&self, s: State) -> usize {
         self.in_state(s).count()
     }
+
+    /// `1 running, 2 up next (1 held)`: the phone widget's queue line.
+    pub fn counts_line(&self) -> String {
+        let held = self
+            .in_state(State::Queued)
+            .filter(|i| i.hold.is_some())
+            .count();
+        let mut next = format!("{} up next", self.count(State::Queued));
+        if held > 0 {
+            next += &format!(" ({held} held)");
+        }
+        format!("{} running, {next}", self.count(State::Running))
+    }
 }
 
 /// One Queue table row: an item and its stage times at the `now` the view was read at, so the
