@@ -330,6 +330,33 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q '"row":"chore(build): drop the old cache"' "$HOME/.local/state/notes/ingest.jsonl" || fail "the filed row's words were not recorded"
 }
 
+@test "outbox: a #p: word that names no project goes to the model with the word as a hint, and is routed, not refused" {
+  sheet '' ''
+  outbox '- [ ] chore(build): drop the old cache #p:scrach\n- [ ] fix(ui): a gap in the hud #p:scratch\n- [ ] still unknown #p:nowhere\n'
+  answer '{"n": 1, "action": "file", "rows": ["chore(build): drop the old cache #low #size/s"], "project": "scratch"}' \
+    '{"n": 2, "action": "skip", "why": "no such project"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 2 from the outbox, filed 2, left 1, refused 0'
+  assert_output --partial '#p:scrach names no project, left for the model'
+  # the exact tag moved with no model; the two misses were the model's batch, with the word as a hint
+  grep -qx '1. \[outbox\] chore(build): drop the old cache #p:scrach (tagged #p:scrach, which is no project; it may name one of the projects above)' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  grep -q '^2. \[outbox\] still unknown #p:nowhere (tagged #p:nowhere' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  ! grep -q "a gap in the hud" "$NOTES_FIXTURE/prompt.txt" || fail "an exact #p: line reached the model"
+  run tasks
+  assert_output --regexp 'chore\(build\): drop the old cache .*id:sc-[12]'
+  assert_output --regexp 'fix\(ui\): a gap in the hud'
+  refute_output --partial '#p:'
+  run cat "$HOME/.notes/outbox.md"
+  assert_output --partial 'still unknown #p:nowhere'
+  refute_output --partial 'old cache'
+  # the one the model passed over is recorded as left, so the next sweep does not ask again
+  rm -f "$NOTES_FIXTURE/model.log"
+  run "$TRIAGE"
+  assert_success
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "a recorded line was asked again"
+}
+
 @test "outbox: an <id>: line answers its open row with no model, closing a decide row; an id with no open row is left" {
   sheet '' '- [ ] decide(squad): followers that fight with you #low <!-- id:sc-1 -->\n- [ ] feat(ui): a colour for the squad <!-- id:sc-2 -->\n'
   mkdir -p "$PROJ/scratch/agent"
