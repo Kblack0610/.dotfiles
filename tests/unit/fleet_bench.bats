@@ -20,7 +20,7 @@ setup() {
   export BENCH_NEEDS_CMD='echo {"needs":[],"errors":[]}'   # nor the real hub: no needs unless a test serves them
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
-  export BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last"
+  export BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
   # nor the real roadmaps, the whole queue or the real plans (fleet-bench epics)
   export BENCH_ROADMAP_CMD=false BENCH_ALL_ITEMS_CMD=true BENCH_PLAN_DIRS="$SANDBOX/no-plans"
@@ -2013,7 +2013,7 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -3689,6 +3689,35 @@ epics_fixture() {
   assert_success
   local h; h=$(jq -r '.requested_unstarted_h["7d"]' <<<"$output")
   [ "$h" -ge 72 ] && [ "$h" -lt 96 ] || fail "oldest open requested row reads $h hours"
+}
+
+@test "chain: wants_unstamped is the share of human-channel adds in the window with no #requested; session and old events do not count" {
+  chain_fixture
+  local day old; day=$(date -d "@$((T0 - 86400))" +%F) old=$(date -d "@$((T0 - 20 * 86400))" +%F)
+  jq -cn --arg d "$day" --arg o "$old" '
+    {ts: "\($d)T10:00:00.1-08:00", action: "added", from: "game", by: "human", text: "fix(a): one #requested"},
+    {ts: "\($d)T10:01:00.1-08:00", action: "added", from: "game", by: "human", text: "fix(a): two"},
+    {ts: "\($d)T10:02:00.1-08:00", action: "filed", from: "tools", text: "fix(a): three"},
+    {ts: "\($d)T10:03:00.1-08:00", action: "moved", from: "outbox", by: "human", text: "fix(a): moved is not an add"},
+    {ts: "\($d)T10:04:00.1-08:00", action: "added", from: "game", by: "abc123", text: "fix(a): a session follow-up"},
+    {ts: "\($o)T10:00:00.1-08:00", action: "added", from: "game", by: "human", text: "fix(a): outside the window"}' > "$BENCH_INGEST"
+  run "$SUBJECT" chain --json
+  assert_success
+  assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.667
+  run "$SUBJECT" chain
+  assert_success
+  assert_line 'wants_unstamped: 2 of 3 human-channel adds in 7d carry no #requested, by project (game 1/2, tools 1/1)'
+}
+
+@test "chain: the table names the oldest open #requested row behind requested_unstarted_h" {
+  chain_fixture
+  jq -cn '{rows: [
+    {project: "game", id: "g-2", lane: "agent", state: "open", requested: true, since: "2026-10-30", tags: []},
+    {project: "game", id: "g-5", lane: "agent", state: "open", requested: true, since: "2026-10-20", tags: []},
+    {project: "game", id: "g-6", lane: "agent", state: "doing", requested: true, since: "2020-01-01", tags: []}]}' > "$BJSON"
+  run "$SUBJECT" chain
+  assert_success
+  assert_line --regexp '^requested_unstarted_h: oldest is game:g-5, open since 2026-10-20 \([0-9]+h\)$'
 }
 
 @test "chain: routes_unresolved counts the watches and runners with no route line" {
