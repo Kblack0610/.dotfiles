@@ -90,13 +90,15 @@
 #   skill-drift --json           machine-readable (everything, with "new": true|false)
 #   skill-drift --new            human-readable, NEW findings only
 #   skill-drift --write-baseline freeze current findings as accepted
-#   skill-drift --lint [DIR] [--profile full|project]
+#   skill-drift --lint [DIR] [--profile full|project] [--allow-empty]
 #                                STATIC checks only, over DIR/.claude. What CI runs:
 #                                no deployed tree, no private repo and no CLAUDE.md
 #                                exist on a runner, so the environmental checks
 #                                cannot even be attempted. `full` is the dotfiles
 #                                corpus. `project` is a game repo: no metadata.* or
 #                                category rules, and flat .claude/skills/<name>/.
+#                                Finding nothing fails, unless --allow-empty says
+#                                this repo tracks no skills on purpose.
 #   skill-drift --write-lint-baseline [DIR] [--profile full|project]
 #                                freeze the current frozen-eligible debt
 #   skill-drift --ratchet [DIR] [BASE]
@@ -145,7 +147,7 @@ LISTING_MAX="${SKILL_LISTING_MAX:-24576}"
 # The one heading every skill carries (the majority form when the standard was written).
 HEADING='## Scope and triggers'
 
-MODE=report LINT_DIR="" DOCS_JSON=0 PROFILE=full RATCHET_BASE=origin/main
+MODE=report LINT_DIR="" DOCS_JSON=0 PROFILE=full RATCHET_BASE=origin/main ALLOW_EMPTY=0
 case "${1:-}" in
   --quiet)          MODE=quiet ;;
   --json)           MODE=json ;;
@@ -164,12 +166,14 @@ case "$MODE" in lint|write_lint_baseline|ratchet)
   while [ $# -gt 0 ]; do
     case "$1" in
       --profile) PROFILE="${2:-}"; shift; [ $# -eq 0 ] || shift ;;
+      --allow-empty) ALLOW_EMPTY=1; shift ;;
       *) if [ -z "$LINT_DIR" ]; then LINT_DIR="$1"; else RATCHET_BASE="$1"; fi; shift ;;
     esac
   done
   LINT_DIR="${LINT_DIR:-$PWD}"
   # A typo here would run the wrong contract and report it clean.
   case "$PROFILE" in full|project) ;; *) echo "skill-drift: unknown profile '$PROFILE' (full|project)" >&2; exit 2 ;; esac
+  [ "$ALLOW_EMPTY" = 0 ] || [ "$MODE" = lint ] || { echo "skill-drift: --allow-empty goes with --lint only" >&2; exit 2; }
 esac
 
 LINT_BASELINE="${SKILL_LINT_BASELINE:-$LINT_DIR/tests/skill-lint.baseline}"
@@ -813,8 +817,13 @@ if [ "$MODE" = lint ]; then
   entries=$( { find_commands "$LINT_DIR"; find_agents "$LINT_DIR"; } | wc -l)
   # An empty input list is a FAILURE, not a clean run. Every tooling failure in
   # this repo has been a silent success, and a lint that scans nothing and says
-  # "all good" is the purest form of it.
+  # "all good" is the purest form of it. --allow-empty is the caller saying so in
+  # advance: a game repo whose only skills are generated and untracked.
   if [ "$((scanned + entries))" -eq 0 ]; then
+    if [ "$ALLOW_EMPTY" = 1 ] && [ "$errs" -eq 0 ]; then
+      echo "skill-lint: no skills, commands or agents under $LINT_DIR/.claude, as --allow-empty expects"
+      exit 0
+    fi
     echo "skill-lint: found NO skills, commands or agents under $LINT_DIR/.claude - refusing to report success"
     exit 2
   fi
