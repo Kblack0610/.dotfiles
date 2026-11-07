@@ -711,9 +711,12 @@ git_facts() {
   if [ -n "${oid:-}" ]; then
     head="$(git -C "$d" rev-parse HEAD)"
     # HEAD is in the PR when it is the PR head or behind it; an unknown oid means the
-    # remote holds commits this clone lacks, which is also "nothing new here".
+    # remote holds commits this clone lacks, which is also "nothing new here". HEAD already
+    # in the base is landed too: a reused slot branch keeps its name, so its newest PR by
+    # name is an old one whose head this HEAD has moved past.
     if [ "$head" != "$oid" ] && git -C "$d" cat-file -e "$oid^{commit}" 2>/dev/null \
-       && ! git -C "$d" merge-base --is-ancestor HEAD "$oid" 2>/dev/null; then inpr=0; fi
+       && ! git -C "$d" merge-base --is-ancestor HEAD "$oid" 2>/dev/null \
+       && ! git -C "$d" merge-base --is-ancestor HEAD "$base" 2>/dev/null; then inpr=0; fi
   fi
   echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base") ${oid:--} $(dirty_names "$paths")"
 }

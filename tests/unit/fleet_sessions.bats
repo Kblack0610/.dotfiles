@@ -1878,6 +1878,31 @@ main_change() {
   git -C "$SANDBOX/wt" fetch -q origin
 }
 
+@test "end to end: a reused slot branch already in the base is not commits after its old merged PR (ar-603)" {
+  landed_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
+  # The slot is reset onto main past #875's head, and main then moves on: clean, 0 ahead, 1 behind.
+  main_change one
+  "${g[@]}" reset -q --hard origin/main
+  main_change two
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .pr <<<"$output")" = 875 ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -c .blockers <<<"$output")" = '[]' ]
+  refute_output --partial 'commits after merged PR'
+
+  # Negative control: a real commit past the merged head is not in the base, so it still flags.
+  echo work > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m 'unlanded work'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  [ "$(jq -c .blockers <<<"$output")" = '["commits after merged PR #875"]' ]
+}
+
 @test "end to end: a conflicting PR with red checks is not a conflict nudge; with green checks it is, once" {
   conflict_fixture
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
