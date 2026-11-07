@@ -15,7 +15,9 @@ origin_repo() {
   [ -n "${1:-}" ] || return 1
   url=$(git -C "$1" remote get-url origin 2>/dev/null) && [ -n "$url" ] || return 1
   if [ -n "${2:-}" ]; then
-    host=${url#*://} host=${host#*@} host=${host%%[:/]*}
+    # The authority, then past any user:password@ (an @ may be in the password), then before a port
+    # or the scp form's `:path`.
+    host=${url#*://} host=${host%%/*} host=${host##*@} host=${host%%:*}
     [ "${host,,}" = "${2,,}" ] || return 1
   fi
   sed -E 's#/+$##; s#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#' <<<"$url"

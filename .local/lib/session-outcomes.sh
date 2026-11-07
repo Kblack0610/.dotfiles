@@ -14,7 +14,7 @@
 # ("Session outcomes") in the private overlay.
 
 # shellcheck source=origin-repo.sh
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/origin-repo.sh"
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/origin-repo.sh" || return 1
 
 # SO_PR_JQ - the jq defs every harness's PR scan shares. pr_cmd: a command that opens or merges
 # a PR, `gh pr create|merge` in command position (at a line start, after a shell separator, `sh -c`

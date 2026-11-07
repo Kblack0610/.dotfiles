@@ -49,6 +49,11 @@ repo_of() {
   assert_output o/r
   run repo_of https://github.com/o/r github.com
   assert_output o/r
+  # A password may hold an @, and a path may too: neither is the host.
+  run repo_of 'https://u:p@ss@github.com/o/r.git' github.com
+  assert_output o/r
+  run repo_of https://git.example.lan/github.com@x/r github.com
+  assert_failure
 }
 
 @test "no origin, or no dir, is nothing and rc 1" {

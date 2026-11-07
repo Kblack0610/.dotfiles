@@ -58,6 +58,8 @@ family() { local r; r="$(project_repo_name "$1")"; { project_field "$r" owner; p
 
 # shellcheck source=../lib/origin-repo.sh
 . "$HERE/../lib/origin-repo.sh"
+# gh_slug <project> -> owner/repo of the project's checkout's origin (origin_repo), or nothing.
+gh_slug() { origin_repo "$(project_repo_path "$1")"; }
 
 # pr_facts <owner/repo> <N> -> one JSON line {files, size}, cached; nothing when gh cannot read it.
 # The file list is the REST one, paged as agent-land's credit reads it (`gh pr view` stops at 100
@@ -129,7 +131,7 @@ cmd_propose() {
   [ -f "$AQ_MAP" ] || die "no registry at $AQ_MAP"
   local top="$1" slug dflt fam items out
   [ -n "$(project_repo_path "$top")" ] || die "unknown project: $top (no checkout for it in $AQ_MAP)"
-  slug="$(origin_repo "$(project_repo_path "$top")")"; [ -n "$slug" ] || die "$top: its checkout has no origin remote"
+  slug="$(gh_slug "$top")"; [ -n "$slug" ] || die "$top: its checkout has no origin remote"
   dflt="$(project_field "$top" owner)"; dflt="${dflt:-$top}"
   mapfile -t fam < <(family "$top")
   items="$(agent-queue list --json --state all --since 2000-01-01 2>/dev/null |
@@ -313,7 +315,7 @@ close_row() {
 cmd_apply() {
   [ $# -eq 1 ] || die "usage: credit-backfill apply <project>"
   local f="$CB_DIR/$1.tsv" tmp n=0 bad slug day
-  slug="$(origin_repo "$(project_repo_path "$1")")"
+  slug="$(gh_slug "$1")"
   [ -f "$f" ] || die "no proposal at $f: run credit-backfill propose $1 first"
   [ -n "$slug" ] || die "$1: its checkout has no origin remote, so no PR can be dated"
   bad="$(awk -F'\t' '$1 == "epic" && $4 == "?" && $10 == "" { print $2 }' "$f")"
@@ -401,7 +403,7 @@ redate_propose() {
   local f="$CB_DIR/$1.tsv" out="$CB_DIR/$1.redate.tsv" slug kind key prj st proof id new got old _day gone=0 same=0
   [ -f "$f" ] || die "no applied proposal at $f"
   [ ! -e "$out" ] || die "$out exists: apply it, or delete it to propose again (a rerun would bring back lines you removed)"
-  slug="$(origin_repo "$(project_repo_path "$1")")"; [ -n "$slug" ] || die "$1: its checkout has no origin remote"
+  slug="$(gh_slug "$1")"; [ -n "$slug" ] || die "$1: its checkout has no origin remote"
   {
     printf '# credit-backfill redate for %s, %s. Delete lines you do not want, then: credit-backfill redate apply %s <project>\n' "$1" "$(date +%F)" "$1"
     printf '# project\tid\told\tnew\tproof\tapplied\n'
