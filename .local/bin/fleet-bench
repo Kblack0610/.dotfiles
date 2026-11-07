@@ -3141,7 +3141,7 @@ reds_json() {
        outcome: (
          if .state == "queued" then "queued"
          elif .state == "running" or .state == "waiting" then "fixing"
-         elif .state == "cancelled" then "cancelled"
+         elif .status == "cancelled" then "cancelled"
          elif .merged != null then
            (if $red | not then "fixed"
             elif $r.area == "watch" and $fin != null and ($w[$r.name] // 0) > $fin then "came back"
