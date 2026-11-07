@@ -129,7 +129,7 @@ tests/docker.sh test-container # all tiers
 tests/docker.sh lint           # shellcheck at the current ratchet + shfmt (advisory)
 ```
 
-The lint ratchet lives in `tests/lint.sh` (`SEVERITY`, currently `error`), shared by make, the Stop hook and CI so a local green cannot mean a CI red. Move it one notch per PR - `error -> warning -> info -> style` - and re-measure before each step; do not jump to `style`, that is a permanently red check nobody reads.
+The lint ratchet lives in `tests/lint.sh` (`SEVERITY`, currently `error`), shared by make and CI so a local green cannot mean a CI red. Move it one notch per PR - `error -> warning -> info -> style` - and re-measure before each step; do not jump to `style`, that is a permanently red check nobody reads.
 
 CI (`.github/workflows/tests.yml`): `fast` on the runner, split into shards by `tests/shard.sh` and the per-file seconds in `tests/shard-weights.tsv` (a shard near its 10-minute cap: regenerate the table with `tests/shard.sh --weights <job logs>`, or add a shard to the matrix; never raise the timeout), `ui` in the same image you used locally, `lint` likewise, plus a weekly tmux-version drift sweep. `push` is restricted to `main` on purpose - `branches: ['**']` makes every job run twice.
 
