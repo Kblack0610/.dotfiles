@@ -113,6 +113,17 @@ done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "obj
   | group_by(.c)[] | select(length > 1) | "\"\(.[0].c)\" is shared by \(map(.k) | join(", "))"' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n row-id codes checked" || skip "no row-id codes to check"
 
+# --- 4b2. queue_rank names real projects (agent-queue's order reads it) ----------------
+# A misspelt name ranks nothing and says nothing: its items just queue behind the ranked ones.
+n=0 bad=0
+while IFS= read -r r; do
+  [ -n "$r" ] || continue
+  n=$((n + 1))
+  is_known "$r" || { bad=1; fail "queue_rank names \"$r\", which is not a registered project"; }
+done < <(jq -r '(.queue_rank // [])[]' "$MAP_FILE" 2>/dev/null)
+[ "$n" -gt 0 ] || skip "no queue_rank to check"
+[ "$n" -eq 0 ] || [ "$bad" = 1 ] || pass "all $n queue_rank projects resolve"
+
 # --- 4c. every deploy target is well formed (release-state reads them) ----------------
 # A malformed target does not error in release-state; it shows `unknown` forever, which reads
 # like a flaky probe. Schema: docs/operations/release-state.md.

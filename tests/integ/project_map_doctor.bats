@@ -137,6 +137,18 @@ EOF
   assert_output --partial 'points at "vanished"'
 }
 
+@test "a queue_rank naming no project fails; a real one passes" {
+  clean_map
+  jq '.queue_rank = ["mono-canon", "vanished"]' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'queue_rank names "vanished"'
+  refute_output --partial 'queue_rank projects resolve'
+  jq '.queue_rank = ["mono-canon"]' "$MAP" > "$MAP.t" && mv "$MAP.t" "$MAP"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial 'PASS  all 1 queue_rank projects resolve'
+}
+
 @test "an alias that shadows a real project fails" {
   # Resolution order decides which wins and the loser is invisible, so this is banned
   # outright rather than left to the resolver.
