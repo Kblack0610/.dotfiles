@@ -935,28 +935,35 @@ pass_account() {
   claude-acct pick 2>/dev/null || true
 }
 
-# pass_panes -> "<pane>\t<session>\t<window name>" for every pane on $SERVER a pass was launched in.
-# launch_pass marks each with the pane option @shepherd_pass, which respawn-pane keeps: a pane id
-# reused after a server restart, or a window that only carries the name, does not have it. Not the
-# start command: tmux re-quotes it, so a path with a space never matches.
+# pass_panes -> "<pane>\t<session>\t<window name>\t<1 when a pass, 0 when only marked>" for every
+# pane on $SERVER a pass was launched in. launch_pass marks each with the pane option
+# @shepherd_pass, which respawn-pane keeps: a pane id reused after a server restart, or a window
+# that only carries the name, does not have it. A marked pane is still a pass while its start
+# command is the launcher; one respawned into something else is not. Only the launcher's name is
+# matched, because tmux re-quotes the command and a ledger path with a space never matched whole.
 pass_panes() {
-  tmux -L "$SERVER" list-panes -a -F "#{pane_id}"$'\t'"#{session_name}"$'\t'"#{window_name}"$'\t'"#{@shepherd_pass}" 2>/dev/null |
-    awk -F'\t' '$4 != "" { print $1 "\t" $2 "\t" $3 }'
+  tmux -L "$SERVER" list-panes -a -F "#{pane_id}"$'\t'"#{session_name}"$'\t'"#{window_name}"$'\t'"#{@shepherd_pass}"$'\t'"#{pane_start_command}" 2>/dev/null |
+    awk -F'\t' '$4 != "" { print $1 "\t" $2 "\t" $3 "\t" (index($5, "/.pass.sh") ? 1 : 0) }'
 }
 
-# one_pass <pane>: the pane the new pass runs in is the only shepherd on $SERVER. Every other pane
-# a pass was launched in closes (one the runner lost track of, wherever it is), and another window
-# named $WINDOW in $SESSION, holding no pass, takes its command's name, so neither the panel nor the
-# human reads a second shepherd. On 2026-11-05 two read as shepherd at once.
+# one_pass <pane>: the pane the new pass runs in is the only shepherd on $SERVER. Every other pass
+# pane closes (one the runner lost track of, wherever it is); a marked pane now running something
+# else loses the mark and keeps running. Another window named $WINDOW in $SESSION, holding no pass,
+# takes its command's name, so neither the panel nor the human reads a second shepherd. On
+# 2026-11-05 two read as shepherd at once.
 one_pass() {
-  local p keep wid name
-  while IFS=$'\t' read -r p _ _; do
-    [ -z "$p" ] || [ "$p" = "$1" ] || tmux -L "$SERVER" kill-pane -t "$p" 2>/dev/null || true
+  local p is keep wid name
+  while IFS=$'\t' read -r p _ _ is; do
+    [ -n "$p" ] && [ "$p" != "$1" ] || continue
+    if [ "$is" = 1 ]; then tmux -L "$SERVER" kill-pane -t "$p" 2>/dev/null || true
+    else tmux -L "$SERVER" set-option -p -u -t "$p" @shepherd_pass 2>/dev/null || true; fi
   done < <(pass_panes)
   keep="$(tmux -L "$SERVER" display-message -p -t "$1" '#{window_id}' 2>/dev/null)"
   while IFS=$'\t' read -r wid name; do
     [ "$name" = "$WINDOW" ] && [ "$wid" != "$keep" ] || continue
-    tmux -L "$SERVER" rename-window -t "$wid" "$(tmux -L "$SERVER" display-message -p -t "$wid" '#{pane_current_command}')" 2>/dev/null || true
+    name="$(tmux -L "$SERVER" display-message -p -t "$wid" '#{pane_current_command}' 2>/dev/null)"
+    [ -n "$name" ] && [ "$name" != "$WINDOW" ] || name="$WINDOW-stray"
+    tmux -L "$SERVER" rename-window -t "$wid" "$name" 2>/dev/null || true
   done < <(tmux -L "$SERVER" list-windows -t "=$SESSION" -F "#{window_id}"$'\t'"#{window_name}" 2>/dev/null)
 }
 
@@ -990,21 +997,21 @@ launch_pass() {
     # The session is made from its world's manifest, as tmx makes every world. With no server,
     # one started from the runner's unit would die with the unit, so it gets a scope.
     if tmux -L "$SERVER" list-sessions >/dev/null 2>&1 || ! command -v systemd-run >/dev/null 2>&1; then
-      # 9>&-: a server started here must not inherit the run lock (cmd_run) and hold it forever.
-      tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1 9>&-
+      tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1
     else
-      systemd-run --user --scope --quiet tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1 9>&-
+      systemd-run --user --scope --quiet tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1
     fi
   fi
   pane="${4:-}"
-  [ -n "$pane" ] || pane="$(pass_panes | awk -F'\t' -v s="$SESSION" -v w="$WINDOW" '$2 == s && $3 == w { print $1; exit }')"
+  [ -n "$pane" ] || pane="$(pass_panes | awk -F'\t' -v s="$SESSION" -v w="$WINDOW" '$2 == s && $3 == w && $4 == 1 { print $1; exit }')"
   if [ -n "$pane" ]; then
     tmux -L "$SERVER" respawn-pane -k -t "$pane" -c "$PASS_CWD" "$cmd" || pane=""
   else
     pane="$(tmux -L "$SERVER" new-window -d -P -F '#{pane_id}' -t "=$SESSION:" -n "$WINDOW" -c "$PASS_CWD" "$cmd")" || pane=""
   fi
   [ -n "$pane" ] || { rm -f "$LEDGER/.proof-$id"; return 1; }
-  tmux -L "$SERVER" set-option -p -t "$pane" @shepherd_pass 1 2>/dev/null || true
+  tmux -L "$SERVER" set-option -p -t "$pane" @shepherd_pass 1 2>/dev/null ||
+    echo "$NAME: could not mark pane $pane as the pass, so a run that loses .pass cannot find it: $ATTACH" >&2
   printf '%s\t%s\t%s\t%s\n' "$id" "$(date +%s)" "$n" "$pane" > "$PASS"
   # The pass is the shepherd: no pass moves it, and fleet-sessions counts it apart from the agent
   # sessions. fleet-sessions label needs a live session, and this one is still starting, so the
@@ -1077,17 +1084,25 @@ replace_pass() {
   sd+="${sd:+; }${scored#*$'\t'}"
 }
 
+# run_locked: cmd_run, one at a time. Two runs (the timer and a hand run) would each read the same
+# .pass and start a pass. flock -o holds the lock in flock itself, so nothing the run starts (a tmux
+# server, a page sent in the background) inherits it and holds it past the run. The loser starts
+# nothing; a run that hangs holding it shows as `stuck` (no pass started in STUCK_MIN).
+run_locked() {
+  [ -z "${FLEET_SHEPHERD_RUN_LOCKED:-}" ] || { cmd_run; return; }
+  [ -n "$SERVER" ] || die "no world declares session $SESSION"
+  mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  local rc=0
+  FLEET_SHEPHERD_RUN_LOCKED=1 flock -n -o -E 75 "$LEDGER/.run.lock" "$0" run || rc=$?
+  [ "$rc" = 75 ] || return "$rc"
+  echo "$NAME: another run is starting a pass now: no second one"
+  publish WORKED "another run held the run lock: no second pass"
+}
+
 cmd_run() {
   [ -n "$SERVER" ] || die "no world declares session $SESSION"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   local id start n pane st busy sv="" sd=""
-  # One run at a time: two (the timer and a hand run) would each read the same .pass and start a
-  # pass. The loser starts nothing; the run holding the lock settles the window.
-  exec 9>"$LEDGER/.run.lock" || die "cannot open $LEDGER/.run.lock"
-  if ! flock -n 9; then
-    echo "$NAME: another run is starting a pass now: no second one"
-    return 0
-  fi
   # Never two passes at once: the holder mid-sweep finishes, and the next run looks again.
   if busy="$(sweeping)"; then
     IFS=$'\t' read -r id st n <<<"$busy"
@@ -1240,7 +1255,7 @@ cmd_budget() {
 }
 
 case "${1:-}" in
-  run)   cmd_run ;;
+  run)   run_locked ;;
   stats) cmd_stats ;;
   budget) shift; cmd_budget "$@" ;;
   stuck) cmd_stuck ;;

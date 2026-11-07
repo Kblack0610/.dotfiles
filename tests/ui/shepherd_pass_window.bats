@@ -173,19 +173,24 @@ said() {
   assert_equal "$(t list-panes -a -F '#{@shepherd_pass}' | grep -c .)" 1
 }
 
-@test "a stray pass pane in another session closes, and a window in hub called shepherd that holds no pass is renamed, not killed" {
+@test "a stray pass pane in another session closes, a marked pane running something else keeps running unmarked, and a window in hub called shepherd that holds no pass is renamed, not killed" {
   touch "$HOME/hold"
   run "$SH" run
   ran
   # A pass the runner lost track of, in session dotfiles, and a shell someone named shepherd in hub.
-  local lost; lost="$(t new-window -d -P -F '#{pane_id}' -t '=dotfiles:' -n lost "'$REAL_TMUX' -L $SRV wait-for hold")"
+  local lost; lost="$(t new-window -d -P -F '#{pane_id}' -t '=dotfiles:' -n lost "bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")")"
   t set-option -p -t "$lost" @shepherd_pass 1
+  ran
+  # A marked pane someone respawned into something else is no longer a pass.
+  local reused; reused="$(t new-window -d -P -F '#{pane_id}' -t '=dotfiles:' -n mine "'$REAL_TMUX' -L $SRV wait-for hold")"
+  t set-option -p -t "$reused" @shepherd_pass 1
   local other; other="$(t new-window -d -P -F '#{pane_id}' -t '=hub:' -n shepherd "'$REAL_TMUX' -L $SRV wait-for hold")"
   echo "- moved a" >> "$FLEET_SHEPHERD_DIR/log.md"
   run "$SH" run
   assert_success
   ran
-  assert_equal "$(windows dotfiles)" 'claude'
+  assert_equal "$(windows dotfiles)" 'claude mine'
+  assert_equal "$(t show-options -p -t "$reused" -v @shepherd_pass)" ''
   assert_equal "$(t list-windows -t =hub -F '#{window_name}' | grep -cx shepherd)" 1
   assert_equal "$(window_of "$(pass_pane)")" shepherd
   # Negative control: the window that held no pass is still there, under its command's name.

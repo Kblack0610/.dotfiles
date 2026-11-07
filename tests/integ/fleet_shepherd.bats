@@ -343,15 +343,13 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 
 @test "a run while another holds the run lock starts nothing and touches no tmux; with the lock free it starts a pass" {
   doc "[$(row a DONE false false)]"
-  exec 8>"$FLEET_SHEPHERD_DIR/.run.lock"
-  flock -n 8
-  run "$SH" run
+  # flock holds the lock while the run inside it runs, so that run is the second one.
+  run flock -n "$FLEET_SHEPHERD_DIR/.run.lock" "$SH" run
   assert_success
   assert_output --partial 'another run is starting a pass now'
   [ ! -e "$HOME/tmux.calls" ]
   [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
-  # Negative control: the lock released, the same run starts one.
-  exec 8>&-
+  # Negative control: the lock free, the same run starts one.
   run "$SH" run
   assert_success
   assert_output --partial 'started pass'
