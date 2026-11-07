@@ -58,16 +58,18 @@ _st_claude_pid() {
   return 1
 }
 
-# _st_mcp <claude pid> <claude age ms> <project dir> -> the mcp array. A server's process is
-# the claude child whose command line holds the basename of its last argument (npx and uvx
-# rewrite argv, the package or script name survives).
+# _st_mcp <claude pid> <project dir> -> the mcp array. A server's process is the claude child
+# whose command line holds the basename of its last argument (npx and uvx rewrite argv, the
+# package or script name survives). spawn_ms subtracts start ticks: two _st_start_ms ages come
+# from two uptime reads, and the gap between the reads would come off every offset.
 _st_mcp() {
-  local cfg="$3/.mcp.json" kids='' c age a
-  [ -r "$cfg" ] || { echo '[]'; return 0; }
+  local cfg="$2/.mcp.json" kids='' c base a
+  [ -r "$cfg" ] && _st_stat "$1" || { echo '[]'; return 0; }
+  base=${_ST_F[19]}
   for c in $(cat "/proc/$1"/task/*/children 2>/dev/null); do
-    age=$(_st_start_ms "$c") && [ -r "/proc/$c/cmdline" ] || continue
+    _st_stat "$c" && [ -r "/proc/$c/cmdline" ] || continue
     mapfile -d '' -t a 2>/dev/null <"/proc/$c/cmdline"
-    kids+="$(( $2 - age ))"$'\t'"${a[*]}"$'\n'
+    kids+="$(( (_ST_F[19] - base) * 1000 / _ST_TCK ))"$'\t'"${a[*]}"$'\n'
   done
   jq -c --arg kids "$kids" '
     [$kids | split("\n")[] | select(. != "") | split("\t") | {ms: (.[0] | tonumber), cmd: (.[1:] | join("\t"))}] as $k
@@ -85,7 +87,7 @@ startup_record() {
   hook_age=$(_st_start_ms $$) || hook_age=null
   if claude=$(_st_claude_pid) && claude_age=$(_st_start_ms "$claude"); then
     # MCP servers spawn once per process, so only a cold start pays for the scan.
-    [ "$3" != startup ] || mcp=$(_st_mcp "$claude" "$claude_age" "${CLAUDE_PROJECT_DIR:-$PWD}")
+    [ "$3" != startup ] || mcp=$(_st_mcp "$claude" "${CLAUDE_PROJECT_DIR:-$PWD}")
   else
     claude_age=null
   fi

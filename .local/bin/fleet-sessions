@@ -43,6 +43,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
@@ -52,16 +54,11 @@ set -uo pipefail
 : "${FLEET_ITEM_DAYS:=7}" # days of done queue items read to see that a session's item moved on
 : "${FLEET_SUSPECTS_MAX:=3}" # a red workflow names its PRs as suspects only up to this many; past
                              # it (a nightly suite after a busy day) nobody can be told it was theirs
-: "${FLEET_MAIN_TTL:=300}" # seconds a repo's main run list is reused across passes: every caller (the
-                           # ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on
-                           # 2026-10-29 the fleet spent GitHub's 5,000/hr REST limit; a nightly's red
-                           # is no less true five minutes later
 # One test failing on this many branches within this many minutes is a SHARED row: a shared cause
 # (the base, a runner, a flaky test), not any one branch's work. 3 in 2h hit about 4 tests a day in
 # the week to 2026-11-06.
 : "${FLEET_SHARED_RED_BRANCHES:=3}"
 : "${FLEET_SHARED_RED_MIN:=120}"
-MAIN_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/fleet"
 # The local gate's per-test failures, one line each: epoch, worktree, branch (- when detached), test.
 TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/test-failures.tsv}"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
@@ -519,31 +516,7 @@ default_base() {
 # fact holds still while a red streak runs on, and the suspect range ends where it broke.
 # Cancelled, skipped and running runs decide nothing, so they are passed over.
 main_state() {
-  jq -r 'map(select(.status == "completed"
-                    and (.conclusion | test("^(success|failure|timed_out|startup_failure)$"))))
-    | group_by(.workflowName)[] | sort_by(.createdAt) | reverse
-    | select(.[0].conclusion != "success")
-    | (map(.conclusion == "success") | index(true)) as $g
-    | [.[0].workflowName, (if $g == null then .[-1] else .[$g - 1] end).headSha,
-       (if $g == null then "-" else .[$g].headSha end)] | @tsv'
-}
-
-# main_runs <dir> <branch> -> the branch's runs in gh run list field names, reused for
-# FLEET_MAIN_TTL seconds across passes. A failed call is not cached, so the next pass asks again.
-# actions/runs, not `gh run list`: that looks workflows up under actions/workflows, a separate
-# bucket that `gh api rate_limit` does not show, and on 2026-10-29 it was the one used up.
-main_runs() {
-  local dir="$1" b="$2" file runs
-  file="$MAIN_CACHE/runs_$(repo_slug "$dir")_${b//\//_}.json"
-  if [ -s "$file" ] && [ $(( $(date +%s) - $(date -r "$file" +%s) )) -lt "$FLEET_MAIN_TTL" ]; then
-    cat "$file"; return
-  fi
-  runs="$(cd "$dir" && gh api -X GET "repos/{owner}/{repo}/actions/runs" -f branch="$b" -f per_page=100 \
-            --jq '[.workflow_runs[] | {workflowName: .name, status, conclusion, headSha: .head_sha, createdAt: .created_at}]' \
-            2>/dev/null)" || return 1
-  mkdir -p "$MAIN_CACHE"
-  printf '%s\n' "$runs" > "$file.$$" && mv "$file.$$" "$file"
-  printf '%s\n' "$runs"
+  jq -r "$MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
 }
 
 # pr_states <owner/repo> -> the repo's recent PRs as a JSON array of {number, state, mergedAt},
@@ -600,7 +573,7 @@ main_health() {
     base="$(default_base "$dir")"
     b="${base#origin/}"
     # Could not look is not green: say so, so the shepherd never reads a dead gh as healthy.
-    if ! runs="$(main_runs "$dir" "$b")"; then
+    if ! runs="$(cd "$dir" && main_runs "$(repo_slug .)" '{owner}/{repo}' "$b")"; then
       printf 'UNKNOWN\t-\t-\t-\t%s\n' "$(basename "$url" .git)" > "$key"
       cut -f1-4 "$key"; return
     fi
