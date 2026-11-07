@@ -412,6 +412,16 @@ setup_theme() {
     "$theme_switch" "$theme" --only kitty,sketchybar
 }
 
+# Firefox profile files, policies (Tab Keeper, Karakeep) and autoconfig. On a
+# brand-new install Firefox has no profile until its first launch, and
+# install.sh says so; the step warns instead of failing the run.
+setup_firefox() {
+    log_section "Setting up Firefox"
+
+    local installer="$HOME/.dotfiles/.config/firefox/install.sh"
+    "$installer" || log_warning "Firefox not set up yet: fix the error above (a new Mac: open Firefox once, quit it), then run $installer"
+}
+
 # Build the notes CLI (always) and wire ~/.notes git sync (Forgejo primary +
 # MQTT/ntfy fan-out) when a remote URL is provided. The CLI build needs no URL,
 # so it runs on every machine; only the sync wiring is gated on the URL.
@@ -488,6 +498,10 @@ install_all() {
     # stowed config tree, and these are gitignored so a clone lacks them)
     step dotfiles   setup_theme
 
+    # Firefox policies and profile files (after apply_dotfiles: the private
+    # overlay holds the Tab Keeper policy)
+    step desktop    setup_firefox
+
     # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
     step notes      setup_notes_sync
 }
@@ -501,6 +515,8 @@ post_install_notes() {
     log_info "  2. Open Raycast from Applications → Grant Accessibility permission"
     log_info "  3. Open Tailscale and sign in"
     log_info "  4. Log out and back in for all system settings to take effect"
+    log_info "  5. Firefox: open it once, quit, run ~/.dotfiles/.config/firefox/install.sh if it was skipped,"
+    log_info "     then paste the Tab Keeper config and Karakeep key (.config/firefox/README.md, Tab Keeper)"
 }
 
 # Run if executed directly

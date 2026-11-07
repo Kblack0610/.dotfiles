@@ -238,6 +238,39 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
 }
 
+@test "the map's queue_rank puts a ranked project first within a priority, under red and urgent, over cleanup" {
+  "$AQ" add --project app --slug a-app "a"
+  "$AQ" add --project app --slug b-app-cleanup --tags cleanup "b"
+  "$AQ" add --project game --slug c-game "c"
+  "$AQ" add --project app --slug d-app-urgent --priority urgent "d"
+  "$AQ" add --project tools --slug e-tools "e"
+  # Without queue_rank the order is as before: cleanup first, then queued time.
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  assert_output $'d-app-urgent\nb-app-cleanup\na-app\nc-game\ne-tools'
+  jq '.queue_rank = ["game"]' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  # urgent still heads; game, ranked, beats the older app items and the app cleanup.
+  assert_output $'d-app-urgent\nc-game\nb-app-cleanup\na-app\ne-tools'
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
+}
+
+@test "a multi-project queue_rank orders by list position; a rank that is not a list ranks nothing" {
+  "$AQ" add --project tools --slug a-tools "a"
+  "$AQ" add --project app --slug b-app "b"
+  "$AQ" add --project game --slug c-game "c"
+  jq '.queue_rank = ["game", "app"]' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  assert_output $'c-game\nb-app\na-tools'
+  # A string or an object where the list belongs falls back to queued time, never an error.
+  for bad in '"game"' '{"game": 1}'; do
+    jq --argjson r "$bad" '.queue_rank = $r' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+    run bash -c "'$AQ' list --json | jq -r .slug"
+    assert_success
+    assert_output $'a-tools\nb-app\nc-game'
+  done
+}
+
 @test "an after: on a re-queued slug holds while the slug is live, whatever an old done record says" {
   "$AQ" add --project game --slug first "a"
   "$AQ" move first running
@@ -410,7 +443,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 # ar-900: reap failed a live item on one agent-panel read, and the shepherd had to mv its file back by hand.
-@test "reopen puts a falsely-done item back with its session and starts its row again; an active or landed slug is refused" {
+@test "reopen puts a failed item back with its session and note and starts its row again; an active, ok or cancelled one is refused" {
   printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/notes"
   chmod +x "$SANDBOX/bin/notes"
   "$AQ" add --project game --running --slug cut "cut the beta" >/dev/null
@@ -430,7 +463,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -z "$(field "$f" finished)" ] || fail "finished: survived the reopen"
   [ "$(field "$f" session)" = "lab:game-agent-1" ] || fail "session: was lost"
   [ "$(field "$f" sessions)" = e4347d61 ] || fail "sessions: was lost"
-  [ "$(field "$f" note)" = "reopened from done (failed): reap read live e4347d61 as gone" ] || fail "note: $(field "$f" note)"
+  [ "$(field "$f" note)" = "reopened from done (failed: session lab:game-agent-1 ended before it closed the item): reap read live e4347d61 as gone" ] || fail "note: $(field "$f" note)"
   # A human-lane row, so no --agent: started again on its own board.
   run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
   assert_output "notes --profile bnb ptask game start gm-7"
@@ -443,15 +476,20 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -n "$(field "$(item waiting cut)" waiting)" ] || fail "--to waiting did not stamp waiting:"
   run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
   assert_output "notes ptask game --agent start gm-7"
-  # A cancel was a decision, and a landed item is new work: neither is a reopen.
+  # A row that will not start again fails the reopen, after the item is back.
+  "$AQ" move cut done --status failed >/dev/null
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/notes"
+  run "$AQ" reopen cut
+  assert_failure; assert_output --partial "could not be started again"
+  [ -n "$(item running cut)" ] || fail "a failed row restart left the item done"
+  # A cancel was a decision and an ok close may have started the items after it: neither is a reopen.
   "$AQ" cancel cut >/dev/null
   run "$AQ" reopen cut
-  assert_failure; assert_output --partial "cancelled"
+  assert_failure; assert_output --partial "closed cancelled, not failed"
   "$AQ" add --project game --running --slug cut "cut the beta again" >/dev/null
-  "$AQ" set cut "pr=Org/game#3" "merged=abc123" >/dev/null
   "$AQ" move cut done --status ok >/dev/null
   run "$AQ" reopen cut
-  assert_failure; assert_output --partial "landed"
+  assert_failure; assert_output --partial "closed ok, not failed"
   run "$AQ" reopen nosuch
   assert_failure; assert_output --partial "no finished item"
 }

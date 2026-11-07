@@ -2510,17 +2510,20 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   [ -n "$(qitem running flaky)" ] && [ ! -e "$mark" ] || fail "a sighting did not clear the miss"
   miss; run cmd_reap
   [ -n "$(qitem running flaky)" ] || fail "a miss after a sighting failed the item"
-  # A second miss a reap later (the mark aged past DISPATCH_REAP_CONFIRM) settles it, and clears the mark.
+  # A second miss a reap later (the mark aged past DISPATCH_REAP_CONFIRM) settles it, and its close
+  # drops the mark at once, so an item agent-queue reopen puts back starts with no miss on record.
   echo $(( $(date +%s) - DISPATCH_REAP_CONFIRM - 1 )) > "$mark"
   run cmd_reap; assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-flaky.md 2>/dev/null)" ] || fail "two misses a reap apart did not settle the item"
-  # A mark whose item is no longer active is pruned on a pass that read active items, so a later item
-  # under the slug starts clean; a pass that read none (the queue may not have been readable) keeps them.
+  [ ! -e "$mark" ] || fail "the closed item's mark survived its close"
+  # A mark whose slug is no longer active (an item closed some other way) is pruned on a pass that read
+  # active items; a pass that read none (the queue may not have been readable) keeps them.
+  echo 1 > "$mark"
   run cmd_reap
   [ -e "$mark" ] || fail "a pass that read no active item pruned the marks"
   started_item other lab:game-agent-1
   run cmd_reap
-  [ ! -e "$mark" ] || fail "the settled item's mark survived the reap"
+  [ ! -e "$mark" ] || fail "a stale mark survived a reap that read active items"
 }
 
 # Confirmed gone stays gone: settle_item leaves an item whose PR is open waiting, and it must not
