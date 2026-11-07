@@ -60,11 +60,16 @@ spent() {
   assert [ -s "$st/held_since" ]
   assert_equal "$(cat "$st/held_why")" "at its budget cap"
   # A called runner writes no outcome line on success, so only the gate can end its hold.
-  printf '%s 5 0\n' "$(date +%F)" > "$st/budget-raise"
+  printf '%s 5 5\n' "$(date +%F)" > "$st/budget-raise"
   run "$RUN" --agent judge -p x
   assert_success
   assert [ ! -e "$st/held_since" ]
   assert [ ! -e "$st/held_why" ]
+  # A budget stop that carried an earlier reason is still the budget's hold.
+  echo 1 > "$st/held_since"; printf 'no gateway route; at its budget cap' > "$st/held_why"
+  run "$RUN" --agent judge -p x
+  assert_success
+  assert [ ! -e "$st/held_since" ]
   # The negative control: a hold for another reason is that gate's to end.
   echo 1 > "$st/held_since"; printf 'pace' > "$st/held_why"
   run "$RUN" --agent judge -p x

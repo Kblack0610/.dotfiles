@@ -105,14 +105,19 @@ fn runner(w: &Worker, at: i64) -> Who {
     } else {
         &w.state
     };
-    // A called runner's newest call, when it is newer than its activity line: a call that
-    // succeeds writes none, so the line would otherwise stand for every call after it.
+    // A called runner's outcomes are its calls: its newest, when newer than its last run and its
+    // activity line, is its last outcome. A call that succeeds writes no line, so the line would
+    // otherwise stand for every call after it.
     let calls = &w.registry.calls;
+    let newest = [&w.why, &w.last]
+        .into_iter()
+        .filter_map(|o| o.as_ref().and_then(|o| o.at))
+        .max();
     let call = w
         .called_by
         .as_ref()
         .and(calls.recent.first())
-        .filter(|c| w.why.as_ref().and_then(|o| o.at).is_none_or(|t| c.at > t));
+        .filter(|c| newest.is_none_or(|t| c.at > t));
     let doing = match (&w.why, w.running_since, w.next) {
         // The hold's own line says what holds it, and its amount; held_why is its short reason.
         _ if w.held_since.is_some() => match &w.why {
@@ -139,6 +144,7 @@ fn runner(w: &Worker, at: i64) -> Who {
         since: w
             .held_since
             .or(w.running_since)
+            .or(call.map(|c| c.at))
             .or(w.last.as_ref().and_then(|o| o.at)),
         doing,
         under: w
@@ -440,6 +446,12 @@ mod tests {
             r[0].doing,
             format!("called ok: 103 calls 24h, {}", usd(Some(9.85)))
         );
+        assert_eq!(r[0].since, Some(950));
+        // A runner nobody calls keeps its own line.
+        let mut own = w.clone();
+        own.called_by = None;
+        let r = build(&[own], &json!({}), 1000);
+        assert!(r[0].doing.starts_with("BLOCKED budget:"), "{}", r[0].doing);
         // The negative control: a call older than the line leaves the line.
         w.registry.calls.recent[0].at = 800;
         let r = build(&[w], &json!({}), 1000);

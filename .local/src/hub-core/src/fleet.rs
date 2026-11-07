@@ -449,7 +449,6 @@ pub fn files(paths: &Paths) -> Fleet {
             w.held_since = Some(*since);
             w.held_why = why.clone();
         }
-        newest_call(w);
     }
 
     let sessions = match std::fs::read_to_string(&paths.state) {
@@ -925,30 +924,6 @@ fn read_held(dir: &Path) -> Option<(i64, String)> {
     Some((since.trim().parse().ok()?, why.trim().to_string()))
 }
 
-/// A called runner's outcomes are its calls: a call that succeeds writes no activity line, so
-/// its newest call, when newer than its last run or line, is its last outcome.
-fn newest_call(w: &mut Worker) {
-    if w.called_by.is_none() {
-        return;
-    }
-    let Some(c) = w.registry.calls.recent.first() else {
-        return;
-    };
-    if w.last
-        .as_ref()
-        .and_then(|o| o.at)
-        .is_some_and(|t| t >= c.at)
-    {
-        return;
-    }
-    w.last = Some(Outcome {
-        word: if c.ok { "ok" } else { "error" }.into(),
-        ok: Some(c.ok),
-        at: Some(c.at),
-        text: String::new(),
-    });
-}
-
 /// The 90th percentile of `lengths`, nearest rank; None under `USUAL_RUNS` of them.
 fn usual(mut lengths: Vec<i64>) -> Option<i64> {
     if lengths.len() < USUAL_RUNS {
@@ -1174,38 +1149,6 @@ mod tests {
             Some((1_793_992_126, "at its budget cap".to_string()))
         );
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_called_runners_newest_call_is_its_last_outcome_when_newer() {
-        let call = |at, ok| Call {
-            at,
-            ok,
-            ..Default::default()
-        };
-        let mut w = Worker {
-            called_by: Some("agent-ask".into()),
-            last: Some(Outcome {
-                word: "BLOCKED".into(),
-                at: Some(100),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        w.registry.calls.recent = vec![call(200, true), call(150, false)];
-        newest_call(&mut w);
-        let l = w.last.clone().unwrap();
-        assert_eq!((l.word.as_str(), l.ok, l.at), ("ok", Some(true), Some(200)));
-        // A newer run line stands; a runner nobody calls keeps its own.
-        w.last.as_mut().unwrap().at = Some(300);
-        newest_call(&mut w);
-        assert_eq!(w.last.as_ref().unwrap().at, Some(300));
-        let mut r = Worker {
-            registry: w.registry.clone(),
-            ..Default::default()
-        };
-        newest_call(&mut r);
-        assert_eq!(r.last, None);
     }
 
     #[test]

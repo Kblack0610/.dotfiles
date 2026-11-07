@@ -194,12 +194,16 @@ proof_report() {
   printf '[%s] outcome=%s %s\n' "$(date -Is)" "$verdict" "$detail" >> "$dir/activity.log" 2>/dev/null || true
 }
 
-# proof_unhold NAME WHY - the gate that held NAME let a pass through, so a standing hold for WHY
-# is over. A hold for another reason is left to its own gate. A called runner needs this: a call
-# that succeeds writes no outcome line, so no WORKED pass would ever end its budget hold.
+# proof_unhold NAME WHY - the gate that held NAME let a pass through, so a standing hold whose
+# reasons (proof_report joins them with "; ") include WHY is over. A hold for another reason is
+# left to its own gate. A called runner needs this: a call that succeeds writes no outcome line,
+# so no WORKED pass would ever end its budget hold.
 proof_unhold() {
-  local dir="$(proof_state_dir)/$1"
-  [ "$(cat "$dir/held_why" 2>/dev/null)" = "$2" ] && rm -f "$dir/held_since" "$dir/held_why"
+  local dir="$(proof_state_dir)/$1" held
+  held="$(cat "$dir/held_why" 2>/dev/null)" || return 0
+  case "; $held; " in
+    *"; $2; "* | *"; $2 (+"*) rm -f "$dir/held_since" "$dir/held_why" ;;
+  esac
   return 0
 }
 
