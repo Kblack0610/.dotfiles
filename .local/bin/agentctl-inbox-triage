@@ -3,6 +3,8 @@
 #
 #   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog] [--watch]
 #
+# A `#ask` outbox line is a question: one read-only call answers it into today's notes inbox and the
+# line leaves the outbox (`notes outbox answer`), so it is never a row.
 # `#p:` outbox lines naming a project exactly, `<id>: <words>` answers and typed inbox lines need no model; the rest of a sweep goes to ONE model
 # call (the conf's MODEL; it also gets a `#p:` word that names no project, as a hint), which only proposes rows, a dup, a skip, and whether to plan first.
 # Every write is the CLI's (`notes outbox move`, `notes ptask --exact file`), so this script never
@@ -15,6 +17,7 @@ set -uo pipefail
 
 NAME="${AGENTCTL_NAME:-inbox-triage}"
 : "${INBOX_TRIAGE_CMD:=agentctl-run --agent inbox-triage}"
+: "${INBOX_ASK_CMD:=agentctl-run --agent inbox-triage --role observe --max-turns 8}"  # a #ask answer: the observe role may look things up and write nothing
 : "${INBOX_TRIAGE_PASSES:=3}"
 : "${INBOX_TRIAGE_MAX:=40}"   # the most lines one model call carries (route and --backlog); budget_batch sizes each call under it
 : "${INBOX_SWEEP_QUIET:=30}"  # --watch: seconds with no save before a sweep runs
@@ -37,7 +40,7 @@ LIB="$HERE/../lib"
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
 DRY=0; ONLY=""; BACKLOG=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
-REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0
+REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0
 OUT=""
 FLAG=""; RECORD=""; OUTBOX=""
 PAUSED="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/PAUSED"
@@ -45,22 +48,27 @@ say() { printf 'inbox-triage: %s\n' "$*" >&2; }
 # clean <width>: model text as one printable ASCII line, punctuation folded rather than dropped.
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 
-# ask <prompt> <items> <label>: one model call over <items> lines or rows, its answer in OUT. A
+# ask <prompt> <items> <label> [cmd]: one model call over <items> lines or rows, its answer in OUT. A
 # failed call keeps its stderr in the log and its first words (a usage limit, an auth error) as
 # the pass's reason; one stopped at the per-call cap (CALLS_RC_CAPPED) halves the next batch, and
 # a clean one lets it grow. It runs from an empty directory, so no repo's Stop hook answers in
-# place of the model.
+# place of the model. A call with its own <cmd> (a #ask answer) leaves the route batch size alone.
 ask() {
-  local wd err rc first
+  local wd err rc first cmd="${4:-$INBOX_TRIAGE_CMD}" sized=1
+  [ -n "${4:-}" ] && sized=0
   wd="$(mktemp -d)"; err="$(mktemp)"
   # shellcheck disable=SC2086 # a word list by design, overridable in tests
-  OUT="$(cd "$wd" && $INBOX_TRIAGE_CMD -p <<<"$1" 2>"$err")"; rc=$?
+  OUT="$(cd "$wd" && $cmd -p <<<"$1" 2>"$err")"; rc=$?
   [ -s "$err" ] && head -n 20 "$err" >&2
   case "$rc" in
-    0) budget_batch_note "$NAME" ok "$2" ;;
+    0) [ "$sized" = 1 ] && budget_batch_note "$NAME" ok "$2" ;;
     "$CALLS_RC_CAPPED")
-      budget_batch_note "$NAME" capped "$2"
-      say "$3: the call stopped at its per-call cap with $2 items; the next carries $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+      if [ "$sized" = 1 ]; then
+        budget_batch_note "$NAME" capped "$2"
+        say "$3: the call stopped at its per-call cap with $2 items; the next carries $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+      else
+        say "$3: the call stopped at its per-call cap"
+      fi
       proof_why "$3: a call of $2 stopped at the per-call cap" ;;
     "$EX_BUDGET")
       BUDGET_STOP=1
@@ -81,6 +89,41 @@ answered() {
   say "$1: model returned no answer block"
   proof_why "$1: the model returned no answer block"
   return 1
+}
+
+# ask_line <raw> <text> <details>: a `#ask` outbox line. One read-only call answers it, `notes
+# outbox answer` writes question and answer to today's notes inbox and takes the line out of the
+# outbox. A failed call leaves the line to the next sweep; an answer that came back without its
+# block, a call too big for its cap, or a line with no question is recorded refused so the line
+# waits for the person.
+ask_line() {
+  local raw="$1" text="$2" details="$3" q reply rc
+  q="$(md_ascii <<<"$text" | tr -cd ' -~' | sed -E ':a; s/(^|[[:space:]])#(ask|p:[^[:space:]]*)([[:space:]]|$)/ /I; ta; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  if [ -z "$q" ]; then note refused outbox "the #ask line holds no question" "$text"; FAILED=$((FAILED + 1)); return 1; fi
+  if [ "$DRY" = 1 ]; then printf 'would answer [outbox] %s\n' "$raw"; ANSWERED=$((ANSWERED + 1)); return 0; fi
+  ask "You answer one question a person left in their notes outbox. Look things up with read-only commands (ping, curl, uptime, df, free, systemctl status, git log, kubectl get, reading files) and run at most a handful. Change nothing: no writes, edits, installs, restarts, deletes or sends, and no command that alters state. If answering needs a write or a decision, say so in one line instead of doing it.
+
+Reply between a line INBOX-ANSWER-START and a line INBOX-ANSWER-END, nothing else outside them. Open with a one-line answer, then at most 8 short lines of evidence. Plain ASCII, no markdown.
+
+Question: $q
+$details" 1 ask "$INBOX_ASK_CMD"; rc=$?
+  if [ "$rc" != 0 ]; then
+    # A cap is recorded refused; any other failure (a usage limit, the budget) leaves the line for the next sweep.
+    [ "$rc" = "$CALLS_RC_CAPPED" ] && { note refused outbox "the answer call stopped at the per-call cap" "$text"; FAILED=$((FAILED + 1)); }
+    return "$rc"
+  fi
+  reply="$(sed -n '/^INBOX-ANSWER-START$/,/^INBOX-ANSWER-END$/p' <<<"$OUT" | sed '1d;$d' | md_ascii | tr -cd '\n -~' | cut -c1-300 | head -n 12)"
+  if [ -z "$(tr -d '[:space:]' <<<"$reply")" ]; then
+    say "outbox: the answer came back with no block, left: $raw"
+    note refused outbox "the model returned no answer block" "$text"
+    FAILED=$((FAILED + 1)); return 1
+  fi
+  if notes outbox answer -- "$raw" <<<"$reply" >/dev/null; then
+    ANSWERED=$((ANSWERED + 1))
+  else
+    say "outbox: not answered, left in the outbox: $raw"
+    FAILED=$((FAILED + 1)); return 1
+  fi
 }
 
 # One model answer line -> n, action, id, project, lane, plan (1 or empty), why, rows (joined
@@ -410,13 +453,21 @@ backlog_pass() {
 
 # One sweep's pass: the outbox, then every inbox.
 pass() {
-  local ob board all seen rc=0 mrc p lines from raw text size r
+  local ob board all seen rc=0 mrc p lines from raw text size r details
   ob="$(notes outbox list --json 2>/dev/null)" || { say "notes outbox list failed"; proof_why "notes outbox list failed"; return 1; }
   # What the record says was left or refused, by where it waited and its words.
   seen='{}'
   [ -s "$RECORD" ] && seen="$(jq -cn '[inputs | select(.action == "left" or .action == "refused")
     | {key: (.from + "\t" + .text), value: true}] | from_entries' "$RECORD" 2>/dev/null || echo '{}')"
   local fresh='select($seen[.from + "\t" + .text] | not)'
+  # A `#ask` line is a question, not work: it is answered and leaves the outbox, and goes no further.
+  while IFS=$'\x1f' read -r -d '' raw text details; do
+    ask_line "$raw" "$text" "$details"; mrc=$?
+    [ "$mrc" = 0 ] || [ "$mrc" = "$EX_BUDGET" ] || rc=1
+    [ "$BUDGET_STOP" = 1 ] && break
+  done < <(jq -j --argjson seen "$seen" --arg only "$ONLY" ".[] | select(.ask and \$only == \"\") | {from: \"outbox\", raw, text, details} | $fresh
+    | .raw, \"\u001f\", .text, \"\u001f\", ((.details // []) | map(\"  \" + .) | join(\"\\n\")), \"\u0000\"" <<<"$ob")
+  ob="$(jq -c '[.[] | select(.ask | not)]' <<<"$ob")"
   # A `#p:` line that names a project exactly moves with no model and is triaged from that inbox.
   # One that names none (a typo, a short name) is not refused: it goes to the model with the word
   # as a hint, like a line with no tag.
@@ -482,7 +533,7 @@ pass() {
 # inbox page and the proof.
 sweep() {
   local k before rc=0 verdict
-  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0; BUDGET_STOP=0
+  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0
   if [ "$WATCH" = 1 ] && [ -e "$PAUSED" ]; then say "the fleet is paused; the sweep waits for the resume"; return 0; fi
   for ((k = 1; k <= INBOX_TRIAGE_PASSES; k++)); do
     before="$(flag_state)"; OVER=0
@@ -492,14 +543,14 @@ sweep() {
   done
   [ "$CAPPED" = 0 ] || rc=1
   [ "$rc" = 0 ] && [ "$BUDGET_STOP" = 1 ] && rc="$EX_BUDGET"
-  SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+  SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED, answered $ANSWERED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
   say "$SUMMARY"
   [ "$DRY" = 1 ] && return "$rc"
   notes ingest page >/dev/null 2>&1 || say "notes ingest page failed"
   # A row waits for its plan: the planner runs as its own unit, so intake never waits on it.
   "$HERE/agentctl-inbox-plan" --kick || true
   verdict=NOOP
-  [ $((FILED + ROUTED)) -gt 0 ] && verdict=WORKED
+  [ $((FILED + ROUTED + ANSWERED)) -gt 0 ] && verdict=WORKED
   [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; SUMMARY="budget: $SUMMARY"; }
   [ "$rc" = 1 ] && verdict=FAILED
   proof_report "$NAME" "$verdict" "$SUMMARY"

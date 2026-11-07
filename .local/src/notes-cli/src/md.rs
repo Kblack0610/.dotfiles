@@ -919,6 +919,32 @@ pub fn without_agent_tag(line: &str) -> String {
     without_words(line, is_agent_word)
 }
 
+/// Whether `line` is marked `#ask`, an outbox question for a quick read-only answer: the word
+/// is first (after any bullet or checkbox) or last. Only the text before the marker comment counts.
+pub fn ask_tag(line: &str) -> bool {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    let mut words = head.split_whitespace().skip_while(|w| {
+        matches!(*w, "-" | "*" | "[" | "]") || (w.starts_with('[') && w.ends_with(']'))
+    });
+    let first = words.next();
+    // The tag leads the question or ends it (ignoring `#p:` words), so "document the #ask flow"
+    // stays a task.
+    let last = head
+        .split_whitespace()
+        .rev()
+        .find(|w| project_tag_word(w).is_none());
+    first.is_some_and(is_ask_word) || last.is_some_and(is_ask_word)
+}
+
+fn is_ask_word(w: &str) -> bool {
+    w.eq_ignore_ascii_case("#ask")
+}
+
+/// `line` without its `#ask` tag, the rest as it was.
+pub fn without_ask_tag(line: &str) -> String {
+    without_words(line, is_ask_word)
+}
+
 fn without_words(line: &str, drop: impl Fn(&str) -> bool) -> String {
     // Only the dropped words and the space before each go; every other byte stays, so a line
     // with a double space or a tab is still found by its raw text after the move.
