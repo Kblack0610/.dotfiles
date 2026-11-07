@@ -25,7 +25,7 @@ Edit that one line to swap targets: local file (`file://...`),
 hosted Bonjourr (`https://online.bonjourr.fr/`), `about:home`, or a real site.
 
 If using a `file://` URL, the HTML lives at
-`~/.local/share/firefox-newtab/index.html` (not in this repo is user content).
+`~/.local/share/firefox-newtab/index.html` (user content, not in this repo).
 
 ## Install / re-install
 
