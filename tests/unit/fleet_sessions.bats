@@ -1094,6 +1094,12 @@ research_item() {
     [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
     [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
   done
+  # started before the answer, the item still holds the ask: the row does not flip back to NEEDS
+  mkdir -p "$HOME/.agent/queue/running"
+  mv "$HOME/.agent/queue/queued/20261103-100000-rollout.md" "$HOME/.agent/queue/running/"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
 }
 
 @test "end to end: a landed session whose next phases are other queue items is DONE once its own item is done; that item is not a next phase" {

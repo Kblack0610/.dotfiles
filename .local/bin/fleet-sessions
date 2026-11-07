@@ -823,9 +823,10 @@ collect() {
   # session has to see that, or it reads as never started (ar-343).
   qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)"
   qjson="$(jq -c 'select(.state != "done")' <<<"$qall" 2>/dev/null)"
-  # The asks a queued item waits on through its ask:<id>[=<option>] tag. That item carries the ask
-  # on, so it is no longer an open question of the session that posted it (ar-764).
-  qheld="$(jq -r 'select(.state == "queued") | (.tags // "") | splits("\\s+")
+  # The asks a live item holds through its ask:<id>[=<option>] tag. That item carries the ask on,
+  # so it is no longer an open question of the session that posted it, whatever state the item
+  # reaches before the answer (ar-764).
+  qheld="$(jq -r '(.tags // "") | splits("\\s+")
     | select(startswith("ask:")) | .[4:] | sub("=.*"; "")' <<<"$qjson" 2>/dev/null)"
   # "<state>\t<session>\t<sessions>\t<slug>\t<finished epoch>" per item, for item_of.
   qitems="$(jq -r '[.state, (.session // "" | if . == "" then "-" else . end),
