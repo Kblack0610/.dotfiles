@@ -13,7 +13,7 @@ const HOME_REFRESH_MS = 60e3;
 // `prop`: the proposal row opened and the id whose accept or reject is in flight.
 // `night`: Since last night (/api/briefing, hub_core::briefing::night) and its read error;
 // `fix`: per area, "busy", or what Queue a fix answered ({ ok, text }).
-const hst = { data: null, err: null, open: new Set(), all: false, prop: { open: null, busy: null, err: null, all: false }, night: null, nightErr: null, fix: {} };
+const hst = { data: null, err: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {} };
 
 const refreshNight = async () => {
   try {
@@ -38,11 +38,11 @@ const NEED_PRE = "n";
 // repaints around a search or dropdown in use. A search in Proposals reads only that section.
 const needT = tblTab({
   tab: "home", id: "home-need", el: "home", pre: NEED_PRE, refresh: () => refreshHome(), table: () => hst.data?.table,
-  head: () => needsHead(hst.data.table), body: () => needsBody(hst.data), reset: () => { hst.all = false; },
+  head: () => needsHead(hst.data.table), body: () => needsBody(hst.data), render: () => renderHome(),
 });
 const propT = tblTab({
   tab: "home", id: "home-prop", el: "home", refresh: () => refreshProposals(), table: () => hst.data?.proposals_table,
-  body: () => propBody(hst.data), reset: () => { hst.prop.all = false; },
+  body: () => propBody(hst.data), render: () => renderHome(),
 });
 
 const refreshHome = coalesce(async () => {
@@ -97,11 +97,11 @@ function propRow(p) {
 // focus across a refresh because only what is around it repaints (home-prop-*).
 function propBody(h) {
   const t = h.proposals_table;
-  const rows = h.proposals.slice(0, hst.prop.all ? undefined : h.shown), more = h.proposals.length - rows.length;
+  const rows = h.proposals.slice(0, propT.all ? undefined : h.shown), more = h.proposals.length - rows.length;
   const err = hst.prop.err ? `<div class="cline warn">${esc(hst.prop.err)}</div>` : "";
   return err + (h.proposals.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, PROP_COLS)}${rows.map(propRow).join("")}</table>` +
-      (more ? `<button class="btn sm" data-propall="1">+${more} more</button>` : "") + `</div>`
+      tblMore(more, "more") + `</div>`
     : `<div class="panel">No proposal matches.</div>`);
 }
 
@@ -177,7 +177,7 @@ function needsBody(h) {
   const t = h.table, rows = h.needs;
   if (!rows.length) return `<div class="empty">${t.total ? "No needs match." : "Nothing waits on you."}</div>`;
   const last = rows.reduce((at, n, i) => (hst.open.has(needKey(n)) ? i + 1 : at), 0);
-  const cap = hst.all ? rows.length : Math.max(h.shown, last);
+  const cap = needT.all ? rows.length : Math.max(h.shown, last);
   const more = rows.length - cap;
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, needCols(t))}${rows.slice(0, cap).map(needRow).join("")}</table>` +
     tblMore(more, "more") + `</div>`;
@@ -268,7 +268,6 @@ $("home").addEventListener("click", (e) => {
   if (t.dataset.fix) { queueFix(t.dataset.fix); return; }
   if (t.dataset.accept) { propDecide("accept", t.dataset.accept); return; }
   if (t.dataset.reject) { propDecide("reject", t.dataset.reject); return; }
-  if (t.dataset.propall) { hst.prop.all = true; renderHome(); return; }
   const prow = t.closest("tr.prop");
   if (prow && !t.closest("a")) {
     hst.prop.open = hst.prop.open === prow.dataset.prop ? null : prow.dataset.prop;
@@ -282,7 +281,6 @@ $("home").addEventListener("click", (e) => {
     return;
   }
   if (e.target.dataset.tab) { setTab(e.target.dataset.tab); return; }
-  if (e.target.dataset.all) { hst.all = true; renderHome(); return; }
   const card = e.target.closest(".card[data-t], .card[data-id]");
   if (card) { answerCard(card, e).then(refreshHome); return; }
   const row = e.target.closest("tr.jr[data-need]");

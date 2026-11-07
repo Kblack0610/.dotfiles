@@ -7,13 +7,12 @@
 
 // open: the folded sections' state; tokWin: the tokens section's window.
 const cost = tblTab({
-  tab: "costs", id: "costs", el: "costs", api: "/api/costs", hint: "search, or harness:codex -model:opus project:dotfiles",
+  tab: "costs", id: "costs", api: "/api/costs", hint: "search, or harness:codex -model:opus project:dotfiles",
   state: { open: {}, tokWin: "week" }, open: () => cost.open,
   // The view keys past the table's: the cut, the window and the sessions sort.
   params: (p) => { const v = new URLSearchParams(st.views.costs || ""); for (const k of ["by", "w", "ssort", "sdir"]) if (v.get(k)) p.set(k, v.get(k)); },
   head: (t) => costsHead(t.data) + `<div id="sec-table">${costsSwitch("window", t.data.windows, t.data.window, "w")}${costsSwitch("by", t.data.cuts, t.data.by, "by")}</div>`,
   body: (t) => costsBody(t.data), tail: (t) => costsTail(t.data),
-  draw: (html) => { paint($("costs"), html, cost.open); seekSection(); },
 });
 
 // Every source is a file written nightly or per call; only the token snapshots push (onEvent), so

@@ -24,7 +24,7 @@ const bst = tblTab({
     // is open: { k, kind }.
     form: null, all: false, controlsKey: "",
   },
-  body: () => bBody(), reset: (t) => { t.all = false; },
+  scroller: "projects", body: () => bBody(),
 });
 
 // `feed.rows` is what the view keeps; a row's action index is into that list, which the drawn
@@ -227,7 +227,6 @@ $("board").addEventListener("click", (e) => {
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
   const d = t.dataset;
-  if (d.all) { bst.all = true; bst.render(); return; }
   const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) {
     const line = t.closest("tr[data-row]");

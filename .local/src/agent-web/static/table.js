@@ -58,7 +58,7 @@ function tblHead(t, labels, pre = "t") {
   }).join("") + "</tr>";
 }
 
-// The button a capped body ends in; the view's own click listener answers `data-all`.
+// The button a capped body ends in; tblTab's listener answers `data-all` (t.all, reset by a view change).
 const tblMore = (n, word = "older") => (n > 0 ? `<button class="btn sm" data-all="1">+${n} ${word}</button>` : "");
 
 // The view patch an event on the bar or a header asks for, or null when it is not one of theirs.
@@ -78,7 +78,8 @@ function tblPatch(e) {
 // One table of a tab on the shared table, the skeleton every such tab draws with. `o` names:
 //   tab    the tab whose URL query (st.views[tab]) holds the view; it is drawn only while open
 //   id     the parts' prefix: `<id>-head`, the bar's `<id>-q`, `-facets` and `-chips`, `<id>-body`, `<id>-tail`
-//   el     the id of the element it draws into, and `on` the one its listener sits on (el)
+//   el     the id of the element it draws into (id), and `on` the one its listener sits on (el);
+//          scroller: the scrolling parent whose scrollTop a whole draw keeps
 //   pre    the view keys' prefix (tblParams), for a tab's second table; its block carries data-tbl
 //   api    the path read with the view keys, plus what params(p, t) adds; with no api the tab reads
 //          itself and `refresh` is that read
@@ -87,11 +88,12 @@ function tblPatch(e) {
 //   head, body, tail (t)  the html above the bar, the rows and below them; table(t): the summary
 //          (data.table); shown(): whether it is on screen (the tab is open)
 //   got(t) after a good read; after(t): after every read, once drawn; reset(t): on a view change
-//   open() the fold map paint keeps (ui.js); draw(html): the whole paint, when it is more than paint(el, html)
-//   state  the tab's own fields, kept beside data, err and sel on the object this returns, which
+//   open() the fold map paint keeps (ui.js); draw(html): the whole paint, when it is more than paint(el, html);
+//          render(): the tab's own, for a table drawn inside a tab that draws itself (Home)
+//   state  the tab's own fields, kept beside data, err, sel and all on the object this returns, which
 //          also carries refresh(), render(), view(patch), repaint(), redraw() and html().
 function tblTab(o) {
-  const t = Object.assign({ data: null, err: null, sel: null }, o.state), id = o.id, pre = o.pre || "";
+  const t = Object.assign({ data: null, err: null, sel: null, all: false }, o.state), id = o.id, pre = o.pre || "", elId = o.el || id;
   const shown = o.shown || (() => st.tab === o.tab);
   const table = () => (o.table ? o.table(t) : t.data?.table);
   const part = (k, f) => (f ? `<div id="${id}-${k}">${f(t)}</div>` : "");
@@ -126,8 +128,8 @@ function tblTab(o) {
     around();
   };
   t.html = () => part("head", o.head) + tblBar(id, table(), o.hint, o.chips !== false) + part("body", o.body) + part("tail", o.tail);
-  t.render = () => {
-    const el = $(o.el), m = open();
+  t.render = o.render || (() => {
+    const el = $(elId), m = open();
     if (!el || !shown()) return;
     // A fold just opened is in the page and not yet in the map the html is built from: record it first.
     if (m) el.querySelectorAll("details[data-k]").forEach((d) => { m[d.dataset.k] = d.open; });
@@ -137,18 +139,24 @@ function tblTab(o) {
       return;
     }
     if (t.repaint()) return;
+    const box = o.scroller && $(o.scroller), y = box && box.scrollTop;
     if (o.draw) o.draw(t.html()); else paint(el, t.html(), open());
-  };
+    if (box) box.scrollTop = y;
+    seekSection();
+  });
   // The view changed: the URL follows it and the server applies it.
   t.view = (patch) => {
     setQuery(tblSet(st.views[o.tab], patch, pre));
+    t.all = false;
     if (o.reset) o.reset(t);
     t.refresh();
   };
-  // The bar's and the headers' events from this table's own block. A picked dropdown lets go of
-  // focus, so the answer redraws it with the new counts.
-  for (const ev of ["input", "change", "click"]) $(o.on || o.el).addEventListener(ev, (e) => {
-    const v = tblOf(e) === pre && shown() && tblPatch(e);
+  // The bar's, the headers' and the more button's events from this table's own block. A picked
+  // dropdown lets go of focus, so the answer redraws it with the new counts.
+  for (const ev of ["input", "change", "click"]) $(o.on || elId).addEventListener(ev, (e) => {
+    if (tblOf(e) !== pre || !shown()) return;
+    if (e.type === "click" && e.target.dataset?.all) { t.all = true; t.render(); return; }
+    const v = tblPatch(e);
     if (!v) return;
     if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
     t.view(v);

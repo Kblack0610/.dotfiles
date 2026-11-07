@@ -166,11 +166,11 @@ test("the page caps at the server's open_rows with +N older, one click lifts it"
   load({ ...data, open_rows: 2 });
   let h = draw();
   assert.doesNotMatch(h, /title q1/);
-  assert.match(h, /<button class="btn sm" data-qall="1">\+1 older<\/button>/);
-  fire("click", { type: "click", target: target({ qall: "1" }) });
+  assert.match(h, /<button class="btn sm" data-all="1">\+1 older<\/button>/);
+  fire("click", { type: "click", target: target({ all: "1" }) });
   h = parts["q-list"].innerHTML;
   assert.match(h, /title q1/);
-  assert.doesNotMatch(h, /data-qall/);
+  assert.doesNotMatch(h, /data-all/);
 });
 
 test("a click on a chip or a header asks the server for that view, and the URL carries it", async () => {

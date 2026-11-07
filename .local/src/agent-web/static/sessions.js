@@ -12,7 +12,6 @@ const sst = tblTab({
   wait: "Loading the sessions.", state: { cap: null, capErr: null, all: false, confirm: null },
   shown: () => !st.sel && st.tab === "sessions", got: (t) => setBuckets(t.data.buckets), open: () => wst.open,
   chips: false, head: (t) => sessionsTiles(t.data) + sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
-  reset: (t) => { t.all = false; },
 });
 
 const SESSION_COLS = { bucket: ["bucket"], project: ["project"], task: ["task"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"] };
@@ -170,7 +169,6 @@ $("scroll").addEventListener("click", (e) => {
   else if (d.keep !== undefined) { sst.confirm = null; sst.render(); }
   else if (d.go) startTimer(d.go);
   else if (d.unlinked !== undefined) sst.view({ q: "item:none", s: "" });
-  else if (d.all) { sst.all = true; sst.render(); }
   else {
     const tr = e.target.closest("tr[data-key]");
     const r = tr && sst.data && sst.data.rows.find((x) => x.key === tr.dataset.key);

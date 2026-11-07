@@ -18,10 +18,10 @@ const Q_MODE = { oneshot: "Run to PR", plan: "Plan first" };
 // state chip; needs: every item waiting on the human, whatever the view; sel: the opened row.
 // The read is the tab's own (refreshQueue): it also follows old section links and reads the stats.
 const qst = tblTab({
-  tab: "queue", id: "qt", el: "q-list", on: "queue", refresh: () => refreshQueue(), table: (t) => t.table,
+  tab: "queue", id: "qt", el: "q-list", on: "queue", scroller: "queue", refresh: () => refreshQueue(), table: (t) => t.table,
   hint: "search, or project:dotfiles kind:fix -acct:k1",
   state: {
-    items: null, table: null, aliases: {}, needs: 0, openRows: 0, all: false, sel: "",
+    items: null, table: null, aliases: {}, needs: 0, openRows: 0, sel: "",
     stats: null, projects: [], busy: false, msg: "", draft: null,
     cands: null, candErr: null, candMsg: "", promoting: null,
     // The Candidates filter: a reason chip ("" is every row) and the search words.
@@ -29,16 +29,14 @@ const qst = tblTab({
     open: { "sec:candidates": false },
   },
   head: (t) => (t.err ? `<div class="panel down">${esc(t.err)}</div>` : "") + qFlow() + qTableHead(),
-  body: () => qBody(), tail: () => qDetail() + qCandidates(),
-  reset: (t) => { t.all = false; },
+  // Candidates sit under the table and are drawn only with the whole list: a repaint while the
+  // search box has focus leaves them as they were.
+  body: () => qBody(), tail: () => qDetail(),
   draw: (html) => {
-    const y = $("queue").scrollTop;
     // A redraw keeps the Candidates search box focused, its caret where it was.
     const typing = document.activeElement && document.activeElement.id === "qc-q" ? document.activeElement.selectionStart : null;
-    $("q-list").innerHTML = html;
-    $("queue").scrollTop = y;
+    $("q-list").innerHTML = html + qCandidates();
     if (typing != null && $("qc-q")) { $("qc-q").focus(); $("qc-q").setSelectionRange(typing, typing); }
-    seekSection();
   },
 });
 
@@ -181,7 +179,7 @@ function qBody() {
   const rows = qst.all ? shown : shown.slice(0, qst.openRows);
   const more = shown.length - rows.length;
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, Q_COLS)}${rows.map(qRow).join("")}</table>` +
-    (more > 0 ? `<button class="btn sm" data-qall="1">+${more} older</button>` : "") + `</div>`;
+    tblMore(more) + `</div>`;
 }
 
 // The stats window's prose, folded under the flow line; the chips above the table are the counts.
@@ -379,7 +377,6 @@ $("queue").addEventListener("click", (e) => {
   if (t.id === "q-add") { qAdd(); return; }
   if (t.closest("[data-home]")) { e.preventDefault(); setTab("home"); return; }
   if (t.dataset.promote) { qPromote(Number(t.dataset.promote)); return; }
-  if (t.dataset.qall) { qst.all = true; qst.render(); return; }
   if (t.dataset.qclose) { qst.sel = ""; qst.render(); return; }
   if (t.dataset.creason != null) { qst.candReason = t.dataset.creason; qst.render(); return; }
   if (t.dataset.open) {

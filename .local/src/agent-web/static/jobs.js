@@ -10,12 +10,10 @@ const JOBS_REFRESH_MS = 60e3;
 const JOBS_OPEN = 200;
 // `hist` is the one job whose every run is listed instead of the folded list.
 const jst = tblTab({
-  tab: "infra", id: "jobs", el: "jobs", api: "/api/jobs", hint: "search, or source:ci result:fail -name:dream",
+  tab: "infra", id: "jobs", api: "/api/jobs", hint: "search, or source:ci result:fail -name:dream",
   state: { hist: null, log: null, all: false },
   params: (p) => { if (jst.hist) p.set("name", jst.hist); },
   head: (t) => jobsHead(t.data), body: (t) => jobsBody(t.data), tail: () => jobsTail(),
-  reset: (t) => { t.all = false; },
-  draw: (html) => { paint($("jobs"), html); seekSection(); },
 });
 
 const jobKey = (j) => `${j.source}|${j.name}|${j.started ?? ""}|${j.finished ?? ""}|${j.state}`;
@@ -88,7 +86,6 @@ $("jobs").addEventListener("click", (e) => {
   if (t.closest("a[target]")) return;
   const h = t.closest("[data-hist]");
   if (h) { e.preventDefault(); jst.hist = h.dataset.hist || null; jst.data = null; jst.render(); jst.refresh(); return; }
-  if (t.dataset.all) { jst.all = true; jst.render(); return; }
   const row = t.closest("tr.jr");
   if (!row) return;
   const j = (jst.data.jobs || []).find((x) => jobKey(x) === row.dataset.key);

@@ -12,7 +12,7 @@ const FLEET_CLIP = 70;
 // fold: the lead rows the human closed, kept across refreshes; said: the answer judge's filter on Log.
 // A read also answers Log's verdicts and the open runner page.
 const fst = tblTab({
-  tab: "fleet", id: "fleet", el: "fleet", api: "/api/fleet", hint: "search, or kind:session state:failed project:dotfiles -who:shepherd",
+  tab: "fleet", id: "fleet", api: "/api/fleet", hint: "search, or kind:session state:failed project:dotfiles -who:shepherd",
   state: { fold: new Set(), said: "all" }, shown: () => st.tab === "fleet" && !st.arg,
   params: (p, t) => { if (t.fold.size) p.set("fold", [...t.fold].join(",")); },
   head: (t) => fleetHead(t.data), body: (t) => fleetBody(t.data),

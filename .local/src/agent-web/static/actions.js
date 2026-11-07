@@ -9,11 +9,10 @@ const ACTION_WINDOWS = [[12, "12h"], [24, "24h"], [72, "3d"], [168, "7d"]];
 const ACTION_HOURS = 24;
 // `read` is the view the data answers; `all` shows past the first LOG_ROWS.
 const ast = tblTab({
-  tab: "log", id: "actions", el: "actions", api: "/api/actions", hint: "search, or actor:shepherd verb:nudge -actor:dispatch",
+  tab: "log", id: "actions", api: "/api/actions", hint: "search, or actor:shepherd verb:nudge -actor:dispatch",
   wait: "Loading.", state: { read: null, all: false },
   params: (p, t) => { p.set("hours", actionHours()); t.asked = st.views.log || ""; }, got: (t) => { t.read = t.asked; },
   head: (t) => actionsHead(t.data), body: (t) => actionsBody(t.data),
-  reset: (t) => { t.all = false; },
 });
 
 // The URL's window, when it is one of the buttons: the head says what the server was asked for.
@@ -55,7 +54,6 @@ function actionsBody(d) {
 
 $("actions").addEventListener("click", (e) => {
   const t = e.target;
-  if (t.dataset.all) { ast.all = true; ast.render(); return; }
   const h = t.closest("[data-hours]");
   if (h) ast.view({ hours: h.dataset.hours === String(ACTION_HOURS) ? "" : h.dataset.hours });
 });
