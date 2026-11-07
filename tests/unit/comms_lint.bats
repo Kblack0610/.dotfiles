@@ -84,7 +84,21 @@ EOF
   { printf '3 things need you.\n\n## Needs you\n\n1. One.\n2. Two.\n3. Three.\n'; cat "$SANDBOX/c.md"; } > "$SANDBOX/b2.md"
   run "$SUBJECT" --channel briefing "$SANDBOX/b2.md"
   assert_failure 1
-  assert_output --partial "items: 7 items, budget 5"
+  assert_output --partial "items: 7 items under '^## Needs you$', budget 5"
+}
+
+@test "a briefing's Areas are capped at 6 lines of 200 chars, and Details only page-wide" {
+  long="$(printf 'x%.0s' $(seq 1 170))"
+  printf -- '# Briefing\n\nAs of Fri 06:45: 1 thing needs you.\n\n## Needs you\n\n- Answer ask a1.\n\n## Areas\n\n- Infra: ok, 24 watches green.\n- Sessions: ok, 14 working.\n- Workers overnight: ok, 23 of 23 ok.\n- Nightly: ok, dream ok.\n- Delivery: ok, 458 merged.\n- Costs: ok, $812.\n\n## Details\n\n- %s\n- %s\n- %s\n- %s\n- %s\n- %s\n- %s\n' "$long" "$long" "$long" "$long" "$long" "$long" "$long" > "$SANDBOX/a.md"
+  run "$SUBJECT" --channel briefing "$SANDBOX/a.md"
+  assert_success
+  # Negative control: a seventh area fails, and so does a Needs item past 160.
+  sed -i "s/^- Costs: ok, \$812.$/&\n- Extra: ok, one more./" "$SANDBOX/a.md"
+  sed -i "s/^- Answer ask a1.$/- Answer ask a1 $long./" "$SANDBOX/a.md"
+  run "$SUBJECT" --channel briefing "$SANDBOX/a.md"
+  assert_failure 1
+  assert_output --partial "items: 7 items under '^## Areas$', budget 6"
+  assert_output --partial "item-too-long: 185 chars under '^## Needs you$', budget 160"
 }
 
 @test "emoji: a page allows none, a client EOD allows a budget" {

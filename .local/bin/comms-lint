@@ -45,7 +45,7 @@ KPI_THRESHOLDS = os.path.expanduser(os.environ.get("KPI_THRESHOLDS", "~/.config/
 SNAPSHOT_WINDOWS = ("7d", "28d")
 QUIET_OK = {"low", "normal", "default", "min"}
 KEYS = {"ascii", "emoji", "max_emoji", "max_chars", "max_lines", "max_line", "max_lead", "lead_ids",
-        "prose", "items_under", "item", "max_items", "max_item", "require", "forbid", "quiet", "source",
+        "prose", "sections", "item", "max_items", "max_item", "require", "forbid", "quiet", "source",
         "max_title", "refs", "group", "option_meanings"}
 
 
@@ -176,10 +176,17 @@ def lint(text, ch, ids, priority=None, title=None, record=None):
         f.append(("empty", "nothing to read"))
 
     items = [l for l in content if item_re.match(l)]
-    # The count can be one section's (the briefing's Needs you); every other check reads it all.
-    counted = [l for l in under(lines, ch["items_under"]) if item_re.match(l)] if ch.get("items_under") else items
-    if ch["max_items"] and len(counted) > ch["max_items"]:
-        f.append(("items", f"{len(counted)} items, budget {ch['max_items']}"))
+    if ch["max_items"] and len(items) > ch["max_items"]:
+        f.append(("items", f"{len(items)} items, budget {ch['max_items']}"))
+    # A section's own caps (the briefing's Needs you and Areas), on top of the whole page's.
+    for heading, n_max, len_max in ch.get("sections", []):
+        sect = [l for l in under(lines, heading) if item_re.match(l)]
+        if n_max and len(sect) > n_max:
+            f.append(("items", f"{len(sect)} items under {heading!r}, budget {n_max}"))
+        for l in sect:
+            _, text_ = lead_of(l, item_re)
+            if len_max and len(text_) > len_max:
+                f.append(("item-too-long", f"{len(text_)} chars under {heading!r}, budget {len_max}: {text_[:50]!r}"))
     for l in items:
         _, text_ = lead_of(l, item_re)
         if ch["max_item"] and len(text_) > ch["max_item"]:

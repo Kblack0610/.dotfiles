@@ -59,7 +59,7 @@ pub const DIRECT_NOTE: &str = "opencode lazer/*, nightly; other direct use unsee
 
 /// The gauges the live tiles read: Claude Code's 24h cost, the Lazer pool's spend and cap, and the
 /// reserve key's cap, what is left of it and the hours to its reset, as LiteLLM exports them.
-fn live_q() -> String {
+pub(crate) fn live_q() -> String {
     format!(
         r#"{{__name__=~"cc:claude_code_cost_24h_usd|cc:lazer_spend_usd|cc:lazer_budget_usd"}} or {{__name__=~"litellm_(api_key_max_budget|remaining_api_key_budget|api_key_budget_remaining_hours)_metric",api_key_alias="{RESERVE_KEY}"}}"#
     )

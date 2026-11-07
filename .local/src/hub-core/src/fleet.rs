@@ -38,7 +38,7 @@ const RECENT_VERDICTS: usize = 30;
 /// verdict, so 1 MiB is several weeks; a tail that still starts inside the week says so.
 const VERDICT_TAIL: u64 = 1 << 20;
 pub(crate) const LOG_TAIL: u64 = 256 << 10;
-const ACTIVITY_TAIL: u64 = 16 << 10;
+pub(crate) const ACTIVITY_TAIL: u64 = 16 << 10;
 /// calls.jsonl holds up to 4 KB of raw reply a line; the busiest lane (dispatch-judge, about 100
 /// calls a day) writes well under 1 MiB a day.
 const CALLS_TAIL: u64 = 2 << 20;

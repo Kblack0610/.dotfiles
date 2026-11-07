@@ -44,9 +44,9 @@ Several act-now items within one pass go out as one page (rule 4). A self-healin
 
 **Page.** The title is a subject of 40 characters or less. The body leads with the state in plain words, then one action, then an id if one helps. Example: "Nightly tests red for 5 days, no session owns it. Pick an owner on the agent board (playground-nightly)."
 
-**Briefing** (`refs/<date>/briefing.md`). A headline ("3 things need you"), then a numbered list of no more than 5 items, one line each. Then one line on yesterday ("317 PRs merged in 7 repos, $421 spent"). Everything else goes under `## Details`, which the lint skips.
+**Briefing** (`refs/<date>/briefing.md`, the shape `hub briefing --md` renders). A headline that opens "As of" ("As of Fri 06:45: 3 things need you. Yesterday 317 PRs in 7 repos, $421 spent."), then `## Needs you`, no more than 5 items of one line each, a group of one kind folded into one. Then `## Areas`, one line per area (Infra, Sessions, Workers overnight, Nightly, Delivery, Costs): its level, then one sentence. Everything else goes under `## Details`, where only the page-wide checks apply.
 
-**Morning block.** The briefing's headline and numbered items, copied as they are, plus the knowledge line. Eight lines at most.
+**Morning block.** The briefing's headline and Needs you items, copied as they are, plus the knowledge line. Eight lines at most.
 
 **Status shape** (rundowns, wind-down notes, lab status, day summaries, client EODs). Group by project, then:
 - Done: what landed, one plain line each, with the link at the end.

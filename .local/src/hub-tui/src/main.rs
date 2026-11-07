@@ -39,6 +39,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub actions --since WHEN [--json | --records]
        hub phone --json
        hub needs --json | --page
+       hub briefing --json | --md [--since WHEN]
        hub projects --json
        hub projects --page NAME
        hub tabs
@@ -59,6 +60,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
           bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
+  briefing what needs you, then one line per area (Infra, Sessions, Workers overnight, Nightly,
+          Delivery, Costs) and the detail, for the window from WHEN (epoch seconds or RFC 3339,
+          default 12h ago); --md is the file agentctl-briefing writes. Exits 1 when a source could
+          not be read (the output says which)
   projects every project's card as {cards, unlinked, errors}, each card with its summary line
           and in_flight: what the waybar projects chip reads
   projects --page NAME
@@ -121,6 +126,10 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("phone") {
         it.next();
         std::process::exit(phone(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("briefing") {
+        it.next();
+        std::process::exit(briefing(it.cloned().collect()));
     }
     if it.peek().map(|a| a.as_str()) == Some("needs") {
         it.next();
@@ -190,33 +199,6 @@ fn actions(args: Vec<String>) -> i32 {
     i32::from(!g.errors.is_empty())
 }
 
-/// What Home joins: the fleet state with its asks read live, the queue, the board feed and,
-/// unless `with_infra` is false, infra (a Prometheus round trip).
-fn gather(
-    with_infra: bool,
-) -> (
-    serde_json::Value,
-    hub_core::queue::Queue,
-    Result<hub_core::tasks::Feed, String>,
-    Option<hub_core::infra::Infra>,
-) {
-    let state = hub_core::boards::state(
-        &hub_core::boards::fleet_state(),
-        &hub_core::session_actions::System,
-    );
-    std::thread::scope(|s| {
-        let infra = with_infra.then(|| s.spawn(hub_core::infra::gather));
-        let queue = hub_core::queue::Queue::read(&hub_core::session_actions::System);
-        let board = hub_core::tasks::feed(&hub_core::session_actions::System);
-        (
-            state,
-            queue,
-            board,
-            infra.map(|i| i.join().unwrap_or_default()),
-        )
-    })
-}
-
 /// `hub needs --json`: NEEDS YOU as Home ranks it. `--page`: the pager over it, with no
 /// Prometheus read (red-now rows never page). Exits 1 when the page could not be decided or sent.
 fn needs(args: Vec<String>) -> i32 {
@@ -225,7 +207,7 @@ fn needs(args: Vec<String>) -> i32 {
         ["--page"] => true,
         _ => die(USAGE),
     };
-    let (state, queue, board, infra) = gather(!page);
+    let (state, queue, board, infra) = hub_core::home::gather(!page);
     let home = hub_core::home::build(&state, Some(&queue), Some(&board), infra.as_ref());
     if !page {
         let out = serde_json::json!({"needs": home.needs, "errors": home.errors});
@@ -247,12 +229,42 @@ fn needs(args: Vec<String>) -> i32 {
     }
 }
 
+/// `hub briefing`: hub-core's briefing over the window from `--since`.
+fn briefing(args: Vec<String>) -> i32 {
+    let (mut since, mut md) = (None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--since" => {
+                since = Some(
+                    it.next()
+                        .and_then(|s| parse_since(s))
+                        .unwrap_or_else(|| die(USAGE)),
+                )
+            }
+            "--json" => md = Some(false),
+            "--md" => md = Some(true),
+            _ => die(USAGE),
+        }
+    }
+    let md = md.unwrap_or_else(|| die(USAGE));
+    let now = chrono::Utc::now().timestamp();
+    let since = since.unwrap_or(now - hub_core::briefing::DEFAULT_WINDOW_SECS);
+    let b = hub_core::briefing::build(&hub_core::briefing::gather(since, now));
+    if md {
+        print!("{}", b.markdown());
+    } else {
+        println!("{}", serde_json::to_string(&b).unwrap_or_default());
+    }
+    i32::from(!b.errors.is_empty())
+}
+
 /// `hub phone --json`: the same join Home draws, reduced to the phone's rows.
 fn phone(args: Vec<String>) -> i32 {
     if args != ["--json"] {
         die(USAGE);
     }
-    let (state, queue, board, infra) = gather(true);
+    let (state, queue, board, infra) = hub_core::home::gather(true);
     let infra = infra.unwrap_or_default();
     let home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
     let projects = hub_core::projects::gather();
@@ -307,7 +319,8 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         if t == Tab::Sessions {
             let b = a.boards.as_ref().expect("just read");
             let f = forecast::Forecast::read();
-            a.controls.read(Some(&b.watch.state), Some(forecast::schedule(&f)));
+            a.controls
+                .read(Some(&b.watch.state), Some(forecast::schedule(&f)));
             a.forecast = Some(f);
             a.read_sessions_now();
         }
