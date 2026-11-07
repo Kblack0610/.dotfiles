@@ -44,11 +44,9 @@ Firefox upgrade (or by re-running `install.sh`).
 
 ### macOS
 
-`install_mac.sh` runs `install.sh` in its `setup_firefox` step when a profile exists. On a new Mac, Firefox has no profile until its first launch, so open Firefox once, quit it, then run `bash ~/.dotfiles/.config/firefox/install.sh`. Profiles are found under `~/Library/Application Support/Firefox/Profiles`, and the policies and autoconfig go inside the app bundle. Both need `~/.dotfiles-private` cloned first, since it holds the Tab Keeper policy and xpi.
+`install_mac.sh` runs `install.sh` in its `setup_firefox` step. On a new Mac, Firefox has no profile until its first launch, so that step warns; open Firefox once, quit it, then run `bash ~/.dotfiles/.config/firefox/install.sh`. Profiles are found under `~/Library/Application Support/Firefox/Profiles`, and the policies and autoconfig go inside the app bundle. Both need `~/.dotfiles-private` cloned first, since it holds the Tab Keeper policy and xpi.
 
 If the script stops with "macOS refused the write", give the terminal App Management (System Settings, Privacy & Security, App Management) and rerun it. Reinstalling Firefox, or a `brew reinstall --cask firefox`, replaces the bundle and drops the policies, so rerun `install.sh` after one. `about:policies` shows whether they loaded.
-
-Verified 2026-11-07 on macOS 26.5 with the system bash 3.2, on a copy of Firefox.app with a scratch profile: policies active with the private overlay, autoconfig loaded, signed Tab Keeper installed, `containers.json` seeded.
 
 ## Why autoconfig
 

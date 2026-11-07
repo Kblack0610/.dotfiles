@@ -80,11 +80,18 @@ find_firefox_dir() {
 }
 
 # macOS blocks writes into another app's bundle unless the terminal has App
-# Management, and says only "Operation not permitted".
-explain_bundle_denied() {
+# Management, and says only "Operation not permitted". One probe up front covers
+# every write below.
+check_bundle_writable() {
     [[ "$(uname -s)" == Darwin ]] || return 0
-    echo "Error: macOS refused the write into $1."
+    local probe="$1/.dotfiles-write-probe"
+    if sudo touch "$probe" 2>/dev/null; then
+        sudo rm -f "$probe"
+        return 0
+    fi
+    echo "Error: macOS refused a write into $1."
     echo "  System Settings > Privacy & Security > App Management: allow your terminal, then rerun."
+    exit 1
 }
 
 # Install policies.json to Firefox distribution directory
@@ -97,11 +104,12 @@ install_policies() {
         echo "  You can manually copy policies.json to <firefox-dir>/distribution/policies.json"
         return
     fi
+    check_bundle_writable "$firefox_dir"
 
     local dist_dir="$firefox_dir/distribution"
     if [[ ! -d "$dist_dir" ]]; then
         echo "Creating $dist_dir (requires sudo)"
-        sudo mkdir -p "$dist_dir" || { explain_bundle_denied "$firefox_dir"; exit 1; }
+        sudo mkdir -p "$dist_dir"
     fi
     # Personal-machine overlay from the private repo (Karakeep search engine
     # etc.): deep-merged over the public base, which cannot name LAN hosts.

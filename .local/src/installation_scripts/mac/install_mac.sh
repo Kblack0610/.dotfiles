@@ -412,17 +412,14 @@ setup_theme() {
     "$theme_switch" "$theme" --only kitty,sketchybar
 }
 
-# Firefox profile files, policies (Tab Keeper, Karakeep) and autoconfig. Needs a
-# profile, so on a brand-new install it waits for the first Firefox launch.
+# Firefox profile files, policies (Tab Keeper, Karakeep) and autoconfig. On a
+# brand-new install Firefox has no profile until its first launch, and
+# install.sh says so; the step warns instead of failing the run.
 setup_firefox() {
     log_section "Setting up Firefox"
 
     local installer="$HOME/.dotfiles/.config/firefox/install.sh"
-    if ! ls -d "$HOME/Library/Application Support/Firefox/Profiles/"*.default* &>/dev/null; then
-        log_warning "No Firefox profile yet: open Firefox once, quit it, then run $installer"
-        return 0
-    fi
-    "$installer" || log_warning "Firefox setup failed; rerun $installer after fixing the error above"
+    "$installer" || log_warning "Firefox not set up yet: fix the error above (a new Mac: open Firefox once, quit it), then run $installer"
 }
 
 # Build the notes CLI (always) and wire ~/.notes git sync (Forgejo primary +
