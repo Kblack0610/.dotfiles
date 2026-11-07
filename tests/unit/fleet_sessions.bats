@@ -17,6 +17,20 @@ setup() {
 #   [<red> <phases> <next> <conflicts>]
 b() { session_bucket "$@"; }
 
+@test "a finished plan waits FLEET_IDLE_MIN idle before DONE, whatever made it DONE (ar-167)" {
+  run b idle 0 0 0 19 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_output 'WORKING idle 19m'
+  run b idle 0 0 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_output 'DONE PR #875 merged, tree clean, all 3 phases done'
+  # the removed worktree and the plan-less merged PR are DONE paths too
+  run b idle 0 0 0 19 gone 0 0 - - - 1
+  assert_output 'WORKING idle 19m'
+  run b idle 0 0 0 20 gone 0 0 - - - 1
+  assert_output 'DONE its worktree was removed'
+  run b idle 0 0 0 19 1 0 0 875 MERGED PASS 1 - -
+  assert_output 'WORKING idle 19m'
+}
+
 @test "waiting and busy win over the session's own work facts" {
   run b waiting 1 2 1 99 1 0 0 875 MERGED PASS 1
   assert_output --partial 'NEEDS waiting'
