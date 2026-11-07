@@ -87,13 +87,18 @@ item_project() {
   printf '%s' "${name:-$board}"
 }
 
-# queue <id>: queue the facet's research item. 0 when queued.
+# queue <id>: queue the facet's research item as research-<id> (a slug cut from the task text is
+# the same 40 characters for every facet in one checkout). 0 when queued. --repeat: a facet picked
+# again reuses its slug, whose last item finished ok; this pick is new work under it.
 queue() {
   local project task
   project=$(item_project "$1"); task=$(task_text "$1")
   if [ "$DRY" = 1 ]; then printf 'would queue [%s] %s\n' "$project" "$task"; return 0; fi
-  agent-queue add --project "$project" --priority low --from "research:$1" --tags research \
-    --title "research($1)" -- "$task" >/dev/null 2>&1
+  local err
+  err=$(agent-queue add --project "$project" --priority low --from "research:$1" --tags research --repeat \
+    --slug "research-$1" --title "research($1)" -- "$task" 2>&1 >/dev/null) && return 0
+  say "$1: nothing queued, agent-queue add failed: $(tail -n 1 <<<"$err")"
+  return 1
 }
 
 # add <board> <text>: file one row. 0 when filed or already open (exit 3), 1 otherwise.
@@ -156,8 +161,6 @@ cmd_run() {
       say "queued $id (score $score: ${stale}d stale, $c commits)"
       [ "$DRY" = 1 ] || jq -cn --arg f "$id" --argjson d "$today" \
         '{facet: $f, day: $d, date: (now | strftime("%Y-%m-%d"))}' >> "$PICKS"
-    else
-      say "$id: agent-queue add failed, nothing queued"
     fi
   fi
 

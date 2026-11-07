@@ -2,7 +2,7 @@
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
-#       [--weight heavy|light] [--after slug] [--from human|shepherd|canary|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
+#       [--weight heavy|light] [--after slug] [--from human|shepherd|canary|research:<facet>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
 #       [--epic <code>-<N>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       An item not from the board files its own story row: see file_story. A slug that already
 #       finished ok is refused unless --repeat says this is new work under it: see finished_ok.
@@ -618,7 +618,7 @@ cmd_add() {
   case "$mode" in oneshot | plan) ;; *) die "--mode is oneshot or plan, not $mode" ;; esac
   prio_rank "$priority" >/dev/null || die "--priority is urgent, high or low, not $priority"
   case "$weight" in '' | heavy | light) ;; *) die "--weight is heavy or light, not $weight" ;; esac
-  case "$from" in human | shepherd | canary | board:?*:?*) ;; *) die "--from is human, shepherd, canary or board:<project>:<key>, not $from" ;; esac
+  case "$from" in human | shepherd | canary | research:?* | board:?*:?*) ;; *) die "--from is human, shepherd, canary, research:<facet> or board:<project>:<key>, not $from" ;; esac
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   [ -z "$epic" ] || [[ "$epic" =~ ^[a-z0-9]+-[0-9]+$ ]] || die "--epic is a row id, <code>-<N>, not $epic"
   check_tags "$tags"
