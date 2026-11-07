@@ -9,17 +9,14 @@ const JOBS_REFRESH_MS = 60e3;
 // Unity gates alone finish about a thousand runs a day, so the table stops here until asked.
 const JOBS_OPEN = 200;
 // `hist` is the one job whose every run is listed instead of the folded list.
-const jst = { data: null, err: null, hist: null, sel: null, log: null, all: false };
+const jst = tblTab({
+  tab: "infra", id: "jobs", api: "/api/jobs", hint: "search, or source:ci result:fail -name:dream",
+  state: { hist: null, log: null, all: false },
+  params: (p) => { if (jst.hist) p.set("name", jst.hist); },
+  head: (t) => jobsHead(t.data), body: (t) => jobsBody(t.data), tail: () => jobsTail(),
+});
 
 const jobKey = (j) => `${j.source}|${j.name}|${j.started ?? ""}|${j.finished ?? ""}|${j.state}`;
-
-const refreshJobs = coalesce(async () => {
-  const p = tblParams(st.views.infra);
-  if (jst.hist) p.set("name", jst.hist);
-  const q = p.toString();
-  try { jst.data = await api("/api/jobs" + (q ? "?" + q : "")); jst.err = null; } catch (e) { jst.err = e.message; }
-  if (st.tab === "infra") renderJobs();
-});
 
 
 function resultCell(j) {
@@ -65,31 +62,6 @@ function jobsHead(d) {
 const jobsTail = () => `<div class="muted fold">A runner or timer that ran more than once shows its latest run plus every failure; xN lists them all. Click a row for its log.</div>` +
   (jst.log ? `<h2 class="sec">Log <span class="muted">${esc(jst.log.title)}</span></h2><pre class="panel joblog">${esc(jst.log.text)}</pre>` : "");
 
-function renderJobs() {
-  const el = $("jobs");
-  const d = jst.data;
-  if (!d || !d.table) {
-    const why = jst.err || (d?.errors || [])[0];
-    el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading..."}</div>`;
-    return;
-  }
-  if (tblRepaint("jobs", d.table, () => jobsBody(d))) {
-    paint($("jobs-head"), jobsHead(d));
-    paint($("jobs-tail"), jobsTail());
-    return;
-  }
-  paint(el, `<div id="jobs-head">${jobsHead(d)}</div>${tblBar("jobs", d.table, "search, or source:ci result:fail -name:dream")}` +
-    `<div id="jobs-body">${jobsBody(d)}</div><div id="jobs-tail">${jobsTail()}</div>`);
-  seekSection();
-}
-
-// The view changed: the URL follows it and the server applies it.
-function jobsView(patch) {
-  setQuery(tblSet(st.views.infra, patch));
-  jst.all = false;
-  refreshJobs();
-}
-
 // A job's log through /api/jobs/log (its byte range for an agentctl run), or why it has none.
 // The Fleet tab's runner page reads its runs' logs here too.
 async function jobLogText(j) {
@@ -104,25 +76,21 @@ async function jobLogText(j) {
 async function openLog(j) {
   jst.sel = jobKey(j);
   const log = jst.log = { title: `${j.source} ${j.name} ${when(j.started)}`, text: "Loading..." };
-  renderJobs();
+  jst.render();
   log.text = await jobLogText(j);
-  if (st.tab === "infra") renderJobs();
+  if (st.tab === "infra") jst.render();
 }
 
 $("jobs").addEventListener("click", (e) => {
   const t = e.target;
   if (t.closest("a[target]")) return;
   const h = t.closest("[data-hist]");
-  if (h) { e.preventDefault(); jst.hist = h.dataset.hist || null; jst.data = null; renderJobs(); refreshJobs(); return; }
-  if (t.dataset.all) { jst.all = true; renderJobs(); return; }
-  const v = tblPatch(e);
-  if (v) { jobsView(v); return; }
+  if (h) { e.preventDefault(); jst.hist = h.dataset.hist || null; jst.data = null; jst.render(); jst.refresh(); return; }
   const row = t.closest("tr.jr");
   if (!row) return;
   const j = (jst.data.jobs || []).find((x) => jobKey(x) === row.dataset.key);
   if (j) openLog(j);
 });
-tblListen($("jobs"), jobsView);
 
 // Shown and refreshed by TABS.infra (infra.js).
-const pollJobs = poll("infra", refreshJobs, JOBS_REFRESH_MS);
+const pollJobs = poll("infra", jst.refresh, JOBS_REFRESH_MS);

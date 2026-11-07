@@ -16,8 +16,6 @@ const HEADER: [&str; 5] = ["STREAM", "PROJECT", "PROPOSAL", "AGE", "VERB"];
 pub struct ProposalsView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,
-    pub sel: usize,
-    pub top: usize,
     /// Home's section opened as the whole table.
     pub open: bool,
     /// The selected record's lines show under the table.
@@ -32,7 +30,7 @@ impl ProposalsView {
     }
 
     pub fn selected<'a>(&self, rows: &'a [Proposal]) -> Option<&'a Proposal> {
-        self.shown(rows).get(self.sel).copied()
+        self.shown(rows).get(self.table.sel).copied()
     }
 
     /// The view on the left, how many it keeps on the right, and the last decision's answer.
@@ -86,9 +84,7 @@ impl ProposalsView {
             mark: self.table.mark::<Proposal>(),
         }
         .fit(w, p.head());
-        if let Some(l) = out.get_mut(self.sel + 1) {
-            l.style = p.sel();
-        }
+        self.table.style(&mut out, p);
         out
     }
 

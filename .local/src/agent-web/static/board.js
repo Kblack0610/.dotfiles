@@ -13,13 +13,19 @@ const B_LANES = ["human", "agent", "playtest"];
 const B_PRIORITIES = ["urgent", "high", "low"];
 // All holds thousands of rows, so the table stops here until asked.
 const B_OPEN = 200;
-const bst = {
-  feed: null, err: null, busy: false, msg: "",
-  draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
-  // `sel` is the opened row (bSel); `form` the one row whose done, drop, move, edit or tags form
-  // is open: { k, kind }.
-  sel: null, form: null, all: false, controlsKey: "",
-};
+// The table is drawn under the add form (renderBoard), which a re-read leaves alone.
+const bst = tblTab({
+  tab: "projects", id: "board", el: "b-tbl", on: "board", refresh: () => refreshBoard(), table: (t) => t.feed?.table,
+  shown: () => st.tab === "projects" && !!pst.open, hint: "search, or lane:agent priority:high size:s -tag:ai",
+  state: {
+    feed: null, busy: false, msg: "",
+    draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
+    // `sel` is the opened row (bSel); `form` the one row whose done, drop, move, edit or tags form
+    // is open: { k, kind }.
+    form: null, all: false, controlsKey: "",
+  },
+  scroller: "projects", body: () => bBody(),
+});
 
 // `feed.rows` is what the view keeps; a row's action index is into that list, which the drawn
 // table always comes from. An answer for a project no longer open is dropped, and pOpen's own
@@ -136,9 +142,7 @@ function bLine(r, i) {
   return open ? line + `<tr class="bopen"><td colspan="${B_SPAN}">${bRow(r, i)}</td></tr>` : line;
 }
 
-function drawBoardList() {
-  const el = $("b-list");
-  if (!el) return;
+function bBody() {
   const t = bst.feed.table, shown = bst.feed.rows, one = pst.open !== "all";
   const rows = bst.all ? shown : shown.slice(0, B_OPEN);
   const more = shown.length - rows.length;
@@ -147,16 +151,13 @@ function drawBoardList() {
   // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
   const focus = one ? [] : bst.feed.focus || [];
   const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
-  const html = `<div class="muted qstats">${t.shown} of ${t.total} open rows${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
+  return `<div class="muted qstats">${t.shown} of ${t.total} open rows${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
     ` <button class="btn sm" id="b-refresh">Refresh</button></div>` +
     (bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "") +
     (shown.length
       ? `<div class="panel scroll"><table class="tbl">${tblHead(t, B_COLS)}${rows.map(bLine).join("")}</table>` +
-        (more ? `<button class="btn sm" data-all="1">+${more} more</button>` : "") + `</div>`
+        tblMore(more, "more") + `</div>`
       : `<div class="card muted">${t.total ? "No row matches." : "No open rows."}</div>`);
-  const y = $("projects").scrollTop;
-  el.innerHTML = html;
-  $("projects").scrollTop = y;
 }
 
 function renderBoard() {
@@ -164,30 +165,15 @@ function renderBoard() {
   if (!bst.feed) { el.innerHTML = `<div class="empty">${bst.err ? esc(bst.err) : "Loading..."}</div>`; return; }
   // The add form is drawn once per project list, so a re-read never eats what is being typed.
   const key = bst.feed.projects.map(bProjKey).join(",");
-  if (key !== bst.controlsKey || !$("b-list")) {
+  if (key !== bst.controlsKey || !$("b-tbl")) {
     bst.controlsKey = key;
-    el.innerHTML = bControls() + `<div id="b-bar"></div><div id="b-list"></div>`;
+    el.innerHTML = bControls() + `<div id="b-tbl"></div>`;
   } else {
     $("b-msg").textContent = bst.msg;
     $("b-add").disabled = bst.busy;
     $("b-add").textContent = bst.busy ? "Adding..." : "Add";
   }
-  // A re-read must not take the search box or an open dropdown from under the human.
-  const f = document.activeElement, t = bst.feed.table;
-  if (f?.id === "board-q" || (f?.dataset?.tq !== undefined && f.closest?.("#b-bar"))) {
-    if (f.id === "board-q") paint($("board-facets"), tblFacets(t));
-    paint($("board-chips"), tblChips(t));
-  } else {
-    paint($("b-bar"), tblBar("board", t, "search, or lane:agent priority:high size:s -tag:ai"));
-  }
-  drawBoardList();
-}
-
-// The view changed: the URL follows it and the server applies it.
-function bView(patch) {
-  setQuery(tblSet(st.views.projects, patch));
-  bst.all = false;
-  refreshBoard();
+  bst.render();
 }
 
 function bSaveDraft() {
@@ -241,9 +227,6 @@ $("board").addEventListener("click", (e) => {
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
   const d = t.dataset;
-  if (d.all) { bst.all = true; drawBoardList(); return; }
-  const v = tblPatch(e);
-  if (v) { bView(v); return; }
   const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) {
     const line = t.closest("tr[data-row]");
@@ -251,7 +234,7 @@ $("board").addEventListener("click", (e) => {
     const k = bSel(rows[line.dataset.row]);
     bst.sel = bst.sel === k ? null : k;
     bst.form = null;
-    drawBoardList();
+    bst.render();
     return;
   }
   const k = bKey(r);
@@ -264,12 +247,12 @@ $("board").addEventListener("click", (e) => {
   const opened = d.done || d.drop || d.move || d.edit || d.tag;
   if (opened) {
     bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : d.tag ? "tag" : "edit" };
-    drawBoardList();
+    bst.render();
     const i = $("board").querySelector(`[data-forminput="${opened}"]`);
     if (i) i.focus();
     return;
   }
-  if (d.formcancel) { bst.form = null; drawBoardList(); return; }
+  if (d.formcancel) { bst.form = null; bst.render(); return; }
   if (d.formgo && bst.form) {
     const i = d.formgo, q = (a) => $("board").querySelector(`[data-${a}="${i}"]`);
     const v = q("forminput").value.trim(), kind = bst.form.kind;
@@ -296,7 +279,6 @@ $("board").addEventListener("click", (e) => {
   }
 });
 for (const ev of ["input", "change"]) $("board").addEventListener(ev, (e) => { if (e.target.closest(".badd")) bSaveDraft(); });
-tblListen($("board"), bView);
 $("board").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "b-text") { e.preventDefault(); bAdd(); return; }

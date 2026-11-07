@@ -10,7 +10,14 @@
 
 // page: the opened card's page by project name, {data} or {err}; folds: which of its folds are open;
 // viewed: the view pst.data was read under.
-const pst = { data: null, err: null, open: null, unlinked: false, page: {}, folds: {}, viewed: "" };
+// The read is the tab's own (refreshProjects): with something open it reads every card.
+const pst = tblTab({
+  tab: "projects", id: "projects", el: "p-cards", refresh: () => refreshProjects(),
+  shown: () => st.tab === "projects" && !pst.open, wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
+  state: { open: null, unlinked: false, page: {}, folds: {}, viewed: "" },
+  head: (t) => pHead(t.data.table) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
+  body: () => pList(),
+});
 
 // With something open, or a deep link on its way, the URL's view is the rows', so every card is
 // read: pDeep and the opened card need theirs whatever the list was showing. An answer for what
@@ -114,22 +121,6 @@ function pList() {
   return html;
 }
 
-// `#p-bar` is its own element, so a re-read does not take the search box or an open dropdown
-// from under the human.
-function pDraw() {
-  const el = $("p-cards"), d = pst.data, t = d.table;
-  if (!$("p-bar")) el.innerHTML = `<div id="p-top"></div><div id="p-bar"></div><div id="p-list"></div>`;
-  paint($("p-top"), pHead(t) + (d.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""));
-  const f = document.activeElement;
-  if (f?.id === "projects-q" || (f?.dataset?.tq !== undefined && f.closest?.("#p-bar"))) {
-    if (f.id === "projects-q") paint($("projects-facets"), tblFacets(t));
-    paint($("projects-chips"), tblChips(t));
-  } else {
-    paint($("p-bar"), tblBar("projects", t, "search, or stage:alpha profile:personal -prio:low"));
-  }
-  paint($("p-list"), pList());
-}
-
 // `#projects/<name>` (a `#p:<name>` link on Daily) or `#projects/<profile>/<name>` opens that
 // project's rows, once the cards say which project the name is; `#projects/all` opens All.
 function pDeep() {
@@ -155,12 +146,6 @@ function pOpen(key) {
   refreshBoard();
 }
 
-// The list's view changed: the URL follows it and the server applies it.
-function pView(patch) {
-  setQuery(tblSet(st.views.projects, patch));
-  refreshProjects();
-}
-
 // A click moves the tab: the URL names what is open and the old view's query goes with it, and
 // so do cards read under it. A deep link is the other way in, and keeps its own (pDeep).
 function pGo(key) {
@@ -177,11 +162,7 @@ function renderProjects() {
   const cardsEl = $("p-cards"), rowsEl = $("p-rows");
   cardsEl.hidden = !!pst.open;
   rowsEl.hidden = !pst.open;
-  if (!pst.open) {
-    if (!pst.data) { cardsEl.innerHTML = `<div class="empty">${pst.err ? esc(pst.err) : "Reading notes projects..."}</div>`; return; }
-    pDraw();
-    return;
-  }
+  if (!pst.open) { pst.render(); return; }
   const c = pst.open !== "all" && pst.data && pst.data.cards.find((x) => pKey(x) === pst.open);
   paint($("p-head"), `<div class="opts"><button class="btn sm" id="p-back">Back to projects</button></div>` +
     (c ? pOpened(c) : `<h2 class="sec">All projects</h2>`), pst.folds);
@@ -193,8 +174,6 @@ $("projects").addEventListener("click", (e) => {
   const o = e.target.closest("[data-open]");
   if (o && !e.target.closest("#board")) pGo(o.dataset.open);
 });
-$("p-cards").addEventListener("click", (e) => { const v = tblPatch(e); if (v) pView(v); });
-tblListen($("p-cards"), pView);
 $("p-cards").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.matches?.("tr[data-open]")) pGo(e.target.dataset.open);
 });
