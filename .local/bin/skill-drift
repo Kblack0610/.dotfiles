@@ -119,8 +119,9 @@
 #                                the agentctl roles and prompts. Each pair prints both homes
 #                                and the one that wins (higher rank; equal rank: a session
 #                                picks). Report-only: exit 0 with pairs, 2 on an empty corpus.
-#                                AUTO:START/END blocks and `<!-- shared: -->` markers are
-#                                skipped. A lexical floor: paraphrase is not found.
+#                                AUTO:START/END blocks are skipped (a file with `<!-- shared: -->`
+#                                markers holds none of the spliced text). A lexical floor: only
+#                                near-verbatim lines are found, paraphrase is not.
 set -uo pipefail
 
 SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
@@ -734,6 +735,7 @@ if [ "$MODE" = dups ]; then
 import json, os, re, sys
 from collections import Counter, defaultdict
 
+# Provisional, confidence low: revisit after two weeks of nightly counts (plan arch-instructions-one-home).
 MIN_CHARS, MIN_TOKENS, N, THRESHOLD = 90, 5, 4, 0.3
 HOME, GLOBAL = os.environ["DUPS_HOME"], os.environ.get("DUPS_GLOBAL", "")
 
@@ -751,21 +753,25 @@ def home(path):
     if "/memory/" in path: return "memory", 1
     return "other", 0
 
+nread = 0
 lines = []   # (path, lineno, text, shingles)
 for path in sys.stdin.read().split("\n"):
     if not path: continue
     skip = False
     try: raw = open(path, encoding="utf-8", errors="replace").read().split("\n")
     except OSError: continue
+    nread += 1
     for i, text in enumerate(raw, 1):
-        if "AUTO:START" in text: skip = True; continue
-        if "AUTO:END" in text: skip = False; continue
         text = text.strip()
-        if skip or len(text) < MIN_CHARS or text.startswith("<!-- shared:"): continue
+        if text.startswith("<!-- AUTO:START"): skip = True; continue
+        if text.startswith("<!-- AUTO:END"): skip = False; continue
+        if skip or len(text) < MIN_CHARS: continue
         tok = re.sub(r"[^a-z0-9]+", " ", text.lower()).split()
         if len(tok) < MIN_TOKENS: continue
         lines.append((path, i, text, {" ".join(tok[k:k + N]) for k in range(len(tok) - N + 1)}))
 
+if nread == 0:
+    print("skill-drift --dups: no readable docs - refusing to report success", file=sys.stderr); sys.exit(2)
 index = defaultdict(list)
 for n, (_, _, _, sh) in enumerate(lines):
     for g in sh: index[g].append(n)
@@ -781,7 +787,7 @@ pairs.sort(key=lambda t: (-t[0], t[1], t[2]))
 def side(n):
     path, lineno, text, _ = lines[n]
     h, r = home(path)
-    return {"home": h, "rank": r, "file": path.replace(HOME, "~", 1), "line": lineno, "text": text[:160]}
+    return {"home": h, "rank": r, "file": ("~" + path[len(HOME):]) if path.startswith(HOME + "/") else path, "line": lineno, "text": text[:160]}
 
 items = []
 for score, a, b in pairs:
@@ -792,7 +798,7 @@ involved = len({(i[s]["file"], i[s]["line"]) for i in items for s in "ab"})
 by_home = Counter("/".join(sorted((i["a"]["home"], i["b"]["home"]))) for i in items)
 
 if os.environ["DUPS_JSON"] == "1":
-    print(json.dumps({"files": len({l[0] for l in lines}), "pairs": len(items), "lines": involved,
+    print(json.dumps({"files": nread, "pairs": len(items), "lines": involved,
                       "threshold": THRESHOLD, "by_home": dict(by_home.most_common()), "items": items}))
 else:
     for i in items:
@@ -801,7 +807,7 @@ else:
         print("        %s" % a["text"][:100])
         print("        %s" % b["text"][:100])
     for k, v in by_home.most_common(): print("  %3d  %s" % (v, k))
-    print("skill-drift --dups: %d pair(s), %d line(s) across %d file(s)" % (len(items), involved, len({l[0] for l in lines})))
+    print("skill-drift --dups: %d pair(s), %d line(s) across %d file(s)" % (len(items), involved, nread))
 '
   exit "${PIPESTATUS[1]}"
 fi

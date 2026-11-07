@@ -62,17 +62,42 @@ $HOME/.claude/projects/p/memory/n.md"
   assert_output --partial 'winner: pick'
 }
 
-@test "an anchor AUTO block and a shared marker do not count" {
+@test "an anchor AUTO block does not count, nor does a one-line mention of the marker pair" {
   mkdir -p "$HOME/.agent/anchors"
   printf '<!-- AUTO:START -->\n%s\n<!-- AUTO:END -->\n' "$RULE" > "$HOME/.agent/anchors/p.md"
-  printf '<!-- shared: Core Principles -->\n' > "$HOME/ov.md"
+  printf 'Markers `<!-- AUTO:START -->` and `<!-- AUTO:END -->` bound the block on one line, so this prose mention must not hide what follows.\n%s\n' "$RULE" > "$HOME/ov.md"
+  # a spliced overview holds only its marker line, so it adds nothing to compare
+  printf '<!-- shared: Core Principles -->\n' > "$HOME/ov2.md"
   export DRIFT_DOCS="$CLAUDE_MD
 $HOME/.agent/anchors/p.md
-$HOME/ov.md"
+$HOME/ov2.md"
   rm "$HOME/.claude/skills/x/SKILL.md"
   run "$DRIFT" --dups --json
   run jq -r '.pairs' <<< "$output"
   assert_output '0'
+  # control: the same anchor and a line after a one-line marker mention is still scanned
+  export DRIFT_DOCS="$CLAUDE_MD
+$HOME/ov.md"
+  run "$DRIFT" --dups --json
+  run jq -r '.pairs' <<< "$output"
+  assert_output '1'
+}
+
+@test "the winner follows the rank of each home" {
+  mkdir -p "$HOME/.config/agentctl/roles" "$HOME/.local/src/docs"
+  printf '%s\n' "$OTHER" > "$HOME/.config/agentctl/RUN.md"
+  printf '%s\n' "$OTHER" > "$HOME/.config/agentctl/roles/r.role"
+  printf '%s\n' "$OTHER" > "$HOME/.local/src/docs/s.md"
+  export DRIFT_DOCS="$HOME/.config/agentctl/RUN.md
+$HOME/.local/src/docs/s.md
+$HOME/.agent/lessons/p.md"
+  rm "$HOME/.claude/skills/x/SKILL.md"
+  run "$DRIFT" --dups --json
+  run jq -r '.items[] | "\([.a.home, .b.home] | sort | join("+"))=\(.winner)"' <<< "$output"
+  assert_output --partial 'runbook+shared-docs=shared-docs'
+  assert_output --partial 'lessons+runbook=runbook'
+  assert_output --partial 'role+runbook=runbook'
+  assert_output --partial 'lessons+role=role'
 }
 
 @test "a file repeating itself is not a pair" {
