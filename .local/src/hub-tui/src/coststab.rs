@@ -1,7 +1,10 @@
 //! The Costs tab: `hub_core::costs::board`, the same view agent-web draws. `b`/`B` step the cut,
 //! `w` the window, `/` types the query (the shared table's grammar), `s` sorts by the cut's next
-//! column, `S` flips it, `x` clears; `o` opens the Grafana trends. The Sections block under Burn
-//! is folded to its headline: `e` opens it, `t` steps its sort column and `T` flips it.
+//! column, `S` flips it, `x` clears; `o` opens the Grafana trends. Burn has one row per Claude
+//! account (the Fleet tab's accounts table until 2026-11-07). Under it the token folds
+//! (tokens.rs): `u` opens where the tokens go, `U` its window, `l` what Langfuse sees. The
+//! Sections block is folded to its headline: `e` opens it, `t` steps its sort column and `T`
+//! flips it.
 
 use hub_core::burn::{self, Burn};
 use hub_core::costs::{self, Board, Costs};
@@ -13,6 +16,7 @@ use ratatui::text::{Line, Span};
 
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fmt::Palette;
+use crate::tokens::{self, TokensView};
 
 pub struct CostsView {
     pub by: &'static str,
@@ -27,6 +31,10 @@ pub struct CostsView {
     /// One of the Sections columns, or empty for fleet-bench's order (the most gate hours first).
     pub ssort: String,
     pub sasc: bool,
+    /// The tokens fold (`u`) and its window (`U`).
+    pub tokens: TokensView,
+    /// The Langfuse fold (`l`); None while it follows its amber state.
+    pub langfuse: Option<bool>,
 }
 
 impl Default for CostsView {
@@ -41,6 +49,8 @@ impl Default for CostsView {
             sections_open: false,
             ssort: String::new(),
             sasc: false,
+            tokens: TokensView::default(),
+            langfuse: None,
         }
     }
 }
@@ -88,7 +98,8 @@ impl CostsView {
     }
 
     /// `hub --tab costs --q '<words>'`: a cut or window name sets it, `key=value` sets `by`, `w`
-    /// or `q`, and any other word joins the query.
+    /// or `q`, a section's name opens its fold (the page scrolls there), and any other word joins
+    /// the query.
     pub fn open(&mut self, arg: &str) {
         let mut q = vec![];
         for word in arg.split(['&', ' ']).filter(|w| !w.is_empty()) {
@@ -100,6 +111,10 @@ impl CostsView {
                 "ssort" => self.ssort = v.to_string(),
                 "sdir" => self.sasc = v == "asc",
                 _ if word == "sections" => self.sections_open = true,
+                _ if word == "tokens" => self.tokens.open = Some(true),
+                _ if word == "langfuse" => self.langfuse = Some(true),
+                _ if hub_core::layout::resolve("costs")
+                    .is_some_and(|t| t.sections.contains(&word)) => {}
                 _ if costs::CUTS.contains(&v) => self.by = costs::cut(v),
                 _ if costs::WINDOWS.iter().any(|w| w.0 == v) => self.window = costs::window(v).0,
                 _ => q.push(word.to_string()),
@@ -152,10 +167,13 @@ impl CostsView {
             KeyCode::Char('T') => self.sasc = !self.sasc,
             KeyCode::Char('x') => {
                 let (by, window, open) = (self.by, self.window, self.sections_open);
+                let (tokens, langfuse) = (self.tokens, self.langfuse);
                 *self = CostsView {
                     by,
                     window,
                     sections_open: open,
+                    tokens,
+                    langfuse,
                     ..CostsView::default()
                 };
             }
@@ -165,6 +183,37 @@ impl CostsView {
             _ => return false,
         }
         true
+    }
+
+    /// The token folds' keys: `u` opens or folds where the tokens go, `U` switches its window,
+    /// `l` opens or folds what Langfuse sees. None leaves the key to `key`; Some carries the
+    /// section to scroll to (a fold that opened), or None for one that shut.
+    pub fn fold(
+        &mut self,
+        code: KeyCode,
+        t: Option<&hub_core::tokens::Tokens>,
+    ) -> Option<Option<&'static str>> {
+        if self.typing.is_some() {
+            return None;
+        }
+        let t = t?;
+        match code {
+            KeyCode::Char('u') => {
+                let open = !self.tokens.is_open(Some(t));
+                self.tokens.open = Some(open);
+                Some(open.then_some("tokens"))
+            }
+            KeyCode::Char('U') => {
+                self.tokens.day = !self.tokens.day;
+                Some(None)
+            }
+            KeyCode::Char('l') => {
+                let open = !tokens::langfuse_open(t, self.langfuse);
+                self.langfuse = Some(open);
+                Some(open.then_some("langfuse"))
+            }
+            _ => None,
+        }
     }
 
     pub fn board(&self, c: &Costs) -> Board {
@@ -181,10 +230,26 @@ impl CostsView {
         )
     }
 
-    pub fn lines(&self, c: &Costs, p: Palette, w: usize) -> Vec<Line<'static>> {
+    /// The page, and where each of its sections starts (layout.rs's Costs sections, for `seek`).
+    pub fn lines(
+        &self,
+        c: &Costs,
+        p: Palette,
+        now: i64,
+        w: usize,
+    ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let b = self.board(c);
         let mut out = burn(&b.burn, p, w);
+        let mut at = vec![("burn", 0), ("tokens", out.len())];
+        out.extend(tokens::tokens(b.tokens.as_ref(), self.tokens, p, now, w));
+        at.push(("langfuse", out.len()));
+        out.extend(tokens::langfuse(b.tokens.as_ref(), self.langfuse, p, w));
+        if b.tokens.is_some() {
+            out.push(Line::raw(""));
+        }
+        at.push(("sections", out.len()));
         out.extend(sections(&b.sections, self.sections_open, p, w));
+        at.push(("totals", out.len()));
         let bar = |name: &str, all: &[&'static str], on: &str, key: &str| {
             let mut s = vec![Span::styled(format!("{name}: "), p.dim())];
             for x in all {
@@ -212,6 +277,7 @@ impl CostsView {
         if let Some(note) = b.unpriced {
             out.push(clip_line(Line::styled(note, p.warn()), w));
         }
+        at.push(("table", out.len()));
         let mut st = vec![];
         if let Some(t) = &self.typing {
             st.push(Span::styled(format!("/{t}_"), p.head()));
@@ -256,7 +322,7 @@ impl CostsView {
             ));
         }
         out.push(Line::styled("trends: o opens Grafana", p.dim()));
-        out
+        (out, at)
     }
 }
 
@@ -337,6 +403,9 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
                         a.on_pace(a.idle_at, b.at, &time).into(),
                         a.run_out.map_or("-".into(), time).into(),
                         a.resets.map_or("-".into(), time).into(),
+                        pc(a.five_hour).into(),
+                        a.five_hour_resets.map_or("-".into(), time).into(),
+                        costs::usd(a.cost_24h).into(),
                     ]);
                 }
             }
@@ -346,12 +415,25 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     out.extend(
         Table {
             header: vec![
-                "ACCOUNT", "LIVE", "USED", "GONE", "ROOM", "BURN/H", "KEEPS/H", "AT BURN",
-                "IF IDLE", "RUNS OUT", "RESETS",
+                "ACCOUNT",
+                "LIVE",
+                "USED",
+                "GONE",
+                "ROOM",
+                "BURN/H",
+                "KEEPS/H",
+                "AT BURN",
+                "IF IDLE",
+                "RUNS OUT",
+                "RESETS",
+                "5H",
+                "5H RESETS",
+                "$24H",
             ],
             rows,
-            keep: vec![0, 4, 5, 6, 1, 7, 8, 2, 3, 9, 10],
-            right: vec![1, 2, 3, 5, 6],
+            // The 5h window and the day's dollars were Fleet's accounts table's; $24H goes first.
+            keep: vec![0, 4, 5, 6, 1, 11, 7, 8, 2, 3, 9, 10, 12, 13],
+            right: vec![1, 2, 3, 5, 6, 11, 13],
             ..Default::default()
         }
         .fit(w, p.head()),
@@ -707,6 +789,16 @@ mod tests {
                 all.push(series(n, k, v));
             }
         }
+        for (k, v) in [
+            ("five_hour_percent", 61.4),
+            (
+                "five_hour_resets_timestamp_seconds",
+                1_000_000.0 + 2.0 * 3600.0,
+            ),
+            ("cost_24h_usd", 12.5),
+        ] {
+            all.push(series("main", k, v));
+        }
         let mut age = series("", "textfile_age_seconds", 120.0);
         age.labels.remove("account");
         all.push(age);
@@ -724,7 +816,8 @@ mod tests {
     #[test]
     fn the_burn_section_leads_and_fits_80_columns() {
         let s = CostsView::default()
-            .lines(&burning(), Palette::default(), 80)
+            .lines(&burning(), Palette::default(), 1_000_000, 80)
+            .0
             .iter()
             .map(crate::fit::plain)
             .collect::<Vec<_>>()
@@ -751,6 +844,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_burn_row_carries_the_five_hour_window_and_the_days_dollars() {
+        let at = |w| {
+            CostsView::default()
+                .lines(&burning(), Palette::default(), 1_000_000, w)
+                .0
+                .iter()
+                .map(crate::fit::plain)
+                .collect::<Vec<_>>()
+        };
+        let wide = at(200);
+        let head = wide.iter().find(|l| l.starts_with("ACCOUNT")).unwrap();
+        for col in ["5H", "5H RESETS", "$24H"] {
+            assert!(head.contains(col), "{col} missing from {head}");
+        }
+        let main = wide.iter().find(|l| l.starts_with("main")).unwrap();
+        let five = crate::fmt::clock(1_000_000 + 2 * 3600, 1_000_000);
+        assert!(
+            main.contains("61%") && main.contains(&five) && main.contains("$12.50"),
+            "{main}"
+        );
+        let bnb = wide.iter().find(|l| l.starts_with("bnb")).unwrap();
+        assert!(!bnb.contains('$'), "no figure is no dollars: {bnb}");
+        // Narrow, $24H is the first to go and the 5h window stays.
+        let narrow = at(100);
+        let head = narrow.iter().find(|l| l.starts_with("ACCOUNT")).unwrap();
+        assert!(!head.contains("$24H") && head.contains("5H"), "{head}");
+    }
+
+    #[test]
+    fn the_token_folds_sit_under_burn_and_a_link_opens_them_where_the_page_says() {
+        let mut c = burning();
+        c.tokens = Some(Default::default());
+        let mut v = CostsView::default();
+        v.open("tokens");
+        assert_eq!((v.tokens.open, v.q.as_str()), (Some(true), ""));
+        v.open("langfuse");
+        v.open("burn");
+        assert_eq!(
+            (v.langfuse, v.q.as_str()),
+            (Some(true), ""),
+            "a section is no query"
+        );
+        let (l, at) = v.lines(&c, Palette::default(), 1_000_000, 100);
+        let l: Vec<String> = l.iter().map(crate::fit::plain).collect();
+        let names: Vec<&str> = at.iter().map(|a| a.0).collect();
+        assert_eq!(
+            names,
+            hub_core::layout::resolve("costs").unwrap().sections,
+            "every Costs section has its anchor, in the layout's order"
+        );
+        let line = |sec| l[at.iter().find(|a| a.0 == sec).unwrap().1].as_str();
+        assert!(line("burn").starts_with("BURN"), "{l:#?}");
+        assert!(
+            line("tokens").starts_with("- WHERE THE TOKENS GO"),
+            "{l:#?}"
+        );
+        assert!(
+            line("langfuse").starts_with("- WHAT LANGFUSE SEES"),
+            "{l:#?}"
+        );
+        assert!(line("totals").starts_with("window:"), "{l:#?}");
+    }
+
     fn with_sections() -> Costs {
         let out = r#"{"days":7,"all":{"prs":598,"gated":460,"with_session":339,"first_try":0.515,"reds_per_pr":0.976,"gate_min_per_pr":144.7,"gate_h":1109,"green_lost":116,"cost_per_pr":7.33,"tokens_per_pr":14030412,"work_min_per_pr":34.4},
           "sections":[
@@ -763,7 +920,8 @@ mod tests {
     }
 
     fn sections_screen(v: &CostsView, w: usize) -> String {
-        v.lines(&with_sections(), Palette::default(), w)
+        v.lines(&with_sections(), Palette::default(), 1_000_000, w)
+            .0
             .iter()
             .map(crate::fit::plain)
             .collect::<Vec<_>>()
@@ -856,7 +1014,8 @@ mod tests {
     }
 
     fn screen(v: &CostsView, w: usize) -> String {
-        v.lines(&costs(), Palette::default(), w)
+        v.lines(&costs(), Palette::default(), 1_000_000, w)
+            .0
             .iter()
             .map(crate::fit::plain)
             .collect::<Vec<_>>()
@@ -896,7 +1055,8 @@ mod tests {
             ..Spent::default()
         });
         let s = CostsView::default()
-            .lines(&c, Palette::default(), 80)
+            .lines(&c, Palette::default(), 1_000_000, 80)
+            .0
             .iter()
             .map(crate::fit::plain)
             .collect::<Vec<_>>()

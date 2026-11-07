@@ -21,7 +21,7 @@ setup() {
   export BENCH_NEEDS_CMD='echo {"needs":[],"errors":[]}'   # nor the real hub: no needs unless a test serves them
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
-  export BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_INGEST="$SANDBOX/ingest.jsonl"
+  export BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
   # nor the real roadmaps, the whole queue or the real plans (fleet-bench epics)
   export BENCH_ROADMAP_CMD=false BENCH_ALL_ITEMS_CMD=true BENCH_PLAN_DIRS="$SANDBOX/no-plans"
@@ -948,9 +948,10 @@ kpi_setup() {
   printf '%s\n' revert_rate_max=0.1 interrupts_per_session_max=1 ci_red_per_pr_max=5 prs_per_session_min=1 > "$KPI_THRESHOLDS"
   BOARD="$SANDBOX/board.tsv"; NLOG="$SANDBOX/notes.log"
   printf 'board.md\t1\tother task\t- [ ] other task #low\n' > "$BOARD"
-  printf '#!/usr/bin/env bash\nB=%q; L=%q\n' "$BOARD" "$NLOG" > "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\nB=%q; L=%q; S=%q\n' "$BOARD" "$NLOG" "$REPO_ROOT/tests/helpers/stubs/notes" > "$SANDBOX/bin/notes"
   cat >> "$SANDBOX/bin/notes" <<'NS'
 echo "$*" >> "$L"
+[ "$1 $2" != "row parse" ] || exec bash "$S" row parse   # the shared stub's row.parse lookup table (parses)
 if [ "$1 $2" = "ptask home-config" ]; then
   case "$3" in list) cat "$B.home" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$B.home" ;; esac
   exit 0
@@ -1666,6 +1667,10 @@ coverage_setup() {
   refute_line --partial 'runner alpha'
 }
 
+# parses <text> <type> <area> <title>: what `notes row parse` answers for that text (a lookup
+# table, never the grammar: that lives in notes-cli alone)
+parses() { printf '%s\t%s\t%s\t%s\t1\n' "$@" >> "$NOTES_FIXTURE/row.parse"; }
+
 # red_item <slug> <state> <title> <queued offset> <finished offset|-> <pr|-> <merged|-> [status] [tags]
 red_item() {
   iso() { [ "$1" = - ] && echo null || echo "\"$(date -u -d "@$((T0 + $1))" +%FT%TZ)\""; }
@@ -1687,16 +1692,45 @@ red_item() {
   red_item f done 'check(watch): gone tripped since 2026-11-01' -7200 -3600 - - ok
   red_item g done 'check(watch): gone tripped since 2026-11-01' -7200 -3600 - - failed
   red_item h done 'fix: not a red' -7200 -3600 r#9 sha9 ok 'night'
+  red_item i done 'check(watch): stuck tripped since 2026-11-01, expected: stuck' -7200 -3600 - - cancelled   # handed to its owner while the watch is still red
+  red_item j done 'check(watch): stuck tripped since 2026-11-01, expected: stuck' -7200 -3600 r#10 sha10 cancelled   # a merge outranks the cancel: its red still reads
+  for w in fine back stuck; do parses "check(watch): $w tripped since 2026-11-01, expected: $w" check watch "$w tripped since 2026-11-01, expected: $w"; done
+  for w in other gone; do parses "check(watch): $w tripped since 2026-11-01" check watch "$w tripped since 2026-11-01"; done
+  parses 'fix(runner): beta is FAILED: x' fix runner 'beta is FAILED: x'
   run "$SUBJECT" reds --json
   assert_success
   run jq -rs 'map("\(.slug) \(.red) \(.outcome) \(.fix_min)") | .[]' <<<"$output"
   assert_output "$(printf '%s\n' 'a watch fine fixed 60' 'b watch back came back 60' 'c watch stuck still red 60' \
-    'd watch other needs merge null' 'e runner beta fixing null' 'f watch gone cleared null' 'g watch gone no fix null')"
+    'd watch other needs merge null' 'e runner beta fixing null' 'f watch gone cleared null' 'g watch gone no fix null' 'i watch stuck cancelled null' 'j watch stuck still red 60')"
   run "$SUBJECT" reds
-  assert_line '7 red fixes in 7d: 1 came back, 1 cleared, 1 fixed, 1 fixing, 1 needs merge, 1 no fix, 1 still red'
+  assert_line '9 red fixes in 7d: 1 came back, 1 cancelled, 1 cleared, 1 fixed, 1 fixing, 1 needs merge, 1 no fix, 2 still red'
   assert_line '| a | watch fine | fixed | '"$(date -u -d "@$((T0 - 7200))" +%FT%H:%M)"' | 60 | r#1 |'
   run "$SUBJECT" chain --json
-  assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 2
+  assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 3
+}
+
+@test "reds: a red's area and name come from one notes row parse; a title it does not parse reads as itself, and a failed parse fails" {
+  log_triage_setup
+  red_item a running 'fix(watch): kitchen-puck, voice is down' -600 - - -
+  red_item b running 'the kitchen puck is down' -600 - - -
+  printf '{"slug":"c","state":"running","title":"fix(watch): two\\nlines","queued":null,"tags":"red"}\n' >> "$ITEMS"
+  red_item d done 'fix(watch): , x' -7200 -3600 r#4 sha4
+  parses 'fix(watch): , x' fix watch ', x'
+  parses 'fix(watch): kitchen-puck, voice is down' fix watch 'kitchen-puck, voice is down'
+  parses 'fix(watch): two lines' fix watch 'two lines'
+  run "$SUBJECT" reds --json
+  assert_success
+  run jq -rs 'map("\(.slug) \(.red)") | .[]' <<<"$output"
+  assert_output "$(printf '%s\n' 'a watch kitchen-puck' 'b the kitchen puck is down' 'c watch two' 'd fix(watch): , x')"
+  assert_equal "$(grep -c '^row parse' "$NLOG")" 1
+  # NEGATIVE CONTROL: a notes that cannot parse is said, and the KPIs read ? rather than counting the reds untyped
+  printf '#!/usr/bin/env bash\n[ "$1" != row ] || exit 1\n' > "$SANDBOX/bin/notes"
+  run "$SUBJECT" reds
+  assert_failure
+  assert_output --partial 'reds: notes row parse failed'
+  refute_output --partial 'cannot read the queue'
+  run "$SUBJECT" ledger
+  assert_line 'reds_unfixed=?'
 }
 
 @test "reds: an unreadable queue fails and says so, and its KPIs read ? instead of 0" {
@@ -1923,6 +1957,7 @@ failed() {
   cleanup a -7200 5 aaa11111 x
   watch fleet-liveness TRIP -3600 urgent
   red_item fixit done "fix(hold): liveness-$((T0 - 3600)) went red after cleanup merge a (PR 5 at aaa11111): x" -3000 -600 o/r#9 eee55555 ok 'red cause:h1'
+  parses "fix(hold): liveness-$((T0 - 3600)) went red after cleanup merge a (PR 5 at aaa11111): x" fix hold "liveness-$((T0 - 3600)) went red after cleanup merge a (PR 5 at aaa11111): x"
   run "$SUBJECT" reds --json
   run jq -rs 'map("\(.slug) \(.red) \(.outcome)") | .[]' <<<"$output"
   assert_output "$(printf '%s\n' "fixit hold liveness-$((T0 - 3600)) still red" 'a cleanup chore(x): a went red')"
@@ -2048,7 +2083,7 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -2084,6 +2119,26 @@ chain_fixture() {
   # the doctor failed a check
   printf 'PASS  map is valid JSON\nFAIL  line 4: an epic belongs on the human sheet\n' > "$BENCH_DOCTOR_LAST"
   check 'doctor_fail 1 (max 0)'
+}
+
+@test "chain: dup_pairs reads the newest nightly dups.json against dup_pairs_max; no snapshot reads ?" {
+  chain_fixture
+  printf '%s\n' dup_pairs_max=60 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.dup_pairs["7d"]' <<<"$output")" null
+  mkdir -p "$BENCH_DOCS_CLEANUP_DIR/20261105" "$BENCH_DOCS_CLEANUP_DIR/20261106"
+  echo '{"pairs":99}' > "$BENCH_DOCS_CLEANUP_DIR/20261105/dups.json"
+  echo '{"pairs":61}' > "$BENCH_DOCS_CLEANUP_DIR/20261106/dups.json"
+  run "$SUBJECT" chain --check
+  assert_failure
+  assert_output --partial 'dup_pairs 61 (max 60)'
+  echo '{"pairs":60}' > "$BENCH_DOCS_CLEANUP_DIR/20261106/dups.json"
+  run "$SUBJECT" chain --check
+  assert_success
+  # a newest night with no dups.json is a runner that stopped: ?, never the older night's count
+  mkdir -p "$BENCH_DOCS_CLEANUP_DIR/20261107"
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.dup_pairs["7d"]' <<<"$output")" null
 }
 
 @test "chain: a CI row with no repo is a PR no item names, and the other KPIs still count" {
@@ -2299,16 +2354,16 @@ pipeline_fixture() {
   [ "$(wc -l < "$FLEET_BENCH_DIR/effect.jsonl")" -eq 1 ]
 }
 
-@test "improve claim: a row id or item:slug adopts a KPI with no board write; a bad subject exits 2, a live one is refused; list shows both" {
+@test "improve claim: a row id or item:slug adopts a KPI with no board write; a bad subject exits 2, a claimed KPI is refused; list shows both" {
   kpi_setup; kpi_fixture
   run "$SUBJECT" improve claim revert_rate ar-141
   assert_success
   assert_output 'ar-141 claims revert_rate from 0.25'
   run "$SUBJECT" improve claim interrupts_per_session 'ar-1; rm -rf'
   assert_failure 2
-  run "$SUBJECT" improve claim interrupts_per_session ar-141
+  run "$SUBJECT" improve claim revert_rate item:judge-stage-3
   assert_failure 1
-  assert_output --partial 'ar-141 already claims revert_rate'
+  assert_output --partial 'already claimed by ar-141'
   run "$SUBJECT" improve claim interrupts_per_session item:judge-stage-3
   assert_success
   [ ! -e "$NLOG" ]
@@ -2316,6 +2371,28 @@ pipeline_fixture() {
   assert_line 'live claims: 2 of 3'
   assert_line '  ar-141 revert_rate from 0.25 (max 0.1), 0d'
   assert_line '  item:judge-stage-3 interrupts_per_session from 2 (max 1), 0d'
+}
+
+@test "improve claim: one row claims each KPI its lever moved, at the cap too, and each claim ends on its own verdict; file at the cap is refused" {
+  kpi_setup; kpi_fixture
+  claim ar-7 cost_per_pr 2 max 1 1
+  BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve file revert_rate 'another lever'
+  assert_failure 1
+  assert_output --partial 'claims are live (BENCH_IMPROVE_MAX 1)'
+  BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve claim revert_rate ar-596
+  assert_success
+  BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve claim interrupts_per_session ar-596
+  assert_success
+  assert_output 'ar-596 claims interrupts_per_session from 2'
+  run "$SUBJECT" improve claim revert_rate ar-596
+  assert_failure 1
+  assert_output --partial 'already claimed by ar-596'
+  run "$SUBJECT" improve list --json
+  [ "$(jq -c '[.live[] | [.subject, .kpi]] | sort' <<<"$output")" = '[["ar-596","interrupts_per_session"],["ar-596","revert_rate"],["ar-7","cost_per_pr"]]' ]
+  # a verdict on one KPI of the row leaves its other claim live
+  printf '%s\n' '{"type":"verdict","at":9999999999,"kpi":"revert_rate","subject":"ar-596","verdict":"flat"}' >> "$FLEET_BENCH_DIR/effect.jsonl"
+  run "$SUBJECT" improve list --json
+  [ "$(jq -c '[.live[] | [.subject, .kpi]] | sort' <<<"$output")" = '[["ar-596","interrupts_per_session"],["ar-7","cost_per_pr"]]' ]
 }
 
 # check_fixture: one claim of each kind, closed 15 days ago unless said
@@ -3726,23 +3803,24 @@ epics_fixture() {
   [ "$h" -ge 72 ] && [ "$h" -lt 96 ] || fail "oldest open requested row reads $h hours"
 }
 
-@test "chain: wants_unstamped is the share of human-channel adds in the window with no #requested; session, sheet-lane and old events do not count" {
+@test "chain: wants_unstamped is the share of human-channel adds in the window with no #requested (an event naming its channel was stamped by the writer); session, sheet-lane and old events do not count" {
   chain_fixture
   local day old; day=$(date -d "@$((T0 - 86400))" +%F) old=$(date -d "@$((T0 - 20 * 86400))" +%F)
   jq -cn --arg d "$day" --arg o "$old" '
     {ts: "\($d)T10:00:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): one #requested"},
     {ts: "\($d)T10:01:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): two"},
     {ts: "\($d)T10:02:00.1-08:00", lane: "agent", action: "filed", from: "tools", text: "fix(a): three"},
+    {ts: "\($d)T10:02:30.1-08:00", lane: "agent", action: "filed", from: "tools", want: "outbox", text: "the raw words, stamped by the writer"},
     {ts: "\($d)T10:03:30.1-08:00", lane: "human", action: "filed", from: "tools", text: "a sheet row can never be stamped"},
     {ts: "\($d)T10:03:00.1-08:00", action: "moved", from: "outbox", by: "human", text: "fix(a): moved is not an add"},
     {ts: "\($d)T10:04:00.1-08:00", lane: "agent", action: "added", from: "game", by: "abc123", text: "fix(a): a session follow-up"},
     {ts: "\($o)T10:00:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): outside the window"}' > "$BENCH_INGEST"
   run "$SUBJECT" chain --json
   assert_success
-  assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.667
+  assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.5
   run "$SUBJECT" chain
   assert_success
-  assert_line 'wants_unstamped: 2 of 3 human-channel agent rows added in 7d carry no #requested, by project (game 1/2, tools 1/1)'
+  assert_line 'wants_unstamped: 2 of 4 human-channel agent rows added in 7d carry no #requested, by project (game 1/2, tools 1/2)'
 }
 
 @test "chain: the table names the oldest open #requested row behind requested_unstarted_h" {
