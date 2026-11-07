@@ -1,17 +1,15 @@
 "use strict";
-// The Fleet tab: who is working, on what, and can I afford it. One table (the shared one,
-// table.js) of every runner and live session by tier; a row opens its record, and a tier 1 row
-// folds the rows under it. Below it, who pays (Claude accounts) and where the tokens go (the
-// nightly snapshots, folded while they are fresh). The judges' verdict lists are
-// Log's Judges' verdicts section. From /api/fleet (hub-core `fleet`, the same reader as the hub's
+// The Fleet tab: who is working, and on what. One table (the shared one, table.js) of every
+// runner and live session by tier; a row opens its record, and a tier 1 row folds the rows under
+// it. Who pays, where the tokens go and what Langfuse sees are Costs' (costs.js). The judges'
+// verdict lists are Log's Judges' verdicts section. From /api/fleet (hub-core `fleet`, the same reader as the hub's
 // Fleet tab). `#fleet/<runner>` is one runner's page, read from /api/fleet/runner only when it
 // opens (hub-core `fleet::runner`).
 
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
-// fold: the tier 1 rows the human closed, kept across refreshes; said: the answer judge's filter on Log;
-// open: the folded sections' state; tokWin: the tokens section's window.
-const fst = { data: null, err: null, fold: new Set(), said: "all", open: {}, tokWin: "week" };
+// fold: the tier 1 rows the human closed, kept across refreshes; said: the answer judge's filter on Log.
+const fst = { data: null, err: null, fold: new Set(), said: "all" };
 
 // The open runner page: whose, what it read, and the run whose log is shown.
 const rst = { name: "", data: null, err: null, log: null, sel: "" };
@@ -38,37 +36,11 @@ const refreshRunner = coalesce(async () => {
   if (st.tab === "fleet" && st.arg === name) renderFleet();
 });
 
-// The accounts and the dollars are Prometheus, which pushes nothing, so the open tab re-reads on
-// Infra's cadence; a runner page re-reads its status the same way. The file parts also re-read
-// on their own events (onEvent).
+// The rows re-read on their own events (onEvent); the open tab also re-reads on Infra's cadence,
+// so the ages and a runner page's status move with no event.
 const pollFleet = poll("fleet", () => (st.arg ? refreshRunner() : refreshFleet()), INFRA_REFRESH_MS);
 
 const cut = (s, n = FLEET_CLIP) => (s.length > n ? `<span title="${esc(s)}">${esc(s.slice(0, n - 2))}..</span>` : esc(s));
-
-// One row per Claude account, from claude-acct's textfile. The weekly percent is what stops work,
-// the 5h window what stops it for the next few hours;
-// dollars are the OTel list-price estimate, for scale.
-function accountsTable(inst) {
-  const by = {};
-  for (const s of inst.accounts || []) {
-    const key = s.labels.__name__.replace("claude_account_", "");
-    if (!s.labels.account || key === "room_reason") continue;
-    (by[s.labels.account] = by[s.labels.account] || {})[key] = +s.value;
-  }
-  const names = Object.keys(by).sort();
-  if (!names.length) return `<div class="empty">no data</div>`;
-  // Past an hour the textfile is not what is true now: the server says so (hub_core::burn::STALE_NOTE)
-  // and the rows carry that in place of figures.
-  if (inst.accounts_stale) return `<table class="tbl">${names.map((n) => `<tr><td>${esc(n)}</td><td class="bad">${esc(inst.accounts_stale)}</td></tr>`).join("")}</table>`;
-  return `<table class="tbl"><tr><th>account</th><th>week used</th><th class="n">used</th><th class="n">week gone</th><th>room</th><th>runs out</th><th>resets</th><th class="n">5h</th><th>5h resets</th><th class="n">live</th><th class="n">24h</th></tr>${names.map((n) => {
-    const a = by[n];
-    if (a.read_ok === 0) return `<tr><td>${esc(n)}</td><td colspan="10" class="bad">usage unreadable</td></tr>`;
-    if (a.week_used_percent == null) return `<tr><td>${esc(n)}</td><td colspan="10" class="muted">idle, token refreshes on launch</td></tr>`;
-    const room = (inst.rooms || {})[n];
-    const over = room != null && !room.ok;
-    return `<tr><td>${esc(n)}</td><td class="m">${meter(a.week_used_percent / 100, over ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${Math.floor(a.week_used_percent)}%</td><td class="n">${Math.floor(a.week_gone_percent)}%</td><td class="${room == null ? "muted" : over ? "bad" : "ok"}">${room == null ? "-" : esc(room.text)}</td><td>${when(a.run_out_timestamp_seconds)}</td><td>${when(a.resets_timestamp_seconds)}</td><td class="n">${a.five_hour_percent == null ? "-" : Math.floor(a.five_hour_percent) + "%"}</td><td>${when(a.five_hour_resets_timestamp_seconds)}</td><td class="n">${a.live_sessions ?? "-"}</td><td class="n">${usd(a.cost_24h_usd)}</td></tr>`;
-  }).join("")}</table>`;
-}
 
 const okClass = (ok) => (ok === false ? "bad" : ok == null ? "warn" : "");
 
@@ -121,69 +93,9 @@ function fleetBody(d) {
 
 function fleetHead(d) {
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
-  return `<div class="bhead"><span>fleet <span class="muted">who is working, on what, and can I afford it; ${d.table.shown} of ${d.table.total} rows, spend on <a href="#costs?by=runner&w=24h">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
+  return `<div class="bhead"><span>fleet <span class="muted">who is working, and on what; ${d.table.shown} of ${d.table.total} rows, accounts and spend on <a href="#costs?by=runner&w=24h">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
     (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
 }
-
-// One table of a tokens window; a named row takes its chart slot, Other its grey (rule 5).
-function tokensTable(title, rows) {
-  const row = (r, i) => `<tr><td>${esc(r.name)}</td><td class="n">${r.calls.toLocaleString()}</td><td class="n">${kfmt(r.chars)} ch</td>` +
-    `<td class="m">${meter(r.share, SLOTS[i] && !r.other ? SLOTS[i] : OTHER)}</td><td class="n">${(r.share * 100).toFixed(1)}%</td><td class="n">${kfmt(r.carried_tokens)}</td></tr>`;
-  return `<table class="tbl"><tr><th>${title}</th><th class="n">calls</th><th class="n">output</th><th>share</th><th class="n">%</th><th class="n">re-read</th></tr>${rows.map(row).join("")}</table>`;
-}
-
-const TOK_WINDOWS = { day: "yesterday", week: "7d" };
-
-// Where the tokens go: hub-core's `fleet::tokens` sums the snapshots; shut while fresh, open and
-// amber once stale (rule 4), which is its own fold key because paint remembers every fold it saw.
-// The dollars per tool are Costs' tool cut, so this links there.
-function tokensSection(d) {
-  const t = d.tokens;
-  if (!t) return `<h2 class="sec" id="sec-tokens">Where the tokens go <span class="warn">no snapshot in ~/.agent/token-usage</span></h2>`;
-  const w = t[fst.tokWin], key = t.stale ? "tokens-stale" : "tokens";
-  const open = fst.open[key] ?? t.stale;
-  const week = `7d ${kfmt(t.week.context)}, tool output ${pct(t.week.carried_share)}`;
-  const head = t.stale ? `<span class="warn">${week}, stale: newest snapshot ${esc(t.date)}</span>` : `<span class="muted">${week}</span>`;
-  const seg = `<div class="seg fseg"><span class="muted">window</span>` + Object.entries(TOK_WINDOWS).map(([k, l]) =>
-    `<button class="${k === fst.tokWin ? "on" : ""}" data-tokwin="${k}">${l}</button>`).join("") + `</div>`;
-  const partial = w.partial ? `<span class="warn">, ${w.partial} of ${w.days} partial</span>` : "";
-  return `<details class="sec-d" data-k="${key}" id="sec-tokens"${open ? " open" : ""}><summary><h2 class="sec">Where the tokens go ${head}</h2></summary>` +
-    `<div class="panel scroll">${seg}<div class="muted">${fst.tokWin === "day" && t.stale ? esc(t.date) : TOK_WINDOWS[fst.tokWin]}: ${kfmt(w.context)} context, ${kfmt(w.per_response)}/response, tool output carried ${pct(w.carried_share)} ` +
-    `(snapshot ${esc(t.date.slice(5))}, ${t.generated_at ? clock(t.generated_at * 1e3) : "-"}${partial})</div>` +
-    tokensTable("by tool", w.tools) + tokensTable("by Bash command", w.commands) +
-    `<div class="muted more">counted by claude-recall tool-output, nightly; dollars per tool on <a href="#costs?by=tool&w=7d">Costs</a></div></div></details>`;
-}
-
-// A duration in ms as the tool table reads it: 99ms, 17.5s.
-const lfMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
-const lfClasses = (cs) => cs.length ? cs.map((c) => `${esc(c.name)} ${c.n.toLocaleString()}`).join(", ") : "none";
-
-// What Langfuse sees: the figures only it has (tool latency, tool errors by class, gateway errors
-// and cost), the newest snapshot's `.langfuse` through hub-core's `fleet::tokens`. Shut while it
-// reads, open and amber when the reader failed that night or the snapshot is stale (rule 4). The
-// gateway's dollars are the gateway's alone; session cost stays on Costs, so none is summed here.
-function langfuseSection(d) {
-  const t = d.tokens, lf = t?.langfuse;
-  if (!t) return "";
-  const f = lf?.figures, bad = !f || t.stale, key = bad ? "langfuse-stale" : "langfuse", open = fst.open[key] ?? bad;
-  const title = `<h2 class="sec">What Langfuse sees `;
-  if (!f) {
-    return `<details class="sec-d" data-k="${key}" id="sec-langfuse"${open ? " open" : ""}><summary>${title}<span class="warn">no figures in snapshot ${esc(t.date)}</span></h2></summary>` +
-      `<div class="panel"><div class="warn">${esc(lf?.why || "the snapshot has no langfuse section: written before the reader, or the run stopped")}</div>` +
-      `<div class="muted more">read nightly by agent-usage langfuse; the Sentinel watch langfuse-read trips after two nights</div></div></details>`;
-  }
-  const head = `tool errors ${pct(f.tool_error_share)}, gateway errors ${pct(f.gateway_error_share)}, ${usd(f.gateway_cost_usd)} gateway`;
-  const rows = f.tools.map((x) => `<tr><td>${esc(x.tool)}</td><td class="n">${x.calls.toLocaleString()}</td><td class="n">${lfMs(x.p50_ms)}</td><td class="n">${lfMs(x.p95_ms)}</td><td class="n">${secs(x.total_s)}</td></tr>`).join("");
-  const models = f.gateway_models.map((m) => `${esc(m.model)} ${usd(m.cost_usd)}`).join(", ") + (f.gateway_other_models ? `, ${f.gateway_other_models} more` : "");
-  const trunc = f.truncated ? `<span class="warn"> (classes partial: more errors than were paged)</span>` : "";
-  return `<details class="sec-d" data-k="${key}" id="sec-langfuse"${open ? " open" : ""}><summary>${title}<span class="${t.stale ? "warn" : "muted"}">${head}${t.stale ? `, stale: newest snapshot ${esc(t.date)}` : ""}</span></h2></summary>` +
-    `<div class="panel scroll"><table class="tbl"><tr><th>slowest tools, by total time</th><th class="n">calls</th><th class="n">p50</th><th class="n">p95</th><th class="n">total</th></tr>${rows}</table>` +
-    `<div class="muted">tool errors: ${f.tool_errors.toLocaleString()} of ${f.tool_executions.toLocaleString()} executions (${lfClasses(f.tool_error_classes)})${trunc}</div>` +
-    `<div class="muted">gateway: ${f.gateway_calls.toLocaleString()} calls, ${f.gateway_errors.toLocaleString()} errors (${lfClasses(f.gateway_error_classes)}), ${kfmt(f.gateway_tokens)} tokens; dearest: ${models || "none"}</div>` +
-    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is on <a href="#costs?by=runner&w=24h">Costs</a></div></div></details>`;
-}
-
-const fleetTail = (d) => `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>${tokensSection(d)}${langfuseSection(d)}`;
 
 const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--c-other)", failed: "var(--b-needs)", error: "var(--b-needs)" };
 const verdictColor = (v) => VERDICT_COLOR[v] || "var(--c1)";
@@ -250,11 +162,10 @@ function renderFleet() {
     if (f.id === "fleet-q") paint($("fleet-facets"), tblFacets(d.table));
     paint($("fleet-chips"), tblChips(d.table));
     paint($("fleet-body"), fleetBody(d));
-    paint($("fleet-tail"), fleetTail(d), fst.open);
     return;
   }
   paint(el, `<div id="fleet-head">${fleetHead(d)}</div>${tblBar("fleet", d.table, "search, or tier:3 state:failed project:dotfiles -who:shepherd")}` +
-    `<div id="fleet-body">${fleetBody(d)}</div><div id="fleet-tail">${fleetTail(d)}</div>`, fst.open);
+    `<div id="fleet-body">${fleetBody(d)}</div>`);
 }
 
 // The view changed: the URL follows it and the server applies it.
@@ -376,8 +287,6 @@ $("fleet").addEventListener("click", (e) => {
   const t = e.target;
   const said = t.closest("[data-said]");
   if (said) { fst.said = said.dataset.said; renderFleet(); return; }
-  const win = t.closest("[data-tokwin]");
-  if (win) { fst.tokWin = win.dataset.tokwin; renderFleet(); return; }
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
   const fold = t.closest("[data-fold]");
