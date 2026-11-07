@@ -19,8 +19,6 @@ Turns a folder of downloaded .unitypackage files into a per-pack verdict (Adopt 
 
 Audit downloaded Unity Asset Store packs (.unitypackage files in the local download cache) and decide, per pack, whether to bring it into the BNB Unity stack (unity-core URP, the catalog contract, asset-ingest, which converts to URP Lit) - with a why and a why-not for every pack, judged from the actual files (material shader GUIDs, scripts, prefabs, FBX import settings, serialization, nested URP sub-packages), never store blurbs. Publishes a filterable Artifact report plus a cross-pack synthesis (style families, what pipeline gaps block which packs, suggested ingest order). Use when the user says "analyze my downloaded assets", "which asset store packs should we use", "audit these packs", "is this pack worth bringing in", or after downloading a new batch from My Assets. Read-only: it never imports into a project. Not for actually ingesting a pack into a library package (that is the com.blacknbrown.asset-ingest editor tool) and not for browsing the owned-but-not-downloaded list on the store site.
 
-## When to Use
-
 - When the user has downloaded packs from Package Manager -> My Assets and asks which are worth using.
 - When one new pack lands and needs a bring-in decision (run the same steps on one pack).
 

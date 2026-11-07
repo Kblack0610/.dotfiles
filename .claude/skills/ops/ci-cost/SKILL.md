@@ -14,7 +14,7 @@ Turns "CI is slow" into a measured list of where the runner minutes go, a ranked
 
 The repo docs own everything but the procedure: `docs/operations/ci-cost.md` (how to measure, open levers, the before/after log), `scripts/ci-cost.py` (the numbers), and `docs/operations/ci.md` Rules (what a CI change must carry). This file is only the procedure. When they disagree, the doc wins and this file gets fixed in the same turn.
 
-## When to Use
+## Scope and triggers
 
 - When the user asks why CI, a gate, or a dispatch takes as long as it does.
 - When choosing the next harness change to cut CI time.

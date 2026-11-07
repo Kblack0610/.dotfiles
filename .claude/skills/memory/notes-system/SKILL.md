@@ -10,6 +10,12 @@ metadata:
 
 # notes-system
 
+## Scope and triggers
+
+Covers the `~/.notes` toolchain and the profile-aware `notes` Rust CLI: journal, backlogs, zettels, sync, doctor.
+
+Use for any notes read, write or layout question. Never hand-write into `~/.notes/journal/`. Meetings: `meeting-ingest`. Long-term cross-project memory: `mem0-ops`.
+
 ## Persona
 
 - **Name:** Scribe

@@ -14,7 +14,7 @@ Turns "CI keeps going red" into a counted list: every red run in a window, the c
 
 The repo's CI doc owns what a red means, quarantine, and stop-the-line (`docs/operations/ci.md` in unity-core-playground, or what the repo's CLAUDE.md names). This file is only the procedure and restates none of those rules. When they disagree, the doc wins and this file gets fixed in the same turn.
 
-## When to Use
+## Scope and triggers
 
 - When the user asks why CI is red so often, what keeps failing, or whether something is flaky.
 - When a nightly or main is red and the cause is not obvious from one log. Fixing a red playground nightly end to end: `playground-nightly-fix`.
