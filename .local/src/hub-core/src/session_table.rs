@@ -843,6 +843,28 @@ mod tests {
     }
 
     #[test]
+    fn the_feed_drops_an_ended_row_from_before_midnight() {
+        struct R;
+        impl Runner for R {
+            fn run(&self, argv: &[String]) -> Result<String, String> {
+                let now = chrono::Local::now().timestamp();
+                Ok(match argv[0].as_str() {
+                    "agent-queue" => String::new(),
+                    _ => [
+                        json!({"session_id":"now","updated_epoch":now}),
+                        json!({"session_id":"two days ago","updated_epoch":now - 2 * 86_400}),
+                    ]
+                    .map(|v| v.to_string())
+                    .join("\n"),
+                })
+            }
+        }
+        let f = super::feed(&R, Path::new("/nonexistent"));
+        let ids: Vec<&str> = f.ended.iter().map(|e| e.session_id.as_str()).collect();
+        assert_eq!(ids, ["now"]);
+    }
+
+    #[test]
     fn ended_keeps_only_the_rows_since_midnight() {
         let midnight = 1_794_000_000;
         let out = [

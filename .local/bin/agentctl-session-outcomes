@@ -470,9 +470,11 @@ cmd_ended() {
   fi | jq -cnR --argjson since "$since" '
     [inputs | fromjson? | select(type == "object" and .session_id and (.updated | type) == "number" and .updated >= $since)]
     | group_by(.session_id) | map(max_by(.updated)) | .[]' > "$work/reg.jsonl" || return 1
-  # One grep over every transcript, its first entrypoint each (-m1 per file); a missing one is not headless.
+  # One grep over every transcript, its first entrypoint each (-m1 per file; -o can print two from
+  # that line, so awk keeps the first). A missing transcript, or one with no entrypoint, is not
+  # headless: grep exits nonzero for it, which must not fail the listing.
   jq -r '.transcript // empty' "$work/reg.jsonl" | sort -u |
-    xargs -r -d '\n' grep -m1 -oH '"entrypoint": *"[^"]*"' 2>/dev/null |
+    { xargs -r -d '\n' grep -m1 -oH '"entrypoint": *"[^"]*"' 2>/dev/null || :; } |
     awk -F'"entrypoint"' '!seen[$1]++ && $2 ~ /"sdk-cli"/ { sub(/:$/, "", $1); print $1 }' |
     jq -R . | jq -s . > "$work/headless.json" || return 1
   jq -cn --argjson since "$since" --slurpfile reg "$work/reg.jsonl" --slurpfile latest "$work/latest.jsonl" \

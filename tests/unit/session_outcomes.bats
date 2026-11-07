@@ -384,6 +384,14 @@ SH
   assert_output ''
 }
 
+@test "ended lists a session whose transcript is gone, and one whose transcript has no entrypoint" {
+  jq -cn --argjson u "$STOP" '{session_id: "sess-gone", project: "proj", transcript: "/nonexistent/x.jsonl", title: "gone", updated: $u}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  run "$SUBJECT" ended --days 1
+  assert_success
+  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(.session_id) | sort')" '["sess-a","sess-b","sess-c","sess-gone"]'
+}
+
 @test "ended keeps an outcome row with no registry row, and leaves out a runner it filed" {
   "$SUBJECT" run
   rm "$SO_SESSIONS/proj/sessions.jsonl"
