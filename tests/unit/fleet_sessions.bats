@@ -13,6 +13,12 @@ setup() {
   source "$REPO_ROOT/.local/bin/fleet-sessions"
 }
 
+# A test that starts stand-in processes lists them here, so they die even when it fails.
+teardown() {
+  # shellcheck disable=SC2086
+  [ -z "${LIVE_PIDS:-}" ] || kill -- $LIVE_PIDS 2>/dev/null || true
+}
+
 # b <status> <plan> <asks> <heavy> <idle> <git> <dirty> <ahead> <pr> <state> <ci> <in_pr> \
 #   [<red> <phases> <next> <conflicts>]
 b() { session_bucket "$@"; }
@@ -480,6 +486,67 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   done
   run b shell 0 0 0 19 1 0 0 875 MERGED PASS 1 - 2/3 x - jobs
   assert_output 'WORKING shell'
+}
+
+@test "a background subagent is WORKING over this tree's finished facts until FLEET_SHELL_STALE_MIN (ar-69)" {
+  # 2026-11-03: agent-10 read DONE and agent-56 LANDED while a background subagent worked a phase
+  # in its own worktree; Claude leaves a session idle, not shell, for a subagent.
+  run b idle 0 0 0 25 1 0 0 875 MERGED PASS 1 - 3/3 - - agent
+  assert_output 'WORKING subagent running'
+  run b idle 0 0 0 119 1 0 0 875 MERGED PASS 1 - 2/3 x - agent
+  assert_output 'WORKING subagent running'
+  run b idle 0 0 0 120 1 0 0 875 MERGED PASS 1 - 2/3 x - agent
+  assert_output 'LANDED PR #875 merged, tree clean, next phase: x, subagent running over 120m'
+  run b idle 0 1 0 25 1 0 0 - - - 1 - - - - agent
+  assert_output 'NEEDS 1 pending ask(s), carrying on'
+  # a finished plan's shell waits on a subagent before DONE
+  run b shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 3/3 - - agent
+  assert_output 'WORKING shell'
+  run b shell 0 0 0 120 1 0 0 875 MERGED PASS 1 - 3/3 - - agent
+  assert_output 'DONE PR #875 merged, tree clean, all 3 phases done, background shell idle over 120m'
+  # negative controls: an idle session with any other open job, or under FLEET_IDLE_MIN, and a
+  # finished plan's shell on a plain job
+  for job in jobs none gate -; do
+    run b idle 0 0 0 25 1 0 0 875 MERGED PASS 1 - 3/3 - - "$job"
+    assert_output 'DONE PR #875 merged, tree clean, all 3 phases done'
+  done
+  run b idle 0 0 0 19 1 0 0 875 MERGED PASS 1 - 3/3 - - agent
+  assert_output 'WORKING idle 19m'
+  # and a gate or test left running past a finished plan is not its work
+  for job in jobs gate test; do
+    run b shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 3/3 - - "$job"
+    assert_output 'DONE PR #875 merged, tree clean, all 3 phases done, background shell still running'
+  done
+}
+
+@test "live_wait finds a gate the session's claude runs in another directory (ar-69)" {
+  # 2026-11-03 agent-49 read STALLED mid-gate: its gate ran in a subagent's worktree, not the session's.
+  mkdir -p "$SANDBOX/wt" "$SANDBOX/sub/scripts/test"
+  printf 'sleep 60\n' > "$SANDBOX/sub/scripts/test/ci-gate.sh"
+  printf 'gate ci-gate.sh\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  # root stands in for the session's claude; `; :` keeps bash from exec-ing the gate in its place,
+  # and setsid gives it a process group, so teardown kills the gate's own sleep too
+  (cd "$SANDBOX/sub" && exec setsid bash -c 'bash scripts/test/ci-gate.sh; :') >/dev/null 2>&1 3>&- &
+  local root=$! child="" other
+  # the process is the event: wait until /proc shows the child's exec, not for a delay
+  until [ -n "$child" ] && grep -q ci-gate.sh "/proc/$child/cmdline" 2>/dev/null; do
+    kill -0 "$root" || fail 'the gate stand-in exited before it started'
+    child="$(pgrep -P "$root" || :)"; child="${child%%$'\n'*}"   # none yet is exit 1, not a failure
+  done
+  LIVE_PIDS="-$root"   # teardown kills these, pass or fail
+  run live_wait "$SANDBOX/wt" "$root"
+  assert_output 'gate'
+  # negative controls: no claude pid, an unrelated one, and junk
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  sleep 60 3>&- &
+  other=$!
+  LIVE_PIDS="$LIVE_PIDS $other"
+  run live_wait "$SANDBOX/wt" "$other"
+  assert_output ''
+  run live_wait "$SANDBOX/wt" junk
+  assert_output ''
 }
 
 @test "live_wait finds a gate or test process running in the session worktree, and only there" {
