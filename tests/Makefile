@@ -83,8 +83,15 @@ test-integ: $(BATS)
 	@$(BATS) $(BATS_FLAGS) $(HERE)integ
 
 # The Stop hook's entry: only the fast-tier files 60-shell-tests.sh picked for the change.
+# Unit files run in parallel like test-unit, integ files serially like test-integ; both run
+# even when the first fails, so one report names every red.
+UNIT_FILES  = $(foreach f,$(FILES),$(if $(findstring /unit/,$(f)),$(f)))
+OTHER_FILES = $(filter-out $(UNIT_FILES),$(FILES))
 test-files: $(BATS)
-	@$(BATS) $(BATS_FLAGS) $(FILES)
+	@rc=0; \
+	$(if $(UNIT_FILES),$(BATS) $(BATS_FLAGS) $(UNIT_PAR) $(UNIT_FILES) || rc=1;) \
+	$(if $(OTHER_FILES),$(BATS) $(BATS_FLAGS) $(OTHER_FILES) || rc=1;) \
+	exit $$rc
 
 # Host entry point for the ui tier: hand off to the container. Running bats over ui/ on a
 # real machine is not a supported path -- require_disposable_host() fails every test there.
