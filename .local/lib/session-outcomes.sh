@@ -283,7 +283,7 @@ so_lesson_sigs() {
 }
 
 # so_pr_index FINAL_DAYS - stdin: a `gh pr list --json number,state,title,mergedAt,body,mergeCommit`
-# array for ONE repo. stdout: {"<number>": {state, merged_at, reverted}}.
+# array for ONE repo. stdout: {"<number>": {state, merged_at, merge_oid, reverted}}.
 # reverted = a merged PR, merged within FINAL_DAYS after this one, that is titled
 # `Revert "<title>"` (GitHub's button), has a title or body line where a revert word comes
 # before `#N` ("Reverts #240", `Revert "x (#5)"`), or says "This reverts commit <sha>" of
@@ -305,7 +305,7 @@ so_pr_index() {
           shas: [ $t | scan("(?i)this reverts commit ([0-9a-f]{7,40})")[0] ] } ] as $rev
     | map(. as $p
         | { key: ($p.number | tostring),
-            value: { state: $p.state, merged_at: $p.mergedAt,
+            value: { state: $p.state, merged_at: $p.mergedAt, merge_oid: ($p.mergeCommit.oid // null),
                      reverted: ( $p.state == "MERGED" and $p.mergedAt != null
                        and (($p.mergedAt | fromdateiso8601) as $at
                             | ($p.mergeCommit.oid // "") as $oid
@@ -316,6 +316,88 @@ so_pr_index() {
                                      or (.refs | index($p.number)) != null
                                      or ($oid != "" and any(.shas[]; . as $s | $oid | startswith($s))))))) } })
     | from_entries'
+}
+
+# --- rework: a fix that rewrote a change's lines soon after it landed (the 2026-11 landscape
+# review's method, after arXiv 2609.26847). A fix is a commit whose subject starts fix, revert or
+# hotfix. Blame at its parent names the commit that last wrote each code line it deleted or
+# changed (.md .json .jsonl .txt are not code). A change a fix rewrote within SO_REWORK_DAYS (7)
+# is a rework CANDIDATE; one a fix rewrote within SO_REWORK_VERIFY_DAYS (30) whose message names
+# it, as its PR (#N) or its sha, is VERIFIED. A candidate is a lead, never a defect: a fix often
+# rewrites lines it did not find wrong. The human samples the verified label (`rework --sample`).
+# A PR merged with a merge commit is read by that commit alone, so its branch's lines are not seen.
+: "${SO_REWORK_DAYS:=7}" "${SO_REWORK_VERIFY_DAYS:=30}"
+SO_REWORK_FIX_RE='^(fix|revert|hotfix)([^a-z0-9_]|$)'   # on the lowercased subject
+
+# so_rework_fixes DIR REF SINCE UNTIL - one JSON line per fix commit on REF committed in
+# (SINCE, UNTIL] that rewrote a code line: {fix, at, msg, intros: [the commits blame names]}.
+so_rework_fixes() {
+  local dir="$1" ref="$2" sha at subj msg intros
+  git -C "$dir" log "$ref" --no-merges --since="@$3" --until="@$4" -z --format='%H%x1f%ct%x1f%s%x1f%B' |
+  while IFS=$'\x1f' read -r -d '' sha at subj msg; do
+    [[ "${subj,,}" =~ $SO_REWORK_FIX_RE ]] || continue
+    # Header lines are read only between `diff --git` and the first hunk: a deleted line
+    # reading "-- a/x" shows as "--- a/x" in a hunk. One blame per file, with every range.
+    intros=$(git -C "$dir" -c core.quotePath=false show -U0 --format= -M --no-ext-diff "$sha" 2>/dev/null |
+      awk '/^diff --git / { h = 1; p = ""; next }
+           h && /^--- a\// { p = substr($0, 7); next }
+           h && /^--- / { p = ""; next }
+           /^@@ / { h = 0
+                    if (p == "" || p ~ /[.](md|json|jsonl|txt)$/) next
+                    split($2, a, ","); s = substr(a[1], 2); n = (2 in a) ? a[2] : 1
+                    if (n > 0) r[p] = r[p] " -L " s "," (s + n - 1) }
+           END { for (p in r) print p "\t" r[p] }' |
+      while IFS=$'\t' read -r path ranges; do
+        # shellcheck disable=SC2086  # ranges is a list of -L flags
+        git -C "$dir" blame --root -s -l $ranges "$sha^" -- "$path" 2>/dev/null | awk '{ sub(/^\^/, "", $1); print $1 }'
+      done | sort -u)
+    [ -n "$intros" ] || continue
+    jq -nc --arg fix "$sha" --argjson at "$at" --arg msg "$msg" --arg i "$intros" \
+      '{fix: $fix, at: $at, msg: $msg, intros: ($i | split("\n") | map(select(length > 0 and . != $fix)))}'
+  done
+}
+
+# so_rework_index DIR - stdin: so_rework_fixes lines. stdout: one object keyed by the sha of each
+# change a fix rewrote within SO_REWORK_VERIFY_DAYS after it was committed (a squash merge's
+# commit time is its merge time): [{fix, subject, days, named}], named when the fix's message
+# names the change's PR (`#N` from its `(#N)` subject) or a prefix of its sha.
+so_rework_index() {
+  local dir="$1" fixes shas
+  fixes=$(jq -sc .) || return 1
+  shas=$(jq -r '.[].intros[]' <<<"$fixes" | sort -u)
+  # An empty --stdin would log HEAD.
+  [ -n "$shas" ] || { printf '{}\n'; return 0; }
+  so_rework_commits "$dir" --no-walk=unsorted --stdin <<<"$shas" |
+    jq -cn --slurpfile fixes <(printf '%s\n' "$fixes") --argjson vd "$SO_REWORK_VERIFY_DAYS" '
+      ([inputs] | INDEX(.sha)) as $c
+      | [ $fixes[0][] | . as $f | .intros[] | ($c[.] // empty)
+          | select(.at < $f.at and ($f.at - .at) <= $vd * 86400)
+          | (.s | capture("\\(#(?<n>[0-9]+)\\)$").n // null) as $pr
+          | .sha as $sha
+          | { intro: $sha, fix: $f.fix, subject: ($f.msg | split("\n")[0]),
+              days: ((($f.at - .at) / 8640 | ceil) / 10),
+              named: (($pr != null and ($f.msg | test("#" + $pr + "(?![0-9])")))
+                      or any($f.msg | scan("\\b[0-9a-f]{7,40}\\b"); . as $p | $sha | startswith($p))) } ]
+      | group_by(.intro) | map({key: .[0].intro, value: map(del(.intro))}) | from_entries'
+}
+
+# so_rework_commits DIR GIT-LOG-ARGS... - one JSON line per commit `git log` lists: {sha, at, s
+# (subject), fix (a fix commit by SO_REWORK_FIX_RE)}.
+so_rework_commits() {
+  git -C "$1" log "${@:2}" --format='%H %ct %s' |
+    jq -cR --arg re "$SO_REWORK_FIX_RE" '
+      capture("^(?<sha>[0-9a-f]+) (?<at>[0-9]+) (?<s>.*)$") | .at |= tonumber | .fix = (.s | ascii_downcase | test($re))'
+}
+
+# so_rework_repos MAP - one `owner/repo<TAB>dir` line per project-map checkout whose origin is on
+# GitHub, so a PR's repo finds the clone blame runs in.
+so_rework_repos() {
+  local dir url
+  jq -r '.paths // {} | keys[]' "$1" 2>/dev/null | while IFS= read -r dir; do
+    url=$(git -C "$dir" remote get-url origin 2>/dev/null) || continue
+    [[ "$url" =~ github\.com[:/]([^/]+)/([^/]+)$ ]] || continue
+    printf '%s/%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]%.git}" "$dir"
+  done
 }
 
 # so_latest OUT_DIR - the newest observation of every session, one JSON line each.
