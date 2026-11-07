@@ -8,7 +8,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use agent_panel::account::GATEWAY;
 use agent_panel::chooser::Agent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -368,7 +367,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         finished: i.finished.as_deref().and_then(ts),
         cost_usd: item_cost(i, &sids, feed),
         account: extra_str(i, "account"),
-        harness: harness_of(i.harness(), &extra_str(i, "account")),
+        harness: queue::harness_of(i.harness(), &extra_str(i, "account")),
         source: Source::Queue,
         ..SessionRow::default()
     }
@@ -390,24 +389,13 @@ fn outcome_row(e: &Ended) -> SessionRow {
         finished: e.updated_epoch,
         cost_usd: e.cost_usd,
         account: e.account.clone().unwrap_or_default(),
-        harness: harness_of(
+        harness: queue::harness_of(
             e.harness.as_deref().unwrap_or(""),
             e.account.as_deref().unwrap_or(""),
         ),
         source: Source::Outcome,
         ..SessionRow::default()
     }
-}
-
-/// The harness a row shows: what its item or outcome row says (empty or blank is claude), except
-/// that a session on the gateway account that says claude, or nothing, ran claude-lazer.
-fn harness_of(said: &str, account: &str) -> String {
-    match said.trim() {
-        "" | queue::HARNESS_DEFAULT if account == GATEWAY => queue::HARNESS_GATEWAY,
-        "" => queue::HARNESS_DEFAULT,
-        h => h,
-    }
-    .to_string()
 }
 
 /// Every row in the table's own order: live sessions by the vocabulary's bucket order (what needs
@@ -438,7 +426,7 @@ pub fn rows(
     }
     // A live row's account is known only after the join above, so its harness is settled here.
     for r in live.iter_mut() {
-        r.harness = harness_of(&r.harness, &r.account);
+        r.harness = queue::harness_of(&r.harness, &r.account);
     }
     live.sort_by(|a, b| {
         (vocab.rank(&a.bucket), &a.target).cmp(&(vocab.rank(&b.bucket), &b.target))
@@ -486,6 +474,7 @@ fn stray_row(a: &Agent, s: &Session, feed: &Feed) -> SessionRow {
 mod tests {
     use super::*;
     use crate::table::View;
+    use agent_panel::account::GATEWAY;
     use serde_json::json;
 
     fn item(line: Value) -> Item {

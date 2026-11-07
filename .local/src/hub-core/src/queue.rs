@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use agent_panel::account::GATEWAY;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -21,6 +22,18 @@ pub const HARNESS_DEFAULT: &str = "claude";
 /// The harness of a session on the Lazer gateway (`agent_panel::account::GATEWAY`) whose item
 /// names no other: claude-lazer's launcher sets `ANTHROPIC_BASE_URL`.
 pub const HARNESS_GATEWAY: &str = "claude-lazer";
+
+/// The harness a session ran on, for every reader (Sessions rows, the Costs cuts): what its item
+/// or outcomes row says, where empty or blank is claude (rows written before #1125 carry none),
+/// except that a session on the gateway account that says claude, or nothing, ran claude-lazer.
+pub fn harness_of(said: &str, account: &str) -> String {
+    match said.trim() {
+        "" | HARNESS_DEFAULT if account == GATEWAY => HARNESS_GATEWAY,
+        "" => HARNESS_DEFAULT,
+        h => h,
+    }
+    .to_string()
+}
 
 /// The store's states, in the order every surface shows them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
