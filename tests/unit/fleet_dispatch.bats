@@ -855,6 +855,43 @@ kinds_match() {
   refute_output --partial 'report=<doc path>'
 }
 
+@test "item_brief: a proof kind (release) starts its skill and ends on live proof on the item and its row, never agent-land; its board rows stay off" {
+  export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
+  project game beta "$SANDBOX/repos/game"
+  it='{"slug": "rel", "mode": "oneshot", "project": "game", "title": "release(steam): cut all 3pm, upload beta", "task": "release(steam): cut all 3pm, upload beta", "row": "game:ar-7", "lane": "agent"}'
+  run item_brief "$it"
+  assert_line --index 0 '/release release(steam): cut all 3pm, upload beta'
+  assert_output --partial 'a release row: it ends on the live proof its skill names, never a PR or agent-land'
+  assert_output --partial 'agent-queue set rel note="<proof>"; notes ptask game --agent done "ar-7" --proof "<proof>"; agent-queue move rel done --status ok'
+  assert_output --partial 'If a step needs a decision from the human'
+  refute_output --partial 'Merge with agent-land'
+  refute_output --partial 'Item: rel'
+  # the kind comes from the item's type too, and with no row there is no row to close
+  run item_brief '{"slug": "rel", "mode": "oneshot", "project": "game", "title": "ship the games", "task": "ship the games", "type": "release"}'
+  assert_line --index 0 '/release ship the games'
+  assert_output --partial 'agent-queue set rel note="<proof>"; agent-queue move rel done --status ok'
+  refute_output --partial 'notes ptask'
+  # a night tag adds no --pr-only and a tier-3 item no merge gate: a release opens no PR
+  run item_brief '{"slug": "rel", "mode": "oneshot", "project": "agent-runtime", "title": "release(steam): x", "task": "release(steam): x", "tags": "night tier3"}'
+  assert_line --index 0 '/release release(steam): x'
+  refute_output --partial 'red-fix gate'
+  # a headless harness gets no wind-down and no window to leave open
+  run item_brief '{"slug": "rel", "mode": "oneshot", "project": "game", "title": "release(steam): x", "task": "release(steam): x"}' opencode
+  assert_line --index 0 'Read ~/.claude/skills/release/SKILL.md and follow it for this task:'
+  assert_output --partial 'agent-queue move rel done --status ok.'
+  assert_output --partial 'nobody watches this run'
+  refute_output --partial 'wind-down'
+  refute_output --partial 'leaving this window open'
+  # a release board row never dispatches on its own: the human starts it, or /release queues it
+  load_kinds
+  assert_equal "$(kind_off release game beta)" 'kind release is off'
+  # a feat item still starts /one-shot and lands a PR (negative control)
+  run item_brief '{"slug": "f", "mode": "oneshot", "project": "game", "title": "feat(game): a mode", "task": "feat(game): a mode"}'
+  assert_line --index 0 '/one-shot feat(game): a mode'
+  assert_output --partial 'Merge with agent-land <N>'
+  refute_output --partial 'note="<proof>"'
+}
+
 @test "reap: a gone session with no PR but its report recorded closes its item ok, not failed" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug d "research(game): which engine"

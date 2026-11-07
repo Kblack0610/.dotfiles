@@ -190,7 +190,7 @@ Every project sheet, in every project and both lanes, uses one row format. Proje
 | Part | Required | Rule |
 |---|---|---|
 | `[ ]` `[/]` `[x]` | yes | open, doing (a queue item exists), closed |
-| `type(area): title` | agent lane yes; human lane at triage | Types: `feat fix perf refactor docs test chore ci` for work, `research design market legal` for work whose output is a doc the human reviews (`design` covers architecture and UX), `run decide check` for what only the human can do, `epic` for an outcome made of other rows (human sheet only). A bug is a `fix` row, and its severity is its priority. The area is one lowercase kebab word naming the component. The title is imperative, 80 chars or fewer, and becomes the PR title. |
+| `type(area): title` | agent lane yes; human lane at triage | Types: `feat fix perf refactor docs test chore ci` for work, `release` for a timed build and store upload (it runs the `release` skill), `research design market legal` for work whose output is a doc the human reviews (`design` covers architecture and UX), `run decide check` for what only the human can do, `epic` for an outcome made of other rows (human sheet only). A bug is a `fix` row, and its severity is its priority. The area is one lowercase kebab word naming the component. The title is imperative, 80 chars or fewer, and becomes the PR title. |
 | detail lines | no | indented two spaces under the row: evidence, file:line, the human's original words. They move with the row through sweep, move and archive. |
 | priority | yes, exactly one | `#urgent`, `#high` or `#low`; a bare add gets `#high` |
 | created | yes, stamped | `#cMMDD`, stamped by `ptask add` |
