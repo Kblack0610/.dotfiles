@@ -222,6 +222,8 @@ pub struct Home {
     /// No read has answered yet, so nothing can be said about what is open.
     pub proposals_unread: bool,
     pub running: Vec<Running>,
+    /// Where work sits from inbox to done; `set_pipeline` adds the gauges' half.
+    pub flow: crate::flow::Strip,
     pub numbers: Vec<Number>,
     pub health: Vec<Chip>,
     /// What could not be read, so a short list never reads as an all-clear.
@@ -640,6 +642,11 @@ pub fn needs(
 }
 
 impl Home {
+    /// The gauges' half of the flow strip (inbox, board, the amber step).
+    pub fn set_pipeline(&mut self, read: &Result<Option<crate::pipeline::Pipeline>, String>) {
+        self.flow.set_pipeline(read);
+    }
+
     /// The proposals agent-propose holds open; a failed read says so among the errors.
     pub fn set_proposals(&mut self, open: &Result<Vec<Proposal>, String>) {
         match open {
@@ -683,6 +690,7 @@ pub fn build(
 ) -> Home {
     let mut h = Home {
         shown: SHOWN,
+        flow: crate::flow::Strip::build(queue),
         ..Home::default()
     };
     if state.is_null() {
@@ -712,22 +720,6 @@ pub fn build(
     if let Some(q) = queue {
         h.errors.extend(q.errors.iter().cloned());
         h.running = running(state, q);
-        let held = q
-            .in_state(State::Queued)
-            .filter(|i| i.hold.is_some())
-            .count();
-        let mut next = format!("{} up next", q.count(State::Queued));
-        if held > 0 {
-            next += &format!(" ({held} held)");
-        }
-        h.numbers.push(Number {
-            label: "queue",
-            value: format!("{} running, {next}", q.count(State::Running)),
-        });
-        h.numbers.push(Number {
-            label: "done today",
-            value: q.count(State::Done).to_string(),
-        });
     }
     if let Some(c) = state["counts"].as_object() {
         let n = |k: &str| c.get(k).and_then(Value::as_u64).unwrap_or(0);
@@ -934,7 +926,13 @@ mod tests {
         assert_eq!(h.running.len(), 1);
         let p = h.running[0].phases.as_ref().unwrap();
         assert_eq!((p.done, p.total), (2, 4));
-        assert_eq!(h.numbers[0].value, "1 running, 0 up next");
+        // The queue's counts are the flow strip's, not Numbers.
+        assert!(h
+            .numbers
+            .iter()
+            .all(|n| n.label != "queue" && n.label != "done today"));
+        assert_eq!(h.flow.chips[3].text(), "running 1");
+        assert_eq!(h.flow.chips[2].text(), "queued 0");
         assert_eq!(h.errors, ["Prometheus: reading"]);
     }
 
