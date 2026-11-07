@@ -1,11 +1,15 @@
-//! The Fleet tab's one table: who is working, on what, and can I afford it (the accounts; what each runner spent is
-//! `crate::costs`). Tier 1 is the
-//! supervisors (a runner whose conf says `TIER=1`), tier 2 every other agentctl runner, tier 3
-//! every live session from fleet-sessions' `state.json`. It is a [`Row`], so both surfaces get
-//! the shared table's search, chips and sort, and a row opens its own record: a runner's page
-//! or the Sessions record. A tier 1 row can fold the rows under it (`OVERSEES=` in its conf).
+//! The Fleet tab's one table: who is working, on what, and why each one is deployed (what
+//! each runner spent is `crate::costs`). Each row has a KIND: `lead` for the supervisors (a
+//! runner whose conf says `TIER=1`, tier 1), the conf's `LANE` for every other agentctl runner
+//! (tier 2), `session` for every live session from fleet-sessions' `state.json` (tier 3). FOR is
+//! why it is there: a runner's conf `DESCRIPTION`, what a session is on. The legend above the
+//! table is agentctl's `lanes.tsv` (`legend`), so no meaning is written here. It is a [`Row`], so
+//! both surfaces get the shared table's search, chips and sort, and a row opens its own record:
+//! a runner's page or the Sessions record. A tier 1 row can fold the rows under it (`OVERSEES=`
+//! in its conf).
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use chrono::{Local, TimeZone};
 use serde::Serialize;
@@ -28,10 +32,16 @@ const ALL_SESSIONS: &str = "sessions";
 const DISPATCHED: &str = "dispatched";
 /// A queue item whose origin is one of these was started by fleet-dispatch.
 const DISPATCH_ORIGINS: [&str; 2] = ["run", "redispatch"];
+/// The KIND of a tier 1 runner and of a live session; any other runner's is its conf `LANE`.
+pub const LEAD: &str = "lead";
+pub const SESSION: &str = "session";
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Who {
+    /// 1 a lead, 2 another runner, 3 a session: the table's own order and what folds.
     pub tier: u8,
+    /// `lead`, the runner's lane, or `session`.
+    pub kind: String,
     pub who: String,
     pub opens: Opens,
     /// What the row opens: the runner's name or the session's tmux target.
@@ -40,9 +50,13 @@ pub struct Who {
     pub state: String,
     /// When it started its present state, unix seconds.
     pub since: Option<i64>,
+    /// Why it is deployed: a runner's conf `DESCRIPTION`, what a session is on.
+    #[serde(rename = "for")]
+    pub purpose: String,
+    /// What it is doing, or its last run; `(N failed 24h)` when any run failed in the day.
     pub doing: String,
     pub under: String,
-    /// A runner's lane, a session's project.
+    /// A session's project; blank for a runner, whose lane is its kind.
     pub project: String,
     /// The tier 1 row that folds this one.
     pub parent: Option<String>,
@@ -51,11 +65,25 @@ pub struct Who {
 }
 
 impl Row for Who {
-    const COLUMNS: &'static [&'static str] =
-        &["tier", "who", "state", "since", "doing", "under", "project"];
-    const STATES: &'static [&'static str] =
-        &["all", "held", "failed", "working", "needs you", "stalled"];
-    const FACETS: &'static [&'static str] = &["tier", "state", "project"];
+    const COLUMNS: &'static [&'static str] = &[
+        "kind", "who", "state", "since", "for", "doing", "under", "project",
+    ];
+    /// The kind chips, then the state chips.
+    const STATES: &'static [&'static str] = &[
+        "all",
+        LEAD,
+        "deliver",
+        "observe",
+        "learn",
+        "maintain",
+        SESSION,
+        "held",
+        "failed",
+        "working",
+        "needs you",
+        "stalled",
+    ];
+    const FACETS: &'static [&'static str] = &["kind", "state", "project"];
 
     fn val(&self, col: &str) -> Val {
         let text = |t: &str| {
@@ -66,10 +94,11 @@ impl Row for Who {
             }
         };
         match col {
-            "tier" => Val::Num(f64::from(self.tier)),
+            "kind" => text(&self.kind),
             "who" => Val::Text(self.who.clone()),
             "state" => Val::Text(self.state.clone()),
             "since" => self.since.map_or(Val::None, |t| Val::Num(t as f64)),
+            "for" => text(&self.purpose),
             "doing" => text(&self.doing),
             "under" => text(&self.under),
             "project" => text(&self.project),
@@ -78,7 +107,7 @@ impl Row for Who {
     }
 
     fn in_state(&self, state: &str) -> bool {
-        self.state == state
+        self.state == state || self.kind == state
     }
 }
 
@@ -94,7 +123,8 @@ fn rank(state: &str) -> u8 {
 }
 
 fn runner(w: &Worker, at: i64) -> Who {
-    let state = if w.failed_24h > 0 {
+    // Failed is the last run; an older failure in the day is a count on DOING.
+    let state = if w.last.as_ref().is_some_and(|o| o.ok == Some(false)) {
         "failed"
     } else if w.held_since.is_some() {
         "held"
@@ -135,8 +165,18 @@ fn runner(w: &Worker, at: i64) -> Who {
         (None, None, Some(n)) if n > at => format!("next {}", clock(n)),
         _ => String::new(),
     };
+    let doing = match w.failed_24h {
+        0 => doing,
+        n => format!("{doing} ({n} failed 24h)").trim().to_string(),
+    };
+    let tier = if w.tier == 0 { 2 } else { w.tier };
     Who {
-        tier: if w.tier == 0 { 2 } else { w.tier },
+        tier,
+        kind: if tier == 1 {
+            LEAD.into()
+        } else {
+            w.lane.clone()
+        },
         who: w.name.clone(),
         opens: Opens::Runner,
         key: w.name.clone(),
@@ -146,12 +186,13 @@ fn runner(w: &Worker, at: i64) -> Who {
             .or(w.running_since)
             .or(call.map(|c| c.at))
             .or(w.last.as_ref().and_then(|o| o.at)),
+        purpose: w.description.clone(),
         doing,
         under: w
             .called_by
             .as_ref()
             .map_or(String::new(), |c| format!("called by {c}")),
-        project: w.lane.clone(),
+        project: String::new(),
         parent: None,
         kids: 0,
     }
@@ -216,19 +257,18 @@ fn session(sess: &Value, at: i64) -> Option<Who> {
         .copied()
         .collect::<Vec<_>>()
         .join(" ");
-    let doing = [s(sess, "doing"), s(sess, "topic")]
-        .into_iter()
-        .find(|d| !d.is_empty())
-        .unwrap_or_default();
     Some(Who {
         tier: 3,
+        kind: SESSION.into(),
         project: project_of(sess, &name),
         who: name,
         opens: Opens::Session,
         key: target.to_string(),
         state,
         since: sess["age_min"].as_i64().map(|m| at - m * 60),
-        doing: doing.to_string(),
+        // fleet-sessions' topic is what it is on; its queue item's slug is under it.
+        purpose: s(sess, "topic").to_string(),
+        doing: s(sess, "doing").to_string(),
         under,
         parent: None,
         kids: 0,
@@ -298,6 +338,33 @@ pub fn build(workers: &[Worker], state: &Value, at: i64) -> Vec<Who> {
     rows
 }
 
+/// The legend above the table: `kind meaning` for each row of agentctl's `lanes.tsv`
+/// (`kind<TAB>meaning`, more columns and `#` lines ignored). A file that cannot be read is
+/// `-` and why, so the table still shows.
+pub fn legend(path: &Path) -> Vec<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let rows: Vec<String> = text
+                .lines()
+                .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                .map(|l| {
+                    let mut f = l.split('\t').map(str::trim);
+                    let kind = f.next().unwrap_or_default();
+                    format!("{kind} {}", f.next().unwrap_or_default())
+                        .trim()
+                        .to_string()
+                })
+                .collect();
+            if rows.is_empty() {
+                vec![format!("- ({} lists no kind)", path.display())]
+            } else {
+                rows
+            }
+        }
+        Err(e) => vec![format!("- ({}: {e})", path.display())],
+    }
+}
+
 /// `rows` without the rows a folded tier 1 row holds. A search or a chip shows every match,
 /// folded or not, so a hit is never hidden under a closed row.
 pub fn unfolded<'a>(rows: Vec<&'a Who>, folded: &HashSet<String>, view: &View) -> Vec<&'a Who> {
@@ -344,6 +411,8 @@ mod tests {
         let mut failed = worker("ask-judge", 0, "");
         failed.failed_24h = 2;
         failed.last = Some(Outcome {
+            word: "FAILED".into(),
+            ok: Some(false),
             at: Some(500),
             ..Default::default()
         });
@@ -377,6 +446,86 @@ mod tests {
         );
     }
 
+    fn ran(name: &str, word: &str, ok: bool, failed_24h: u32) -> Worker {
+        let mut w = worker(name, 2, "");
+        w.failed_24h = failed_24h;
+        w.last = Some(Outcome {
+            word: word.into(),
+            ok: Some(ok),
+            at: Some(900),
+            ..Default::default()
+        });
+        w.why = Some(Outcome {
+            word: word.into(),
+            ok: Some(ok),
+            at: Some(900),
+            text: "6 need you".into(),
+        });
+        w
+    }
+
+    #[test]
+    fn failed_is_the_last_run_and_an_older_failure_is_a_count_on_doing() {
+        // The negative control: an old failure under a WORKED last run is not failed.
+        let r = build(&[ran("briefing", "WORKED", true, 1)], &json!({}), 1000);
+        assert_eq!(r[0].state, "idle");
+        assert!(!r[0].in_state("failed"));
+        assert_eq!(r[0].doing, "WORKED 6 need you (1 failed 24h)");
+        let r = build(&[ran("briefing", "FAILED", false, 3)], &json!({}), 1000);
+        assert_eq!(r[0].state, "failed");
+        assert_eq!(r[0].doing, "FAILED 6 need you (3 failed 24h)");
+        // A day with no failure adds nothing.
+        let r = build(&[ran("briefing", "WORKED", true, 0)], &json!({}), 1000);
+        assert_eq!(r[0].doing, "WORKED 6 need you");
+    }
+
+    #[test]
+    fn kind_is_lead_the_lane_or_session_and_for_says_why_it_is_deployed() {
+        let mut lead = worker("shepherd", 1, "sessions");
+        lead.lane = "deliver".into();
+        lead.description = "Moves every session through its plan".into();
+        let mut brief = worker("briefing", 2, "");
+        brief.lane = "observe".into();
+        brief.description = "Morning and evening briefing".into();
+        let r = build(&[lead, brief], &state(), 1000);
+        let row = |n: &str| r.iter().find(|x| x.who == n).unwrap();
+        let kf = |n: &str| (row(n).kind.as_str(), row(n).purpose.as_str());
+        assert_eq!(
+            kf("shepherd"),
+            ("lead", "Moves every session through its plan")
+        );
+        assert_eq!(kf("briefing"), ("observe", "Morning and evening briefing"));
+        assert_eq!(kf("dotfiles-agent-3"), ("session", "moonlit P3"));
+        // DOING is what it does, FOR keeps the topic; a runner's lane is no longer its project.
+        assert_eq!(row("dotfiles-agent-3").doing, "Bash: tests");
+        assert_eq!(row("briefing").project, "");
+        let chips = View::default().states(&r);
+        let n = |s: &str| chips.iter().find(|c| c.name == s).map(|c| c.n);
+        assert_eq!(
+            (n("lead"), n("observe"), n("session"), n("deliver")),
+            (Some(1), Some(1), Some(3), Some(0))
+        );
+        let picked = View::new::<Who>("", "session", "", "").apply(&r);
+        assert!(picked.len() == 3 && picked.iter().all(|w| w.tier == 3));
+    }
+
+    #[test]
+    fn the_legend_is_lanes_tsv_and_a_missing_file_says_so() {
+        let dir = std::env::temp_dir().join(format!("who-legend-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("lanes.tsv");
+        std::fs::write(
+            &p,
+            "# kind\tmeaning\twrites\nlead\truns the sessions\t-\n\nobserve\treports\n",
+        )
+        .unwrap();
+        assert_eq!(legend(&p), ["lead runs the sessions", "observe reports"]);
+        std::fs::remove_file(&p).unwrap();
+        let gone = legend(&p);
+        assert!(gone.len() == 1 && gone[0].starts_with("- ("), "{gone:?}");
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
     #[test]
     fn a_runner_with_a_failure_reads_failed_and_a_session_reads_its_bucket() {
         let r = rows();
@@ -403,6 +552,10 @@ mod tests {
     fn a_held_runner_reads_held_since_its_first_block_and_leads_its_tier_after_failed() {
         let mut failed = worker("alpha", 2, "");
         failed.failed_24h = 1;
+        failed.last = Some(Outcome {
+            ok: Some(false),
+            ..Default::default()
+        });
         let r = build(
             &[worker("aaa", 2, ""), held("ask-judge"), failed],
             &json!({}),
@@ -521,7 +674,7 @@ mod tests {
     #[test]
     fn the_columns_are_searchable_by_key() {
         let r = rows();
-        let v = View::new::<Who>("tier:3 state:\"needs you\"", "", "", "");
+        let v = View::new::<Who>("kind:session state:\"needs you\"", "", "", "");
         let got = v.apply(&r);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].who, "ucp-agent-9");

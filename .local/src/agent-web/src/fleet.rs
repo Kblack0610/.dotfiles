@@ -74,6 +74,7 @@ mod tests {
     fn row(tier: u8, key: &str, parent: Option<&str>, kids: usize) -> Who {
         Who {
             tier,
+            kind: if tier == 3 { "session" } else { "lead" }.into(),
             who: key.into(),
             opens: if tier == 3 {
                 Opens::Session
@@ -83,6 +84,7 @@ mod tests {
             key: key.into(),
             state: "working".into(),
             since: None,
+            purpose: String::new(),
             doing: String::new(),
             under: String::new(),
             project: "dotfiles".into(),

@@ -1127,6 +1127,41 @@ EOF
   assert_equal "$(jq -r .harness "$SO_OUT/old/2026-11.jsonl" | paste -sd' ')" 'lazer-reserve claude'
 }
 
+@test "a Claude session never reads codex or opencode: not from an agent: codex item, a glm item, or a codex stamp an earlier run left" {
+  oc_db
+  queue_stub
+  export SO_HARNESSES="$SANDBOX/harnesses.json"
+  jq -n '{harnesses: {glm: {launcher: "opencode"}, codex: {launcher: "codex"}, "lazer-reserve": {launcher: "claude-lazer"}}}' > "$SO_HARNESSES"
+  {
+    jq -cn '{slug: "cx", agent: "codex", sessions: "sess-a sess-c"}'
+    jq -cn '{slug: "gl", agent: "glm", sessions: "sess-b"}'
+    jq -cn '{slug: "lz", agent: "lazer-reserve", sessions: "sess-d"}'
+  } > "$SANDBOX/items.jsonl"
+  # c: an earlier run stamped codex on it (the 8473b997 shape); the re-observation must not keep it
+  mkdir -p "$SO_OUT/proj"
+  jq -cn '{session_id: "sess-c", harness: "codex", updated_epoch: 1}' > "$SO_OUT/proj/2026-09.jsonl"
+  jq -c 'del(.harness)' "$SO_SESSIONS/proj/sessions.jsonl" > "$SANDBOX/reg" && mv "$SANDBOX/reg" "$SO_SESSIONS/proj/sessions.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a .harness) $(field b .harness) $(field c .harness)" 'claude claude claude'
+  # negative controls: a gateway item still gives its Claude session the gateway harness, and an
+  # opencode session's own row keeps opencode
+  assert_equal "$(field d .harness)" lazer-reserve
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | .harness')" opencode
+  # with no harness map the launcher is the name itself: a codex item or prior still reads claude
+  export SO_HARNESSES="$SANDBOX/no-map.json"
+  run "$SUBJECT" run --all
+  assert_success
+  assert_equal "$(field a .harness) $(field c .harness)" 'claude claude'
+  # the same rule over old outcomes rows: backfill gives a codex item's Claude session claude
+  jq -cn '{slug: "cx", agent: "codex", sessions: "old-cx"}' > "$SANDBOX/items.jsonl"
+  mkdir -p "$SO_OUT/old"
+  jq -cn '{session_id: "old-cx", account: "claude"}' > "$SO_OUT/old/2026-11.jsonl"
+  run "$SUBJECT" backfill-harness 2026-11
+  assert_success
+  assert_equal "$(jq -r .harness "$SO_OUT/old/2026-11.jsonl")" claude
+}
+
 @test "an opencode session on Lazer direct says so: provider lazer on the row and in costs" {
   oc_db
   sqlite3 "$SO_OPENCODE_DB" "UPDATE session_v2 SET model = '{\"id\":\"claude-sonnet-5.5\",\"providerID\":\"lazer\"}' WHERE id = 'ses_root'"
