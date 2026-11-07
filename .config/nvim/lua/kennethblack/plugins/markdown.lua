@@ -114,6 +114,7 @@ return {
       --   Keymaps: <leader>tP raise / <leader>tp lower (cursor follows the task),
       --            stopping at either end of low -> high -> urgent
       local PRIORITIES = { "low", "high", "urgent" }
+      local PRIORITY_RANK = { low = 1, high = 2, urgent = 3 }
 
       -- Every inline hashtag on `line`, plus where the scan began. Mirrors md::for_each_tag and
       -- md::tag_span, the one tag grammar, so this file and the `notes` CLI agree on where a tag
@@ -158,9 +159,10 @@ return {
       end
 
       -- Return (base_without_tag, current_level_or_nil): strip every priority tag wherever it
-      -- sits and trim trailing whitespace; the level is the most urgent one. Mirrors
-      -- md::split_priority, cut for cut: each tag goes with one neighbouring space (the one
-      -- before it, else the one after), and a trailing `.` is given back to the prose.
+      -- sits and trim trailing whitespace; the level is the most urgent one. Cuts as
+      -- md::split_priority cuts: each tag goes with one neighbouring space (the one before it,
+      -- else the one after), and a trailing `.` is given back to the prose. Unlike the CLI it
+      -- trims an untagged line too, which task_key and set_priority rely on.
       --
       -- Deliberately NOT anchored to end-of-line: a release tag follows the priority tag
       -- (`#high #v0.0.2`), and an anchored match read such a task as untagged.
@@ -169,23 +171,22 @@ return {
         local level, rank, out, cursor = nil, 0, {}, 1
         for _, t in ipairs(tags) do
           local name = line:sub(t.from, t.to):lower()
-          for r, p in ipairs(PRIORITIES) do
-            if p == name then
-              if r > rank then
-                level, rank = p, r
-              end
-              local cs, ce = t.hash, t.scan - 1
-              while ce > t.to and line:sub(ce, ce) == "." do
-                ce = ce - 1
-              end
-              if cs > start and line:sub(cs - 1, cs - 1) == " " then
-                cs = cs - 1
-              elseif line:sub(ce + 1, ce + 1) == " " then
-                ce = ce + 1
-              end
-              out[#out + 1] = line:sub(cursor, cs - 1)
-              cursor = math.max(cursor, ce + 1)
+          local r = PRIORITY_RANK[name]
+          if r then
+            if r > rank then
+              level, rank = name, r
             end
+            local cs, ce = t.hash, t.scan - 1
+            while ce > t.to and line:sub(ce, ce) == "." do
+              ce = ce - 1
+            end
+            if cs > start and line:sub(cs - 1, cs - 1) == " " then
+              cs = cs - 1
+            elseif line:sub(ce + 1, ce + 1) == " " then
+              ce = ce + 1
+            end
+            out[#out + 1] = line:sub(cursor, cs - 1)
+            cursor = math.max(cursor, ce + 1) -- two tags can claim the space between them
           end
         end
         if not level then
@@ -557,17 +558,9 @@ return {
         return nil
       end
 
-      -- First line past the section starting at `s`: the next H2, or the link footer (a `---`
-      -- whose next line has a wikilink), mirroring md::section_end. Without the footer arm a
-      -- sweep strips the footer's `---` and files its link line as a task.
+      -- First line past the section starting at `s` (notes.datetag owns the bounds).
       local function section_end(lines, s)
-        for i = s + 1, #lines do
-          local footer = lines[i]:match "^%-%-%-%s*$" and (lines[i + 1] or ""):find("[[", 1, true)
-          if lines[i]:match "^##%s" or lines[i]:match "^%s*<!%-%- rollup:start %-%->%s*$" or footer then
-            return i
-          end
-        end
-        return #lines + 1
+        return require("notes.datetag").section_end(lines, s)
       end
 
       -- Line of the first heading `pat` matches, or nil.
@@ -1018,10 +1011,11 @@ return {
             return
           end
           vim.w.task_priority_matched = true
-          -- The tag grammar of each_tag: no `#` glued to a word, and no tag that runs on
-          -- (`#high-priority` is not `#high`, a sentence-final `#high.` is).
+          -- each_tag's glue and run-on rules, any case: no `#` glued to a word, and no tag
+          -- that runs on (`#high-priority` is not `#high`, a sentence-final `#high.` is).
+          -- A regex cannot see code spans, so `` `#high` `` still colours.
           for _, m in ipairs { { "TaskPriorityUrgent", "urgent" }, { "TaskPriorityHigh", "high" }, { "TaskPriorityLow", "low" } } do
-            vim.fn.matchadd(m[1], [[\%([[:alnum:]_/.[#]\)\@<!#]] .. m[2] .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
+            vim.fn.matchadd(m[1], [[\c\%([[:alnum:]_/.[#]\)\@<!#]] .. m[2] .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
           end
         end,
       })

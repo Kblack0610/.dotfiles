@@ -127,6 +127,7 @@ buf() { mapfile -t BUF <<<"$output"; }
   assert_output "$(printf '%s' $'## Focus\n\n### Urgent\n\n### High\n\n### Low\n- [ ] loose #low\n\n---\n### Done\n\n<!-- rollup:start -->\n### bnb\n- [ ] row\nraw text\n\n## Refs\n')"
 }
 
+# Same input and expected text as focus_sweep.rs golden_tag_grammar_matches_the_nvim_buffer_sweep.
 # md::tag_span reads `#high-priority` as one tag that is no priority; a `%f[%W]` match read it
 # as `#high`, filed the row by it and cut `#high` out of the tag, leaving `-priority` behind.
 @test "a save reads a priority tag by the CLI's tag grammar" {
