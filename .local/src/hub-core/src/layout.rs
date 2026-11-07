@@ -83,7 +83,7 @@ pub const TABS: [Tab; 10] = [
         title: "Costs",
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
-        sections: &["burn", "totals", "table"],
+        sections: &["burn", "sections", "totals", "table"],
     },
 ];
 
