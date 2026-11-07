@@ -3438,6 +3438,16 @@ landed_item() {
   ! grep -q '^gh ' "$NOTES_FIXTURE/calls.log" || fail "read gh for a recorded merge"
 }
 
+@test "reap: an item with one PR per repo closes its row on its first PR's merge proof" {
+  # NEGATIVE CONTROL: the whole list as one ref gave merge_proof "pr 9" and a two-sha commit, so no proof.
+  landed_item MERGED 'o/game#12 o/tools#9'
+  agent-queue set fix-crash "merged=$OID 1111111111111111111111111111111111111111" >/dev/null
+  run cmd_reap
+  assert_output --partial 'closed game: fix crash'
+  run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+}
+
 @test "reap: a done item's open PR keeps its row started past the orphan grace" {
   landed_item OPEN
   orphan_seen game 'fix crash' 73

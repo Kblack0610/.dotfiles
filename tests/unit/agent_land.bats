@@ -24,7 +24,9 @@ case "$1 $2" in
   case "$*" in
   # head.oid / head.ref / head.cross: the PR's head commit, branch and fork-ness (this checkout's HEAD, branch pr-42, same repo, by default)
   # The caller's real -q runs through jq on the JSON gh would return, so a query gh rejects fails here too.
-  *baseRefName*) printf '{"state":"%s","baseRefName":"main","url":"https://github.com/o/r/pull/42","headRefOid":"%s","isCrossRepository":%s,"headRefName":"%s"}' "$(cat "$NOTES_FIXTURE/state")" \
+  # url: the PR's URL (o/r #42 by default)
+  *baseRefName*) printf '{"state":"%s","baseRefName":"main","url":"%s","headRefOid":"%s","isCrossRepository":%s,"headRefName":"%s"}' "$(cat "$NOTES_FIXTURE/state")" \
+    "$(cat "$NOTES_FIXTURE/url" 2>/dev/null || echo https://github.com/o/r/pull/42)" \
     "$(cat "$NOTES_FIXTURE/head.oid" 2>/dev/null || echo 0123456789abcdef)" "$(cat "$NOTES_FIXTURE/head.cross" 2>/dev/null || echo false)" "$(cat "$NOTES_FIXTURE/head.ref" 2>/dev/null || echo pr-42)" |
     jq -r "${@: -1}" || exit 1 ;;
   *mergeable*)
@@ -32,7 +34,8 @@ case "$1 $2" in
     q="$NOTES_FIXTURE/mergeable.seq"
     if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo '0123456789abcdef MERGEABLE'; fi ;;
   *body*) cat "$NOTES_FIXTURE/body" ;;
-  *mergeCommit*) echo fedcba9876543210fedcba9876543210fedcba98 ;;
+  # merge.oid: the PR's merge commit
+  *mergeCommit*) cat "$NOTES_FIXTURE/merge.oid" 2>/dev/null || echo fedcba9876543210fedcba9876543210fedcba98 ;;
   *) cat "$NOTES_FIXTURE/state" ;;
   esac ;;
 # rules.json: the base's rulesets ([] when absent); rules.fail: the call fails
@@ -684,9 +687,55 @@ EOF
   assert_success
   assert_line --index 1 'merge: #42 already MERGED, recording it'
   assert_line --index 5 'board: closed "fix it" with pr:42 commit:fedcba987654'
+  echo https://github.com/o/r/pull/43 >"$NOTES_FIXTURE/url"
   run "$LAND" 43 --item fix
   assert_failure 2
-  assert_output --partial 'queue item fix is done ok, not open'
+  assert_output --partial 'queue item fix is done with o/r#42, and an item carries one PR per repo'
+}
+
+@test "a task across two repos lands its second PR on its done item: one PR per repo, row closed once" {
+  # NEGATIVE CONTROL: before ar-790 the second landing was refused as "done ok, not open".
+  item split 'board:game:split it' human
+  run "$LAND" 42 --item split
+  assert_success
+  : >"$LOG"
+  echo https://github.com/o/p/pull/552 >"$NOTES_FIXTURE/url"
+  printf 'abcdef0123456789abcdef0123456789abcdef01\n' >"$NOTES_FIXTURE/merge.oid"
+  run "$LAND" 552 --item split
+  assert_success
+  assert_line 'item: split done with pr:o/p#552, beside o/r#42'
+  assert_line 'board: left to its first PR, o/r#42 (agent-land on that one closes the row if its board step failed)'
+  assert_line 'landed #552'
+  run board_calls
+  assert_output ''
+  run agent-queue show split --json
+  assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.merged)"' <<<"$output")" \
+    'done ok o/r#42 o/p#552 fedcba9876543210fedcba9876543210fedcba98 abcdef0123456789abcdef0123456789abcdef01'
+  # A re-run of either PR records nothing twice; a second PR in a repo the item carries is refused.
+  run "$LAND" 552 --item split
+  assert_success
+  assert_line 'board: left to its first PR, o/r#42 (agent-land on that one closes the row if its board step failed)'
+  run agent-queue show split --json
+  assert_equal "$(jq -r .pr <<<"$output")" 'o/r#42 o/p#552'
+  echo https://github.com/o/p/pull/553 >"$NOTES_FIXTURE/url"
+  run "$LAND" 553 --item split
+  assert_failure 2
+  assert_output --partial 'queue item split is done with o/p#552, and an item carries one PR per repo'
+}
+
+@test "a done item with a bare pr: re-runs on its number and takes no PR from another repo" {
+  item legacy
+  agent-queue set legacy pr=42 merged=fedcba9876543210fedcba9876543210fedcba98 >/dev/null
+  agent-queue move legacy done --status ok >/dev/null
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  run "$LAND" 42 --item legacy
+  assert_success
+  echo https://github.com/o/p/pull/552 >"$NOTES_FIXTURE/url"
+  run "$LAND" 552 --item legacy
+  assert_failure 2
+  assert_output --partial 'done with a bare pr:42, which names no repo'
+  run agent-queue show legacy --json
+  assert_equal "$(jq -r .pr <<<"$output")" 42
 }
 
 @test "a merge commit not on origin/<base> is refused: the item stays open and no row closes" {
