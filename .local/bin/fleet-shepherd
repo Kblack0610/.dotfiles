@@ -64,8 +64,9 @@
 #
 # A pass starts with a fresh context (about 60k), where one long /loop chat re-read 100k+ on every
 # tick and compacted 12 times on 2026-11-03. There is one pass window, and each pass replaces the
-# last in the same pane (respawn-pane), so there is never a second shepherd window or session to
-# close: on 2026-11-05 a replaced pass kept a window of its own and read as a second shepherd.
+# last in the same pane (respawn-pane). On 2026-11-05 a replaced pass kept a window of its own and
+# read as a second shepherd, so one run at a time holds a lock, and each closes every other pane a
+# pass ran in on the pass server and renames any other window called shepherd.
 # Talking holds a run only while the pass is answering or young: on 2026-11-04 the human talked
 # to a pass for 70 minutes and no sweep ran. What they said goes to the next pass as a handover.
 # Lease, orders and routing: the fleet-lead skill, "Verb: pass".
@@ -934,10 +935,36 @@ pass_account() {
   claude-acct pick 2>/dev/null || true
 }
 
+# pass_panes -> "<pane>\t<session>\t<window name>" for every pane on $SERVER a pass was launched in.
+# launch_pass marks each with the pane option @shepherd_pass, which respawn-pane keeps: a pane id
+# reused after a server restart, or a window that only carries the name, does not have it. Not the
+# start command: tmux re-quotes it, so a path with a space never matches.
+pass_panes() {
+  tmux -L "$SERVER" list-panes -a -F "#{pane_id}"$'\t'"#{session_name}"$'\t'"#{window_name}"$'\t'"#{@shepherd_pass}" 2>/dev/null |
+    awk -F'\t' '$4 != "" { print $1 "\t" $2 "\t" $3 }'
+}
+
+# one_pass <pane>: the pane the new pass runs in is the only shepherd on $SERVER. Every other pane
+# a pass was launched in closes (one the runner lost track of, wherever it is), and another window
+# named $WINDOW in $SESSION, holding no pass, takes its command's name, so neither the panel nor the
+# human reads a second shepherd. On 2026-11-05 two read as shepherd at once.
+one_pass() {
+  local p keep wid name
+  while IFS=$'\t' read -r p _ _; do
+    [ -z "$p" ] || [ "$p" = "$1" ] || tmux -L "$SERVER" kill-pane -t "$p" 2>/dev/null || true
+  done < <(pass_panes)
+  keep="$(tmux -L "$SERVER" display-message -p -t "$1" '#{window_id}' 2>/dev/null)"
+  while IFS=$'\t' read -r wid name; do
+    [ "$name" = "$WINDOW" ] && [ "$wid" != "$keep" ] || continue
+    tmux -L "$SERVER" rename-window -t "$wid" "$(tmux -L "$SERVER" display-message -p -t "$wid" '#{pane_current_command}')" 2>/dev/null || true
+  done < <(tmux -L "$SERVER" list-windows -t "=$SESSION" -F "#{window_id}"$'\t'"#{window_name}" 2>/dev/null)
+}
+
 # launch_pass <id> <due> [handover file] [pane]: write the pane's launcher and start it in <pane>,
 # the last pass's, with respawn-pane -k, so the new pass takes its place in the same window. With
-# no pane, a new window of the pass session. The launcher carries the runner's environment, since
-# a tmux pane gets the server's, not the caller's.
+# no pane, a pass pane already in the pass window (pass_panes) is taken the same way, and only
+# with neither does the pass session get a new window. one_pass then closes any other. The
+# launcher carries the runner's environment, since a tmux pane gets the server's, not the caller's.
 launch_pass() {
   local id="$1" n acct v cmd pane
   n="$(printf '%s\n' "$2" | grep -c .)"
@@ -963,18 +990,21 @@ launch_pass() {
     # The session is made from its world's manifest, as tmx makes every world. With no server,
     # one started from the runner's unit would die with the unit, so it gets a scope.
     if tmux -L "$SERVER" list-sessions >/dev/null 2>&1 || ! command -v systemd-run >/dev/null 2>&1; then
-      tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1
+      # 9>&-: a server started here must not inherit the run lock (cmd_run) and hold it forever.
+      tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1 9>&-
     else
-      systemd-run --user --scope --quiet tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1
+      systemd-run --user --scope --quiet tmx ensure "$SERVER" "$SESSION" >/dev/null 2>&1 9>&-
     fi
   fi
   pane="${4:-}"
+  [ -n "$pane" ] || pane="$(pass_panes | awk -F'\t' -v s="$SESSION" -v w="$WINDOW" '$2 == s && $3 == w { print $1; exit }')"
   if [ -n "$pane" ]; then
     tmux -L "$SERVER" respawn-pane -k -t "$pane" -c "$PASS_CWD" "$cmd" || pane=""
   else
     pane="$(tmux -L "$SERVER" new-window -d -P -F '#{pane_id}' -t "=$SESSION:" -n "$WINDOW" -c "$PASS_CWD" "$cmd")" || pane=""
   fi
   [ -n "$pane" ] || { rm -f "$LEDGER/.proof-$id"; return 1; }
+  tmux -L "$SERVER" set-option -p -t "$pane" @shepherd_pass 1 2>/dev/null || true
   printf '%s\t%s\t%s\t%s\n' "$id" "$(date +%s)" "$n" "$pane" > "$PASS"
   # The pass is the shepherd: no pass moves it, and fleet-sessions counts it apart from the agent
   # sessions. fleet-sessions label needs a live session, and this one is still starting, so the
@@ -982,6 +1012,7 @@ launch_pass() {
   mkdir -p "$LEDGER/labels" && printf 'manual\nshepherd\n' > "$LEDGER/labels/$id"
   # The lease moves to the new pass now, before it runs: from here the last pass is refused.
   write_lease runner "$id"
+  one_pass "$pane"
   tag_pane $(( $(date +%s) + FLEET_SHEPHERD_LEASE_MIN * 60 )) "$pane"
   claude-acct trust "$SERVER" "$pane" "bypass permissions on" >/dev/null 2>&1 ||
     echo "$NAME: claude did not show bypass mode; look at the pane: $ATTACH" >&2
@@ -1050,6 +1081,13 @@ cmd_run() {
   [ -n "$SERVER" ] || die "no world declares session $SESSION"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   local id start n pane st busy sv="" sd=""
+  # One run at a time: two (the timer and a hand run) would each read the same .pass and start a
+  # pass. The loser starts nothing; the run holding the lock settles the window.
+  exec 9>"$LEDGER/.run.lock" || die "cannot open $LEDGER/.run.lock"
+  if ! flock -n 9; then
+    echo "$NAME: another run is starting a pass now: no second one"
+    return 0
+  fi
   # Never two passes at once: the holder mid-sweep finishes, and the next run looks again.
   if busy="$(sweeping)"; then
     IFS=$'\t' read -r id st n <<<"$busy"
