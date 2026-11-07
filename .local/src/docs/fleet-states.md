@@ -92,6 +92,8 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
 | `hub` and agent-web Sessions tab | The whole document (`vocab` orders the rows and colours the lanes, `project` names each row), plus `~/.agent/shepherd/watch.log` for the change feed |
 | agent-panel `rows --sort` (the Stage key), the phone widget (`in_progress` for its ETAs) | `vocab` |
+| tmux status line (`.local/src/tmux/claude-status.sh`) | agent-panel's live glyph per window of the current session, plus `bucket` joined by `target`: a glyph `!` or bucket NEEDS counts as needs you, `~` as working, anything else as idle. It reads no pane text and no ask file |
+| tmux fleet view (`.local/src/tmux/fleet.sh`, agents section) | agent-panel's glyph and `bucket` by `target`, the same join |
 | tmux window names | `bucket` and `labels` per session, copied each tick onto the session's window as `@fleet_stage` and `@fleet_labels` (`tmux_project`); `.tmux.conf`'s `@fleet_fmt` draws them |
 | waybar `custom/ai-agents` (`.config/waybar/ai_agents.sh`) | `bucket`, `target`, `project`, `age_min` and `idle_min` per session by way of the `fleet_sessions.prom` textfile on Prometheus (`agent_session_age_minutes`, `agent_session_idle_minutes`), the bucket order and its in-progress and finished flags from `vocab` as `agent_session_bucket`, and the file's age |
 
