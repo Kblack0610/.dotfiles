@@ -1752,6 +1752,19 @@ failed() {
   assert_output --partial 'cleanup merge first (PR 5 at aaa11111)'
 }
 
+@test "hold: a cleanup item with one PR per repo counts the merge in each repo by its own commit" {
+  # NEGATIVE CONTROL: the one-ref match dropped an item whose pr: is "o/p#9 o/r#5" from the hold.
+  hold_setup
+  red_item split done 'chore(x): split' -7260 -7200 'o/p#9 o/r#5' 'eee55555 aaa11111' ok 'cleanup tier3'
+  printf '%s\n' .local/bin/tool > "$GHD/files.aaa11111"
+  echo 'run tool' > "$GHD/tool.bats"
+  ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201
+  failed 2 integ/tool.bats
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'cleanup merge split (PR 5 at aaa11111)'
+}
+
 @test "hold: a changed test file is its own area, and the shared harness is every area" {
   hold_setup
   cleanup own -7200 5 aaa11111 tests/unit/plain.bats

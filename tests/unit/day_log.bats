@@ -198,6 +198,16 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   assert_output '[{"repo":"game","by":"raiders-x","scope":"hovercraft"},{"repo":"tools","by":null,"scope":"ci"}]'
 }
 
+@test "an item that carries one PR per repo credits each of them" {
+  # NEGATIVE CONTROL: a one-ref capture read "o/game#7 o/tools#7" as no PR, so neither was credited.
+  { pr game 7 'feat(raiders): x' 2026-10-28T20:00:00Z; pr tools 7 'docs(ci): y' 2026-10-28T20:00:00Z; } | merged
+  printf '%s\n' '{"slug":"split","pr":"o/game#7 o/tools#7"}' > "$SANDBOX/items"
+  run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -c '[.merged[] | {repo, by}]' 2026-10-28
+  assert_output '[{"repo":"game","by":"split"},{"repo":"tools","by":"split"}]'
+}
+
 @test "a pass that cannot read the ledger keeps the credits its last record held and names it" {
   pr game 7 'feat: x' 2026-10-28T20:00:00Z | merged
   echo '{"slug":"raiders-x","pr":"o/game#7"}' > "$SANDBOX/items"

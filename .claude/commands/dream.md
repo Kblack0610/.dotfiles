@@ -55,4 +55,4 @@ Tell the user: the project swept, counts per store (lessons, memory, mem0 propos
 
 - `nightly-sync` (23:00): raw notes -> mem0.
 - `dream` (03:00, or `/dream`): the agent's own corpus -> lessons, memory/, mem0 proposals.
-- `/remember` (on demand): notes and git -> mem0.
+- `/remember` (on demand): runs `nightly-sync` now.
