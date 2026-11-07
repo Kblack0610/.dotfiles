@@ -226,7 +226,7 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'STALLED clean, nothing on the branch, no plan file, its item dbr-p8 is running here'
   ! session_finished idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:dbr-p8'
   run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:dbr-p8'
-  assert_output 'no plan file and nothing merged'
+  assert_output 'no plan file and nothing merged; its item dbr-p8 is running here'
   # unlanded work and a plan still win over the item
   run b idle 0 0 0 30 1 3 0 - - - 1 - - - - - - - "$q"
   assert_output 'STALLED 3 dirty file(s), no PR'
@@ -239,6 +239,46 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   [ -z "$(work_blockers '' idle 0 0 0 30 gone 0 0 - - - 1)" ]
   run b idle 0 0 0 5 gone 0 0 - - - 1
   assert_output 'WORKING idle 5m'
+}
+
+@test "a merged side PR is not DONE while an item still runs here: every running item names the session" {
+  # 2026-11-06: unity-core-playground-agent-6 merged #1922 for steam-untested-reason, read DONE and
+  # was told to wind down while its own steam-beta-cut-1106 was running (three release.yml runs).
+  local own='own:steam-beta-cut-1106' why='its item steam-beta-cut-1106 is running here'
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - "$own"
+  assert_output "STALLED PR #1922 merged, tree clean, $why"
+  ! session_finished idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - "$own"
+  run work_blockers '' idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - "$own"
+  assert_output "$why"
+  # the same with every phase ticked, a single-phase plan, or the PR found only in the transcript
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - 2/2 - - - - - "$own"
+  assert_output "STALLED PR #1922 merged, tree clean, $why"
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - none - - - - - "$own"
+  assert_output "STALLED PR #1922 merged, tree clean, $why"
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - '#1922' "$own"
+  assert_output "STALLED clean, nothing on the branch, its PRs #1922 merged, $why"
+  # a plan with a phase left still names that phase; a removed worktree has nothing left to land
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - 1/2 'P2' - - - - "$own"
+  assert_output 'LANDED PR #1922 merged, tree clean, next phase: P2'
+  run b idle 0 0 0 30 gone 0 0 - - - 1 - - - - - - - "$own"
+  assert_output 'DONE its worktree was removed'
+  # negative control: once its own item is done too (moved on), the merge is DONE
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - 'moved:steam-beta-cut-1106 moved on (done)'
+  assert_output 'DONE PR #1922 merged, tree clean, no plan file, its PR landed'
+  session_finished idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - 'moved:steam-beta-cut-1106 moved on (done)'
+  # two running here: the row names the first (a side item coming or going is not a new fact),
+  # the blockers name each, so `agent-queue move <slug>` gets a real slug
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - 'own:a,b'
+  assert_output 'STALLED PR #1922 merged, tree clean, its item a is running here'
+  run work_blockers '' idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - 'own:a,b'
+  assert_output 'its item a is running here; its item b is running here'
+  # item_of: the side item done, the release item running: own names the running one, and two
+  # running here are both named
+  local t=$'\t' start=1000
+  run item_of "done${t}lab:s1${t}sid-9${t}steam-untested-reason${t}1500"$'\n'"running${t}lab:s1${t}sid-9${t}steam-beta-cut-1106${t}0" sid-9 lab:s1 1 "$start"
+  assert_output 'own:steam-beta-cut-1106'
+  run item_of "running${t}lab:s1${t}sid-9${t}a${t}0"$'\n'"running${t}lab:s1${t}sid-9${t}b${t}0" sid-9 lab:s1 1 "$start"
+  assert_output 'own:a,b'
 }
 
 @test "item_of: sessions: matches by Claude session, session: only for a lone claude, a done one only after it started" {
@@ -915,7 +955,7 @@ research_item() {
   [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
 }
 
-@test "end to end: a landed session whose next phases are other queue items is DONE; its own item does not count" {
+@test "end to end: a landed session whose next phases are other queue items is DONE once its own item is done; that item is not a next phase" {
   landed_fixture
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
@@ -929,6 +969,11 @@ research_item() {
   mkdir -p "$HOME/.agent/queue/queued"
   printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nafter: fix-wave-save\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\nPhase 2 of /elsewhere/plans/plan.md: rollout\n' \
     > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  # its own item still running is an unrecorded landing (agent-land moves it to done), never DONE
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item fix-wave-save is running here' ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  "$SANDBOX/bin/agent-queue" move fix-wave-save done --status ok >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [ "$(jq -r .finished <<<"$output")" = true ]
