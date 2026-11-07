@@ -1,0 +1,46 @@
+#!/usr/bin/env bats
+# tests/Makefile UNIT_JOBS: bats --jobs is the cores free now (nproc minus the 1-minute load,
+# floor 2), so concurrent local gates share the box instead of each forking nproc ways (ar-885).
+
+setup() {
+  load '../vendor/bats-support/load'
+  load '../vendor/bats-assert/load'
+  MK="$BATS_TEST_DIRNAME/../Makefile"
+  CORES=$(nproc)
+}
+
+# unit_jobs [make args...] -> the UNIT_JOBS the Makefile computes.
+unit_jobs() { make -s --no-print-directory -f "$MK" "$@" --eval 'show-unit-jobs: ; @echo $(UNIT_JOBS)' show-unit-jobs; }
+
+# with_load <1-min load> -> UNIT_JOBS with that load in a /proc/loadavg-shaped file.
+with_load() {
+  printf '%s 1.00 1.00 1/100 1\n' "$1" > "$BATS_TEST_TMPDIR/loadavg"
+  unit_jobs UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg"
+}
+
+@test "an idle box gets every core" {
+  run with_load 0.00
+  assert_success
+  assert_output "$CORES"
+}
+
+@test "a loaded box gets only the free cores" {
+  [ "$CORES" -ge 4 ] || skip "needs 4 cores"
+  run with_load "$((CORES - 3)).00"
+  assert_output "3"
+}
+
+@test "a box at or over its cores gets the floor of 2, never 0 or less" {
+  run with_load "$((CORES + 10)).00"
+  assert_output "2"
+}
+
+@test "an unreadable load source falls back to 2" {
+  run unit_jobs UNIT_LOADAVG="$BATS_TEST_TMPDIR/missing"
+  assert_output "2"
+}
+
+@test "an explicit UNIT_JOBS still wins" {
+  run unit_jobs UNIT_JOBS=7
+  assert_output "7"
+}
