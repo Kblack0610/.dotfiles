@@ -357,7 +357,7 @@ SH
   refute_output --partial 'sess-a'
 }
 
-@test "ended lists the window's sessions newest first and leaves out the runners" {
+@test "ended lists the window's sessions newest first, joins their PRs and leaves out the runners" {
   "$SUBJECT" run
   run "$SUBJECT" ended --days 3650
   assert_success
@@ -366,9 +366,38 @@ SH
   assert_equal "$(printf '%s\n' "$output" | jq -s 'map(.updated_epoch) == (map(.updated_epoch) | sort | reverse)')" true
   assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0] | keys')" \
     '["account","cost_usd","harness","project","prs_merged","prs_open","session_id","title","updated_epoch"]'
+  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0].prs_merged')" 1
   SO_NOW=$((SO_NOW + 3651 * 86400)) run "$SUBJECT" ended --days 1
   assert_success
   assert_output ''
+}
+
+@test "ended reads the registry, so a session shows the day it stops, before any outcome row" {
+  run "$SUBJECT" ended --days 1
+  assert_success
+  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(.session_id) | sort')" '["sess-a","sess-b","sess-c"]'
+  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0]')" \
+    '{"session_id":"sess-a","project":"proj","title":"title a","harness":null,"account":null,"cost_usd":1,"updated_epoch":1792368000,"prs_merged":0,"prs_open":0}'
+  # negative control: a stop before the window is not listed
+  SO_NOW=$((STOP + 86401)) run "$SUBJECT" ended --days 1
+  assert_success
+  assert_output ''
+}
+
+@test "ended lists a session whose transcript is gone, and one whose transcript has no entrypoint" {
+  jq -cn --argjson u "$STOP" '{session_id: "sess-gone", project: "proj", transcript: "/nonexistent/x.jsonl", title: "gone", updated: $u}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  run "$SUBJECT" ended --days 1
+  assert_success
+  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(.session_id) | sort')" '["sess-a","sess-b","sess-c","sess-gone"]'
+}
+
+@test "ended keeps an outcome row with no registry row, and leaves out a runner it filed" {
+  "$SUBJECT" run
+  rm "$SO_SESSIONS/proj/sessions.jsonl"
+  run "$SUBJECT" ended --days 1
+  assert_success
+  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(.session_id) | sort')" '["sess-a","sess-b","sess-c"]'
 }
 
 @test "costs lists the window's sessions with the runners, each with its kind and runner" {

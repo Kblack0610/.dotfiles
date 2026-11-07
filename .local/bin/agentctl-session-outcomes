@@ -4,7 +4,7 @@
 #   agentctl-session-outcomes [run] [--all]                observe due sessions (--all: every one)
 #   agentctl-session-outcomes worst [--project P] [--days N] [-n N] [--json]
 #   agentctl-session-outcomes card <session-id prefix> [--json]   one session's full card
-#   agentctl-session-outcomes ended [--days N]             the sessions observed that recently, one JSON line each, newest first
+#   agentctl-session-outcomes ended [--days N]             the sessions that stopped that recently, one JSON line each, newest first
 #   agentctl-session-outcomes costs [--days N]             what each session in the window cost and on what, runners too (the hub's Costs tab)
 #   agentctl-session-outcomes langfuse [--all]             push outcomes and judge verdicts to Langfuse as scores
 #   agentctl-session-outcomes backfill-harness YYYY-MM     give that month's rows with no harness one
@@ -447,19 +447,50 @@ cmd_worst() {
 }
 
 # ended: what the hub's Sessions table lists as ended (hub_core::session_table), for a session
-# with no queue item. Rows exist only after a nightly run, and a headless runner call is not a session.
+# with no queue item. The Stop-hook registry has a session from its first stop, so it shows the
+# day it ends rather than after the 02:30 run; its outcome row, once written, adds the PR counts and
+# harness, and an opencode or Codex session (no registry row) comes from its outcome row alone.
+# A headless call is not a session: `_runner` in its outcome row, or a transcript whose first
+# entrypoint is sdk-cli before one is written.
 cmd_ended() {
-  local days=1
+  local days=1 since work
   while [ $# -gt 0 ]; do
     case "$1" in
       --days) days="${2:-1}"; shift 2 ;;
       *) echo "$NAME ended: unknown arg $1" >&2; return 2 ;;
     esac
   done
-  so_latest "$OUT" | jq -cn --argjson now "$NOW" --argjson days "$days" '
-    [inputs | select(.project != "_runner" and .updated_epoch >= $now - $days * 86400)]
-    | sort_by(-.updated_epoch)[]
-    | {session_id, project, title, harness, account, cost_usd, updated_epoch, prs_merged, prs_open}'
+  since=$((NOW - days * 86400))
+  work="$(mktemp -d)" || return 1
+  # shellcheck disable=SC2064
+  trap "rm -rf '$work'" EXIT
+  so_latest "$OUT" > "$work/latest.jsonl" || return 1
+  if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then
+    cat "$SESSIONS"/*/sessions.jsonl
+  fi | jq -cnR --argjson since "$since" '
+    [inputs | fromjson? | select(type == "object" and .session_id and (.updated | type) == "number" and .updated >= $since)]
+    | group_by(.session_id) | map(max_by(.updated)) | .[]' > "$work/reg.jsonl" || return 1
+  # One grep over every transcript, its first entrypoint each (-m1 per file; -o can print two from
+  # that line, so awk keeps the first). A missing transcript, or one with no entrypoint, is not
+  # headless: grep exits nonzero for it, which must not fail the listing.
+  jq -r '.transcript // empty' "$work/reg.jsonl" | sort -u |
+    { xargs -r -d '\n' grep -m1 -oH '"entrypoint": *"[^"]*"' 2>/dev/null || :; } |
+    awk -F'"entrypoint"' '!seen[$1]++ && $2 ~ /"sdk-cli"/ { sub(/:$/, "", $1); print $1 }' |
+    jq -R . | jq -s . > "$work/headless.json" || return 1
+  jq -cn --argjson since "$since" --slurpfile reg "$work/reg.jsonl" --slurpfile latest "$work/latest.jsonl" \
+      --slurpfile headless "$work/headless.json" '
+    ($latest | map({key: .session_id, value: .}) | from_entries) as $o
+    | ($headless[0] | map({key: ., value: true}) | from_entries) as $hl
+    | ($reg | map({key: .session_id, value: true}) | from_entries) as $inreg
+    | [ ($reg[] | select($hl[.transcript // ""] | not) | . as $r | ($o[$r.session_id] // {}) as $p
+          | {session_id, project, title: (.title // .first_prompt // ""), harness: ($p.harness // null),
+             account: ((.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a) // $p.account // null),
+             cost_usd: (.cost_usd // $p.cost_usd // null),
+             updated_epoch: ([.updated, ($p.updated_epoch // 0)] | max),
+             prs_merged: ($p.prs_merged // 0), prs_open: ($p.prs_open // 0), _runner: ($p.project == "_runner")}),
+        ($latest[] | select(.updated_epoch >= $since and ($inreg[.session_id] | not))
+          | {session_id, project, title, harness, account, cost_usd, updated_epoch, prs_merged, prs_open, _runner: (.project == "_runner")}) ]
+    | map(select(._runner | not) | del(._runner)) | sort_by(-.updated_epoch)[]'
 }
 
 # costs: one line per session updated in the window, runner calls included, with what the hub's
