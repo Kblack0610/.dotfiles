@@ -85,7 +85,7 @@ BUCKET_ORDER="NEEDS STALLED DONE LANDED CHAT WORKING PARKED"
 BUCKET_FINISHED="DONE LANDED"
 BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 
-# session_bucket <status> <plan_mode 0|1> <asks> <heavy 0|1> <idle_min> <git 0|1> \
+# session_bucket <status> <plan: 1 when status is waiting on an ExitPlanMode approval, else 0> <asks> <heavy 0|1> <idle_min> <git 0|1> \
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
@@ -112,7 +112,10 @@ session_bucket() {
   # Parked on purpose: its claude is gone, so a message would wake nothing, and nothing in it
   # moves until it is unparked.
   [ "$st" = parked ] && { echo "PARKED claude exited to save usage; claude-acct unpark resumes it"; return; }
-  [ "$st" = waiting ] && { echo "NEEDS waiting on a prompt or permission"; return; }
+  if [ "$st" = waiting ]; then
+    [ "$2" = 1 ] && echo "NEEDS plan awaiting approval" || echo "NEEDS waiting on a prompt or permission"
+    return
+  fi
   # A session with an open question carries on with what does not depend on the answer. The
   # bucket stays NEEDS (the human still owes the answer), but one whose activity alone would read
   # WORKING busy or shell says so, and keeps WORKING's overdue check. Asking the rules below with no
@@ -162,7 +165,6 @@ bucket_facts() {
   [ "${18:--}" = - ] || nm=" (${18})"
   [ "$heavy" = 1 ] && { echo "WORKING heavy child process"; return; }
   [ "$asks" -gt 0 ] && { echo "NEEDS $asks pending ask(s)"; return; }
-  [ "$plan" = 1 ] && { echo "NEEDS plan awaiting approval"; return; }
   [ "$idle" -lt "$FLEET_IDLE_MIN" ] && { echo "WORKING idle ${idle}m"; return; }
   # wt done reaps a worktree once its work landed; nothing is left here to land or lose.
   [ "$git" = gone ] && { echo "DONE its worktree was removed"; return; }
@@ -847,6 +849,11 @@ collect() {
        (.time_use.parked_min // 0), (.compactions // 0), (.summary | text), (.doing | text), (.said | text),
        (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text), (.account | text)]
       | map(tostring) | join("\t")' <<<"$line")
+    # plan_mode alone is only a mode: an idle session in it with no plan written is not waiting
+    # on anyone (2026-11-06 hub/dotfiles:1 read NEEDS for an unsent draft). An approval is open
+    # only while the dialog is: status waiting with ExitPlanMode as the last tool call. `doing`
+    # outlives the dialog (a rejected plan leaves it), so it counts only together with waiting.
+    if [ "$plan" = 1 ] && { [ "$status" != waiting ] || [[ "$doing" != ExitPlanMode* ]]; }; then plan=0; fi
     prs="$(session_prs "$transcript")"
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
