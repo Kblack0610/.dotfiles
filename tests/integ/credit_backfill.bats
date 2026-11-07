@@ -49,13 +49,15 @@ SH
 pr() { local n="$1" size="$2"; shift 2; jq -n --argjson s "$size" '{additions: $s, deletions: 0, files: [$ARGS.positional[] | {path: .}]}' --args "$@" >"$GH_PRS/$n.json"; }
 # merged <N> <day> -- PR N merged at noon UTC on <day>.
 merged() { local f="$GH_PRS/$1.json"; jq --arg t "$2T12:00:00Z" '.merged_at = $t' "$f" >"$f.new" && mv "$f.new" "$f"; }
-# done_item <slug> <pr> [<plan> <phase>] -- a landed item on the repo's own project; `phases:` is
-# written as add --plan writes it, since set has no verb for it.
+# done_item <slug> <pr> [<plan> <phase>] -- a landed item on the repo's own project with no merged:,
+# as items closed before agent-queue required one are (so its pr: goes on after the close); `phases:`
+# is written as add --plan writes it, since set has no verb for it.
 done_item() { local s="$1" n="$2" aq="$REPO_ROOT/.local/bin/agent-queue"
   "$aq" add --project game --slug "$s" "$s" >/dev/null 2>&1
-  "$aq" set "$s" pr="acme/game#$n" ${3:+plan="$3"} >/dev/null
+  [ -z "${3:-}" ] || "$aq" set "$s" plan="$3" >/dev/null
   [ -z "${4:-}" ] || sed -i "0,/^plan: /s//phases: $4\nplan: /" "$AGENT_QUEUE_DIR"/queued/*-"$s".md
-  "$aq" move "$s" done --status ok >/dev/null; }
+  "$aq" move "$s" done --status ok >/dev/null
+  "$aq" set "$s" pr="acme/game#$n" >/dev/null; }
 lines() { grep -v '^#' "$CREDIT_BACKFILL_DIR/game.tsv" | cut -f1-9 | tr '\t' '|'; }
 
 @test "propose credits an item to the game its PR's files belong to, and keeps a shared one home" {
