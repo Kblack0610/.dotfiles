@@ -2672,6 +2672,34 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   [ ! -e "$mark" ] || fail "a stale mark survived a reap that read active items"
 }
 
+# 2026-11-07 steam-beta-cut-1106: failed "session ended" while its Claude worked. agent-panel left it
+# out (load, a compaction), and the item recorded session ids, so the live tmux session did not count.
+# A recorded Claude whose process still runs is alive whatever the panel lists.
+@test "reap keeps an item whose recorded Claude process is running though agent-panel leaves it out, and settles it once the process is gone" {
+  project game beta "$SANDBOX/repos/game"
+  started_item busy lab:game-agent-1
+  sed -i 's/^agent: claude/agent: claude\nsessions: s1 s2/' "$AGENT_QUEUE_DIR"/running/*-busy.md
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-ask 'exit 0'
+  stub agent-panel 'echo "{\"target\":\"lab/other-agent-9:1\",\"status\":\"busy\",\"session_id\":\"s9\"}"'
+  export DISPATCH_REAP_CONFIRM=0
+  tail -f /dev/null >/dev/null 2>&1 3>&- & pid=$!   # sleep is a stub here
+  mkdir -p "$HOME/.claude-bnb/sessions"
+  jq -nc --argjson p "$pid" '{pid: $p, sessionId: "s2"}' > "$HOME/.claude-bnb/sessions/$pid.json"
+  cmd_reap >/dev/null; cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(qitem running busy)" ] || { kill "$pid"; fail "reaped an item whose Claude process is running"; }
+  # A pid file for another session id, or a dead pid, is not this item's Claude.
+  jq -nc --argjson p "$pid" '{pid: $p, sessionId: "other"}' > "$HOME/.claude-bnb/sessions/$pid.json"
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-busy.md 2>/dev/null)" ] || { kill "$pid"; fail "another session's process kept the item"; }
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  rm -f "$FLEET_DISPATCH_DIR"/reap-miss/*
+  agent-queue reopen busy --why test >/dev/null
+  jq -nc --argjson p "$pid" '{pid: $p, sessionId: "s2"}' > "$HOME/.claude-bnb/sessions/$pid.json"
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-busy.md 2>/dev/null)" ] || fail "a dead pid kept the item"
+}
+
 # Confirmed gone stays gone: settle_item leaves an item whose PR is open waiting, and it must not
 # re-enter the mark-then-confirm cycle, logging a fresh miss and settling half as often.
 @test "reap keeps a confirmed miss for an item it leaves waiting on its open PR" {

@@ -551,7 +551,8 @@ panel_lists() { [ "$1" = claude ] || [ "$(harness_launcher "$1")" = claude-lazer
 # seconds (its claude may still be booting), or a panel it cannot read or that lists nobody.
 # An item that records its session ids is alive only while one of them is on the panel; the tmux
 # session counts only for one that records none: worktree lanes are recycled, and a new Claude in
-# an old item's lane is not its session (2026-11-07 ar-255, ar-487). REAP_PANEL caches one read per pass,
+# an old item's lane is not its session (2026-11-07 ar-255, ar-487). A recorded Claude whose process
+# still runs (claude_pid_live) is alive whatever the panel lists. REAP_PANEL caches one read per pass,
 # so its verdict is one witness: reap settles on it only when the reap before also missed (reap_confirm).
 claude_gone() {
   local server="$1" sess="$2" agent="$3" started="$4" sids="$5" t
@@ -566,11 +567,30 @@ claude_gone() {
   [ $(( $(date +%s) - t )) -ge "$DISPATCH_REAP_GRACE" ] || return 1
   [ -n "${REAP_PANEL+set}" ] || REAP_PANEL=$(agent-panel list --json 2>/dev/null) || REAP_PANEL=''
   [ -n "$REAP_PANEL" ] || return 1
+  [ -z "$sids" ] || ! claude_pid_live "$sids" || return 1
   jq -e -s --arg t "$server/$sess" --arg ids "$sids" '
     ($ids | split(" ") | map(select(. != ""))) as $ids
     | any(.[]; if $ids != [] then (.session_id // "") as $s | $s != "" and ($ids | index($s)) != null
                else $t != "/" and ((.target // "") | sub(":[^:/]*$"; "")) == $t end)
     | not' <<<"$REAP_PANEL" >/dev/null
+}
+
+# claude_pid_live <session ids> -- exit 0 when a Claude process recorded for one of those ids is
+# running: its ~/.claude*/sessions/<pid>.json names the id, the pid is alive and (when the file
+# records it) has the start time the file records, so a reused pid is not a session. agent-panel is
+# a view of those files and can leave a live Claude out (under load, around a compaction); the
+# process is what makes a session gone. 2026-11-07 steam-beta-cut-1106 was failed with its Claude working.
+claude_pid_live() {
+  local pid start ids="$1" cur
+  while IFS=$'\t' read -r pid start; do
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+    [ -n "$start" ] && { cur=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20); [ -z "$cur" ] || [ "$cur" = "$start" ] || continue; }
+    return 0
+  done < <(cat "$HOME"/.claude*/sessions/*.json 2>/dev/null | jq -r --arg ids "$ids" '
+    ($ids | split(" ") | map(select(. != ""))) as $ids
+    | select((.sessionId // "") as $s | .pid != null and $s != "" and ($ids | index($s)) != null)
+    | [.pid, (.procStart // "")] | @tsv' 2>/dev/null)
+  return 1
 }
 
 # reap_confirm <slug> -- exit 0 when an earlier reap, at least DISPATCH_REAP_CONFIRM seconds before,
