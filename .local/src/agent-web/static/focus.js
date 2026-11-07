@@ -22,7 +22,7 @@
 // where a row action writes.
 
 // `links` are the nav's places from the last read (View.places: a day's own links, else
-// today's), kept while the outbox is open; null until a read. `undo` is the note as it was
+// today's), kept while the outbox is open or a read's places are null; null until a read. `undo` is the note as it was
 // before the last row removed.
 const fcs = { data: null, err: null, raw: false, open: {}, copied: false, edit: null, saved: null, links: null, busy: false, undo: null };
 
@@ -129,7 +129,7 @@ function noteParts() {
 // places in their order, each once) and then the open note's parts. Only the view open now is
 // marked; each place opens in this view, so Back returns.
 function dayNav() {
-  if (fcs.data) fcs.links = fcs.data.places;
+  if (fcs.data && fcs.data.places) fcs.links = fcs.data.places;
   const t = focusTarget().split(/[|#]/)[0].trim();
   const cur = outboxOpen() ? "outbox" : /^daily(:|$)/.test(t) ? "daily" : t;
   const parts = noteParts();

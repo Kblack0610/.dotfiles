@@ -171,6 +171,12 @@ test("a page opened straight on the outbox reads once for the nav's places and d
   run(`obx.view = null; st.arg = ""`);
 });
 
+test("a read whose places are unknown (today could not be read) keeps the nav's links", () => {
+  run(`st.tab = "daily"; st.arg = ""; fcs.links = ${JSON.stringify(day.places)}; fcs.data = { ...${JSON.stringify(day)}, note: { ...${JSON.stringify(day.note)}, target: "status/inbox", date: null }, places: null }; redraw()`);
+  assert.match(box("d-nav").innerHTML, /href="#daily\/lab\/projects\/index"[^>]*>Projects<\/a>/);
+  assert.equal(run("fcs.links.length"), day.places.length);
+});
+
 // Edit and Save: the page's side of `notes put --base` (the CLI's compare-and-swap is tested in
 // notes-cli, the 200/409/502 mapping in agent-web's cli.rs).
 const store = new Map();

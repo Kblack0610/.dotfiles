@@ -45,7 +45,7 @@ fn item(i: &Item, p: Palette, w: usize) -> Vec<Line<'static>> {
 }
 
 /// The day's briefing under the lanes: each section's title, then its lines word-wrapped under
-/// a two-space indent, blank lines and HTML comments left out.
+/// a two-space indent, blank lines and HTML comments (one line or several) left out.
 fn brief(b: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![
         Line::raw(""),
@@ -64,9 +64,14 @@ fn brief(b: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
                 w,
             ));
         }
+        let mut comment = false;
         for l in s.markdown.lines() {
             let l = l.trim();
-            if l.is_empty() || l.starts_with("<!--") {
+            if comment || l.starts_with("<!--") {
+                comment = !l.contains("-->");
+                continue;
+            }
+            if l.is_empty() {
                 continue;
             }
             out.extend(crate::projtab::wrapped(
@@ -220,7 +225,7 @@ mod tests {
         let mut v = view("## Focus\n### Low\n- [ ] one\n## Notes\nhi\n");
         let mut b = build(Note {
             rel: "journal/refs/2026-11-05/briefing".into(),
-            markdown: "# Briefing\nAs of 07:00, two things.\n<!-- gen -->\n\n## Needs you\n- answer the ask one two three four\n".into(),
+            markdown: "# Briefing\nAs of 07:00, two things.\n<!-- gen -->\n<!-- a\nnote -->\n\n## Needs you\n- answer the ask one two three four\n".into(),
             exists: true,
             ..Default::default()
         });

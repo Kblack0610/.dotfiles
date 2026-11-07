@@ -96,8 +96,9 @@ pub struct View {
     pub sections: Vec<Section>,
     /// The day's briefing, read whole, under a day note whose day has one.
     pub brief: Option<Box<View>>,
-    /// The links the web nav lists as places: a day note's own, else today's note's.
-    pub places: Vec<Link>,
+    /// The links the web nav lists as places: a day note's own, else today's note's; None when
+    /// today's could not be read, so the nav keeps the ones it has.
+    pub places: Option<Vec<Link>>,
 }
 
 fn show(runner: &dyn Runner, target: &str) -> Result<String, String> {
@@ -118,14 +119,14 @@ pub fn view_of(runner: &dyn Runner, json: &str) -> Result<View, String> {
 
 /// A view with its briefing and places read: the day's briefing under a day note, and the nav's
 /// places (a day note's own links, else today's). A briefing or a today that cannot be read is
-/// left out, never an error: the note itself was read.
+/// left out (None), never an error: the note itself was read.
 fn around(runner: &dyn Runner, mut v: View) -> View {
     let read_bare = |t: &str| show(runner, t).and_then(|j| parse(&j)).ok();
     if v.note.date.is_some() {
-        v.places = v.note.links.clone();
+        v.places = Some(v.note.links.clone());
         v.brief = v.note.brief.as_deref().and_then(read_bare).map(Box::new);
     } else {
-        v.places = read_bare("daily").map(|d| d.note.links).unwrap_or_default();
+        v.places = read_bare("daily").map(|d| d.note.links);
     }
     v
 }
@@ -461,10 +462,10 @@ mod tests {
             "daily",
         )
         .unwrap();
-        assert_eq!(v.places[0].target, "outbox");
+        assert_eq!(v.places.as_ref().unwrap()[0].target, "outbox");
         let b = v.brief.expect("the briefing");
         assert_eq!(b.sections[0].title, "Needs you");
-        assert!(b.brief.is_none() && b.places.is_empty(), "read bare");
+        assert!(b.brief.is_none() && b.places.is_none(), "read bare");
         // A briefing that cannot be read is left out; the day still reads.
         let v = read(&Fake(vec![("daily", DAY)]), "daily").unwrap();
         assert!(v.brief.is_none());
@@ -478,9 +479,9 @@ mod tests {
             "status/inbox",
         )
         .unwrap();
-        assert_eq!(v.places[0].target, "outbox");
+        assert_eq!(v.places.as_ref().unwrap()[0].target, "outbox");
         assert!(v.brief.is_none());
         let v = read(&Fake(vec![("status/inbox", inbox)]), "status/inbox").unwrap();
-        assert!(v.places.is_empty(), "no today, no places, no error");
+        assert!(v.places.is_none(), "no today: places unknown, no error");
     }
 }
