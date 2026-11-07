@@ -875,7 +875,7 @@ item_of() {
 }
 
 # handoff_of <qall> <item_of's answer> -> "<ask id>\t<doc>" when the item is of a doc+ask kind
-# (kinds.json `exit`, by the item's type or its title's `type(area):` prefix) and has handed its work
+# (kinds.json `exit`, by the item's `type`, which agent-queue sets from `notes row parse`) and has handed its work
 # over: its `report` doc exists and its `ask` is filed. That ask is the deliverable, so it is not the
 # session's open question, and the item has moved on. Else nothing.
 handoff_of() {
@@ -884,7 +884,7 @@ handoff_of() {
   [ -r "$KINDS" ] || return 0
   IFS=$'\t' read -r ask doc < <(jq -r --arg s "${slug%% *}" --slurpfile k "$KINDS" '
     select(.slug == $s)
-    | (.type // ((.title // .task // "") | capture("^(?<t>[a-z]+)(\\([A-Za-z0-9_./-]+\\))?:").t // "")) as $t
+    | (.type // "") as $t
     | select($t != "" and $k[0][$t].exit == "doc+ask" and (.report // "") != "" and (.ask // "") != "")
     | [.ask, .report] | @tsv' <<<"$1" 2>/dev/null)
   [ -n "${ask:-}" ] && [ -f "${doc/#\~/$HOME}" ] && compgen -G "$ASK_ROOT/*/$ask.md" >/dev/null && printf '%s\t%s\n' "$ask" "$doc"

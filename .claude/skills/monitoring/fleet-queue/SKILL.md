@@ -46,7 +46,7 @@ Not for how dispatch picks and starts sessions (`fleet-dispatch`), or an account
 
 ## Land and close
 
-1. `agent-land <pr>` runs fetch, item-line, checks, merge, proof, item, board, plan. Add `--item <slug>` when the session records more than one item, `--plan <file> --phase "<text>"` to tick a plan phase, `--dry-run` to see the steps.
+1. `agent-land <pr>` runs fetch, item-line, checks, merge, proof, item, board, plan. Add `--item <slug>` when the session records more than one item, `--plan <file> --phase "<text>"` to tick a plan phase, `--dry-run` to see the steps. Run it from a checkout of the PR's repo: the number is read in `--repo <owner>/<repo>`, else the repo of the item's own `pr:`, else this checkout's, and a PR outside this checkout's origin, or a merged one that is not the item's, is refused.
 2. The item is `--item`, then `$AGENT_QUEUE_ITEM`, then `agent-queue mine`. With none it refuses before any gh call; add one with `agent-queue add --running`.
 3. Exit 0 landed, 1 a step failed (fix it and re-run; an already merged PR skips checks and merge, so the re-run finishes the record step), 2 usage (more than one item without `--item`, or the removed `--project` and `--title`), 3 behind origin base or a catch-up conflict (merge the base, re-run).
 4. A `night` item stops at the open PR: `agent-queue set <slug> pr=<owner>/<repo>#<N>`, then `agent-queue move <slug> waiting`. `fleet-dispatch reap` records `merged:` and closes it once the PR merges.
