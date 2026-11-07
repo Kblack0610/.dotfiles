@@ -102,6 +102,29 @@ covered_log() {
   assert_output --partial " Tmux sessions survive a reboot only through the snapshot."
 }
 
+@test "dup reads a memory file whose front matter never closes as body" {
+  printf -- '---\nname: x\nTmux sessions survive a reboot only through snapshots, never by themselves.\n' > "$DIR/mem.md"
+  run "$BIN" dup "$DIR/mem.md" "$F"
+  [[ $output == "0."[3-9]*" 13 - **$OLD** Tmux sessions survive"* || $output == "1.00 13 "* ]]
+}
+
+@test "dup ignores the words of a sig marker" {
+  sed -i 's/nightly\.\*red/xyzzy plugh/' "$F"
+  printf 'The regexes cover xyzzy plugh.\n' > "$DIR/mem.md"
+  run "$BIN" dup "$DIR/mem.md" "$F"
+  assert_output "0.00 0 "
+}
+
+@test "dup on an unreadable file exits 2 and prints no score" {
+  run "$BIN" dup "$DIR/none.md" "$F"
+  assert_failure 2
+}
+
+@test "pick ignores a stopword shared with a lesson" {
+  run "$BIN" pick -n 1 "$F" "never since"
+  assert_line --index 0 --partial "nothing matched"
+}
+
 @test "log records the keys of the matched lines only, one line per call" {
   "$BIN" pick -n 4 "$F" "waybar chip" | "$BIN" log proj "$F"
   run cat "$LESSONS_DELIVERED_DIR/$(date +%Y-%m).tsv"

@@ -64,7 +64,7 @@ function open_lesson(t,   k) {
 # shellcheck disable=SC2016
 TOK='
 BEGIN {
-  ns = split("this that with from into when then than only have does each what which their there they will would should could about after before every instead also been were being make made more most must need over some such them these those under until upon very your just like same other where while last first next phase plan task item file files work using used uses true false none feat chore docs refactor main master again because between done much still through without", sw, " ")
+  ns = split("this that with from into when then than only have does each what which their there they will would should could about after before every instead also been were being make made more most must need over some such them these those under until upon very your just like same other where while last first next phase plan task item file files work using used uses true false none feat chore docs refactor main master again because between done much still through without never since", sw, " ")
   for (k = 1; k <= ns; k++) STOP[sw[k]] = 1
 }
 function toks(s, out,   n, m, a, i, t) {
@@ -128,17 +128,20 @@ END {
 DUP='
 BEGIN {
   while ((getline l < mfile) > 0) {
+    whole = whole " " l
     if (++ml == 1 && l == "---") { fm = 1; continue }
     if (fm == 1) { if (l == "---") fm = 2; continue }
     mtext = mtext " " l
   }
+  if (fm == 1) mtext = whole   # an unterminated front matter is body, not a skipped file
 }
 END {
   # Blocks are finer than lessons: every "- " bullet and "#" heading, with its continuation
-  # lines. 0.35 was calibrated on them, and a long section must not dilute the score of one bullet.
+  # lines, so a long section does not dilute the score of one bullet (MEMORY_DUP_MIN in agentctl-dream was set on them).
   for (l = 1; l <= NR; l++) {
     if (raw[l] ~ /^(- |#+ )/) bl[++nb] = l
-    if (nb) bt[nb] = bt[nb] " " raw[l]
+    t = raw[l]; gsub(/<!--.*-->/, "", t)   # a sig regex is not the lesson text
+    if (nb) bt[nb] = bt[nb] " " t
   }
   for (r = 1; r <= nb; r++) {
     k = toks(bt[r], T)
