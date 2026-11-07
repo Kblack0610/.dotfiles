@@ -55,7 +55,7 @@ keeps it.
 | `notes archive [--month M] [--dry-run] [--backfill]` | Roll a month into the monthly summary + move dailies to the archive tree. |
 | `notes backlog <fun\|scheduled\|recurring>` | Open a standing backlog and print its path. `fun`/`scheduled` are tidied (sweep checked → `## Done`, restamp day counts); `recurring` is only ensured (never swept — its masters aren't checked off). |
 | `notes focus [list]` | List today's open `## Focus` items — the daily cockpit's active-task list. Same items the session-start hook surfaces at turn 1. |
-| `notes focus add "<text>"` | Append a new open task under today's `## Focus`, freshly day-stamped. Bootstraps today's note if absent. Keep it a couple words. |
+| `notes focus add "<text>"` | Add a new open task to today's `## Focus`, freshly day-stamped, in the lane its tag names, else Low. Bootstraps today's note if absent. Keep it a couple words. |
 | `notes focus done <word>` | Check off the first open `## Focus` item whose text matches `<word>` (case-insensitive). |
 | `notes focus --all` | Cross-profile cockpit: aggregate every configured profile's open `## Focus` items as TSV `profile<TAB>file<TAB>line<TAB>key<TAB>text` (for editor/jump integration). Close a row with `notes --profile <p> focus done "<key>"`. |
 | `notes inbox [list]` | Triage view of the dated-capture inbox — pending captures oldest-first with age + title, stale (≥14d) flagged. |
@@ -236,7 +236,7 @@ To write, a UI passes the row's `raw` back to `ptask --exact`, which acts only o
 ## Daily-note model
 
 Lean by design: **ONE** task list, `## Focus`, swept into `### Urgent` / `### High` /
-`### Low` / `### Done` lanes. There is no second inline list. `## Due` (and its `## Priority`
+`### Low` / `### Done` lanes, and nothing else: a bare bullet or plain line is rewritten to an open task, its indented lines stay under it, and a task in no lane files under Low. A heading, a rule or a comment is no task and stays above the lanes. There is no second inline list. `## Due` (and its `## Priority`
 ancestor) was removed because two lists in one note make every glance a merge, and anything a
 schedule surfaces IS today's work; a note left over from an older build has its Due items
 folded into Focus on the next run. **Fun** is a standing backlog file linked in the footer.
@@ -277,8 +277,8 @@ Everything that reads or writes the vault on its own, and what sets it off. Chan
 | When | What runs | What it changes |
 |---|---|---|
 | You open today's note from notes.nvim, or run `today` / `notes today` | `notes today` | Creates the note if it is missing, refreshes Morning and the footer, writes `status/watches.md`, `status/comms.md`, `status/inbox.md` and the board file, then runs the Focus sweep (next row) |
-| `notes today`, `notes focus sweep`, `notes clickup sync` | the Focus sweep | Regroups `## Focus` into its lanes and moves nothing out of it. A row leaves Focus for intake only by `notes focus ingest`, which puts it in the outbox (recorded as `removed`, `from: focus`, `why: to the outbox`) |
-| You save a note in nvim | `markdown.lua` save hooks | Stamps new tasks with a date and regroups the Focus lanes, with no moves; on a daily note, `notes clickup push` sends the status of ClickUp-linked rows |
+| `notes today`, `notes focus sweep`, `notes clickup sync` | the Focus sweep | Regroups `## Focus` into its lanes, turns each line of text into an open task, and moves nothing out of it. A row leaves Focus for intake only by `notes focus ingest`, which puts it in the outbox (recorded as `removed`, `from: focus`, `why: to the outbox`) |
+| You save a note in nvim | `markdown.lua` save hooks | Stamps new tasks with a date and regroups the Focus lanes, with no moves; a note named as a day also gets its lines of text turned into tasks, while another doc with a `## Focus` heading keeps its prose; on a daily note, `notes clickup push` sends the status of ClickUp-linked rows |
 | You save `outbox.md`, a project `README.md` or its `agent/README.md` | `agentctl@inbox-triage` (`--watch`, always on), once 30s pass with no other save | Moves outbox lines to their project, files inbox lines as rows (one Opus call for the untyped ones), republishes `status/inbox.md`, and starts the planner when a `#plan` row waits |
 | The triage sweep, when a `#plan` row waits | `agentctl@inbox-plan` | Adds `goal:`, `approach:` and `check:` lines to the row, sets its size, splits it when it is more than one PR |
 | Any file under `~/.notes` changes | `notes-watch`, 3s after the last change, then `notes-sync`; `git-sync-notes.timer` runs the same sync every 5 minutes | Commits, pulls and pushes the vault. `notes-mqtt` and `notes-ntfy` start a pull when another machine pushes |

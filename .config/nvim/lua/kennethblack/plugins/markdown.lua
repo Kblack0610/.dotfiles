@@ -153,6 +153,8 @@ return {
       -- The level a task has when nobody has said otherwise. Mirrors md::DEFAULT_PRIORITY.
       -- Every task carries a priority, so there is no "no tag" state to cycle through.
       local DEFAULT_PRIORITY = "high"
+      -- The level of a `## Focus` task nobody placed in a lane. Mirrors md::FOCUS_DEFAULT_PRIORITY.
+      local FOCUS_DEFAULT_PRIORITY = "low"
 
       -- Ladder of priority levels, least -> most urgent. `step_priority` walks one rung in
       -- `dir` (+1 toward urgent, -1 toward low) and CLAMPS at either end rather than
@@ -252,16 +254,27 @@ return {
         return (line:gsub("%s+$", "")) .. " " .. tag
       end
 
-      -- Index of the default lane within `lanes`, falling back to the most urgent offered.
-      -- `lanes` can be a sub-slice, so the default is located by name rather than by its index
-      -- in the full table. Mirrors sweep::default_lane.
-      local function default_lane(lanes)
-        for i, lane in ipairs(lanes) do
-          if lane[1] == DEFAULT_PRIORITY then
+      -- Index of the lane named `level`.
+      local function lane_index(level)
+        for i, lane in ipairs(LANES) do
+          if lane[1] == level then
             return i
           end
         end
-        return 1
+      end
+
+      -- The open task a line of text in `## Focus` stands for, nil for a blank, a task, a heading,
+      -- a rule or a comment. An empty bullet comes back as the `- [ ]` slot the sweep drops.
+      -- Mirrors md::loose_task.
+      local function loose_task(l)
+        local t = l:match "^%s*(.-)%s*$"
+        if t == "" or t:match "^%- %[.%]" or t:match "^#+ " or t:match "^%-%-%-" or t:match "^<!%-%-" then
+          return nil
+        end
+        if t:match "^[-*+]$" then
+          return "- [ ] "
+        end
+        return "- [ ] " .. (t:match "^[-*+]%s+(.*)$" or t)
       end
 
       -- Which LANES index this scaffold line opens, or nil if it's a non-lane scaffold
@@ -275,21 +288,26 @@ return {
         return nil
       end
 
-      -- Pure rebuild of the `## Focus` body, grouped by priority + status: untagged todos
-      -- on top, then `### Urgent`/`### High`/`### Low` (open tasks), finished (`[x]`) under
-      -- `--- / ### Done`; an in-progress `[/]` keeps its mark inside its lane. Once the
-      -- section is active, ALL lane headers + Done are emitted even when empty, so the
-      -- columns stay put as stable drop targets. A task's #tag is the source of truth, but an
-      -- untagged task sitting under a lane header inherits that lane's tag (drop-to-tag) when
-      -- `inherit` is set. Inherit is ON for the on-save sweep (you dragged a task into a
-      -- column) and OFF for the interactive cursor-follow cycle (so clearing a tag actually
-      -- clears it instead of the task re-inheriting the lane it still sits under). The single
-      -- empty `- [ ]` placeholder is kept after the untagged block. `nil` means "nothing to
-      -- organize" (no priority-tagged open task, no done, no scaffold). Idempotent.
-      local function rebuild_focus_body(body, inherit, lanes, force)
-        lanes = lanes or LANES
+      -- Pure rebuild of the `## Focus` body, grouped by priority + status:
+      -- `### Urgent`/`### High`/`### Low` (open tasks), finished (`[x]`) under `--- / ### Done`;
+      -- an in-progress `[/]` keeps its mark inside its lane. ALL lane headers + Done are emitted
+      -- even when empty, so the columns stay put as stable drop targets, and the empty `- [ ]`
+      -- slot goes. A task's #tag is the source of truth, but an untagged task sitting under a
+      -- lane header inherits that lane's tag (drop-to-tag) when `inherit` is set. Inherit is ON
+      -- for the on-save sweep (you dragged a task into a column) and OFF for the interactive
+      -- cursor-follow cycle (so clearing a tag actually clears it instead of the task
+      -- re-inheriting the lane it still sits under). Idempotent.
+      --
+      -- `kind` says which list this is. "daily" is a daily note's Focus (sweep::Layout::Focus):
+      -- a line of text is a task, a task in no lane files under Low, and the lanes are always
+      -- there. "tasks" is a sheet's `## Tasks`, which always emits and defaults to High. nil is
+      -- any other markdown with a `## Focus` heading: its prose stays, and `nil` comes back when
+      -- there is nothing to organize (no priority-tagged open task, no done, no scaffold).
+      local function rebuild_focus_body(body, inherit, kind)
+        local daily = kind == "daily"
+        local default = lane_index(daily and FOCUS_DEFAULT_PRIORITY or DEFAULT_PRIORITY)
         local open, done, placeholder, had_scaffold = {}, {}, nil, false
-        for _ = 1, #lanes + 1 do
+        for _ = 1, #LANES + 1 do
           open[#open + 1] = {}
         end
         local cur_lane = nil -- LANES index of the header we're under, else nil
@@ -310,46 +328,49 @@ return {
             else
               table.insert(open[last], l)
             end
-          elseif l:match "^%s*%- %[[xX]%]" then
-            done[#done + 1] = l
-            last = 0
-          elseif l:match "^%s*%- %[ %]%s*$" then
-            placeholder = l
-            last = nil
-          elseif l:match "^%s*%- %[" then
-            local _, lvl = strip_priority(l)
-            if lvl then
-              local i = task_lane(l)
-              table.insert(open[i], l) -- tag is the source of truth
-              last = i
-            else
-              -- Untagged: inherit the lane it was dropped under, else take the default.
-              -- Either way it leaves here TAGGED - an open task with no stated priority used
-              -- to sort above `### Urgent`, outranking one explicitly marked urgent.
-              local i = (inherit and cur_lane) or default_lane(lanes)
-              table.insert(open[i], add_tag(l, "#" .. lanes[i][1]))
-              last = i
+          else
+            -- Past the indent check, so a note under a task stays a note.
+            l = daily and loose_task(l) or l
+            if l:match "^%s*%- %[[xX]%]" then
+              done[#done + 1] = l
+              last = 0
+            elseif l:match "^%s*%- %[ %]%s*$" then
+              placeholder = l
+              last = nil
+            elseif l:match "^%s*%- %[" then
+              local _, lvl = strip_priority(l)
+              if lvl then
+                local i = task_lane(l)
+                table.insert(open[i], l) -- tag is the source of truth
+                last = i
+              else
+                -- Untagged: inherit the lane it was dropped under, else take the default.
+                -- Either way it leaves here TAGGED - an open task with no stated priority used
+                -- to sort above `### Urgent`, outranking one explicitly marked urgent.
+                local i = (inherit and cur_lane) or default
+                table.insert(open[i], add_tag(l, "#" .. LANES[i][1]))
+                last = i
+              end
+            elseif l:match "%S" then
+              table.insert(open[#LANES + 1], l)
+              last = #LANES + 1
             end
-          elseif l:match "%S" then
-            table.insert(open[#lanes + 1], l)
-            last = #lanes + 1
           end
         end
         local tagged = false
-        for i = 1, #lanes do
+        for i = 1, #LANES do
           if #open[i] > 0 then
             tagged = true
           end
         end
-        if not force and not tagged and #done == 0 and not had_scaffold then
+        if not kind and not tagged and #done == 0 and not had_scaffold then
           return nil
         end
         local out = {}
-        for _, l in ipairs(open[#lanes + 1]) do -- untagged, on top
+        for _, l in ipairs(open[#LANES + 1]) do -- what is no task, above the lanes
           out[#out + 1] = l
         end
-        out[#out + 1] = placeholder or "- [ ] "
-        for i, lane in ipairs(lanes) do -- every lane header, even when empty (drop targets)
+        for i, lane in ipairs(LANES) do -- every lane header, even when empty (drop targets)
           out[#out + 1] = ""
           out[#out + 1] = lane[2]
           for _, l in ipairs(open[i]) do
@@ -362,7 +383,7 @@ return {
         for _, l in ipairs(done) do
           out[#out + 1] = l
         end
-        return out
+        return out, placeholder
       end
 
       -- Rebuild a `## Tasks` body as a single list SORTED by priority, with a trailing
@@ -373,19 +394,17 @@ return {
       -- rule were scaffolding two real groups. Always emits: Done is part of the section, not
       -- something that shows up once there is enough to organize.
       local function rebuild_task_body(body, inherit)
-        local grouped = rebuild_focus_body(body, inherit, LANES, true)
+        local grouped, placeholder = rebuild_focus_body(body, inherit, "tasks")
         -- Re-read the lane-grouped output back into one sorted list: drop the scaffold, keep
         -- the order the lanes already put things in. Reusing the bucketing this way is what
         -- keeps the two layouts from disagreeing about which lane a task is in.
-        local open, done, placeholder, in_done = {}, {}, nil, false
+        local open, done, in_done = {}, {}, false
         for _, l in ipairs(grouped) do
           if l:match "^###%s+Done%s*$" then
             in_done = true
           elseif not (is_scaffold(l) or l:match "^%s*$") then
             if in_done then
               done[#done + 1] = l
-            elseif l:match "^%s*%- %[ %]%s*$" then
-              placeholder = l
             else
               open[#open + 1] = l
             end
@@ -492,7 +511,7 @@ return {
       local function section_end(lines, s)
         for i = s + 1, #lines do
           local footer = lines[i]:match "^%-%-%-%s*$" and (lines[i + 1] or ""):find("[[", 1, true)
-          if lines[i]:match "^##%s" or footer then
+          if lines[i]:match "^##%s" or lines[i]:match "^%s*<!%-%- rollup:start %-%->%s*$" or footer then
             return i
           end
         end
@@ -561,8 +580,9 @@ return {
 
       -- Pure: given all buffer lines, return (new_lines, changed). Only the `## Focus`
       -- section is rewritten; everything else is passed through untouched. `inherit` gates
-      -- drop-to-tag (see rebuild_focus_body): ON for the save sweep, OFF for the live cycle.
-      local function sweep_focus(lines, inherit)
+      -- drop-to-tag and `kind` picks the list (see rebuild_focus_body): inherit is ON for the
+      -- save sweep, OFF for the live cycle.
+      local function sweep_focus(lines, inherit, kind)
         local s = find_heading(lines, "^##%s+Focus%s*$")
         if not s then
           return lines, false
@@ -575,7 +595,7 @@ return {
         while #body > 0 and body[#body]:match "^%s*$" do
           table.remove(body)
         end
-        local rebuilt = rebuild_focus_body(body, inherit)
+        local rebuilt = rebuild_focus_body(body, inherit, kind)
         if not rebuilt then
           return lines, false
         end
@@ -595,13 +615,15 @@ return {
 
       -- A buffer is a project SHEET when it holds both `## Inbox` and `## Tasks`, the pair every
       -- sheet carries; `## Tasks` alone is too common a heading for a sweep that runs on every
-      -- markdown save. Anything else with a `## Focus` is a daily note. One dispatcher so the
-      -- keymaps and the save hook cannot disagree about which sweep a buffer gets.
+      -- markdown save. Anything else with a `## Focus` gets the Focus sweep, and only a note named
+      -- as a day is a daily note: any other doc can have a `## Focus` heading over prose. One
+      -- dispatcher so the keymaps and the save hook cannot disagree about which sweep a buffer gets.
       local function sweep_buffer(lines, inherit)
         if find_heading(lines, TASKS_PAT) and find_heading(lines, "^##%s+Inbox%s*$") then
           return sweep_tasks(lines, inherit)
         end
-        return sweep_focus(lines, inherit)
+        local daily = require("notes.datetag").note_date(vim.api.nvim_buf_get_name(0))
+        return sweep_focus(lines, inherit, daily and "daily" or nil)
       end
 
       -- A task line with its priority and release tags removed, so a line and the copy the sweep

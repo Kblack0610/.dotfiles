@@ -112,11 +112,7 @@ pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
     };
     for l in &f.lanes {
         out.push(Line::raw(""));
-        let name = if l.name.is_empty() {
-            "Focus"
-        } else {
-            l.name.as_str()
-        };
+        let name = l.name.as_str();
         if l.name.eq_ignore_ascii_case("done") {
             out.push(clip_line(
                 Line::from(vec![

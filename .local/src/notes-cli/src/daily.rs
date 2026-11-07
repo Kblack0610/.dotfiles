@@ -144,12 +144,10 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
 
         // Focus = "now": carry unfinished items forward; a task dated beyond the lead
         // window is pushed out to the scheduled backlog instead of cluttering today.
-        if let Some(lines) = md::section_lines(&content, "Focus") {
-            let carried: Vec<String> = lines
-                .iter()
-                .filter(|l| md::is_open_task(l))
-                .map(|l| md::stamp_line(l, today, prev_date))
-                .collect();
+        // Swept first, so a line the day's last sweep never saw is a task like the rest.
+        let swept = crate::focus_sweep::sweep_content(&content);
+        if let Some(lines) = md::section_lines(swept.as_ref().unwrap_or(&content), "Focus") {
+            let carried = carry_focus(&lines, today, prev_date);
             (focus_keep, focus_defer) = route_by_due(&carried, today);
         }
 
@@ -176,8 +174,11 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     let (promoted, sched_pruned) = promote_schedule(&sched_before, today);
     let n_promoted = promoted.len();
 
-    let mut focus_keys: std::collections::HashSet<String> =
-        focus_keep.iter().map(|l| md::task_key(l)).collect();
+    let mut focus_keys: std::collections::HashSet<String> = focus_keep
+        .iter()
+        .filter(|l| md::is_task(l))
+        .map(|l| md::task_key(l))
+        .collect();
     for pr in promoted {
         // Dedup against what already carried forward: a habit whose surfaced copy is still
         // open from yesterday must not land twice.
@@ -201,7 +202,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         s.push_str(l);
         s.push('\n');
     }
-    s.push_str("- [ ] \n");
 
     md::write_atomic(note, &s).with_context(|| format!("writing {}", note.display()))?;
     if n_promoted > 0 {
@@ -292,16 +292,43 @@ fn carry(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> Vec<String
         .collect()
 }
 
+/// A line indented under a task that is no task itself: a note, which goes where its task goes.
+fn is_note(line: &str) -> bool {
+    line.starts_with(char::is_whitespace) && !line.trim().is_empty() && !md::is_task(line)
+}
+
+/// A swept `## Focus` as it carries: each open task day-stamped, with the notes under it.
+fn carry_focus(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut under_open = false;
+    for l in lines {
+        if md::is_open_task(l) {
+            out.push(md::stamp_line(l, today, prev_date));
+            under_open = true;
+        } else if under_open && is_note(l) {
+            out.push(l.clone());
+        } else {
+            under_open = false;
+        }
+    }
+    out
+}
+
 /// Partition carried lines into `(keep, defer)`: a task dated more than `LEAD_DAYS`
 /// ahead is deferred to the scheduled backlog; undated, due-soon, and overdue stay.
 fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>) {
     let horizon = today + chrono::Duration::days(LEAD_DAYS);
     let mut keep = Vec::new();
     let mut defer = Vec::new();
+    let mut deferring = false;
     for l in lines {
-        match md::find_due(l, today) {
-            Some(due) if due > horizon => defer.push(l.clone()),
-            _ => keep.push(l.clone()),
+        if !is_note(l) {
+            deferring = md::find_due(l, today).is_some_and(|due| due > horizon);
+        }
+        if deferring {
+            defer.push(l.clone());
+        } else {
+            keep.push(l.clone());
         }
     }
     (keep, defer)
@@ -2176,6 +2203,55 @@ mod tests {
             "legacy Due item stranded:\n{out}"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A line the last sweep never saw is carried as a task with the note under it, and a
+    /// task dated past the lead window takes its note with it to the schedule.
+    #[test]
+    fn a_loose_line_carries_as_a_task_and_a_note_follows_its_task() {
+        let dir = std::env::temp_dir().join(format!("notes-loose-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        std::fs::write(
+            dir.join("journal/daily/2026-08-04.md"),
+            "# 2026-08-04\n\n## Focus\npasted line\n- bare bullet\n    its note\n\
+             - [ ] later [2026-09-01] #high\n    later's note\n- [x] finished\n    gone with it\n\n## Notes\n",
+        )
+        .unwrap();
+        let log = Logger::new(dir.join("log"), false);
+        let note = dir.join("journal/daily/2026-08-05.md");
+        create_note(&p, &log, d("2026-08-05"), &note).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+
+        assert!(out.contains("- [ ] pasted line #c0804 #low\n"), "{out}");
+        assert!(
+            out.contains("- [ ] bare bullet #c0804 #low\n    its note\n"),
+            "{out}"
+        );
+        assert!(!out.contains("later"), "deferred with its note:\n{out}");
+        assert!(!out.contains("gone with it"), "{out}");
+        let sched = std::fs::read_to_string(&p.schedule).unwrap();
+        assert!(sched.contains("\n    later's note\n"), "{sched}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A day's Focus opens on the three lanes and Done, nothing above them.
+    #[test]
+    fn a_new_note_opens_on_the_lanes() {
+        let dir = std::env::temp_dir().join(format!("notes-lanes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = profile(dir.to_str().unwrap());
+        let log = Logger::new(dir.join("log"), false);
+        std::fs::create_dir_all(&p.daily).unwrap();
+        run(&p, &log).unwrap();
+        let out = std::fs::read_to_string(today_path(&p)).unwrap();
+        assert!(
+            out.contains("## Focus\n\n### Urgent\n\n### High\n\n### Low\n\n---\n### Done\n"),
+            "{out}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
