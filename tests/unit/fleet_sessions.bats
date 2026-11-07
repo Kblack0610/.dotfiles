@@ -334,6 +334,12 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   [ "$output" = - ]
   run item_of "$(qi "queued${t}lab:s2${t}sid-8${t}a${t}0")" sid-9 lab:s1 1 "$start"
   [ "$output" = - ]
+  # a recycled lane: an item that records its own Claude is not the next Claude's in that tmux
+  # session (2026-11-07 ar-255 read "its item is running here" on lab:dotfiles-agent-17)
+  run item_of "$(qi "running${t}lab:s1${t}sid-1${t}a${t}0")" sid-9 lab:s1 1 "$start"
+  [ "$output" = - ]
+  run item_of "$(qi "waiting${t}lab:s1${t}sid-1${t}a${t}0" "done${t}lab:s1${t}sid-1${t}b${t}1500")" sid-9 lab:s1 1 "$start"
+  [ "$output" = - ]
 }
 
 @test "no PR on the branch, but the transcript's own PRs all merged: the plan decides, as for a merged PR" {

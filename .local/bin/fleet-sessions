@@ -762,8 +762,9 @@ parked_lines() {
 # -> the queue item this session worked: own:<slug>[,<slug>...] while any runs here (every one,
 # so a merged side item never hides the one still open), moved:<slug> moved on
 # (<where>) once it is done, requeued or running elsewhere, or -. sessions: (Claude session ids)
-# is the strong match. session: (the tmux session) counts only when one claude lives there, and a
-# done item by it only when it finished after this claude started: worktree names are recycled.
+# is the match for an item that records them. session: (the tmux session) counts only for one that
+# records none, when one claude lives there, and a done item by it only when it finished after this
+# claude started: worktree names are recycled (fleet-dispatch claude_gone reads the same rule).
 # An item still running or waiting here wins over one that moved on; an item that recorded no
 # session: (added by hand, `add --running`) is here when it names this Claude session, and
 # here:<slug> is one waiting here, which decides no bucket but names the item on the row.
@@ -771,7 +772,7 @@ item_of() {
   awk -F'\t' -v sid="$2" -v me="$3" -v solo="$4" -v start="$5" '
     function mine_sid(list,   n, a, i) { n = split(list, a, " "); for (i = 1; i <= n; i++) if (a[i] == sid) return 1; return 0 }
     {
-      bysid = (sid != "" && mine_sid($3)); bysess = (solo == 1 && $2 == me)
+      bysid = (sid != "" && mine_sid($3)); bysess = (solo == 1 && $2 == me && $3 == "-")
       if (!bysid && !bysess) next
       if (($1 == "running" || $1 == "waiting") && ($2 == me || ($2 == "-" && bysid))) {
         if ($1 == "running") own = own (own == "" ? "" : ",") $4
