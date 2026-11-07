@@ -63,7 +63,7 @@ function setup() {
 
 test("the header is hub-core's parts: a stopped timer is amber with a Start, and nothing runs until confirmed", () => {
   setup();
-  ctx.renderOverview();
+  run("sst.render()");
   let html = boxes.scroll.innerHTML;
   assert.match(html, /38 live: 14 hand, 18 dispatched \(0\/40 run units, 3 per pass\), 6 other<\/span> \| <span class="">dispatch on, next 13:01/);
   assert.match(html, /<span class="capwarn">shepherd timer stopped<\/span> <button class="btn sm" data-start="shepherd">Start<\/button>/);
@@ -71,7 +71,7 @@ test("the header is hub-core's parts: a stopped timer is amber with a Start, and
   assert.match(html, /21 of 38 live sessions have no queue item <button class="btn sm" data-unlinked>Show/);
   assert.match(html, /fleet-dispatch headroom: exit 1/, "what could not be read says so");
   run(`sst.confirm = "shepherd"`);
-  ctx.renderOverview();
+  run("sst.render()");
   html = boxes.scroll.innerHTML;
   assert.match(html, /Start the shepherd timer\? <button class="btn sm" data-go="shepherd">Start<\/button>/);
   assert.doesNotMatch(html, /data-start/);
@@ -79,7 +79,7 @@ test("the header is hub-core's parts: a stopped timer is amber with a Start, and
 
 test("the table is the server's rows in its order, with the overview tiles and the facet", () => {
   setup();
-  ctx.renderOverview();
+  run("sst.render()");
   const html = boxes.scroll.innerHTML;
   const order = ["hub/b:1", "lab/x:1", "ucp-394"].map((k) => html.indexOf(`data-key="${k}"`));
   assert.ok(order.every((i) => i >= 0), html);
@@ -97,7 +97,7 @@ test("the table is the server's rows in its order, with the overview tiles and t
 
 test("a row says what the columns do not: parked, no session here, and where an ended row came from", () => {
   setup();
-  ctx.renderOverview();
+  run("sst.render()");
   const html = boxes.scroll.innerHTML;
   assert.match(html, /task of hub\/b:1 <span class="pill parked">parked<\/span>/);
   assert.match(html, /task of lab\/x:1 <span class="pill">no session<\/span>/);
@@ -111,7 +111,7 @@ const PAGE = { name: "ucp-394", session_id: "s9", target: "", bucket: "DONE", ta
 test("the overview spend is the server's sum, and the tile in force clears the filter", () => {
   setup();
   run(`sst.data = { ...sst.data, spend_usd: 41.2, table: { ...sst.data.table, state: "stalled", shown: 1 } }`);
-  ctx.renderOverview();
+  run("sst.render()");
   const html = boxes.scroll.innerHTML;
   assert.match(html, /SPEND<\/span><span class="tv">\$41\.20<\/span><span class="ts1">1 shown/);
   assert.match(html, /<button class="tile on" data-ts="" style="--c:var\(--b-stalled\)">/);
@@ -231,10 +231,10 @@ test("a page refreshes with the feed, the transcript is not read for it, and the
 test("past the cap the table offers the rest", () => {
   setup();
   run(`sst.data.rows = Array.from({ length: SESSIONS_OPEN + 7 }, (_, i) => ({ ...sst.data.rows[0], key: "k" + i }))`);
-  ctx.renderOverview();
+  run("sst.render()");
   assert.match(boxes.scroll.innerHTML, /data-all="1">\+7 older/);
   run("sst.all = true");
-  ctx.renderOverview();
+  run("sst.render()");
   assert.doesNotMatch(boxes.scroll.innerHTML, /\+\d+ older/);
 });
 
@@ -255,7 +255,7 @@ test("the bucket order and colours come from the published vocabulary, not a lis
 test("a freqtrade_trading_attempt-agent-1 session reads trader in the table", () => {
   setup();
   run(`sst.data.rows = [__d]`, row("lab/freqtrade_trading_attempt-agent-1:1", { project: "trader" }));
-  ctx.renderOverview();
+  run("sst.render()");
   assert.match(boxes.scroll.innerHTML, /trader/);
   assert.doesNotMatch(boxes.scroll.innerHTML, /freqtrade_trading_attempt-agent-1<\/td>/);
 });
@@ -270,7 +270,7 @@ test("PARKED and CHAT have a colour of their own; a retired bucket takes CHAT's 
 
 test("under the table fold the last day and the shepherd; the changes and the rundowns are Log's", () => {
   setup();
-  ctx.renderOverview();
+  run("sst.render()");
   const html = boxes.scroll.innerHTML;
   for (const k of ["lanes", "shep"]) assert.match(html, new RegExp(`<details class="ovsec" data-k="${k}">`));
   for (const k of ["changes", "rundowns"]) assert.doesNotMatch(html, new RegExp(`data-k="${k}"`));
@@ -281,7 +281,7 @@ test("under the table fold the last day and the shepherd; the changes and the ru
 test("Log's ranked sessions list the week worst first, and an open row shows its card", () => {
   setup();
   run(`ost.rows = null; ost.open = null; ost.cards = {}`);
-  ctx.renderOverview();
+  run("sst.render()");
   assert.doesNotMatch(boxes.scroll.innerHTML, /data-k="ranked"/, "the ranking is Log's, not the Sessions overview's");
   ctx.renderLogRanked();
   assert.match(boxes["log-ranked"].innerHTML, /<span class="muted">7d, by friction<\/span>/);

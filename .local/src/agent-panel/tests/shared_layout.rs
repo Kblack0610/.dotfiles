@@ -73,16 +73,20 @@ fn fzf_gets_the_layout_the_helper_prints_and_the_one_saved_last() {
         assert_eq!(picked, None, "an aborted fzf selects nothing");
         let argv = fzf_argv(&log);
         let want = helper_says();
-        assert_eq!(want.len(), 2, "{want:?}");
+        assert_eq!(want.len(), 3, "{want:?}");
         for line in &want {
             assert!(
                 argv.contains(line),
                 "{saved:?}: fzf argv lacks {line}\n{argv:?}"
             );
         }
-        // Only the shared layout sets the preview window: no second one of agent-panel's own.
+        // Only the shared layout sets the preview window and its scroll keys: no second one of
+        // agent-panel's own.
         let windows = argv.iter().filter(|a| a.contains("preview-window")).count();
         assert_eq!(windows, 1, "{saved:?}: {argv:?}");
+        let scrolls = argv.iter().filter(|a| a.contains(":preview-half-page-down")).count();
+        assert_eq!(scrolls, 1, "{saved:?}: {argv:?}");
+        assert!(want[2].contains("page-down:preview-page-down"), "{want:?}");
         assert!(
             want[1].contains("transform(") && want[1].contains(" next agent-panel)"),
             "{want:?}"

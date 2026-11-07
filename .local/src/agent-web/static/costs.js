@@ -6,7 +6,14 @@
 // tiles: who pays (Burn, one row per Claude account), where the tokens go and what Langfuse sees.
 
 // open: the folded sections' state; tokWin: the tokens section's window.
-const cost = { data: null, err: null, open: {}, tokWin: "week" };
+const cost = tblTab({
+  tab: "costs", id: "costs", api: "/api/costs", hint: "search, or harness:codex -model:opus project:dotfiles",
+  state: { open: {}, tokWin: "week" }, open: () => cost.open,
+  // The view keys past the table's: the cut, the window and the sessions sort.
+  params: (p) => { const v = new URLSearchParams(st.views.costs || ""); for (const k of ["by", "w", "ssort", "sdir"]) if (v.get(k)) p.set(k, v.get(k)); },
+  head: (t) => costsHead(t.data) + `<div id="sec-table">${costsSwitch("window", t.data.windows, t.data.window, "w")}${costsSwitch("by", t.data.cuts, t.data.by, "by")}</div>`,
+  body: (t) => costsBody(t.data), tail: (t) => costsTail(t.data),
+});
 
 // Every source is a file written nightly or per call; only the token snapshots push (onEvent), so
 // the open tab re-reads on the Infra cadence; the server folds reads inside two minutes into one.
@@ -20,17 +27,6 @@ const COST_COLS = {
   per_pr: ["$/PR", "n"], src: ["src"], pr: ["PR"], at: ["updated", "n"],
 };
 
-function costsParams() {
-  const v = new URLSearchParams(st.views.costs || ""), p = tblParams(st.views.costs);
-  for (const k of ["by", "w", "ssort", "sdir"]) if (v.get(k)) p.set(k, v.get(k));
-  return p;
-}
-
-const refreshCosts = coalesce(async () => {
-  const q = costsParams().toString();
-  try { cost.data = await api("/api/costs" + (q ? "?" + q : "")); cost.err = null; } catch (e) { cost.err = e.message; }
-  if (st.tab === "costs") renderCosts();
-});
 
 // One cell, as the TUI prints it (coststab.rs `show`).
 function costCell(r, key, d) {
@@ -221,52 +217,26 @@ function costsTail(d) {
     `${d.table.shown} of ${d.table.total} rows, ${d.unpriced ? "-" : usd(d.shown_usd)}.</div>`;
 }
 
-function renderCosts() {
-  const el = $("costs");
-  const d = cost.data;
-  if (!d || !d.table) {
-    el.innerHTML = `<div class="empty">${cost.err ? esc(cost.err) : "Loading..."}</div>`;
-    return;
-  }
-  // A fold the reader just opened is in the page and not yet in `cost.open`, and the head below is
-  // built from that map: record it first, or the next repaint (a sort click) closes it again.
-  el.querySelectorAll("details[data-k]").forEach((f) => { cost.open[f.dataset.k] = f.open; });
-  if (tblRepaint("costs", d.table, () => costsBody(d))) {
-    paint($("costs-tail"), costsTail(d));
-    return;
-  }
-  paint(el, `<div id="costs-head">${costsHead(d)}</div>` +
-    `<div id="sec-table">${costsSwitch("window", d.windows, d.window, "w")}${costsSwitch("by", d.cuts, d.by, "by")}</div>` +
-    `${tblBar("costs", d.table, "search, or harness:codex -model:opus project:dotfiles")}` +
-    `<div id="costs-body">${costsBody(d)}</div><div id="costs-tail">${costsTail(d)}</div>`, cost.open);
-  seekSection();
-}
-
-// The view changed: the URL follows it and the server applies it. A new cut has other columns,
-// so its sort goes back to the cut's own.
+// A new cut has other columns, so its sort goes back to the cut's own.
 function costsView(patch) {
   if ("by" in patch) Object.assign(patch, { sort: "", dir: "" });
-  setQuery(tblSet(st.views.costs, patch));
-  refreshCosts();
+  cost.view(patch);
 }
 
 $("costs").addEventListener("click", (e) => {
   const t = e.target;
   if (t.closest && t.closest("a[target]")) return;
   const win = t.closest && t.closest("[data-tokwin]");
-  if (win) { cost.tokWin = win.dataset.tokwin; renderCosts(); return; }
+  if (win) { cost.tokWin = win.dataset.tokwin; cost.render(); return; }
   const sw = t.closest && t.closest("[data-cv]");
   if (sw) { costsView({ [sw.dataset.cv]: sw.dataset.cval }); return; }
   const ss = t.closest && t.closest("[data-ssort]");
-  if (ss) { costsView({ ssort: ss.dataset.ssort, sdir: ss.dataset.ssort && ss.dataset.sdir === "asc" ? "asc" : "" }); return; }
-  const v = tblPatch(e);
-  if (v) costsView(v);
+  if (ss) costsView({ ssort: ss.dataset.ssort, sdir: ss.dataset.ssort && ss.dataset.sdir === "asc" ? "asc" : "" });
 });
-tblListen($("costs"), costsView);
 
-const pollCosts = poll("costs", refreshCosts, COSTS_REFRESH_MS);
+const pollCosts = poll("costs", cost.refresh, COSTS_REFRESH_MS);
 TABS.costs = {
-  show() { renderCosts(); pollCosts(); },
+  show() { cost.render(); pollCosts(); },
   // A new token snapshot (main.rs `COSTS_EVENT`, sent once the server's kept read is dropped).
-  onEvent(ev) { if (st.tab === "costs" && (ev.kind === "costs" || ev.kind === "resync")) refreshCosts(); },
+  onEvent(ev) { if (st.tab === "costs" && (ev.kind === "costs" || ev.kind === "resync")) cost.refresh(); },
 };

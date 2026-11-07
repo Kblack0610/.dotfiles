@@ -37,7 +37,7 @@ Bound in `~/.tmux.conf`:
   prompt (`!`) or holding a pending ask (`A`)
 - `Prefix + y` - the questions panel: every pending question, its card, answered in place (`.local/src/tmux/questions.sh`)
 
-chooser preview prints the card above the pane tail.
+The chooser preview shows the same card under `needs you`.
 
 In the chooser:
 
@@ -46,8 +46,9 @@ In the chooser:
 - `C-s` goes to the shepherd pass running now, through `fleet-shepherd open` (the same as `Prefix o`).
 - Each row shows how long the session has been open (`45m`, ` 3h`, ` 2d`: since its claude process started, so a resume restarts it; blank on a parked row) before its target. Typing filters on everything a row shows.
 - `C-o` steps the sort: by project (grouped, the default), longest open first, needs you first, stalled first. Any sort but project is one flat list, each target led by its project. `A-o` reverses the sort. The panel reopens in the sort it was left in, saved in `${XDG_STATE_HOME:-~/.local/state}/panels/agent-panel.sort` (`src/sort.rs`).
-- The list is on top at full width and the preview below it. `C-/` steps stacked -> side by side -> hidden -> stacked, and the panel reopens in the layout `C-/` last left it in, hidden included. The layout is `panel_fzf_layout` in `../tmux/panel-lib.sh`, shared with every other panel: agent-panel runs `~/.local/src/tmux/panel-layout.sh args agent-panel` for its two fzf arguments, and `tests/shared_layout.rs` checks they reach fzf as printed.
-- The preview shows, top to bottom: the pending question card, the session's last message in full, its last tool call, and the last 12 pane lines (for a permission dialog or live prompt, which only the pane shows).
+- The list is on top at full width and the preview below it. `C-/` steps stacked -> side by side -> hidden -> stacked, and the panel reopens in the layout `C-/` last left it in, hidden included. The layout is `panel_fzf_layout` in `../tmux/panel-lib.sh`, shared with every other panel: agent-panel runs `~/.local/src/tmux/panel-layout.sh args agent-panel` for its fzf arguments, and `tests/shared_layout.rs` checks they reach fzf as printed.
+- The preview scrolls on the keys every panel shares, from that same layout: `C-d`/`C-u` half a page, `PgDn`/`PgUp` a page, and fzf's own `S-Down`/`S-Up` and the mouse wheel.
+- The preview reads summary first (`render::preview`), each part under a bold title and a dim rule: one status line (target, worktree, status, plan mode, how long open, account) and the pane title; `needs you` (amber, the only colour) with the same card the questions panel shows, the ask's (`agent-ask card`) and the open plan or question dialog's (`agent-panel dialog`); the last tool call on one line; the last message in full as plain text (`agent-panel plain`); last the bottom 8 pane lines above Claude Code's input box and status bar, for a permission prompt or a live spinner. When a dialog card shows, the pane part is left out: it is the same dialog. Changed 2026-11-07 (ar-690, ar-691): the `question` title is now `needs you` and also carries an open dialog; the last tool moved above the last message; the pane tail went from 12 lines with colour and chrome to 8 plain lines without them.
 
 ## Why a binary (replacing the old bash scripts)
 
@@ -81,6 +82,7 @@ string rather than `claude` (observed on macOS).
 | `agent-panel send --pane <server>/<pane> [--no-submit] <text>` | Type a message into a Claude pane: the one implementation (agent-web's send box and `agent-ask answer` both use it). Bracketed paste, Enter only once the input box has drawn the paste and held still, a second Enter if the box did not change, exit 3 if it still did not (the text is in the input box). It judges only Claude Code's input box (the lines between the last two rules), so a busy pane's spinner passes for neither; a pane with no box is judged whole |
 | `agent-panel dialog <target> [--options]` | The card for the plan or question dialog open in that pane, read off the live screen (`dialog.rs`): kind, title, the options as the pane numbers them, and for a plan the plan text from the transcript. `--options` prints `key<TAB>free<TAB>text`, free 1 for an option that takes typed text. Exit 1 when no dialog it can read is open (the questions panel then shows the pane) |
 | `agent-panel answer <target> <key> --expect <text> [-- <typed>]` | Press option `<key>` in that dialog, after a fresh capture shows it still reads `<text>`; an option that takes text gets `<typed>` pasted and Enter. Exit 0 sent, 3 the pane did not move on, 4 the dialog changed or closed (nothing sent). The questions panel (Prefix+y) answers plans and questions with it; hub-tui's plan approval reads the same parser |
+| `agent-panel plain [--width N]` | Markdown on stdin as plain text (`md.rs`): heading, bold and backtick marks and code fences gone (the code kept, indented), a table as one `header: value; ...` line per row, folded at `N` (default `$FZF_PREVIEW_COLUMNS`, else `$COLUMNS`, at most 110; `0` folds nothing) with list items hung. The one markdown cleaner: the preview's last message, the dialog card's plan and `agent-ask card`'s story read through it |
 | `agent-panel preview --map-file <f> <row>` | Internal fzf preview callback |
 
 ## Multiple tmux servers
@@ -102,6 +104,7 @@ which owns the detach-and-attach hop.
 - `dialog.rs` - read an open plan or question dialog off a pane capture, and answer it with keys
 - `asks.rs` — which Claude sessions own a pending ask (`agent-ask`)
 - `render.rs` — project grouping, ANSI fzf rows, preview formatting
+- `md.rs` - markdown to plain text at a width (`agent-panel plain`)
 - `sort.rs` - the sort keys, their order and the saved sort
 - `fzf.rs` — spawn fzf with the rows + preview/next callbacks, and the shared preview layout from `panel-layout.sh`
 - `chooser.rs` — orchestration for the three entry points

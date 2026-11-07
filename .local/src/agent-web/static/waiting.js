@@ -12,7 +12,7 @@ const refreshAsks = coalesce(async () => {
   st.asks = await api("/api/asks");
   renderBadge();
   if (st.tab === "home") renderHome();
-  if (st.tab === "queue") renderQueueList();
+  if (st.tab === "queue") qst.render();
 });
 
 const asking = () => st.agents.filter((a) => a.question);

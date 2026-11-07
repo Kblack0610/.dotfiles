@@ -37,7 +37,7 @@ for (const f of [...page.matchAll(/static\/([a-z]+\.js)/g)].map((m) => m[1]).fil
 const now = () => Math.floor(Date.now() / 1000);
 function draw(home, agents = [], asks = [], opened = []) {
   ctx.input = { home, agents, asks, opened };
-  return vm.runInContext(`st.agents = input.agents; st.asks = input.asks; hst.data = input.home; hst.err = null; hst.open = new Set(input.opened); hst.all = false; drawHome(); $("home").innerHTML`, ctx);
+  return vm.runInContext(`st.agents = input.agents; st.asks = input.asks; hst.data = input.home; hst.err = null; hst.open = new Set(input.opened); needT.all = false; propT.all = false; drawHome(); $("home").innerHTML`, ctx);
 }
 // Proposals' table summary, and Needs you's (`ntable`) over the rows it ranks.
 const table = (n) => ({ q: "", state: "", sort: "", dir: "desc", total: n, shown: n, states: [{ name: "all", n }], facets: [],
@@ -223,7 +223,7 @@ test("a refresh repaints around the search box in use and leaves it alone", () =
   doc.activeElement = undefined;
   assert.equal(again, first, "the board with the box in it is not repainted");
   assert.match(parts["home-need-body"].innerHTML, /Second/);
-  assert.match(parts["home-nhead"].innerHTML, /Needs you/);
+  assert.match(parts["home-need-head"].innerHTML, /Needs you/);
   assert.equal(typeof parts["home-need-chips"].innerHTML, "string");
 });
 
@@ -280,7 +280,7 @@ test("the summary leads, and a long list shows the cap with a button for the res
   assert.match(html, /<button class="btn sm" data-all="1">\+3 more<\/button>/);
   assert.doesNotMatch(draw(home({ needs: needs.slice(0, 8) })), /data-all/);
   draw(home({ needs }));
-  fire("click", stub(() => null, { all: "1" }));
+  fire("click", stub(inNeeds, { all: "1" }));
   assert.match(box.innerHTML, /red 10/);
   assert.doesNotMatch(box.innerHTML, /data-all/);
 });

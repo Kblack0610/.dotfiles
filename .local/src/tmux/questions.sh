@@ -36,7 +36,7 @@ DIALOG_REASONS='["waiting on a prompt or permission", "plan awaiting approval"]'
 # The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]". The
 # picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
-QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . pgup/pgdn scroll card . C-/ layout . esc close'
+QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
 # A row is "<slug>:<agent number>  <age>  <question>" and, under the question, what the
 # session is (its registry title) and "ended" once it has: short enough for the list column
@@ -391,7 +391,7 @@ cmd_pick() {
   # --no-input --disabled: no search box (a handful of rows), which frees the digit keys;
   # t shows the input as the answer line. --no-wrap: a long question ends in .. on its row
   # and reads in full in the card. --read0: a row is two lines (question, then session).
-  # pgup/pgdn scroll the card, a page at a time; the list is a handful of rows.
+  # The card scrolls on panel_fzf_layout's keys (C-d/C-u, pgup/pgdn), the same in every panel.
   fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" "${PANEL_FZF_LAYOUT[@]}" <"$rows" \
     --read0 --no-wrap --no-input --disabled --with-nth=2.. \
     --border-label=' questions ' --border-label-pos=3 \
@@ -402,7 +402,6 @@ cmd_pick() {
     --bind="enter:transform($me key enter {1} {q})" \
     --bind="esc:transform($me key esc {1})" \
     --bind="focus:transform($me key focus {1})" \
-    --bind="page-up:preview-page-up,page-down:preview-page-down" \
     --bind="start,resize:transform($me key fit)" >/dev/null
   return 0
 }

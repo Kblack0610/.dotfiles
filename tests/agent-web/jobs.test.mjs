@@ -56,7 +56,7 @@ const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-t
 test("the table draws the server's rows, sort, chips and dropdowns", () => {
   run("st.tab = 'infra'");
   Object.assign(jst, { data, err: null, hist: null, log: null, all: false });
-  run("renderJobs()");
+  run("jst.render()");
   const h = box.innerHTML;
   assert.match(h, /2 of 3 in 24h/);
   assert.match(h, /<th class="n" aria-sort="ascending"><button class="thsort" data-tsort="" data-tdir="desc" title="sort by started">started \^<\/button><\/th>/, "the sorted header says its direction and that a click goes back to the default");
@@ -91,7 +91,7 @@ test("a view change lands in the URL and the API asks the server for it", async 
   await new Promise((r) => setImmediate(r));
   assert.equal(ctx.history.url, "#infra?q=source%3Aci&s=failed", "the plain sort is a bare URL");
   jst.hist = "dream";
-  run("refreshJobs()");
+  run("jst.refresh()");
   await new Promise((r) => setImmediate(r));
   assert.equal(asked.at(-1), "/api/jobs?q=source%3Aci&s=failed&name=dream", "a history keeps the view");
   jst.hist = null;
@@ -101,7 +101,7 @@ test("a refresh while the search box has focus leaves the box alone", () => {
   Object.assign(jst, { data, err: null });
   box.innerHTML = "KEEP";
   doc.activeElement = { id: "jobs-q" };
-  run("renderJobs()");
+  run("jst.render()");
   doc.activeElement = null;
   assert.equal(box.innerHTML, "KEEP");
   assert.match(parts["jobs-body"].innerHTML, /playground \/ Tests/);
@@ -111,6 +111,6 @@ test("a refresh while the search box has focus leaves the box alone", () => {
 
 test("a failed collection says why instead of drawing an empty table", () => {
   Object.assign(jst, { data: { jobs: [], errors: ["gh: rate limited"] }, err: null });
-  run("renderJobs()");
-  assert.match(box.innerHTML, /<div class="empty">gh: rate limited<\/div>/);
+  run("jst.render()");
+  assert.match(box.innerHTML, /<div class="card err">gh: rate limited<\/div>/);
 });

@@ -361,12 +361,11 @@ pub struct App {
     pub fleet: Option<hub_core::fleet::Fleet>,
     /// The Queue tab's pipeline line: None until the first read.
     pub pipeline: Option<Result<Option<hub_core::pipeline::Pipeline>, String>>,
-    /// Fleet's one table: `/` query, `f` state, `s`/`S` sort, `x` clear (datatable).
+    /// Fleet's one table: `/` query, `f` state, `s`/`S` sort, `x` clear (datatable), and the
+    /// row j/k pick and Enter opens, an index into `fleettab::shown`.
     pub fleet_table: DataTable,
     /// The tier 1 rows folded (`z`), by runner name; their children leave the table.
     pub fleet_folded: std::collections::HashSet<String>,
-    /// The table row j/k pick and Enter opens, an index into `fleettab::shown`.
-    pub fleet_sel: usize,
     /// The runner whose page is open (Enter, or `hub tab fleet <runner>`); None is the tab.
     pub fleet_page: Option<String>,
     /// That page's read; None until it comes back.
@@ -505,7 +504,6 @@ impl App {
             daily_outbox: false,
             fleet_table: DataTable::default(),
             fleet_folded: Default::default(),
-            fleet_sel: 0,
             fleet_page: None,
             fleet_runner: None,
             outbox: None,
@@ -1442,8 +1440,8 @@ impl App {
             }
             Msg::Proposals(r) => {
                 self.proposals = Some(*r);
-                let last = self.prv.shown(open_rows(&self.proposals)).len();
-                self.prv.sel = self.prv.sel.min(last.saturating_sub(1));
+                let n = self.prv.shown(open_rows(&self.proposals)).len();
+                self.prv.table.clamp(n);
                 if self.proposals_read.done() {
                     self.read_proposals();
                 }
@@ -1489,7 +1487,7 @@ impl App {
 
     fn selected(&self) -> Option<&hub_core::jobs::Job> {
         let js = self.jobs.as_ref()?;
-        self.jv.shown(js).get(self.jv.sel).copied()
+        self.jv.shown(js).get(self.jv.table.sel).copied()
     }
 
     fn key(&mut self, k: KeyEvent) {
@@ -1643,7 +1641,7 @@ impl App {
     fn open_session(&mut self, target: &str) {
         self.go(Tab::Sessions);
         if let Some(i) = self.controls.rows().iter().position(|r| r.target == target) {
-            self.controls.sel = i;
+            self.controls.table.sel = i;
             self.controls.open = true;
             self.seek = Some(DETAIL);
         }
@@ -1677,13 +1675,8 @@ impl App {
             }
             return true;
         }
-        match self.fleet_table.key::<Who>(k.code) {
-            Took::View => {
-                self.fleet_sel = 0;
-                return true;
-            }
-            Took::Typing => return true,
-            Took::No => {}
+        if self.fleet_table.key::<Who>(k.code) != Took::No {
+            return true;
         }
         let rows: Vec<(Opens, String)> = self.fleet.as_ref().map_or(vec![], |f| {
             fleettab::shown(f, &self.fleet_table, &self.fleet_folded)
@@ -1691,20 +1684,21 @@ impl App {
                 .map(|r| (r.opens, r.key.clone()))
                 .collect()
         });
-        let last = rows.len().saturating_sub(1);
-        self.fleet_sel = self.fleet_sel.min(last);
+        // The selection back in range of the rows for Enter and z: a re-read can leave fewer.
+        self.fleet_table.clamp(rows.len());
+        if self.fleet_table.moves(k, rows.len(), self.page) {
+            self.keep_fleet_sel_visible();
+            return true;
+        }
+        let sel = self.fleet_table.sel;
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => self.fleet_sel = (self.fleet_sel + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => self.fleet_sel = self.fleet_sel.saturating_sub(1),
-            KeyCode::Char('g') | KeyCode::Home => self.fleet_sel = 0,
-            KeyCode::Char('G') | KeyCode::End => self.fleet_sel = last,
-            KeyCode::Enter => match rows.get(self.fleet_sel).cloned() {
+            KeyCode::Enter => match rows.get(sel).cloned() {
                 Some((Opens::Runner, name)) => self.open_runner(&name),
                 Some((Opens::Session, target)) => self.open_session(&target),
                 None => {}
             },
             KeyCode::Char('z') => {
-                if let Some((Opens::Runner, name)) = rows.get(self.fleet_sel) {
+                if let Some((Opens::Runner, name)) = rows.get(sel) {
                     if !self.fleet_folded.remove(name) {
                         self.fleet_folded.insert(name.clone());
                     }
@@ -1720,7 +1714,7 @@ impl App {
     /// The reader's errors, the heading, the status and the table head sit above the first row.
     fn keep_fleet_sel_visible(&mut self) {
         let errors = self.fleet.as_ref().map_or(0, |f| f.errors.len());
-        let at = 3 + errors + self.fleet_sel;
+        let at = 3 + errors + self.fleet_table.sel;
         let h = self.page.max(1);
         if at < self.scroll {
             self.scroll = at;
@@ -1950,7 +1944,11 @@ impl App {
     /// the selected row in view while no detail is open.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
         let armed = |c: &Controls| c.confirm.is_some() || c.starting.is_some();
-        let was = (self.controls.open, self.controls.sel, armed(&self.controls));
+        let was = (
+            self.controls.open,
+            self.controls.table.sel,
+            armed(&self.controls),
+        );
         match self.controls.key(k) {
             Ask::Pass => return false,
             Ask::Done => {}
@@ -1962,14 +1960,14 @@ impl App {
         // row or a confirm is armed, and otherwise stays where the reader scrolled it.
         if self.controls.open {
             let now_armed = armed(&self.controls);
-            if !was.0 || was.1 != self.controls.sel || (now_armed && !was.2) {
+            if !was.0 || was.1 != self.controls.table.sel || (now_armed && !was.2) {
                 self.seek = Some(DETAIL);
             }
             return true;
         }
         self.seek = None;
         // The stage counts line, then the table's own header.
-        let at = 1 + self.controls.above() + self.controls.sel;
+        let at = 1 + self.controls.above() + self.controls.table.sel;
         let h = self.page.max(1);
         if at < self.scroll {
             self.scroll = at;
@@ -2259,19 +2257,15 @@ impl App {
                 Took::No => false,
             };
         }
-        match self.prv.table.key::<Proposal>(k.code) {
-            Took::View => {
-                self.prv.sel = 0;
-                return true;
-            }
-            Took::Typing => return true,
-            Took::No => {}
+        if self.prv.table.key::<Proposal>(k.code) != Took::No {
+            return true;
         }
         let rows = self.prv.shown(open_rows(&self.proposals)).len();
         let pv = &mut self.prv;
+        if pv.table.moves(k, rows, self.page) {
+            return true;
+        }
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => pv.sel = (pv.sel + 1).min(rows.saturating_sub(1)),
-            KeyCode::Char('k') | KeyCode::Up => pv.sel = pv.sel.saturating_sub(1),
             KeyCode::Enter => pv.detail = !pv.detail,
             KeyCode::Char('a') => self.decide_proposal(true),
             KeyCode::Char('d') => self.decide_proposal(false),
@@ -2330,23 +2324,13 @@ impl App {
     }
 
     fn jobs_key(&mut self, k: KeyEvent) -> bool {
-        match self.jv.table.key::<Job>(k.code) {
-            Took::View => {
-                self.jv.sel = 0;
-                return true;
-            }
-            Took::Typing => return true,
-            Took::No => {}
+        if self.jv.table.key::<Job>(k.code) != Took::No {
+            return true;
         }
         let rows = self.jobs.as_ref().map_or(0, |j| self.jv.shown(j).len());
-        let last = rows.saturating_sub(1);
         let n = self.page.max(1);
         let jv = &mut self.jv;
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => jv.sel = (jv.sel + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => jv.sel = jv.sel.saturating_sub(1),
-            KeyCode::Char('g') | KeyCode::Home => jv.sel = 0,
-            KeyCode::Char('G') | KeyCode::End => jv.sel = last,
             KeyCode::PageDown | KeyCode::Char('J') if jv.log.is_some() => {
                 let l = jv.log.as_mut().unwrap();
                 l.back = l
@@ -2357,8 +2341,6 @@ impl App {
                 let l = jv.log.as_mut().unwrap();
                 l.back += if k.code == KeyCode::Char('K') { 1 } else { n };
             }
-            KeyCode::PageDown => jv.sel = (jv.sel + n).min(last),
-            KeyCode::PageUp => jv.sel = jv.sel.saturating_sub(n),
             KeyCode::Enter => self.open_log(),
             KeyCode::Esc => {
                 if jv.log.is_some() {
@@ -2368,7 +2350,6 @@ impl App {
                     self.read_jobs();
                 } else {
                     jv.table.clear();
-                    jv.sel = 0;
                 }
             }
             KeyCode::Char('h') => {
@@ -2378,7 +2359,7 @@ impl App {
                 } else {
                     name
                 };
-                self.jv.sel = 0;
+                self.jv.table.sel = 0;
                 self.read_jobs();
             }
             KeyCode::Char('o') => {
@@ -2386,42 +2367,29 @@ impl App {
                     open(&u);
                 }
             }
-            _ => return false,
+            _ => return jv.table.moves(k, rows, n),
         }
         true
     }
 
     fn selected_schedule(&self) -> Option<&Schedule> {
         let s = self.schedules.as_ref()?;
-        self.sv.shown(s).get(self.sv.sel).copied()
+        self.sv.shown(s).get(self.sv.table.sel).copied()
     }
 
     /// The Schedules table's keys. Enter opens the row's pane, or an agentctl row's Fleet page,
     /// which already says all the pane would.
     fn schedules_key(&mut self, k: KeyEvent) -> bool {
-        match self.sv.table.key::<Schedule>(k.code) {
-            Took::View => {
-                self.sv.sel = 0;
-                return true;
-            }
-            Took::Typing => return true,
-            Took::No => {}
+        if self.sv.table.key::<Schedule>(k.code) != Took::No {
+            return true;
         }
         let rows = self
             .schedules
             .as_ref()
             .map_or(0, |s| self.sv.shown(s).len());
-        let last = rows.saturating_sub(1);
-        let n = self.page.max(1);
-        let before = self.sv.sel;
+        let before = self.sv.table.sel;
         let sv = &mut self.sv;
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => sv.sel = (sv.sel + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => sv.sel = sv.sel.saturating_sub(1),
-            KeyCode::Char('g') | KeyCode::Home => sv.sel = 0,
-            KeyCode::Char('G') | KeyCode::End => sv.sel = last,
-            KeyCode::PageDown => sv.sel = (sv.sel + n).min(last),
-            KeyCode::PageUp => sv.sel = sv.sel.saturating_sub(n),
             KeyCode::Char('J') if sv.open => sv.down += 1,
             KeyCode::Char('K') if sv.open => sv.down = sv.down.saturating_sub(1),
             KeyCode::Enter => {
@@ -2439,7 +2407,6 @@ impl App {
                     sv.open = false;
                 } else {
                     sv.table.clear();
-                    sv.sel = 0;
                 }
             }
             KeyCode::Char('o') => {
@@ -2448,9 +2415,10 @@ impl App {
                     open(&u.url);
                 }
             }
+            _ if sv.table.moves(k, rows, self.page) => {}
             _ => return false,
         }
-        if self.sv.sel != before {
+        if self.sv.table.sel != before {
             self.sv.down = 0;
         }
         true
@@ -2860,15 +2828,7 @@ impl App {
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
                 Some(f) => (
-                    fleettab::page(
-                        f,
-                        &self.fleet_table,
-                        &self.fleet_folded,
-                        self.fleet_sel,
-                        self.p,
-                        now,
-                        w,
-                    ),
+                    fleettab::page(f, &self.fleet_table, &self.fleet_folded, self.p, now, w),
                     vec![("workers", 0)],
                 ),
             },
@@ -3037,18 +2997,10 @@ impl App {
             .saturating_sub(status.len() + 1)
             .max(1);
         self.page = h;
-        // Keep the selection in view: the table header stays, rows scroll under it.
-        let sv = &mut self.sv;
-        if sv.sel < sv.top {
-            sv.top = sv.sel;
-        } else if sv.sel >= sv.top + h {
-            sv.top = sv.sel + 1 - h;
-        }
         let mut lines = status;
-        lines.extend(table.iter().take(1).cloned());
-        lines.extend(table.into_iter().skip(1 + sv.top).take(h));
+        lines.extend(self.sv.table.window(table, h));
         f.render_widget(Paragraph::new(lines), list);
-        let row = self.sv.shown(s).get(self.sv.sel).copied();
+        let row = self.sv.shown(s).get(self.sv.table.sel).copied();
         if let (Some(area), Some(r)) = (pane, row) {
             let lines = schedules::detail(r, self.p, s.at, area.width as usize);
             let max = lines.len().saturating_sub(area.height as usize);
@@ -3071,14 +3023,8 @@ impl App {
         let h = (area.height as usize)
             .saturating_sub(lines.len() + 1 + record.len())
             .max(1);
-        let pv = &mut self.prv;
-        if pv.sel < pv.top {
-            pv.top = pv.sel;
-        } else if pv.sel >= pv.top + h {
-            pv.top = pv.sel + 1 - h;
-        }
-        lines.extend(table.iter().take(1).cloned());
-        lines.extend(table.into_iter().skip(1 + pv.top).take(h));
+        self.page = h;
+        lines.extend(self.prv.table.window(table, h));
         lines.extend(record);
         f.render_widget(Paragraph::new(lines), area);
     }
@@ -3103,16 +3049,8 @@ impl App {
         let head = status.len() + 1;
         let h = (list.height as usize).saturating_sub(head).max(1);
         self.page = h;
-        // Keep the selection in view: the table header stays, rows scroll under it.
-        let jv = &mut self.jv;
-        if jv.sel < jv.top {
-            jv.top = jv.sel;
-        } else if jv.sel >= jv.top + h {
-            jv.top = jv.sel + 1 - h;
-        }
         let mut lines = status;
-        lines.extend(table.iter().take(1).cloned());
-        lines.extend(table.into_iter().skip(1 + jv.top).take(h));
+        lines.extend(self.jv.table.window(table, h));
         f.render_widget(Paragraph::new(lines), list);
         if let (Some(area), Some(l)) = (log, &mut self.jv.log) {
             let h = (area.height as usize).saturating_sub(1);
@@ -3425,7 +3363,7 @@ mod tests {
             a.handle(key('j'));
         }
         let s = screen(&mut a, 80, 20);
-        assert_eq!(a.qv.sel, 30);
+        assert_eq!(a.qv.table.sel, 30);
         assert!(a.scroll > 0, "the page scrolled with the selection");
         assert!(s.contains("Task 30"), "the selected row is on screen:\n{s}");
         a.handle(key('k'));
@@ -3439,16 +3377,16 @@ mod tests {
         screen(&mut a, 80, 20);
         a.handle(key('G'));
         let s = screen(&mut a, 80, 20);
-        assert_eq!(a.qv.sel, 39);
+        assert_eq!(a.qv.table.sel, 39);
         assert!(s.contains("Task 39"), "{s}");
         assert!(s.contains("CANDIDATES"), "G reaches the page's end:\n{s}");
         a.handle(key('g'));
         let s = screen(&mut a, 80, 20);
-        assert_eq!((a.qv.sel, a.scroll), (0, 0));
+        assert_eq!((a.qv.table.sel, a.scroll), (0, 0));
         assert!(s.contains("Task 0"), "{s}");
         // PgDn and space move the selection a page; the page follows rather than snapping back.
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::PageDown))));
-        assert_eq!(a.qv.sel, a.page);
+        assert_eq!(a.qv.table.sel, a.page);
         let want = format!("Task {}", a.page);
         assert!(screen(&mut a, 80, 20).contains(&want));
     }
@@ -3461,15 +3399,15 @@ mod tests {
         let half = a.page / 2;
         assert!(half > 0);
         a.handle(ctrl('d'));
-        assert_eq!(a.qv.sel, half);
+        assert_eq!(a.qv.table.sel, half);
         a.handle(ctrl('d'));
-        assert_eq!(a.qv.sel, 2 * half);
+        assert_eq!(a.qv.table.sel, 2 * half);
         a.handle(ctrl('u'));
-        assert_eq!(a.qv.sel, half);
+        assert_eq!(a.qv.table.sel, half);
         // NEGATIVE CONTROL: a plain d or u is no move.
         a.handle(key('d'));
         a.handle(key('u'));
-        assert_eq!(a.qv.sel, half);
+        assert_eq!(a.qv.table.sel, half);
     }
 
     #[test]
@@ -4287,7 +4225,7 @@ mod tests {
         assert!(a.pv.open && a.tv.said.is_none());
         a.handle(esc());
         assert!(!a.pv.open);
-        assert_eq!(a.pv.card, 0);
+        assert_eq!(a.pv.table.sel, 0);
 
         // All keeps the cross-project board, the last row scrolled into view.
         a.handle(key('a'));

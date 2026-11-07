@@ -16,7 +16,7 @@ use hub_core::tasks::{self, Feed, Row, Verb, Write};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 
-use crate::datatable::{DataTable, Took};
+use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::Palette;
 
@@ -61,9 +61,7 @@ const HEADER: [&str; 10] = [
 
 #[derive(Debug, Default)]
 pub struct TaskView {
-    /// Index into `shown`.
-    pub sel: usize,
-    /// The search, chip and sort over the rows.
+    /// The search, chip and sort over the rows, and the selection, an index into `shown`.
     pub table: DataTable,
     /// One project's rows, as (profile, project); None shows every project's.
     pub project: Option<(String, String)>,
@@ -110,27 +108,18 @@ impl TaskView {
         self.prompt.is_some() || self.table.typing.is_some()
     }
 
-    /// One key for the table; the selection goes to the top when the view changed.
-    fn table_key(&mut self, code: KeyCode) {
-        if self.table.key::<Row>(code) == Took::View {
-            self.sel = 0;
-        }
-    }
-
     pub fn selected<'a>(&self, f: &'a Feed) -> Option<&'a Row> {
-        shown(f, self).get(self.sel).copied()
+        shown(f, self).get(self.table.sel).copied()
     }
 
     /// A new read keeps the selection on the same line when it is still open.
     pub fn reselect(&mut self, was: Option<Row>, f: &Feed) {
         let rows = shown(f, self);
-        self.sel = was
-            .and_then(|w| {
-                rows.iter()
-                    .position(|r| r.sheet == w.sheet && r.raw == w.raw)
-            })
-            .unwrap_or(self.sel)
-            .min(rows.len().saturating_sub(1));
+        let at = was.and_then(|w| {
+            rows.iter()
+                .position(|r| r.sheet == w.sheet && r.raw == w.raw)
+        });
+        self.table.keep(at, rows.len());
     }
 
     /// The selected row when it can be written, else why not (said on the status line).
@@ -272,12 +261,13 @@ impl TaskView {
             return Ask::Done;
         }
         if self.table.typing.is_some() {
-            self.table_key(k.code);
+            self.table.key::<Row>(k.code);
             return Ask::Done;
         }
         let Some(f) = f else { return Ask::Pass };
-        let last = shown(f, self).len().saturating_sub(1);
-        let n = page.max(1);
+        if self.table.moves(k, shown(f, self).len(), page) {
+            return Ask::Done;
+        }
         let prompt = |kind, row| {
             Some(Prompt {
                 kind,
@@ -286,28 +276,23 @@ impl TaskView {
             })
         };
         match k.code {
-            KeyCode::Char('/' | 'f' | 'S') => self.table_key(k.code),
+            KeyCode::Char('/' | 'f' | 'S') => {
+                self.table.key::<Row>(k.code);
+            }
             // The table's `s`, which is Start here; past HEADER are terms with no column to mark.
             KeyCode::Char('c') => {
-                self.table_key(KeyCode::Char('s'));
+                self.table.key::<Row>(KeyCode::Char('s'));
                 while self
                     .table
                     .mark::<Row>()
                     .is_some_and(|(at, _)| at >= HEADER.len())
                 {
-                    self.table_key(KeyCode::Char('s'));
+                    self.table.key::<Row>(KeyCode::Char('s'));
                 }
             }
-            KeyCode::Char('j') | KeyCode::Down => self.sel = (self.sel + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => self.sel = self.sel.saturating_sub(1),
-            KeyCode::PageDown | KeyCode::Char(' ') => self.sel = (self.sel + n).min(last),
-            KeyCode::PageUp => self.sel = self.sel.saturating_sub(n),
-            KeyCode::Char('g') | KeyCode::Home => self.sel = 0,
-            KeyCode::Char('G') | KeyCode::End => self.sel = last,
             KeyCode::Esc => {
                 self.table.clear();
                 self.said = None;
-                self.sel = 0;
             }
             KeyCode::Char('a') => {
                 if let Some(r) = self.target(f, true) {
@@ -467,8 +452,8 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
         ..Default::default()
     }
     .fit_wrapped(w, p.head());
-    let at = starts.get(v.sel).copied().map(|start| {
-        let end = starts.get(v.sel + 1).copied().unwrap_or(t.len());
+    let at = starts.get(v.table.sel).copied().map(|start| {
+        let end = starts.get(v.table.sel + 1).copied().unwrap_or(t.len());
         for l in &mut t[start..end] {
             l.style = p.sel();
         }
@@ -953,17 +938,15 @@ pub(crate) mod tests {
     #[test]
     fn a_new_read_keeps_the_selection_on_its_line() {
         let f = fixture();
-        let mut v = TaskView {
-            sel: 1,
-            ..Default::default()
-        };
+        let mut v = TaskView::default();
+        v.table.sel = 1;
         let was = v.selected(&f).cloned();
         let mut fewer = fixture();
         fewer.rows.remove(1);
         v.reselect(was, &fewer);
         assert_eq!(v.selected(&fewer).unwrap().text, "sweep the logs");
         v.reselect(None, &Feed::default());
-        assert_eq!(v.sel, 0);
+        assert_eq!(v.table.sel, 0);
     }
 
     #[test]
