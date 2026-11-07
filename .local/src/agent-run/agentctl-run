@@ -38,6 +38,7 @@ SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 . "$SELF_DIR/lib/agent.sh"
 . "$SELF_DIR/lib/calls.sh"
 . "$SELF_DIR/lib/budget.sh"
+. "$SELF_DIR/lib/sandbox.sh"
 
 role="${ROLE:-${AGENTCTL_ROLE:-}}"
 # MODEL is the conf key (it arrives as environment on a supervised runner);
@@ -144,6 +145,9 @@ AGENTCTL_ROUTE="$_declared_route"
 AGENTCTL_DATA_CLASS="$_declared_class"
 
 role_load "$role"
+# The lane sandbox (lib/sandbox.sh) fails closed the same way: a named profile that cannot
+# be read refuses here, before any harness is sourced.
+sandbox_load
 
 # ROUTE, then the interlock, BEFORE the harness file is even sourced -- so
 # "the harness was never invoked on a refused pair" is structurally true rather
@@ -167,6 +171,12 @@ if ! harness_supports; then
   role_die "harness '$harness' cannot enforce role '$ROLE_NAME'. Refusing to run.
 Running anyway would mean the role's denials silently do not apply - see
 docs/contract.md, rule 3."
+fi
+
+# The lane sandbox is a contract too, checked in the same place: a harness enforces a profile
+# only by defining harness_sandbox, and one that does not, or cannot hold this profile, refuses.
+if [ -n "$SANDBOX_FILE" ] && ! { declare -F harness_sandbox >/dev/null && harness_sandbox; }; then
+  role_die "harness '$harness' cannot enforce lane sandbox '$SANDBOX_PROFILE'. Refusing to run unsandboxed."
 fi
 
 # Contract rule 4. Same shape as rule 3 above and deliberately in the same place:
@@ -206,6 +216,8 @@ if [ -n "$AGENTCTL_EXPLAIN" ]; then
   # this line exists. The negative control asserts that a hostile
   # ANTHROPIC_BASE_URL shows up here and nowhere else.
   printf 'env scrubbed: %s\n' "${SCRUBBED:-(none)}"
+  if [ -n "$SANDBOX_FILE" ]; then printf 'sandbox:     %s  (%s)\n' "$SANDBOX_PROFILE" "$SANDBOX_FILE"
+  else printf 'sandbox:     (none - this lane runs unsandboxed)\n'; fi
   route_explain
   budget_explain
   if [ -n "$ROLE_FAMILY_EXCLUDE" ]; then
