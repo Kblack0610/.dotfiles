@@ -34,7 +34,7 @@ Not for how dispatch picks and starts sessions (`fleet-dispatch`), or an account
 ## States and moves
 
 - queued -> running when a session starts on it; running -> waiting while its session waits on the human or owns a pending ask (`fleet-dispatch reap` does this); -> done when closed.
-- `agent-queue move <slug> <state>`; `done` needs `--status ok|failed|cancelled`. `--if <state>` makes the move conditional and exits 3 when the item is elsewhere. `cancel <slug>`, `bump <slug> <priority>`, `set <slug> key=value` (for example `pr=<N>`).
+- `agent-queue move <slug> <state>`; `done` needs `--status ok|failed|cancelled`, and `done --status ok` on an item with `pr:` refuses until it has `merged:` (agent-land, or reap on merge, writes it). `--if <state>` makes the move conditional and exits 3 when the item is elsewhere. `cancel <slug>`, `bump <slug> <priority>`, `set <slug> key=value` (for example `pr=<N>`).
 - `agent-land` normally does the closing. Use `move ... done` by hand only for work with no PR.
 
 ## Why an item is not starting
@@ -49,7 +49,7 @@ Not for how dispatch picks and starts sessions (`fleet-dispatch`), or an account
 1. `agent-land <pr>` runs fetch, item-line, checks, merge, proof, item, board, plan. Add `--item <slug>` when the session records more than one item, `--plan <file> --phase "<text>"` to tick a plan phase, `--dry-run` to see the steps.
 2. The item is `--item`, then `$AGENT_QUEUE_ITEM`, then `agent-queue mine`. With none it refuses before any gh call; add one with `agent-queue add --running`.
 3. Exit 0 landed, 1 a step failed (fix it and re-run; an already merged PR skips checks and merge, so the re-run finishes the record step), 2 usage (more than one item without `--item`, or the removed `--project` and `--title`), 3 behind origin base or a catch-up conflict (merge the base, re-run).
-4. A `night` item stops at the open PR. Close it by hand: `agent-queue set <slug> pr=<N>`, then `agent-queue move <slug> done --status ok`.
+4. A `night` item stops at the open PR: `agent-queue set <slug> pr=<owner>/<repo>#<N>`, then `agent-queue move <slug> waiting`. `fleet-dispatch reap` records `merged:` and closes it once the PR merges.
 
 ## Do NOT
 
