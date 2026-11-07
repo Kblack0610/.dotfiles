@@ -599,17 +599,18 @@ item_json() {
 # item within that, then queued time. The one queue order: every reader (next, list, fleet-dispatch
 # next_items) takes it as is. `after` and other tags hold, not reorder.
 # A red outranks urgent on purpose: the human's rule is that anything broken goes first. The rank
-# sits under priority, so an urgent fix still jumps it, and over cleanup, because on 2026-11-07
-# 81 agent-runtime items held the head while 17 game items waited (the human: games go first).
-# order_filter -> ORDER with the map's queue_rank, read once a call; a map without it ranks nothing.
+# sits under priority, so an urgent fix still jumps it, and over cleanup, so a ranked project's work
+# is not queued behind the fleet's own housekeeping (the human: games go first).
+ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
+    | [splits("\\s+")] | index([$t])) == null;
+  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority] // 1),
+    ((.project // "") as $p | $rank | index([$p]) // length), untagged("cleanup"), .queued)'
+# order_filter -> ORDER with the map's queue_rank bound to $rank. A map without one, or with one
+# that is not a list of names, ranks nothing (project-map-doctor fails it).
 order_filter() {
   local rank
-  rank="$(jq -c '.queue_rank // [] | map(strings)' "$AQ_MAP" 2>/dev/null)" || rank='[]'
-  printf 'def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
-    | [splits("\\\\s+")] | index([$t])) == null;
-  %s as $rank |
-  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority] // 1),
-    ((.project // "") as $p | $rank | index([$p]) // length), untagged("cleanup"), .queued)' "${rank:-[]}"
+  rank="$(jq -c '.queue_rank | if type == "array" then map(strings) else [] end' "$AQ_MAP" 2>/dev/null)" || rank='[]'
+  printf '%s as $rank | %s' "$rank" "$ORDER"
 }
 
 # list_files <states...> [--date D] [--since D] -> appends the caller's FILES with the item files in
