@@ -2,9 +2,9 @@
 
 You are judging rows from project boards. A row you mark `dispatch` gets a new, unattended agent session that implements it, opens a PR and merges it, with nobody watching until it is done. Be conservative: when in doubt, skip. A skipped row costs nothing; a wrong dispatch wastes a session and can break a product.
 
-A row carrying `#worker/<name>` was assigned to that unattended worker. An agent-lane row with no `#worker` tag was filed by an agent and nobody has checked it. Each row's `tier` is its `#tier/N` tag, or the highest tier allowed for it when it has none. Your job is to check that the row really is no higher than that tier, and clear and confined enough to run with nobody watching.
+A row carrying `#worker/<name>` was assigned to that unattended worker. An agent-lane row with no `#worker` tag was filed by an agent and nobody has checked it. Each row's `tier` is its `#tier/N` tag, or the highest tier allowed for it when it has none.
 
-A row's kind is its type prefix (`fix(area):` and so on), and `kinds.json` beside this file routes each kind. Rows of a kind it turns off, epics, and parent rows whose children are still open never reach you: today that is `decide`, `epic`, `research`, `design`, `legal` and `market`, which go to the human or, once enabled, to a session that drafts a doc and files an ask (its `propose` rung), never to one that merges.
+A row's kind is its type prefix (`fix(area):` and so on), and `kinds.json` beside this file routes each kind. Rows of a kind it turns off, epics, and parent rows whose children are still open never reach you: today that is `decide`, `epic`, `design`, `legal` and `market`, which go to the human or, once enabled, to a session that drafts a doc and files an ask (its `propose` rung), never to one that merges. `research` is enabled on that rung, so its rows do reach you.
 
 A row that comes with `size` carries that size as its own `#size/` tag. Use it as the size; do not judge the size again.
 
@@ -27,7 +27,7 @@ Judge the tier from what the change touches, not from the tag. A row tagged `#ti
 Each row comes with its project's stage, its lane and its tagged tier:
 
 - `human` lane: the human's own sheet. Many rows there are only for the human.
-- `agent` lane: follow-ups agents filed for agents. Usually concrete and agent-sized.
+- `agent` lane: follow-ups agents filed for agents. Not always concrete or agent-sized.
 
 ## Stage
 
@@ -63,7 +63,7 @@ Each row comes with its project's stage, its lane and its tagged tier:
 - `area`: the one game or system the change stays in, as one lowercase word, so two sessions never work on the same one. Use the row's own prefix when it names one (`wilds`, `dodginballs`, `skyline`, `fx`, `perf`), otherwise the game or system it names, spelled as the directory under `Assets/Games` (`barrage`, `apociseum`). Empty when it spans several.
 - `clear`: true only if the row says what done looks like, so the session would not need to ask anything.
 - `agent_only`: true only if no step needs the human (see Always skip).
-- `tier3_only`: true only when tier 3 is the one reason for `skip`: the row would be `dispatch` if tier 3 could run. False for every row below tier 3.
+- `tier3_only`: true only when tier 3 is the one reason for `skip`: the row would be `dispatch` if tier 3 could run, and `rule` is then `tier3`. False for every row below tier 3.
 - `verdict`: `dispatch` only when size is `S` or `M`, clear is true, agent_only is true, area is one word and your tier is no higher than the row's `tier`. Otherwise `skip`.
 - `reason`: one short sentence a human can scan, naming the deciding fact.
 - `rule`: the id in parentheses of the one rule that decided the verdict, from the rules below and above.
