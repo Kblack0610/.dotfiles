@@ -318,10 +318,12 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run prompt
   assert_line '/fleet-chief pass'
   refute_output --partial '/fleet-lead'
-  rm -f "$FLEET_SHEPHERD_DIR/.pass.sh" "$FLEET_SHEPHERD_DIR/.pass"
+  # a conf naming none fails the run before the live pass is replaced
+  local id; id="$(pass_id)"
   STUB_SKILL= run "$SH" run
   assert_output --partial 'no SKILL= in the'
-  [ ! -e "$FLEET_SHEPHERD_DIR/.pass.sh" ] || fail 'a launcher was written without a skill'
+  assert_equal "$(pass_id)" "$id"
+  assert_equal "$(outcome)" FAILED
 }
 
 @test "run starts a pass in window shepherd of session hub on the hub server, as the runner, and does not wait for it" {

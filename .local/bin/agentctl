@@ -123,9 +123,9 @@ load_agent() {
             || { printf 'invalid RANDOM_DELAY=%s (a span like 5min, or 0)\n' "$RANDOM_DELAY" >&2; exit 1; }
         # SKILL is optional: the skill or command that owns the runner's job (its procedure,
         # or the docs describing it). Blank on purpose for a runner with no owner. It is an
-        # owner link, not a prompt: nothing builds a run from it, so a name that resolves to
-        # nothing must not make the conf invalid (install would drop the runner's timer for
-        # a doc field). It is reported as SKILL_FOUND=no instead, which `list` and
+        # owner link, not a prompt: a runner script reads it (`agentctl skill`) to name the skill
+        # it starts, but a name that resolves to nothing must not make the conf invalid (install
+        # would drop the runner's timer for a doc field). It is reported as SKILL_FOUND=no instead, which `list` and
         # `list --md` show and `fleet-bench triage --coverage` counts.
         SKILL_FOUND=-
         if [ -n "${SKILL:-}" ]; then

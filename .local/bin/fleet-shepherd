@@ -2,7 +2,7 @@
 # fleet-shepherd - the shepherd as a scheduled runner, over the fleet state document.
 #
 #   fleet-shepherd run     one scheduled pass (agentctl runner `shepherd`): refresh the state
-#                          document, score the last pass and start a fresh `/fleet-lead pass` in
+#                          document, score the last pass and start a fresh `/<skill> pass` (the conf's SKILL=, fleet-lead) in
 #                          its place, in the same pane of window hub:shepherd on the hub
 #                          server (Prefix o). A run starts nothing while the
 #                          lease holder is mid-sweep and nobody is talking to it, or while the
@@ -848,7 +848,7 @@ route_block() {
 }
 
 # --- the pass: an interactive claude in one tmux pane, a fresh one per run --------------------
-# A pass is a fresh `/fleet-lead pass` session in window $WINDOW of session $SESSION on server
+# A pass is a fresh `/<skill> pass` session (the conf's SKILL=, fleet-lead) in window $WINDOW of session $SESSION on server
 # $SERVER, so the human can attach, watch it work and type to it (`fleet-shepherd open`). The runner
 # does not wait for it: the next run scores it and starts the next in the same pane.
 
@@ -1188,7 +1188,9 @@ cmd_run() {
     due="$trouble: fleet-sessions --write, $STATE_FILE"
   fi
   [ -z "$due" ] || printf '%s: due\n%s\n' "$NAME" "$due"
-  local new hand turns reuse=""
+  local new hand turns reuse="" skill
+  # Before the last pass is replaced: a conf naming no skill must not cost the pass that is running.
+  skill="$(pass_skill)" || { publish FAILED "no SKILL= in the $NAME conf"; return 1; }
   new="$(cat /proc/sys/kernel/random/uuid)" || return 1
   hand="$LEDGER/.handover-$new"
   # The last pass is replaced in its own pane, and what the human said to it goes to the new one.

@@ -1637,6 +1637,10 @@ coverage_setup() {
   run "$SUBJECT" triage --coverage
   assert_failure
   assert_output 'skill alpha SKILL=no-such-skill'
+  # a check that cannot run is not a clean one
+  BENCH_SKILL_CMD=no-such-command run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output --partial 'skill the SKILL check failed'
 }
 
 @test "triage --route: each key gets the first line its row matches, and no line is a dash" {
