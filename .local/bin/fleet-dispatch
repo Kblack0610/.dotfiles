@@ -1275,7 +1275,7 @@ cmd_start() {
     # A resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM too.
     if [ -z "$item" ]; then
       item=$(agent-queue mine --sid "$resume" 2>&1)
-      case $? in 0) ;; 1) item='' ;; *) say "start: ${item#agent-queue: }; pass --item"; return 1 ;; esac
+      case $? in 0) ;; 2) say "start: ${item#agent-queue: }; pass --item"; return 1 ;; *) item='' ;; esac
     fi
   fi
   if [ -n "$item" ] && [ -z "$resume" ]; then

@@ -4078,6 +4078,13 @@ board_item() {
   assert_output --partial 'more than one item'
   assert_output --partial 'pass --item'
   assert_not_called 'new-session'
+
+  # Only an ambiguous lookup refuses: a queue that cannot answer (none installed) resumes with no item.
+  stub agent-queue 'echo "agent-queue: command not found" >&2; exit 127'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s3 \
+    --cwd "$SANDBOX/repos/game" --resume conv-two
+  assert_success
+  assert_called "-s s3 -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-two"
 }
 
 @test "start --resume --window makes the session when it is not there yet, named as asked" {
