@@ -1,11 +1,13 @@
 //! The Fleet tab's machinery, below the sessions: one table of who is working (runners by tier,
-//! then the live sessions) and the Claude accounts, from hub-core's `fleet` (the same reader as agent-web's Fleet
-//! tab). Named apart from `fleet.rs`, which is the sessions' watch page. One runner's page
+//! then the live sessions), the Claude accounts and where the tokens go, from hub-core's `fleet`
+//! (the same reader as agent-web's Fleet tab). Named apart from `fleet.rs`, which is the sessions' watch page. One runner's page
 //! (`runner_page`) is hub-core's `fleet::runner`, as agent-web's `#fleet/<runner>`.
 
 use std::collections::{BTreeMap, HashSet};
 
+use hub_core::costs::tokens as count;
 use hub_core::fleet::runner::{Extras, Runner, Totals};
+use hub_core::fleet::tokens::{Share, Tokens};
 use hub_core::fleet::who::{self, Who};
 use hub_core::fleet::{AskVerdict, Dispatch, Eval, Fleet, Judge, Registry, ASK_FILTERS};
 use hub_core::prom::Series;
@@ -34,8 +36,8 @@ pub fn shown<'a>(f: &'a Fleet, t: &DataTable, folded: &HashSet<String>) -> Vec<&
     who::unfolded(t.view.apply(&f.who), folded, &t.view)
 }
 
-/// The Fleet page: the table of who is working, then the Claude accounts. `sel` is the row j/k
-/// picked, drawn reversed: Enter opens it.
+/// The Fleet page: the table of who is working, then the Claude accounts; `tokens` goes under it.
+/// `sel` is the row j/k picked, drawn reversed: Enter opens it.
 pub fn page(
     f: &Fleet,
     t: &DataTable,
@@ -78,6 +80,115 @@ pub fn page(
     out.push(heading("CLAUDE ACCOUNTS", String::new(), p));
     out.extend(accounts(&f.accounts, p, now, w));
     out
+}
+
+/// The Fleet page's tokens fold: `t` opens it, `w` switches its window. None leaves it to the
+/// section's state: shut while green, open while amber (dashboards rule 4).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TokensView {
+    pub open: Option<bool>,
+    pub day: bool,
+}
+
+impl TokensView {
+    pub fn is_open(self, t: Option<&Tokens>) -> bool {
+        t.is_some_and(|t| self.open.unwrap_or(t.stale))
+    }
+}
+
+/// Where the tokens go: a head line with the week's total, and open, one window's two tables.
+pub fn tokens(
+    t: Option<&Tokens>,
+    v: TokensView,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
+    const TITLE: &str = "WHERE THE TOKENS GO";
+    let Some(t) = t else {
+        return vec![clip_line(
+            Line::from(vec![
+                Span::styled(format!("  {TITLE}"), p.head()),
+                Span::styled("  no snapshot in ~/.agent/token-usage", p.warn()),
+            ]),
+            w,
+        )];
+    };
+    let open = v.is_open(Some(t));
+    let (mark, verb) = if open { ("-", "folds") } else { ("+", "opens") };
+    let week = format!(
+        "  7d {}, tool output {}",
+        count(Some(t.week.context as f64)),
+        pct(Some(t.week.carried_share))
+    );
+    let mut head = vec![
+        Span::styled(format!("{mark} {TITLE}"), p.head()),
+        Span::styled(week, if t.stale { p.warn() } else { p.dim() }),
+    ];
+    if t.stale {
+        head.push(Span::styled(format!("  stale, {}", t.date), p.warn()));
+    }
+    head.push(Span::styled(format!("  t {verb} it"), p.dim()));
+    let mut out = vec![clip_line(Line::from(head), w)];
+    if !open {
+        return out;
+    }
+    let (s, label) = if v.day {
+        (&t.day, "yesterday")
+    } else {
+        (&t.week, "7d")
+    };
+    let partial = match s.partial {
+        0 => String::new(),
+        n => format!(", {n} of {} partial", s.days),
+    };
+    let read = t.generated_at.map_or("-".into(), |g| clock(g, now));
+    out.push(clip_line(
+        Line::styled(
+            format!(
+                "  {label}: {} context, {}/response, tool output carried {}  (snapshot {}, {read}{partial})",
+                count(Some(s.context as f64)),
+                count(Some(s.per_response as f64)),
+                pct(Some(s.carried_share)),
+                t.date.get(5..).unwrap_or(&t.date),
+            ),
+            if s.partial > 0 { p.warn() } else { p.dim() },
+        ),
+        w,
+    ));
+    out.extend(token_table("BY TOOL", &s.tools, p, w));
+    out.extend(token_table("BY BASH COMMAND", &s.commands, p, w));
+    out.push(clip_line(
+        Line::styled(
+            "  counted by claude-recall tool-output, nightly; w yesterday | 7d; dollars per tool: 0 Costs",
+            p.dim(),
+        ),
+        w,
+    ));
+    out
+}
+
+fn token_table(title: &'static str, rows: &[Share], p: Palette, w: usize) -> Vec<Line<'static>> {
+    let rows = rows
+        .iter()
+        .map(|r| {
+            vec![
+                r.name.clone().into(),
+                r.calls.to_string().into(),
+                format!("{} ch", count(Some(r.chars as f64))).into(),
+                format!("{:.1}%", r.share * 100.0).into(),
+                count(Some(r.carried_tokens as f64)).into(),
+            ]
+        })
+        .collect();
+    Table {
+        header: vec![title, "CALLS", "OUTPUT", "SHARE", "RE-READ"],
+        rows,
+        keep: vec![0, 3, 2, 4, 1],
+        right: vec![1, 2, 3, 4],
+        ..Default::default()
+    }
+    .fit(w, p.head())
 }
 
 /// `Who::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
@@ -900,6 +1011,7 @@ fn why(x: &AskVerdict) -> String {
 pub mod tests {
     use super::*;
     use crate::fit::plain;
+    use hub_core::fleet::tokens::Split;
     use hub_core::fleet::who::Opens;
     use hub_core::fleet::{
         Bar, Call, Calls, JudgeWeek, Outcome, RunnerScore, Score, Verdict, Worker,
@@ -949,6 +1061,7 @@ pub mod tests {
 
     pub fn fixture() -> Fleet {
         Fleet {
+            tokens: None,
             at: NOW,
             errors: vec!["prometheus: timed out".into()],
             accounts: vec![
@@ -1493,5 +1606,99 @@ pub mod tests {
                 assert!(l.chars().count() <= 40, "{l:?}");
             }
         }
+    }
+
+    fn token_fixture(stale: bool) -> Tokens {
+        let row = |name: &str, chars: u64, share| Share {
+            name: name.into(),
+            calls: 141_812,
+            chars,
+            share,
+            carried_tokens: 2_550_000_000,
+        };
+        let split = |context| Split {
+            days: 7,
+            partial: 0,
+            context,
+            per_response: 120_000,
+            carried_share: 0.15,
+            tools: vec![
+                row("Bash", 331_000_000, 0.823),
+                row("Other (22)", 10_000_000, 0.026),
+            ],
+            commands: vec![row("sed", 89_000_000, 0.221), row("Other", 40_000_000, 0.1)],
+        };
+        Tokens {
+            date: "2026-11-05".into(),
+            generated_at: Some(NOW - 3600),
+            stale,
+            week: split(18_000_000_000),
+            day: split(3_900_000_000),
+        }
+    }
+
+    fn token_text(t: Option<&Tokens>, v: TokensView, w: usize) -> Vec<String> {
+        tokens(t, v, Palette::default(), NOW, w)
+            .iter()
+            .map(crate::fit::plain)
+            .collect()
+    }
+
+    #[test]
+    fn the_tokens_fold_is_one_line_while_fresh() {
+        let t = token_fixture(false);
+        let l = token_text(Some(&t), TokensView::default(), 80);
+        assert_eq!(
+            l,
+            ["+ WHERE THE TOKENS GO  7d 18.0B, tool output 15%  t opens it"]
+        );
+    }
+
+    #[test]
+    fn a_stale_snapshot_opens_the_fold_and_says_so_until_it_is_folded() {
+        let t = token_fixture(true);
+        let l = token_text(Some(&t), TokensView::default(), 80);
+        assert!(l[0].starts_with("- WHERE THE TOKENS GO"), "{l:?}");
+        assert!(l[0].contains("stale, 2026-11-05"), "{l:?}");
+        assert!(l.len() > 1);
+        let shut = TokensView {
+            open: Some(false),
+            day: false,
+        };
+        assert_eq!(token_text(Some(&t), shut, 80).len(), 1);
+    }
+
+    #[test]
+    fn no_snapshot_is_a_head_with_nothing_to_open() {
+        let l = token_text(None, TokensView::default(), 80);
+        assert_eq!(l.len(), 1);
+        assert!(l[0].contains("no snapshot"), "{l:?}");
+        let open = TokensView {
+            open: Some(true),
+            day: false,
+        };
+        assert!(!open.is_open(None));
+    }
+
+    #[test]
+    fn open_it_draws_the_window_and_both_tables_in_80_columns() {
+        let t = token_fixture(false);
+        let mut v = TokensView {
+            open: Some(true),
+            day: false,
+        };
+        let l = token_text(Some(&t), v, 80);
+        let all = l.join("\n");
+        assert!(all.contains("7d: 18.0B context, 120k/response"), "{all}");
+        assert!(
+            all.contains("BY TOOL") && all.contains("BY BASH COMMAND"),
+            "{all}"
+        );
+        assert!(all.contains("Bash") && all.contains("82.3%"), "{all}");
+        assert!(all.contains("Other (22)") && all.contains("sed"), "{all}");
+        assert!(l.iter().all(|x| x.chars().count() <= 80), "{all}");
+        v.day = true;
+        let all = token_text(Some(&t), v, 80).join("\n");
+        assert!(all.contains("yesterday: 3.9B context"), "{all}");
     }
 }

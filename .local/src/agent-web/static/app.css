@@ -318,6 +318,7 @@ details.sec-d summary::-webkit-details-marker { display: none; }
 .sp { height: 8px; }
 .glink { color: var(--accent); text-decoration: none; margin-left: 10px; font-family: var(--sans); }
 .burn.bad { color: var(--b-needs); } .burn.warn { color: var(--b-stalled); } .burn.ok { color: var(--b-done); }
+span.warn { color: var(--b-stalled); }
 .panel a.warn { color: var(--b-stalled); font-weight: 600; }
 .tbl td.warn, .tbl td.bad { font-weight: 600; }
 .tbl td.warn { color: var(--b-stalled); } .tbl td.bad { color: var(--b-needs); }

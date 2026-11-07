@@ -284,6 +284,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         // The Fleet tab's run ledger, and fleet-dispatch's verdicts and log.
         Some(hub_core::jobs::Paths::from_env().agentctl),
         Some(boards::dispatch_dir()),
+        // The nightly token snapshots, for Fleet's Where the tokens go.
+        Some(boards::token_usage_dir()),
         // agent-notify's ledger, for Log's Actions section.
         hub_core::actions::Paths::from_env()
             .notify_log
@@ -343,6 +345,13 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
 fn classify(p: &Path) -> Option<String> {
     if p.ends_with(".local/state/fleet/state.json") || p.ends_with(".agent/shepherd/watch.log") {
         return Some(r#"{"kind":"watch"}"#.to_string());
+    }
+    // The token snapshots are named by day too, so they go before day-log's rule below.
+    if p.parent()?.ends_with(".agent/token-usage") {
+        return p
+            .extension()
+            .is_some_and(|e| e == "json")
+            .then(|| r#"{"kind":"fleet"}"#.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -1279,6 +1288,15 @@ mod tests {
             None
         );
         assert_eq!(classify(Path::new("/h/.agent/daylog/.lock")), None);
+        // A token snapshot is named by day, but it is Fleet's, never a Log refresh.
+        assert_eq!(
+            classify(Path::new("/h/.agent/token-usage/2026-11-05.json")).as_deref(),
+            Some(r#"{"kind":"fleet"}"#)
+        );
+        assert_eq!(
+            classify(Path::new("/h/.agent/token-usage/2026-11-05.json.tmp")),
+            None
+        );
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),
             None
