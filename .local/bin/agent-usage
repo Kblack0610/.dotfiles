@@ -141,16 +141,25 @@ _from_transcript() { # $1=transcript path
         printf "%d %d %d %d %d %d %s\n", I+0, O+0, CC+0, CR+0, n+0, d, (ms==""?"-":ms) }'
 }
 
-# From Prometheus: tokens by type (all query_sources), models, real USD, and USD per model.
-# Emits "in out cw cr cost models_csv cost_by_model_csv" or nothing when Prometheus is
-# unreachable/empty; cost_by_model_csv is "model=usd,..." or "-".
 # A counter's peak over the range, not its instant value: an ended session's series (and a
 # finished skill's skill_name series) go stale after 5 minutes, so an instant sum reads 0,
-# and increase() drops each series' first sample. Prometheus keeps a week.
-PROM_SESSION_RANGE=7d
+# and increase() drops each series' first sample. Prometheus keeps a week. A counter reset
+# (27 of 4,238 series in a week) loses its pre-reset part, about 0.35% of the week's cost.
+PROM_SESSION_RANGE="${PROM_SESSION_RANGE:-7d}"
 _session_peak() { # $1=metric $2=session id
   printf 'max_over_time(%s{session_id="%s"}[%s])' "$1" "$2" "$PROM_SESSION_RANGE"
 }
+# A counter's growth over the last $2: its peak in the window minus its last value before it,
+# so a series born in the window counts in full. Same form as the cc:claude_code_cost_24h_usd
+# rule in home-config.
+_spent() { # $1=metric $2=window
+  printf 'sum(max_over_time(%s[%s])) - (sum(last_over_time(%s[1d] offset %s) and max_over_time(%s[%s])) or vector(0))' \
+    "$1" "$2" "$1" "$2" "$1" "$2"
+}
+
+# From Prometheus: tokens by type (all query_sources), models, real USD, and USD per model.
+# Emits "in out cw cr cost models_csv cost_by_model_csv" or nothing when Prometheus is
+# unreachable/empty; cost_by_model_csv is "model=usd,..." or "-".
 _from_prom() { # $1=session id
   local id="$1" toks cost models by_model i=0 o=0 cc=0 cr=0
 
@@ -618,7 +627,7 @@ cmd_spend() {
   fi
   [ -n "${CC_PROM_URL:-}" ] || { echo "spend: no CC_PROM_URL (set it in ~/.config/command-center/env)" >&2; return 2; }
   local PROM_TIMEOUT=20
-  v="$(prom_q "sum(increase(claude_code_cost_usage_USD_total[$win]))" \
+  v="$(prom_q "$(_spent claude_code_cost_usage_USD_total "$win")" \
        | jq -er '.data.result | if type != "array" then error("not a vector") elif length == 0 then "0" else .[0].value[1] end' 2>/dev/null)" \
     && [[ "$v" =~ ^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$ ]] \
     || { echo "spend: Prometheus unreadable or not a number" >&2; return 2; }

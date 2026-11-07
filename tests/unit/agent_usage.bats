@@ -448,7 +448,7 @@ spend_curl() {
   SANDBOX="$SANDBOX" run "$AU" spend check 24h 900
   assert_success
   assert_output 'last 24h: $0.0 (alert at $900)'
-  run grep -c 'increase(claude_code_cost_usage_USD_total\[24h\])' "$SANDBOX/q"
+  run grep -c 'max_over_time(claude_code_cost_usage_USD_total\[24h\])' "$SANDBOX/q"
   assert_output 1
 }
 
