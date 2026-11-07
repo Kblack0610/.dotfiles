@@ -154,7 +154,7 @@ test("a failed read says why instead of drawing an empty table", () => {
   run("st.tab = 'costs'");
   Object.assign(cost, { data: null, err: "502 bad gateway" });
   run("cost.render()");
-  assert.match(box.innerHTML, /<div class="empty">502 bad gateway<\/div>/);
+  assert.match(box.innerHTML, /<div class="card err">502 bad gateway<\/div>/);
 });
 
 test("the burn section leads the tab: headline, drip with its hold link, pace and a row per account", () => {

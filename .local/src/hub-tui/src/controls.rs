@@ -246,8 +246,9 @@ impl Controls {
         }
         match k.code {
             // PgUp/PgDn, space and g/G scroll the page, the detail under the table with it.
-            KeyCode::Char('j' | 'k') | KeyCode::Down | KeyCode::Up => {
-                self.table.moves(k, self.len(), 1);
+            KeyCode::Char('j' | 'k') | KeyCode::Down | KeyCode::Up
+                if self.table.moves(k, self.len(), 1) =>
+            {
                 Ask::Done
             }
             KeyCode::Enter => {

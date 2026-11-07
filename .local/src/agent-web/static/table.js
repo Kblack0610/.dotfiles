@@ -135,7 +135,8 @@ function tblTab(o) {
     if (m) el.querySelectorAll("details[data-k]").forEach((d) => { m[d.dataset.k] = d.open; });
     if (!table()) {
       const why = t.err || (t.data?.errors || [])[0];
-      paint(el, `<div class="empty">${why ? esc(why) : o.wait || "Loading..."}</div>`);
+      // A failed read looks like one, never like an empty table.
+      paint(el, why ? `<div class="card err">${esc(why)}</div>` : `<div class="empty">${o.wait || "Loading..."}</div>`);
       return;
     }
     if (t.repaint()) return;

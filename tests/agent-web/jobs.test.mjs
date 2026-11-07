@@ -112,5 +112,5 @@ test("a refresh while the search box has focus leaves the box alone", () => {
 test("a failed collection says why instead of drawing an empty table", () => {
   Object.assign(jst, { data: { jobs: [], errors: ["gh: rate limited"] }, err: null });
   run("jst.render()");
-  assert.match(box.innerHTML, /<div class="empty">gh: rate limited<\/div>/);
+  assert.match(box.innerHTML, /<div class="card err">gh: rate limited<\/div>/);
 });

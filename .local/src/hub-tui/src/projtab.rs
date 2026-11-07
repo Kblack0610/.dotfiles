@@ -54,7 +54,7 @@ impl ProjView {
         self.table.view.apply(cards)
     }
 
-    /// The selected row of `n`: a re-read can leave `card` past what the view now keeps.
+    /// The selected row of `n`: a re-read can leave the selection past what the view now keeps.
     fn at(&self, n: usize) -> usize {
         self.table.sel.min(n.saturating_sub(1))
     }

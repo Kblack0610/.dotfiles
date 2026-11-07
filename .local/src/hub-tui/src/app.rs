@@ -1684,11 +1684,14 @@ impl App {
                 .map(|r| (r.opens, r.key.clone()))
                 .collect()
         });
-        // A move or not, the selection is back in range of the rows for Enter and z.
-        let moved = self.fleet_table.moves(k, rows.len(), self.page);
+        // The selection back in range of the rows for Enter and z: a re-read can leave fewer.
+        self.fleet_table.clamp(rows.len());
+        if self.fleet_table.moves(k, rows.len(), self.page) {
+            self.keep_fleet_sel_visible();
+            return true;
+        }
         let sel = self.fleet_table.sel;
         match k.code {
-            _ if moved => {}
             KeyCode::Enter => match rows.get(sel).cloned() {
                 Some((Opens::Runner, name)) => self.open_runner(&name),
                 Some((Opens::Session, target)) => self.open_session(&target),
@@ -3020,6 +3023,7 @@ impl App {
         let h = (area.height as usize)
             .saturating_sub(lines.len() + 1 + record.len())
             .max(1);
+        self.page = h;
         lines.extend(self.prv.table.window(table, h));
         lines.extend(record);
         f.render_widget(Paragraph::new(lines), area);
