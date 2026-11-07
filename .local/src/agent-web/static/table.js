@@ -54,10 +54,11 @@ function tblListen(el, onView) {
 }
 
 // The search box, the dropdowns and the chips. `id` names the parts a repaint while the search
-// box has focus replaces around it: `<id>-facets` and `<id>-chips`.
-function tblBar(id, t, hint) {
+// box has focus replaces around it: `<id>-facets` and `<id>-chips`. A tab whose overview tiles are
+// its chips (Sessions) passes `chips` false.
+function tblBar(id, t, hint, chips = true) {
   return `<div class="card bfilter qcfilter"><div class="opts"><input id="${id}-q" data-tsearch placeholder="${esc(hint)}" value="${esc(t.q)}" title="key:value matches a column, a repeated key is any of them, -key:value excludes, a word searches the text">` +
-    `<span id="${id}-facets">${tblFacets(t)}</span></div></div><div class="seg fseg" id="${id}-chips">${tblChips(t)}</div>`;
+    `<span id="${id}-facets">${tblFacets(t)}</span></div></div>` + (chips ? `<div class="seg fseg" id="${id}-chips">${tblChips(t)}</div>` : "");
 }
 
 // The header row. `labels` maps a column key to [text, class]; a column it leaves out is not drawn.
