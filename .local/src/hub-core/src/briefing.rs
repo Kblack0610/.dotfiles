@@ -692,10 +692,7 @@ fn costs(i: &Inputs) -> Area {
 }
 
 fn headline(i: &Inputs, n: usize) -> String {
-    let when = Local
-        .timestamp_opt(i.now, 0)
-        .single()
-        .map_or_else(String::new, |d| d.format("%a %H:%M").to_string());
+    let when = day_clock(i.now);
     let needs = match n {
         0 => "nothing needs you".to_string(),
         1 => "1 thing needs you".to_string(),
@@ -871,6 +868,123 @@ impl Briefing {
     }
 }
 
+/// Home's "Since last night" starts this long before today's local midnight (18:00 the evening
+/// before), so the evening's runs count at any hour of the day.
+const NIGHT_FROM_SECS: i64 = 6 * 3600;
+/// How often both surfaces re-read "Since last night": it composes the runs, calls, day records
+/// and Prometheus, none of them watched, so it is read on this cadence while Home is shown.
+pub const NIGHT_REFRESH: std::time::Duration = std::time::Duration::from_secs(60);
+/// Where "Queue a fix" queues a bad area: every area is the fleet's own machinery.
+pub const FIX_PROJECT: &str = "agent-runtime";
+
+/// When Home's "Since last night" window starts for `now`.
+fn last_night(now: i64) -> i64 {
+    crate::text::local_day_start(now) - NIGHT_FROM_SECS
+}
+
+/// One row of "Since last night": an area that is not ok, and for a bad one the task "Queue a
+/// fix" queues.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NightRow {
+    #[serde(flatten)]
+    pub area: Area,
+    pub fix: Option<Fix>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Fix {
+    pub project: &'static str,
+    pub task: String,
+    /// The open queue item already carrying this area's fix for this window, so neither
+    /// surface, nor a reload, queues it twice.
+    pub queued: Option<String>,
+}
+
+/// Home's "Since last night" section on both surfaces (dashboards rules 4 and 8): the areas
+/// that are not ok in the briefing's order, the ok ones folded into one line, and what this
+/// read could not reach (Home's own errors are Home's to show).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Night {
+    pub at: i64,
+    pub since: i64,
+    /// "Thu 18:00": when the window starts.
+    pub since_label: String,
+    pub rows: Vec<NightRow>,
+    /// "Infra, Delivery, Costs ok", "all 6 areas ok", or empty when none is.
+    pub ok_line: String,
+    pub errors: Vec<String>,
+}
+
+/// The task a bad area queues: what it says, its detail and the tab that has the facts.
+pub fn fix_task(a: &Area, since: i64) -> String {
+    let mut s = format!("{} {}.", fix_head(a.name, since), a.line);
+    if !a.details.is_empty() {
+        s += &format!(" Detail: {}.", a.details.join("; "));
+    }
+    s += &format!(
+        " The facts are on the hub's {} tab. Find the cause and fix it; if it is already fixed, close this with the proof.",
+        a.link
+    );
+    s
+}
+
+/// What every fix task for area `name` in the window from `since` starts with.
+fn fix_head(name: &str, since: i64) -> String {
+    format!(
+        "Fix what the briefing's {name} area reads bad since {}:",
+        day_clock(since)
+    )
+}
+
+fn day_clock(t: i64) -> String {
+    Local
+        .timestamp_opt(t, 0)
+        .single()
+        .map_or_else(String::new, |d| d.format("%a %H:%M").to_string())
+}
+
+/// The briefing over `i`, cut to Home's section.
+pub fn night(i: &Inputs) -> Night {
+    let b = build(i);
+    let (ok, rows): (Vec<Area>, Vec<Area>) =
+        b.areas.into_iter().partition(|a| a.level == Level::Ok);
+    let ok_line = match (ok.len(), rows.is_empty()) {
+        (0, _) => String::new(),
+        (n, true) => format!("all {n} areas ok"),
+        _ => format!(
+            "{} ok",
+            ok.iter().map(|a| a.name).collect::<Vec<_>>().join(", ")
+        ),
+    };
+    let queued = |name: &str| {
+        let head = fix_head(name, i.since);
+        i.queue.as_ref().and_then(|q| {
+            q.items
+                .iter()
+                .find(|it| it.state != queue::State::Done && it.task.starts_with(&head))
+                .map(|it| it.slug.clone())
+        })
+    };
+    Night {
+        at: i.now,
+        since: i.since,
+        since_label: day_clock(i.since),
+        rows: rows
+            .into_iter()
+            .map(|a| NightRow {
+                fix: (a.level == Level::Bad).then(|| Fix {
+                    project: FIX_PROJECT,
+                    task: fix_task(&a, i.since),
+                    queued: queued(a.name),
+                }),
+                area: a,
+            })
+            .collect(),
+        ok_line,
+        errors: i.errors.clone(),
+    }
+}
+
 /// The newest `system-health-*.md` written at or after `since`: its "## Issues Detected"
 /// bullets, each without its "-> do:" hint.
 pub fn host_issues(dir: &Path, since: i64) -> Vec<String> {
@@ -934,10 +1048,25 @@ fn env_dir(k: &str, home: &Path, d: &str) -> PathBuf {
 
 /// Every input, read now for the window from `since`.
 pub fn gather(since: i64, now: i64) -> Inputs {
+    gather_from(since, now, || {
+        let (state, queue, board, infra) = home::gather(true);
+        let home = home::build(&state, Some(&queue), Some(&board), infra.as_ref());
+        (state, queue, home)
+    })
+}
+
+/// Home's "Since last night" for a caller that has read Home already (agent-web caches its
+/// infra, the hub TUI holds the fleet state and the queue), so nothing is read twice.
+pub fn since_last_night(now: i64, state: Value, queue: Queue, home: Home) -> Night {
+    night(&gather_from(last_night(now), now, || (state, queue, home)))
+}
+
+/// The inputs, with Home's from `home`, which runs beside the done list and the Prometheus read.
+fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)) -> Inputs {
     use crate::session_actions::System;
     let home_dir = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     let mut errors = vec![];
-    let (state, queue, board, infra, done, live) = std::thread::scope(|s| {
+    let (state, queue, home, done, live) = std::thread::scope(|s| {
         let live = s.spawn(|| {
             crate::prom::base()
                 .and_then(|b| crate::prom::instant(&b, &crate::costs::live_q()))
@@ -956,17 +1085,15 @@ pub fn gather(since: i64, now: i64) -> Inputs {
                     .collect::<Vec<_>>()
             })
         });
-        let (state, queue, board, infra) = home::gather(true);
+        let (state, queue, home) = home();
         (
             state,
             queue,
-            board,
-            infra.unwrap_or_default(),
+            home,
             done.join().unwrap_or_else(|_| Err("panicked".into())),
             live.join().unwrap_or_else(|_| Err("panicked".into())),
         )
     });
-    let home = home::build(&state, Some(&queue), Some(&board), Some(&infra));
     let done = done
         .map_err(|e| errors.push(format!("agent-queue list --since: {e}")))
         .ok();
@@ -1177,6 +1304,93 @@ mod tests {
         // Negative control: the same fixture without the failed runner reads ok.
         i.runs.as_mut().unwrap().retain(|j| j.name != "wave-roll");
         assert_eq!(area(&build(&i), "Workers overnight").level, Level::Ok);
+    }
+
+    #[test]
+    fn since_last_night_shows_what_is_not_ok_and_a_bad_area_carries_its_fix() {
+        let n = night(&green());
+        assert!(n.rows.is_empty(), "{:#?}", n.rows);
+        assert_eq!(n.ok_line, "all 6 areas ok");
+
+        let mut i = green();
+        i.runs
+            .as_mut()
+            .unwrap()
+            .push(run("wave-roll", Some(false), "FAILED", NOW - 3600));
+        i.runs
+            .as_mut()
+            .unwrap()
+            .push(run("dream", None, "BLOCKED", NOW - 1800));
+        i.errors.push("watches: no such dir".into());
+        i.home.errors.push("no fleet state yet".into());
+        let n = night(&i);
+        let names: Vec<&str> = n.rows.iter().map(|r| r.area.name).collect();
+        assert_eq!(names, ["Workers overnight", "Nightly"], "briefing order");
+        let w = &n.rows[0];
+        assert_eq!(w.area.level, Level::Bad);
+        let fix = w.fix.as_ref().expect("a bad area queues a fix");
+        assert_eq!(fix.project, FIX_PROJECT);
+        assert!(
+            fix.task
+                .starts_with("Fix what the briefing's Workers overnight area reads bad since ")
+                && fix.task.contains(&w.area.line)
+                && fix.task.contains("#fleet?s=failed"),
+            "{}",
+            fix.task
+        );
+        assert_eq!(n.rows[1].area.level, Level::Warn);
+        assert!(n.rows[1].fix.is_none(), "only a bad area queues a fix");
+        assert_eq!(n.ok_line, "Infra, Sessions, Delivery, Costs ok");
+        assert_eq!(n.errors, ["watches: no such dir"], "Home shows its own");
+        let v = serde_json::to_value(&n).unwrap();
+        assert_eq!(
+            v["rows"][0]["name"], "Workers overnight",
+            "the area is flat"
+        );
+        assert_eq!(v["rows"][0]["level"], "bad");
+        assert_eq!(v["rows"][0]["fix"]["project"], FIX_PROJECT);
+        assert_eq!(fix.queued, None);
+
+        let open = |slug: &str, state, task: &str| queue::Item {
+            slug: slug.into(),
+            state,
+            task: task.into(),
+            ..Default::default()
+        };
+        i.queue.as_mut().unwrap().items = vec![
+            open("old", queue::State::Done, &fix.task),
+            open(
+                "other",
+                queue::State::Queued,
+                "Fix what the briefing's Nightly area",
+            ),
+            open(
+                "fix-1",
+                queue::State::Running,
+                &format!("{} earlier line.", fix_head("Workers overnight", i.since)),
+            ),
+        ];
+        let n = night(&i);
+        assert_eq!(
+            n.rows[0].fix.as_ref().unwrap().queued.as_deref(),
+            Some("fix-1"),
+            "an open item for this area and window, whatever its line, is the fix already queued"
+        );
+        i.since -= 86_400;
+        let n = night(&i);
+        assert_eq!(
+            n.rows[0].fix.as_ref().unwrap().queued,
+            None,
+            "a new window offers it again"
+        );
+    }
+
+    #[test]
+    fn last_night_is_six_in_the_evening_before_today() {
+        let t = last_night(NOW);
+        let d = Local.timestamp_opt(t, 0).single().unwrap();
+        assert_eq!(d.format("%H:%M").to_string(), "18:00");
+        assert!(t < NOW && NOW - t <= 30 * 3600 + 3600, "{t}");
     }
 
     #[test]
