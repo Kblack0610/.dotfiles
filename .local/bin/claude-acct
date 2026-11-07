@@ -196,8 +196,11 @@ RESERVE_PCT="${CLAUDE_ACCT_RESERVE_PCT:-15}"        # the last of each account, 
 # every account over 2026-11-01..04, so percents compare across accounts.
 SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-0.07}"
 RATE_TTL="${CLAUDE_ACCT_RATE_TTL:-3600}"
-# The endpoint is private: the hub's own env file, the same one agent-web's Infra tab loads.
-PROM_ENV="${CLAUDE_ACCT_PROM_ENV:-$HOME/.config/command-center/env}"
+# The one bash Prometheus reader (prom_q, PROM_URL from the hub's own env file). A dead endpoint
+# costs a start 5s at most, and only the spend paths ask.
+# shellcheck source=../lib/prom.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
+PROM_TIMEOUT="${PROM_TIMEOUT:-5}"
 
 # email_of <dir> -> the address that account is logged in as, empty if unknown
 email_of() {
@@ -217,15 +220,6 @@ live_of() {
         [[ -z "$(gateway_of "${c##*/}")" ]] || continue
         printf '@%s\n' "$(config_dir_of "${c##*/}")"
     done
-}
-
-# prom_q <promql> -> the instant-query answer on stdout, exit 1 when Prometheus cannot be read
-prom_q() {
-    local url="${CC_PROM_URL:-}"
-    # shellcheck source=/dev/null
-    [[ -n "$url" || ! -r "$PROM_ENV" ]] || url=$(. "$PROM_ENV" 2>/dev/null; printf '%s' "${CC_PROM_URL:-}")
-    [[ -n "$url" ]] || return 1
-    curl -sf -m 5 --data-urlencode "query=$1" "$url/api/v1/query" 2>/dev/null
 }
 
 # spend_24h -> {"email": dollars}, or null when Prometheus cannot be read: dollars are for scale,
@@ -356,6 +350,9 @@ cmd_run() {
         dir=$(cmd_pick)
     fi
     if [[ -n "$dir" ]]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
+    # An account session's harness is claude, which the Stop hook records when none is set: a
+    # gateway parent's AGENT_HARNESS (claude-lazer) must not label it.
+    unset AGENT_HARNESS
     set +u
     # shellcheck source=/dev/null
     . "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null

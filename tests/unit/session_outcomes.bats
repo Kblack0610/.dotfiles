@@ -122,6 +122,35 @@ EOF
   assert_equal "$(field a .board_done.proof)" 1
 }
 
+@test "pr-link records: a subagent's PR and a persisted-output PR reach .prs once, also when gh printed it; a malformed record is skipped" {
+  cat > "$TR/e.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Agent","input":{"subagent_type":"general-purpose","prompt":"open the PR"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":[{"type":"text","text":"Done, the PR is open."}]}]}}
+{"type":"pr-link","sessionId":"sess-e","prNumber":20,"prUrl":"https://github.com/o/r/pull/20","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-e","prNumber":20,"prUrl":"https://github.com/o/r/pull/20","prRepository":"o/r"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e2","name":"Bash","input":{"command":"gh pr create --title 'feat: e' --body x"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e2","content":"<persisted-output>\nOutput too large (37.6KB). Full output saved to: /tmp/tool-results/e2.txt\n</persisted-output>"}]}}
+{"type":"pr-link","sessionId":"sess-e","prNumber":21,"prUrl":"https://github.com/o/r/pull/21","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-e","prUrl":"https://github.com/o/r/pull/22"}
+{"type":"pr-link","sessionId":"sess-e","prNumber":"23","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-e","prNumber":24,"prRepository":""}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e3","name":"Bash","input":{"command":"gh pr merge 20 --squash -R o/r"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e3","content":"Squashed and merged pull request o/r#20 (feat: e1)"}]}}
+EOF2
+  jq -cn --arg t "$TR/e.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-e", project: "proj", transcript: $t, title: "title e", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$GH_FIXTURE/prs.o-r" <<'EOF2'
+[{"number":10,"state":"MERGED","title":"feat: a","mergedAt":"2026-10-19T01:00:00Z"},
+ {"number":20,"state":"MERGED","title":"feat: e1","mergedAt":"2026-10-19T03:00:00Z"},
+ {"number":21,"state":"MERGED","title":"feat: e","mergedAt":"2026-10-19T04:00:00Z"}]
+EOF2
+  "$SUBJECT" run
+  assert_equal "$(field e '[.prs[].number] | join(",")')" "20,21"
+  assert_equal "$(field e .prs_merged)" 2
+  assert_equal "$(field a '[.prs[].number] | join(",")')" 10
+}
+
 @test "reverted PR: B's #11 is reverted by #12 within the window" {
   "$SUBJECT" run
   assert_equal "$(field b '.prs[0].number')" 11
@@ -890,28 +919,31 @@ EOF
   assert_equal "$(field a '.class|tojson')" '{"size":null,"kind":"fix"}'
 }
 
-@test "the harness is what the transcript ran on: a gateway session is claude-lazer with no item, an account session is claude on a spilled item" {
+@test "the harness is what the launcher recorded: claude on a spilled item's account try, a legacy row by the item and the map" {
   queue_stub
   export SO_HARNESSES="$SANDBOX/harnesses.json"
-  jq -n '{gateway: {url: "https://gateway.example"}}' > "$SO_HARNESSES"
+  jq -n '{harnesses: {"lazer-reserve": {launcher: "claude-lazer"}}}' > "$SO_HARNESSES"
   {
-    jq -cn '{slug: "spilled", agent: "lazer-reserve", sessions: "sess-a sess-b sess-c"}'
+    jq -cn '{slug: "spilled", agent: "lazer-reserve", sessions: "sess-a sess-b sess-c sess-e sess-f"}'
   } > "$SANDBOX/items.jsonl"
   mkdir -p "$HOME/.claude-personal/projects/p"
   cp "$TR/c.jsonl" "$HOME/.claude-personal/projects/p/c.jsonl"
-  # a: the reserve run (gateway); b: the item's first try on an account; c: a row from before
-  # base_url, under another account's config dir; d: a hand `cl --lazer` on no item; e: another
-  # endpoint, which is not the gateway (negative control).
+  # a: the reserve run; b: the item's first try on an account, which records claude; c: a row from
+  # before the record, under another account's config dir; d: a hand `cl --lazer` on no item; e: a
+  # row from before the record under ~/.claude takes the gateway agent; f: one an earlier run gave a
+  # harness keeps it, though the item's agent and the map say otherwise.
+  mkdir -p "$SO_OUT/proj"
+  jq -cn '{session_id: "sess-f", harness: "claude", updated_epoch: 1}' > "$SO_OUT/proj/2026-11.jsonl"
   jq -c --arg tc "$HOME/.claude-personal/projects/p/c.jsonl" '
-    if .session_id == "sess-a" then . + {base_url: "https://gateway.example"}
-    elif .session_id == "sess-b" then . + {base_url: null}
+    if .session_id == "sess-a" then . + {harness: "lazer-reserve"}
+    elif .session_id == "sess-b" then . + {harness: "claude"}
     elif .session_id == "sess-c" then .transcript = $tc
-    else . + {base_url: "https://gateway.example"} end
-    | ., (select(.session_id == "sess-d") | .session_id = "sess-e" | .base_url = "https://other-proxy.example")' \
+    else . + {harness: "claude-lazer"} end
+    | ., (select(.session_id == "sess-d") | (.session_id = "sess-e", .session_id = "sess-f") | del(.harness))' \
     "$SO_SESSIONS/proj/sessions.jsonl" > "$SANDBOX/reg" && mv "$SANDBOX/reg" "$SO_SESSIONS/proj/sessions.jsonl"
   run "$SUBJECT" run
   assert_success
-  assert_equal "$(field a .harness) $(field b .harness) $(field c .harness) $(field d .harness) $(field e .harness)" 'lazer-reserve claude claude claude-lazer claude'
+  assert_equal "$(field a .harness) $(field b .harness) $(field c .harness) $(field d .harness) $(field e .harness) $(field f .harness)" 'lazer-reserve claude claude claude-lazer lazer-reserve claude'
   # the same rule over old outcomes rows: under ~/.claude keeps the gateway agent, another account does not
   jq -cn '{slug: "spilled", agent: "lazer-reserve", sessions: "old-gw old-acct"}' > "$SANDBOX/items.jsonl"
   mkdir -p "$SO_OUT/old"
@@ -1263,4 +1295,70 @@ rework_repo() {
   rework_repo move
   "$SUBJECT" run
   assert_equal "$(field a '.rework | tojson')" '{"measured":1,"candidate_7d":0,"verified_30d":0}'
+}
+
+# lessons: one project, 3-day windows, now 2026-10-20 UTC. s1 and s2 stop before the 10-10 lessons,
+# s3 and s4 after them, s5 before the 10-18 one; s7's transcript is pruned, so it is not counted,
+# and s6 is another project's. Project tiny has one session each side, a hit then none: held on
+# the ratio, but MIN_SESSIONS is 2 here, so thin. The transcript path is the registry's: an outcome
+# row keeps only a boolean, which must not be read as a path.
+lessons_fixture() {
+  export TZ=UTC SO_OUT="$SANDBOX/lo" SO_LESSONS_DIR="$SANDBOX/lessons" SO_SESSIONS="$SANDBOX/reg" SO_LESSON_MIN_SESSIONS=2
+  mkdir -p "$SO_OUT/proj" "$SO_LESSONS_DIR" "$TR/l" "$SO_SESSIONS/proj" "$SO_SESSIONS/other" "$SO_SESSIONS/tiny"
+  bash_line() { jq -cn --arg c "$1" '{type: "assistant", message: {content: [{type: "tool_use", id: "x", name: "Bash", input: {command: $c}}]}}'; }
+  { bash_line 'killall node'; bash_line 'cd x && chmod -R 777 y'; } > "$TR/l/s1.jsonl"
+  bash_line 'ls' > "$TR/l/s2.jsonl"
+  bash_line 'chmod -R 777 z' > "$TR/l/s3.jsonl"
+  bash_line 'grep killall notes.md' > "$TR/l/s4.jsonl"
+  bash_line 'docker system prune -af' > "$TR/l/s5.jsonl"
+  bash_line 'git push --tags' > "$TR/l/t1.jsonl"
+  bash_line 'ls' > "$TR/l/t2.jsonl"
+  cp "$TR/l/s1.jsonl" "$TR/l/s6.jsonl"
+  local s day proj
+  for s in s1:2026-10-08 s2:2026-10-09 s3:2026-10-12 s4:2026-10-13 s5:2026-10-16 s7:2026-10-12 s6:2026-10-08 t1:2026-10-08 t2:2026-10-12; do
+    day=$(date -d "${s#*:}T12:00:00Z" +%s)
+    case "${s%%:*}" in s6) proj=other ;; t*) proj=tiny ;; *) proj=proj ;; esac
+    # an older registry row first: the newest row per session is the one read
+    jq -cn --arg id "${s%%:*}" --argjson at "$((day - 30 * 86400))" --arg p "$proj" '{session_id: $id, project: $p, updated: $at}' >> "$SO_SESSIONS/$proj/sessions.jsonl"
+    jq -cn --arg id "${s%%:*}" --argjson at "$day" --arg p "$proj" --arg tr "$TR/l/${s%%:*}.jsonl" \
+      '{session_id: $id, project: $p, updated: $at, transcript: $tr}' >> "$SO_SESSIONS/$proj/sessions.jsonl"
+    jq -cn --arg id "${s%%:*}" --argjson at "$day" --arg p "$proj" \
+      '{session_id: $id, project: $p, updated: ($at | todate), updated_epoch: $at, observed: $at, transcript: true}' >> "$SO_OUT/proj/2026-10.jsonl"
+  done
+  cat > "$SO_LESSONS_DIR/proj.md" <<'L'
+- **Never killall node; name the pid.** (2026-10-10, dream sweep) <!-- sig:2026-10-10 (^|[;&|]\s*)killall\s -->
+- **chmod 777 opens the key dir.** <!-- sig:2026-10-10 (^|[;&|]\s*)chmod\s+-R\s+777\b -->
+- **Never rm -rf a mount.** <!-- sig:2026-10-10 (^|[;&|]\s*)rm\s+-rf\s+/mnt -->
+- **docker prune takes the cache.** <!-- sig:2026-10-18 (^|[;&|]\s*)docker\s+system\s+prune -->
+- A note with no sig (2026-10-11, dream sweep)
+L
+  printf '%s\n' '- **Push tags one by one.** <!-- sig:2026-10-10 (^|[;&|]\s*)git\s+push\s+--tags -->' > "$SO_LESSONS_DIR/tiny.md"
+}
+
+@test "lessons: held, recurring, no-baseline, thin and early from the windows before and after; whole windows only are cached" {
+  lessons_fixture
+  run "$SUBJECT" lessons --days 3 --json
+  assert_success
+  run jq -c '[.lessons[] | [.claim[0:12], .verdict, .before.hits, .before.sessions, .after.hits, .after.sessions]], [.held, .recurring, .no_baseline, .thin, .early, .dream_lessons, .dream_with_sig]' <<<"$output"
+  assert_line '[["chmod 777 op","recurring",1,2,1,2],["docker prune","early",1,1,null,null],["Push tags on","thin",1,1,0,1],["Never killal","held",1,2,0,2],["Never rm -rf","no-baseline",0,2,0,2]]'
+  assert_line '[1,1,1,1,1,2,1]'
+  # the after window of the 10-18 lesson is not whole, so it is not cached; the other nine are
+  assert_equal "$(wc -l < "$SO_OUT/lesson-effect.jsonl")" 9
+  run "$SUBJECT" lessons --days 3
+  assert_line --partial '| held | proj | 2026-10-10 | 1/2 50% | 0/2 0% | Never killall node'
+  assert_line '1 held, 1 recurring, 1 no-baseline, 1 thin, 1 early (3d windows); 1 of 2 dream-sweep lessons carry a sig'
+}
+
+@test "lessons: a cached window is not scanned again; --cached reads only the cache; a bad arg is usage" {
+  lessons_fixture
+  run "$SUBJECT" lessons --cached --days 3 --json
+  assert_success
+  assert_equal "$(jq -c '[.held, .recurring, .early]' <<<"$output")" '[0,0,5]'
+  "$SUBJECT" lessons --days 3 >/dev/null
+  rm "$TR/l/s3.jsonl"   # the chmod recurrence: gone from disk, still in the cache
+  run "$SUBJECT" lessons --days 3 --json
+  assert_equal "$(jq -c '[.held, .recurring]' <<<"$output")" '[1,1]'
+  assert_equal "$(wc -l < "$SO_OUT/lesson-effect.jsonl")" 9
+  run "$SUBJECT" lessons --days 0
+  assert_failure 2
 }

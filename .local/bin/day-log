@@ -72,11 +72,11 @@ groups_json() {
 }
 
 # ledger_prs <day> -> {"repo#N": {item, area}} from the work ledger: every item active or done
-# since the day whose pr: is owner/repo#N, keyed by the repo's name as gh search gives it. The item
+# since the day, one key for each owner/repo#N in its pr: (one PR per repo), keyed by the repo's name as gh search gives it. The item
 # that carries a PR is the one unit of work it landed (agent-land records it), so this is the credit.
 ledger_prs() {
   $DAYLOG_QUEUE_CMD list --json --state all --since "$1" 2>/dev/null | jq -cs '
-    [.[] | . as $i | (.pr // "" | capture("^[^#/ ]+/(?<r>[^#/ ]+)#(?<n>[0-9]+)$")) // empty
+    [.[] | . as $i | (.pr // "" | tostring | split(" ")[] | capture("^[^#/ ]+/(?<r>[^#/ ]+)#(?<n>[0-9]+)$"))
      | {key: "\(.r)#\(.n)", value: {item: $i.slug, area: ($i.area // null)}}] | from_entries'
 }
 
