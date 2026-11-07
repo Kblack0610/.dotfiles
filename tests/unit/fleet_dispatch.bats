@@ -3785,6 +3785,33 @@ landed_item() {
   assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
 }
 
+@test "reap: an item whose PR is in another of the project's repos proves its commit in that repo's checkout" {
+  # NEGATIVE CONTROL: proved in the project's own checkout (game), the tools commit read
+  # "evidence ... is not a commit in .../repos/game" and the row stayed started every pass (ar-965).
+  landed_item MERGED 'o/tools#9'
+  git init -q --bare "$SANDBOX/tools.git"
+  git -c init.defaultBranch=main init -q "$SANDBOX/repos/tools"
+  git -C "$SANDBOX/repos/tools" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "tools fix (#9)"
+  git -C "$SANDBOX/repos/tools" remote add origin "$SANDBOX/tools.git"
+  git -C "$SANDBOX/repos/tools" push -q origin HEAD:main
+  TOID=$(git -C "$SANDBOX/repos/tools" rev-parse HEAD)
+  jq --arg d "$SANDBOX/repos/tools" '.trackers.tools = {repo: "tools"} | .paths[$d] = "tools"' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/map.next"
+  mv "$SANDBOX/map.next" "$DISPATCH_PROJECT_MAP"
+  agent-queue set fix-crash "merged=$TOID" >/dev/null
+  run cmd_reap
+  assert_output --partial 'closed game: fix crash'
+  run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:9 commit:${TOID:0:12}"
+}
+
+@test "reap: an item whose PR names a repo with no checkout leaves its row started" {
+  landed_item MERGED 'o/tools#9'
+  agent-queue set fix-crash "merged=$OID" >/dev/null
+  run cmd_reap
+  refute_output --partial 'closed game'
+  grep -qF 'no merge proof: no checkout of the repo o/tools#9 names' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
+}
+
 @test "reap: a done item's open PR keeps its row started past the orphan grace" {
   landed_item OPEN
   orphan_seen game 'fix crash' 73
@@ -5097,4 +5124,176 @@ sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.l
   run "$REPO_ROOT/.local/bin/fleet-dispatch" reap
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-spilled.md 2>/dev/null)" ] || fail "a spilled item whose claude exited stayed active"
+}
+
+# --- fleet workers -----------------------------------------------------------------------
+
+# worker <load cores ready> [place] -- one fleet worker, razer-laptop, in an inventory whose
+# ansible_host sits in another group, with the game repo cloned. ssh answers its probe with those
+# three words and runs any other command here, so the tmux stub stands in for the worker's server.
+# ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
+worker() {
+  export FLEET_INVENTORY="$SANDBOX/inventory.yml"
+  cat > "$FLEET_INVENTORY" <<EOF
+all:
+  vars:
+    fleet_state_host: state.lan
+  children:
+    laptops:
+      hosts:
+        razer-laptop:
+          ansible_host: 192.0.2.26
+          ansible_user: kb
+    fleet_workers:
+      vars:
+        fleet_max_live: 1
+        fleet_place: ${2:-true}
+      hosts:
+        razer-laptop:
+          fleet_repos:
+            - dest: "$SANDBOX/repos/game"
+              repo: game
+EOF
+  tr ' ' '\n' <<<"$1" > "$NOTES_FIXTURE/ssh.probe"
+  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
+[ ! -e "$NOTES_FIXTURE/ssh.rc" ] || exit "$(cat "$NOTES_FIXTURE/ssh.rc")"
+eval "set -- ${*: -1}"
+case "$1" in sh) cat "$NOTES_FIXTURE/ssh.probe" ;; *) "$@" ;; esac'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  unset FLEET_HOSTS_JSON
+}
+
+# remote_item <slug> -- a started item on lab:game-agent-1 at razer-laptop.
+remote_item() {
+  started_item "$1" lab:game-agent-1 run
+  sed -i 's/^session: .*/&\nhost: razer-laptop/' "$(qitem running "$1")"
+}
+
+@test "hosts lists the roster with what a pass reads from each worker" {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  assert_success
+  assert_equal "$(jq -r '"\(.name) \(.dest) \(.free) \(.why)"' <<<"$output")" 'razer-laptop kb@192.0.2.26 1 '
+  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
+}
+
+@test "run places a light queue item on a fleet worker when this machine is over its load pace" {
+  game_ready
+  worker '2.0 16 1'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_STATE_HOST=state.lan AGENT_QUEUE_ITEM=fix-menu"
+  f=$(qitem running fix-menu)
+  [ -n "$f" ] || fail "fix-menu is not running"
+  assert_equal "$(qfield "$f" host) $(qfield "$f" session)" 'razer-laptop lab:game-agent-1'
+  # Its @dispatch mark goes to the worker's tmux, not this machine's.
+  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env tmux -L lab set'
+}
+
+@test "negative control: a fleet worker over its own load pace gets no session, and the pass says why" {
+  game_ready
+  worker '64.0 16 1'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'over the'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued fix-menu)" ] || fail "fix-menu left the queue"
+}
+
+@test "a worker not placed, one at its fleet_max_live, or one without claude takes nothing" {
+  game_ready
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  worker '2.0 16 1' false
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  assert_not_called 'ssh'
+  worker '2.0 16 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop has no wt, no claude, or an agent-queue that does not forward'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  worker '2.0 16 1'
+  remote_item busy
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop is at its fleet_max_live'
+}
+
+@test "a heavy item stays here: a worker takes light claude work only" {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug bake --priority high --weight heavy "Bake the lights" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'machine pace: bake'
+  assert_output --partial 'no fleet worker takes it'
+  assert_not_called 'wt new'
+}
+
+@test "with room here a pass starts here first, and with no roster nothing asks a worker" {
+  game_ready
+  worker '2.0 16 1'
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
+  assert_not_called 'wt new --host'
+  assert_equal "$(qfield "$(qitem running fix-menu)" host)" ''
+}
+
+@test "reap leaves an item alone while its worker does not answer, and settles it once the worker says the session is gone" {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1'
+  remote_item fix-crash
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem running fix-crash)" ] || fail "reaped an item whose worker did not answer"
+  # cannot-tell is live to every reader: its unit stays held on the worker.
+  run live_runs
+  assert_output 'game/ light razer-laptop'
+  rm "$NOTES_FIXTURE/ssh.rc"
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run cmd_reap
+  [ -n "$(qitem running fix-crash)" ] || fail "reaped a live remote session"
+  run live_runs
+  assert_output 'game/ light razer-laptop'
+  assert_equal "$(units_on '' <<<"$output") $(units_on razer-laptop <<<"$output")" '0 1'
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run cmd_reap
+  [ -z "$(qitem running fix-crash)" ] || fail "kept an item whose remote session is gone"
+}
+
+@test "a worker gone from the roster cannot answer for its item, so reap settles it by its PR" {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1'
+  remote_item fix-crash
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  sed -i 's/^\( *\)razer-laptop:$/\1other-laptop:/' "$FLEET_INVENTORY"; unset FLEET_HOSTS_JSON
+  run cmd_reap
+  [ -z "$(qitem running fix-crash)" ] || fail "held an item whose host left the roster"
+}
+
+@test "start --host refuses what a worker cannot run" {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1'
+  run cmd_start --host razer-laptop --project game --brief "$SANDBOX/b.md"
+  assert_failure 2
+  assert_output --partial 'starts a queued --item'
+  agent-queue add --project game --slug x "x" >/dev/null
+  run cmd_start --host nope --item x
+  assert_failure 2
+  assert_output --partial 'nope is not in the fleet roster'
+  sed -i '/fleet_state_host/d' "$FLEET_INVENTORY"; unset FLEET_HOSTS_JSON
+  run cmd_start --host razer-laptop --item x
+  assert_failure 2
+  assert_output --partial 'has no fleet_state_host'
+  assert_not_called 'wt new'
 }
