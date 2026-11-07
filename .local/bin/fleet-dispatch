@@ -1117,7 +1117,7 @@ gateway_launch() {
   case "$(harness_launcher "$harness")" in
     claude-lazer)
       launch_mode "$(jq -r 'if .mode == "plan" then "plan" else "bypassPermissions" end' <<<"$it")"
-      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") $(telemetry_env "$cwd" "$slug")env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY=$(printf '%q' "$file")"
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") $(telemetry_env "$cwd" "$slug")env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY=$(printf '%q' "$file") AGENT_HARNESS=$(printf '%q' "$harness")"
       sid=$(new_sid) || { say "start: no session id for queue item $slug; it stays queued"; return 1; }
       cmd="$cmd ANTHROPIC_CUSTOM_HEADERS=$(printf '%q' "x-litellm-tags: queue:$slug") claude-lazer --model $(printf '%q' "$id") --session-id $sid $flags $(printf '%q' "$brief")"
       ;;

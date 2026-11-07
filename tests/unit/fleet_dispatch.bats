@@ -4148,7 +4148,7 @@ harness_ready() {
   assert_success
   assert_called 'env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY='
   mask_sid "$NOTES_FIXTURE/calls.log"
-  assert_called 'ANTHROPIC_CUSTOM_HEADERS=x-litellm-tags:\ queue:fix-menu claude-lazer --model sonnet --session-id SID --permission-mode bypassPermissions'
+  assert_called 'AGENT_HARNESS=claude-lazer ANTHROPIC_CUSTOM_HEADERS=x-litellm-tags:\ queue:fix-menu claude-lazer --model sonnet --session-id SID --permission-mode bypassPermissions'
   assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane eval --by human --harness claude-lazer --picked sonnet --ran sonnet'
   assert_not_called 'claude-acct pick'
   f=$(qitem running fix-menu)
@@ -4436,7 +4436,7 @@ sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.l
   assert_equal "$(outcome)" WORKED
   mask_sid "$NOTES_FIXTURE/calls.log"
   assert_called 'claude-lazer --model sonnet --session-id SID --permission-mode bypassPermissions'
-  assert_called 'reserve.key'
+  assert_called 'reserve.key AGENT_HARNESS=lazer-reserve '
   assert_not_called 'eval.key'
   grep -q 'Bearer sk-reserve' "$NOTES_FIXTURE/curl.stdin" || fail "the budget check read another key"
   assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet --harness lazer-reserve'

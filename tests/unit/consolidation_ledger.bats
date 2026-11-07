@@ -148,6 +148,16 @@ NS
   assert_line 'launches_direct=2'
 }
 
+@test "a caller that reads its model URL from config is found by its chat body" {
+  # model-lane's shape: the URL lives in lanes.yaml, the code only builds the payload
+  printf 'body = json.dumps({"model": llm["model"], "messages": [m]})\nurllib.request.Request(llm["url"], body)\n' > "$LEDGER_SRC/lane.py"
+  printf 'url: https://h/v1/chat/completions\n' > "$LEDGER_SRC/lanes.yaml"
+  # a per-model stats row (messages is a count, not a list) and a commented payload are not calls
+  printf 'row = {"model": m, "messages": n}\n# {"model": m, "messages": []}\n' > "$LEDGER_SRC/stats.py"
+  run "$SUBJECT" ledger --launches "$LEDGER_SRC"
+  assert_output "$LEDGER_SRC/lane.py:1:body = json.dumps({\"model\": llm[\"model\"], \"messages\": [m]})"
+}
+
 @test "a missing baseline fails rather than reading as held" {
   rm "$LEDGER_BASELINE"
   run "$SUBJECT" ledger --check
