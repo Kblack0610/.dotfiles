@@ -3,6 +3,8 @@
 # main ones first, each with its stage and open count; the selected project's card and open
 # rows show on the right. Enter opens the hub's Projects tab on that project, where tasks are
 # added, moved, edited, rewaved and closed; e opens the project's sheet in the hub notes editor.
+# a, g and c reach the repo the project lives in (project-map.json, via project_repo_path):
+# its agents in the agent panel, its session, or a new Claude in a fresh worktree of it.
 #
 # Usage: projects.sh [verb]
 #
@@ -15,6 +17,7 @@
 #   --preview <prof> <name>  the project's card over its open rows, the hub Projects tab's own
 #                          text (`hub --once`), at the preview's width
 #   --board <prof> <name>  show the hub Projects tab on one project and go to its window
+#   --repo <name>          the checkout the project lives in, or exit 1 for a notes-only one
 #   --key <view> <key>     the fzf action a key runs in a view (list). The keys mean one
 #                          thing while you browse and type themselves while you search, so the
 #                          choice is made here at keypress time, where a test can see it.
@@ -23,6 +26,7 @@
 # Keys, project list (it opens in hotkey mode, no input line):
 #   1-9 / Enter / o  hub Projects   j k  move   /  search (Esc: leave the box, clear, quit)
 #   e  the sheet in the hub notes editor   n  new project   d  show/hide drafts
+#   a  its agents (agent panel)   g  its repo's session   c  new Claude in a fresh worktree
 #   s  set stage   x  archive   ctrl-/  preview below, hidden, back   q / Esc  quit
 #
 # The preview and the hub are one reader: the card, its progress and ETA and the rows all
@@ -34,6 +38,8 @@
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
+# shellcheck source=../../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-${SELF%/*}/../../../.config/shared-hooks/project-name.sh}" || exit 1
 
 # The ladder, least to most real, from its one definition in notes-cli.
 PROJECTS_STAGES="${PROJECTS_STAGES:-$(notes projects --stages 2>/dev/null)}"
@@ -130,6 +136,9 @@ cmd_key() {
   list:[1-9]) echo "pos($key)+print(enter)+accept" ;;
   list:o) echo 'print(enter)+accept' ;;
   list:e) echo 'print(edit)+accept' ;;
+  list:a) echo 'print(agents)+accept' ;;
+  list:g) echo 'print(repo)+accept' ;;
+  list:c) echo 'print(claude)+accept' ;;
   list:q) echo abort ;;
   list:n) echo "execute($Q --new)+$relist" ;;
   list:s) echo "execute($Q --stage {1} {2})+$relist" ;;
@@ -217,6 +226,38 @@ cmd_board() {
   hub tab projects "$1/$2" && tmx goto hub hub:board
 }
 
+# --- Repo ---
+# The checkout a project lives in: project-map.json's trackers.<p>.repo, then its paths, the
+# lookup fleet-dispatch uses. Several projects can share one repo (every BNB app is platform).
+cmd_repo() {
+  local dir
+  dir="$(project_repo_path "$1")"
+  [ -n "$dir" ] && [ -d "$dir" ] || return 1
+  printf '%s\n' "$dir"
+}
+
+# What a, g and c do once a project is picked. A notes-only project says so and goes back to
+# the list, so the press is never silently lost.
+_to_repo() {
+  local act="$1" name="$2" dir label
+  if ! dir="$(cmd_repo "$name")"; then
+    panel_hint "$name has no repo in project-map.json (trackers.$name.repo or paths)"
+    read -rsn1 -p '  press a key '
+    cmd_pick
+    return
+  fi
+  case "$act" in
+  # The label agent-panel groups a row under (render::project_from_path): the basename,
+  # leading dot stripped. The leading ' makes it an exact match, so it is that group only.
+  agents)
+    label="${dir##*/}"
+    panel_need agent-panel && agent-panel --query "'${label#.}"
+    ;;
+  repo) "${SELF%/*}/sessionizer.sh" "$dir" ;;
+  claude) panel_need wt && wt new --claude -c "$dir" >/dev/null ;;
+  esac
+}
+
 # --- Picker ---
 # The table flags minus --no-sort. An empty query shows the rows in their own order either
 # way; a search ranks by match, which is what makes "time" land on time-tangle rather than
@@ -236,16 +277,17 @@ cmd_pick() {
 
   local out profile name sheet
   local -a BINDS
-  _binds list j k / 1 2 3 4 5 6 7 8 9 o e q n s x d esc enter
+  _binds list j k / 1 2 3 4 5 6 7 8 9 o e a g c q n s x d esc enter
   out="$(cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PROJECTS_FZF_TABLE[@]}" \
     --no-input --with-nth=4,5 --nth=1 --tabstop=1 --prompt='projects> ' \
-    --header='1-9/o open  e sheet  n new  s stage  x archive  d drafts  / search  ctrl-/ preview  q quit' \
+    --header='1-9/o open  e sheet  a agents  g repo  c claude  n new  s stage  x archive  d drafts  / search  ctrl-/ layout  q quit' \
     "${PANEL_FZF_LAYOUT[@]}" --preview="$Q --preview {1} {2}" \
     "${BINDS[@]}")" || return 0
   IFS="$PANEL_TAB" read -r profile name sheet _ <<<"${out#*$'\n'}"
   case "${out%%$'\n'*}" in
   edit) panel_need tmx && tmx open hub "$sheet" 1 ;;
   enter) cmd_board "$profile" "$name" ;;
+  agents | repo | claude) _to_repo "${out%%$'\n'*}" "$name" ;;
   esac
 }
 
@@ -258,6 +300,7 @@ case "${1:-}" in
 --list) cmd_list "${2:-}" ;;
 --preview) cmd_preview "${2:?profile}" "${3:?name}" ;;
 --board) cmd_board "${2:?profile}" "${3:?name}" ;;
+--repo) cmd_repo "${2:?name}" ;;
 --key) cmd_key "${2:?view}" "${3:?key}" ;;
 --new) panel_fzf_opts && cmd_new ;;
 --stage) panel_fzf_opts && cmd_stage "${2:?profile}" "${3:?name}" ;;

@@ -4,7 +4,7 @@
 # Usage: worktree.sh [verb]
 #
 # Verbs:
-#   new [-c <dir>] [--server <name>] [--detach]
+#   new [-c <dir>] [--server <name>] [--detach] [--claude]
 #                     cut a fresh worktree off the repo containing <dir> (default $PWD),
 #                     open a tmux session rooted in it, and land there. Reuses the lowest
 #                     IDLE agent-N (reapable, see `reap`) before cutting a new one: an idle
@@ -16,7 +16,9 @@
 #                     whichever world you pressed the key in. --server opens it on that
 #                     tmux server instead; --detach opens it without going there. Together
 #                     they let a caller with no tmux of its own (fleet-dispatch, from a
-#                     timer) start a session.
+#                     timer) start a session. --claude starts Claude in it (`claude-acct
+#                     run`, the launcher `cl` uses): the one "new agent for this repo"
+#                     that Prefix+p c, Prefix+f ctrl-n and Prefix+g ctrl-n all call.
 #                                                                               [Prefix+F]
 #   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
 #                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
@@ -856,6 +858,10 @@ cmd_new() {
       ;;
     -d | --detach)
       detach=1
+      shift
+      ;;
+    --claude)
+      WT_NEW_CMD='claude-acct run'
       shift
       ;;
     *) panel_die "new: unknown arg: $1" ;;
