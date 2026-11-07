@@ -1,0 +1,39 @@
+name: consolidation ledger
+
+# The one CI run of `fleet-bench ledger --check`: runners, timers and direct headless launches
+# may only shrink to the baseline. The roster (runner confs, ledger-baseline) lives in the
+# private overlay, which this repo's CI cannot see, so the private repo calls this workflow on
+# its PRs, its pushes to main and a daily schedule; the daily run catches a launch that landed
+# here. Counts come from the two checkouts alone (fleet-bench ledger_roster), never live state.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  ledger:
+    name: ledger check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: private
+      # fleet-bench and the launch scan come from the public repo at main: the counts must
+      # see what has landed there, and this repo calls the workflow from main.
+      - uses: actions/checkout@v4
+        with:
+          repository: Kblack0610/.dotfiles
+          ref: main
+          path: public
+      - name: Ledger check
+        run: |
+          export LEDGER_CONF_DIR="$PWD/private/.config/agentctl/agents"
+          export LEDGER_BASELINE="$PWD/private/.config/agentctl/ledger-baseline"
+          export LEDGER_SRC="$PWD/public/.local:$PWD/public/.config:$PWD/public/.claude/skills:$PWD/private/.local:$PWD/private/.config:$PWD/private/.claude/skills"
+          export BENCH_LIB_DIR="$PWD/public/.local/lib"
+          public/.local/bin/fleet-bench ledger --check || {
+            echo "::error::the ledger grew: retire one, or raise .config/agentctl/ledger-baseline in this PR with a why"
+            exit 1
+          }

@@ -14,14 +14,13 @@ setup() {
   export FLEET_BENCH_DIR="$HOME/.agent/bench"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
   export BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
-  export LEDGER_CONF_DIR="$SANDBOX/confs" LEDGER_TIMER_DIR="$SANDBOX/timers"
+  export LEDGER_CONF_DIR="$SANDBOX/confs"
   export LEDGER_SRC="$SANDBOX/src" LEDGER_BASELINE="$SANDBOX/baseline"
   export LEDGER_BOARDS="$SANDBOX/board.md"
   export BENCH_NEEDS_CMD=needs-stub BENCH_NOW=1793160000
-  mkdir -p "$LEDGER_CONF_DIR" "$LEDGER_TIMER_DIR" "$LEDGER_SRC" "$AGENTCTL_STATE_DIR"
+  mkdir -p "$LEDGER_CONF_DIR" "$LEDGER_SRC" "$AGENTCTL_STATE_DIR"
   for n in alpha beta; do
-    printf 'NAME=%s\nKIND=oneshot\n' "$n" > "$LEDGER_CONF_DIR/$n.conf"
-    : > "$LEDGER_TIMER_DIR/agentctl-$n.timer"
+    printf "NAME=%s\nKIND=oneshot\nSCHEDULE='*-*-* 03:00'\n" "$n" > "$LEDGER_CONF_DIR/$n.conf"
   done
   printf 'exec claude "${flags[@]}" "$@"\n' > "$LEDGER_SRC/harness.sh"
   printf 'runners=2\ntimers=2\nlaunches_direct=0\n' > "$LEDGER_BASELINE"
@@ -44,8 +43,28 @@ NS
   assert_success
   assert_line 'runners=2'
   assert_line 'runners_on=1'
-  assert_line 'timers=2'
+  assert_line 'timers=1'
   assert_line 'launches_direct=0'
+}
+
+@test "a timer is counted where agentctl reload writes one: a switched-on oneshot with a SCHEDULE" {
+  printf 'NAME=p\nKIND=persistent\nAUTOSTART=yes\n' > "$LEDGER_CONF_DIR/p.conf"
+  printf "NAME=h\nKIND=oneshot\nSCHEDULE=''\n" > "$LEDGER_CONF_DIR/h.conf"
+  printf "NAME=q\nKIND='oneshot'\nSCHEDULE=hourly\n" > "$LEDGER_CONF_DIR/q.conf"
+  run "$SUBJECT" ledger
+  assert_line 'runners=5'
+  assert_line 'timers=3'
+}
+
+@test "check reads only the roster, so a checkout with no live state counts the same (the ledger workflow)" {
+  printf '#!/bin/sh\ntouch "%s"\nexit 1\n' "$SANDBOX/needs-read" > "$SANDBOX/bin/needs-stub"
+  run "$SUBJECT" ledger --check
+  assert_success
+  assert_output ''
+  [ ! -e "$SANDBOX/needs-read" ]
+  # negative control: the full ledger does read the live asks
+  run "$SUBJECT" ledger
+  [ -e "$SANDBOX/needs-read" ]
 }
 
 @test "asks older than ASK_STALE_DAYS are stale, and open board rows count todo and in-progress" {
@@ -84,6 +103,14 @@ NS
   run "$SUBJECT" ledger --check
   assert_failure
   assert_output 'runners grew: 3 > baseline 2'
+}
+
+@test "a new scheduled conf grows runners and timers both" {
+  printf "NAME=gamma\nKIND=oneshot\nSCHEDULE=daily\n" > "$LEDGER_CONF_DIR/gamma.conf"
+  run "$SUBJECT" ledger --check
+  assert_failure
+  assert_line 'runners grew: 3 > baseline 2'
+  assert_line 'timers grew: 3 > baseline 2'
 }
 
 @test "a KIND=call agent is counted as a call, not a runner, and holds the check" {
