@@ -169,7 +169,7 @@ function overview() {
   renderPin();
   $("main").classList.remove("open");
   $("scroll").innerHTML = "";
-  renderFacts(); renderOverview(); refreshSessions();
+  renderFacts(); renderOverview(); renderSide(); refreshSessions();
 }
 
 $("back").onclick = () => setTab("sessions", "");

@@ -66,6 +66,18 @@ main { display: grid; grid-template-columns: 1fr; height: calc(100% - 49px - env
 .acts .msg.err { color: var(--wait); }
 /* An element's own display rule would otherwise beat the hidden attribute (#detail is flex). */
 [hidden] { display: none !important; }
+/* The split pane (sessions.js renderSide): from 900px an open session keeps the list on its left. */
+#side { display: none; }
+@media (min-width: 900px) {
+  main.open:has(> #detail:not([hidden])) { grid-template-columns: minmax(240px, 320px) 1fr; }
+  main.open:has(> #detail:not([hidden])) > #side { display: block; overflow-y: auto; min-height: 0; padding: 8px; border-right: 1px solid var(--line); background: var(--panel); }
+}
+#side .fseg { margin: 0 0 6px; }
+.srow { display: grid; grid-template-columns: auto 1fr; gap: 2px 6px; align-items: center; width: 100%; text-align: left; font: inherit; color: var(--ink); background: none; border: 0; border-left: 3px solid transparent; border-radius: 6px; padding: 6px 8px; cursor: pointer; }
+.srow:hover { background: var(--bg); }
+.srow.on { background: var(--bg); border-left-color: var(--accent); }
+.srow .sn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); }
+.srow .sx { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--fs-xs) var(--mono); color: var(--muted); }
 #detail { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .bar .name { font-family: var(--mono); font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
