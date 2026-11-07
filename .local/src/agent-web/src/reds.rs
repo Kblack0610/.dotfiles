@@ -2,7 +2,7 @@
 //! worst first, and the summary line. `hub_core::reds` reads and words it for the hub TUI too.
 //!
 //! One `fleet-bench reds` read takes about 2s and a fix moves in minutes, so every open tab
-//! shares one answer for `REDS_TTL`. The lock is held across the read, so tabs that refresh
+//! shares one answer for `REDS_SECS`. The lock is held across the read, so tabs that refresh
 //! together wait on one read instead of starting one each.
 
 use axum::http::StatusCode;

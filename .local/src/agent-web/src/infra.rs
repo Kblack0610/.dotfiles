@@ -13,25 +13,26 @@ use crate::cache::{off, ReadCache};
 const CACHE_SECS: u64 = 30;
 
 /// The last answer, as hub-core's struct (Home joins it) and as JSON (the Infra tab serves it),
-/// kept as a failed gather is, inside the answer.
+/// kept as a failed gather is, inside the answer. A panic in the gather is shown, not kept.
 #[derive(Default)]
 pub struct Cache(ReadCache<(Infra, String), CACHE_SECS>);
 
+/// The answer beside its JSON, made once for every request that shares it.
+fn with_body(infra: Infra) -> (Infra, String) {
+    let body = serde_json::to_string(&infra)
+        .unwrap_or_else(|e| serde_json::json!({"ok": false, "error": e.to_string()}).to_string());
+    (infra, body)
+}
+
 impl Cache {
     async fn answer(&self) -> Arc<(Infra, String)> {
-        let read = async {
-            let infra = off(hub_core::infra::gather)
-                .await
-                .unwrap_or_else(|e| Infra {
-                    error: Some(e),
-                    ..Default::default()
-                });
-            let body = serde_json::to_string(&infra).unwrap_or_else(|e| {
-                serde_json::json!({"ok": false, "error": e.to_string()}).to_string()
-            });
-            (infra, body)
-        };
-        self.0.keep((), read).await
+        let read = async { off(hub_core::infra::gather).await.map(with_body) };
+        self.0.get((), read).await.unwrap_or_else(|e| {
+            Arc::new(with_body(Infra {
+                error: Some(e),
+                ..Default::default()
+            }))
+        })
     }
 
     /// The Infra tab's answer, as JSON.

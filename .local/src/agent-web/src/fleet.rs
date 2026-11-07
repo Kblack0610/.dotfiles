@@ -30,21 +30,21 @@ pub struct FleetQuery {
 pub struct Cache(ReadCache<Prom, CACHE_SECS>);
 
 impl Cache {
+    /// A panic in the read is shown, not kept: the next request asks again.
     async fn prom(&self) -> Arc<Prom> {
-        let read = async {
-            off(fleet::prom).await.unwrap_or_else(|e| Prom {
+        self.0.get((), off(fleet::prom)).await.unwrap_or_else(|e| {
+            Arc::new(Prom {
                 errors: vec![e],
                 ..Default::default()
             })
-        };
-        self.0.keep((), read).await
+        })
     }
 
     pub async fn get(&self, q: FleetQuery) -> String {
-        let files = tokio::task::spawn_blocking(|| fleet::files(&Paths::from_env()));
+        let files = off(|| fleet::files(&Paths::from_env()));
         let p = self.prom().await;
         let mut f = files.await.unwrap_or_else(|e| Fleet {
-            errors: vec![e.to_string()],
+            errors: vec![e],
             ..Default::default()
         });
         f.apply(&p);
@@ -81,9 +81,7 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
 
 /// One runner's page, read only when `#fleet/<name>` opens. An unknown name is the caller's 404.
 pub async fn runner(name: String) -> Result<String, String> {
-    let r = tokio::task::spawn_blocking(move || fleet::runner::read(&Paths::from_env(), &name))
-        .await
-        .map_err(|e| e.to_string())??;
+    let r = off(move || fleet::runner::read(&Paths::from_env(), &name)).await??;
     serde_json::to_string(&r).map_err(|e| e.to_string())
 }
 

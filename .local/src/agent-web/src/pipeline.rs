@@ -16,9 +16,11 @@ pub struct Cache(ReadCache<Read, CACHE_SECS>);
 
 impl Cache {
     /// The gauges, an error among them: a failed read is kept too, so a Prometheus that is
-    /// down is asked once a window and not on every reload.
+    /// down is asked once a window and not on every reload. A panic in the read is not kept.
     pub async fn get(&self) -> Read {
-        let read = async { off(hub_core::pipeline::read).await.and_then(|r| r) };
-        (*self.0.keep((), read).await).clone()
+        match self.0.get((), off(hub_core::pipeline::read)).await {
+            Ok(r) => (*r).clone(),
+            Err(e) => Err(e),
+        }
     }
 }

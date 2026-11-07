@@ -33,14 +33,18 @@ pub struct CostsQuery {
     pub sdir: String,
 }
 
+/// A read that failed to find any outcome is not kept: the next refresh tries again.
+fn kept(c: &Costs) -> bool {
+    !c.sessions.is_empty() || c.errors.is_empty()
+}
+
 pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
     let read = off(|| {
         let now = chrono::Utc::now().timestamp();
         costs::read(&System, &costs::Paths::from_env(), now)
     });
-    // A read with no outcomes is not kept: the next refresh tries again.
     let c = LAST
-        .get_if((), read, |c| !c.sessions.is_empty() || c.errors.is_empty())
+        .get_if((), read, kept)
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(costs::board(
@@ -52,4 +56,19 @@ pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
         &q.dir,
         (&q.ssort, &q.sdir),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_read_that_found_no_outcome_is_not_kept() {
+        let failed = Costs {
+            errors: vec!["no outcomes".into()],
+            ..Costs::default()
+        };
+        assert!(!kept(&failed));
+        assert!(kept(&Costs::default()), "a quiet day is kept");
+    }
 }

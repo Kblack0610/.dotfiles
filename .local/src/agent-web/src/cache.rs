@@ -4,7 +4,6 @@
 //! across the read, so requests that arrive together wait on one read instead of starting one
 //! each.
 
-use std::convert::Infallible;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,14 +62,6 @@ impl<T, const TTL_SECS: u64, K: PartialEq> ReadCache<T, TTL_SECS, K> {
             *last = Some((Instant::now(), key, v.clone()));
         }
         Ok(v)
-    }
-
-    /// As `get`, for a read whose every answer is kept: its failures ride inside the answer.
-    pub async fn keep(&self, key: K, read: impl Future<Output = T>) -> Arc<T> {
-        let Ok(v) = self
-            .get(key, async { Ok::<_, Infallible>(read.await) })
-            .await;
-        v
     }
 
     /// Drop the kept read, so the next request reads afresh and shows a write just made.

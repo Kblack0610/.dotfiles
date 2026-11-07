@@ -94,9 +94,7 @@ impl Cache {
 /// The outer error is a reference that does not parse; the inner one, a log that cannot be read.
 pub async fn log(raw: String) -> Result<Result<String, String>, String> {
     let r: LogRef = serde_json::from_str(&raw).map_err(|e| format!("bad log reference: {e}"))?;
-    tokio::task::spawn_blocking(move || jobs::read_log(&Paths::from_env(), &r))
-        .await
-        .map_err(|e| e.to_string())
+    off(move || jobs::read_log(&Paths::from_env(), &r)).await
 }
 
 #[cfg(test)]

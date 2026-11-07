@@ -52,20 +52,8 @@ struct Shown<'a> {
 pub struct Cache {
     table: ReadCache<Read, CACHE_SECS>,
     /// The last page opened, by its id.
-    page: ReadCache<SessionPage, CACHE_SECS, String>,
+    page: ReadCache<Option<SessionPage>, CACHE_SECS, String>,
     capacity: ReadCache<Capacity, CAPACITY_SECS>,
-}
-
-/// Why a page read is not kept: nothing names the id, or the read failed.
-enum NoPage {
-    Missing,
-    Failed(String),
-}
-
-impl From<String> for NoPage {
-    fn from(e: String) -> Self {
-        NoPage::Failed(e)
-    }
 }
 
 fn render(r: &Read, q: &TableQuery) -> String {
@@ -106,8 +94,8 @@ impl Cache {
     }
 
     /// One session's page, or None when nothing names `id`. The open page refreshes with the
-    /// list, so the last one is kept as the list's read is.
-    pub async fn page(&self, id: String) -> Result<Option<Arc<SessionPage>>, String> {
+    /// list, so the last one is kept as the list's read is; a None is not kept.
+    pub async fn page(&self, id: String) -> Result<Arc<Option<SessionPage>>, String> {
         let key = id.clone();
         let read = async {
             let read = self.read().await?;
@@ -120,14 +108,9 @@ impl Cache {
                     &read.state,
                 )
             })
-            .await?
-            .ok_or(NoPage::Missing)
+            .await
         };
-        match self.page.get(key, read).await {
-            Ok(p) => Ok(Some(p)),
-            Err(NoPage::Missing) => Ok(None),
-            Err(NoPage::Failed(e)) => Err(e),
-        }
+        self.page.get_if(key, read, Option::is_some).await
     }
 
     pub async fn capacity(&self) -> Result<Arc<Capacity>, String> {

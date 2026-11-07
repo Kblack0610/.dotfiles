@@ -1157,9 +1157,11 @@ async fn sessions_page(
         .session_table
         .page(q.t)
         .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let page = (*page)
+        .as_ref()
         .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no such session"))?;
-    Ok(Json(serde_json::json!(&*page)))
+    Ok(Json(serde_json::json!(page)))
 }
 
 async fn sessions_capacity(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
