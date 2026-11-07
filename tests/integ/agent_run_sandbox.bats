@@ -243,24 +243,23 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_success   # an unsandboxed lane has no write bound to lose
 }
 
-@test "a refused sandboxed call leaves a sandbox_refused line in calls.jsonl that the call budget does not count; a hand run leaves none" {
+@test "a refused sandboxed call leaves a line in sandbox-refusals.jsonl and none in calls.jsonl; a hand run leaves none" {
+  refusals="$HOME/.local/state/agentctl/sandbox-refusals.jsonl"
   calls="$HOME/.local/state/agentctl/calls.jsonl"
   SANDBOX_PROFILE=nope lane -p x
   assert_failure 78
-  [ ! -s "$calls" ] || fail "a hand run (no AGENTCTL_NAME) wrote a call line"
+  [ ! -s "$refusals" ] || fail "a hand run (no AGENTCTL_NAME) wrote a refusal line"
   AGENTCTL_NAME=probe SANDBOX_PROFILE=nope lane -p x
   assert_failure 78
-  run jq -c 'select(.agent == "probe") | [.sandbox, .exit, .subtype, (.raw | test("not readable"))]' "$calls"
-  assert_output '["nope",78,"sandbox_refused",true]'
+  run jq -c '[.agent, .sandbox, (.why | test("not readable"))]' "$refusals"
+  assert_output '["probe","nope",true]'
   mkdir -p "$HOME/.config/agentctl/routes"
   printf 'ROUTE_DESC=fixture\nROUTE_TRANSPORT=openai-compatible\nROUTE_BASE_URL="http://origin.test/v1"\nROUTE_MODEL_RAW="fast (fixture)"\nROUTE_KEY_SOURCE=none\nROUTE_PAYER=none\nROUTE_PERSONAL_SAFE=yes\nROUTE_WORK_SAFE=yes\nROUTE_FALLBACK_SAFE=yes\nROUTE_VERIFY_MODEL=x\nROUTE_VERIFY_API_BASE=http://origin.test\nROUTE_HARNESSES=raw\n' \
     > "$HOME/.config/agentctl/routes/origin.route"
   AGENTCTL_NAME=probe SANDBOX_PROFILE=lane run "$RUN" --role build --data-class public --harness raw --route origin -- true
   assert_failure 78
   assert_output --partial "cannot enforce lane sandbox 'lane'"
-  run jq -c 'select(.agent == "probe") | .subtype' "$calls"
-  assert_output $'"sandbox_refused"\n"sandbox_refused"'
-  # Two refusals on record and a cap of one call an hour: the next real call still runs.
-  AGENTCTL_NAME=probe MAX_CALLS_HOUR=1 SANDBOX_PROFILE=lane lane -p x
-  assert_success
+  run jq -c '[.harness, (.why | test("cannot enforce"))]' "$refusals"
+  assert_line --index 1 '["raw",true]'
+  [ ! -s "$calls" ] || fail "a refusal wrote a calls.jsonl line, which every reader counts as a call"
 }

@@ -277,6 +277,8 @@ def leaves_landed: .open == 0 and .done > 0;
 # agent-ask stamps date +%Y-%m-%dT%H:%M:%S%z; jq has no offset-aware parser
 def ask_epoch: (.[0:19] + "Z" | fromdateiso8601)
   - ((if .[19:20] == "-" then -1 else 1 end) * ((.[20:22] | tonumber) * 3600 + (.[22:24] | tonumber) * 60));
+# iso_epoch: an ISO time with a Z, +HH:MM or +HHMM offset (date -Iseconds writes the colon form)
+def iso_epoch: if endswith("Z") then fromdateiso8601 else sub(":(?<m>[0-9]{2})$"; "\(.m)") | ask_epoch end;
 def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;   # 3 places, null over none
 # move($before; $after; $dir; $flat): improved or regressed when the value moved more than $flat
 # (relative) the way $dir says (-1 lower is better, 1 higher), flat inside that, - with no value
@@ -1847,7 +1849,7 @@ sandbox_kpi() {
   [ -s "$BENCH_CALLS" ] || { echo '{}'; return 0; }
   jq -nc --argjson t "$1" "$JQ_LIB"'
     [inputs | objects | select((.agent // "") != "" and (.harness == "claude" or .harness == "codex") and (.at | type) == "string")
-     | {agent, sb: ((.sandbox // "") != ""), e: (.at | sub(":(?<m>[0-9]{2})$"; "\(.m)") | ask_epoch)}] as $c
+     | {agent, sb: ((.sandbox // "") != ""), e: (.at | iso_epoch)}] as $c
     | def w($d): [$c[] | select(.e > $t - $d * 86400 and .e <= $t)] | group_by(.agent) | map(max_by(.e).sb)
         | if length == 0 then null else (map(select(.)) | length) * 100 / length | round1 end;
     {sandboxed_lane_pct: {"7d": w(7), "28d": w(28)}}' "$BENCH_CALLS" 2>/dev/null || echo '{}'
@@ -2601,7 +2603,7 @@ improve_check() {
   v=$(jq -c --argjson now "$(now)" --argjson d "$BENCH_EFFECT_DAYS" --argjson flat "$BENCH_EFFECT_FLAT" \
       --argjson k "$json" --slurpfile log <(printf '%s\n' "$log") "$JQ_LIB"'
     def log_epoch: sub("\\.[0-9]+"; "")
-      | if endswith("Z") then fromdateiso8601 else sub(":(?<m>[0-9]{2})$"; "\(.m)") | ask_epoch end;
+      | iso_epoch;
     .[] | . as $c | ($c.subject | ltrimstr("item:")) as $slug | ($c.subject | startswith("item:")) as $item
     | [$log[] | select(if $item then .item == $slug and ((.action == "item-moved" and .to == "done") or .action == "item-cancelled")
                        else .id == $c.subject and (.action | IN("done", "dropped", "dup")) end)

@@ -9,6 +9,7 @@
 # docs/contract.md "Lane sandbox" has the table.
 
 SANDBOX_DIR="${AGENTCTL_SANDBOX_DIR:-$HOME/.config/agentctl/sandbox}"
+AGENTCTL_SANDBOX_REFUSALS="${AGENTCTL_SANDBOX_REFUSALS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/sandbox-refusals.jsonl}"
 
 # The shape a profile must have before any harness builds flags from it. A list that is not an
 # array of strings would break the jq that builds the flags, and a path that is neither absolute
@@ -50,20 +51,19 @@ sandbox_load() {
   fi
 }
 
-# sandbox_refuse <why>: refuse the run (role_die, exit 78), first appending a calls.jsonl line for
-# a named call: {agent, sandbox, exit 78, subtype "sandbox_refused", raw: <why>}. A refused run never
-# reaches calls_record, and this line is what the sandboxed_lane_pct KPI and the
-# lane-sandbox-refusals watch read. fleet-dispatch loads this file without lib/calls.sh, so there it
-# only refuses.
+# sandbox_refuse <why>: refuse the run (role_die, exit 78), first appending a line for a named call
+# to AGENTCTL_SANDBOX_REFUSALS: {agent, role, harness, sandbox, at, why}. The lane-sandbox-refusals
+# watch reads it. It is not calls.jsonl, because every reader of that file counts a line as a call
+# made. A name comes from lib/calls.sh, which fleet-dispatch does not load, so there it only refuses.
 sandbox_refuse() {
   local name=""
   declare -F calls_name >/dev/null && name="$(calls_name)"
   if [ -n "$name" ]; then
-    mkdir -p "$(dirname "$AGENTCTL_CALLS")" 2>/dev/null
-    jq -cn --arg id "$(calls_new_id)" --arg agent "$name" --arg harness "${harness:-}" --arg sandbox "${SANDBOX_PROFILE:-}" \
-      --arg at "$(date -Iseconds)" --argjson exit "$EX_CONFIG" --arg why "$1" '
-      {id: $id, agent: $agent, harness: $harness, sandbox: $sandbox, at: $at, exit: $exit, subtype: "sandbox_refused", raw: $why}
-      | with_entries(select(.value != ""))' | flock "$AGENTCTL_CALLS" tee -a "$AGENTCTL_CALLS" >/dev/null || true
+    mkdir -p "$(dirname "$AGENTCTL_SANDBOX_REFUSALS")" 2>/dev/null
+    jq -cn --arg agent "$name" --arg role "${ROLE_NAME:-}" --arg harness "${harness:-}" --arg sandbox "${SANDBOX_PROFILE:-}" \
+      --arg at "$(date -Iseconds)" --arg why "$1" '
+      {agent: $agent, role: $role, harness: $harness, sandbox: $sandbox, at: $at, why: $why}
+      | with_entries(select(.value != ""))' >>"$AGENTCTL_SANDBOX_REFUSALS" || true
   fi
   role_die "$1"
 }
