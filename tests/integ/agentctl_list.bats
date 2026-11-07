@@ -98,8 +98,70 @@ setup() {
     > "$HOME/.config/agentctl/agents/writer.conf"
   run "$AGENTCTL_BIN" list --md
   assert_success
-  assert_line --index 0 '| Runner | Lane | Trigger | Role | Model | Effect | Purpose |'
-  assert_line --index 2 '| judge | deliver | called by its caller | distill | m1 | shadow | a \| judge |'
-  assert_line '| alpha | observe | `daily` | - | - | none | purpose of alpha |'
-  assert_line '| writer | learn | `daily` (disabled) | curate | not in conf | acts | w |'
+  assert_line --index 0 '| Runner | Lane | Trigger | Role | Skill | Model | Effect | Purpose |'
+  assert_line --index 2 '| judge | deliver | called by its caller | distill | - | m1 | shadow | a \| judge |'
+  assert_line '| alpha | observe | `daily` | - | - | - | none | purpose of alpha |'
+  assert_line '| writer | learn | `daily` (disabled) | curate | - | not in conf | acts | w |'
+}
+
+# SKILL names the skill or command that owns a runner's job. The roots are fixtures, so the
+# test needs neither the host's skills nor a private one.
+skill_fixture() {
+  export AGENTCTL_SKILLS_DIR="$BATS_TEST_TMPDIR/skills" AGENTCTL_COMMANDS_DIR="$BATS_TEST_TMPDIR/commands"
+  mkdir -p "$AGENTCTL_SKILLS_DIR/dream" "$AGENTCTL_COMMANDS_DIR/my"
+  : > "$AGENTCTL_SKILLS_DIR/dream/SKILL.md"
+  : > "$AGENTCTL_COMMANDS_DIR/my/autopilot.md"
+  : > "$AGENTCTL_COMMANDS_DIR/remember.md"
+}
+
+@test "SKILL resolving to a skill dir, a command or a namespaced command shows in the Skill column" {
+  skill_fixture
+  sed -i '/^NAME=/a SKILL=dream' "$HOME/.config/agentctl/agents/alpha.conf"
+  sed -i '/^NAME=/a SKILL=my:autopilot' "$HOME/.config/agentctl/agents/beta.conf"
+  printf 'NAME=gamma\nKIND=oneshot\nLANE=learn\nCOMMAND=true\nDESCRIPTION=g\nEFFECT=none\nSKILL=remember\n' \
+    > "$HOME/.config/agentctl/agents/gamma.conf"
+  run "$AGENTCTL_BIN" list --md
+  assert_success
+  assert_line '| alpha | observe | `daily` | - | dream | - | none | purpose of alpha |'
+  assert_line '| beta | observe | `daily` | - | my:autopilot | - | none | purpose of beta |'
+  assert_line --regexp '^\| gamma \| learn .* \| remember \|'
+  refute_output --partial 'Invalid'
+}
+
+@test "a SKILL that resolves to nothing is flagged, and the runner stays valid (negative control)" {
+  skill_fixture
+  sed -i '/^NAME=/a SKILL=no-such-skill' "$HOME/.config/agentctl/agents/alpha.conf"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line 'skill not found (the runner still runs)'
+  assert_line --regexp '^  alpha +SKILL=no-such-skill$'
+  refute_line 'invalid (reload skips these)'
+  run "$AGENTCTL_BIN" list --md
+  assert_success
+  assert_line '| alpha | observe | `daily` | - | no-such-skill (not found) | - | none | purpose of alpha |'
+  refute_output --partial 'Invalid'
+}
+
+@test "a SKILL that is a path, a doubled colon or an empty directory is not found, a blank or unset SKILL is not flagged" {
+  skill_fixture
+  mkdir -p "$AGENTCTL_SKILLS_DIR/hollow"
+  sed -i '/^NAME=/a SKILL=../skills/dream' "$HOME/.config/agentctl/agents/alpha.conf"
+  sed -i '/^NAME=/a SKILL=my::autopilot' "$HOME/.config/agentctl/agents/beta.conf"
+  printf 'NAME=gamma\nKIND=oneshot\nLANE=learn\nCOMMAND=true\nDESCRIPTION=g\nEFFECT=none\nSKILL=hollow\n' \
+    > "$HOME/.config/agentctl/agents/gamma.conf"
+  printf 'NAME=delta\nKIND=oneshot\nLANE=learn\nCOMMAND=true\nDESCRIPTION=d\nEFFECT=none\nSKILL=\n' \
+    > "$HOME/.config/agentctl/agents/delta.conf"
+  run "$AGENTCTL_BIN" list
+  assert_success
+  assert_line --regexp '^  alpha +SKILL=\.\./skills/dream$'
+  assert_line --regexp '^  beta +SKILL=my::autopilot$'
+  assert_line --regexp '^  gamma +SKILL=hollow$'
+  refute_line --regexp '^  delta +SKILL='
+}
+
+@test "a SKILL in the caller's environment is not inherited by a conf that sets none" {
+  skill_fixture
+  SKILL=dream run "$AGENTCTL_BIN" list --md
+  assert_success
+  assert_line '| alpha | observe | `daily` | - | - | - | none | purpose of alpha |'
 }
