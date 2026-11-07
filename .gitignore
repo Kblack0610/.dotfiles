@@ -133,6 +133,7 @@ Media/Music
 !.claude/skills/monitoring/fix-red/
 !.claude/skills/monitoring/fleet-runners/
 !.claude/skills/monitoring/fleet-asks/
+!.claude/skills/monitoring/fleet-memory/
 !.claude/skills/monitoring/fleet-accounts/
 !.claude/skills/monitoring/fleet-queue/
 !.claude/skills/ops/game-eval/
