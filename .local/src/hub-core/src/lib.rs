@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod boards;
+pub mod burn;
 pub mod capacity;
 pub mod costs;
 pub mod epics;

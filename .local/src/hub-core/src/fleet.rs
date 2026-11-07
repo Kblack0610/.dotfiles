@@ -37,7 +37,7 @@ const RECENT_VERDICTS: usize = 30;
 /// How much of the end of each append-only log is read. verdicts.jsonl grows about 400 bytes a
 /// verdict, so 1 MiB is several weeks; a tail that still starts inside the week says so.
 const VERDICT_TAIL: u64 = 1 << 20;
-const LOG_TAIL: u64 = 256 << 10;
+pub(crate) const LOG_TAIL: u64 = 256 << 10;
 const ACTIVITY_TAIL: u64 = 16 << 10;
 /// calls.jsonl holds up to 4 KB of raw reply a line; the busiest lane (dispatch-judge, about 100
 /// calls a day) writes well under 1 MiB a day.
@@ -47,7 +47,7 @@ const RECENT_CALLS: usize = 5;
 
 /// claude-acct's textfile, only while it is fresh; no `max without`, which would drop the
 /// metric names the table reads. An empty answer makes the table say no data.
-const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} and on (instance) (time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"} < 3600)"#;
+pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} and on (instance) (time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"} < 3600)"#;
 
 #[derive(Clone, Debug)]
 pub struct Paths {
@@ -959,7 +959,7 @@ pub fn log_counts(text: &str, since: &str) -> BTreeMap<String, u32> {
     out
 }
 
-fn local_minute(t: i64) -> String {
+pub(crate) fn local_minute(t: i64) -> String {
     Local
         .timestamp_opt(t, 0)
         .single()
@@ -1070,7 +1070,7 @@ pub fn ts(s: &str) -> Option<i64> {
 
 /// The last `max` bytes of a file, from the first whole line, and whether that cut anything.
 /// A missing file is empty: a fresh install has no log yet.
-fn tail(p: &Path, max: u64) -> Result<(String, bool), String> {
+pub(crate) fn tail(p: &Path, max: u64) -> Result<(String, bool), String> {
     let err = |e: std::io::Error| format!("{}: {e}", p.display());
     let mut f = match std::fs::File::open(p) {
         Ok(f) => f,
