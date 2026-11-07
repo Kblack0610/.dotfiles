@@ -60,7 +60,7 @@ pub struct Sources {
 }
 
 /// A clock time as the header prints it.
-fn clock(epoch: i64) -> String {
+pub fn clock(epoch: i64) -> String {
     Local
         .timestamp_opt(epoch, 0)
         .single()
