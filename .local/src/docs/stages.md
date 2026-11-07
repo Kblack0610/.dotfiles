@@ -87,7 +87,7 @@ These are never automated; each one is a `human` row, which the gate lists for t
 
 - Logins and 2FA on store consoles, payment, legal attestations, Apple and Play review, console dev-kit NDAs.
 - A finished playtest before a game enters beta.
-- The final public Publish or Submit click. The `store-console` skill fills a console up to it and stops. `stores.md` says which store steps are API, workflow, skill or person.
+- The final public Publish or Submit click. The `store-console` skill fills a console up to it and stops. One exception: setting a beta-verified Steam build live on `default` is the agent's click (the person, 2026-11-06), in `store-console`'s standing permission. `stores.md` says which store steps are API, workflow, skill or person.
 
 ## Games: one ladder per game
 
