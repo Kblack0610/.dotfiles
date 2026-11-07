@@ -385,3 +385,68 @@ burn() {
   # which still counts toward first_turn_context, adds no parts.
   assert_equal "$(burn '[.first_request_parts.sessions, .first_turn_context.sessions]')" '[1,2]'
 }
+
+# -- spend check: the one check behind claude-spend-hourly and claude-spend-daily --
+
+spend_curl() {
+  printf '#!/usr/bin/env bash\necho %q\n' "$1" > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+}
+
+@test "spend check: under the ceiling exits 0 and names the window and the ceiling" {
+  spend_curl '{"data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}'
+  run "$AU" spend check 1h 150
+  assert_success
+  assert_output 'last 1h: $88.4 (alert at $150)'
+}
+
+@test "spend check: over the ceiling exits 1" {
+  spend_curl '{"data":{"result":[{"metric":{},"value":[0,"1376.2"]}]}}'
+  run "$AU" spend check 24h 900
+  assert_failure 1
+  assert_output 'last 24h: $1376.2 (alert at $900)'
+}
+
+@test "spend check: the query carries the window it was given" {
+  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"data":{"result":[]}}' > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  SANDBOX="$SANDBOX" run "$AU" spend check 24h 900
+  assert_success
+  assert_output 'last 24h: $0.0 (alert at $900)'
+  run grep -c 'increase(claude_code_cost_usage_USD_total\[24h\])' "$SANDBOX/q"
+  assert_output 1
+}
+
+@test "spend check: Prometheus unreadable exits 2, so the watch trips instead of going blind" {
+  printf '#!/usr/bin/env bash\nexit 7\n' > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  run "$AU" spend check 1h 150
+  assert_failure 2
+}
+
+@test "spend check: a bad window or ceiling is a usage error, not a silent pass" {
+  run "$AU" spend check hour 150
+  assert_failure 64
+  run "$AU" spend check 1h lots
+  assert_failure 64
+}
+
+@test "spend check: an answer that is not a vector of numbers exits 2, never a silent zero" {
+  for body in '{}' '{"status":"error"}' 'not json' '{"data":{"result":[{"metric":{},"value":[0,"NaN"]}]}}'; do
+    spend_curl "$body"
+    run "$AU" spend check 1h 150
+    assert_failure 2
+  done
+}
+
+@test "spend check: no PROM_URL exits 2" {
+  AGENT_USAGE_CONF=/nonexistent PROM_URL='' run "$AU" spend check 1h 150
+  assert_failure 2
+}
+
+@test "spend check: just over the ceiling prints a figure that shows it" {
+  spend_curl '{"data":{"result":[{"metric":{},"value":[0,"150.4"]}]}}'
+  run "$AU" spend check 1h 150
+  assert_failure 1
+  assert_output 'last 1h: $150.4 (alert at $150)'
+}
