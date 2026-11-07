@@ -468,6 +468,17 @@ spend_curl() {
   assert_failure 2
 }
 
+@test "spend check: the endpoint is CC_PROM_URL from the command-center env file, a stray PROM_URL is ignored" {
+  mkdir -p "$HOME/.config/command-center"
+  echo 'CC_PROM_URL=http://from-env.test' > "$HOME/.config/command-center/env"
+  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[]}}' > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  SANDBOX="$SANDBOX" CC_PROM_URL='' PROM_URL=http://stale.test run "$AU" spend check 1h 150
+  assert_success
+  run grep -c 'http://from-env.test/api/v1/query' "$SANDBOX/q"
+  assert_output 1
+}
+
 @test "spend check: just over the ceiling prints a figure that shows it" {
   spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"150.4"]}]}}'
   run "$AU" spend check 1h 150
