@@ -6,7 +6,8 @@
 # Also a lessons file (~/.agent/lessons/<project>.md), which the preflight ranks on every
 # start; it warns only on an edit that grows one already over budget (five sat at 2.5x).
 #
-# Every one of those, and any memory file or SKILL.md, also gets a restated-instruction check: a line
+# Every one of those but a CLAUDE.md or AGENTS.md below a repo root, plus any memory file or SKILL.md,
+# also gets a restated-instruction check (only when the edit wrote a line of 90+ characters): a line
 # the edit wrote that shares its wording with a line in another home (skill-drift --dups --file) is
 # named with both homes and the winner, so the writer deletes the loser's copy in the same turn.
 # SKILL_DRIFT_BIN names the scorer (default: skill-drift on PATH, else the one in this repo).
@@ -67,8 +68,9 @@ over_budget=0
 # The pairs of this file whose line on this side is text the edit just wrote.
 dups=""
 drift="${SKILL_DRIFT_BIN:-$(command -v skill-drift 2>/dev/null || echo "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/bin/skill-drift")}"
-if [[ -x $drift ]]; then
-  written=$(jq -r '.tool_input | (.content // .new_string // ([.edits[]?.new_string] | join("\n")) // "")' <<<"$payload" 2>/dev/null)
+written=$(jq -r '.tool_input | (.content // .new_string // ([.edits[]?.new_string] | join("\n")) // "")' <<<"$payload" 2>/dev/null)
+# Only a line of 90+ characters can pair, so a short edit skips the corpus scan.
+if [[ -x $drift ]] && grep -Eq '.{90}' <<<"$written"; then
   dups=$("$drift" --dups --file "$real" --json 2>/dev/null | jq -r --arg me "$real" --arg home "$HOME" --arg w "$written" '
     .items[] | (if (.a.file | sub("^~"; $home)) == $me then [.a, .b] else [.b, .a] end) as [$mine, $other]
     | select($w | contains($mine.text))

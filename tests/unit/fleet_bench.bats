@@ -2133,6 +2133,10 @@ chain_fixture() {
   echo '{"pairs":60}' > "$BENCH_DOCS_CLEANUP_DIR/20261106/dups.json"
   run "$SUBJECT" chain --check
   assert_success
+  # a newest night with no dups.json is a runner that stopped: ?, never the older night's count
+  mkdir -p "$BENCH_DOCS_CLEANUP_DIR/20261107"
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.dup_pairs["7d"]' <<<"$output")" null
 }
 
 @test "chain: a CI row with no repo is a PR no item names, and the other KPIs still count" {

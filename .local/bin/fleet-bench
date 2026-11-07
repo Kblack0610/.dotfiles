@@ -1501,7 +1501,7 @@ ledger_counts() {
 # ownerless_running: running items with no session. epic_linked_share: the agent rows filed under
 # an epic (#of/) in the projects that have one open. landed_unverified: open epics whose every leaf
 # is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
-# dup_pairs: instructions two homes restate, from the newest nightly docs-cleanup dups.json
+# dup_pairs: instructions two homes restate, from the newest nightly docs-cleanup night's dups.json
 # (skill-drift --dups); the bound is dup_pairs_max, the same row skill-drift --dups --check holds.
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
@@ -1589,8 +1589,9 @@ chain_counts() {
         | if length == 0 then null else add / length * 100 | round / 100 end end))"'
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
   local orphans dups
-  dups=$(ls -d "$BENCH_DOCS_CLEANUP_DIR"/*/dups.json 2>/dev/null | tail -1)
-  if [ -n "$dups" ] && dups=$(jq -er '.pairs | numbers' "$dups" 2>/dev/null); then echo "dup_pairs=$dups"; else echo "dup_pairs=?"; fi
+  # the newest night only: a runner that stopped must read ?, never an older night's count as now
+  dups=$(ls -d "$BENCH_DOCS_CLEANUP_DIR"/*/ 2>/dev/null | tail -1)
+  if [ -n "$dups" ] && dups=$(jq -er '.pairs | numbers' "${dups}dups.json" 2>/dev/null); then echo "dup_pairs=$dups"; else echo "dup_pairs=?"; fi
   if orphans=$(plans_orphaned); then echo "plans_unqueued=$(grep -c . <<<"$orphans")"; else echo "plans_unqueued=?"; fi
   echo "routes_unresolved=$(triage_coverage | grep -c .)"
   local wants

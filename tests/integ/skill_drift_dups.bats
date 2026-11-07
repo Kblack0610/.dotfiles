@@ -253,4 +253,6 @@ $HOME/.agent/anchors/beta.md"
   assert_failure 2
   run "$DRIFT" --dups --bogus
   assert_failure 2
+  run "$DRIFT" --dups --file --json
+  assert_failure 2
 }

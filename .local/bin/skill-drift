@@ -187,7 +187,7 @@ if [ "$MODE" = dups ]; then
     case "$1" in
       --json)  DOCS_JSON=1 ;;
       --check) DUPS_CHECK=1 ;;
-      --file)  DUPS_FILE="${2:-}"; [ -n "$DUPS_FILE" ] || { echo "skill-drift --dups --file needs a path" >&2; exit 2; }; shift ;;
+      --file)  DUPS_FILE="${2:-}"; case "$DUPS_FILE" in ""|--*) DUPS_FILE="" ;; esac; [ -n "$DUPS_FILE" ] || { echo "skill-drift --dups --file needs a path" >&2; exit 2; }; shift ;;
       *) echo "skill-drift --dups: unknown argument $1" >&2; exit 2 ;;
     esac
     shift
