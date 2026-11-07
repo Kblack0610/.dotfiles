@@ -22,10 +22,6 @@
 
 set -u
 
-here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
-# shellcheck source=../../.local/lib/prom.sh
-. "${PROM_LIB:-$here/../../.local/lib/prom.sh}"
-
 # Endpoint + roster are machine-local (this repo is public - keep them out of it).
 # Set both in ~/.config/fleet-pulse/env:
 #   GATUS_BASE=https://fleet.your.lan
@@ -79,6 +75,15 @@ C_RED="#ef5734" # orange-red
 emit() { # text_color class tooltip
     printf '{"text": "<span color=\x27%s\x27>%s</span>", "tooltip": "%s", "class": "%s"}\n' \
         "$1" "$ICON" "$3" "$2"
+}
+
+# Human-readable age from seconds.
+fmt_age() {
+    local s="$1"
+    if ((s < 0)); then echo "?"; return; fi
+    if ((s < 60)); then echo "${s}s"; return; fi
+    if ((s < 3600)); then echo "$((s / 60))m"; return; fi
+    echo "$((s / 3600))h$(((s % 3600) / 60))m"
 }
 
 json="$(curl -fsS -m 8 "${GATUS_BASE}/api/v1/endpoints/statuses" 2>/dev/null)" || json=""
@@ -150,10 +155,10 @@ status_text() {
         epoch="$(date -d "$ts" +%s 2>/dev/null || echo "")"
         [[ -n "$epoch" ]] && age=$((now - epoch))
     fi
-    if [[ "$success" == "true" ]] && ((age >= 0 && age < STALE_AFTER)); then echo "up ($(prom_dur "$age") ago)"
+    if [[ "$success" == "true" ]] && ((age >= 0 && age < STALE_AFTER)); then echo "up ($(fmt_age "$age") ago)"
     elif ((age < 0)); then echo "no data"
-    elif [[ "$success" != "true" ]]; then echo "DOWN ($(prom_dur "$age") ago)"
-    else echo "STALE ($(prom_dur "$age") ago)"; fi
+    elif [[ "$success" != "true" ]]; then echo "DOWN ($(fmt_age "$age") ago)"
+    else echo "STALE ($(fmt_age "$age") ago)"; fi
 }
 
 # not-up state -> pango-colored dot. Filled when reporting, hollow when not.

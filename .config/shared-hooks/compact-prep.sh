@@ -24,7 +24,7 @@ set -uo pipefail
 PN="$(dirname "$0")/project-name.sh"
 [ -f "$PN" ] || PN="$HOME/.config/shared-hooks/project-name.sh"
 # shellcheck source=project-name.sh
-. "$PN"
+. "$PN" || { echo "compact-prep: cannot read $PN" >&2; exit 1; }
 
 PROJECT="$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")"
 AGENT="$HOME/.agent"
