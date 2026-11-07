@@ -21,14 +21,17 @@ use crate::vocab::Vocab;
 const ASK_MAX: usize = 44;
 /// One whole widget line at 4x4: the oldest-ask row's "oldest 13h: " plus `ASK_MAX`.
 const LINE_MAX: usize = 12 + ASK_MAX;
-/// How many projects the needs row names before the rest fold under "+N more", and how many
-/// in-flight projects the projects section lists under its head.
+/// How many projects the needs row names before the rest fold under "+N more".
 const PROJECTS: usize = 3;
-/// How many KPIs the over-limit row names, beside the count of all of them: one line at 4x4.
-const KPIS: usize = 2;
+/// How many in-flight projects the projects section lists under its head; the widget is full at
+/// 4x4, so the rest fold into the head's count.
+const CARDS: usize = 2;
 /// KPI names that do not read as words once the underscores go.
-const KPI_LABELS: [(&str, &str); 2] =
-    [("ci_red_per_pr", "CI reds per PR"), ("board_open", "board")];
+const KPI_LABELS: [(&str, &str); 3] = [
+    ("ci_red_per_pr", "CI reds per PR"),
+    ("board_open", "open board rows"),
+    ("ask_answered_pct", "asks answered %"),
+];
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Row {
@@ -135,7 +138,7 @@ fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
     out
 }
 
-/// "14 past ETA, worst 21h, next done 10:12", from the sessions still live.
+/// "14 late (worst 21h), next done 10:12", from the sessions still live.
 fn etas(state: &Value, now: i64) -> Option<String> {
     let vocab = Vocab::from_state(state);
     let etas: Vec<i64> = state["sessions"]
@@ -147,8 +150,7 @@ fn etas(state: &Value, now: i64) -> Option<String> {
     let late: Vec<i64> = etas.iter().copied().filter(|e| *e < now).collect();
     let mut said = vec![];
     if let Some(oldest) = late.iter().min() {
-        said.push(format!("{} past ETA", late.len()));
-        said.push(format!("worst {}", age(now - oldest)));
+        said.push(format!("{} late (worst {})", late.len(), age(now - oldest)));
     }
     if let Some(next) = etas.iter().filter(|e| **e >= now).min() {
         let at = chrono::DateTime::from_timestamp(*next, 0)?.with_timezone(&chrono::Local);
@@ -168,7 +170,8 @@ fn kpi(infra: &Infra, name: &str, kpi: &str, window: &str) -> Option<f64> {
         .and_then(|s| s.value)
 }
 
-/// "5 over limit: CI reds per PR 0.86 (0.5), board 372 (60)". fleet-bench judges, this only words it.
+/// "off target: CI reds per PR 0.86 (limit 0.5), +4 more": the first KPI past its limit in words,
+/// and how many more; the full list is on Home and Costs. fleet-bench judges, this only words it.
 fn over_limit(infra: &Infra) -> Option<String> {
     let mut said: Vec<String> = infra
         .get("bench")
@@ -182,13 +185,17 @@ fn over_limit(infra: &Infra) -> Option<String> {
                 .map_or_else(|| k.replace('_', " "), |(_, l)| l.to_string());
             let value = kpi(infra, "agent_bench_kpi", k, "7d")?;
             let limit = kpi(infra, "agent_bench_kpi_limit", k, "")?;
-            Some(format!("{label} {} ({})", plain(value), plain(limit)))
+            Some(format!("{label} {} (limit {})", plain(value), plain(limit)))
         })
         .collect();
     said.sort();
-    let past = said.len();
-    said.truncate(KPIS);
-    (past > 0).then(|| format!("{past} over limit: {}", said.join(", ")))
+    let first = said.first()?;
+    let more = said.len() - 1;
+    Some(if more > 0 {
+        format!("off target: {first}, +{more} more")
+    } else {
+        format!("off target: {first}")
+    })
 }
 
 fn agents(i: &Inputs) -> Vec<Row> {
@@ -210,55 +217,58 @@ fn agents(i: &Inputs) -> Vec<Row> {
     let mut out = vec![row(level, "agents", head)];
 
     let infra = i.infra.filter(|x| x.ok);
-    if let Some(inf) = infra {
-        let waited: f64 = inf
-            .get("bench")
-            .iter()
-            .filter(|s| s.label("__name__") == "agent_bench_waiting_hours")
-            .filter_map(|s| s.value)
-            .sum();
-        if waited > 0.0 {
-            out.push(row(
-                Level::Ok,
-                "agents",
-                format!("agents waited {waited:.0}h on you in 24h"),
-            ));
-        }
-    }
     if let Some(line) = etas(i.state, i.now) {
         out.push(row(Level::Ok, "agents", line));
     }
     if let Some(line) = infra.and_then(over_limit) {
         out.push(row(Level::Warn, "agents", line));
     }
-    let mut pace = vec![];
-    if let Some(inf) = infra {
-        if let Some(w) = kpi(inf, "agent_bench_kpi", "cost_per_pr", "7d") {
-            let month = kpi(inf, "agent_bench_kpi", "cost_per_pr", "28d")
-                .map_or(String::new(), |m| format!(" (28d ${m:.2})"));
-            pace.push(format!("${w:.2} per PR{month}"));
-        }
-    }
-    if let Some(m) = i.merged {
-        pace.push(format!("{m} merged today"));
-    }
-    if !pace.is_empty() {
-        out.push(row(Level::Ok, "agents", pace.join(", ")));
-    }
     out
 }
 
-fn queue(q: Option<&Queue>) -> Option<Row> {
-    let q = q?;
-    let mut text = format!("Queue: {}", q.counts_line());
-    let sitting = q.stats.as_ref().and_then(|s| s.sitting.as_ref());
-    if let Some(s) = sitting.filter(|s| s.runnable > 0) {
-        text += &format!(", {} can start", s.runnable);
-        if let Some(o) = s.oldest_runnable.first() {
-            text += &format!(" ({})", age(o.minutes * 60));
+/// "Queue: 14 running, 16 ready, 83 held", then what it delivered today and the oldest ready
+/// item's wait: "37 done today, oldest ready waited 37h", then "164 PRs merged today, $4.24 each
+/// (28d $5.90)". The PR line stands without the queue, since it reads the day-log.
+fn queue(i: &Inputs) -> Vec<Row> {
+    let mut out = vec![];
+    if let Some(q) = i.queue {
+        out.push(row(
+            Level::Ok,
+            "queue",
+            format!("Queue: {}", q.counts_line()),
+        ));
+        let stats = q.stats.as_ref();
+        let mut said = vec![];
+        if let Some(r) = stats.and_then(|s| s.recent.as_ref()) {
+            said.push(format!("{} done today", r.done_today));
+        }
+        let sitting = stats.and_then(|s| s.sitting.as_ref());
+        if let Some(o) = sitting.and_then(|s| s.oldest_runnable.first()) {
+            said.push(format!("oldest ready waited {}", age(o.minutes * 60)));
+        }
+        if !said.is_empty() {
+            out.push(row(Level::Ok, "queue", said.join(", ")));
         }
     }
-    Some(row(Level::Ok, "queue", text))
+    let mut prs = vec![];
+    if let Some(m) = i.merged {
+        prs.push(format!("{m} PRs merged today"));
+    }
+    if let Some(inf) = i.infra.filter(|x| x.ok) {
+        if let Some(w) = kpi(inf, "agent_bench_kpi", "cost_per_pr", "7d") {
+            let month = kpi(inf, "agent_bench_kpi", "cost_per_pr", "28d")
+                .map_or(String::new(), |m| format!(" (28d ${m:.2})"));
+            prs.push(if i.merged.is_some() {
+                format!("${w:.2} each{month}")
+            } else {
+                format!("${w:.2} per PR{month}")
+            });
+        }
+    }
+    if !prs.is_empty() {
+        out.push(row(Level::Ok, "queue", prs.join(", ")));
+    }
+    out
 }
 
 /// One card as the widget says it: "agent-runtime 35%, ETA 69d, 4 running".
@@ -278,7 +288,7 @@ fn project(c: &Card) -> String {
     cap(&s, LINE_MAX)
 }
 
-/// "Projects: 4 in flight of 25", then the first `PROJECTS` in flight, one line each, in the
+/// "Projects: 4 in flight of 25", then the first `CARDS` in flight, one line each, in the
 /// cards' own order (in flight first); the head's count says how many more there are. Nothing in
 /// flight is the head line alone, since a green section is one line.
 fn projects(p: &Projects) -> Vec<Row> {
@@ -298,7 +308,7 @@ fn projects(p: &Projects) -> Vec<Row> {
     out.extend(
         flying
             .iter()
-            .take(PROJECTS)
+            .take(CARDS)
             .map(|c| row(Level::Ok, "projects", project(c))),
     );
     out
@@ -387,7 +397,7 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
         rows.extend(needs(&waiting, i.now));
     }
     rows.extend(agents(i));
-    rows.extend(queue(i.queue));
+    rows.extend(queue(i));
     rows.extend(i.infra.filter(|x| x.ok).and_then(ci));
     rows.extend(i.projects.map(projects).unwrap_or_default());
     let worst = |l: Level| rows.iter().any(|r| r.level == l);
@@ -598,10 +608,46 @@ mod tests {
             agents,
             [
                 "Agents: 8 working, 1 stalled".to_string(),
-                "agents waited 193h on you in 24h".to_string(),
-                format!("2 past ETA, worst 2h, next done {next}"),
-                "2 over limit: CI reds per PR 0.86 (0.5), board 372 (60)".to_string(),
-                "$6.54 per PR (28d $7.00), 85 merged today".to_string(),
+                format!("2 late (worst 2h), next done {next}"),
+                "off target: CI reds per PR 0.86 (limit 0.5), +1 more".to_string(),
+            ]
+        );
+        // Merged PRs and their cost read with the queue, the delivery section.
+        assert_eq!(
+            texts(&phone(&s, None, Some(&inf)), "queue"),
+            ["85 PRs merged today, $6.54 each (28d $7.00)"]
+        );
+    }
+
+    #[test]
+    fn the_queue_says_ready_held_and_what_it_delivered_today() {
+        let mut q = queue_of(vec![
+            (State::Running, "r1"),
+            (State::Queued, "q1"),
+            (State::Queued, "q2"),
+        ]);
+        q.items[2].hold = Some("after q1".into());
+        q.stats = Some(crate::queue::Stats {
+            recent: Some(crate::queue::Recent {
+                done_today: 37,
+                ..Default::default()
+            }),
+            sitting: Some(crate::queue::Sitting {
+                oldest_runnable: vec![crate::queue::Waiter {
+                    minutes: 37 * 60,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let p = phone(&state(), Some(&q), Some(&infra(vec![])));
+        assert_eq!(
+            texts(&p, "queue"),
+            [
+                "Queue: 1 running, 1 ready, 1 held",
+                "37 done today, oldest ready waited 37h",
+                "85 PRs merged today",
             ]
         );
     }
@@ -620,7 +666,7 @@ mod tests {
         ]);
         assert_eq!(
             over_limit(&infra(vec![("bench", bench)])).as_deref(),
-            Some("3 over limit: CI reds per PR 0.86 (0.5), board 372 (60)")
+            Some("off target: CI reds per PR 0.86 (limit 0.5), +2 more")
         );
     }
 
@@ -651,8 +697,8 @@ mod tests {
             [
                 "Needs you: nothing",
                 "Agents: 2 working",
-                "85 merged today",
-                "Queue: 1 running, 0 up next",
+                "Queue: 1 running, 0 ready",
+                "85 PRs merged today",
                 "CI: 6/29 busy, 80% passed",
             ]
         );
@@ -677,7 +723,7 @@ mod tests {
         assert!(texts(&p, "ci").is_empty());
         let agents = texts(&p, "agents");
         assert_eq!(agents[0], "Agents: 8 working, 1 stalled");
-        assert_eq!(agents.last().unwrap(), "85 merged today");
+        assert_eq!(texts(&p, "queue"), ["85 PRs merged today"]);
     }
 
     #[test]
@@ -708,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn projects_head_counts_in_flight_then_names_the_first_three() {
+    fn projects_head_counts_in_flight_then_names_the_first_two() {
         let p = Projects {
             cards: vec![
                 card("agent-runtime", 35, Some(69), 4, 1),
@@ -726,7 +772,6 @@ mod tests {
                 "Projects: 4 in flight of 5",
                 "agent-runtime 35%, ETA 69d, 4 running, 1 waiting",
                 "unity-core-playground 52%, ETA 54d, 9 running",
-                "dodginballs 2%, no ETA, 4 running",
             ]
         );
         assert!(lint(&rows), "{rows:#?}");
@@ -799,6 +844,8 @@ mod tests {
         assert!(lint(&rows), "{rows:#?}");
         // Negative control: a line past the budget fails, so the pass above means something.
         assert!(!lint(&["x ".repeat(80)]));
+        // And so does one row past the line budget, since the widget clips at the bottom.
+        assert!(!lint(&vec!["ok".to_string(); 15]));
     }
 
     #[test]

@@ -9,7 +9,10 @@
 #                                   repo holds <path> (a worktree of it counts), one line saying what
 #                                   happened; nothing for a repo that is not one of the checkouts
 #
-# Stow serves the main checkouts, so a merged change is live only once its checkout moves.
+# Stow serves the main checkouts, so a merged change is live only once its checkout moves, and a
+# file it adds only once it has a link: after any move, `dotfiles-deploy --apply --missing` links
+# every deploy path of both checkouts that resolves to nothing in $HOME (one more line when it
+# linked or failed). It only creates links where nothing is; a file in $HOME is never replaced.
 # `git merge --ff-only` refuses rather than overwrite a dirty or untracked file, so local work is
 # never touched; a refused or diverged checkout stays put and says why (logged too). Fail-soft:
 # every path exits 0, so no network or repo state can break a shell start or a landing.
@@ -21,8 +24,10 @@ THROTTLE_SECS="${DOTFILES_AUTOPULL_INTERVAL:-21600}" # 6h
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-autopull"
 STAMP="$CACHE_DIR/last-pull"
 LOG="$CACHE_DIR/autopull.log"
-# The public checkout's own copy, so a pull that changed it runs the new one.
+# The public checkout's own copies, so a pull that changed them runs the new ones.
 OVERLAY_LINK="${REPOS[0]}/.local/bin/dotfiles-overlay-link"
+DEPLOY="${DOTFILES_DEPLOY:-${REPOS[0]}/.local/bin/dotfiles-deploy}"
+DEPLOY_SECS="${DOTFILES_AUTOPULL_DEPLOY_SECS:-120}"
 FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
 
 command -v git >/dev/null 2>&1 || exit 0
@@ -45,6 +50,24 @@ phys() { (cd "$1" 2>/dev/null && pwd -P); }
 say() {
   log "$1"
   echo "$1"
+}
+
+# attach_missing -> one line when it linked anything or failed, nothing otherwise. A move can add a
+# tracked file and stow never runs on pull, so link every deploy path (both checkouts) that resolves
+# to nothing. Runs once per pass, after every move. A failure's report goes to the log.
+attach_missing() {
+  local out rc n
+  [ -x "$DEPLOY" ] || return 0
+  out=$(DOTFILES="${REPOS[0]}" DOTFILES_PRIVATE="${REPOS[1]}" capped "$DEPLOY_SECS" "$DEPLOY" --apply --missing 2>&1)
+  rc=$?
+  n=$(printf '%s\n' "$out" | grep -c '^  linked ')
+  if [ "$rc" -ne 0 ]; then
+    log "dotfiles-deploy --apply --missing exited $rc, its report:"
+    printf '%s\n' "$out" | tail -n 40 | sed 's/^/    /' >>"$LOG" 2>/dev/null
+    say "~: linked $n missing file(s), then dotfiles-deploy --apply --missing failed (exit $rc); report in ${LOG/#"$HOME"/\~}"
+  elif [ "$n" -gt 0 ]; then
+    say "~: linked $n missing file(s) into \$HOME (dotfiles-deploy --apply --missing)"
+  fi
 }
 
 # pull <checkout> -> one line on stdout saying what happened; every outcome but "already current" is
@@ -100,7 +123,9 @@ if [ "${1:-}" = --now ]; then
   common=$(phys "$common") || exit 0
   for repo in "${REPOS[@]}"; do
     [ -d "$repo/.git" ] && [ "$(phys "$repo/.git")" = "$common" ] || continue
-    pull "$repo"
+    line=$(pull "$repo")
+    echo "$line"
+    [[ "$line" != *": fast-forwarded "* ]] || attach_missing
     exit 0
   done
   exit 0
@@ -116,10 +141,17 @@ fi
 mkdir -p "$CACHE_DIR"
 echo "$now" >"$STAMP"
 
+moved=0
 for repo in "${REPOS[@]}"; do
   [ -d "$repo/.git" ] || continue
   line=$(pull "$repo")
+  [[ "$line" == *": fast-forwarded "* ]] || continue
+  moved=1
   # Only speak in the foreground: backgrounded from .zshrc it stays silent.
-  [[ -t 1 && "$line" == *": fast-forwarded "* ]] && echo "$line"
+  [ ! -t 1 ] || echo "$line"
 done
+if [ "$moved" = 1 ]; then
+  line=$(attach_missing)
+  [[ ! -t 1 || -z "$line" ]] || echo "$line"
+fi
 exit 0
