@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# claude-cloud-run <slug> <owner/repo> <brief> - run a queue item as a Claude cloud session, and hold
+# the pane until that session's PR exists.
+#
+# `claude --cloud` creates a session on Anthropic's VM (no compute charge, it draws on the plan) and
+# has no stop or list API. The session's PR is the only signal it gives, so after the create this
+# polls GitHub for the PR whose body carries the line "Item: <slug>", records it on the item, and
+# parks the item `waiting` for the merge (fleet-dispatch reap closes it on merge proof, as a night
+# item). CLOUD_TIMEOUT_MIN flags a session that opened no PR: this exits 1, reap reads that as
+# failed, and the cloud session itself keeps running.
+set -uo pipefail
+
+CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+CLOUD_TIMEOUT_MIN="${CLOUD_TIMEOUT_MIN:-180}"
+# No event says a cloud session opened a PR, so this is the one poll, bounded by the timeout above.
+CLOUD_POLL_SEC="${CLOUD_POLL_SEC:-120}"
+
+slug=${1:?usage: claude-cloud-run <slug> <owner/repo> <brief>}
+repo=${2:?usage: claude-cloud-run <slug> <owner/repo> <brief>}
+brief=${3:?usage: claude-cloud-run <slug> <owner/repo> <brief>}
+
+# The create runs in this pane's tty, as it does for a person; script keeps the tty and keeps a
+# transcript to read the session URL from.
+log=$(mktemp "${TMPDIR:-/tmp}/claude-cloud-run.XXXXXX")
+trap 'rm -f "$log"' EXIT
+if command -v script >/dev/null 2>&1; then
+  script -qefc "$(printf '%q ' "$CLAUDE_BIN" --cloud "$brief")" "$log" || true
+else
+  echo "claude-cloud-run: no script(1); the session URL is not recorded" >&2
+  "$CLAUDE_BIN" --cloud "$brief" || true
+fi
+url=$(grep -aoE 'https://claude\.ai/code/(session|cse)_[A-Za-z0-9]+' "$log" | head -n 1)
+[ -z "$url" ] || agent-queue set "$slug" "note=cloud session $url" >/dev/null || true
+echo "claude-cloud-run: ${url:-no session URL}; waiting for the PR with the line \"Item: $slug\" in $repo"
+
+deadline=$(( $(date +%s) + CLOUD_TIMEOUT_MIN * 60 ))
+while :; do
+  # The exact line, not a search hit: "Item: a-b" also matches the body of "Item: a-b-c".
+  pr=$(gh pr list --repo "$repo" --state all --search "\"Item: $slug\" in:body" --json number,body 2>/dev/null |
+    jq -r --arg l "Item: $slug" '[.[] | select(.body | split("\n") | map(sub("\\r$"; "")) | index($l) != null)] | first | .number // empty')
+  [ -z "$pr" ] || break
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    agent-queue set "$slug" "note=cloud session ${url:-unknown} opened no PR in ${CLOUD_TIMEOUT_MIN} min" >/dev/null || true
+    echo "claude-cloud-run: no PR after ${CLOUD_TIMEOUT_MIN} min" >&2
+    exit 1
+  fi
+  sleep "$CLOUD_POLL_SEC"
+done
+agent-queue set "$slug" "pr=$repo#$pr" >/dev/null && agent-queue move "$slug" waiting >/dev/null ||
+  { echo "claude-cloud-run: could not record PR $repo#$pr on $slug" >&2; exit 1; }
+echo "claude-cloud-run: $repo#$pr is open; $slug waits for its merge"

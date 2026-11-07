@@ -4338,7 +4338,8 @@ harness_ready() {
       "claude-lazer": {timeout_min: 180, models: {sonnet: "sonnet"}},
       opencode: {config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
       glm: {launcher: "opencode", config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
-      codex: {account: "chatgpt", room: "agent-codex room", timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
+      codex: {account: "chatgpt", room: "agent-codex room", timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
+      "claude-cloud": {launcher: "claude-cloud", room: "claude-acct room", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
   stub curl "cat > \"\$NOTES_FIXTURE/curl.stdin\"; echo \"curl \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '{\"info\":{\"spend\":${1:-1},\"max_budget\":150}}'"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
@@ -4625,6 +4626,106 @@ codex_room() { stub agent-codex "echo \"agent-codex \$*\" >> \"\$NOTES_FIXTURE/c
   assert_not_called '/one-shot Fix'
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'codex sol chatgpt'
+}
+
+# --- claude-cloud: a #cloud-ok item runs as a Claude cloud session ---------------------------
+
+cloud_ready() {
+  harness_ready
+  git -C "$SANDBOX/repos/game" init -q
+  git -C "$SANDBOX/repos/game" remote add origin git@github.com:acme/game.git
+  agent-queue add --project game --slug cloud-fix --priority high --tags cloud-ok "Fix the menu text" >/dev/null
+}
+
+@test "a cloud-ok item starts as a cloud session with no --harness: claude-cloud-run on the claude account, a self-contained brief, no model-lane" {
+  cloud_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-fix
+  assert_success
+  assert_called 'AGENT_QUEUE_ITEM=cloud-fix env -u CLAUDE_CONFIG_DIR CLOUD_TIMEOUT_MIN=90 claude-cloud-run cloud-fix acme/game'
+  assert_called 'The PR body carries the line "Item: cloud-fix"'
+  assert_not_called '/one-shot'
+  assert_not_called 'model-lane'
+  assert_not_called 'curl'
+  f=$(qitem running cloud-fix)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'claude-cloud cloud main'
+}
+
+@test "a cloud-ok item with no room on the plan stays queued, as a local one would" {
+  cloud_ready
+  stub claude-acct '[ "$1" = room ] && { echo "no account has room"; exit 1; }; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-fix
+  assert_failure
+  assert_output --partial 'claude-cloud has no room'
+  [ -n "$(qitem queued cloud-fix)" ] || fail "the item left the queue"
+}
+
+@test "an item without cloud-ok never routes to a cloud session" {
+  cloud_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu
+  assert_success
+  assert_not_called 'claude-cloud-run'
+  assert_called 'claude --model'
+  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" claude
+}
+
+@test "a cloud session refuses a plan item, a tier 3 item and a repo off GitHub, and the item stays queued" {
+  cloud_ready
+  agent-queue add --project game --slug cloud-plan --mode plan --tags cloud-ok "Think" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-plan --harness claude-cloud
+  assert_failure
+  assert_output --partial 'cannot wait on a plan'
+  agent-queue add --project game --slug cloud-t3 --tags 'cloud-ok tier3' "Fix the gate" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-t3
+  assert_failure
+  assert_output --partial 'is tier 3'
+  git -C "$SANDBOX/repos/game" remote set-url origin git@forge.example:acme/game.git
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-fix
+  assert_failure
+  assert_output --partial 'no GitHub repo for a cloud session'
+  for k in cloud-plan cloud-t3 cloud-fix; do [ -n "$(qitem queued "$k")" ] || fail "$k left the queue"; done
+  assert_not_called 'claude-cloud-run'
+}
+
+@test "item_brief for claude-cloud names the Item and Task lines and leaves out local tooling" {
+  run item_brief '{"slug": "cloud-fix", "mode": "oneshot", "project": "game", "title": "fix(game): x", "task": "fix(game): x"}' claude-cloud
+  assert_success
+  assert_output --partial 'fix(game): x'
+  assert_output --partial 'The PR body carries the line "Item: cloud-fix"'
+  assert_output --partial 'Never merge it'
+  refute_output --partial '/one-shot'
+  refute_output --partial 'agent-land <N>'
+}
+
+# claude-cloud-run: claude, gh and script are stubs; the real agent-queue records the PR.
+cloud_run_ready() {
+  agent-queue add --project game --slug cloud-fix --priority high --tags cloud-ok "Fix the menu text" >/dev/null
+  agent-queue move cloud-fix running >/dev/null
+  stub claude 'echo "claude $*" >> "$NOTES_FIXTURE/calls.log"; echo "Session: https://claude.ai/code/session_01AbC"'
+  stub gh 'echo "gh $*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/prs.json"'
+  export CLOUD_POLL_SEC=0 CLAUDE_BIN=claude
+}
+
+@test "claude-cloud-run records the session URL, finds the PR by its exact Item line, and parks the item waiting on it" {
+  cloud_run_ready
+  printf '%s\n' '[{"number": 8, "body": "Item: cloud-fix-extra"}, {"number": 9, "body": "text\r\nItem: cloud-fix\r\nmore"}]' > "$NOTES_FIXTURE/prs.json"
+  run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
+  assert_success
+  assert_called 'claude --cloud do the task'
+  assert_called 'gh pr list --repo acme/game --state all --search "Item: cloud-fix" in:body'
+  f=$(qitem waiting cloud-fix)
+  [ -n "$f" ] || fail "the item is not waiting"
+  assert_equal "$(qfield "$f" pr)" 'acme/game#9'
+  grep -q 'https://claude.ai/code/session_01AbC' "$f" || fail "the session URL is not on the item"
+}
+
+@test "claude-cloud-run past its timeout with no PR exits 1 and flags the item, which stays running" {
+  cloud_run_ready
+  echo '[{"number": 8, "body": "Item: other"}]' > "$NOTES_FIXTURE/prs.json"
+  CLOUD_TIMEOUT_MIN=0 run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
+  assert_failure
+  f=$(qitem running cloud-fix)
+  [ -n "$f" ] || fail "the item left running"
+  grep -q 'opened no PR in 0 min' "$f" || fail "the item is not flagged"
 }
 
 @test "codex refuses a spent plan and a plan item, and the item stays queued" {
