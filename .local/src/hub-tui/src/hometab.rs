@@ -131,11 +131,33 @@ fn night_section(out: &mut Vec<Line<'static>>, v: &NightView, p: Palette, w: usi
     }
 }
 
-pub fn page(h: &Home, night: &NightView, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// The keys that open a flow chip's view from Home, and the chip each opens: the Queue on that
+/// chip's state, or Projects for the board. The inbox is a count with no view of its own.
+pub const FLOW_KEYS: [(char, &str); 6] = [
+    ('u', "queued"),
+    ('w', "running"),
+    ('n', "needs"),
+    ('e', "done"),
+    ('m', "drain"),
+    ('b', "board"),
+];
+
+/// Home as lines. `flow` is (the gauges have not answered yet, the `o graph` hint applies).
+pub fn page(
+    h: &Home,
+    night: &NightView,
+    p: Palette,
+    now: i64,
+    w: usize,
+    flow: (bool, bool),
+) -> Vec<Line<'static>> {
     let mut out = vec![];
     for e in &h.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
+
+    // The flow strip leads, then the other numbers (dashboards rule 3).
+    out.extend(crate::flowstrip::lines(&h.flow, flow.0, flow.1, p, w));
 
     // The summary leads (dashboards rule 3): two lines, so a long list never buries them.
     let nums: Vec<String> = h
@@ -362,6 +384,7 @@ mod tests {
     use super::*;
     use crate::fit::plain;
     use hub_core::briefing::NightRow;
+    use hub_core::flow::Strip;
     use hub_core::home::{Chip, Need, Number, Score};
 
     fn home() -> Home {
@@ -376,9 +399,10 @@ mod tests {
                 recommend: None,
                 score: Some(Score::new(true, true, 3, 0, 2)),
             }],
+            flow: Strip::build(Some(&crate::queuetab::tests::fixture())),
             numbers: vec![Number {
-                label: "queue",
-                value: "1 running, 2 up next".into(),
+                label: "sessions",
+                value: "3 working, 1 need you, 0 stalled".into(),
             }],
             health: vec![
                 Chip {
@@ -401,18 +425,31 @@ mod tests {
 
     fn night_text(h: &Home, n: Option<&Night>, fixes: &Fixes) -> String {
         let v = NightView { night: n, fixes };
-        page(h, &v, Palette { no_color: true }, 1_000, 120)
-            .iter()
-            .map(plain)
-            .collect::<Vec<_>>()
-            .join("\n")
+        page(
+            h,
+            &v,
+            Palette { no_color: true },
+            1_000,
+            120,
+            (false, false),
+        )
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     #[test]
     fn the_summary_leads_and_only_the_chips_that_are_not_green_are_drawn() {
         let out = text(&home());
+        // The flow strip leads, then the other numbers; the queue's counts are the strip's.
         assert!(
-            out.starts_with("NUMBERS  queue 1 running, 2 up next"),
+            out.starts_with("FLOW  inbox - | board - | queued 2 | running 1 | needs you 1"),
+            "{out}"
+        );
+        assert!(out.contains("\nNUMBERS  sessions 3 working"), "{out}");
+        assert!(
+            !out.contains("queue 1 running") && !out.contains("done today"),
             "{out}"
         );
         let (num, need) = (
@@ -422,7 +459,6 @@ mod tests {
         assert!(num < need, "health sits above the lists: {out}");
         assert!(out.contains("ask") && out.contains("dodginballs") && out.contains("2m"));
         assert!(out.contains("RUNNING  nothing running from the queue"));
-        assert!(out.contains("NUMBERS  queue 1 running, 2 up next"));
         assert!(
             out.contains(" ci WARN ") && out.contains("1 green"),
             "{out}"
@@ -575,6 +611,16 @@ mod tests {
         );
         assert_eq!(next_fix(&n, &fixes).unwrap().0, "Workers overnight");
         assert!(night_text(&home(), Some(&n), &fixes).contains("F retry: no such project"));
+    }
+
+    #[test]
+    fn every_flow_key_names_a_chip_of_the_strip() {
+        let strip = Strip::build(None);
+        for (key, chip) in FLOW_KEYS {
+            let c = strip.chips.iter().find(|c| c.key == chip);
+            let c = c.unwrap_or_else(|| panic!("{key}: no chip {chip}"));
+            assert!(c.to.is_some(), "{key}: chip {chip} opens nothing");
+        }
     }
 
     #[test]

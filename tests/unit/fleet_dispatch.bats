@@ -1138,6 +1138,38 @@ game_ready() {
   assert_equal "$(grep -c 'id:gm-' "$NOTES_FIXTURE/rows.game.human")" 3
 }
 
+@test "promote: a row whose item already finished ok is never queued again; a human row goes back recorded failed" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'landed one' '- [ ] landed one <!-- id:gm-7 -->'
+  row game agent 'landed two' '- [ ] landed two <!-- id:gm-8 -->'
+  for k in gm-7 gm-8; do
+    agent-queue add --project game --from "board:game:$k" --slug "$k" "x" >/dev/null
+    agent-queue move "$k" done --status ok >/dev/null
+  done
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human", key: "gm-7"}')" "" task
+  assert_failure
+  assert_output --partial 'row un-started, recorded failed: gm-7 already finished ok'
+  grep -qF -- '- [ ] landed one' "$NOTES_FIXTURE/rows.game.human" || fail "human row left started"
+  assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r '.key + " " + .verdict')" "gm-7 failed"
+  # An agent row stays started for the orphan pass, which closes it on its item's merge proof.
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-8"}')" "" task
+  assert_failure
+  assert_output --partial 'row left started for the orphan pass: gm-8 already finished ok'
+  grep -qF -- '- [/] landed two' "$NOTES_FIXTURE/rows.game.agent" || fail "agent row un-started"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished row was queued again"
+}
+
+@test "fleet-dispatch promote: the human's Start queues a row whose item finished ok, as a repeat" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'landed one' '- [ ] landed one <!-- id:gm-7 -->'
+  agent-queue add --project game --from "board:game:gm-7" --slug gm-7 "x" >/dev/null
+  agent-queue move gm-7 done --status ok >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --raw '- [ ] landed one <!-- id:gm-7 -->'
+  assert_success
+  assert_output --partial "queued game: gm-7"
+  [ -n "$(qitem queued gm-7)" ] || fail "the human's Start did not queue the row"
+}
+
 @test "promote: a row start could not give an id is un-started and refused, with no item" {
   project game beta "$SANDBOX/repos/game"
   row game human 'the row' '- [ ] the row'
@@ -3156,7 +3188,7 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   agent-queue add --project game --slug c "do c"
   stub wt 'echo "game-$WT_N"'
   for s in a b c; do WT_N=$s cmd_start --item "$s" >/dev/null; done
-  agent-queue set a pr=12
+  agent-queue set a pr=12 merged=0123abcd
   agent-queue move c done --status ok
   printf 'game-c\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run cmd_reap
@@ -3222,6 +3254,19 @@ OUT
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
 }
 
+@test "reap: a --pr-only item its session left waiting closes ok with merged: once the PR merges" {
+  pr_item OPEN
+  agent-queue move fix-crash waiting >/dev/null
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  printf 'MERGED %s\n' "$OID" > "$NOTES_FIXTURE/pr.state"
+  run cmd_reap
+  assert_success
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
+}
+
 @test "reap: a gone session's closed PR fails its item and hands the row back" {
   pr_item CLOSED
   run cmd_reap
@@ -3273,13 +3318,15 @@ orphan_seen() {
   ! grep -q gm-1 "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "un-started row still tracked"
 }
 
-# landed_item <state> [pr] -- pr_item's item closed ok by its own session, no merged: recorded, as a
-# --pr-only run leaves it: the row stays started and no active item names it.
+# landed_item <state> [pr] -- pr_item's item closed ok by its own session with no merged: recorded,
+# as a --pr-only run left it before agent-queue refused that close (the store still holds those):
+# the row stays started and no active item names it.
 landed_item() {
   export DISPATCH_NIGHT_PROFILE=bnb
   pr_item "$1"
-  agent-queue set fix-crash "pr=${2:-o/game#12}" >/dev/null
+  agent-queue set fix-crash pr= >/dev/null
   agent-queue move fix-crash done --status ok >/dev/null
+  agent-queue set fix-crash "pr=${2:-o/game#12}" >/dev/null
 }
 
 @test "reap: a done item's PR merged after its session closed it records merged: and closes the row on merge proof" {
@@ -3643,7 +3690,7 @@ board_item() {
 @test "stats: runnable work and its age, reap moves in the last hour, flapping items" {
   local old new t
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
-  queued_item stuck high "$old"
+  queued_item stuck urgent "$old"
   queued_item low-new low "$new"
   queued_item after-old urgent "$old" '' never-done   # held by its after:, so not runnable
   mkdir -p "$FLEET_DISPATCH_DIR"
@@ -3670,6 +3717,28 @@ board_item() {
   jq -e '.done_6h == 0 and .added_6h == 3' <<<"$output"
   # Only numbers, booleans and the one list, so mqtt2prom keeps every fact it needs.
   assert_equal "$(jq -c '[to_entries[] | select(.value | type == "string")] | length' <<<"$output")" 0
+}
+
+@test "stats: runnable_urgent counts only urgent items a start would take; high ones, chained ones and a gateway agent's are not in it" {
+  local old
+  old=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item urgent-ok urgent "$old"
+  queued_item urgent-chained urgent "$old" '' never-done
+  queued_item high-a high "$old"
+  queued_item high-b high "$old"
+  queued_item urgent-gateway urgent "$old"
+  sed -i 's/^agent: claude$/agent: opencode/' "$AGENT_QUEUE_DIR"/queued/*-urgent-gateway.md
+  export DISPATCH_STARVED_MIN=100000
+  mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '[.runnable_urgent, .runnable_high]' <<<"$output")" '[1,2]'
+  jq -e '.oldest_urgent_s >= 10790 and .oldest_urgent_s <= 10900 and .oldest_high_s >= 10790 and .oldest_high_s <= 10900' <<<"$output"
+  # No urgent item a start would take: none counted and no age, not the high ones' age.
+  rm "$AGENT_QUEUE_DIR"/queued/*-urgent-ok.md
+  run cmd_stats
+  assert_equal "$(jq -c '[.runnable_urgent, .runnable_high, .oldest_urgent_s]' <<<"$output")" '[0,2,null]'
+  jq -e '.oldest_high_s >= 10790' <<<"$output"
 }
 
 @test "a real pass leaves its headroom for stats; a dry pass, or one older than three passes, gives none" {

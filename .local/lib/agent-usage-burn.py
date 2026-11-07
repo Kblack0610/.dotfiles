@@ -35,7 +35,7 @@ import sys
 from collections import Counter, defaultdict
 
 WAIT_RE = re.compile(
-    r"(^|[;&|\s(])sleep\s+\d|\buntil\b.*;\s*do\b|gh pr checks\b.*--watch|gh run watch\b"
+    r"(^|[;&|\s(])sleep\s+\d|\buntil\b.*;\s*do\b|gh pr checks\b.*--watch|gh run watch\b|\bgh-run-wait\b"
     r"|/tasks/[^\s'\"]+\.output")
 # A response's turn class, from its tool calls: write wins over wait, wait over investigate;
 # a response with no tool call is a reply.

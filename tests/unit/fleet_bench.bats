@@ -3278,7 +3278,7 @@ qstats_fixture() {
   agent-queue add --project game --slug landed "landed"
   agent-queue add --project game --slug waiting "still queued"
   agent-queue move landed running
-  agent-queue set landed pr=901
+  agent-queue set landed pr=901 merged=0123abcd
   agent-queue move landed "done" --status ok
   run env BENCH_NOW=$T0 "$SUBJECT" queue
   assert_success

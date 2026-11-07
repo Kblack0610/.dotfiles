@@ -737,8 +737,8 @@ impl App {
         }
     }
 
-    /// The Queue tab's pipeline line is Prometheus (no push): read on entering, on `r` and on the
-    /// tick while shown.
+    /// The flow strip's inbox and board are the fleet-bench gauges in Prometheus (no push): read
+    /// on entering Home or Queue, on `r` and on the tick while one is shown.
     pub fn read_pipeline(&mut self) {
         if self.pipeline_read.want() {
             let tx = self.tx.clone();
@@ -939,6 +939,7 @@ impl App {
         self.read_tasks();
         self.read_proposals();
         self.read_night();
+        self.read_pipeline();
     }
 
     /// Since last night over the fleet state, queue and Home this App already holds, so only
@@ -1201,6 +1202,7 @@ impl App {
                 }
                 if self.tab == Tab::Home {
                     self.read_night();
+                    self.read_pipeline();
                 }
                 // With no file watch, the board files are only read here.
                 if self.watch_failed.is_some() {
@@ -2174,6 +2176,12 @@ impl App {
             return true;
         }
         if !self.prv.open {
+            if let KeyCode::Char(c) = k.code {
+                if let Some(chip) = hometab::FLOW_KEYS.iter().find(|(key, _)| *key == c) {
+                    self.open_flow(chip.1);
+                    return true;
+                }
+            }
             let opens = k.code == KeyCode::Enter || DataTable::owns(k.code);
             if !opens || open_rows(&self.proposals).is_empty() {
                 return false;
@@ -2205,6 +2213,27 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// A flow chip's view: the Queue on its state chip, or the Projects tab.
+    fn open_flow(&mut self, key: &str) {
+        let Some(to) = hub_core::flow::Strip::build(None)
+            .chips
+            .into_iter()
+            .find(|c| c.key == key)
+            .and_then(|c| c.to)
+        else {
+            return;
+        };
+        match to.tab {
+            "queue" => {
+                self.go(Tab::Queue);
+                self.qv.open("");
+                self.qv.table.view.state = to.state.into();
+            }
+            "projects" => self.go(Tab::Projects),
+            _ => {}
+        }
     }
 
     /// Infra's own keys. The summary: n/N jump between sections, Enter and the jobs keys
@@ -2592,7 +2621,7 @@ impl App {
             Tab::Projects => format!(
                 "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Home => format!("F queue a fix  Enter proposals  {tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
+            Tab::Home => format!("u w n e m b open a flow chip  F queue a fix  Enter proposals  {tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
         }
     }
 
@@ -2652,11 +2681,16 @@ impl App {
                     Some(open) => home.set_proposals(open),
                     None => home.proposals_unread = true,
                 }
+                if let Some(r) = &self.pipeline {
+                    home.set_pipeline(r);
+                }
                 let night = hometab::NightView {
                     night: self.night.as_ref(),
                     fixes: &self.fixes,
                 };
-                (hometab::page(&home, &night, self.p, now, w), vec![])
+                let graph = i.as_ref().is_some_and(|i| i.grafana.is_some());
+                let flow = (self.pipeline.is_none(), graph);
+                (hometab::page(&home, &night, self.p, now, w, flow), vec![])
             }
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {
                 None => reading("notes projects"),
@@ -2695,12 +2729,17 @@ impl App {
             (Tab::Queue, ..) => match &self.queue {
                 None => reading("agent-queue"),
                 Some(q) => {
+                    let mut strip = hub_core::flow::Strip::build(Some(q));
+                    if let Some(r) = &self.pipeline {
+                        strip.set_pipeline(r);
+                    }
                     let (l, at) = queuetab::page(
                         q,
                         &self.qv,
                         self.candidates.as_ref(),
                         (
-                            self.pipeline.as_ref(),
+                            &strip,
+                            self.pipeline.is_none(),
                             self.infra.as_ref().is_some_and(|i| i.grafana.is_some()),
                         ),
                         self.p,
@@ -3253,19 +3292,42 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_tab_shows_the_pipeline_line_first() {
+    fn the_queue_tab_shows_the_flow_strip_first() {
         let mut a = app(Tab::Queue);
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         let top = |a: &mut App| {
-            a.page_lines(80)
+            a.page_lines(100)
                 .iter()
-                .take(2)
+                .take(3)
                 .map(|l| l.to_string())
                 .collect::<Vec<_>>()
         };
-        assert!(top(&mut a)[0].starts_with("pipeline  reading"));
+        let t = top(&mut a);
+        assert!(
+            t[0].starts_with("FLOW  inbox - | board - | queued 2"),
+            "{t:?}"
+        );
+        assert!(t[1].contains("inbox, board: reading Prometheus"), "{t:?}");
         a.handle(Msg::Pipeline(Ok(None)));
-        assert_eq!(top(&mut a)[0], "pipeline -");
+        let t = top(&mut a);
+        assert!(t[0].starts_with("FLOW  inbox - | board - |"), "{t:?}");
+        assert!(!t.join("\n").contains("reading Prometheus"), "{t:?}");
+    }
+
+    #[test]
+    fn a_flow_chip_key_on_home_opens_the_queue_on_its_filter() {
+        let mut a = app(Tab::Home);
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        a.handle(key('w'));
+        assert_eq!(a.tab, Tab::Queue);
+        assert_eq!(a.qv.table.view.state, "running");
+        a.handle(key('1'));
+        a.handle(key('b'));
+        assert_eq!(a.tab, Tab::Projects);
+        // Negative control: a key that is not a chip leaves Home where it is.
+        a.handle(key('1'));
+        a.handle(key('x'));
+        assert_eq!(a.tab, Tab::Home);
     }
 
     /// A queue longer than any screen: `n` queued items, item-0 first.
@@ -3797,7 +3859,12 @@ mod tests {
             "{s}"
         );
         assert!(
-            s.contains("NUMBERS  queue 1 running, 2 up next (1 held) | done today 1"),
+            s.contains("FLOW  inbox - | board - | queued 2")
+                && s.contains("running 1 | needs you 1"),
+            "{s}"
+        );
+        assert!(
+            !s.contains("done today") && !s.contains("queue 1 running"),
             "{s}"
         );
         assert!(s.contains("RUNNING (1)"), "{s}");
