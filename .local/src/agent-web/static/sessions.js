@@ -10,7 +10,7 @@ const SESSIONS_OPEN = 200;
 const sst = tblTab({
   tab: "sessions", id: "sessions", el: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
   wait: "Loading the sessions.", state: { cap: null, capErr: null, all: false, confirm: null },
-  shown: () => !st.sel && st.tab === "sessions", got: (t) => setBuckets(t.data.buckets), open: () => wst.open,
+  shown: () => !st.sel && st.tab === "sessions", got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
   chips: false, head: (t) => sessionsTiles(t.data) + sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
 
@@ -22,7 +22,7 @@ const refreshCapacity = coalesce(async () => {
 });
 // The table's sources move only with what is on screen, so a session open reads only its page.
 function refreshSessions() {
-  if (st.sel) { if (st.view === "page") loadPage(); return; }
+  if (st.sel) { if (st.view === "page") loadPage(); if (SPLIT.matches) sst.refresh(); return; }
   sst.refresh();
   refreshCapacity();
 }
@@ -123,7 +123,49 @@ async function openSession(id) {
   }
   const a = st.agents.find((x) => x.session === id || x.target === id);
   select(a || { target: id, session: id, paneless: true, status: "", summary: "", actions: [] });
+  sideShow(true);
 }
+
+// From 900px an open session keeps the list beside it (app.css): the same rows as the table, under
+// the same view, one compact line each, so the human moves between sessions without going Back.
+// Under 900px the list is not drawn and not read.
+const SPLIT = matchMedia("(min-width: 900px)");
+const isSel = (r) => !!st.sel && ((r.target && r.target === st.sel.target) || (r.session_id && r.session_id === st.sel.session));
+
+function sideRow(r) {
+  const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "" : dur(r.idle_min);
+  const pr = r.pr ? sessionPr(r) : "";
+  return `<button class="srow${isSel(r) ? " on" : ""}" data-key="${esc(r.key)}"><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span>` +
+    `<span class="sn">${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
+}
+
+function renderSide(scroll = false) {
+  const el = $("side");
+  if (!st.sel || !SPLIT.matches) { el.innerHTML = ""; return; }
+  const d = sst.data;
+  if (!d || !d.table) { el.innerHTML = `<div class="empty">${esc(sst.err || "Loading the sessions.")}</div>`; return; }
+  const rows = (d.rows || []).slice(0, SESSIONS_OPEN);
+  const more = (d.rows || []).length - rows.length;
+  paint(el, `<div class="seg fseg">${tblChips(d.table)}</div>` + (rows.length ? rows.map(sideRow).join("") : '<div class="muted">No sessions match.</div>') +
+    (more ? `<div class="muted">+${more} more on the table</div>` : ""));
+  if (scroll) el.querySelector(".srow.on")?.scrollIntoView({ block: "nearest" });
+}
+
+// A session just opened, or the screen crossed 900px: draw the list, reading it if it is not read.
+function sideShow(scroll) {
+  if (!st.sel || !SPLIT.matches) return renderSide();
+  if (sst.data) renderSide(scroll);
+  else sst.refresh();
+}
+SPLIT.addEventListener("change", () => sideShow(true));
+
+$("side").addEventListener("click", (e) => {
+  const patch = tblPatch(e);
+  if (patch) return sst.view(patch);
+  const b = e.target.closest(".srow");
+  const r = b && sst.data && sst.data.rows.find((x) => x.key === b.dataset.key);
+  if (r) sessionClick(r);
+});
 
 const pageRow = (label, html, warn) => `<div class="pgrow"><span class="pgk">${esc(label)}</span><span class="pgv${warn ? " capwarn" : ""}">${html}</span></div>`;
 

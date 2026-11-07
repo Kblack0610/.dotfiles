@@ -43,8 +43,8 @@ const needBand = (k, meta) =>
 // A live session's open dialog: what the session is, what it wants and for how long, then the
 // question and its answers. `k` is its row's kind. The tmux target is the title's tooltip and sits
 // in Details. A plan shows whole, its buttons above it, so a long plan never hides how to approve
-// it.
-function sessionCard(a, k) {
+// it. `here` is the card pinned in the session's own conversation, which needs no Open button.
+function sessionCard(a, k, here = false) {
   const q = a.question;
   let opts = "";
   if (q.kind === "choice") opts = q.options.map((o, i) => `<button class="btn" data-k="${i + 1}">${i + 1}. ${esc(o)}</button>`).join("");
@@ -57,7 +57,7 @@ function sessionCard(a, k) {
   const title = `<div class="ntitle" title="${esc(a.target)}">${esc(a.summary || a.plan || a.short || a.target)}</div>`;
   const more = cfold(`ses:${a.target}`, "Details", facts([["target", a.target], ["session", a.session], ["account", a.account],
     ["plan", a.plan], ["next phase", p && p.next]]), askst.open);
-  const open = `<button class="btn sm" data-open>Open session</button>`;
+  const open = here ? "" : `<button class="btn sm" data-open>Open session</button>`;
   const lead = q.kind === "plan" ? `<div class="opts">${opts}${open}</div>${body}<div class="opts">${reply}</div>`
     : `${body}<div class="opts">${opts}${open}${reply}</div>`;
   return `<div class="card need k-${k}" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">${band}${title}${lead}${more}<div class="err"></div></div>`;
