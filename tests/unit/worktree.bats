@@ -550,6 +550,18 @@ EOF
   run wt_main_repo "$WT_ROOT/sub-agent-1"
   assert_success
   assert_output "$MAIN/sub"
+  # A superproject worktree's submodule keeps its store under .git/worktrees/<n>/modules.
+  run wt_main_repo "$WT/sub"
+  assert_success
+  assert_output "$WT/sub"
+}
+
+@test "a deinitialised submodule resolves to nothing, not a missing checkout" {
+  make_drifted_submodule
+  git -C "$MAIN/sub" worktree add --quiet "$WT_ROOT/sub-agent-1" -b agent-1
+  rm -rf "$MAIN/sub"
+  run wt_main_repo "$WT_ROOT/sub-agent-1"
+  assert_failure
 }
 
 @test "a submodule's main checkout is never listed as one of its worktrees" {

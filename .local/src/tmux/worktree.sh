@@ -102,14 +102,17 @@ WT_HOLD_REASON='held by wt: wt done or wt reap frees it and refuses a live sessi
 # the main one. That matters: `wt new` run inside `dotfiles-agent-1` must cut
 # `dotfiles-agent-2`, not `dotfiles-agent-1-agent-1`. A submodule's common dir is
 # <super>/.git/modules/<name>, whose core.worktree names its checkout; a bare repo has none.
+# The probe is needed: --git-dir with no core.worktree takes the cwd as the toplevel. A
+# deinitialised submodule keeps core.worktree, so the checkout must still exist.
 wt_main_repo() {
-  local common
+  local common top
   common=$(git -C "${1:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
   case "$common" in
   */.git) printf '%s\n' "${common%/.git}" ;;
   *)
     git --git-dir="$common" config --get core.worktree >/dev/null 2>&1 || return 1
-    git --git-dir="$common" rev-parse --show-toplevel 2>/dev/null
+    top=$(git --git-dir="$common" rev-parse --show-toplevel 2>/dev/null) && [ -d "$top" ] || return 1
+    printf '%s\n' "$top"
     ;;
   esac
 }
