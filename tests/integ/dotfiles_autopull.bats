@@ -64,11 +64,11 @@ head_of() { git -C "$1" rev-parse HEAD; }
   before=$(head_of "$PUB")
   run "$PULL" --now "$PUB"
   assert_success
-  assert_output --regexp '^~/\.dotfiles: not fast-forwarded, main stays at [0-9a-f]{8}: local changes to f$'
+  assert_output --regexp '^~/\.dotfiles: not fast-forwarded, main stays at [0-9a-f]{8}: local files in the way: f$'
   assert_equal "$(head_of "$PUB")" "$before"
   assert_equal "$(cat "$PUB/f")" 'local edit'
   run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
-  assert_output --partial 'local changes to f'
+  assert_output --partial 'local files in the way: f'
 }
 
 @test "a dirty file the merge does not touch does not block it, and keeps its edit" {
@@ -130,4 +130,21 @@ head_of() { git -C "$1" rev-parse HEAD; }
   run "$PULL"
   assert_success
   assert_equal "$(cat "$PUB/f")" v2
+}
+
+@test "an untracked file at a path the merge adds stays put, and the line names it" {
+  printf 'g1\n' >"$SANDBOX/pub-up/g"
+  git -C "$SANDBOX/pub-up" add g && git -C "$SANDBOX/pub-up" commit -qm g && git -C "$SANDBOX/pub-up" push -q origin HEAD:main
+  printf 'mine\n' >"$PUB/g"
+  run "$PULL" --now "$PUB"
+  assert_output --regexp ': local files in the way: g$'
+  assert_equal "$(cat "$PUB/g")" mine
+}
+
+@test "the silent shell pass logs a checkout it could not move" {
+  git -C "$PRIV" checkout -q --detach
+  run "$PULL"
+  assert_output ''
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial '~/.dotfiles-private: detached HEAD, left alone'
 }

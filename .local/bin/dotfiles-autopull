@@ -21,7 +21,9 @@ THROTTLE_SECS="${DOTFILES_AUTOPULL_INTERVAL:-21600}" # 6h
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-autopull"
 STAMP="$CACHE_DIR/last-pull"
 LOG="$CACHE_DIR/autopull.log"
-OVERLAY_LINK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/dotfiles-overlay-link"
+# The public checkout's own copy, so a pull that changed it runs the new one.
+OVERLAY_LINK="${REPOS[0]}/.local/bin/dotfiles-overlay-link"
+FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
 
 command -v git >/dev/null 2>&1 || exit 0
 
@@ -30,28 +32,41 @@ log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$LOG" 2>/dev/null
 }
 
+# capped <secs> <cmd...>: a network call under a time cap, so a hung remote cannot hold a landing or a
+# shell start; macOS ships no timeout, and there the call runs uncapped.
+capped() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$@"; else shift && "$@"; fi
+}
+
 # phys <dir> -> its physical path (no realpath on older macOS)
 phys() { (cd "$1" 2>/dev/null && pwd -P); }
 
-# pull <checkout> -> one line on stdout saying what happened; a move or a refusal is logged too.
+# say <line>: print it and log it
+say() {
+  log "$1"
+  echo "$1"
+}
+
+# pull <checkout> -> one line on stdout saying what happened; every outcome but "already current" is
+# logged, so the silent shell pass leaves a trace of a checkout it could not move.
 pull() {
-  local repo=$1 name branch head up out files msg
+  local repo=$1 name branch head up out files
   name=${repo/#"$HOME"/\~}
   if git -C "$repo" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 ||
     [ -d "$repo/.git/rebase-merge" ] || [ -d "$repo/.git/rebase-apply" ]; then
-    echo "$name: mid-merge or mid-rebase, left alone"
+    say "$name: mid-merge or mid-rebase, left alone"
     return
   fi
   branch=$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null) || {
-    echo "$name: detached HEAD, left alone"
+    say "$name: detached HEAD, left alone"
     return
   }
   git -C "$repo" rev-parse --quiet --verify '@{u}' >/dev/null 2>&1 || {
-    echo "$name: $branch has no upstream, left alone"
+    say "$name: $branch has no upstream, left alone"
     return
   }
-  git -C "$repo" fetch --quiet 2>/dev/null || {
-    echo "$name: fetch failed, $branch left at $(git -C "$repo" rev-parse --short HEAD 2>/dev/null)"
+  capped "$FETCH_SECS" git -C "$repo" fetch --quiet 2>/dev/null || {
+    say "$name: fetch failed, $branch left at $(git -C "$repo" rev-parse --short HEAD 2>/dev/null)"
     return
   }
   head=$(git -C "$repo" rev-parse HEAD 2>/dev/null) && up=$(git -C "$repo" rev-parse '@{u}' 2>/dev/null) || return
@@ -60,26 +75,24 @@ pull() {
     return
   fi
   if ! git -C "$repo" merge-base --is-ancestor HEAD '@{u}' 2>/dev/null; then
-    msg="$name: not fast-forwarded, $branch has local commits its upstream lacks"
+    say "$name: not fast-forwarded, $branch has local commits its upstream lacks"
   elif out=$(git -C "$repo" merge --ff-only '@{u}' 2>&1); then
-    msg="$name: fast-forwarded $branch ${head:0:8}..${up:0:8}"
+    say "$name: fast-forwarded $branch ${head:0:8}..${up:0:8}"
     # A move may have advanced submodule pointers (android-suite): check them out so their links do
     # not dangle. HTTPS avoids SSH:22 hangs on networks that block it; capped and fail-soft.
-    timeout 120 git -C "$repo" -c url."https://github.com/".insteadOf="git@github.com:" \
+    capped 120 git -C "$repo" -c url."https://github.com/".insteadOf="git@github.com:" \
       submodule update --init --recursive --quiet >/dev/null 2>&1 || true
     # Attach anything the move added to, or moved into, the private overlay.
     [ ! -x "$OVERLAY_LINK" ] || "$OVERLAY_LINK" >/dev/null 2>&1 || true
   else
-    # git lists each file it refused to overwrite on its own tab-indented line.
-    files=$(printf '%s\n' "$out" | sed -n 's/^\t//p' | paste -sd ' ' -)
+    # git lists each file it refused to overwrite, dirty or untracked, on its own tab-indented line.
+    files=$(printf '%s\n' "$out" | awk 'sub(/^\t/, "")' | paste -sd ' ' -)
     if [ -n "$files" ]; then
-      msg="$name: not fast-forwarded, $branch stays at ${head:0:8}: local changes to $files"
+      say "$name: not fast-forwarded, $branch stays at ${head:0:8}: local files in the way: $files"
     else
-      msg="$name: not fast-forwarded, $branch stays at ${head:0:8}: $(printf '%s\n' "$out" | tail -n 1)"
+      say "$name: not fast-forwarded, $branch stays at ${head:0:8}: $(printf '%s\n' "$out" | tail -n 1)"
     fi
   fi
-  log "$msg"
-  echo "$msg"
 }
 
 if [ "${1:-}" = --now ]; then
