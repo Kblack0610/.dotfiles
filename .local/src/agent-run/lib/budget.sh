@@ -72,12 +72,13 @@ budget_caps() {
       -v h="${MAX_CALLS_HOUR:-$BUDGET_DEFAULT_CALLS_HOUR}" -v c="$calls" 'BEGIN { print d + r, h + c }'
 }
 
-# budget_spent <name> -> "<dollars today> <calls in the last hour>" from calls.jsonl. `at` is
-# local ISO time, so a string compare against a local cutoff orders it.
+# budget_spent <name> -> "<dollars today> <calls in the last hour>" from calls.jsonl, leaving out
+# sandbox refusals (lib/sandbox.sh), which made no call. `at` is local ISO time, so a string
+# compare against a local cutoff orders it.
 budget_spent() {
   [ -r "$AGENTCTL_CALLS" ] || { echo "0 0"; return 0; }
   jq -rn --arg n "$1" --arg day "$(date +%F)" --arg since "$(date -Iseconds -d '-1 hour')" '
-    reduce (inputs | select(.agent == $n)) as $c ([0, 0];
+    reduce (inputs | select(.agent == $n and .subtype != "sandbox_refused")) as $c ([0, 0];
       [.[0] + (if ($c.at // "")[0:10] == $day then ($c.cost_usd // 0) else 0 end),
        .[1] + (if ($c.at // "") >= $since then 1 else 0 end)])
     | "\(.[0] * 100 | round / 100) \(.[1])"' "$AGENTCTL_CALLS"

@@ -28,16 +28,19 @@ SANDBOX_SHAPE='
 sandbox_load() {
   SANDBOX_FILE=""
   if [ -n "${SANDBOX_PROFILE:-}" ]; then
-    [[ "$SANDBOX_PROFILE" =~ ^[a-z0-9][a-z0-9-]*$ ]] || role_die "SANDBOX_PROFILE '$SANDBOX_PROFILE' is not a profile name"
+    [[ "$SANDBOX_PROFILE" =~ ^[a-z0-9][a-z0-9-]*$ ]] || sandbox_refuse "SANDBOX_PROFILE '$SANDBOX_PROFILE' is not a profile name"
     SANDBOX_FILE="$SANDBOX_DIR/$SANDBOX_PROFILE.json"
-    [ -r "$SANDBOX_FILE" ] || role_die "lane sandbox '$SANDBOX_PROFILE' wants $SANDBOX_FILE, which is not readable. Refusing to run unsandboxed."
-    jq -e "$SANDBOX_SHAPE" "$SANDBOX_FILE" >/dev/null 2>&1 || role_die "lane sandbox $SANDBOX_FILE is not a valid profile: it needs a sandbox object, every list an array of strings, and every path absolute or ~/. Refusing to run unsandboxed."
+    [ -r "$SANDBOX_FILE" ] || sandbox_refuse "lane sandbox '$SANDBOX_PROFILE' wants $SANDBOX_FILE, which is not readable. Refusing to run unsandboxed."
+    jq -e "$SANDBOX_SHAPE" "$SANDBOX_FILE" >/dev/null 2>&1 || sandbox_refuse "lane sandbox $SANDBOX_FILE is not a valid profile: it needs a sandbox object, every list an array of strings, and every path absolute or ~/. Refusing to run unsandboxed."
+    # The cwd is writable in the sandbox, so a lane started from $HOME or above it (a user unit with
+    # no WorkingDirectory starts in $HOME) would have no write bound at all.
+    case "${HOME%/}/" in "${PWD%/}/"*) sandbox_refuse "lane sandbox '$SANDBOX_PROFILE' would run from $PWD, which holds all of \$HOME, and the cwd is writable. Start the lane from its own directory (its inbox or a worktree)." ;; esac
   fi
   # GH_TOKEN_FILE: the lane's own repo-scoped token, which the human creates. A sandboxed lane
   # cannot read gh's login (the profile hides it), and must not inherit a broad token from the
   # environment either, so without its own file it gets none.
   if [ -n "${GH_TOKEN_FILE:-}" ]; then
-    [ -r "$GH_TOKEN_FILE" ] && [ -s "$GH_TOKEN_FILE" ] || role_die "GH_TOKEN_FILE=$GH_TOKEN_FILE is not a readable, non-empty file"
+    [ -r "$GH_TOKEN_FILE" ] && [ -s "$GH_TOKEN_FILE" ] || sandbox_refuse "GH_TOKEN_FILE=$GH_TOKEN_FILE is not a readable, non-empty file"
     GH_TOKEN="$(tr -d '[:space:]' < "$GH_TOKEN_FILE")"
     export GH_TOKEN
     # The lane needs the token itself, not where it is kept.
@@ -45,6 +48,24 @@ sandbox_load() {
   elif [ -n "$SANDBOX_FILE" ]; then
     unset GH_TOKEN GITHUB_TOKEN
   fi
+}
+
+# sandbox_refuse <why>: refuse the run (role_die, exit 78), first appending a calls.jsonl line for
+# a named call: {agent, sandbox, exit 78, subtype "sandbox_refused", raw: <why>}. A refused run never
+# reaches calls_record, and this line is what the sandboxed_lane_pct KPI and the
+# lane-sandbox-refusals watch read. fleet-dispatch loads this file without lib/calls.sh, so there it
+# only refuses.
+sandbox_refuse() {
+  local name=""
+  declare -F calls_name >/dev/null && name="$(calls_name)"
+  if [ -n "$name" ]; then
+    mkdir -p "$(dirname "$AGENTCTL_CALLS")" 2>/dev/null
+    jq -cn --arg id "$(calls_new_id)" --arg agent "$name" --arg harness "${harness:-}" --arg sandbox "${SANDBOX_PROFILE:-}" \
+      --arg at "$(date -Iseconds)" --argjson exit "$EX_CONFIG" --arg why "$1" '
+      {id: $id, agent: $agent, harness: $harness, sandbox: $sandbox, at: $at, exit: $exit, subtype: "sandbox_refused", raw: $why}
+      | with_entries(select(.value != ""))' | flock "$AGENTCTL_CALLS" tee -a "$AGENTCTL_CALLS" >/dev/null || true
+  fi
+  role_die "$1"
 }
 
 # sandbox_git_common -> the absolute git common dir of the cwd, or nothing outside a repo. In a
