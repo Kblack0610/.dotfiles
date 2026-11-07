@@ -902,7 +902,7 @@ cmd_credit_of() {
 # moment ago never undoes a move made since (a requeue, the session's own close).
 cmd_move() {
   local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
-  local status="" expect="" f from dest deps run
+  local status="" expect="" f from dest deps run tags
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -932,7 +932,14 @@ cmd_move() {
     # that no longer works it. `sessions:` stays: it is the history of who worked the item.
     # lane_run goes too: the next start logs a run of its own.
     queued) header_del "$f" session window started waiting origin lane_run ;;
-    running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)" ;;
+    running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)"
+      # A hold: tag gates one start: once running, the item's own session may claim that resource,
+      # and a tag left on would hold the item behind its own claim if it is ever requeued.
+      tags="$(fm_get "$f" tags)"
+      case " $tags " in *" hold:"*)
+        tags="$(tr ' ' '\n' <<<"$tags" | grep -v '^hold:' | paste -sd' ')"
+        if [ -n "$tags" ]; then header_set "$f" tags "$tags"; else header_del "$f" tags; fi ;;
+      esac ;;
     waiting) header_set "$f" waiting "$(now_utc)" ;;
     done) header_set "$f" status "$status"; header_set "$f" finished "$(now_utc)" ;;
   esac
@@ -976,6 +983,8 @@ cmd_requeue() {
   done
   [ -n "$res" ] || die "usage: agent-queue requeue <slug> --hold <resource>"
   hold_resource "$res" || die "not an agent-hold resource: $res (letters, digits, . _ -)"
+  # A free resource would restart the item at once: the caller claims it instead.
+  [ -n "$(hold_pending "$res")" ] || die "$res is not held: claim it (agent-hold claim $res) instead of requeueing"
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   tags="$(fm_get "$f" tags)"

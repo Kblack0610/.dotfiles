@@ -266,6 +266,10 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure
   run "$AQ" requeue forms
   assert_failure
+  # Behind a free resource it would restart at once, so the session is told to claim it.
+  run "$AQ" requeue forms --hold mac-desktop
+  assert_failure; assert_output --partial "claim it"
+  [ -n "$(item running forms)" ]
   "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
   run "$AQ" requeue forms --hold mac-desktop
   assert_success; assert_output --partial "forms: running -> queued"
@@ -283,6 +287,10 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
   run env AGENT_QUEUE_NOW=02:00 "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = forms ]
+  # Started, its hold tag is spent: its own session may claim the desktop, and a later requeue
+  # must not hold it behind that claim.
+  "$AQ" move forms running >/dev/null
+  [ "$(field "$(item running forms)" tags)" = night ]
 }
 
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
