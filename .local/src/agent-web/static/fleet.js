@@ -93,7 +93,7 @@ const callsTable = (recent) => `<table class="tbl"><tr><th class="n">when</th><t
 
 // The table's headers: hub_core::fleet::who::Who::COLUMNS (checked by assets.rs).
 const FLEET_COLS = { tier: ["tier", "n"], who: ["who"], state: ["state"], since: ["since", "n"], doing: ["doing now"], under: ["under it"], project: ["project"] };
-const STATE_CLASS = { failed: "bad", "needs you": "warn", stalled: "warn", idle: "muted", off: "muted", chat: "muted", parked: "muted", landed: "muted" };
+const STATE_CLASS = { failed: "bad", held: "bad", "needs you": "warn", stalled: "warn", idle: "muted", off: "muted", chat: "muted", parked: "muted", landed: "muted" };
 // A runner opens its page, a session its record on the Sessions tab.
 const whoHref = (r) => (r.opens === "runner" ? runnerHref(r.key) : "#sessions/" + encodeURIComponent(r.key));
 
