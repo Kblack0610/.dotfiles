@@ -173,6 +173,11 @@ sandbox_init() {
     chmod +x "$SANDBOX/bin/$b"
   done
 
+  # The copies source ../lib/*.sh and the registry resolver relative to themselves, which
+  # in a copy is $SANDBOX/lib. Point both at the repo's own.
+  ln -sfn "$REPO_ROOT/.local/lib" "$SANDBOX/lib"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
+
   # The world resolver finds panel-lib beside itself, so it runs from the repo, not a copy.
   printf '#!/bin/sh\nexec "%s/.local/src/tmux/worlds.sh" "$@"\n' "$REPO_ROOT" > "$SANDBOX/bin/tmux-world"
   chmod +x "$SANDBOX/bin/tmux-world"

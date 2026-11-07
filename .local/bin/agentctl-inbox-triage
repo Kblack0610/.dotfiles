@@ -31,6 +31,8 @@ LIB="$HERE/../lib"
 . "$LIB/md-render.sh"
 # shellcheck source=/dev/null
 . "$LIB/inbox-epics.sh"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
 DRY=0; ONLY=""; BACKLOG=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0
@@ -153,7 +155,7 @@ flag_state() { [ -n "$FLAG" ] && cat "$FLAG" 2>/dev/null; }
 # project's repo, and where a row about one of them, or the code they share, belongs.
 homes_rule() {
   local homes
-  homes="$(jq -r '[.trackers // {} | to_entries[] | select((.value.repo // .key) != .key) | "\(.key) (in \(.value.repo))"] | join(", ")' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}" 2>/dev/null)"
+  homes="$(jq -r '[.trackers // {} | to_entries[] | select((.value.repo // .key) != .key) | "\(.key) (in \(.value.repo))"] | join(", ")' "$(project_map_file)" 2>/dev/null)"
   [ -z "$homes" ] || printf " Projects whose code lives in another project's repo: %s. A row about only one of those belongs on that project, not on the repo's; a row about several of them, or the shared code under them, belongs on the repo's project." "$homes"
   printf ' A row about a host or the cluster belongs on home-config.'
 }

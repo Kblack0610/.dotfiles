@@ -62,6 +62,8 @@
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 . "${SELF%/*}/worlds.sh" || exit 1
+# shellcheck source=../../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-${SELF%/*}/../../../.config/shared-hooks/project-name.sh}" || exit 1
 
 WT_ROOT="${WT_ROOT:-$HOME/.worktrees}"
 # The command a new session's first window runs. Empty = a plain shell, which is the honest
@@ -81,7 +83,7 @@ tmux() {
 }
 # Repo discovery for --list, so the picker sees worktrees of repos that have none under
 # $WT_ROOT yet (platform's siblings, for one). Same file the hooks resolve projects through.
-WT_PROJECT_MAP="${WT_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
+WT_PROJECT_MAP="${WT_PROJECT_MAP:-$(project_map_file)}"
 # Where the DEFERRED reap reports to. `done` kills the terminal that asked for it, so the
 # outcome has nowhere to be printed; a refusal that nobody can read is the same as a silent
 # one. Mirrors wind-down's fire.log, for the same reason.

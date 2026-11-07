@@ -21,7 +21,16 @@
 
 set -uo pipefail
 
-MAP_FILE="${1:-${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}}"
+# Overridable because the deployed copy is a stow symlink into ~/.dotfiles, so a worktree editing
+# the library cannot verify its own change without pointing at it.
+PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
+if [ ! -r "$PROJECT_NAME_LIB" ]; then
+  printf 'FAIL  %s not found; is the dotfiles stow current?\n' "$PROJECT_NAME_LIB"
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$PROJECT_NAME_LIB"
+MAP_FILE="${1:-$(project_map_file)}"
 AGENT_DIR="${AGENT_DIR:-$HOME/.agent}"
 
 fails=0
@@ -42,15 +51,7 @@ pass "map is valid JSON ($MAP_FILE)"
 
 # The set of names the registry considers real comes from `project_keys`, the one
 # definition (`default` is a tracker fallback, not a project, so every typo'd name does not
-# "resolve"). Overridable because the deployed copy is a stow symlink into ~/.dotfiles, so
-# a worktree editing the library cannot verify its own change without pointing at it.
-PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
-if [ ! -r "$PROJECT_NAME_LIB" ]; then
-  fail "$PROJECT_NAME_LIB not found; is the dotfiles stow current?"
-  exit 1
-fi
-# shellcheck source=/dev/null
-. "$PROJECT_NAME_LIB"
+# "resolve").
 export PROJECT_MAP_FILE="$MAP_FILE"
 KNOWN="$(project_keys)"
 is_known() { grep -qxF -- "$1" <<<"$KNOWN"; }

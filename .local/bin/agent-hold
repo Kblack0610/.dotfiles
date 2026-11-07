@@ -28,7 +28,8 @@ set -uo pipefail
 
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 
-now_iso() { date +%Y-%m-%dT%H:%M:%S%z; }
+# shellcheck source=../lib/fmt.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
 
 # collapse a value to a single physical line (files are one key:value per line)
 oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }

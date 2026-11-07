@@ -16,9 +16,12 @@
 # picks.jsonl under RESEARCH_DIR is the record of what was queued and when; this is its only writer.
 set -uo pipefail
 
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+
 : "${RESEARCH_FACETS:=$HOME/.config/agentctl/research-facets.json}"
 : "${RESEARCH_DIR:=$HOME/.agent/research}"
-: "${RESEARCH_MAP:=$HOME/.config/shared-hooks/project-map.json}"
+: "${RESEARCH_MAP:=$(project_map_file)}"
 : "${RESEARCH_NEVER_DAYS:=60}"   # the staleness of a facet never picked
 : "${RESEARCH_CHURN_DAYS:=14}"   # the window recent commits are counted over
 
