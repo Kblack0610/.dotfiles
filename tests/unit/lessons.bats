@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # lessons: pick ranks a project's lessons against the session's work, log records the lessons
-# pick matched to the work, archive moves dated lessons nobody picked or repeated in N days.
+# pick matched to the work, archive moves dated lessons nobody picked or repeated in N days,
+# dup scores a memory file against the lessons (agentctl-dream refuses one that restates a lesson).
 
 setup() {
   load '../vendor/bats-support/load'
@@ -74,6 +75,31 @@ covered_log() {
   run "$BIN" pick "$DIR/none.md" anything
   assert_success
   assert_output ""
+}
+
+@test "dup names the lesson a memory file restates, with its line and first line" {
+  printf -- '---\nname: x\ndescription: unrelated words\n---\nA new waybar chip costs about 54 px of the bar, so keep each chip narrow.\n' > "$DIR/mem.md"
+  run "$BIN" dup "$DIR/mem.md" "$F"
+  assert_success
+  [[ $output == "0."[3-9]*" 5 ## $OLD: Waybar chips cost width" ]]
+  printf 'Tmux sessions survive a reboot only through snapshots, never by themselves.\n' > "$DIR/mem.md"
+  run "$BIN" dup "$DIR/mem.md" "$F"
+  [[ $output == *" 13 - **$OLD** Tmux sessions survive"* ]]
+}
+
+@test "dup scores a memory file no lesson holds at zero, front matter ignored" {
+  printf -- '---\nname: waybar chip nightly tmux snapshot\n---\nThe backup drive holds weekly mirrors of the shared storage.\n' > "$DIR/mem.md"
+  run "$BIN" dup "$DIR/mem.md" "$F"
+  assert_success
+  assert_output "0.00 0 "
+}
+
+@test "dup and pick share a tokenizer: a plural folds to its singular in both" {
+  run "$BIN" pick -n 1 "$F" "tmux sessions snapshots"
+  assert_line --index 1 --partial "Tmux sessions survive"
+  printf 'Tmux sessions survive a reboot only through snapshots.\n' > "$DIR/mem.md"
+  run "$BIN" dup "$DIR/mem.md" "$F"
+  assert_output --partial " Tmux sessions survive a reboot only through the snapshot."
 }
 
 @test "log records the keys of the matched lines only, one line per call" {
