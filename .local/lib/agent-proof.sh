@@ -183,7 +183,8 @@ proof_report() {
   # The standing hold: held_since is the first BLOCKED pass of an unbroken run, held_why the latest
   # one's reason, and a WORKED or NOOP pass ends the run. A pass that went past the hold without
   # proving it gone (a run-floor start, a pass that never read the gates) sets PROOF_HELD_KEEP=1.
-  # FAILED and STALLED leave it: they say nothing about the gate. Readers: fleet-dispatch stopped.
+  # FAILED and STALLED leave it: they say nothing about the gate. proof_unhold ends a hold whose own
+  # gate let a pass through. Readers: fleet-dispatch stopped, the Fleet tab (hub-core fleet.rs).
   case "$verdict" in
     BLOCKED)
       [ -s "$dir/held_since" ] || date +%s > "$dir/held_since" 2>/dev/null
@@ -191,6 +192,19 @@ proof_report() {
     WORKED | NOOP) [ "${PROOF_HELD_KEEP:-0}" = 1 ] || rm -f "$dir/held_since" "$dir/held_why" ;;
   esac
   printf '[%s] outcome=%s %s\n' "$(date -Is)" "$verdict" "$detail" >> "$dir/activity.log" 2>/dev/null || true
+}
+
+# proof_unhold NAME WHY - the gate that held NAME let a pass through, so a standing hold whose
+# reasons (proof_report joins them with "; ") include WHY is over. A hold for another reason is
+# left to its own gate. A called runner needs this: a call that succeeds writes no outcome line,
+# so no WORKED pass would ever end its budget hold.
+proof_unhold() {
+  local dir="$(proof_state_dir)/$1" held
+  held="$(cat "$dir/held_why" 2>/dev/null)" || return 0
+  case "; $held; " in
+    *"; $2; "* | *"; $2 (+"*) rm -f "$dir/held_since" "$dir/held_why" ;;
+  esac
+  return 0
 }
 
 # proof_outcome NAME VERDICT WORDS - for a runner whose one line of words is its reason when the

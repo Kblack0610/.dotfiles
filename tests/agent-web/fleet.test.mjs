@@ -125,6 +125,16 @@ test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Ses
   assert.match(h, /2 sessions/);
 });
 
+test("a held runner reads red and the held chip counts it", () => {
+  vm.runInContext("st", ctx).tab = "fleet";
+  const held = wrow({ tier: 2, who: "ask-judge", opens: "runner", key: "ask-judge", state: "held", doing: "budget: over its daily budget: $5.03 of $5", parent: null });
+  vm.runInContext("fst", ctx).data = { ...fleetData, who: [held], table: table({ states: [{ name: "all", n: 1 }, { name: "held", n: 1 }] }) };
+  ctx.renderFleet();
+  const h = box.innerHTML;
+  assert.match(h, /<td class="bad">held<\/td>/);
+  assert.match(h, /data-ts="held">held <span class="n">1<\/span>/);
+});
+
 test("the header draws every hub-core column and the bar is the shared one", () => {
   vm.runInContext("fst", ctx).data = fleetData;
   ctx.renderFleet();
