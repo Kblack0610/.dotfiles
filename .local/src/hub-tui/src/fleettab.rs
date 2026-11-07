@@ -133,10 +133,10 @@ pub fn tokens(
     if !open {
         return out;
     }
-    let (s, label) = if v.day {
-        (&t.day, "yesterday")
-    } else {
-        (&t.week, "7d")
+    let (s, label) = match (v.day, t.stale) {
+        (true, false) => (&t.day, "yesterday"),
+        (true, true) => (&t.day, t.date.as_str()),
+        (false, _) => (&t.week, "7d"),
     };
     let partial = match s.partial {
         0 => String::new(),
@@ -1615,6 +1615,7 @@ pub mod tests {
             chars,
             share,
             carried_tokens: 2_550_000_000,
+            other: name.starts_with("Other"),
         };
         let split = |context| Split {
             days: 7,
@@ -1700,5 +1701,12 @@ pub mod tests {
         v.day = true;
         let all = token_text(Some(&t), v, 80).join("\n");
         assert!(all.contains("yesterday: 3.9B context"), "{all}");
+        let stale = Tokens {
+            stale: true,
+            date: "2026-11-02".into(),
+            ..t.clone()
+        };
+        let all = token_text(Some(&stale), v, 80).join("\n");
+        assert!(all.contains("2026-11-02: 3.9B context"), "{all}");
     }
 }

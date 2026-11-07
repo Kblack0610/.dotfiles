@@ -6,12 +6,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use chrono::{Days, NaiveDate};
 use serde::Serialize;
 
-use crate::boards;
-use crate::costs::{snapshot, Snapshot, ToolDay, STALE_SECS};
+use crate::costs::{snapshots, Snapshot, ToolDay, STALE_SECS};
 
-/// Snapshots the week view sums.
+/// Calendar days the week view sums, the newest snapshot's day the last.
 const WEEK_DAYS: usize = 7;
 /// Rows named in each table before the rest fold into Other: agent-web's four chart `SLOTS`
 /// (dashboards rule 5).
@@ -53,24 +53,25 @@ pub struct Share {
     /// Of all tool output in the window, so a Bash command's reads against the whole.
     pub share: f64,
     pub carried_tokens: u64,
+    /// The rest of the table, not a tool or command of that name.
+    pub other: bool,
 }
 
 /// The newest week of snapshots in `dir`. None with no snapshot at all, which is no error: the
 /// head says so. A file that does not parse is named in `errors` and the others still count.
 pub fn read(dir: &Path, now: i64, errors: &mut Vec<String>) -> Option<Tokens> {
-    let mut found: Vec<Snapshot> = vec![];
-    for date in boards::days(dir).into_iter().rev().take(WEEK_DAYS) {
-        let text = std::fs::read_to_string(dir.join(format!("{date}.json")));
-        match text.ok().and_then(|t| snapshot(&date, &t)) {
-            Some(d) => found.push(d),
-            None => errors.push(format!("tokens: {date}.json does not parse")),
-        }
-    }
+    let mut found = snapshots(dir, WEEK_DAYS, errors);
     let newest = found.first()?;
+    let (date, generated_at) = (newest.date.clone(), newest.generated_at);
+    // A night the run missed leaves no file, and "7d" must not reach back past it.
+    let first =
+        NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok()? - Days::new(WEEK_DAYS as u64 - 1);
+    let first = first.format("%Y-%m-%d").to_string();
+    found.retain(|d| d.date >= first);
     Some(Tokens {
-        date: newest.date.clone(),
-        generated_at: newest.generated_at,
-        stale: newest.generated_at.is_none_or(|t| now - t > STALE_SECS),
+        date,
+        generated_at,
+        stale: generated_at.is_none_or(|t| now - t > STALE_SECS),
         week: split(&found),
         day: split(&found[..1]),
     })
@@ -146,16 +147,18 @@ fn shares(rows: &[ToolDay], whole: &ToolDay, all_chars: u64, other: String) -> V
         carried_tokens: whole.carried_tokens.saturating_sub(shown.carried_tokens),
         ..Default::default()
     };
+    let row = |c: &ToolDay, other| Share {
+        name: c.tool.clone(),
+        calls: c.calls,
+        chars: c.chars,
+        share: ratio(c.chars, all_chars),
+        carried_tokens: c.carried_tokens,
+        other,
+    };
     named
         .iter()
-        .chain((rest.chars > 0).then_some(&rest))
-        .map(|c| Share {
-            name: c.tool.clone(),
-            calls: c.calls,
-            chars: c.chars,
-            share: ratio(c.chars, all_chars),
-            carried_tokens: c.carried_tokens,
-        })
+        .map(|c| row(c, false))
+        .chain((rest.chars > 0).then(|| row(&rest, true)))
         .collect()
 }
 
@@ -245,6 +248,16 @@ mod tests {
     }
 
     #[test]
+    fn a_night_with_no_snapshot_does_not_stretch_the_week() {
+        let d = dir("gap");
+        for n in [1, 2, 10, 11, 12] {
+            day(&d, &format!("2027-01-{n:02}"), 3_600, 100, 10);
+        }
+        let t = read(&d.0, NOW, &mut vec![]).unwrap();
+        assert_eq!((t.date.as_str(), t.week.days), ("2027-01-12", 3));
+    }
+
+    #[test]
     fn a_snapshot_past_the_limit_or_undated_is_stale() {
         let d = dir("stale");
         day(&d, "2027-01-15", STALE_SECS + 1, 100, 10);
@@ -321,7 +334,7 @@ mod tests {
     fn the_costs_answer_does_not_carry_what_only_fleet_reads() {
         let text = r#"{"by_tool":[{"tool":"Bash","calls":1,"chars":9,"carried_tokens":2}],
             "by_command":[{"head":"sed","calls":1,"chars":9}],"totals":{"context":5},"errors":["x"]}"#;
-        let s = snapshot("2027-01-15", text).unwrap();
+        let s = crate::costs::snapshot("2027-01-15", text).unwrap();
         assert_eq!(s.tools[0].chars, 9);
         assert_eq!(s.commands[0].tool, "sed");
         assert_eq!(s.totals.as_ref().unwrap().context, 5);

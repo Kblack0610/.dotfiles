@@ -345,7 +345,7 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         Ok(text) => c.calls = calls(&text, now - longest()),
         Err(e) => c.errors.push(format!("{}: {e}", paths.calls.display())),
     }
-    c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize);
+    c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize, &mut c.errors);
     // One Prometheus base for the spend tiles and the Burn section; a failure is named once.
     let base = crate::prom::base();
     match base.clone().and_then(|b| crate::prom::instant(&b, &live_q())) {
@@ -422,25 +422,18 @@ pub fn calls(text: &str, since: i64) -> Vec<Call> {
         .collect()
 }
 
-/// The newest `n` day snapshots in `dir`, newest first.
-pub fn snapshots(dir: &Path, n: usize) -> Vec<Snapshot> {
-    let mut days: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            let date = name.strip_suffix(".json")?;
-            let ok =
-                date.len() == 10 && chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok();
-            ok.then(|| (date.to_string(), e.path()))
-        })
-        .collect();
-    days.sort_by(|a, b| b.0.cmp(&a.0));
-    days.into_iter()
-        .take(n)
-        .filter_map(|(date, p)| snapshot(&date, &std::fs::read_to_string(p).ok()?))
-        .collect()
+/// The newest `n` day snapshots in `dir`, newest first. One that does not parse is named in
+/// `errors` and the others still count.
+pub fn snapshots(dir: &Path, n: usize, errors: &mut Vec<String>) -> Vec<Snapshot> {
+    let mut found = vec![];
+    for date in crate::boards::days(dir).into_iter().rev().take(n) {
+        let text = std::fs::read_to_string(dir.join(format!("{date}.json")));
+        match text.ok().and_then(|t| snapshot(&date, &t)) {
+            Some(s) => found.push(s),
+            None => errors.push(format!("tokens: {date}.json does not parse")),
+        }
+    }
+    found
 }
 
 pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {

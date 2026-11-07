@@ -284,8 +284,8 @@ test("a judge has no tile on the Fleet tab, and Log's verdict headers link to th
 });
 
 // Where the tokens go: hub_core::fleet::tokens's sums, folded while fresh.
-const tokenRow = (name, chars, share) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000 });
-const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15, tools: [tokenRow("Bash", 331000000, 0.823), tokenRow("Other (22)", 10000000, 0.026)], commands: [tokenRow("sed", 89000000, 0.221)] });
+const tokenRow = (name, chars, share, other = false) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other });
+const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15, tools: [tokenRow("Bash", 331000000, 0.823), tokenRow("Other (22)", 10000000, 0.026, true)], commands: [tokenRow("sed", 89000000, 0.221)] });
 const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
 const tail = (t) => { const f = vm.runInContext("fst", ctx); f.open = {}; f.tokWin = "week"; return ctx.tokensSection({ tokens: t }); };
 
@@ -329,6 +329,16 @@ test("the window switch picks yesterday, and a partial window says so", () => {
   const h = ctx.tokensSection(f.data);
   assert.match(h, /yesterday: 3\.9B context/);
   assert.match(h, /class="warn">, 1 of 1 partial/);
+  f.tokWin = "week";
+});
+
+test("a stale day names its date, not yesterday", () => {
+  const f = vm.runInContext("fst", ctx);
+  f.open = {};
+  f.tokWin = "day";
+  const h = ctx.tokensSection({ tokens: tokens({ stale: true }) });
+  assert.match(h, /2026-11-05: 3\.9B context/);
+  assert.doesNotMatch(h, /yesterday: /);
   f.tokWin = "week";
 });
 

@@ -276,6 +276,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let proposals = boards::proposals_dir();
     std::fs::create_dir_all(&proposals)?;
     targets.push((proposals, flat));
+    // The nightly token snapshots: Fleet's Where the tokens go. The first one must still push.
+    let tokens = boards::token_usage_dir();
+    std::fs::create_dir_all(&tokens)?;
+    targets.push((tokens, flat));
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
         boards::fleet_state().parent().map(Path::to_path_buf),
@@ -284,8 +288,6 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         // The Fleet tab's run ledger, and fleet-dispatch's verdicts and log.
         Some(hub_core::jobs::Paths::from_env().agentctl),
         Some(boards::dispatch_dir()),
-        // The nightly token snapshots, for Fleet's Where the tokens go.
-        Some(boards::token_usage_dir()),
         // agent-notify's ledger, for Log's Actions section.
         hub_core::actions::Paths::from_env()
             .notify_log
@@ -347,7 +349,7 @@ fn classify(p: &Path) -> Option<String> {
         return Some(r#"{"kind":"watch"}"#.to_string());
     }
     // The token snapshots are named by day too, so they go before day-log's rule below.
-    if p.parent()?.ends_with(".agent/token-usage") {
+    if p.parent()? == boards::token_usage_dir().as_path() {
         return p
             .extension()
             .is_some_and(|e| e == "json")
@@ -1290,11 +1292,11 @@ mod tests {
         assert_eq!(classify(Path::new("/h/.agent/daylog/.lock")), None);
         // A token snapshot is named by day, but it is Fleet's, never a Log refresh.
         assert_eq!(
-            classify(Path::new("/h/.agent/token-usage/2026-11-05.json")).as_deref(),
+            classify(&boards::token_usage_dir().join("2026-11-05.json")).as_deref(),
             Some(r#"{"kind":"fleet"}"#)
         );
         assert_eq!(
-            classify(Path::new("/h/.agent/token-usage/2026-11-05.json.tmp")),
+            classify(&boards::token_usage_dir().join("2026-11-05.json.tmp")),
             None
         );
         assert_eq!(

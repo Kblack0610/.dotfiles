@@ -122,7 +122,7 @@ function fleetHead(d) {
 // One table of a tokens window; a named row takes its chart slot, Other its grey (rule 5).
 function tokensTable(title, rows) {
   const row = (r, i) => `<tr><td>${esc(r.name)}</td><td class="n">${r.calls.toLocaleString()}</td><td class="n">${kfmt(r.chars)} ch</td>` +
-    `<td class="m">${meter(r.share, SLOTS[i] && !r.name.startsWith("Other") ? SLOTS[i] : OTHER)}</td><td class="n">${(r.share * 100).toFixed(1)}%</td><td class="n">${kfmt(r.carried_tokens)}</td></tr>`;
+    `<td class="m">${meter(r.share, SLOTS[i] && !r.other ? SLOTS[i] : OTHER)}</td><td class="n">${(r.share * 100).toFixed(1)}%</td><td class="n">${kfmt(r.carried_tokens)}</td></tr>`;
   return `<table class="tbl"><tr><th>${title}</th><th class="n">calls</th><th class="n">output</th><th>share</th><th class="n">%</th><th class="n">re-read</th></tr>${rows.map(row).join("")}</table>`;
 }
 
@@ -142,7 +142,7 @@ function tokensSection(d) {
     `<button class="${k === fst.tokWin ? "on" : ""}" data-tokwin="${k}">${l}</button>`).join("") + `</div>`;
   const partial = w.partial ? `<span class="warn">, ${w.partial} of ${w.days} partial</span>` : "";
   return `<details class="sec-d" data-k="${key}" id="sec-tokens"${open ? " open" : ""}><summary><h2 class="sec">Where the tokens go ${head}</h2></summary>` +
-    `<div class="panel scroll">${seg}<div class="muted">${TOK_WINDOWS[fst.tokWin]}: ${kfmt(w.context)} context, ${kfmt(w.per_response)}/response, tool output carried ${pct(w.carried_share)} ` +
+    `<div class="panel scroll">${seg}<div class="muted">${fst.tokWin === "day" && t.stale ? esc(t.date) : TOK_WINDOWS[fst.tokWin]}: ${kfmt(w.context)} context, ${kfmt(w.per_response)}/response, tool output carried ${pct(w.carried_share)} ` +
     `(snapshot ${esc(t.date.slice(5))}, ${t.generated_at ? clock(t.generated_at * 1e3) : "-"}${partial})</div>` +
     tokensTable("by tool", w.tools) + tokensTable("by Bash command", w.commands) +
     `<div class="muted more">counted by claude-recall tool-output, nightly; dollars per tool on <a href="#costs?by=tool&w=7d">Costs</a></div></div></details>`;

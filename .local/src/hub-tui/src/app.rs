@@ -1553,15 +1553,15 @@ impl App {
             Took::Typing => return true,
             Took::No => {}
         }
+        let tokens = self.fleet.as_ref().and_then(|f| f.tokens.as_ref());
         match k.code {
-            KeyCode::Char('t') => {
-                let tokens = self.fleet.as_ref().and_then(|f| f.tokens.as_ref());
+            KeyCode::Char('t') if tokens.is_some() => {
                 let open = !self.fleet_tokens.is_open(tokens);
                 self.fleet_tokens.open = Some(open);
                 self.seek = open.then_some("tokens");
                 return true;
             }
-            KeyCode::Char('w') => {
+            KeyCode::Char('w') if tokens.is_some() => {
                 self.fleet_tokens.day = !self.fleet_tokens.day;
                 return true;
             }
@@ -4395,6 +4395,17 @@ mod tests {
         a.handle(k(KeyCode::Char('t')));
         assert_eq!(a.fleet_tokens.open, Some(false));
         assert_eq!(a.fleet_sel, sel);
+    }
+
+    #[test]
+    fn t_and_w_wait_for_a_snapshot_so_the_first_one_lands_folded() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = app(Tab::Fleet);
+        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
+        a.handle(k(KeyCode::Char('t')));
+        a.handle(k(KeyCode::Char('w')));
+        assert_eq!(a.fleet_tokens.open, None);
+        assert!(!a.fleet_tokens.day);
     }
 
     #[test]
