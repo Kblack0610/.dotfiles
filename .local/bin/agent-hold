@@ -178,18 +178,26 @@ cmd_grant() {
   echo "granted: $resource for $granted"
 }
 
-# unit_of <pid> -> the user unit the process runs in (the last .scope or .service on its
-# cgroup path under user@<uid>.service), or exit 1.
+# unit_of <pid|self> -> the user unit a process runs in: the tmux pane scope or agentctl unit
+# on its cgroup path when there is one (a run started with `systemd-run --scope` from a
+# pane sits in a scope nested inside the pane's), else the innermost .scope or .service.
+# Exit 1 when the process is gone, 2 when it is not under this user's manager.
 unit_of() {
-  local path part unit=""
-  path="$(sed -n 's/^0:://p' "$PROC_ROOT/$1/cgroup" 2>/dev/null)"
-  case "$path" in */user@"$(id -u)".service/*) ;; *) return 1 ;; esac
+  local path part unit="" batch=""
+  path="$(sed -n 's/^0:://p' "$PROC_ROOT/$1/cgroup" 2>/dev/null)" || return 1
+  [ -n "$path" ] || return 1
+  case "$path" in */user@"$(id -u)".service/*) ;; *) return 2 ;; esac
   path="${path#*/user@"$(id -u)".service/}"
   local IFS=/
   for part in $path; do
-    case "$part" in *.scope|*.service) unit="$part" ;; esac
+    case "$part" in
+      tmux-spawn-*.scope|agentctl@*.service) batch="${batch:-$part}" ;;
+      *.scope|*.service) unit="$part" ;;
+    esac
   done
-  [ -n "$unit" ] && printf '%s' "$unit"
+  unit="${batch:-$unit}"
+  [ -n "$unit" ] || return 2
+  printf '%s' "$unit"
 }
 
 cmd_lower() {
@@ -198,23 +206,35 @@ cmd_lower() {
   [ $# -gt 0 ] || { echo "agent-hold lower: name at least one pid" >&2; exit 2; }
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || { echo "agent-hold: $resource is not held; set it first, so its release restores what lower changes" >&2; exit 1; }
-  local lowered before pid unit rc=0
-  lowered="$(field "$f" lowered)"; before="$lowered"
+  # A claim is one session's use of a desktop, not a load hold, and its refresh rewrites
+  # the file whole, so nothing recorded on it would survive to the release.
+  [ "$(field "$f" kind)" = claim ] && { echo "agent-hold lower: $resource is a claim, not a load hold" >&2; exit 2; }
+  local lowered pid unit self rc=0 err
+  lowered="$(field "$f" lowered)"
+  self="$(unit_of self)"
   for pid in "$@"; do
     [[ "$pid" =~ ^[0-9]+$ ]] || { echo "agent-hold lower: bad pid '$pid'" >&2; rc=2; continue; }
-    unit="$(unit_of "$pid")" || { echo "agent-hold lower: pid $pid has no unit under the user manager (gone?)" >&2; rc=1; continue; }
-    # Only units that are batch work: a desktop terminal's or app's scope is the human's.
+    unit="$(unit_of "$pid")"; err=$?
+    case "$err" in
+      1) echo "agent-hold lower: no process $pid" >&2; [ "$rc" -gt 1 ] || rc=1; continue ;;
+      2) echo "agent-hold lower: pid $pid is not under this user's systemd manager; left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue ;;
+    esac
+    # Only units that are batch work: a desktop terminal's or app's scope is the human's,
+    # and the caller's own pane would slow the pass that has to lift the hold.
     case "$unit" in
       tmux-spawn-*.scope|agentctl@*.service) ;;
-      *) echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane or agentctl unit; left alone" >&2; rc=1; continue ;;
+      *) echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane or agentctl unit; left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue ;;
     esac
+    [ "$unit" = "$self" ] && { echo "agent-hold lower: pid $pid is in this pane ($unit); left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue; }
     if in_list "$unit" "$lowered"; then echo "lowered: $unit (pid $pid, already)"; continue; fi
-    systemctl --user set-property --runtime "$unit" "CPUWeight=$LOW_CPU_WEIGHT" ||
-      { echo "agent-hold lower: systemctl could not set CPUWeight on $unit" >&2; rc=1; continue; }
+    # Recorded before it is applied, so no interrupted run leaves a unit lowered that the
+    # release does not know about. Restoring a unit that was never lowered is harmless.
     lowered="${lowered:+$lowered,}$unit"
+    set_field "$f" lowered "$lowered" || exit 1
+    systemctl --user set-property --runtime "$unit" "CPUWeight=$LOW_CPU_WEIGHT" ||
+      { echo "agent-hold lower: systemctl could not set CPUWeight on $unit" >&2; [ "$rc" -gt 1 ] || rc=1; continue; }
     echo "lowered: $unit (pid $pid)"
   done
-  [ "$lowered" = "$before" ] || set_field "$f" lowered "$lowered" || exit 1
   return "$rc"
 }
 
@@ -225,15 +245,24 @@ cmd_release() {
   [ -f "$f" ] || { echo "agent-hold: $resource is not held" >&2; exit 1; }
   local reason roster
   reason="$(field "$f" reason)"; roster="$(field "$f" roster)"
-  local unit
+  local unit failed=""
   for unit in $(field "$f" lowered | tr ',' ' '); do
     # An empty CPUWeight= drops the runtime setting. A pane closed since has no scope left.
-    if systemctl --user set-property --runtime "$unit" CPUWeight= 2>/dev/null; then
+    if systemctl --user set-property --runtime "$unit" CPUWeight=; then
       echo "restored: $unit"
+    elif [ "$(systemctl --user show -p LoadState --value "$unit" 2>/dev/null)" = not-found ]; then
+      echo "gone: $unit"
     else
-      echo "not restored: $unit (gone, or systemctl failed)"
+      failed="${failed:+$failed,}$unit"
     fi
   done
+  # The hold file is the only record of what is still lowered, so it stays until each
+  # live unit is restored.
+  if [ -n "$failed" ]; then
+    set_field "$f" lowered "$failed"
+    echo "agent-hold release: could not restore $failed; $resource stays held, release it again" >&2
+    return 1
+  fi
   rm -f "$f"
   notify -p low -t "go: $resource" "released (was: $reason)"
   echo "released: $resource"

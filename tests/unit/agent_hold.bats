@@ -168,6 +168,9 @@ lower_setup() {
   fake_pid 103 "$u/app.slice/agentctl@sentinel.service"
   fake_pid 104 "$u/session.slice/kitty-9327-0.scope"
   fake_pid 105 "/system.slice/docker.service"
+  fake_pid 106 "$u/session.slice/tmux-spawn-bbb.scope/run-r1.scope"
+  fake_pid self "$u/session.slice/tmux-spawn-me.scope"
+  fake_pid 107 "$u/session.slice/tmux-spawn-me.scope"
 }
 fake_pid() { mkdir -p "$AGENT_HOLD_PROC/$1"; printf '0::%s\n' "$2" > "$AGENT_HOLD_PROC/$1/cgroup"; }
 systemctl_calls() { grep '^systemctl ' "$NOTES_FIXTURE/calls.log" 2>/dev/null | sed 's/^systemctl //'; }
@@ -185,16 +188,40 @@ systemctl_calls() { grep '^systemctl ' "$NOTES_FIXTURE/calls.log" 2>/dev/null | 
   assert_line 'lowered: tmux-spawn-aaa.scope,agentctl@sentinel.service'
 }
 
-@test "lower leaves a desktop scope, a system unit and a gone pid alone, and says so" {
+@test "lower leaves a desktop scope, a system unit, its own pane and a gone pid alone" {
   lower_setup
   "$HOLD" set unity-tests --by c "hot"
-  run "$HOLD" lower unity-tests 104 105 999 101
+  run "$HOLD" lower unity-tests 104 105 107 999 101
   assert_failure 1
   assert_output --partial 'kitty-9327-0.scope, not a tmux pane'
-  assert_output --partial 'pid 105 has no unit under the user manager'
-  assert_output --partial 'pid 999 has no unit'
+  assert_output --partial 'pid 105 is not under this user'
+  assert_output --partial 'pid 107 is in this pane'
+  assert_output --partial 'no process 999'
   run systemctl_calls
   assert_output '--user set-property --runtime tmux-spawn-aaa.scope CPUWeight=1'
+}
+
+@test "lower finds the pane scope around a nested scope" {
+  lower_setup
+  "$HOLD" set unity-tests --by c "hot"
+  run "$HOLD" lower unity-tests 106
+  assert_success
+  assert_line 'lowered: tmux-spawn-bbb.scope (pid 106)'
+}
+
+@test "a usage error outranks a refused pid in the exit code" {
+  lower_setup
+  "$HOLD" set unity-tests --by c "hot"
+  run "$HOLD" lower unity-tests abc 999
+  assert_failure 2
+}
+
+@test "lower refuses a claim, whose refresh would drop the record" {
+  lower_setup
+  "$HOLD" claim mac-desktop --by agent-6 "mine"
+  run "$HOLD" lower mac-desktop 101
+  assert_failure 2
+  assert_output --partial 'is a claim'
 }
 
 @test "lower needs a hold to record on, so release can undo it" {
@@ -222,14 +249,27 @@ systemctl_calls() { grep '^systemctl ' "$NOTES_FIXTURE/calls.log" 2>/dev/null | 
   assert_line -- '--user set-property --runtime agentctl@sentinel.service CPUWeight='
 }
 
-@test "release names a lowered unit it could not restore and still frees the hold" {
+@test "release skips a lowered unit whose pane is gone and frees the hold" {
   lower_setup
   "$HOLD" set unity-tests --by c "hot"
   "$HOLD" lower unity-tests 101
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/systemctl"
+  printf '#!/usr/bin/env bash\ncase "$*" in *LoadState*) echo not-found ;; *) exit 1 ;; esac\n' > "$SANDBOX/bin/systemctl"
   run "$HOLD" release unity-tests
   assert_success
-  assert_line 'not restored: tmux-spawn-aaa.scope (gone, or systemctl failed)'
+  assert_line 'gone: tmux-spawn-aaa.scope'
   run "$HOLD" check unity-tests
   assert_success
+}
+
+@test "release keeps the hold and the record when a live unit cannot be restored" {
+  lower_setup
+  "$HOLD" set unity-tests --by c "hot"
+  "$HOLD" lower unity-tests 101 103
+  printf '#!/usr/bin/env bash\ncase "$*" in *LoadState*) echo loaded ;; *agentctl*) exit 0 ;; *) exit 1 ;; esac\n' > "$SANDBOX/bin/systemctl"
+  run "$HOLD" release unity-tests
+  assert_failure 1
+  assert_line 'restored: agentctl@sentinel.service'
+  assert_output --partial 'could not restore tmux-spawn-aaa.scope'
+  run "$HOLD" show unity-tests
+  assert_line 'lowered: tmux-spawn-aaa.scope'
 }
