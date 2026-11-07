@@ -107,13 +107,19 @@ fn show(runner: &dyn Runner, target: &str) -> Result<String, String> {
 /// Read the note `target` names (`daily`, `daily:YYYY-MM-DD`, or a wikilink target), with what
 /// `around` adds.
 pub fn read(runner: &dyn Runner, target: &str) -> Result<View, String> {
-    Ok(around(runner, parse(&show(runner, target)?)?))
+    view_of(runner, &show(runner, target)?)
+}
+
+/// The view of one `notes show --json` object (the shape `notes put` prints too), with what
+/// `around` adds, so a write answers like a read.
+pub fn view_of(runner: &dyn Runner, json: &str) -> Result<View, String> {
+    Ok(around(runner, parse(json)?))
 }
 
 /// A view with its briefing and places read: the day's briefing under a day note, and the nav's
 /// places (a day note's own links, else today's). A briefing or a today that cannot be read is
 /// left out, never an error: the note itself was read.
-pub fn around(runner: &dyn Runner, mut v: View) -> View {
+fn around(runner: &dyn Runner, mut v: View) -> View {
     let read_bare = |t: &str| show(runner, t).and_then(|j| parse(&j)).ok();
     if v.note.date.is_some() {
         v.places = v.note.links.clone();

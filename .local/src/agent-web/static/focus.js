@@ -71,7 +71,7 @@ const liveRows = () => !!fcs.data && !!fcs.data.note.date && !fcs.edit;
 
 // A lane's `+` line: Done takes no new rows, and the rollup is another note's.
 function addRow(l) {
-  if (!liveRows() || !l.name || isDone(l.name) || !Number.isInteger(l.line)) return "";
+  if (!liveRows() || !l.name || isDone(l.name)) return "";
   return `<form class="tadd" data-id="${esc(l.name)}"><button class="tplus" title="Add a task to ${esc(l.name)}" aria-label="Add a task to ${esc(l.name)}">+</button>` +
     `<input name="t" data-free placeholder="Add to ${esc(l.name)}" autocomplete="off" enterkeyhint="done"></form>`;
 }
@@ -129,7 +129,7 @@ function noteParts() {
 // places in their order, each once) and then the open note's parts. Only the view open now is
 // marked; each place opens in this view, so Back returns.
 function dayNav() {
-  if (fcs.data && fcs.data.places) fcs.links = fcs.data.places;
+  if (fcs.data) fcs.links = fcs.data.places;
   const t = focusTarget().split(/[|#]/)[0].trim();
   const cur = outboxOpen() ? "outbox" : /^daily(:|$)/.test(t) ? "daily" : t;
   const parts = noteParts();
@@ -328,7 +328,7 @@ function addTask(lane, text) {
   // Below the lane's last line, or its heading when it has none; a heading that is not one
   // means the page's lines are not this note's.
   return rowEdit((ls) => {
-    const after = l.lines && l.lines.length ? l.lines[l.lines.length - 1] : l.line;
+    const after = l.lines.length ? l.lines[l.lines.length - 1] : l.line;
     if (!/^#/.test(ls[l.line] || "") || !(after < ls.length)) return null;
     ls.splice(after + 1, 0, row + (ls[after].endsWith("\r") ? "\r" : ""));
     return ls;

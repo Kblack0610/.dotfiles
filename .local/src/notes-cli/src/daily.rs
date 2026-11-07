@@ -390,12 +390,17 @@ fn file_date(path: &Path) -> Option<NaiveDate> {
 /// The morning briefing's file stem under a day's refs dir. Written by `agentctl-briefing`.
 const BRIEFING: &str = "briefing";
 
+/// A day's refs note `stem` (BRIEFING, SHIPPED): its file and the wikilink target that names it.
+fn refs_note(p: &Profile, day: &str, stem: &str) -> (std::path::PathBuf, String) {
+    (
+        p.refs.join(day).join(format!("{stem}.md")),
+        format!("{}/{day}/{stem}", p.refs_rel),
+    )
+}
+
 /// The day's briefing: its file and the wikilink target that names it.
 pub(crate) fn briefing(p: &Profile, day: &str) -> (std::path::PathBuf, String) {
-    (
-        p.refs.join(day).join(format!("{BRIEFING}.md")),
-        format!("{}/{day}/{BRIEFING}", p.refs_rel),
-    )
+    refs_note(p, day, BRIEFING)
 }
 /// The day log's file stem under today's refs dir. Written by `day-log`.
 const SHIPPED: &str = "shipped";
@@ -444,8 +449,8 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
         Err(_) => s.push_str("- Briefing: not written yet\n"),
     }
     // The day log, as one line: its first sentence is the count of what merged.
-    if let Ok(text) = fs::read_to_string(p.refs.join(&today_s).join(format!("{SHIPPED}.md"))) {
-        let link = format!("{}/{today_s}/{SHIPPED}", p.refs_rel);
+    let (shipped, link) = refs_note(p, &today_s, SHIPPED);
+    if let Ok(text) = fs::read_to_string(shipped) {
         let first = text
             .lines()
             .map(str::trim)

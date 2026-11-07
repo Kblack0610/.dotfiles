@@ -81,9 +81,7 @@ pub async fn save(Json(e): Json<Edit>) -> Response {
     match tokio::task::spawn_blocking(move || {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         // The note as written or as it is now, with its briefing and places like a read.
-        cli::put("notes put", &args, &text, |j| {
-            focus::parse(j).map(|v| focus::around(&System, v))
-        })
+        cli::put("notes put", &args, &text, |j| focus::view_of(&System, j))
     })
     .await
     {

@@ -69,10 +69,13 @@ fn brief(b: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
             if l.is_empty() || l.starts_with("<!--") {
                 continue;
             }
-            let words: Vec<&str> = l.split_whitespace().collect();
-            for t in wrap(&words, " ", w.saturating_sub(2).max(10)) {
-                out.push(clip_line(Line::raw(format!("  {t}")), w));
-            }
+            out.extend(crate::projtab::wrapped(
+                "  ",
+                l,
+                ratatui::style::Style::default(),
+                p,
+                w,
+            ));
         }
     }
     out

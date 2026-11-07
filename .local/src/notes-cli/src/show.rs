@@ -353,7 +353,11 @@ mod tests {
         let v = note(&p, "daily:2026-11-04").unwrap();
         let target = format!("{}/2026-11-04/briefing", p.refs_rel);
         assert_eq!(v["brief"], target.as_str());
-        assert_eq!(note(&p, &target).unwrap()["exists"], true, "the target opens");
+        assert_eq!(
+            note(&p, &target).unwrap()["exists"],
+            true,
+            "the target opens"
+        );
         assert!(note(&p, "daily:2026-11-05").unwrap()["brief"].is_null());
         assert!(note(&p, "outbox").unwrap()["brief"].is_null(), "not a day");
         fs::remove_dir_all(root).unwrap();
