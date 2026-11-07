@@ -23,23 +23,36 @@ const refreshNight = async () => {
   } catch (e) { hst.nightErr = e.message; }
 };
 
+// Every Home read takes a number when it starts. The Proposals fields of an answer apply only
+// if no read started after it, so a slow full read cannot put an older search over a newer one.
+const PROP_KEYS = ["proposals", "proposals_head", "proposals_table"];
+let homeSeq = 0;
+
 const refreshHome = coalesce(async () => {
   const view = tblParams(st.views.home).toString();
+  const seq = ++homeSeq;
   // The briefing read is the slower one: Home draws without it and again when it answers.
   const night = refreshNight().then(() => { if (st.tab === "home") renderHome(); });
-  try { hst.data = await api("/api/home" + (view ? "?" + view : "")); hst.err = null; } catch (e) { hst.err = e.message; }
+  try {
+    const d = await api("/api/home" + (view ? "?" + view : ""));
+    if (seq !== homeSeq && hst.data) for (const k of PROP_KEYS) d[k] = hst.data[k];
+    hst.data = d; hst.err = null;
+  } catch (e) { hst.err = e.message; }
   if (st.tab === "home") renderHome();
   await night;
 });
 
 // A search keystroke or a sort changes only the Proposals section, so it asks for that alone:
 // /api/home also reads the queue, its stats, the board and Prometheus (about 1.6s at load 20).
-// Before Home has loaded, or if this read fails, the full read answers and shows the error.
+// Before Home has loaded, after a failed proposals read, or if this read fails, the full read
+// answers and shows the reason.
 const refreshProposals = coalesce(async () => {
-  if (!hst.data) return refreshHome();
+  if (!hst.data || hst.data.proposals_failed) return refreshHome();
   const view = tblParams(st.views.home).toString();
+  const seq = ++homeSeq;
   let p;
-  try { p = await api("/api/home/proposals" + (view ? "?" + view : "")); } catch { return refreshHome(); }
+  try { p = await api("/api/home/proposals" + (view ? "?" + view : "")); } catch (e) { console.warn("proposals read:", e); return refreshHome(); }
+  if (seq !== homeSeq) return;
   Object.assign(hst.data, p);
   if (st.tab === "home") renderHome();
 });

@@ -33,13 +33,11 @@ pub struct HomePage {
 }
 
 pub fn page(mut home: Home, q: &ViewQuery) -> HomePage {
-    let view = View::new::<Proposal>(&q.q, &q.s, &q.sort, &q.dir);
-    let (rows, proposals_table) = view.summary(&home.proposals);
-    let rows: Vec<Proposal> = rows.into_iter().cloned().collect();
-    home.proposals = rows;
+    let kept = rows(&home.proposals, q);
+    home.proposals = kept.proposals;
     HomePage {
         home,
-        proposals_table,
+        proposals_table: kept.proposals_table,
         grafana: hub_core::infra::grafana(),
     }
 }
@@ -53,11 +51,11 @@ pub struct ProposalsPage {
     proposals_table: Summary,
 }
 
-pub fn rows(open: Vec<Proposal>, q: &ViewQuery) -> ProposalsPage {
+pub fn rows(open: &[Proposal], q: &ViewQuery) -> ProposalsPage {
     let view = View::new::<Proposal>(&q.q, &q.s, &q.sort, &q.dir);
-    let (kept, proposals_table) = view.summary(&open);
+    let (kept, proposals_table) = view.summary(open);
     ProposalsPage {
-        proposals_head: hub_core::proposals::heading(&open),
+        proposals_head: hub_core::proposals::heading(open),
         proposals: kept.into_iter().cloned().collect(),
         proposals_table,
     }
@@ -72,7 +70,7 @@ pub async fn list(Query(q): Query<ViewQuery>) -> ApiResult<Json<ProposalsPage>> 
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
-    Ok(Json(rows(open, &q)))
+    Ok(Json(rows(&open, &q)))
 }
 
 #[derive(Deserialize)]
@@ -125,7 +123,7 @@ mod tests {
             ..ViewQuery::default()
         };
         let open = home().proposals;
-        let v = serde_json::to_value(rows(open, &q)).unwrap();
+        let v = serde_json::to_value(rows(&open, &q)).unwrap();
         let full = serde_json::to_value(page(home(), &q)).unwrap();
         for k in ["proposals", "proposals_head", "proposals_table"] {
             assert_eq!(v[k], full[k], "{k}");
