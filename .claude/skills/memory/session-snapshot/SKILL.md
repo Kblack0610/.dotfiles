@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [session, reboot, inventory]
-  reviewed: "2026-11-04"
+  reviewed: "2026-11-07"
 ---
 
 # session-snapshot
@@ -65,17 +65,35 @@ for d in <dirs from steps 1-2>; do
   printf '%-45s [%s] dirty=%s unpushed=%s\n' "$d" "$(git -C "$d" branch --show-current)" \
     "$(git -C "$d" status --porcelain | wc -l)" "$(git -C "$d" log --oneline @{u}.. 2>/dev/null | wc -l)"
 done
+
+# 7. Cross-check: sessions with a transcript written in the last 30 min that steps 1-2 did not list.
+#    ps and tmux miss a session in a detached or closed window; its transcript still shows it.
+#    Search every account dir and the subagents/ subtree (a subagent's file maps to its parent session).
+find ~/.claude*/projects -name '*.jsonl' -mmin -30 | while read -r f; do
+  case $f in
+    */subagents/*) d=$(dirname "$(dirname "$(dirname "$f")")"); sid=$(basename "$(dirname "$(dirname "$f")")") ;;
+    *) d=$(dirname "$f"); sid=$(basename "$f" .jsonl) ;;
+  esac
+  printf '%s\t%s\n' "$sid" "$(basename "$d")"
+done | sort -u
+#   -> any id missing from the tables of steps 1-2 gets a row in "Dies on reboot", marked "from transcript".
+#   `claude-recall` does the same search and counts subagents too.
+
+# 8. Finished or not, per session: the fleet's own verdict, never "PR merged + idle".
+fleet-sessions --json | jq -r '"\(.session_id)\t\(.finished)\t\(.bucket)\t\(.phases_done)/\(.phases_total)\t\(.blockers | join("; "))"'
 ```
 
 Write the file with these sections (see the template the skill emits):
 - **⚠️ Before reboot** - dirty/unpushed repos (commit/stash prompt)
 - **🟢 Auto-restarts (enabled --user units)** - do nothing
 - **🟡 Manual restart** - running-but-not-enabled services + dev servers (with exact relaunch cmd + port)
-- **🔴 Dies on reboot** - tmux/Claude sessions table (server | session | dir | branch | project | Claude session id | queue item, if it was working one). The id is what `restore` resumes; the project comes from `resolve_project_name <dir>` (`~/.config/shared-hooks/project-name.sh`), the item from `agent-queue list --json --state active`, the one whose `session` is `<server>:<session>` (a bare name means `lab`).
+- **🔴 Dies on reboot** - tmux/Claude sessions table (server | session | dir | branch | project | Claude session id | queue item, if it was working one). A session found only by step 7 is listed too (its row says "from transcript", no tmux server or dir known beyond the project). The id is what `restore` resumes; the project comes from `resolve_project_name <dir>` (`~/.config/shared-hooks/project-name.sh`), the item from `agent-queue list --json --state active`, the one whose `session` is `<server>:<session>` (a bare name means `lab`).
 - **Docker** - containers w/ vs w/o restart policy; note `mcp/filesystem` are ephemeral (Claude respawns)
 - **Resume task** - any in-flight task to pick up (e.g. the original reason for rebooting)
 
 Then: `notes inbox add "reboot restore checklist -> $OUT"` and tell the user the path.
+
+**Finished means the plan's phases are done.** A merged PR on an idle pane proves nothing. Mark a session finished (no restore needed) only when step 8 reads `finished true`: every `## Phases` line of its plan is `[x]` or `[-]`, nothing it made is unlanded, and no ask is open. Otherwise list it as unfinished with its `phases_done/phases_total` and `blockers`, even when its last PR merged. A session with no plan file counts as one phase, so for those also read the last assistant message in the transcript before calling it finished.
 
 Key classification rule: **running ∧ ¬enabled = manual restart**. Enabled units auto-start; don't
 list them as action items. Ephemeral `mcp/filesystem` containers are noise - Claude respawns them.
