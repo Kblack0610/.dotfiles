@@ -146,9 +146,7 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<i32> {
     // into keeps that tag; only an untagged one takes the default.
     let line = md::with_focus_priority(&md::stamp_line(&format!("- [ ] {text}"), today, today));
     let new_content = md::insert_under_heading(&content, "Focus", std::slice::from_ref(&line));
-    md::write_atomic(&note, &new_content)?;
-    // Nothing stays above the lanes: file it now, as `clickup` does.
-    crate::focus_sweep::sweep(p, log)?;
+    md::write_atomic(&note, &crate::focus_sweep::filed(new_content))?;
     log.info("focus", &format!("added to {}", note.display()));
     crate::ingest::record(
         p,

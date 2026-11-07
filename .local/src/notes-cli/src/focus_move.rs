@@ -192,9 +192,8 @@ pub fn mv(
             }
             let dcontent = fs::read_to_string(&dnote)?;
             let dnew = md::insert_under_heading(&dcontent, "Focus", &[new_line.clone()]);
-            fs::write(&dnote, dnew)?;
+            fs::write(&dnote, crate::focus_sweep::filed(dnew))?;
             fs::write(&src_note, src_without)?;
-            crate::focus_sweep::sweep(&dp, log)?;
             log.info("focus", &format!("moved to {d}: {}", new_line.trim()));
             crate::ingest::record(
                 p,
@@ -205,8 +204,7 @@ pub fn mv(
         // same profile: a re-tag in place
         _ => {
             let updated = md::insert_under_heading(&src_without, "Focus", &[new_line.clone()]);
-            fs::write(&src_note, updated)?;
-            crate::focus_sweep::sweep(p, log)?;
+            fs::write(&src_note, crate::focus_sweep::filed(updated))?;
             log.info("focus", &format!("retagged in {}", src_note.display()));
             crate::ingest::record(
                 p,

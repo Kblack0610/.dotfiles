@@ -42,6 +42,12 @@ pub(crate) fn sweep_content(content: &str) -> Option<String> {
     sweep::sweep_section(content, |h| h.eq_ignore_ascii_case("Focus"))
 }
 
+/// `content` with its `## Focus` filed: what a writer puts on disk, so a row it adds under the
+/// heading never sits above the lanes.
+pub(crate) fn filed(content: String) -> String {
+    sweep_content(&content).unwrap_or(content)
+}
+
 /// notes focus start <query> — toggle the first matching authored `## Focus` task
 /// between [ ] (todo) and `[/]` (in progress). Pair with a sweep to move it into the
 /// right lane. Only the authored region is scanned (stops at the next H2 / rollup

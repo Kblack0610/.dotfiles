@@ -112,11 +112,10 @@ pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
     };
     for l in &f.lanes {
         out.push(Line::raw(""));
-        let name = l.name.as_str();
         if l.name.eq_ignore_ascii_case("done") {
             out.push(clip_line(
                 Line::from(vec![
-                    Span::styled(name.to_uppercase(), p.head()),
+                    Span::styled(l.name.to_uppercase(), p.head()),
                     Span::styled(format!("  {} done today", l.done), p.dim()),
                 ]),
                 w,
@@ -124,7 +123,7 @@ pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
             continue;
         }
         out.push(Line::from(vec![
-            Span::styled(name.to_uppercase(), p.head()),
+            Span::styled(l.name.to_uppercase(), p.head()),
             Span::styled(format!("  {}", l.open), p.dim()),
         ]));
         if l.items.is_empty() {

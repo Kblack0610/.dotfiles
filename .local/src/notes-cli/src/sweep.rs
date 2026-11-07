@@ -149,9 +149,11 @@ fn bucket(body: &[&str], layout: Layout) -> Buckets {
         }
         // Past the indent check, so a note under a task stays a note. What is left and indented
         // has no task above it, which makes it a line of its own.
-        let task = (layout == Layout::Focus)
-            .then(|| md::loose_task(l))
-            .flatten();
+        let task = if layout == Layout::Focus {
+            md::loose_task(l)
+        } else {
+            None
+        };
         let l = task.as_deref().unwrap_or(l);
         if md::is_checked(l) {
             done.push(l.to_string());
