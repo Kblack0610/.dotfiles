@@ -11,8 +11,21 @@ setup() {
   DRIFT="$REPO_ROOT/.local/bin/skill-drift"
   RULE='Never push to a branch that another session has open, because the second push silently reverts the first and nobody sees it.'
   OTHER='Render every dashboard tile from the cached snapshot file, since the live query times out on a cold cluster after thirty seconds.'
-  mkdir -p "$HOME/.agent/lessons" "$HOME/.claude/skills/x"
-  export CLAUDE_MD="$HOME/global.md"
+  mkdir -p "$HOME/.agent/lessons" "$HOME/.claude/skills/x" "$HOME/.config/agentctl"
+  export CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+  # The live file is private (~/.config/agentctl/instruction-homes.json); this is its shape.
+  cat > "$HOME/.config/agentctl/instruction-homes.json" <<'JSON'
+{"kinds": [
+  {"kind": "global", "rank": 6, "globs": ["*/.claude/CLAUDE.md"]},
+  {"kind": "shared-docs", "rank": 5, "globs": ["*/.local/src/docs/*"]},
+  {"kind": "role", "rank": 3, "globs": ["*/.config/agentctl/roles/*", "*/.config/agentctl/prompts/*"]},
+  {"kind": "runbook", "rank": 4, "globs": ["*/.config/agentctl/*"]},
+  {"kind": "skill", "rank": 3, "globs": ["*/SKILL.md"]},
+  {"kind": "lessons", "rank": 2, "globs": ["*/.agent/lessons/*"]},
+  {"kind": "anchor", "rank": 1, "globs": ["*/.agent/anchors/*"]},
+  {"kind": "memory", "rank": 1, "globs": ["*/memory/*"]}
+]}
+JSON
   printf '# global\n%s\n' "$RULE" > "$CLAUDE_MD"
   export DRIFT_DOCS="$CLAUDE_MD
 $HOME/.agent/lessons/p.md"
@@ -114,4 +127,21 @@ $HOME/.agent/lessons/p.md"
   rm "$HOME/.claude/skills/x/SKILL.md"
   run "$DRIFT" --dups
   assert_failure 2
+}
+
+@test "the rank comes from instruction-homes.json: raising lessons over global flips the winner" {
+  printf '# lessons\n%s\n' "$RULE" > "$HOME/.agent/lessons/p.md"
+  rm "$HOME/.claude/skills/x/SKILL.md"
+  f="$HOME/.config/agentctl/instruction-homes.json"
+  jq '(.kinds[] | select(.kind == "lessons") | .rank) = 9' "$f" > "$f.new" && mv "$f.new" "$f"
+  run "$DRIFT" --dups
+  assert_success
+  assert_output --partial 'winner: lessons'
+}
+
+@test "no homes file refuses to report, since no winner can be named" {
+  rm "$HOME/.config/agentctl/instruction-homes.json"
+  run "$DRIFT" --dups
+  assert_failure 2
+  assert_output --partial 'instruction-homes.json'
 }
