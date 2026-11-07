@@ -5366,3 +5366,146 @@ remote_item() {
   assert_output --partial 'has no fleet_state_host'
   assert_not_called 'wt new'
 }
+
+# --- cloud workers: demand for the ci-runner-governor ---------------------------------------------
+
+# cloud_worker [home|two] -- fleet-worker-1, a box the ci-runner-governor powers (fleet_power:
+# governor), reached by its tailnet name and off: its ssh fails. With "home", razer-laptop too,
+# listed after it, a home worker that answers ssh.probe; with "two", fleet-worker-2, a second
+# powered box. kubectl logs its arguments; while cm.missing exists a patch is NotFound, and while
+# cm.race exists the first patch is NotFound and the create AlreadyExists (another writer made it).
+cloud_worker() {
+  export FLEET_INVENTORY="$SANDBOX/inventory.yml" CC_KUBE_CONTEXT=home-k3s
+  {
+    cat <<EOF
+all:
+  vars:
+    fleet_state_host: state.lan
+  children:
+    fleet_workers:
+      vars:
+        fleet_max_live: 1
+        fleet_repos:
+          - dest: "$SANDBOX/repos/game"
+            repo: game
+      hosts:
+        fleet-worker-1:
+          ansible_host: i-0123456789abcdef0
+          ansible_user: ubuntu
+          fleet_ssh_host: fleet-worker-1.tail.example
+          fleet_power: governor
+EOF
+    [ "${1:-}" != home ] || cat <<EOF
+        razer-laptop:
+          ansible_host: 192.0.2.26
+          ansible_user: kb
+EOF
+    [ "${1:-}" != two ] || cat <<EOF
+        fleet-worker-2:
+          ansible_host: i-0fedcba9876543210
+          fleet_ssh_host: fleet-worker-2.tail.example
+          fleet_power: governor
+EOF
+  } > "$FLEET_INVENTORY"
+  echo '2.0 16 1' | tr ' ' '\n' > "$NOTES_FIXTURE/ssh.probe"
+  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
+case "$*" in *.tail.example*) exit 255 ;; esac
+eval "set -- ${*: -1}"
+case "$1" in sh) cat "$NOTES_FIXTURE/ssh.probe" ;; *) "$@" ;; esac'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  stub kubectl 'echo "kubectl $*" >> "$NOTES_FIXTURE/calls.log"
+nf() { echo "Error from server (NotFound): configmaps \"ci-runner-governor-override\" not found" >&2; exit 1; }
+[ "$6" = patch ] && [ -e "$NOTES_FIXTURE/cm.missing" ] && nf
+if [ -e "$NOTES_FIXTURE/cm.race" ]; then
+  [ "$6" = create ] && { echo "Error from server (AlreadyExists): configmaps \"ci-runner-governor-override\" already exists" >&2; exit 1; }
+  [ -e "$NOTES_FIXTURE/cm.raced" ] || { touch "$NOTES_FIXTURE/cm.raced"; nf; }
+fi
+exit 0'
+  unset FLEET_HOSTS_JSON
+}
+
+# demand_of <host> -> the {demand, until} the last kubectl call wrote for that host.
+demand_of() {
+  grep '^kubectl ' "$NOTES_FIXTURE/calls.log" | tail -n 1 | grep -o '{"data":.*}}' | jq -r --arg k "$1.demand" '.data[$k]'
+}
+
+@test "a cloud worker gets demand for the light item this machine is gated on, as a merge patch that ends" {
+  game_ready
+  cloud_worker
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
+  assert_called 'kubectl --context home-k3s --request-timeout=10s -n monitoring patch configmap ci-runner-governor-override --type merge -p'
+  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 ubuntu@fleet-worker-1.tail.example'
+  v=$(demand_of fleet-worker-1)
+  assert_equal "$(jq -r .demand <<<"$v")" 1
+  ttl=$(( $(jq -r .until <<<"$v") - $(date +%s) ))
+  [ "$ttl" -gt 2300 ] && [ "$ttl" -le 2400 ] || fail "until is $ttl s away, not DISPATCH_DEMAND_TTL"
+  # The box is off, so nothing starts on it this pass, and the pass says it is the governor's to start.
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'fleet-worker-1 did not answer over ssh: off or booting (the ci-runner-governor starts it on demand), or its tailnet is down'
+  # No ConfigMap yet: the pass makes it with the one key.
+  : > "$NOTES_FIXTURE/calls.log"; touch "$NOTES_FIXTURE/cm.missing"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_called 'kubectl --context home-k3s --request-timeout=10s -n monitoring create configmap ci-runner-governor-override --from-literal=fleet-worker-1.demand={"demand":1,'
+  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
+  # Another writer makes it between the patch and the create: the pass patches it after all.
+  rm "$NOTES_FIXTURE/cm.missing"; : > "$NOTES_FIXTURE/calls.log"; touch "$NOTES_FIXTURE/cm.race"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
+  refute_output --partial 'unwritten'
+  assert_equal "$(grep -c '^kubectl .* patch ' "$NOTES_FIXTURE/calls.log")" 2
+}
+
+@test "negative control: room here, a heavy item, a closed gate or no context counts nothing, and a dry run writes nothing" {
+  game_ready
+  cloud_worker
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'would write demand 0 for fleet-worker-1 (0 live, 0 waiting)'
+  assert_not_called 'kubectl'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  rm "$(qitem queued fix-menu)"
+  agent-queue add --project game --slug bake --priority high --weight heavy "Bake the lights" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'would write demand 0 for fleet-worker-1 (0 live, 0 waiting)'
+  agent-queue add --project game --slug fix-menu2 --priority high "Fix the menu sides" >/dev/null
+  stub agent-hold 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'none counted: held (agent-hold dispatch)'
+  stub agent-hold 'exit 0'
+  unset CC_KUBE_CONTEXT
+  DISPATCH_KUBE_ENV=/nonexistent run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting) unwritten: no CC_KUBE_CONTEXT in /nonexistent'
+  assert_not_called 'kubectl'
+}
+
+@test "an open home worker takes the item ahead of a powered one listed first, which then gets no demand for it" {
+  game_ready
+  cloud_worker home
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'demand 0 for fleet-worker-1 (0 live, 0 waiting)'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game"
+  assert_equal "$(qfield "$(qitem running fix-menu)" host)" razer-laptop
+}
+
+@test "an item counts once across two powered workers, and a worker's demand stops at its fleet_max_live" {
+  game_ready
+  cloud_worker two
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 0'
+  # One patch carries both keys.
+  assert_equal "$(grep -c '^kubectl ' "$NOTES_FIXTURE/calls.log")" 1
+  agent-queue add --project game --slug fix-menu2 --priority high "Fix the menu top" >/dev/null
+  agent-queue add --project game --slug fix-menu3 --priority high "Fix the menu foot" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 1'
+}
