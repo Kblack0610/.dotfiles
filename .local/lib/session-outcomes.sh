@@ -408,10 +408,15 @@ so_rework_repos() {
 # dirs, subagents/ included) recorded, one per line. A session records its link as a
 # `remote_session_change` attachment; matched as raw JSON with unescaped quotes, so a transcript that
 # quotes one inside a string does not count. A subagent records its own link, and the PRs it opens
-# carry that one, so a session's links are its transcript's and its subagents'.
+# carry that one, so a session's links are its transcript's and its subagents'. A missing PATH is
+# skipped; a file that could not be read fails it.
 so_session_links() {
-  grep -rhoE --include='*.jsonl' '\{"type":"remote_session_change","url":"https://claude\.ai/code/session_[A-Za-z0-9]+' "$@" 2>/dev/null |
+  local p paths=()
+  for p; do [ -e "$p" ] && paths+=("$p"); done
+  [ "${#paths[@]}" -gt 0 ] || return 0
+  grep -rhoE --include='*.jsonl' '\{"type":"remote_session_change","url":"https://claude\.ai/code/session_[A-Za-z0-9]+' "${paths[@]}" 2>/dev/null |
     sed 's|.*/code/||' | sort -u
+  [ "${PIPESTATUS[0]}" -le 1 ]
 }
 
 # so_latest OUT_DIR - the newest observation of every session, one JSON line each.

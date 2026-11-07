@@ -1355,8 +1355,7 @@ link_fixture() {
       app1: {repo: "proj", path: "apps/app1"}, app2: {repo: "proj", path: "apps/app2/"}}}' > "$SANDBOX/map.json"
   export SO_PROJECT_MAP="$SANDBOX/map.json" SO_PROJECT_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
   export SO_TRANSCRIPT_ROOTS="$TR" SO_QUEUE=queue-credit
-  printf '#!/usr/bin/env bash\n[ "$1" = credit-of ] || exit 1\nAGENT_QUEUE_PROJECT_MAP=%q exec %q "$@"\n' \
-    "$SANDBOX/map.json" "$REPO_ROOT/.local/bin/agent-queue" > "$SANDBOX/bin/queue-credit"
+  printf '#!/usr/bin/env bash\n[ "$1" = credit-of ] || exit 1\nexec %q "$@"\n' "$REPO_ROOT/.local/bin/agent-queue" > "$SANDBOX/bin/queue-credit"
   chmod +x "$SANDBOX/bin/queue-credit"
   link() { printf '{"type":"attachment","attachment":{"type":"remote_session_change","url":"https://claude.ai/code/%s","pr":"https://claude.ai/code/%s"}}\n' "$1" "$1"; }
   link session_AAA >> "$TR/a.jsonl"
@@ -1391,6 +1390,20 @@ link_fixture() {
   assert_output --partial '`sess-c`'
 }
 
+@test "links: a cloud session split evenly between projects goes to the one with more PRs overall" {
+  link_fixture
+  jq '.trackers.zz = {repo: "proj", path: "zz"}' "$SANDBOX/map.json" > "$SANDBOX/m" && mv "$SANDBOX/m" "$SANDBOX/map.json"
+  O26=$(c "feat: zz (#26)" zz/notes); O27=$(c "docs: notes (#27)" docs/notes)   # #27 is under no app: proj
+  add_prs '[{number: 26, state: "MERGED", title: "feat: zz", mergedAt: "2026-10-19T07:00:00Z", mergeCommit: {oid: $a}, body: "https://claude.ai/code/session_CLOUD"},
+            {number: 27, state: "MERGED", title: "docs: notes", mergedAt: "2026-10-19T08:00:00Z", mergeCommit: {oid: $b}, body: "https://claude.ai/code/session_CLOUD"}]' \
+    --arg a "$O26" --arg b "$O27"
+  run "$SUBJECT" run
+  assert_success
+  # one merged PR each for app2, zz and proj; the open #24 counts for proj, so proj wins over the
+  # alphabetically last zz
+  assert_equal "$(jq -r 'select(.harness == "claude-cloud") | .project + " " + (.projects | join(","))' "$SO_OUT"/proj/2026-10.jsonl)" "proj app2,proj,zz"
+}
+
 @test "links: a link no transcript recorded is a cloud session's line, under the app its PRs changed; an old one gets none" {
   link_fixture
   run "$SUBJECT" run
@@ -1403,6 +1416,37 @@ link_fixture() {
   assert_equal "$(cat "$SO_OUT"/app2/*.jsonl | wc -l)" 1   # seen, nothing changed: not observed again
   SO_NOW=$((SO_NOW + 7 * 86400)) run "$SUBJECT" run
   assert_equal "$(jq -s 'last | .final' "$SO_OUT"/app2/2026-10.jsonl)" true
+}
+
+@test "links: a clone repo no due session names that cannot be listed is skipped and reported" {
+  link_fixture
+  X="$SANDBOX/x"; git init -q -b main "$X"; git -C "$X" remote add origin git@github.com:o/x.git
+  jq --arg d "$X" '.paths[$d] = "xproj"' "$SANDBOX/map.json" > "$SANDBOX/m" && mv "$SANDBOX/m" "$SANDBOX/map.json"
+  printf '#!/usr/bin/env bash\ncase " $* " in *" -R o/x "*) echo "HTTP 404" >&2; exit 1;; esac\nexec gh "$@"\n' > "$SANDBOX/bin/gh-x"
+  chmod +x "$SANDBOX/bin/gh-x"
+  SO_GH=gh-x run "$SUBJECT" run
+  assert_success
+  assert_output --partial "1 clone repo(s) unlisted, last o/x"
+  assert_equal "$(field a '[.prs[].number] | join(",")')" "10,20,21"
+}
+
+@test "links: an unreadable transcript makes no cloud line, since a link in it would read as one" {
+  link_fixture
+  link session_CLOUD > "$TR/locked.jsonl"; chmod 000 "$TR/locked.jsonl"
+  run "$SUBJECT" run
+  chmod 644 "$TR/locked.jsonl"
+  assert_success
+  [ ! -d "$SO_OUT/app2" ] || fail "a cloud line was made with a transcript unread"
+  assert_output --partial "a transcript unreadable, cloud sessions unread"
+}
+
+@test "links: a transcript root holding no link at all is read, not unreadable" {
+  link_fixture
+  mkdir -p "$SANDBOX/nolinks"; echo '{}' > "$SANDBOX/nolinks/x.jsonl"
+  SO_TRANSCRIPT_ROOTS="$SANDBOX/nolinks" run "$SUBJECT" run
+  assert_success
+  refute_output --partial "cloud sessions unread"
+  [ -d "$SO_OUT/app2" ] || fail "the cloud session got no line"
 }
 
 @test "links negative control: with no transcript root to read, no link becomes a cloud line, and the report says so" {

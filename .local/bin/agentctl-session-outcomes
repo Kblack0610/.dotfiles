@@ -241,14 +241,20 @@ cmd_run() {
   # project map, where a PR that names a session link may sit.
   local repo
   so_rework_repos "$PROJECT_MAP" > "$work/clones.tsv"
-  { { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo'
-    cut -f1 "$work/clones.tsv"; } | sort -u > "$work/repos"
+  # A due session's repo that cannot be listed stalls the run; a clone's alone is skipped and reported.
+  { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo' |
+    sort -u > "$work/repos.due"
+  sort -u "$work/repos.due" <(cut -f1 "$work/clones.tsv") > "$work/repos"
   : > "$work/index.jsonl"
+  local unlisted=0 list_note=""
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
-    "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
-      --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err" \
-      || die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
+    if ! "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
+        --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err"; then
+      grep -qixF -- "$repo" "$work/repos.due" && die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
+      unlisted=$((unlisted + 1)) list_note="; $((unlisted)) clone repo(s) unlisted, last $repo"
+      continue
+    fi
     so_pr_index "$FINAL_DAYS" < "$work/prs.json" | jq -c --arg r "$repo" '{($r): .}' >> "$work/index.jsonl" \
       || die_stalled "could not index PRs for $repo"
   done < "$work/repos"
@@ -262,10 +268,13 @@ cmd_run() {
   if [ -n "$TR_ROOTS" ]; then IFS=: read -ra cand <<<"$TR_ROOTS"; else cand=("$HOME"/.claude*/projects); fi
   for r in "${cand[@]}"; do [ -d "$r" ] && roots+=("$r"); done
   jq -cs 'add // {}' "$work/links.jsonl" 2>/dev/null > "$work/links.json" || printf '{}' > "$work/links.json"
-  if [ "${#roots[@]}" -gt 0 ]; then
-    { so_session_links "${roots[@]}"; jq -r '.[][]' "$work/links.json"; } | jq -Rcs 'split("\n") | map(select(. != ""))' > "$work/local.json"
-  else
+  if [ "${#roots[@]}" -eq 0 ]; then
     cloud_note="; no transcript root, cloud sessions unread"
+  elif so_session_links "${roots[@]}" > "$work/local.txt"; then
+    { cat "$work/local.txt"; jq -r '.[][]' "$work/links.json"; } | jq -Rcs 'split("\n") | map(select(. != ""))' > "$work/local.json" ||
+      die_stalled "could not read the local session links"
+  else
+    cloud_note="; a transcript unreadable, cloud sessions unread"   # a link it holds would read as a cloud one
   fi
   # {"<link>": [{repo, number}]} over every listed PR
   jq -c '[to_entries[] | .key as $r | .value | to_entries[] | {repo: $r, number: (.key | tonumber), v: .value}
@@ -338,7 +347,7 @@ cmd_run() {
     dir=$(clone_of "$work/clones.tsv" "$repo") proj=${rproj[$repo]:-}
     [ -n "$dir" ] && [ -n "$proj" ] || continue
     files=$(git -C "$dir" -c core.quotepath=off diff --name-only "$oid^1" "$oid" 2>/dev/null) || continue
-    win=$(printf '%s\n' "$files" | "$QUEUE" credit-of "$proj" 2>/dev/null) || { attr_note="; credit-of unread"; continue; }
+    win=$(printf '%s\n' "$files" | AGENT_QUEUE_PROJECT_MAP="$PROJECT_MAP" "$QUEUE" credit-of "$proj" 2>/dev/null) || { attr_note="; credit-of unread"; continue; }
     win=${win%%$'\t'*}
     printf '%s\t%s\n' "$repo#$num" "${win:-$proj}" >> "$work/attr.tsv"
   done < "$work/merged.tsv"
@@ -386,10 +395,13 @@ cmd_run() {
                    | {rework: {seen_days: (($now - (.merged_at | fromdateiso8601)) / 86400 | floor),
                                candidate: any($f[]; .days <= $rdays), verified: any($f[]; .named), fixes: $f}}
                  else {} end) ] as $prs
-      # a cloud session has no project of its own: its PRs most often name one, else its first repo
+      # a cloud session has no project of its own: the one its attributed PRs most often name, a tie
+      # going to the one with more PRs overall, where an unattributed (open, or no clone) PR counts
+      # for the project of its repo
       | (if $runner then "_runner"
-         elif $row.harness == "claude-cloud" then ([$prs[].project | select(.)] | group_by(.) | max_by(length) | .[0])
-                              // ($rp[0][$prs[0].repo // ""] // "_unscoped")
+         elif $row.harness == "claude-cloud" then
+           ([$prs[] | {p: (.project // $rp[0][.repo]), a: (.project != null)} | select(.p)]
+            | group_by(.p) | max_by([(map(select(.a)) | length), length]) | .[0].p) // "_unscoped"
          else $row.project end) as $proj
       | { session_id: $row.session_id,
           project: $proj,
@@ -449,8 +461,8 @@ cmd_run() {
     written=$((written + 1))
   done < "$work/lines.jsonl"
 
-  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note$rework_note$attr_note$cloud_note"
-  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$rework_note$attr_note$cloud_note; $(lessons_note); $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
+  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note$rework_note$attr_note$cloud_note$list_note"
+  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$rework_note$attr_note$cloud_note$list_note; $(lessons_note); $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
 }
 
 # ledger_push - the work ledger's cost and time (~/.config/agentctl/QUEUE.md): every queue item
