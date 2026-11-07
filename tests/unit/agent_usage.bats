@@ -292,6 +292,30 @@ burn() {
   assert_equal "$(burn '.dream_runs_by_night')" '{"2026-01-01":1}'
 }
 
+# h2 is an unregistered headless session with the most turns and the most context but no cost, so
+# sorting by cost puts it last and sorting by turns or context puts it first.
+burn_sorted() {
+  burn_home
+  local d="$HOME/.claude/projects/-home-demo-cli" i
+  { echo '{"type":"user","timestamp":"2026-01-01T04:00:00.000Z","cwd":"/home/demo","entrypoint":"sdk-cli","message":{"content":"long sweep"}}'
+    for i in 1 2 3 4 5 6; do
+      echo "{\"type\":\"assistant\",\"timestamp\":\"2026-01-01T04:00:0$i.000Z\",\"message\":{\"id\":\"h2m$i\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":900000}}}"
+    done; } > "$d/h2.jsonl"
+  TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00 --json "$@" | jq -c '.by_session | keys_unsorted | map(.[0:2])'
+}
+
+@test "burn --sort: cost is the default order, turns and context put the long session first" {
+  assert_equal "$(burn_sorted)" '["s1","h1","h2"]'
+  assert_equal "$(burn_sorted --sort cost)" '["s1","h1","h2"]'
+  assert_equal "$(burn_sorted --sort turns | jq -r '.[0]')" 'h2'
+  assert_equal "$(burn_sorted --sort context | jq -r '.[0]')" 'h2'
+}
+
+@test "burn --sort: a value that is not cost, turns or context is a usage error" {
+  run "$AU" burn --sort bytes
+  assert_failure 2
+}
+
 @test "burn: the table form prints every section" {
   burn_home
   run env TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00

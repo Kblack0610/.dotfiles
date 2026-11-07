@@ -357,6 +357,66 @@ SH
   refute_output --partial 'sess-a'
 }
 
+# worst --by reads rows straight from the outcome store: x1 and x2 are in the window, x3 is 40 days old.
+by_rows() {
+  mkdir -p "$SO_OUT/wb"
+  local old=$((SO_NOW - 40 * 86400)) new=$((SO_NOW - 86400))
+  {
+    jq -cn --argjson u "$new" '{session_id:"x1",project:"p1",updated_epoch:$u,cost_usd:4,hard_errors:{denied:1},
+      guards:{"focus-gate":2,"block-poll":1},uses:{skills:{"wind-down":1,"final-pass":2}}}'
+    jq -cn --argjson u "$new" '{session_id:"x2",project:"p2",updated_epoch:$u,cost_usd:2,
+      guards:{"focus-gate":1},uses:{skills:{"wind-down":1}}}'
+    jq -cn --argjson u "$old" '{session_id:"x3",project:"p1",updated_epoch:$u,cost_usd:6,
+      guards:{"focus-gate":9},uses:{skills:{"wind-down":9}}}'
+  } > "$SO_OUT/wb/2026-10.jsonl"
+}
+
+@test "worst --by hook: hooks ranked by denials, with sessions, projects, friction and mean cost, inside the window" {
+  by_rows
+  run "$SUBJECT" worst --by hook --days 7 --json
+  assert_success
+  assert_line --index 0 '{"name":"focus-gate","calls":3,"sessions":2,"projects":2,"friction_sessions":1,"mean_session_cost":3}'
+  assert_line --index 1 '{"name":"block-poll","calls":1,"sessions":1,"projects":1,"friction_sessions":1,"mean_session_cost":4}'
+  refute_output --partial '"calls":12'
+}
+
+@test "worst --by skill: skills ranked by calls; --project narrows; the table form names the column" {
+  by_rows
+  run "$SUBJECT" worst --by skill --days 7 --json
+  # equal calls: more sessions ranks first
+  assert_line --index 0 '{"name":"wind-down","calls":2,"sessions":2,"projects":2,"friction_sessions":1,"mean_session_cost":3}'
+  assert_line --index 1 '{"name":"final-pass","calls":2,"sessions":1,"projects":1,"friction_sessions":1,"mean_session_cost":4}'
+  run "$SUBJECT" worst --by skill --days 7 --project p2
+  assert_line --index 0 '| skill | calls | sessions | projects | sessions with friction | mean session cost |'
+  assert_line --index 2 --partial '`wind-down` | 1 | 1 | 1 | 0 | $2'
+  refute_output --partial 'final-pass'
+}
+
+@test "worst --by: mean cost is over the sessions that have a cost, null when none does" {
+  by_rows
+  jq -cn --argjson u "$((SO_NOW - 86400))" '{session_id:"x4",project:"p3",updated_epoch:$u,cost_usd:null,guards:{"focus-gate":1}}' >> "$SO_OUT/wb/2026-10.jsonl"
+  jq -cn --argjson u "$((SO_NOW - 86400))" '{session_id:"x5",project:"p4",updated_epoch:$u,cost_usd:null,guards:{"only-null":1}}' >> "$SO_OUT/wb/2026-10.jsonl"
+  run "$SUBJECT" worst --by hook --days 7 --json
+  assert_line --index 0 '{"name":"focus-gate","calls":4,"sessions":3,"projects":3,"friction_sessions":1,"mean_session_cost":3}'
+  assert_line --partial '{"name":"only-null","calls":1,"sessions":1,"projects":1,"friction_sessions":0,"mean_session_cost":null}'
+}
+
+@test "worst --by: no value, an empty value or an unknown kind is a usage error, never a hang or the sessions table" {
+  by_rows
+  run timeout 10 "$SUBJECT" worst --by
+  assert_failure 2
+  run "$SUBJECT" worst --by ''
+  assert_failure 2
+  run "$SUBJECT" worst --by tool
+  assert_failure 2
+}
+
+@test "worst --by: a row with no guards or uses adds nothing" {
+  by_rows
+  run "$SUBJECT" worst --by hook --days 7 --project p9
+  assert_output '_(no hook in the last 7 days)_'
+}
+
 @test "ended lists the window's sessions newest first, joins their PRs and leaves out the runners" {
   "$SUBJECT" run
   run "$SUBJECT" ended --days 3650

@@ -7,7 +7,7 @@
 #   agent-usage changelog <project> --since E [--until E]   markdown for a version note
 #   agent-usage backfill <project|--all>     fill telemetry into existing registry lines
 #   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
-#   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--json]   where the window's tokens went, by session too (usage-cleanup)
+#   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--sort cost|turns|context] [--json]   where the window's tokens went, by session too (usage-cleanup)
 #   agent-usage tokens snapshot|line|json|check [--langfuse] [--date D]  the nightly token-usage record per day
 #   agent-usage spend check <window> <max-usd>                    fleet spend over a window vs a ceiling (the claude-spend-* watches)
 #   agent-usage langfuse --since T --until T                      tool latency, tool and gateway errors from Langfuse
@@ -602,7 +602,7 @@ cmd_wakes() {
 # context, waits, cache writes by cause, idle wakes and dream runs. The usage-cleanup skill's
 # numbers; the logic lives in ../lib/agent-usage-burn.py.
 #
-#   burn [--days 7] [--before YYYY-MM-DD] [--json]
+#   burn [--days 7] [--before YYYY-MM-DD] [--top N] [--sort cost|turns|context] [--json]
 cmd_burn() {
   python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-burn.py" "$@"
 }
