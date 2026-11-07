@@ -2076,6 +2076,30 @@ approved_plan() {
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" peer
 }
 
+@test "reap reads a queue too big for one argument: plans_orphaned finds the orphan and honours an item that names a plan" {
+  stub agent-ask 'echo other-session'
+  approved_plan orphan gone-session
+  approved_plan named gone-session
+  # 600 items of about 1 KB each: past MAX_ARG_STRLEN (128 KB), so --argjson would fail with E2BIG
+  stub agent-queue 'pad=$(head -c 1000 /dev/zero | tr "\0" x)
+for i in $(seq 600); do printf "{\"slug\":\"i%s\",\"task\":\"%s\"}\n" "$i" "$pad"; done
+printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBOX"'"'
+  run plans_orphaned
+  assert_success
+  assert_equal "$(jq -r .plan <<<"$output")" "$SANDBOX/orphan.md"
+}
+
+@test "plans_orphaned fails when the queue cannot be read: agent-queue exits 1, or prints what is not JSON" {
+  stub agent-ask 'echo other-session'
+  approved_plan orphan gone-session
+  stub agent-queue 'exit 1'
+  run plans_orphaned
+  assert_failure
+  stub agent-queue 'echo not json'
+  run plans_orphaned
+  assert_failure
+}
+
 @test "reap acts on nothing when it cannot read the sessions, or when reconcile is off" {
   approved_plan orphan gone-session
   stub agent-ask 'exit 1'
