@@ -81,16 +81,28 @@ setup() {
   [[ " $INSTALL_OPTIONAL_MODULES " == *" music "* ]]
 }
 
-@test "the private overlay gets its hooks wired by the installer" {
-  mkdir -p "$HOME/.dotfiles-private"
-  git init -q "$HOME/.dotfiles-private"
-  bin="$BATS_TEST_TMPDIR/bin"
-  mkdir -p "$bin"
-  printf '#!/bin/sh\nexit 0\n' >"$bin/stow"
-  chmod +x "$bin/stow"
+# setup_dotfiles_private under a throwaway HOME, with stow and deploy_skills stubbed. `load
+# sandbox` alone leaves HOME live, and this function pulls, configures and links under it.
+overlay_install() {
+  sandbox_init
+  [ "$HOME" != "$(getent passwd "$(id -u)" | cut -d: -f6)" ]
+  mkdir -p "$HOME/.dotfiles-private" "$BATS_TEST_TMPDIR/bin"
+  [ "${1:-}" = not-a-repo ] || git init -q "$HOME/.dotfiles-private"
+  printf '#!/bin/sh\nexit 0\n' >"$BATS_TEST_TMPDIR/bin/stow"
+  chmod +x "$BATS_TEST_TMPDIR/bin/stow"
   deploy_skills() { :; }
-  PATH="$bin:$PATH" run setup_dotfiles_private
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run setup_dotfiles_private
+}
+
+@test "the private overlay gets its hooks wired by the installer" {
+  overlay_install
   assert_success
   run git -C "$HOME/.dotfiles-private" config core.hooksPath
   assert_output ".githooks"
+}
+
+@test "a private overlay that is not a repo warns and the install carries on" {
+  overlay_install not-a-repo
+  assert_success
+  assert_output --partial "secret scan is off"
 }
