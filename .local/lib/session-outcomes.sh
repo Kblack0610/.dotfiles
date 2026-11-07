@@ -14,15 +14,18 @@
 # ("Session outcomes") in the private overlay.
 
 # SO_PR_JQ - the jq defs every harness's PR scan shares. pr_cmd: a command that opens or merges
-# a PR, `gh pr create|merge` or a curl POST to a Forgejo `.../pulls` or `.../pulls/N/merge` URL (often
-# `"$API/pulls"`, API set in an earlier call; a POST to a PR's comments or reviews is not one). pr_refs:
+# a PR, `gh pr create|merge` in command position (at a line start, after a shell separator, `sh -c`
+# or `ssh host`, past assignments and wrappers like env, sudo, timeout, xargs), so a search or
+# quoted pattern naming it, whose output is often test fixtures, is not one; or a curl POST to a Forgejo `.../pulls` or
+# `.../pulls/N/merge` URL (often `"$API/pulls"`, API set in an earlier call; a POST to a PR's
+# comments or reviews is not one). pr_refs:
 # the PRs a call's output names, as {repo, number}. A GitHub repo is `owner/repo`; a Forgejo one
 # is `host/owner/repo` (gh's own HOST/OWNER/REPO form), so a GitHub mirror of the same name stays
 # a different repo. Forgejo is told by its URL shape, `/pulls/N` on a host that is not github.com:
 # its hostnames are not named here, since this repo is public. A Forgejo merge prints no URL, so
 # its PR is found from the create call's `html_url`.
 SO_PR_JQ='
-  def pr_cmd: test("\\bgh\\s+pr\\s+(create|merge)\\b")
+  def pr_cmd: test("(^|[\\n;&|({`!]|\\b(ba|z)?sh\\s+-[a-z]*c\\s+[\"\u0027]?|\\bssh\\s+(-\\S+\\s+)*\\S+\\s+[\"\u0027]?)\\s*((\\w+=(\\$\\([^)]*\\)|\"[^\"]*\"|\u0027[^\u0027]*\u0027|\\S*)|env|command|exec|time|then|do|else|sudo|nohup|timeout\\s+\\S+|xargs(\\s+-\\S+)*)\\s+)*gh\\s+pr\\s+(create|merge)\\b")
     or (test("\\bcurl\\b") and test("/pulls(/[0-9]+/merge)?([\"\u0027?\\s]|$)")
         and test("(-X\\s*|--request[=\\s]+)POST\\b|\\s(-d|--data[a-z-]*)([=\\s@\u0027\"]|$)"));
   def pr_refs: [ (scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
@@ -37,9 +40,10 @@ SO_PR_JQ='
 # A PR counts when a PR call's own result printed it (SO_PR_JQ), so a PR merely
 # viewed or pasted is not claimed, or when Claude Code wrote a pr-link record for it: that
 # record is how a PR made in a subagent, or whose output was persisted to a file, reaches
-# this transcript, since neither prints its URL in a tool result here. A pr-link is the
-# session's own record (none carries another session's id), so it is not a viewed PR. (`run`
-# also claims a PR whose body names the session's own claude.ai/code link: so_session_links.)
+# this transcript, since neither prints its URL in a tool result here. Claude Code also writes
+# a pr-link for a PR URL it only saw printed (a test's fixture o/r#99, session 5642f5f8), so `run`
+# drops a claim in a repo gh cannot resolve. (`run` also claims a PR whose body names the
+# session's own claude.ai/code link: so_session_links.)
 # lessons_written counts corrections (the rule is "after ANY correction, update lessons");
 # most land as `cat >>` through Bash, not Edit, so both are counted. Malformed lines are skipped, not fatal:
 # a transcript cut off by a crash is the session this feed most needs to see.
