@@ -71,7 +71,7 @@ const liveRows = () => !!fcs.data && !!fcs.data.note.date && !fcs.edit;
 
 // A lane's `+` line: Done takes no new rows, and the rollup is another note's.
 function addRow(l) {
-  if (!liveRows() || !l.name || isDone(l.name)) return "";
+  if (!liveRows() || isDone(l.name)) return "";
   return `<form class="tadd" data-id="${esc(l.name)}"><button class="tplus" title="Add a task to ${esc(l.name)}" aria-label="Add a task to ${esc(l.name)}">+</button>` +
     `<input name="t" data-free placeholder="Add to ${esc(l.name)}" autocomplete="off" enterkeyhint="done"></form>`;
 }
@@ -80,19 +80,19 @@ function addRow(l) {
 // empty lane says so in one line. Urgent and High take the priority tints Queue uses.
 function laneCard(l) {
   const done = isDone(l.name);
-  const k = "lane:" + (l.name || "focus");
+  const k = "lane:" + l.name;
   seed(k, !done);
   const n = done ? l.done : l.open;
   const tint = /^urgent$/i.test(l.name) ? " urgent" : /^high$/i.test(l.name) ? " high" : done ? " done" : "";
-  const head = `<span class="dln">${esc(l.name || "Focus")}</span><span class="dlc">${n}</span>`;
+  const head = `<span class="dln">${esc(l.name)}</span><span class="dlc">${n}</span>`;
   if (!l.markdown) {
     const add = addRow(l);
     return `<div class="dlane empty${tint}"><div class="dlh">${head}<span class="muted">nothing here</span></div>${add ? `<div class="md">${add}</div>` : ""}</div>`;
   }
   // Every task in the Urgent lane carries #urgent; the lane says it once.
-  const own = l.name ? new RegExp(`(^|\\s)#${l.name.replace(/\W/g, "")}(?![\\w:/-])`, "gim") : null;
-  const text = own ? l.markdown.replace(own, "$1") : l.markdown;
-  const at = liveRows() && l.name ? l.lines : null;
+  const own = new RegExp(`(^|\\s)#${l.name.replace(/\W/g, "")}(?![\\w:/-])`, "gim");
+  const text = l.markdown.replace(own, "$1");
+  const at = liveRows() ? l.lines : null;
   return `<details class="dlane${tint}" data-k="${esc(k)}"${fcs.open[k] ? " open" : ""}><summary class="dlh">${head}</summary>` +
     `<div class="md">${md(text, { notes: true, rows: at })}${addRow(l)}</div></details>`;
 }
@@ -116,7 +116,7 @@ function noteParts() {
   if (!v || !v.note.exists || fcs.raw || fcs.edit || outboxOpen()) return [];
   const f = v.focus, parts = [];
   if (f) {
-    for (const l of f.lanes) if (l.markdown && l.name) parts.push({ k: "lane:" + l.name, name: l.name, n: isDone(l.name) ? l.done : l.open });
+    for (const l of f.lanes) if (l.markdown) parts.push({ k: "lane:" + l.name, name: l.name, n: isDone(l.name) ? l.done : l.open });
     if (v.note.date && v.brief && v.brief.note.exists) parts.push({ k: "brief", name: "Briefing", target: v.brief.note.target });
     if (f.rollup) parts.push({ k: "rollup", name: "Rollup" });
   }
@@ -186,8 +186,7 @@ function focusBody(v) {
   let html = "";
   const f = v.focus;
   if (f) {
-    // A nameless lane with no words in it (a stray bracket or rule left in the note) is not drawn.
-    html += f.lanes.filter((l) => l.name || /\w/.test(l.markdown || "")).map(laneCard).join("");
+    html += f.lanes.map(laneCard).join("");
     if (n.date) html += briefFold();
     if (f.rollup) { seed("rollup", false); html += cfold("rollup", "<b>Rollup</b>", `<div class="md">${md(f.rollup, { notes: true })}</div>`, fcs.open); }
   }
