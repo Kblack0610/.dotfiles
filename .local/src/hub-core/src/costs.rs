@@ -9,7 +9,8 @@
 //! | per runner call | `calls.jsonl` | `fleet::parse_call`, the Fleet tab's parser |
 //! | per tool, allocated | `~/.agent/token-usage/<day>.json` (`TOKENS_DIR`) | the snapshot files |
 //! | landed rate, redo, reverts, $ per PR | `fleet-bench models --json` | a shell-out, so the scoring stays there |
-//! | live 24h and the Lazer pool | Prometheus `cc:` rules | `prom::instant` |
+//! | live 24h, the Lazer pool and the claude-reserve key | Prometheus `cc:` rules and LiteLLM's key gauges | `prom::instant` |
+//! | Lazer direct (opencode `lazer/*`), which the pool cannot see | outcomes rows with `provider: lazer` | the outcomes read above |
 //!
 //! The query filters slices (a session's cost on one model) before grouping, so `-model:opus`
 //! narrows every outcomes cut; runner and tool cuts filter their own rows; the sort is over groups.
@@ -47,9 +48,22 @@ pub const SPEND_BADGE: &str = "spend: 0 Costs";
 pub const UNPRICED: &str =
     "no snapshot in this window allocates dollars to tools yet: calls and tokens only";
 
-/// The gauges the live tiles read: Claude Code's 24h cost and the Lazer pool's spend and cap.
-const LIVE_Q: &str =
-    r#"{__name__=~"cc:claude_code_cost_24h_usd|cc:lazer_spend_usd|cc:lazer_budget_usd"}"#;
+/// The gateway key `claude-lazer` runs on (a `cl --lazer`, a dispatch spill): Sonnet only, capped
+/// per period by the gateway, and inside the Lazer pool.
+pub const RESERVE_KEY: &str = "claude-reserve";
+
+/// What the direct figure covers and what it cannot, beside the pool on both surfaces. opencode's
+/// own DB prices a `lazer/*` session and the nightly outcomes run carries it; a direct call from
+/// anything else (a curl probe, another machine) reaches Lazer with no record here.
+pub const DIRECT_NOTE: &str = "opencode lazer/*, nightly; other direct use unseen";
+
+/// The gauges the live tiles read: Claude Code's 24h cost, the Lazer pool's spend and cap, and the
+/// reserve key's cap, what is left of it and the hours to its reset, as LiteLLM exports them.
+fn live_q() -> String {
+    format!(
+        r#"{{__name__=~"cc:claude_code_cost_24h_usd|cc:lazer_spend_usd|cc:lazer_budget_usd"}} or {{__name__=~"litellm_(api_key_max_budget|remaining_api_key_budget|api_key_budget_remaining_hours)_metric",api_key_alias="{RESERVE_KEY}"}}"#
+    )
+}
 
 /// One session's newest outcomes row, as `agentctl-session-outcomes costs` prints it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -67,6 +81,8 @@ pub struct Spent {
     pub models: Vec<String>,
     pub cost_usd: Option<f64>,
     pub cost_by_model: Option<BTreeMap<String, f64>>,
+    /// An opencode session's provider: `lazer` went to Lazer direct, past the gateway.
+    pub provider: Option<String>,
     pub tokens_total: Option<f64>,
     pub updated_epoch: Option<i64>,
     /// When the nightly writer last looked at the session, RFC 3339.
@@ -136,6 +152,89 @@ pub struct Live {
     pub claude_24h: Option<f64>,
     pub lazer_spend: Option<f64>,
     pub lazer_budget: Option<f64>,
+    /// The `RESERVE_KEY` key: spent this period (cap less what is left), its cap, hours to reset.
+    pub reserve_spend: Option<f64>,
+    pub reserve_budget: Option<f64>,
+    pub reserve_reset_hours: Option<f64>,
+}
+
+/// The live gauges out of `live_q`'s series, and why the reserve is unknown when it is. A key with
+/// no cap exports +Inf, which `prom` reads as none. The reserve's cap and what is left pair by key
+/// hash (every pod exports the same key); two keys under the alias is unknown, never a mix of both.
+pub fn live(series: &[crate::prom::Series]) -> (Live, Option<String>) {
+    let mut l = Live::default();
+    let mut keys: BTreeMap<&str, [Option<f64>; 3]> = BTreeMap::new();
+    for s in series {
+        let v = s.value;
+        match s.label("__name__") {
+            "cc:claude_code_cost_24h_usd" => l.claude_24h = v,
+            "cc:lazer_spend_usd" => l.lazer_spend = v,
+            "cc:lazer_budget_usd" => l.lazer_budget = v,
+            n if s.label("api_key_alias") == RESERVE_KEY => {
+                let k = keys.entry(s.label("hashed_api_key")).or_default();
+                match n {
+                    "litellm_api_key_max_budget_metric" => k[0] = v,
+                    "litellm_remaining_api_key_budget_metric" => k[1] = v,
+                    "litellm_api_key_budget_remaining_hours_metric" => k[2] = v,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    let why = match keys.len() {
+        0 => Some(format!("Prometheus: no {RESERVE_KEY} key gauges")),
+        1 => {
+            let [cap, left, hours] = keys.into_values().next().unwrap_or_default();
+            l.reserve_budget = cap;
+            l.reserve_spend = cap.zip(left).map(|(cap, left)| cap - left);
+            l.reserve_reset_hours = hours;
+            None
+        }
+        n => Some(format!("Prometheus: {n} keys carry the {RESERVE_KEY} alias")),
+    };
+    (l, why)
+}
+
+/// Lazer use that went past the gateway, so the pool does not count it: the opencode sessions on
+/// provider `lazer` active since the 1st (UTC), the pool's own period, each at its whole cost (a
+/// session from last month still running counts all of it). Nightly, as the outcomes rows are.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Direct {
+    pub usd: f64,
+    /// Sessions that used tokens on a model opencode has no price for: spend unknown, never $0.
+    pub unpriced: usize,
+    pub note: &'static str,
+}
+
+/// 00:00 UTC on the 1st of `now`'s month, when the Lazer pool resets.
+pub fn month_start(now: i64) -> i64 {
+    use chrono::Datelike;
+    chrono::DateTime::from_timestamp(now, 0)
+        .and_then(|t| t.date_naive().with_day(1))
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map_or(now, |d| d.and_utc().timestamp())
+}
+
+pub fn direct(sessions: &[Spent], now: i64) -> Direct {
+    let since = month_start(now);
+    // a fold from 0.0, not `sum`: an empty f64 sum is -0.0, which prints as $-0.00
+    let init = Direct {
+        note: DIRECT_NOTE,
+        ..Direct::default()
+    };
+    sessions
+        .iter()
+        .filter(|s| s.provider.as_deref() == Some("lazer"))
+        .filter(|s| s.updated_epoch.unwrap_or(0) >= since)
+        .fold(init, |mut d, s| {
+            match cost(s).filter(|c| *c > 0.0) {
+                Some(c) => d.usd += c,
+                None if s.tokens_total.unwrap_or(0.0) > 0.0 => d.unpriced += 1,
+                None => {}
+            }
+            d
+        })
 }
 
 /// Everything one read gathered, over the longest window. `board` cuts it for a view.
@@ -196,7 +295,8 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         grafana: crate::infra::grafana(),
         ..Costs::default()
     };
-    let days = (longest() / DAY).to_string();
+    // The longest window, or back to the 1st when the month is longer: the direct figure's period.
+    let days = (longest() / DAY).max((now - month_start(now)) / DAY + 1).to_string();
     let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match runner.run(&argv(&[
         "agentctl-session-outcomes",
@@ -231,17 +331,11 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
     c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize);
     // One Prometheus base for the spend tiles and the Burn section; a failure is named once.
     let base = crate::prom::base();
-    match base.clone().and_then(|b| crate::prom::instant(&b, LIVE_Q)) {
+    match base.clone().and_then(|b| crate::prom::instant(&b, &live_q())) {
         Ok(series) => {
-            for s in series {
-                let v = s.value;
-                match s.label("__name__") {
-                    "cc:claude_code_cost_24h_usd" => c.live.claude_24h = v,
-                    "cc:lazer_spend_usd" => c.live.lazer_spend = v,
-                    "cc:lazer_budget_usd" => c.live.lazer_budget = v,
-                    _ => {}
-                }
-            }
+            let (l, why) = live(&series);
+            c.live = l;
+            c.errors.extend(why);
         }
         Err(e) => c.errors.push(format!("Prometheus: {e}")),
     }
@@ -884,6 +978,7 @@ pub struct Board {
     pub windows: Vec<&'static str>,
     pub totals: Vec<Total>,
     pub live: Live,
+    pub direct: Direct,
     pub burn: Burn,
     pub sections: sections::Block,
     pub sources: Vec<Source>,
@@ -1015,6 +1110,7 @@ pub fn board(
         windows: WINDOWS.iter().map(|w| w.0).collect(),
         totals: totals(&c.sessions, c.at),
         live: c.live.clone(),
+        direct: direct(&c.sessions, c.at),
         burn: c.burn.clone(),
         sections: sections::board(&c.sections, sec.0, sec.1),
         sources: sources(c),
@@ -1472,5 +1568,103 @@ not json
         assert_eq!(usd(None), "-");
         assert_eq!(tokens(Some(1.9e9)), "1.9B");
         assert_eq!(tokens(Some(61e6)), "61M");
+    }
+
+    fn gauge(name: &str, alias: &str, v: f64) -> crate::prom::Series {
+        let mut labels = BTreeMap::from([("__name__".to_string(), name.to_string())]);
+        if !alias.is_empty() {
+            labels.insert("api_key_alias".into(), alias.into());
+            labels.insert("hashed_api_key".into(), format!("h-{alias}"));
+        }
+        crate::prom::Series {
+            labels,
+            value: Some(v),
+            points: vec![],
+        }
+    }
+
+    #[test]
+    fn the_reserve_key_reads_as_spent_of_its_cap_and_no_cap_is_none() {
+        let (l, why) = live(&[
+            gauge("cc:lazer_spend_usd", "", 93.36),
+            gauge("cc:lazer_budget_usd", "", 250.0),
+            gauge("litellm_api_key_max_budget_metric", RESERVE_KEY, 100.0),
+            gauge("litellm_remaining_api_key_budget_metric", RESERVE_KEY, 80.48),
+            gauge("litellm_api_key_budget_remaining_hours_metric", RESERVE_KEY, 575.0),
+            // another key's gauges never land on the reserve
+            gauge("litellm_api_key_max_budget_metric", "lazer-eval", 150.0),
+        ]);
+        assert_eq!((l.lazer_spend, l.lazer_budget), (Some(93.36), Some(250.0)));
+        assert_eq!(l.reserve_budget, Some(100.0));
+        assert!((l.reserve_spend.unwrap() - 19.52).abs() < 1e-9);
+        assert_eq!((l.reserve_reset_hours, why), (Some(575.0), None));
+        // negative control: an uncapped key's +Inf reaches here as no value, and no remaining gauge
+        // is no spend
+        let mut uncapped = gauge("litellm_api_key_max_budget_metric", RESERVE_KEY, 0.0);
+        uncapped.value = None;
+        let (l, why) = live(&[uncapped]);
+        assert_eq!((l.reserve_budget, l.reserve_spend, why), (None, None, None));
+        // a second key under the alias is unknown, never one key's cap less the other's remainder
+        let mut rotated = gauge("litellm_remaining_api_key_budget_metric", RESERVE_KEY, 99.0);
+        rotated.labels.insert("hashed_api_key".into(), "h-new".into());
+        let (l, why) = live(&[
+            gauge("litellm_api_key_max_budget_metric", RESERVE_KEY, 100.0),
+            rotated,
+        ]);
+        assert_eq!(l.reserve_spend, None);
+        assert_eq!(why.as_deref(), Some("Prometheus: 2 keys carry the claude-reserve alias"));
+        // and no reserve gauge at all says so, so a renamed gauge is not a quiet "-"
+        let (_, why) = live(&[gauge("cc:lazer_spend_usd", "", 1.0)]);
+        assert_eq!(why.as_deref(), Some("Prometheus: no claude-reserve key gauges"));
+    }
+
+    #[test]
+    fn direct_lazer_is_this_months_opencode_lazer_sessions_and_unpriced_ones_are_counted() {
+        // 1_800_000_000 is 2027-01-15T08:00:00Z
+        let since = month_start(NOW);
+        assert_eq!(since, 1_798_761_600); // 2027-01-01T00:00:00Z
+        let oc = |id: &str, provider: &str, cost: f64, tokens: f64, at: i64| Spent {
+            session_id: id.into(),
+            harness: Some("opencode".into()),
+            provider: Some(provider.into()),
+            cost_usd: Some(cost),
+            tokens_total: Some(tokens),
+            updated_epoch: Some(at),
+            ..Spent::default()
+        };
+        let d = direct(
+            &[
+                oc("a", "lazer", 1.25, 500.0, NOW - 10),
+                oc("b", "lazer", 0.0, 800.0, NOW - 20),
+                oc("probe", "lazer", 0.0, 0.0, NOW - 30),
+                oc("gw", "litellm", 4.0, 900.0, NOW - 40),
+                oc("old", "lazer", 9.0, 900.0, since - 1),
+            ],
+            NOW,
+        );
+        assert_eq!((d.usd, d.unpriced, d.note), (1.25, 1, DIRECT_NOTE));
+        // negative control: no session on Lazer direct is $0 over none, not a missing figure
+        let d = direct(&[oc("gw", "litellm", 4.0, 900.0, NOW)], NOW);
+        assert_eq!((d.usd, d.unpriced), (0.0, 0));
+        assert!(d.usd.is_sign_positive(), "{}", d.usd);
+    }
+
+    #[test]
+    fn the_board_carries_direct_lazer_beside_the_live_pool() {
+        let mut c = costs();
+        c.sessions.push(Spent {
+            session_id: "oc-direct".into(),
+            harness: Some("opencode".into()),
+            provider: Some("lazer".into()),
+            cost_usd: Some(2.5),
+            tokens_total: Some(10.0),
+            updated_epoch: Some(NOW - 60),
+            ..Spent::default()
+        });
+        let b = board(&c, "harness", "7d", "", "", "", ("", ""));
+        assert_eq!((b.direct.usd, b.direct.unpriced), (2.5, 0));
+        let j = serde_json::to_value(&b).unwrap();
+        assert_eq!(j["direct"]["note"], DIRECT_NOTE);
+        assert!(j["live"].get("reserve_spend").is_some());
     }
 }
