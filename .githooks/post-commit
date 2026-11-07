@@ -1,15 +1,19 @@
 #!/bin/bash
-# Post-commit hook to automatically sync AI rules and MCP config
-# when source files are changed.
+# Post-commit hook: re-run the live AI config sync when a commit changes the sync script.
+#
+# Main checkout only. The sync rewrites ~/.codex, ~/.gemini and ~/.config/opencode, so a
+# commit in a worktree would deploy unmerged sources (it did, during #1211).
+# tests/unit/post_commit_sync.bats pins this.
 
 set -euo pipefail
 
-DOTFILES_ROOT="${DOTFILES_ROOT:-$HOME/.dotfiles}"
-SYNC_SCRIPT="$DOTFILES_ROOT/.config/codex/sync-ai-global-config.sh"
-SOURCE_DIR=".config/rulesync-global"
+DOTFILES_ROOT="$HOME/.dotfiles"
+SYNC_PATH=".config/codex/sync-ai-global-config.sh"
+SYNC_SCRIPT="$DOTFILES_ROOT/$SYNC_PATH"
 
-# Only run if files in the rulesync source or the sync script itself changed in the last commit
-if git diff-tree --no-commit-id --name-only -r HEAD | grep -qE "^(${SOURCE_DIR}/|${SYNC_SCRIPT#$DOTFILES_ROOT/})"; then
+[ "$(git rev-parse --show-toplevel)" = "$(cd "$DOTFILES_ROOT" 2>/dev/null && pwd -P)" ] || exit 0
+
+if git diff-tree --no-commit-id --name-only -r HEAD | grep -qxF "$SYNC_PATH"; then
     echo "Changes detected in AI configuration source. Syncing..."
     if [ -f "$SYNC_SCRIPT" ]; then
         bash "$SYNC_SCRIPT"

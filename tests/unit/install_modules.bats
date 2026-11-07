@@ -80,3 +80,17 @@ setup() {
   [[ -n "$PACKAGES_MUSIC_ARCH" ]]
   [[ " $INSTALL_OPTIONAL_MODULES " == *" music "* ]]
 }
+
+@test "the private overlay gets its hooks wired by the installer" {
+  mkdir -p "$HOME/.dotfiles-private"
+  git init -q "$HOME/.dotfiles-private"
+  bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\nexit 0\n' >"$bin/stow"
+  chmod +x "$bin/stow"
+  deploy_skills() { :; }
+  PATH="$bin:$PATH" run setup_dotfiles_private
+  assert_success
+  run git -C "$HOME/.dotfiles-private" config core.hooksPath
+  assert_output ".githooks"
+}
