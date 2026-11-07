@@ -19,6 +19,7 @@
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource>   a started item back in the queue, held on that agent-hold
+#   reopen <slug> [--to running|waiting] [--why text]   a falsely-done item back to running (or waiting), its row started again
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 #   admission [--json]    the backlog an automated add is admitted under, its limit, and the adds held in 7 days
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
@@ -1316,6 +1317,47 @@ cmd_requeue() {
   cmd_move "$slug" queued
 }
 
+# reopen <slug> [--to running|waiting] [--why <text>] -- put back an item a false close finished,
+# such as a reap that read a live session as gone (ar-900, 2026-11-07: the shepherd had to move the
+# file under the lock by hand). The latest done item with the slug goes to running (or waiting) with
+# its session: and sessions: as they were, so the next reap reads it live again; status: and
+# finished: go, note: says why. Its board row, which the close un-started, is started again.
+# Refused for a slug still active, and for a landed item (merged:): new work under it is add --repeat.
+cmd_reopen() {
+  local usage="usage: agent-queue reopen <slug> [--to running|waiting] [--why text]"
+  local slug="${1:?$usage}" to=running why="" f dest status row prof flag=()
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --to) to="${2:?--to needs a state}"; shift 2 ;;
+      --why) why="${2:?--why needs a reason}"; shift 2 ;;
+      *) die "$usage" ;;
+    esac
+  done
+  case "$to" in running | waiting) ;; *) die "reopen goes to running or waiting, not $to" ;; esac
+  case "$why" in *$'\n'*) die "--why is one line" ;; esac
+  lock
+  [ -z "$(find_item "$slug")" ] || die "$slug is still active: nothing to reopen"
+  f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
+  [ -z "$(fm_get "$f" merged)" ] || die "$slug landed (merged: $(fm_get "$f" merged)); new work under it is agent-queue add --repeat"
+  status="$(fm_get "$f" status)"
+  header_del "$f" status finished
+  [ "$to" = running ] || header_set "$f" waiting "$(now_utc)"
+  header_set "$f" note "reopened from done ($status)${why:+: $why}"
+  dest="$(move_to "$f" "$to")" || die "could not move $f"
+  item_event item-moved "$dest" --to "$to" --why "done ($status) -> $to: reopened${why:+: $why}"
+  echo "$slug: done -> $to (reopened, was $status)"
+  # The row, through notes, the rows' one writer; a row already started is left as it is.
+  row="$(fm_get "$dest" row)" prof="$(fm_get "$dest" profile)"
+  [ -n "$row" ] && [ -n "$prof" ] || return 0
+  [ "$(fm_get "$dest" lane)" = human ] || flag=(--agent)
+  if notes --profile "$prof" ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1; then
+    echo "$slug: board row ${row#*:} started again"
+  else
+    echo "agent-queue: $slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again" >&2
+  fi
+}
+
 # lane_outcome <lane_run> <from> <to> <status> -- the model-lane run a dispatch start logged gets
 # what became of it: done ok is ok, done failed is failed, and a started item put back in the queue
 # is redo. Every close goes through move (agent-land, the reap, a hand close), so this is the one
@@ -1492,7 +1534,7 @@ cmd_stats() {
 
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | bump | set | attribute | move | requeue | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | bump | set | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;

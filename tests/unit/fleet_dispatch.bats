@@ -2456,6 +2456,8 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   mkdir -p "$HOME/.agent/parked"; : > "$HOME/.agent/parked/game-agent-2:1"
   stub agent-panel 'echo "{\"target\":\"lab/game-agent-5:1\",\"status\":\"busy\",\"session_id\":\"s5\"}"'
   stub agent-ask 'exit 0'
+  export DISPATCH_REAP_CONFIRM=0   # the second witness has its own test
+  cmd_reap >/dev/null
   run cmd_reap
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gone.md 2>/dev/null)" ] || fail "an item whose claude exited stayed active"
@@ -2469,6 +2471,8 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   sed -i '/^session: *$/d; s/^agent: claude/agent: claude\nsessions: h3/' "$AGENT_QUEUE_DIR"/running/*-hublive.md
   stub agent-panel 'echo "{\"target\":\"hub/dotfiles:2\",\"status\":\"idle\",\"session_id\":\"h3\"}"'
   stub agent-ask 'exit 0'
+  export DISPATCH_REAP_CONFIRM=0   # the second witness has its own test
+  cmd_reap >/dev/null
   run cmd_reap
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-hubgone.md 2>/dev/null)" ] || fail "a hub item with no live session stayed active"
@@ -2477,8 +2481,44 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   stub agent-panel 'exit 0'
   started_item hubblind ''
   sed -i '/^session: *$/d; s/^agent: claude/agent: claude\nsessions: h9/' "$AGENT_QUEUE_DIR"/running/*-hubblind.md
+  cmd_reap >/dev/null
   run cmd_reap
   [ -n "$(qitem running hubblind)" ] || fail "reaped on an empty panel"
+}
+
+# 2026-11-07 ar-900: one agent-panel read under load 33 left a live session out, and reap failed an
+# urgent item whose re-read a minute later listed it. A miss is one witness; the gone verdict needs a
+# second reap, DISPATCH_REAP_CONFIRM seconds or more later, that misses it too.
+@test "reap fails a live-looking item only on two misses: one miss keeps it, a sighting between resets it, a quick re-run is no witness" {
+  project game beta "$SANDBOX/repos/game"
+  started_item flaky lab:game-agent-1 '' '' board:game:gm-7
+  sed -i 's/^agent: claude/agent: claude\nsessions: s1\nrow: game:gm-7/' "$AGENT_QUEUE_DIR"/running/*-flaky.md
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-ask 'exit 0'
+  miss() { stub agent-panel 'echo "{\"target\":\"lab/other-agent-9:1\",\"status\":\"busy\",\"session_id\":\"s9\"}"'; }
+  seen() { stub agent-panel 'echo "{\"target\":\"lab/game-agent-1:1\",\"status\":\"busy\",\"session_id\":\"s1\"}"'; }
+  mark="$FLEET_DISPATCH_DIR/reap-miss/flaky"
+  # The 09:35 read: a non-empty panel that leaves the session out. One miss is not the verdict.
+  miss; run cmd_reap; assert_success
+  [ -n "$(qitem running flaky)" ] || fail "one agent-panel miss failed the item"
+  [ -s "$mark" ] || fail "the miss was not recorded"
+  # A re-run seconds later shares the same load, so it is no second witness.
+  run cmd_reap
+  [ -n "$(qitem running flaky)" ] || fail "a re-run inside DISPATCH_REAP_CONFIRM counted as a second witness"
+  # The next read lists it: the miss is forgotten, and a later single miss starts over.
+  seen; run cmd_reap
+  [ -n "$(qitem running flaky)" ] && [ ! -e "$mark" ] || fail "a sighting did not clear the miss"
+  miss; run cmd_reap
+  [ -n "$(qitem running flaky)" ] || fail "a miss after a sighting failed the item"
+  # A second miss a reap later (the mark aged past DISPATCH_REAP_CONFIRM) settles it, and clears the mark.
+  echo $(( $(date +%s) - DISPATCH_REAP_CONFIRM - 1 )) > "$mark"
+  run cmd_reap; assert_success
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-flaky.md 2>/dev/null)" ] || fail "two misses a reap apart did not settle the item"
+  [ ! -e "$mark" ] || fail "the settled item kept its mark"
+  # A mark whose item is no longer active is pruned, so a later item under the slug starts clean.
+  date +%s > "$FLEET_DISPATCH_DIR/reap-miss/closed-meanwhile"
+  run cmd_reap
+  [ ! -e "$FLEET_DISPATCH_DIR/reap-miss/closed-meanwhile" ] || fail "a mark for an inactive slug survived the reap"
 }
 
 @test "reap moves nothing when it cannot read the sessions or the asks" {
@@ -3461,9 +3501,9 @@ OUT
   stub agent-ask 'exit 0'
   run cmd_reap
   [ -n "$(qitem waiting cx)" ] || fail "a codex item's thread ids flipped it to running"
-  # a running item whose lane went to another Claude settles on its open PR
+  # a running item whose lane went to another Claude settles on its open PR: the passes above missed it once already
   agent-queue move fix-crash running >/dev/null
-  run cmd_reap
+  DISPATCH_REAP_CONFIRM=0 run cmd_reap
   assert_output --partial 'waiting queue item fix-crash (PR o/game#12 open'
   # its own Claude back on the panel: running is left alone
   agent-queue move fix-crash running >/dev/null
@@ -4610,6 +4650,8 @@ codex_room() { stub agent-codex "echo \"agent-codex \$*\" >> \"\$NOTES_FIXTURE/c
   printf 'game-agent-%s\n' 1 2 > "$NOTES_FIXTURE/tmux.sessions.lab"
   stub agent-panel 'echo "{\"target\":\"lab/game-agent-9:1\",\"status\":\"busy\",\"session_id\":\"s9\"}"'
   stub agent-ask 'exit 0'
+  export DISPATCH_REAP_CONFIRM=0   # a miss settles on the second reap
+  "$REPO_ROOT/.local/bin/fleet-dispatch" reap >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" reap
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-lazer.md 2>/dev/null)" ] || fail "a claude-lazer item whose claude exited stayed active"
@@ -4751,6 +4793,8 @@ sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.l
   sed -i 's/^agent: claude/agent: lazer-reserve/' "$AGENT_QUEUE_DIR"/running/*-spilled.md
   stub agent-panel 'echo "{\"target\":\"lab/game-agent-9:1\",\"status\":\"busy\",\"session_id\":\"s9\"}"'
   stub agent-ask 'exit 0'
+  export DISPATCH_REAP_CONFIRM=0   # a miss settles on the second reap
+  "$REPO_ROOT/.local/bin/fleet-dispatch" reap >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" reap
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-spilled.md 2>/dev/null)" ] || fail "a spilled item whose claude exited stayed active"
