@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-CONFIG_DIR="${HOME}/.config/agentctl/agents"
+CONFIG_DIR="${AGENTCTL_CONF_DIR:-${HOME}/.config/agentctl/agents}"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 # ONE state dir, reachable under EITHER name.
 #
@@ -123,9 +123,9 @@ load_agent() {
             || { printf 'invalid RANDOM_DELAY=%s (a span like 5min, or 0)\n' "$RANDOM_DELAY" >&2; exit 1; }
         # SKILL is optional: the skill or command that owns the runner's job (its procedure,
         # or the docs describing it). Blank on purpose for a runner with no owner. It is an
-        # owner link, not a prompt: nothing builds a run from it, so a name that resolves to
-        # nothing must not make the conf invalid (install would drop the runner's timer for
-        # a doc field). It is reported as SKILL_FOUND=no instead, which `list` and
+        # owner link, not a prompt: a runner script reads it (`agentctl skill`) to name the skill
+        # it starts, but a name that resolves to nothing must not make the conf invalid (install
+        # would drop the runner's timer for a doc field). It is reported as SKILL_FOUND=no instead, which `list` and
         # `list --md` show and `fleet-bench triage --coverage` counts.
         SKILL_FOUND=-
         if [ -n "${SKILL:-}" ]; then
@@ -465,6 +465,27 @@ cmd_list_md() {
     done
     [ "${#invalid[@]}" -eq 0 ] || printf '\nInvalid (see `agentctl list`): %s\n' "${invalid[*]}"
     return 0
+}
+
+# skill <name>: the skill or command the runner's conf names (empty when it names none), so a
+# script that starts that skill reads the name from the conf instead of holding a copy.
+# skill --dangling: each runner whose SKILL resolves to nothing, as "<runner> SKILL=<name>", exit 1
+# when there is one (fleet-bench triage --coverage counts these).
+cmd_skill() {
+    local name conf bad=0
+    case "${1:-}" in
+        "") die "usage: agentctl skill <name> | --dangling" ;;
+        --dangling)
+            while read -r name; do
+                conf=$(load_agent "$name" 2>/dev/null) || continue
+                [ "$(kv_get SKILL_FOUND <<<"$conf")" = no ] || continue
+                printf '%s SKILL=%s\n' "$name" "$(kv_get SKILL <<<"$conf")"; bad=1
+            done < <(list_agent_names)
+            return "$bad" ;;
+        *)
+            conf=$(load_agent "$1") || die "cannot read agent: $1"
+            kv_get SKILL <<<"$conf" ;;
+    esac
 }
 
 cmd_list() {
@@ -857,6 +878,7 @@ Usage:
   agentctl list                  Runners grouped by lane: state, last verdict and age, next run, purpose
   agentctl list --md             The runner catalog: trigger, role, model, effect, purpose (from the confs)
   agentctl status <name>         Detailed status for one agent
+  agentctl skill <name>          The skill its conf names (SKILL=); --dangling lists those that name nothing
   agentctl budget                Spend against each runner's caps today (lib/budget.sh)
   agentctl budget <n> raise <usd> [calls]  Lift <n>'s day cap (and hour cap) for the rest of today
   agentctl report [k=v ...]      Publish this runner's status (runner-side; see below)
@@ -938,6 +960,7 @@ case "${1:-}" in
     status)            shift; cmd_status "$@" ;;
     budget)            shift; cmd_budget "$@" ;;
     report)            shift; cmd_report "$@" ;;
+    skill)             shift; cmd_skill "$@" ;;
     start)             shift; cmd_start "$@" ;;
     stop)              shift; cmd_stop "$@" ;;
     restart)           shift; cmd_restart "$@" ;;
