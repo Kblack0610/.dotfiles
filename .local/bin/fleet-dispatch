@@ -1429,10 +1429,10 @@ item_brief() {
   fi
   if [ -n "$row" ] && [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, promoted from a board row that is already started. Open the PR and do not merge: the human's merge closes the row."
-    echo "When the PR is open: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok"
+    echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug waiting (fleet-dispatch reap closes it once the PR merges)"
   elif [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, and that item is its only record: touch no board or sheet row for it."
-    echo "When the PR is open: agent-queue set $slug pr=<N>; agent-queue move $slug done --status ok"
+    echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug waiting (fleet-dispatch reap closes it once the PR merges)"
   else
     echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, and that item is its record: touch no other board or sheet row."
     echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
@@ -1524,26 +1524,30 @@ settle_row() {
 # pr_state <owner/repo#N> -> "<state> <merge oid>" as gh reads it; fails when gh cannot.
 pr_state() { gh pr view "${1##*#}" -R "${1%#*}" --json state,mergeCommit -q '.state + " " + (.mergeCommit.oid // "")' 2>/dev/null; }
 
-# land_orphan <slug> -- a started row whose item ended ok, closed by its session before the PR merged
-# (a --pr-only run, a human's merge): the row goes by that PR, not by the orphan timer. A merged:
+# item_pr_state <slug> <item json> -> "<state> <merge oid>" of the item's PR; fails when gh cannot read
+# it. A bare pr: names no repo and one project spans repos, so it reads from the project's checkout
+# and prints nothing unless a line of the PR's body is exactly the item's `Item:` stamp.
+item_pr_state() {
+  local pr dir
+  pr=$(jq -r '.pr // ""' <<<"$2")
+  if [[ "$pr" == */*#* ]]; then pr_state "$pr"; return; fi
+  dir=$(repo_dir "$(jq -r .project <<<"$2")")
+  [ -n "$pr" ] && [ -n "$dir" ] || return 1
+  (cd "$dir" && gh pr view "$pr" --json state,mergeCommit,body -q \
+    "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | .state + \" \" + (.mergeCommit.oid // \"\")" 2>/dev/null)
+}
+
+# land_orphan <slug> -- a started row whose item ended ok before its PR merged (closed by hand
+# before agent-queue refused that): the row goes by that PR, not by the orphan timer. A merged:
 # commit, or a PR gh reads as MERGED (then recorded), goes to close_row; OPEN leaves it started for the
 # merge. Returns 1 when no PR holds the row, so the timer decides: no PR, closed unmerged, or unreadable
-# (a Forgejo PR, which gh cannot see, needs merged: on the item). A bare pr: names no repo and one
-# project spans repos, so it reads from the project's checkout and counts only if a line of the PR's
-# body is exactly the item's `Item:` stamp.
+# (a Forgejo PR, which gh cannot see, needs merged: on the item).
 land_orphan() {
-  local it pr oid dir info state
+  local it oid info state
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 1
-  IFS=$'\x1f' read -r pr oid < <(jq -r '[.pr // "", .merged // ""] | join("\u001f")' <<<"$it")
+  oid=$(jq -r '.merged // ""' <<<"$it")
   if [ -z "$oid" ]; then
-    if [[ "$pr" == */*#* ]]; then
-      info=$(pr_state "$pr") || return 1
-    else
-      dir=$(repo_dir "$(jq -r .project <<<"$it")")
-      [ -n "$pr" ] && [ -n "$dir" ] || return 1
-      info=$(cd "$dir" && gh pr view "$pr" --json state,mergeCommit,body -q \
-        "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | .state + \" \" + (.mergeCommit.oid // \"\")" 2>/dev/null) || return 1
-    fi
+    info=$(item_pr_state "$1" "$it") || return 1
     read -r state oid <<<"$info"
     case "$state" in
     OPEN) return 0 ;;
@@ -1601,25 +1605,29 @@ unstart_orphans() {
 }
 
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
-# Still open, it goes by its PR's state, read from gh for an <owner>/<repo>#<N> pr: MERGED is done
-# ok (and a board row still started closes on merge proof, close_row), OPEN waits in waiting/ for
-# the merge, CLOSED is failed; a state gh cannot read leaves it for the next pass. A bare-number
-# pr: names no repo, so it is taken as merged, as before. No PR but a `report` (a doc+ask kind's
+# Still open, it goes by its PR's state (merged: when the item has one, else item_pr_state): MERGED records merged: and is done ok (and
+# a board row still started closes on merge proof, close_row), OPEN waits in waiting/ for the merge
+# (where a --pr-only run leaves it), CLOSED is failed; a state gh cannot read, or a bare pr: whose PR
+# lacks the item's stamp, leaves it for the next pass. No PR but a `report` (a doc+ask kind's
 # doc, a stack-review report) is done ok: that was the deliverable. Neither is failed, the reason in note.
-# Every move is a compare-and-set on the state read here (`--if`), and the note or merged: is
-# written only after it: an item its session closed or a human requeued meanwhile is left as it is.
+# Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
+# it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
+# since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
 settle_item() {
-  local st pr report info state oid; st=$(item_state "$1")
+  local st it pr report info state oid; st=$(item_state "$1")
   case "$st" in running | waiting | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
-  dispatch_event reaped "$(agent-queue show "$1" --json 2>/dev/null | jq -r '.project // empty')" "session $2 gone" --item "$1" --why "item was $st"
-  IFS=$'\x1f' read -r pr report < <(agent-queue show "$1" --json 2>/dev/null | jq -r '[.pr // "", .report // ""] | join("\u001f")')
-  if [[ "$pr" == */*#* ]]; then
-    info=$(pr_state "$pr") || info=''
-    read -r state oid <<<"$info"
+  it=$(agent-queue show "$1" --json 2>/dev/null)
+  dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
+  IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
+  if [ -n "$pr" ]; then
+    if [ -n "$oid" ]; then state=MERGED
+    else info=$(item_pr_state "$1" "$it") || info=''; read -r state oid <<<"$info"
+    fi
     case "$state" in
     MERGED)
+      [ -n "$oid" ] || { logline "reaped $2: queue item $1 left: PR $pr merged with no merge commit gh could read"; return 0; }
+      agent-queue set "$1" "merged=$oid" >/dev/null || return 0
       agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
-      [ -z "$oid" ] || agent-queue set "$1" "merged=$oid" >/dev/null
       logline "reaped $2: session gone, queue item $1 done, PR $pr merged"
       close_row "$1" ;;
     OPEN)
@@ -1635,9 +1643,6 @@ settle_item() {
       echo "failed queue item $1 (PR $pr closed unmerged)" ;;
     *) logline "reaped $2: queue item $1 left: gh could not read PR $pr" ;;
     esac
-  elif [ -n "$pr" ]; then
-    agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
-    logline "reaped $2: session gone, queue item $1 done with PR $pr"
   elif [ -n "$report" ]; then
     agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
     logline "reaped $2: session gone, queue item $1 done with its report $report"

@@ -440,6 +440,32 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ -z "$(field "$(item queued rq)" lane_run)" ]
 }
 
+@test "done ok refuses an item with pr: and no merged:, and its after: item stays queued" {
+  "$AQ" add --project game --running --slug p "p" >/dev/null
+  "$AQ" add --project game --slug next --after p "next" >/dev/null
+  "$AQ" set p pr=o/game#9999 >/dev/null
+  run "$AQ" move p done --status ok
+  assert_failure
+  assert_output --partial 'p has pr:o/game#9999 and no merged:'
+  assert_output --partial 'agent-land'
+  [ -f "$(item running p)" ]
+  [ -f "$(item queued next)" ]
+  ! grep -q '^fleet-dispatch' "$NOTES_FIXTURE/calls.log" 2>/dev/null || fail "started next on an unmerged close"
+  # The ways out: waiting until it merges, or a close that is not ok.
+  "$AQ" move p waiting
+  "$AQ" move p done --status failed
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-p.md)" status)" = failed ]
+}
+
+@test "done ok closes an item with pr: once merged: is set (negative control)" {
+  "$AQ" add --project game --running --slug m2 "m2" >/dev/null
+  "$AQ" set m2 pr=o/game#9999 merged=abc123 >/dev/null
+  run "$AQ" move m2 done --status ok
+  assert_success
+  assert_output --partial 'm2: running -> done'
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-m2.md)" status)" = ok ]
+}
+
 @test "a failing model-lane never fails the move" {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/model-lane"; chmod +x "$SANDBOX/bin/model-lane"
   "$AQ" add --project game --running --slug m "m" >/dev/null; "$AQ" set m lane_run=r1 >/dev/null
@@ -1292,7 +1318,7 @@ STUB
 @test "every item write appends one queue event naming the item, its row and its PR" {
   story_notes
   "$AQ" add --project game --from board:level:lv-2 --slug chain "x" >/dev/null
-  "$AQ" set chain pr=o/r#7 >/dev/null
+  "$AQ" set chain pr=o/r#7 merged=0123abcd >/dev/null
   "$AQ" move chain running >/dev/null
   "$AQ" move chain done --status ok >/dev/null
   "$AQ" add --project game --from board:level:lv-3 --slug gone "y" >/dev/null
