@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use hub_core::costs::tokens as count;
 use hub_core::fleet::runner::{Extras, Runner, Totals};
-use hub_core::fleet::tokens::{Share, Tokens};
+use hub_core::fleet::tokens::{Count, Langfuse, Share, Tokens};
 use hub_core::fleet::who::{self, Who};
 use hub_core::fleet::{AskVerdict, Dispatch, Eval, Fleet, Judge, Registry, ASK_FILTERS};
 use hub_core::prom::Series;
@@ -166,6 +166,154 @@ pub fn tokens(
         w,
     ));
     out
+}
+
+/// What Langfuse sees: the newest snapshot's tool latency, tool errors and gateway figures. `open`
+/// is the human's fold (`l`); None leaves it to the section's state: shut while it reads, open
+/// while amber, which is no figures that night or a stale snapshot (dashboards rule 4). The
+/// gateway's dollars are the gateway's alone, never summed with the Claude sessions' (Costs).
+pub fn langfuse(
+    t: Option<&Tokens>,
+    open: Option<bool>,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    const TITLE: &str = "WHAT LANGFUSE SEES";
+    let Some(t) = t else { return vec![] };
+    let f = t.langfuse.figures.as_ref();
+    let amber = f.is_none() || t.stale;
+    let open = open.unwrap_or(amber);
+    let (mark, verb) = if open { ("-", "folds") } else { ("+", "opens") };
+    let mut head = vec![Span::styled(format!("{mark} {TITLE}"), p.head())];
+    match f {
+        None => head.push(Span::styled(
+            format!("  no figures in snapshot {}", t.date),
+            p.warn(),
+        )),
+        Some(f) => {
+            let (lead, tool, gw, style) = if t.stale {
+                (format!("  stale {}: ", t.date), "tool", "gateway", p.warn())
+            } else {
+                ("  ".to_string(), "tool errors", "gateway errors", p.dim())
+            };
+            head.push(Span::styled(
+                format!(
+                    "{lead}{tool} {}, {gw} {}, {}",
+                    pct(f.tool_error_share),
+                    pct(f.gateway_error_share),
+                    usd(Some(f.gateway_cost_usd)),
+                ),
+                style,
+            ));
+        }
+    }
+    head.push(Span::styled(format!("  l {verb} it"), p.dim()));
+    let mut out = vec![clip_line(Line::from(head), w)];
+    if !open {
+        return out;
+    }
+    let Some(f) = f else {
+        let why = t.langfuse.why.as_deref().unwrap_or(
+            "the snapshot has no langfuse section: written before the reader, or the run stopped",
+        );
+        out.push(clip_line(Line::styled(format!("  {why}"), p.warn()), w));
+        return out;
+    };
+    out.extend(langfuse_tools(f, p, w));
+    let classes = |cs: &[Count]| match cs {
+        [] => "none".to_string(),
+        cs => cs
+            .iter()
+            .map(|c| format!("{} {}", c.name, c.n))
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    let partial = if f.truncated {
+        " (classes partial)"
+    } else {
+        ""
+    };
+    out.push(clip_line(
+        Line::styled(
+            format!(
+                "  tool errors: {} of {} executions ({}){partial}",
+                f.tool_errors,
+                f.tool_executions,
+                classes(&f.tool_error_classes)
+            ),
+            p.dim(),
+        ),
+        w,
+    ));
+    let models = f
+        .gateway_models
+        .iter()
+        .map(|m| format!("{} {}", m.model, usd(Some(m.cost_usd))))
+        .chain((f.gateway_other_models > 0).then(|| format!("{} more", f.gateway_other_models)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    out.push(clip_line(
+        Line::styled(
+            format!(
+                "  gateway: {} calls, {} errors ({}), {} tokens",
+                f.gateway_calls,
+                f.gateway_errors,
+                classes(&f.gateway_error_classes),
+                kilo(f.gateway_tokens),
+            ),
+            p.dim(),
+        ),
+        w,
+    ));
+    out.push(clip_line(
+        Line::styled(
+            format!(
+                "  gateway dearest: {}",
+                if models.is_empty() { "none" } else { &models }
+            ),
+            p.dim(),
+        ),
+        w,
+    ));
+    out.push(clip_line(
+        Line::styled(
+            "  agent-usage langfuse, nightly; gateway only, Claude sessions: 0 Costs",
+            p.dim(),
+        ),
+        w,
+    ));
+    out
+}
+
+fn langfuse_tools(f: &Langfuse, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let ms = |ms: u64| {
+        if ms >= 1000 {
+            format!("{:.1}s", ms as f64 / 1000.0)
+        } else {
+            format!("{ms}ms")
+        }
+    };
+    let rows = f
+        .tools
+        .iter()
+        .map(|t| {
+            vec![
+                t.tool.clone().into(),
+                t.calls.to_string().into(),
+                ms(t.p50_ms).into(),
+                ms(t.p95_ms).into(),
+                dur(t.total_s as f64).into(),
+            ]
+        })
+        .collect();
+    Table {
+        header: vec!["SLOWEST TOOLS", "CALLS", "P50", "P95", "TOTAL"],
+        rows,
+        keep: vec![0, 4, 3, 1, 2],
+        right: vec![1, 2, 3, 4],
+        ..Default::default()
+    }
+    .fit(w, p.head())
 }
 
 fn token_table(title: &'static str, rows: &[Share], p: Palette, w: usize) -> Vec<Line<'static>> {
@@ -1011,7 +1159,7 @@ fn why(x: &AskVerdict) -> String {
 pub mod tests {
     use super::*;
     use crate::fit::plain;
-    use hub_core::fleet::tokens::Split;
+    use hub_core::fleet::tokens::{LangfuseView, LfModel, LfTool, Split};
     use hub_core::fleet::who::Opens;
     use hub_core::fleet::{
         Bar, Call, Calls, JudgeWeek, Outcome, RunnerScore, Score, Verdict, Worker,
@@ -1652,7 +1800,112 @@ pub mod tests {
             stale,
             week: split(18_000_000_000),
             day: split(3_900_000_000),
+            langfuse: LangfuseView {
+                figures: Some(lf_fixture()),
+                why: None,
+            },
         }
+    }
+
+    fn lf_fixture() -> Langfuse {
+        Langfuse {
+            tools: vec![LfTool {
+                tool: "Bash".into(),
+                calls: 35_243,
+                p50_ms: 99,
+                p95_ms: 17_487,
+                total_s: 224_341,
+            }],
+            tool_executions: 38_947,
+            tool_errors: 854,
+            tool_error_share: Some(0.0219),
+            tool_error_classes: vec![Count {
+                name: "ShellError".into(),
+                n: 781,
+            }],
+            gateway_calls: 194,
+            gateway_errors: 26,
+            gateway_error_share: Some(0.134),
+            gateway_error_classes: vec![Count {
+                name: "invalid_key".into(),
+                n: 16,
+            }],
+            gateway_cost_usd: 3.59,
+            gateway_tokens: 2_271_863,
+            gateway_models: vec![LfModel {
+                model: "claude-sonnet-5.5".into(),
+                calls: 33,
+                errors: 0,
+                cost_usd: 3.45,
+            }],
+            gateway_other_models: 14,
+            truncated: false,
+        }
+    }
+
+    fn lf_text(t: Option<&Tokens>, open: Option<bool>, w: usize) -> Vec<String> {
+        langfuse(t, open, Palette::default(), w)
+            .iter()
+            .map(crate::fit::plain)
+            .collect()
+    }
+
+    #[test]
+    fn the_langfuse_fold_is_one_line_while_it_reads() {
+        let t = token_fixture(false);
+        assert_eq!(
+            lf_text(Some(&t), None, 80),
+            ["+ WHAT LANGFUSE SEES  tool errors 2%, gateway errors 13%, $3.59  l opens it"]
+        );
+        assert!(lf_text(None, None, 80).is_empty());
+    }
+
+    #[test]
+    fn open_it_draws_the_tools_the_error_classes_and_the_gateway_in_80_columns() {
+        let t = token_fixture(false);
+        let l = lf_text(Some(&t), Some(true), 80);
+        let all = l.join("\n");
+        assert!(
+            l[0].starts_with("- WHAT LANGFUSE SEES") && l[0].contains("l folds it"),
+            "{all}"
+        );
+        assert!(
+            all.contains("SLOWEST TOOLS") && all.contains("Bash"),
+            "{all}"
+        );
+        assert!(all.contains("17.5s") && all.contains("99ms"), "{all}");
+        assert!(
+            all.contains("854 of 38947 executions (ShellError 781)"),
+            "{all}"
+        );
+        assert!(
+            all.contains("194 calls, 26 errors (invalid_key 16)"),
+            "{all}"
+        );
+        assert!(
+            all.contains("dearest: claude-sonnet-5.5 $3.45, 14 more"),
+            "{all}"
+        );
+        assert!(l.iter().all(|x| x.chars().count() <= 80), "{all}");
+    }
+
+    #[test]
+    fn no_figures_or_a_stale_snapshot_opens_the_fold_and_says_why() {
+        let mut t = token_fixture(false);
+        t.langfuse = LangfuseView {
+            figures: None,
+            why: Some("no key (rbw langfuse-api)".into()),
+        };
+        let l = lf_text(Some(&t), None, 80);
+        assert!(l[0].contains("no figures in snapshot 2026-11-05"), "{l:?}");
+        assert_eq!(l[1].trim(), "no key (rbw langfuse-api)");
+        assert_eq!(lf_text(Some(&t), Some(false), 80).len(), 1);
+        let stale = token_fixture(true);
+        let l = lf_text(Some(&stale), None, 80);
+        assert!(
+            l[0].starts_with("- WHAT") && l[0].contains("stale 2026-11-05: tool 2%, gateway 13%"),
+            "{l:?}"
+        );
     }
 
     fn token_text(t: Option<&Tokens>, v: TokensView, w: usize) -> Vec<String> {

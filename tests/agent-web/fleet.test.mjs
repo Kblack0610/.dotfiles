@@ -362,3 +362,44 @@ test("the fold keeps what paint remembered, and going stale still opens it", () 
   assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
   f.open = {};
 });
+
+// What Langfuse sees: the newest snapshot's `.langfuse`, folded while it reads.
+const lfFigures = () => ({
+  tools: [{ tool: "Bash", calls: 35243, p50_ms: 99, p95_ms: 17487, total_s: 224341 }],
+  tool_executions: 38947, tool_errors: 854, tool_error_share: 0.0219, tool_error_classes: [{ name: "ShellError", n: 781 }],
+  gateway_calls: 194, gateway_errors: 26, gateway_error_share: 0.134, gateway_error_classes: [{ name: "invalid_key", n: 16 }],
+  gateway_cost_usd: 3.59, gateway_tokens: 2271863, gateway_models: [{ model: "claude-sonnet-5.5", calls: 33, errors: 0, cost_usd: 3.45 }], gateway_other_models: 14, truncated: false,
+});
+const lfTail = (t) => { const f = vm.runInContext("fst", ctx); f.open = {}; return ctx.langfuseSection({ tokens: t }); };
+
+test("the langfuse section is folded while it reads, with both error shares and the gateway's cost on its head", () => {
+  const h = lfTail(tokens({ langfuse: { figures: lfFigures(), why: null } }));
+  assert.doesNotMatch(h, /id="sec-langfuse" open>/);
+  assert.match(h, /tool errors 2%, gateway errors 13%, \$3\.59 gateway/);
+});
+
+test("open, it draws the slowest tools, the error classes and the dearest models", () => {
+  const f = vm.runInContext("fst", ctx);
+  f.open = { langfuse: true };
+  const h = ctx.langfuseSection({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }) });
+  assert.match(h, /<td>Bash<\/td><td class="n">35,243<\/td><td class="n">99ms<\/td><td class="n">17\.5s<\/td>/);
+  assert.match(h, /854 of 38,947 executions \(ShellError 781\)/);
+  assert.match(h, /194 calls, 26 errors \(invalid_key 16\)/);
+  assert.match(h, /claude-sonnet-5\.5 \$3\.45, 14 more/);
+  f.open = {};
+});
+
+test("no figures opens the section amber and says why; a stale snapshot opens it too", () => {
+  const none = lfTail(tokens({ langfuse: { figures: null, why: "no key (rbw langfuse-api)" } }));
+  assert.match(none, /data-k="langfuse-stale" id="sec-langfuse" open>/);
+  assert.match(none, /class="warn">no figures in snapshot 2026-11-05/);
+  assert.match(none, /no key \(rbw langfuse-api\)/);
+  const stale = lfTail(tokens({ stale: true, langfuse: { figures: lfFigures(), why: null } }));
+  assert.match(stale, /data-k="langfuse-stale" id="sec-langfuse" open>/);
+  assert.match(stale, /stale: newest snapshot 2026-11-05/);
+});
+
+test("a snapshot from before the reader has no langfuse key and still draws the amber head", () => {
+  assert.match(lfTail(tokens()), /no figures in snapshot/);
+  assert.equal(ctx.langfuseSection({ tokens: null }), "");
+});

@@ -366,6 +366,8 @@ pub struct App {
     pub fleet_runner: Option<Result<hub_core::fleet::runner::Runner, String>>,
     /// The tokens fold: open or shut, and which window.
     pub fleet_tokens: fleettab::TokensView,
+    /// The Langfuse fold: open or shut, None while it follows its amber state.
+    pub fleet_langfuse: Option<bool>,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -499,6 +501,7 @@ impl App {
             fleet_page: None,
             fleet_runner: None,
             fleet_tokens: Default::default(),
+            fleet_langfuse: None,
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -1633,7 +1636,8 @@ impl App {
     /// `[ ]` step to the previous or next runner and Esc goes back to the tab; on the tab the
     /// table keys (`/ f s S x`), j/k pick a row, Enter opens it (a runner's page, or a session on
     /// the Sessions tab) and `z` folds a tier 1 row's children. `t` opens or folds Where the
-    /// tokens go and `w` switches its window; neither moves the row, so the view stays put.
+    /// tokens go and `w` switches its window, `l` opens or folds What Langfuse sees; none moves
+    /// the row, so the view stays put.
     fn fleet_key(&mut self, k: KeyEvent) -> bool {
         if let Some(page) = self.fleet_page.clone() {
             let names = self.fleet_runners();
@@ -1676,6 +1680,14 @@ impl App {
             }
             KeyCode::Char('w') if tokens.is_some() => {
                 self.fleet_tokens.day = !self.fleet_tokens.day;
+                return true;
+            }
+            KeyCode::Char('l') if tokens.is_some() => {
+                let shown = self.fleet_langfuse.unwrap_or_else(|| {
+                    tokens.is_some_and(|t| t.langfuse.figures.is_none() || t.stale)
+                });
+                self.fleet_langfuse = Some(!shown);
+                self.seek = (!shown).then_some("langfuse");
                 return true;
             }
             _ => {}
@@ -1770,6 +1782,9 @@ impl App {
         }
         if self.tab == Tab::Fleet && sec == "tokens" {
             self.fleet_tokens.open = Some(true);
+        }
+        if self.tab == Tab::Fleet && sec == "langfuse" {
+            self.fleet_langfuse = Some(true);
         }
         if !self.infra_jobs && !self.log_days {
             self.seek = Some(sec);
@@ -2583,7 +2598,7 @@ impl App {
                 "[ ] runner  Esc all runners  j/k PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Fleet => format!(
-                "j/k pick  Enter open  z fold  t tokens  w window  / query  f state  s/S sort  x clear  PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
+                "j/k pick  Enter open  z fold  t tokens  w window  l langfuse  / query  f state  s/S sort  x clear  PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
@@ -2807,7 +2822,14 @@ impl App {
                         now,
                         w,
                     ));
-                    (l, vec![("tokens", at)])
+                    let lf_at = l.len();
+                    l.extend(fleettab::langfuse(
+                        f.tokens.as_ref(),
+                        self.fleet_langfuse,
+                        self.p,
+                        w,
+                    ));
+                    (l, vec![("tokens", at), ("langfuse", lf_at)])
                 }
             },
             // Daily's outbox view: the outbox and today's intake steps (outboxtab.rs); Enter
@@ -4704,6 +4726,23 @@ mod tests {
         a.handle(k(KeyCode::Char('t')));
         assert_eq!(a.fleet_tokens.open, Some(false));
         assert_eq!(a.fleet_sel, sel);
+    }
+
+    #[test]
+    fn l_opens_the_langfuse_fold_and_goes_to_it_and_waits_for_a_snapshot() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = app(Tab::Fleet);
+        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
+        a.handle(k(KeyCode::Char('l')));
+        assert_eq!(a.fleet_langfuse, None, "no snapshot, no fold");
+        let mut f = fleettab::tests::fixture();
+        f.tokens = Some(Default::default());
+        a.handle(Msg::Fleet(Box::new(f)));
+        a.handle(k(KeyCode::Char('l')));
+        assert_eq!(a.fleet_langfuse, Some(false), "no figures opens it by default, so l folds it");
+        a.handle(k(KeyCode::Char('l')));
+        assert_eq!(a.fleet_langfuse, Some(true));
+        assert_eq!(a.seek, Some("langfuse"));
     }
 
     #[test]

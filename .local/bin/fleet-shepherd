@@ -563,7 +563,7 @@ remind_sample() {
     decision="$(remind_decision "$bucket" "$reason" "$pr" "$next" "$plan")"
     # A page agent-notify refused is not recorded, so the next check tries it again. An undelivered
     # one it queues (ntfy down) exits 0 and is flushed by Sentinel.
-    agent-notify -p high -t "$target: one decision closes it" -r "tmux:$target" \
+    agent-notify -p high -k decision -t "$target: one decision closes it" -r "tmux:$target" \
       "$target has sat $(( (now - when) / 3600 ))h since the shepherd told you: $reason. To close it: $decision." >/dev/null 2>&1 || continue
     printf '%s\t%s\t%s\n' "$today" "$sid" "$fact" >> "$REMINDED"
     cmd_log "remind: $target ($reason): $decision" >/dev/null

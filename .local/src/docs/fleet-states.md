@@ -14,7 +14,7 @@ Every view of the agent fleet (phone and Home Assistant, the shepherd, fleet-ben
 | `fleet-state.path` | `tick` when `agent-ask` posts, answers or cancels an ask (it rewrites `~/.agent/asks/.changed`) | A new ask shows as NEEDS within seconds |
 | `fleet-bench sample`, `fleet-shepherd` | `--write`, every 10 minutes and on each shepherd pass | Each needs a pass of its own to act on |
 
-The document is built beside the target and renamed into place, so a reader never sees half of one. A pass that started before the document on disk was generated leaves it alone, so a slow pass cannot overwrite a newer one. `agent-mqtt-sessions.path` watches the file and republishes to Home Assistant when it changes.
+The document is built beside the target and renamed into place, so a reader never sees half of one. A pass that started before the document on disk was generated leaves it alone, so a slow pass cannot overwrite a newer one. After each pass `fleet-state.service` starts `agent-mqtt-sessions.service`, which republishes to Home Assistant.
 
 ## Two fields, never one word
 

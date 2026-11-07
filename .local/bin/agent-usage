@@ -8,7 +8,7 @@
 #   agent-usage backfill <project|--all>     fill telemetry into existing registry lines
 #   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
 #   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--json]   where the window's tokens went, by session too (usage-cleanup)
-#   agent-usage tokens snapshot|line|json|check [--date D]        the nightly token-usage record per day
+#   agent-usage tokens snapshot|line|json|check [--langfuse] [--date D]  the nightly token-usage record per day
 #   agent-usage spend check <window> <max-usd>                    fleet spend over a window vs a ceiling (the claude-spend-* watches)
 #   agent-usage langfuse --since T --until T                      tool latency, tool and gateway errors from Langfuse
 #
