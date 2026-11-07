@@ -1843,8 +1843,8 @@ startup_kpi() {
 
 # sandbox_kpi <now> -> the lane sandbox KPI object, the same shape as comms_kpi. sandboxed_lane_pct: of
 # the named lanes that ran claude or codex in the window (calls.jsonl, agent-run lib/calls.sh), the
-# percent whose newest call ran under a lane sandbox profile (the record's sandbox field; a refusal
-# counts, since that lane is held to its profile). A raw-harness call has no shell to confine.
+# percent whose newest call ran under a lane sandbox profile (the record's sandbox field). A refused
+# run makes no call (lib/sandbox.sh records it elsewhere). A raw-harness call has no shell to confine.
 sandbox_kpi() {
   [ -s "$BENCH_CALLS" ] || { echo '{}'; return 0; }
   jq -nc --argjson t "$1" "$JQ_LIB"'
