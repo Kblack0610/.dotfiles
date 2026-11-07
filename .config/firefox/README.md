@@ -13,7 +13,7 @@ Simple Tab Groups (STG) vs WebExtension new-tab race condition.
 | `chrome/userChrome.css` | `<profile>/chrome/userChrome.css` | Catppuccin Mocha theme |
 | `containers.json` | `<profile>/containers.json` | Multi-account containers |
 | `policies.json` | `<install dir>/distribution/policies.json` | Enterprise policies, extension auto-install |
-| `~/.dotfiles-private/.config/firefox/policies.local.json` | merged into the above by `install.sh` | Personal overlay (Karakeep `@k` search engine + extension). Private because it names LAN hosts; Linux and macOS, not the Windows work machines |
+| `~/.dotfiles-private/.config/firefox/policies.local.json` | merged into the above by `install.sh` | Personal overlay (Karakeep `@k` search engine + extension). Private because it names LAN hosts; merged on Linux and macOS, skipped on the Windows work machines |
 | `mozilla.cfg` | `<install dir>/mozilla.cfg` | Sets new-tab URL natively (bypasses WebExt API) |
 | `autoconfig.js` | `<install dir>/defaults/pref/autoconfig.js` | Bootstraps Firefox to read `mozilla.cfg` |
 | `firefox-autoconfig.hook` | `/etc/pacman.d/hooks/firefox-autoconfig.hook` | Restores `mozilla.cfg` + `autoconfig.js` after `pacman -Syu firefox` |
@@ -21,11 +21,11 @@ Simple Tab Groups (STG) vs WebExtension new-tab race condition.
 | `install.sh` | - | One-shot installer, Linux and macOS |
 
 The new-tab URL is hardcoded in `mozilla.cfg` (`AboutNewTab.newTabURL = ...`).
-Edit that one line to swap targets — local file (`file://...`),
+Edit that one line to swap targets: local file (`file://...`),
 hosted Bonjourr (`https://online.bonjourr.fr/`), `about:home`, or a real site.
 
 If using a `file://` URL, the HTML lives at
-`~/.local/share/firefox-newtab/index.html` (not in this repo — user content).
+`~/.local/share/firefox-newtab/index.html` (not in this repo is user content).
 
 ## Install / re-install
 
