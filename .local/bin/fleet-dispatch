@@ -1203,7 +1203,7 @@ gateway_left() {
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file room
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file room repo dir
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -1243,8 +1243,37 @@ gateway_launch() {
       cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m agent-codex run -m $(printf '%q' "$id")"
       cmd="$cmd --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --color never $(printf '%q' "$brief")"
       ;;
+    claude-cloud)
+      # A Claude cloud session: a fresh GitHub clone on Anthropic's VM, billed to the plan, with none of
+      # this machine's skills, hooks or queue. So only an oneshot item below tier 3 may go, and only
+      # from a GitHub repo; claude-cloud-run keeps the pane until the session's PR is found.
+      [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: a cloud session cannot wait on a plan; $slug is a plan item"; return 2; }
+      [ "$(item_tier "$it")" != 3 ] || { say "start: $slug is tier 3, which merges behind a local gate a cloud session lacks"; return 2; }
+      repo=$(cloud_repo "$cwd") || { say "start: $slug has no GitHub repo for a cloud session to clone: $cwd"; return 2; }
+      # acct is cmd_start's (dynamic scope): the claude account this session bills, recorded as account=.
+      dir=$(account_dir); acct=$(basename "${dir:-main}")
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") $(account_env "$dir")CLOUD_TIMEOUT_MIN=$(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")"
+      cmd="$cmd claude-cloud-run $(printf '%q' "$slug") $(printf '%q' "$repo") $(printf '%q' "$brief")"
+      ;;
     *) say "start: no launcher for harness $harness"; return 2 ;;
   esac
+}
+
+# cloud_repo <dir> -> owner/repo of the GitHub remote a cloud session would clone; rc 1 for any other host.
+cloud_repo() {
+  local url; url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
+  [[ "$url" == *github.com[:/]* ]] || return 1
+  url=${url#*github.com[:/]}; url=${url%.git}
+  [[ "$url" == */* && "$url" != */*/* ]] && printf '%s\n' "$url"
+}
+
+# cloud_routed <slug> -> rc 0 when the queued item is a claude one tagged cloud-ok, which runs in a cloud
+# session: the tag is the human's word that it is self-contained, on GitHub, and needs no local skill.
+# An item that names another model (agent: codex, model: opus) is not routed: the cloud has one model.
+# agent=claude-cloud is what a start recorded, so a re-queued item routes again.
+cloud_routed() {
+  agent-queue show "$1" --json 2>/dev/null |
+    jq -e '((.agent // "claude") | . == "claude" or . == "claude-cloud") and ((.model // "") | . == "" or . == "cloud") and ((" " + (.tags // "") + " ") | contains(" cloud-ok "))' >/dev/null 2>&1
 }
 
 # headless <harness> -- the harness runs to its end with no slash commands, hooks or human at the pane.
@@ -1330,6 +1359,7 @@ cmd_start() {
     fi
   fi
   if [ -n "$item" ] && [ -z "$resume" ]; then
+    [ -n "$harness" ] || [ -n "$model" ] || ! cloud_routed "$item" || harness=claude-cloud
     # Before the lock: model-lane may ask an LLM (20s timeout), and another start must not wait on it.
     verdict=${START_VERDICT:-}; [ -n "$verdict" ] || [ -n "$model" ] || verdict=$(lane_pick "$item" "$harness")
     # One start of a queue item at a time, from the queued check until the item is running: on
@@ -1402,9 +1432,13 @@ cmd_start() {
       # one open while the knob says every session is sandboxed is the failure the knob prevents.
       [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: $item would run on $harness, which cannot enforce lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
       [ -n "$model" ] || model=$(jq -r '.model // empty' <<<"$it")
+      # A cloud session's model is its environment's, so the map's one entry stands for it.
+      [ "$(harness_launcher "$harness")" != claude-cloud ] || model=${model:-cloud}
       gateway_launch "$harness" "$model" "$it" "$(item_brief "$it" "$harness")" || return
-      # What the run bills: the map's `account` for a plan login (codex: chatgpt), else the gateway key.
-      acct=$(jq -r --arg h "$harness" '.harnesses[$h].account // "gateway"' "$HARNESSES") on=$harness
+      # What the run bills: the map's `account` for a plan login (codex: chatgpt), else the gateway key;
+      # a cloud session bills the claude account gateway_launch chose (acct).
+      [ "$(harness_launcher "$harness")" = claude-cloud ] || acct=$(jq -r --arg h "$harness" '.harnesses[$h].account // "gateway"' "$HARNESSES")
+      on=$harness
     fi
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new --server "$server" --detach -c "$cwd" | tail -1)
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
@@ -1417,6 +1451,7 @@ cmd_start() {
     if [ "$harness" = claude ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model"
     # A run pass's spill is not an experiment: it logs under the lane model-lane picked, with its harness.
     elif [ "$origin" = run ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model" "$harness"
+    elif [ "$harness" = claude-cloud ]; then :   # not a pairing the human picked, and no model of ours ran
     else eval_log "$item" "$(item_headline "$it")" "$harness" "$model"
     fi
     dispatch_event started "$project" "$(item_headline "$it")" --item "$item" --to "$server:$session" --why "$model on $on"
@@ -1563,6 +1598,16 @@ item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
   if [[ "$tags" == *" canary "* ]]; then jq -r .task <<<"$it"; return 0; fi
+  if [ "$harness" = claude-cloud ]; then
+    key=$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")
+    jq -r .task <<<"$it"
+    echo
+    echo "This runs in a Claude Code cloud session on a fresh clone of the repo: no local skills, hooks, agent-queue or agent-land. Follow the repo's own CLAUDE.md and tooling."
+    echo "Work on a new branch, run the repo's own tests for what you changed, push, and open a pull request. Never merge it."
+    echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}: fleet-dispatch finds the PR by that line, and the human's merge closes the item."
+    echo "If a step needs a decision from the human, put the question in the PR body, build the rest with that step off, and end the session."
+    return 0
+  fi
   [[ "$tags" == *" night "* ]] && pr_only=' --pr-only'
   load_kinds
   kind=$(jq -r '.type // empty' <<<"$it"); [ -n "$kind" ] || kind=$(row_kind "$(jq -r '.title // .task // ""' <<<"$it")")
