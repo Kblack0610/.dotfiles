@@ -32,7 +32,7 @@
 # A board item starts while the human is away, or within DISPATCH_PRESENT_PER_HOUR while they are here.
 # Facts are code; the judgment (is this row clear, agent-only, in one area and really that tier?)
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
-# row's text, the policy or workers.json changes. A picked row is started on its sheet and added
+# row's text changes or its rule leaves the policy (a policy edit only dates it: judged again, last). A picked row is started on its sheet and added
 # to agent-queue under its id, at its own priority (`from: board:<project>:<id>`); its item gets a detached `wt new` session on the agent world
 # running its kind's entry skill (kinds.json; /one-shot for code), tagged @dispatch; the item records that session. Pause: `agent-hold set dispatch`.
 # `start` is that same launch for a session an agent starts by hand or restores after a reboot.
@@ -786,10 +786,13 @@ judge() {
   # Within a round a cleanup row goes first, and rank already puts it first in its project; ahead of
   # the rounds it took every slot from a project with no cleanup (review of #1222).
   # A row whose old verdict still holds (a policy edit made it stale) goes after every row with
-  # none, so an edit costs the board's new rows nothing.
-  cands=$(jq -sc --argjson prules "$(policy_rules)" --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
+  # none, so an edit costs the board's new rows nothing; a stale dispatch, the verdict that
+  # acts, before a stale skip.
+  rules=$(policy_rules)
+  cands=$(jq -sc --argjson prules "$rules" --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
       ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
-      | map(. as $c | . + {stale: (($by[[.project, .lane, .key] | tostring] // {}) as $d | ($d | usable($prules)) and ($d | holds($c)))})
+      | map(. as $c | . + {stale: (($by[[.project, .lane, .key] | tostring] // {}) as $d
+          | if ($d | usable($prules)) and ($d | holds($c)) then (if $d.verdict == "dispatch" then 1 else 2 end) else 0 end)})
       | rank | to_entries | group_by(.value.project)
       | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
       | sort_by(.row.stale, .round, (.row.cleanup // 1), .i) | .[].row | del(.stale)' <<<"$cands" |
@@ -821,7 +824,6 @@ For every row above, return one verdict in the structured output. Copy project, 
     verdict_errors "$cands" "$JUDGE_WHY" "$cid" >> "$VERDICTS"
     say "judge $JUDGE_WHY"; return 1
   fi
-  rules=$(policy_rules)
   # The reply is the schema's one object (SCHEMA in the agent's conf); prose yields no verdicts.
   verdicts=$(jq -c '.verdicts[]?' <<<"$out" 2>/dev/null |
     jq -c --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg call "$cid" --argjson rules "$rules" \
@@ -939,11 +941,11 @@ cmd_suggest() {
   [ -n "$profs" ] || profs=$DISPATCH_PROFILES
   cands=$(SUGGEST=1 DISPATCH_PROFILES="$profs" VERDICTS=/dev/null cmd_candidates)
   [ -n "$cands" ] || { [ "${1:-}" = --json ] || echo "suggest: no open agent row"; return 0; }
-  jq -sc --argjson prules "$(policy_rules)" --slurpfile v <(latest_verdicts) \
+  jq -sc --arg sig "$(policy_sig)" --argjson prules "$(policy_rules)" --slurpfile v <(latest_verdicts) \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
-      | . + {auto: (.worker != ""), area: (($d.area // "") | ascii_downcase),
+      | . + {auto: (.worker != ""), area: (($d.area // "") | ascii_downcase), stale: ($d != null and $d.verdict != "failed" and $d.policy != $sig),
              verdict: (if $d == null then "unjudged" elif $d.verdict == "failed" then "failed"
                        elif ($d | usable($prules) | not) or ($d | holds($c) | not) then "unjudged" else $d.verdict end)}
       | . + {held: (.area != "" and ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a)) != null),
@@ -958,10 +960,12 @@ cmd_suggest() {
     fi
 }
 
-# latest verdict per row, as JSON lines
+# latest verdict per row, as JSON lines. An `error` record does not replace an earlier verdict: a call
+# that failed or named no rule says nothing about the row, so its stale-but-usable verdict stays
+# and the row is judged again (judged_keys reads the file itself and skips errors).
 latest_verdicts() {
   [ -f "$VERDICTS" ] || return 0
-  jq -sc 'group_by([.project, .lane, .key]) | map(last) | .[]' "$VERDICTS" 2>/dev/null
+  jq -sc 'group_by([.project, .lane, .key]) | map((map(select(.verdict != "error")) | last) // last) | .[]' "$VERDICTS" 2>/dev/null
 }
 
 # picks <candidates> <room> -> the rows to launch: the row's latest verdict is a dispatch made

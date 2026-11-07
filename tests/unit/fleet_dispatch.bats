@@ -2736,17 +2736,23 @@ J
   assert_equal "$(jq -r .verdict <<<"$output")" skip
 }
 
-@test "judge: after a policy edit the rows with no verdict are judged before the ones with a stale verdict" {
+@test "judge: after a policy edit rows with no verdict go first, then a stale dispatch, then a stale skip; a reply that names no rule keeps the stale verdict" {
   stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
-    printf "%s\n" "{\"verdicts\":[]}"'
+    printf "%s\n" "{\"verdicts\":[{\"project\":\"game\",\"lane\":\"agent\",\"key\":\"oldskip\",\"verdict\":\"skip\",\"rule\":\"nope\"}]}"'
   project game beta "$SANDBOX/repos/game"
-  row game agent 'old' "- [ ] old $T"
+  row game agent 'oldskip' "- [ ] oldskip $T"
+  row game agent 'olddisp' "- [ ] olddisp $T"
   row game agent 'fresh' "- [ ] fresh $T"
-  verdict game agent 'old' skip
+  verdict game agent 'oldskip' skip
+  verdict game agent 'olddisp' dispatch
   echo 'policy v2' >> "$DISPATCH_POLICY"
-  DISPATCH_JUDGE_MAX=1 run judge "$(jq -nc --arg l "$(line_of game agent old)" '{project:"game",stage:"beta",lane:"agent",key:"old",text:"- [ ] old",prio:1,line:$l}')
+  cand() { jq -nc --arg k "$1" --arg l "$(line_of game agent "$1")" '{project:"game",stage:"beta",lane:"agent",key:$k,text:("- [ ] " + $k),prio:1,line:$l}'; }
+  DISPATCH_JUDGE_MAX=3 run judge "$(cand oldskip)
+$(cand olddisp)
 $(jq -nc '{project:"game",stage:"beta",lane:"agent",key:"fresh",text:"- [ ] fresh",prio:1}')"
-  assert_equal "$(grep -o '"key":"[a-z]*"' "$NOTES_FIXTURE/prompt" | cut -d'"' -f4 | paste -sd,)" 'fresh'
+  assert_equal "$(grep -o '"key":"[a-z]*"' "$NOTES_FIXTURE/prompt" | cut -d'"' -f4 | paste -sd,)" 'fresh,olddisp,oldskip'
+  # The reply named a rule the policy lacks: that is an error record, and it leaves both stale verdicts in force.
+  assert_equal "$(latest_verdicts | jq -r 'select(.key == "oldskip" or .key == "olddisp") | .verdict' | paste -sd,)" 'dispatch,skip'
 }
 
 @test "judge shares a capped batch across projects: each project's best row, then each one's next" {
