@@ -1161,7 +1161,7 @@ pr_ci() {
 }
 
 cmd_review() {
-  local t since cfg new repo num sid row n=0 red=0 msg days=''
+  local t since cfg new repo num sid row n=0 red=0 failed=0 msg days=''
   case "${1:-}" in
     '') ;;
     --days) days=${2:-}; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench review [--days N]"; return 2; } ;;
@@ -1178,12 +1178,17 @@ cmd_review() {
     [ -n "$repo" ] || continue
     if ! row=$(pr_ci "$repo" "$num" "$sid" "$cfg"); then
       say "gh failed counting $repo#$num"
-      report_outcome FAILED "gh failed counting CI"
-      return 1
+      failed=$((failed + 1))
+      continue
     fi
     printf '%s\n' "$row" >> "$CI"
     n=$((n + 1)); red=$((red + $(jq .ci_red <<<"$row")))
   done <<<"$new"
+  # a PR with no row is picked up by the next run, so one bad PR never holds back the rest
+  if [ "$failed" -gt 0 ]; then
+    report_outcome FAILED "gh failed counting $failed PRs, $n counted"
+    return 1
+  fi
   if [ "$n" -eq 0 ]; then
     report_outcome NOOP "nothing new merged in the window"
     return 0

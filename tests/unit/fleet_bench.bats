@@ -612,6 +612,25 @@ merged_pr() {
   assert_output FAILED
 }
 
+@test "one PR gh cannot count is FAILED, the rest are counted, and the next run picks it up" {
+  stub_review
+  merged_pr s1 7 35
+  merged_pr s2 8 35
+  merged_pr s3 9 35
+  mv "$GHD/pr-8.json" "$GHD/held"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_failure
+  run jq -s -c 'map(.number) | sort' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7,9]'
+  run outcome
+  assert_output FAILED
+  mv "$GHD/held" "$GHD/pr-8.json"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -s -c 'map(.number) | sort' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7,8,9]'
+}
+
 # sections_map: o/r has sections, its gate is the Tests workflow
 sections_map() {
   export BENCH_PROJECT_MAP="$SANDBOX/project-map.json"
