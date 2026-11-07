@@ -855,6 +855,24 @@ done_from_inside() {
   assert_line --index 1 --partial 'aa-super'
 }
 
+@test "gc judges a dot-prefixed worktree" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/.repo-agent-1" -b dotted
+  run cmd_gc -n
+  assert_success
+  assert_output --partial '.repo-agent-1'
+  assert_output --partial '1 of 1 reapable'
+}
+
+@test "gc leaves a dot dir that is no worktree alone, even one holding only caches" {
+  # .preview and .xdg-agent18 are tools' dirs; a cache-only one would read as a reapable husk.
+  mkdir -p "$WT_ROOT/.preview/Library" "$WT_ROOT/.xdg-agent18/Logs"
+  run cmd_gc
+  assert_output --partial 'no worktrees to consider'
+  [ -d "$WT_ROOT/.preview/Library" ]
+  [ -d "$WT_ROOT/.xdg-agent18/Logs" ]
+}
+
 @test "reap removes a clean worktree that has an initialised submodule" {
   # Plain `git worktree remove` refuses every such tree, clean or not.
   make_drifted_submodule

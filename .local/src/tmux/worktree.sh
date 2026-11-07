@@ -1136,8 +1136,11 @@ cmd_gc() {
     # A submodule's worktree goes first: it pins the superproject tree its git dir lives in,
     # so reaping it first frees that tree in this pass rather than the next night's.
     local -a later=()
-    for d in "$WT_ROOT"/*; do
+    for d in "$WT_ROOT"/* "$WT_ROOT"/.[!.]*; do
       [ -d "$d" ] || continue
+      # A dot dir is a tool's (.preview, .xdg-agent18) unless it carries a .git: judged by
+      # wt_work_reason alone, a git-less one with only caches would read as a reapable husk.
+      case "${d##*/}" in .*) [ -e "$d/.git" ] || continue ;; esac
       if [ -f "$d/.git" ] && [[ "$(<"$d/.git")" == 'gitdir: '*/modules/*/worktrees/* ]]; then
         candidates+=("$d")
       else
