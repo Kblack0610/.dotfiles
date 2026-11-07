@@ -189,7 +189,7 @@ cmd_run() {
                    | select(.size != null or .kind != null)] | first) // .prior_class)
       | .harness = harness_of($i)
       | if .harness == "opencode" or .harness == "codex" then
-          .prs = (((.prs // []) + [$i.pr // "" | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
+          .prs = (((.prs // []) + [$i.pr // "" | tostring | split(" ")[] | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
         else . end' "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
     die_stalled "could not join the due sessions to the queue"
 

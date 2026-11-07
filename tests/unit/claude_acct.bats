@@ -408,7 +408,7 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   week alt 80 84
   echo '{"oauthAccount":{"emailAddress":"m@x"}}' > "$HOME/.claude.json"
   echo '{"oauthAccount":{"emailAddress":"a@x"}}' > "$ALT/.claude.json"
-  printf '#!/usr/bin/env bash\necho %s\n' "'{\"data\":{\"result\":[{\"metric\":{\"user_email\":\"m@x\"},\"value\":[0,\"600.4\"]}]}}'" > "$SANDBOX/bin/curl"
+  printf '#!/usr/bin/env bash\necho %s\n' "'{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"user_email\":\"m@x\"},\"value\":[0,\"600.4\"]}]}}'" > "$SANDBOX/bin/curl"
   export CC_PROM_URL=http://prom.test
   run "$ACCT" status
   assert_success
@@ -586,7 +586,7 @@ live() {
 @test "the session rate comes from Prometheus, is cached, falls back when unreadable, and a pick never asks" {
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-case "$*" in *live_sessions*) echo '{"data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
+case "$*" in *live_sessions*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
 STUB
   export CC_PROM_URL=http://prom.test
   # a pick (nospend) never asks Prometheus, so `cl` off the LAN does not wait
@@ -762,7 +762,7 @@ STUB
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" > "$HOME/curl.args"
-echo '{"data":{"result":[{"metric":{"session_id":"s1"},"value":[0,"12.345"]},{"metric":{},"value":[0,"9"]}]}}'
+echo '{"status":"success","data":{"result":[{"metric":{"session_id":"s1"},"value":[0,"12.345"]},{"metric":{},"value":[0,"9"]}]}}'
 STUB
   export CC_PROM_URL=http://prom.test
   run "$ACCT" cost
