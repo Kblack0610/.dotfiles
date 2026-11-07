@@ -4,6 +4,9 @@
 #   lessons pick [-n N] FILE [TEXT...]
 #       N lessons (default 5) from FILE: the ones sharing the most distinctive words with TEXT
 #       first, then the newest, each cut to 200 chars.
+#   lessons dup MEMORY_FILE FILE
+#       "<cosine> <line> <first line>" of the bullet or heading in FILE the memory file restates most
+#       (TF-IDF cosine over its bullets and headings); agentctl-dream refuses a new memory file at 0.38.
 #   lessons log PROJECT FILE < DIGEST      record the digest lines pick matched to the work
 #   lessons archive [--days N] [--dry-run] [DIR]
 #       Move dated lessons older than N days (90) that no pick matched to a session and no session
@@ -17,7 +20,7 @@ set -euo pipefail
 
 LESSONS_DIR_DEFAULT="$HOME/.agent/lessons"
 
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The parser every mode shares. Bytes, not characters (LC_ALL=C), so the hash is the same
 # under any locale. Per line: own[NR] is the lesson it belongs to (0 for a `# ` title or
@@ -55,18 +58,35 @@ function open_lesson(t,   k) {
 }
 '
 
-# pick: BM25 over the query's distinctive words (4+ chars, not a stopword, plural cut so
-# "lessons" finds "lesson"), a word in the lesson's first line counting twice, so a long
+# The tokenizer pick and dup share: lowercase words of 4+ chars, plurals folded ("lessons" ->
+# "lesson"), no number, no stopword (plain English fillers plus the words every work query
+# carries). toks(s, out) fills out[1..n] in order and returns n.
+# shellcheck disable=SC2016
+TOK='
+BEGIN {
+  ns = split("this that with from into when then than only have does each what which their there they will would should could about after before every instead also been were being make made more most must need over some such them these those under until upon very your just like same other where while last first next phase plan task item file files work using used uses true false none feat chore docs refactor main master again because between done much still through without never since", sw, " ")
+  for (k = 1; k <= ns; k++) STOP[sw[k]] = 1
+}
+function toks(s, out,   n, m, a, i, t) {
+  s = tolower(s); gsub(/[^a-z0-9]+/, " ", s); n = split(s, a, " "); m = 0
+  for (i = 1; i <= n; i++) {
+    t = a[i]
+    if (t ~ /(ch|sh|x|ss)es$/) sub(/es$/, "", t); else if (length(t) > 4) sub(/s$/, "", t)
+    if (length(t) >= 4 && t !~ /^[0-9]+$/ && !(t in STOP)) out[++m] = t
+  }
+  return m
+}
+'
+
+# pick: BM25 over the query's distinctive words (toks above), a word in the lesson's first line counting twice, so a long
 # multi-topic section does not outrank a lesson that is about the word. Ties go to the newer.
 # shellcheck disable=SC2016
 PICK='
 END {
-  split("this that with from into when then than only have does each what which their there they will would should could about after before every instead also been were being make made more most must need over some such them these those under until upon very your just like same other where while last first next phase plan task item file files work using used uses true false none feat chore docs refactor main master", sw, " ")
-  for (i in sw) stop[sw[i]] = 1
-  q = tolower(query); gsub(/[^a-z0-9]+/, " ", q); nt = split(q, w, " ")
+  nt = toks(query, w)
   for (i = 1; i <= nt; i++) {
-    t = w[i]; if (t ~ /(ch|sh|x|ss)es$/) sub(/es$/, "", t); else if (length(t) > 4) sub(/s$/, "", t)
-    if (length(t) < 4 || t ~ /^[0-9]+$/ || (t in stop) || (t in seen)) continue
+    t = w[i]
+    if (t in seen) continue
     seen[t] = 1; terms[++m] = t
     if (m == 12) break
   }
@@ -100,6 +120,45 @@ END {
   if (matched) printf "## Lessons for this work (%d matched on: %s; %d newest)\n", matched, on, got - matched
   else printf "## Lessons (newest %d; nothing matched this work)\n", got
   for (i = 1; i <= got; i++) print cut("- " title[r = order[i]])
+}
+'
+
+# dup: TF-IDF cosine of one memory file (mfile, front matter skipped) against each lesson.
+# shellcheck disable=SC2016
+DUP='
+BEGIN {
+  while ((getline l < mfile) > 0) {
+    whole = whole " " l
+    if (++ml == 1 && l == "---") { fm = 1; continue }
+    if (fm == 1) { if (l == "---") fm = 2; continue }
+    mtext = mtext " " l
+  }
+  if (fm == 1) mtext = whole   # an unterminated front matter is body, not a skipped file
+}
+END {
+  # Blocks are finer than lessons: every "- " bullet and "#" heading, with its continuation
+  # lines, so a long section does not dilute the score of one bullet (MEMORY_DUP_MIN in agentctl-dream was set on them).
+  for (l = 1; l <= NR; l++) {
+    if (raw[l] ~ /^(- |#+ )/) bl[++nb] = l
+    t = raw[l]; gsub(/<!--.*-->/, "", t)   # a sig regex is not the lesson text
+    if (nb) bt[nb] = bt[nb] " " t
+  }
+  for (r = 1; r <= nb; r++) {
+    k = toks(bt[r], T)
+    for (i = 1; i <= k; i++) { w = T[i]; if (!tf[r, w]++) { uw[r, ++nu[r]] = w; df[w]++ } }
+    delete T
+  }
+  for (w in df) idf[w] = log((nb + 1) / (df[w] + 1))
+  nm = toks(mtext, M)
+  for (i = 1; i <= nm; i++) mw[M[i]]++
+  mn = 0; for (w in mw) { mw[w] *= (w in idf ? idf[w] : log(nb + 1)); mn += mw[w] ^ 2 }
+  best = 0; bb = 0
+  for (r = 1; r <= nb && mn > 0; r++) {
+    dot = 0; bn = 0
+    for (i = 1; i <= nu[r]; i++) { w = uw[r, i]; v = tf[r, w] * idf[w]; bn += v ^ 2; if (w in mw) dot += v * mw[w] }
+    if (bn > 0 && (c = dot / sqrt(bn * mn)) > best) { best = c; bb = r }
+  }
+  printf "%.2f %d %s\n", best, bl[bb], bb ? substr(raw[bl[bb]], 1, 100) : ""
 }
 '
 
@@ -140,6 +199,12 @@ END {
 }
 '
 
+cmd_dup() {
+  local mem="${1:-}" file="${2:-}"
+  [ -r "$mem" ] && [ -r "$file" ] || usage 2
+  LC_ALL=C awk -v mfile="$mem" "$TOK$PARSE$DUP" "$file"
+}
+
 cmd_pick() {
   local want=5 file
   while [ $# -gt 0 ]; do
@@ -152,7 +217,7 @@ cmd_pick() {
   file="${1:-}"; [ -n "$file" ] || usage 2
   shift
   [ -r "$file" ] || return 0
-  LC_ALL=C awk -v want="$want" -v query="$*" "$PARSE$PICK" "$file"
+  LC_ALL=C awk -v want="$want" -v query="$*" "$TOK$PARSE$PICK" "$file"
 }
 
 # Appends one delivery line; the month file is append-only, so concurrent preflights are safe.
@@ -247,6 +312,7 @@ cmd_archive() {
 
 case "${1:-}" in
   pick) shift; cmd_pick "$@" ;;
+  dup) shift; cmd_dup "$@" ;;
   log) shift; cmd_log "$@" ;;
   archive) shift; cmd_archive "$@" ;;
   -h|--help|'') usage ;;
