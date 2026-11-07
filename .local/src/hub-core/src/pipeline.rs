@@ -5,6 +5,9 @@
 
 use serde::Serialize;
 
+use chrono::{Local, TimeZone};
+
+use crate::capacity::clock;
 use crate::prom::{self, Series, W};
 
 /// The steps the line shows, in pipeline order. `done` (finished in 24h) is left off by design.
@@ -33,6 +36,9 @@ pub struct Pipeline {
     pub wip: Vec<(String, Option<u64>)>,
     /// The step with the largest age ratio above 1, if any.
     pub bottleneck: Option<Bottleneck>,
+    /// When fleet-bench last wrote the gauges (unix seconds). They lag the live queue by up to
+    /// one sample, so the line says when they were read; None when the file's age is unknown.
+    pub as_of: Option<i64>,
 }
 
 fn by_step<'a>(s: &'a [Series], step: &str) -> Option<&'a Series> {
@@ -71,6 +77,7 @@ pub fn from_series(wip: &[Series], p90: &[Series], ratio: &[Series]) -> Option<P
     Some(Pipeline {
         wip: wip_by,
         bottleneck,
+        as_of: None,
     })
 }
 
@@ -81,6 +88,8 @@ pub fn read() -> Result<Option<Pipeline>, String> {
         format!("{W} (agent_chain_wip)"),
         format!("{W} (agent_chain_age_minutes{{quantile=\"p90\"}})"),
         format!("{W} (agent_chain_age_ratio)"),
+        // node_exporter's mtime of the textfile fleet-bench writes the gauges to.
+        "max (node_textfile_mtime_seconds{file=~\".*fleet_bench.prom\"})".to_string(),
     ];
     let mut a: Vec<_> = std::thread::scope(|s| {
         let hs: Vec<_> = qs
@@ -95,10 +104,25 @@ pub fn read() -> Result<Option<Pipeline>, String> {
             .collect()
     });
     let wip = a.remove(0)?;
-    // The age and ratio gauges only decide the second line; their failure leaves it off.
+    // The age and ratio gauges only decide the second line, and the mtime only the as-of
+    // stamp; their failure leaves each off.
+    let mtime = a.pop().and_then(Result::ok).unwrap_or_default();
     let ratio = a.pop().and_then(Result::ok).unwrap_or_default();
     let p90 = a.pop().and_then(Result::ok).unwrap_or_default();
-    Ok(from_series(&wip, &p90, &ratio))
+    Ok(from_series(&wip, &p90, &ratio).map(|mut p| {
+        p.as_of = mtime.iter().find_map(|s| s.value).map(|v| v as i64);
+        p
+    }))
+}
+
+/// The stamp: a clock time for today, with the date when the gauges were last written on an
+/// earlier day, so a collector that stopped writing cannot pass for a fresh reading.
+fn stamp(epoch: i64, now: i64) -> String {
+    let day = |e| Local.timestamp_opt(e, 0).single().map(|t| t.date_naive());
+    match Local.timestamp_opt(epoch, 0).single() {
+        Some(t) if day(epoch) != day(now) => t.format("%m-%d %H:%M").to_string(),
+        _ => clock(epoch),
+    }
 }
 
 fn mins(m: f64) -> String {
@@ -106,14 +130,17 @@ fn mins(m: f64) -> String {
 }
 
 impl Pipeline {
-    /// `pipeline  inbox 4  backlog 312 ...`; a step the gauge lacks reads `-`.
+    /// `pipeline  inbox 4  backlog 312 ...  as of 12:40`; a step the gauge lacks reads `-`.
     pub fn line(&self) -> String {
         let steps: Vec<String> = self
             .wip
             .iter()
             .map(|(s, n)| format!("{s} {}", n.map_or("-".into(), |n| n.to_string())))
             .collect();
-        format!("pipeline  {}", steps.join("  "))
+        let as_of = self.as_of.map_or(String::new(), |t| {
+            format!("  as of {}", stamp(t, Local::now().timestamp()))
+        });
+        format!("pipeline  {}{as_of}", steps.join("  "))
     }
 
     /// `! bottleneck: waiting, age p90 9h (bound 4h)`, only when a step is past its bound.
@@ -207,6 +234,25 @@ mod tests {
             p.line(),
             "pipeline  inbox 0  backlog -  queued 3  running -  waiting -"
         );
+    }
+
+    #[test]
+    fn the_line_says_when_the_gauges_were_written() {
+        let mut p = from_series(&wip(), &[], &[]).unwrap();
+        assert!(!p.line().contains("as of"), "unknown age adds nothing");
+        p.as_of = Some(Local::now().timestamp() - 60);
+        assert!(p
+            .line()
+            .ends_with(&format!("  as of {}", clock(p.as_of.unwrap()))));
+        assert!(p.line().starts_with("pipeline  inbox 4  backlog 312"));
+    }
+
+    #[test]
+    fn a_stamp_from_an_earlier_day_carries_its_date() {
+        let now = 1_794_010_893;
+        assert_eq!(stamp(now - 60, now), clock(now - 60));
+        let old = stamp(now - 3 * 86_400, now);
+        assert_eq!(old.len(), "11-04 12:40".len(), "{old}");
     }
 
     #[test]
