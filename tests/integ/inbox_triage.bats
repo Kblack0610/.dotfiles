@@ -361,7 +361,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   sheet '' '- [ ] decide(squad): followers that fight with you #low <!-- id:sc-1 -->\n- [ ] feat(ui): a colour for the squad <!-- id:sc-2 -->\n'
   mkdir -p "$PROJ/scratch/agent"
   printf '# scratch agent\n\n## Tasks\n- [ ] decide(lanes): which lane a game takes <!-- id:sc-3 -->\n' >"$PROJ/scratch/agent/README.md"
-  outbox '- [ ] sc-1: yes, build it after the bully fix\n- [ ] sc-2: the blue one\n- [ ] sc-3: the agent lane\n- [ ] zz-9: yes\n- [ ] stays for the model\n'
+  outbox '- [ ] sc-1: yes, build it after the bully fix\n- [ ] sc-2: the blue one #p:scrach\n- [ ] sc-3: the agent lane\n- [ ] zz-9: yes\n- [ ] stays for the model\n'
   answer '{"n": 1, "action": "skip", "why": "no project named"}'
   run "$TRIAGE"
   assert_success

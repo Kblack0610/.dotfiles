@@ -154,6 +154,7 @@ answer() {
   [ -n "$row" ] || { left outbox "$text" "no open row $id"; return 0; }
   IFS=$'\x1f' read -r p lane ty <<<"$row"
   move_out "$p" "$raw" "$text" || return 1
+  raw="$MOVED_RAW"
   file_line "$p" "$raw" "$text" --dup "$id" --lane "$lane" || return 1
   [ "$ty" = decide ] || return 0
   pt "$p" "$lane" done "$id" --proof "ingest:$(date +%F)"
@@ -433,7 +434,7 @@ pass() {
   # A `<id>: <words>` line answers its open row, with no model.
   [ -z "$ONLY" ] && while IFS=$'\x1f' read -r -d '' p raw text; do
     answer "$p" "$raw" "$text" "$board" || rc=1
-  done < <(jq -j --argjson seen "$seen" --arg re "$ID_LINE_RE" ".[] | select((.project | not) and (.text | test(\$re)))
+  done < <(jq -j --argjson seen "$seen" --arg re "$ID_LINE_RE" --argjson missed "$missed" ".[] | select(((.project | not) or (.raw as \$r | \$missed | index(\$r) != null)) and (.text | test(\$re)))
     | {from: \"outbox\", raw, text} | $fresh | (.text | capture(\$re).id), \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
   all='[]'
   [ -z "$ONLY" ] && all="$(jq -c --arg re "$ID_LINE_RE" --argjson missed "$missed" '[.[]

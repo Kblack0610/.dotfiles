@@ -28,7 +28,7 @@ pub(crate) const EXIT_NO_PROJECT: i32 = 3;
 
 fn skeleton() -> String {
     format!(
-        "# Outbox\n\nOne item per line, for any project. The inbox sweep routes each to its project's inbox and files it there; what went where is on the inbox status page. `#p:<name>` forces a project, `#agent` the agent board, `#plan` a planning pass.\n\n## {HEADING}\n"
+        "# Outbox\n\nOne item per line, for any project. The inbox sweep routes each to its project's inbox and files it there; what went where is on the inbox status page. `#p:<name>` names a project (a name that matches none is left to the sweep's model), `#agent` the agent board, `#plan` a planning pass.\n\n## {HEADING}\n"
     )
 }
 
