@@ -864,6 +864,16 @@ done_from_inside() {
   assert_output --partial '1 of 1 reapable'
 }
 
+@test "gc keeps a dot-prefixed worktree whose session is live under the dotless name" {
+  # panel_session_name strips the leading dot, so the session is repo-agent-1, not .repo-agent-1.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/.repo-agent-1" -b dotted
+  wt_session_exists() { [ "$1" = repo-agent-1 ]; }
+  run cmd_gc
+  assert_output --partial 'its tmux session is live'
+  [ -d "$WT_ROOT/.repo-agent-1" ]
+}
+
 @test "gc leaves a dot dir that is no worktree alone, even one holding only caches" {
   # .preview and .xdg-agent18 are tools' dirs; a cache-only one would read as a reapable husk.
   mkdir -p "$WT_ROOT/.preview/Library" "$WT_ROOT/.xdg-agent18/Logs"
@@ -871,6 +881,10 @@ done_from_inside() {
   assert_output --partial 'no worktrees to consider'
   [ -d "$WT_ROOT/.preview/Library" ]
   [ -d "$WT_ROOT/.xdg-agent18/Logs" ]
+  # Nor one holding a clone: its .git is a directory, a main checkout, not a worktree.
+  mkdir -p "$WT_ROOT/.clone/.git"
+  run cmd_gc
+  assert_output --partial 'no worktrees to consider'
 }
 
 @test "reap removes a clean worktree that has an initialised submodule" {
