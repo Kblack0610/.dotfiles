@@ -598,6 +598,7 @@ mod tests {
                 cache: root.join("cache"),
             },
             dispatch: root.join("dispatch"),
+            state: root.join("state.json"),
             // Never run: no fixture conf below is a judge.
             judge_eval: root.join("no-judge-eval").display().to_string(),
             notes_state: root.join("notes"),

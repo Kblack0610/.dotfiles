@@ -305,9 +305,8 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.boards = Some(app::Boards::read(&a.files, None));
         if t == Tab::Sessions {
             let b = a.boards.as_ref().expect("just read");
-            let state = b.watch.state["sessions"].as_array().cloned();
             let f = forecast::Forecast::read();
-            a.controls.read(state, Some(forecast::schedule(&f)));
+            a.controls.read(Some(&b.watch.state), Some(forecast::schedule(&f)));
             a.forecast = Some(f);
             a.read_sessions_now();
         }

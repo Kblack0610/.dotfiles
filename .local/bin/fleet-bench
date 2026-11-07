@@ -231,7 +231,6 @@ now() { printf '%s' "${BENCH_NOW:-$(date +%s)}"; }
 
 # jq helpers shared by every verb.
 JQ_LIB='
-def project: sub("^[^/]*/"; "") | sub(":[0-9]+$"; "") | sub("-agent-[0-9]+$"; "");
 def median: sort | length as $n | if $n == 0 then null
   elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
 def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
@@ -437,7 +436,7 @@ sample_rows() {
   local t="$1"
   $BENCH_SESSIONS_CMD | jq -c --argjson t "$t" "$JQ_LIB"'
     select(type == "object" and (.session_id // "") != "" and (.bucket | IN("NIGHTLY", "SHARED") | not))
-    | {epoch: $t, at: ($t | iso), session_id, target, project: (.target | project), bucket,
+    | {epoch: $t, at: ($t | iso), session_id, target, project, bucket,
        phases_done, phases_total, next_phase, finished: (.finished // false), idle_min,
        context_tokens, nudged, escalated, pr, plan_file}'
 }
@@ -2757,10 +2756,10 @@ prom_snapshot() {
 
 # merge_rows <until> [since] -> project, merge epoch (tab-separated) for each project sampled in that
 # time, default 24h. A project whose merges cannot be read prints "!project": no repo in the map, or a
-# failed fetch, whose old refs would otherwise read as no merges. A name the map lacks is a worktree's,
-# `<repo>-<slug>` (the `project` def strips only -agent-N, so unity-core-playground-agent-40-b gets
-# here whole): the longest registered checkout basename or alias it starts with names it, as
-# project-name.sh does for a reaped worktree, and its merges count under that name.
+# failed fetch, whose old refs would otherwise read as no merges. A name the map lacks is an app inside
+# a repo (project-name.sh resolves a bnb-platform worktree to its app) or a progress line written before
+# rows carried their project, a worktree's `<repo>-<slug>`: the longest registered checkout basename or
+# alias it starts with names it, and its merges count under that name.
 merge_rows() {
   local until="$1" since="${2:-$(($1 - 86400))}" p path head
   if [ -n "${BENCH_MERGES_TSV:-}" ]; then cat "$BENCH_MERGES_TSV"; return; fi
@@ -3326,8 +3325,21 @@ canary_brief() {
 # task whose item exists in any state, so a second retro the same week queues nothing. `from:
 # canary` files no story row. With no flags it is the weekly claude lane; another lane's items are
 # canary-<id>-<week>-<h>[-<m>], carrying agent and model for fleet-dispatch to start them on.
+# canary_slug <id> <week> [lane] -> the item slug, built to survive agent-queue's slugify (lowercase,
+# a-z0-9 and single dashes, cut at 40): the lane suffix stays whole and the id is what gets shortened,
+# so lanes never collapse into one another and `show`, `set` and the brief name the item as stored.
+canary_slug() {
+  local id tail
+  tail=$(printf '%s' "-$2${3:+-$3}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-')
+  id=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' | sed 's/^-//')
+  id=$(printf '%s' "${id:0:$((40 - 7 - ${#tail}))}" | sed 's/-*$//')
+  [ -n "$id" ] || return 1
+  printf 'canary-%s%s' "$id" "$tail"
+}
+
 canary_queue() {
   local tasks t id slug week lane="" harness="" model="" added=0 had=0
+  local -A seen=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --harness) harness="${2:?canary queue: --harness needs a value}"; shift 2 ;;
@@ -3336,12 +3348,15 @@ canary_queue() {
     esac
   done
   [ -z "$model" ] || [ -n "$harness" ] || { say "canary queue: --model needs --harness"; return 2; }
-  [ -z "$harness" ] || lane="-$harness${model:+-$model}"
+  [ -z "$harness" ] || lane="$harness${model:+-$model}"
   tasks=$(canary_tasks) || return 1
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
   while IFS= read -r t; do
-    id=$(jq -r .id <<<"$t"); slug="canary-$id-$week$lane"
+    id=$(jq -r .id <<<"$t")
+    slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
+    [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
+    seen[$slug]=$id
     if $BENCH_CANARY_QUEUE_CMD show "$slug" >/dev/null 2>&1; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags 'night canary' \
       --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${harness:+ $harness${model:+/$model}}" \

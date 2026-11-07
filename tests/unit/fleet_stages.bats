@@ -13,9 +13,12 @@ setup() {
   export TZ=America/Los_Angeles
   SUBJECT="$REPO_ROOT/.local/lib/fleet-stages.py"
   LOG="$SANDBOX/watch.log"
+  STATE="$SANDBOX/state.json"
+  echo '{"vocab":{"buckets":["NEEDS","STALLED","DONE","LANDED","CHAT","WORKING","PARKED"],"finished":["DONE","LANDED"]}}' > "$STATE"
   FROM=$(date -d 2026-10-28 +%s) TO=$(date -d 2026-10-29 +%s)
   cat > "$LOG" <<'EOF'
 2026-10-27 23:00  game-agent-1:1  new: WORKING (busy)
+2026-10-27 23:00  game-agent-1:1  project - -> game
 2026-10-28 00:30  game-agent-1:1  plan - -> 0/2, pr - -> #5 open, ci - -> pending
 2026-10-28 00:32  game-agent-1:1  ci pending -> fail, stage WORKING -> STALLED (CI red on #5, 2 failing)
 2026-10-28 00:40  game-agent-1:1  ci fail -> pending, stage STALLED -> WORKING, labels - -> manual (busy)
@@ -28,16 +31,18 @@ setup() {
 2026-10-28 02:31  game-agent-1:1  new: LANDED (merged)
 2026-10-28 02:40  game-agent-1:1  gone
 2026-10-28 03:00  game-agent-2:1  new: WORKING (busy)
+2026-10-28 03:00  game-agent-2:1  project - -> game
 2026-10-28 03:10  game-agent-2:1  conflicts no -> CONFLICT, stage WORKING -> STALLED (conflicts with origin/main)
 2026-10-28 03:25  game-agent-2:1  conflicts CONFLICT -> no, stage STALLED -> WORKING (busy)
 2026-10-28 04:00  game-agent-2:1  gone
 2026-10-28 10:00  dotfiles:2  new: NEEDS (waiting on a prompt or permission)
+2026-10-28 10:00  dotfiles:2  project - -> dotfiles
 2026-10-28 10:30  dotfiles:2  stage NEEDS -> WORKING (busy)
 2026-10-29 01:00  dotfiles:2  gone
 EOF
 }
 
-stages() { run python3 "$SUBJECT" --log "$LOG" --from "$FROM" --to "$TO" --json; assert_success; }
+stages() { run python3 "$SUBJECT" --log "$LOG" --state "$STATE" --from "$FROM" --to "$TO" --json; assert_success; }
 v() { jq -c "$1" <<<"$output"; }
 
 @test "sessions: a gone and a new one tick apart are one session; ended, no PR and the stage it ended from" {
@@ -67,25 +72,46 @@ v() { jq -c "$1" <<<"$output"; }
   assert_equal "$(v '[.plans.plans_started, .plans.phases_ticked, .plans.phases_unticked]')" '[1,3,1]'
 }
 
-@test "wind-down is finished to gone across a flicker, and projects split agent worktrees from the main session" {
+@test "wind-down is finished to gone across a flicker, and the project is the one the log names, not a suffix strip" {
   stages
   assert_equal "$(v '[.wind_down.n, .wind_down.p50]')" '[1,20.0]'
   assert_equal "$(v '.by_project.game | [.ended, .ended_no_pr, .prs_merged, .ci_fail, .ci_pass]')" '[2,1,1,1,1]'
-  assert_equal "$(v '.by_project["dotfiles (main)"] | [.needs_min, .working_min]')" '[30,810]'
+  assert_equal "$(v '.by_project.dotfiles | [.needs_min, .working_min]')" '[30,810]'
+}
+
+@test "a session in freqtrade_trading_attempt-agent-1 is project trader; one with no project line is (unknown)" {
+  cat > "$LOG" <<'EOF'
+2026-10-28 03:00  freqtrade_trading_attempt-agent-1:1  new: WORKING (busy)
+2026-10-28 03:00  freqtrade_trading_attempt-agent-1:1  project - -> trader
+2026-10-28 04:00  freqtrade_trading_attempt-agent-1:1  gone
+2026-10-28 05:00  old-agent-3:1  new: WORKING (busy)
+2026-10-28 06:00  old-agent-3:1  gone
+EOF
+  stages
+  assert_equal "$(v '.by_project | keys')" '["(unknown)","trader"]'
+  refute_output --partial freqtrade
+}
+
+@test "without the finished buckets in state.json it stops, never guessing a list" {
+  echo '{}' > "$STATE"
+  run python3 "$SUBJECT" --log "$LOG" --state "$STATE" --from "$FROM" --to "$TO" --json
+  assert_failure
+  assert_output --partial 'no finished buckets'
 }
 
 @test "a window before anything happened is empty, not an error" {
-  run python3 "$SUBJECT" --log "$LOG" --from "$((FROM - 86400))" --to "$((FROM - 7200))" --json
+  run python3 "$SUBJECT" --log "$LOG" --state "$STATE" --from "$((FROM - 86400))" --to "$((FROM - 7200))" --json
   assert_success
   assert_equal "$(v '[.sessions, .ended, .stages]')" '[0,0,{}]'
 }
 
 @test "the text table and the fleet-sessions verb read the same log" {
-  run python3 "$SUBJECT" --log "$LOG" --from "$FROM" --to "$TO"
+  run python3 "$SUBJECT" --log "$LOG" --state "$STATE" --from "$FROM" --to "$TO"
   assert_success
   assert_output --partial 'NEEDS:ask'
   assert_output --partial '3 sessions, 2 started, 2 ended (1 with no PR seen)'
   mkdir -p "$HOME/.agent/shepherd" && cp "$LOG" "$HOME/.agent/shepherd/watch.log"
+  export FLEET_STATE_FILE="$STATE"
   run "$REPO_ROOT/.local/bin/fleet-sessions" stages --from "$FROM" --to "$TO" --json
   assert_success
   assert_equal "$(v '.ended')" '2'

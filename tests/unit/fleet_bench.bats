@@ -60,10 +60,15 @@ setup() {
   chmod +x "$SANDBOX/bin/asks-all-stub"
 }
 
+# project_of_target <target> -> the project fleet-sessions would write on that row: the tmux session
+# without its server, window and -agent-N. A fixture standing in for resolve_project_name, which
+# the sessions' own tests cover; fleet-bench only reads the field.
+project_of_target() { local p="${1#*/}"; p="${p%%:*}"; printf '%s' "${p%-agent-*}"; }
+
 # row <session> <target> <done> <total> [finished]
 row() {
-  printf '{"session_id":"%s","target":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s}\n' \
-    "$1" "$2" "$3" "$4" "${5:-false}"
+  printf '{"session_id":"%s","target":"%s","project":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s}\n' \
+    "$1" "$2" "$(project_of_target "$2")" "$3" "$4" "${5:-false}"
 }
 
 # sample_at <offset-seconds>: one sample of whatever $SNAP holds
@@ -79,6 +84,17 @@ outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
   assert_output "$(printf 'a\tgame\t0')"
   run outcome
   assert_output --partial WORKED
+}
+
+@test "a session in freqtrade_trading_attempt-agent-1 is project trader: the row's project, not its name stripped" {
+  jq -cn '{session_id:"f", target:"lab/freqtrade_trading_attempt-agent-1:1", project:"trader", bucket:"WORKING",
+           phases_done:0, phases_total:2, finished:false}' > "$SNAP"
+  run sample_at 0
+  assert_success
+  run jq -r '.project' "$FLEET_BENCH_DIR/progress.jsonl"
+  assert_output trader
+  # negative control: the old suffix strip would have read freqtrade_trading_attempt
+  refute_output --partial freqtrade
 }
 
 @test "fleet-sessions failing writes nothing and publishes FAILED with exit 1" {
@@ -100,7 +116,8 @@ outcome() { cat "$AGENTCTL_STATE_DIR/fleet-bench/last-outcome"; }
 
 # brow <session> <target> <bucket>: a live row in that bucket
 brow() {
-  printf '{"session_id":"%s","target":"%s","bucket":"%s","phases_done":1,"phases_total":4,"finished":false}\n' "$1" "$2" "$3"
+  printf '{"session_id":"%s","target":"%s","project":"%s","bucket":"%s","phases_done":1,"phases_total":4,"finished":false}\n' \
+    "$1" "$2" "$(project_of_target "$2")" "$3"
 }
 
 @test "sample publishes the window per project to node_exporter as fleet_bench.prom" {
@@ -394,7 +411,7 @@ past_scores() {
 }
 
 # rowj <jq object fields>: a fleet-sessions row with any fields, for the scorecard tests
-rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", bucket: \"WORKING\", phases_done: 0, phases_total: 4, finished: false} + {$1}"; }
+rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", project: \"game\", bucket: \"WORKING\", phases_done: 0, phases_total: 4, finished: false} + {$1}"; }
 
 @test "a new plan is a new timeline: the gap across the switch is not measured as a phase" {
   rowj 'plan_file: "p1", phases_done: 1' > "$SNAP"; sample_at 0
@@ -2458,8 +2475,8 @@ scorecard_with_data() {
 
 # rowp <session> <target> <done> <total> <plan> [finished]: a row carrying its plan file
 rowp() {
-  printf '{"session_id":"%s","target":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s,"plan_file":"%s"}\n' \
-    "$1" "$2" "$3" "$4" "${6:-false}" "$5"
+  printf '{"session_id":"%s","target":"%s","project":"%s","bucket":"WORKING","phases_done":%s,"phases_total":%s,"finished":%s,"plan_file":"%s"}\n' \
+    "$1" "$2" "$(project_of_target "$2")" "$3" "$4" "${6:-false}" "$5"
 }
 
 @test "flow counts ticked, added, removed and started apart, and balances the open phases" {
@@ -3221,7 +3238,7 @@ case "$1" in
   show) [ -f "$CQ/$2.json" ] && cat "$CQ/$2.json" ;;
   set) f="$CQ/$2.json"; shift 2; for kv in "$@"; do jq --arg k "${kv%%=*}" --arg v "${kv#*=}" '.[$k] = $v' "$f" > "$f.t" && mv "$f.t" "$f"; done ;;
   add) printf '%s\n' "$@" >> "$CQ/add.log"; agent=claude
-       while [ $# -gt 0 ]; do case "$1" in --slug) slug=$2 ;; --agent) agent=$2 ;; esac; shift; done
+       while [ $# -gt 0 ]; do case "$1" in --slug) slug=${2:0:40}; slug=${slug%-} ;; --agent) agent=$2 ;; esac; shift; done
        jq -n --arg s "$slug" --arg a "$agent" '{slug: $s, agent: $a}' > "$CQ/$slug.json" ;;
 esac
 STUB
@@ -3322,6 +3339,23 @@ STUB
   run grep -c -- --agent "$CQ/add.log"
   assert_output 1
   grep -q 'in any other harness, end the session' "$CQ/add.log"
+  # A long id still fits: agent-queue cuts slugs at 40, so the id is shortened and the lane kept whole.
+  jq '.id = "dispatch-requested-night"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long.json"
+  run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
+  assert_success
+  assert_output "fleet-bench: canary: 2 queued, 0 already queued for $week (codex/gpt-5.6-sol)"
+  long="canary-dispatc-$week-codex-gpt-5-6-sol"
+  assert_equal "${#long}" 40
+  assert_equal "$(jq -r .model "$CQ/$long.json")" gpt-5.6-sol
+  grep -q "agent-queue move $long done" "$CQ/add.log"
+  run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
+  assert_output "fleet-bench: canary: 0 queued, 2 already queued for $week (codex/gpt-5.6-sol)"
+  # Two ids that shorten to one slug are refused, not queued as one item.
+  jq '.id = "dispatch-requested-day"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long2.json"
+  run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
+  assert_failure 1
+  assert_output --partial 'share the slug'
+  rm "$BENCH_CANARY_DIR/long2.json"
   run "$SUBJECT" canary queue --model sol
   assert_failure 2
   run "$SUBJECT" canary queue --bogus
