@@ -640,14 +640,15 @@ refusal() {
 }
 
 # shell_kind <command> -> local, remote or other. local is a gate, suite or Unity run on this
-# machine: stopping it throws the run away. remote is a wait on GitHub (`gh run watch`,
-# `gh pr checks --watch`, an `until ... gh ...; do sleep` loop): the run goes on without it,
+# machine: stopping it throws the run away. remote is a wait on GitHub (`gh-run-wait`, `gh run
+# watch`, `gh pr checks --watch`, an `until ... gh ...; do sleep` loop): the run goes on without it,
 # and a resumed session re-checks it in one call. A command that is both is local.
 shell_kind() {
     local re_local='(^|[^[:alnum:]_.-])(ci-gate|suite|run)\.sh([^[:alnum:]_.-]|$)|(^|[/[:space:]])Unity([[:space:]]|$)|-batchmode'
     local re_loop='(^|[;&|({[:space:]])(until|while)[[:space:]].*gh[[:space:]].*;[[:space:]]*do[[:space:]].*sleep'
+    local re_waiter='(^|[^[:alnum:]_.-])gh-run-wait([^[:alnum:]_.-]|$)'
     if [[ "$1" =~ $re_local ]]; then echo local
-    elif [[ "$1" =~ gh[[:space:]]+run[[:space:]]+watch || "$1" =~ $re_loop ||
+    elif [[ "$1" =~ $re_waiter || "$1" =~ gh[[:space:]]+run[[:space:]]+watch || "$1" =~ $re_loop ||
             ( "$1" =~ gh[[:space:]]+pr[[:space:]]+checks && "$1" == *--watch* ) ]]; then echo remote
     else echo other; fi
 }

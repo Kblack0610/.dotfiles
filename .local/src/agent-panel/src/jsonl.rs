@@ -1193,6 +1193,18 @@ mod tests {
     }
 
     #[test]
+    fn open_job_counts_the_shared_ci_waiter_as_a_gate_under_the_shipped_conf() {
+        let conf = include_str!("../../../../.config/agent-panel/time-use.conf");
+        let open = |cmd: &str| {
+            let input = format!(r#"{{"command":"{cmd}","run_in_background":true}}"#);
+            walk(&[call(0, "w", "Bash", &input), launched(0, "w", "backgroundTaskId", "tw")].join("\n"), &job_patterns(conf)).1
+        };
+        assert_eq!(open("gh-run-wait 42349132239 'Release builds'"), "gate");
+        // A wrapper script of the session's own hides its gh run view: a plain job.
+        assert_eq!(open("/tmp/run-wait-1106.sh 42349132239"), "jobs");
+    }
+
+    #[test]
     fn time_use_agents_run_in_the_background_only_when_the_result_says_so() {
         let got = buckets(&[
             call(0, "a", "Agent", r#"{"prompt":"look"}"#),

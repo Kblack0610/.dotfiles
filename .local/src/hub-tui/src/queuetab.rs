@@ -1,6 +1,6 @@
 //! The Queue tab: agent-queue's items as one table on the shared data-table component, the
 //! Infra Jobs style, read through `hub_core::queue`, the same reader and the same `QueueRow` as
-//! agent-web's Queue tab. Its sections are `flow` (the pipeline), `table` and `candidates`.
+//! agent-web's Queue tab. Its sections are `flow` (the strip), `table` and `candidates`.
 //! `/ f s S x` are the shared table's keys; j/k pick a row (a done one too), Enter opens its
 //! detail, `c` arms a cancel that waits on y and `+`/`-` move its priority one step, both for an
 //! active item only. Below the table the Candidates fold (`hub_core::queue::candidates`,
@@ -9,7 +9,7 @@
 //! through hub-core.
 
 use chrono::{DateTime, Utc};
-use hub_core::pipeline::{self, Pipeline};
+use hub_core::flow::Strip;
 use hub_core::queue::{
     money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing, TABLE_OPEN_ROWS,
 };
@@ -19,6 +19,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
+use crate::flowstrip;
 use crate::fmt::{clock, Palette};
 
 /// What a key on the Queue tab asks the app to do.
@@ -408,52 +409,6 @@ fn detail(i: &Item, t: Timing, p: Palette, now: i64, w: usize) -> Vec<Line<'stat
     out
 }
 
-/// The pipeline summary at the top of the page (hub_core::pipeline, the agent_chain_* gauges):
-/// the counts, a bottleneck line when a step is past its bound, `o graph` when Grafana is known.
-/// While the read runs it says so; with the gauges absent or the read failed it says `pipeline -`
-/// and never a zero.
-pub fn pipeline_lines(
-    pipe: Option<&Result<Option<Pipeline>, String>>,
-    graph: bool,
-    p: Palette,
-    w: usize,
-) -> Vec<Line<'static>> {
-    let hint = if graph { "   o graph" } else { "" };
-    match pipe {
-        None => vec![clip_line(
-            Line::styled("pipeline  reading Prometheus", p.dim()),
-            w,
-        )],
-        Some(Err(e)) => vec![clip_line(
-            Line::styled(format!("{}  {e}", pipeline::NONE), p.warn()),
-            w,
-        )],
-        Some(Ok(None)) => vec![clip_line(
-            Line::styled(format!("{}{hint}", pipeline::NONE), p.dim()),
-            w,
-        )],
-        Some(Ok(Some(pl))) => {
-            // The `as of` stamp can push the hint past the width; it then rides the line below.
-            let first = pl.line();
-            let fits = first.chars().count() + hint.chars().count() <= w;
-            let mut out = vec![clip_line(
-                Line::raw(format!("{first}{}", if fits { hint } else { "" })),
-                w,
-            )];
-            let late = if fits { "" } else { hint };
-            match pl.bottleneck_line() {
-                Some(b) => out.push(clip_line(Line::styled(format!("{b}{late}"), p.warn()), w)),
-                None if !late.is_empty() => out.push(clip_line(
-                    Line::styled(format!("{:10}{}", "", late.trim_start()), p.dim()),
-                    w,
-                )),
-                None => {}
-            }
-            out
-        }
-    }
-}
-
 /// The table's lines (header first), one per drawn row, columns dropped by priority to fit `w`:
 /// ACCT, SIZE, KIND and WAIT go first, then PR, RUN, PROJECT and IN; STATE and TITLE stay.
 fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'static>> {
@@ -475,12 +430,12 @@ pub fn page(
     q: &Queue,
     v: &QueueView,
     cands: Option<&Result<Candidates, String>>,
-    pipe: (Option<&Result<Option<Pipeline>, String>>, bool),
+    flow: (&Strip, bool, bool),
     p: Palette,
     now: i64,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let mut out = pipeline_lines(pipe.0, pipe.1, p, w);
+    let mut out = flowstrip::lines(flow.0, flow.1, flow.2, p, w);
     for e in &q.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
@@ -707,12 +662,20 @@ pub(crate) mod tests {
         c: Option<&Result<Candidates, String>>,
         w: usize,
     ) -> String {
-        page(q, v, c, (None, false), Palette { no_color: true }, now(), w)
-            .0
-            .iter()
-            .map(plain)
-            .collect::<Vec<_>>()
-            .join("\n")
+        page(
+            q,
+            v,
+            c,
+            (&Strip::build(Some(q)), false, false),
+            Palette { no_color: true },
+            now(),
+            w,
+        )
+        .0
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     /// Three ranked rows: an auto one with a verdict, a held auto one, a human-lane manual one.
@@ -1278,90 +1241,5 @@ pub(crate) mod tests {
             Ask::Done,
             "no second action while one runs"
         );
-    }
-
-    fn series(step: &str, v: f64) -> hub_core::prom::Series {
-        hub_core::prom::Series {
-            labels: [("step".to_string(), step.to_string())].into(),
-            value: Some(v),
-            points: vec![],
-        }
-    }
-
-    fn pipe(ratio: f64) -> Result<Option<Pipeline>, String> {
-        let wip: Vec<_> = [
-            ("inbox", 4.0),
-            ("backlog", 312.0),
-            ("queued", 3.0),
-            ("running", 5.0),
-            ("waiting", 2.0),
-        ]
-        .iter()
-        .map(|(s, v)| series(s, *v))
-        .collect();
-        Ok(pipeline::from_series(
-            &wip,
-            &[series("waiting", 540.0)],
-            &[series("waiting", ratio)],
-        ))
-    }
-
-    fn lines_of(p: Option<&Result<Option<Pipeline>, String>>, graph: bool) -> Vec<String> {
-        pipeline_lines(p, graph, Palette { no_color: true }, 80)
-            .iter()
-            .map(plain)
-            .map(|s| s.trim_end().to_string())
-            .collect()
-    }
-
-    #[test]
-    fn the_pipeline_line_is_the_mockup_with_a_bottleneck() {
-        assert_eq!(
-            lines_of(Some(&pipe(2.25)), true),
-            vec![
-                "pipeline  inbox 4  backlog 312  queued 3  running 5  waiting 2   o graph",
-                "          ! bottleneck: waiting, age p90 9h (bound 4h)",
-            ]
-        );
-    }
-
-    #[test]
-    fn a_stamp_that_pushes_the_hint_past_the_width_moves_it_to_the_next_line() {
-        let mut p = pipe(2.25).unwrap().unwrap();
-        let ten_ago = chrono::Local::now().timestamp() - 600;
-        p.as_of = Some(ten_ago);
-        let at = hub_core::capacity::clock(ten_ago);
-        let r = Ok(Some(p.clone()));
-        let l = lines_of(Some(&r), true);
-        assert_eq!(
-            l[0],
-            format!("pipeline  inbox 4  backlog 312  queued 3  running 5  waiting 2  as of {at}")
-        );
-        assert_eq!(
-            l[1],
-            "          ! bottleneck: waiting, age p90 9h (bound 4h)   o graph"
-        );
-        p.bottleneck = None;
-        let l = lines_of(Some(&Ok(Some(p))), true);
-        assert_eq!(l[1], "          o graph");
-    }
-
-    #[test]
-    fn no_step_past_its_bound_is_one_line_and_no_grafana_is_no_hint() {
-        assert_eq!(
-            lines_of(Some(&pipe(0.8)), false),
-            vec!["pipeline  inbox 4  backlog 312  queued 3  running 5  waiting 2"]
-        );
-    }
-
-    #[test]
-    fn negative_control_no_gauges_read_pipeline_dash_never_zeros() {
-        let none: Result<Option<Pipeline>, String> = Ok(None);
-        assert_eq!(lines_of(Some(&none), true), vec!["pipeline -   o graph"]);
-        let err: Result<Option<Pipeline>, String> = Err("CC_PROM_URL is not set".into());
-        let l = lines_of(Some(&err), true);
-        assert_eq!(l, vec!["pipeline -  CC_PROM_URL is not set"]);
-        assert_eq!(lines_of(None, true), vec!["pipeline  reading Prometheus"]);
-        assert!(l.iter().all(|s| !s.contains(" 0")));
     }
 }

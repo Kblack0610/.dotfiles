@@ -293,7 +293,8 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
 @test "park: a wait on GitHub is remote, a gate, suite or Unity run is local, anything else is other" {
   src
   local c
-  for c in 'gh run watch 123 --exit-status' 'gh pr checks 9 --watch --interval 60' \
+  for c in 'gh-run-wait 123 Release' '/home/u/.local/bin/gh-run-wait 123' \
+           'gh run watch 123 --exit-status' 'gh pr checks 9 --watch --interval 60' \
            'until gh pr checks 9 | grep -q pass; do sleep 60; done' \
            'while ! gh run view 1 --json status | grep -q completed; do sleep 30; done'; do
     run shell_kind "$c"; assert_output remote
@@ -303,7 +304,7 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
            'until scripts/test/ci-gate.sh; do sleep 5; done' 'gh run watch 1 && scripts/test/suite.sh'; do
     run shell_kind "$c"; assert_output local
   done
-  for c in 'npm run dev' 'tail -f build.log' 'sleep 600' 'gh run list' 'gh pr checks 9' 'scripts/test/rerun.sh'; do
+  for c in 'npm run dev' 'tail -f build.log' 'sleep 600' 'gh run list' 'gh pr checks 9' 'scripts/test/rerun.sh' 'vi gh-run-waiter'; do
     run shell_kind "$c"; assert_output other
   done
 }
