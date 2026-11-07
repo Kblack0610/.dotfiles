@@ -195,7 +195,7 @@ pub struct Live {
 /// The live gauges out of `live_q`'s series, and why the reserve is unknown when it is. A key with
 /// no cap exports +Inf, which `prom` reads as none. A key's cap and what is left pair by key
 /// hash (every pod exports the same key); two keys under one alias is unknown, never a mix of both.
-/// The GLM key does not exist until it is minted, so its absence is not a reason: it reads as none.
+/// The GLM key does not exist until it is minted, so its absence is not a reason; several under its alias is.
 pub fn live(series: &[crate::prom::Series]) -> (Live, Option<String>) {
     let mut l = Live::default();
     let mut reserve: BTreeMap<&str, [Option<f64>; 3]> = BTreeMap::new();
@@ -229,11 +229,17 @@ pub fn live(series: &[crate::prom::Series]) -> (Live, Option<String>) {
             (cap.zip(left).map(|(cap, left)| cap - left), cap, hours)
         })
     };
-    let why = match reserve.len() {
+    let mut why = match reserve.len() {
         0 => Some(format!("Prometheus: no {RESERVE_KEY} key gauges")),
         1 => None,
         n => Some(format!("Prometheus: {n} keys carry the {RESERVE_KEY} alias")),
     };
+    // absent is an unminted key; several is a rotation that left the old key exporting, and says so
+    if glm.len() > 1 {
+        let n = glm.len();
+        let note = format!("Prometheus: {n} keys carry the {GLM_KEY} alias");
+        why = Some(why.map_or(note.clone(), |w| format!("{w}; {note}")));
+    }
     if let Some((spend, cap, hours)) = one(reserve) {
         (l.reserve_spend, l.reserve_budget, l.reserve_reset_hours) = (spend, cap, hours);
     }
@@ -1676,6 +1682,17 @@ not json
         assert_eq!((l.reserve_budget, why), (Some(100.0), None));
         let (l, _) = live(&[gauge("litellm_api_key_max_budget_metric", RESERVE_KEY, 100.0)]);
         assert_eq!((l.glm_budget, l.glm_spend), (None, None));
+        // two GLM keys is unknown and says so
+        let mut old = gauge("litellm_api_key_max_budget_metric", GLM_KEY, 50.0);
+        old.labels.insert("hashed_api_key".into(), "h-old".into());
+        let (l, why) = live(&[
+            gauge("litellm_api_key_max_budget_metric", RESERVE_KEY, 100.0),
+            gauge("litellm_remaining_api_key_budget_metric", RESERVE_KEY, 80.0),
+            gauge("litellm_api_key_max_budget_metric", GLM_KEY, 50.0),
+            old,
+        ]);
+        assert_eq!(l.glm_budget, None);
+        assert_eq!(why.as_deref(), Some("Prometheus: 2 keys carry the glm-pilot alias"));
         // and no reserve gauge at all says so, so a renamed gauge is not a quiet "-"
         let (_, why) = live(&[gauge("cc:lazer_spend_usd", "", 1.0)]);
         assert_eq!(why.as_deref(), Some("Prometheus: no claude-reserve key gauges"));

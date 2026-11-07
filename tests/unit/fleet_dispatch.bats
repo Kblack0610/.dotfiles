@@ -4262,13 +4262,15 @@ harness_ready() {
   assert_called "OPENCODE_CONFIG='$SANDBOX/eval-glm.json'"
   assert_called '--model litellm/reasoning\ \(glm-5.3\)'
   grep -q 'Bearer sk-glm' "$NOTES_FIXTURE/curl.stdin" || fail "the budget was not read with the glm key"
-  grep -q 'sk-test' "$NOTES_FIXTURE/curl.stdin" && fail "the eval key reached the glm lane"
+  # one gateway call, so the stdin file the stub overwrites per call is the whole story
+  assert_equal "$(grep -c '^curl' "$NOTES_FIXTURE/calls.log")" 1
+  ! grep -q 'sk-test' "$NOTES_FIXTURE/curl.stdin" || fail "the eval key reached the glm lane"
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" agent) $(qfield "$f" model)" 'glm glm'
 }
 
 @test "--harness glm refuses once its key is spent, and starts nothing" {
-  harness_ready 50
+  harness_ready
   stub curl "echo '{\"info\":{\"spend\":50,\"max_budget\":50}}'"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_failure

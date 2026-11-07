@@ -478,13 +478,19 @@ fn of_cap(spent: Option<f64>, cap: Option<f64>) -> String {
     }
 }
 
+/// A key's spend against its cap, with the days to its reset when known.
+fn key_cap(spend: Option<f64>, budget: Option<f64>, reset_hours: Option<f64>) -> String {
+    let mut s = of_cap(spend, budget);
+    if let Some(h) = reset_hours {
+        s.push_str(&format!(" {:.0}d left", h / 24.0));
+    }
+    s
+}
+
 /// Every Lazer figure on one line: the gateway pool, the reserve key against its cap, and direct use.
 fn lazer(b: &Board, p: Palette) -> Vec<Span<'static>> {
     let l = &b.live;
-    let mut reserve = of_cap(l.reserve_spend, l.reserve_budget);
-    if let Some(h) = l.reserve_reset_hours {
-        reserve.push_str(&format!(" {:.0}d left", h / 24.0));
-    }
+    let reserve = key_cap(l.reserve_spend, l.reserve_budget, l.reserve_reset_hours);
     vec![
         Span::styled("LAZER ", p.dim()),
         Span::raw(format!("{}  ", of_cap(l.lazer_spend, l.lazer_budget))),
@@ -500,10 +506,7 @@ fn glm(b: &Board, p: Palette) -> Option<Vec<Span<'static>>> {
     if l.glm_spend.is_none() && l.glm_budget.is_none() {
         return None;
     }
-    let mut cap = of_cap(l.glm_spend, l.glm_budget);
-    if let Some(h) = l.glm_reset_hours {
-        cap.push_str(&format!(" {:.0}d left", h / 24.0));
-    }
+    let cap = key_cap(l.glm_spend, l.glm_budget, l.glm_reset_hours);
     Some(vec![Span::styled("GLM ", p.dim()), Span::raw(cap)])
 }
 
