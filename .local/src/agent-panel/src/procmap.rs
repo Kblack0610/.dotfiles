@@ -21,6 +21,7 @@ impl ProcMap {
             .args(["-axo", "pid=,ppid="])
             .output()
             .context("failed to run `ps -axo pid=,ppid=`")?;
+        anyhow::ensure!(out.status.success(), "`ps -axo pid=,ppid=` exited {}", out.status);
         let text = String::from_utf8_lossy(&out.stdout);
         let mut ppid = HashMap::new();
         for line in text.lines() {

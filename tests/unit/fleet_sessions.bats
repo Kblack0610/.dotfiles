@@ -794,6 +794,11 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   assert_equal "$(jq -r .target <<<"$output")" 'lab/s1:1'
+  # A worker whose read had a gap (exit 3) keeps the rows it read (ar-916).
+  printf '#!/usr/bin/env bash\n%q "$@"\nexit 3\n' "$SANDBOX/remote-panel" > "$SANDBOX/bin/ssh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
 }
 
 @test "end to end: a merged PR in an idle worktree comes out LANDED with its fact" {
