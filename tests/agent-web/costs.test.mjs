@@ -54,7 +54,7 @@ const board = (o = {}) => ({
   at: 1794000000, by: "model", window: "7d",
   cuts: ["session", "model", "harness", "tool", "project", "runner", "kind"], windows: ["24h", "7d", "30d"],
   totals: [{ window: "24h", usd: 12.5, sessions: 3, unpriced: 0 }, { window: "7d", usd: 40, sessions: 9, unpriced: 2 }, { window: "30d", usd: 90, sessions: 20, unpriced: 2 }],
-  live: { claude_24h: 11, lazer_spend: 50, lazer_budget: 250, reserve_spend: 19.52, reserve_budget: 100, reserve_reset_hours: 575 },
+  live: { claude_24h: 11, lazer_spend: 50, lazer_budget: 250, reserve_spend: 19.52, reserve_budget: 100, reserve_reset_hours: 575, glm_spend: 5, glm_budget: 50, glm_reset_hours: 720 },
   direct: { usd: 1.25, unpriced: 1, note: "opencode lazer/*, nightly; other direct use unseen" },
   sources: [{ name: "outcomes", as_of: 1793990000, stale: false }, { name: "token snapshot", as_of: 1793000000, stale: true }, { name: "calls", as_of: null, stale: true }],
   errors: [], columns: MODEL_COLS, source: "outcomes rows", eval_days: 7, unpriced: null,
@@ -106,6 +106,12 @@ test("with no gauges and no direct rows the Lazer tiles say unknown, never $0 or
   assert.match(reset, /LAZER RESERVE<\/span><span class="tv">-<\/span><span class="ts1">2d left</, "no cap, so no leading comma");
   assert.match(h, /LAZER DIRECT<\/span><span class="tv">-<\/span><span class="ts1">not read</, "no direct figure says so");
   assert.doesNotMatch(h, /unpriced<\/span>, /);
+  assert.doesNotMatch(h, /LAZER GLM/, "an unminted key is no tile");
+});
+
+test("the GLM pilot key shows spent of its cap once it exports gauges", () => {
+  const h = show(board());
+  assert.match(h, /LAZER GLM<\/span><span class="tv">\$5\.00<\/span><span class="ts1">of \$50\.00 \(10%\), 30d left</);
 });
 
 test("the tool cut with no allocated dollars prints no dollars", () => {
