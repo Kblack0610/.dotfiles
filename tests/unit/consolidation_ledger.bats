@@ -109,6 +109,15 @@ NS
   assert_output 'launches_direct grew: 1 > baseline 0'
 }
 
+@test "the default scan reaches a launch owned by a skill in either repo" {
+  unset LEDGER_SRC
+  mkdir -p "$HOME/.dotfiles/.claude/skills/a" "$HOME/.dotfiles-private/.claude/skills/b"
+  printf 'claude -p "x"\n' > "$HOME/.dotfiles/.claude/skills/a/run.sh"
+  printf 'curl "$U/chat/completions"\n' > "$HOME/.dotfiles-private/.claude/skills/b/run.sh"
+  run "$SUBJECT" ledger
+  assert_line 'launches_direct=2'
+}
+
 @test "a missing baseline fails rather than reading as held" {
   rm "$LEDGER_BASELINE"
   run "$SUBJECT" ledger --check

@@ -148,7 +148,7 @@ set -uo pipefail
 : "${BENCH_SIZES_MIN:=10}"           # items with work_min a size needs before it is calibrated
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_TIMER_DIR:=$HOME/.config/systemd/user}"
-: "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config}"   # colon-separated
+: "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles/.claude/skills:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config:$HOME/.dotfiles-private/.claude/skills}"   # colon-separated
 : "${LEDGER_BOARDS:=$HOME/.notes/lab/projects/current/*/agent/README.md}"
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
 : "${RULES_REGISTER:=$HOME/.config/agentctl/rules.jsonl}"
