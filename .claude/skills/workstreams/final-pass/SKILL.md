@@ -12,7 +12,7 @@ metadata:
 
 A finished diff usually carries a helper that already exists one file over, a fallback that hides the real fault, a magic number that belongs in config, and the comment noise `code-hygiene` exists for. The built-in `/simplify` catches the generic half and knows nothing about this fleet's rules or its lessons, including the ones that say a weird-looking thing is load-bearing. This skill runs the built-in, adds the house checks, and protects what the lessons protect. It produces a cleaner diff plus a short report, and it must run BEFORE the merge gate so the gate validates every edit it made.
 
-## When to Use
+## Scope and triggers
 
 - At the end of implementation, before the merge gate (one-shot step 3a).
 - When the user asks for a final pass or a cleanup of the current change.

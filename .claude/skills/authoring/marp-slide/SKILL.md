@@ -16,8 +16,6 @@ Create professional, visually appealing Marp presentation slides with 7 pre-desi
 
 Create professional Marp presentation slides with 7 beautiful themes (default, minimal, colorful, dark, gradient, tech, business). Use when users request slide creation, presentations, or Marp documents. Supports custom themes, image layouts, and "make it look good" requests with automatic quality improvements.
 
-## When to Use This Skill
-
 Use this skill when the user:
 - Requests to create presentation slides or Marp documents
 - Asks to "make slides look good" or "improve slide design"
