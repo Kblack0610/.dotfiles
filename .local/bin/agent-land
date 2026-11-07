@@ -3,8 +3,9 @@
 #
 #   agent-land <pr> [--item <slug>] [--plan <file> --phase "<text>"] [--dry-run]
 #
-# Steps, stopping at the first failure: fetch (HEAD must contain origin/<base> before the
-# checks; after them, a base that moved on is merged in, pushed and landed on the same gate), item-line
+# Steps, stopping at the first failure: head (HEAD must be the PR's head commit, before the body is
+# touched; else the merge would be refused as "Head branch was modified": run from the PR's own
+# checkout), fetch (HEAD must contain origin/<base> before the checks; after them, a base that moved on is merged in, pushed and landed on the same gate), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
 # "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item needs checks that ran), merge (--squash
@@ -72,6 +73,26 @@ wait_checks() {
     }
     sleep "$CHECKS_POLL"
   done
+}
+
+# own_head: the merge pins HEAD (--match-head-commit), so a cwd that is not on the PR's head would
+# reach the merge and be refused as "Head branch was modified", which reads as a race. Say where the
+# PR's branch is checked out instead. A fork's branch name proves nothing about a local checkout.
+own_head() {
+  local here wt top
+  here=$(git rev-parse HEAD 2>&1) || fail head "git rev-parse: $(lastline "$here")"
+  [ "$here" != "$head_oid" ] || return 0
+  if [ "$cross" = true ]; then
+    fail head "HEAD ${here:0:8} is not the PR's head ${head_oid:0:8}, and that head is on a fork: gh pr checkout $pr in a checkout of this repo, then re-run"
+  fi
+  wt=$(git worktree list --porcelain 2>/dev/null | awk -v b="branch refs/heads/$head_ref" '/^worktree /{p = substr($0, 10)} $0 == b { print p; exit }')
+  top=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  if [ -n "$wt" ] && [ "$wt" = "$top" ]; then
+    fail head "HEAD ${here:0:8} is not the PR's head ${head_oid:0:8} though this checkout has $head_ref: push your commits, or pull the branch, then re-run"
+  elif [ -n "$wt" ]; then
+    fail head "HEAD ${here:0:8} is not the PR's head ${head_oid:0:8}: run from the PR's checkout: $wt"
+  fi
+  fail head "HEAD ${here:0:8} is not the PR's head ${head_oid:0:8}, and no checkout of $head_ref is listed: git switch $head_ref (pushed and current) in a checkout of this repo, then re-run"
 }
 
 current_with_base() {
@@ -263,6 +284,7 @@ fi
 
 if [ "$dry" -eq 1 ]; then
   echo "item-line: gh pr view $pr --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
+  echo "head: git rev-parse HEAD must equal the PR's headRefOid, else exit 1 naming the PR's checkout (git worktree list)"
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
   echo "checks: gh pr checks $pr --watch --fail-fast  (must pass, or report none on a tier 1 or 2 item)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push)"
@@ -277,12 +299,14 @@ if [ "$dry" -eq 1 ]; then
   exit 0
 fi
 
-info=$(gh pr view "$pr" --json state,baseRefName,url -q '.state + " " + .baseRefName + " " + .url' 2>&1) ||
+info=$(gh pr view "$pr" --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q '.state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + .isCrossRepository + " " + .headRefName' 2>&1) ||
   fail fetch "gh pr view $pr: $(lastline "$info")"
-read -r state base url <<<"$info"
+read -r state base url head_oid cross head_ref <<<"$info"
 # The item's PR names its repo: a bare number is ambiguous across the repos one project spans.
 pr_ref=$(sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pulls?/([0-9]+).*#\1\#\2#' <<<"$url")
 [[ "$pr_ref" =~ ^[^/]+/[^/#]+#[0-9]+$ ]] || pr_ref="$pr"
+# Before stamp_item, so a refused run leaves the PR untouched.
+[ "$state" = MERGED ] || own_head
 stamp_item
 
 if [ "$state" = MERGED ]; then
