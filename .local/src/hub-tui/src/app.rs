@@ -3195,6 +3195,11 @@ mod tests {
         );
         assert!(!s.contains("FORECAST"), "the forecast is Log's: {s}");
         assert!(lines[29].contains("j/k pick  Enter detail  / query"), "{s}");
+        // HARNESS gives way before YOU and ASK; a wide screen names each row's.
+        let wide = screen(&mut a, 220, 30);
+        let wl: Vec<&str> = wide.lines().collect();
+        assert!(wl[3].contains("ACCOUNT  HARNESS"), "{wide}");
+        assert!(wl[4].contains("bnb      claude"), "{wide}");
 
         // The stages join by target: the NEEDS row is the live session, and it sorts first.
         a.handle(Msg::Boards(Box::new(boards())));

@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::burn::{self, Burn};
+use crate::queue;
 use crate::sections::{self, Sections};
 use crate::session_actions::Runner;
 use crate::table::{Row, Summary, Val, View};
@@ -581,7 +582,10 @@ pub fn slices(sessions: &[Spent], since: i64) -> Vec<Slice> {
                 session: s.session_id.clone(),
                 title: s.title.clone().unwrap_or_default(),
                 project: s.project.clone(),
-                harness: s.harness.clone().unwrap_or_default(),
+                harness: queue::harness_of(
+                    s.harness.as_deref().unwrap_or(""),
+                    s.account.as_deref().unwrap_or(""),
+                ),
                 model: short(&model),
                 alias,
                 runner: s.runner.clone().unwrap_or_default(),
@@ -1368,6 +1372,17 @@ mod tests {
         assert!((b.shown_usd - 15.5).abs() < 1e-9);
         let share: f64 = b.rows.iter().map(|r| r.share).sum();
         assert!((share - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_row_with_no_harness_is_claude_and_on_the_gateway_claude_lazer() {
+        let mut c = costs();
+        c.sessions.truncate(2);
+        c.sessions[0].harness = None;
+        c.sessions[1].harness = Some(" ".into());
+        c.sessions[1].account = Some(agent_panel::account::GATEWAY.into());
+        let b = board(&c, "harness", "30d", "", "", "", ("", ""));
+        assert_eq!(names(&b, "harness"), ["claude", "claude-lazer"]);
     }
 
     #[test]

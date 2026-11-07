@@ -144,7 +144,7 @@ function qItem(i) {
   const prio = i.priority && i.priority !== "low" ? cchip(`prio ${esc(i.priority)}`, esc(i.priority)) : "";
   const when = i.state === "done" ? `finished ${stamp(i.finished)}`
     : i.started ? `started ${stamp(i.started)}` : `queued ${stamp(i.queued)}`;
-  const line = cardLine([esc(i.project), when, p ? `phase ${p.done}/${p.total}` : "", qEta(i, a), qPr(i), qCost(i), qProof(i)]);
+  const line = cardLine([esc(i.project), i.harness && `<span title="harness">${esc(i.harness)}</span>`, when, p ? `phase ${p.done}/${p.total}` : "", qEta(i, a), qPr(i), qCost(i), qProof(i)]);
   const next = active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "";
   const hold = i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "";
   const note = i.note ? `<div class="qhold">${esc(i.note)}</div>` : "";
