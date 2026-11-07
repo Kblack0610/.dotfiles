@@ -28,6 +28,12 @@ pub struct Event {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub text: String,
+    /// The tool call a `tool_use` is, or the one a `tool_result` answers, so the page can pair them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// A `tool_result` the tool marked as an error.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub error: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -272,7 +278,10 @@ pub fn parse_line(line: &[u8]) -> Vec<Event> {
         kind,
         name,
         text: clip(&text),
+        id: None,
+        error: false,
     };
+    let id = |b: &Value, key| b.get(key).and_then(Value::as_str).map(String::from);
 
     match v.pointer("/message/content") {
         Some(Value::String(s)) => vec![ev("text", None, s.clone())],
@@ -280,12 +289,19 @@ pub fn parse_line(line: &[u8]) -> Vec<Event> {
             .iter()
             .filter_map(|b| match b.get("type").and_then(Value::as_str)? {
                 "text" => Some(ev("text", None, str_of(b.get("text")))),
-                "tool_use" => Some(ev(
-                    "tool_use",
-                    b.get("name").and_then(Value::as_str).map(String::from),
-                    tool_input(b.get("input")),
-                )),
-                "tool_result" => Some(ev("tool_result", None, result_text(b.get("content")))),
+                "tool_use" => Some(Event {
+                    id: id(b, "id"),
+                    ..ev(
+                        "tool_use",
+                        b.get("name").and_then(Value::as_str).map(String::from),
+                        tool_input(b.get("input")),
+                    )
+                }),
+                "tool_result" => Some(Event {
+                    id: id(b, "tool_use_id"),
+                    error: b.get("is_error").and_then(Value::as_bool) == Some(true),
+                    ..ev("tool_result", None, result_text(b.get("content")))
+                }),
                 _ => None,
             })
             .collect(),
@@ -374,6 +390,22 @@ mod tests {
         );
         assert!(parse_line(br#"{"type":"summary","summary":"x"}"#).is_empty());
         assert!(parse_line(b"not json").is_empty());
+    }
+
+    #[test]
+    fn a_tool_result_names_the_call_it_answers() {
+        let call = br#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/a"}}]}}"#;
+        let ok = br#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"fine"}]}}"#;
+        let bad = br#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","is_error":true,"content":"no such file"}]}}"#;
+        assert_eq!(parse_line(call)[0].id.as_deref(), Some("toolu_1"));
+        let r = &parse_line(ok)[0];
+        assert_eq!((r.id.as_deref(), r.error), (Some("toolu_1"), false));
+        assert!(parse_line(bad)[0].error);
+        let json = serde_json::to_string(&parse_line(ok)[0]).unwrap();
+        assert!(
+            !json.contains("error"),
+            "a result that did not fail sends no error key: {json}"
+        );
     }
 
     const ASK: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Which key?","options":[{"label":"mint-key"},{"label":"stay-off"}]}]}}]}}"#;

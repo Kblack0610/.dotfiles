@@ -347,9 +347,8 @@ fn ci(infra: &Infra) -> Option<Row> {
         said.push(format!("{:.0}% passed", passed / done * 100.0));
     }
     let mut down: Vec<&str> = infra
-        .get("runners")
-        .iter()
-        .filter(|s| matches!(s.label("state"), "offline" | "missing"))
+        .runners_down()
+        .into_iter()
         .map(|s| s.label("host"))
         .filter(|h| !h.is_empty())
         .collect();
@@ -677,12 +676,21 @@ mod tests {
             metric("x", json!({"host": "aws-burst-1", "state": "offline"}), "0"),
             metric("x", json!({"host": "box", "state": "idle"}), "1"),
         ];
-        let inf = infra(vec![("runners", runners)]);
+        let inf = infra(vec![("runners", runners.clone())]);
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(
             texts(&p, "ci"),
             ["CI: 6/29 busy, 80% passed, aws-burst-1 offline"]
         );
+        // Powered off by the governor, its runners are offline by design: nothing is down.
+        let stopped = metric(
+            "ci_governor_power_state",
+            json!({"host": "aws-burst-1", "state": "stopped"}),
+            "1",
+        );
+        let inf = infra(vec![("runners", runners), ("power", vec![stopped])]);
+        let p = phone(&state(), None, Some(&inf));
+        assert_eq!(texts(&p, "ci"), ["CI: 6/29 busy, 80% passed"]);
     }
 
     #[test]

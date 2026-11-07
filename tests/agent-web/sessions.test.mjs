@@ -15,8 +15,12 @@ const el = () => new Proxy({}, {
 const boxes = {};
 const box = (id) => (boxes[id] ||= Object.assign(el(), { innerHTML: "", scrollTop: 0, hidden: false, textContent: "", querySelectorAll: () => [] }));
 const doc = { getElementById: box, addEventListener() {}, createElement: el, body: el(), querySelector: el, querySelectorAll: () => [] };
+// The split pane's media query (sessions.js SPLIT): narrow unless a test widens it.
+const mq = { matches: false, addEventListener() {} };
 const ctx = vm.createContext({
   console,
+  matchMedia: () => mq,
+  URLSearchParams,
   document: doc,
   window: { addEventListener() {} },
   location: { hash: "", pathname: "/" },
@@ -46,6 +50,7 @@ const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 
   { text: "shepherd timer stopped", warn: true, start: "shepherd", confirm: "Start the shepherd timer?" }], live: 38, unlinked: 21, errors: ["fleet-dispatch headroom: exit 1"] };
 
 function setup() {
+  mq.matches = false;
   run(`st.tab = "sessions"; st.sel = null; st.view = "page"; st.views = {}; st.arg = ""; sst.confirm = null; api = __api; sst.all = false;
     st.agents = __d.agents; wst.data = __d.watch; shst.data = __d.shep; sst.data = __d.table; sst.cap = __d.cap;`, {
     table: { rows: ROWS, errors: [], table: TABLE },
@@ -72,14 +77,16 @@ test("the header is hub-core's parts: a stopped timer is amber with a Start, and
   assert.doesNotMatch(html, /data-start/);
 });
 
-test("the table is the server's rows in its order, with the chips and the facet", () => {
+test("the table is the server's rows in its order, with the overview tiles and the facet", () => {
   setup();
   ctx.renderOverview();
   const html = boxes.scroll.innerHTML;
   const order = ["hub/b:1", "lab/x:1", "ucp-394"].map((k) => html.indexOf(`data-key="${k}"`));
   assert.ok(order.every((i) => i >= 0), html);
   assert.deepEqual([...order].sort((a, b) => a - b), order);
-  assert.match(html, /data-ts="done today">done today <span class="n">1/);
+  assert.match(html, /<button class="tile" data-ts="done today" style="--c:var\(--b-done\)"><span class="tl">DONE TODAY<\/span><span class="tv">1<\/span>/);
+  assert.doesNotMatch(html, /data-ts="all"|sessions-chips/, "the tiles are the chips, so the small chip row is gone");
+  assert.ok(html.indexOf("stiles") < html.indexOf("capline"), "the overview row leads the tab");
   assert.match(html, /<option value="project:dotfiles">dotfiles \(3\)/);
   assert.match(html, /#12 open <b class="ci pass">PASS<\/b>/);
   assert.match(html, /<td class="n">2\/4<\/td><td class="n">3m<\/td><td class="n">\$1\.20<\/td>/);
@@ -100,6 +107,42 @@ test("a row says what the columns do not: parked, no session here, and where an 
 
 const PAGE = { name: "ucp-394", session_id: "s9", target: "", bucket: "DONE", task: "the <task>", idle: "ended", errors: ["notes board: exit 1"], outcome: "card of s9",
   parts: [{ label: "Queue item", text: "ucp-394 (done, high)", link: "#queue", warn: false }, { label: "PR", text: "#1915 merged", link: "https://github.com/o/r/pull/1915", warn: false }, { label: "Asks", text: "1 open: ship?", link: null, warn: true }] };
+
+test("the overview spend is the server's sum, and the tile in force clears the filter", () => {
+  setup();
+  run(`sst.data = { ...sst.data, spend_usd: 41.2, table: { ...sst.data.table, state: "stalled", shown: 1 } }`);
+  ctx.renderOverview();
+  const html = boxes.scroll.innerHTML;
+  assert.match(html, /SPEND<\/span><span class="tv">\$41\.20<\/span><span class="ts1">1 shown/);
+  assert.match(html, /<button class="tile on" data-ts="" style="--c:var\(--b-stalled\)">/);
+});
+
+test("an opened session starts on its conversation, not its Details page", () => {
+  setup();
+  run(`__load = load; load = () => {}; select({ target: "hub/a:1", session: "hub/a:1-id", status: "idle", actions: [] })`);
+  assert.equal(run("st.view"), "transcript");
+  run(`load = __load`);
+});
+
+test("from 900px an open session lists the table's rows beside it, the open one marked; narrower, none", async () => {
+  setup();
+  mq.matches = true;
+  run(`__load = load; load = () => {}; __asked = []; api = async (u) => { __asked.push(u); return { rows: [], table: TABLE }; }`);
+  await run(`openSession("hub/b:1-id")`);
+  const html = boxes.side.innerHTML;
+  assert.equal((html.match(/class="srow/g) || []).length, 3, "every row the table shows");
+  assert.match(html, /<button class="srow on" data-key="hub\/b:1">/, "the open session is marked");
+  assert.match(html, /data-ts=/, "the state chips filter it");
+  assert.equal(run("__asked.length"), 0, "a read table is not read again to draw it");
+  run(`sst.data = null`);
+  run(`refreshSessions()`);
+  await new Promise(setImmediate);
+  assert.match(run("__asked.join()"), /^\/api\/sessions\/table/, "an open session keeps the list fresh");
+  mq.matches = false;
+  run(`sst.data = __d; renderSide()`, { rows: ROWS, errors: [], table: TABLE });
+  assert.equal(boxes.side.innerHTML, "", "under 900px nothing is drawn");
+  run(`load = __load; api = __api`);
+});
 
 test("every row is a link to its page, keeping the table's view for Back", () => {
   setup();
@@ -148,7 +191,7 @@ test("a page draws hub-core's parts: links, amber, errors, the open outcome card
   assert.match(html, /the &lt;task&gt;/, "text is escaped");
   assert.match(html, /card err">notes board: exit 1/);
   assert.match(html, /data-k="page-outcome" open.*card of s9/s);
-  assert.match(html, /data-transcript/);
+  assert.doesNotMatch(html, /data-transcript/, "the conversation is the default view, so Details has no Load row");
   assert.doesNotMatch(html, /page-state/, "a session out of the state document has no state fold");
   assert.equal(run("st.sel.name"), "ucp-394");
   assert.equal(run("st.sel.summary"), "the <task>");
