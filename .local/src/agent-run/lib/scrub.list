@@ -81,6 +81,8 @@ CODEX_HOME                        # config and auth root; relocating it reselect
 CLAUDE_HEADLESS                   # ours: "no human is watching". Set by agentctl-run itself
 CLAUDE_CODE_SESSION_ID            # identity of the session, no routing effect
 CLAUDE_CODE_SESSION_ATTENDED      # 1 when a human is attached; agent-ask reads it, no routing effect
+CLAUDE_CODE_ENTRYPOINT            # how claude was started (cli, sdk); startup-telemetry.sh records it, no routing effect
+CLAUDE_CODE_EXECPATH              # the running claude binary; startup-telemetry.sh reads its version from it, no routing effect
 CLAUDE_CODE_ENABLE_TELEMETRY      # observability only
 CLAUDE_CODE_ENHANCED_TELEMETRY_BETA
 CLAUDE_CODE_ARTIFACT              # Artifact tool on/off (claude-telemetry.sh defaults it to 0); a tool toggle, no routing effect
@@ -89,7 +91,6 @@ CLAUDE_CODE_ENABLE                # not a variable: a prefix fragment inside a r
 CLAUDE_CODE_ENHANCED              # in tests/unit/claude_telemetry.bats:24
 LLM_MAXTOK                        # token budget, not a destination
 LLM_MAXTOK_REWRITE
-LLM_JUDGE_DRY_RUN                 # behaviour flag
 OPENCODE_DATA_DIR
 OPENCODE_AGENTS_DIR               # asset locations for the binks-fork sync tooling,
 OPENCODE_COMMANDS_DIR             # all of which describe WHERE FILES ARE, never

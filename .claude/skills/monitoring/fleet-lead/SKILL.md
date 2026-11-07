@@ -10,15 +10,15 @@ metadata:
 
 # fleet-lead
 
-The fleet lead is persona **Binks** (`~/.dotfiles-private/.claude/PERSONAS.md`): the coordinator that keeps the human's agent sessions moving while they are away. It owns no product code and does no role's work itself. It holds the lease, the standing orders, the routing of each due line to the role that answers it, the record of what it did and chose not to do, and the summary the human reads on return. The roles are skills loaded only when a due line needs them:
-
-| Role skill | Owns |
-|---|---|
-| `fleet-pace` | machine room: assess, hold, go, the pace check (load, blocked I/O, usage limits) |
-| `shepherd` | delivery state: the buckets, nudges, escalation, overdue phases |
-| `fleet-dispatch` | keeping the queue topped up from the board and starting its sessions (away rate, present trickle), and `fleet-dispatch start` |
+The fleet lead is persona **Binks** (`~/.dotfiles-private/.claude/PERSONAS.md`): the coordinator that keeps the human's agent sessions moving while they are away. It owns no product code and does no role's work itself. It holds the lease, the standing orders, the routing of each due line to the role that answers it, the record of what it did and chose not to do, and the summary the human reads on return. The roles are skills loaded only when a due line needs them. Step 1 routes each due line to its role; findings, `infra:`, other `watch:` and `improve:` lines are this skill's own.
 
 The aim is measured improvement: the KPIs in `fleet-bench kpi` move the better way, one at a time, each through a row that carries its check (an `improve:` line, step 3), and nothing counts as improved until retro has read the number after the PR. Pace is the means. The human wants every session moving and the machine working hard but responsive: about 70% of its CPU (load near 17 on 24 cores, `top` idle near 30%). A fleet sitting near 100% idle is as much a failure as one at 0% idle. Every pass looks at both directions.
+
+## Scope and triggers
+
+Covers one pass over every live agent session: routing each due line to its role skill, and keeping the standing orders, log, pages and rundowns.
+
+Use for "what are my agents doing", "where are we", "run a fleet pass". Load and holds: `fleet-pace`. Nudges and delivery state: `shepherd`. Queue top-up: `fleet-dispatch`.
 
 ## Verb: `pass`
 
@@ -32,15 +32,7 @@ One pass. It runs two ways, and neither waits for the other:
 **Standing orders.** When the human gives an order that should outlive this pass ("Barrage first: freed Unity slots go to agent-11 and agent-12"), write it to `~/.agent/shepherd/orders.md`, one line with the date, and delete the line when it is done or withdrawn. Read that file at the start of every pass and follow it; a headless pass has nothing else to learn the human's word from.
 
 0. `fleet-shepherd lease`, then `fleet-shepherd check` (a runner pass has its due lines in the prompt already and skips it). A refused lease (exit 3) means another pass holds it: act on nothing, tell the human the window it names (`Prefix o`), and end the turn. On exit 1, or `nothing` in the prompt, nothing is due: print one line with the bucket counts and end the turn. On exit 0, act on the due lines it printed. Read the rest in ONE Bash call: `cat ~/.agent/shepherd/orders.md; fleet-bench findings --open; fleet-bench throughput; fleet-assess; top -bn2 -d2 | grep '^%Cpu' | tail -1`: the orders, the shared things no session row shows (the pool, every host, merges per hour), and the pace for the report (never `top -bn1`, whose only frame averages since boot). Every tool call re-reads the whole context, so batch reads, and never re-read state you already have this pass.
-1. **Route.** Load each role skill the due lines name, and no other (a headless prompt lists them as `Roles due:`). `unhandled: <line>` lines come first and route by the line they carry.
-
-   | Due line | Role skill, section |
-   |---|---|
-   | `pace:`, `blocked:`, `limit:` | `fleet-pace`, "Pace check" |
-   | `nudge <bucket>:`, `escalate <bucket>:`, `overdue:`, `escalate overdue:`, `nightly red:`, `shared red:` | `shepherd`, "Verb: nudge" |
-   | `watch: queue-starved` | `fleet-dispatch`, "Starved queue" |
-   | `finding`, `infra:`, other `watch:` | this skill, step 2 and Reporting |
-   | `improve:` | this skill, step 3 |
+1. **Route.** The table `.config/fleet-lead/functions.tsv` (in `~/.dotfiles`) maps each due line to its role skill and section; `fleet-shepherd check` prints them under each line, and a runner prompt lists them as `Roles due:` with the path to read (the family skills are unlisted, so open `~/.claude/skills/<name>/SKILL.md`). Load the skills named and no other. `unhandled: <line>` lines come first and route by the line they carry. A line the table sends here (`finding`, `infra:`, other `watch:`, `improve:`) is this skill's own: step 2, Reporting, step 3. A new function is a new row, not new text here.
 
    On HOLD, or idle under 5% or over 60% in that sample, run `fleet-pace`'s pace check.
 2. **Findings**, from `fleet-bench findings --json` or a `finding` due line, once each, skipping report class and any seen on one sample (`epoch` equal to `episode`). Quote a finding's evidence when naming a limit, or say there is none; a finding never authorizes messaging a WORKING session. Class `human`: add it to this pass's page with its conclusion and cost. Class `shepherd`: act if a standing order covers it (slots and runner counts today, with a before and after from `fleet-bench throughput`), otherwise log it. A starved pool finding is yours to try first: `fleet-shepherd sweep-cancel "<fact>"` cancels the run when one `workflow_dispatch` run on a `sweep/*` branch holds most of the pool and most of its finished jobs failed, records the cancel on the finding, and prints the session to tell (send it with `SendMessage`); exit 1 names why it left the pool alone. Then run the ledger call the due line prints, `fleet-sessions escalate finding-<rule>-<scope> "<fact> <class>"` with `/` in the id written `-`, so a promotion to human is news. Each act on a finding is recorded against it, `fleet-bench respond "<fact>" binks <asked|filed-row|fixed> <ref>` (the ask id, row text or PR); the escalation records the page and `sweep-cancel` its cancel. A human-class episode with nothing but pages reads DARK in `fleet-bench loop`, and `loop_dark` past its threshold comes back as an `improve:` line.
@@ -55,7 +47,7 @@ The human is usually away while this loop runs, so every pass leaves a record an
 - **Log.** When a pass sent a message, escalated or skipped, append one entry to `~/.agent/shepherd/log.md`: a heading, the counts per bucket, one line per message sent (session, fact), and one line per new escalation. Write the entry with `fleet-shepherd log` in two calls, `fleet-shepherd log --heading pass` and then every line at once with `fleet-shepherd log -` and the lines on stdin, never with `echo`: it stamps the time from the clock, and a time you type is a guess (2026-10-28: entries stamped 00:55 and 01:00 UTC the next day were written at 23:44 UTC). A pass that did nothing writes nothing. This file is the rundown the human reads on return.
 - **Page on escalation.** An escalated session or ask is not paged by the pass: it joins hub Home's NEEDS YOU list, and `hub needs --page` (run by `fleet-state.service`) pages new rows above the bar in `channels.toml` `[pager.needs]`, capped per day. A NIGHTLY row escalated this pass gets one page, `-p high`, led by `Nightly tests red on <repo>, no session owns it.`: a nightly red blocks everyone. A `shared red:` line is answered by the `fleet-sessions escalate` call it carries, and gets one page, `-p high`, led by `<test> red on <n> branches in 2h, a shared cause, not one branch.`: every gate that runs it will fail the same way. A human-class finding goes `-p high` in the same page, after any NIGHTLY and SHARED lines. Word it by the `comms-standard` page shape. Escalation is once per fact, so the same row never pages twice for the same reason.
 - **Settled.** When nothing is left to move, `fleet-shepherd check` pages it once (`fleet settled: <n> need you`, counted from hub Home's list) and clears the mark when work comes back. Never page it yourself. Keep the loop running; a settled pass costs one `fleet-sessions` call.
-- **Infra and watches.** An `infra:` line (a red or unreadable k3s domain) or a `watch: <name> tripped (<severity>)` line (a high or urgent Sentinel trip) leads the report and gets a line in the log, even when no session moved. Sentinel or Alertmanager already paged the human, so do not page again. Read the watch's action with `watch-companion-loop list --long <name>`. Who fixes it is `~/.config/agentctl/triage-routes`, not this pass: an `agent` route becomes a `red` item on the next dispatch pass, and a watch with a live `red` item raises no line here. Anything else needs an order before you start work. Either way, answer the line: fix it, or `fleet-shepherd skip "<line>" "<why>"`. Reporting it is not an answer, and a line owed for an hour pages the human (2026-11-04: passes logged "dispatch NOOP" for 6.5h and nobody was told).
+- **Infra and watches.** An `infra:` line (a red or unreadable k3s domain) or a `watch: <name> tripped (<severity>)` line (a high or urgent Sentinel trip) leads the report and gets a line in the log, even when no session moved. Sentinel or Alertmanager already paged the human, so do not page again. Read the watch's action with `watch-companion-loop list --long <name>`. Where the watch's route is `agent`, fixing it is `fix-red`'s, not this pass's (a watch with a live `red` item raises no line here); for any other route, work needs an order before you start it. Either way, answer the line: fix it, or `fleet-shepherd skip "<line>" "<why>"`. Reporting it is not an answer, and a line owed for an hour pages the human (2026-11-04: passes logged "dispatch NOOP" for 6.5h and nobody was told).
 - **In the session.** Each pass also prints its report in its own session, where `/shepherd status` gives the live table.
 - **On the page.** agent-web's Sessions tab shows what is due, each line's role and age, which ones the last pass left unhandled, and the last pass time, read from the same `.due` and `.lease`. Its skips button opens Log's Actions section, which lists every skip with its why next to every other action the fleet took, from `log.md`; a skip with a vague why reads as vague there, so give the reason the human would want.
 
@@ -91,7 +83,7 @@ These hold for every role; each role skill adds its own.
 
 ## Related
 
-- `fleet-pace`, `shepherd`, `fleet-dispatch`: the roles this pass routes to.
+- `fleet-pace` (machine room: assess, hold, go, pace check), `shepherd` (delivery state, nudges), `fleet-dispatch` (queue top-up, `fleet-dispatch start`): the roles this pass routes to. `fix-red`: fixes the reds routed to `agent`.
 - `fleet-comms`: channel choice and message wording for every message a role sends.
 - `fleet-bench`: the ETAs, findings and throughput a pass and the summary quote.
 - `sentinel`: hosts the `fleet-thermal` watch. It stays observe-only; the session running a pass acts.

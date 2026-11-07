@@ -44,24 +44,22 @@ done
 [ -z "$FILE" ] || [ -z "$JSON" ] || { echo "project-stage-check: --file and --json do not mix" >&2; usage; }
 
 # sheet_rows: one `state<TAB>title` line per task row on both lanes' sheets and their frozen
-# version notes, the title as `projects::row_title` reads it (marker, `#` words and the
-# `type(area): ` prefix dropped, spaces collapsed). State is `open`, or `closed` for a ticked
-# row, done or dropped. The roadmap leaves dropped rows out, so it cannot be this reader.
+# version notes, the title from `notes row parse` (the grammar's home, so it reads as
+# `projects::row_title` does: marker, stamps, `#` words and the `type(area): ` prefix dropped,
+# spaces collapsed). State is `open`, or `closed` for a ticked row, done or dropped. The
+# roadmap leaves dropped rows out, so it cannot be this reader. Fails, saying so, when the
+# verb does or answers short.
 sheet_rows() {
-  local f files=()
+  local f files=() rows titles
   for f in "$LAB/README.md" "$LAB/agent/README.md" "$LAB"/versions/*.md "$LAB"/agent/versions/*.md; do
     [ -f "$f" ] && files+=("$f")
   done
   [ "${#files[@]}" -gt 0 ] || return 0
-  awk '
-    /^[ \t]*- \[.\] / {
-      st = ($0 ~ /^[ \t]*- \[[xX]\] /) ? "closed" : "open"
-      t = $0; sub(/^[ \t]*- \[.\] /, "", t); gsub(/<!--.*-->/, "", t)
-      n = split(t, w, /[ \t]+/); out = ""
-      for (i = 1; i <= n; i++) if (w[i] != "" && w[i] !~ /^#/) out = out (out == "" ? "" : " ") w[i]
-      sub(/^[a-z]+\([a-z0-9-]+\)!?: /, "", out)
-      print st "\t" out
-    }' "${files[@]}"
+  rows="$(awk '/^[ \t]*- \[.\] / { print (($0 ~ /^[ \t]*- \[[xX]\] /) ? "closed" : "open") "\t" $0 }' "${files[@]}")"
+  [ -n "$rows" ] || return 0
+  titles="$(cut -f2- <<<"$rows" | notes row parse | cut -f3)" && [ "$(wc -l <<<"$titles")" = "$(wc -l <<<"$rows")" ] \
+    || { echo "project-stage-check: notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)" >&2; return 1; }
+  paste <(cut -f1 <<<"$rows") - <<<"$titles"
 }
 
 # file_gaps: the --file mode. It reads this script's own --json, the open epics from `notes
@@ -75,7 +73,7 @@ file_gaps() {
   epics="$(notes projects --stats --json 2>/dev/null | jq -c --arg n "$NAME" \
     '[.[] | select((.name | ascii_downcase) == ($n | ascii_downcase)) | .epics[]?]')" \
     || { echo "project-stage-check: notes projects --stats --json failed" >&2; exit 2; }
-  have="$(sheet_rows)"
+  have="$(sheet_rows)" || exit 2
   if [ -n "$SYSTEMS" ]; then
     check="$("$0" "$NAME" --systems ${ONLY:+--system "$ONLY"} --json)"; rc=$?
     [ "$rc" -le 1 ] || exit "$rc"

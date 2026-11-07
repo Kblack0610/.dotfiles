@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [session, reboot, inventory]
-  reviewed: "2026-11-04"
+  reviewed: "2026-11-07"
 ---
 
 # session-snapshot
@@ -65,17 +65,36 @@ for d in <dirs from steps 1-2>; do
   printf '%-45s [%s] dirty=%s unpushed=%s\n' "$d" "$(git -C "$d" branch --show-current)" \
     "$(git -C "$d" status --porcelain | wc -l)" "$(git -C "$d" log --oneline @{u}.. 2>/dev/null | wc -l)"
 done
+
+# 7. Cross-check: sessions with a transcript written in the last 30 min that the fleet has no live row for.
+#    ps and tmux miss a session in a detached or closed window; its transcript still shows it. A live
+#    session idle for longer is in steps 1-2, so the window only has to cover a session that just died.
+#    All account dirs; a subagent file (<session>/subagents/agent-*.jsonl) maps to its parent session.
+WINDOW_MIN=30
+{ fleet-sessions --json | jq -r '.session_id // empty'; echo "$CLAUDE_CODE_SESSION_ID"; } > /tmp/snap-known.$$
+find ~/.claude*/projects -name '*.jsonl' -mmin -$WINDOW_MIN 2>/dev/null | while read -r f; do
+  case $f in */subagents/*) sid=$(basename "$(dirname "$(dirname "$f")")") ;; *) sid=$(basename "$f" .jsonl) ;; esac
+  printf '%s\t%s\n' "$sid" "$(rg -o -m1 '"cwd":"[^"]*"' "$f" | cut -d'"' -f4)"
+done | sort -u | awk -F'\t' 'NR==FNR{k[$0];next} !($1 in k)' /tmp/snap-known.$$ -
+rm -f /tmp/snap-known.$$
+#   -> each line is <session id> <cwd>: a row in "Dies on reboot" marked "from transcript", and its cwd joins
+#      the step 6 dirty/unpushed loop. This session itself is excluded.
+
+# 8. Finished or not, per session: the fleet's own verdict, never "PR merged + idle".
+fleet-sessions --json | jq -r 'select(.session_id) | "\(.session_id)\t\(.finished)\t\(.bucket)\t\(.blockers | join("; "))"'
 ```
 
 Write the file with these sections (see the template the skill emits):
 - **⚠️ Before reboot** - dirty/unpushed repos (commit/stash prompt)
 - **🟢 Auto-restarts (enabled --user units)** - do nothing
 - **🟡 Manual restart** - running-but-not-enabled services + dev servers (with exact relaunch cmd + port)
-- **🔴 Dies on reboot** - tmux/Claude sessions table (server | session | dir | branch | project | Claude session id | queue item, if it was working one). The id is what `restore` resumes; the project comes from `resolve_project_name <dir>` (`~/.config/shared-hooks/project-name.sh`), the item from `agent-queue list --json --state active`, the one whose `session` is `<server>:<session>` (a bare name means `lab`).
+- **🔴 Dies on reboot** - tmux/Claude sessions table (server | session | dir | branch | project | Claude session id | queue item, if it was working one). A session found only by step 7 is listed too (its row says "from transcript", with no tmux server and the cwd from the transcript). The id is what `restore` resumes; the project comes from `resolve_project_name <dir>` (`~/.config/shared-hooks/project-name.sh`), the item from `agent-queue list --json --state active`, the one whose `session` is `<server>:<session>` (a bare name means `lab`).
 - **Docker** - containers w/ vs w/o restart policy; note `mcp/filesystem` are ephemeral (Claude respawns)
 - **Resume task** - any in-flight task to pick up (e.g. the original reason for rebooting)
 
 Then: `notes inbox add "reboot restore checklist -> $OUT"` and tell the user the path.
+
+**Finished means the plan's phases are done.** A merged PR on an idle pane proves nothing. Take `finished` and `blockers` from step 8 as the verdict (its rule: `.local/src/docs/fleet-states.md`, DONE) and do not restate it here. A `finished false` session is listed unfinished with its `blockers`. A session with no step 8 row (a "from transcript" one) has no verdict: list it unfinished and read the last assistant message in its transcript (`claude-recall show <id>`) for what it was doing.
 
 Key classification rule: **running ∧ ¬enabled = manual restart**. Enabled units auto-start; don't
 list them as action items. Ephemeral `mcp/filesystem` containers are noise - Claude respawns them.

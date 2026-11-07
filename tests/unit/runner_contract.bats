@@ -114,6 +114,8 @@ headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"
   assert_output ''
   run headless_launches "$REPO_ROOT/.claude/hooks"
   assert_output ''
+  run headless_launches "$REPO_ROOT/.claude/skills"
+  assert_output ''
 }
 
 # A human start runs on the account `claude-acct run` picks, the choice `cl` makes; an unattended

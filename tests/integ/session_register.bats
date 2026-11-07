@@ -96,3 +96,12 @@ run_hook() {
   run jq -r .first_prompt "$REG"
   assert_output "from the bnb account"
 }
+
+@test "a Stop records the harness its launcher set: AGENT_HARNESS for a claude-lazer session, claude on an account" {
+  AGENT_HARNESS=lazer-reserve run_hook
+  assert_equal "$(jq -r .harness "$REG")" lazer-reserve
+  # negative control: no AGENT_HARNESS is an account session, and the row still says so
+  env -u AGENT_HARNESS bash -c "$(declare -f run_hook); TRANSCRIPT='$TRANSCRIPT' HOOK='$HOOK' run_hook"
+  assert_equal "$(jq -r .harness "$REG")" claude
+  [ "$(jq -c 'has("base_url")' "$REG")" = false ]
+}

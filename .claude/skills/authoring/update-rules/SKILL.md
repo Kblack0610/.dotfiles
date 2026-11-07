@@ -12,6 +12,12 @@ metadata:
 
 Edit the rule layer with the correct scope, then sync. This skill picks the right file to touch and runs the fan-out.
 
+## Scope and triggers
+
+Covers adding, editing or removing AI assistant rules in the right layer (rulesync, CLAUDE.md, AGENTS.md) and running the sync.
+
+Use for "add a rule", "from now on always X", "update CLAUDE.md", "register a new MCP server". Settings and hooks: `update-config`.
+
 ## The one thing that trips everyone up
 
 **The rule CONTENT lives in the PRIVATE overlay. This SKILL lives in the PUBLIC repo.**
@@ -81,7 +87,7 @@ If `~/.config/rulesync-global` is absent (a public-only machine with no private 
 
 Every add below starts here (global CLAUDE.md, Subtract First).
 
-1. Grep every layer for the rule's keywords: the three files in the tree above, the repo's CLAUDE.md and `docs/`, `~/.claude/skills/*/SKILL.md`, `~/.agent/anchors/`, the project's `memory/` and `~/.agent/lessons/{project}.md`.
+1. Find the copies: `skill-drift --dups` lists every line already restated across homes (global and repo CLAUDE.md, AGENTS.md, shared docs, runbooks, skills, roles, lessons, memory, anchors) with the winner by `~/.config/agentctl/instruction-homes.json`; run it before and after the edit and the pair count must not rise. It finds near-verbatim copies only, so also grep the rule's keywords in the repo's `docs/` and the rulesync tree above, which it does not scan.
 2. If an existing rule covers it, rewrite that one; do not add a second. If the new rule supersedes or contradicts one, delete the old one in the same commit. A copy in a lower layer becomes a one-line pointer or goes.
 3. Record `wc -c` before and after for each file touched. The commit or PR body has a `Removes:` line naming what went, or one line on why nothing could. At a budget (`context-budget-guard.sh` warns), make room by deleting, never by squeezing wording.
 

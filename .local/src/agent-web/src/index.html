@@ -23,18 +23,20 @@
     <button id="tab-infra">Infra</button>
     <button id="tab-log">Log</button>
     <button id="tab-fleet">Fleet</button>
+    <button id="tab-schedules">Schedules</button>
+    <button id="tab-costs">Costs</button>
     <form method="post" action="/logout"><button class="signout" title="Sign out">Sign out</button></form>
   </nav>
 </header>
 <main id="main">
-  <nav id="list"></nav>
   <section id="detail">
     <div class="bar">
       <button class="btn" id="back">Back</button>
       <span class="dot" id="d-dot"></span>
       <span class="name" id="d-name">Pick an agent</span>
       <div class="seg" id="v-seg">
-        <button id="v-transcript" class="on">Transcript</button>
+        <button id="v-page" class="on">Page</button>
+        <button id="v-transcript">Transcript</button>
         <button id="v-screen">Screen</button>
       </div>
     </div>
@@ -63,11 +65,15 @@
   </section>
   <section id="infra" class="board" hidden><div id="infra-main"></div><div id="jobs"></div><div id="infra-tail"></div></section>
   <section id="fleet" class="board" hidden></section>
+  <section id="schedules" class="board" hidden></section>
+  <section id="costs" class="board" hidden></section>
 </main>
 <script src="/static/ui.js?v={{v}}"></script>
 <script src="/static/md.js?v={{v}}"></script>
 <script src="/static/charts.js?v={{v}}"></script>
 <script src="/static/app.js?v={{v}}"></script>
+<script src="/static/table.js?v={{v}}"></script>
+<script src="/static/flow.js?v={{v}}"></script>
 <script src="/static/waiting.js?v={{v}}"></script>
 <script src="/static/home.js?v={{v}}"></script>
 <script src="/static/outbox.js?v={{v}}"></script>
@@ -75,12 +81,15 @@
 <script src="/static/log.js?v={{v}}"></script>
 <script src="/static/infra.js?v={{v}}"></script>
 <script src="/static/jobs.js?v={{v}}"></script>
+<script src="/static/schedules.js?v={{v}}"></script>
 <script src="/static/queue.js?v={{v}}"></script>
 <script src="/static/board.js?v={{v}}"></script>
 <script src="/static/projects.js?v={{v}}"></script>
 <script src="/static/shepherd.js?v={{v}}"></script>
+<script src="/static/sessions.js?v={{v}}"></script>
 <script src="/static/actions.js?v={{v}}"></script>
 <script src="/static/fleet.js?v={{v}}"></script>
+<script src="/static/costs.js?v={{v}}"></script>
 <script src="/static/focus.js?v={{v}}"></script>
 </body>
 </html>

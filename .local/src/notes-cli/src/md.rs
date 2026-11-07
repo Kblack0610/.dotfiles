@@ -241,6 +241,33 @@ pub fn is_open_task(line: &str) -> bool {
     is_task(line) && !is_checked(line) && !is_empty_unchecked(line)
 }
 
+/// The open task a line of text in `## Focus` stands for: a bare bullet loses its marker, a
+/// plain line is taken whole. `None` for what is not text to act on: a blank, a task, a
+/// heading, a rule or a comment. Mirrored by `loose_task` in markdown.lua.
+///
+/// A bullet with no text comes back as the empty `- [ ]` slot, which the sweep drops.
+pub fn loose_task(line: &str) -> Option<String> {
+    let t = line.trim();
+    let heading = t.starts_with('#') && t.trim_start_matches('#').starts_with(' ');
+    // `- [[a link]]` passes is_task, and only a one-character box is a task here.
+    let boxed = is_task(t) && t.as_bytes().get(4) == Some(&b']');
+    if t.is_empty() || boxed || heading || t.starts_with("---") || t.starts_with("<!--") {
+        return None;
+    }
+    let text = t
+        .strip_prefix(['-', '*', '+'])
+        .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        .unwrap_or(t)
+        .trim();
+    // `* [x] done` is a checklist in another bullet: it keeps its box.
+    let has_box = text.starts_with('[') && text.as_bytes().get(2) == Some(&b']');
+    Some(if has_box {
+        format!("- {text}")
+    } else {
+        format!("- [ ] {text}")
+    })
+}
+
 /// `- [ ]` with no text after it.
 pub fn is_empty_unchecked(line: &str) -> bool {
     match line.trim().strip_prefix("- [ ]") {
@@ -795,6 +822,32 @@ pub fn version_tag(line: &str) -> Option<String> {
     split_version(line).1
 }
 
+/// What a tag is for: `Task` tags are row state the system reads (the row grammar in the README,
+/// "The task row"), `Topic` tags say what something is about. One `#` syntax, so the kind comes
+/// from the name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+pub enum TagKind {
+    Topic,
+    Task,
+}
+
+/// The kind of `tag` (bare, lower-case, no `#`). `p` is `#p:<project>`: the tag charset stops at `:`.
+pub fn tag_kind(tag: &str) -> TagKind {
+    let task = PRIORITIES.iter().any(|(t, _, _)| *t == tag)
+        || matches!(tag, "requested" | "agent" | "p")
+        || ["size/", "worker/"].iter().any(|p| tag.starts_with(p))
+        || looks_like_tier(tag)
+        || is_parent_tag(tag)
+        || is_version_tag(tag)
+        || is_created_tag(tag)
+        || is_due_tag(tag);
+    if task {
+        TagKind::Task
+    } else {
+        TagKind::Topic
+    }
+}
+
 /// The tier a `#tier/N` hashtag (without its `#`) names, 1 to 3 as `fleet-dispatch` reads it
 /// (`row_tier`); None for any other tag, a malformed tier included.
 pub fn tier_tag(tag: &str) -> Option<u8> {
@@ -1096,6 +1149,11 @@ pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
 /// leaves room to move in both directions: pump to `#urgent`, push down to `#low`.
 pub(crate) const DEFAULT_PRIORITY: usize = 1; // #high
 
+/// The level of a task in `## Focus` that nobody placed in a lane: a line typed or pasted
+/// above the lanes, a row added without a tag. Low, not [`DEFAULT_PRIORITY`], because a line
+/// turned into a task was never ranked, so it must not sit among the ones that were.
+pub(crate) const FOCUS_DEFAULT_PRIORITY: usize = 2; // #low
+
 /// The default priority hashtag (`"#high"`).
 pub fn default_priority() -> &'static str {
     PRIORITIES[DEFAULT_PRIORITY].1
@@ -1106,16 +1164,25 @@ pub fn default_priority() -> &'static str {
 ///
 /// The placeholder is the load-bearing exclusion: the sweep re-emits one every run, so
 /// tagging it would make each sweep differ from the one before it and the file would churn
-/// forever. Prose is excluded for a simpler reason - it is not a task and cannot have a
-/// priority - which is what keeps the untagged bucket alive for the lines that belong there.
+/// forever. Prose is excluded for a simpler reason: it is not a task and cannot have a
+/// priority.
 pub fn with_default_priority(line: &str) -> String {
+    with_priority(line, default_priority())
+}
+
+/// [`with_default_priority`] for a row headed to `## Focus`.
+pub fn with_focus_priority(line: &str) -> String {
+    with_priority(line, PRIORITIES[FOCUS_DEFAULT_PRIORITY].1)
+}
+
+fn with_priority(line: &str, default: &str) -> String {
     if !is_task(line) || is_empty_unchecked(line) {
         return line.to_string();
     }
     if task_priority(line).is_some() {
         return one_priority(line);
     }
-    normalize_tags(&add_tag(line, default_priority()))
+    normalize_tags(&add_tag(line, default))
 }
 
 /// A task line with several priority tags (`#urgent #high`, `#low #low`) rewritten to carry
@@ -1542,6 +1609,45 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loose_task_takes_text_and_leaves_the_rest() {
+        let task = |l: &str| loose_task(l);
+        assert_eq!(task("plain line").as_deref(), Some("- [ ] plain line"));
+        assert_eq!(task("- a bullet").as_deref(), Some("- [ ] a bullet"));
+        assert_eq!(task("* a star").as_deref(), Some("- [ ] a star"));
+        assert_eq!(task("+ a plus").as_deref(), Some("- [ ] a plus"));
+        assert_eq!(task("1. a number").as_deref(), Some("- [ ] 1. a number"));
+        assert_eq!(
+            task("**bold** words").as_deref(),
+            Some("- [ ] **bold** words")
+        );
+        assert_eq!(
+            task("#idea a tag first").as_deref(),
+            Some("- [ ] #idea a tag first")
+        );
+        assert_eq!(
+            task("- [[a link]] words").as_deref(),
+            Some("- [ ] [[a link]] words")
+        );
+        assert_eq!(task("- [docs](url)").as_deref(), Some("- [ ] [docs](url)"));
+        assert_eq!(task("* [ ] a list").as_deref(), Some("- [ ] a list"));
+        assert_eq!(task("+ [x] a done").as_deref(), Some("- [x] a done"));
+        assert_eq!(task("[ ] no bullet").as_deref(), Some("- [ ] no bullet"));
+        assert_eq!(task("-").as_deref(), Some("- [ ] "), "the empty slot");
+        for not_text in [
+            "",
+            "   ",
+            "- [ ] a task",
+            "- [x] done",
+            "- [/] doing",
+            "### Parked",
+            "---",
+            "<!-- c -->",
+        ] {
+            assert_eq!(task(not_text), None, "{not_text:?}");
+        }
+    }
 
     #[test]
     fn a_project_tag_names_its_project_and_leaves_the_rest_of_the_line() {
@@ -1986,6 +2092,31 @@ after
         let b = task_key("- [ ] ship it");
         assert_eq!(a, b);
         assert_eq!(a, "ship it");
+    }
+
+    #[test]
+    fn tag_kind_tells_row_state_from_topics() {
+        for t in [
+            "urgent",
+            "high",
+            "low",
+            "size/s",
+            "tier/2",
+            "tier3",
+            "of/tr-37",
+            "worker/fleet",
+            "requested",
+            "agent",
+            "p",
+            "v0.5.0",
+            "c1026",
+            "due1031",
+        ] {
+            assert_eq!(tag_kind(t), TagKind::Task, "{t}");
+        }
+        for t in ["software", "troubleshooting", "sizes", "v0", "interview"] {
+            assert_eq!(tag_kind(t), TagKind::Topic, "{t}");
+        }
     }
 
     #[test]

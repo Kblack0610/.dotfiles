@@ -21,7 +21,7 @@ const CSS: &str = "text/css; charset=utf-8";
 const WOFF2: &str = "font/woff2";
 
 /// `(name, content type, body)`. ui.js is the shared helpers, md.js the markdown renderer,
-/// app.js the Sessions tab and the event stream, waiting.js the answer cards, home.js the Home tab;
+/// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
     ("app.css", CSS, include_bytes!("../static/app.css")),
@@ -35,7 +35,12 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("watch.js", JS, include_bytes!("../static/watch.js")),
     ("log.js", JS, include_bytes!("../static/log.js")),
     ("infra.js", JS, include_bytes!("../static/infra.js")),
+    ("table.js", JS, include_bytes!("../static/table.js")),
+    ("flow.js", JS, include_bytes!("../static/flow.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
+    ("schedules.js", JS, include_bytes!("../static/schedules.js")),
+    ("costs.js", JS, include_bytes!("../static/costs.js")),
+    ("sessions.js", JS, include_bytes!("../static/sessions.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
     ("board.js", JS, include_bytes!("../static/board.js")),
     ("projects.js", JS, include_bytes!("../static/projects.js")),
@@ -185,13 +190,68 @@ mod tests {
     }
 
     #[test]
-    fn the_workers_filters_are_hub_cores() {
-        // docs/dashboards.md rule 8: the chips and sorts are the TUI's, in its order.
-        assert_eq!(
-            js_list(FLEET_JS, "W_FILTERS"),
-            hub_core::fleet::WORKER_FILTERS
-        );
-        assert_eq!(js_list(FLEET_JS, "W_SORTS"), hub_core::fleet::WORKER_SORTS);
+    fn the_jobs_headers_are_hub_cores_columns() {
+        // Rule 8: the web draws the columns hub_core::table sorts and filters, every one of them.
+        use hub_core::table::Row;
+        let js = include_str!("../static/jobs.js");
+        let at = js.find("const JOB_COLS = {").expect("no JOB_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        assert_eq!(keys, hub_core::jobs::Job::COLUMNS);
+    }
+
+    #[test]
+    fn the_schedules_headers_are_hub_cores_columns() {
+        // Rule 8, less `repo` and `next`: the name says the one, a row's detail the other, and
+        // both still sort and filter.
+        use hub_core::table::Row;
+        let js = include_str!("../static/schedules.js");
+        let at = js.find("const SCHED_COLS = {").expect("no SCHED_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        let all = hub_core::schedules::Schedule::COLUMNS;
+        assert_eq!(keys, all[..all.len() - 2]);
+        assert_eq!(all[all.len() - 2..], ["repo", "next"]);
+    }
+
+    #[test]
+    fn the_fleet_headers_are_hub_cores_columns() {
+        // Rule 8: the Fleet table draws the columns hub_core::fleet::who sorts and filters.
+        use hub_core::table::Row;
+        let at = FLEET_JS
+            .find("const FLEET_COLS = {")
+            .expect("no FLEET_COLS");
+        let body = &FLEET_JS[at..at + FLEET_JS[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        assert_eq!(keys, hub_core::fleet::who::Who::COLUMNS);
+    }
+
+    #[test]
+    fn the_session_headers_are_hub_cores_columns() {
+        // Rule 8, as above; `item`, `source` and `session` are search keys with no column here.
+        use hub_core::table::Row;
+        let js = include_str!("../static/sessions.js");
+        let at = js.find("const SESSION_COLS = {").expect("no SESSION_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        let columns = hub_core::session_table::SessionRow::COLUMNS;
+        assert_eq!(keys, columns[..columns.len() - 3]);
     }
 
     #[test]

@@ -237,10 +237,14 @@ enum Cmd {
         rebuild: bool,
     },
     /// Scan the vault for tags (inline `#hashtag` + frontmatter `tags:`). No arg lists
-    /// every tag with a count; `<name>` prints each matching line as `path<TAB>line<TAB>text`.
+    /// every tag with a count, topics before task tags; `<name>` prints each matching line as
+    /// `path<TAB>line<TAB>text`. Every profile's project boards count too, task rows only.
     Tags {
         /// Tag to show hits for (leading `#` optional). Omit to list all tags.
         name: Option<String>,
+        /// List only `task` tags (row state like `#high`, `#size/s`) or `topic` tags.
+        #[arg(long, value_enum, conflicts_with = "name")]
+        kind: Option<md::TagKind>,
     },
     /// List the indexed projects behind the board and the daily note's footer link.
     /// No arg lists each as `name<TAB>summary-path<TAB>status`; `<name>` lists that
@@ -365,6 +369,12 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<CommsCmd>,
     },
+    /// The row grammar `type(area): title` (README "The task row"), for scripts and prompts
+    /// that would otherwise keep their own copy
+    Row {
+        #[command(subcommand)]
+        sub: RowCmd,
+    },
     /// Mirror in-progress ClickUp tickets assigned to me into today's `## Focus`.
     /// Opt-in per profile via `clickup_list`; a no-op where it is unset.
     Clickup {
@@ -428,6 +438,15 @@ enum ClickupCmd {
     /// Push status edits (`[/]`/`[x]`) on cu-linked `## Focus` items up to ClickUp (no fetch;
     /// the fast on-save path).
     Push,
+}
+
+#[derive(Subcommand)]
+enum RowCmd {
+    /// One row or row text per stdin line -> one `type area title ok` TSV line each, `ok` 1
+    /// when it parses; an empty field prints as `-`. Hashtags and stamps are not the title
+    Parse,
+    /// The types a filer may give a row, one space-separated line (`epic` is the human's)
+    Types,
 }
 
 #[derive(Subcommand)]
@@ -553,8 +572,24 @@ enum PtaskCmd {
         /// No checkable artifact exists, and this is why
         #[arg(long, value_name = "WHY")]
         unverified: Option<String>,
+        /// The day it closed, YYYY-MM-DD, when that is not today (a backfill closes a row on the
+        /// day its PR merged). Never a future day
+        #[arg(long, value_name = "DAY")]
+        on: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
+    },
+    /// Re-date a closed row's `done:` day (a backfill that stamped the apply day). The row is
+    /// picked by its id and must already be closed with a `done:` day
+    Redate {
+        /// The day it closed, YYYY-MM-DD; never a future day
+        #[arg(long, value_name = "DAY")]
+        on: String,
+        /// Print `id<TAB>old<TAB>new` and write nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// The row's id, as `ar-142`
+        id: String,
     },
     /// Add or take hashtags off the first matching open task (before its marker). A release
     /// tag is refused: move, promote and demote own it
@@ -869,10 +904,14 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             pr,
             text: text.join(" "),
         },
+        Some(PtaskCmd::Done { on: Some(_), .. }) => {
+            bail!("--playtest done takes no --on: a playtest row closes today")
+        }
         Some(PtaskCmd::Done {
             proof,
             unverified,
             query,
+            ..
         }) => playtest::Op::Done {
             proof,
             unverified,
@@ -888,9 +927,35 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
     })
 }
 
+/// `notes row parse|types`. Parse reads bytes, so one line that is not UTF-8 still gets its
+/// own output line instead of failing the rest.
+fn row_cmd(sub: &RowCmd) -> Result<()> {
+    use std::io::{BufRead, Write};
+    let mut out = std::io::stdout().lock();
+    match sub {
+        RowCmd::Parse => {
+            let mut stdin = std::io::stdin().lock();
+            let mut buf = Vec::new();
+            while stdin.read_until(b'\n', &mut buf)? > 0 {
+                let line = String::from_utf8_lossy(&buf);
+                let line = line.strip_suffix('\n').unwrap_or(&line);
+                writeln!(out, "{}", projects::row_parse_tsv(line))?;
+                buf.clear();
+            }
+        }
+        RowCmd::Types => writeln!(out, "{}", projects::filer_types().collect::<Vec<_>>().join(" "))?,
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
+    // The grammar needs no profile, and its callers (agent-queue, the triage prompts) run where
+    // none may resolve.
+    if let Cmd::Row { sub } = &cli.cmd {
+        return row_cmd(sub);
+    }
     let prof = config::resolve(cli.profile.as_deref())?;
     let log = logging::Logger::new(prof.log_file.clone(), cli.verbose);
 
@@ -1036,9 +1101,12 @@ fn main() -> Result<()> {
             // minting, so two writers never lose a row or mint one id twice.
             let _lock = match &sub {
                 None
-                | Some(PtaskCmd::List { .. } | PtaskCmd::Inbox { .. } | PtaskCmd::Propose { .. }) => {
-                    None
-                }
+                | Some(
+                    PtaskCmd::List { .. }
+                    | PtaskCmd::Inbox { .. }
+                    | PtaskCmd::Propose { .. }
+                    | PtaskCmd::Redate { dry_run: true, .. },
+                ) => None,
                 Some(_) => Some(project_tasks::lock(&prof)?),
             };
             match sub {
@@ -1091,6 +1159,7 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Done {
                     proof,
                     unverified,
+                    on,
                     query,
                 }) => project_tasks::done(
                     &prof,
@@ -1099,8 +1168,12 @@ fn main() -> Result<()> {
                     &pick(&query)?,
                     proof.as_deref(),
                     unverified.as_deref(),
+                    on.as_deref(),
                     lane,
                 )?,
+                Some(PtaskCmd::Redate { on, dry_run, id }) => {
+                    project_tasks::redate(&prof, &log, &name, &id, &on, dry_run, lane)?
+                }
                 Some(PtaskCmd::Start { query }) => {
                     project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
                 }
@@ -1330,10 +1403,10 @@ fn main() -> Result<()> {
             index::run(&prof, &log, rebuild)?;
             0
         }
-        Cmd::Tags { name } => {
+        Cmd::Tags { name, kind } => {
             match name {
                 Some(n) => tags::show(&prof, &n)?,
-                None => tags::list(&prof)?,
+                None => tags::list(&prof, kind)?,
             }
             0
         }
@@ -1483,6 +1556,7 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Row { .. } => unreachable!("handled before the profile resolves"),
         Cmd::Clickup { sub } => match sub {
             ClickupCmd::Sync => clickup::sync(&prof, &log)?,
             ClickupCmd::Push => clickup::push(&prof, &log)?,

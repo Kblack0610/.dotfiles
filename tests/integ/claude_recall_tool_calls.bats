@@ -130,8 +130,25 @@ group() { jq -c "[.groups.$1[] | [.key,.calls,.ctx]] | sort" <<<"$(out)"; }
 @test "failures: classed by message, with what the next response did" {
   run group fail
   assert_output '[["denied",1,1000],["zsh",1,800]]'
+  # both failures were Bash calls: by tool they are one row, so this fails if it groups by class
+  run group fail_tool
+  assert_output '[["Bash",2,1800]]'
   run group retry
   assert_output '[["changed input",1,1000],["same input",1,800]]'
+}
+
+@test "failures by tool: MCP tools collapse to their server, so one flaky server is one row" {
+  local c='"cwd":"/home/u/mcpproj"'
+  {
+    echo "{\"type\":\"user\",$c,\"timestamp\":\"2026-10-20T12:00:00Z\",\"message\":{\"content\":\"drive\"}}"
+    A k1 10 01 "$(T toolu_x1 mcp__playwright__click '{}')"
+    R toolu_x1 'Error: timeout' true
+    A k2 20 02 "$(T toolu_x2 mcp__playwright__navigate '{}')"
+    R toolu_x2 'Error: timeout' true
+    A k3 30 03 ''
+  } | sed "s#/home/u/proj#/home/u/mcpproj#" > "$D/projects/p/s4.jsonl"
+  run jq -c '[.groups.fail_tool[] | select(.key | startswith("mcp")) | [.key,.calls]]' <<<"$(out)"
+  assert_output '[["mcp__playwright",2]]'
 }
 
 @test "background: run time, idle or busy, and the ctx of the ack plus the wake" {

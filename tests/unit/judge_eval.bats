@@ -96,6 +96,19 @@ ask_fixture() {
   assert_output '[12,1,2,2,1,2,2,2,54.5,50,33.3,0.16]'
 }
 
+@test "ask-judge: a deferral of a hard-stop type is no false-defer, one of a type that can go live is" {
+  ask hs_fn judge=human judge_type=product_taste answer=yes
+  ask hs_tn judge=human judge_type=human_physical_action answer=no
+  ask hs_ans judge=take-recommend judge_type=product_taste answer=yes
+  ask live_fn judge=human judge_type=ci_capacity_ops answer=yes
+  ask live_tn judge=human judge_type=agent_policy answer=no
+  run "$JUDGE_EVAL" ask-judge --json
+  assert_success
+  # hs_fn and hs_tn are unscorable; hs_ans still scores the judge's own answer
+  run jq -c '.agents[0].total | [.tp, .fn, .tn, .unscorable, .false_defer_pct]' <<<"$output"
+  assert_output '[1,1,1,2,50]'
+}
+
 @test "ask-judge: an answer assumed after its wait is counted, and an override on it is an fp" {
   ask_fixture
   ask as_over judge=take-recommend judge_rule=fast answered_by=judge assume_at=2026-11-06T10:00:00-0800 judge_override=no answer=yes
@@ -173,7 +186,7 @@ ask_fixture() {
   ask live1 judge=take-recommend answered_by=judge judge_override=none judge_rule=ship_deploy judge_type=ship_deploy judge_evidence=merged judge_reason=merged
   ask live2 judge=take-recommend answered_by=judge judge_override=no 'answer=yes'
   ask would judge=take-recommend answer=no
-  ask pass judge=human judge_rule=knowledge judge_type=human_fact judge_reason=only-you answer=yes
+  ask pass judge=human judge_rule=knowledge judge_type=agent_policy judge_reason=only-you answer=yes
   ask wait judge=human status=pending answer=
   ask old judge=human judge_call=c0 answer=no
   ask err1 judge=error judge_rule= answer=yes

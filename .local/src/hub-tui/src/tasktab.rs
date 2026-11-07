@@ -453,7 +453,7 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
         out.push(clip_line(
             heading(
                 "FOCUS",
-                format!("  {} open, on the Daily tab", each.join(", ")),
+                format!("  {} open, in the daily note", each.join(", ")),
                 p,
             ),
             w,
@@ -681,7 +681,7 @@ pub(crate) mod tests {
         let s = text(&f, &v, 120);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
         assert!(s.contains("ALL PROJECTS  4 open rows in 2 groups"), "{s}");
-        assert!(at("FOCUS  bnb 1 open, on the Daily tab") < at("BNB/DEMO  3, 1 urgent"));
+        assert!(at("FOCUS  bnb 1 open, in the daily note") < at("BNB/DEMO  3, 1 urgent"));
         assert!(at("BNB/DEMO") < at("PERSONAL/GARDEN  1"));
         assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
         // j/k follow the page's order, not the feed's.
@@ -703,7 +703,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         assert!(
-            !text(&f, &one, 120).contains("on the Daily tab"),
+            !text(&f, &one, 120).contains("in the daily note"),
             "one project's rows have no Focus count"
         );
     }

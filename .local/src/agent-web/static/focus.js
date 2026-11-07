@@ -17,12 +17,14 @@
 // and each named lane but Done has a `+` line that adds a task tagged with the lane. Each is the
 // one line changed in the note as read, saved like Edit's Save (`notes put --base`), so a note
 // that changed since is shown as it is now and nothing is written over it.
-// The day's Briefing note is read beside it and drawn as one fold after the lanes.
+// The day's Briefing comes with the day (hub-core View.brief) and is drawn as one fold after
+// the lanes. Each lane and section carries its lines in the note (`line`, `lines`), which is
+// where a row action writes.
 
-// `links` are the last day note's links (null until one is read), which the nav lists while
-// another note is open.
-// `brief` is the day's briefing note (`briefFor` the target last asked for), `undo` the note as it was before the last row removed.
-const fcs = { briefFor: null, data: null, err: null, raw: false, open: {}, copied: false, edit: null, saved: null, links: null, brief: null, busy: false, undo: null };
+// `links` are the nav's places from the last read (View.places: a day's own links, else
+// today's), kept while the outbox is open or a read's places are null; null until a read. `undo` is the note as it was
+// before the last row removed.
+const fcs = { data: null, err: null, raw: false, open: {}, copied: false, edit: null, saved: null, links: null, busy: false, undo: null };
 
 const DRAFT = "focus-draft:";
 function loadDraft(path) { try { return JSON.parse(localStorage.getItem(DRAFT + path) || "null"); } catch { return null; } }
@@ -41,14 +43,13 @@ const refreshFocus = coalesce(async () => {
     // A read that finished after the reader moved on is not what the page asks for now.
     if (t !== focusTarget()) return;
     fcs.data = d; fcs.err = null;
-    // The day draws now; its briefing joins it when read.
-    if (d.note.date) readBrief(d.note.links || []).then(() => { if (fcs.data === d) redraw(); });
   } catch (e) { fcs.err = e.message; }
   redraw();
 });
 // A re-read while editing must not touch what is being typed: only the line under it changes.
 function redraw() {
-  if (st.tab !== "daily" || outboxOpen()) return;
+  if (st.tab !== "daily") return;
+  if (outboxOpen()) { dayNav(); return; }
   if (fcs.edit && fcs.edit.drawn) { editStatus(); dayNav(); } else renderFocus();
 }
 
@@ -57,53 +58,20 @@ function seed(k, open) { if (!(k in fcs.open)) fcs.open[k] = open; }
 
 const outboxOpen = () => st.arg === "outbox";
 
-// The day's briefing (its Morning links it as `journal/refs/<day>/briefing`), read whole so the
-// Daily page shows it as a section; a day without one draws none.
-async function readBrief(links) {
-  const l = links.find((x) => x.exists && /(^|\/)briefing$/.test(x.target));
-  // Another day's briefing is not shown while this one's is read.
-  if (!l || (fcs.brief && fcs.brief.note.target !== l.target)) fcs.brief = null;
-  fcs.briefFor = l ? l.target : null;
-  if (!l) return;
-  let b = null;
-  try { b = await readNote(l.target); } catch { /* no briefing drawn */ }
-  // A read that finished after the page moved to another day is not this day's.
-  if (fcs.briefFor === l.target) fcs.brief = b;
-}
-
+// The day's briefing, read whole with the day, as an open fold; a day without one draws none.
 function briefFold() {
-  const b = fcs.brief;
+  const b = fcs.data.brief;
   if (!b || !b.note.exists) return "";
   seed("brief", true);
   const body = b.sections.map((s) => (s.title ? `<h3>${esc(s.title)}</h3>` : "") + md(s.markdown, { notes: true })).join("");
   return cfold("brief", `<b>Briefing</b> <a class="muted" href="${focusHref(b.note.target)}">open</a>`, `<div class="md">${body}</div>`, fcs.open);
 }
 
-// The line of the note under its headings in order (matched as hub-core matches them, case
-// aside), and the line where `block` (a lane or section as hub-core trimmed it) starts below
-// them; null when it is not there as one run, so its rows stay as text.
-function headLine(heads) {
-  const ls = fcs.data.note.markdown.split("\n");
-  let i = -1;
-  for (const h of heads) {
-    i = ls.findIndex((l, j) => j > i && l.trimEnd().toLowerCase() === h.toLowerCase());
-    if (i < 0) return null;
-  }
-  return i;
-}
-function blockLine(heads, block) {
-  const t = fcs.data.note.markdown, h = headLine(heads);
-  if (h == null || !block || t.includes("\r")) return null;
-  const ls = t.split("\n"), bl = block.split("\n");
-  for (let j = h + 1; j + bl.length <= ls.length; j++) if (bl.every((b, k) => ls[j + k] === b)) return j;
-  return null;
-}
 const liveRows = () => !!fcs.data && !!fcs.data.note.date && !fcs.edit;
-const laneHeads = (l) => ["## Focus", "### " + l.name];
 
 // A lane's `+` line: Done takes no new rows, and the rollup is another note's.
 function addRow(l) {
-  if (!liveRows() || !l.name || isDone(l.name) || headLine(laneHeads(l)) == null) return "";
+  if (!liveRows() || isDone(l.name)) return "";
   return `<form class="tadd" data-id="${esc(l.name)}"><button class="tplus" title="Add a task to ${esc(l.name)}" aria-label="Add a task to ${esc(l.name)}">+</button>` +
     `<input name="t" data-free placeholder="Add to ${esc(l.name)}" autocomplete="off" enterkeyhint="done"></form>`;
 }
@@ -112,19 +80,19 @@ function addRow(l) {
 // empty lane says so in one line. Urgent and High take the priority tints Queue uses.
 function laneCard(l) {
   const done = isDone(l.name);
-  const k = "lane:" + (l.name || "focus");
+  const k = "lane:" + l.name;
   seed(k, !done);
   const n = done ? l.done : l.open;
   const tint = /^urgent$/i.test(l.name) ? " urgent" : /^high$/i.test(l.name) ? " high" : done ? " done" : "";
-  const head = `<span class="dln">${esc(l.name || "Focus")}</span><span class="dlc">${n}</span>`;
+  const head = `<span class="dln">${esc(l.name)}</span><span class="dlc">${n}</span>`;
   if (!l.markdown) {
     const add = addRow(l);
     return `<div class="dlane empty${tint}"><div class="dlh">${head}<span class="muted">nothing here</span></div>${add ? `<div class="md">${add}</div>` : ""}</div>`;
   }
   // Every task in the Urgent lane carries #urgent; the lane says it once.
-  const own = l.name ? new RegExp(`(^|\\s)#${l.name.replace(/\W/g, "")}(?![\\w:/-])`, "gim") : null;
-  const text = own ? l.markdown.replace(own, "$1") : l.markdown;
-  const at = liveRows() && l.name ? blockLine(laneHeads(l), l.markdown) : null;
+  const own = new RegExp(`(^|\\s)#${l.name.replace(/\W/g, "")}(?![\\w:/-])`, "gim");
+  const text = l.markdown.replace(own, "$1");
+  const at = liveRows() ? l.lines : null;
   return `<details class="dlane${tint}" data-k="${esc(k)}"${fcs.open[k] ? " open" : ""}><summary class="dlh">${head}</summary>` +
     `<div class="md">${md(text, { notes: true, rows: at })}${addRow(l)}</div></details>`;
 }
@@ -138,7 +106,7 @@ function linkName(l) {
   return w.charAt(0).toUpperCase() + w.slice(1).replace(/[-_]/g, " ");
 }
 
-// The places the nav always has, Daily first; the day note's own links follow them.
+// The places the nav always has, Daily first; the read's places follow them.
 const PLACES = [{ target: "daily", name: "Daily" }, { target: "outbox", name: "Outbox" }, { target: "status/inbox", name: "Inbox" }];
 
 // The open note's parts the nav jumps to: each lane with something in it, the rollup and each
@@ -148,8 +116,8 @@ function noteParts() {
   if (!v || !v.note.exists || fcs.raw || fcs.edit || outboxOpen()) return [];
   const f = v.focus, parts = [];
   if (f) {
-    for (const l of f.lanes) if (l.markdown && l.name) parts.push({ k: "lane:" + l.name, name: l.name, n: isDone(l.name) ? l.done : l.open });
-    if (v.note.date && fcs.brief && fcs.brief.note.exists) parts.push({ k: "brief", name: "Briefing", target: fcs.brief.note.target });
+    for (const l of f.lanes) if (l.markdown) parts.push({ k: "lane:" + l.name, name: l.name, n: isDone(l.name) ? l.done : l.open });
+    if (v.note.date && v.brief && v.brief.note.exists) parts.push({ k: "brief", name: "Briefing", target: v.brief.note.target });
     if (f.rollup) parts.push({ k: "rollup", name: "Rollup" });
   }
   for (const s of v.sections) if (s.title && !(v.note.date && s.title === "Links")) parts.push({ k: "sec:" + s.title, name: s.title });
@@ -157,11 +125,11 @@ function noteParts() {
 }
 
 // Daily's one nav: a column beside the note on a wide screen, a strip that scrolls sideways on a
-// phone (app.css). The places (Daily, Outbox with its waiting count, Inbox, then the last day
-// note's links in its order, each once) and then the open note's parts. Only the view open now
-// is marked; each place opens in this view, so Back returns.
+// phone (app.css). The places (Daily, Outbox with its waiting count, Inbox, then the read's
+// places in their order, each once) and then the open note's parts. Only the view open now is
+// marked; each place opens in this view, so Back returns.
 function dayNav() {
-  if (fcs.data && fcs.data.note.date) fcs.links = fcs.data.note.links || [];
+  if (fcs.data && fcs.data.places) fcs.links = fcs.data.places;
   const t = focusTarget().split(/[|#]/)[0].trim();
   const cur = outboxOpen() ? "outbox" : /^daily(:|$)/.test(t) ? "daily" : t;
   const parts = noteParts();
@@ -186,7 +154,7 @@ const noteMd = (text, rows) => md(text, { notes: true, ack: !!fcs.data && fcs.da
 function sectionFold(s, open) {
   const k = "sec:" + (s.title || "top");
   seed(k, open);
-  const at = liveRows() && s.title ? blockLine(["## " + s.title], s.markdown) : null;
+  const at = liveRows() && s.title ? s.lines : null;
   return cfold(k, `<b>${esc(s.title || "Top")}</b>`, `<div class="md">${noteMd(s.markdown, at)}</div>`, fcs.open);
 }
 
@@ -218,8 +186,7 @@ function focusBody(v) {
   let html = "";
   const f = v.focus;
   if (f) {
-    // A nameless lane with no words in it (a stray bracket or rule left in the note) is not drawn.
-    html += f.lanes.filter((l) => l.name || /\w/.test(l.markdown || "")).map(laneCard).join("");
+    html += f.lanes.map(laneCard).join("");
     if (n.date) html += briefFold();
     if (f.rollup) { seed("rollup", false); html += cfold("rollup", "<b>Rollup</b>", `<div class="md">${md(f.rollup, { notes: true })}</div>`, fcs.open); }
   }
@@ -357,13 +324,12 @@ function addTask(lane, text) {
   if (!l || !text.trim()) return Promise.resolve(false);
   const tag = /^(urgent|high|low)$/i.test(lane) && !/(^|\s)#(urgent|high|low)\b/i.test(text) ? " #" + lane.toLowerCase() : "";
   const row = `- [ ] ${text.trim()}${tag}`;
+  // Below the lane's last line, or its heading when it has none; a heading that is not one
+  // means the page's lines are not this note's.
   return rowEdit((ls) => {
-    const h = headLine(laneHeads(l));
-    if (h == null) return null;
-    const at = l.markdown ? blockLine(laneHeads(l), l.markdown) : null;
-    if (l.markdown && at == null) return null;
-    const after = at == null ? h : at + l.markdown.split("\n").length - 1;
-    ls.splice(after + 1, 0, row);
+    const after = l.lines.length ? l.lines[l.lines.length - 1] : l.line;
+    if (!/^#/.test(ls[l.line] || "") || !(after < ls.length)) return null;
+    ls.splice(after + 1, 0, row + (ls[after].endsWith("\r") ? "\r" : ""));
     return ls;
   });
 }
@@ -461,16 +427,6 @@ $("d-nav").addEventListener("click", (e) => {
 });
 OUTBOX.changed = () => { if (st.tab === "daily") dayNav(); };
 
-// A page opened straight on the outbox or another note has not read the day yet: its links are
-// the nav's places all the same. One read at a time; a failed one is tried again on the next show.
-let dayLinksRead = null;
-function dayLinks() {
-  dayLinksRead = dayLinksRead || readNote("daily").then((d) => {
-    if (!fcs.links) fcs.links = d.note.links || [];
-    if (st.tab === "daily") dayNav();
-  }, () => { dayLinksRead = null; });
-}
-
 $("d-note").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) fcs.open[e.target.dataset.k] = e.target.open;
 }, true);
@@ -484,8 +440,8 @@ TABS.daily = {
     $("d-note").hidden = outboxOpen();
     $("outbox").hidden = !outboxOpen();
     dayNav();
-    if (!fcs.links && !/^daily(:|$)/.test(focusTarget())) dayLinks();
-    if (outboxOpen()) { OUTBOX.show(); return; }
+    // A page opened straight on the outbox has read no note yet; one read brings the nav's places.
+    if (outboxOpen()) { OUTBOX.show(); if (!fcs.links) refreshFocus(); return; }
     // A different note than the one drawn starts from its own top.
     if (fcs.data && fcs.data.note.target !== focusTarget().split(/[|#]/)[0].trim()) { fcs.data = null; fcs.copied = false; $("daily").scrollTop = 0; }
     // Another note than the one being edited closes the editor; the draft stays on the device.

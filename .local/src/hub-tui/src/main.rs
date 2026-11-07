@@ -5,10 +5,13 @@
 mod app;
 mod board;
 mod controls;
+mod coststab;
+mod datatable;
 mod day;
 mod fit;
 mod fleet;
 mod fleettab;
+mod flowstrip;
 mod fmt;
 mod focustab;
 mod forecast;
@@ -17,7 +20,9 @@ mod jobs;
 mod logtab;
 mod outboxtab;
 mod projtab;
+mod proptab;
 mod queuetab;
+mod schedules;
 mod tabreq;
 mod tasktab;
 
@@ -35,13 +40,12 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub actions --since WHEN [--json | --records]
        hub phone --json
        hub needs --json | --page
+       hub briefing --json | --md [--since WHEN]
        hub projects --json
        hub projects --page NAME
        hub tabs
-  TAB     home|daily|queue|infra|sessions|today|history|fleet|projects, or a retired name
-          (overview, waiting, asks, focus, outbox, board, forecast, watch, shepherd, jobs, ci,
-          machines) that lands on its new tab; jobs, ci and machines open that section of
-          Infra, outbox the outbox under Daily
+  TAB     a tab id (`hub tabs` lists them), or a retired name (hub_core::layout::RETIRED)
+          that lands on its new tab, on the section it became when it became one
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
@@ -55,6 +59,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
           bar in channels.toml [pager.needs] (fleet-state.service runs it after every pass)
+  briefing what needs you, then one line per area (Infra, Sessions, Workers overnight, Nightly,
+          Delivery, Costs) and the detail, for the window from WHEN (epoch seconds or RFC 3339,
+          default 12h ago); --md is the file agentctl-briefing writes. Exits 1 when a source could
+          not be read (the output says which)
   projects every project's card as {cards, unlinked, errors}, each card with its summary line
           and in_flight: what the waybar projects chip reads
   projects --page NAME
@@ -117,6 +125,10 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("phone") {
         it.next();
         std::process::exit(phone(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("briefing") {
+        it.next();
+        std::process::exit(briefing(it.cloned().collect()));
     }
     if it.peek().map(|a| a.as_str()) == Some("needs") {
         it.next();
@@ -186,33 +198,6 @@ fn actions(args: Vec<String>) -> i32 {
     i32::from(!g.errors.is_empty())
 }
 
-/// What Home joins: the fleet state with its asks read live, the queue, the board feed and,
-/// unless `with_infra` is false, infra (a Prometheus round trip).
-fn gather(
-    with_infra: bool,
-) -> (
-    serde_json::Value,
-    hub_core::queue::Queue,
-    Result<hub_core::tasks::Feed, String>,
-    Option<hub_core::infra::Infra>,
-) {
-    let state = hub_core::boards::state(
-        &hub_core::boards::fleet_state(),
-        &hub_core::session_actions::System,
-    );
-    std::thread::scope(|s| {
-        let infra = with_infra.then(|| s.spawn(hub_core::infra::gather));
-        let queue = hub_core::queue::Queue::read(&hub_core::session_actions::System);
-        let board = hub_core::tasks::feed(&hub_core::session_actions::System);
-        (
-            state,
-            queue,
-            board,
-            infra.map(|i| i.join().unwrap_or_default()),
-        )
-    })
-}
-
 /// `hub needs --json`: NEEDS YOU as Home ranks it. `--page`: the pager over it, with no
 /// Prometheus read (red-now rows never page). Exits 1 when the page could not be decided or sent.
 fn needs(args: Vec<String>) -> i32 {
@@ -221,7 +206,7 @@ fn needs(args: Vec<String>) -> i32 {
         ["--page"] => true,
         _ => die(USAGE),
     };
-    let (state, queue, board, infra) = gather(!page);
+    let (state, queue, board, infra) = hub_core::home::gather(!page);
     let home = hub_core::home::build(&state, Some(&queue), Some(&board), infra.as_ref());
     if !page {
         let out = serde_json::json!({"needs": home.needs, "errors": home.errors});
@@ -243,12 +228,42 @@ fn needs(args: Vec<String>) -> i32 {
     }
 }
 
+/// `hub briefing`: hub-core's briefing over the window from `--since`.
+fn briefing(args: Vec<String>) -> i32 {
+    let (mut since, mut md) = (None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--since" => {
+                since = Some(
+                    it.next()
+                        .and_then(|s| parse_since(s))
+                        .unwrap_or_else(|| die(USAGE)),
+                )
+            }
+            "--json" => md = Some(false),
+            "--md" => md = Some(true),
+            _ => die(USAGE),
+        }
+    }
+    let md = md.unwrap_or_else(|| die(USAGE));
+    let now = chrono::Utc::now().timestamp();
+    let since = since.unwrap_or(now - hub_core::briefing::DEFAULT_WINDOW_SECS);
+    let b = hub_core::briefing::build(&hub_core::briefing::gather(since, now));
+    if md {
+        print!("{}", b.markdown());
+    } else {
+        println!("{}", serde_json::to_string(&b).unwrap_or_default());
+    }
+    i32::from(!b.errors.is_empty())
+}
+
 /// `hub phone --json`: the same join Home draws, reduced to the phone's rows.
 fn phone(args: Vec<String>) -> i32 {
     if args != ["--json"] {
         die(USAGE);
     }
-    let (state, queue, board, infra) = gather(true);
+    let (state, queue, board, infra) = hub_core::home::gather(true);
     let infra = infra.unwrap_or_default();
     let home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
     let projects = hub_core::projects::gather();
@@ -302,13 +317,11 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.boards = Some(app::Boards::read(&a.files, None));
         if t == Tab::Sessions {
             let b = a.boards.as_ref().expect("just read");
-            let state = b.watch.state["sessions"].as_array().cloned();
             let f = forecast::Forecast::read();
-            a.controls.read(state, Some(forecast::schedule(&f)));
+            a.controls
+                .read(Some(&b.watch.state), Some(forecast::schedule(&f)));
             a.forecast = Some(f);
-            a.controls.set(hub_core::session_actions::gather(
-                &hub_core::session_actions::System,
-            ));
+            a.read_sessions_now();
         }
         // `--tab 'fleet NAME'` prints that runner's page in place of the tab.
         if t == Tab::Fleet {
@@ -320,7 +333,14 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
                         name,
                     ));
                 }
-                None => a.fleet = Some(hub_core::fleet::collect()),
+                None => {
+                    a.fleet = Some(hub_core::fleet::collect());
+                    match section.as_deref().map(str::trim) {
+                        Some("tokens") => a.fleet_tokens.open = Some(true),
+                        Some("langfuse") => a.fleet_langfuse = Some(true),
+                        _ => {}
+                    }
+                }
             }
         }
         a.tab = t;
@@ -344,6 +364,13 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             let _ = writeln!(out, "{}", plain(&l));
         }
         return 0;
+    }
+    if matches!(tab, None | Some(Tab::Home)) {
+        a.proposals = Some(hub_core::proposals::read(
+            &hub_core::session_actions::System,
+        ));
+        // Home leads with the flow strip, whose inbox and board are the gauges.
+        a.pipeline = Some(hub_core::pipeline::read());
     }
     // Home counts the queue too, so it is read for the default pages as well.
     if matches!(tab, None | Some(Tab::Home | Tab::Queue | Tab::Projects)) {
@@ -379,6 +406,22 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
+    // `--tab 'costs by=runner&w=24h'` prints that view of the Costs tab.
+    if tab == Some(Tab::Costs) {
+        let sys = hub_core::session_actions::System;
+        let paths = hub_core::costs::Paths::from_env();
+        a.costs = Some(hub_core::costs::read(
+            &sys,
+            &paths,
+            chrono::Utc::now().timestamp(),
+        ));
+        a.tab = Tab::Costs;
+        a.open_query(section);
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
     // `--tab jobs` prints the whole jobs table, as the Jobs tab did.
     if tab == Some(Tab::Infra) && section.as_deref() == Some("jobs") {
         let js = hub_core::jobs::collect(&a.paths, &Default::default());
@@ -390,6 +433,18 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             let _ = writeln!(out, "{}", plain(l));
         }
         return 0;
+    }
+    if tab == Some(Tab::Schedules) {
+        let paths = hub_core::fleet::Paths::from_env();
+        let s = hub_core::schedules::read(&paths, &hub_core::session_actions::System);
+        for l in
+            a.sv.status(&s, a.p)
+                .iter()
+                .chain(&a.sv.table(&s, a.p, w, false))
+        {
+            let _ = writeln!(out, "{}", plain(l));
+        }
+        return i32::from(!s.errors.is_empty());
     }
     let infra = hub_core::infra::gather();
     let failed = !infra.ok;
@@ -455,9 +510,13 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         let tabs = tx.clone();
         std::thread::spawn(move || tabreq::serve(l, tabs));
     }
-    // A job starting or ending writes one of the job files, fleet-sessions and day-log write
-    // the board files, and agent-queue its item files: each re-reads only its own part.
+    // A job starting or ending writes one of the job files, the nightly run a token snapshot,
+    // fleet-sessions and day-log the board files, and agent-queue its item files: each re-reads
+    // only its own part.
     let files = tx;
+    // agent-propose makes its store on the first write, and a watch needs it to exist now.
+    std::fs::create_dir_all(hub_core::boards::proposals_dir()).ok();
+    std::fs::create_dir_all(&app.files.tokens).ok();
     let paths = app.watched();
     let probe = app.paths.clone();
     let boards = app.files.clone();
@@ -467,7 +526,10 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         if !app::is_write(&e.kind) {
             return;
         }
-        if e.paths.iter().any(|p| app::is_job_file(&probe, p)) {
+        if e.paths
+            .iter()
+            .any(|p| app::is_job_file(&probe, p) || boards.is_token_file(p))
+        {
             let _ = files.send(Msg::Files);
         }
         if e.paths.iter().any(|p| boards.is_board_file(p)) {
@@ -475,6 +537,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         }
         if e.paths.iter().any(|p| app::is_queue_file(&queue, p)) {
             let _ = files.send(Msg::QueueFiles);
+        }
+        if e.paths.iter().any(|p| boards.is_proposal_file(p)) {
+            let _ = files.send(Msg::ProposalFiles);
         }
     });
     // Kept alive until hub exits; dropping it ends the watch.
@@ -494,7 +559,7 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     app.read_boards();
     app.read_queue();
     if app.tab == Tab::Home {
-        app.read_tasks();
+        app.read_home();
     }
     if app.tab == Tab::Queue {
         app.read_candidates();
@@ -508,6 +573,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     }
     if app.tab == Tab::Infra {
         app.read_reds();
+    }
+    if app.tab == Tab::Schedules {
+        app.read_schedules();
     }
     // `--tab outbox` read the outbox in open_query above.
     if app.tab == Tab::Daily && !app.daily_outbox {

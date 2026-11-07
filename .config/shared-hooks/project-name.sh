@@ -56,6 +56,13 @@ project_map_file() {
   printf '%s' "${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
 }
 
+# resolve_project [dir] -> the canonical project for <dir> (default $PWD). The one entry point
+# for a script that wants "the project I am in"; four scripts each wrapped resolve_project_name
+# with their own copy and their own basename fallback. A hook passes "${CLAUDE_PROJECT_DIR:-$PWD}".
+resolve_project() {
+  resolve_project_name "${1:-$PWD}"
+}
+
 # ── the registry's OTHER relation: project -> repo ────────────────────────────
 #
 # resolve_project_name answers "what project is this PATH", which is the question

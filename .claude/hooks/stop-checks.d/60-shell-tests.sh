@@ -41,8 +41,7 @@ TESTS_DIR="$PROJECT_ROOT/tests"
 # Pick the fast-tier files this change can affect; CI's fast job runs all of them on every
 # PR. The whole tier outgrew the 300s Stop budget (5m24s in CI) and timed out on every Stop
 # of a checkout carrying someone else's theme churn, so the gate reported nothing at all.
-# A test is picked when it changed, or names a changed file's basename; a change to the
-# shared harness (helpers, fixtures, vendor, Makefile) picks every file.
+# .local/lib/test-pick.sh says what is picked.
 # Seam: SHELL_TESTS_CHANGED (newline list of repo-relative paths) replaces the git read.
 if [ -n "${SHELL_TESTS_CHANGED+x}" ]; then
   CHANGED="$SHELL_TESTS_CHANGED"
@@ -51,19 +50,13 @@ else
   CHANGED="$( { git -C "$PROJECT_ROOT" diff --name-only "$BASE"
                 git -C "$PROJECT_ROOT" ls-files --others --exclude-standard; } | sort -u)"
 fi
+# shellcheck source=/dev/null
+. "${_self%/*}/../../../.local/lib/test-pick.sh"
 mapfile -t ALL < <(ls "$TESTS_DIR"/unit/*.bats "$TESTS_DIR"/integ/*.bats 2>/dev/null)
 PICKED=()
-if grep -qE '^tests/(helpers|fixtures|vendor)/|^tests/Makefile$' <<<"$CHANGED"; then
-  PICKED=("${ALL[@]}")
-else
-  PATS="$(grep -v '^$' <<<"$CHANGED" | sed 's#.*/##' | sort -u)"
-  for t in "${ALL[@]}"; do
-    if grep -qxF "tests/${t#"$TESTS_DIR"/}" <<<"$CHANGED" \
-       || { [ -n "$PATS" ] && grep -qwFf <(printf '%s\n' "$PATS") "$t"; }; then
-      PICKED+=("$t")
-    fi
-  done
-fi
+for t in "${ALL[@]}"; do
+  test_picked "$CHANGED" "tests/${t#"$TESTS_DIR"/}" < "$t" && PICKED+=("$t")
+done
 if [ "${#PICKED[@]}" -eq 0 ]; then
   echo "shell-tests: no fast-tier test names a changed file ($(grep -c . <<<"$CHANGED") changed); CI runs the full tier"
   exit 0

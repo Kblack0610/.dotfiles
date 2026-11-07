@@ -35,7 +35,7 @@ import sys
 from collections import Counter, defaultdict
 
 WAIT_RE = re.compile(
-    r"(^|[;&|\s(])sleep\s+\d|\buntil\b.*;\s*do\b|gh pr checks\b.*--watch|gh run watch\b"
+    r"(^|[;&|\s(])sleep\s+\d|\buntil\b.*;\s*do\b|gh pr checks\b.*--watch|gh run watch\b|\bgh-run-wait\b"
     r"|/tasks/[^\s'\"]+\.output")
 # A response's turn class, from its tool calls: write wins over wait, wait over investigate;
 # a response with no tool call is a reply.
@@ -282,6 +282,7 @@ def scan(path, start, end, acc):
 
 def registry(start, end, root):
     by_acct, by_proj, n, cost, last = defaultdict(lambda: Counter()), defaultdict(lambda: Counter()), 0, 0.0, {}
+    by_sess = {}
     for f in glob.glob(os.path.join(root, "*", "sessions.jsonl")):
         rows = {}
         for line in open(f, errors="ignore"):
@@ -308,7 +309,8 @@ def registry(start, end, root):
                 b[k]["output"] += tok.get("output", 0) or 0
             n += 1
             cost += c
-    return n, cost, by_acct, by_proj, last
+            by_sess[r["session_id"]] = by_sess.get(r["session_id"], 0) + c  # one sid in two registries counts in both, as cost does
+    return n, cost, by_acct, by_proj, last, by_sess
 
 
 def merged_prs(start, end, root):
@@ -388,6 +390,8 @@ def main():
     ap.add_argument("--since", help="start of the window (YYYY-MM-DD, an ISO time, or 90m/12h/2d ago); overrides --days")
     ap.add_argument("--before", help="end of the window (YYYY-MM-DD or ISO time), default now")
     ap.add_argument("--top", type=int, default=15, help="sessions in the by-session table (all in --json)")
+    ap.add_argument("--sort", choices=("cost", "turns", "context"), default="cost",
+                    help="order of the by-session table and its --json: registry cost (default), turns, or context tokens")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     end = ts(a.before) if a.before else dt.datetime.now().timestamp()
@@ -419,7 +423,7 @@ def main():
             continue
         scan(p, start, end, acc)
 
-    n, cost, by_acct, by_proj, reg_last = registry(start, end, env.get("SESS_ROOT", f"{home}/.agent/sessions"))
+    n, cost, by_acct, by_proj, reg_last, reg_by_sess = registry(start, end, env.get("SESS_ROOT", f"{home}/.agent/sessions"))
     prs, zero_ctx, out_ctx, prs_by_sess = merged_prs(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
     ctx_all = sum(b["input"] + b["cache_write"] + b["cache_read"] for b in acc["kind"].values())
     fc = sorted(acc["first_ctx"])
@@ -465,7 +469,10 @@ def main():
             "wait_share": round(v["wait_context"] / v["context"], 3) if v["context"] else None,
             "compactions": v["compactions"], "first_turn_context": v.get("first_turn_context"),
             "merged_prs": sp, "cost_per_merged_pr": round(c / len(sp), 2) if sp and c is not None else None}
-    sessions = dict(sorted(sessions.items(), key=lambda x: (-(x[1]["cost_usd"] or 0), -x[1]["context"])))
+    by_field = {"cost": lambda x: (-(x[1]["cost_usd"] or 0), -x[1]["context"]),
+                "turns": lambda x: (-x[1]["turns"], -x[1]["context"]),
+                "context": lambda x: (-x[1]["context"], -x[1]["turns"])}
+    sessions = dict(sorted(sessions.items(), key=by_field[a.sort]))
     turns_all = sum(v["turns"] for v in acc["mix"].values())
 
     def q(p):
@@ -477,7 +484,7 @@ def main():
         "window": {"start": dt.datetime.fromtimestamp(start).isoformat(timespec="minutes"),
                    "end": dt.datetime.fromtimestamp(end).isoformat(timespec="minutes"),
                    "transcripts": len(set().union(*acc["kind_files"].values()))},
-        "registry": {"sessions": n, "cost_usd": round(cost, 2)},
+        "registry": {"sessions": n, "cost_usd": round(cost, 2), "cost_by_session": reg_by_sess},
         "by_account": {k: dict(v) for k, v in sorted(by_acct.items(), key=lambda x: -x[1]["cost_usd"])},
         "by_project": {k: dict(v) for k, v in sorted(by_proj.items(), key=lambda x: -x[1]["cost_usd"])},
         "by_kind": {k: {**v, "sessions": len(acc["kind_files"][k])}
@@ -547,7 +554,7 @@ def main():
     print(f"wait-style calls: {wt['calls']:,}, context {m(wt['context'])} ({wt['share']} of all)")
     print("turn mix: " + ", ".join(f"{k} {v['turns']:,} ({v['share']})" for k, v in out["turn_mix"].items()))
     print(f"compactions: {out['compactions']}\n")
-    print(f"by session (top {a.top} of {len(sessions)}; cost is the session's whole run, from the registry)")
+    print(f"by session (top {a.top} of {len(sessions)} by {a.sort}; cost is the session's whole run, from the registry)")
     print("  " + "\t".join(["session", "project", "origin", "model", "cost_usd", "turns", "context", "inv/wait/write/reply",
                             "wait_share", "compactions", "first_turn", "merged_prs", "per_pr"]))
     for sid, v in list(sessions.items())[:a.top]:

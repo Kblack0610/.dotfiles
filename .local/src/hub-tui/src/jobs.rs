@@ -1,53 +1,18 @@
 //! The Jobs page: every job `hub_core::jobs::collect` finds (agentctl, timers, Unity gates,
-//! CI, k8s), filtered and searched, with a log pane under the list.
+//! CI, k8s) on the shared data table (`datatable`: `/` query, `f` state, `s`/`S` sort, `x`
+//! clear), with a log pane under the list.
 
 use hub_core::jobs::{Job, Jobs, Source, State};
 use ratatui::text::{Line, Span};
 
+use crate::datatable::DataTable;
 use crate::fit::{cell, Cell, Table};
 use crate::fmt::{clock, dur, Palette};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum StateFilter {
-    #[default]
-    All,
-    Running,
-    Queued,
-    Done,
-    Failed,
-}
-
-impl StateFilter {
-    fn next(self) -> StateFilter {
-        use StateFilter::*;
-        match self {
-            All => Running,
-            Running => Queued,
-            Queued => Done,
-            Done => Failed,
-            Failed => All,
-        }
-    }
-    fn name(self) -> &'static str {
-        use StateFilter::*;
-        match self {
-            All => "all states",
-            Running => "running",
-            Queued => "queued",
-            Done => "done",
-            Failed => "failed",
-        }
-    }
-    fn keeps(self, j: &Job) -> bool {
-        match self {
-            StateFilter::All => true,
-            StateFilter::Running => j.state == State::Running,
-            StateFilter::Queued => j.state == State::Queued,
-            StateFilter::Done => j.state == State::Done,
-            StateFilter::Failed => j.ok == Some(false),
-        }
-    }
-}
+/// `Job::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
+const HEADER: [&str; 7] = [
+    "STATE", "SOURCE", "NAME", "STARTED", "TOOK", "RESULT", "DETAIL",
+];
 
 /// The log of one row, read in a worker. `back` counts lines up from the end: 0 follows the tail.
 pub struct LogPane {
@@ -60,11 +25,8 @@ pub struct LogPane {
 
 #[derive(Default)]
 pub struct JobsView {
-    pub source: Option<Source>,
-    pub state: StateFilter,
-    pub search: String,
-    /// The search being typed after `/`, applied on Enter.
-    pub typing: Option<String>,
+    /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
+    pub table: DataTable,
     pub sel: usize,
     pub top: usize,
     pub log: Option<LogPane>,
@@ -80,36 +42,9 @@ pub fn row_id(j: &Job) -> RowId {
 }
 
 impl JobsView {
-    pub fn cycle_source(&mut self) {
-        self.source = match self.source {
-            None => Some(Source::ALL[0]),
-            Some(s) => Source::ALL
-                .iter()
-                .position(|x| *x == s)
-                .and_then(|i| Source::ALL.get(i + 1))
-                .copied(),
-        };
-        self.sel = 0;
-    }
-    pub fn cycle_state(&mut self) {
-        self.state = self.state.next();
-        self.sel = 0;
-    }
-
-    /// The rows the filters and the search keep, in the collector's order.
+    /// The rows the view keeps, in its sort or the collector's order.
     pub fn shown<'a>(&self, jobs: &'a Jobs) -> Vec<&'a Job> {
-        let q = self.search.to_lowercase();
-        jobs.jobs
-            .iter()
-            .filter(|j| self.source.is_none_or(|s| j.source == s))
-            .filter(|j| self.state.keeps(j))
-            .filter(|j| {
-                q.is_empty()
-                    || [j.name.as_str(), &j.detail, &j.result, j.source.name()]
-                        .iter()
-                        .any(|f| f.to_lowercase().contains(&q))
-            })
-            .collect()
+        self.table.view.apply(&jobs.jobs)
     }
 
     /// Move the selection to the row with this id after a refresh, or keep the index in range.
@@ -121,19 +56,9 @@ impl JobsView {
         self.sel = self.sel.min(rows.len().saturating_sub(1));
     }
 
-    /// One status line: the filters on the left, what is going on on the right.
+    /// One status line: the view on the left, how many it keeps of the window on the right.
     pub fn status(&self, jobs: &Jobs, p: Palette) -> Vec<Line<'static>> {
-        let count = |f: fn(&Job) -> bool| jobs.jobs.iter().filter(|j| f(j)).count();
-        let mut spans = vec![Span::raw(format!(
-            "{} | {}",
-            self.source.map_or("all sources", |s| s.name()),
-            self.state.name()
-        ))];
-        if let Some(t) = &self.typing {
-            spans.push(Span::styled(format!(" | /{t}_"), p.head()));
-        } else if !self.search.is_empty() {
-            spans.push(Span::raw(format!(" | /{}", self.search)));
-        }
+        let mut spans = self.table.status(&jobs.jobs, p);
         if let Some(h) = &self.history {
             spans.push(Span::styled(
                 format!(" | history of {h} (h back)"),
@@ -142,10 +67,9 @@ impl JobsView {
         }
         spans.push(Span::styled(
             format!(
-                "    running {}  queued {}  failed {}  (last {})",
-                count(|j| j.state == State::Running),
-                count(|j| j.state == State::Queued),
-                count(|j| j.ok == Some(false)),
+                "    {} of {} (last {})",
+                self.shown(jobs).len(),
+                jobs.jobs.len(),
                 dur(jobs.window_secs as f64)
             ),
             p.dim(),
@@ -169,22 +93,21 @@ impl JobsView {
                 if jobs.jobs.is_empty() {
                     "no jobs in the window"
                 } else {
-                    "no job matches (s source, f state, / search, Esc clears)"
+                    "no job matches (/ query, f state, x clears)"
                 },
                 p.dim(),
             )];
         }
         let cells: Vec<Vec<Cell>> = rows.iter().map(|j| job_row(j, p, now)).collect();
         let mut out = Table {
-            header: vec![
-                "STATE", "SOURCE", "NAME", "STARTED", "DUR", "RESULT", "DETAIL",
-            ],
+            header: HEADER.to_vec(),
             rows: cells,
             keep: vec![0, 2, 3, 4, 5, 1],
             flex: Some(6),
             flexmin: 10,
             right: vec![4],
             cap: vec![(2, 40), (5, 12)],
+            mark: self.table.mark::<Job>(),
             ..Default::default()
         }
         .fit(w, p.head());
@@ -272,6 +195,7 @@ pub fn clean(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::fit::plain;
+    use hub_core::table::Dir;
 
     fn job(src: Source, name: &str, state: State, ok: Option<bool>) -> Job {
         let mut j = Job::new(src, name, state);
@@ -332,21 +256,30 @@ mod tests {
     }
 
     #[test]
-    fn filters_and_search_narrow_the_rows() {
+    fn the_shared_view_narrows_and_sorts_the_rows() {
         let j = fixture();
         let mut v = JobsView::default();
-        v.cycle_state(); // running
+        v.table.view.state = "running".into();
         assert_eq!(v.shown(&j).len(), 1);
-        v.state = StateFilter::Failed;
+        v.table.view.state = "failed".into();
         assert_eq!(v.shown(&j)[0].name, "editmode");
-        v.state = StateFilter::All;
-        v.cycle_source(); // agentctl
+        v.table.view.state.clear();
+        v.table.view.q = "source:agentctl".into();
         assert_eq!(v.shown(&j).len(), 1);
-        v.source = None;
-        v.search = "E2E".into();
+        v.table.view.q = "E2E".into();
         assert_eq!(v.shown(&j)[0].name, "platform / e2e");
-        v.search = "nothing-like-it".into();
+        v.table.view.q = "nothing-like-it".into();
         assert!(lines(&v, &j)[0].contains("no job matches"));
+        v.table.view.q.clear();
+        v.table.view.sort = "name".into();
+        v.table.view.dir = Dir::Asc;
+        let out = lines(&v, &j);
+        assert!(
+            out[0].contains("NAME ^"),
+            "the sorted header carries its mark: {}",
+            out[0]
+        );
+        assert!(out[1].contains("dream"), "{out:?}");
     }
 
     #[test]
@@ -389,8 +322,19 @@ mod tests {
             .iter()
             .map(plain)
             .collect();
-        assert!(st[0].contains("running 1  queued 1  failed 1"));
+        assert!(
+            st[0].starts_with("all 4  running 1  queued 1  done 2  failed 1"),
+            "{st:?}"
+        );
+        assert!(st[0].ends_with("4 of 4 (last 1d0h)"), "{st:?}");
         assert_eq!(st[1], "unread: k8s: prometheus down");
+    }
+
+    #[test]
+    fn the_header_is_hub_cores_columns() {
+        use hub_core::table::Row;
+        let lower: Vec<String> = HEADER.iter().map(|h| h.to_lowercase()).collect();
+        assert_eq!(lower, Job::COLUMNS);
     }
 
     #[test]

@@ -35,13 +35,16 @@ HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 WATCH_MSG = (
     "`gh run watch` polls the GitHub API for the whole wait and is banned (unity-core-playground "
     "docs/operations/ci.md rule 8). `agent-land <N>` already waits for a PR's checks: start the "
-    "gate-and-land command with run_in_background and act on its completion notification."
+    "gate-and-land command with run_in_background and act on its completion notification. Any "
+    "other run: `gh-run-wait <run-id> [label]` with run_in_background; do not write your own waiter."
 )
 LOOP_MSG = (
     "This foreground loop polls: it blocks the turn, and every re-check re-reads the whole "
     "context. Start the same wait with run_in_background: true (or the Monitor tool) and act on "
     "the completion notification; do not check its output, gh or git before the notice arrives. "
-    "A loop inside a script file is not affected."
+    "A loop inside a script file is not affected. For a CI run use `gh-run-wait <run-id> [label]` "
+    "in the background, not a wrapper script of your own: fleet-sessions counts it as a gate, and "
+    "reads a script of your own as STALLED."
 )
 LIVE_MSG = (
     "Background task {id} is still running, so this read polls it, and every look re-reads the "

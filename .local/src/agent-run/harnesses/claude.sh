@@ -11,6 +11,13 @@
 # DID. It pre-approves what it names and removes nothing. The same prompt under
 # --disallowedTools "Write,Edit" answered CANNOT and left the file byte-identical.
 
+# harness_sandbox - build the lane sandbox settings once, before the run. A profile the jq cannot
+# turn into settings refuses here, because an empty --settings would run the shell open.
+harness_sandbox() {
+  sandbox_claude_version_ok || { echo "claude is older than $SANDBOX_CLAUDE_MIN (or has no readable version), which ignores the key that bounds Edit and Write" >&2; return 1; }
+  CLAUDE_SANDBOX_SETTINGS="$(sandbox_claude_settings)" && [ -n "$CLAUDE_SANDBOX_SETTINGS" ]
+}
+
 # harness_supports - claude can enforce every key in the current contract.
 # Returns 0 (supported) or prints why and returns 1. See contract rule 3.
 harness_supports() {
@@ -51,6 +58,10 @@ harness_exec() {
   flags+=(--dangerously-skip-permissions)
 
   [ -n "$mcp_file" ] && flags+=(--mcp-config "$mcp_file" --strict-mcp-config)
+
+  # A lane with SANDBOX_PROFILE runs its Bash in Claude's OS sandbox (lib/sandbox.sh): the
+  # bypass above stops prompts, and the sandbox bounds what a command can read, write and reach.
+  [ -n "${SANDBOX_FILE:-}" ] && flags+=(--settings "$CLAUDE_SANDBOX_SETTINGS")
 
   # There is no human on a timer to answer a prompt or read a plan file. Mirrors
   # the prompt agentctl-dream and agentctl-nightly-sync already use. A run with no

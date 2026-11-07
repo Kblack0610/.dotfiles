@@ -10,6 +10,12 @@ metadata:
 
 # notes-system
 
+## Scope and triggers
+
+Covers the `~/.notes` toolchain and the profile-aware `notes` Rust CLI: journal, backlogs, zettels, sync, doctor.
+
+Use for any notes read, write or layout question. Never hand-write into `~/.notes/journal/`. Meetings: `meeting-ingest`. Long-term cross-project memory: `mem0-ops`.
+
 ## Persona
 
 - **Name:** Scribe
@@ -20,7 +26,7 @@ metadata:
 - **Style:** Faithful, concise, structured; records rather than embellishes
 - **Autonomy rung:** draft / author (never edits auth/runtime state; uses the `notes` CLI, never
   hand-writes the journal)
-- **Carrying primitive:** skill voice - home here; also voices `daily:summary`, `wind-down`,
+- **Carrying primitive:** skill voice - home here; also voices `wind-down`,
   `one-pager`, `lab-sync`
 - **Notify channel:** the notes vault + generated summaries
 - **Registry:** `~/.dotfiles-private/.claude/PERSONAS.md`
@@ -58,7 +64,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | Linux | `notes-watch.service` (inotifywait + 3s debounce) | `notes-mqtt.service` (mosquitto_sub) | `git-sync-notes.timer` 5min |
 | macOS | `com.kblack.notes-watch.plist` (launchd `WatchPaths`) | `com.kblack.notes-mqtt.plist` | `com.kblack.git-sync-notes.plist` 5min |
 | Windows | `notes-watch` Scheduled Task (FileSystemWatcher) | `notes-mqtt` Scheduled Task (mosquitto_sub.exe) | `notes-sync-fallback` Scheduled Task 5min |
-| Termux | `~/.termux/boot/notes-watch.sh` (inotifywait) | ntfy Android app (FCM-backed) | crond 5min |
+| Termux | `.termux/boot/notes-watch.sh` in the Termux home (inotifywait) | ntfy Android app (FCM-backed) | crond 5min |
 
 ## Profiles
 
@@ -105,8 +111,9 @@ Ad-hoc task lines (in any markdown: daily notes, plans, backlogs) carry priority
 
 - **Vocabulary (three levels):** `#low`, `#high`, `#urgent`. No `#medium`.
 - **Placement:** end of the task line, one space before the tag, e.g. `- [ ] fix token refresh race #urgent`. End-of-line keeps it clear of markdown `# headings` (which are line-start only) so the CLI never mistakes it for a heading.
-- **nvim keymap:** `<leader>tp` in a markdown buffer cycles the current line (or a visual selection, converging to one level): `(none) -> #low -> #high -> #urgent -> (none)`. Sibling of `<leader>t` (checkbox toggle); defined in `~/.dotfiles/.config/nvim/lua/kennethblack/plugins/markdown.lua`.
+- **nvim keymap:** in a markdown buffer `<leader>tP` raises and `<leader>tp` lowers the current line (or a visual selection, converging to one level) along `#low -> #high -> #urgent`, stopping at either end; a task always has a priority, so there is no untagged step. Sibling of `<leader>t` (checkbox toggle); defined in `~/.dotfiles/.config/nvim/lua/kennethblack/plugins/markdown.lua`.
 - **Discovery:** because they are `#tags`, `notes tags` counts them and `<leader>nt` (the tag finder) drills into them; `notes tags urgent` lists every tagged line. Greppable via `rg '#urgent'`.
+- **Two kinds of tag:** task tags (row state, end of the row) and topic tags (what a note is about, in frontmatter or prose); `notes tags --kind task|topic` splits them and typing `#` in nvim offers them. Rule: `.local/src/notes-cli/README.md`, "The task row".
 
 ## Project board
 
@@ -147,11 +154,11 @@ Thin wrapper that `exec`s `~/.local/src/git/git-sync-notes.sh`. Pulls from origi
 
 ### `notes-termux-bootstrap`
 
-Android-specific variant of `notes-bootstrap`. Use on Termux when the auto-detection needs an override. Also installs `neovim`/`tmux`/`rust` and writes the `~/.shortcuts/notes` Termux:Widget shortcut.
+Android-specific variant of `notes-bootstrap`. Use on Termux when the auto-detection needs an override. Also installs `neovim`/`tmux`/`rust` and writes the `.shortcuts/notes` Termux:Widget shortcut.
 
 ### `notes-mobile`
 
-One-tap entry into today's daily note: pull, open `notes path daily` in neovim inside a persistent `notes` tmux session (reattaches on reopen), push on exit. On Termux it is wired to a home-screen icon via the `~/.shortcuts/notes` Termux:Widget shortcut (install the Termux:Widget add-on APK, then place the widget). Runs on desktop/macOS too for testing.
+One-tap entry into today's daily note: pull, open `notes path daily` in neovim inside a persistent `notes` tmux session (reattaches on reopen), push on exit. On Termux it is wired to a home-screen icon via the `.shortcuts/notes` Termux:Widget shortcut (install the Termux:Widget add-on APK, then place the widget). Runs on desktop/macOS too for testing.
 
 ### `journal-create` (deprecated)
 

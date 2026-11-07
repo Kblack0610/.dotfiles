@@ -1,8 +1,7 @@
-//! The priority-lane sweep: untagged tasks on top, then a `### Urgent` / `### High` /
-//! `### Low` lane each, then `---` and `### Done`. Every lane header is emitted even when
-//! empty so the columns stay put as drop targets, and an untagged task dropped under one
-//! inherits that lane's tag. The tag is the source of truth; position decides only for a
-//! task that has none.
+//! The priority-lane sweep: a `### Urgent` / `### High` / `### Low` lane each, then `---` and
+//! `### Done`. Every lane header is emitted even when empty so the columns stay put as drop
+//! targets, and an untagged task dropped under one inherits that lane's tag. The tag is the
+//! source of truth; position decides only for a task that has none.
 //!
 //! Apart from `focus_sweep` because the daily note's `## Focus` is not the only list with
 //! urgency in it: a project sheet's `## Tasks` section sorts the same way, and a second copy
@@ -17,10 +16,10 @@ enum Bucket {
     Done,
 }
 
-/// The number of lanes: the index of the trailing untagged bucket.
+/// The number of lanes: the index of the trailing bucket for lines that are no task.
 const LANES: usize = md::PRIORITIES.len();
 
-/// Lane index for an open task, else [`LANES`] (untagged).
+/// Lane index for an open task, else [`LANES`] (no priority tag).
 fn lane_of(line: &str) -> usize {
     md::task_priority(line)
         .and_then(|tag| md::PRIORITIES.iter().position(|(_, hash, _)| *hash == tag))
@@ -51,35 +50,22 @@ fn scaffold_lane(line: &str) -> Option<usize> {
 /// in how they EMIT this - the bucketing rule is shared so they cannot disagree about which
 /// lane a task is in.
 struct Buckets {
-    /// One per lane, plus a trailing bucket for prose (and anything untagged that the
-    /// default could not apply to).
+    /// One per lane, plus a trailing bucket for lines that are no task: prose on a sheet,
+    /// an authored heading or comment in Focus.
     open: Vec<Vec<String>>,
     done: Vec<String>,
     placeholder: Option<String>,
-    had_scaffold: bool,
-}
-
-impl Buckets {
-    fn any_tagged(&self) -> bool {
-        self.open[..LANES].iter().any(|b| !b.is_empty())
-    }
 }
 
 /// Rebuild one list body, grouped under a `### <Lane>` heading each, with a trailing
-/// `### Done`. This is the `## Focus` layout: the headings are drop targets, so they are
-/// emitted even when empty.
-///
-/// `None` when there is nothing to organize - that shape is already the sorted form, and
-/// rewriting it would churn the file. It is what keeps a fresh daily note from being born
-/// full of empty headers.
-fn rebuild(body: &[&str]) -> Option<Vec<String>> {
-    let mut b = bucket(body);
-    if !b.any_tagged() && b.done.is_empty() && !b.had_scaffold {
-        return None;
-    }
+/// `### Done`. This is the `## Focus` layout: the lanes are the whole of it, so a note holds
+/// them from the day it is made, and the headings are drop targets, so they are emitted even
+/// when empty. Nothing is unlaned: an empty `- [ ]` slot goes, a line of text is a task
+/// ([`md::loose_task`]), and a task with no lane takes [`md::FOCUS_DEFAULT_PRIORITY`].
+fn rebuild(body: &[&str]) -> Vec<String> {
+    let mut b = bucket(body, Layout::Focus);
     let mut out: Vec<String> = Vec::new();
     out.extend(b.open[LANES].drain(..));
-    out.push(b.placeholder.take().unwrap_or_else(|| "- [ ] ".to_string()));
     for (i, (_, _, heading)) in md::PRIORITIES.iter().enumerate() {
         out.push(String::new());
         out.push((*heading).to_string());
@@ -89,7 +75,7 @@ fn rebuild(body: &[&str]) -> Option<Vec<String>> {
     out.push("---".to_string());
     out.push("### Done".to_string());
     out.extend(b.done);
-    Some(out)
+    out
 }
 
 /// Rebuild one list body as a single list SORTED by priority, with a trailing `### Done`.
@@ -104,7 +90,7 @@ fn rebuild(body: &[&str]) -> Option<Vec<String>> {
 /// Always emits: the section's `### Done` is part of it, not something that appears once
 /// there is enough to organize.
 pub(crate) fn rebuild_sorted(body: &[&str]) -> Vec<String> {
-    let mut b = bucket(body);
+    let mut b = bucket(body, Layout::Tasks);
     let mut out: Vec<String> = Vec::new();
     // Prose first, above the task list, where it reads as a note about the list.
     out.extend(b.open[LANES].drain(..));
@@ -121,12 +107,23 @@ pub(crate) fn rebuild_sorted(body: &[&str]) -> Vec<String> {
     out
 }
 
+/// Which list a body is, for the two things they answer differently: what a line of text is,
+/// and the lane of a task nobody placed.
+#[derive(Clone, Copy, PartialEq)]
+enum Layout {
+    Focus,
+    Tasks,
+}
+
 /// Sort one list body into buckets. Shared by both layouts.
-fn bucket(body: &[&str]) -> Buckets {
+fn bucket(body: &[&str], layout: Layout) -> Buckets {
+    let default = match layout {
+        Layout::Focus => md::FOCUS_DEFAULT_PRIORITY,
+        Layout::Tasks => md::DEFAULT_PRIORITY,
+    };
     let mut open: Vec<Vec<String>> = vec![Vec::new(); LANES + 1];
     let mut done: Vec<String> = Vec::new();
     let mut placeholder: Option<String> = None;
-    let mut had_scaffold = false;
     let mut cur_lane: Option<usize> = None;
     // Where the last top-level line went, so its indented children follow it.
     let mut last: Option<Bucket> = None;
@@ -134,7 +131,6 @@ fn bucket(body: &[&str]) -> Buckets {
     for l in body {
         let t = l.trim();
         if is_scaffold(l) {
-            had_scaffold = true;
             cur_lane = scaffold_lane(l);
             last = None;
             continue;
@@ -151,11 +147,19 @@ fn bucket(body: &[&str]) -> Buckets {
                 continue;
             }
         }
+        // Past the indent check, so a note under a task stays a note. What is left and indented
+        // has no task above it, which makes it a line of its own.
+        let task = if layout == Layout::Focus {
+            md::loose_task(l)
+        } else {
+            None
+        };
+        let l = task.as_deref().unwrap_or(l);
         if md::is_checked(l) {
-            done.push((*l).to_string());
+            done.push(l.to_string());
             last = Some(Bucket::Done);
         } else if md::is_empty_unchecked(l) {
-            placeholder = Some((*l).to_string());
+            placeholder = Some(l.to_string());
             last = None;
         } else if md::is_task(l) {
             let i = match md::task_priority(l) {
@@ -165,17 +169,17 @@ fn bucket(body: &[&str]) -> Buckets {
                     // default. Either way it leaves here TAGGED - an open task with no
                     // stated priority used to sort above `### Urgent`, so a task nobody had
                     // thought about outranked one explicitly marked urgent.
-                    let i = cur_lane.unwrap_or(md::DEFAULT_PRIORITY);
+                    let i = cur_lane.unwrap_or(default);
                     open[i].push(md::add_tag(l, md::PRIORITIES[i].1));
                     last = Some(Bucket::Open(i));
                     continue;
                 }
             };
-            open[i].push((*l).to_string());
+            open[i].push(l.to_string());
             last = Some(Bucket::Open(i));
         } else if !t.is_empty() {
-            // a stray prose line stays with the untagged bucket
-            open[LANES].push((*l).to_string());
+            // a stray prose line stays above the lists
+            open[LANES].push(l.to_string());
             last = Some(Bucket::Open(LANES));
         }
     }
@@ -183,7 +187,6 @@ fn bucket(body: &[&str]) -> Buckets {
         open,
         done,
         placeholder,
-        had_scaffold,
     }
 }
 
@@ -204,7 +207,7 @@ pub(crate) fn sweep_section(content: &str, pred: impl Fn(&str) -> bool) -> Optio
     while body.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
         body.pop();
     }
-    let rebuilt = rebuild(&body)?;
+    let rebuilt = rebuild(&body);
 
     let mut out: Vec<String> = lines[..=start].iter().map(|s| s.to_string()).collect();
     out.extend(rebuilt);
@@ -301,7 +304,7 @@ mod tests {
     #[test]
     fn golden_matches_the_nvim_buffer_sweep_with_markers_and_children() {
         let note = "## Focus\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] outlook integration #high\n      needs OAuth2 first\n### Urgent\n- [ ] dropped <!-- pr:307 -->\n\n## Notes\nafter\n";
-        let expected = "## Focus\n- [ ] \n\n### Urgent\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] dropped #urgent <!-- pr:307 -->\n\n### High\n- [ ] outlook integration #high\n      needs OAuth2 first\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
+        let expected = "## Focus\n\n### Urgent\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] dropped #urgent <!-- pr:307 -->\n\n### High\n- [ ] outlook integration #high\n      needs OAuth2 first\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
         assert_eq!(focus(note), expected);
     }
 }

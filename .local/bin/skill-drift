@@ -53,6 +53,7 @@
 #              the update-rules class and the reason this script exists.
 #   NOCMD      a command the skill tells you to RUN does not resolve on PATH.
 #              (`rulesync` lives at ~/.rulesync/bin/rulesync, never on PATH.)
+#              A name the same doc defines as a shell function is not a command.
 #   UNDEPLOYED a skill dir exists in a repo but has no link in ~/.claude/skills,
 #              so it is documented and unreachable.
 #   GHOST      CLAUDE.md bullets a skill that is not on disk (retired but still
@@ -90,13 +91,15 @@
 #   skill-drift --json           machine-readable (everything, with "new": true|false)
 #   skill-drift --new            human-readable, NEW findings only
 #   skill-drift --write-baseline freeze current findings as accepted
-#   skill-drift --lint [DIR] [--profile full|project]
+#   skill-drift --lint [DIR] [--profile full|project] [--allow-empty]
 #                                STATIC checks only, over DIR/.claude. What CI runs:
 #                                no deployed tree, no private repo and no CLAUDE.md
 #                                exist on a runner, so the environmental checks
 #                                cannot even be attempted. `full` is the dotfiles
 #                                corpus. `project` is a game repo: no metadata.* or
 #                                category rules, and flat .claude/skills/<name>/.
+#                                Finding nothing fails, unless --allow-empty says
+#                                this repo tracks no skills on purpose.
 #   skill-drift --write-lint-baseline [DIR] [--profile full|project]
 #                                freeze the current frozen-eligible debt
 #   skill-drift --ratchet [DIR] [BASE]
@@ -111,12 +114,22 @@
 #                                finding names the doc and its first line. Override
 #                                the set with DRIFT_DOCS (newline-separated paths).
 #                                The nightly docs-cleanup runner reads --docs --json.
+#   skill-drift --dups [--json]  RESTATED instructions: a line of 90+ chars in one home
+#                                that shares 4-word shingles (Jaccard >= 0.3) with a line
+#                                in another. Corpus: the --docs set plus every SKILL.md and
+#                                the agentctl roles and prompts. Each pair prints both homes
+#                                and the one that wins (higher rank in the agentctl conf's
+#                                instruction-homes.json; equal rank: a session picks).
+#                                Report-only: exit 0 with pairs, 2 on an empty corpus or no
+#                                homes file.
+#                                AUTO:START/END blocks are skipped (a file with `<!-- shared: -->`
+#                                markers holds none of the spliced text). A lexical floor: only
+#                                near-verbatim lines are found, paraphrase is not.
 set -uo pipefail
 
 SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
 PUB="${DOTFILES:-$HOME/.dotfiles}"
 PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
-CODEX="${CODEX_SKILLS:-$PUB/.config/codex/skills}"
 COMMANDS="${CLAUDE_COMMANDS:-$HOME/.claude/commands}"
 CLAUDE_MD="${CLAUDE_MD:-$HOME/.claude/CLAUDE.md}"
 BASELINE="${SKILL_DRIFT_BASELINE:-$HOME/.agent/skill-drift.baseline}"
@@ -146,7 +159,7 @@ LISTING_MAX="${SKILL_LISTING_MAX:-24576}"
 # The one heading every skill carries (the majority form when the standard was written).
 HEADING='## Scope and triggers'
 
-MODE=report LINT_DIR="" DOCS_JSON=0 PROFILE=full RATCHET_BASE=origin/main
+MODE=report LINT_DIR="" DOCS_JSON=0 PROFILE=full RATCHET_BASE=origin/main ALLOW_EMPTY=0
 case "${1:-}" in
   --quiet)          MODE=quiet ;;
   --json)           MODE=json ;;
@@ -156,6 +169,7 @@ case "${1:-}" in
   --write-lint-baseline) MODE=write_lint_baseline ;;
   --ratchet)             MODE=ratchet ;;
   --docs)           MODE=docs; [ "${2:-}" = --json ] && DOCS_JSON=1 ;;
+  --dups)           MODE=dups; [ "${2:-}" = --json ] && DOCS_JSON=1 ;;
   -h|--help) sed -n '2,/^set -uo pipefail/{/^#/p}' "$0" | sed 's/^# \?//'; exit 0 ;;
 esac
 
@@ -165,12 +179,14 @@ case "$MODE" in lint|write_lint_baseline|ratchet)
   while [ $# -gt 0 ]; do
     case "$1" in
       --profile) PROFILE="${2:-}"; shift; [ $# -eq 0 ] || shift ;;
+      --allow-empty) ALLOW_EMPTY=1; shift ;;
       *) if [ -z "$LINT_DIR" ]; then LINT_DIR="$1"; else RATCHET_BASE="$1"; fi; shift ;;
     esac
   done
   LINT_DIR="${LINT_DIR:-$PWD}"
   # A typo here would run the wrong contract and report it clean.
   case "$PROFILE" in full|project) ;; *) echo "skill-drift: unknown profile '$PROFILE' (full|project)" >&2; exit 2 ;; esac
+  [ "$ALLOW_EMPTY" = 0 ] || [ "$MODE" = lint ] || { echo "skill-drift: --allow-empty goes with --lint only" >&2; exit 2; }
 esac
 
 LINT_BASELINE="${SKILL_LINT_BASELINE:-$LINT_DIR/tests/skill-lint.baseline}"
@@ -405,10 +421,19 @@ at_line() {
 # with no flag, path, assignment, pipe or quote in it is English, not a command.
 # Without those, `bump the version` reports a missing tool called "bump".
 check_cmds() {
-  local skill="$1" f="$2" c
+  local skill="$1" f="$2" c defined
+  # A shell function a shell fence of the doc defines (`mem0() {`, `function mem0 {`) is
+  # called by the steps after it, not looked up on PATH.
+  defined=$(awk '
+      /^[[:space:]]*```(bash|sh|shell|console)[[:space:]]*$/ { inblock=1; next }
+      /^[[:space:]]*```/ { inblock=0; next }
+      inblock && match($0, /^[[:space:]]*(function[[:space:]]+[a-z][a-z0-9_-]*|[a-z][a-z0-9_-]*[[:space:]]*\(\))/) {
+        d = substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*(function[[:space:]]+)?/, "", d); sub(/[[:space:]]*\(\)$/, "", d); print d
+      }' "$f")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     is_common "$c" && continue
+    grep -qxF -- "$c" <<<"$defined" && continue
     command -v "$c" >/dev/null 2>&1 && continue
     add NOCMD "$skill" "$c" "command not found on PATH$(at_line "$f" "$c")"
   done < <(
@@ -573,26 +598,19 @@ check_listing() {
 # SEEN_NAME is scoped to ONE namespace per call, because uniqueness is a property
 # of the namespace and not of the filesystem. ~/.claude/skills is a single flat
 # tree fed by both dotfiles repos, so a name repeated across them is ambiguous.
-# .config/codex/skills is a DIFFERENT tool's corpus that happens to reuse names
-# (deep-research, security-engineer); flagging those would be noise.
 declare -A SEEN_NAME=()
 # run_static <contract> <root>...
 #
-# <contract> is `full`, `project` or `structural`.
+# <contract> is `full` or `project`.
 #
 #   full        the Claude corpus: category/tags/reviewed, the category directory
 #               layout, the description budget, the house ASCII rule, the heading.
 #   project     the same minus category/tags/reviewed and the category layout, which
 #               mean nothing outside dotfiles. --profile project: a game repo's flat
 #               .claude/skills/<name>/ is still a Claude skill, listed like any other.
-#   structural  only what is true of ANY skill file - it parses, it has a name and
-#               a description, the name matches its directory, no duplicates.
 #
-# The Codex corpus is `structural`. It is a different tool's skills, deployed by a
-# different mechanism, with a deliberately smaller 2-key contract; holding it to
-# the Claude one produced 25 findings that could never be actioned, which is how a
-# report becomes something nobody reads. It is still held to the checks that mean
-# something anywhere, NOFRONTMATTER among them.
+# Codex reads this same corpus: .config/codex/sync-codex-home.sh links each deployed
+# skill into ~/.codex/skills, so there is no second corpus to lint.
 run_static() {
   local contract="$1"; shift
   local root m d s parent c
@@ -613,7 +631,6 @@ run_static() {
       check_frontmatter "$s" "$m" name description
       check_yaml        "$s" "$m"
       check_name        "$s" "$m"
-      [ "$contract" = structural ] && continue
       [ "$contract" = full ] && check_meta "$s" "$m" "$parent"
       check_desc_len "$s" "$m"
       check_ascii    "$s" "$m"
@@ -708,6 +725,109 @@ if [ "$MODE" = docs ]; then
   [ "$n" -eq 0 ] && exit 0 || exit 1
 fi
 
+# --- dups: the same instruction written in two homes ---------------------------
+#
+# The corpus is doc_set plus the skills, roles and prompts that also carry rules. A pair is
+# two lines in different files, so a file restating itself never counts. Kinds, globs and
+# ranks come from instruction-homes.json in the agentctl conf (private repo); the global file
+# is whatever $CLAUDE_MD resolves to, as everywhere else in this script.
+AGENTCTL_DIR="${AGENTCTL_CONF:-$HOME/.config/agentctl}"
+dup_corpus() {
+  local conf="$AGENTCTL_DIR"
+  { doc_set
+    { find -L "$SKILLS" -maxdepth 3 -name SKILL.md
+      find -L "$conf/roles" -maxdepth 1 -name '*.role'
+      find -L "$conf/prompts" -maxdepth 1 -name '*.md'
+    } 2>/dev/null | xargs -d '\n' -r readlink -e --
+  } | sort -u
+}
+
+if [ "$MODE" = dups ]; then
+  nfiles=$(dup_corpus | wc -l)
+  [ "$nfiles" -gt 0 ] || { echo "skill-drift --dups: no docs found - refusing to report success" >&2; exit 2; }
+  homes="$AGENTCTL_DIR/instruction-homes.json"
+  [ -r "$homes" ] || { echo "skill-drift --dups: no $homes - no rank to pick a winner by" >&2; exit 2; }
+  dup_corpus | DUPS_GLOBAL="$(readlink -e "$CLAUDE_MD" 2>/dev/null)" DUPS_HOMES="$homes" DUPS_JSON="$DOCS_JSON" DUPS_HOME="$HOME" python3 -c '
+import fnmatch, json, os, re, sys
+from collections import Counter, defaultdict
+
+# Provisional, confidence low: revisit after two weeks of nightly counts (plan arch-instructions-one-home).
+MIN_CHARS, MIN_TOKENS, N, THRESHOLD = 90, 5, 4, 0.3
+HOME, GLOBAL = os.environ["DUPS_HOME"], os.environ.get("DUPS_GLOBAL", "")
+try:
+    KINDS = [(k["kind"], int(k["rank"]), list(k["globs"])) for k in json.load(open(os.environ["DUPS_HOMES"]))["kinds"]]
+    RANK = dict((k, r) for k, r, _ in KINDS)
+    assert KINDS and "global" in RANK
+except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
+    print("skill-drift --dups: %s is not a homes file (kinds with kind, rank, globs; one named global): %r" % (os.environ["DUPS_HOMES"], e), file=sys.stderr)
+    sys.exit(2)
+
+def home(path):
+    """(home, rank): the global file is $CLAUDE_MD; any other path takes the first kind whose glob matches."""
+    if path == GLOBAL: return "global", RANK["global"]
+    for kind, rank, globs in KINDS:
+        if any(fnmatch.fnmatchcase(path, g) for g in globs): return kind, rank
+    return "other", 0
+
+nread = 0
+lines = []   # (path, lineno, text, shingles)
+for path in sys.stdin.read().split("\n"):
+    if not path: continue
+    skip = False
+    try: raw = open(path, encoding="utf-8", errors="replace").read().split("\n")
+    except OSError: continue
+    nread += 1
+    for i, text in enumerate(raw, 1):
+        text = text.strip()
+        if text.startswith("<!-- AUTO:START"): skip = True; continue
+        if text.startswith("<!-- AUTO:END"): skip = False; continue
+        if skip or len(text) < MIN_CHARS: continue
+        tok = re.sub(r"[^a-z0-9]+", " ", text.lower()).split()
+        if len(tok) < MIN_TOKENS: continue
+        lines.append((path, i, text, {" ".join(tok[k:k + N]) for k in range(len(tok) - N + 1)}))
+
+if nread == 0:
+    print("skill-drift --dups: no readable docs - refusing to report success", file=sys.stderr); sys.exit(2)
+index = defaultdict(list)
+for n, (_, _, _, sh) in enumerate(lines):
+    for g in sh: index[g].append(n)
+
+pairs = []
+for a, (pa, _, _, sa) in enumerate(lines):
+    shared = Counter(b for g in sa for b in index[g] if b > a and lines[b][0] != pa)
+    for b, c in shared.items():
+        score = c / (len(sa) + len(lines[b][3]) - c)
+        if score >= THRESHOLD: pairs.append((score, a, b))
+pairs.sort(key=lambda t: (-t[0], t[1], t[2]))
+
+def side(n):
+    path, lineno, text, _ = lines[n]
+    h, r = home(path)
+    return {"home": h, "rank": r, "file": ("~" + path[len(HOME):]) if path.startswith(HOME + "/") else path, "line": lineno, "text": text[:160]}
+
+items = []
+for score, a, b in pairs:
+    x, y = side(a), side(b)
+    win = "pick" if x["rank"] == y["rank"] else (x if x["rank"] > y["rank"] else y)["home"]
+    items.append({"score": round(score, 2), "a": x, "b": y, "winner": win})
+involved = len({(i[s]["file"], i[s]["line"]) for i in items for s in "ab"})
+by_home = Counter("/".join(sorted((i["a"]["home"], i["b"]["home"]))) for i in items)
+
+if os.environ["DUPS_JSON"] == "1":
+    print(json.dumps({"files": nread, "pairs": len(items), "lines": involved,
+                      "threshold": THRESHOLD, "by_home": dict(by_home.most_common()), "items": items}))
+else:
+    for i in items:
+        a, b = i["a"], i["b"]
+        print("  %.2f  %s %s:%d  <->  %s %s:%d  winner: %s" % (i["score"], a["home"], a["file"], a["line"], b["home"], b["file"], b["line"], i["winner"]))
+        print("        %s" % a["text"][:100])
+        print("        %s" % b["text"][:100])
+    for k, v in by_home.most_common(): print("  %3d  %s" % (v, k))
+    print("skill-drift --dups: %d pair(s), %d line(s) across %d file(s)" % (len(items), involved, nread))
+'
+  exit "${PIPESTATUS[1]}"
+fi
+
 # --- ratchet (what makes the lint baseline shrink-only) ------------------------
 #
 # Compares the file as it stands with the file at the merge base. A file missing there,
@@ -738,10 +858,8 @@ if [ "$MODE" = lint ] || [ "$MODE" = write_lint_baseline ]; then
   run_static "$PROFILE" "$LINT_DIR/.claude/skills"
   run_entries "$LINT_DIR"
 else
-  # Two namespaces, two calls: the dotfiles pair feed one flat ~/.claude/skills,
-  # while the Codex corpus is a different tool's and legitimately reuses names.
+  # One namespace: the dotfiles pair feed one flat ~/.claude/skills.
   run_static full "$PUB/.claude/skills" "$PRIV/.claude/skills"
-  run_static structural "$CODEX"
   run_entries "$PUB" "$PRIV"
 
   load_usage
@@ -824,8 +942,13 @@ if [ "$MODE" = lint ]; then
   entries=$( { find_commands "$LINT_DIR"; find_agents "$LINT_DIR"; } | wc -l)
   # An empty input list is a FAILURE, not a clean run. Every tooling failure in
   # this repo has been a silent success, and a lint that scans nothing and says
-  # "all good" is the purest form of it.
+  # "all good" is the purest form of it. --allow-empty is the caller saying so in
+  # advance: a game repo whose only skills are generated and untracked.
   if [ "$((scanned + entries))" -eq 0 ]; then
+    if [ "$ALLOW_EMPTY" = 1 ] && [ "$errs" -eq 0 ]; then
+      echo "skill-lint: no skills, commands or agents under $LINT_DIR/.claude, as --allow-empty expects"
+      exit 0
+    fi
     echo "skill-lint: found NO skills, commands or agents under $LINT_DIR/.claude - refusing to report success"
     exit 2
   fi
@@ -838,7 +961,8 @@ if [ "$MODE" = lint ]; then
 fi
 
 # A YAML parser error quotes the text it choked on, and the nightly reads this as JSON.
-json_esc() { local v="${1//\\/\\\\}"; printf '%s' "${v//\"/\\\"}"; }
+# shellcheck source=../lib/fmt.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
 
 is_new() { [ -f "$BASELINE" ] || return 0; ! grep -qxF "$1" "$BASELINE"; }
 

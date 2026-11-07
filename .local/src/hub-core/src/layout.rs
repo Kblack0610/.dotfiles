@@ -12,13 +12,13 @@ pub struct Tab {
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 8] = [
+pub const TABS: [Tab; 10] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
         title: "Home",
         question: "What needs me, and is everything OK?",
-        sections: &["needs", "running", "numbers", "health"],
+        sections: &["needs", "proposals", "running", "numbers", "health"],
     },
     // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
     // (the doc and Handled today) opens from that nav, so it is a section here, not a tab of its own.
@@ -33,7 +33,7 @@ pub const TABS: [Tab; 8] = [
         id: "queue",
         title: "Queue",
         question: "What will agents do next?",
-        sections: &["waiting", "running", "queued", "done"],
+        sections: &["flow", "table", "candidates"],
     },
     Tab {
         id: "projects",
@@ -66,8 +66,24 @@ pub const TABS: [Tab; 8] = [
     Tab {
         id: "fleet",
         title: "Fleet",
-        question: "Can I afford more agents, and are the judges right?",
-        sections: &["accounts", "workers", "judges"],
+        question: "Who is working, on what, and can I afford it?",
+        sections: &["workers", "accounts", "tokens", "langfuse"],
+    },
+    // After the older tabs, so they keep their digits.
+    Tab {
+        id: "schedules",
+        title: "Schedules",
+        question: "What runs on its own, and why?",
+        sections: &["table", "detail"],
+    },
+    // Last, the tenth (key 0), so no digit shifts. Every dollar figure the other tabs showed is
+    // here, cut seven ways; they keep a one-line badge that links in.
+    Tab {
+        id: "costs",
+        title: "Costs",
+        question:
+            "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
+        sections: &["burn", "sections", "totals", "table"],
     },
 ];
 
@@ -163,6 +179,7 @@ mod tests {
         assert_eq!(resolve("history").map(|t| t.id), Some("log"));
         assert_eq!(resolve("actions").map(|t| t.id), Some("log"));
         assert_eq!(resolve("fleet").map(|t| t.id), Some("fleet"));
+        assert_eq!(resolve("Costs").map(|t| t.id), Some("costs"));
         assert_eq!(resolve("nope"), None);
     }
 

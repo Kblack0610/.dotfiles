@@ -189,8 +189,8 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    branch switch.
 5. **Clean up after yourself.** `/tmp` is a tmpfs on this machine, so anything left there is
    RAM, not disk. The session scratchpad is removed for you: `fire` deletes it after the kill,
-   and `claude-scratch-sweep.timer` (`wind-down.sh sweep`) reclaims the scratchpads of sessions
-   that never wound down. What no script can know, and so is yours:
+   and `agentctl-tmp-gc` (hourly) reclaims the scratchpads of sessions that never wound down.
+   What no script can know, and so is yours:
    - **Stop the background processes this session started**: anything launched with
      `run_in_background`, `nohup`, `setsid` or `&`, such as dev servers, `kubectl port-forward`,
      `pw-record`, emulators, Unity `-batchMode` editors, `docker run` containers. Stop them by
@@ -217,7 +217,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
 
    The slot is not free until the reap runs. `wt gc -n` lists what is still held across all repos.
 
-   When `wt done` keeps the tree, file one agent-board row for it, `worktree <name> held: <reason>` (check both lanes first), and name it in step 7. Once the session is gone, nobody is in that tree: the nightly `wt gc` keeps it and marks it `stranded, nobody in it`, and that board row is what brings it back. Why: 2026-11-02, about 30 of 70 playground worktrees were held this way, some for weeks.
+   When `wt done` keeps the tree, file one agent-board row for it, `worktree <name> held: <reason>` (check both lanes first), and name it in step 7. Once the session is gone, nobody is in that tree: the nightly `wt gc` keeps it with the state `held`, and that board row is what brings it back. Why: 2026-11-02, about 30 of 70 playground worktrees were held this way, some for weeks.
 
    **Only release the worktree this session is in.** Never reap one another live session is
    rooted in (a prior incident removing `platform-agent-3` broke a live session); if another

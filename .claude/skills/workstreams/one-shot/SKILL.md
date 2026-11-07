@@ -16,8 +16,6 @@ Carries one task the whole way: work, validation, PR, merge, queue record, wind-
 
 Take one task from description to landed and wound down with no check-ins - work under autopilot rules, implement in a fresh worktree, run final-pass, run the project's own merge gate, open the PR, merge it, record it on its agent-queue item, then run wind-down. Use when the user says "one shot this", "/one-shot <task>", "do it all and land it", "just ship this end to end", or "do the whole thing, validate, PR and wind down". Pass --pr-only to stop after the PR is open. Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI), /captain (batches of tickets, not one task), and wind-down (only the session note and teardown). Not for releases, which stay with release-coordinator and the user.
 
-## When to Use
-
 - The user hands over one well-scoped task and wants it landed without being asked anything.
 - The user wants the session to close itself once the work is merged.
 
@@ -45,7 +43,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    <the project's gate command> && agent-land <N> --item <slug> --plan ~/.claude/plans/<slug>.md --phase "<task>"
    ```
    `agent-land` waits for the PR's checks, merges the validated head, records the PR on the item and moves it to done, closes the board row when the item came from the board, and ticks the plan phase. With no gate script the command is `agent-land` alone. A project doc that gives its own gate-and-land command wins; add `--item --plan --phase` to its `agent-land`.
-   - A repo whose canonical forge is Forgejo (home-config): `gh` sees only the GitHub mirror, so `agent-land` cannot run there. Open and merge through the `forgejo-ops` PR API, then `agent-queue set <slug> pr=<N>; agent-queue move <slug> done --status ok`, and tick the plan phase by hand.
+   - A repo whose canonical forge is Forgejo (home-config): `gh` sees only the GitHub mirror, so `agent-land` cannot run there. Open and merge through the `forgejo-ops` PR API, then `agent-queue set <slug> pr=<N> merged=<sha>; agent-queue move <slug> done --status ok` (reap closes the row on that merge proof), and tick the plan phase by hand.
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command.
    - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes and lands on the same gate). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
@@ -53,7 +51,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    - A sheet row the human wrote for this work: also `notes ptask <project> done "<row>" --proof pr:<N>`.
    - Then do any post-land step the project's CLAUDE.md names (unity-core-playground has none). Wind-down releases the worktree.
    - Work left that can only run after a set time, a day of data or a night's log is not waited on. Land what is done, queue the rest as an `at:` item whose task text names the plan file (the `at:` rule in agentctl `QUEUE.md`; a new session's brief carries only the task text), mark those phases `- [-] <name>: queue item <slug>`, and go to step 7. A session sitting on a `sleep` reads as STALLED, holds a dispatch unit, and holds back every item queued `after:` it.
-   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<N>; agent-queue move <slug> done --status ok`. A board row stays started; the human's merge closes it.
+   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<owner>/<repo>#<N>; agent-queue move <slug> waiting` (`done --status ok` refuses an item whose PR has not merged). The item and any board row wait for the human's merge; `fleet-dispatch reap` then closes both on merge proof. Reap reads only GitHub, so on a Forgejo repo whoever merges records it: `agent-queue set <slug> merged=<sha>; agent-queue move <slug> done --status ok`.
 
 7. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
    - **`--pr-only`**: the open PR is the end the human asked for, so invoke it without `auto`; step 0's finished check would read the open PR as unlanded and refuse.
