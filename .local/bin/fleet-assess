@@ -26,6 +26,8 @@ set -uo pipefail
 : "${FLEET_CLEAR_STALL_PCT:=5}"  # stall under this -> may CLEAR
 : "${FLEET_HOT_TCTL:=95}"        # Tctl at the throttle point ...
 : "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD
+# roots whose subtree sum alone never earns a row (comm of tmux's server is "tmux:")
+: "${FLEET_ROW_TREE_SKIP:=systemd init tmux: kthreadd}"
 : "${FLEET_ROW_CPU:=50}"         # a process at or above this %CPU gets a row
 : "${FLEET_NOT_LOAD_HOLDS:=dispatch mac-desktop}"  # holds that pause work or a mac-mini desktop, not this machine: no effect on the verdict
 : "${FLEET_BLOCKED_MIN_AGE:=300}" # a process this old (s) with a thread in D state gets a blocked row
@@ -161,12 +163,30 @@ worktree_of() {
   esac
 }
 
+# A row is a process at FLEET_ROW_CPU on its own, or the lowest process whose subtree (itself
+# plus every descendant) reaches it with no single child doing so: a make or test runner whose
+# 30 children each sit at 20% never shows on its own CPU (ar-231). TREE is that subtree sum;
+# it comes after PANE so fleet-sessions' heavy_panes keeps reading the pane as $8. A TREE-only
+# row shows its own CPU, under the line. Load spread thinly across unrelated services would
+# otherwise land on their common ancestor, so FLEET_ROW_TREE_SKIP names the roots that never
+# get a TREE-only row. pcpu is ps's lifetime average, as it was for the own-CPU rows.
 rows() {
-  ps -eo pid=,ni=,pcpu=,comm=,args= --sort=-pcpu 2>/dev/null \
-    | awk -v min="$FLEET_ROW_CPU" '$3 + 0 >= min || ($4 == "Unity" && / -batchmode/) { print }' \
-    | while read -r pid ni cpu comm _; do
+  ps -eo pid=,ppid=,ni=,pcpu=,comm=,args= 2>/dev/null \
+    | LC_ALL=C awk -v min="$FLEET_ROW_CPU" -v skip=" $FLEET_ROW_TREE_SKIP " '
+        { pid[NR] = $1; par[$1] = $2; ni[$1] = $3; cpu[$1] = $4; comm[$1] = $5
+          unity[$1] = ($5 == "Unity" && / -batchmode/); tree[$1] = $4 }
+        END {
+          # add each process to every ancestor, bounded so a pid-reuse loop cannot spin
+          for (i = 1; i <= NR; i++) { p = pid[i]; q = par[p]
+            for (d = 0; q in cpu && q != p && d < 64; d++) { tree[q] += cpu[p]; q = par[q] } }
+          for (i = 1; i <= NR; i++) { p = pid[i]; if (tree[p] + 0 >= min) big[par[p]] = 1 }
+          for (i = 1; i <= NR; i++) { p = pid[i]
+            if (cpu[p] + 0 >= min || unity[p] || (tree[p] + 0 >= min && !(p in big) && p > 2 && index(skip, " " comm[p] " ") == 0))
+              printf "%.1f %s %s %s %s\n", tree[p], p, ni[p], cpu[p], comm[p] } }' \
+    | LC_ALL=C sort -rn -k1,1 \
+    | while read -r tree pid ni cpu comm; do
         IFS=$'\t' read -r class sess pane < <(classify "$pid")
-        printf '%-8s %5s %3s  %-8s %-28s %-34s %-10s %s\n' "$pid" "$cpu" "$ni" "$class" "$sess" "$(worktree_of "$pid")" "$comm" "$pane"
+        printf '%-8s %5s %3s  %-8s %-28s %-34s %-10s %-14s %s\n' "$pid" "$cpu" "$ni" "$class" "$sess" "$(worktree_of "$pid")" "$comm" "$pane" "$tree"
       done
 }
 
@@ -439,7 +459,7 @@ main() {
   fi
   echo "verdict: $verdict"
   echo
-  printf '%-8s %5s %3s  %-8s %-28s %-34s %-10s %s\n' PID CPU NI CLASS SESSION WORKTREE COMM PANE
+  printf '%-8s %5s %3s  %-8s %-28s %-34s %-10s %-14s %s\n' PID CPU NI CLASS SESSION WORKTREE COMM PANE TREE
   rows
   blocked="$(blocked_rows)"
   [ -n "$blocked" ] || return 0
