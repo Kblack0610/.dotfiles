@@ -417,9 +417,10 @@ wt_process_inside() {
 # ── Eligibility ──────────────────────────────────────────────────────────────
 
 # wt_work_reason <path> -- print why <path> still holds WORK; nothing, and rc 0, when the
-# work is safely elsewhere. rc 2 when <path> is no worktree at all (gone, git-less and not a
-# husk, a main checkout, or a .git git cannot resolve), so wt_state need not probe it again. Split out of wt_reap_reason for exactly one caller: `done` kills
-# its own session, so the live-session rule below would refuse it every single time. `done`
+# work is safely elsewhere; rc 2 when <path> is no worktree at all (gone, git-less and not a
+# husk, a main checkout, or a .git git cannot resolve), so wt_state need not probe it again.
+#
+# Split out of wt_reap_reason for exactly one caller: `done` kills its own session, so the live-session rule below would refuse it every single time. `done`
 # has to ask "is the work safe?" while the session is still up, which is this question, and
 # leave "is anything running there?" to the deferred reap that runs after the kill.
 #
@@ -547,11 +548,10 @@ wt_state() {
     printf 'claimed\t%s\n' "${work:-$occ}"
   elif [ "$rc" -ne 0 ]; then
     printf 'held\t%s\n' "$work"
-  elif [ -e "$1/.git" ]; then
-    printf 'landed\t\n'
-  else
-    # wt_work_reason passes a git-less dir only when wt_is_husk does.
+  elif wt_is_husk "$1"; then
     printf 'husk\t\n'
+  else
+    printf 'landed\t\n'
   fi
 }
 
@@ -1189,7 +1189,11 @@ cmd_gc() {
   # An empty candidate list is a RESULT, not a success. Every silent-success bug in this
   # tree has looked exactly like a sweep that ran over nothing and said "done".
   if [ "${#candidates[@]}" -eq 0 ]; then
-    panel_hint "no worktrees to consider${repo:+ in $repo}" >&"$((tsv + 1))"
+    if [ "$tsv" -eq 1 ]; then
+      panel_hint "no worktrees to consider${repo:+ in $repo}" >&2
+    else
+      panel_hint "no worktrees to consider${repo:+ in $repo}"
+    fi
     return 0
   fi
 
@@ -1198,7 +1202,7 @@ cmd_gc() {
   # night rather than keeping it silently (2026-11-02: 30 of 70 playground trees, some for weeks).
   # A symlink, a main checkout or a dir git cannot resolve is NOT-A-WORKTREE and is skipped, so
   # it no longer inflates that count (2026-11-06: 12 of 44 "stranded" were such entries).
-  local reaped=0 skipped=0 line state action hue reason ends states='' w by=''
+  local reaped=0 skipped=0 line state action hue reason ends out states='' w by=''
   for path in "${candidates[@]}"; do
     line=$(wt_state "$path")
     state=${line%%$'\t'*} reason=${line#*$'\t'}
@@ -1209,8 +1213,11 @@ cmd_gc() {
       ends=$(wt_orphans_inside "$path" | paste -sd, -)
       if [ "$dry" -eq 1 ]; then
         action='would reap' hue=$C_SEL reaped=$((reaped + 1))
-      elif reason=$(cmd_reap "$path" 2>&1 >/dev/null); then
+      elif out=$(cmd_reap "$path" 2>&1 >/dev/null); then
         action=reaped hue=$C_SEL reaped=$((reaped + 1))
+      else
+        # Still the state it was judged in; the reason says why the reap refused.
+        reason=$out
       fi
       [ -z "$ends" ] || reason+="${reason:+ }(orphan daemon $ends)"
       ;;

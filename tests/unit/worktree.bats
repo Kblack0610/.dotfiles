@@ -697,7 +697,8 @@ orphan_tree() {
   run cmd_gc
   assert_success
   assert_output --partial '0 of 1 reapable, 1 kept'
-  assert_output --partial 'an orphan daemon outlived SIGTERM (orphan daemon 500)'
+  # Still the state it was judged in; the reason says why the reap refused.
+  assert_line --regexp '^kept +repo-agent-1 +landed +.*an orphan daemon outlived SIGTERM \(orphan daemon 500\)$'
   [ -d "$T" ]
 }
 

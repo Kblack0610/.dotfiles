@@ -339,9 +339,9 @@ breaking all three at once.
 
 | state | what it is | gc does | left by |
 |---|---|---|---|
-| `landed` | clean, its work merged into the trunk or pushed (PR open), nobody in it | reaps it | the reap |
+| `landed` | clean, its work merged into the trunk or pushed (PR open), nobody in it | reaps it; if the reap refuses, keeps it with that reason | the reap |
 | `husk` | no `.git`, only caches a tool rewrote after the tree was removed | reaps it | the reap |
-| `claimed` | a live session, pane, Unity editor or process is in it; the reason says what work it holds | keeps it | the session ends |
+| `claimed` | a live session, pane, Unity editor or process is in it; the reason names its unlanded work, or what is in it when the work has landed | keeps it | the session ends |
 | `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, or a submodule worktree lives off it | keeps it and names it every night | commit and push, `ingest-worktree`, or the human |
 | `not-a-worktree` | a symlink, a main checkout, a dir with no `.git` holding more than caches, or a `.git` git cannot resolve | skips it, and does not count it as held | the human |
 
