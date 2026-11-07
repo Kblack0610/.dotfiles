@@ -482,6 +482,40 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'WORKING shell'
 }
 
+@test "live_wait finds a gate or test process running in the session worktree, and only there" {
+  # 2026-11-07 unity-core-playground-agent-30: a gate detached with & left only its until-loop in the
+  # transcript (open job jobs), so a Tests run in progress read STALLED.
+  mkdir -p "$SANDBOX/wt/scripts/test" "$SANDBOX/other"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/ci-gate.sh"
+  printf 'gate ci-gate.sh\ntest bats\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/ci-gate.sh) >/dev/null 2>&1 3>&- &
+  local pid=$!
+  # the process is the event: wait until /proc shows its exec, not for a delay
+  until grep -q ci-gate.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output 'gate'
+  # negative controls: another worktree, and a shell that only holds the script text after -c
+  run live_wait "$SANDBOX/other"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  # the session's own claude names agent-land in its dispatch prompt: not a gate
+  (cd "$SANDBOX/wt" && exec -a claude bash scripts/test/ci-gate.sh) >/dev/null 2>&1 3>&- &
+  pid=$!
+  until grep -q ci-gate.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  (cd "$SANDBOX/wt" && exec bash -c 'sleep 60; : scripts/test/ci-gate.sh') >/dev/null 2>&1 3>&- &
+  pid=$!
+  until grep -q ci-gate.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+}
+
 @test "a finished plan is DONE past FLEET_IDLE_MIN even with a background shell" {
   # 2026-10-27: hub/dotfiles:1 sat 5/5 for over an hour as WORKING shell, never told to wind down.
   run b shell 0 0 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -
