@@ -58,12 +58,14 @@ function tblBar(id, t, hint) {
 }
 
 // The header row. `labels` maps a column key to [text, class]; a column it leaves out is not drawn.
-function tblHead(t, labels) {
+// `pre` names the data attributes a click reads (`data-<pre>sort`, `data-<pre>dir`): a second table
+// on a tab sorts apart from the first by naming its own.
+function tblHead(t, labels, pre = "t") {
   return "<tr>" + t.columns.filter((c) => labels[c.key]).map((c) => {
     const [label, cls] = labels[c.key];
     const aria = c.sort ? ` aria-sort="${c.sort === "asc" ? "ascending" : "descending"}"` : "";
     const mark = c.sort ? (c.sort === "asc" ? " ^" : " v") : "";
-    return `<th${cls ? ` class="${cls}"` : ""}${aria}><button class="thsort" data-tsort="${esc(c.next_sort)}" data-tdir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
+    return `<th${cls ? ` class="${cls}"` : ""}${aria}><button class="thsort" data-${pre}sort="${esc(c.next_sort)}" data-${pre}dir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
   }).join("") + "</tr>";
 }
 
