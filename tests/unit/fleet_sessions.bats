@@ -800,6 +800,7 @@ SH
   [ "$(jq -r .target <<<"$main")" = origin ]
   [ "$(jq -r '.owners | join(",")' <<<"$main")" = sid-9 ]
   [ "$(jq -r .fact <<<"$main")" = "NIGHTLY origin red: Tests @${red:0:8} (#875)" ]
+  [ "$(jq -r .nudged <<<"$main")" = false ]
   # the table a person reads names the bucket NIGHTLY, never MAIN
   run "$REPO_ROOT/.local/bin/fleet-sessions"
   assert_success
@@ -807,11 +808,26 @@ SH
   assert_output --partial 'nightly red after PR #875'
   refute_output --partial MAIN
   refute_output --partial 'main red'
+  refute_output --partial '(nudged)'
+
+  # the shepherd's nudge to the owners is the ledger's fact, so the row reads it (ar-151: it printed 0 always)
+  "$REPO_ROOT/.local/bin/fleet-sessions" mark "$(jq -r .session_id <<<"$main")" "$(jq -r .fact <<<"$main")"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .nudged' <<<"$output")" = true ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .escalated' <<<"$output")" = false ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_line --partial 'origin red: Tests'
+  assert_output --partial '(nudged)'
+  FLEET_STATE_FILE="$SANDBOX/state.json" "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  [ "$(jq -r '.main[0].nudged' "$SANDBOX/state.json")" = true ]
+  [ "$(jq -r '.main[0].fact' "$SANDBOX/state.json")" = "NIGHTLY origin red: Tests @${red:0:8} (#875)" ]
 
   # an unreadable CI is reported, never read as green
   printf '#!/usr/bin/env bash\n[ "$1" = api ] && exit 1\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$red" > "$SANDBOX/bin/gh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r 'select(.bucket == "NIGHTLY") | .reason' <<<"$output")" = 'origin main CI unreadable (gh api actions/runs failed)' ]
+  # a new fact on the same row is not the one nudged
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .nudged' <<<"$output")" = false ]
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
 }
 
