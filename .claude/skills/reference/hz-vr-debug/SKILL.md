@@ -25,7 +25,7 @@ interface. This skill covers viewing application logs, capturing device state,
 diagnosing crashes, and resolving common issues encountered during Meta VR
 development.
 
-## When to Use This Skill
+## Scope and triggers
 
 Use this skill when you need to:
 

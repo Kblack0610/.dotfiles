@@ -20,7 +20,7 @@ metadata:
 
 # Perfetto Debug Skill
 
-## When to Use
+## Scope and triggers
 
 Use this skill when investigating VR performance issues on Meta VR devices:
 

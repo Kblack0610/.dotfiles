@@ -11,6 +11,12 @@ metadata:
 
 Drive GitHub through the `gh` CLI via Bash. No MCP wrapper needed - `gh` is authenticated on this machine and covers the full GitHub surface.
 
+## Scope and triggers
+
+Covers GitHub operations through the `gh` CLI: pull requests, issues, CI checks, workflow runs, releases and repo management.
+
+Use whenever the user asks to interact with GitHub. Prefer this over any GitHub MCP. Bitbucket: `bitbucket-ops`. A pile of open PRs: `ingest-prs`.
+
 ## Pull requests
 
 ```bash

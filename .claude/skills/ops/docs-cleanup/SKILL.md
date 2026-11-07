@@ -14,7 +14,7 @@ One pass that leaves the agent corpus truer than it found it: a measured baselin
 
 It composes skills and restates none of them: `skill-drift` counts, `docs-audit` owns the Tier 1 method (verify a claim against the code, never another doc), `skill-refine` owns judgment on a skill, `update-rules` picks the rule layer, `dotfiles-land` routes a change between the two dotfiles repos. The nightly `docs-cleanup` runner (`agentctl list --md`) takes the counts and queues this pass when there is drift.
 
-## When to Use
+## Scope and triggers
 
 - The nightly queue item, or the human asks for a docs cleanup or "docs pass N".
 - Sessions keep acting on things that are no longer true: a retired runner, a moved path, a fixed bug.
