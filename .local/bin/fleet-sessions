@@ -1003,9 +1003,10 @@ collect() {
 }
 
 # One NIGHTLY row per red repo seen this pass. Its ledger id is main-<repo slug>, so the shepherd
-# escalates a nightly red once per fact; owners are the live sessions whose merge is a suspect.
+# escalates a nightly red once per fact; owners are the live sessions whose merge is a suspect, nudged
+# on their own STALLED rows. Its nudged and escalated cells read that ledger, as every row's do.
 main_rows() {
-  local f slug st wfs sha prs repo sid reason owners e
+  local f slug st wfs sha prs repo sid reason owners nu e
   for f in "$CACHE"/main_*; do
     [ -f "$f" ] || continue
     IFS=$'\t' read -r st wfs sha prs repo < "$f"
@@ -1016,8 +1017,8 @@ main_rows() {
       *) continue ;;
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
-    e=0; escalated "$sid" "NIGHTLY $reason" && e=1
-    printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tNIGHTLY %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
+    nu=0; nudged "$sid" "NIGHTLY $reason" && nu=1; e=0; escalated "$sid" "NIGHTLY $reason" && e=1
+    printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t%s\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tNIGHTLY %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$nu" "$reason" "$e" "${owners:--}" "$reason"
   done
 }
 
@@ -1288,7 +1289,7 @@ write_state() {
          sessions: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") | not)
                      | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end)),
          main: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT"))
-                     | {repo: .target, id: .session_id, reason, escalated, owners})),
+                     | {repo: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
          shared: ($r | map(select(.bucket == "SHARED")
                      | {test: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
