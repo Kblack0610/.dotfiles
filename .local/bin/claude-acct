@@ -14,7 +14,8 @@
 #   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
 #   claude-acct room [--json]
 #                        # for automatic starts: the account with room, as pick prints it; --json
-#                        # prints every account's verdict (ok, reason, points past the line, capped)
+#                        # prints every account's verdict (ok, reason, every refusal, why, points
+#                        # past the line, capped)
 #                        # exit 1 when none has room, 2 when none has room and one cannot be read
 #   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
 #   claude-acct cost     # {"<session id>": dollars} over CLAUDE_ACCT_COST_WINDOW (7d), from
@@ -180,7 +181,7 @@ cmd_pick() {
     local picked
     picked=$(jq -c --arg n "$name" '.[] | select(.name == $n)' <<< "$rows")
     if [[ -n "$picked" && "$(jq -r .room.ok <<< "$picked")" == false ]]; then
-        echo "claude-acct: $name would be refused an automatic start, $(room_why "$picked"); this start goes ahead" >&2
+        echo "claude-acct: $name would be refused an automatic start, $(jq -r .room.why <<< "$picked"); this start goes ahead" >&2
     fi
     if jq -e 'length > 0 and all(.[]; .room.capped)' <<< "$rows" >/dev/null; then
         echo "claude-acct: every account is spent; cl --lazer runs Sonnet on the Lazer reserve, where dispatch passes already spill Sonnet-lane items" >&2
@@ -192,9 +193,9 @@ cmd_pick() {
 # The weekly percent is what stops work, so pace is read against it: under the line the account
 # can keep this use up until it resets. Dollars are the OTel list-price estimate, for scale only.
 WEEK=604800
-# The numbers live in .config/claude-acct/pace.conf and nowhere else. The env names
-# are the machine-mode level keys, kept as overrides until the dispatch floor reads the verdict
-# instead of lifting the slack.
+# The numbers live in .config/claude-acct/pace.conf and nowhere else: no env override, so every
+# reader of the verdict sees the same line (the machine-mode level scales them, by column name). A dispatch floor lifts the pace reason from the
+# published verdict (room.reasons), never by moving the slack.
 PACE_CONF="${CLAUDE_ACCT_PACE_CONF:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/claude-acct/pace.conf}"
 # pace_get KEY -> the value; empty and a line naming the file when it is not set or not a plain
 # number, which stops the script below: a missing number must not quietly become a default
@@ -207,8 +208,8 @@ pace_get() {
     fi
     printf '%s' "$v"
 }
-PACE_SLACK_PCT="${CLAUDE_ACCT_PACE_SLACK_PCT:-$(pace_get PACE_SLACK_PCT)}"
-RESERVE_PCT="${CLAUDE_ACCT_RESERVE_PCT:-$(pace_get RESERVE_PCT)}"
+PACE_SLACK_PCT="$(pace_get PACE_SLACK_PCT)"
+RESERVE_PCT="$(pace_get RESERVE_PCT)"
 # shellcheck source=../lib/machine-mode.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh"   # level_scale, for room
 SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-$(pace_get SESSION_RATE)}"
@@ -341,25 +342,39 @@ usage_json() {
                    elif $carry > .burn then ([1 / ($carry - .burn), 999] | min)
                    else 1e3 + .burn / (100 - $u) end)
                   + (if (.five_hour // 0) >= 100 - $reserve then 1e6 else 0 end);
-            # The verdict on an automatic start, the one place the rule is written. reason is the first
-            # that refuses: unread, capped (week or 5h window empty), reserve (inside the last of the
+            # The verdict on an automatic start, the one place the rule is written. reasons lists every
+            # refusal, in this order: unread, capped (week empty), reserve (inside the last of the
             # week), pace (past the line after slack), five_hour (its window inside the reserve),
-            # committed (its live sessions already use the rest of the week), else ok. An expired
+            # committed (its live sessions already use the rest of the week); reason is the first, or
+            # ok. A dispatch floor may lift pace only, so it reads reasons == ["pace"]. An expired
             # token is idle and launching it refreshes it, so it has room. over_points is the points
             # past the line after slack; headroom_points the same, signed and null with no week.
             def room($slack; $reserve):
                 .week_used as $u | (.week_gone // 0) as $g | (.five_hour // 0) as $f
-                | (if .state == "unread" then "unread"
-                   elif $u != null and $u >= 100 then "capped"
-                   elif $u != null and $u >= 100 - $reserve then "reserve"
-                   elif $u != null and $u > $g + $slack then "pace"
-                   elif $f >= 100 - $reserve then "five_hour"
-                   elif .state != "expired" and sustain <= .burn then "committed"
-                   else "ok" end) as $why
-                | {ok: ($why == "ok"), reason: $why,
+                | (if .state == "unread" then ["unread"] else
+                     [if $u != null and $u >= 100 then "capped" else empty end,
+                      if $u != null and $u >= 100 - $reserve and $u < 100 then "reserve" else empty end,
+                      if $u != null and $u > $g + $slack then "pace" else empty end,
+                      if $f >= 100 - $reserve then "five_hour" else empty end,
+                      if .state != "expired" and sustain <= .burn then "committed" else empty end]
+                   end) as $no
+                | {ok: ($no == []), reason: ($no[0] // "ok"), reasons: $no,
                    over_points: (if $u == null then 0 else ([$u - $g - $slack, 0] | max) end),
                    headroom_points: (if $u == null then null else $g + $slack - $u end),
                    capped: (($u // 0) >= 100 or $f >= 100), slack: $slack, reserve: $reserve};
+            # why: the first refusal in a sentence, for every reader that says it (room, pick,
+            # dispatch); "it has room" when there is none.
+            def room_why:
+                def pts: ceil | "\(.) point\(if . == 1 then "" else "s" end)";
+                .room as $r
+                | if $r.reason == "unread" then "its usage cannot be read"
+                  elif $r.reason == "capped" then "out of its week"
+                  elif $r.reason == "reserve" then "\(.week_used | floor)% of its week used, inside the last \($r.reserve)% kept for the human"
+                  elif $r.reason == "pace" then
+                    "\($r.over_points | pts) over its weekly pace (\(.week_used | floor)% used, \((.week_gone // 0) | floor)% of its week gone, \($r.slack | pts) of slack)"
+                  elif $r.reason == "five_hour" then (if (.five_hour // 0) >= 100 then "its 5h window is spent" else "its 5h window at \(.five_hour | floor)%" end)
+                  elif $r.reason == "committed" then "its \(.live) live sessions use the rest of its week before the reset"
+                  else "it has room" end;
             {name: $name, dir: $dir, email: $email, state: $state,
              five_hour: ($usage.five_hour.utilization // null),
              five_hour_resets: ($usage.five_hour.resets_at // null | if . == null then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null) end),
@@ -373,7 +388,8 @@ usage_json() {
             | .sustain = (if .week_used == null then null else sustain end)
             | .on_pace_idle = on_pace(0) | .on_pace_burn = on_pace(.burn)
             | .rank = rank
-            | .room = room($room_slack; $room_reserve)'
+            | .room = room($room_slack; $room_reserve)
+            | .room.why = room_why'
     done < <(accounts)
 }
 
@@ -485,6 +501,8 @@ cmd_textfile() {
         (rows("claude_account_over_pace"; if .over_pace == null then null elif .over_pace then 1 else 0 end)),
         (rows("claude_account_room"; if .state == "unread" then null elif .room.ok then 1 else 0 end)),
         (rows("claude_account_room_headroom_points"; .room.headroom_points)),
+        # the first refusal as a label, 1 on the account'"'"'s one current reason (ok when it has room)
+        (.[] | select(.state != "unread") | "claude_account_room_reason{account=\"\(.name)\",reason=\"\(.room.reason)\"} 1"),
         (rows("claude_account_five_hour_percent"; .five_hour)),
         (rows("claude_account_five_hour_resets_timestamp_seconds"; .five_hour_resets)),
         (rows("claude_account_resets_timestamp_seconds"; .resets)),
@@ -503,60 +521,50 @@ cmd_textfile() {
     return 1
 }
 
-# room_why <usage row> -> why that row's room verdict refuses an automatic start, in a sentence
-room_why() {
-    jq -r '
-        def pts: ceil | "\(.) point\(if . == 1 then "" else "s" end)";
-        .room as $r
-        | if $r.reason == "unread" then "its usage cannot be read"
-          elif $r.reason == "capped" then (if (.week_used // 0) >= 100 then "out of its week" else "its 5h window is spent" end)
-          elif $r.reason == "reserve" then "\(.week_used | floor)% of its week used, inside the last \($r.reserve)% kept for the human"
-          elif $r.reason == "pace" then
-            "\($r.over_points | pts) over its weekly pace (\(.week_used | floor)% used, \((.week_gone // 0) | floor)% of its week gone, \($r.slack | pts) of slack)"
-          elif $r.reason == "five_hour" then "its 5h window at \(.five_hour | floor)%"
-          elif $r.reason == "committed" then "its \(.live) live sessions use the rest of its week before the reset"
-          else "it has room" end' <<< "$1"
-}
-
 # room [--json]: where an automatic start may go. Only automatic starts ask this: `cl`, a running
 # session and a hand start are never refused. The verdict is each usage row's `room` object, written
 # once in usage_json; this picks the best account whose room is ok and says why when none is. --json
-# prints every account's verdict instead: name, dir, state, rank, live and room.
+# prints the same answer for readers: {pick (that account's name, or null), why (the refusal
+# sentence, or null), accounts (every account's name, dir, state, rank, live and room)}.
 cmd_room() {
-    local rows row json=0
+    local rows json=0 pick unread closest cwhy run_out resets why='' t=''
     case "${1:-}" in
         "") ;;
         --json) json=1 ;;
         *) echo "usage: claude-acct room [--json]" >&2; return 3 ;;
     esac
     rows=$(usage_json nospend | jq -s .)
-    row=$(jq -c '[.[] | select(.room.ok)] | sort_by(.rank) | first // empty' <<< "$rows")
+    # One read: the best account with room, whether one is unread, and the account a refused start
+    # would fall back to (pick's best) with its own why and clock. \x1f, not a tab: read collapses
+    # a run of tabs, so an empty field would shift the rest.
+    IFS=$'\x1f' read -r pick unread closest cwhy run_out resets < <(jq -r '
+        ([.[] | select(.room.ok)] | sort_by(.rank) | first | .name // "") as $p
+        | ([.[] | select(.state != "unread")] | sort_by(.rank) | first) as $c
+        | [$p, any(.[]; .state == "unread"), ($c.name // ""), ($c.room.why // ""), ($c.run_out // "-"), ($c.resets // "-")]
+        | map(tostring) | join("\u001f")' <<< "$rows")
+    if [[ -n "$pick" ]]; then :
+    elif [[ "$unread" == true ]]; then why="no account has room and one cannot be read"
+    elif [[ -z "$closest" ]]; then why="no account has room under its weekly pace and after its live sessions"
+    else
+        # Name the account a start would fall back to and why room refused it, from its own row: "no
+        # account has room" alone read as every account being full (2026-11-05). The tail is the
+        # RUNS-OUT or RESETS column of status, from the same row.
+        if [[ "$run_out" != - ]]; then t=", runs out $(day_time "$run_out") at this rate"
+        elif [[ "$resets" != - ]]; then t=", lasts to its reset $(day_time "$resets")"; fi
+        why="no account has room; $closest is the closest, $cwhy$t"
+    fi
     if (( json )); then
-        jq '[.[] | {name, dir, state, rank, live, week_used, week_gone, five_hour, room}]' <<< "$rows"
-    elif [[ -n "$row" ]]; then
-        echo "claude-acct: room on $(jq -r '"\(.name) (\(.week_used // "?")% of its week, \(.week_gone // "?" | if type == "number" then floor else . end)% gone)"' <<< "$row")" >&2
-        jq -r .dir <<< "$row"
+        jq --arg p "$pick" --arg w "$why" '{pick: (if $p == "" then null else $p end), why: (if $w == "" then null else $w end),
+            accounts: [.[] | {name, dir, state, rank, live, week_used, week_gone, five_hour, room}]}' <<< "$rows"
+    elif [[ -n "$pick" ]]; then
+        jq -r --arg p "$pick" '.[] | select(.name == $p)
+            | "claude-acct: room on \(.name) (\(.week_used // "?")% of its week, \(.week_gone // "?" | if type == "number" then floor else . end)% gone)", .dir' <<< "$rows" |
+            { read -r line; echo "$line" >&2; cat; }
+    else
+        echo "claude-acct: $why" >&2
     fi
-    [[ -n "$row" ]] && return 0
-    if [[ "$(jq 'any(.state == "unread")' <<< "$rows")" == true ]]; then
-        (( json )) || echo "claude-acct: no account has room and one cannot be read" >&2
-        return 2
-    fi
-    (( json )) && return 1
-    # Name the account a start would fall back to (pick's best) and why room refused it, from its
-    # own row: "no account has room" alone read as every account being full (2026-11-05).
-    local closest
-    closest=$(jq -c '[.[] | select(.state != "unread")] | sort_by(.rank) | first // empty' <<< "$rows")
-    if [[ -z "$closest" ]]; then
-        echo "claude-acct: no account has room under its weekly pace and after its live sessions" >&2
-        return 1
-    fi
-    # The RUNS-OUT and RESETS columns of status, from the same row.
-    local run_out resets t=""
-    run_out=$(jq -r '.run_out // "-"' <<< "$closest"); resets=$(jq -r '.resets // "-"' <<< "$closest")
-    if [[ "$run_out" != - ]]; then t=", runs out $(day_time "$run_out") at this rate"
-    elif [[ "$resets" != - ]]; then t=", lasts to its reset $(day_time "$resets")"; fi
-    echo "claude-acct: no account has room; $(jq -r .name <<< "$closest") is the closest, $(room_why "$closest")$t" >&2
+    [[ -n "$pick" ]] && return 0
+    [[ "$unread" == true ]] && return 2
     return 1
 }
 

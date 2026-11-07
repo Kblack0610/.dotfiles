@@ -2,6 +2,38 @@
 # fleet-dispatch: which rows may start an unattended session, and the bookkeeping around it.
 # Everything that could launch, claim or judge is a stub; calls.log records what it would do.
 
+# acct <name:reasons[:dir[:why]]>... -> claude-acct room --json answers these accounts, best rank
+# first (main's dir is empty), with claude-acct's pick (the first with room) and its refusal
+# sentence when there is none. reasons is ok, or every refusal joined by commas (pace, reserve,
+# five_hour, committed, capped, unread); why is the first refusal's words, a stock sentence when not
+# given. Each ask is counted in room.n, and acct.<n>.json, when present, answers ask n (from 0).
+# Every other verb exits 0.
+acct() {
+  local spec name reasons dir why rank=0 rows='[]'
+  for spec in "$@"; do
+    IFS=: read -r name reasons dir why <<<"$spec"
+    rank=$((rank + 1))
+    rows=$(jq -c --arg n "$name" --arg r "$reasons" --arg d "$dir" --arg w "$why" --argjson k "$rank" '
+      ($r | split(",") | map(select(. != "ok"))) as $no
+      | {pace: "1 point over its weekly pace", reserve: "90% of its week used, inside the last 15% kept for the human",
+         five_hour: "its 5h window at 90%", committed: "its 2 live sessions use the rest of its week before the reset",
+         capped: "out of its week", unread: "its usage cannot be read"} as $stock
+      | . + [{name: $n, dir: $d, state: (if $no == ["unread"] then "unread" else "ok" end), rank: $k,
+              room: {ok: ($no == []), reason: ($no[0] // "ok"), reasons: $no, capped: ($no | index("capped") != null),
+                     why: (if $no == [] then "it has room" elif $w != "" then $w else $stock[$no[0]] end)}}]' <<<"$rows")
+  done
+  jq -c '([.[] | select(.room.ok)] | first | .name) as $p
+    | ([.[] | select(.state != "unread")] | first) as $c
+    | {pick: $p, accounts: .,
+       why: (if $p then null elif any(.[]; .state == "unread") then "no account has room and one cannot be read"
+             elif $c == null then "no account has room under its weekly pace and after its live sessions"
+             else "no account has room; \($c.name) is the closest, \($c.room.why)" end)}' <<<"$rows" > "$NOTES_FIXTURE/acct.json"
+  rm -f "$NOTES_FIXTURE/room.n"
+  stub claude-acct '[ "$1 ${2:-}" = "room --json" ] || exit 0
+n=$(cat "$NOTES_FIXTURE/room.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/room.n"
+if [ -e "$NOTES_FIXTURE/acct.$n.json" ]; then cat "$NOTES_FIXTURE/acct.$n.json"; else cat "$NOTES_FIXTURE/acct.json"; fi'
+}
+
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
@@ -28,7 +60,7 @@ setup() {
   stub fleet-bench 'exit 0'
   stub top 'printf "%%Cpu(s):  1.0 us,  1.0 sy,  0.0 ni, 98.0 id,  0.0 wa\n%%Cpu(s):  5.0 us,  5.0 sy,  0.0 ni, 90.0 id,  0.0 wa\n"'
   stub fleet-shepherd 'exit 1'
-  stub claude-acct 'exit 0'   # main account; a test that wants the alt one restubs it
+  acct main:ok   # main account with room; a test that wants the alt one restubs it
   stub model-lane 'echo "{\"dispatch_model\":\"opus\"}"'
   # Spilling to Lazer is off but in its own tests (spill_ready): an account test means the accounts.
   export DISPATCH_SPILL_MAX_LIVE=0
@@ -1295,16 +1327,14 @@ refuses() {
 
 @test "run starts nothing when no account has room under its weekly pace" {
   game_ready
-  stub claude-acct 'exit 1'
-  refuses 'no account has room under its weekly pace'
+  acct main:pace
+  refuses 'no account has room; main is the closest, 1 point over its weekly pace'
 }
 
-# room_on_floor: claude-acct room finds room only with the pace line lifted, as the real one would
-# for an account over its pace but outside its reserve.
+# room_on_floor: the one account's verdict refuses it for its pace alone, so it has room only while
+# a floor lifts the pace reason.
 room_on_floor() {
-  stub claude-acct '[ "$1" = room ] || exit 0
-[ "${CLAUDE_ACCT_PACE_SLACK_PCT:-}" = 100 ] && { echo /home/u/.claude-personal; exit 0; }
-echo "claude-acct: no account has room; main is the closest, 1 point over its weekly pace" >&2; exit 1'
+  acct alt:pace:/home/u/.claude-personal
   stub top 'printf "%%Cpu(s): 1.0 id\n%%Cpu(s): 60.0 us,  5.0 sy, 25.0 ni, 10.0 id,  0.0 wa\n"'
 }
 
@@ -1343,7 +1373,7 @@ echo "claude-acct: no account has room; main is the closest, 1 point over its we
   local d="$HOME/.local/state/agentctl/fleet-dispatch"
   two_items
   export DISPATCH_PER_PASS=1 DISPATCH_RUN_FLOOR=0
-  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; main is the closest, 5 points over its weekly pace (17% used, 7% of its week gone, 5 points of slack), runs out Mon 01:08 at this rate" >&2; exit 1'
+  acct "main:pace::5 points over its weekly pace (17% used, 7% of its week gone, 5 points of slack)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(outcome)" BLOCKED
   [ -s "$d/held_since" ] || fail "a BLOCKED pass left no held_since"
@@ -1360,7 +1390,7 @@ echo "claude-acct: no account has room; main is the closest, 1 point over its we
   assert_failure
   assert_output --partial 'Dispatch stopped 13h00m: no account has room'
   # Negative control: an account with room again, and the next start ends the hold.
-  stub claude-acct '[ "$1" = room ] && echo /home/u/.claude-personal; exit 0'
+  acct alt:ok:/home/u/.claude-personal
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-app'
   assert_equal "$(outcome)" WORKED
@@ -1377,7 +1407,7 @@ echo "claude-acct: no account has room; main is the closest, 1 point over its we
   two_items
   export AGENTCTL_NAME=fleet-dispatch DISPATCH_PER_PASS=1 DISPATCH_RUN_FLOOR=0
   stub fleet-bench '[ "$1" = triage ] || exit 0; . "$HOME/.local/lib/agent-proof.sh"; proof_outcome "${AGENTCTL_NAME:-fleet-bench}" NOOP "every row already current"'
-  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; main is the closest, 5 points over its weekly pace" >&2; exit 1'
+  acct "main:pace::5 points over its weekly pace"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(outcome)" BLOCKED
   echo "$(( $(date +%s) - 2 * 3600 - 30 ))" > "$d/held_since"
@@ -1400,10 +1430,49 @@ echo "claude-acct: no account has room; main is the closest, 1 point over its we
   assert_not_called 'wt new'
   # an account in its reserve: room refuses whatever the slack
   echo "0.10 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; main is the closest, 90% of its week used, inside the last 15% kept for the human" >&2; exit 1'
+  acct main:reserve
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'inside the last 15% kept for the human'
   assert_not_called 'wt new'
+}
+
+@test "the run floor lifts the pace reason alone: pace with the 5h window, committed burn or the reserve still refuses" {
+  game_ready
+  stub top 'printf "%%Cpu(s): 1.0 id\n%%Cpu(s): 60.0 us,  5.0 sy, 25.0 ni, 10.0 id,  0.0 wa\n"'
+  export DISPATCH_RUN_FLOOR=2
+  for r in pace,five_hour pace,committed reserve,pace; do
+    acct "alt:$r:/home/u/.claude-personal"
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+    assert_output --partial 'no account has room; alt is the closest'
+    assert_not_called 'wt new'
+  done
+  # Negative control: the same account refused for its pace alone starts on the floor.
+  acct alt:pace:/home/u/.claude-personal
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'on the run floor (DISPATCH_RUN_FLOOR=2)'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+}
+
+@test "a floor start takes an account with room before a better-ranked one past its pace" {
+  game_ready
+  export DISPATCH_RUN_FLOOR=2
+  acct alt:pace:/home/u/.claude-personal bnb:ok:/home/u/.claude-bnb
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'on the run floor'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-bnb claude --model'
+  assert_not_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude'
+}
+
+@test "dispatch reads room --json: no slack override, no prose parse, and starved asks once for both its reads" {
+  run grep -nE 'CLAUDE_ACCT_PACE_SLACK_PCT|claude-acct room($|[^ ]| [^-])|#claude-acct: ' "$REPO_ROOT/.local/bin/fleet-dispatch"
+  assert_failure
+  queued_item old high "$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)"
+  acct main:pace
+  run cmd_starved
+  assert_failure
+  assert_equal "$(cat "$NOTES_FIXTURE/room.n")" 1
 }
 
 # 2026-11-06: reds sat queued behind a machine held by Unity CI (load 1.4x, 96.5 C), which the run
@@ -1462,7 +1531,7 @@ red_held_machine() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
   stub agent-hold 'exit 0'
-  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; main is the closest, 90% of its week used, inside the last 15% kept for the human" >&2; exit 1'
+  acct main:reserve
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'inside the last 15% kept for the human'
   assert_not_called 'wt new'
@@ -1473,7 +1542,7 @@ red_held_machine() {
 @test "red floor: a red start past the machine gates leaves the hold standing, with an account's room too" {
   local d="$HOME/.local/state/agentctl/fleet-dispatch"
   red_held_machine
-  stub claude-acct '[ "$1" = room ] && echo /home/u/.claude-personal; exit 0'
+  acct alt:ok:/home/u/.claude-personal
   agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r" >/dev/null
   mkdir -p "$d"; echo "$(( $(date +%s) - 3 * 3600 - 30 ))" > "$d/held_since"; printf 'fleet-assess says HOLD' > "$d/held_why"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -1500,14 +1569,13 @@ red_held_machine() {
 @test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
   game_ready
   # the gate's ask finds room; the start's ask, a moment later, finds none
-  stub claude-acct '[ "$1" = room ] || exit 0
-n=$(cat "$NOTES_FIXTURE/room.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/room.n"
-[ "$n" = 0 ] && { echo /home/u/.claude-personal; exit 0; }
-echo "claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate" >&2; exit 1'
+  acct alt:ok:/home/u/.claude-personal
+  mv "$NOTES_FIXTURE/acct.json" "$NOTES_FIXTURE/acct.0.json"
+  acct "alt:pace:/home/u/.claude-personal:1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack)"
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'queue item gm-1 waits: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate'
+  assert_output --partial 'queue item gm-1 waits: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack)'
   assert_equal "$(outcome)" BLOCKED
   assert_not_called 'wt new'
 }
@@ -1520,7 +1588,8 @@ echo "claude-acct: no account has room; alt is the closest, 1 point over its wee
 
 @test "a run start lands on the account room names, never pick" {
   game_ready
-  stub claude-acct '[ "$1" = room ] && { echo /home/u/.claude-personal; exit 0; }; echo /wrong/pick'
+  acct alt:ok:/home/u/.claude-personal
+  stub claude-acct '[ "$1" = room ] && { cat "$NOTES_FIXTURE/acct.json"; exit 0; }; echo /wrong/pick'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
@@ -2782,7 +2851,7 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   night_ready
   row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
   night_verdict 'fix it' hooks
-  stub claude-acct '[ "$1" = room ] && echo "/acct/alt"; exit 0'
+  acct alt:ok:/acct/alt
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "app-agent-1"'
   export AGENT_QUEUE_NIGHT=01:00-06:00
   AGENT_QUEUE_NOW=12:00 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -2828,7 +2897,7 @@ J
   night_ready
   project game beta "$SANDBOX/repos/game"
   for n in 1 2 3 4; do agent-queue add --project game --slug "work-$n" --priority high "work $n" >/dev/null; done
-  stub claude-acct '[ "$1" = room ] && { echo "claude-acct: no account has room under its weekly pace and after its live sessions" >&2; exit 1; }; exit 0'
+  acct
   row agent-runtime agent 'wt done never reaps' '- [ ] wt done never reaps (worktree.sh:213) #tier/3'
   row agent-runtime agent 'decide: fold it' '- [ ] decide: fold it #tier/3'
   night_verdict 'wt done never reaps' wt
@@ -2933,13 +3002,13 @@ $(jq -nc '{project:"game",stage:"beta",lane:"agent",key:"fresh",text:"- [ ] fres
 }
 
 @test "gate names every closed gate, room's own reason included; a dispatch hold is the only answer when it holds" {
-  stub claude-acct '[ "$1" = room ] && { echo "claude-acct: no account has room under its weekly pace and after its live sessions" >&2; exit 1; }; exit 0'
+  acct
   echo '99.00 99.00 99.00 1/1 1' > "$DISPATCH_LOADAVG"
   run gate
   assert_output --regexp '^no account has room under its weekly pace and after its live sessions; load 99.00 on [0-9]+ cores is over the [0-9.]+ pace$'
   stub claude-acct 'exit 2'
   run gate
-  assert_output --partial 'account usage unreadable; load 99.00'
+  assert_output --partial 'account usage unreadable (claude-acct room --json gave no answer); load 99.00'
   stub agent-hold 'exit 1'
   run gate
   assert_output 'held (agent-hold dispatch)'
@@ -3598,17 +3667,17 @@ queued_item() {
   assert_output --partial 'held by load (fleet-assess says HOLD)'
   # Load plus any other closed gate is not held by load: it still starves.
   echo '30.00 30.00 30.00 1/1 1' > "$DISPATCH_LOADAVG"
-  stub claude-acct '[ "$1" = room ] && exit 1; exit 0'
+  acct main:pace
   run cmd_starved
   assert_failure
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  stub claude-acct 'exit 0'
+  acct main:ok
   stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
-  stub claude-acct 'exit 1'
+  acct main:pace
   run cmd_starved
   assert_failure
   assert_output --partial 'stuck (high'
-  stub claude-acct 'exit 0'
+  acct main:ok
   stub agent-hold 'exit 1'
   run cmd_starved
   assert_success
@@ -3623,7 +3692,7 @@ hold_for() {
 
 @test "starved: a hold standing the limit trips it, led by the Stopped line, and a run start does not clear it; a younger hold or none does not" {
   queued_item fresh low "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
-  stub claude-acct '[ "$1" = room ] && exit 1; exit 0'
+  acct main:pace
   hold_for 30 'no account has room; main is the closest, 5 points over its weekly pace, queue item fresh waits'
   run cmd_starved
   assert_success
@@ -3635,14 +3704,14 @@ hold_for() {
   assert_failure
   assert_line --index 0 'Dispatch stopped 2h05m: no account has room; main is the closest, 5 points over its weekly pace. Clears when an account is back under its pace.'
   # A hold by load alone is fleet-thermal's alarm, as before.
-  stub claude-acct 'exit 0'
+  acct main:ok
   echo '30.00 30.00 30.00 1/1 1' > "$DISPATCH_LOADAVG"
   run cmd_starved
   assert_success
   assert_output --partial 'held by load'
   # Negative control: no hold, and the same run start clears it.
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  stub claude-acct '[ "$1" = room ] && exit 1; exit 0'
+  acct main:pace
   rm "$HOME/.local/state/agentctl/fleet-dispatch/held_since"
   run cmd_starved
   assert_success
@@ -3676,7 +3745,7 @@ hold_for() {
   assert_failure
   assert_line --index 0 --partial 'Dispatch stopped 2h05m: no account has room'
   # Negative control: an account with room, and the same load hold is fleet-thermal's alarm.
-  stub claude-acct '[ "$1" = room ] && echo /home/u/.claude-personal; exit 0'
+  acct alt:ok:/home/u/.claude-personal
   run cmd_starved
   assert_success
   assert_output --partial 'held by load (fleet-assess says HOLD)'
@@ -4423,7 +4492,7 @@ spill_ready() {
   printf 'sk-reserve\n' > "$SANDBOX/reserve.key"
   jq --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}' \
     "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
-  stub claude-acct '[ "$1" = room ] || exit 0; echo "claude-acct: no account has room; alt is the closest, 4 points over its weekly pace" >&2; exit 1'
+  acct "alt:pace:/home/u/.claude-personal:4 points over its weekly pace"
   stub lazer-spend "echo '{\"spend\":${1:-100},\"max_budget\":250}'"
   stub curl "cat > \"\$NOTES_FIXTURE/curl.stdin\"; echo \"curl \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '{\"info\":{\"spend\":${2:-1},\"max_budget\":100}}'"
   sonnet_lane
