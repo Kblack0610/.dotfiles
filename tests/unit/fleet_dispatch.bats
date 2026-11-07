@@ -1543,6 +1543,28 @@ echo "claude-acct: no account has room; alt is the closest, 1 point over its wee
   [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row that is not cleanup"
 }
 
+@test "run with DISPATCH_CLEANUP_FLOOR cleanup items already runnable does not read the board, so a fresh cleanup row waits" {
+  export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=2
+  project game beta "$SANDBOX/repos/game"
+  row game human 'crash' "- [ ] fix(game): crash on load $T"
+  verdict game human 'crash' dispatch S 1 crash
+  agent-queue add --project game --slug c1 --tags cleanup "c1"
+  agent-queue add --project game --slug c2 --tags cleanup "c2"
+  agent-queue add --project game --slug c3 --tags cleanup "c3"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  # the pass starts c1, which leaves 2 runnable cleanup items: the floor is met (low water is 1, so only the floor decides)
+  assert_output --partial 'started game-agent-1: game: c1'
+  refute_output --partial 'under the floor'
+  assert_not_called 'judge called'
+  [ -z "$(qitem queued gm-1)" ] || fail "the floor read the board with the cleanup floor met"
+  # negative control: with the floor at 3 the next pass starts c2, leaves 1 cleanup item, and promotes the same row
+  export DISPATCH_CLEANUP_FLOOR=3
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'runnable cleanup 1 is under the floor 3'
+  [ -n "$(qitem queued gm-1)" ] || fail "under the floor the cleanup row was not promoted"
+}
+
 @test "the cleanup floor's fill reads and judges only cleanup rows of the cleanup projects; a plain fill judges them all" {
   export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PROFILES=bnb
   project game beta "$SANDBOX/repos/game"
