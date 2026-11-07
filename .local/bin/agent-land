@@ -90,19 +90,25 @@ own_head() {
   # be the old one (#590, #1401 failed here and a plain re-run passed). When origin's branch tip is
   # HEAD, the push landed: poll until the PR reads it, since the checks and the merge read the PR's
   # head, not origin's. No event says when; the bound is the checks one.
-  local tip seen try
-  tip=$(git ls-remote origin "refs/heads/$head_ref" 2>/dev/null | awk 'NR == 1 { print $1 }')
-  if [ "$tip" = "$here" ]; then
-    for ((try = 1; try <= CHECKS_TRIES; try++)); do
-      sleep "$CHECKS_POLL"
-      seen=$(gh pr view "$pr" --json headRefOid -q .headRefOid 2>/dev/null || true)
-      if [ "$seen" = "$here" ]; then
-        head_oid=$here
-        echo "head: the PR read the pushed head ${here:0:8} after $try polls"
-        return 0
+  # A failed ls-remote leaves tip empty and the diagnostics below run, as before this wait existed.
+  local tip seen out try
+  tip=$(git ls-remote origin "refs/heads/$head_ref" 2>/dev/null | awk -v r="refs/heads/$head_ref" '$2 == r { print $1 }') || tip=''
+  if [ -n "$tip" ] && [ "$tip" = "$here" ]; then
+    for ((try = 1; ; try++)); do
+      if out=$(gh pr view "$pr" --json headRefOid -q .headRefOid 2>&1); then
+        if [ "$out" = "$here" ]; then
+          head_oid=$here
+          echo "head: the PR read the pushed head ${here:0:8} after $try polls"
+          return 0
+        fi
+        seen=${out:0:8}
+      else
+        seen="nothing (gh: $(lastline "$out"))"
       fi
+      [ "$try" -lt "$CHECKS_TRIES" ] || break
+      sleep "$CHECKS_POLL"
     done
-    fail head "HEAD ${here:0:8} is origin's $head_ref, but the PR still reads ${seen:0:8} after $CHECKS_TRIES polls: re-run once GitHub catches up"
+    fail head "HEAD ${here:0:8} is origin's $head_ref, but the PR still reads $seen after $try polls: re-run once GitHub catches up"
   fi
   wt=$(git worktree list --porcelain 2>/dev/null | awk -v b="branch refs/heads/$head_ref" '/^worktree /{p = substr($0, 10)} $0 == b { print p; exit }')
   top=$(git rev-parse --show-toplevel 2>/dev/null || true)

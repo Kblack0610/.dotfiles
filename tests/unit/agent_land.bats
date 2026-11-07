@@ -34,9 +34,11 @@ case "$1 $2" in
     q="$NOTES_FIXTURE/mergeable.seq"
     if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo '0123456789abcdef MERGEABLE'; fi ;;
   *headRefOid*)
-    # head.seq: the PR's head on each poll after a fresh push, popped as read; then head.oid
+    # head.seq: the PR's head on each poll after a fresh push, popped as read; then head.oid. head.fail: the call fails
+    [ ! -f "$NOTES_FIXTURE/head.fail" ] || { echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; }
     q="$NOTES_FIXTURE/head.seq"
-    if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/head.oid" 2>/dev/null || echo 0123456789abcdef; fi ;;
+    if [ -s "$q" ]; then h=$(head -1 "$q"); sed -i 1d "$q"; else h=$(cat "$NOTES_FIXTURE/head.oid" 2>/dev/null || echo 0123456789abcdef); fi
+    printf '{"headRefOid":"%s"}' "$h" | jq -r "${@: -1}" || exit 1 ;;
   *body*) cat "$NOTES_FIXTURE/body" ;;
   # merge.oid: the PR's merge commit
   *mergeCommit*) cat "$NOTES_FIXTURE/merge.oid" 2>/dev/null || echo fedcba9876543210fedcba9876543210fedcba98 ;;
@@ -79,7 +81,9 @@ rev-list)
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
 rev-parse) case "$2" in --show-toplevel) cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;; *) echo 0123456789abcdef ;; esac ;;
 # remote.tip: origin's tip of the asked branch, as `git ls-remote` prints it (nothing when absent)
-ls-remote) [ ! -f "$NOTES_FIXTURE/remote.tip" ] || printf '%s\t%s\n' "$(cat "$NOTES_FIXTURE/remote.tip")" "$3" ;;
+# remote.fail: the call fails (no network); a decoy ref that only tail-matches comes first
+ls-remote) [ ! -f "$NOTES_FIXTURE/remote.fail" ] || { echo 'fatal: unable to access' >&2; exit 128; }
+  [ ! -f "$NOTES_FIXTURE/remote.tip" ] || printf 'ffffffffffffffff\trefs/heads/x/%s\n%s\t%s\n' "$3" "$(cat "$NOTES_FIXTURE/remote.tip")" "$3" ;;
 # worktree.list: what `git worktree list --porcelain` prints (nothing when absent)
 worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
 # not.ancestor: the merge commit is not on the base branch (merge_proof refuses)
@@ -190,6 +194,25 @@ item() {
   run grep -c 'pr view 42 --json headRefOid -q .headRefOid' "$LOG"
   assert_output 3
   run grep -c 'pr edit\|pr checks\|pr merge\|^notes' "$LOG"
+  assert_output 0
+}
+
+@test "a fresh push and gh cannot read the PR: names the gh error, not an empty head" {
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  printf '0123456789abcdef\n' >"$NOTES_FIXTURE/remote.tip"
+  touch "$NOTES_FIXTURE/head.fail"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'but the PR still reads nothing (gh: gh: API rate limit exceeded (HTTP 403)) after 2 polls'
+}
+
+@test "head differs and ls-remote fails: the old diagnostics run, no wait and no silent exit" {
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  touch "$NOTES_FIXTURE/remote.fail"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial "no checkout of pr-42 is listed"
+  run grep -c "headRefOid -q" "$LOG"
   assert_output 0
 }
 
