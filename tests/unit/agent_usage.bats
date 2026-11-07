@@ -94,7 +94,7 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
 q="$*"
 case "$q" in
   *"by (type)"*) echo '{"status":"success","data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
-  *"by (model) (claude_code_cost"*) echo '{"status":"success","data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
+  *"by (model)"*"claude_code_cost"*) echo '{"status":"success","data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
   *"by (model)"*) echo '{"status":"success","data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
   *) echo '{"status":"success","data":{"result":[]}}' ;;
 esac
@@ -103,6 +103,17 @@ STUB
   assert_equal "$(usage_field .usage_source)" 'otel'
   assert_equal "$(usage_field '.cost_by_model | tojson')" '{"m1":1.2346,"m2":0.5}'
   assert_equal "$(usage_field .cost_usd)" '1.73456'
+}
+
+@test "a session reads each counter's peak over the week, not its instant value" {
+  # An ended session's series are stale, so an instant sum reads 0; increase() drops the first sample.
+  printf '#!/usr/bin/env bash\necho "$*" >> "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[{"metric":{"type":"input","model":"m1"},"value":[0,"1"]}]}}' > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  SANDBOX="$SANDBOX" usage_field .usage_source >/dev/null
+  run grep -c 'max_over_time(claude_code_[a-zA-Z_]*{session_id="dedupe"}\[7d\])' "$SANDBOX/q"
+  assert_output 3
+  run grep -c 'increase(' "$SANDBOX/q"
+  assert_output 0
 }
 
 @test "without telemetry there is no per-model cost" {
@@ -469,7 +480,7 @@ spend_curl() {
   SANDBOX="$SANDBOX" run "$AU" spend check 24h 900
   assert_success
   assert_output 'last 24h: $0.0 (alert at $900)'
-  run grep -c 'increase(claude_code_cost_usage_USD_total\[24h\])' "$SANDBOX/q"
+  run grep -c 'max_over_time(claude_code_cost_usage_USD_total\[24h\])' "$SANDBOX/q"
   assert_output 1
 }
 
