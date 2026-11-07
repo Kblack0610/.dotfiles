@@ -1692,6 +1692,8 @@ red_item() {
   red_item f done 'check(watch): gone tripped since 2026-11-01' -7200 -3600 - - ok
   red_item g done 'check(watch): gone tripped since 2026-11-01' -7200 -3600 - - failed
   red_item h done 'fix: not a red' -7200 -3600 r#9 sha9 ok 'night'
+  red_item i done 'check(watch): stuck tripped since 2026-11-01, expected: stuck' -7200 -3600 - - cancelled   # handed to its owner while the watch is still red
+  red_item j done 'check(watch): stuck tripped since 2026-11-01, expected: stuck' -7200 -3600 r#10 sha10 cancelled   # a merge outranks the cancel: its red still reads
   for w in fine back stuck; do parses "check(watch): $w tripped since 2026-11-01, expected: $w" check watch "$w tripped since 2026-11-01, expected: $w"; done
   for w in other gone; do parses "check(watch): $w tripped since 2026-11-01" check watch "$w tripped since 2026-11-01"; done
   parses 'fix(runner): beta is FAILED: x' fix runner 'beta is FAILED: x'
@@ -1699,12 +1701,12 @@ red_item() {
   assert_success
   run jq -rs 'map("\(.slug) \(.red) \(.outcome) \(.fix_min)") | .[]' <<<"$output"
   assert_output "$(printf '%s\n' 'a watch fine fixed 60' 'b watch back came back 60' 'c watch stuck still red 60' \
-    'd watch other needs merge null' 'e runner beta fixing null' 'f watch gone cleared null' 'g watch gone no fix null')"
+    'd watch other needs merge null' 'e runner beta fixing null' 'f watch gone cleared null' 'g watch gone no fix null' 'i watch stuck cancelled null' 'j watch stuck still red 60')"
   run "$SUBJECT" reds
-  assert_line '7 red fixes in 7d: 1 came back, 1 cleared, 1 fixed, 1 fixing, 1 needs merge, 1 no fix, 1 still red'
+  assert_line '9 red fixes in 7d: 1 came back, 1 cancelled, 1 cleared, 1 fixed, 1 fixing, 1 needs merge, 1 no fix, 2 still red'
   assert_line '| a | watch fine | fixed | '"$(date -u -d "@$((T0 - 7200))" +%FT%H:%M)"' | 60 | r#1 |'
   run "$SUBJECT" chain --json
-  assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 2
+  assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 3
 }
 
 @test "reds: a red's area and name come from one notes row parse; a title it does not parse reads as itself, and a failed parse fails" {

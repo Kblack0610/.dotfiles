@@ -81,7 +81,9 @@
 #   fleet-bench reds [--json] [--days N]
 #                                each red fix queued in the last N days (REDS_DAYS) and what came
 #                                of it: fixing, needs merge, fixed (merged, not red now), still red,
-#                                came back (red again after the merge), cleared or no fix; and each
+#                                came back (red again after the merge), cancelled (closed cancelled
+#                                with no merge, as when handed to an owner), cleared (ok with no PR)
+#                                or no fix (failed with no PR); and each
 #                                merged cleanup item, its hold: holding (under HOLD_HOURS old), held,
 #                                went red (a red now names it) or recovered (a red named it, now over)
 #   fleet-bench findings [--open|--json|--run]
@@ -3143,11 +3145,11 @@ reds_json() {
        outcome: (
          if .state == "queued" then "queued"
          elif .state == "running" or .state == "waiting" then "fixing"
-         elif .state == "cancelled" then "cancelled"
          elif .merged != null then
            (if $red | not then "fixed"
             elif $r.area == "watch" and $fin != null and ($w[$r.name] // 0) > $fin then "came back"
             else "still red" end)
+         elif .status == "cancelled" then "cancelled"
          elif .pr != null then "needs merge"
          elif .status == "ok" then "cleared"
          else "no fix" end)}), $cleanups[]' <<<"$items"
