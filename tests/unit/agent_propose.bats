@@ -146,6 +146,7 @@ STUB
 # mem0: sops and curl stubbed. The curl stub keeps its stdin (the -K config) and its argv apart, so a
 # test can tell where the key went.
 mem0_stubs() {
+  export AGENT_PROPOSE_MEM0_LIB="$BATS_TEST_DIRNAME/../../.local/lib/mem0.sh"
   export AGENT_PROPOSE_MEM0_ENV="$BATS_TEST_TMPDIR/mem0.env"
   printf 'MEM0_BASE_URL=https://mem0.test\nMEM0_USER_ID=me\nMEM0_SECRET=%s/secret.yaml\n' "$BATS_TEST_TMPDIR" > "$AGENT_PROPOSE_MEM0_ENV"
   printf '#!/usr/bin/env bash\necho "sops $*" >> "$CALLS"\necho "MEM0_API_KEY: \\"m0sk_sekrit\\""\n' > "$BATS_TEST_TMPDIR/bin/sops"
