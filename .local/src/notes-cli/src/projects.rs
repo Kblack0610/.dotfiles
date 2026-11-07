@@ -33,11 +33,14 @@ fn indexed(p: &Profile) -> Vec<(String, PathBuf)> {
 /// relative `<target>`, so the path is `root/<target>.md`. Blank / placeholder lines
 /// are skipped. `None` when the index is unset/absent or the lane has no entries.
 fn from_index(p: &Profile) -> Option<Vec<(String, PathBuf)>> {
-    let idx = p.project_index.as_ref()?;
-    let content = fs::read_to_string(idx).ok()?;
-    let lines = md::section_lines(&content, "Current")?;
+    let content = fs::read_to_string(p.project_index.as_ref()?).ok()?;
+    Some(current_lane(p, &content)).filter(|l| !l.is_empty())
+}
+
+/// The wikilinked entries of `content`'s `## Current` lane, the ones [`from_index`] lists.
+fn current_lane(p: &Profile, content: &str) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
-    for l in lines {
+    for l in md::section_lines(content, "Current").unwrap_or_default() {
         let t = l.trim();
         if t.is_empty() || t == "-" || (t.starts_with('_') && t.ends_with('_')) {
             continue;
@@ -50,11 +53,7 @@ fn from_index(p: &Profile) -> Option<Vec<(String, PathBuf)>> {
             out.push((name, path));
         }
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    out
 }
 
 /// Extract `(target, name)` from a line containing `[[target|name]]` (or bare
@@ -566,6 +565,27 @@ fn remove_from_lane(content: &str, heading: &str, name: &str) -> Option<String> 
     Some(joined)
 }
 
+/// Add `name`'s entry (linking `target`) to the `## heading` lane of index `content`.
+///
+/// `notes projects` reads the Current lane, else the dir scan, so a first entry written into
+/// a Current lane with none would flip it from every project to just this one (bnb,
+/// 2026-11-05). An empty Current lane is seeded from the dir scan first, so adding a project
+/// never drops the others.
+fn add_to_lane(p: &Profile, content: &str, heading: &str, target: &Path, name: &str) -> String {
+    // The new entry goes first, where an insert into a listed lane puts it too.
+    let mut lines = vec![lane_line(p, target, name)];
+    if heading.eq_ignore_ascii_case("Current") && current_lane(p, content).is_empty() {
+        for (n, summary) in daily::discover_project_dirs(p) {
+            if !n.eq_ignore_ascii_case(name) {
+                let dir = summary.parent().unwrap_or(&summary);
+                lines.push(lane_line(p, &lane_target(dir), &n));
+            }
+        }
+    }
+    let content = strip_lane_placeholder(content, heading);
+    md::insert_under_heading(&content, heading, &lines)
+}
+
 /// Move a project's index entry from one lane to another (rewriting its link target).
 fn move_lane(p: &Profile, from: &str, to: &str, name: &str, new_summary: &Path) -> Result<()> {
     let Some(idx) = &p.project_index else {
@@ -574,8 +594,7 @@ fn move_lane(p: &Profile, from: &str, to: &str, name: &str, new_summary: &Path) 
     let content = fs::read_to_string(idx).unwrap_or_default();
     let content = remove_from_lane(&content, from, name).unwrap_or(content);
     let content = ensure_lane_placeholder(&content, from);
-    let content = strip_lane_placeholder(&content, to);
-    let content = md::insert_under_heading(&content, to, &[lane_line(p, new_summary, name)]);
+    let content = add_to_lane(p, &content, to, new_summary, name);
     fs::write(idx, content)?;
     Ok(())
 }
@@ -748,10 +767,7 @@ pub fn new_project(p: &Profile, log: &Logger, name: &str, o: &Overlays) -> Resul
     if !existed {
         if let Some(idx) = &p.project_index {
             let content = fs::read_to_string(idx).unwrap_or_default();
-            let content = strip_lane_placeholder(&content, "Current");
-            let target = lane_target(&dir);
-            let content =
-                md::insert_under_heading(&content, "Current", &[lane_line(p, &target, name)]);
+            let content = add_to_lane(p, &content, "Current", &lane_target(&dir), name);
             fs::write(idx, content)?;
         }
     }
@@ -938,9 +954,29 @@ const RETIRED_TAGS: &[&str] = &["oneshot", "ci", "ai", "high-priority"];
 /// THE list of row kinds: `--stats --json` counts by it and `fleet-dispatch`'s kinds.json is
 /// checked against it. A bug is a `fix` row; its severity is the row's priority tag.
 pub(crate) const ROW_TYPES: &[&str] = &[
-    "feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "research", "design",
-    "market", "legal", "run", "decide", "check", "epic",
+    "feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "release", "research",
+    "design", "market", "legal", "run", "decide", "check", "epic",
 ];
+
+/// The channels a human's want enters by (`ptask add|file --want`), and THE list: the writer
+/// stamps `#requested` on a row that names one, and records it as the ingest event's `want`.
+pub(crate) const WANT_CHANNELS: &[&str] = &[
+    "outbox", "focus", "voice", "request", "ask", "meeting", "human",
+];
+
+/// `--want`'s value, or the channels there are.
+pub(crate) fn want_channel(s: &str) -> anyhow::Result<&'static str> {
+    WANT_CHANNELS
+        .iter()
+        .find(|c| **c == s.trim())
+        .copied()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--want takes one of {}, not '{s}'",
+                WANT_CHANNELS.join(", ")
+            )
+        })
+}
 
 /// The `by_kind` key of a row with no well-formed `type(area):` prefix.
 pub(crate) const UNTYPED: &str = "untyped";
@@ -993,6 +1029,28 @@ pub(crate) fn row_title(line: &str) -> String {
         .collect();
     let bare = bare.join(" ");
     split_row_prefix(&bare).unwrap_or(&bare).to_string()
+}
+
+/// One `notes row parse` line for a row or its bare text: `type area title ok`, tab-separated,
+/// `ok` 1 when the grammar parses it. An empty field prints as `-`, because a shell `read`
+/// with a tab IFS merges empty columns.
+pub(crate) fn row_parse_tsv(line: &str) -> String {
+    let title = row_title(line);
+    let title = if title.is_empty() {
+        "-".to_string()
+    } else {
+        title
+    };
+    match row_type_area(line) {
+        Some((ty, area)) => format!("{ty}\t{area}\t{title}\t1"),
+        None => format!("-\t-\t{title}\t0"),
+    }
+}
+
+/// The types a filer (a script, a prompt, `propose`) may give a row: every [`ROW_TYPES`]
+/// entry but `epic`, which is the human's to file. `notes row types` prints them.
+pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
+    ROW_TYPES.iter().copied().filter(|t| *t != "epic")
 }
 
 /// The row grammar the board feed parses, per top-level row: a retired priority word, two
@@ -1284,8 +1342,7 @@ fn move_with(
     });
     let dest_index = dest.project_index.as_ref().map(|idx| {
         let c = fs::read_to_string(idx).unwrap_or_default();
-        let c = strip_lane_placeholder(&c, lane);
-        let c = md::insert_under_heading(&c, lane, &[lane_line(&dest, &target, name)]);
+        let c = add_to_lane(&dest, &c, lane, &target, name);
         (idx.clone(), c)
     });
 
@@ -4273,6 +4330,43 @@ Version: v0.2.0
     }
 
     #[test]
+    fn row_parse_prints_four_columns_for_every_line() {
+        assert_eq!(
+            row_parse_tsv("fix(audio): the gun sound plays late #high #size/s"),
+            "fix\taudio\tthe gun sound plays late\t1"
+        );
+        assert_eq!(
+            row_parse_tsv("- [/] feat(fleet-bench): a row line #c1107 <!-- id:ar-1 -->"),
+            "feat\tfleet-bench\ta row line\t1"
+        );
+        // the grammar's own refusals: an unknown type, a breaking `!`, an area with a slash
+        for text in [
+            "feature(x): a",
+            "fix(x)!: a",
+            "fix(a/b): a",
+            "no prefix at all",
+        ] {
+            let out = row_parse_tsv(text);
+            assert!(
+                out.starts_with("-\t-\t") && out.ends_with("\t0"),
+                "{text}: {out}"
+            );
+        }
+        assert_eq!(row_parse_tsv(""), "-\t-\t-\t0");
+        // a tab or CR inside the text never makes a fifth column: the title is its words
+        assert_eq!(row_parse_tsv("fix(x): a\tb\r"), "fix\tx\ta b\t1");
+        assert_eq!(row_parse_tsv("fix(x): a").split('\t').count(), 4);
+    }
+
+    #[test]
+    fn filer_types_are_the_row_types_but_epic() {
+        let types: Vec<_> = filer_types().collect();
+        assert!(!types.contains(&"epic"));
+        assert_eq!(types.len(), ROW_TYPES.len() - 1);
+        assert_eq!(types[..2], ["feat", "fix"]);
+    }
+
+    #[test]
     fn a_close_window_counts_today_and_stops_at_its_edge() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
         let mut p = Progress::default();
@@ -4946,6 +5040,21 @@ mod move_layout_tests {
     }
 
     #[test]
+    fn a_move_into_an_empty_current_lane_keeps_the_dest_projects_listed() {
+        let v = vault("seed");
+        project(&v.personal, "Current", "dodgy");
+        // bnb lists a project by dir scan only: its lane is empty.
+        let there = v.bnb.projects.as_ref().unwrap().join("already");
+        fs::create_dir_all(&there).unwrap();
+        fs::write(there.join("summary.md"), "# already\n").unwrap();
+
+        move_with(&v.personal, &v.log, "dodgy", "bnb", resolver(&v)).unwrap();
+
+        let names: Vec<String> = indexed(&v.bnb).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, vec!["dodgy", "already"], "{}", index(&v.bnb));
+    }
+
+    #[test]
     fn an_archived_project_stays_archived_on_the_other_side() {
         let v = vault("archived");
         let keep = project(&v.bnb, "Current", "stays");
@@ -5451,6 +5560,99 @@ mod shape_tests {
         assert!(board.contains("## Tasks"), "{board}");
         let index = fs::read_to_string(s.p.project_index.as_ref().unwrap()).unwrap();
         assert_eq!(index.matches("|demo]]").count(), 1, "{index}");
+    }
+
+    /// A project the dir scan finds: a dir under `current/` with a `summary.md`.
+    fn scanned(s: &Sandbox, name: &str) {
+        let dir = s.p.projects.as_ref().unwrap().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("summary.md"), format!("# {name}\n")).unwrap();
+    }
+
+    fn names(p: &Profile) -> Vec<String> {
+        indexed(p).into_iter().map(|(n, _)| n).collect()
+    }
+
+    #[test]
+    fn new_in_an_index_without_a_current_lane_keeps_every_project_listed() {
+        let s = sandbox("nolane");
+        scanned(&s, "alpha");
+        scanned(&s, "beta");
+        let idx = s.p.project_index.as_ref().unwrap();
+        fs::write(idx, "# Projects\n\nSome prose, no lanes.\n").unwrap();
+        assert_eq!(names(&s.p), vec!["alpha", "beta"]);
+
+        new_project(&s.p, &s.log, "gamma", &Overlays::default()).unwrap();
+
+        let mut got = names(&s.p);
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["alpha", "beta", "gamma"],
+            "{}",
+            fs::read_to_string(idx).unwrap()
+        );
+        let index = fs::read_to_string(idx).unwrap();
+        assert!(index.contains("Some prose, no lanes."), "{index}");
+        assert_eq!(index.matches("|gamma]]").count(), 1, "{index}");
+    }
+
+    #[test]
+    fn new_in_a_current_lane_of_prose_only_keeps_every_project_listed() {
+        let s = sandbox("prose");
+        scanned(&s, "alpha");
+        let idx = s.p.project_index.as_ref().unwrap();
+        fs::write(idx, "# Projects\n\n## Current\n- TBD, see below\n").unwrap();
+
+        new_project(&s.p, &s.log, "beta", &Overlays::default()).unwrap();
+
+        let mut got = names(&s.p);
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["alpha", "beta"],
+            "{}",
+            fs::read_to_string(idx).unwrap()
+        );
+    }
+
+    #[test]
+    fn restore_into_an_empty_current_lane_keeps_every_project_listed() {
+        let s = sandbox("restore");
+        scanned(&s, "alpha");
+        let arch = archived_dir(&s.p).unwrap().join("oldie");
+        fs::create_dir_all(&arch).unwrap();
+        fs::write(arch.join("summary.md"), "# oldie\n").unwrap();
+
+        restore(&s.p, &s.log, "oldie").unwrap();
+
+        let idx = fs::read_to_string(s.p.project_index.as_ref().unwrap()).unwrap();
+        assert_eq!(names(&s.p), vec!["oldie", "alpha"], "{idx}");
+        assert_eq!(idx.matches("|oldie]]").count(), 1, "{idx}");
+    }
+
+    #[test]
+    fn new_in_a_listed_current_lane_adds_only_itself() {
+        let s = sandbox("listed");
+        scanned(&s, "alpha");
+        scanned(&s, "unlisted");
+        let idx = s.p.project_index.as_ref().unwrap();
+        fs::write(
+            idx,
+            "# Projects\n\n## Current\n- [[lab/projects/current/alpha/summary|alpha]]\n",
+        )
+        .unwrap();
+
+        new_project(&s.p, &s.log, "beta", &Overlays::default()).unwrap();
+
+        let mut got = names(&s.p);
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["alpha", "beta"],
+            "{}",
+            fs::read_to_string(idx).unwrap()
+        );
     }
 
     #[test]

@@ -14,3 +14,4 @@ pub mod send;
 pub mod session;
 pub mod sort;
 pub mod tmux;
+pub mod vocab;

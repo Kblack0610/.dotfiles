@@ -2,9 +2,12 @@
 // Small charts for the board tabs: plain SVG and HTML, coloured from the page's CSS tokens so
 // both themes work. Each returns an HTML string; the tab puts it into the page.
 
-// fleet-sessions buckets, most urgent first (its `rank`). CHAT and PARKED are grey: not attention.
-// A bucket no longer emitted (UNCLEAR in old watch.log lines) takes CHAT's grey.
-const BUCKETS = ["NEEDS", "STALLED", "LANDED", "CHAT", "WORKING", "DONE", "PARKED"];
+// The buckets in fleet-sessions' order, most urgent first: state.json `vocab.buckets`, set from
+// the first read that carries it (/api/watch, /api/sessions/table). Nothing here names one.
+// A bucket outside it (UNCLEAR in old watch.log lines) takes CHAT's grey and sorts last.
+let BUCKETS = [];
+const setBuckets = (list) => { if (list && list.length) BUCKETS = list; };
+const bucketRank = (b) => { const i = BUCKETS.indexOf(b); return i < 0 ? BUCKETS.length : i; };
 const bucketColor = (b) => `var(--b-${BUCKETS.includes(b) ? b.toLowerCase() : "chat"})`;
 
 // A horizontal meter: frac in [0, 1].

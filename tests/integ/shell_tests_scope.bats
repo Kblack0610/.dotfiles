@@ -23,12 +23,7 @@ setup() {
 #!/usr/bin/env bash
 echo "DISPATCHED: make $*"
 EOF
-  # Keep the advisory lint arm fast and quiet; it is not what is under test.
-  cat > "$SANDBOX/bin/shellcheck" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-  chmod +x "$SANDBOX/bin/make" "$SANDBOX/bin/shellcheck"
+  chmod +x "$SANDBOX/bin/make"
 }
 
 # a throwaway git repo that is NOT this one

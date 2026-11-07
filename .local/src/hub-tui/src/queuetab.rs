@@ -1,17 +1,25 @@
-//! The Queue tab: agent-queue's items in agent-web's sections (Waiting for you, Running, Up next,
-//! Done today), read through `hub_core::queue`, the same reader as agent-web's Queue tab. j/k
-//! pick an active item, `c` arms a cancel that waits on y, and `+`/`-` move its priority one
-//! step. Below them the Candidates fold (`hub_core::queue::candidates`, `fleet-dispatch
-//! suggest`): `f` opens it, j/k carry on into its rows, and `p` starts the selected one through
-//! the Projects tab's Start (`fleet-dispatch promote`). Every write goes through hub-core.
+//! The Queue tab: agent-queue's items as one table on the shared data-table component, the
+//! Infra Jobs style, read through `hub_core::queue`, the same reader and the same `QueueRow` as
+//! agent-web's Queue tab. Its sections are `flow` (the strip), `table` and `candidates`.
+//! `/ f s S x` are the shared table's keys; j/k pick a row (a done one too), Enter opens its
+//! detail, `c` arms a cancel that waits on y and `+`/`-` move its priority one step, both for an
+//! active item only. Below the table the Candidates fold (`hub_core::queue::candidates`,
+//! `fleet-dispatch suggest`): `C` opens it, j/k carry on into its rows, and `p` starts the
+//! selected one through the Projects tab's Start (`fleet-dispatch promote`). Every write goes
+//! through hub-core.
 
-use hub_core::pipeline::{self, Pipeline};
-use hub_core::queue::{Candidate, Candidates, Item, Queue, State, SECTIONS};
+use chrono::{DateTime, Utc};
+use hub_core::flow::Strip;
+use hub_core::queue::{
+    money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing, TABLE_OPEN_ROWS,
+};
 use hub_core::tasks::Write;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
 
+use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
+use crate::flowstrip;
 use crate::fmt::{clock, Palette};
 
 /// What a key on the Queue tab asks the app to do.
@@ -29,8 +37,12 @@ pub enum Ask {
 
 #[derive(Default)]
 pub struct QueueView {
-    /// Index into `active`, then into the candidates the open fold shows.
+    /// The shared table's view: query, state chip, sort.
+    pub table: DataTable,
+    /// Index into the drawn rows, then into the candidates the open fold shows.
     pub sel: usize,
+    /// The selected row's detail replaces the table.
+    pub detail: bool,
     pub cands_open: bool,
     /// The slug a cancel waits on y for.
     pub confirm: Option<String>,
@@ -40,22 +52,48 @@ pub struct QueueView {
     pub said: Option<Result<String, String>>,
 }
 
-/// The items j/k move over: every active one, in section order. A done item has no action.
-pub fn active(q: &Queue) -> Vec<&Item> {
-    SECTIONS
-        .iter()
-        .filter(|(s, _)| *s != State::Done)
-        .flat_map(|(s, _)| q.in_state(*s))
-        .collect()
+/// `now` (unix seconds) as the time the rows are measured at.
+fn at(now: i64) -> DateTime<Utc> {
+    DateTime::from_timestamp(now, 0).unwrap_or_default()
 }
 
 impl QueueView {
-    pub fn selected<'a>(&self, q: &'a Queue) -> Option<&'a Item> {
-        active(q).get(self.sel).copied()
+    /// A request for the tab (`hub --tab "queue running"`): an old section id opens the table on
+    /// its state chip, `candidates` opens that fold, `flow` and `table` are the page as it is, and
+    /// any other word is the query. The table starts from its own view.
+    pub fn open(&mut self, query: &str) {
+        let q = query.trim();
+        self.table.clear();
+        self.sel = 0;
+        self.detail = false;
+        match hub_core::queue::section_chip(q) {
+            _ if q.is_empty() => {}
+            Some(chip) => self.table.view.state = chip.into(),
+            None if q.eq_ignore_ascii_case("candidates") => self.cands_open = true,
+            None if ["flow", "table"].iter().any(|s| q.eq_ignore_ascii_case(s)) => {}
+            None => self.table.view.q = q.into(),
+        }
+    }
+
+    /// The rows the table draws, from every row in the table's own order: the view applied, then
+    /// capped at `TABLE_OPEN_ROWS`; and how many the cap left out.
+    fn drawn<'a>(&self, all: &[QueueRow<'a>]) -> (Vec<QueueRow<'a>>, usize) {
+        let mut rows: Vec<QueueRow<'a>> = self.table.view.apply(all).into_iter().copied().collect();
+        let older = rows.len().saturating_sub(TABLE_OPEN_ROWS);
+        rows.truncate(TABLE_OPEN_ROWS);
+        (rows, older)
+    }
+
+    pub fn shown<'a>(&self, q: &'a Queue, now: i64) -> Vec<QueueRow<'a>> {
+        self.drawn(&q.rows(at(now))).0
+    }
+
+    pub fn selected<'a>(&self, q: &'a Queue, now: i64) -> Option<&'a Item> {
+        self.shown(q, now).get(self.sel).map(|r| r.item)
     }
 
     /// The candidates the fold lists: none while it is shut.
-    pub fn shown<'a>(&self, c: &'a [Candidate]) -> &'a [Candidate] {
+    pub fn shown_cands<'a>(&self, c: &'a [Candidate]) -> &'a [Candidate] {
         if self.cands_open {
             c
         } else {
@@ -63,18 +101,23 @@ impl QueueView {
         }
     }
 
-    pub fn selected_cand<'a>(&self, q: &Queue, c: &'a [Candidate]) -> Option<&'a Candidate> {
-        let i = self.sel.checked_sub(active(q).len())?;
-        self.shown(c).get(i)
+    pub fn selected_cand<'a>(
+        &self,
+        q: &Queue,
+        c: &'a [Candidate],
+        now: i64,
+    ) -> Option<&'a Candidate> {
+        let i = self.sel.checked_sub(self.shown(q, now).len())?;
+        self.shown_cands(c).get(i)
     }
 
-    /// A new read keeps the selection on the same slug when it is still active, and otherwise
-    /// in range of the items and shown candidates.
-    pub fn reselect(&mut self, was: Option<String>, q: &Queue, c: &[Candidate]) {
-        let rows = active(q);
-        let n = rows.len() + self.shown(c).len();
+    /// A new read keeps the selection on the same slug when it is still shown, and otherwise
+    /// in range of the rows and shown candidates.
+    pub fn reselect(&mut self, was: Option<String>, q: &Queue, c: &[Candidate], now: i64) {
+        let rows = self.shown(q, now);
+        let n = rows.len() + self.shown_cands(c).len();
         self.sel = was
-            .and_then(|s| rows.iter().position(|i| i.slug == s))
+            .and_then(|s| rows.iter().position(|r| r.item.slug == s))
             .unwrap_or(self.sel)
             .min(n.saturating_sub(1));
     }
@@ -82,7 +125,14 @@ impl QueueView {
     /// `page` is the body's height in rows: PgUp/PgDn and space move the selection a page,
     /// Ctrl-d/Ctrl-u half of one, g/G to the first and last row. The app keeps the selected row
     /// in view, so every move scrolls the page with it.
-    pub fn key(&mut self, k: KeyEvent, q: Option<&Queue>, c: &[Candidate], page: usize) -> Ask {
+    pub fn key(
+        &mut self,
+        k: KeyEvent,
+        q: Option<&Queue>,
+        c: &[Candidate],
+        page: usize,
+        now: i64,
+    ) -> Ask {
         if let Some(slug) = &self.confirm {
             return match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
@@ -97,12 +147,22 @@ impl QueueView {
                 _ => Ask::Done,
             };
         }
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        // `/ f s S x`, and every key while a query is being typed, are the shared table's.
+        if !ctrl && (self.table.typing.is_some() || DataTable::owns(k.code)) {
+            if self.table.key::<QueueRow>(k.code) == Took::View {
+                self.sel = 0;
+                self.detail = false;
+            }
+            return Ask::Done;
+        }
         let Some(q) = q else { return Ask::Pass };
-        let n = active(q).len() + self.shown(c).len();
+        let rows = self.shown(q, now);
+        let n = rows.len() + self.shown_cands(c).len();
         let last = n.saturating_sub(1);
         let half = (page / 2).max(1);
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let busy = || Some(Err("an action is still running".to_string()));
+        let item = rows.get(self.sel).map(|r| r.item);
         match k.code {
             KeyCode::Char('d') if ctrl => self.sel = (self.sel + half).min(last),
             KeyCode::Char('u') if ctrl => self.sel = self.sel.saturating_sub(half),
@@ -113,11 +173,17 @@ impl QueueView {
             KeyCode::PageUp => self.sel = self.sel.saturating_sub(page.max(1)),
             KeyCode::Char('g') | KeyCode::Home => self.sel = 0,
             KeyCode::Char('G') | KeyCode::End => self.sel = last,
-            KeyCode::Char('f') => {
-                self.cands_open = !self.cands_open;
-                self.reselect(None, q, c);
+            KeyCode::Enter if item.is_some() => self.detail = !self.detail,
+            KeyCode::Esc if self.detail => self.detail = false,
+            KeyCode::Esc if !self.table.is_default() => {
+                self.table.clear();
+                self.sel = 0;
             }
-            KeyCode::Char('p') => match self.selected_cand(q, c) {
+            KeyCode::Char('C') => {
+                self.cands_open = !self.cands_open;
+                self.reselect(None, q, c, now);
+            }
+            KeyCode::Char('p') => match self.selected_cand(q, c, now) {
                 _ if self.running.is_some() => self.said = busy(),
                 Some(cand) => {
                     self.said = None;
@@ -127,12 +193,13 @@ impl QueueView {
                     );
                 }
                 None if !self.cands_open => {
-                    self.said = Some(Err("f opens the candidates, then j/k onto one".into()))
+                    self.said = Some(Err("C opens the candidates, then j/k onto one".into()))
                 }
                 None => self.said = Some(Err("j/k onto a candidate to promote it".into())),
             },
-            KeyCode::Char('c') => match self.selected(q) {
+            KeyCode::Char('c') => match item {
                 _ if self.running.is_some() => self.said = busy(),
+                Some(i) if i.state == State::Done => self.said = Some(done_row(i)),
                 Some(i) => {
                     self.said = None;
                     self.confirm = Some(i.slug.clone());
@@ -140,11 +207,15 @@ impl QueueView {
                 None => self.said = Some(Err("nothing active to cancel".into())),
             },
             KeyCode::Char(c @ ('+' | '=' | '-')) => {
-                let Some(i) = self.selected(q) else {
+                let Some(i) = item else {
                     return Ask::Done;
                 };
                 if self.running.is_some() {
                     self.said = busy();
+                    return Ask::Done;
+                }
+                if i.state == State::Done {
+                    self.said = Some(done_row(i));
                     return Ask::Done;
                 }
                 match i.bumped(c != '-') {
@@ -158,10 +229,9 @@ impl QueueView {
     }
 }
 
-/// An ISO time from the store as the local clock, or "" when there is none.
-fn when(t: Option<&str>, now: i64) -> String {
-    t.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-        .map_or(String::new(), |d| clock(d.timestamp(), now))
+/// Why cancel and priority leave a finished item alone.
+fn done_row(i: &Item) -> Result<String, String> {
+    Err(format!("{} is done", i.slug))
 }
 
 fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
@@ -171,101 +241,201 @@ fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     ])
 }
 
-/// What the row's state column says: the hold, the session, or how it finished.
+/// A span of minutes as the table prints it: `14m`, `1h05`, `2d03h`; `-` where the item has not
+/// reached the stage.
+fn mins(m: Option<i64>) -> String {
+    match m {
+        None => "-".into(),
+        Some(m) if m < 60 => format!("{m}m"),
+        Some(m) if m < 24 * 60 => format!("{}h{:02}", m / 60, m % 60),
+        Some(m) => format!("{}d{:02}h", m / (24 * 60), m % (24 * 60) / 60),
+    }
+}
+
+/// The STATE column: what the item needs, or how it finished.
 fn state(i: &Item, p: Palette) -> Cell {
     match i.state {
-        State::Queued => match &i.hold {
-            Some(h) => cell(format!("waits: {h}"), p.warn()),
-            None => cell("ready", p.good()),
-        },
-        State::Waiting | State::Running => i.session.clone().unwrap_or_default().into(),
+        State::Waiting => cell("needs you", p.warn()),
+        State::Running => cell("running", p.good()),
+        State::Queued if i.hold.is_some() => cell("held", p.warn()),
+        State::Queued => "ready".into(),
         State::Done => {
-            let st = i.status.clone().unwrap_or_default();
-            let style = if st == "ok" { p.good() } else { p.bad() };
-            match &i.pr {
-                Some(pr) => cell(format!("{st}, PR {pr}"), style),
-                None => cell(st, style),
-            }
+            let st = i.status.clone().unwrap_or_else(|| "done".into());
+            let style = if st == "ok" || st == "done" {
+                p.good()
+            } else {
+                p.bad()
+            };
+            cell(st, style)
         }
     }
 }
 
-fn row(i: &Item, p: Palette, now: i64) -> Vec<Cell> {
-    let t = match i.state {
-        State::Done => when(i.finished.as_deref(), now),
-        _ if i.started.is_some() => when(i.started.as_deref(), now),
-        _ => when(i.queued.as_deref(), now),
+const HEADER: [&str; 10] = [
+    "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE",
+];
+
+fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
+    let i = r.item;
+    let pr = match i.pr_link() {
+        Some((label, _)) => label.into(),
+        None if i.unproven() => cell("! none", p.warn()),
+        None => "-".into(),
     };
-    let prio = match i.priority.as_str() {
-        "urgent" => p.bad(),
-        "high" => p.warn(),
-        _ => Default::default(),
+    let or_dash = |v: &Option<String>| match v.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => "-".into(),
     };
-    // The weight (agent-queue's, heavy or light) rides in extra; MODE shows it beside the mode.
-    let mode = match i.extra.get("weight").and_then(|w| w.as_str()) {
-        Some(w) => format!("{} {w}", i.mode),
-        None => i.mode.clone(),
-    };
-    let mut task = i.title().to_string();
+    let mut title = i.title();
     if let Some(n) = &i.note {
-        task = format!("{task}  ({n})");
+        title = format!("{title}  ({n})");
     }
     vec![
-        cell(i.slug.clone(), Default::default()),
-        cell(i.priority.clone(), prio),
-        i.project.clone().into(),
-        mode.into(),
-        t.into(),
         state(i, p),
-        task.into(),
+        mins(r.timing.in_state).into(),
+        mins(r.timing.wait).into(),
+        mins(r.timing.run).into(),
+        or_dash(&Some(i.project.clone())).into(),
+        or_dash(&i.kind).into(),
+        or_dash(&i.size).into(),
+        or_dash(&i.account).into(),
+        pr,
+        title.into(),
     ]
 }
 
-/// The pipeline summary at the top of the page (hub_core::pipeline, the agent_chain_* gauges):
-/// the counts, a bottleneck line when a step is past its bound, `o graph` when Grafana is known.
-/// While the read runs it says so; with the gauges absent or the read failed it says `pipeline -`
-/// and never a zero.
-pub fn pipeline_lines(
-    pipe: Option<&Result<Option<Pipeline>, String>>,
-    graph: bool,
-    p: Palette,
-    w: usize,
-) -> Vec<Line<'static>> {
-    let hint = if graph { "   o graph" } else { "" };
-    match pipe {
-        None => vec![clip_line(
-            Line::styled("pipeline  reading Prometheus", p.dim()),
-            w,
-        )],
-        Some(Err(e)) => vec![clip_line(
-            Line::styled(format!("{}  {e}", pipeline::NONE), p.warn()),
-            w,
-        )],
-        Some(Ok(None)) => vec![clip_line(
-            Line::styled(format!("{}{hint}", pipeline::NONE), p.dim()),
-            w,
-        )],
-        Some(Ok(Some(pl))) => {
-            let mut out = vec![clip_line(Line::raw(format!("{}{hint}", pl.line())), w)];
-            if let Some(b) = pl.bottleneck_line() {
-                out.push(clip_line(Line::styled(b, p.warn()), w));
-            }
-            out
-        }
+/// One `label  value` line of the detail.
+fn kv(k: &str, v: String, p: Palette, w: usize) -> Line<'static> {
+    clip_line(
+        Line::from(vec![Span::styled(format!("{k:<9}"), p.dim()), Span::raw(v)]),
+        w,
+    )
+}
+
+/// A header's text, or None when it is blank.
+fn some(v: &Option<String>) -> Option<&str> {
+    v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// The selected row in full: every header, then the timeline queued -> ready -> started ->
+/// waiting -> finished -> merged with the minutes from the step before. The agent-queue log is
+/// `notes log --item <slug>`, named here and not read.
+fn detail(i: &Item, t: Timing, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![clip_line(
+        Line::from(vec![
+            Span::styled(i.slug.clone(), p.head()),
+            Span::raw(format!("  {}", i.title())),
+        ]),
+        w,
+    )];
+    let mut state_words = format!("{:?}", i.state).to_lowercase();
+    if let Some(s) = some(&i.status) {
+        state_words += &format!(" ({s})");
     }
+    if let Some(h) = &i.hold {
+        state_words += &format!(", waits: {h}");
+    }
+    let mode = match some(&i.weight) {
+        Some(wt) => format!("{} {wt}", i.mode),
+        None => i.mode.clone(),
+    };
+    let mut fields = vec![
+        ("state", state_words),
+        ("priority", i.priority.clone()),
+        ("project", i.project.clone()),
+        ("mode", mode),
+        ("kind", some(&i.kind).unwrap_or("").to_string()),
+        ("size", some(&i.size).unwrap_or("").to_string()),
+        ("acct", some(&i.account).unwrap_or("").to_string()),
+        ("harness", i.harness_label()),
+        ("session", some(&i.session).unwrap_or("").to_string()),
+        ("tags", i.tags.clone()),
+        ("area", some(&i.area).unwrap_or("").to_string()),
+        ("from", some(&i.from).unwrap_or("").to_string()),
+        ("row", some(&i.row).unwrap_or("").to_string()),
+        ("after", some(&i.after).unwrap_or("").to_string()),
+        ("pr", i.pr_words().unwrap_or_default()),
+        ("cost", i.cost().map(money).unwrap_or_default()),
+        (
+            "timing",
+            format!(
+                "in {}  wait {}  run {}  lead {}",
+                mins(t.in_state),
+                mins(t.wait),
+                mins(t.run),
+                mins(t.lead)
+            ),
+        ),
+    ];
+    if i.unproven() {
+        fields.push(("proof", "! no PR, no proof".into()));
+    }
+    out.extend(
+        fields
+            .into_iter()
+            .filter(|(_, v)| !v.trim().is_empty())
+            .map(|(k, v)| kv(k, v, p, w)),
+    );
+    out.push(Line::raw(""));
+    out.push(Line::styled("timeline", p.head()));
+    for st in i.timeline() {
+        let value = match (&st.at, &st.sha) {
+            (_, Some(sha)) => sha.chars().take(10).collect(),
+            (Some(at), None) => {
+                let when = chrono::DateTime::parse_from_rfc3339(at.trim())
+                    .map_or(at.clone(), |d| clock(d.timestamp(), now));
+                match st.gap_min {
+                    Some(g) => format!("{when}  +{}", mins(Some(g))),
+                    None => when,
+                }
+            }
+            _ => continue,
+        };
+        out.push(kv(st.step, value, p, w));
+    }
+    out.push(Line::raw(""));
+    out.push(clip_line(
+        Line::styled(format!("log: notes log --item {}", i.slug), p.dim()),
+        w,
+    ));
+    let task: Vec<&str> = i.task.lines().take(8).collect();
+    if !task.is_empty() {
+        out.push(Line::raw(""));
+        out.extend(
+            task.into_iter()
+                .map(|l| clip_line(Line::raw(l.to_string()), w)),
+        );
+    }
+    out
+}
+
+/// The table's lines (header first), one per drawn row, columns dropped by priority to fit `w`:
+/// ACCT, SIZE, KIND and WAIT go first, then PR, RUN, PROJECT and IN; STATE and TITLE stay.
+fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'static>> {
+    Table {
+        header: HEADER.to_vec(),
+        rows: rows.iter().map(|r| row(r, p)).collect(),
+        keep: vec![0, 1, 4, 3, 8, 2, 5, 6, 7],
+        flex: Some(9),
+        flexmin: 20,
+        flexkeep: true,
+        right: vec![1, 2, 3],
+        cap: vec![(4, 18), (5, 8), (7, 10), (8, 14)],
+        mark: v.table.mark::<QueueRow>(),
+    }
+    .fit(w, p.head())
 }
 
 pub fn page(
     q: &Queue,
     v: &QueueView,
     cands: Option<&Result<Candidates, String>>,
-    pipe: (Option<&Result<Option<Pipeline>, String>>, bool),
+    flow: (&Strip, bool, bool),
     p: Palette,
     now: i64,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let mut out = pipeline_lines(pipe.0, pipe.1, p, w);
-    let mut at_line = None;
+    let mut out = flowstrip::lines(flow.0, flow.1, flow.2, p, w);
     for e in &q.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
@@ -278,50 +448,42 @@ pub fn page(
         out.push(clip_line(Line::raw(l), w));
     }
     out.push(status_line(v, p, w));
-    let sel = v.selected(q).map(|i| i.slug.clone());
-    for (s, title) in SECTIONS {
-        let rows: Vec<&Item> = q.in_state(s).collect();
-        if rows.is_empty() && s == State::Waiting {
-            continue;
-        }
+    let all = q.rows(at(now));
+    let (rows, older) = v.drawn(&all);
+    let mut chips = v.table.status(&all, p);
+    chips.push(Span::styled(
+        format!("    {} of {}", rows.len() + older, all.len()),
+        p.dim(),
+    ));
+    out.push(clip_line(Line::from(chips), w));
+    let mut at_line = None;
+    if let (true, Some(r)) = (v.detail, rows.get(v.sel)) {
         out.push(Line::raw(""));
-        out.push(heading(
-            &title.to_uppercase(),
-            format!("  {}", rows.len()),
-            p,
-        ));
-        if rows.is_empty() {
-            let what = if s == State::Done {
-                "finished today"
+        at_line = Some(out.len());
+        out.extend(detail(r.item, r.timing, p, now, w));
+    } else if rows.is_empty() {
+        out.push(Line::styled(
+            if all.is_empty() {
+                "Nothing in the queue."
             } else {
-                "here"
-            };
-            out.push(Line::styled(format!("Nothing {what}."), p.dim()));
-            continue;
-        }
-        let mut t = Table {
-            header: vec![
-                "SLUG", "PRIORITY", "PROJECT", "MODE", "WHEN", "STATE", "TASK",
-            ],
-            rows: rows.iter().map(|i| row(i, p, now)).collect(),
-            keep: vec![0, 5, 1, 4, 2, 3],
-            flex: Some(6),
-            flexmin: 20,
-            cap: vec![(0, 40), (5, 36)],
-            ..Default::default()
-        }
-        .fit(w, p.head());
-        if s != State::Done {
-            if let Some(at) = rows.iter().position(|i| Some(&i.slug) == sel.as_ref()) {
-                t[at + 1].style = p.sel();
-                at_line = Some(out.len() + at + 1);
-            }
+                "No item matches (/ query, f state, x clears)."
+            },
+            p.dim(),
+        ));
+    } else {
+        let mut t = table(&rows, v, p, w);
+        if v.sel < rows.len() {
+            t[v.sel + 1].style = p.sel();
+            at_line = Some(out.len() + v.sel + 1);
         }
         out.append(&mut t);
+        if older > 0 {
+            out.push(Line::styled(format!("+{older} older"), p.dim()));
+        }
     }
     out.push(Line::raw(""));
     let top = out.len();
-    let (more, cand_at) = candidates(q, v, cands, p, w);
+    let (more, cand_at) = candidates(rows.len(), v, cands, p, w);
     out.extend(more);
     (out, at_line.or(cand_at.map(|a| a + top)))
 }
@@ -329,7 +491,7 @@ pub fn page(
 /// The Candidates fold: its heading counts every ranked row and how many a worker takes; open,
 /// it lists the first `CANDIDATES_SHOWN` in rank order and says how many more there are.
 fn candidates(
-    q: &Queue,
+    above: usize,
     v: &QueueView,
     cands: Option<&Result<Candidates, String>>,
     p: Palette,
@@ -337,9 +499,9 @@ fn candidates(
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let mark = if v.cands_open { "-" } else { "+" };
     let hint = if v.cands_open {
-        "f folds, p promotes"
+        "C folds, p promotes"
     } else {
-        "f opens"
+        "C opens"
     };
     let (count, hint) = match cands {
         None => (String::new(), "reading fleet-dispatch suggest"),
@@ -365,7 +527,7 @@ fn candidates(
         Some(Ok(c)) if v.cands_open => c,
         _ => return (out, None),
     };
-    let shown = v.shown(&c.rows);
+    let shown = v.shown_cands(&c.rows);
     if shown.is_empty() {
         out.push(Line::styled("No open board row to start.", p.dim()));
         return (out, None);
@@ -405,11 +567,7 @@ fn candidates(
     }
     .fit(w, p.head());
     let mut sel_at = None;
-    if let Some(at) = v
-        .sel
-        .checked_sub(active(q).len())
-        .filter(|i| *i < shown.len())
-    {
+    if let Some(at) = v.sel.checked_sub(above).filter(|i| *i < shown.len()) {
         t[at + 1].style = p.sel();
         sel_at = Some(out.len() + at + 1);
     }
@@ -487,6 +645,13 @@ pub(crate) mod tests {
         }
     }
 
+    /// Three hours after the fixture's first item was queued: its running rows have run 2h55 and 2h40.
+    fn now() -> i64 {
+        chrono::DateTime::parse_from_rfc3339("2026-11-03T13:00:00Z")
+            .unwrap()
+            .timestamp()
+    }
+
     fn text(q: &Queue, v: &QueueView, w: usize) -> String {
         text_with(q, v, None, w)
     }
@@ -497,12 +662,20 @@ pub(crate) mod tests {
         c: Option<&Result<Candidates, String>>,
         w: usize,
     ) -> String {
-        page(q, v, c, (None, false), Palette { no_color: true }, 0, w)
-            .0
-            .iter()
-            .map(plain)
-            .collect::<Vec<_>>()
-            .join("\n")
+        page(
+            q,
+            v,
+            c,
+            (&Strip::build(Some(q)), false, false),
+            Palette { no_color: true },
+            now(),
+            w,
+        )
+        .0
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     /// Three ranked rows: an auto one with a verdict, a held auto one, a human-lane manual one.
@@ -521,35 +694,349 @@ pub(crate) mod tests {
         KeyEvent::from(KeyCode::Char(c))
     }
 
+    /// One key on the view, with no candidates unless given.
+    fn press(v: &mut QueueView, q: &Queue, c: &[Candidate], ch: char) -> Ask {
+        v.key(key(ch), Some(q), c, 10, now())
+    }
+
+    fn slugs(v: &QueueView, q: &Queue) -> Vec<String> {
+        v.shown(q, now())
+            .iter()
+            .map(|r| r.item.slug.clone())
+            .collect()
+    }
+
+    /// The first line of `s` that has `what` in it.
+    fn line<'a>(s: &'a str, what: &str) -> &'a str {
+        s.lines()
+            .find(|l| l.contains(what))
+            .unwrap_or_else(|| panic!("{what} missing from\n{s}"))
+    }
+
     #[test]
-    fn the_page_has_the_web_pages_sections_in_order() {
+    fn the_table_opens_exceptions_first_with_every_column() {
         let q = fixture();
         let s = text(&q, &QueueView::default(), 160);
-        let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
-        assert!(at("WAITING FOR YOU  1") < at("RUNNING  1"));
-        assert!(at("RUNNING  1") < at("UP NEXT  2"));
-        assert!(at("UP NEXT  2") < at("DONE TODAY  1"));
-        assert!(s.contains("4 done (3 ok, 0 failed, 1 cancelled)"), "{s}");
-        assert!(s.contains("to PR median 95m"), "{s}");
-        assert!(s.contains("waits: night (01:00-06:00)"), "{s}");
-        assert!(s.contains("ok, PR 812"), "{s}");
-        assert!(
-            s.contains("plan heavy"),
-            "the weight shows beside the mode\n{s}"
+        let header = line(&s, "STATE");
+        let cols = [
+            "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE",
+        ];
+        assert_eq!(
+            header.split_whitespace().collect::<Vec<_>>(),
+            cols,
+            "columns in order"
         );
+        let order = ["Pick a side", "Fix the menu", "Next", "Sweep", "Landed"];
+        let pos: Vec<usize> = order.iter().map(|t| s.find(t).unwrap()).collect();
+        assert!(pos.windows(2).all(|w| w[0] < w[1]), "{s}");
+        // A waiting row: needs you, in its state for 2h55 (since started), no PR.
+        let waiting = line(&s, "Pick a side");
         assert!(
-            s.contains("lab:game-agent-3") && s.contains("Pick a side"),
+            waiting.contains("needs you") && waiting.contains("2h55"),
+            "{waiting}"
+        );
+        // Running: 2h40 in state and run, the 10m it waited after it could start.
+        let running = line(&s, "Fix the menu");
+        assert!(
+            running.contains("running") && running.contains("2h40") && running.contains("10m"),
+            "{running}"
+        );
+        assert!(line(&s, "Sweep").contains("held"));
+        assert!(line(&s, "Next").contains("ready"));
+        let done = line(&s, "Landed");
+        assert!(done.contains("ok") && done.contains("#812"), "{done}");
+        assert!(
+            s.contains("all 5  needs you 1  running 1  up next 2  done 1    5 of 5"),
             "{s}"
         );
-
-        let empty = Queue::default();
-        let s = text(&empty, &QueueView::default(), 120);
         assert!(
-            !s.contains("WAITING FOR YOU"),
-            "an empty waiting section is left out"
+            s.contains("4 done (3 ok, 0 failed, 1 cancelled)") && s.contains("to PR median 95m"),
+            "{s}"
         );
+        let empty = text(&Queue::default(), &QueueView::default(), 120);
+        assert!(empty.contains("Nothing in the queue."), "{empty}");
+    }
+
+    #[test]
+    fn at_80_columns_the_columns_drop_by_priority_and_the_title_stays() {
+        let mut q = fixture();
+        q.items.extend(hub_core::queue::parse(concat!(
+            r#"{"slug":"wide","project":"unity-core-playground","type":"feat","size":"m","account":"claude-lazer","queued":"2026-11-03T12:00:00Z","state":"done","status":"ok","pr":"owner/repo#1234","finished":"2026-11-03T12:30:00Z","task":"Wide row"}"#,
+            "\n",
+        )));
+        let heads = |w: usize| -> Vec<String> {
+            let s = text(&q, &QueueView::default(), w);
+            line(&s, "STATE")
+                .split_whitespace()
+                .map(String::from)
+                .collect()
+        };
+        assert_eq!(
+            heads(160),
+            ["STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE"]
+        );
+        // ACCT, SIZE and KIND give way first (then WAIT, PR, RUN, PROJECT, IN); STATE and TITLE never do.
+        assert_eq!(
+            heads(80),
+            ["STATE", "IN", "WAIT", "RUN", "PROJECT", "PR", "TITLE"],
+            "{}",
+            text(&q, &QueueView::default(), 80)
+        );
+        let s = text(&q, &QueueView::default(), 80);
+        assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
+        let r = line(&s, "Pick a side");
         assert!(
-            s.contains("Nothing here.") && s.contains("Nothing finished today."),
+            r.contains("needs you") && r.contains("2h55") && r.contains("game"),
+            "{r}"
+        );
+        assert!(line(&s, "Wide row").contains("repo#1234"), "{s}");
+        let s = text(&q, &QueueView::default(), 40);
+        assert!(line(&s, "Pick a side").contains("needs you"), "{s}");
+        assert!(s.lines().all(|l| l.chars().count() <= 40), "{s}");
+    }
+
+    #[test]
+    fn f_cycles_the_state_chip_and_the_sort_keys_reorder() {
+        let q = fixture();
+        let mut v = QueueView::default();
+        press(&mut v, &q, &[], 'j');
+        press(&mut v, &q, &[], 'j');
+        assert_eq!(v.sel, 2);
+        let want: [(&str, &[&str]); 5] = [
+            ("needs you", &["pick-sides"]),
+            ("running", &["fix-menu"]),
+            ("up next", &["next-up", "night-sweep"]),
+            ("done", &["landed"]),
+            (
+                "",
+                &["pick-sides", "fix-menu", "next-up", "night-sweep", "landed"],
+            ),
+        ];
+        for (chip, slugs_in) in want {
+            assert_eq!(press(&mut v, &q, &[], 'f'), Ask::Done);
+            assert_eq!(v.table.view.state, chip);
+            assert_eq!(slugs(&v, &q), slugs_in, "{chip}");
+            assert_eq!(v.sel, 0, "a changed view starts at the top");
+        }
+        // s sorts by the next column, S flips it: by `in` the longest-waiting row goes last.
+        press(&mut v, &q, &[], 's');
+        assert_eq!(v.table.view.sort, "state");
+        assert!(text(&q, &v, 160).contains("STATE ^") || text(&q, &v, 160).contains("STATE v"));
+        press(&mut v, &q, &[], 'x');
+        assert!(v.table.is_default());
+        press(&mut v, &q, &[], 's');
+        press(&mut v, &q, &[], 's');
+        assert_eq!(v.table.view.sort, "in");
+        assert_eq!(
+            slugs(&v, &q),
+            ["pick-sides", "fix-menu", "night-sweep", "next-up", "landed"],
+            "the longest in its state first, the done row (no time) last"
+        );
+        assert_eq!(press(&mut v, &q, &[], 'S'), Ask::Done);
+        assert_eq!(
+            slugs(&v, &q),
+            ["next-up", "night-sweep", "fix-menu", "pick-sides", "landed"],
+            "S flips it"
+        );
+    }
+
+    #[test]
+    fn a_done_row_is_selectable_but_cancel_and_priority_refuse_it() {
+        let q = fixture();
+        let mut v = QueueView::default();
+        press(&mut v, &q, &[], 'G');
+        assert_eq!(v.selected(&q, now()).unwrap().slug, "landed");
+        for ch in ['c', '+', '-'] {
+            assert_eq!(press(&mut v, &q, &[], ch), Ask::Done);
+            assert!(
+                matches!(&v.said, Some(Err(e)) if e == "landed is done"),
+                "{ch}: {:?}",
+                v.said
+            );
+            assert!(v.confirm.is_none());
+        }
+        // NEGATIVE CONTROL: the same key on an active row acts.
+        press(&mut v, &q, &[], 'k');
+        press(&mut v, &q, &[], 'k');
+        assert_eq!(v.selected(&q, now()).unwrap().slug, "next-up");
+        assert!(matches!(press(&mut v, &q, &[], '-'), Ask::Bump(..)));
+    }
+
+    #[test]
+    fn slash_searches_with_a_project_token_and_enter_applies_it() {
+        let q = fixture();
+        let mut v = QueueView::default();
+        press(&mut v, &q, &[], 'j');
+        press(&mut v, &q, &[], '/');
+        for ch in "project:dotfiles".chars() {
+            assert_eq!(
+                press(&mut v, &q, &[], ch),
+                Ask::Done,
+                "typed into the query"
+            );
+        }
+        assert_eq!(slugs(&v, &q).len(), 5, "nothing applies before Enter");
+        assert!(text(&q, &v, 160).contains("| /project:dotfiles_"));
+        assert_eq!(
+            v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now()),
+            Ask::Done
+        );
+        assert_eq!(slugs(&v, &q), ["next-up", "night-sweep", "landed"]);
+        assert_eq!(v.sel, 0);
+        let s = text(&q, &v, 160);
+        assert!(
+            s.contains("3 of 5") && s.contains("| /project:dotfiles"),
+            "{s}"
+        );
+        assert!(!s.contains("Pick a side"), "{s}");
+        // A word searches the slug and tags too: `night` finds night-sweep by its tag.
+        v.table.view.q = "night".into();
+        assert_eq!(slugs(&v, &q), ["night-sweep"]);
+        // Esc clears the view; with it clear Esc is the app's.
+        let esc = || KeyEvent::from(KeyCode::Esc);
+        assert_eq!(v.key(esc(), Some(&q), &[], 10, now()), Ask::Done);
+        assert!(v.table.is_default());
+        assert_eq!(v.key(esc(), Some(&q), &[], 10, now()), Ask::Pass);
+        v.table.view.q = "zzz".into();
+        assert!(text(&q, &v, 160).contains("No item matches"));
+    }
+
+    #[test]
+    fn an_old_section_id_opens_the_table_on_its_chip_and_other_words_search() {
+        let q = fixture();
+        for (old, chip, n) in [
+            ("waiting", "needs you", 1),
+            ("running", "running", 1),
+            ("queued", "up next", 2),
+            ("done", "done", 1),
+        ] {
+            let mut v = QueueView::default();
+            v.open(old);
+            assert_eq!(v.table.view.state, chip, "{old}");
+            assert!(v.table.view.q.is_empty());
+            assert_eq!(slugs(&v, &q).len(), n, "{old}");
+        }
+        let mut v = QueueView::default();
+        v.open("Running");
+        assert_eq!(v.table.view.state, "running", "case does not matter");
+        v.open("project:game");
+        assert_eq!(v.table.view.q, "project:game");
+        assert!(
+            v.table.view.state.is_empty(),
+            "a new request starts from the table's own view"
+        );
+        v.open("candidates");
+        assert!(v.cands_open && v.table.is_default());
+        v.open("table");
+        assert!(v.table.is_default());
+        v.open("  ");
+        assert!(v.table.is_default());
+    }
+
+    #[test]
+    fn enter_opens_the_detail_with_every_header_and_the_timeline_in_minutes() {
+        let mut q = fixture();
+        q.items.extend(hub_core::queue::parse(concat!(
+            r#"{"slug":"shipped","project":"dotfiles","mode":"oneshot","weight":"heavy","priority":"high","type":"feat","size":"m","account":"a2","model":"opus","tags":"night","queued":"2026-11-03T08:00:00Z","ready":"2026-11-03T08:10:00Z","started":"2026-11-03T08:25:00Z","waiting":"2026-11-03T09:00:00Z","finished":"2026-11-03T09:30:00Z","state":"done","status":"ok","pr":"o/r#7","merged":"abcdef1234567","cost_usd":"6.10","task":"feat(x): Ship it\nthe body"}"#,
+            "\n",
+        )));
+        let mut v = QueueView::default();
+        v.table.view.q = "shipped".into();
+        assert_eq!(
+            v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now()),
+            Ask::Done
+        );
+        assert!(v.detail);
+        let s = text(&q, &v, 100);
+        for want in [
+            "shipped",
+            "done (ok)",
+            "oneshot heavy",
+            "dotfiles",
+            "feat",
+            "a2",
+            "opus",
+            "night",
+            "PR r#7 merged",
+            "$6.10",
+            "in -  wait 15m  run 1h05  lead 1h30",
+            "log: notes log --item shipped",
+        ] {
+            assert!(s.contains(want), "{want} missing from\n{s}");
+        }
+        let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h}\n{s}"));
+        let order = [
+            "queued ",
+            "ready ",
+            "started ",
+            "waiting ",
+            "finished ",
+            "merged ",
+        ];
+        let pos: Vec<usize> = order.iter().map(|h| at(&format!("\n{h}")) + 1).collect();
+        assert!(pos.windows(2).all(|w| w[0] < w[1]), "{s}");
+        // Gaps are minutes from the step before: ready +10m, started +15m, waiting +35m, finished +30m.
+        for (stage, gap) in [
+            ("ready", "+10m"),
+            ("started", "+15m"),
+            ("waiting", "+35m"),
+            ("finished", "+30m"),
+        ] {
+            assert!(line(&s, &format!("{stage} ")).contains(gap), "{stage}\n{s}");
+        }
+        assert!(line(&s, "merged ").contains("abcdef1234"), "{s}");
+        assert!(!s.contains("STATE "), "the detail replaces the table\n{s}");
+        // Esc closes the detail first, and the query stays.
+        let esc = || KeyEvent::from(KeyCode::Esc);
+        assert_eq!(v.key(esc(), Some(&q), &[], 10, now()), Ask::Done);
+        assert!(!v.detail && v.table.view.q == "shipped");
+        assert!(text(&q, &v, 100).contains("STATE"));
+    }
+
+    #[test]
+    fn a_done_row_shows_its_pr_in_the_column_and_flags_a_finish_with_no_proof() {
+        let mut q = fixture();
+        q.items.extend(hub_core::queue::parse(concat!(
+            r#"{"slug":"merged-one","project":"dotfiles","state":"done","status":"ok","pr":"o/r#7","merged":"abc","cost_usd":"6.10","finished":"2026-11-03T12:00:00Z","task":"Merged one"}"#,
+            "\n",
+            r#"{"slug":"nothing-shown","project":"dotfiles","state":"done","status":"ok","cost_usd":"0","finished":"2026-11-03T12:00:00Z","task":"Nothing shown"}"#,
+            "\n",
+            r#"{"slug":"broke","project":"dotfiles","state":"done","status":"failed","finished":"2026-11-03T12:00:00Z","task":"Broke"}"#,
+            "\n",
+        )));
+        let s = text(&q, &QueueView::default(), 200);
+        assert!(line(&s, "Merged one").contains("r#7"), "{s}");
+        assert!(line(&s, "Nothing shown").contains("! none"), "{s}");
+        assert!(line(&s, "Broke").contains("failed"), "{s}");
+        let mut v = QueueView::default();
+        v.table.view.q = "merged-one".into();
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        let s = text(&q, &v, 200);
+        assert!(s.contains("PR r#7 merged") && s.contains("$6.10"), "{s}");
+    }
+
+    #[test]
+    fn only_the_cap_of_rows_is_drawn_and_the_rest_are_counted_older() {
+        let n = TABLE_OPEN_ROWS + 5;
+        let jsonl: Vec<String> = (0..n)
+            .map(|i| {
+                format!(
+                    r#"{{"slug":"d-{i}","project":"p","state":"done","status":"ok","finished":"2026-11-03T{:02}:{:02}:00Z","task":"T{i}"}}"#,
+                    i / 60 % 24,
+                    i % 60
+                )
+            })
+            .collect();
+        let q = Queue {
+            items: hub_core::queue::parse(&jsonl.join("\n")),
+            ..Default::default()
+        };
+        let v = QueueView::default();
+        assert_eq!(v.shown(&q, now()).len(), TABLE_OPEN_ROWS);
+        let s = text(&q, &v, 120);
+        assert!(s.contains("+5 older"), "{s}");
+        assert!(
+            s.contains(&format!("{n} of {n}")) && s.contains(&format!("done {n}")),
             "{s}"
         );
     }
@@ -558,54 +1045,58 @@ pub(crate) mod tests {
     fn cancel_waits_on_y_and_bump_steps_the_selected_item() {
         let q = fixture();
         let mut v = QueueView::default();
-        assert_eq!(v.selected(&q).unwrap().slug, "pick-sides");
-        assert_eq!(v.key(key('c'), Some(&q), &[], 10), Ask::Done);
+        assert_eq!(v.selected(&q, now()).unwrap().slug, "pick-sides");
+        assert_eq!(press(&mut v, &q, &[], 'c'), Ask::Done);
         assert_eq!(v.confirm.as_deref(), Some("pick-sides"));
         assert!(text(&q, &v, 200).contains("Cancel pick-sides?"));
-        assert_eq!(v.key(key('n'), Some(&q), &[], 10), Ask::Done, "n drops it");
+        assert_eq!(press(&mut v, &q, &[], 'n'), Ask::Done, "n drops it");
         assert!(v.confirm.is_none());
-        v.key(key('c'), Some(&q), &[], 10);
+        press(&mut v, &q, &[], 'c');
         assert_eq!(
-            v.key(key('y'), Some(&q), &[], 10),
+            press(&mut v, &q, &[], 'y'),
             Ask::Cancel("pick-sides".into())
         );
 
         assert_eq!(
-            v.key(key('+'), Some(&q), &[], 10),
+            press(&mut v, &q, &[], '+'),
             Ask::Bump("pick-sides".into(), "urgent")
         );
-        for _ in 0..9 {
-            v.key(key('j'), Some(&q), &[], 10);
+        for _ in 0..3 {
+            press(&mut v, &q, &[], 'j');
         }
-        let at = |v: &QueueView| v.selected(&q).unwrap().slug.clone();
-        assert_eq!(at(&v), "night-sweep", "j stops at the last active item");
-        assert_eq!(v.key(key('-'), Some(&q), &[], 10), Ask::Done);
+        let at = |v: &QueueView| v.selected(&q, now()).unwrap().slug.clone();
+        assert_eq!(at(&v), "night-sweep");
+        assert_eq!(press(&mut v, &q, &[], '-'), Ask::Done);
         assert!(
             matches!(&v.said, Some(Err(e)) if e.contains("already low")),
             "{:?}",
             v.said
         );
         assert_eq!(
-            v.key(key('+'), Some(&q), &[], 10),
+            press(&mut v, &q, &[], '+'),
             Ask::Bump("night-sweep".into(), "high")
         );
-        v.key(key('k'), Some(&q), &[], 10);
+        press(&mut v, &q, &[], 'k');
         assert_eq!(at(&v), "next-up");
-        assert_eq!(v.key(key('+'), Some(&q), &[], 10), Ask::Done);
+        assert_eq!(press(&mut v, &q, &[], '+'), Ask::Done);
         assert!(
             matches!(&v.said, Some(Err(e)) if e.contains("already urgent")),
             "{:?}",
             v.said
         );
         assert_eq!(
-            v.key(key('-'), Some(&q), &[], 10),
+            press(&mut v, &q, &[], '-'),
             Ask::Bump("next-up".into(), "high")
         );
 
         v.running = Some("cancel x".into());
-        v.key(key('c'), Some(&q), &[], 10);
+        press(&mut v, &q, &[], 'c');
         assert!(v.confirm.is_none(), "no second action while one runs");
-        assert_eq!(v.key(key('x'), Some(&q), &[], 10), Ask::Pass);
+        assert_eq!(press(&mut v, &q, &[], 'o'), Ask::Pass);
+        for _ in 0..10 {
+            press(&mut v, &q, &[], 'j');
+        }
+        assert_eq!(at(&v), "landed", "j stops at the last row, a done one");
     }
 
     #[test]
@@ -615,22 +1106,29 @@ pub(crate) mod tests {
             sel: 2,
             ..Default::default()
         };
-        assert_eq!(v.selected(&q).unwrap().slug, "next-up");
+        assert_eq!(v.selected(&q, now()).unwrap().slug, "next-up");
         let mut fewer = fixture();
         fewer.items.retain(|i| i.slug != "pick-sides");
-        v.reselect(Some("next-up".into()), &fewer, &[]);
-        assert_eq!(v.selected(&fewer).unwrap().slug, "next-up");
-        v.reselect(Some("gone".into()), &Queue::default(), &[]);
+        v.reselect(Some("next-up".into()), &fewer, &[], now());
+        assert_eq!(v.selected(&fewer, now()).unwrap().slug, "next-up");
+        v.reselect(Some("landed".into()), &fewer, &[], now());
+        assert_eq!(
+            v.selected(&fewer, now()).unwrap().slug,
+            "landed",
+            "a done row keeps its place too"
+        );
+        v.reselect(Some("gone".into()), &Queue::default(), &[], now());
         assert_eq!(v.sel, 0);
     }
+
     #[test]
     fn candidates_fold_shut_with_their_counts_below_the_queue() {
         let q = fixture();
         let c = Ok(cands());
         let s = text_with(&q, &QueueView::default(), Some(&c), 200);
-        assert!(s.contains("+ CANDIDATES (3, 2 auto)  f opens"), "{s}");
+        assert!(s.contains("+ CANDIDATES (3, 2 auto)  C opens"), "{s}");
         assert!(
-            s.find("DONE TODAY").unwrap() < s.find("CANDIDATES").unwrap(),
+            s.find("Landed").unwrap() < s.find("CANDIDATES").unwrap(),
             "below the queue\n{s}"
         );
         assert!(!s.contains("bar-17"), "no row shows while folded\n{s}");
@@ -645,18 +1143,13 @@ pub(crate) mod tests {
         let q = fixture();
         let c = Ok(cands());
         let mut v = QueueView::default();
-        assert_eq!(v.key(key('f'), Some(&q), &cands().rows, 10), Ask::Done);
+        assert_eq!(press(&mut v, &q, &cands().rows, 'C'), Ask::Done);
         let s = text_with(&q, &v, Some(&c), 200);
         assert!(
-            s.contains("- CANDIDATES (3, 2 auto)  f folds, p promotes"),
+            s.contains("- CANDIDATES (3, 2 auto)  C folds, p promotes"),
             "{s}"
         );
-        let line = |k: &str| {
-            s.lines()
-                .find(|l| l.contains(k))
-                .unwrap_or_else(|| panic!("{k}\n{s}"))
-        };
-        let (a, b, m) = (line("bar-17"), line("ucp-408"), line("tr-41"));
+        let (a, b, m) = (line(&s, "bar-17"), line(&s, "ucp-408"), line(&s, "tr-41"));
         assert!(
             a.trim_start().starts_with("1 ") && b.trim_start().starts_with("2 "),
             "{s}"
@@ -690,26 +1183,26 @@ pub(crate) mod tests {
         let c = cands().rows;
         let mut v = QueueView::default();
         assert_eq!(
-            v.key(key('p'), Some(&q), &c, 10),
+            press(&mut v, &q, &c, 'p'),
             Ask::Done,
             "shut: nothing to promote"
         );
         assert!(
-            matches!(&v.said, Some(Err(e)) if e.contains("f opens")),
+            matches!(&v.said, Some(Err(e)) if e.contains("C opens")),
             "{:?}",
             v.said
         );
-        v.key(key('f'), Some(&q), &c, 10);
-        for _ in 0..4 {
-            v.key(key('j'), Some(&q), &c, 10);
+        press(&mut v, &q, &c, 'C');
+        for _ in 0..5 {
+            press(&mut v, &q, &c, 'j');
         }
         assert_eq!(
-            v.selected_cand(&q, &c).unwrap().key,
+            v.selected_cand(&q, &c, now()).unwrap().key,
             "bar-17",
-            "j runs on past the items"
+            "j runs on past the rows"
         );
         assert!(text_with(&q, &v, Some(&Ok(cands())), 200).contains("fix the jump arc"));
-        let Ask::Promote(label, w) = v.key(key('p'), Some(&q), &c, 10) else {
+        let Ask::Promote(label, w) = press(&mut v, &q, &c, 'p') else {
             panic!("p promotes")
         };
         assert_eq!(label, "promote shape-city bar-17");
@@ -728,89 +1221,25 @@ pub(crate) mod tests {
             ]
         );
         // NEGATIVE CONTROL: the human-lane row is promoted with no --agent.
-        v.key(key('j'), Some(&q), &c, 10);
-        v.key(key('j'), Some(&q), &c, 10);
-        let Ask::Promote(_, w) = v.key(key('p'), Some(&q), &c, 10) else {
+        press(&mut v, &q, &c, 'j');
+        press(&mut v, &q, &c, 'j');
+        let Ask::Promote(_, w) = press(&mut v, &q, &c, 'p') else {
             panic!("p promotes")
         };
         let argv = hub_core::tasks::argv(&w).unwrap();
         assert!(argv.contains(&"trader".to_string()), "{argv:?}");
         assert!(!argv.contains(&"--agent".to_string()), "{argv:?}");
-        assert_eq!(v.key(key('c'), Some(&q), &c, 10), Ask::Done);
+        assert_eq!(press(&mut v, &q, &c, 'c'), Ask::Done);
         assert!(v.confirm.is_none(), "c does not cancel a candidate");
 
-        v.key(key('f'), Some(&q), &c, 10);
-        assert_eq!(v.sel, 3, "folding brings the selection back to the items");
+        press(&mut v, &q, &c, 'C');
+        assert_eq!(v.sel, 4, "folding brings the selection back to the rows");
         v.running = Some("promote x".into());
-        v.key(key('f'), Some(&q), &c, 10);
+        press(&mut v, &q, &c, 'C');
         assert_eq!(
-            v.key(key('p'), Some(&q), &c, 10),
+            press(&mut v, &q, &c, 'p'),
             Ask::Done,
             "no second action while one runs"
         );
-    }
-
-    fn series(step: &str, v: f64) -> hub_core::prom::Series {
-        hub_core::prom::Series {
-            labels: [("step".to_string(), step.to_string())].into(),
-            value: Some(v),
-            points: vec![],
-        }
-    }
-
-    fn pipe(ratio: f64) -> Result<Option<Pipeline>, String> {
-        let wip: Vec<_> = [
-            ("inbox", 4.0),
-            ("backlog", 312.0),
-            ("queued", 3.0),
-            ("running", 5.0),
-            ("waiting", 2.0),
-        ]
-        .iter()
-        .map(|(s, v)| series(s, *v))
-        .collect();
-        Ok(pipeline::from_series(
-            &wip,
-            &[series("waiting", 540.0)],
-            &[series("waiting", ratio)],
-        ))
-    }
-
-    fn lines_of(p: Option<&Result<Option<Pipeline>, String>>, graph: bool) -> Vec<String> {
-        pipeline_lines(p, graph, Palette { no_color: true }, 80)
-            .iter()
-            .map(plain)
-            .map(|s| s.trim_end().to_string())
-            .collect()
-    }
-
-    #[test]
-    fn the_pipeline_line_is_the_mockup_with_a_bottleneck() {
-        assert_eq!(
-            lines_of(Some(&pipe(2.25)), true),
-            vec![
-                "pipeline  inbox 4  backlog 312  queued 3  running 5  waiting 2   o graph",
-                "          ! bottleneck: waiting, age p90 9h (bound 4h)",
-            ]
-        );
-    }
-
-    #[test]
-    fn no_step_past_its_bound_is_one_line_and_no_grafana_is_no_hint() {
-        assert_eq!(
-            lines_of(Some(&pipe(0.8)), false),
-            vec!["pipeline  inbox 4  backlog 312  queued 3  running 5  waiting 2"]
-        );
-    }
-
-    #[test]
-    fn negative_control_no_gauges_read_pipeline_dash_never_zeros() {
-        let none: Result<Option<Pipeline>, String> = Ok(None);
-        assert_eq!(lines_of(Some(&none), true), vec!["pipeline -   o graph"]);
-        let err: Result<Option<Pipeline>, String> = Err("CC_PROM_URL is not set".into());
-        let l = lines_of(Some(&err), true);
-        assert_eq!(l, vec!["pipeline -  CC_PROM_URL is not set"]);
-        assert_eq!(lines_of(None, true), vec!["pipeline  reading Prometheus"]);
-        assert!(l.iter().all(|s| !s.contains(" 0")));
     }
 }

@@ -20,7 +20,7 @@ metadata:
 
 # Unity Code Review for Meta VR
 
-## When to Use
+## Scope and triggers
 
 Use this skill when reviewing Unity C# code or project settings that target Meta VR headsets. This includes:
 
@@ -30,6 +30,8 @@ Use this skill when reviewing Unity C# code or project settings that target Meta
 - Identifying common VR development pitfalls
 - Validating input handling for controllers, hands, and eye tracking
 - Auditing memory usage and GC allocation patterns
+
+Not for a general diff review (`/code-review`) or for reading a captured trace (`hz-perfetto-debug`).
 
 ## Key Review Areas
 

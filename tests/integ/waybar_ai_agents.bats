@@ -37,6 +37,8 @@ feed() {
 import json, sys
 res, mtime = [], 60
 for a in sys.argv[2:]:
+    if a == "novocab":
+        continue
     k, v = a.split("=", 1)
     if k == "mtime":
         mtime = None if v == "-" else int(v)
@@ -49,6 +51,13 @@ for a in sys.argv[2:]:
     res.append({"metric": dict(base, __name__="agent_session_age_minutes"), "value": [0, age]})
     if idle:
         res.append({"metric": dict(base, __name__="agent_session_idle_minutes"), "value": [0, idle[0]]})
+if "novocab" not in sys.argv:
+    for i, b in enumerate(["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]):
+        for inst in ("i1", "i9"):
+            res.append({"metric": {"__name__": "agent_session_bucket", "bucket": b, "host": "h1", "instance": inst,
+                                   "finished": "1" if b in ("DONE", "LANDED") else "0",
+                                   "in_progress": "1" if b in ("WORKING", "NEEDS", "STALLED") else "0"},
+                        "value": [0, str(i)]})
 if mtime is not None:
     res.append({"metric": {"__name__": "node_textfile_mtime_seconds", "host": "h1",
                            "file": "/var/lib/node_exporter/textfile/fleet_sessions.prom"},
@@ -80,14 +89,14 @@ tip() { jq -r .tooltip <<< "$output"; }
     lab/uc-agent-1:1=WORKING:10 lab/uc-agent-2:1=DONE:400
   run "$MODULE"
   run tip
-  assert_line --index 0 "<b>Sessions</b>  4 in progress: 3 working, <span color='$Y'>1</span> need you, 1 done"
-  assert_line --index 1 "<b>hub</b>  2 in progress: 1 working, <span color='$Y'>1</span> need you"
+  assert_line --index 0 "<b>Sessions</b>  4 in progress: <span color='$Y'>1</span> need you, 1 done, 3 working"
+  assert_line --index 1 "<b>hub</b>  2 in progress: <span color='$Y'>1</span> need you, 1 working"
   assert_line --index 2 "<tt>NEEDS    shepherd:2         up 1h30m  idle 20m"
   assert_line --index 3 "WORKING  dotfiles:1         up 30m</tt>"
-  assert_line --index 4 "<b>lab</b>  2 in progress: 2 working, 1 done"
-  assert_line --index 5 "<tt>WORKING  uc-agent-1:1       up 10m"
-  assert_line --index 6 "WORKING  dotfiles-agent-2:1 up 5m"
-  assert_line --index 7 "DONE     uc-agent-2:1       up 6h40m</tt>"
+  assert_line --index 4 "<b>lab</b>  2 in progress: 1 done, 2 working"
+  assert_line --index 5 "<tt>DONE     uc-agent-2:1       up 6h40m"
+  assert_line --index 6 "WORKING  uc-agent-1:1       up 10m"
+  assert_line --index 7 "WORKING  dotfiles-agent-2:1 up 5m</tt>"
 }
 
 @test "a stalled session turns the robot amber, leads the hover and heads its world" {
@@ -98,6 +107,24 @@ tip() { jq -r .tooltip <<< "$output"; }
   run tip
   assert_line --index 1 "<span color='$Y'>1 session(s) STALLED: unlanded work and idle, or a ready PR that conflicts</span>"
   assert_line --index 3 "<tt><span color='$Y'>STALLED  uc-agent-9:1 up 3h20m  idle 1h20m</span>"
+}
+
+@test "the hover's order is the published bucket order: a need-you line leads a stalled one" {
+  feed lab/uc-agent-1:1=STALLED:200:80 lab/uc-agent-2:1=NEEDS:30:20 lab/uc-agent-3:1=WORKING:10
+  run "$MODULE"
+  run tip
+  assert_output --partial "3 in progress: "
+  assert_line --index 3 --partial "NEEDS "
+  assert_line --index 4 --partial "STALLED "
+  assert_line --index 5 --partial "WORKING "
+}
+
+@test "no published bucket order reads amber and says so, never a built-in list" {
+  feed lab/uc-agent-1:1=WORKING:10 novocab
+  run "$MODULE"
+  assert_equal "$(class)" warn
+  run tip
+  assert_output --partial "no agent_session_bucket on Prometheus"
 }
 
 @test "a CHAT session is listed uncoloured and leaves the robot green: the human's conversation is not attention" {

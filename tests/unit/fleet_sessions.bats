@@ -17,8 +17,28 @@ setup() {
 #   [<red> <phases> <next> <conflicts>]
 b() { session_bucket "$@"; }
 
+@test "a finished plan waits 20m idle before DONE: all phases, removed worktree, plan-less merge (ar-167)" {
+  FLEET_IDLE_MIN=20
+  run b idle 0 0 0 19 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_output 'WORKING idle 19m'
+  run b idle 0 0 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_output 'DONE PR #875 merged, tree clean, all 3 phases done'
+  # the removed worktree and the plan-less merged PR are DONE paths too
+  run b idle 0 0 0 19 gone 0 0 - - - 1
+  assert_output 'WORKING idle 19m'
+  run b idle 0 0 0 20 gone 0 0 - - - 1
+  assert_output 'DONE its worktree was removed'
+  run b idle 0 0 0 19 1 0 0 875 MERGED PASS 1 - -
+  assert_output 'WORKING idle 19m'
+  run b idle 0 0 0 20 1 0 0 875 MERGED PASS 1 - -
+  assert_output 'DONE PR #875 merged, tree clean, no plan file, its PR landed'
+  # a background shell does not make a finished plan DONE early either
+  run b shell 0 0 0 19 1 0 0 875 MERGED PASS 1 - 3/3 -
+  assert_output 'WORKING shell'
+}
+
 @test "waiting and busy win over the session's own work facts" {
-  run b waiting 1 2 1 99 1 0 0 875 MERGED PASS 1
+  run b waiting 0 2 1 99 1 0 0 875 MERGED PASS 1
   assert_output --partial 'NEEDS waiting'
   run b busy 0 0 0 99 1 0 0 875 MERGED PASS 1
   assert_output 'WORKING busy'
@@ -95,7 +115,7 @@ b() { session_bucket "$@"; }
 @test "a pending ask or plan mode is NEEDS" {
   run b idle 0 1 0 99 1 0 0 - - - 1
   assert_output --partial 'NEEDS 1 pending ask'
-  run b idle 1 0 0 99 1 0 0 - - - 1
+  run b waiting 1 0 0 99 1 0 0 - - - 1
   assert_output 'NEEDS plan awaiting approval'
 }
 
@@ -226,7 +246,7 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   assert_output 'STALLED clean, nothing on the branch, no plan file, its item dbr-p8 is running here'
   ! session_finished idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:dbr-p8'
   run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:dbr-p8'
-  assert_output 'no plan file and nothing merged'
+  assert_output 'no plan file and nothing merged; its item dbr-p8 is running here'
   # unlanded work and a plan still win over the item
   run b idle 0 0 0 30 1 3 0 - - - 1 - - - - - - - "$q"
   assert_output 'STALLED 3 dirty file(s), no PR'
@@ -239,6 +259,46 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   [ -z "$(work_blockers '' idle 0 0 0 30 gone 0 0 - - - 1)" ]
   run b idle 0 0 0 5 gone 0 0 - - - 1
   assert_output 'WORKING idle 5m'
+}
+
+@test "a merged side PR is not DONE while an item still runs here: every running item names the session" {
+  # 2026-11-06: unity-core-playground-agent-6 merged #1922 for steam-untested-reason, read DONE and
+  # was told to wind down while its own steam-beta-cut-1106 was running (three release.yml runs).
+  local own='own:steam-beta-cut-1106' why='its item steam-beta-cut-1106 is running here'
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - "$own"
+  assert_output "STALLED PR #1922 merged, tree clean, $why"
+  ! session_finished idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - "$own"
+  run work_blockers '' idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - "$own"
+  assert_output "$why"
+  # the same with every phase ticked, a single-phase plan, or the PR found only in the transcript
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - 2/2 - - - - - "$own"
+  assert_output "STALLED PR #1922 merged, tree clean, $why"
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - none - - - - - "$own"
+  assert_output "STALLED PR #1922 merged, tree clean, $why"
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - '#1922' "$own"
+  assert_output "STALLED clean, nothing on the branch, its PRs #1922 merged, $why"
+  # a plan with a phase left still names that phase; a removed worktree has nothing left to land
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - 1/2 'P2' - - - - "$own"
+  assert_output 'LANDED PR #1922 merged, tree clean, next phase: P2'
+  run b idle 0 0 0 30 gone 0 0 - - - 1 - - - - - - - "$own"
+  assert_output 'DONE its worktree was removed'
+  # negative control: once its own item is done too (moved on), the merge is DONE
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - 'moved:steam-beta-cut-1106 moved on (done)'
+  assert_output 'DONE PR #1922 merged, tree clean, no plan file, its PR landed'
+  session_finished idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - 'moved:steam-beta-cut-1106 moved on (done)'
+  # two running here: the row names the first (a side item coming or going is not a new fact),
+  # the blockers name each, so `agent-queue move <slug>` gets a real slug
+  run b idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - 'own:a,b'
+  assert_output 'STALLED PR #1922 merged, tree clean, its item a is running here'
+  run work_blockers '' idle 0 0 0 30 1 0 0 1922 MERGED PASS 1 - - - - - - - 'own:a,b'
+  assert_output 'its item a is running here; its item b is running here'
+  # item_of: the side item done, the release item running: own names the running one, and two
+  # running here are both named
+  local t=$'\t' start=1000
+  run item_of "done${t}lab:s1${t}sid-9${t}steam-untested-reason${t}1500"$'\n'"running${t}lab:s1${t}sid-9${t}steam-beta-cut-1106${t}0" sid-9 lab:s1 1 "$start"
+  assert_output 'own:steam-beta-cut-1106'
+  run item_of "running${t}lab:s1${t}sid-9${t}a${t}0"$'\n'"running${t}lab:s1${t}sid-9${t}b${t}0" sid-9 lab:s1 1 "$start"
+  assert_output 'own:a,b'
 }
 
 @test "item_of: sessions: matches by Claude session, session: only for a lone claude, a done one only after it started" {
@@ -273,6 +333,12 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   run item_of "$(qi "queued${t}lab:s1${t}-${t}a${t}0")" sid-9 lab:s1 2 "$start"
   [ "$output" = - ]
   run item_of "$(qi "queued${t}lab:s2${t}sid-8${t}a${t}0")" sid-9 lab:s1 1 "$start"
+  [ "$output" = - ]
+  # a recycled lane: an item that records its own Claude is not the next Claude's in that tmux
+  # session (2026-11-07 ar-255 read "its item is running here" on lab:dotfiles-agent-17)
+  run item_of "$(qi "running${t}lab:s1${t}sid-1${t}a${t}0")" sid-9 lab:s1 1 "$start"
+  [ "$output" = - ]
+  run item_of "$(qi "waiting${t}lab:s1${t}sid-1${t}a${t}0" "done${t}lab:s1${t}sid-1${t}b${t}1500")" sid-9 lab:s1 1 "$start"
   [ "$output" = - ]
 }
 
@@ -328,7 +394,7 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
 @test "nothing open is part of DONE: an ask, plan mode, a prompt or unlanded work blocks it" {
   run b idle 0 1 0 30 1 0 0 875 MERGED PASS 1 - 3/3 -
   assert_output 'NEEDS 1 pending ask(s)'
-  run b idle 1 0 0 30 1 0 0 875 MERGED PASS 1 - 3/3 -
+  run b waiting 1 0 0 30 1 0 0 875 MERGED PASS 1 - 3/3 -
   assert_output 'NEEDS plan awaiting approval'
   run b waiting 0 0 0 30 1 0 0 875 MERGED PASS 1 - 3/3 -
   assert_output --partial 'NEEDS waiting'
@@ -414,6 +480,40 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   done
   run b shell 0 0 0 19 1 0 0 875 MERGED PASS 1 - 2/3 x - jobs
   assert_output 'WORKING shell'
+}
+
+@test "live_wait finds a gate or test process running in the session worktree, and only there" {
+  # 2026-11-07 unity-core-playground-agent-30: a gate detached with & left only its until-loop in the
+  # transcript (open job jobs), so a Tests run in progress read STALLED.
+  mkdir -p "$SANDBOX/wt/scripts/test" "$SANDBOX/other"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/ci-gate.sh"
+  printf 'gate ci-gate.sh\ntest bats\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/ci-gate.sh) >/dev/null 2>&1 3>&- &
+  local pid=$!
+  # the process is the event: wait until /proc shows its exec, not for a delay
+  until grep -q ci-gate.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output 'gate'
+  # negative controls: another worktree, and a shell that only holds the script text after -c
+  run live_wait "$SANDBOX/other"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  # the session's own claude names agent-land in its dispatch prompt: not a gate
+  (cd "$SANDBOX/wt" && exec -a claude bash scripts/test/ci-gate.sh) >/dev/null 2>&1 3>&- &
+  pid=$!
+  until grep -q ci-gate.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  (cd "$SANDBOX/wt" && exec bash -c 'sleep 60; : scripts/test/ci-gate.sh') >/dev/null 2>&1 3>&- &
+  pid=$!
+  until grep -q ci-gate.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
 @test "a finished plan is DONE past FLEET_IDLE_MIN even with a background shell" {
@@ -554,7 +654,7 @@ MD
 panel() {
   local since=$(( $(date +%s) - 3600 )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\"}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\"}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -633,6 +733,27 @@ SH
   [ "$(jq -r .nudged <<<"$output")" = true ]
 }
 
+@test "end to end: plan mode with no approval dialog open is not NEEDS plan awaiting approval" {
+  landed_fixture
+  PANEL_PLAN_MODE=true panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  # a rejected plan leaves ExitPlanMode as the last tool call, but the session is idle: no dialog
+  PANEL_PLAN_MODE=true PANEL_DOING=ExitPlanMode panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  # the dialog open: waiting, ExitPlanMode the last call
+  PANEL_STATUS=waiting PANEL_PLAN_MODE=true PANEL_DOING=ExitPlanMode panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+  [ "$(jq -r .reason <<<"$output")" = 'plan awaiting approval' ]
+  # waiting on some other prompt in plan mode keeps the generic reason
+  PANEL_STATUS=waiting PANEL_PLAN_MODE=true PANEL_DOING='Bash: ls' panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'waiting on a prompt or permission' ]
+}
+
 @test "end to end: carrying on is in the reason, never the fact, so a busy/idle flip pages once" {
   landed_fixture
   PANEL_STATUS=busy panel "$SANDBOX/wt" "$SANDBOX/plan.md"
@@ -679,6 +800,7 @@ SH
   [ "$(jq -r .target <<<"$main")" = origin ]
   [ "$(jq -r '.owners | join(",")' <<<"$main")" = sid-9 ]
   [ "$(jq -r .fact <<<"$main")" = "NIGHTLY origin red: Tests @${red:0:8} (#875)" ]
+  [ "$(jq -r .nudged <<<"$main")" = false ]
   # the table a person reads names the bucket NIGHTLY, never MAIN
   run "$REPO_ROOT/.local/bin/fleet-sessions"
   assert_success
@@ -686,12 +808,86 @@ SH
   assert_output --partial 'nightly red after PR #875'
   refute_output --partial MAIN
   refute_output --partial 'main red'
+  refute_output --partial '(nudged)'
+
+  # the shepherd's nudge to the owners is the ledger's fact, so the row reads it (ar-151: it printed 0 always)
+  "$REPO_ROOT/.local/bin/fleet-sessions" mark "$(jq -r .session_id <<<"$main")" "$(jq -r .fact <<<"$main")"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .nudged' <<<"$output")" = true ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .escalated' <<<"$output")" = false ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_line --partial 'origin red: Tests'
+  assert_output --partial '(nudged)'
+  FLEET_STATE_FILE="$SANDBOX/state.json" "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  [ "$(jq -r '.main[0].nudged' "$SANDBOX/state.json")" = true ]
+  [ "$(jq -r '.main[0].fact' "$SANDBOX/state.json")" = "NIGHTLY origin red: Tests @${red:0:8} (#875)" ]
 
   # an unreadable CI is reported, never read as green
   printf '#!/usr/bin/env bash\n[ "$1" = api ] && exit 1\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$red" > "$SANDBOX/bin/gh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r 'select(.bucket == "NIGHTLY") | .reason' <<<"$output")" = 'origin main CI unreadable (gh api actions/runs failed)' ]
+  # a new fact on the same row is not the one nudged
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .nudged' <<<"$output")" = false ]
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
+}
+
+@test "end to end: a deployed checkout off main is one CHECKOUT row naming its actor, not a STALLED row per session" {
+  # 2026-11-06: ~/.dotfiles sat detached on an unmerged branch and all 16 sessions there read
+  # "9 file(s) not on the default branch" while the fault itself was on no row at all.
+  export DOTFILES="$SANDBOX/dots"
+  local c="git -c user.name=t -c user.email=t@t"
+  git init -q --bare "$SANDBOX/o.git"
+  git clone -q "$SANDBOX/o.git" "$DOTFILES" 2>/dev/null
+  $c -C "$DOTFILES" commit -q --allow-empty -m init
+  git -C "$DOTFILES" branch -M main
+  git -C "$DOTFILES" push -q origin main 2>/dev/null
+  git -C "$DOTFILES" switch -q -c fix/x
+  echo x > "$DOTFILES/f"; git -C "$DOTFILES" add f; $c -C "$DOTFILES" commit -q -m 'x'
+  git -C "$DOTFILES" push -q origin fix/x 2>/dev/null
+  git -C "$DOTFILES" switch -q main
+  git -C "$DOTFILES" fetch -q origin
+  panel "$DOTFILES"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+
+  # negative control: on main there is no row
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ -z "$(jq -c 'select(.bucket == "CHECKOUT")' <<<"$output")" ]
+
+  git -C "$DOTFILES" checkout -q --detach origin/fix/x
+  # negative control: nothing recorded this HEAD
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  assert_output --partial 'moved by an unrecorded actor'
+
+  mkdir -p "$FLEET_SHEPHERD_DIR"
+  printf '1\t%s\t%s\tsession abcdef01 git<-claude\n' "$DOTFILES" "$(git -C "$DOTFILES" rev-parse HEAD)" > "$FLEET_SHEPHERD_DIR/checkout-moves.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  row="$(jq -c 'select(.bucket == "CHECKOUT")' <<<"$output")"
+  session="$(jq -c 'select(.session_id == "sid-9")' <<<"$output")"
+  [ "$(jq -r .target <<<"$row")" = dots ]
+  [ "$(jq -r .escalated <<<"$row")" = true ]
+  [ "$(jq -r .fact <<<"$row")" = "CHECKOUT dots @$(git -C "$DOTFILES" rev-parse --short=12 HEAD)" ]
+  jq -r .reason <<<"$row" | grep -q "dots checkout on origin/fix/x since .*, moved by session abcdef01 git<-claude: stowed scripts run it, git -C $DOTFILES switch main"
+  [ "$(jq -r .ahead <<<"$session")" = 0 ]
+  [[ "$(jq -r .reason <<<"$session")" != *"not on the default branch"* ]]
+
+  # the table and the state document carry it once, outside sessions
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_success
+  assert_line CHECKOUT
+  export FLEET_STATE_FILE="$SANDBOX/state.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq '[.sessions[] | select(.bucket == "CHECKOUT")] | length' "$FLEET_STATE_FILE")" = 0 ]
+  [ "$(jq -r '.main[] | select(.id == "checkout-dots") | .escalated' "$FLEET_STATE_FILE")" = true ]
+
+  # a session's cwd is a real path, so $DOTFILES reaching the checkout by a symlink still matches it
+  ln -s "$DOTFILES" "$SANDBOX/dots-link"
+  DOTFILES="$SANDBOX/dots-link" run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.session_id == "sid-9") | .ahead' <<<"$output")" = 0 ]
 }
 
 @test "end to end: one test red on three branches in the window is one SHARED row, escalated once per episode" {
@@ -915,7 +1111,48 @@ research_item() {
   [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
 }
 
-@test "end to end: a landed session whose next phases are other queue items is DONE; its own item does not count" {
+@test "end to end: an ask a queued item holds through its ask: tag is handed over, not the posting session's open ask" {
+  # 2026-11-06: hub/dotfiles:7 queued its next phase behind its own ask, as the LANDED nudge says,
+  # and wind-down auto refused it because that ask still read as the session's (ar-764).
+  landed_fixture
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue" ASK_ROOT="$HOME/.agent/asks"
+  mkdir -p "$ASK_ROOT/apociseum" "$HOME/.agent/queue/queued"
+  printf 'id: Ob1\nstatus: pending\nsession: s1\nclaude_session: sid-9\n' > "$ASK_ROOT/apociseum/Ob1.md"
+  queue_item running lab:s1
+  "$SANDBOX/bin/agent-queue" move fix-wave-save done --status ok >/dev/null
+  # rollout_item <tags>: phase 2 queued with these tags
+  rollout_item() {
+    printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\ntags: %s\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\nPhase 2 of %s: rollout\n' \
+      "$1" "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  }
+  # negative control: queued with no ask tag, the ask is still the session's open question
+  rollout_item night
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s)' ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  # an item held on another ask does not hand this one over
+  rollout_item 'night ask:Zz9=b'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s)' ]
+  # held on this ask, with an option or without: DONE, finished, nothing blocks
+  for tag in 'ask:Ob1=a' 'ask:Ob1'; do
+    rollout_item "night $tag"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .bucket <<<"$output")" = DONE ]
+    [ "$(jq -r .finished <<<"$output")" = true ]
+    [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+    [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
+  done
+  # started before the answer, the item still holds the ask: the row does not flip back to NEEDS
+  mkdir -p "$HOME/.agent/queue/running"
+  mv "$HOME/.agent/queue/queued/20261103-100000-rollout.md" "$HOME/.agent/queue/running/"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+}
+
+@test "end to end: a landed session whose next phases are other queue items is DONE once its own item is done; that item is not a next phase" {
   landed_fixture
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
@@ -929,6 +1166,11 @@ research_item() {
   mkdir -p "$HOME/.agent/queue/queued"
   printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nafter: fix-wave-save\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\nPhase 2 of /elsewhere/plans/plan.md: rollout\n' \
     > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  # its own item still running is an unrecorded landing (agent-land moves it to done), never DONE
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item fix-wave-save is running here' ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  "$SANDBOX/bin/agent-queue" move fix-wave-save done --status ok >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [ "$(jq -r .finished <<<"$output")" = true ]
@@ -1155,17 +1397,19 @@ research_item() {
   [ "$hub" = "tmux -L hub set-option -wq -t =dotfiles:2 @fleet_stage LANDED ; set-option -wqu -t =dotfiles:2 @fleet_labels" ]
 }
 
-# cells <sid> <target> <ci> <stage>: one board_cells line with everything else fixed
-cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h0m\twhy %s\n' "$1" "$2" "$3" "$4" "$4"; }
+# cells <sid> <target> <ci> <stage> [project]: one board_cells line with everything else fixed
+cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h0m\twhy %s\t-\t-\t-\t-\t-\t-\t%s\n' "$1" "$2" "$3" "$4" "$4" "${5:-proj}"; }
 
 @test "transitions names what appeared, left, or changed a stage cell, and nothing else" {
-  { cells a s-a pending WORKING; cells b s-b pass DONE; } > "$SANDBOX/prev"
-  # a: CI went red and the stage followed; b: only idle and age moved; c: new; (nothing left yet)
-  { cells a s-a fail STALLED; cells b s-b pass DONE | sed 's/5m/9m/; s/1h0m/1h4m/'; cells c s-c - LANDED; } > "$SANDBOX/cur"
+  { cells a s-a pending WORKING; cells b s-b pass DONE; cells d s-d pass DONE one; } > "$SANDBOX/prev"
+  # a: CI went red and the stage followed; b: only idle and age moved; c: new; d: its project moved
+  { cells a s-a fail STALLED; cells b s-b pass DONE | sed 's/5m/9m/; s/1h0m/1h4m/'; cells c s-c - LANDED; cells d s-d pass DONE two; } > "$SANDBOX/cur"
   run transitions "$SANDBOX/prev" "$SANDBOX/cur"
   assert_line 's-a  ci pending -> fail, stage WORKING -> STALLED (why STALLED)'
   assert_line 's-c  new: LANDED (why LANDED)'
-  [ "${#lines[@]}" -eq 2 ]
+  assert_line 's-c  project - -> proj'
+  assert_line 's-d  project one -> two'
+  [ "${#lines[@]}" -eq 4 ]
   run transitions "$SANDBOX/cur" "$SANDBOX/prev"
   assert_line 's-c  gone'
 }
@@ -1258,10 +1502,17 @@ age_row() {
 @test "board_cells: AGE reads as minutes, hours, days, and - when the start is unknown" {
   run board_cells < <(age_row 45; age_row 192; age_row 3125; age_row -)
   assert_success
-  assert_line --regexp $'^sid-45\t.*\t5m\t45m\tbusy\t-\t-\t-\t-\t-\tbusy$'
-  assert_line --regexp $'^sid-192\t.*\t5m\t3h12m\tbusy\t-\t-\t-\t-\t-\tbusy$'
-  assert_line --regexp $'^sid-3125\t.*\t5m\t2d4h\tbusy\t-\t-\t-\t-\t-\tbusy$'
-  assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy\t-\t-\t-\t-\t-\tbusy$'
+  assert_line --regexp $'^sid-45\t.*\t5m\t45m\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
+  assert_line --regexp $'^sid-192\t.*\t5m\t3h12m\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
+  assert_line --regexp $'^sid-3125\t.*\t5m\t2d4h\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
+  assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
+}
+
+@test "board_cells: the row's project is the last cell, and - when it has none (negative control)" {
+  run board_cells < <(time_row WORKING 0 0 0 0 | awk -F'\t' -v OFS='\t' '{ $51 = "trader"; print }')
+  assert_output --regexp $'\tbusy\ttrader$'
+  run board_cells < <(time_row WORKING 0 0 0 0)
+  assert_output --regexp $'\tbusy\t-$'
 }
 
 # time_row <stage> <work> <jobs> <human> <parked> [doing] [gate] [test]: a collect row with the newer fields set.
@@ -1272,26 +1523,26 @@ time_row() {
 @test "board_cells: PRS, WORK, the largest WAIT, TASK, and WHY as the last action on a WORKING row" {
   run board_cells < <(time_row WORKING 190 300 60 620 'Bash: Commit P3')
   assert_success
-  assert_output --regexp $'\tbusy\t-\t2/3\t3h\tparked 10h\tthe-topic\tCommit P3$'
+  assert_output --regexp $'\tbusy\t-\t2/3\t3h\tparked 10h\tthe-topic\tCommit P3\t-$'
   run board_cells < <(time_row WORKING 45 90 300 60 'Read')
-  assert_output --regexp $'\t2/3\t45m\tyou 5h\tthe-topic\tRead$'
+  assert_output --regexp $'\t2/3\t45m\tyou 5h\tthe-topic\tRead\t-$'
   # a tie goes to jobs: something was running, so it is not the session sitting still
   run board_cells < <(time_row WORKING 0 120 120 120)
-  assert_output --regexp $'\t2/3\t-\tjobs 2h\tthe-topic\tbusy$'
+  assert_output --regexp $'\t2/3\t-\tjobs 2h\tthe-topic\tbusy\t-$'
   run board_cells < <(time_row WORKING 0 120 120 120 - 300 50)
-  assert_output --regexp $'\t2/3\t-\tgate 5h\tthe-topic\tbusy$'
+  assert_output --regexp $'\t2/3\t-\tgate 5h\tthe-topic\tbusy\t-$'
   run board_cells < <(time_row WORKING 0 120 120 120 - 50 300)
-  assert_output --regexp $'\t2/3\t-\ttest 5h\tthe-topic\tbusy$'
+  assert_output --regexp $'\t2/3\t-\ttest 5h\tthe-topic\tbusy\t-$'
   # a tie goes to the gate ahead of the test, and the test ahead of jobs
   run board_cells < <(time_row WORKING 0 120 120 120 - 120 120)
-  assert_output --regexp $'\t2/3\t-\tgate 2h\tthe-topic\tbusy$'
+  assert_output --regexp $'\t2/3\t-\tgate 2h\tthe-topic\tbusy\t-$'
   run board_cells < <(time_row WORKING 0 120 120 120 - 0 120)
-  assert_output --regexp $'\t2/3\t-\ttest 2h\tthe-topic\tbusy$'
+  assert_output --regexp $'\t2/3\t-\ttest 2h\tthe-topic\tbusy\t-$'
   run board_cells < <(time_row WORKING 0 0 0 0)
-  assert_output --regexp $'\t-\t-\tthe-topic\tbusy$'
+  assert_output --regexp $'\t-\t-\tthe-topic\tbusy\t-$'
   # any other stage keeps its reason: it says what the stage needs
   run board_cells < <(time_row STALLED 5 5 5 5 'Bash: Commit P3')
-  assert_output --regexp $'\tbusy$'
+  assert_output --regexp $'\tbusy\t-$'
 }
 
 @test "eta_cells: a calibrated basis is shortened like a plain one" {
@@ -1361,6 +1612,35 @@ SH
   unset PR_GH_FAIL; CACHE="$SANDBOX/pass2"; mkdir -p "$CACHE"
   run session_prs "$SANDBOX/t.jsonl"
   [ "$(jq -c 'map(.state)' <<<"$output")" = '["OPEN","MERGED"]' ]
+}
+
+@test "session_prs: a Forgejo PR (host/owner/repo) takes its state from that host's API, not gh" {
+  pr_gh
+  {
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://git.example.test/api/v1/repos/o/audio/pulls"}}]}}'
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://git.example.test/o/audio/pulls/12"}]}}'
+  } > "$SANDBOX/t.jsonl"
+  printf 'fj-token' > "$RBW_FIXTURE/forgejo_repo_admin"
+  cat > "$SANDBOX/bin/curl-fj" <<'SH'
+#!/usr/bin/env bash
+cat > /dev/null
+while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done
+echo '[{"number":12,"state":"closed","merged":true,"merged_at":"2026-10-30T12:00:00Z","merge_commit_sha":"587713a"}]' > "$out"
+SH
+  chmod +x "$SANDBOX/bin/curl-fj"
+  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run session_prs "$SANDBOX/t.jsonl"
+  assert_success
+  [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["git.example.test/o/audio",12,"MERGED","2026-10-30T12:00:00Z"]]' ]
+  [ ! -s "$SANDBOX/gh.log" ]
+  # the clone's origin names owner/repo only: the PR is still this session's, and never a sibling for gh
+  git init -q "$SANDBOX/audio"; git -C "$SANDBOX/audio" remote add origin ssh://git@git.example.test:2222/o/audio.git
+  run pr_made_here "$SANDBOX/audio" 12 - '[{"repo":"git.example.test/o/audio","number":12,"state":"MERGED"}]' /dev/null -
+  assert_success
+  run sibling_pr "$SANDBOX/one-missing" '[{"repo":"git.example.test/o/audio","number":13,"state":"OPEN"}]'
+  assert_success
+  assert_output ""
+  [ ! -s "$SANDBOX/gh.log" ]
 }
 
 @test "sibling_pr: the last open PR in another repo, its CI from one cached gh pr view; a failed view is unreadable, asked once a pass" {
@@ -1720,10 +2000,11 @@ SH
 state_doc() {
   cat > "$SANDBOX/state.json" <<'JSON'
 {"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],
+ "vocab":{"buckets":["NEEDS","DONE","WORKING"],"finished":["DONE"],"in_progress":["WORKING","NEEDS"]},
  "counts":{"CHAT":0,"DONE":0,"LANDED":0,"NEEDS":1,"PARKED":0,"STALLED":0,"WORKING":1},"sessions":[
- {"bucket":"WORKING","target":"lab/game-agent-2:1","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
+ {"bucket":"WORKING","target":"lab/game-agent-2:1","project":"game-agent-2","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
   "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123","item":{"slug":"fix-x","is":"own"}},
- {"bucket":"NEEDS","target":"hub/dot\"files:1","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
+ {"bucket":"NEEDS","target":"hub/dot\"files:1","project":"dotfiles","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
   "age_min":null,"phases_done":null,"phases_total":null,"behind":null,"dirty":0,"conflicts":null}]}
 JSON
 }
@@ -1772,6 +2053,11 @@ agent_sessions{bucket="NEEDS"} 1
 agent_sessions{bucket="PARKED"} 0
 agent_sessions{bucket="STALLED"} 0
 agent_sessions{bucket="WORKING"} 1
+# HELP agent_session_bucket Place of a bucket in the order that needs the human first (0 is first), with its finished and in-progress flags.
+# TYPE agent_session_bucket gauge
+agent_session_bucket{bucket="NEEDS",finished="0",in_progress="1"} 0
+agent_session_bucket{bucket="DONE",finished="1",in_progress="0"} 1
+agent_session_bucket{bucket="WORKING",finished="0",in_progress="1"} 2
 # HELP agent_sessions_unlinked Live sessions with no agent-queue item, by the item_of join.
 # TYPE agent_sessions_unlinked gauge
 agent_sessions_unlinked 1
@@ -1799,17 +2085,22 @@ PROM
 }
 
 
-# open_pr_gh <json rollup> [main runs page]: a gh whose `pr list` answers one OPEN PR for feat/x
-# at the worktree's HEAD, folded by fleet-sessions' own -q filter, so the fold itself is under
-# test. `api` answers the main runs page (see page) when given, else no runs.
+# open_pr_gh <json rollup> [main runs page] [feat/x runs page]: a gh whose `pr list` answers one
+# OPEN PR for feat/x at the worktree's HEAD, folded by fleet-sessions' own -q filter, so the fold
+# itself is under test. `api` answers the main runs page (see page) when given, else no runs, and
+# a feat/x runs query the third page, else no runs.
 open_pr_gh() {
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   printf '[{"number":9,"state":"OPEN","headRefName":"feat/x","headRefOid":"%s","statusCheckRollup":%s}]' \
     "$oid" "$1" > "$SANDBOX/prs.json"
   printf '%s' "${2:-}" > "$SANDBOX/runs.json"
+  printf '%s' "${3:-}" > "$SANDBOX/branch_runs.json"
   cat > "$SANDBOX/bin/gh" <<GH
 #!/usr/bin/env bash
-if [ "\$1" = api ]; then [ -s "$SANDBOX/runs.json" ] && jq -c "\${@: -1}" "$SANDBOX/runs.json" || echo "[]"; exit 0; fi
+if [ "\$1" = api ]; then
+  f="$SANDBOX/runs.json"; case "\$*" in *branch=feat/x*) f="$SANDBOX/branch_runs.json" ;; esac
+  [ -s "\$f" ] && jq -c "\${@: -1}" "\$f" || echo "[]"; exit 0
+fi
 while [ \$# -gt 0 ]; do [ "\$1" = -q ] && { jq -r "\$2" "$SANDBOX/prs.json"; exit; }; shift; done
 GH
   chmod +x "$SANDBOX/bin/gh"
@@ -1824,6 +2115,61 @@ GH
   open_pr_gh '[{"conclusion":"FAILURE"},{"conclusion":"SUCCESS"}]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
+# gate <workflow> <status> <conclusion> <sha> <minute> [event]: one actions/runs row on feat/x
+gate() { printf '{"name":"%s","event":"%s","status":"%s","conclusion":%s,"head_sha":"%s","created_at":"2026-10-29T10:%02d:00Z"}' \
+  "$1" "${6:-workflow_dispatch}" "$2" "$( [ "$3" = - ] && echo null || echo "\"$3\"")" "$4" "$5"; }
+
+@test "end to end: Checks green does not make a PR green while its dispatched gate is queued or red (ar-191)" {
+  landed_fixture
+  local oid old; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)" old="$(git -C "$SANDBOX/wt" rev-parse HEAD~1)"
+  export FLEET_MAIN_TTL=0
+  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' queued - "$oid" 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+
+  # a red gate newer than a green one is red; an older green does not hide it
+  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed success "$old" 1),$(gate 'Tests (affected)' completed failure "$oid" 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+
+  # a cancelled run decides nothing, a pull_request run is the rollup's, and a run on a commit the
+  # head does not hold (a reused slot branch's old PR) is not this PR's gate
+  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed success "$oid" 1),$(gate 'Tests (affected)' completed cancelled "$oid" 3),$(gate Checks completed failure "$oid" 4 pull_request),$(gate Shots completed failure 0000000000000000000000000000000000000000 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+
+  # an older green alone adds nothing: whether it still covers the head is Checks' call
+  open_pr_gh '[]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed success "$old" 1)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .ci <<<"$output")" = PASS ]
+
+  # only a gate workflow counts, and a stale run decides nothing, as in MAIN_STREAKS
+  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Multi (named)' completed failure "$oid" 4),$(gate 'Tests (affected)' completed stale "$oid" 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  FLEET_GATE_WORKFLOWS='^(Tests|Multi)( |$)' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+
+  # a rollup still running stays running, whatever the gate says
+  open_pr_gh '[{"status":"IN_PROGRESS","conclusion":""}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed failure "$oid" 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+}
+
+@test "gate_ci: a branch run list gh cannot read keeps the rollup's answer and is named unreadable (ar-191)" {
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/one.git
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run gate_ci "$SANDBOX/one" feat/x deadbeef PASS
+  assert_output PASS
+  grep -qx 'gh api actions/runs (one feat/x)' "$CACHE/unreadable"
+  # a red or running rollup is not asked about at all
+  : > "$CACHE/unreadable"
+  run gate_ci "$SANDBOX/one" feat/x deadbeef FAIL
+  assert_output FAIL
+  [ ! -s "$CACHE/unreadable" ]
 }
 
 @test "end to end: an open PR's fact carries its head, so a new push that is still red is nudged again" {
@@ -1861,6 +2207,31 @@ main_change() {
   git -C "$SANDBOX/other" -c user.email=t@t -c user.name=t commit -q -m "$1"
   git -C "$SANDBOX/other" push -q origin HEAD:main 2>/dev/null
   git -C "$SANDBOX/wt" fetch -q origin
+}
+
+@test "end to end: a reused slot branch already in the base is not commits after its old merged PR (ar-603)" {
+  landed_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
+  # The slot is reset onto main past #875's head, and main then moves on: clean, 0 ahead, 1 behind.
+  main_change one
+  "${g[@]}" reset -q --hard origin/main
+  main_change two
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .pr <<<"$output")" = 875 ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -c .blockers <<<"$output")" = '[]' ]
+  refute_output --partial 'commits after merged PR'
+
+  # Negative control: a real commit past the merged head is not in the base, so it still flags.
+  echo work > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m 'unlanded work'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  [ "$(jq -c .blockers <<<"$output")" = '["commits after merged PR #875"]' ]
 }
 
 @test "end to end: a conflicting PR with red checks is not a conflict nudge; with green checks it is, once" {

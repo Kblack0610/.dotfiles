@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::chooser::Agent;
+use crate::vocab::Vocab;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Key {
@@ -17,7 +18,7 @@ pub enum Key {
     Open,
     /// Waiting on the human first, then busy, then idle.
     Status,
-    /// The fleet stage, worst first (`STAGES`).
+    /// The fleet stage, in the order fleet-sessions publishes (state.json `vocab.buckets`).
     Stage,
 }
 
@@ -26,12 +27,8 @@ const KEYS: [(Key, &str, &str); 4] = [
     (Key::Project, "project", "by project"),
     (Key::Open, "open", "longest open first"),
     (Key::Status, "status", "needs you first"),
-    (Key::Stage, "stage", "stalled first"),
+    (Key::Stage, "stage", "by fleet stage"),
 ];
-
-/// Fleet stages (`~/.local/src/docs/fleet-states.md`) worst first; an unknown or empty stage
-/// sorts beside WORKING.
-const STAGES: [&str; 7] = ["STALLED", "NEEDS", "WORKING", "CHAT", "LANDED", "DONE", "PARKED"];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sort {
@@ -94,6 +91,12 @@ impl Sort {
     /// orders itself. A row with no open time (a parked one) goes last either way, and ties
     /// keep the longest open first, then the order the agents were found in (a stable sort).
     pub fn order(self, agents: &mut [&Agent]) {
+        let vocab = if self.key == Key::Stage { Vocab::read() } else { Vocab::default() };
+        self.order_by(agents, &vocab);
+    }
+
+    /// `order`, with the stage order given by state.json's `vocab`.
+    pub fn order_by(self, agents: &mut [&Agent], vocab: &Vocab) {
         let dir = |o: Ordering| if self.reverse { o.reverse() } else { o };
         let open = |a: &&Agent, b: &&Agent| a.started_at.is_none().cmp(&b.started_at.is_none()).then(a.started_at.cmp(&b.started_at));
         match self.key {
@@ -102,7 +105,9 @@ impl Sort {
                 a.started_at.is_none().cmp(&b.started_at.is_none()).then_with(|| dir(a.started_at.cmp(&b.started_at)))
             }),
             Key::Status => agents.sort_by(|a, b| dir(status_rank(a).cmp(&status_rank(b))).then_with(|| open(a, b))),
-            Key::Stage => agents.sort_by(|a, b| dir(stage_rank(a).cmp(&stage_rank(b))).then_with(|| open(a, b))),
+            Key::Stage => {
+                agents.sort_by(|a, b| dir(vocab.rank(&a.stage).cmp(&vocab.rank(&b.stage))).then_with(|| open(a, b)))
+            }
         }
     }
 }
@@ -114,10 +119,6 @@ fn status_rank(a: &Agent) -> u8 {
         '✓' => 2,
         _ => 3,
     }
-}
-
-fn stage_rank(a: &Agent) -> usize {
-    STAGES.iter().position(|s| *s == a.stage).unwrap_or(2)
 }
 
 /// `${XDG_STATE_HOME:-$HOME/.local/state}/panels/agent-panel.sort`, beside the layout file
@@ -164,7 +165,9 @@ mod tests {
 
     fn targets(sort: Sort, agents: &[Agent]) -> Vec<String> {
         let mut refs: Vec<&Agent> = agents.iter().collect();
-        sort.order(&mut refs);
+        let vocab = Vocab::from_state(&serde_json::json!({"vocab": {"buckets":
+            ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]}}));
+        sort.order_by(&mut refs, &vocab);
         refs.iter().map(|a| a.target.clone()).collect()
     }
 
@@ -190,9 +193,9 @@ mod tests {
         let status = Sort { key: Key::Status, reverse: false };
         assert_eq!(targets(status, &fleet()), ["needs-mid", "busy-old", "idle-new", "parked"]);
         let stage = Sort { key: Key::Stage, reverse: false };
-        assert_eq!(targets(stage, &fleet()), ["needs-mid", "busy-old", "idle-new", "parked"]);
+        assert_eq!(targets(stage, &fleet()), ["needs-mid", "idle-new", "busy-old", "parked"]);
         let stage_rev = stage.step(Step::Reverse);
-        assert_eq!(targets(stage_rev, &fleet()), ["parked", "idle-new", "busy-old", "needs-mid"]);
+        assert_eq!(targets(stage_rev, &fleet()), ["parked", "busy-old", "idle-new", "needs-mid"]);
     }
 
     #[test]

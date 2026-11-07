@@ -64,36 +64,20 @@ pub fn money(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("${v:.2}"))
 }
 
-pub fn tok(v: Option<u64>) -> String {
-    match v {
-        None => "-".into(),
-        Some(n) if n >= 1_000_000_000 => format!("{:.1}B", (n / 100_000_000) as f64 / 10.0),
-        Some(n) if n >= 1_000_000 => format!("{:.1}M", (n / 100_000) as f64 / 10.0),
-        Some(n) => n.to_string(),
-    }
-}
-
 /// Touched within OPEN_DAYS of `now`.
 fn recent(pr: &Value, now: i64) -> bool {
     DateTime::parse_from_rfc3339(s(pr, "updated_at"))
         .is_ok_and(|t| t.timestamp() >= now - OPEN_DAYS * 86400)
 }
 
-/// Sessions, cost and tokens: the `TOTAL` usage row, or the rows summed when there is none.
-fn spend(rec: &Value) -> (Option<u64>, Option<f64>, Option<u64>) {
+/// The day's sessions: the `TOTAL` usage row, or the rows summed when there is none. What they
+/// cost is on the Costs tab.
+fn sessions(rec: &Value) -> Option<u64> {
     let u = rec["usage"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-    if let Some(t) = u.iter().find(|r| r["project"] == "TOTAL") {
-        return (
-            t["sessions"].as_u64(),
-            t["cost_usd"].as_f64(),
-            t["tokens"].as_u64(),
-        );
+    match u.iter().find(|r| r["project"] == "TOTAL") {
+        Some(t) => t["sessions"].as_u64(),
+        None => Some(u.iter().filter_map(|r| r["sessions"].as_u64()).sum()),
     }
-    (
-        Some(u.iter().filter_map(|r| r["sessions"].as_u64()).sum()),
-        Some(u.iter().filter_map(|r| r["cost_usd"].as_f64()).sum()),
-        Some(u.iter().filter_map(|r| r["tokens"].as_u64()).sum()),
-    )
 }
 
 /// Log's day and where each section starts (for n/N).
@@ -249,18 +233,16 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
     repos.sort_unstable();
     repos.dedup();
     let open = rec["open"].as_array();
-    let (sessions, cost, tokens) = spend(rec);
     let mut items = vec![format!("merged {} in {} repos", merged.len(), repos.len())];
     if let Some(o) = open {
         let fresh = o.iter().filter(|x| recent(x, now)).count();
         items.push(format!("open {fresh} (+{} older)", o.len() - fresh));
     }
     items.push(format!(
-        "{} sessions {}",
-        sessions.map_or("-".into(), |n| n.to_string()),
-        money(cost)
+        "{} sessions",
+        sessions(rec).map_or("-".into(), |n| n.to_string())
     ));
-    items.push(format!("{} tokens", tok(tokens)));
+    items.push(hub_core::costs::SPEND_BADGE.into());
     if let Some(f) = rec["fleet"].as_object() {
         let mut b: Vec<(&String, i64)> = f
             .get("buckets")
@@ -521,21 +503,17 @@ pub fn history(days: &[DayRow], sel: usize, p: Palette, w: usize) -> Vec<Line<'s
                 "#".repeat((d.merged * 20).div_ceil(max)).into(),
                 d.repos.to_string().into(),
                 d.sessions.map_or("-".into(), |n| n.to_string()).into(),
-                money(d.cost_usd).into(),
-                tok(d.tokens).into(),
                 areas.join(", ").into(),
             ]
         })
         .collect();
     let mut lines = Table {
-        header: vec![
-            "DAY", "MERGED", "", "REPOS", "SESSIONS", "COST", "TOKENS", "AREAS",
-        ],
+        header: vec!["DAY", "MERGED", "", "REPOS", "SESSIONS", "AREAS"],
         rows,
-        keep: vec![0, 1, 5, 4, 3, 6, 2],
-        flex: Some(7),
+        keep: vec![0, 1, 4, 3, 2],
+        flex: Some(5),
         flexmin: 16,
-        right: vec![1, 3, 4, 5, 6],
+        right: vec![1, 3, 4],
         ..Default::default()
     }
     .fit(w, p.head());
@@ -674,7 +652,7 @@ pub mod tests {
                 .is_ascii_uppercase());
         }
         assert!(
-            t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions $1282.41  2.6B tokens"),
+            t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions  spend: 0 Costs"),
             "{t}"
         );
         assert!(t.contains("fleet WORKING 27 NEEDS 8 unity runs 3"), "{t}");
@@ -751,6 +729,5 @@ pub mod tests {
         assert_eq!(subject("fix: x"), "x");
         assert_eq!(subject("Revert \"feat: x\""), "Revert \"feat: x\"");
         assert_eq!(subject("feat(open paren"), "feat(open paren");
-        assert_eq!(tok(Some(865_949_077)), "865.9M");
     }
 }

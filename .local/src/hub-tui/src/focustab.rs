@@ -1,7 +1,7 @@
 //! The Daily tab: a day's `## Focus` from `hub_core::focus`, the reader agent-web's Daily tab
 //! uses, as lines. Read-only: Focus is written by `notes focus` and the editor. The open lanes
-//! are drawn item by item, word-wrapped; Done, the rollup and the note's other sections are
-//! counted and named, since a terminal has no fold to keep them in.
+//! are drawn item by item, word-wrapped, then the day's briefing as text; Done, the rollup and
+//! the note's other sections are counted and named, since a terminal has no fold to keep them in.
 
 use hub_core::focus::{Item, View};
 use ratatui::text::{Line, Span};
@@ -44,6 +44,48 @@ fn item(i: &Item, p: Palette, w: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The day's briefing under the lanes: each section's title, then its lines word-wrapped under
+/// a two-space indent, blank lines and HTML comments (one line or several) left out.
+fn brief(b: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![
+        Line::raw(""),
+        clip_line(
+            Line::from(vec![
+                Span::styled("BRIEFING", p.head()),
+                Span::styled(format!("  {}", b.note.rel), p.dim()),
+            ]),
+            w,
+        ),
+    ];
+    for s in &b.sections {
+        if !s.title.is_empty() {
+            out.push(clip_line(
+                Line::styled(format!("  {}", s.title), p.head()),
+                w,
+            ));
+        }
+        let mut comment = false;
+        for l in s.markdown.lines() {
+            let l = l.trim();
+            if comment || l.starts_with("<!--") {
+                comment = !l.contains("-->");
+                continue;
+            }
+            if l.is_empty() {
+                continue;
+            }
+            out.extend(crate::projtab::wrapped(
+                "  ",
+                l,
+                ratatui::style::Style::default(),
+                p,
+                w,
+            ));
+        }
+    }
+    out
+}
+
 pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
     let n = &v.note;
     let mut out = vec![];
@@ -70,15 +112,10 @@ pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
     };
     for l in &f.lanes {
         out.push(Line::raw(""));
-        let name = if l.name.is_empty() {
-            "Focus"
-        } else {
-            l.name.as_str()
-        };
         if l.name.eq_ignore_ascii_case("done") {
             out.push(clip_line(
                 Line::from(vec![
-                    Span::styled(name.to_uppercase(), p.head()),
+                    Span::styled(l.name.to_uppercase(), p.head()),
                     Span::styled(format!("  {} done today", l.done), p.dim()),
                 ]),
                 w,
@@ -86,7 +123,7 @@ pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
             continue;
         }
         out.push(Line::from(vec![
-            Span::styled(name.to_uppercase(), p.head()),
+            Span::styled(l.name.to_uppercase(), p.head()),
             Span::styled(format!("  {}", l.open), p.dim()),
         ]));
         if l.items.is_empty() {
@@ -95,6 +132,9 @@ pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
         for i in &l.items {
             out.extend(item(i, p, w));
         }
+    }
+    if let Some(b) = v.brief.as_deref().filter(|b| b.note.exists) {
+        out.extend(brief(b, p, w));
     }
     let mut rest: Vec<String> = vec![];
     if !f.rollup.is_empty() {
@@ -173,6 +213,40 @@ mod tests {
         let v = view("## Focus\n### Low\n- [ ] one two three four five six\n");
         let t = text(&v, 20);
         assert_eq!(&t[3..5], ["  [ ] one two three", "      four five six"]);
+    }
+
+    #[test]
+    fn the_days_briefing_is_drawn_under_the_lanes() {
+        let mut v = view("## Focus\n### Low\n- [ ] one\n## Notes\nhi\n");
+        let mut b = build(Note {
+            rel: "journal/refs/2026-11-05/briefing".into(),
+            markdown: "# Briefing\nAs of 07:00, two things.\n<!-- gen -->\n<!-- a\nnote -->\n\n## Needs you\n- answer the ask one two three four\n".into(),
+            exists: true,
+            ..Default::default()
+        });
+        v.brief = Some(Box::new(b.clone()));
+        let t = text(&v, 30);
+        let at = t
+            .iter()
+            .position(|l| l.starts_with("BRIEFING"))
+            .expect("{t:?}");
+        assert_eq!(
+            &t[at..at + 5],
+            [
+                "BRIEFING  journal/refs/2026-1~",
+                "  As of 07:00, two things.",
+                "  Needs you",
+                "  - answer the ask one two",
+                "  three four",
+            ]
+        );
+        assert!(
+            t.last().unwrap().starts_with("Also in the note"),
+            "after the lanes"
+        );
+        b.note.exists = false;
+        v.brief = Some(Box::new(b));
+        assert!(!text(&v, 30).iter().any(|l| l.starts_with("BRIEFING")));
     }
 
     #[test]

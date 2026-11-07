@@ -25,6 +25,9 @@ setup() {
   export AGENTCTL_NAME=inherited-runner
   # A Claude session exports this to every tool subprocess, the Stop-hook suite included.
   export NTFY_URL=http://127.0.0.1:9/inherited-topic
+  # A dispatched run (agentctl-run) exports the first and carries the second; a suite run from
+  # inside one would read them as its own.
+  export CLAUDE_HEADLESS=1 AGENTCTL_MODEL=inherited-model
 
   load '../helpers/sandbox'
   sandbox_init basic
@@ -33,6 +36,14 @@ setup() {
 @test "sandbox_init detaches from an inherited agentctl identity" {
   [ -z "${AGENTCTL_STATE:-}" ]
   [ -z "${AGENTCTL_NAME:-}" ]
+}
+
+# focus_gate.bats asserts the gate blocks, which CLAUDE_HEADLESS=1 turns off; agent_run_route.bats
+# and agent_run_codex.bats expect the model to come from the conf or the route, which an
+# inherited AGENTCTL_MODEL outranks.
+@test "sandbox_init detaches from an inherited CLAUDE_HEADLESS and AGENTCTL_MODEL" {
+  [ -z "${CLAUDE_HEADLESS:-}" ]
+  [ -z "${AGENTCTL_MODEL:-}" ]
 }
 
 # The one that matters. The env assertions above would pass against a sandbox that merely

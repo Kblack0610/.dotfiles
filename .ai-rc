@@ -13,43 +13,19 @@
 
 # --- mem0 API key ------------------------------------------------------------
 # The self-hosted mem0 server authenticates on an X-API-Key header carrying a
-# m0sk_ CLIENT key. Nothing exported this, so every ready-to-run curl staged in
-# ~/.agent/dreams/*/mem0-queue.md expanded $MEM0_API_KEY to empty and 401'd on the
-# first copy-paste. 17 approved facts sat unposted across 6 projects for ~4 weeks,
-# and two dream-diary entries misread it as a server/credential fault. It is not:
-# the server answers 200 with the right key.
+# m0sk_ CLIENT key, exported here for interactive mem0 calls (the mem0-ops skill).
+# Without it every call 401s, which two dream-diary entries once misread as a
+# server fault: the server answers 200 with the right key.
 #
-# Two sources, tried in order, because they fail on different machines:
-#   1. SOPS in home-config — deterministic and non-interactive, but needs the repo
-#      cloned AND the age key present. ~11ms.
-#   2. rbw — covers machines with the vault but no age key. Guarded on `rbw
-#      unlocked` because a bare `rbw get` PROMPTS when locked, and a prompt in an
-#      rc file hangs every new shell.
-#
-# Unset is a valid outcome, not a failure: on a corporate machine neither source
-# resolves and personal memory should not be reachable from there anyway.
-#
-# NOTE: the rbw fallback needs an entry holding the m0sk_ key. The existing
-# `mem0_login_api_key` entry is the LOGIN PASSWORD, not the API key -- it returns
-# 401 against the API. Add the client key as `mem0_api_key` if you want the
-# fallback live; until then source 1 is doing the work.
-if [ -z "${MEM0_API_KEY:-}" ]; then
-    _mem0_secret="$HOME/dev/home/home-config/apps/mem0/client-credentials.secret.yaml"
-    if [ -r "$_mem0_secret" ] && command -v sops >/dev/null 2>&1; then
-        MEM0_API_KEY="$(sops -d "$_mem0_secret" 2>/dev/null \
-            | awk '/MEM0_API_KEY:/ {print $2}' | tr -d '"')"
-    fi
-    if [ -z "${MEM0_API_KEY:-}" ] && command -v rbw >/dev/null 2>&1 \
-       && rbw unlocked >/dev/null 2>&1; then
-        MEM0_API_KEY="$(rbw get mem0_api_key 2>/dev/null)"
-    fi
-    # Only export a key that actually looks like one, so a partial read cannot
-    # masquerade as a working credential and reintroduce the silent 401.
-    case "${MEM0_API_KEY:-}" in
-        m0sk_*) export MEM0_API_KEY ;;
-        *) unset MEM0_API_KEY ;;
-    esac
-    unset _mem0_secret
+# The config (MEM0_BASE_URL, MEM0_USER_ID, MEM0_SECRET) and the key reader are the
+# ones agent-propose, agentctl-dream and agentctl-nightly-sync use: see mem0.sh.
+# Unset is a valid outcome, not a failure: on a corporate machine there is no
+# mem0.env or no age key, and personal memory should not be reachable from there.
+# A subshell reads it, so only the key reaches the environment: not the endpoint, the user,
+# the secret path, or mem0_load and mem0_key as shell functions.
+if [ -z "${MEM0_API_KEY:-}" ] && [ -r "$HOME/.local/lib/mem0.sh" ]; then
+    MEM0_API_KEY="$( { . "$HOME/.local/lib/mem0.sh" && mem0_load && mem0_key; } 2>/dev/null )"
+    if [ -n "$MEM0_API_KEY" ]; then export MEM0_API_KEY; else unset MEM0_API_KEY; fi
 fi
 
 # Claude Code entry point — two-case permission cycle (pairs with settings.json
@@ -94,7 +70,7 @@ cl() {
         --acct=*) acct=(--acct "${1#--acct=}"); shift ;;
         --lazer)
             shift
-            ( unset CLAUDE_CONFIG_DIR
+            ( unset CLAUDE_CONFIG_DIR AGENT_HARNESS   # a hand start is claude-lazer, not a parent pane's harness
               command -v claude_telemetry_launch >/dev/null 2>&1 \
                   && export OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)"
               claude-lazer --dangerously-skip-permissions "$@" )
@@ -102,7 +78,7 @@ cl() {
     esac
     claude-acct run "${acct[@]}" --dangerously-skip-permissions "$@"
 }
-alias codex-sync="$HOME/.dotfiles/.config/codex/sync-codex-config.sh"
+alias codex-sync="$HOME/.dotfiles/.config/codex/sync-ai-global-config.sh"
 alias cb="agent" # need to rename to agent
 
 # --- Tmux pane title wrappers for AI tools ---

@@ -1,32 +1,114 @@
 #!/usr/bin/env bash
-# dotfiles-autopull — keep ~/.dotfiles current across machines.
+# dotfiles-autopull - keep the stowed checkouts current: ~/.dotfiles and the private overlay
+# ~/.dotfiles-private (DOTFILES_DIR, DOTFILES_PRIVATE).
 #
-# Cross-platform (invoked from ~/.zshrc, which runs on both Linux and macOS),
-# throttled, fast-forward-only, and silent unless it actually advances the branch.
-# Designed to be non-invasive: it never merges, rebases, or clobbers local work —
-# `git merge --ff-only` aborts rather than overwrite tracked changes, and we only
-# attempt it when HEAD is strictly behind upstream. A persistently-dirty submodule
-# (e.g. .local/src/android-suite) does NOT block a superproject fast-forward, so we
-# deliberately do not gate on a dirty working tree.
+#   dotfiles-autopull               the shell-start pass (~/.zshrc): every checkout, at most once
+#                                   per DOTFILES_AUTOPULL_INTERVAL (6h), silent unless it moves one
+#                                   while attached to a terminal
+#   dotfiles-autopull --now <path>  agent-land's post-merge step: no throttle, only the checkout whose
+#                                   repo holds <path> (a worktree of it counts), one line saying what
+#                                   happened; nothing for a repo that is not one of the checkouts
 #
-# fail-soft throughout: any error exits 0 so a broken network or odd repo state can
-# never disrupt shell startup.
+# Stow serves the main checkouts, so a merged change is live only once its checkout moves.
+# `git merge --ff-only` refuses rather than overwrite a dirty or untracked file, so local work is
+# never touched; a refused or diverged checkout stays put and says why (logged too). Fail-soft:
+# every path exits 0, so no network or repo state can break a shell start or a landing.
 
 set -uo pipefail
 
-REPO="${DOTFILES_DIR:-$HOME/.dotfiles}"
+REPOS=("${DOTFILES_DIR:-$HOME/.dotfiles}" "${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}")
 THROTTLE_SECS="${DOTFILES_AUTOPULL_INTERVAL:-21600}" # 6h
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-autopull"
 STAMP="$CACHE_DIR/last-pull"
 LOG="$CACHE_DIR/autopull.log"
+# The public checkout's own copy, so a pull that changed it runs the new one.
+OVERLAY_LINK="${REPOS[0]}/.local/bin/dotfiles-overlay-link"
+FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
 
 command -v git >/dev/null 2>&1 || exit 0
-[ -d "$REPO/.git" ] || exit 0
 
+log() {
+  mkdir -p "$CACHE_DIR" 2>/dev/null
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$LOG" 2>/dev/null
+}
+
+# capped <secs> <cmd...>: a network call under a time cap, so a hung remote cannot hold a landing or a
+# shell start; macOS ships no timeout, and there the call runs uncapped.
+capped() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$@"; else shift && "$@"; fi
+}
+
+# phys <dir> -> its physical path (no realpath on older macOS)
+phys() { (cd "$1" 2>/dev/null && pwd -P); }
+
+# say <line>: print it and log it
+say() {
+  log "$1"
+  echo "$1"
+}
+
+# pull <checkout> -> one line on stdout saying what happened; every outcome but "already current" is
+# logged, so the silent shell pass leaves a trace of a checkout it could not move.
+pull() {
+  local repo=$1 name branch head up out files
+  name=${repo/#"$HOME"/\~}
+  if git -C "$repo" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 ||
+    [ -d "$repo/.git/rebase-merge" ] || [ -d "$repo/.git/rebase-apply" ]; then
+    say "$name: mid-merge or mid-rebase, left alone"
+    return
+  fi
+  branch=$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null) || {
+    say "$name: detached HEAD, left alone"
+    return
+  }
+  git -C "$repo" rev-parse --quiet --verify '@{u}' >/dev/null 2>&1 || {
+    say "$name: $branch has no upstream, left alone"
+    return
+  }
+  capped "$FETCH_SECS" git -C "$repo" fetch --quiet 2>/dev/null || {
+    say "$name: fetch failed, $branch left at $(git -C "$repo" rev-parse --short HEAD 2>/dev/null)"
+    return
+  }
+  head=$(git -C "$repo" rev-parse HEAD 2>/dev/null) && up=$(git -C "$repo" rev-parse '@{u}' 2>/dev/null) || return
+  if [ "$head" = "$up" ]; then
+    echo "$name: $branch already current at ${head:0:8}"
+    return
+  fi
+  if ! git -C "$repo" merge-base --is-ancestor HEAD '@{u}' 2>/dev/null; then
+    say "$name: not fast-forwarded, $branch has local commits its upstream lacks"
+  elif out=$(git -C "$repo" merge --ff-only '@{u}' 2>&1); then
+    say "$name: fast-forwarded $branch ${head:0:8}..${up:0:8}"
+    # A move may have advanced submodule pointers (android-suite): check them out so their links do
+    # not dangle. HTTPS avoids SSH:22 hangs on networks that block it; capped and fail-soft.
+    capped 120 git -C "$repo" -c url."https://github.com/".insteadOf="git@github.com:" \
+      submodule update --init --recursive --quiet >/dev/null 2>&1 || true
+    # Attach anything the move added to, or moved into, the private overlay.
+    [ ! -x "$OVERLAY_LINK" ] || "$OVERLAY_LINK" >/dev/null 2>&1 || true
+  else
+    # git lists each file it refused to overwrite, dirty or untracked, on its own tab-indented line.
+    files=$(printf '%s\n' "$out" | awk 'sub(/^\t/, "")' | paste -sd ' ' -)
+    if [ -n "$files" ]; then
+      say "$name: not fast-forwarded, $branch stays at ${head:0:8}: local files in the way: $files"
+    else
+      say "$name: not fast-forwarded, $branch stays at ${head:0:8}: $(printf '%s\n' "$out" | tail -n 1)"
+    fi
+  fi
+}
+
+if [ "${1:-}" = --now ]; then
+  common=$(git -C "${2:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+  common=$(phys "$common") || exit 0
+  for repo in "${REPOS[@]}"; do
+    [ -d "$repo/.git" ] && [ "$(phys "$repo/.git")" = "$common" ] || continue
+    pull "$repo"
+    exit 0
+  done
+  exit 0
+fi
+
+# Throttle: at most once per THROTTLE_SECS. Stamp BEFORE the network calls so an offline or hung
+# fetch does not retry on every single shell.
 now=$(date +%s)
-
-# Throttle: at most once per THROTTLE_SECS. Stamp BEFORE the network call so an
-# offline/hung fetch does not retry on every single shell.
 if [ -f "$STAMP" ]; then
   last=$(cat "$STAMP" 2>/dev/null || echo 0)
   [ "$((now - last))" -lt "$THROTTLE_SECS" ] && exit 0
@@ -34,40 +116,10 @@ fi
 mkdir -p "$CACHE_DIR"
 echo "$now" >"$STAMP"
 
-# Never touch a repo mid-merge or mid-rebase.
-git -C "$REPO" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 && exit 0
-if [ -d "$REPO/.git/rebase-merge" ] || [ -d "$REPO/.git/rebase-apply" ]; then exit 0; fi
-
-# Need a branch with an upstream.
-branch=$(git -C "$REPO" symbolic-ref --quiet --short HEAD 2>/dev/null) || exit 0
-git -C "$REPO" rev-parse --quiet --verify "@{u}" >/dev/null 2>&1 || exit 0
-
-git -C "$REPO" fetch --quiet 2>/dev/null || exit 0
-
-local_head=$(git -C "$REPO" rev-parse HEAD 2>/dev/null) || exit 0
-remote_head=$(git -C "$REPO" rev-parse "@{u}" 2>/dev/null) || exit 0
-[ "$local_head" = "$remote_head" ] && exit 0 # already current
-
-# Only fast-forward when strictly behind (HEAD is an ancestor of upstream); this
-# skips the diverged case, which ff-only would refuse anyway.
-git -C "$REPO" merge-base --is-ancestor HEAD "@{u}" 2>/dev/null || exit 0
-
-if git -C "$REPO" merge --ff-only "@{u}" >/dev/null 2>&1; then
-  short_from=$(git -C "$REPO" rev-parse --short "$local_head" 2>/dev/null)
-  short_to=$(git -C "$REPO" rev-parse --short "$remote_head" 2>/dev/null)
-  msg="dotfiles: fast-forwarded $branch ${short_from}..${short_to}"
-  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$msg" >>"$LOG" 2>/dev/null
-  # Only speak when attached to a terminal in the foreground; stays silent when
-  # backgrounded from .zshrc.
-  [ -t 1 ] && echo "$msg"
-
-  # A fast-forward may have advanced submodule pointers (e.g. android-suite); check
-  # them out so their symlinks do not dangle. Force HTTPS to avoid SSH:22 hangs on
-  # networks that block it, cap the time, and stay fail-soft.
-  timeout 120 git -C "$REPO" -c url."https://github.com/".insteadOf="git@github.com:" \
-    submodule update --init --recursive --quiet >/dev/null 2>&1 || true
-  # Re-attach the private overlay in case the pull moved anything into it.
-  [ -x "$REPO/.local/bin/dotfiles-overlay-link" ] && \
-    "$REPO/.local/bin/dotfiles-overlay-link" >/dev/null 2>&1 || true
-fi
+for repo in "${REPOS[@]}"; do
+  [ -d "$repo/.git" ] || continue
+  line=$(pull "$repo")
+  # Only speak in the foreground: backgrounded from .zshrc it stays silent.
+  [[ -t 1 && "$line" == *": fast-forwarded "* ]] && echo "$line"
+done
 exit 0

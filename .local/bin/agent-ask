@@ -126,24 +126,12 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 : "${AGENT_ASK_JUDGE_BOARD:=agent-runtime}"
 # shellcheck source=../lib/judge.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
-SHARED_HOOKS="$HOME/.config/shared-hooks"
+# shellcheck source=../lib/fmt.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
 # --- helpers ---------------------------------------------------------------
-
-resolve_project() {
-  # Canonical project name, the same way the hooks + sessions CLI do it.
-  local dir="${1:-$PWD}"
-  if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
-    # shellcheck disable=SC1091
-    . "$SHARED_HOOKS/project-name.sh"
-    resolve_project_name "$dir"
-  else
-    local base="${dir##*/}"; echo "${base#.}"
-  fi
-}
-
-# now_iso [<date -d spec>]: the one timestamp format, now or at an offset ("+30 minutes").
-now_iso() { date -d "${1:-now}" +%Y-%m-%dT%H:%M:%S%z; }
 
 # collapse a value to a single physical line (files are one key:value per line)
 oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
@@ -229,16 +217,8 @@ wrap() {
 }
 
 # card_slug <project>: its short name (project-name.sh project_slug), the one the questions
-# panel rows use; the name itself where the shared hooks are not installed.
-card_slug() {
-  if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
-    # shellcheck disable=SC1091
-    . "$SHARED_HOOKS/project-name.sh"
-    project_slug "$1"
-  else
-    printf '%s\n' "$1"
-  fi
-}
+# panel rows use.
+card_slug() { project_slug "$1"; }
 
 # judge_line: the loaded ask's (load_ask) judge verdict as one line, worded as agent-web's
 # judgeText words it: what the judge did or would do, the rule that decided it, an override,
@@ -381,12 +361,8 @@ cmd_post() {
   if [ -n "$project" ]; then
     # An explicit --project must be the canonical name, or the ask files where no reader looks
     # for it. The resolver's own answer (no --project) is canonical by construction.
-    if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
-      # shellcheck disable=SC1091
-      . "$SHARED_HOOKS/project-name.sh"
-      project_known "$project"
-      [ $? = 1 ] && { echo "agent-ask post: '$project' is not a canonical project (project-map.json)" >&2; return 2; }
-    fi
+    project_known "$project"
+    [ $? = 1 ] && { echo "agent-ask post: '$project' is not a canonical project (project-map.json)" >&2; return 2; }
   else
     project="$(resolve_project)"
   fi
@@ -896,11 +872,7 @@ file_board_row() {
   local f="$1" text="$2" project profile board q
   project="$(field "$f" project)"; profile="$(field "$f" profile)"
   [ -n "$project" ] || return 0
-  if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
-    # shellcheck disable=SC1091
-    . "$SHARED_HOOKS/project-name.sh"
-    board="$(project_lab_names "$project" 2>/dev/null | head -1)"
-  fi
+  board="$(project_lab_names "$project" 2>/dev/null | head -1)"
   # Boards are plain ASCII, and a # in the question would read as a tag.
   q="$(printf '%s' "$text" | tr -cd ' -~' | tr -d '#' | cut -c1-240)"
   notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add \
@@ -1112,11 +1084,25 @@ in_session_picks() {
                   | [.id, .options, .answer] | @tsv' <<<"$1") | jq -sc 'add // {}'
 }
 
+# not_an_answer <message>: true when a message to the session cannot answer a free-text ask: a
+# slash command (/name, not a path), a message ending in ?, or one opening with a question word.
+# A hedged answer ending in ? is cancelled too: the session asks again, which costs less than
+# a question recorded as an answer. Words alone cannot tell a reply from a new topic.
+not_an_answer() {
+  local m="${1,,}"
+  local lead='^(why|what|whats|what.s|how many|how much|were you|are you|did you|do you|can you|could you|is it|is there)([[:space:]]|$)'
+  local cmd='^/[a-z][a-z0-9:_-]*([[:space:]]|$)'
+  m="${m#"${m%%[![:space:]]*}"}"
+  [[ "$m" =~ $cmd || "$m" == *"?" || "$m" =~ $lead ]]
+}
+
 # settle-session <claude_session> answered [text...]: the human typed into the session (the
 # UserPromptSubmit hook), so every pending ask it owns leaves the human's list: the conversation
 # now holds the question. A message naming exactly one option answers with that option; an ask
-# with no options takes the message as its answer; any other message cancels it, recording no
-# answer, and the session asks again if it still needs one (88-ask-filed.sh makes it file that).
+# with no options takes the message as its answer unless it is a question or a slash command
+# (not_an_answer); any other message cancels it, recording no answer, and the session asks again
+# if it still needs one (88-ask-filed.sh makes it file that). 2026-11-03 "were you going to post
+# which ones i could close out" was recorded as the answer to a free-text ask about a runner pool.
 # 2026-11-04 any message answered every ask, so "whats going on here?" closed three go|later
 # cleanup asks as answered; then from #876 such a message left the ask pending, so a reply like
 # "I already clicked that" kept a session on every board after the human had answered it
@@ -1126,7 +1112,7 @@ cmd_settle_session() {
   local owner="${1:-}" to="${2:-}"; shift 2 2>/dev/null || shift $#
   [ -n "$owner" ] && [ "$to" = answered ] ||
     { echo "usage: agent-ask settle-session <claude_session> answered [text...]" >&2; return 2; }
-  local text f opts pick; text="$(oneline "$*" | cut -c1-200)"
+  local full text f opts pick; full="$(oneline "$*")"; text="$(cut -c1-200 <<<"$full")"
   case "$text" in "Answer to ask "*) return 0 ;; esac
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -1134,9 +1120,9 @@ cmd_settle_session() {
     review_judge_answer "$f" "$text" "in session"
     [ "$(field "$f" status)" = pending ] || continue
     opts="$(field "$f" options)"
-    if [ -z "$opts" ]; then
+    if [ -z "$opts" ] && ! not_an_answer "$full"; then
       record_answer "$f" human "in session: ${text:-(no text)}"
-    elif pick="$(named_option "$opts" "$text")" && [ -n "$pick" ]; then
+    elif [ -n "$opts" ] && pick="$(named_option "$opts" "$text")" && [ -n "$pick" ]; then
       set_field "$f" answer_note "in session: $text"
       record_answer "$f" human "$pick"
     else

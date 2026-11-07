@@ -97,3 +97,25 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
   run jq -c '[.rows[] | [.key,.calls,.chars]]' <<<"$(out --by kind)"
   assert_output '[["subagent",3,150]]'
 }
+
+@test "by session,tool: a row per pair, and a subagent's output counts for the parent session that pays for it" {
+  mkdir -p "$D/projects/p/s2/subagents"
+  cp "$D/projects/p/s1.jsonl" "$D/projects/p/s2/subagents/agent-a1.jsonl"
+  run jq -c '[.rows[] | [.key,.calls,.carried]]' <<<"$(out --by session,tool)"
+  assert_output '[[["s1","Bash"],2,200],[["s2","Bash"],2,200],[["s1","Read"],1,80],[["s2","Read"],1,80]]'
+}
+
+@test "by session,filetype: a result with no filetype has no row, and the text report prints the pairs" {
+  run jq -c '[.rows[] | [.key,.calls]]' <<<"$(out --by session,filetype)"
+  assert_output '[[["s1","other (none)"],1]]'
+  run "$RECALL" tool-output --since 2026-10-01 --by session,filetype
+  assert_success
+  assert_output --partial "s1 other (none)"
+}
+
+@test "by: one cut, or two different result cuts; a response cut in a pair is refused" {
+  run "$RECALL" tool-output --by day,tool
+  assert_failure 2
+  run "$RECALL" tool-output --by tool,tool
+  assert_failure 2
+}

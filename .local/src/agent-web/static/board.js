@@ -295,16 +295,8 @@ $("board").addEventListener("click", (e) => {
     bWrite(Object.assign(body, bTarget(r)), ok);
   }
 });
-// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
-for (const ev of ["input", "change"]) {
-  $("board").addEventListener(ev, (e) => {
-    if (e.target.closest(".badd")) { bSaveDraft(); return; }
-    const v = tblPatch(e);
-    if (!v) return;
-    if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
-    bView(v);
-  });
-}
+for (const ev of ["input", "change"]) $("board").addEventListener(ev, (e) => { if (e.target.closest(".badd")) bSaveDraft(); });
+tblListen($("board"), bView);
 $("board").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "b-text") { e.preventDefault(); bAdd(); return; }

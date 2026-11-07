@@ -10,11 +10,11 @@ metadata:
 
 # CI cost
 
-Turns "CI is slow" into a measured list of where the runner minutes go, a ranked lever, one PR that pulls it, and a before/after number recorded where the next session will read it.
+Turns "CI is slow" into a measured list of where the runner minutes go, a ranked lever, one PR that pulls it, and a before/after number recorded where the next session will read it. The method (finding shape, baseline, one lever per PR, re-measure, proposals) is `~/.local/src/docs/analysis-streams.md`; this file holds what is specific to CI time.
 
 The repo docs own everything but the procedure: `docs/operations/ci-cost.md` (how to measure, open levers, the before/after log), `scripts/ci-cost.py` (the numbers), and `docs/operations/ci.md` Rules (what a CI change must carry). This file is only the procedure. When they disagree, the doc wins and this file gets fixed in the same turn.
 
-## When to Use
+## Scope and triggers
 
 - When the user asks why CI, a gate, or a dispatch takes as long as it does.
 - When choosing the next harness change to cut CI time.
@@ -47,6 +47,5 @@ Not for running tests or gating a PR - that is `playground-headless-test`. Not f
 
 - Do not quote a number you did not count in this session or read from the cost doc with its date.
 - Do not hand-count timings in a shell loop when `scripts/ci-cost.py` could own the number; a number only one session can reproduce cannot be compared later.
-- Do not bundle levers in one PR: the before/after then measures nothing.
 - Do not drop coverage to hit a target: the nightly runs every class (`docs/operations/ci.md` rule 10).
 - Do not cancel another session's pool gate run; measure around it (rule 7).

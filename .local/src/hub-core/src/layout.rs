@@ -12,13 +12,13 @@ pub struct Tab {
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 8] = [
+pub const TABS: [Tab; 10] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
         title: "Home",
         question: "What needs me, and is everything OK?",
-        sections: &["needs", "running", "numbers", "health"],
+        sections: &["needs", "proposals", "running", "numbers", "health"],
     },
     // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
     // (the doc and Handled today) opens from that nav, so it is a section here, not a tab of its own.
@@ -33,7 +33,7 @@ pub const TABS: [Tab; 8] = [
         id: "queue",
         title: "Queue",
         question: "What will agents do next?",
-        sections: &["waiting", "running", "queued", "done"],
+        sections: &["flow", "table", "candidates"],
     },
     Tab {
         id: "projects",
@@ -66,8 +66,24 @@ pub const TABS: [Tab; 8] = [
     Tab {
         id: "fleet",
         title: "Fleet",
-        question: "Can I afford more agents, and are the judges right?",
-        sections: &["accounts", "workers", "judges"],
+        question: "Who is working, and on what?",
+        sections: &["workers"],
+    },
+    // After the older tabs, so they keep their digits.
+    Tab {
+        id: "schedules",
+        title: "Schedules",
+        question: "What runs on its own, and why?",
+        sections: &["table", "detail"],
+    },
+    // Last, the tenth (key 0), so no digit shifts. Every dollar figure the other tabs showed is
+    // here, cut seven ways; they keep a one-line badge that links in.
+    Tab {
+        id: "costs",
+        title: "Costs",
+        question:
+            "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
+        sections: &["burn", "tokens", "langfuse", "sections", "totals", "table"],
     },
 ];
 
@@ -104,6 +120,30 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("outbox", "daily"),
     ("focus", "daily"),
 ];
+
+/// Sections that moved to another tab: (old tab, old section, new tab, new section), so
+/// `hub tab fleet tokens`, `hub --tab 'fleet tokens'` and agent-web's `#fleet/tokens` still land
+/// where the content went. Keep a row here for good once it has shipped.
+pub const MOVED: &[(&str, &str, &str, &str)] = &[
+    // Fleet's Claude accounts table, Where the tokens go and What Langfuse sees: what the fleet
+    // costs, not who is working (2026-11-07). The accounts' columns joined Costs' Burn table.
+    ("fleet", "accounts", "costs", "burn"),
+    ("fleet", "tokens", "costs", "tokens"),
+    ("fleet", "langfuse", "costs", "langfuse"),
+];
+
+/// Where a section that moved off `tab` lives now: its new tab and section.
+pub fn moved(tab: &str, sec: &str) -> Option<(&'static Tab, &'static str)> {
+    let (t, s) = (
+        tab.trim().to_ascii_lowercase(),
+        sec.trim().to_ascii_lowercase(),
+    );
+    let id = resolve(&t)?.id;
+    MOVED
+        .iter()
+        .find(|m| m.0 == id && m.1 == s)
+        .and_then(|m| Some((resolve(m.2)?, m.3)))
+}
 
 /// A tab id, a title, or a retired name (any case) as the tab it means.
 pub fn resolve(name: &str) -> Option<&'static Tab> {
@@ -163,7 +203,41 @@ mod tests {
         assert_eq!(resolve("history").map(|t| t.id), Some("log"));
         assert_eq!(resolve("actions").map(|t| t.id), Some("log"));
         assert_eq!(resolve("fleet").map(|t| t.id), Some("fleet"));
+        assert_eq!(resolve("Costs").map(|t| t.id), Some("costs"));
         assert_eq!(resolve("nope"), None);
+    }
+
+    #[test]
+    fn a_moved_section_lands_on_its_new_tab_and_is_gone_from_the_old() {
+        for (old_tab, old, new_tab, new) in MOVED {
+            let from = resolve(old_tab).unwrap();
+            assert!(!from.sections.contains(old), "{old} is still on {old_tab}");
+            let to = resolve(new_tab).unwrap();
+            assert!(
+                to.sections.contains(new),
+                "{new} is not a section of {new_tab}"
+            );
+        }
+        assert_eq!(
+            moved("Fleet", " Tokens ").map(|(t, s)| (t.id, s)),
+            Some(("costs", "tokens"))
+        );
+        assert_eq!(
+            moved("fleet", "accounts").map(|(t, s)| (t.id, s)),
+            Some(("costs", "burn"))
+        );
+        assert_eq!(
+            moved("fleet", "langfuse").map(|(t, s)| (t.id, s)),
+            Some(("costs", "langfuse"))
+        );
+        assert_eq!(moved("fleet", "workers"), None, "workers stayed");
+        assert_eq!(
+            moved("fleet", "inbox-triage"),
+            None,
+            "a runner is no section"
+        );
+        assert_eq!(moved("costs", "tokens"), None);
+        assert_eq!(resolve("fleet").unwrap().sections, ["workers"]);
     }
 
     #[test]

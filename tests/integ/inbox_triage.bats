@@ -40,6 +40,20 @@ outbox() { printf '# Outbox\n\n## Outbox\n%b' "$1" >"$HOME/.notes/outbox.md"; }
 inbox() { sed -n '/^## Inbox/,/^## Tasks/p' "$SHEET"; }
 tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
 
+@test "a notes with no row types asks no model, keeps the line and says why" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"]}'
+  # Replace the link, never write through it: it points at the built binary.
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$1" = row ] && exit 2\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$TRIAGE"
+  assert_output --partial 'notes row types failed'
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the model was asked with no type list"
+  run inbox
+  assert_output --partial 'gun sound'
+}
+
 @test "end to end: a raw line is filed as one typed row with an id, its words as the detail" {
   sheet '- the gun sound is off since the top-down patch\n' ''
   answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays off since the top-down patch #high #size/s"]}'
@@ -53,6 +67,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial '  was: the gun sound is off since the top-down patch'
   [ "$(grep -c 'fix(audio)' "$SHEET")" = 1 ] || fail "filed more than once: $(cat "$SHEET")"
   grep -qx '1. \[scratch\] the gun sound is off since the top-down patch' "$NOTES_FIXTURE/prompt.txt" || fail "the line never reached the model"
+  grep -qF "type is one of $("$NOTES_BIN" row types); a bug is fix." "$NOTES_FIXTURE/prompt.txt" || fail "the row types never reached the model"
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
@@ -175,6 +190,18 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_line 'left maybe the boss is too easy?'
   assert_line 'refused the save button'
   assert_line 'refused the jump is floaty'
+}
+
+@test "a filed want is stamped #requested by the writer on the agent board, and its channel is recorded" {
+  sheet '- the gun sound is off\n- the menu is slow\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"], "lane": "agent"}' \
+    '{"n": 2, "action": "file", "rows": ["fix(ui): the menu is slow #high #size/s"]}'
+  run "$TRIAGE"
+  assert_success
+  grep -qE 'fix\(audio\): the gun sound plays late .*#requested' "$PROJ/scratch/agent/README.md" || fail "$(cat "$PROJ/scratch/agent/README.md")"
+  run tasks
+  refute_output --partial '#requested'
+  [ "$(grep -c '"want":"human"' "$HOME/.local/state/notes/ingest.jsonl")" = 2 ] || fail "$(cat "$HOME/.local/state/notes/ingest.jsonl")"
 }
 
 @test "a duplicate joins its open row, and a line about another project moves there" {
@@ -330,11 +357,38 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q '"row":"chore(build): drop the old cache"' "$HOME/.local/state/notes/ingest.jsonl" || fail "the filed row's words were not recorded"
 }
 
+@test "outbox: a #p: word that names no project goes to the model with the word as a hint, and is routed, not refused" {
+  sheet '' ''
+  outbox '- [ ] chore(build): drop the old cache #p:scrach\n- [ ] fix(ui): a gap in the hud #p:scratch\n- [ ] still unknown #p:nowhere\n'
+  answer '{"n": 1, "action": "file", "rows": ["chore(build): drop the old cache #low #size/s"], "project": "scratch"}' \
+    '{"n": 2, "action": "skip", "why": "no such project"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 2 from the outbox, filed 2, left 1, refused 0'
+  assert_output --partial '#p:scrach names no project, left for the model'
+  # the exact tag moved with no model; the two misses were the model's batch, with the word as a hint
+  grep -qx '1. \[outbox\] chore(build): drop the old cache #p:scrach (tagged #p:scrach, which is no project; it may name one of the projects above)' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  grep -q '^2. \[outbox\] still unknown #p:nowhere (tagged #p:nowhere' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  ! grep -q "a gap in the hud" "$NOTES_FIXTURE/prompt.txt" || fail "an exact #p: line reached the model"
+  run tasks
+  assert_output --regexp 'chore\(build\): drop the old cache .*id:sc-[12]'
+  assert_output --regexp 'fix\(ui\): a gap in the hud'
+  refute_output --partial '#p:'
+  run cat "$HOME/.notes/outbox.md"
+  assert_output --partial 'still unknown #p:nowhere'
+  refute_output --partial 'old cache'
+  # the one the model passed over is recorded as left, so the next sweep does not ask again
+  rm -f "$NOTES_FIXTURE/model.log"
+  run "$TRIAGE"
+  assert_success
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "a recorded line was asked again"
+}
+
 @test "outbox: an <id>: line answers its open row with no model, closing a decide row; an id with no open row is left" {
   sheet '' '- [ ] decide(squad): followers that fight with you #low <!-- id:sc-1 -->\n- [ ] feat(ui): a colour for the squad <!-- id:sc-2 -->\n'
   mkdir -p "$PROJ/scratch/agent"
   printf '# scratch agent\n\n## Tasks\n- [ ] decide(lanes): which lane a game takes <!-- id:sc-3 -->\n' >"$PROJ/scratch/agent/README.md"
-  outbox '- [ ] sc-1: yes, build it after the bully fix\n- [ ] sc-2: the blue one\n- [ ] sc-3: the agent lane\n- [ ] zz-9: yes\n- [ ] stays for the model\n'
+  outbox '- [ ] sc-1: yes, build it after the bully fix\n- [ ] sc-2: the blue one #p:scrach\n- [ ] sc-3: the agent lane\n- [ ] zz-9: yes\n- [ ] stays for the model\n'
   answer '{"n": 1, "action": "skip", "why": "no project named"}'
   run "$TRIAGE"
   assert_success

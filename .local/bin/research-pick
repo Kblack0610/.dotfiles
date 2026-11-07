@@ -16,9 +16,12 @@
 # picks.jsonl under RESEARCH_DIR is the record of what was queued and when; this is its only writer.
 set -uo pipefail
 
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+
 : "${RESEARCH_FACETS:=$HOME/.config/agentctl/research-facets.json}"
 : "${RESEARCH_DIR:=$HOME/.agent/research}"
-: "${RESEARCH_MAP:=$HOME/.config/shared-hooks/project-map.json}"
+: "${RESEARCH_MAP:=$(project_map_file)}"
 : "${RESEARCH_NEVER_DAYS:=60}"   # the staleness of a facet never picked
 : "${RESEARCH_CHURN_DAYS:=14}"   # the window recent commits are counted over
 
@@ -84,13 +87,22 @@ item_project() {
   printf '%s' "${name:-$board}"
 }
 
-# queue <id>: queue the facet's research item. 0 when queued.
+# queue <id>: queue the facet's research item as research-<id> (a slug cut from the task text is
+# the same 40 characters for every facet in one checkout). 0 when queued. --repeat: a facet picked
+# again reuses its slug, whose last item finished ok; this pick is new work under it.
 queue() {
   local project task
   project=$(item_project "$1"); task=$(task_text "$1")
   if [ "$DRY" = 1 ]; then printf 'would queue [%s] %s\n' "$project" "$task"; return 0; fi
-  agent-queue add --project "$project" --priority low --from "research:$1" --tags research \
-    --title "research($1)" -- "$task" >/dev/null 2>&1
+  local err
+  err=$(agent-queue add --project "$project" --priority low --from "research:$1" --tags research --repeat \
+    --slug "research-$1" --title "research($1)" -- "$task" 2>&1 >/dev/null)
+  case $? in
+    0) return 0 ;;
+    5) say "$1: held by queue admission, nothing queued; the next run tries again"; return 1 ;;
+  esac
+  say "$1: nothing queued, agent-queue add failed: $(tail -n 1 <<<"$err")"
+  return 1
 }
 
 # add <board> <text>: file one row. 0 when filed or already open (exit 3), 1 otherwise.
@@ -153,8 +165,6 @@ cmd_run() {
       say "queued $id (score $score: ${stale}d stale, $c commits)"
       [ "$DRY" = 1 ] || jq -cn --arg f "$id" --argjson d "$today" \
         '{facet: $f, day: $d, date: (now | strftime("%Y-%m-%d"))}' >> "$PICKS"
-    else
-      say "$id: agent-queue add failed, nothing queued"
     fi
   fi
 

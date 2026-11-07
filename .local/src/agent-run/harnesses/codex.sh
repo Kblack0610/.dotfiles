@@ -14,6 +14,13 @@ harness_supports() {
   return 0
 }
 
+# harness_sandbox - codex confines writes only, so a profile that also hides paths or lists hosts
+# is refused rather than run with less isolation than it names.
+harness_sandbox() {
+  local why; why="$(sandbox_codex_refusal)" || return 1
+  [ -z "$why" ] || { echo "codex cannot hold lane sandbox '$SANDBOX_PROFILE': $why." >&2; return 1; }
+}
+
 # _codex_mcp_flags -> one -c override per line pinning the run to ROLE_MCP's set
 _codex_mcp_flags() {
   local file; file="$(role_mcp_file)"
@@ -50,6 +57,10 @@ harness_exec() {
   fi
   [ -n "$model" ] && flags+=(-m "$model")
   if [ "$ROLE_WRITE" = no ]; then flags+=(--sandbox read-only)
+  elif [ -n "${SANDBOX_FILE:-}" ]; then
+    # A sandboxed lane writes only its workspace and the profile's roots (lib/sandbox.sh).
+    flags+=(--sandbox workspace-write)
+    while IFS= read -r o; do flags+=(-c "$o"); done < <(sandbox_codex_flags)
   else flags+=(--dangerously-bypass-approvals-and-sandbox); fi
   [ "$ROLE_TASK" = no ] && flags+=(--disable multi_agent)
   while IFS= read -r o; do [ -n "$o" ] && flags+=(-c "$o"); done < <(_codex_mcp_flags)

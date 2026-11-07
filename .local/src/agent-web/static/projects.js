@@ -193,9 +193,8 @@ $("projects").addEventListener("click", (e) => {
   const o = e.target.closest("[data-open]");
   if (o && !e.target.closest("#board")) pGo(o.dataset.open);
 });
-for (const ev of ["click", "input", "change"]) {
-  $("p-cards").addEventListener(ev, (e) => { const v = tblPatch(e); if (v) pView(v); });
-}
+$("p-cards").addEventListener("click", (e) => { const v = tblPatch(e); if (v) pView(v); });
+tblListen($("p-cards"), pView);
 $("p-cards").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.matches?.("tr[data-open]")) pGo(e.target.dataset.open);
 });

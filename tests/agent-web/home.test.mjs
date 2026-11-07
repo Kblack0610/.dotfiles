@@ -21,14 +21,21 @@ const ctx = vm.createContext({
   window: { addEventListener() {} },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
-for (const f of ["ui.js", "md.js", "app.js", "waiting.js", "home.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+// In the page's own order: a script that calls another at load needs it loaded first.
+const page = readFileSync(new URL("../src/index.html", dir), "utf8");
+const scripts = new Set(["ui.js", "md.js", "app.js", "actions.js", "table.js", "flow.js", "waiting.js", "home.js", "queue.js"]);
+for (const f of [...page.matchAll(/static\/([a-z]+\.js)/g)].map((m) => m[1]).filter((f) => scripts.has(f))) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const now = () => Math.floor(Date.now() / 1000);
 function draw(home, agents = [], asks = []) {
   ctx.input = { home, agents, asks };
   return vm.runInContext(`st.agents = input.agents; st.asks = input.asks; hst.data = input.home; hst.err = null; drawHome(); $("home").innerHTML`, ctx);
 }
-const home = (o) => ({ needs: [], running: [], numbers: [], health: [], errors: [], shown: 8, ...o });
+const table = (n) => ({ q: "", state: "", sort: "", dir: "desc", total: n, shown: n, states: [{ name: "all", n }], facets: [],
+  columns: ["stream", "project", "proposal", "created", "verb"].map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })) });
+const home = (o) => ({ needs: [], proposals: [], proposals_head: "", proposals_table: table(0), running: [], flow: { chips: [{ key: "running", label: "running", value: "1", hot: false, to: { tab: "queue", state: "running" } }, { key: "inbox", label: "inbox", value: null, hot: false, to: null }], bottleneck: null, as_of: null, error: null }, numbers: [], health: [], errors: [], shown: 8, ...o });
+const prop = (id, o) => ({ id, stream: "dream", project: "dotfiles", title: `Keep ${id}`, why: "said twice", evidence: "", verb: "queue",
+  does: "agent-queue add --project dotfiles -- x", created: "2026-11-05T10:00:00Z", expires: "2026-12-05T10:00:00Z", error: null, ...o });
 
 test("an ask or an open dialog on Needs you is its answer card; a red nightly is a plain card", () => {
   const html = draw(home({
@@ -101,10 +108,18 @@ test("the numbers and what could not be read are drawn as hub-core worded them",
   assert.match(html, /<span><b>queue<\/b> 1 running, 2 up next<\/span>/);
 });
 
+test("the flow strip leads Home, ahead of Numbers, and the queue and done-today numbers are gone", () => {
+  const html = draw(home({ numbers: [{ label: "sessions", value: "3 working" }] }));
+  assert.ok(html.indexOf("Flow") < html.indexOf("Numbers"), html);
+  assert.match(html, /href="#queue\?s=running" data-flow="running">running 1</);
+  assert.match(html, />inbox -</);
+  assert.doesNotMatch(html, /<b>queue<\/b>|done today/);
+});
+
 test("the summary leads, and a long list shows the cap with the rest folded", () => {
   const needs = Array.from({ length: 11 }, (_, i) => ({ kind: "nightly", project: "p", text: `red ${i}`, id: `r${i}` }));
   const html = draw(home({ needs, numbers: [{ label: "queue", value: "1 running" }], health: [{ name: "ci", level: "red" }] }));
-  assert.ok(html.indexOf("Numbers") < html.indexOf("Health") && html.indexOf("Health") < html.indexOf("Needs you"), html);
+  assert.ok(html.indexOf("Flow") < html.indexOf("Numbers") && html.indexOf("Numbers") < html.indexOf("Health") && html.indexOf("Health") < html.indexOf("Needs you"), html);
   const fold = html.indexOf('<details class="cfold" data-k="home-needs"');
   assert.ok(fold > html.indexOf("red 7") && fold < html.indexOf("red 8"), "rows past the cap sit in the fold");
   assert.match(html, /<summary>\+3 more<\/summary>/);
@@ -121,4 +136,227 @@ test("a retired tab name lands on its new tab, and anything unknown on the landi
   assert.equal(of("focus"), "daily");
   assert.equal(of(""), "home");
   assert.equal(of("nope"), "home");
+});
+
+test("Proposals is one line when empty and sits between Needs you and Running", () => {
+  const html = draw(home());
+  assert.match(html, /Nothing proposed\./);
+  assert.ok(html.indexOf("Needs you") < html.indexOf("Proposals") && html.indexOf("Proposals") < html.indexOf("Running"), html);
+  assert.doesNotMatch(html, /home-prop-q/);
+});
+
+test("a proposal row carries both actions; the rest fold under +N more", () => {
+  const rows = Array.from({ length: 10 }, (_, i) => prop(`p${i}`));
+  const html = draw(home({ proposals: rows, proposals_head: "10 from 1 stream", proposals_table: table(10) }));
+  assert.match(html, /Proposals <span class="muted">10 from 1 stream<\/span>/);
+  assert.match(html, /data-accept="p0".*data-reject="p0"/s);
+  assert.equal((html.match(/data-accept=/g) || []).length, 8);
+  assert.match(html, /\+2 more/);
+});
+
+test("an opened proposal says why and exactly what accept runs, and escapes it", () => {
+  const p = prop("aa", { why: "<b>why</b>", evidence: "https://x.test/r", error: "boom" });
+  ctx.input = p.id;
+  vm.runInContext("hst.prop.open = input", ctx);
+  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: table(1) }));
+  vm.runInContext("hst.prop.open = null", ctx);
+  assert.match(html, /Accept runs.*agent-queue add --project dotfiles -- x/s);
+  assert.match(html, /&lt;b&gt;why&lt;\/b&gt;/);
+  assert.match(html, /href="https:\/\/x\.test\/r"/);
+  assert.match(html, /Last accept failed<\/b> boom/);
+});
+
+test("evidence that is not a web link is text, never an href", () => {
+  const p = prop("aa", { evidence: "javascript:alert(1)" });
+  ctx.input = p.id;
+  vm.runInContext("hst.prop.open = input", ctx);
+  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: table(1) }));
+  vm.runInContext("hst.prop.open = null", ctx);
+  assert.doesNotMatch(html, /href="javascript/);
+});
+
+test("accept and reject post the id to their own route, and a refusal stays on the page", async () => {
+  const sent = [];
+  const reply = { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) };
+  const before = ctx.fetch;
+  ctx.fetch = async (path, o) => {
+    if (!path.startsWith("/api/proposals/")) return { ...reply, json: async () => home({ proposals: [prop("a1")], proposals_table: table(1) }) };
+    sent.push([path, o.body]);
+    return path.endsWith("/reject") ? { ok: false, status: 500, statusText: "", text: async () => "already decided" } : reply;
+  };
+  try {
+    await vm.runInContext(`propDecide("accept", "a1")`, ctx);
+    assert.equal(vm.runInContext("hst.prop.err", ctx), null);
+    await vm.runInContext(`propDecide("reject", "a1")`, ctx);
+  } finally { ctx.fetch = before; }
+  assert.deepEqual(sent, [["/api/proposals/accept", '{"id":"a1"}'], ["/api/proposals/reject", '{"id":"a1"}']]);
+  assert.match(vm.runInContext("hst.prop.err", ctx), /already decided/);
+  assert.equal(vm.runInContext("hst.prop.busy", ctx), null);
+  vm.runInContext("hst.prop.err = null", ctx);
+});
+
+test("a failed proposals read does not say nothing is proposed", () => {
+  const html = draw(home({ proposals_failed: true, errors: ["no jq, so no proposals are shown"] }));
+  assert.match(html, /Could not read proposals/);
+  assert.doesNotMatch(html, /Nothing proposed/);
+});
+
+const night = (o) => ({ at: now(), since: now() - 3600, since_label: "Thu 18:00", rows: [], ok_line: "all 6 areas ok", errors: [], ...o });
+const area = (name, level, o) => ({ name, level, line: `${name} line`, details: [], link: "#fleet?s=failed", fix: null, ...o });
+function drawNight(n) {
+  ctx.input = n;
+  vm.runInContext("hst.night = input; hst.nightErr = null; hst.fix = {}", ctx);
+  return draw(home());
+}
+
+test("Since last night shows only what is not ok, links each row and folds the ok areas", () => {
+  assert.match(drawNight(night()), /<h2 class="sec">Since last night <span class="muted">since Thu 18:00 <a href="#daily">briefing<\/a><\/span><\/h2><div class="cline muted">all 6 areas ok<\/div>/);
+  const html = drawNight(night({
+    rows: [
+      area("Workers overnight", "bad", { details: ["wave-roll failed 02:10"], fix: { project: "agent-runtime", task: "Fix it" } }),
+      area("Sessions", "warn", { link: "#sessions" }),
+    ],
+    ok_line: "Infra, Nightly, Delivery, Costs ok",
+    errors: ["watches: no such dir"],
+  }));
+  assert.match(html, /<div class="cline warn">watches: no such dir<\/div>/);
+  assert.match(html, /<a href="#fleet\?s=failed">Workers overnight<\/a> <span class="cchip bad">bad<\/span> Workers overnight line <button class="btn sm" data-fix="Workers overnight">Queue a fix<\/button><\/div><div class="cline muted">wave-roll failed 02:10<\/div>/);
+  assert.match(html, /<a href="#sessions">Sessions<\/a> <span class="cchip warn">warn<\/span> Sessions line <\/div>/, "a warn row has no fix");
+  assert.equal(html.match(/data-fix=/g).length, 1);
+  assert.match(html, /Infra, Nightly, Delivery, Costs ok/);
+  assert.ok(html.indexOf("Needs you") < html.indexOf("Since last night") && html.indexOf("Since last night") < html.indexOf("Proposals"));
+});
+
+test("a failed briefing read says why instead of an all-clear", () => {
+  vm.runInContext("hst.night = null; hst.nightErr = 'agent-web: 502'", ctx);
+  const html = draw(home());
+  assert.match(html, /Since last night<\/h2><div class="cline warn">agent-web: 502<\/div>/);
+  assert.doesNotMatch(html, /areas ok/);
+  vm.runInContext("hst.nightErr = null", ctx);
+});
+
+test("Queue a fix posts the area's task to the queue once and says what it queued", async () => {
+  const sent = [];
+  const before = ctx.fetch;
+  ctx.fetch = async (path, o) => {
+    sent.push([path, o && o.body]);
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ out: "20261107-fix-it" }) };
+  };
+  drawNight(night({ rows: [area("Nightly", "bad", { fix: { project: "agent-runtime", task: "Fix the nightly" } })] }));
+  try {
+    await vm.runInContext(`queueFix("Nightly")`, ctx);
+  } finally { ctx.fetch = before; }
+  assert.deepEqual(sent, [["/api/queue", '{"project":"agent-runtime","task":"Fix the nightly"}']]);
+  const html = draw(home());
+  assert.match(html, /<span class="muted">queued 20261107-fix-it<\/span>/);
+  assert.doesNotMatch(html, /data-fix=/, "a queued fix is not offered again");
+  vm.runInContext("hst.night = null; hst.fix = {}", ctx);
+});
+
+test("a fix the queue already holds shows its item, and a new window offers fixes again", async () => {
+  const held = night({ rows: [area("Nightly", "bad", { fix: { project: "agent-runtime", task: "Fix the nightly", queued: "20261106-fix-nightly" } })] });
+  let html = drawNight(held);
+  assert.match(html, /<span class="muted">queued 20261106-fix-nightly<\/span>/);
+  assert.doesNotMatch(html, /data-fix=/, "a reload or the hub TUI does not queue it twice");
+
+  const before = ctx.fetch;
+  let answer = night({ rows: [area("Nightly", "bad", { fix: { project: "agent-runtime", task: "Fix the nightly" } })] });
+  ctx.fetch = async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => answer });
+  try {
+    vm.runInContext(`hst.fix = { Nightly: { ok: true, text: "queued x" } }`, ctx);
+    await vm.runInContext("refreshNight()", ctx);
+    assert.equal(vm.runInContext("hst.fix.Nightly.text", ctx), "queued x", "the same window keeps what was queued here");
+    answer = { ...answer, since: answer.since - 86400 };
+    await vm.runInContext("refreshNight()", ctx);
+    assert.equal(vm.runInContext("hst.fix.Nightly", ctx), undefined, "a new window forgets it");
+    answer = { error: "briefing: boom" };
+    await vm.runInContext("refreshNight()", ctx);
+    assert.equal(vm.runInContext("hst.nightErr", ctx), "briefing: boom");
+    html = draw(home());
+    assert.match(html, /<div class="cline warn">briefing: boom<\/div>/);
+    assert.match(html, /data-fix="Nightly"/, "the last good read stays up under a failed one");
+  } finally { ctx.fetch = before; }
+  vm.runInContext("hst.night = null; hst.nightErr = null; hst.fix = {}", ctx);
+});
+
+test("a search reads the Proposals section alone and lays it over the Home already held", async () => {
+  const seen = [];
+  const before = ctx.fetch;
+  ctx.URLSearchParams = URLSearchParams;
+  ctx.fetch = async (path) => {
+    seen.push(path);
+    const body = path.startsWith("/api/home/proposals")
+      ? { proposals: [prop("b2")], proposals_head: "2 from 1 stream", proposals_table: table(2) }
+      : home({ needs: [{ kind: "queue", project: "p", text: "kept", id: "q1" }], proposals: [prop("a1"), prop("b2")], proposals_table: table(2) });
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body };
+  };
+  try {
+    draw(home({ needs: [{ kind: "queue", project: "p", text: "kept", id: "q1" }], proposals: [prop("a1"), prop("b2")], proposals_table: table(2) }));
+    seen.length = 0;
+    await vm.runInContext(`refreshProposals()`, ctx);
+  } finally { ctx.fetch = before; delete ctx.URLSearchParams; }
+  assert.equal(seen.length, 1);
+  assert.match(seen[0], /^\/api\/home\/proposals/);
+  assert.deepEqual(vm.runInContext("hst.data.proposals.map((p) => p.id)", ctx), ["b2"]);
+  assert.equal(vm.runInContext("hst.data.needs.length", ctx), 1, "the rest of Home is untouched");
+});
+
+test("a failed section read falls back to the full Home read, which shows the error", async () => {
+  const seen = [];
+  const before = ctx.fetch;
+  ctx.URLSearchParams = URLSearchParams;
+  ctx.fetch = async (path) => {
+    seen.push(path);
+    if (path === "/api/briefing") return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ error: "briefing: off" }) };
+    if (path.startsWith("/api/home/proposals")) return { ok: false, status: 502, statusText: "", text: async () => "agent-propose: boom" };
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => home({ proposals_failed: true, errors: ["agent-propose: boom, so no proposals are shown"] }) };
+  };
+  try {
+    draw(home({ proposals: [prop("a1")], proposals_table: table(1) }));
+    seen.length = 0;
+    await vm.runInContext(`refreshProposals()`, ctx);
+  } finally { ctx.fetch = before; delete ctx.URLSearchParams; }
+  assert.match(seen[0], /^\/api\/home\/proposals/);
+  assert.ok(seen.includes("/api/home"), seen.join());
+  assert.match(vm.runInContext("$('home').innerHTML", ctx), /Could not read proposals/);
+});
+
+test("a slow full read that started before a search cannot put the older rows back", async () => {
+  const before = ctx.fetch;
+  ctx.URLSearchParams = URLSearchParams;
+  let release;
+  const json = (body) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body });
+  ctx.fetch = (path) => {
+    if (path === "/api/briefing") return Promise.resolve(json({ error: "off" }));
+    if (path.startsWith("/api/home/proposals")) return Promise.resolve(json({ proposals: [prop("new")], proposals_head: "1 from 1 stream", proposals_table: table(1) }));
+    return new Promise((r) => { release = () => r(json(home({ needs: [{ kind: "queue", project: "p", text: "fresh", id: "q2" }], proposals: [prop("old")], proposals_table: table(1) }))); });
+  };
+  try {
+    draw(home({ proposals: [prop("old")], proposals_table: table(1) }));
+    const full = vm.runInContext(`refreshHome()`, ctx);
+    await vm.runInContext(`refreshProposals()`, ctx);
+    release();
+    await full;
+  } finally { ctx.fetch = before; delete ctx.URLSearchParams; }
+  assert.deepEqual(vm.runInContext("hst.data.proposals.map((p) => p.id)", ctx), ["new"]);
+  assert.equal(vm.runInContext("hst.data.needs.length", ctx), 1, "the rest of the full read still lands");
+});
+
+test("after a failed proposals read the next search goes to the full read, so the recovery shows", async () => {
+  const seen = [];
+  const before = ctx.fetch;
+  ctx.URLSearchParams = URLSearchParams;
+  ctx.fetch = async (path) => {
+    seen.push(path);
+    const body = path === "/api/briefing" ? { error: "off" } : home({ proposals: [prop("a1")], proposals_table: table(1) });
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body };
+  };
+  try {
+    draw(home({ proposals_failed: true, errors: ["agent-propose: boom, so no proposals are shown"] }));
+    seen.length = 0;
+    await vm.runInContext(`refreshProposals()`, ctx);
+  } finally { ctx.fetch = before; delete ctx.URLSearchParams; }
+  assert.ok(!seen.some((p) => p.startsWith("/api/home/proposals")), seen.join());
+  assert.equal(vm.runInContext("hst.data.proposals_failed", ctx), undefined);
+  assert.doesNotMatch(vm.runInContext("$('home').innerHTML", ctx), /Could not read proposals/);
 });

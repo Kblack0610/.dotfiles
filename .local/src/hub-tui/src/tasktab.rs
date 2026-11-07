@@ -444,7 +444,7 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
         out.push(clip_line(
             heading(
                 "FOCUS",
-                format!("  {} open, on the Daily tab", each.join(", ")),
+                format!("  {} open, in the daily note", each.join(", ")),
                 p,
             ),
             w,
@@ -661,7 +661,7 @@ pub(crate) mod tests {
             s.contains("all 4  in progress 0  filed today 0  urgent 1"),
             "{s}"
         );
-        assert!(at("FOCUS  bnb 1 open, on the Daily tab") < at("PRIORITY"));
+        assert!(at("FOCUS  bnb 1 open, in the daily note") < at("PRIORITY"));
         assert!(
             at("PROJECT") < at("LANE") && at("SINCE") < at("TEXT"),
             "{s}"
@@ -686,7 +686,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         assert!(
-            !text(&f, &one, 120).contains("on the Daily tab"),
+            !text(&f, &one, 120).contains("in the daily note"),
             "one project's rows have no Focus count"
         );
     }

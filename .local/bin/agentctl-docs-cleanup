@@ -4,16 +4,16 @@
 #   agentctl-docs-cleanup [--dry-run]     agentctl: docs-cleanup.conf; --dry-run counts and prints the task, queues nothing
 #
 # Deterministic: no model runs here. It writes tonight's baseline to the inbox (skill-drift over the
-# skills, skill-drift --docs over the global docs, the size of every lessons file), and when there is
-# drift and no docs-cleanup item is already open it adds ONE agent-queue item that runs the
+# skills, skill-drift --docs over the global docs, skill-drift --dups --check over every home that
+# restates an instruction, the size of every lessons file), and when there is drift and no docs-cleanup item is already open it adds ONE agent-queue item that runs the
 # docs-cleanup skill on that baseline. fleet-dispatch starts the item, so an unattended pass starts
 # only on an account under its weekly pace. The session lands its fixes by PR, one area per PR.
 #
 # It replaced the weekly propose-only skill-refine runner: six reports (2026-09-28 to 11-02) while
 # skill DEADPATH rose from 25 to 31 showed that a report nobody applies fixes nothing.
 #
-# Verdict: WORKED when it queued a pass, NOOP when there was no drift or a pass is still open,
-# FAILED when a count could not be taken.
+# Verdict: WORKED when it queued a pass, NOOP when there was no drift, a pass is still open or the
+# queue's admission held it, FAILED when a count could not be taken.
 set -uo pipefail
 # The user manager's PATH has no ~/.local/bin, where skill-drift and agent-queue live.
 PATH="$HOME/.local/bin:$PATH"
@@ -41,17 +41,23 @@ snap() {
 }
 snap skills --json
 snap docs --docs --json
+# --check exits 1 over the dup_pairs_max baseline in kpi-thresholds and still prints the JSON; with no
+# such row it exits 2 with no JSON, so a lost baseline reads FAILED, never "no drift".
+snap dups --dups --check --json
 for f in "$LESSONS"/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$(wc -c < "$f")" "$(basename "$f")"; done \
     | sort -rn > "$dir/lessons.tsv"
 
 # UNUSED and STALE are signals for a human, not drift a session can fix, so they do not count here.
 skills_n="$(jq '[.findings[] | select(.type != "UNUSED" and .type != "STALE")] | length' "$dir/skills.json")"
 docs_n="$(jq '.drift' "$dir/docs.json")"
+dups_n="$(jq '.pairs' "$dir/dups.json")"
+dups_over="$(jq '.over' "$dir/dups.json")"
+dups_max="$(jq '.max' "$dir/dups.json")"
 lessons_kb="$(awk '{s += $1} END {printf "%d", s / 1024}' "$dir/lessons.tsv")"
-summary="skills $skills_n, global docs $docs_n, lessons ${lessons_kb} KB"
+summary="skills $skills_n, global docs $docs_n, restated pairs $dups_n (baseline $dups_max), lessons ${lessons_kb} KB"
 printf '%s\n' "$summary" > "$dir/summary.txt"
 
-if [ "$skills_n" = 0 ] && [ "$docs_n" = 0 ]; then
+if [ "$skills_n" = 0 ] && [ "$docs_n" = 0 ] && [ "$dups_over" = 0 ]; then
     report NOOP "no drift ($summary)"
     echo "docs-cleanup: no drift ($summary)"
     exit 0
@@ -59,6 +65,7 @@ fi
 
 # One pass at a time under one slug: agent-queue refuses a second active item with it, and a
 # finished one sits in done/ where `show` still finds it, so only an active state means "open".
+# Each night's pass is new work under that slug, so it is queued --repeat.
 state="$(agent-queue show "$SLUG" --json 2>/dev/null | jq -r '.state // empty')"
 case "$state" in
     queued|running|waiting)
@@ -67,11 +74,21 @@ case "$state" in
         exit 0 ;;
 esac
 
-task="Run the docs-cleanup skill (~/.claude/skills/docs-cleanup/SKILL.md) on tonight's baseline in ${dir/#$HOME/\~}: $summary. Fix by cause, one area per PR, and write the pass report."
+# The skill is the one this runner's conf names, so a rename is one edit in the conf.
+skill="$(agentctl skill "$NAME" 2>/dev/null)" && [ -n "$skill" ] || fail "no SKILL= in the $NAME conf (agentctl skill $NAME)"
+task="Run the $skill skill on tonight's baseline in ${dir/#$HOME/\~}: $summary. Fix by cause, one area per PR, and write the pass report."
 if [ "$DRY" = 1 ]; then
     echo "docs-cleanup: would queue: $task"
     exit 0
 fi
-agent-queue add --project dotfiles --slug "$SLUG" --priority low --tags night "$task" \
-    || fail "could not queue the pass ($summary)"
+# An automated filer: a queue already a day of drain deep holds the pass (agent-queue exit 5), and
+# tomorrow's run counts again.
+agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority low --tags night "$task"
+rc=$?
+if [ "$rc" -eq 5 ]; then
+    report NOOP "pass held by queue admission ($summary)"
+    echo "docs-cleanup: the queue held the pass (admission), not queued ($summary)"
+    exit 0
+fi
+[ "$rc" -eq 0 ] || fail "could not queue the pass ($summary)"
 report WORKED "queued $SLUG ($summary)"

@@ -13,8 +13,11 @@
 mod assets;
 mod auth;
 mod board;
+mod briefing;
+mod cache;
 mod cli;
 mod cloud;
+mod costs;
 mod feed;
 mod fleet;
 mod focus;
@@ -24,8 +27,10 @@ mod outbox;
 mod outcomes;
 mod pipeline;
 mod projects;
+mod proposals;
 mod queue;
 mod reds;
+mod schedules;
 mod sessions;
 mod shepherd;
 mod transcript;
@@ -48,6 +53,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use hub_core::boards;
 use hub_core::session_actions::{self as actions, Action};
+use hub_core::session_table;
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -74,9 +80,10 @@ struct AppState {
     watch_off: WatchOff,
     infra: infra::Cache,
     jobs: jobs::Cache,
+    schedules: schedules::Cache,
     session_table: sessions::Cache,
-    fleet: fleet::Cache,
     pipeline: pipeline::Cache,
+    briefing: briefing::Cache,
 }
 
 type Shared = Arc<AppState>;
@@ -100,9 +107,10 @@ async fn main() -> Result<()> {
         watch_off,
         infra: infra::Cache::default(),
         jobs: jobs::Cache::default(),
+        schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
-        fleet: fleet::Cache::default(),
         pipeline: pipeline::Cache::default(),
+        briefing: briefing::Cache::default(),
     });
 
     let api = Router::new()
@@ -113,6 +121,7 @@ async fn main() -> Result<()> {
         .route("/api/session/{target}/{action}", post(session_action))
         .route("/api/session-options", get(session_options))
         .route("/api/sessions/table", get(sessions_table))
+        .route("/api/sessions/page", get(sessions_page))
         .route("/api/sessions/capacity", get(sessions_capacity))
         .route("/api/sessions/timer/{name}/start", post(sessions_start))
         .route("/api/asks", get(asks))
@@ -122,13 +131,18 @@ async fn main() -> Result<()> {
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
         .route("/api/home", get(home_board))
+        .route("/api/home/proposals", get(proposals::list))
+        .route("/api/briefing", get(briefing_night))
+        .route("/api/proposals/accept", post(proposals::accept))
+        .route("/api/proposals/reject", post(proposals::reject))
         .route("/api/infra", get(infra_board))
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
         .route("/api/fleet/runner", get(fleet_runner))
-        .route("/api/pipeline", get(pipeline_line))
+        .route("/api/flow", get(flow_strip))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
+        .route("/api/schedules", get(schedules_list))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
@@ -145,6 +159,7 @@ async fn main() -> Result<()> {
         .route("/api/outcomes", get(outcomes::ranked))
         .route("/api/outcomes/card", get(outcomes::card))
         .route("/api/reds", get(reds::get))
+        .route("/api/costs", get(costs::get))
         .route("/api/actions", get(feed::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
@@ -223,6 +238,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let claude = session::home().join(".claude");
     let projects = claude.join("projects");
     let (new_dirs, mut new_dirs_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
+    let (costs_events, mut costs_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watched = projects.clone();
     let events = tx.clone();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -234,8 +250,16 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
             if is_new_project(&ev.kind, p, &watched) {
                 let _ = new_dirs.send(p.clone());
             }
-            if let Some(msg) = classify(p) {
-                let _ = events.send(msg); // no subscribers is fine
+            match classify(p) {
+                // Costs keeps its read for minutes, so the task below drops it before it tells
+                // the page; a refresh that raced ahead would get the old snapshots back.
+                Some(msg) if msg == COSTS_EVENT => {
+                    let _ = costs_events.send(msg);
+                }
+                Some(msg) => {
+                    let _ = events.send(msg); // no subscribers is fine
+                }
+                None => {}
             }
         }
     })?;
@@ -261,6 +285,14 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let queue = session::home().join(".agent").join("queue");
     std::fs::create_dir_all(&queue)?;
     targets.push((queue, RecursiveMode::Recursive));
+    // agent-propose's store: Home's Proposals section.
+    let proposals = boards::proposals_dir();
+    std::fs::create_dir_all(&proposals)?;
+    targets.push((proposals, flat));
+    // The nightly token snapshots: Costs' Where the tokens go. The first one must still push.
+    let tokens = boards::token_usage_dir();
+    std::fs::create_dir_all(&tokens)?;
+    targets.push((tokens, flat));
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
         boards::fleet_state().parent().map(Path::to_path_buf),
@@ -312,6 +344,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                     let Some(dir) = dir else { break };
                     failed.extend(add_watches(&mut w, vec![(dir, flat)]));
                 }
+                Some(msg) = costs_rx.recv() => {
+                    costs::forget().await;
+                    let _ = tx.send(msg);
+                }
                 () = tokio::time::sleep(delay), if retry => {
                     // A project dir removed since needs no watch; anything else waits to exist.
                     failed.retain(|(p, _)| p.exists() || p.parent() != Some(projects.as_path()));
@@ -325,9 +361,19 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     Ok(())
 }
 
+/// A new token snapshot: the Costs tab reads afresh.
+const COSTS_EVENT: &str = r#"{"kind":"costs"}"#;
+
 fn classify(p: &Path) -> Option<String> {
     if p.ends_with(".local/state/fleet/state.json") || p.ends_with(".agent/shepherd/watch.log") {
         return Some(r#"{"kind":"watch"}"#.to_string());
+    }
+    // The token snapshots are named by day too, so they go before day-log's rule below.
+    if p.parent()? == boards::token_usage_dir().as_path() {
+        return p
+            .extension()
+            .is_some_and(|e| e == "json")
+            .then(|| COSTS_EVENT.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -364,6 +410,9 @@ fn classify(p: &Path) -> Option<String> {
     }
     match ext {
         "json" if parent == "sessions" => Some(r#"{"kind":"sessions"}"#.to_string()),
+        "json" if boards::is_proposal_file(&boards::proposals_dir(), p) => {
+            Some(r#"{"kind":"proposals"}"#.to_string())
+        }
         "md" if p.ancestors().any(|a| a.ends_with(".agent/queue")) => {
             Some(r#"{"kind":"queue"}"#.to_string())
         }
@@ -634,10 +683,21 @@ struct PageQuery {
 }
 
 async fn transcript_page(Query(q): Query<PageQuery>) -> ApiResult<Json<transcript::Page>> {
-    let agent = find_any(&q.t).await?;
-    let path = agent
-        .jsonl
-        .ok_or_else(|| bad(StatusCode::NOT_FOUND, "agent has no transcript yet"))?;
+    let path = match find_any(&q.t).await {
+        Ok(agent) => agent
+            .jsonl
+            .ok_or_else(|| bad(StatusCode::NOT_FOUND, "agent has no transcript yet"))?,
+        // An ended session is on no pane; the registry still names its transcript.
+        Err(gone) => {
+            let id = q.t.clone();
+            tokio::task::spawn_blocking(move || {
+                session_table::transcript(&session_table::registry(), &id)
+            })
+            .await
+            .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or(gone)?
+        }
+    };
     let limit = q.limit.unwrap_or(PAGE_DEFAULT).clamp(1, PAGE_MAX);
     let page = tokio::task::spawn_blocking(move || match q.after {
         Some(after) => transcript::page_after(&path, after, limit),
@@ -1003,17 +1063,35 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
 
 /// The Home tab: hub_core::home over the fleet state (asks read live), the queue and the cached
 /// Prometheus answer, the same join the hub TUI's Home draws.
-async fn home_board(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::Home>> {
+async fn home_board(
+    State(s): State<Shared>,
+    Query(q): Query<proposals::ViewQuery>,
+) -> ApiResult<Json<proposals::HomePage>> {
     let infra = s.infra.infra().await;
+    let gauges = s.pipeline.get().await;
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
         let board = hub_core::tasks::feed(&actions::System);
-        hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra))
+        let open = hub_core::proposals::read(&actions::System);
+        let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
+        home.set_proposals(&open);
+        home.set_pipeline(&gauges);
+        proposals::page(home, &q)
     })
     .await
     .map(Json)
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Home's "Since last night" (briefing.rs): the briefing's areas that are not ok since last night.
+async fn briefing_night(State(s): State<Shared>) -> Response {
+    let infra = s.infra.infra().await;
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.briefing.get(infra).await,
+    )
+        .into_response()
 }
 
 async fn infra_board(State(s): State<Shared>) -> Response {
@@ -1024,18 +1102,25 @@ async fn infra_board(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
-async fn pipeline_line(State(s): State<Shared>) -> Response {
-    (
-        [(header::CONTENT_TYPE, "application/json")],
-        s.pipeline.get().await,
-    )
-        .into_response()
+/// The flow strip (hub_core::flow) over the live queue and the cached gauges: the Queue tab's
+/// copy of what Home's `/api/home` carries as `flow`.
+async fn flow_strip(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
+    let gauges = s.pipeline.get().await;
+    tokio::task::spawn_blocking(move || {
+        let queue = hub_core::queue::Queue::read(&actions::System);
+        let mut flow = hub_core::flow::Strip::build(Some(&queue));
+        flow.set_pipeline(&gauges);
+        serde_json::json!({ "flow": flow, "grafana": hub_core::infra::grafana() })
+    })
+    .await
+    .map(Json)
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-async fn fleet_board(State(s): State<Shared>) -> Response {
+async fn fleet_board(Query(q): Query<fleet::FleetQuery>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.fleet.get().await,
+        fleet::get(q).await,
     )
         .into_response()
 }
@@ -1060,6 +1145,14 @@ async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) ->
         .into_response()
 }
 
+async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.schedules.get(q).await,
+    )
+        .into_response()
+}
+
 async fn sessions_table(
     State(s): State<Shared>,
     Query(q): Query<sessions::TableQuery>,
@@ -1069,6 +1162,21 @@ async fn sessions_table(
         s.session_table.table(q).await,
     )
         .into_response()
+}
+
+async fn sessions_page(
+    State(s): State<Shared>,
+    Query(q): Query<TargetQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let page = s
+        .session_table
+        .page(q.t)
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let page = (*page)
+        .as_ref()
+        .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no such session"))?;
+    Ok(Json(serde_json::json!(page)))
 }
 
 async fn sessions_capacity(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
@@ -1189,6 +1297,11 @@ mod tests {
             Some(r#"{"kind":"transcript","session":"abc"}"#)
         );
         assert_eq!(
+            classify(&boards::proposals_dir().join("0a1b.json")).as_deref(),
+            Some(r#"{"kind":"proposals"}"#)
+        );
+        assert_eq!(classify(&boards::proposals_dir().join(".0a1b.tmp")), None);
+        assert_eq!(
             classify(Path::new("/h/.agent/asks/bnb/Y3g.md")).as_deref(),
             Some(r#"{"kind":"asks"}"#)
         );
@@ -1218,6 +1331,15 @@ mod tests {
             None
         );
         assert_eq!(classify(Path::new("/h/.agent/daylog/.lock")), None);
+        // A token snapshot is named by day, but it is Costs', never a Log or Fleet refresh.
+        assert_eq!(
+            classify(&boards::token_usage_dir().join("2026-11-05.json")).as_deref(),
+            Some(COSTS_EVENT)
+        );
+        assert_eq!(
+            classify(&boards::token_usage_dir().join("2026-11-05.json.tmp")),
+            None
+        );
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),
             None

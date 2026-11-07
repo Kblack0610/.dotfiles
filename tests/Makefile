@@ -33,19 +33,18 @@ BATS_FLAGS ?= --print-output-on-failure --timing
 UI_TIMEOUT  ?= 420
 
 .PHONY: test test-fast test-unit test-integ test-files test-ui test-ui-inner test-container \
-        test-docker test-rust lint fmt corpus-check bootstrap clean clean-vendor help
+        test-docker test-rust lint fmt bootstrap clean clean-vendor help
 
 help:
 	@echo "make bootstrap    vendor bats-core + helpers (once)"
 	@echo ""
 	@echo "host-safe (no tmux server started):"
-	@echo "  make test-fast    unit + integ (CI fast job)"
+	@echo "  make test-fast    unit + integ (CI runs them in shards: shard.sh)"
 	@echo "  make test-files   FILES=... only these (the stop-hook picks them)"
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
 	@echo "  make lint         shellcheck + shfmt + house rules over tracked shell scripts"
 	@echo "  make test-rust    cargo test/clippy/fmt over the tracked Rust crates"
-	@echo "  make corpus-check ADVISORY: do the board fixtures still match ~/.agent/plans?"
 	@echo ""
 	@echo "container-only (real tmux servers; NEVER runs on this machine):"
 	@echo "  make test-ui      the tmux ui tier, inside docker"
@@ -82,9 +81,16 @@ test-unit: $(BATS)
 test-integ: $(BATS)
 	@$(BATS) $(BATS_FLAGS) $(HERE)integ
 
-# The Stop hook's entry: only the fast-tier files 60-shell-tests.sh picked for the change.
+# The Stop hook's entry (the files 60-shell-tests.sh picked for the change) and CI's (one shard.sh shard).
+# Unit files run in parallel like test-unit, integ files serially like test-integ; both run
+# even when the first fails, so one report names every red.
+UNIT_FILES  = $(strip $(foreach f,$(FILES),$(if $(filter unit/%,$(f))$(findstring /unit/,$(f)),$(f))))
+OTHER_FILES = $(filter-out $(UNIT_FILES),$(FILES))
 test-files: $(BATS)
-	@$(BATS) $(BATS_FLAGS) $(FILES)
+	@rc=0; \
+	$(if $(UNIT_FILES),$(BATS) $(BATS_FLAGS) $(UNIT_PAR) $(UNIT_FILES) || rc=1;) \
+	$(if $(OTHER_FILES),$(BATS) $(BATS_FLAGS) $(OTHER_FILES) || rc=1;) \
+	exit $$rc
 
 # Host entry point for the ui tier: hand off to the container. Running bats over ui/ on a
 # real machine is not a supported path -- require_disposable_host() fails every test there.
@@ -113,7 +119,7 @@ test-ui-inner: $(BATS)
 # What the container's default CMD runs: everything, in one pass.
 test-container: test-fast test-ui-inner
 
-# One implementation, in lint.sh, shared with the Stop hook and CI. The severity ratchet and
+# One implementation, in lint.sh, shared with CI. The severity ratchet and
 # the file list both live there, so a local green cannot mean a CI red.
 lint:
 	@$(HERE)lint.sh
@@ -134,10 +140,3 @@ clean:
 
 clean-vendor:
 	@rm -rf $(VENDOR)
-
-# Advisory drift check, never a gate: it reads LIVE state (~/.agent/plans), which differs
-# per machine and is empty in CI. Same precedent as runner_contract.bats reading the real
-# agentctl roster -- a fixture corpus can only ever confirm the fixture. Always exits 0;
-# read its output.
-corpus-check:
-	@./corpus-check.sh

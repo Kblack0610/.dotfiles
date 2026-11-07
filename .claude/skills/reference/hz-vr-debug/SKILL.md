@@ -25,7 +25,7 @@ interface. This skill covers viewing application logs, capturing device state,
 diagnosing crashes, and resolving common issues encountered during Meta VR
 development.
 
-## When to Use This Skill
+## Scope and triggers
 
 Use this skill when you need to:
 
@@ -37,6 +37,8 @@ Use this skill when you need to:
 - Pull diagnostic files from the device for offline analysis
 
 This skill is relevant for Meta VR Glasses and Meta Quest headsets (Quest 2, Quest 3, Quest 3S, Quest Pro) running Horizon OS.
+
+Not for frame timing from a trace (`hz-perfetto-debug`) or CPU hotspots (`hz-simpleperf-debug`). An unclear build path is `hz-quest-verify-first`.
 
 ## Prerequisites
 
