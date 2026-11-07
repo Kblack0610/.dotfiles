@@ -122,8 +122,29 @@ buf() { mapfile -t BUF <<<"$output"; }
   printf '%s' $'## Focus\nloose\n<!-- rollup:start -->\n### bnb\n- [ ] row\nraw text\n\n## Refs\n' > "$NOTE"
   run save_run 1 0 'vim.cmd "silent write"'
   assert_success
-  run sed 's/ #c1104//' "$NOTE"
+  # No sed over the whole note: the mirrored row must come back without this note's created tag.
+  run sed '/rollup:start/,$!s/ #c1104//' "$NOTE"
   assert_output "$(printf '%s' $'## Focus\n\n### Urgent\n\n### High\n\n### Low\n- [ ] loose #low\n\n---\n### Done\n\n<!-- rollup:start -->\n### bnb\n- [ ] row\nraw text\n\n## Refs\n')"
+}
+
+# Same input and expected text as focus_sweep.rs golden_tag_grammar_matches_the_nvim_buffer_sweep.
+# md::tag_span reads `#high-priority` as one tag that is no priority; a `%f[%W]` match read it
+# as `#high`, filed the row by it and cut `#high` out of the tag, leaving `-priority` behind.
+@test "a save reads a priority tag by the CLI's tag grammar" {
+  printf '%s' $'## Focus\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority\n- [ ] c foo#urgent\n- [ ] d `#urgent` #HIGH.\n\n## Notes\n' > "$NOTE"
+  run save_run 1 0 'vim.cmd "silent write"'
+  assert_success
+  run sed 's/ #c1104//' "$NOTE"
+  assert_output "$(printf '%s' $'## Focus\n\n### Urgent\n\n### High\n- [ ] d `#urgent` #HIGH.\n\n### Low\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority #low\n- [ ] c foo#urgent #low\n\n---\n### Done\n\n## Notes\n')"
+}
+
+@test "the priority cycle leaves a longer tag that starts with a level alone" {
+  printf '%s' $'## Focus\n\n### Urgent\n\n### High\n- [ ] row #size/m #high-priority #c1104 #high\n\n### Low\n\n---\n### Done\n' > "$NOTE"
+  run save_run 6 0 'vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<leader>tP", true, false, true), "x", false)'
+  assert_success
+  buf
+  local row="${BUF[0]%% *}"
+  assert_equal "${BUF[$row]}" "- [ ] row #size/m #high-priority #c1104 #urgent"
 }
 
 @test "a doc that is no daily note keeps the prose under its Focus heading" {

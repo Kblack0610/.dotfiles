@@ -298,6 +298,16 @@ after
     }
 
     #[test]
+    fn golden_tag_grammar_matches_the_nvim_buffer_sweep() {
+        // `#high-priority` is no priority, a glued or code-spanned `#urgent` is no tag, and
+        // `#HIGH.` is high. tests/integ/notes_save_sweep.bats ("a save reads a priority tag by
+        // the CLI's tag grammar") runs the same input through markdown.lua's each_tag.
+        let note = "## Focus\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority\n- [ ] c foo#urgent\n- [ ] d `#urgent` #HIGH.\n\n## Notes\n";
+        let expected = "## Focus\n\n### Urgent\n\n### High\n- [ ] d `#urgent` #HIGH.\n\n### Low\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority #low\n- [ ] c foo#urgent #low\n\n---\n### Done\n\n## Notes\n";
+        assert_eq!(sweep_content(note).unwrap(), expected);
+    }
+
+    #[test]
     fn empty_lanes_are_kept_as_placeholders() {
         // one #high task -> all lane headers + Done are emitted, even the empty ones
         let note = "## Focus\n- [ ] task #high\n\n## Notes\n";

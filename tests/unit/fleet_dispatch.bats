@@ -2188,7 +2188,7 @@ approved_plan() {
   run agent-queue list --json --state queued
   assert_equal "$(jq -r .slug <<<"$output" | paste -sd,)" 'orphan-p2,orphan-p3'
   assert_equal "$(jq -r .tags <<<"$output" | sort -u)" 'night'
-  assert_equal "$(jq -r .from <<<"$output" | sort -u)" 'shepherd'
+  assert_equal "$(jq -r .from <<<"$output" | sort -u)" 'auto:plans'
   grep -q 'orphan.md for the night' "$FLEET_DISPATCH_DIR/log.md"
 }
 

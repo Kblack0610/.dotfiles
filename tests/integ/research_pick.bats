@@ -47,6 +47,14 @@ repo() {
   assert_output hot
 }
 
+@test "a pick the queue's admission holds (exit 5) is said as held, not as a failure, and is not recorded" {
+  stub agent-queue 'case "$1" in add) echo "agent-queue: held by admission, nothing was added" >&2; exit 5 ;; esac; exit 0'
+  run "$PICK" run
+  assert_output --partial 'hot: held by queue admission, nothing queued'
+  refute_output --partial 'agent-queue add failed'
+  [ ! -e "$RESEARCH_DIR/picks.jsonl" ]
+}
+
 @test "while a research item is in flight nothing is queued; another project's item does not count" {
   echo '{"slug": "x", "from": "research:cold"}' > "$NOTES_FIXTURE/queue.jsonl"
   run "$PICK" run
