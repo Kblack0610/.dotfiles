@@ -12,7 +12,7 @@ metadata:
 
 Runs the playground's tests without hurting the workstation, which is the human's and is shared with every other session, and turns a run into a merge decision. Every CI rule lives in the repo's `docs/operations/ci.md` (Rules); this file restates none of them. When the two disagree, the doc wins and this file gets fixed in the same turn.
 
-## When to Use
+## Scope and triggers
 
 - When iterating on one test class while writing or fixing it.
 - When gating and landing a playground PR.

@@ -12,6 +12,12 @@ metadata:
 
 The delivery role of `fleet-lead` (Binks). Binks aims at measured improvement of the fleet, one KPI at a time with a check (`fleet-lead`, step 3); this role is the means. It answers one question: is every session either working, waiting on the human, or finished and wound down? A session that is none of these gets one nudge per fact, and a fact that survives its nudge goes to the human. It never does a session's work for it.
 
+## Scope and triggers
+
+Covers moving every agent session through its plan: the buckets (WORKING, STALLED, LANDED, DONE), one nudge per fact, escalation and overdue phases.
+
+Use for "which sessions are stuck", "nudge the stalled ones", "wind down the finished ones", "/shepherd status". Load: `fleet-pace`. One pass over everything: `fleet-lead`.
+
 ## Verb: `status`
 
 Run `fleet-sessions` and show its table. It sorts every live Claude session into one bucket from facts (session status, plan mode, the ask queue, `fleet-assess` rows, git, and `gh pr list`), with no judgment:
