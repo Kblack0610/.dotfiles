@@ -403,6 +403,12 @@ fn newest(runs: &[Job]) -> BTreeMap<&str, &Job> {
     m
 }
 
+/// What the calls cost, $0 for none.
+fn spent_in(calls: &[Call]) -> f64 {
+    // Not sum(): an empty f64 sum is -0.0, which prints as "$-0.00".
+    calls.iter().filter_map(|c| c.cost).fold(0.0, |a, c| a + c)
+}
+
 fn budget_stops(state: &Value) -> Vec<String> {
     state["budget"]
         .as_array()
@@ -425,13 +431,20 @@ fn workers(i: &Inputs) -> Area {
     let last = newest(runs);
     let failed: Vec<&&Job> = last.values().filter(|j| j.ok == Some(false)).collect();
     let stops = budget_stops(&i.state);
+    // A run that ended BLOCKED (a gate or a budget) did not do its work: not ok, not failed.
+    let blocked: Vec<String> = last
+        .values()
+        .filter(|j| j.ok.is_none() && !stops.contains(&j.name))
+        .map(|j| j.name.clone())
+        .collect();
+    let not_ok = last.values().filter(|j| j.ok != Some(true)).count();
     let mut line = if last.is_empty() {
         format!("no runner ran since {}", clock(i.since))
     } else {
-        format!("{} of {} ok", last.len() - failed.len(), last.len())
+        format!("{} of {} ok", last.len() - not_ok, last.len())
     };
     if let Some(calls) = &i.calls {
-        let spent: f64 = calls.iter().filter_map(|c| c.cost).fold(0.0, |a, c| a + c); // not sum(): an empty f64 sum is -0.0
+        let spent: f64 = spent_in(calls);
         line += &format!(", {}", money(spent));
     }
     let mut level = Level::Ok;
@@ -446,6 +459,10 @@ fn workers(i: &Inputs) -> Area {
     if !stops.is_empty() {
         level = level.max(Level::Warn);
         line += &format!(". Budget stop: {}", names(&stops, 3));
+    }
+    if !blocked.is_empty() {
+        level = level.max(Level::Warn);
+        line += &format!(". Blocked: {}", names(&blocked, 3));
     }
     Area {
         name: "Workers overnight",
@@ -487,6 +504,10 @@ fn nightly(i: &Inputs) -> Area {
             }
             Some(Some(j)) if j.ok == Some(false) => {
                 level = Level::Bad;
+                not.push(format!("{r} {}", j.result.to_lowercase()));
+            }
+            Some(Some(j)) if j.ok.is_none() => {
+                level = level.max(Level::Warn);
                 not.push(format!("{r} {}", j.result.to_lowercase()));
             }
             Some(Some(_)) => ok.push(r.to_string()),
@@ -645,7 +666,7 @@ fn costs(i: &Inputs) -> Area {
         }
     }
     if let Some(calls) = &i.calls {
-        let r: f64 = calls.iter().filter_map(|c| c.cost).fold(0.0, |a, c| a + c); // not sum(): an empty f64 sum is -0.0
+        let r: f64 = spent_in(calls);
         parts.push(format!("runners {} since {}", money(r), clock(i.since)));
     }
     match i
@@ -1156,6 +1177,26 @@ mod tests {
         // Negative control: the same fixture without the failed runner reads ok.
         i.runs.as_mut().unwrap().retain(|j| j.name != "wave-roll");
         assert_eq!(area(&build(&i), "Workers overnight").level, Level::Ok);
+    }
+
+    #[test]
+    fn a_blocked_run_is_not_ok_in_workers_or_nightly() {
+        let mut i = green();
+        i.runs
+            .as_mut()
+            .unwrap()
+            .push(run("dream", None, "BLOCKED", NOW - 3600));
+        let b = build(&i);
+        let w = area(&b, "Workers overnight");
+        assert_eq!(w.level, Level::Warn);
+        assert_eq!(w.line, "2 of 3 ok, $0.00. Blocked: dream");
+        let n = area(&b, "Nightly");
+        assert_eq!(n.level, Level::Warn);
+        assert_eq!(n.line, "nightly-sync, day-log ok; dream blocked");
+        // A budget stop is named once, as the stop.
+        i.state["budget"] = serde_json::json!([{"runner": "dream", "detail": "$10.20 of $10"}]);
+        let w = area(&build(&i), "Workers overnight").clone();
+        assert_eq!(w.line, "2 of 3 ok, $0.00. Budget stop: dream");
     }
 
     #[test]

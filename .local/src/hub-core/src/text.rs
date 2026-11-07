@@ -47,12 +47,13 @@ fn short_path(w: &str) -> String {
     format!("{stem}{}", &w[body.len()..])
 }
 
-/// `s` cut to `max` chars on a word boundary, with "..." when cut.
+/// `s` cut on a word boundary to fit `max` chars with the "..." it gains when cut, so a cap
+/// a lint enforces holds.
 pub fn cap(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
-    let cut: String = s.chars().take(max).collect();
+    let cut: String = s.chars().take(max.saturating_sub(3)).collect();
     let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(a, _)| a);
     format!("{}...", cut.trim_end_matches([',', ';', ':']))
 }
@@ -73,13 +74,30 @@ pub fn local_day_start(now: i64) -> i64 {
         .timestamp_opt(now, 0)
         .single()
         .and_then(|t| t.date_naive().and_hms_opt(0, 0, 0))
-        .and_then(|d| Local.from_local_datetime(&d).earliest())
+        // A DST change that skips midnight starts the day at the first time that exists.
+        .and_then(|d| {
+            (0..3).find_map(|h| {
+                Local
+                    .from_local_datetime(&(d + chrono::Duration::hours(h)))
+                    .earliest()
+            })
+        })
         .map_or(now, |t| t.timestamp())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cap_fits_its_max_with_the_ellipsis() {
+        let word = "x".repeat(200);
+        assert_eq!(cap(&word, 160).chars().count(), 160);
+        let words = format!("{} tail", "a b".repeat(60));
+        assert!(cap(&words, 160).chars().count() <= 160);
+        assert!(cap(&words, 160).ends_with("..."));
+        assert_eq!(cap("short", 160), "short");
+    }
 
     #[test]
     fn the_title_is_the_first_sentence_and_the_rest_follows_it() {

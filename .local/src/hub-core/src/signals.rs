@@ -69,27 +69,40 @@ pub fn mail(tsv: &str) -> Vec<Value> {
 
 /// The janitor's NEEDS YOU items in `infra-cleanup.md`: `- <when> [<who>] NEEDS YOU: <what>`.
 /// The section header names NEEDS YOU too, but is no item.
+/// One item per what, the newest pass's: the janitor repeats a line on each pass it persists.
 pub fn janitor(md: &str) -> Vec<Value> {
-    md.lines()
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<Value> = md
+        .lines()
+        .rev()
         .filter_map(|l| {
             let rest = l.strip_prefix("- ")?;
             let (when, rest) = rest.split_once(" [")?;
             let (who, rest) = rest.split_once("] NEEDS YOU")?;
             let what = rest.trim_start_matches(':').trim();
-            Some(json!({"when": when.trim(), "who": who, "what": what}))
+            seen.insert(what.to_string())
+                .then(|| json!({"when": when.trim(), "who": who, "what": what}))
         })
-        .collect()
+        .collect();
+    out.reverse();
+    out
 }
 
-/// A runner stopped at its budget today: the newest outcome line of its activity.log is
-/// `outcome=BLOCKED budget: <detail>` (lib/budget.sh), at or after `day_start`. It waits for a
-/// raise or for midnight, so it needs the human whatever its kind.
+/// A runner stopped at its day budget today: the newest outcome line of its activity.log is
+/// `outcome=BLOCKED budget: over its daily budget: <detail>` (lib/budget.sh), at or after
+/// `day_start`. It waits for a raise or for midnight, so it needs the human whatever its kind.
+/// The hourly call cap (`budget: rate: ...`) clears itself within the hour, so it is no stop.
 pub fn budget_stop(log: &str, day_start: i64) -> Option<(String, Option<i64>)> {
     let last = log
         .lines()
         .rev()
         .find_map(|l| crate::fleet::parse_activity(l.trim()))?;
-    let detail = last.text.strip_prefix("budget:")?.trim();
+    let detail = last
+        .text
+        .strip_prefix("budget:")?
+        .trim()
+        .strip_prefix("over its daily budget:")?
+        .trim();
     (last.word == "BLOCKED" && last.at.is_some_and(|t| t >= day_start))
         .then(|| (detail.to_string(), last.at))
 }
@@ -195,16 +208,24 @@ mod tests {
             json!({"when": "Thu 06:30", "who": "janitor", "what": "pvc stuck"})
         );
         assert_eq!(j[1]["what"], "node disk 91%");
+        // A line the janitor repeats on a later pass is one item, at its newest time.
+        let again = format!("{md}- Fri 02:00 [janitor] NEEDS YOU: pvc stuck\n");
+        let j = janitor(&again);
+        assert_eq!(j.len(), 2);
+        assert_eq!(
+            j[1],
+            json!({"when": "Fri 02:00", "who": "janitor", "what": "pvc stuck"})
+        );
     }
 
     #[test]
     fn a_budget_stop_counts_only_when_it_is_the_newest_outcome_of_today() {
         let day = crate::fleet::ts("2026-11-06T00:00:00-0800").unwrap();
-        let log = "[2026-11-06T03:12:00-0800] outcome=BLOCKED budget: day $10.20 of $10\n";
+        let log = "[2026-11-06T03:12:00-0800] outcome=BLOCKED budget: over its daily budget: $10.20 of $10 (BUDGET_DAY_USD)\n";
         assert_eq!(
             budget_stop(log, day),
             Some((
-                "day $10.20 of $10".into(),
+                "$10.20 of $10 (BUDGET_DAY_USD)".into(),
                 crate::fleet::ts("2026-11-06T03:12:00-0800")
             ))
         );
@@ -212,8 +233,11 @@ mod tests {
         let raised = format!("{log}[2026-11-06T04:00:00-0800] outcome=WORKED did it\n");
         assert_eq!(budget_stop(&raised, day), None);
         // Yesterday's stop ended at midnight.
-        let old = "[2026-11-05T23:00:00-0800] outcome=BLOCKED budget: day $10.20 of $10\n";
+        let old = "[2026-11-05T23:00:00-0800] outcome=BLOCKED budget: over its daily budget: $10.20 of $10 (BUDGET_DAY_USD)\n";
         assert_eq!(budget_stop(old, day), None);
+        // The hourly cap clears itself: no stop.
+        let rate = "[2026-11-06T03:12:00-0800] outcome=BLOCKED budget: rate: 20 calls in the last hour, cap 20 (MAX_CALLS_HOUR)\n";
+        assert_eq!(budget_stop(rate, day), None);
         // A gate, not a budget.
         let gate = "[2026-11-06T03:12:00-0800] outcome=BLOCKED gate: held\n";
         assert_eq!(budget_stop(gate, day), None);
@@ -255,7 +279,7 @@ mod tests {
         let now = crate::fleet::ts("2026-11-06T06:45:00-0800").unwrap();
         std::fs::write(
             agentctl.join("dream/activity.log"),
-            "[2026-11-06T03:12:00-0800] outcome=BLOCKED budget: day $10.20 of $10\n",
+            "[2026-11-06T03:12:00-0800] outcome=BLOCKED budget: over its daily budget: $10.20 of $10 (BUDGET_DAY_USD)\n",
         )
         .unwrap();
         std::fs::write(

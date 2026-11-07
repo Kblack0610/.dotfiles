@@ -266,6 +266,9 @@ fn day_start(day: &str) -> Option<i64> {
 }
 
 /// A `night` queue item that finished failed: it ran unwatched, so its failure is the human's.
+/// A failed night task needs the human for a day after it ends; after that the queue holds it.
+pub const NIGHT_WINDOW_SECS: i64 = 86_400;
+
 fn night_failed(i: &Item) -> bool {
     i.state == State::Done
         && i.status.as_deref() == Some("failed")
@@ -529,13 +532,18 @@ pub fn needs(
             Kind::Budget,
             format!("budget:{runner}"),
             format!(
-                "{runner} stopped at its budget: {}. To go on today: agentctl budget {runner} raise <usd>.",
+                "{runner} stopped at its daily budget: {}. To go on today: agentctl budget {runner} raise <usd>.",
                 str_of(b, "detail").trim_end_matches('.')
             ),
             b["at"].as_i64(),
         ));
     }
-    for i in items.iter().filter(|i| night_failed(i)) {
+    let recent = |i: &Item| {
+        let done = i.finished.as_deref().and_then(ts);
+        now.zip(done)
+            .is_none_or(|(n, d)| n - d <= NIGHT_WINDOW_SECS)
+    };
+    for i in items.iter().filter(|i| night_failed(i) && recent(i)) {
         out.push(Need {
             project: i.project.clone(),
             ..condition(
@@ -833,8 +841,12 @@ mod tests {
         let mut day = failed.clone();
         day.slug = "day-failed".into();
         day.tags = String::new();
+        // And one that failed more than a day before the state was written.
+        let mut old = failed.clone();
+        old.slug = "night-old".into();
+        old.finished = Some("2026-11-03T03:00:00-0800".into());
         let q = Queue {
-            items: vec![failed, ok, day],
+            items: vec![failed, ok, day, old],
             ..Default::default()
         };
         let h = build(&st, Some(&q), None, None);
@@ -854,7 +866,7 @@ mod tests {
         let text = |k: Kind| h.needs.iter().find(|n| n.kind == k).unwrap().text.clone();
         assert_eq!(
             text(Kind::Budget),
-            "dream stopped at its budget: day $10.20 of $10. To go on today: agentctl budget dream raise <usd>."
+            "dream stopped at its daily budget: day $10.20 of $10. To go on today: agentctl budget dream raise <usd>."
         );
         assert_eq!(
             text(Kind::Night),
