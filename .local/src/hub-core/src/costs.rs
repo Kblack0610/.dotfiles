@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::burn::{self, Burn};
 use crate::session_actions::Runner;
 use crate::table::{Row, Summary, Val, View};
 
@@ -149,6 +150,8 @@ pub struct Costs {
     /// Newest first.
     pub snapshots: Vec<Snapshot>,
     pub live: Live,
+    /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
+    pub burn: Burn,
     pub grafana: Option<String>,
 }
 
@@ -157,6 +160,8 @@ pub struct Costs {
 pub struct Paths {
     pub calls: PathBuf,
     pub tokens: PathBuf,
+    /// fleet-dispatch's `log.md`, whose `started` lines are the drip.
+    pub dispatch_log: PathBuf,
 }
 
 impl Paths {
@@ -164,6 +169,7 @@ impl Paths {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         Paths {
             calls: crate::fleet::Paths::from_env().calls,
+            dispatch_log: crate::boards::dispatch_dir().join("log.md"),
             tokens: std::env::var_os("TOKENS_DIR")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
@@ -223,7 +229,43 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         }
         Err(e) => c.errors.push(format!("Prometheus: {e}")),
     }
+    c.burn = read_burn(runner, paths, now, &mut c.errors);
     c
+}
+
+/// The Burn section's sources: claude-acct's series and rate in Prometheus, the dispatch log
+/// for the drip, and `fleet-dispatch headroom` for why it is held. A source that fails is named
+/// in `errors` and the rest still show.
+fn read_burn(runner: &dyn Runner, paths: &Paths, now: i64, errors: &mut Vec<String>) -> Burn {
+    let (series, rate) = match crate::prom::base() {
+        Ok(b) => {
+            let series = crate::prom::instant(&b, crate::fleet::ACCOUNTS).unwrap_or_else(|e| {
+                errors.push(format!("accounts: {e}"));
+                vec![]
+            });
+            let rate = crate::prom::instant(&b, burn::RATE_Q)
+                .ok()
+                .and_then(|s| s.first().and_then(|s| s.value));
+            (series, rate)
+        }
+        Err(e) => {
+            errors.push(format!("accounts: {e}"));
+            (vec![], None)
+        }
+    };
+    let log = crate::fleet::tail(&paths.dispatch_log, crate::fleet::LOG_TAIL)
+        .map(|(text, _)| text)
+        .unwrap_or_else(|e| {
+            errors.push(format!("dispatch log: {e}"));
+            String::new()
+        });
+    let held = runner
+        .run(&["fleet-dispatch", "headroom", "--json"].map(String::from))
+        .map_err(|e| errors.push(format!("fleet-dispatch headroom: {e}")))
+        .ok()
+        .and_then(|o| serde_json::from_str::<serde_json::Value>(&o).ok())
+        .and_then(|v| v["held"].as_str().map(String::from));
+    burn::build(&series, rate, burn::drip(&log, now, held), now)
 }
 
 /// The outcomes CLI's lines; one that does not parse is skipped, as every hub reader does.
@@ -819,6 +861,7 @@ pub struct Board {
     pub windows: Vec<&'static str>,
     pub totals: Vec<Total>,
     pub live: Live,
+    pub burn: Burn,
     pub sources: Vec<Source>,
     pub errors: Vec<String>,
     /// This cut's columns, the only ones drawn.
@@ -938,6 +981,7 @@ pub fn board(c: &Costs, by: &str, w: &str, q: &str, sort: &str, dir: &str) -> Bo
         windows: WINDOWS.iter().map(|w| w.0).collect(),
         totals: totals(&c.sessions, c.at),
         live: c.live.clone(),
+        burn: c.burn.clone(),
         sources: sources(c),
         errors: c.errors.clone(),
         columns: cols,
