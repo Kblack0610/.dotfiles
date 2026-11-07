@@ -49,6 +49,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use hub_core::boards;
 use hub_core::session_actions::{self as actions, Action};
+use hub_core::session_table;
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -114,6 +115,7 @@ async fn main() -> Result<()> {
         .route("/api/session/{target}/{action}", post(session_action))
         .route("/api/session-options", get(session_options))
         .route("/api/sessions/table", get(sessions_table))
+        .route("/api/sessions/page", get(sessions_page))
         .route("/api/sessions/capacity", get(sessions_capacity))
         .route("/api/sessions/timer/{name}/start", post(sessions_start))
         .route("/api/asks", get(asks))
@@ -644,10 +646,21 @@ struct PageQuery {
 }
 
 async fn transcript_page(Query(q): Query<PageQuery>) -> ApiResult<Json<transcript::Page>> {
-    let agent = find_any(&q.t).await?;
-    let path = agent
-        .jsonl
-        .ok_or_else(|| bad(StatusCode::NOT_FOUND, "agent has no transcript yet"))?;
+    let path = match find_any(&q.t).await {
+        Ok(agent) => agent
+            .jsonl
+            .ok_or_else(|| bad(StatusCode::NOT_FOUND, "agent has no transcript yet"))?,
+        // An ended session is on no pane; the registry still names its transcript.
+        Err(gone) => {
+            let id = q.t.clone();
+            tokio::task::spawn_blocking(move || {
+                session_table::transcript(&session_table::registry(), &id)
+            })
+            .await
+            .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or(gone)?
+        }
+    };
     let limit = q.limit.unwrap_or(PAGE_DEFAULT).clamp(1, PAGE_MAX);
     let page = tokio::task::spawn_blocking(move || match q.after {
         Some(after) => transcript::page_after(&path, after, limit),
@@ -1085,6 +1098,19 @@ async fn sessions_table(
         s.session_table.table(q).await,
     )
         .into_response()
+}
+
+async fn sessions_page(
+    State(s): State<Shared>,
+    Query(q): Query<TargetQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let page = s
+        .session_table
+        .page(q.t)
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| bad(StatusCode::NOT_FOUND, "no such session"))?;
+    Ok(Json(serde_json::json!(&*page)))
 }
 
 async fn sessions_capacity(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {

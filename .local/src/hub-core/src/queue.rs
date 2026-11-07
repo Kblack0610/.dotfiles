@@ -440,6 +440,13 @@ pub fn parse(jsonl: &str) -> Vec<Item> {
         .collect()
 }
 
+/// One item by its slug, whatever its state.
+pub fn show(runner: &dyn Runner, slug: &str) -> Result<Item, String> {
+    parse(&runner.run(&argv(&["show", slug, "--json"]))?)
+        .pop()
+        .ok_or_else(|| format!("{slug}: agent-queue show printed no item"))
+}
+
 /// The items in `state` (`active`, `all`, or one state), in agent-queue's order: priority, then
 /// queued time. `all` is every active item plus today's finished ones.
 pub fn list(runner: &dyn Runner, state: &str) -> Result<Vec<Item>, String> {

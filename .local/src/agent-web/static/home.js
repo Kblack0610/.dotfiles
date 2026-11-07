@@ -184,7 +184,7 @@ $("home").addEventListener("click", (e) => {
   const open = e.target.dataset.open;
   if (open) {
     const a = st.agents.find((x) => x.target === open);
-    if (a) { setTab("sessions"); select(a); }
+    if (a) openAgent(a);
     return;
   }
   if (e.target.dataset.tab) { setTab(e.target.dataset.tab); return; }
