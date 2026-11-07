@@ -12,6 +12,12 @@ metadata:
 
 Edit the rule layer with the correct scope, then sync. This skill picks the right file to touch and runs the fan-out.
 
+## Scope and triggers
+
+Covers adding, editing or removing AI assistant rules in the right layer (rulesync, CLAUDE.md, AGENTS.md) and running the sync.
+
+Use for "add a rule", "from now on always X", "update CLAUDE.md", "register a new MCP server". Settings and hooks: `update-config`.
+
 ## The one thing that trips everyone up
 
 **The rule CONTENT lives in the PRIVATE overlay. This SKILL lives in the PUBLIC repo.**

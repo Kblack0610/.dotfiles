@@ -14,7 +14,7 @@ One pass that leaves CI greener because causes were fixed, not hidden: a measure
 
 It composes three skills and restates none of them: `ci-failures` counts reds, `ci-cost` counts time, `playground-headless-test` runs and gates. The repo's CI doc owns the rules (`docs/operations/ci.md` in unity-core-playground: gate, quarantine, timeouts, stop-the-line). When this file and the doc disagree, the doc wins and this file is fixed in the same turn.
 
-## When to Use
+## Scope and triggers
 
 - The human asks to clean up CI, raise the pass rate, or run "CI cleanup pass N".
 - Nightlies stay red for days and single-red triage has not moved them.

@@ -16,6 +16,12 @@ Rigor means correct and simple. A design with more layers than the problem needs
 
 The global Core Principles already apply: Simplicity First, One Source of Truth, Subtract First, No sleep-and-hope timing. This skill names them and does not restate them.
 
+## Scope and triggers
+
+Covers a modifier you put in front of an ask or another skill (`/rigor <ask>`, `/rigor /one-shot X`): staff-architect mode, from that turn until the human drops it.
+
+Use for "do it properly", "best practices", "no shortcuts". Autonomy without the extra care: `my:go`.
+
 ## Steps
 
 Do the four stages in order. End each one with its exit line in the reply. A stage you cannot exit is the thing to report.

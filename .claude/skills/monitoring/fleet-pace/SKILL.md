@@ -12,6 +12,12 @@ metadata:
 
 The machine-room role of `fleet-lead` (Binks). It was written down after 2026-10-23: about 15 sessions each started headless Unity runs, load reached 96 on 24 cores, Tctl reached 95.8 C, and the timing-sensitive test classes went red. Stopping them took an improvised process-tree trace, a hand-built kill, a dozen one-off messages, and a second kill when shell loops respawned the editors. This skill makes that a three-verb routine, and a fleet left idle is the same failure in the other direction.
 
+## Scope and triggers
+
+Covers keeping the machine busy but responsive (about 70% CPU): assess load, hold a resource, park sessions, GO in batches, the pace check.
+
+Use for "the machine is melting", "stop all the agents", "is there room for more", "lift the hold". Session progress and nudges: `shepherd`.
+
 ## Tools
 
 - `fleet-assess` prints headroom (load against cores, Tctl, memory, threads blocked on I/O), the GitHub REST calls left this hour in the emptier of its two per-user buckets (a `github:` line; `(actions/workflows)` names the bucket `gh run list`, `gh run view` and `gh workflow run` spend, which `gh api rate_limit` does not show; LOW under `FLEET_GH_LOW` with over 20 minutes to the reset, naming the scripts whose gh calls are running), active holds, a verdict, one row per heavy process (pid, CPU, nice, class, tmux session, worktree, command, and the pane as `<server>/<pane id>`, which `fleet-sessions` reads to mark only that pane's agent WORKING heavy), and a `blocked on I/O` table for any process over 5 minutes old with a thread in D state (thread count, age, wchan, the file it holds open). `--watch-probe` prints one line and exits 1 on HOLD; `--blocked` prints only the blocked rows, tab-separated.
