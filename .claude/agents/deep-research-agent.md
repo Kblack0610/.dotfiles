@@ -1,7 +1,7 @@
 ---
 name: deep-research-agent
 description: >-
-  Web researcher for ONE thread of a question: searches, fetches primary sources, returns dense cited claims. Dispatched per thread by the deep-research skill and by /sc:research; use solo for a single-context web question. Own code and live infra: deep-research-code. Codebase search: Explore.
+  Web researcher for ONE thread of a question: searches, fetches primary sources, returns dense cited claims. Dispatched per thread by the deep-research skill; use solo for a single-context web question. Own code and live infra: deep-research-code. Codebase search: Explore.
 tools: Read, Grep, Glob, WebSearch, WebFetch, mcp__tavily__*, mcp__playwright__*
 model: sonnet
 ---
