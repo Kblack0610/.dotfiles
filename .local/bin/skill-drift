@@ -728,8 +728,9 @@ fi
 # --- dups: the same instruction written in two homes ---------------------------
 #
 # The corpus is doc_set plus the skills, roles and prompts that also carry rules. A pair is
-# two lines in different files, so a file restating itself never counts. Rank is the plan
-# instruction-homes.json in the agentctl conf (private repo): its kinds, globs and ranks.
+# two lines in different files, so a file restating itself never counts. Kinds, globs and
+# ranks come from instruction-homes.json in the agentctl conf (private repo); the global file
+# is whatever $CLAUDE_MD resolves to, as everywhere else in this script.
 AGENTCTL_DIR="${AGENTCTL_CONF:-$HOME/.config/agentctl}"
 dup_corpus() {
   local conf="$AGENTCTL_DIR"
@@ -746,17 +747,24 @@ if [ "$MODE" = dups ]; then
   [ "$nfiles" -gt 0 ] || { echo "skill-drift --dups: no docs found - refusing to report success" >&2; exit 2; }
   homes="$AGENTCTL_DIR/instruction-homes.json"
   [ -r "$homes" ] || { echo "skill-drift --dups: no $homes - no rank to pick a winner by" >&2; exit 2; }
-  dup_corpus | DUPS_HOMES="$homes" DUPS_JSON="$DOCS_JSON" DUPS_HOME="$HOME" python3 -c '
+  dup_corpus | DUPS_GLOBAL="$(readlink -e "$CLAUDE_MD" 2>/dev/null)" DUPS_HOMES="$homes" DUPS_JSON="$DOCS_JSON" DUPS_HOME="$HOME" python3 -c '
 import fnmatch, json, os, re, sys
 from collections import Counter, defaultdict
 
 # Provisional, confidence low: revisit after two weeks of nightly counts (plan arch-instructions-one-home).
 MIN_CHARS, MIN_TOKENS, N, THRESHOLD = 90, 5, 4, 0.3
-HOME = os.environ["DUPS_HOME"]
-KINDS = [(k["kind"], k["rank"], k["globs"]) for k in json.load(open(os.environ["DUPS_HOMES"]))["kinds"]]
+HOME, GLOBAL = os.environ["DUPS_HOME"], os.environ.get("DUPS_GLOBAL", "")
+try:
+    KINDS = [(k["kind"], int(k["rank"]), list(k["globs"])) for k in json.load(open(os.environ["DUPS_HOMES"]))["kinds"]]
+    RANK = dict((k, r) for k, r, _ in KINDS)
+    assert KINDS and "global" in RANK
+except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
+    print("skill-drift --dups: %s is not a homes file (kinds with kind, rank, globs; one named global): %r" % (os.environ["DUPS_HOMES"], e), file=sys.stderr)
+    sys.exit(2)
 
 def home(path):
-    """(home, rank) of the first kind with a glob matching the real path; instruction-homes.json owns the order."""
+    """(home, rank): the global file is $CLAUDE_MD; any other path takes the first kind whose glob matches."""
+    if path == GLOBAL: return "global", RANK["global"]
     for kind, rank, globs in KINDS:
         if any(fnmatch.fnmatchcase(path, g) for g in globs): return kind, rank
     return "other", 0

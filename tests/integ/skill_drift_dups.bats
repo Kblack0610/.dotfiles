@@ -12,14 +12,16 @@ setup() {
   RULE='Never push to a branch that another session has open, because the second push silently reverts the first and nobody sees it.'
   OTHER='Render every dashboard tile from the cached snapshot file, since the live query times out on a cold cluster after thirty seconds.'
   mkdir -p "$HOME/.agent/lessons" "$HOME/.claude/skills/x" "$HOME/.config/agentctl"
-  export CLAUDE_MD="$HOME/.claude/CLAUDE.md"
-  # The live file is private (~/.config/agentctl/instruction-homes.json); this is its shape.
+  export CLAUDE_MD="$HOME/global.md"
+  # The live file is private (~/.config/agentctl/instruction-homes.json) and CI has no private
+  # checkout, so this is its shape, not its content: the private repo's tests own the content.
   cat > "$HOME/.config/agentctl/instruction-homes.json" <<'JSON'
 {"kinds": [
-  {"kind": "global", "rank": 6, "globs": ["*/.claude/CLAUDE.md"]},
+  {"kind": "global", "rank": 6, "globs": []},
   {"kind": "shared-docs", "rank": 5, "globs": ["*/.local/src/docs/*"]},
   {"kind": "role", "rank": 3, "globs": ["*/.config/agentctl/roles/*", "*/.config/agentctl/prompts/*"]},
   {"kind": "runbook", "rank": 4, "globs": ["*/.config/agentctl/*"]},
+  {"kind": "repo", "rank": 4, "globs": ["*/CLAUDE.md", "*/AGENTS.md"]},
   {"kind": "skill", "rank": 3, "globs": ["*/SKILL.md"]},
   {"kind": "lessons", "rank": 2, "globs": ["*/.agent/lessons/*"]},
   {"kind": "anchor", "rank": 1, "globs": ["*/.agent/anchors/*"]},
@@ -144,4 +146,29 @@ $HOME/.agent/lessons/p.md"
   run "$DRIFT" --dups
   assert_failure 2
   assert_output --partial 'instruction-homes.json'
+}
+
+@test "the global file is CLAUDE_MD, wherever it lives; another .claude/CLAUDE.md is a repo" {
+  mkdir -p "$HOME/proj/.claude"
+  printf '%s\n' "$RULE" > "$HOME/proj/.claude/CLAUDE.md"
+  export DRIFT_DOCS="$CLAUDE_MD
+$HOME/proj/.claude/CLAUDE.md"
+  rm "$HOME/.claude/skills/x/SKILL.md"
+  run "$DRIFT" --dups
+  assert_success
+  assert_output --partial 'winner: global'
+  assert_output --partial 'repo'
+}
+
+@test "a homes file that does not parse, or names no global kind, refuses to report" {
+  f="$HOME/.config/agentctl/instruction-homes.json"
+  printf '{"kinds": [}' > "$f"
+  run "$DRIFT" --dups
+  assert_failure 2
+  printf '{"kinds": [{"kind": "skill", "rank": 3, "globs": ["*/SKILL.md"]}]}' > "$f"
+  run "$DRIFT" --dups
+  assert_failure 2
+  printf '{"kinds": [{"kind": "global", "globs": []}]}' > "$f"
+  run "$DRIFT" --dups
+  assert_failure 2
 }
