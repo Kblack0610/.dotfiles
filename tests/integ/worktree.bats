@@ -350,6 +350,19 @@ declare_in_lab() {
   [ -e "$WT_ROOT/repo-agent-1/ran-here" ] || fail "the pane did not run the command in the worktree"
 }
 
+@test "new --claude starts Claude in the pane through claude-acct run, the launcher cl uses" {
+  make_repo
+  export TMUX=/tmp/tmux-stub/default,1,0
+  run "$WT" new --claude --detach -c "$MAIN"
+  assert_success
+  assert_called 'fresh claude-acct\ run'
+  # Negative control: without --claude the pane is a plain shell.
+  : >"$NOTES_FIXTURE/calls.log"
+  run "$WT" new --detach -c "$MAIN"
+  assert_success
+  assert_not_called 'claude-acct'
+}
+
 @test "a second press while the first is still preparing takes the NEXT slot" {
   # The first press's session exists but its worktree does not yet: the session alone
   # must pin the slot, or both presses would cut agent-1.

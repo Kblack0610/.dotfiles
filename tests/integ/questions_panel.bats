@@ -101,31 +101,33 @@ session() {
   printf '{"target":"%s","bucket":"%s","reason":"%s","idle_min":%s,"doing":"%s","topic":"%s","said":"the last thing it said","cwd":"/nowhere/demo"}' "$@"
 }
 
-@test "a session waiting on a prompt in its terminal is a row after the questions, so the count matches the chip's" {
+@test "every session with a dialog open is a row after the asks, plans included, so the count matches the chip's" {
   local id
   id="$(ask demo agent-1 'a=the first|b=the second' 'filed question?')"
   fleet_doc "$(session lab/demo-agent-4:1 NEEDS 'waiting on a prompt or permission' 30 AskUserQuestion 'Trading plan')" \
-    "$(session hub/demo:2 NEEDS 'waiting on a prompt or permission' 90 ExitPlanMode 'Stop issues')" \
+    "$(session hub/demo:2 NEEDS 'plan awaiting approval' 90 ExitPlanMode 'Stop issues')" \
+    "$(session hub/demo:3 NEEDS 'waiting on a prompt or permission' 10 Bash 'Needs a permission')" \
     "$(session lab/demo-agent-5:1 NEEDS '1 pending ask(s)' 5 Bash 'Has an ask')" \
     "$(session lab/demo-agent-6:1 WORKING busy 0 Edit 'Busy')"
   run rows
   assert_success
-  # The ask first, then the prompts oldest first; an ask's NEEDS and a WORKING session add nothing.
-  assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$id @hub/demo:2 @lab/demo-agent-4:1 "
+  # The ask first, then the dialogs oldest first; an ask's NEEDS and a WORKING session add nothing.
+  assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$id @hub/demo:2 @lab/demo-agent-4:1 @hub/demo:3 "
   assert_line --index 1 --partial 'demo:2'
-  assert_line --index 1 --partial 'plan waiting for approval in its terminal~'
+  assert_line --index 1 --partial 'plan waiting for approval~'
   assert_line --index 1 --partial 'Stop issues'
   assert_line --index 2 --partial 'demo:4'
-  assert_line --index 2 --partial 'question waiting in its terminal'
-  # The header names both, and each alone.
+  assert_line --index 2 --partial 'question waiting for an answer'
+  assert_line --index 3 --partial 'prompt waiting in its terminal: Bash'
+  # The header counts each kind, and leaves out a kind with none.
   . "$Q"
-  assert_equal "$(waiting $("$Q" rows | rows_count))" '1 question . 2 prompts waiting'
-  assert_equal "$(waiting 0 1)" '1 prompt waiting'
-  assert_equal "$(waiting 3 0)" '3 questions waiting'
-  assert_equal "$(waiting 0 0)" 'no questions waiting'
+  assert_equal "$(waiting $("$Q" rows | rows_count))" '1 ask . 1 plan . 1 question . 1 prompt waiting'
+  assert_equal "$(waiting 3 11 2 0)" '3 asks . 11 plans . 2 questions waiting'
+  assert_equal "$(waiting 0 1 0 0)" '1 plan waiting'
+  assert_equal "$(waiting 0 0 0 0)" 'no questions waiting'
 }
 
-@test "with no state document, or no question at all, a prompt row never appears" {
+@test "with no state document, or no question at all, a dialog row never appears" {
   run rows
   assert_output ''
   fleet_doc "$(session lab/demo-agent-6:1 WORKING busy 0 Edit 'Busy')"
@@ -134,19 +136,85 @@ session() {
   assert_output ''
 }
 
-@test "a prompt row is answered in its session: g goes there, the answer keys say so and arm nothing" {
-  run "$Q" key g @lab/demo-agent-4:1
-  assert_output 'execute-silent(agent-panel jump lab/demo-agent-4:1)+abort'
-  local k
-  for k in 1 t d; do
-    run "$Q" key "$k" @lab/demo-agent-4:1
-    assert_output 'change-footer~answer this one in its session . g goes there~'
-  done
-  run "$Q" key enter @lab/demo-agent-4:1
+# plan_dialog: the options agent-panel reads off a plan dialog's pane.
+plan_dialog() {
+  printf '1\t0\tYes, and switch to BYPASS PERMISSIONS\n2\t0\tYes, manually approve edits\n3\t1\tTell Claude what to change\n' >"$NOTES_FIXTURE/agent-panel.options"
+}
+
+@test "a dialog row: a number arms the option the pane shows, enter presses it there, checked against that text" {
+  plan_dialog
+  run "$Q" key 2 @hub/demo:2
+  assert_output 'change-footer~send 2 "Yes, manually approve edits" to hub/demo:2? enter sends . esc cancels~'
+  run grep -c '^agent-panel answer' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  run "$Q" key enter @hub/demo:2
+  assert_success
+  assert_output --partial 'sent 2 "Yes, manually approve edits" to hub/demo:2'
+  assert_output --partial 'reload('
+  grep -qx 'agent-panel answer hub/demo:2 2 --expect Yes, manually approve edits --' "$NOTES_FIXTURE/calls.log"
+  # The state is spent: a second enter sends nothing more.
+  run "$Q" key enter @hub/demo:2
   assert_output --partial 'press a number, t or d first'
 }
 
-@test "a prompt row's card is the session from the state document and the bottom of its pane" {
+@test "a dialog that changed or closed before enter is refused, said, and the list reloads" {
+  plan_dialog
+  printf '4\nagent-panel answer: option 2 now reads "No"; nothing sent\n' >"$NOTES_FIXTURE/agent-panel.answer"
+  "$Q" key 2 @hub/demo:2 >/dev/null
+  run "$Q" key enter @hub/demo:2
+  assert_output --partial 'not sent: agent-panel answer: option 2 now reads "No"; nothing sent'
+  assert_output --partial 'reload('
+  printf '3\n' >"$NOTES_FIXTURE/agent-panel.answer"
+  "$Q" key 1 @hub/demo:2 >/dev/null
+  run "$Q" key enter @hub/demo:2
+  assert_output --partial 'not taken: hub/demo:2 did not move on . g goes there'
+}
+
+@test "t, or the number of the option that takes text, opens the answer line; enter types it into that option" {
+  plan_dialog
+  run "$Q" key t @hub/demo:2
+  assert_output --partial 'change-prompt~answer> ~'
+  assert_output --partial 'answering hub/demo:2: Tell Claude what to change'
+  # Keys type while the line is open.
+  run "$Q" key 2 @hub/demo:2
+  assert_output 'put(2)'
+  run "$Q" key enter @hub/demo:2 'split it in two'
+  assert_output --partial 'sent 3 "Tell Claude what to change" to hub/demo:2'
+  grep -qx 'agent-panel answer hub/demo:2 3 --expect Tell Claude what to change -- split it in two' "$NOTES_FIXTURE/calls.log"
+  run "$Q" key 3 @hub/demo:2
+  assert_output --partial 'change-prompt~answer> ~'
+}
+
+@test "a dialog row refuses what it cannot do: no option, no text field, drop, or no dialog to read" {
+  printf '1\t0\tYes\n2\t0\tNo\n' >"$NOTES_FIXTURE/agent-panel.options"
+  run "$Q" key 5 @hub/demo:2
+  assert_output 'change-footer~no option 5 here . pick one the card shows~'
+  run "$Q" key t @hub/demo:2
+  assert_output 'change-footer~this one takes no typed answer . pick a number~'
+  run "$Q" key d @hub/demo:2
+  assert_output 'change-footer~a dialog is answered, not dropped . g goes there~'
+  rm "$NOTES_FIXTURE/agent-panel.options"
+  local k
+  for k in 1 t; do
+    run "$Q" key "$k" @lab/demo-agent-4:1
+    assert_output 'change-footer~no dialog to answer here . g goes there~'
+  done
+  run "$Q" key enter @lab/demo-agent-4:1
+  assert_output --partial 'press a number, t or d first'
+  run grep -c '^agent-panel answer' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  run "$Q" key g @lab/demo-agent-4:1
+  assert_output 'execute-silent(agent-panel jump lab/demo-agent-4:1)+abort'
+}
+
+@test "a dialog row's card is agent-panel's, from the live pane" {
+  printf 'plan waiting for your approval\n 1  Yes\n' >"$NOTES_FIXTURE/agent-panel.dialog"
+  run "$Q" card @hub/demo:2
+  assert_success
+  assert_output $'plan waiting for your approval\n 1  Yes'
+}
+
+@test "a dialog agent-panel cannot read gets the session from the state document and the bottom of its pane" {
   fleet_doc "$(session lab/demo-agent-4:1 NEEDS 'waiting on a prompt or permission' 30 AskUserQuestion 'Trading plan')"
   printf 'earlier output\n\nWhich check forms should this build?\n1. KPI key only\n\n\n' >"$NOTES_FIXTURE/tmux.capture.demo-agent-4_1"
   run "$Q" card @lab/demo-agent-4:1
@@ -239,7 +307,7 @@ session() {
   assert_output --regexp '^show-input\+clear-query\+'
   run "$Q" key enter "$a" 'one'
   assert_output --partial 'hide-input'
-  assert_output --partial 'change-header~1 question waiting~'
+  assert_output --partial 'change-header~1 ask waiting~'
   # A t that beats the reload lands on the row just answered: it refreshes, types nothing.
   run "$Q" key t "$a"
   assert_output --partial 'reload('
@@ -251,7 +319,7 @@ session() {
   # esc out of typing puts the count back and closes nothing.
   run "$Q" key esc "$b"
   assert_output --partial 'hide-input+change-prompt~~'
-  assert_output --partial 'change-header~1 question waiting~'
+  assert_output --partial 'change-header~1 ask waiting~'
   refute_output --partial 'abort'
   run grep -c '^answer: one$' "$(ask_file "$a")"
   assert_output 1
