@@ -557,8 +557,24 @@ enum PtaskCmd {
         /// No checkable artifact exists, and this is why
         #[arg(long, value_name = "WHY")]
         unverified: Option<String>,
+        /// The day it closed, YYYY-MM-DD, when that is not today (a backfill closes a row on the
+        /// day its PR merged). Never a future day
+        #[arg(long, value_name = "DAY")]
+        on: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
+    },
+    /// Re-date a closed row's `done:` day (a backfill that stamped the apply day). The row is
+    /// picked by its id and must already be closed with a `done:` day
+    Redate {
+        /// The day it closed, YYYY-MM-DD; never a future day
+        #[arg(long, value_name = "DAY")]
+        on: String,
+        /// Print `id<TAB>old<TAB>new` and write nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// The row's id, as `ar-142`
+        id: String,
     },
     /// Add or take hashtags off the first matching open task (before its marker). A release
     /// tag is refused: move, promote and demote own it
@@ -873,10 +889,14 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             pr,
             text: text.join(" "),
         },
+        Some(PtaskCmd::Done { on: Some(_), .. }) => {
+            bail!("--playtest done takes no --on: a playtest row closes today")
+        }
         Some(PtaskCmd::Done {
             proof,
             unverified,
             query,
+            ..
         }) => playtest::Op::Done {
             proof,
             unverified,
@@ -1040,9 +1060,12 @@ fn main() -> Result<()> {
             // minting, so two writers never lose a row or mint one id twice.
             let _lock = match &sub {
                 None
-                | Some(PtaskCmd::List { .. } | PtaskCmd::Inbox { .. } | PtaskCmd::Propose { .. }) => {
-                    None
-                }
+                | Some(
+                    PtaskCmd::List { .. }
+                    | PtaskCmd::Inbox { .. }
+                    | PtaskCmd::Propose { .. }
+                    | PtaskCmd::Redate { dry_run: true, .. },
+                ) => None,
                 Some(_) => Some(project_tasks::lock(&prof)?),
             };
             match sub {
@@ -1095,6 +1118,7 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Done {
                     proof,
                     unverified,
+                    on,
                     query,
                 }) => project_tasks::done(
                     &prof,
@@ -1103,8 +1127,12 @@ fn main() -> Result<()> {
                     &pick(&query)?,
                     proof.as_deref(),
                     unverified.as_deref(),
+                    on.as_deref(),
                     lane,
                 )?,
+                Some(PtaskCmd::Redate { on, dry_run, id }) => {
+                    project_tasks::redate(&prof, &log, &name, &id, &on, dry_run, lane)?
+                }
                 Some(PtaskCmd::Start { query }) => {
                     project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
                 }
