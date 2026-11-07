@@ -114,6 +114,9 @@ pub struct Watch {
     pub since: Option<i64>,
     pub lastrun: Option<i64>,
     pub lasttrip: Option<i64>,
+    /// What it looks at: the text of its `where:`.
+    #[serde(skip)]
+    pub place: String,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -255,16 +258,8 @@ pub fn runner(
             }
         },
         "sentinel-watches" => {
-            let dir = |k: &str, d: &str| {
-                Some(key(k))
-                    .filter(|v| !v.is_empty())
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| Path::new(&home).join(d))
-            };
-            match watches(
-                &dir("SENTINEL_WATCHES", ".agent/watches"),
-                &dir("SENTINEL_STATE", ".local/state/watch-companion"),
-            ) {
+            let (dir, state) = watch_dirs(&home, key);
+            match watches(&dir, &state) {
                 Ok(watches) => Extras::SentinelWatches { watches },
                 Err(e) => {
                     errors.push(format!("sentinel: {e}"));
@@ -501,6 +496,31 @@ pub fn ingest(text: &str, cut: bool, at: i64) -> Extras {
     }
 }
 
+/// Sentinel's watch and state directories: what `var` says for each, else its place under `home`.
+pub fn watch_dirs(home: &str, var: impl Fn(&str) -> String) -> (PathBuf, PathBuf) {
+    let dir = |k: &str, d: &str| {
+        Some(var(k))
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| Path::new(home).join(d))
+    };
+    (
+        dir("SENTINEL_WATCHES", ".agent/watches"),
+        dir("SENTINEL_STATE", ".local/state/watch-companion"),
+    )
+}
+
+/// The text of a watch file's `where:`, a one-liner or a folded block.
+pub(crate) fn place(yaml: &str) -> String {
+    let mut lines = yaml.lines().skip_while(|l| !l.starts_with("where:"));
+    let first = lines.next().unwrap_or("");
+    let rest = lines.take_while(|l| l.starts_with(' ') || l.is_empty());
+    std::iter::once(first.trim_start_matches("where:"))
+        .chain(rest)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Every `<watches>/*.yaml` with its `<state>/<name>.*` files, TRIP and ERROR first, then by name.
 pub fn watches(dir: &Path, state: &Path) -> Result<Vec<Watch>, String> {
     let rd = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -527,6 +547,7 @@ pub fn watches(dir: &Path, state: &Path) -> Result<Vec<Watch>, String> {
                 since: read(&name, "since").parse().ok(),
                 lastrun: read(&name, "lastrun").parse().ok(),
                 lasttrip: read(&name, "lasttrip").parse().ok(),
+                place: place(&yaml),
                 name,
             })
         })

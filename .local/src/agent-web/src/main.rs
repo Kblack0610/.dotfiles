@@ -27,6 +27,7 @@ mod projects;
 mod proposals;
 mod queue;
 mod reds;
+mod schedules;
 mod sessions;
 mod shepherd;
 mod transcript;
@@ -76,6 +77,7 @@ struct AppState {
     watch_off: WatchOff,
     infra: infra::Cache,
     jobs: jobs::Cache,
+    schedules: schedules::Cache,
     session_table: sessions::Cache,
     fleet: fleet::Cache,
     pipeline: pipeline::Cache,
@@ -102,6 +104,7 @@ async fn main() -> Result<()> {
         watch_off,
         infra: infra::Cache::default(),
         jobs: jobs::Cache::default(),
+        schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
         fleet: fleet::Cache::default(),
         pipeline: pipeline::Cache::default(),
@@ -134,6 +137,7 @@ async fn main() -> Result<()> {
         .route("/api/pipeline", get(pipeline_line))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
+        .route("/api/schedules", get(schedules_list))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
@@ -1085,6 +1089,14 @@ async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) ->
     (
         [(header::CONTENT_TYPE, "application/json")],
         s.jobs.get(q).await,
+    )
+        .into_response()
+}
+
+async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.schedules.get(q).await,
     )
         .into_response()
 }
