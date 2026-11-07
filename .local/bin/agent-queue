@@ -1065,7 +1065,7 @@ cmd_mine() {
   printf '%s\n' "$slugs"
 }
 
-# claim <slug> [--sid id] -- add a Claude session to the sessions that worked this item. Run by
+# claim <slug> [--sid id] -- add a Claude session to the sessions that worked this item, done or not. Run by
 # fleet-dispatch start for the id it launches with, and by agent-land; adding one already there is a no-op.
 cmd_claim() {
   local slug="${1:?usage: agent-queue claim <slug> [--sid id]}" sid f cur
@@ -1073,7 +1073,8 @@ cmd_claim() {
   case "${1:-}" in --sid) sid="${2:?--sid needs a value}" ;; '') sid="$(claude_sid)" || die "no Claude session: pass --sid" ;; *) die "usage: agent-queue claim <slug> [--sid id]" ;; esac
   case "$sid" in *[!A-Za-z0-9_-]*) die "not a session id: $sid" ;; esac
   lock
-  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  # `any`: a task split across repos lands its second PR on a done item, from another session.
+  f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
   cur="$(fm_get "$f" sessions)"
   case " $cur " in *" $sid "*) echo "$slug: $sid already claimed"; return 0 ;; esac
   header_set "$f" sessions "${cur:+$cur }$sid"
