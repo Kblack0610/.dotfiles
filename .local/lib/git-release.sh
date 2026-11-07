@@ -27,7 +27,7 @@
 #
 # None of these fail loudly. A wrong tag renders as a plausible tag; an empty
 # shipping-next list renders exactly like a genuinely empty one. That is the same
-# class of silent drift lab-feed.sh and agent-board.sh were written against: a
+# class of silent drift lab-feed.sh was written against: a
 # second copy of a rule does not drift with an error, it drifts with a plausible
 # answer.
 #

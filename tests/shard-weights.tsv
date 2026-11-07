@@ -101,7 +101,6 @@
 0.7	integ/worktree_create_hook.bats
 0.7	integ/world_openers.bats
 0.1	integ/zshrc_agent_shell.bats
-7.6	unit/agent_board.bats
 3.8	unit/agent_hold.bats
 31.4	unit/agent_land.bats
 5.6	unit/agent_merge_proof.bats
@@ -115,7 +114,6 @@
 2.0	unit/anchor_lib.bats
 0.2	unit/block_pip.bats
 0.9	unit/block_pkill_f.bats
-2.3	unit/board_corpus.bats
 27.8	unit/claude_acct.bats
 0.4	unit/claude_rules.bats
 4.4	unit/claude_status.bats
