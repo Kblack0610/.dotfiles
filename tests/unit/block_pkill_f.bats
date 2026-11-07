@@ -15,7 +15,9 @@ decision() {
 }
 
 @test "pkill -f is denied in any clause and flag spelling, the reason leading with the hook's name" {
-  for c in 'pkill -f foo' 'sleep 1; pkill -9 -f "bats.*x"' 'sudo pkill -f x' 'x && pkill --full y' 'pkill -9f z' 'LC_ALL=C pkill -f w'; do
+  for c in 'pkill -f foo' 'sleep 1; pkill -9 -f "bats.*x"' 'sudo pkill -f x' 'x && pkill --full y' 'pkill -9f z' 'LC_ALL=C pkill -f w' \
+    'bash -c "pkill -f foo"' 'if true; then pkill -f foo; fi' 'timeout 5 pkill -f foo' 'xargs -r pkill -f' \
+    'pkill -u me -f foo' 'pkill -U 1000 -f foo' '/usr/bin/pkill -f x' 'echo pkill -f'; do
     run decision "$c"
     assert_output deny
   done
@@ -29,10 +31,13 @@ decision() {
   assert_output deny
   run decision 'pgrep -f foo | xargs kill -9'
   assert_output deny
+  run decision 'pgrep -f foo | xargs -r sudo kill'
+  assert_output deny
 }
 
-@test "negative control: a kill by name, a read-only pgrep -f and text naming pkill -f all pass" {
-  for c in 'pkill -x foo' 'pkill foo' 'pkill -9 foo' 'pgrep -af claude' 'grep -n "pkill -f" f' 'echo pkill -f' 'git commit -m "no pkill -f"' 'ls'; do
+@test "negative control: a kill by name, a read-only pgrep -f and a broken phrase all pass" {
+  for c in 'pkill -x foo' 'pkill foo' 'pkill -9 foo' 'pkill -x foo-fbar' 'pgrep -af claude' 'pgrep -f foo; git checkout -b kill-switch' \
+    'pgrep -f x; ls kill/' 'rg -n "pkill[ ]-f" f' 'my-pkill -f x' 'ls -f; pkill -x foo' 'ls'; do
     run decision "$c"
     assert_output allow
   done

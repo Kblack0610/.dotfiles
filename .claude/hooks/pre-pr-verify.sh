@@ -9,31 +9,42 @@ set -uo pipefail
 PAYLOAD=$(cat)
 CMD=$(jq -r '.tool_input.command // empty' <<<"$PAYLOAD")
 # A clause start: line start or a separator, then any VAR=value prefixes.
-START='(^|[;&|(]|\$\()[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
-grep -qE "${START}(git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+push|gh[[:space:]]+pr[[:space:]]+create)([[:space:]]|$)" <<<"$CMD" || exit 0
-# Deleting a remote branch pushes no code.
-grep -qE "${START}gh[[:space:]]+pr[[:space:]]+create" <<<"$CMD" || ! grep -qE '[[:space:]](--delete|-d)([[:space:]]|$)' <<<"$CMD" || exit 0
+ENV='([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
+START="(^|[;&|(]|\\\$\\()[[:space:]]*${ENV}"
+path_re="('[^']*'|\"[^\"]*\"|[^[:space:];&|]+)"
+PUSH="git([[:space:]]+-C[[:space:]]+${path_re})?[[:space:]]+push"
+grep -qE "${START}(${PUSH}|gh[[:space:]]+pr[[:space:]]+create)([[:space:]]|$)" <<<"$CMD" || exit 0
+# A push that only deletes a remote branch sends no code.
+grep -qE "${START}gh[[:space:]]+pr[[:space:]]+create" <<<"$CMD" \
+  || ! grep -qE "${START}${PUSH}([[:space:]]+[^;&|[:space:]]+)*[[:space:]]+(--delete|-d|:[^;&|[:space:]]+)([[:space:];&|]|$)" <<<"$CMD" || exit 0
 
 CHECK="${PRE_PR_CHECK:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/stop-checks.d/60-shell-tests.sh}"
 STATE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-stop-hook"
 LOG="$STATE/pre-pr.log"
 mkdir -p "$STATE"
 
-# The tree the command pushes: a leading `cd DIR &&`, else `git -C DIR`, else the session's cwd.
+deny() { jq -nc --arg r "pre-pr-verify: $1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'; exit 0; }
+
+# The tree the command pushes: a `cd DIR` clause, else `git -C DIR`, else the session's cwd.
 dir=$(jq -r '.cwd // empty' <<<"$PAYLOAD"); dir=${dir:-$PWD}
-path_re="('[^']*'|\"[^\"]*\"|[^[:space:];&|]+)"
-if [[ $CMD =~ ^[[:space:]]*cd[[:space:]]+${path_re}[[:space:]]*(\&\&|\;) ]] \
-  || [[ $CMD =~ git[[:space:]]+-C[[:space:]]+${path_re}[[:space:]]+push ]]; then
-  d=${BASH_REMATCH[1]//[\"\']/}; d=${d/#\~/$HOME}
+cd_re="(^|[;&|(])[[:space:]]*cd[[:space:]]+${path_re}[[:space:]]*(&&|;)"
+c_re="()git[[:space:]]+-C[[:space:]]+${path_re}[[:space:]]+push"
+if [[ $CMD =~ $cd_re ]] || [[ $CMD =~ $c_re ]]; then
+  d=${BASH_REMATCH[2]//[\"\']/}; d=${d/#\~/$HOME}
+  [[ $d == *[\$\`]* ]] && deny "cannot tell which tree this pushes from \`$d\`. Name the directory literally, or cd into it first."
   [[ $d == /* ]] || d="$dir/$d"
   dir=$d
 fi
+# Only this repo has the fast tier; 60-shell-tests.sh would exit 0 anywhere else, so do not
+# run, log or remember a pass there.
+own=${PRE_PR_REPO:-$(git -C "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)}
+[ "$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$own" ] || exit 0
 head=$(git -C "$dir" rev-parse HEAD 2>/dev/null) || exit 0
 
 log() { printf '%s %s %s %s\n' "$(date -Is)" "$1" "$dir" "${head:0:12}" >> "$LOG"; }
 
 # A test that is red on origin/main too is not this change's: the caller says so, and it is logged.
-if grep -qE '(^|[[:space:]])PRE_PR_VERIFY=main-red([[:space:]]|$)' <<<"$CMD"; then log main-red; exit 0; fi
+if grep -qE "${START}PRE_PR_VERIFY=main-red[[:space:]]+${ENV}(git|gh)[[:space:]]" <<<"$CMD"; then log main-red; exit 0; fi
 
 PASS="$STATE/pre-pr-pass"
 fp=$( { echo "$dir $head"; git -C "$dir" diff HEAD; git -C "$dir" ls-files --others --exclude-standard; } 2>/dev/null | sha256sum | cut -c1-32)
@@ -48,8 +59,8 @@ case $rc in
     ;;
   2)
     log fail
-    jq -nc --arg t "$(tail -n 30 <<<"$out")" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny",
-      permissionDecisionReason: ("pre-pr-verify: the fast-tier tests this change picks fail on this tree, so CI would go red. Fix them and run the command again. If the same test also fails on origin/main, it is not yours: put PRE_PR_VERIFY=main-red in front of the command.\n" + $t)}}'
+    deny "the fast-tier tests this change picks fail on this tree, so CI would go red. Fix them and run the command again. If the same test also fails on origin/main, it is not yours: put PRE_PR_VERIFY=main-red in front of the command.
+$(tail -n 30 <<<"$out")"
     ;;
   # A timeout or a warn (bats not vendored) cannot say red; CI still runs the whole tier.
   *) log "rc$rc" ;;
