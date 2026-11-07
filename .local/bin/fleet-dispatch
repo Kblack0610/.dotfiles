@@ -87,6 +87,8 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # The fleet worker roster (home-config's `fleet_workers` group) and the one ssh path to a worker.
 # shellcheck source=../lib/fleet-hosts.sh
 . "${FLEET_HOSTS_LIB:-$HERE/../lib/fleet-hosts.sh}"
+: "${DISPATCH_DEMAND_TTL:=2400}"   # seconds a cloud worker's demand key holds (demand_pass): two 15-minute passes plus slack, so one missed pass does not stop the box
+: "${DISPATCH_KUBE_ENV:=$HOME/.config/command-center/env}"   # where CC_KUBE_CONTEXT, the cluster the governor's ConfigMap lives on, is set
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, stages, enabled, off (load_kinds)
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
@@ -2114,15 +2116,17 @@ pick_item() {
 # whether wt and claude are on its PATH and its agent-queue forwards (an older one would write the
 # queue on the worker): HOST_PROBE[<name>] is "<load> <cores> <ready 0|1>", or
 # "unreachable". HOST_FREE[<name>] is its fleet_max_live less the run units its live sessions hold,
-# and start_items takes each start there off it. Read once a pass, before the gates, so every gate
-# and pick in it reads the same numbers: a gate runs in a subshell and cannot write back.
-declare -A HOST_PROBE=() HOST_FREE=()
+# and start_items takes each start there off it. HOST_POWER[<name>] is its fleet_power. Read once a
+# pass, before the gates, so every gate and pick in it reads the same numbers: a gate runs in a
+# subshell and cannot write back.
+declare -A HOST_PROBE=() HOST_FREE=() HOST_POWER=()
 probe_hosts() {
-  local name place max out
-  HOST_PROBE=() HOST_FREE=()
+  local name place max power out
+  HOST_PROBE=() HOST_FREE=() HOST_POWER=()
   fleet_hosts >/dev/null
-  while IFS=$'\t' read -r name place max; do
+  while IFS=$'\t' read -r name place max power; do
     [ "$place" = true ] || continue
+    HOST_POWER[$name]=$power
     HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$1") ))
     # shellcheck disable=SC2016 # the worker's shell expands nothing here; the quotes are for cut
     if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && grep -qs state_forward "$(readlink -f "$(command -v agent-queue)")" && echo 1 || echo 0' 2>/dev/null); then
@@ -2130,7 +2134,7 @@ probe_hosts() {
     else
       HOST_PROBE[$name]=unreachable
     fi
-  done < <(fleet_hosts | jq -r '[.name, .place, .max_live] | @tsv')
+  done < <(fleet_hosts | jq -r '[.name, .place, .max_live, .power] | @tsv')
 }
 
 # host_why <name> -> why that worker takes no session now, or nothing. Its pace is this runner's
@@ -2138,7 +2142,10 @@ probe_hosts() {
 host_why() {
   local p="${HOST_PROBE[$1]:-}" load cores ready
   [ -n "$p" ] || { echo "$1 is not placed (fleet_place false, or not in $FLEET_HOSTS_GROUP)"; return; }
-  [ "$p" != unreachable ] || { echo "$1 did not answer over ssh"; return; }
+  if [ "$p" = unreachable ]; then
+    echo "$1 did not answer over ssh${HOST_POWER[$1]:+${HOST_POWER[$1]/#governor/: off or booting (the ci-runner-governor starts it on demand), or its tailnet is down}}"
+    return
+  fi
   [ "${HOST_FREE[$1]:-0}" -gt 0 ] || { echo "$1 is at its fleet_max_live"; return; }
   read -r load cores ready <<<"$p"
   [ "$ready" = 1 ] || { echo "$1 has no wt, no claude, or an agent-queue that does not forward"; return; }
@@ -2153,19 +2160,94 @@ remote_open() {
   return 1
 }
 
-# place_host <item json> -> the first worker, in roster order, that takes this item: a light claude
-# item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos). Heavy work
-# (Unity), plans and other harnesses stay here: a worker is provisioned for light claude sessions.
-place_host() {
-  local dir name
-  [ ${#HOST_PROBE[@]} -gt 0 ] || return 1
+# host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
+# light claude item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos).
+# Heavy work (Unity), plans and other harnesses stay here: a worker is provisioned for light claude
+# sessions. Roster order, a worker the governor powers last: it costs money while it runs.
+host_takers() {
+  local dir
   jq -e '(.weight // "light") == "light" and (.agent // "claude") == "claude" and (.plan // "") == ""
-    and ((" " + (.tags // "") + " ") | contains(" cloud-ok ") | not)' <<<"$1" >/dev/null || return 1
-  dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 1
+    and ((" " + (.tags // "") + " ") | contains(" cloud-ok ") | not)' <<<"$1" >/dev/null || return 0
+  dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
+  fleet_hosts | jq -sr --arg d "$dir" 'map(select(.repos | index($d))) | sort_by(.power == "governor") | .[].name'
+}
+
+# place_host <item json> -> the first worker host_takers names that takes a session now.
+place_host() {
+  local name
+  [ ${#HOST_PROBE[@]} -gt 0 ] || return 1
   while IFS= read -r name; do
     [ -n "${HOST_PROBE[$name]:-}" ] && [ -z "$(host_why "$name")" ] && { echo "$name"; return 0; }
-  done < <(fleet_hosts | jq -r --arg d "$dir" 'select(.repos | index($d)) | .name')
+  done < <(host_takers "$1")
   return 1
+}
+
+# --- cloud workers: the demand the ci-runner-governor starts them on ---------------------------
+
+# demand_pass <live_runs> -- for each placed worker the governor powers (fleet_power: governor),
+# write the demand this pass has for it into the "<host>.demand" key of the governor's override
+# ConfigMap: the run units its sessions hold, plus the waiting items it would take, at most its
+# fleet_max_live. Each waiting item counts once, for the first place that takes it in the order
+# pick_item uses: this machine's free units while its own pace is open, then an open home worker,
+# then a powered one with room. Nothing counts while another gate is closed or a finding holds the
+# item: a box started into a closed gate would run for nothing. Each key ends DISPATCH_DEMAND_TTL
+# from now, so a dispatcher that stops writing lets the governor stop the box. The governor side:
+# home-config apps/ci-runner-governor/governor.py, the "workers" paragraph.
+demand_pass() {
+  local name it t takers took why='' here=0 need data='{}' says=() live
+  local -A cap=() want=()
+  for name in "${!HOST_POWER[@]}"; do
+    [ "${HOST_POWER[$name]}" = governor ] && want[$name]=0
+  done
+  [ ${#want[@]} -gt 0 ] || return 0
+  if why=$(GATE_NO_MACHINE=1 gate) && [ -n "$why" ]; then :
+  elif ! load_findings; then why="fleet-bench findings unreadable"
+  fi
+  if [ -z "$why" ]; then
+    [ "$UNITS_FREE" -le 0 ] || [ -n "$(machine_why)" ] || here=$UNITS_FREE
+    for name in "${!HOST_FREE[@]}"; do cap[$name]=${HOST_FREE[$name]}; done
+    while IFS= read -r it; do
+      [ -n "$it" ] && [ -z "$(held_by "$it" "$FIRING")" ] || continue
+      need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
+      if [ "$need" -le "$here" ]; then here=$(( here - need )); continue; fi
+      takers=$(host_takers "$it")
+      while IFS= read -r t; do
+        [ -n "$t" ] && [ "${cap[$t]:-0}" -gt 0 ] || continue
+        [ -n "${want[$t]+x}" ] || [ -z "$(host_why "$t")" ] || continue
+        cap[$t]=$(( cap[$t] - 1 ))
+        [ -z "${want[$t]+x}" ] || want[$t]=$(( want[$t] + 1 ))
+        break
+      done <<<"$takers"
+    done < <(next_items)
+  fi
+  for name in "${!want[@]}"; do
+    live=$(units_on "$name" <<<"$1")
+    data=$(jq -c --arg k "$name.demand" --argjson d "$(( live + want[$name] ))" --argjson u "$(( $(date +%s) + DISPATCH_DEMAND_TTL ))" \
+      '.[$k] = ({demand: $d, until: $u} | tojson)' <<<"$data")
+    says+=("$(( live + want[$name] )) for $name ($live live, ${want[$name]} waiting${why:+, none counted: $why})")
+  done
+  took=$(printf '%s; ' "${says[@]}"); demand_write "$data" "${took%; }"
+}
+
+# demand_write <data json> <what> -- merge-patch those keys into the governor's override ConfigMap,
+# one call for every worker, so no other key moves (machine-mode's pin, agent-web's override); the
+# ConfigMap is made when missing, and patched after all when another writer made it first. A dry
+# run says what it would write.
+demand_write() {
+  local ctx out ok=0 try k=() lits=()
+  [ "$DRY" = 0 ] || { say "would write demand $2"; return 0; }
+  # shellcheck source=/dev/null
+  ctx=${CC_KUBE_CONTEXT:-$(. "$DISPATCH_KUBE_ENV" 2>/dev/null; printf '%s' "${CC_KUBE_CONTEXT:-}")}
+  [ -n "$ctx" ] || { say "demand $2 unwritten: no CC_KUBE_CONTEXT in $DISPATCH_KUBE_ENV"; return 0; }
+  k=(kubectl --context "$ctx" --request-timeout=10s -n monitoring)
+  mapfile -t lits < <(jq -r 'to_entries[] | "--from-literal=\(.key)=\(.value)"' <<<"$1")
+  for try in 1 2; do
+    out=$("${k[@]}" patch configmap ci-runner-governor-override --type merge -p "$(jq -c '{data: .}' <<<"$1")" 2>&1) && { ok=1; break; }
+    [ "$try" = 1 ] && [[ "$out" == *NotFound* ]] || break
+    out=$("${k[@]}" create configmap ci-runner-governor-override "${lits[@]}" 2>&1) && { ok=1; break; }
+    [[ "$out" == *AlreadyExists* ]] || break
+  done
+  if [ "$ok" = 1 ]; then say "demand $2"; else say "demand $2 unwritten: $(tail -n 1 <<<"$out")"; fi
 }
 
 # cmd_hosts [--json] -- each worker in the roster, as a pass would read it now.
@@ -2176,7 +2258,7 @@ cmd_hosts() {
     [ -n "$h" ] || continue
     name=$(jq -r .name <<<"$h")
     rows+=("$(jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" \
-      '{name, dest, place, max_live, free: ($f | tonumber? // null), probe: $p, why: $w, repos}' <<<"$h")")
+      '{name, dest, place, max_live, free: ($f | tonumber? // null), probe: $p, why: $w, repos, power}' <<<"$h")")
   done < <(fleet_hosts)
   [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
   if [ "${1:-}" = --json ]; then printf '%s\n' "${rows[@]}"
@@ -2889,7 +2971,9 @@ gate() {
   infra="$(fleet-shepherd infra 2>/dev/null)" && why+=("$infra")
   # This machine's own pace holds only a start here: while a fleet worker takes one, the pass goes
   # on, and pick_item places each item on whichever is open (place_host).
-  load=$(load_why "$red"); idle=$(idle_why "$red")
+  # GATE_NO_MACHINE leaves this machine's pace out altogether, unread: demand_pass asks what else holds.
+  load='' idle=''
+  [ "${GATE_NO_MACHINE:-0}" = 1 ] || { load=$(load_why "$red"); idle=$(idle_why "$red"); }
   [ -z "$load$idle" ] || ! remote_open || load='' idle=''
   [ -z "$load" ] || why+=("$load")
   github=$(fleet-assess --github 2>/dev/null)
@@ -2977,6 +3061,7 @@ cmd_run() {
   BUSY_PROJECTS=$(busy_projects)
   SPILL_LIVE=$(spill_live)
   UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
+  demand_pass "$runs"
   # Room is this machine's units plus every placed worker's.
   # A worker adds room only when it takes a session now (host_why), not merely by being placed.
   local h remote=0; for h in "${!HOST_FREE[@]}"; do [ -n "$(host_why "$h")" ] || remote=$(( remote + HOST_FREE[$h] )); done
