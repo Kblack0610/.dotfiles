@@ -12,13 +12,17 @@ home-config worktree, so the home-config lessons never loaded. The mirror's reje
 workflow closes a PR only after it opens, too late to stop that merge.
 
 Denied in such a checkout: `gh pr create`, `gh pr merge`, `agent-land` (it merges with gh), and
-`git push` to a github.com remote. The checkout is the one each segment runs in: the payload cwd,
-moved by `cd`/`pushd` earlier in the command, then `git -C <dir>`; for `gh -R <owner>/<repo>`, the
-clone project-map.json `paths` lists under that repo name. Fail-open: any error allows the command.
+`git push` to a github.com remote (an ssh Host alias is resolved with `ssh -G`). The checkout is
+the one each segment runs in: the payload cwd, moved by `cd`/`pushd` earlier in the command (a
+subshell's cd stays in it), then `git -C <dir>`; for `gh -R <owner>/<repo>`, GH_REPO or a PR URL,
+the clone project-map.json `paths` lists under that repo name. `bash -c` and `eval` payloads and
+backticks are checked as code. Not covered: `gh api` writes, `--git-dir`, and an unresolvable cd
+target ($(...)), which allow. Fail-open: any error allows the command.
 """
 import importlib.util
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -26,7 +30,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 MARKERS = (".forgejo/workflows/mirror-to-github.yaml", ".forgejo/workflows/mirror-to-github.yml")
 SEPARATORS = set(";&|()")
-WRAPPERS = {"env", "command", "builtin", "exec", "time", "nohup"}
+NL = "\x1e"  # newline sentinel: a separator that also ends a comment
+PREFIXES = {"env", "command", "builtin", "exec", "time", "nohup", "sudo", "then", "do", "else", "elif", "{", "!"}
+SHELLS = {"bash", "sh", "zsh", "dash"}
 GIT_OPT_ARG = {"-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 PUSH_OPT_ARG = {"-o", "--push-option", "--receive-pack", "--exec"}
 
@@ -52,16 +58,30 @@ def git(top, *args):
 
 
 def segments(cmd):
-    """The command's simple commands, each a word list, in order."""
-    # "\n ; " and not " ; ": shlex eats a comment through its newline, so the separator goes after it.
-    lex = shlex.shlex(cmd.replace("\\\n", " ").replace("\n", "\n ; "), posix=True, punctuation_chars=True)
+    """The command in order: each simple command as a word list (redirections dropped), and each
+    separator as its token, so the caller can scope a subshell's cd. Backticks split like `;`."""
+    text = cmd.replace("\\\n", " ").replace("\n", " %s " % NL).replace("`", " ; ")
+    lex = shlex.shlex(text, posix=True, punctuation_chars=True)
     lex.whitespace_split = True
-    seg = []
+    lex.commenters = ""  # shlex ends a word at a mid-word `#` (fix#3); bash does not
+    seg, comment, skip = [], False, False
     for tok in lex:
-        if tok and set(tok) <= SEPARATORS:
+        if tok == NL or (tok and set(tok) <= SEPARATORS):
+            comment = skip = False
             if seg:
                 yield seg
             seg = []
+            yield tok
+        elif comment:
+            continue
+        elif skip:
+            skip = False
+        elif tok.startswith("#"):
+            comment = True
+        elif tok and set(tok) <= set("<>&|") and ("<" in tok or ">" in tok):
+            if seg and seg[-1].isdigit():
+                seg.pop()  # the 2 of 2>&1
+            skip = True  # the redirection target
         else:
             seg.append(tok)
     if seg:
@@ -69,14 +89,16 @@ def segments(cmd):
 
 
 def unwrap(argv):
-    """Drop leading VAR=value assignments and wrappers (env, command, time, ...)."""
-    env = {}
+    """Drop leading VAR=value assignments, keywords and wrappers (env -i, sudo, then, ...)."""
+    env, wrapped = {}, False
     while argv:
         a = argv[0]
         if "=" in a and not a.startswith("=") and a.split("=", 1)[0].isidentifier():
             k, v = a.split("=", 1)
             env[k] = v
-        elif a in WRAPPERS:
+        elif a in PREFIXES:
+            wrapped = True
+        elif wrapped and a.startswith("-"):
             pass
         else:
             break
@@ -85,7 +107,11 @@ def unwrap(argv):
 
 
 def resolve(base, path):
-    return os.path.normpath(os.path.join(base, os.path.expanduser(path)))
+    """base/path, or None when either is unknown (an unset variable, a $(...))."""
+    path = os.path.expandvars(os.path.expanduser(path))
+    if "$" in path or (base is None and not os.path.isabs(path)):
+        return None
+    return os.path.normpath(os.path.join(base or "/", path))
 
 
 def canonical(d):
@@ -99,8 +125,20 @@ def canonical(d):
     return None
 
 
+def host(url):
+    m = re.match(r"^[a-z+]+://(?:[^@/]*@)?([^/:]+)", url) or re.match(r"^(?:[^@/]*@)?([^/:]+):", url)
+    if not m:
+        return ""
+    h = m.group(1).lower()
+    if "." not in h:  # an ssh Host alias: ask ssh what it names
+        r = subprocess.run(["ssh", "-G", h], capture_output=True, text=True, timeout=2)
+        h = next((l.split()[1] for l in r.stdout.splitlines() if l.startswith("hostname ")), h)
+    return h
+
+
 def is_github(url):
-    return "github.com" in url
+    h = host(url)
+    return h == "github.com" or h.endswith(".github.com")
 
 
 def forgejo_remote(top):
@@ -113,8 +151,11 @@ def clone_for(slug):
     """The local clone project-map.json lists under the repo name in <owner>/<repo>."""
     name = slug.rstrip("/").split("/")[-1].removesuffix(".git")
     path = os.environ.get("PROJECT_MAP_FILE") or os.path.expanduser("~/.config/shared-hooks/project-map.json")
-    with open(path) as f:
-        paths = json.load(f).get("paths") or {}
+    try:
+        with open(path) as f:
+            paths = json.load(f).get("paths") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
     for p, n in paths.items():
         if n == name or os.path.basename(p.rstrip("/")) == name:
             return os.path.expanduser(p)
@@ -181,7 +222,10 @@ def check_gh(cwd, argv, env):
         return None
     slug = env.get("GH_REPO") or os.environ.get("GH_REPO")
     for j, a in enumerate(argv):
-        if a in ("-R", "--repo") and j + 1 < len(argv):
+        url = re.search(r"github\.com/([^/\s]+/[^/\s]+)/pull/", a)
+        if url:
+            slug = url.group(1)
+        elif a in ("-R", "--repo") and j + 1 < len(argv):
             slug = argv[j + 1]
         elif a.startswith("--repo="):
             slug = a.split("=", 1)[1]
@@ -201,32 +245,43 @@ def check_land(cwd):
 
 
 def reason(cmd, cwd):
-    stack = []
+    subshells, dirs = [], []
     for seg in segments(_strip_heredocs()(cmd)):
+        if isinstance(seg, str):
+            for ch in seg:
+                if ch == "(":
+                    subshells.append(cwd)
+                elif ch == ")" and subshells:
+                    cwd = subshells.pop()
+            continue
         argv, env = unwrap(seg)
         if not argv:
             continue
         head = os.path.basename(argv[0])
+        r = None
         if head in ("cd", "pushd"):
-            target = argv[1] if len(argv) > 1 and argv[1] != "--" else (argv[2] if len(argv) > 2 else "~")
+            args = [a for a in argv[1:] if a == "-" or not a.startswith("-")]
+            target = args[0] if args else "~"
             if target != "-":
                 if head == "pushd":
-                    stack.append(cwd)
+                    dirs.append(cwd)
                 cwd = resolve(cwd, target)
-        elif head == "popd" and stack:
-            cwd = stack.pop()
+        elif head == "popd" and dirs:
+            cwd = dirs.pop()
+        elif head in SHELLS:
+            c = next((j for j, a in enumerate(argv[1:], 1) if re.fullmatch(r"-[a-z]*c[a-z]*", a)), None)
+            if c is not None and c + 1 < len(argv):
+                r = reason(argv[c + 1], cwd)
+        elif head == "eval":
+            r = reason(" ".join(argv[1:]), cwd)
         elif head == "git":
             r = check_git(cwd, argv)
-            if r:
-                return r
         elif head == "gh":
             r = check_gh(cwd, argv, env)
-            if r:
-                return r
         elif head == "agent-land":
             r = check_land(cwd)
-            if r:
-                return r
+        if r:
+            return r
     return None
 
 

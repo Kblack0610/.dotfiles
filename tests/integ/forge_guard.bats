@@ -96,3 +96,37 @@ git log -1'
   run bash -c "jq -nc '{tool_name:\"Read\", tool_input:{file_path:\"x\"}}' | python3 '$GUARD'"
   allowed
 }
+
+@test "review forms: redirects, keywords, nested shells, mid-word #, cd flags, \$HOME, PR URLs" {
+  run at "$T/hc" 'git push 2>&1 | tail -1'
+  denied
+  run at "$T/hc" 'git push >/dev/null'
+  denied
+  run at /tmp "if true; then cd $T/hc && gh pr merge 62; fi"
+  denied
+  run at /tmp "bash -lc 'cd $T/hc && gh pr merge 62'"
+  denied
+  run at "$T/hc" 'eval gh pr merge 62'
+  denied
+  run at "$T/hc" 'n=`gh pr create --fill`'
+  denied
+  run at "$T/ps" "git push origin fix#3; cd $T/hc; gh pr merge 1"
+  denied
+  run at /tmp "cd -P $T/hc && env -i gh pr merge 62"
+  denied
+  run env HOME="$T" bash -c "jq -nc '{tool_name:\"Bash\", cwd:\"/tmp\", tool_input:{command:\"cd \$HOME/hc && gh pr merge 1\"}}' | python3 '$GUARD'"
+  denied
+  run at /tmp 'gh pr merge https://github.com/Kblack0610/home-config/pull/62 --squash'
+  denied
+}
+
+@test "review forms: a subshell's cd stays inside it, a missing map and a lookalike host allow" {
+  run at "$T/ps" "(cd $T/hc && git log -1); gh pr create --fill"
+  allowed
+  run env PROJECT_MAP_FILE="$T/none.json" bash -c "jq -nc '{tool_name:\"Bash\", cwd:\"$T/hc\", tool_input:{command:\"gh pr merge 1 -R o/home-config; git push origin HEAD\"}}' | python3 '$GUARD'"
+  denied
+  assert_output --partial 'git push origin'
+  git -C "$T/hc" remote add look "https://forgejo.example/x/github.com-mirror.git"
+  run at "$T/hc" 'git push look HEAD'
+  allowed
+}
