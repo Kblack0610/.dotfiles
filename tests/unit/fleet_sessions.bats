@@ -532,7 +532,7 @@ page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, he
   # the process is the event: wait until /proc shows the child's exec, not for a delay
   until [ -n "$child" ] && grep -q ci-gate.sh "/proc/$child/cmdline" 2>/dev/null; do
     kill -0 "$root" || fail 'the gate stand-in exited before it started'
-    child="$(pgrep -P "$root" | head -1)"
+    child="$(pgrep -P "$root" || :)"; child="${child%%$'\n'*}"   # none yet is exit 1, not a failure
   done
   LIVE_PIDS="-$root"   # teardown kills these, pass or fail
   run live_wait "$SANDBOX/wt" "$root"
