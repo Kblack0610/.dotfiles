@@ -68,6 +68,48 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .weight <<<"$("$AQ" show old --json)")" = heavy ]
 }
 
+@test "list and show read a hand-edited header the way fm_get does" {
+  # The listing reads headers in awk (queue_index, item_recs), the verbs in fm_get: a hold and a
+  # weight take a key's first line, with or without a space after the colon.
+  mkdir -p "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/done/2026-11-07"
+  printf 'slug: a\nproject: game\npriority: high\nqueued: 2026-11-07T01:00:00Z\nafter:gone\nafter: b\n:odd\n::x\n---\ntask a\n\nmore\n\n' \
+    > "$AGENT_QUEUE_DIR/queued/20261107-010000-a.md"
+  printf 'slug: b\nproject: game\npriority: high\nfinished: 2026-11-07T02:00:00Z\nstatus: ok\nweight: heavy\nweight: light\n---\ntask b\n' \
+    > "$AGENT_QUEUE_DIR/done/2026-11-07/20261107-000000-b.md"
+  a="$("$AQ" show a --json)"
+  [ "$(jq -r .hold <<<"$a")" = "after gone" ]
+  [ "$(jq -r .task <<<"$a")" = $'task a\n\nmore' ]
+  [ "$(jq -r .weight <<<"$a")" = light ]
+  [ "$(jq -r '.[":odd"] // .[""] // "none"' <<<"$a")" = none ]
+  [ "$(jq -r .weight <<<"$("$AQ" show b --json)")" = heavy ]
+  run "$AQ" list --json --state all --date 2026-11-07
+  assert_success
+  [ "$(jq -c 'select(.slug == "a")' <<<"$output")" = "$a" ]
+}
+
+@test "show and list give an item the same hold, ready and derived weight" {
+  # show reads one item (item_json), a listing the whole queue's index (items_json).
+  mkdir -p "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/done/2026-11-07"
+  hdr='project: game\npriority: high\nqueued: 2026-11-07T01:00:00Z\n'
+  printf "slug: b\n${hdr}finished: 2026-11-07T02:00:00Z\nstatus: ok\nweight: light\n---\nb\n" \
+    > "$AGENT_QUEUE_DIR/done/2026-11-07/20261107-000000-b.md"
+  printf "slug: c\n${hdr}after: b\nweight: light\n---\nc\n" > "$AGENT_QUEUE_DIR/queued/20261107-010000-c.md"
+  printf "slug: n\n${hdr}tags: night\nweight: light\n---\nn\n" > "$AGENT_QUEUE_DIR/queued/20261107-010001-n.md"
+  printf "slug: p\n${hdr}mode: plan\n---\np\n" > "$AGENT_QUEUE_DIR/queued/20261107-010002-p.md"
+  printf "slug: q\n${hdr}phases: one two\n---\nq\n" > "$AGENT_QUEUE_DIR/queued/20261107-010003-q.md"
+  export AGENT_QUEUE_NOW=12:00
+  list="$("$AQ" list --json --state all --date 2026-11-07)"
+  for s in b c n p q; do
+    [ "$(jq -c --arg s "$s" 'select(.slug == $s)' <<<"$list")" = "$("$AQ" show "$s" --json)" ]
+  done
+  c="$("$AQ" show c --json)"
+  [ "$(jq -r '.hold // "none"' <<<"$c")" = none ]
+  [ "$(jq -r .ready <<<"$c")" = 2026-11-07T02:00:00Z ]
+  [[ "$(jq -r .hold <<<"$("$AQ" show n --json)")" == night* ]]
+  [ "$(jq -r .weight <<<"$("$AQ" show p --json)")" = heavy ]
+  [ "$(jq -r .weight <<<"$("$AQ" show q --json)")" = heavy ]
+}
+
 @test "add reads a multi-line task from stdin" {
   printf 'Line one\nline two\n' | "$AQ" add --project game --slug two-lines
   run awk 'f { print } $0 == "---" { f = 1 }' "$(item queued two-lines)"
@@ -1236,6 +1278,9 @@ EOF
   assert_output $'\tarena level'
   run "$AQ" credit-of game <<<'Assets/Shared/S.cs'
   assert_success; assert_output ''
+  # outside every tracker path, a directory named after the app is the app's
+  run "$AQ" credit-of game <<<$'store/arena/listing.json\nstore/arena/art.png\nAssets/Level/L.cs\ndocs/x/arena.md'
+  assert_output $'arena\tarena level'
   [ ! -e "$AGENT_QUEUE_DIR" ]
 }
 
