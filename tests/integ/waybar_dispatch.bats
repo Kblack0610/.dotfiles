@@ -33,7 +33,7 @@ feed() {
   python3 - "$FX/prom.json" "$@" <<'PY'
 import json, sys
 s = {
-    "summary_dispatch.runnable": 39, "summary_dispatch.runnable_urgent": 32,
+    "summary_dispatch.runnable": 39, "summary_dispatch.runnable_urgent": 32, "summary_dispatch.runnable_high": 7,
     "summary_dispatch.oldest_runnable_s": 46758, "summary_dispatch.oldest_urgent_s": 46758,
     "summary_dispatch.last_pass_epoch": 100000 - 180, "summary_dispatch.last_run_start_epoch": 100000 - 720,
     "summary_dispatch.started_1h": 5, "summary_dispatch.failed_1h": 0,
@@ -86,7 +86,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   run tip
   assert_line --index 1 "<b>Queue</b>  84 items: 60 queued, 14 running, 10 waiting on you"
-  assert_line --index 2 "queued: 39 ready (32 urgent or high), 21 blocked (19 on a phase, 2 on a PR, 0 on a time tag)"
+  assert_line --index 2 "queued: 39 ready (32 urgent, 7 high), 21 blocked (19 on a phase, 2 on a PR, 0 on a time tag)"
   assert_line --index 3 "oldest: ready 12h59m, urgent <span color='$Y'>12h59m</span>"
   assert_line --index 4 "last hour: 5 started, 4 done, 0 failed"
   assert_line --index 5 "last 24h: 50 started, 38 done, <span color='$Y'>2</span> failed"
@@ -317,7 +317,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   assert_success
   assert_equal "$(text)" "$(bar 39 1522 12)"
-  assert_output --partial "39 ready (32 urgent or high) of low water 3"
+  assert_output --partial "39 ready (32 urgent, 7 high) of low water 3"
   assert_output --partial "present trickle: 1 of 1 board starts this hour"
   feed
   run "$MODULE"

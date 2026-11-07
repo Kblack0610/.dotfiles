@@ -2173,7 +2173,8 @@ last_run_start() {
 
 # stats -- one JSON object for the feed (agent-mqtt-publish summary/dispatch), numbers only where a
 # number will do, because mqtt2prom keeps nothing else: runnable items and the oldest one's age, by
-# all and by urgent/high; the low water and whether runnable is under it; the present trickle's rate
+# all and by urgent (runnable_urgent, oldest_urgent_s: priority urgent only, and only what a start would
+# take, as next_items does) with the high ones counted apart (runnable_high); the low water and whether runnable is under it; the present trickle's rate
 # and its starts in the last hour; starved (the queue-starved verdict); the last pass and last run start;
 # reap moves in the last hour, and the items moved
 # DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily); the open board rows
@@ -2204,10 +2205,12 @@ cmd_stats() {
       --argjson low "$DISPATCH_LOW_WATER" --argjson per "$DISPATCH_PRESENT_PER_HOUR" \
       --argjson held "${held_since:-null}" '
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
-      | ($q | map(select((.priority == "urgent" or .priority == "high") and (.waits | not)))) as $u
+      | ($q | map(select((.waits | not) and (.agent // "claude") == "claude"))) as $take
+      | ($take | map(select(.priority == "urgent"))) as $u
+      | ($take | map(select(.priority == "high"))) as $hi
       | def age(x): if (x | map(.t // empty) | length) == 0 then null else $now - (x | map(.t // empty) | min) end;
         ($ev | map(select(.[0] == "move") | .[1]) | group_by(.) | map(select(length >= $flap) | .[0])) as $flapping
-      | {state: ($q | length), runnable: ($q | length), runnable_urgent: ($u | length),
+      | {state: ($q | length), runnable: ($q | length), runnable_urgent: ($u | length), runnable_high: ($hi | length),
          oldest_runnable_s: age($q), oldest_urgent_s: age($u), starved: $starved,
          last_pass_epoch: $pass, last_run_start_epoch: $start,
          reaped_1h: ($ev | map(select(.[0] == "move" or .[0] == "settle")) | length),

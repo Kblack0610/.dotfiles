@@ -124,7 +124,7 @@ else
   total=-
   [ -n "$queued" ] && total=$((queued + $(n0 running) + $(n0 waiting)))
   qhead="$title  $total items: $(d queued) queued, $(d running) running, $(d waiting) waiting on you"
-  ready_line="$ready ready ($(d runnable_urgent) urgent or high)"
+  ready_line="$ready ready ($(d runnable_urgent) urgent, $(d runnable_high) high)"
   low="$(get dispatch.low_water)"
   [ -z "$low" ] || ready_line+=" of low water $low"
   queue="queued: $ready_line, $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag)"

@@ -3658,7 +3658,7 @@ board_item() {
 @test "stats: runnable work and its age, reap moves in the last hour, flapping items" {
   local old new t
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
-  queued_item stuck high "$old"
+  queued_item stuck urgent "$old"
   queued_item low-new low "$new"
   queued_item after-old urgent "$old" '' never-done   # held by its after:, so not runnable
   mkdir -p "$FLEET_DISPATCH_DIR"
@@ -3685,6 +3685,27 @@ board_item() {
   jq -e '.done_6h == 0 and .added_6h == 3' <<<"$output"
   # Only numbers, booleans and the one list, so mqtt2prom keeps every fact it needs.
   assert_equal "$(jq -c '[to_entries[] | select(.value | type == "string")] | length' <<<"$output")" 0
+}
+
+@test "stats: runnable_urgent counts only urgent items a start would take; high ones, chained ones and a gateway agent's are not in it" {
+  local old
+  old=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item urgent-ok urgent "$old"
+  queued_item urgent-chained urgent "$old" '' never-done
+  queued_item high-a high "$old"
+  queued_item high-b high "$old"
+  queued_item urgent-gateway urgent "$old"
+  sed -i 's/^agent: claude$/agent: opencode/' "$AGENT_QUEUE_DIR"/queued/*-urgent-gateway.md
+  export DISPATCH_STARVED_MIN=100000
+  mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '[.runnable_urgent, .runnable_high]' <<<"$output")" '[1,2]'
+  jq -e '.oldest_urgent_s >= 10790 and .oldest_urgent_s <= 10900' <<<"$output"
+  # No urgent item a start would take: none counted and no age, not the high ones' age.
+  rm "$AGENT_QUEUE_DIR"/queued/*-urgent-ok.md
+  run cmd_stats
+  assert_equal "$(jq -c '[.runnable_urgent, .runnable_high, .oldest_urgent_s]' <<<"$output")" '[0,2,null]'
 }
 
 @test "a real pass leaves its headroom for stats; a dry pass, or one older than three passes, gives none" {
