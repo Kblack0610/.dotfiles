@@ -63,6 +63,9 @@ row() { # target bucket nudged escalated [labels-json]
     '{target:$t, bucket:$b, nudged:$n, escalated:$e, labels:$l, fact:"f-\($t)", reason:"r-\($t)"}'
 }
 
+# checked: `check` with the routing lines under each due line dropped, for tests of the due lines
+checked() { "$SH" check | grep -v '^  -> '; return "${PIPESTATUS[0]}"; }
+
 outcome() { cat "$AGENTCTL_STATE_DIR/shepherd-test/last-outcome"; }
 
 # The pass the last run started, and what its launcher hands claude.
@@ -140,7 +143,7 @@ case "$1" in
   add) echo "queued shared-red-footests -> /q/x.md" ;;
 esac'
   shared_doc '["sid-1","sid-2"]'
-  run "$SH" check
+  run checked
   assert_success
   assert_line 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by queue item shared-red-footests; tell sid-1,sid-2: do not gate again on it, merge main once shared-red-footests lands; then: fleet-sessions mark shared-P_Tests "SHARED P.Tests.FooTests.Bar("x") @100"'
   refute_output --partial 'shared red:'
@@ -167,7 +170,7 @@ esac'
 [ "$1" = list ] && printf "%s\n" "{\"slug\":\"other\",\"task\":\"fix the BarTests class\"}" "{\"slug\":\"nightly-fix-foo-ucp-9\",\"task\":\"fix FooTests on the nightly\"}"
 exit 0'
   shared_doc '["sid-1"]'
-  run "$SH" check
+  run checked
   assert_line --partial 'is owned by queue item nightly-fix-foo-ucp-9; tell sid-1'
   run grep -c '^add ' "$HOME/aq.calls"
   assert_output 0
@@ -408,6 +411,18 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   STUB_PANES='%9\thub\t2\tshepherd\t1\n' run "$SH" run
   grep -qxF -- "-L hub respawn-pane -k -t %9 -c $HOME/.dotfiles bash $(printf %q "$FLEET_SHEPHERD_DIR/.pass.sh")" "$HOME/tmux.calls"
   assert_equal "$(windows)" 0
+}
+
+@test "check prints the skill and section under each due line; the prompt gives the path to read" {
+  doc "[$(row a DONE false false)]"
+  STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" check
+  assert_line 'nudge DONE: a f-a'
+  assert_line '  -> shepherd (~/.claude/skills/shepherd/SKILL.md), "Verb: nudge"'
+  assert_line '  -> fleet-pace (~/.claude/skills/fleet-pace/SKILL.md), "Pace check"'
+  STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" run
+  run prompt
+  assert_line '  shepherd: ~/.claude/skills/shepherd/SKILL.md, "Verb: nudge"'
+  assert_line '  fleet-pace: ~/.claude/skills/fleet-pace/SKILL.md, "Pace check"'
 }
 
 @test "the pass prompt names only the role skills its due lines need" {
@@ -876,17 +891,17 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
 @test "a standing trip stays due until a pass answers it; a skip lasts while it trips, and a new trip is news" {
   doc "[$(row d WORKING false false)]"
   export STUB_TRIPPED='queue-starved\thigh\n'
-  run "$SH" check
+  run checked
   assert_output 'watch: queue-starved tripped (high)'
   # Negative control: a pass that only reported it still owes it.
-  run "$SH" check
+  run checked
   assert_output 'unhandled: watch: queue-starved tripped (high)'
   "$SH" skip 'unhandled: watch: queue-starved tripped (high)' 'started the head item by hand; gate fix in #795'
-  run "$SH" check
+  run checked
   assert_failure 1
-  STUB_TRIPPED='' run "$SH" check
+  STUB_TRIPPED='' run checked
   assert_failure 1
-  run "$SH" check
+  run checked
   assert_output 'watch: queue-starved tripped (high)'
 }
 
@@ -1145,7 +1160,7 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
 
 @test "check refreshes like run and prints what is due, calling no model" {
   doc "[$(row a DONE false false)]"
-  run "$SH" check
+  run checked
   assert_success
   assert_line 'nudge DONE: a f-a'
   assert_equal "$(cat "$HOME/sessions.calls")" --write
@@ -1154,7 +1169,7 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
 
 @test "check on a quiet fleet exits 1 and pages settled once" {
   doc "[$(row a NEEDS false true)]"
-  run "$SH" check
+  run checked
   assert_failure 1
   assert_output ''
   "$SH" check || true
@@ -1163,7 +1178,7 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
 
 @test "check exits 2 when the document cannot be refreshed, and run records FAILED with a pass started" {
   stub fleet-sessions 'exit 1'
-  run "$SH" check
+  run checked
   assert_failure 2
   run "$SH" run
   assert_failure
@@ -1173,11 +1188,11 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
 
 @test "a due line the last pass left as it was leads the next check as unhandled" {
   doc "[$(row a DONE false false), $(row b LANDED false false)]"
-  run "$SH" check
+  run checked
   assert_output "$(printf 'nudge DONE: a f-a\nnudge LANDED: b f-b')"
   # the pass nudged a (so it is an escalate line now) and did nothing about b
   doc "[$(row a DONE true false), $(row b LANDED false false)]"
-  run "$SH" check
+  run checked
   assert_success
   assert_line --index 0 'unhandled: nudge LANDED: b f-b'
   assert_line --index 1 'escalate DONE: a r-a'
@@ -1243,7 +1258,7 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
   "$SH" check >/dev/null
   run "$SH" skip 'unhandled: nudge DONE: a f-a' 'the human is on it in chat'
   assert_success
-  run "$SH" check
+  run checked
   assert_failure 1
   assert_output ''
   run cut -f2 "$FLEET_SHEPHERD_DIR/.skipped"
@@ -1252,7 +1267,7 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
   assert_output --partial 'skipped: nudge DONE: a f-a: the human is on it in chat'
   doc "[]"; "$SH" check || true        # no longer due: the skip is spent
   doc "[$(row a DONE false false)]"
-  run "$SH" check
+  run checked
   assert_output 'nudge DONE: a f-a'
 }
 
@@ -1261,7 +1276,7 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
   phases_doc
   "$SH" check >/dev/null
   : > "$HOME/rows"; : > "$HOME/eta"; phase s1 shell 40 160; phases_doc
-  run "$SH" check
+  run checked
   assert_line --partial 'unhandled: overdue: t-s1 phase 2/4'
   assert_line --partial 'open 160m'
   run "$SH" skip 'overdue: t-s1 phase 2/4'
@@ -1398,13 +1413,13 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   budget_setup
   doc "[$(brow WORKING)]"
   export STUB_COST='{"s-old1":10,"s-old2":8,"s-now":9,"other":500}'   # $27: 1x of the unsized $25
-  run "$SH" check
-  run "$SH" check
+  run checked
+  run checked
   assert_equal "$(grep -c 'budget: lab/w-agent-1:1 (q1 spent \$27, 1x its \$25 unsized budget), still working: carries on to 2x' "$FLEET_SHEPHERD_DIR/log.md")" 1
   assert_equal "$(parks)" 0
   [ ! -s "$HOME/pages" ]
   export STUB_COST='{"s-now":51}'   # the next checkpoint is news again
-  run "$SH" check
+  run checked
   grep -q 'q1 spent \$51, 2x its \$25 unsized budget), still working: carries on to 3x' "$FLEET_SHEPHERD_DIR/log.md"
 }
 
@@ -1412,14 +1427,14 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   budget_setup
   doc "[$(brow STALLED)]"
   export STUB_TASK='feat(x): y #size/s' STUB_COST='{"s-old1":7,"s-now":6}'   # $13 past the s $12
-  run "$SH" check
-  run "$SH" check
+  run checked
+  run checked
   assert_equal "$(parks)" 1
   grep -q 'budget: parked lab/w-agent-1:1 (q1 spent \$13, 1x its \$12 s budget, STALLED)' "$FLEET_SHEPHERD_DIR/log.md"
   assert_equal "$(grep -c 'lab/w-agent-1:1 parked at its budget' "$HOME/pages")" 1
   grep -q 'claude-acct unpark lab/w-agent-1:1' "$HOME/pages"
   export STUB_COST='{"s-now":25}'   # resumed and spent a second budget: the next checkpoint parks again
-  run "$SH" check
+  run checked
   assert_equal "$(parks)" 2
 }
 
@@ -1427,16 +1442,16 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   budget_setup
   doc "[$(brow WORKING)]"
   export STUB_COST='{"s-now":80}' STUB_PARK_BUSY=1   # 3x of $25
-  run "$SH" check
-  run "$SH" check
+  run checked
+  run checked
   assert_equal "$(parks)" 2
   grep -q 'budget: lab/w-agent-1:1 (q1 spent \$80, 3x its \$25 unsized budget, WORKING) parks once its turn ends' "$FLEET_SHEPHERD_DIR/log.md"
   unset STUB_PARK_BUSY
-  run "$SH" check
+  run checked
   assert_equal "$(parks)" 3
   grep -q 'budget: parked lab/w-agent-1:1' "$FLEET_SHEPHERD_DIR/log.md"
   assert_equal "$(grep -c . "$HOME/pages")" 1
-  run "$SH" check
+  run checked
   assert_equal "$(parks)" 3
 }
 
@@ -1444,10 +1459,10 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   budget_setup
   doc "[$(brow NEEDS)]"
   export STUB_COST=''
-  run "$SH" check
+  run checked
   [ ! -e "$FLEET_SHEPHERD_DIR/.budget" ] || [ ! -s "$FLEET_SHEPHERD_DIR/.budget" ]
   export STUB_COST='{"s-now":30}'
-  run "$SH" check
+  run checked
   assert_equal "$(parks)" 0
   grep -q 'budget: lab/w-agent-1:1 (q1 spent \$30, 1x its \$25 unsized budget), NEEDS: not parked, it is not spending' "$FLEET_SHEPHERD_DIR/log.md"
 }

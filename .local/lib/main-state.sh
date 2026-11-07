@@ -27,7 +27,7 @@ MAIN_STREAKS='map(select(.status == "completed"
 # bucket that `gh api rate_limit` does not show, and on 2026-10-29 it was the one used up.
 main_runs() {
   local b="$3" file runs
-  file="$MAIN_CACHE/runs_$1_${b//\//_}.json"
+  file="$MAIN_CACHE/runs_$1_${b//\//%2F}.json" # %2F: feat/x and feat_x are two branches
   if [ -s "$file" ] && [ $(( $(date +%s) - $(date -r "$file" +%s) )) -lt "$FLEET_MAIN_TTL" ]; then
     cat "$file"; return
   fi
