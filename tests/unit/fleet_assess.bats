@@ -64,7 +64,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
 
 @test "read_mem_stall takes the some line's avg10, not full's; a missing PSI file reads 0" {
   printf 'some avg10=12.34 avg60=1.00 avg300=0.00 total=1\nfull avg10=3.21 avg60=0.00 avg300=0.00 total=1\n' > "$BATS_TEST_TMPDIR/psi"
-  PSI_MEM="$FLEET_PSI_MEM" run read_mem_stall
+  PSI_MEM="$BATS_TEST_TMPDIR/psi" run read_mem_stall
   assert_output '12.34'
   PSI_MEM="$BATS_TEST_TMPDIR/none" run read_mem_stall
   assert_output '0'
