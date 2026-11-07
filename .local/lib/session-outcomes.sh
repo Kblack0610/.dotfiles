@@ -179,7 +179,7 @@ so_opencode_rows() {
     FROM tree t JOIN session_v2 r ON r.id = t.root JOIN session_v2 s ON s.id = t.id GROUP BY t.root" > "$work/oc.sessions.json" || return 1
   sqlite3 -readonly -json "$db" "$tree
     SELECT t.root, m.data FROM tree t JOIN session_message m ON m.session_id = t.id
-    WHERE m.type = 'assistant' AND (m.data LIKE '%gh pr %' OR m.data LIKE '%/api/v1/repos/%')" > "$work/oc.messages.json" || return 1
+    WHERE m.type = 'assistant' AND (m.data LIKE '%gh pr %' OR (m.data LIKE '%/api/v1/repos/%' AND m.data LIKE '%/pulls%'))" > "$work/oc.messages.json" || return 1
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   jq -r '(. // [])[].directory' "$work/oc.sessions.json" | sort -u | while IFS= read -r dir; do
@@ -292,6 +292,34 @@ so_lesson_sigs() {
         claim: (.line | sub("^\\s*-\\s*"; "") | sub("^\\*\\*[0-9-]+\\*\\*\\s*"; "")
                 | ((capture("^\\*\\*(?<c>.+?)\\*\\*") | .c) // .) | gsub("#"; "") | .[0:120])}]
     | group_by(.sig) | map(min_by(.since))'
+}
+
+# so_forgejo_pr_list HOST/OWNER/REPO WORKDIR LIMIT - the repo's newest LIMIT PRs from its Forgejo API,
+# in the `gh pr list --json number,state,title,mergedAt,body,mergeCommit` shape, so a reader of
+# gh's list takes them unchanged. The token is rbw entry SO_FORGEJO_ENTRY (one with repo scope),
+# read once per process, and goes in on stdin (-K -), never argv. rc 1 with SO_FORGEJO_ERR set when
+# there is no token or a page fails. Seams: SO_CURL SO_RBW.
+SO_FORGEJO_PAGE=50   # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50, whatever limit asks for
+SO_FORGEJO_TOKEN=""
+so_forgejo_pr_list() {
+  local repo="$1" work="$2" limit="$3" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}" page=1 got
+  if [ -z "$SO_FORGEJO_TOKEN" ]; then
+    SO_FORGEJO_TOKEN="$("${SO_RBW:-rbw}" get "$entry" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
+    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (rbw $entry), $repo unread"; return 1; }
+  fi
+  rm -f "$work"/fj.page.*
+  while :; do
+    printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
+      "${SO_CURL:-curl}" -sSf -K - --max-time 30 -o "$work/fj.page.$page" \
+        "https://${repo%%/*}/api/v1/repos/${repo#*/}/pulls?state=all&limit=$SO_FORGEJO_PAGE&page=$page" 2>"$work/fj.err" &&
+      got="$(jq 'length' "$work/fj.page.$page" 2>/dev/null)" ||
+      { SO_FORGEJO_ERR="$repo unread: $(head -c 120 "$work/fj.err")"; return 1; }
+    [ "$got" -ge "$SO_FORGEJO_PAGE" ] && [ $((page * SO_FORGEJO_PAGE)) -lt "$limit" ] || break
+    page=$((page + 1))
+  done
+  jq -cs 'add | map({number, title, body, mergedAt: .merged_at,
+                     state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
+                     mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)})' "$work"/fj.page.*
 }
 
 # so_pr_index FINAL_DAYS - stdin: a `gh pr list --json number,state,title,mergedAt,body,mergeCommit`

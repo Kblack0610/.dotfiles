@@ -1564,6 +1564,27 @@ SH
   [ "$(jq -c 'map(.state)' <<<"$output")" = '["OPEN","MERGED"]' ]
 }
 
+@test "session_prs: a Forgejo PR (host/owner/repo) takes its state from that host's API, not gh" {
+  pr_gh
+  {
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://git.example.test/api/v1/repos/o/audio/pulls"}}]}}'
+    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://git.example.test/o/audio/pulls/12"}]}}'
+  } > "$SANDBOX/t.jsonl"
+  printf 'fj-token' > "$RBW_FIXTURE/forgejo_repo_admin"
+  cat > "$SANDBOX/bin/curl-fj" <<'SH'
+#!/usr/bin/env bash
+cat > /dev/null
+while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done
+echo '[{"number":12,"state":"closed","merged":true,"merged_at":"2026-10-30T12:00:00Z","merge_commit_sha":"587713a"}]' > "$out"
+SH
+  chmod +x "$SANDBOX/bin/curl-fj"
+  export SO_CURL=curl-fj FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run session_prs "$SANDBOX/t.jsonl"
+  assert_success
+  [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["git.example.test/o/audio",12,"MERGED","2026-10-30T12:00:00Z"]]' ]
+  [ ! -s "$SANDBOX/gh.log" ]
+}
+
 @test "sibling_pr: the last open PR in another repo, its CI from one cached gh pr view; a failed view is unreadable, asked once a pass" {
   git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/One.git
   cat > "$SANDBOX/bin/gh" <<'SH'

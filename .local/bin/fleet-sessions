@@ -576,7 +576,7 @@ main_state() {
   jq -r "$MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
 }
 
-# pr_states <owner/repo> -> the repo's recent PRs as a JSON array of {number, state, mergedAt},
+# pr_states <owner/repo or host/owner/repo (Forgejo)> -> the repo's recent PRs as a JSON array of {number, state, mergedAt},
 # reused for FLEET_MAIN_TTL seconds across passes, as main_runs is and for the same reason. This
 # keys on the repo the PR is in, not the cwd: one session lands PRs in several. A failed call is
 # not cached, but it is not retried for every other session in this pass either.
@@ -588,8 +588,12 @@ pr_states() {
     cat "$file"; return
   fi
   [ -f "$failed" ] && return 1
-  prs="$(gh pr list --repo "$repo" --state all --limit 300 --json number,state,mergedAt 2>/dev/null)" \
-    || { : > "$failed"; return 1; }
+  if [[ "$repo" == */*/* ]]; then   # host/owner/repo is a Forgejo repo (session-outcomes.sh SO_PR_JQ)
+    prs="$(so_forgejo_pr_list "$repo" "$CACHE" 300)" || { : > "$failed"; return 1; }
+  else
+    prs="$(gh pr list --repo "$repo" --state all --limit 300 --json number,state,mergedAt 2>/dev/null)" \
+      || { : > "$failed"; return 1; }
+  fi
   mkdir -p "$MAIN_CACHE"
   printf '%s\n' "$prs" > "$file.$$" && mv "$file.$$" "$file"
   printf '%s\n' "$prs"

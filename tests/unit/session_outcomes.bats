@@ -251,7 +251,6 @@ case "$url" in
   *"&page=1") jq -cn '[range(100; 150) | {number: ., state: "open", merged: false, merged_at: null, merge_commit_sha: null, title: "t\(.)", body: ""}]' ;;
   *"&page=2") jq -cn '[{number: 12, state: "closed", merged: true, merged_at: "2026-10-19T03:00:00Z", merge_commit_sha: "587713a", title: "docs: e", body: ""},
                        {number: 7, state: "closed", merged: false, merged_at: null, merge_commit_sha: null, title: "seven", body: ""}]' ;;
-  *) echo '[]' ;;
 esac > "$out"
 STUB
   chmod +x "$SANDBOX/bin/curl-fj"
@@ -276,7 +275,7 @@ STUB
   assert_equal "$(refs 'https://github.com/o/r/pulls/3 https://h/api/v1/repos/o/r/pulls/4')" '[]'
 }
 
-@test "a Forgejo PR: claimed from its create's html_url, looked up across API pages, merged; a GET is not claimed and gh is never asked" {
+@test "a Forgejo PR: claimed from its create's html_url, looked up across API pages with the token on stdin, merged; a GET is not claimed and gh is never asked" {
   fj_setup
   run "$SUBJECT" run
   assert_success
@@ -289,11 +288,7 @@ STUB
   # GitHub sessions are untouched beside it
   assert_equal "$(field a '[.prs[].number] | join(",")')" 10
   assert_equal "$(field a .prs_merged)" 1
-}
-
-@test "a Forgejo token goes in on stdin, never curl's argv" {
-  fj_setup
-  "$SUBJECT" run
+  # the token goes in on stdin, never curl's argv
   run grep -c 'fj-secret-token' "$BATS_TEST_TMPDIR/fj.argv"
   assert_output 0
   grep -q 'header = "Authorization: token fj-secret-token"' "$BATS_TEST_TMPDIR/fj.stdin"
