@@ -112,8 +112,6 @@ pub struct Inputs {
     /// Queue items finished in the window.
     pub done: Option<Vec<Item>>,
     pub live: Option<Live>,
-    /// Memory proposals waiting, and in how many projects.
-    pub mem0: (usize, usize),
     /// comms' one-line inbox summary.
     pub mail_stats: Option<String>,
     pub errors: Vec<String>,
@@ -776,14 +774,6 @@ fn details(i: &Inputs, areas: &[Area]) -> Vec<String> {
             ));
         }
     }
-    let (n, p) = i.mem0;
-    if n > 0 {
-        also.push(format!(
-            "{} wait for review in {}. Keep one by running its curl in ~/.agent/dreams/<project>/mem0-queue.md.",
-            plural(n, "memory proposal", "memory proposals"),
-            plural(p, "project", "projects")
-        ));
-    }
     if let Some(m) = &i.mail_stats {
         also.push(format!("Email: {}.", m.trim().trim_end_matches('.')));
     }
@@ -1023,22 +1013,6 @@ pub fn issues(md: &str) -> Vec<String> {
         .collect()
 }
 
-/// Memory proposals waiting (`^curl ` lines of each `<dreams>/*/mem0-queue.md`) and the
-/// projects they wait in.
-pub fn mem0(dreams: &Path) -> (usize, usize) {
-    let mut n = 0;
-    let mut p = 0;
-    for e in std::fs::read_dir(dreams).into_iter().flatten().flatten() {
-        let q = std::fs::read_to_string(e.path().join("mem0-queue.md")).unwrap_or_default();
-        let k = q.lines().filter(|l| l.starts_with("curl ")).count();
-        if k > 0 {
-            n += k;
-            p += 1;
-        }
-    }
-    (n, p)
-}
-
 fn env_dir(k: &str, home: &Path, d: &str) -> PathBuf {
     std::env::var_os(k)
         .filter(|v| !v.is_empty())
@@ -1148,7 +1122,6 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
         days,
         done,
         live,
-        mem0: mem0(&home_dir.join(".agent/dreams")),
         mail_stats: std::fs::read_to_string(comms.join("stats-summary.txt"))
             .ok()
             .filter(|s| !s.trim().is_empty()),

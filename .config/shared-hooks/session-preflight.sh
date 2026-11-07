@@ -95,24 +95,6 @@ HEADER=$(
     fi
     echo
   fi
-
-  # The dream PROSE is no longer injected. It is a model's re-narration of the lessons
-  # the anchor's digest already carries -- a third surface for one fact, and the longest
-  # of the three. The mem0 queue COUNT stays, because it is the one part that is
-  # actionable and is not said anywhere else, and it now prints the command to drain it
-  # rather than just the number.
-  MEM0_QUEUE="$HOME/.agent/dreams/${PROJECT_NAME}/mem0-queue.md"
-  if [ -f "$MEM0_QUEUE" ]; then
-    # `grep -c` PRINTS 0 and exits 1 on no match, so `|| echo 0` appended a second 0
-    # and the `-gt` below died with "integer expected" on every empty queue.
-    pending=$(grep -c '^curl ' "$MEM0_QUEUE" 2>/dev/null | head -1)
-    pending=${pending:-0}
-    if [ "${pending:-0}" -gt 0 ]; then
-      echo "💤 $pending mem0 proposal(s) awaiting review — drain with:"
-      echo "     bash <(grep '^curl ' ${MEM0_QUEUE/#$HOME/\~})"
-      echo
-    fi
-  fi
 )
 startup_mark header
 

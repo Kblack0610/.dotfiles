@@ -13,11 +13,10 @@
 
 # --- mem0 API key ------------------------------------------------------------
 # The self-hosted mem0 server authenticates on an X-API-Key header carrying a
-# m0sk_ CLIENT key. Nothing exported this, so every ready-to-run curl staged in
-# ~/.agent/dreams/*/mem0-queue.md expanded $MEM0_API_KEY to empty and 401'd on the
-# first copy-paste. 17 approved facts sat unposted across 6 projects for ~4 weeks,
-# and two dream-diary entries misread it as a server/credential fault. It is not:
-# the server answers 200 with the right key.
+# m0sk_ CLIENT key, exported here for interactive mem0 calls (the mem0-ops skill).
+# Without it every call 401s, which two dream-diary entries once misread as a
+# server fault: the server answers 200 with the right key. A dream proposal is
+# posted by `agent-propose accept`, which reads the key from sops itself.
 #
 # Two sources, tried in order, because they fail on different machines:
 #   1. SOPS in home-config — deterministic and non-interactive, but needs the repo

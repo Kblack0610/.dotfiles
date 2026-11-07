@@ -142,3 +142,62 @@ STUB
   assert_equal "$(sed -n 1p "$CALLS")" 5
   assert_equal "$(sed -n '2,$p' "$CALLS")" $'two  words\nand a line'
 }
+
+# mem0: sops and curl stubbed. The curl stub keeps its stdin (the -K config) and its argv apart, so a
+# test can tell where the key went.
+mem0_stubs() {
+  export AGENT_PROPOSE_MEM0_ENV="$BATS_TEST_TMPDIR/mem0.env"
+  printf 'MEM0_BASE_URL=https://mem0.test\nMEM0_USER_ID=me\nMEM0_SECRET=%s/secret.yaml\n' "$BATS_TEST_TMPDIR" > "$AGENT_PROPOSE_MEM0_ENV"
+  printf '#!/usr/bin/env bash\necho "sops $*" >> "$CALLS"\necho "MEM0_API_KEY: \\"m0sk_sekrit\\""\n' > "$BATS_TEST_TMPDIR/bin/sops"
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'C'
+#!/usr/bin/env bash
+cat > "$CALLS.curl-stdin"
+printf '%s\n' "$@" > "$CALLS.curl-argv"
+echo "curl" >> "$CALLS"
+ok='{"results":[{"id":"m1","memory":"x","event":"ADD"}]}'
+echo "${CURL_OUT:-$ok}"
+C
+  chmod +x "$BATS_TEST_TMPDIR/bin/sops" "$BATS_TEST_TMPDIR/bin/curl"
+}
+
+add_mem0() { "$AP" add --stream dream --project dotfiles --verb mem0 --arg "Prefers plain tables" --key dream/b1 "Keep: prefers plain tables"; }
+
+@test "mem0 accept posts the fact verbatim, and the key goes to curl on stdin only" {
+  mem0_stubs
+  id="$(add_mem0)"
+  assert_equal "$("$AP" list --json | jq -r '.[0].does')" "post to mem0, verbatim: Prefers plain tables"
+  run "$AP" accept "$id"
+  assert_success
+  assert_equal "$(jq -r '.status + " " + .result' "$AGENT_PROPOSE_DIR/$id.json")" "accepted mem0 m1"
+  assert_equal "$(cat "$CALLS.curl-stdin")" 'header = "X-API-Key: m0sk_sekrit"'
+  run grep -c m0sk_ "$CALLS.curl-argv" "$AGENT_PROPOSE_DIR/$id.json"
+  assert_output --partial "curl-argv:0"
+  assert_output --partial "$id.json:0"
+  assert_equal "$(grep -x -A1 -- --data-binary "$CALLS.curl-argv" | tail -1 | jq -c .)" \
+    '{"messages":[{"role":"user","content":"Prefers plain tables"}],"user_id":"me","infer":false}'
+  grep -qx 'https://mem0.test/memories' "$CALLS.curl-argv"
+}
+
+@test "mem0 reject reads no key and posts nothing" {
+  mem0_stubs
+  id="$(add_mem0)"
+  run "$AP" reject "$id"
+  assert_success
+  [ ! -e "$CALLS" ]
+}
+
+@test "mem0 that stores nothing, or has no config or key, stays open with the reason" {
+  mem0_stubs
+  id="$(add_mem0)"
+  CURL_OUT='{"results":[]}' run "$AP" accept "$id"
+  assert_failure
+  assert_equal "$(jq -r '.status' "$AGENT_PROPOSE_DIR/$id.json")" open
+  assert_output --partial "mem0 stored nothing"
+  printf '#!/bin/sh\necho "MEM0_API_KEY: "\n' > "$BATS_TEST_TMPDIR/bin/sops"
+  run "$AP" accept "$id"
+  assert_output --partial "no mem0 key could be read"
+  AGENT_PROPOSE_MEM0_ENV="$BATS_TEST_TMPDIR/none" run "$AP" accept "$id"
+  assert_output --partial "no mem0 config"
+  assert_equal "$(jq -r '.status' "$AGENT_PROPOSE_DIR/$id.json")" open
+  grep -c curl "$CALLS" | grep -qx 1
+}
