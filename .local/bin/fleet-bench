@@ -2599,18 +2599,27 @@ upsert_report() {
   fi
 }
 
-# triage_rows -> key, text and priority (tab-separated) for each runtime fault that persists: a
-# scheduled runner whose last-outcome is FAILED or STALLED, a failed user unit, and a Sentinel
-# watch held at TRIP past TRIAGE_WATCH_AFTER, or TRIAGE_WATCH_HIGH_AFTER when high or urgent.
-# FAILED, a failed unit and a high or urgent watch are #high. Sentinel stays observe-only: this
-# reads its state files.
 # watch_sev <name> -> the severity in its manifest. watch_after <severity> -> seconds it must stay
 # at TRIP before it is a red.
 watch_sev() { sed -n 's/^severity:[[:space:]]*//p' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null | head -1; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
 
+# watch_tripped_since <name> <now> -> when the watch tripped, once it is past triage's patience
+watch_tripped_since() {
+  local since
+  [ "$(cat "$TRIAGE_WATCH_STATE/$1.state" 2>/dev/null)" = TRIP ] || return 1
+  since=$(cat "$TRIAGE_WATCH_STATE/$1.since" 2>/dev/null) || return 1
+  [[ "$since" =~ ^[0-9]+$ ]] && [ $(($2 - since)) -ge "$(watch_after "$(watch_sev "$1")")" ] || return 1
+  printf '%s\n' "$since"
+}
+
+# triage_rows -> key, text and priority (tab-separated) for each runtime fault that persists: a
+# scheduled runner whose last-outcome is FAILED or STALLED, a failed user unit, and a Sentinel
+# watch held at TRIP past TRIAGE_WATCH_AFTER, or TRIAGE_WATCH_HIGH_AFTER when high or urgent.
+# FAILED, a failed unit and a high or urgent watch are #high. Sentinel stays observe-only: this
+# reads its state files.
 triage_rows() {
-  local c name sd v detail u res load f n since sev what why t after
+  local c name sd v detail u res load f n since sev what why t
   t=$(now)
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
@@ -2650,15 +2659,6 @@ triage_rows() {
       "${why:+, why: $why, evidence: watch-companion-loop list --long $n}" \
       "$(case "$sev" in high|urgent) echo '#high' ;; *) echo '#low' ;; esac)"
   done
-}
-
-# watch_tripped_since <name> <now> -> when the watch tripped, once it is past triage's patience
-watch_tripped_since() {
-  local since
-  [ "$(cat "$TRIAGE_WATCH_STATE/$1.state" 2>/dev/null)" = TRIP ] || return 1
-  since=$(cat "$TRIAGE_WATCH_STATE/$1.since" 2>/dev/null) || return 1
-  [[ "$since" =~ ^[0-9]+$ ]] && [ $(($2 - since)) -ge "$(watch_after "$(watch_sev "$1")")" ] || return 1
-  printf '%s\n' "$since"
 }
 
 # log_norm: a stderr line with what varies between runs taken out, so one error is one signature:
@@ -2853,17 +2853,31 @@ hold_runs() {
   jq -c 'map(select(.event == "push"))' <<<"$runs"
 }
 
-# hold_failed <owner/repo> <run id> -> the bats files that failed in that run, repo-relative, kept
-# per run because a red holds for many passes and a run's log does not change. A failed read is
-# not kept. gh run view spends the actions/workflows bucket (fleet-assess gh_budget).
+# hold_memo <key> <command...> -> the command's output, kept for a read that cannot change (a run's
+# log, a commit's files, a file at a sha): a red stands for many passes and every hub refresh and KPI
+# sample reads it, on the REST budget of 2026-10-29. A failed read is not kept.
+hold_memo() {
+  local file="$MAIN_CACHE/hold_$1" out
+  shift
+  [ -e "$file" ] && { cat "$file"; return; }
+  out=$("$@") || return 1
+  mkdir -p "$MAIN_CACHE"
+  find "$MAIN_CACHE" -maxdepth 1 -name 'hold_*' -mtime +"$REDS_DAYS" -delete
+  printf '%s\n' "$out" > "$file.$$" && mv "$file.$$" "$file"
+  printf '%s\n' "$out"
+}
+
+# hold_failed <owner/repo> <run id> -> the bats files that failed in that run, repo-relative; rc 1
+# when its log cannot be read, or is not there yet.
 hold_failed() {
-  local file="$MAIN_CACHE/failed_${1//\//_}_$2" log
-  if [ ! -e "$file" ]; then
-    log=$(gh run view "$2" -R "$1" --log-failed 2>/dev/null) || return 0
-    mkdir -p "$MAIN_CACHE"
-    grep -oE 'in test file [^,]+\.bats' <<<"$log" | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u > "$file"
-  fi
-  cat "$file"
+  local log
+  log=$(gh run view "$2" -R "$1" --log-failed 2>/dev/null) && [ -n "$log" ] || return 1
+  { grep -oE 'in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
+}
+
+# hold_test <owner/repo> <sha> <file> -> the file's text at that sha
+hold_test() {
+  gh api -H 'Accept: application/vnd.github.raw+json' "repos/$1/contents/$3?ref=$2" 2>/dev/null
 }
 
 # hold_streak <owner/repo> <streak> <runs> <merges> -> the record for main's red streak, if it counts
@@ -2872,22 +2886,26 @@ hold_failed() {
 # merges whose area they are, the ones the Stop hook would pick for what each changed; a red that names none (lint, rust, a timeout) leaves only the merges
 # in last green..first red.
 hold_streak() {
-  local repo=$1 streak=$2 near failed sha m f paths hits
+  local repo=$1 streak=$2 near id failed sha msha m f paths hits
   local -A body
   near=$(jq -c --arg repo "$repo" --argjson s "$streak" --argjson runs "$3" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
     ($s.red.createdAt | ep) as $red | .[] | select(.repo == $repo)
     | . as $m | .at = (([$runs[] | select(.workflowName == $s.workflow and .headSha == $m.sha) | .createdAt | ep] | first) // $m.at)
     | select(.at <= $red and $red - .at <= $h)' <<<"$4")
   [ -n "$near" ] || return 0
-  failed=$(hold_failed "$repo" "$(jq -r .red.id <<<"$streak")")
+  id=$(jq -r .red.id <<<"$streak")
+  failed=$(hold_memo "failed_${repo//\//_}_$id" hold_failed "$repo" "$id") ||
+    { say "hold: cannot read the log of run $id on $repo"; return 0; }
   sha=$(jq -r .red.headSha <<<"$streak")
   if [ -n "$failed" ]; then
     while IFS= read -r f; do
-      body[$f]=$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/$repo/contents/$f?ref=$sha" 2>/dev/null)
+      body[$f]=$(hold_memo "test_${repo//\//_}_${sha}_${f//\//_}" hold_test "$repo" "$sha" "$f") ||
+        say "hold: cannot read $f on $repo at ${sha:0:8}"
     done <<<"$failed"
     hits=$(while IFS= read -r m; do
-      paths=$(commit_paths "$repo" "$(jq -r .sha <<<"$m")" 2>/dev/null) ||
-        { say "hold: cannot read the files of $repo $(jq -r '.sha[0:8]' <<<"$m")"; continue; }
+      msha=$(jq -r .sha <<<"$m")
+      paths=$(hold_memo "files_${repo//\//_}_$msha" commit_paths "$repo" "$msha" 2>/dev/null) ||
+        { say "hold: cannot read the files of $repo ${msha:0:8}"; continue; }
       for f in "${!body[@]}"; do
         test_picked "$paths" "$f" <<<"${body[$f]}" && { printf '%s\n' "$m"; break; }
       done

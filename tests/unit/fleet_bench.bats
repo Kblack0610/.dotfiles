@@ -1735,6 +1735,13 @@ failed() {
   cleanup inrange -3600 6 bbb22222 .local/bin/other
   ci 1 success aaa11111 -7201; ci 2 failure bbb22222 -3601
   run "$SUBJECT" triage --dry-run
+  refute_output --partial 'fix(hold)'
+  assert_output --partial 'hold: cannot read the log of run 2 on o/r'
+  : > "$GHD/log.2"
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'hold: cannot read the log of run 2 on o/r'
+  echo 'lint: a red that is no bats file' > "$GHD/log.2"
+  run "$SUBJECT" triage --dry-run
   assert_output 'fix(hold): ci-bbb22222-shell-tests went red after cleanup merge inrange (PR 6 at bbb22222): shell tests red at bbb22222, no bats file named #high'
 }
 
@@ -1755,7 +1762,7 @@ failed() {
   refute_output --partial 'fix(hold)'
 }
 
-@test "hold: a scheduled run going red is no merge's fault, and a run's failed files are read once" {
+@test "hold: a scheduled run going red is no merge's fault, and what cannot change is read once" {
   hold_setup
   cleanup a -3600 5 aaa11111 .local/bin/tool
   echo 'run tool' > "$GHD/tool.bats"
@@ -1766,7 +1773,7 @@ failed() {
   printf '[]' > "$GHD/runs"; ci 1 success zzz00000 -7200; ci 2 failure aaa11111 -3601
   run "$SUBJECT" triage --dry-run
   assert_output --partial 'fix(hold): ci-aaa11111-shell-tests went red'
-  rm "$GHD/log.2"
+  rm "$GHD/log.2" "$GHD/tool.bats" "$GHD/files.aaa11111"
   run "$SUBJECT" triage --dry-run
   assert_output --partial 'unit/tool.bats'
 }
