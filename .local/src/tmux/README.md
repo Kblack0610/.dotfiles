@@ -347,6 +347,8 @@ breaking all three at once.
 
 A plain file in `~/.worktrees` is not listed at all. `wt new` creates a tree (or recycles an idle agent-N in place) and its session claims it at once, so `created` and `recycled` are moments, not states gc can see. The picker and `wt --list` still show their own work column (`dirty`, `unlanded`, `reapable`), not these words.
 
+`wt reap` is the only code that removes a tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
+
 **Reaping is the load-bearing half.** Cheap creation with no reaper is how
 `~/dev/bnb/platform` reached 35 worktrees. `reap` refuses - with the reason, and there is no
 `--force` - when the tree is dirty, when commits are unpushed, when the path is a main

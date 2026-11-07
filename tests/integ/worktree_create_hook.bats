@@ -19,6 +19,8 @@ setup() {
   REPO="$SANDBOX/myrepo"
   git init -q -b main "$REPO"
   git -C "$REPO" commit -q --allow-empty -m init
+  # The tmux stub answers has-session with EXISTS; for a tree nobody is in, "gone" is the truth.
+  : > "$NOTES_FIXTURE/tmux.no-session"
 }
 
 hook() {
@@ -57,17 +59,30 @@ hook() {
   refute_output --partial 'hookSpecificOutput'
 }
 
-@test "worktree-remove: a slot wt holds survives the hook, which reports the refusal" {
-  git -C "$REPO" worktree add -q --lock "$SANDBOX/slot" -b agent-1
-  run --separate-stderr bash "$REPO_ROOT/.config/shared-hooks/worktree-remove.sh" \
-    <<<"$(jq -n --arg p "$SANDBOX/slot" '{worktree_path: $p}')"
-  assert_failure
-  [ -d "$SANDBOX/slot" ]
+remove_hook() {
+  bash "$REPO_ROOT/.config/shared-hooks/worktree-remove.sh" \
+    <<<"$(jq -n --arg p "$1" '{worktree_path: $p}')"
 }
 
-@test "worktree-remove: a harness tree with no hold is removed" {
-  git -C "$REPO" worktree add -q "$SANDBOX/own" -b own
-  bash "$REPO_ROOT/.config/shared-hooks/worktree-remove.sh" \
-    <<<"$(jq -n --arg p "$SANDBOX/own" '{worktree_path: $p}')"
+@test "worktree-remove: an unlanded tree survives the hook, which reports the refusal" {
+  # Clean, so a raw `git worktree remove` would take it; only `wt reap` sees the unpushed commit.
+  git -C "$REPO" worktree add -q "$SANDBOX/slot" -b agent-1
+  git -C "$SANDBOX/slot" commit -q --allow-empty -m unlanded
+  run --separate-stderr remove_hook "$SANDBOX/slot"
+  assert_failure
+  [ -d "$SANDBOX/slot" ]
+  [[ "$stderr" == *'kept slot: not merged'* ]]
+}
+
+@test "worktree-remove: a landed tree is removed with its branch, a held lock and all" {
+  git -C "$REPO" worktree add -q --lock "$SANDBOX/own" -b agent-2
+  run --separate-stderr remove_hook "$SANDBOX/own"
+  assert_success
   [ ! -d "$SANDBOX/own" ]
+  ! git -C "$REPO" rev-parse --verify --quiet agent-2 >/dev/null
+}
+
+@test "worktree-remove: a path that is already gone is a no-op" {
+  run remove_hook "$SANDBOX/never-was"
+  assert_success
 }
