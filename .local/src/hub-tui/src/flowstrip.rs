@@ -57,6 +57,9 @@ pub fn lines(
     if reading {
         notes.push("inbox, board: reading Prometheus".into());
     }
+    if strip.absent {
+        notes.push("inbox, board: no gauges".into());
+    }
     if let Some(t) = &strip.as_of {
         notes.push(format!("inbox, board as of {t}"));
     }
@@ -117,5 +120,11 @@ mod tests {
         bad.set_pipeline(&Err("CC_PROM_URL is not set".into()));
         let l = text(&bad, false, false, 140);
         assert_eq!(l[1], "      inbox, board: CC_PROM_URL is not set");
+        let mut none = Strip::build(None);
+        none.set_pipeline(&Ok(None));
+        assert_eq!(
+            text(&none, false, false, 140)[1],
+            "      inbox, board: no gauges"
+        );
     }
 }

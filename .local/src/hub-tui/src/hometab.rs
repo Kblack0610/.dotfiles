@@ -614,6 +614,16 @@ mod tests {
     }
 
     #[test]
+    fn every_flow_key_names_a_chip_of_the_strip() {
+        let strip = Strip::build(None);
+        for (key, chip) in FLOW_KEYS {
+            let c = strip.chips.iter().find(|c| c.key == chip);
+            let c = c.unwrap_or_else(|| panic!("{key}: no chip {chip}"));
+            assert!(c.to.is_some(), "{key}: chip {chip} opens nothing");
+        }
+    }
+
+    #[test]
     fn a_fix_the_queue_already_holds_is_shown_queued_and_not_offered() {
         let mut n = night();
         n.rows[0].fix.as_mut().unwrap().queued = Some("2026-fix-from-web".into());

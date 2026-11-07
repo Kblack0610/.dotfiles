@@ -69,7 +69,7 @@ test("only the chip of a step past its bound is amber, and the bottleneck and gr
 });
 
 test("negative control: absent gauges draw inbox - and board - , never 0, with no amber or link", () => {
-  const html = drawStrip({ chips: chips({ inbox: { value: null }, board: { value: null }, needs: { hot: false } }), bottleneck: null, as_of: null, error: null });
+  const html = drawStrip({ chips: chips({ inbox: { value: null }, board: { value: null }, needs: { hot: false } }), bottleneck: null, as_of: null, error: null, absent: true });
   assert.match(html, />inbox -</);
   assert.match(html, />board -</);
   assert.doesNotMatch(html, /inbox 0|board 0|fchip warn|qwarn|href="https:/);

@@ -18,10 +18,9 @@ function flowChip(c) {
 
 function flowHtml(strip, grafana) {
   if (!strip) return '<div class="flow muted">reading</div>';
-  const gaugesAbsent = strip.chips.some((c) => (c.key === "inbox" || c.key === "board") && c.value == null);
   const note = strip.error ? `<span class="warn">inbox, board: ${esc(strip.error)}</span>`
     : strip.as_of ? `inbox, board as of ${esc(strip.as_of)}`
-    : gaugesAbsent ? "inbox, board: no gauges" : "";
+    : strip.absent ? "inbox, board: no gauges" : "";
   const graph = grafana ? ` <a class="glink" href="${esc(grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "";
   return `<div class="flow">${strip.chips.map(flowChip).join(" ")}` +
     (strip.bottleneck ? `<div class="qwarn">! ${esc(strip.bottleneck)}</div>` : "") +

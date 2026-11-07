@@ -4,7 +4,8 @@
 //! hub TUI and agent-web cannot word or count it differently.
 //!
 //! Where each number comes from: the queue's own chips (queued, running, needs you) are the live
-//! queue, the same count the table under a chip shows; inbox and board are fleet-bench's
+//! queue, the same count the table under a chip shows (done 24h is agent-queue's rolling count,
+//! and its chip opens the Queue's done chip, which lists today's finished items); inbox and board are fleet-bench's
 //! `agent_chain_*` gauges (`pipeline`), the only owner of those two; done 24h and the drain are
 //! agent-queue's `stats.recent`. A number its source did not give reads `-`, never 0. A step
 //! past its age bound is the one amber chip (`hot`).
@@ -48,6 +49,8 @@ pub struct Strip {
     pub as_of: Option<String>,
     /// Why the gauges could not be read, if they could not.
     pub error: Option<String>,
+    /// The read answered but fleet-bench has written no gauges, so inbox and board are `-`.
+    pub absent: bool,
 }
 
 const QUEUE: &str = "queue";
@@ -136,7 +139,10 @@ impl Strip {
     pub fn set_pipeline(&mut self, read: &Result<Option<Pipeline>, String>) {
         let p = match read {
             Ok(Some(p)) => p,
-            Ok(None) => return,
+            Ok(None) => {
+                self.absent = true;
+                return;
+            }
             Err(e) => {
                 self.error = Some(e.clone());
                 return;
@@ -283,6 +289,7 @@ mod tests {
         // Gauges absent: the queue's chips stand and inbox and board stay `-`.
         let mut q = Strip::build(Some(&queue()));
         q.set_pipeline(&Ok(None));
+        assert!(q.absent);
         assert!(q
             .line()
             .starts_with("inbox - | board - | queued 2 (1 ready)"));

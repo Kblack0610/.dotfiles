@@ -69,7 +69,7 @@ const refreshQueue = coalesce(async () => {
   try { qst.stats = await api("/api/queue/stats"); } catch (e) { qst.stats = { week: `stats: ${e.message}` }; }
   if (st.tab === "queue") renderQueue();
   renderQueueBadge();
-  refreshFlow();
+  if (st.tab === "queue") refreshFlow();
 });
 
 function renderQueueBadge() {
