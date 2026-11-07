@@ -200,7 +200,7 @@ item() {
   run grep -c '^gh api repos/o/r/rules/branches/main$\|^gh api repos/o/r/branches/main/protection$' "$LOG"
   assert_output 2
   run grep -A2 '^git merge -q --no-edit origin/main$' "$LOG"
-  assert_line --index 1 'git push -q'
+  assert_line --index 1 'git push -q origin HEAD:refs/heads/pr-42'
   assert_line --index 2 'git rev-parse HEAD'
   run grep -c 'pr merge 42 --squash --match-head-commit 0123456789abcdef' "$LOG"
   assert_output 1
@@ -213,7 +213,7 @@ second_wait() {
   assert_line 'landed #42'
   run grep -c 'pr checks' "$LOG"
   assert_output 2
-  [ "$(grep -n '^git push -q$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
+  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
   [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
 }
 
@@ -264,7 +264,7 @@ second_wait() {
   echo '{"required_status_checks":{"strict":true}}' >"$NOTES_FIXTURE/protection.json"
   run "$LAND" 42 --item ship
   assert_success
-  run grep -c '^git push -q$' "$LOG"
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
   assert_output 2
   run grep -c 'pr checks' "$LOG"
   assert_output 3
@@ -281,6 +281,26 @@ second_wait() {
   assert_output 3
   # the merge comes after the last poll
   [ "$(grep -n 'headRefOid,mergeable' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "behind after a green gate: the catch-up pushes to the PR's head branch, whatever the local branch tracks" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  printf 'feat/x\n' >"$NOTES_FIXTURE/head.ref"
+  printf '%s\n' 'worktree /srv/here' 'HEAD 0123456789abcdef' 'branch refs/heads/agent-11' >"$NOTES_FIXTURE/worktree.list"
+  run "$LAND" 42 --item ship
+  assert_success
+  run grep '^git push' "$LOG"
+  assert_output 'git push -q origin HEAD:refs/heads/feat/x'
+}
+
+@test "behind after a green gate with a fork head: names the push to run, nothing pushed or merged" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  printf 'true\n' >"$NOTES_FIXTURE/head.cross"
+  run "$LAND" 42 --item ship
+  assert_failure
+  assert_output --partial 'on a fork'
+  run grep -c '^git push\|pr merge' "$LOG"
+  assert_output 0
 }
 
 @test "behind after a green gate with a conflicting merge: aborted, exit 3, nothing pushed or merged" {
