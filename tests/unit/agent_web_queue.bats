@@ -53,7 +53,7 @@ setup() {
   assert_success
 }
 
-@test "agent-web infra.js red fixes: node unit tests pass" {
+@test "agent-web infra.js red fixes and red now: node unit tests pass" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/infra.test.mjs"
   assert_success
 }

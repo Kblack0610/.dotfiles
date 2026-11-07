@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 /// The prompt says which rows are listed; ctrl-y flips it, and every reload reads it back.
 const PROMPT_ALL: &str = "Select agent > ";
 const PROMPT_ASKING: &str = "Asking only > ";
-const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-y asking  C-o sort  A-o reverse  C-/ layout  C-d/C-u pgup/pgdn scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
+const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-n new agent  C-y asking  C-o sort  A-o reverse  C-/ layout  C-d/C-u pgup/pgdn scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
 
 /// The preview layout every panel shares, from its one source: `panel-layout.sh args agent-panel`
 /// (`.local/src/tmux/`, beside panel-lib.sh) prints the `--preview-window` to open with, which is
@@ -31,9 +31,9 @@ pub fn layout() -> Result<Vec<String>> {
 }
 
 /// Run fzf over `rows` (newline-joined). `map_file` backs the preview callback;
-/// `restore_line`, when set, positions the cursor on the active agent.
-/// Returns the selected row text, or None if the user aborted.
-pub fn run(rows: &str, map_file: &Path, restore_line: Option<usize>) -> Result<Option<String>> {
+/// `restore_line`, when set, positions the cursor on the active agent; `query` is typed into
+/// the search box up front. Returns the selected row text, or None if the user aborted.
+pub fn run(rows: &str, map_file: &Path, restore_line: Option<usize>, query: Option<&str>) -> Result<Option<String>> {
     let exe = std::env::current_exe()
         .context("cannot resolve own path for fzf callbacks")?
         .to_string_lossy()
@@ -42,7 +42,7 @@ pub fn run(rows: &str, map_file: &Path, restore_line: Option<usize>) -> Result<O
     let layout = layout()?;
 
     let mut child = Command::new("fzf")
-        .args(args(&exe, &map, restore_line, &layout))
+        .args(args(&exe, &map, restore_line, query, &layout))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -60,11 +60,13 @@ pub fn run(rows: &str, map_file: &Path, restore_line: Option<usize>) -> Result<O
 }
 
 /// fzf's arguments: layout, the preview and reload callbacks into `exe`, and the key binds.
-fn args(exe: &str, map: &str, restore_line: Option<usize>, layout: &[String]) -> Vec<String> {
+fn args(exe: &str, map: &str, restore_line: Option<usize>, query: Option<&str>, layout: &[String]) -> Vec<String> {
     let preview_cmd = format!("{exe} preview --map-file '{map}' {{}}");
     let next_bind = format!("n:execute-silent({exe} next)+abort");
     // `fleet-shepherd open` is the one way to the running pass (Prefix o too): it hops worlds.
     let shepherd_bind = "ctrl-s:execute-silent(fleet-shepherd open)+abort".to_string();
+    // A new agent beside the selected one: wt hops to the new session, so the panel closes.
+    let new_agent_bind = format!("ctrl-n:execute-silent({exe} new-agent {{1}})+abort");
     // Label keys write through fleet-sessions (the labels' one home), then reload the rows in
     // place. {1} is the row's full target; on a project header it is empty and the label fails.
     // The prompt is the asking-only state (ctrl-y), so a reload from a label key keeps the view.
@@ -105,6 +107,8 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, layout: &[String]) ->
         "--bind".into(),
         shepherd_bind,
         "--bind".into(),
+        new_agent_bind,
+        "--bind".into(),
         manual_bind,
         "--bind".into(),
         labels_bind,
@@ -120,6 +124,9 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, layout: &[String]) ->
         "--bind".into(),
         "down:down+transform:case {} in *━━*) echo down ;; esac".into(),
     ]);
+    if let Some(q) = query {
+        args.push(format!("--query={q}"));
+    }
     if let Some(line) = restore_line {
         // Once: a reload fires load again and must not pull the cursor back.
         args.push("--bind".into());
@@ -135,7 +142,7 @@ mod tests {
     #[test]
     fn label_keys_write_through_fleet_sessions_and_reload_in_place() {
         let stacked = ["--preview-window=down".to_string(), "--bind=ctrl-/:x".to_string()];
-        let a = args("/bin/ap", "/tmp/m.map", Some(3), &stacked);
+        let a = args("/bin/ap", "/tmp/m.map", Some(3), None, &stacked);
         let reload = "reload(/bin/ap rows --map-file '/tmp/m.map' $([ \"$FZF_PROMPT\" = 'Asking only > ' ] && echo --asking))";
         let manual = format!("ctrl-t:execute-silent(fleet-sessions label {{1}} ^manual)+{reload}");
         assert!(a.contains(&manual), "{a:?}");
@@ -158,8 +165,18 @@ mod tests {
         assert!(a.contains(&format!("alt-o:reload({rows} --sort reverse {asking})")), "{a:?}");
         assert!(HEADER.contains("C-o sort") && HEADER.contains("A-o reverse"));
         // Negative control: no active agent, no load bind.
-        assert!(!args("/bin/ap", "/tmp/m.map", None, &stacked)
+        assert!(!args("/bin/ap", "/tmp/m.map", None, None, &stacked)
             .iter()
             .any(|x| x.starts_with("load:")));
+    }
+
+    #[test]
+    fn query_is_typed_up_front_and_ctrl_n_starts_a_new_agent_beside_the_row() {
+        let a = args("/bin/ap", "/tmp/m.map", None, Some("'dotfiles"), &[]);
+        assert!(a.contains(&"--query='dotfiles".to_string()), "{a:?}");
+        assert!(a.contains(&"ctrl-n:execute-silent(/bin/ap new-agent {1})+abort".to_string()), "{a:?}");
+        assert!(HEADER.contains("C-n new agent"));
+        // Negative control: no query asked for, none passed.
+        assert!(!args("/bin/ap", "/tmp/m.map", None, None, &[]).iter().any(|x| x.starts_with("--query")));
     }
 }
