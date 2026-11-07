@@ -120,8 +120,12 @@ applies() {
 }
 
 # typed <text> <area> <type> -> the text as a board row's `type(area): title`; one that already has
-# a type keeps it (notes refuses a type it does not know).
-typed() { if grep -qE '^[a-z]+\([a-z0-9][a-z0-9-]*\): .' <<<"$1"; then echo "$1"; else echo "$3($2): $1"; fi; }
+# a type keeps it (notes refuses a type it does not know). `notes row parse` says whether it parses.
+typed() {
+  local ok
+  ok="$(printf '%s\n' "$1" | notes row parse | cut -f4)" && [ -n "$ok" ] || die "notes row parse failed (an old notes? notes-bootstrap --build-only)"
+  if [ "$ok" = 1 ]; then echo "$1"; else echo "$3($2): $1"; fi
+}
 
 row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n' "$@"; }
 

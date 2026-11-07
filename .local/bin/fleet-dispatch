@@ -278,11 +278,33 @@ load_kinds() {
     | map(tostring | gsub("[\t\n]"; " ")) | join("\t")' "$DISPATCH_KINDS")
 }
 
-# row_kind <text> -> the row's type, its `type(area):` or `type:` prefix; nothing for a bare row.
+# row_kind <text> -> the row's type, from the grammar's one home (`notes row parse`); nothing for a
+# bare or unknown row. ROW_KIND holds the rows a pass has loaded (row_kinds_load), so a lookup in a
+# `$(...)` costs no fork; a row not in it is parsed on the spot.
+declare -gA ROW_KIND=()
 row_kind() {
-  local body="${1#- \[?\] }"
-  [[ "$body" =~ ^([a-z]+)(\([a-z0-9-]+\))?: ]] && echo "${BASH_REMATCH[1]}"
+  local t
+  if [ -n "${ROW_KIND[$1]+x}" ]; then t=${ROW_KIND[$1]}
+  else t=$(printf '%s\n' "${1//$'\n'/ }" | notes row parse 2>/dev/null | cut -f1) || t=''
+  fi
+  [ "$t" = - ] || [ -z "$t" ] || printf '%s\n' "$t"
   return 0
+}
+
+# row_kinds_load -- the `key TAB text` lines of `rows` on stdin: every text's type into ROW_KIND with
+# one `notes row parse`, which answers a line per line. A parse that fails or answers short loads
+# nothing and says so, and row_kind then parses row by row.
+row_kinds_load() {
+  local -a texts=() types=()
+  local key text i
+  while IFS=$'\t' read -r key text; do [ -n "$text" ] && texts+=("$text"); done
+  [ ${#texts[@]} -gt 0 ] || return 0
+  mapfile -t types < <(printf '%s\n' "${texts[@]}" | notes row parse 2>/dev/null | cut -f1)
+  if [ ${#types[@]} -ne ${#texts[@]} ]; then
+    say "notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)"
+    return 0
+  fi
+  for i in "${!texts[@]}"; do ROW_KIND[${texts[$i]}]=${types[$i]}; done
 }
 
 # kind_off <kind> <project> <stage> -> why the registry keeps a row of that kind from dispatching
@@ -339,7 +361,7 @@ cleanup_row() {
   local body="${2%%<!--*}" k c
   [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] || { echo 1; return; }
   load_kinds
-  k=$(row_kind "$body")
+  k=$(row_kind "$2")
   c=${KIND_CLEANUP[${k:-_}]:-}
   body=${body#- \[?\] }
   if { [ "$c" = true ] || { [ -n "$c" ] && grep -qiE -- "$c" <<<"$body"; }; } && ! grep -qiE -- "$DISPATCH_CLEANUP_NOT" <<<"$body"; then echo 0; else echo 1; fi
@@ -744,7 +766,7 @@ judged_keys() {
 # cleanup rows.
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
-  local x planned dj dsig plan off kind
+  local x planned dj dsig plan off kind board
   local -A DET=() PLN=() PAR=()
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
@@ -765,6 +787,8 @@ cmd_candidates() {
       active=false
       [ "${SUGGEST:-0}" = 1 ] && [ -n "$(git -C "$repo" log -1 --since=24.hours --format=%h 2>/dev/null)" ] && active=true
       for lane in human agent; do
+        board=$(rows "$prof" "$name" "$lane")
+        row_kinds_load <<<"$board"
         while IFS=$'\t' read -r key text; do
           [ -n "$key" ] || continue
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
@@ -801,7 +825,7 @@ cmd_candidates() {
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
               + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio)'
-        done < <(rows "$prof" "$name" "$lane")
+        done <<<"$board"
       done
     done < <(notes --profile "$prof" projects 2>/dev/null)
   done
@@ -2808,7 +2832,7 @@ cmd_fill() {
 # row's place on its board, newest first; `rank` puts what the human asked for, then observer rows,
 # first (cleanup rows leave for t3_cleanup_picks, so kinds.json is the one cleanup rank).
 night_rows() {
-  local judged="$1" name sheet stage repo key text body t line n x planned dj dsig
+  local judged="$1" name sheet stage repo key text body t line n x planned dj dsig board
   local -A DET=() PLN=() PAR=()
   load_extras
   load_kinds
@@ -2819,6 +2843,8 @@ night_rows() {
     repo=$(repo_dir "$name")
     [ -n "$repo" ] && [ -d "$repo" ] || continue
     n=0
+    board=$(rows "$DISPATCH_NIGHT_PROFILE" "$name" agent)
+    row_kinds_load <<<"$board"
     while IFS=$'\t' read -r key text; do
       [ -n "$key" ] || continue
       n=$(( n + 1 ))
@@ -2846,7 +2872,7 @@ night_rows() {
           cleanup: $cleanup, project_prio: $pprio,
           details: $details, dsig: $dsig, planned: ($planned == 1),
           rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}'
-    done < <(rows "$DISPATCH_NIGHT_PROFILE" "$name" agent)
+    done <<<"$board"
   done
 }
 
