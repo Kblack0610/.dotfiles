@@ -1729,6 +1729,8 @@ impl App {
     /// detail and goes to it. The page scrolls with PgUp/PgDn, space and g/G, and keeps
     /// the selected row in view while no detail is open.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
+        let armed = |c: &Controls| c.confirm.is_some() || c.starting.is_some();
+        let was = (self.controls.open, self.controls.sel, armed(&self.controls));
         match self.controls.key(k) {
             Ask::Pass => return false,
             Ask::Done => {}
@@ -1736,11 +1738,16 @@ impl App {
             Ask::Start(name) => self.start_timer(name),
         }
         self.read_page();
-        // The detail draws under the whole table, so the view goes to it, not to the row.
+        // The detail draws under the whole table, so the view goes to it when it opens, changes
+        // row or a confirm is armed, and otherwise stays where the reader scrolled it.
         if self.controls.open {
-            self.seek = Some(DETAIL);
+            let now_armed = armed(&self.controls);
+            if !was.0 || was.1 != self.controls.sel || (now_armed && !was.2) {
+                self.seek = Some(DETAIL);
+            }
             return true;
         }
+        self.seek = None;
         // The stage counts line, then the table's own header.
         let at = 1 + self.controls.above() + self.controls.sel;
         let h = self.page.max(1);
@@ -2488,10 +2495,12 @@ impl App {
                     Some(b) => fleet::page(&b.watch, table, self.p, now, w),
                 };
                 // From the status line, two above, so an armed action's confirm stays on screen.
-                let at = l
-                    .iter()
-                    .position(|x| crate::fit::plain(x).starts_with("DETAIL  "))
-                    .map(|at| (DETAIL, at.saturating_sub(2)));
+                let at = self.controls.open.then(|| {
+                    l.iter().position(|x| {
+                        crate::fit::plain(x).starts_with(crate::controls::DETAIL_HEAD)
+                    })
+                });
+                let at = at.flatten().map(|at| (DETAIL, at.saturating_sub(2)));
                 (l, at.into_iter().collect())
             }
             // Who is working (runners by tier, then the live sessions), then who pays.
@@ -3206,6 +3215,31 @@ mod tests {
         a.handle(Msg::Boards(Box::new(boards())));
         a.open_session(target);
         assert!(screen(&mut a, 200, 8).contains(&format!("DETAIL  {target}")));
+    }
+
+    #[test]
+    fn a_scrolled_detail_stays_put_until_a_confirm_is_armed_and_a_close_drops_the_seek() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = app(Tab::Sessions);
+        a.controls.set(crate::controls::tests::fixture());
+        screen(&mut a, 140, 7);
+        a.handle(k(KeyCode::Enter));
+        screen(&mut a, 140, 7);
+        a.handle(k(KeyCode::PageDown));
+        screen(&mut a, 140, 7);
+        let read_to = a.scroll;
+        a.handle(key('s'));
+        screen(&mut a, 140, 7);
+        assert_eq!(a.scroll, read_to, "a sort is not a move");
+        a.handle(key('x'));
+        assert!(screen(&mut a, 140, 7).contains("It will"));
+        a.handle(k(KeyCode::Esc));
+        a.handle(k(KeyCode::Enter));
+        assert!(!a.controls.open);
+        a.handle(k(KeyCode::Enter));
+        assert_eq!(a.seek, Some(DETAIL), "opened, not drawn yet");
+        a.handle(k(KeyCode::Esc));
+        assert_eq!(a.seek, None);
     }
 
     #[test]
