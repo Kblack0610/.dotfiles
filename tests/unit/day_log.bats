@@ -511,6 +511,7 @@ PROM
 
 @test "nightly: CI per repo from ci-failures and ci-cost lands in the record, and a later gather keeps it" {
   ci_clone
+  echo 'forgejo:fj.test/o/fj develop' >> "$DAYLOG_CI"   # ledger-only: never handed to the GitHub readers
   mkdir -p "$PROM_TEXTFILE_DIR"
   run "$SUBJECT" nightly
   assert_success
