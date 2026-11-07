@@ -5,7 +5,7 @@
 //! | part         | source                                                                   |
 //! |--------------|--------------------------------------------------------------------------|
 //! | accounts     | `claude_account_*`, claude-acct's textfile, in Prometheus                 |
-//! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` (agent-proof), and the user timers (else the runner's own status `next=`); what each runner spent is `crate::costs` |
+//! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` and standing hold `held_since`/`held_why` (agent-proof), and the user timers (else the runner's own status `next=`); what each runner spent is `crate::costs` |
 //! | who          | the workers and `state.json`'s live sessions, one row each, tiered (`who::build`)  |
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
@@ -132,6 +132,10 @@ pub struct Worker {
     pub failed_24h: u32,
     /// The newest activity.log line: the runner's own word on why.
     pub why: Option<Outcome>,
+    /// The standing hold `lib/agent-proof.sh` writes in its state dir: `held_since`, its first
+    /// BLOCKED pass of an unbroken run, and `held_why`, the latest one's reason. None when not held.
+    pub held_since: Option<i64>,
+    pub held_why: String,
     pub next: Option<i64>,
     /// A call's CALLER: the runner (or program) that makes it.
     pub called_by: Option<String>,
@@ -409,6 +413,10 @@ pub fn files(paths: &Paths) -> Fleet {
             Some((c.name.clone(), text.lines().rev().find_map(parse_activity)?))
         })
         .collect();
+    let held: HashMap<String, (i64, String)> = confs
+        .iter()
+        .filter_map(|c| Some((c.name.clone(), read_held(&c.inbox)?)))
+        .collect();
     let roles = read_roles(&paths.roles, &confs);
     let lf = langfuse_sessions(&paths.agents.join("session-outcomes.conf"));
     let calls = match tail(&paths.calls, CALLS_TAIL) {
@@ -437,6 +445,11 @@ pub fn files(paths: &Paths) -> Fleet {
             .or_else(|| runner::status_next(&paths.jobs.agentctl, &w.name));
         w.registry = regs.get(&w.name).cloned().unwrap_or_default();
         w.score = scores.get(&w.name).cloned();
+        if let Some((since, why)) = held.get(&w.name) {
+            w.held_since = Some(*since);
+            w.held_why = why.clone();
+        }
+        newest_call(w);
     }
 
     let sessions = match std::fs::read_to_string(&paths.state) {
@@ -905,6 +918,37 @@ pub fn workers(
     out
 }
 
+/// A runner's standing hold from its state dir, None when it has no `held_since`.
+fn read_held(dir: &Path) -> Option<(i64, String)> {
+    let since = std::fs::read_to_string(dir.join("held_since")).ok()?;
+    let why = std::fs::read_to_string(dir.join("held_why")).unwrap_or_default();
+    Some((since.trim().parse().ok()?, why.trim().to_string()))
+}
+
+/// A called runner's outcomes are its calls: a call that succeeds writes no activity line, so
+/// its newest call, when newer than its last run or line, is its last outcome.
+fn newest_call(w: &mut Worker) {
+    if w.called_by.is_none() {
+        return;
+    }
+    let Some(c) = w.registry.calls.recent.first() else {
+        return;
+    };
+    if w.last
+        .as_ref()
+        .and_then(|o| o.at)
+        .is_some_and(|t| t >= c.at)
+    {
+        return;
+    }
+    w.last = Some(Outcome {
+        word: if c.ok { "ok" } else { "error" }.into(),
+        ok: Some(c.ok),
+        at: Some(c.at),
+        text: String::new(),
+    });
+}
+
 /// The 90th percentile of `lengths`, nearest rank; None under `USUAL_RUNS` of them.
 fn usual(mut lengths: Vec<i64>) -> Option<i64> {
     if lengths.len() < USUAL_RUNS {
@@ -1116,6 +1160,52 @@ mod tests {
             enabled,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_standing_hold_is_read_from_the_runner_dir_and_none_without_held_since() {
+        let dir = std::env::temp_dir().join(format!("hub-fleet-held-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_held(&dir), None);
+        std::fs::write(dir.join("held_since"), "1793992126\n").unwrap();
+        std::fs::write(dir.join("held_why"), "at its budget cap").unwrap();
+        assert_eq!(
+            read_held(&dir),
+            Some((1_793_992_126, "at its budget cap".to_string()))
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_called_runners_newest_call_is_its_last_outcome_when_newer() {
+        let call = |at, ok| Call {
+            at,
+            ok,
+            ..Default::default()
+        };
+        let mut w = Worker {
+            called_by: Some("agent-ask".into()),
+            last: Some(Outcome {
+                word: "BLOCKED".into(),
+                at: Some(100),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        w.registry.calls.recent = vec![call(200, true), call(150, false)];
+        newest_call(&mut w);
+        let l = w.last.clone().unwrap();
+        assert_eq!((l.word.as_str(), l.ok, l.at), ("ok", Some(true), Some(200)));
+        // A newer run line stands; a runner nobody calls keeps its own.
+        w.last.as_mut().unwrap().at = Some(300);
+        newest_call(&mut w);
+        assert_eq!(w.last.as_ref().unwrap().at, Some(300));
+        let mut r = Worker {
+            registry: w.registry.clone(),
+            ..Default::default()
+        };
+        newest_call(&mut r);
+        assert_eq!(r.last, None);
     }
 
     #[test]

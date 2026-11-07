@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::Worker;
+use crate::costs::usd;
 use crate::table::{Row, Val, View};
 
 /// What a row opens: a runner's page or a session's record.
@@ -52,7 +53,8 @@ pub struct Who {
 impl Row for Who {
     const COLUMNS: &'static [&'static str] =
         &["tier", "who", "state", "since", "doing", "under", "project"];
-    const STATES: &'static [&'static str] = &["all", "failed", "working", "needs you", "stalled"];
+    const STATES: &'static [&'static str] =
+        &["all", "held", "failed", "working", "needs you", "stalled"];
     const FACETS: &'static [&'static str] = &["tier", "state", "project"];
 
     fn val(&self, col: &str) -> Val {
@@ -84,15 +86,18 @@ impl Row for Who {
 fn rank(state: &str) -> u8 {
     match state {
         "failed" => 0,
-        "needs you" => 1,
-        "stalled" => 2,
-        _ => 3,
+        "held" => 1,
+        "needs you" => 2,
+        "stalled" => 3,
+        _ => 4,
     }
 }
 
 fn runner(w: &Worker, at: i64) -> Who {
     let state = if w.failed_24h > 0 {
         "failed"
+    } else if w.held_since.is_some() {
+        "held"
     } else if w.overdue {
         "stalled"
     } else if w.state == "running" {
@@ -100,7 +105,26 @@ fn runner(w: &Worker, at: i64) -> Who {
     } else {
         &w.state
     };
+    // A called runner's newest call, when it is newer than its activity line: a call that
+    // succeeds writes none, so the line would otherwise stand for every call after it.
+    let calls = &w.registry.calls;
+    let call = w
+        .called_by
+        .as_ref()
+        .and(calls.recent.first())
+        .filter(|c| w.why.as_ref().and_then(|o| o.at).is_none_or(|t| c.at > t));
     let doing = match (&w.why, w.running_since, w.next) {
+        // The hold's own line says what holds it, and its amount; held_why is its short reason.
+        _ if w.held_since.is_some() => match &w.why {
+            Some(o) if o.word == "BLOCKED" && !o.text.is_empty() => o.text.clone(),
+            _ => w.held_why.clone(),
+        },
+        _ if call.is_some() => format!(
+            "called {}: {} calls 24h, {}",
+            call.map_or("", |c| if c.ok { "ok" } else { "error" }),
+            calls.n_24h,
+            usd(calls.cost_24h)
+        ),
         (_, Some(_), _) if w.why.is_none() => "running".to_string(),
         (Some(o), ..) => format!("{} {}", o.word, o.text).trim().to_string(),
         (None, None, Some(n)) if n > at => format!("next {}", clock(n)),
@@ -112,7 +136,10 @@ fn runner(w: &Worker, at: i64) -> Who {
         opens: Opens::Runner,
         key: w.name.clone(),
         state: state.into(),
-        since: w.running_since.or(w.last.as_ref().and_then(|o| o.at)),
+        since: w
+            .held_since
+            .or(w.running_since)
+            .or(w.last.as_ref().and_then(|o| o.at)),
         doing,
         under: w
             .called_by
@@ -351,6 +378,72 @@ mod tests {
         assert_eq!(st("ask-judge"), "failed");
         assert_eq!(st("ucp-agent-9"), "needs you");
         assert_eq!(st("dotfiles:2"), "chat");
+    }
+
+    fn held(name: &str) -> Worker {
+        let mut w = worker(name, 2, "");
+        w.held_since = Some(400);
+        w.held_why = "at its budget cap".into();
+        w.why = Some(Outcome {
+            word: "BLOCKED".into(),
+            at: Some(900),
+            text: "budget: over its daily budget: $5.03 of $5 (BUDGET_DAY_USD)".into(),
+            ..Default::default()
+        });
+        w
+    }
+
+    #[test]
+    fn a_held_runner_reads_held_since_its_first_block_and_leads_its_tier_after_failed() {
+        let mut failed = worker("alpha", 2, "");
+        failed.failed_24h = 1;
+        let r = build(
+            &[worker("aaa", 2, ""), held("ask-judge"), failed],
+            &json!({}),
+            1000,
+        );
+        let order: Vec<&str> = r.iter().map(|r| r.who.as_str()).collect();
+        assert_eq!(order, ["alpha", "ask-judge", "aaa"]);
+        let h = &r[1];
+        assert_eq!((h.state.as_str(), h.since), ("held", Some(400)));
+        assert_eq!(
+            h.doing,
+            "budget: over its daily budget: $5.03 of $5 (BUDGET_DAY_USD)"
+        );
+        assert!(h.in_state("held") && !r[2].in_state("held"));
+        let chips = View::default().states(&r);
+        let n = |s: &str| chips.iter().find(|c| c.name == s).map(|c| c.n);
+        assert_eq!((n("held"), n("failed")), (Some(1), Some(1)));
+    }
+
+    #[test]
+    fn a_hold_with_no_blocked_line_says_its_held_why() {
+        let mut w = held("ask-judge");
+        w.why = None;
+        assert_eq!(build(&[w], &json!({}), 1000)[0].doing, "at its budget cap");
+    }
+
+    #[test]
+    fn a_called_runner_past_its_last_line_reads_its_calls_not_the_old_block() {
+        let mut w = worker("ask-judge", 2, "");
+        w.called_by = Some("agent-ask".into());
+        w.why = held("x").why;
+        w.registry.calls.n_24h = 103;
+        w.registry.calls.cost_24h = Some(9.85);
+        w.registry.calls.recent = vec![crate::fleet::Call {
+            at: 950,
+            ok: true,
+            ..Default::default()
+        }];
+        let r = build(std::slice::from_ref(&w), &json!({}), 1000);
+        assert_eq!(
+            r[0].doing,
+            format!("called ok: 103 calls 24h, {}", usd(Some(9.85)))
+        );
+        // The negative control: a call older than the line leaves the line.
+        w.registry.calls.recent[0].at = 800;
+        let r = build(&[w], &json!({}), 1000);
+        assert!(r[0].doing.starts_with("BLOCKED budget:"), "{}", r[0].doing);
     }
 
     #[test]
