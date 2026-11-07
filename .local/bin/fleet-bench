@@ -163,7 +163,6 @@ set -uo pipefail
 : "${BENCH_PR_LIST_MAX:=1000}"       # the most a GitHub search returns: a full page means PRs were cut
 : "${BENCH_SIZES_MIN:=10}"           # items with work_min a size needs before it is calibrated
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
-: "${LEDGER_TIMER_DIR:=$HOME/.config/systemd/user}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles/.claude/skills:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config:$HOME/.dotfiles-private/.claude/skills}"   # colon-separated
 : "${LEDGER_BOARDS:=$HOME/.notes/lab/projects/current/*/agent/README.md}"
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
@@ -1432,9 +1431,12 @@ intake_room() {
   echo "room: board_open $n of board_open_max $max"
 }
 
-# ledger_counts -> key=value lines
-ledger_counts() {
-  local c n_conf=0 n_on=0 n_bad=0 n_call=0 t rows src sd="" name
+# ledger_roster -> the roster's key=value lines, read from the confs and the source tree alone,
+# so CI can count a checkout (the ledger workflow): `--check` reads only these. A timer is
+# counted where `agentctl reload` writes one, a switched-on oneshot with a SCHEDULE; reload
+# removes any other, so the live timer dir holds the same count once reloaded.
+ledger_roster() {
+  local c n_conf=0 n_on=0 n_bad=0 n_call=0 n_timer=0 src sd="" name
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
     [ -e "$c" ] || continue
@@ -1443,6 +1445,7 @@ ledger_counts() {
     n_conf=$((n_conf + 1))
     grep -qE '^ENABLED=["'"'"']?no' "$c" && continue
     n_on=$((n_on + 1))
+    grep -qE '^KIND=["'"'"']?oneshot' "$c" && grep -qE '^SCHEDULE=["'"'"']?[^"'"'"' ]' "$c" && n_timer=$((n_timer + 1))
     name=$(scheduled_runner "$c") || continue
     [ -n "$sd" ] && grep -qE '^(FAILED|STALLED)' "$sd/$name/last-outcome" 2>/dev/null && n_bad=$((n_bad + 1))
   done
@@ -1450,9 +1453,16 @@ ledger_counts() {
   echo "runners_on=$n_on"
   echo "runners_bad=$n_bad"
   echo "agents_call=$n_call"
-  echo "timers=$(find "$LEDGER_TIMER_DIR" -maxdepth 1 -name 'agentctl-*.timer' 2>/dev/null | wc -l)"
+  echo "timers=$n_timer"
   IFS=: read -ra src <<<"$LEDGER_SRC"
   echo "launches_direct=$(headless_launches "${src[@]}" | cut -d: -f1 | sort -u | wc -l)"
+}
+
+# ledger_counts -> key=value lines: the roster, then the fleet's live counts
+ledger_counts() {
+  local t rows sd=""
+  ledger_roster
+  proof_lib && sd=$(proof_state_dir)
   # awk, not cat: last-outcome has no trailing newline, so cat runs every verdict into one word
   echo "verdict_words=$([ -n "$sd" ] && awk '{print $1}' "$sd"/*/last-outcome 2>/dev/null | sort -u | grep -c .)"
   t=$(now)
@@ -1653,11 +1663,11 @@ cmd_ledger() {
   local counts
   case "${1:-}" in
     --launches) shift; headless_launches "$@"; return 0 ;;
+    --check) ledger_check "$(ledger_roster)"; return ;;
   esac
   counts=$(ledger_counts)
   case "${1:-}" in
     --json) jq -Rn '[inputs | split("=") | {key: .[0], value: (.[1] | tonumber? // .)}] | from_entries' <<<"$counts" ;;
-    --check) ledger_check "$counts" ;;
     "") echo "$counts" ;;
     *) say "ledger: unknown option $1"; return 2 ;;
   esac
