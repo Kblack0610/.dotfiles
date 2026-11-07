@@ -56,13 +56,10 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # family <project> -> every registry project sharing its checkout, and the repo's owner.
 family() { local r; r="$(project_repo_name "$1")"; { project_field "$r" owner; project_lab_names "$r"; } | sort -u; }
 
-# gh_slug <project> -> owner/repo of the project's checkout's origin, or nothing.
-gh_slug() {
-  local dir url
-  dir="$(project_repo_path "$1")"; [ -n "$dir" ] || return 0
-  url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || return 0
-  sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##' <<<"$url"
-}
+# shellcheck source=../lib/origin-repo.sh
+. "$HERE/../lib/origin-repo.sh"
+# gh_slug <project> -> owner/repo of the project's checkout's origin (origin_repo), or nothing.
+gh_slug() { origin_repo "$(project_repo_path "$1")"; }
 
 # pr_facts <owner/repo> <N> -> one JSON line {files, size}, cached; nothing when gh cannot read it.
 # The file list is the REST one, paged as agent-land's credit reads it (`gh pr view` stops at 100
