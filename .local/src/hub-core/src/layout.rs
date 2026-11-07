@@ -33,7 +33,7 @@ pub const TABS: [Tab; 10] = [
         id: "queue",
         title: "Queue",
         question: "What will agents do next?",
-        sections: &["waiting", "running", "queued", "done"],
+        sections: &["flow", "table", "candidates"],
     },
     Tab {
         id: "projects",
