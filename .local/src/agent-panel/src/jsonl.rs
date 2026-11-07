@@ -80,6 +80,32 @@ pub fn asks_human_at(path: &Path) -> bool {
 /// its last call is a dialog tool left open (AskUserQuestion, ExitPlanMode), or its closing text
 /// asks a question (`text_asks`) or asks the human to do something (`text_requests_action`).
 fn asks_human(text: &str) -> bool {
+    let Some(block) = last_turn_block(text) else { return false };
+    match block.get("type").and_then(Value::as_str) {
+        Some("tool_use") => block.get("name").and_then(Value::as_str).is_some_and(|n| HUMAN_TOOLS.contains(&n)),
+        Some("text") => {
+            let msg = block.get("text").and_then(Value::as_str).unwrap_or("");
+            text_asks(msg) || text_requests_action(msg)
+        }
+        _ => false,
+    }
+}
+
+/// The dialog the session's turn ended on and still waits in: the open AskUserQuestion or
+/// ExitPlanMode call's name and input (the questions with their options, or the plan text).
+pub fn open_dialog_at(path: &Path) -> Option<(String, Value)> {
+    open_dialog(&read(path))
+}
+
+fn open_dialog(text: &str) -> Option<(String, Value)> {
+    let block = last_turn_block(text)?;
+    let name = block.get("name").and_then(Value::as_str).filter(|n| HUMAN_TOOLS.contains(n))?;
+    Some((name.to_string(), block.get("input").cloned().unwrap_or(Value::Null)))
+}
+
+/// The last content block of the last main-thread entry, when that entry is the assistant's
+/// own turn (no prompt or tool result after it).
+fn last_turn_block(text: &str) -> Option<Value> {
     // The human's side: a typed prompt or a tool result, not a reminder or a subagent's.
     let answer = |v: &Value| {
         v.get("type").and_then(Value::as_str) == Some("user")
@@ -92,18 +118,8 @@ fn asks_human(text: &str) -> bool {
         .filter(|l| l.contains("\"type\":\"assistant\"") || l.contains("\"type\":\"user\""))
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .find(|v| own_turn(v) || answer(v))
-        .filter(own_turn);
-    let Some(block) = last.as_ref().and_then(|v| v.pointer("/message/content")?.as_array()?.last()) else {
-        return false;
-    };
-    match block.get("type").and_then(Value::as_str) {
-        Some("tool_use") => matches!(block.get("name").and_then(Value::as_str), Some("AskUserQuestion" | "ExitPlanMode")),
-        Some("text") => {
-            let msg = block.get("text").and_then(Value::as_str).unwrap_or("");
-            text_asks(msg) || text_requests_action(msg)
-        }
-        _ => false,
-    }
+        .filter(own_turn)?;
+    last.pointer("/message/content")?.as_array()?.last().cloned()
 }
 
 /// An entry the session wrote itself: a main-thread assistant turn, not a subagent's.
@@ -1467,6 +1483,18 @@ mod tests {
         ] {
             assert!(!asks_human(&said(msg)), "should not ask: {msg}");
         }
+    }
+
+    #[test]
+    fn the_open_dialog_carries_its_input_until_answered() {
+        let plan = r##"{"type":"assistant","message":{"content":[{"type":"text","text":"Plan below."},{"type":"tool_use","name":"ExitPlanMode","input":{"plan":"# Do it\nstep one"}}]}}"##;
+        let (name, input) = open_dialog(&format!("{plan}\n")).unwrap();
+        assert_eq!(name, "ExitPlanMode");
+        assert_eq!(input["plan"], "# Do it\nstep one");
+        // Answered, or another tool: no dialog.
+        let answered = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#;
+        assert_eq!(open_dialog(&format!("{plan}\n{answered}\n")), None);
+        assert_eq!(open_dialog(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}"#), None);
     }
 
     #[test]

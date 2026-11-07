@@ -72,13 +72,15 @@ string rather than `claude` (observed on macOS).
 | Command | Purpose |
 |---------|---------|
 | `agent-panel` (default) | Interactive chooser; spawns fzf, jumps on selection |
-| `agent-panel next` | Jump to the next agent that needs you: `!`, `A`, or a plan awaiting approval. With none, says `no session needs you` and stays put |
+| `agent-panel next` | Jump to the next agent that needs you: `!` (a dialog or prompt open, a plan to approve included) or `A`. Plan mode alone waits on nothing, as `fleet-sessions` reads it. With none, says `no session needs you` and stays put |
 | `agent-panel asks-human <transcript>` | Exit 0 when the transcript's last word asks the human something, else 1 (the Stop check `88-ask-filed.sh`) |
 | `agent-panel list` | One TSV row per agent: `target glyph project summary` |
 | `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file, edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`), and what an action needs: server, tmux_session, window_id, pid, account (claude-acct's name for the claude's `CLAUDE_CONFIG_DIR`), attached, parked, plan (the plan slug), ask (the pending ask id or null). `--parked` adds a row per `claude-acct park` ledger whose session has no live claude, and puts the attached sessions first |
 | `agent-panel jump <target>` | Jump to a `list` target (same-server switch or cross-server hop) |
 | `agent-panel said <transcript> --around <ask id>` | JSON `{first, prompt, said}` for the turn whose tool result printed the ask id on its own line: the session's first typed prompt, the prompt that turn answered, and its own text blocks, oldest first. Exit 1 when no turn printed the id. The question card's story (`agent-ask card`) |
 | `agent-panel send --pane <server>/<pane> [--no-submit] <text>` | Type a message into a Claude pane: the one implementation (agent-web's send box and `agent-ask answer` both use it). Bracketed paste, Enter only once the input box has drawn the paste and held still, a second Enter if the box did not change, exit 3 if it still did not (the text is in the input box). It judges only Claude Code's input box (the lines between the last two rules), so a busy pane's spinner passes for neither; a pane with no box is judged whole |
+| `agent-panel dialog <target> [--options]` | The card for the plan or question dialog open in that pane, read off the live screen (`dialog.rs`): kind, title, the options as the pane numbers them, and for a plan the plan text from the transcript. `--options` prints `key<TAB>free<TAB>text`, free 1 for an option that takes typed text. Exit 1 when no dialog it can read is open (the questions panel then shows the pane) |
+| `agent-panel answer <target> <key> --expect <text> [-- <typed>]` | Press option `<key>` in that dialog, after a fresh capture shows it still reads `<text>`; an option that takes text gets `<typed>` pasted and Enter. Exit 0 sent, 3 the pane did not move on, 4 the dialog changed or closed (nothing sent). The questions panel (Prefix+y) answers plans and questions with it; hub-tui's plan approval reads the same parser |
 | `agent-panel preview --map-file <f> <row>` | Internal fzf preview callback |
 
 ## Multiple tmux servers
@@ -97,6 +99,7 @@ which owns the detach-and-attach hop.
 - `tmux.rs` — `tmux` CLI wrappers per server (list-panes, capture-pane, jump)
 - `session.rs` — read `~/.claude/sessions/<pid>.json`; status glyph; at-the-prompt test; JSONL path
 - `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, the last message for the preview
+- `dialog.rs` - read an open plan or question dialog off a pane capture, and answer it with keys
 - `asks.rs` — which Claude sessions own a pending ask (`agent-ask`)
 - `render.rs` — project grouping, ANSI fzf rows, preview formatting
 - `sort.rs` - the sort keys, their order and the saved sort

@@ -6,7 +6,7 @@ use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 
 use crate::{account, asks, fzf, jsonl, parked, procmap::ProcMap, render, session, sort, tmux};
 
@@ -58,11 +58,12 @@ pub struct Agent {
 
 impl Agent {
     /// Waiting on the human, the fleet's NEEDS (`~/.local/src/docs/fleet-states.md`): at a
-    /// prompt or dialog (`!`), holding a pending ask, or idle in plan mode, which is a plan
-    /// awaiting approval (`bucket_facts` in fleet-sessions). A question asked only in the
-    /// conversation is not a source: the Stop check makes the session file it.
+    /// prompt or dialog (`!`, a plan to approve included) or holding a pending ask. Idle in plan
+    /// mode with no dialog open waits on nothing, as fleet-sessions reads it since #1360. A
+    /// question asked only in the conversation is not a source: the Stop check makes the
+    /// session file it.
     pub fn needs_attention(&self) -> bool {
-        self.glyph == '!' || self.ask.is_some() || (self.plan && self.glyph == '✓')
+        self.glyph == '!' || self.ask.is_some()
     }
 }
 
@@ -230,8 +231,9 @@ fn map_file_path() -> PathBuf {
     std::env::temp_dir().join(format!("agent-panel-{}.map", std::process::id()))
 }
 
-/// Interactive chooser: render rows, drive fzf, jump to the selection.
-pub fn run_interactive() -> Result<()> {
+/// Interactive chooser: render rows, drive fzf, jump to the selection. `query` is typed into
+/// the search box up front.
+pub fn run_interactive(query: Option<&str>) -> Result<()> {
     let agents = collect();
     if agents.is_empty() {
         println!("No claude agents running");
@@ -255,7 +257,7 @@ pub fn run_interactive() -> Result<()> {
             .map(|i| i + 1) // fzf pos() is 1-based
     });
 
-    let selected = fzf::run(&rows_text, &map_file, restore_line);
+    let selected = fzf::run(&rows_text, &map_file, restore_line, query);
     let _ = fs::remove_file(&map_file);
     let selected = selected?;
 
@@ -268,6 +270,24 @@ pub fn run_interactive() -> Result<()> {
         if !target.is_empty() {
             tmux::jump(target);
         }
+    }
+    Ok(())
+}
+
+/// ctrl-n: a new Claude in a fresh worktree of the repo the row's agent works in. `wt new
+/// --claude` is the one new-agent verb (Prefix+p c and Prefix+f ctrl-n call it too); wt maps a
+/// worktree path back to its main repo. A project header row has no target and starts nothing.
+pub fn run_new_agent(target: &str) -> Result<()> {
+    let Some(agent) = collect().into_iter().find(|a| a.target == target) else {
+        bail!("no agent at {target:?}");
+    };
+    let status = std::process::Command::new("wt")
+        .args(["new", "--claude", "-c", &agent.cwd])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .context("cannot run wt")?;
+    if !status.success() {
+        bail!("wt new --claude -c {} failed", agent.cwd);
     }
     Ok(())
 }
@@ -536,13 +556,13 @@ mod tests {
     }
 
     #[test]
-    fn plan_mode_counts_only_while_idle() {
+    fn plan_mode_counts_only_with_its_dialog_open() {
+        let plan_dialog = Agent { glyph: '!', plan: true, ..live_agent("hub", "a", false) };
         let plan_idle = Agent { glyph: '✓', plan: true, ..live_agent("hub", "a", false) };
         let plan_busy = Agent { glyph: '~', plan: true, ..live_agent("hub", "b", false) };
-        let idle = Agent { glyph: '✓', ..live_agent("hub", "c", false) };
-        assert!(plan_idle.needs_attention());
+        assert!(plan_dialog.needs_attention());
+        assert!(!plan_idle.needs_attention());
         assert!(!plan_busy.needs_attention());
-        assert!(!idle.needs_attention());
     }
 
     #[test]

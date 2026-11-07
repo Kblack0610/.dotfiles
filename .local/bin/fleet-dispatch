@@ -88,6 +88,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${DISPATCH_SANDBOX_PROFILE:=}"   # a lane sandbox profile (agent-run docs/contract.md "Lane sandbox") every claude start runs under; empty is off, and a start that cannot hold the profile is refused (lane_sandbox)
 : "${DISPATCH_SANDBOX_GH_TOKEN_FILE:=}"   # the sandboxed session's own repo-scoped GitHub token file, as GH_TOKEN_FILE is for a runner; empty gives it no token
 : "${DISPATCH_REAP_GRACE:=600}"   # seconds after a start before reap may read a missing Claude as gone: a claude still booting has no registry entry yet
+: "${DISPATCH_REAP_CONFIRM:=120}"   # seconds between the two reaps that must both miss a Claude before it counts as gone: two reads closer than that share one load spike, so they are one witness. Provisional: one false fail (ar-900, 2026-11-07) whose re-read a minute later listed the session, low confidence; revisit on the next false reap or one held a pass too long
 : "${PARKED_DIR:=${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}}"   # claude-acct park: a parked pane is never reaped
 # Night items: the default notes profile's agent lanes of the dotfiles boards.
 : "${DISPATCH_NIGHT_PROFILE:=}"   # empty: notes' own default profile, where those boards live
@@ -519,7 +520,8 @@ panel_lists() { [ "$1" = claude ] || [ "$(harness_launcher "$1")" = claude-lazer
 # seconds (its claude may still be booting), or a panel it cannot read or that lists nobody.
 # An item that records its session ids is alive only while one of them is on the panel; the tmux
 # session counts only for one that records none: worktree lanes are recycled, and a new Claude in
-# an old item's lane is not its session (2026-11-07 ar-255, ar-487). REAP_PANEL caches one read per pass.
+# an old item's lane is not its session (2026-11-07 ar-255, ar-487). REAP_PANEL caches one read per pass,
+# so its verdict is one witness: reap settles on it only when the reap before also missed (reap_confirm).
 claude_gone() {
   local server="$1" sess="$2" agent="$3" started="$4" sids="$5" t
   panel_lists "$agent" || return 1
@@ -539,6 +541,25 @@ claude_gone() {
                else $t != "/" and ((.target // "") | sub(":[^:/]*$"; "")) == $t end)
     | not' <<<"$REAP_PANEL" >/dev/null
 }
+
+# reap_confirm <slug> -- exit 0 when an earlier reap, at least DISPATCH_REAP_CONFIRM seconds before,
+# also read the item's Claude as gone (claude_gone); else record this miss and exit 1. One agent-panel
+# read is not a witness: on 2026-11-07 (ar-900) a panel at 78% CPU under load 33 left a live session
+# out, and reap failed an urgent item whose re-read a minute later listed it. A reap that does not
+# read the item gone clears its mark (reap_seen), so only consecutive misses count. The mark stays
+# once confirmed, so an item settle_item leaves active (waiting on its open PR) stays gone, and goes
+# with the item (cmd_reap prunes marks of slugs no longer active).
+reap_confirm() {
+  local f="$DIR/reap-miss/$1" first
+  first=$(cat "$f" 2>/dev/null)
+  if [ -n "$first" ]; then
+    [ $(( $(date +%s) - first )) -ge "$DISPATCH_REAP_CONFIRM" ]; return
+  fi
+  mkdir -p "${f%/*}" && date +%s > "$f"
+  logline "reap: queue item $1's Claude is not on agent-panel; a reap ${DISPATCH_REAP_CONFIRM}s or more from now settles it if it still is not"
+  return 1
+}
+reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 
 # live_runs -> "<project>/<area> <weight>" for every running session this runner started itself. A
 # hand launch or a restore is tagged and tracked like any other, but holds none of the runner's
@@ -2383,7 +2404,7 @@ cmd_stats() {
 # stopped on), running/ again once it does not. It is the one writer of that move for a live session.
 # A session neither read can see is left where it is.
 cmd_reap() {
-  local s d slug server sess origin project area state _weight agent started sids want waits='' seen=''
+  local s d slug server sess origin project area state _weight agent started sids want waits='' seen='' gone active=()
   unset REAP_PANEL
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
@@ -2394,7 +2415,15 @@ cmd_reap() {
   done
   while IFS=$'\x1f' read -r slug server sess origin project area state _weight agent started sids; do
     [ -n "$slug" ] || continue
-    if { [ -n "$sess" ] && ! session_live "$sess" "$server"; } || claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then
+    active+=("$slug")
+    # A tmux session gone is its own witness; a Claude missing from agent-panel needs a second reap
+    # (reap_confirm), and until then the item is left as it is: its Claude is not read as live either.
+    gone=''
+    if [ -n "$sess" ] && ! session_live "$sess" "$server"; then gone=1
+    elif claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then reap_confirm "$slug" || continue; gone=1
+    else reap_seen "$slug"
+    fi
+    if [ -n "$gone" ]; then
       settle_item "$slug" "${sess:-${sids##* }}"
       settle_row "$slug"
       continue
@@ -2409,6 +2438,12 @@ cmd_reap() {
     [ "$state" = "$want" ] && continue
     agent-queue move "$slug" "$want" --if "$state" >/dev/null && logline "reaped $sess: queue item $slug $state -> $want"
   done < <(item_sessions)
+  # A mark whose item is no longer active (closed by its session, cancelled) would count for a later
+  # item under the slug. No active item at all may be a queue that could not be read: keep them then.
+  [ ${#active[@]} -eq 0 ] || for s in "$DIR"/reap-miss/*; do
+    [ -e "$s" ] || continue
+    [[ " ${active[*]} " == *" ${s##*/} "* ]] || rm -f "$s"
+  done
   unstart_orphans
   reconcile_plans
   return 0

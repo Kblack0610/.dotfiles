@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""schedules-sync - the one local writer of GitHub scheduled-run facts.
+"""schedules-sync - the one local writer of CI run facts: GitHub scheduled runs, and every run.
 
-For each repo in the day-log-ci list (`<owner/name> <base> [clone]`, private overlay), it
+For each GitHub repo in the day-log-ci list (`<owner/name> <base> [clone]`, private overlay), it
 records every workflow on the base branch that has an `on.schedule`: its crons, its
 timeout (the longest `needs:` path of job timeouts, GitHub's 360 min where a job sets
 none), its purpose (the comment block right above `on:`, else the file's first comment
@@ -10,7 +10,19 @@ conclusion, start, end, failed jobs). It writes them to one file, SCHEDULES_STAT
 (~/.local/state/schedules/state.json), which the agent-queue `nightly:` hold, fleet-sessions
 and the hub Schedules tab read instead of asking gh themselves.
 
-  schedules-sync          sync every repo, write the state file, print its path
+Each pass also appends every run of every event, on GitHub and on the Forgejo repos the list
+names as `forgejo:<host>/<owner/name> <base>`, to the run ledger SCHEDULES_RUNS_LEDGER
+(~/.local/state/ci/runs.jsonl), one JSON row per run each time it changes: forge, repo, id,
+attempt (the key), workflow, path, title, branch, event, sha, status, conclusion, created_at,
+started_at, ended_at, queue_wait_s, prs, url. A reader dedupes on the key and keeps the last
+row; a torn last line is skipped. Rows whose run was created more than 30 days ago are pruned
+by an atomic rewrite, which also drops superseded rows once they outnumber the live ones.
+Forgejo has no attempt (always 1) and lists jobs, not runs: a run is its jobs grouped by run
+number, failed when one failed. Its API is https://<host>/api/v1, the host named in the
+private list (never here), with the token FORGEJO_TOKEN, else `rbw get forgejo_repo_admin`,
+sent in curl's stdin config, never argv; with neither, a public repo still reads.
+
+  schedules-sync          sync every repo, write the state file and the ledger, print the state path
   schedules-sync pending <repo>
                           what an agent-queue `nightly:<repo>` hold still waits for, one line;
                           exit 0 and no output when nothing is (repo: owner/name or name)
@@ -18,16 +30,20 @@ and the hub Schedules tab read instead of asking gh themselves.
 Deterministic, no model. schedules-sync.timer runs it every 10 minutes: GitHub sends this
 machine no event when a run ends, so it samples.
 
-gh cost per repo per pass: one workflows listing, one runs page (more only on a cold start
-or after a gap), one blob per changed workflow file and one jobs call per newly failed run.
-The previous state is the cache: a workflow whose blob sha is unchanged is not re-read, a
-finished run's failed jobs are not re-asked. Runs come from actions/runs?event=schedule,
-not `gh run list`, which looks workflows up under actions/workflows, the bucket used up on
-2026-10-29 (fleet-sessions main_runs).
+gh cost per GitHub repo per pass: one workflows listing, one conditional runs page (a 304,
+which costs no rate limit, when nothing on it changed; more pages only on a cold start or
+after a gap), one blob per changed workflow file and one jobs call per newly failed scheduled
+run. The scheduled runs are the runs page's `event: schedule` rows, so there is no second
+listing. The ETag, the last sync and the last error per repo are in ci/sync.json beside the
+ledger. The previous state is the cache: a workflow whose blob sha is unchanged is not
+re-read, a finished run's failed jobs are not re-asked. Runs come from actions/runs, not
+`gh run list`, which looks workflows up under actions/workflows, the bucket used up on
+2026-10-29 (fleet-sessions main_runs). A re-run of a run older than the first page leaves
+that page unchanged, so it is read when the page next changes.
 
 A repo gh cannot read keeps its last good entry, with `error` set and `synced_at` left at
-the last success, so a reader can tell stale from fresh per repo; the exit status is 1.
-A repo with no scheduled workflow is an empty list, not an error.
+the last success, so a reader can tell stale from fresh per repo; the exit status is 1, and
+the other repos still land. A repo with no scheduled workflow is an empty list, not an error.
 
 `pending` reads the state file and nothing else. Each scheduled workflow's cron slots on
 today's local date must each have a finished run, or be past the slot (or the run's start)
@@ -53,6 +69,17 @@ STATE = os.environ.get(
     "SCHEDULES_STATE",
     os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "schedules/state.json"),
 )
+LEDGER = os.environ.get(
+    "SCHEDULES_RUNS_LEDGER",
+    os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "ci/runs.jsonl"),
+)
+SYNC = os.path.join(os.path.dirname(LEDGER), "sync.json")
+CURL = os.environ.get("SCHEDULES_CURL", "curl")
+RBW = os.environ.get("SCHEDULES_RBW", "rbw")
+FORGEJO_ENTRY = os.environ.get("SCHEDULES_FORGEJO_ENTRY", "forgejo_repo_admin")
+FJ_PAGE = 50  # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50
+FJ_DONE = ("success", "failure", "cancelled", "skipped")
+KEEP = timedelta(days=30)  # the ledger's window, and how far back a cold pass reads
 RUNS_KEPT = int(os.environ.get("SCHEDULES_RUNS", "14"))
 PER_PAGE = int(os.environ.get("SCHEDULES_PER_PAGE", "100"))
 MAX_PAGES = int(os.environ.get("SCHEDULES_MAX_PAGES", "20"))  # a cold start of a busy repo
@@ -83,6 +110,20 @@ def parse_iso(s):
     return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
+def when(s):
+    """An API timestamp as an aware datetime, or None (Forgejo writes year 1 for never)."""
+    try:
+        t = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return t if t.year > 2000 else None
+
+
+def wait_s(a, b):
+    ta, tb = when(a), when(b)
+    return int((tb - ta).total_seconds()) if ta and tb else None
+
+
 def gh(path, missing=None):
     """gh api <path> as JSON. A 404 returns `missing` when one is given, else it is an error."""
     try:
@@ -100,13 +141,75 @@ def gh(path, missing=None):
     raise GhError(f"gh api {path}: {(p.stderr or p.stdout).strip()[:200]}")
 
 
+def gh_page(path, etag=None):
+    """gh api -i <path>, conditional on `etag` -> (body, etag); body is None on a 304."""
+    cmd = [GH, "api", "-i"] + (["-H", f"If-None-Match: {etag}"] if etag else []) + [path]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise GhError(f"gh api {path}: no answer in {GH_CALL_TIMEOUT_S}s")
+    head, _, raw = p.stdout.replace("\r\n", "\n").partition("\n\n")
+    status = head.split("\n", 1)[0].split()
+    if len(status) > 1 and status[1] == "304":
+        return None, etag  # gh exits 1 on it, but it is the answer asked for
+    tag = next((h.split(":", 1)[1].strip() for h in head.split("\n") if h.lower().startswith("etag:")), None)
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        body = None
+    if p.returncode == 0 and body is not None:
+        return body, tag
+    raise GhError(f"gh api {path}: {(p.stderr or raw).strip()[:200]}")
+
+
+FJ_TOKEN = []
+
+
+def fj_token():
+    """FORGEJO_TOKEN, else the rbw entry, read once per pass; "" when neither answers."""
+    if not FJ_TOKEN:
+        tok = os.environ.get("FORGEJO_TOKEN", "")
+        if not tok:
+            try:
+                tok = subprocess.run([RBW, "get", FORGEJO_ENTRY], capture_output=True, text=True,
+                                     timeout=GH_CALL_TIMEOUT_S).stdout.strip()
+            except (OSError, subprocess.TimeoutExpired):
+                tok = ""
+        FJ_TOKEN.append(tok)
+    return FJ_TOKEN[0]
+
+
+def fj(host, path):
+    """GET https://<host>/api/v1/<path> as JSON; the token goes in on curl's stdin, never argv."""
+    tok = fj_token()
+    conf = f'header = "Authorization: token {tok}"\n' if tok else ""
+    try:
+        p = subprocess.run([CURL, "-sSf", "-K", "-", "--max-time", "30", f"https://{host}/api/v1/{path}"],
+                           input=conf, capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise GhError(f"forgejo {path}: no answer in {GH_CALL_TIMEOUT_S}s")
+    if p.returncode == 0:
+        try:
+            return json.loads(p.stdout)
+        except ValueError:
+            pass
+    why = (p.stderr or p.stdout).strip()[:200]
+    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" (no token: FORGEJO_TOKEN unset, rbw {FORGEJO_ENTRY} unread)"))
+
+
 def read_repos():
+    """-> [(forge, owner/name, base, host)]: `forgejo:<host>/<owner/name>` is a Forgejo repo,
+    a bare (or `github:`) name a GitHub one, whose host is None."""
     out = []
     with open(REPOS) as f:
         for line in f:
             line = line.split("#", 1)[0].split()
             if len(line) >= 2:
-                out.append((line[0], line[1]))
+                forge, _, name = line[0].rpartition(":")
+                host = None
+                if forge == "forgejo":
+                    host, _, name = name.partition("/")
+                out.append((forge or "github", name, line[1], host))
     return out
 
 
@@ -223,27 +326,154 @@ def run_record(r):
             "started_at": r.get("run_started_at"), "ended_at": r.get("updated_at") if done else None}
 
 
-def fetch_runs(repo, prev):
-    """Scheduled runs, newest first, paged back until the window overlaps the last sync
-    (and every run that was still going then), or MAX_PAGES on a cold start."""
-    stop = None
-    if prev and prev.get("synced_at"):
-        stop = parse_iso(prev["synced_at"]) - OVERLAP
-        for w in prev.get("workflows", []):
-            for r in w.get("runs", []):
-                if r.get("status") != "completed" and r.get("created_at"):
-                    stop = min(stop, parse_iso(r["created_at"]))
-    runs = []
+def window(entry, open_since, t):
+    """How far back a pass reads: the last sync less OVERLAP, or the oldest run still open
+    then, never past KEEP; a repo never synced reads all of KEEP."""
+    floor = t - KEEP
+    stop = parse_iso(entry["synced_at"]) - OVERLAP if entry.get("synced_at") else floor
+    if open_since:
+        stop = min(stop, open_since)
+    return max(stop, floor)
+
+
+def fetch_runs(repo, entry, open_since, t):
+    """Every GitHub run, newest first, paged back to window(), or MAX_PAGES on a cold start.
+    -> (runs, etag); runs is None when the first page is unchanged (a 304)."""
+    stop, runs, etag = window(entry, open_since, t), [], None
     for page in range(1, MAX_PAGES + 1):
-        got = gh(f"repos/{repo}/actions/runs?event=schedule&per_page={PER_PAGE}&page={page}")
+        path = f"repos/{repo}/actions/runs?per_page={PER_PAGE}&page={page}"
+        if page == 1:
+            got, etag = gh_page(path, entry.get("etag"))
+            if got is None:
+                return None, etag
+        else:
+            got = gh(path)
         batch = got.get("workflow_runs", []) if isinstance(got, dict) else []
         runs.extend(batch)
         if len(batch) < PER_PAGE:
             break
-        oldest = batch[-1].get("created_at")
-        if stop and oldest and parse_iso(oldest) < stop:
+        oldest = when(batch[-1].get("created_at"))
+        if oldest and oldest < stop:
             break
-    return runs
+    return runs, etag
+
+
+def gh_row(repo, r):
+    done = r.get("status") == "completed"
+    return {"forge": "github", "repo": repo, "id": r["id"], "attempt": r.get("run_attempt", 1),
+            "workflow": r.get("name"), "path": r.get("path"), "title": r.get("display_title"),
+            "branch": r.get("head_branch"), "event": r.get("event"), "sha": r.get("head_sha"),
+            "status": r.get("status"), "conclusion": r.get("conclusion") if done else None,
+            "created_at": r.get("created_at"), "started_at": r.get("run_started_at"),
+            "ended_at": r.get("updated_at") if done else None,
+            "queue_wait_s": wait_s(r.get("created_at"), r.get("run_started_at")),
+            "prs": [p["number"] for p in r.get("pull_requests") or [] if isinstance(p, dict) and "number" in p],
+            "url": r.get("html_url")}
+
+
+def forgejo_rows(host, repo, entry, open_since, t):
+    """Every Forgejo run back to window(), one row per run from its jobs (actions/tasks lists
+    jobs, newest first). When paging stops before the list ends, the oldest run seen may be
+    cut by the page edge, so it is left out; a pass that saw it whole wrote its row."""
+    stop, tasks, whole = window(entry, open_since, t), [], False
+    for page in range(1, MAX_PAGES + 1):
+        got = fj(host, f"repos/{repo}/actions/tasks?limit={FJ_PAGE}&page={page}")
+        batch = got.get("workflow_runs") or [] if isinstance(got, dict) else []
+        tasks.extend(batch)
+        if len(batch) < FJ_PAGE:
+            whole = True
+            break
+        oldest = when(batch[-1].get("created_at"))
+        if oldest and oldest < stop:
+            break
+    cut = None if whole or not tasks else tasks[-1].get("run_number")
+    runs = {}
+    for k in tasks:
+        if k.get("run_number") is not None and k["run_number"] != cut:
+            runs.setdefault(k["run_number"], []).append(k)
+    rows = []
+    for n, jobs in runs.items():
+        st = [j.get("status") for j in jobs]
+        done = all(x in FJ_DONE for x in st)
+        conclusion = None
+        if done:
+            conclusion = next((c for c in ("failure", "cancelled", "success") if c in st), "skipped")
+        created = min((j.get("created_at") for j in jobs if when(j.get("created_at"))), default=None)
+        started = min((j.get("run_started_at") for j in jobs if when(j.get("run_started_at"))), default=None)
+        ended = max((j.get("updated_at") for j in jobs if when(j.get("updated_at"))), default=None) if done else None
+        j = jobs[0]
+        rows.append({"forge": "forgejo", "repo": repo, "id": n, "attempt": 1,
+                     "workflow": j.get("workflow_id"), "path": j.get("workflow_id"), "title": j.get("display_title"),
+                     "branch": j.get("head_branch"), "event": j.get("event"), "sha": j.get("head_sha"),
+                     "status": "completed" if done else ("in_progress" if "running" in st else "queued"),
+                     "conclusion": conclusion, "created_at": created, "started_at": started, "ended_at": ended,
+                     "queue_wait_s": wait_s(created, started), "prs": [], "url": j.get("url")})
+    return rows
+
+
+def run_key(r):
+    return (r["forge"], r["repo"], r["id"], r["attempt"])
+
+
+def read_ledger():
+    """-> ({key: last row}, rows read, whether the file ends mid-line); None for no ledger."""
+    try:
+        f = open(LEDGER)
+    except OSError:
+        return None, 0, False
+    last, n, line = {}, 0, ""
+    with f:
+        for line in f:
+            try:
+                r = json.loads(line)
+                last[run_key(r)] = r
+                n += 1
+            except (ValueError, KeyError, TypeError):
+                continue  # a torn last line, or not a row
+    return last, n, bool(line) and not line.endswith("\n")
+
+
+def write_ledger(last, n, torn, rows, t):
+    """Append the rows that changed since their key's last row. Rewrite instead, through a tmp
+    file, when a run has aged past KEEP or superseded rows outnumber live ones. -> the rows the
+    file now holds; `last` is left holding only the live runs."""
+    changed = []
+    for r in rows:
+        if last.get(run_key(r)) != r:
+            last[run_key(r)] = r
+            changed.append(r)
+    live = {k: r for k, r in last.items() if (when(r.get("created_at")) or t) >= t - KEEP}
+    os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
+    line = lambda r: json.dumps(r, separators=(",", ":")) + "\n"
+    if len(live) < len(last) or n + len(changed) - len(live) > len(live):
+        tmp = f"{LEDGER}.{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.writelines(line(r) for r in sorted(live.values(), key=lambda r: (r.get("created_at") or "", run_key(r))))
+        os.replace(tmp, LEDGER)
+        for k in set(last) - set(live):
+            del last[k]
+        return len(live)
+    else:  # opened even with nothing to add: an ETag in sync.json is only trusted beside a ledger
+        with open(LEDGER, "a") as f:
+            f.write(("\n" if torn else "") + "".join(line(r) for r in changed))
+    return n + len(changed)
+
+
+def read_sync():
+    try:
+        with open(SYNC) as f:
+            return json.load(f).get("repos", {})
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def write_json(path, doc):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(doc, f, indent=1)
+        f.write("\n")
+    os.replace(tmp, path)
 
 
 def failed_jobs(repo, run, old):
@@ -260,12 +490,13 @@ def failed_jobs(repo, run, old):
     return [j["name"] for j in got.get("jobs", []) if j.get("conclusion") in FAILED]
 
 
-def sync_repo(repo, base, prev, t):
+def sync_repo(repo, base, prev, t, sched):
+    """The state entry of one repo; `sched` is this pass's new scheduled runs."""
     workflows, unscheduled = scheduled_workflows(repo, base, prev)
     paths = {w["path"] for w in workflows}
     old_runs = {r["id"]: (w["path"], r) for w in (prev or {}).get("workflows", []) for r in w.get("runs", [])}
     merged = {rid: pr for rid, pr in old_runs.items() if pr[0] in paths}
-    for raw in fetch_runs(repo, prev) if workflows else []:
+    for raw in sched:
         if raw.get("path") in paths:
             merged[raw["id"]] = (raw["path"], run_record(raw))
     for w in workflows:
@@ -371,21 +602,50 @@ def main(argv):
         print(f"schedules-sync: no repo list: {e}", file=sys.stderr)
         return 1
     prev, t, out, bad = read_prev(), now(), [], 0
-    for repo, base in repos:
+    last, n, torn = read_ledger()
+    sync = read_sync() if last is not None else {}  # no ledger: an ETag would hide its rows
+    last = last or {}
+    opened = {}  # (forge, repo) -> the oldest run the ledger still has open
+    for r in last.values():
+        c = when(r.get("created_at")) if r.get("status") != "completed" else None
+        if c:
+            k = (r["forge"], r["repo"])
+            opened[k] = min(opened.get(k, c), c)
+    for forge, repo, base, host in repos:
+        rows = []
+        entry = dict(sync.get(f"{forge}:{repo}") or {})
+        p = prev.get(repo) if forge == "github" else None
         try:
-            out.append(sync_repo(repo, base, prev.get(repo), t))
+            if forge == "forgejo" and "/" not in repo:
+                raise GhError(f"forgejo:{host}/{repo}: want forgejo:<host>/<owner/name>")
+            if forge == "forgejo":
+                rows.extend(forgejo_rows(host, repo, entry, opened.get((forge, repo)), t))
+            elif forge == "github":
+                since = [opened[(forge, repo)]] if (forge, repo) in opened else []
+                since += [parse_iso(r["created_at"]) for w in (p or {}).get("workflows", [])
+                          for r in w.get("runs", []) if r.get("status") != "completed" and r.get("created_at")]
+                got, etag = fetch_runs(repo, entry, min(since, default=None), t)
+                got = got or []
+                out.append(sync_repo(repo, base, p, t, [r for r in got if r.get("event") == "schedule"]))
+                rows.extend(gh_row(repo, r) for r in got)
+                entry["etag"] = etag  # only once its rows are kept: a 304 must not hide them
+            else:
+                raise GhError(f"unknown forge {forge} (github, forgejo)")
+            entry.update(synced_at=iso(t), error=None)
         except GhError as e:
             bad += 1
             print(f"schedules-sync: {repo}: {e}", file=sys.stderr)
-            kept = dict(prev.get(repo) or {"repo": repo, "base": base, "synced_at": None, "workflows": []})
-            kept["error"] = str(e)
-            out.append(kept)
-    os.makedirs(os.path.dirname(STATE), exist_ok=True)
-    tmp = f"{STATE}.{os.getpid()}"
-    with open(tmp, "w") as f:
-        json.dump({"generated_at": iso(t), "repos": out}, f, indent=1)
-        f.write("\n")
-    os.replace(tmp, STATE)
+            entry["error"] = str(e)
+            if forge == "github":
+                kept = dict(p or {"repo": repo, "base": base, "synced_at": None, "workflows": []})
+                kept["error"] = str(e)
+                out.append(kept)
+        sync[f"{forge}:{repo}"] = entry
+        # Per repo, so a cold pass the service timeout cuts keeps the repos it finished. The
+        # ledger goes first: a crash between the two re-reads the repo, it never skips it.
+        n, torn = write_ledger(last, n, torn, rows, t), False
+        write_json(SYNC, {"generated_at": iso(t), "repos": sync})
+    write_json(STATE, {"generated_at": iso(t), "repos": out})
     print(STATE)
     return 1 if bad else 0
 

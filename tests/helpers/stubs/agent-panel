@@ -14,6 +14,10 @@
 #   agent-panel.unsent  present: `agent-panel send` exits 3 (the pane did not take the Enter)
 #   agent-panel.said    the JSON `agent-panel said <transcript> --around <id>` prints; absent:
 #                       exit 1, as the real one does when no turn printed the id
+#   agent-panel.dialog  the card `agent-panel dialog <target>` prints; absent: exit 1 (no dialog)
+#   agent-panel.options the "<key>\t<free>\t<text>" lines of `agent-panel dialog <target> --options`
+#   agent-panel.answer  `agent-panel answer` exits with its first line and prints the rest to
+#                       stderr; absent: exit 0 (sent)
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -24,6 +28,12 @@ case "${1:-}" in
   asks-human) [ -f "$FIX/agent-panel.asks" ] && exit 0; exit 1 ;;
   said) [ -f "$FIX/agent-panel.said" ] || exit 1; cat "$FIX/agent-panel.said" ;;
   send) [ -f "$FIX/agent-panel.unsent" ] && { echo "agent-panel send: did not take the Enter" >&2; exit 3; } ;;
+  dialog)
+    if [[ " $* " == *" --options "* ]]; then [ -f "$FIX/agent-panel.options" ] || exit 1; cat "$FIX/agent-panel.options"
+    else [ -f "$FIX/agent-panel.dialog" ] || exit 1; cat "$FIX/agent-panel.dialog"; fi ;;
+  answer)
+    [ -f "$FIX/agent-panel.answer" ] || exit 0
+    tail -n +2 "$FIX/agent-panel.answer" >&2; exit "$(head -1 "$FIX/agent-panel.answer")" ;;
   *) : ;;   # jump / next / preview / interactive: recorded no-ops
 esac
 exit 0
