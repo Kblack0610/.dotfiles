@@ -91,6 +91,8 @@ WT_LOG="${WT_LOG:-$HOME/.agent/wt/done.log}"
 # Where `new` takes its per-repo lock. Prefix+F runs in the background now, so nothing
 # serializes two presses any more; without the lock both pick the same slot.
 WT_LOCK_DIR="${WT_LOCK_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/wt}"
+# Git prints this beside its own hint to unlock, so it is what the reader of a refusal acts on.
+WT_HOLD_REASON='held by wt: wt done or wt reap frees it and refuses a live session; do not unlock it or use -f -f'
 
 # ── Repo plumbing ────────────────────────────────────────────────────────────
 
@@ -605,7 +607,7 @@ cmd_preview() {
 #
 # fresh: the directory is gone and so is the branch -- or the branch is a leftover that is
 # already merged into <base-ref> and checked out nowhere, which `new` then resets with -B.
-# A refused reap or a hand-run `git worktree remove` leaves `agent-N` behind; an UNMERGED
+# A refused reap or a removal by hand leaves `agent-N` behind; an UNMERGED
 # leftover may be the only copy of a commit, so it still pins its slot.
 #
 # recycle: the directory is a worktree of THIS repo and wt_reap_reason passes -- clean,
@@ -636,10 +638,14 @@ wt_next_slot() {
       fi
     elif [ -z "$fresh" ] && ! wt_session_exists "$repo-agent-$n"; then
       # A live session pins its slot even with the directory gone. Its worktree can be
-      # removed out from under it (an agent running `git worktree remove --force` on
-      # itself), and handing the slot out again landed the new worktree in the OLD session:
+      # removed out from under it (an agent running `rm -rf` or `remove -f -f` past
+      # wt_hold), and handing the slot out again landed the new worktree in the OLD session:
       # wt_ensure_session found the name taken and reused it, so you arrived among panes
       # still sitting in the deleted directory.
+      #
+      # With no session, a hold that outlived its directory is dropped here: `rm -rf` or a husk
+      # reap leaves the entry, and `prune` skips a locked one, so it would pin the slot for good.
+      { git -C "$main" worktree unlock "$path" && git -C "$main" worktree remove "$path"; } 2>/dev/null || :
       if ! git -C "$main" show-ref --verify --quiet "refs/heads/agent-$n" 2>/dev/null ||
         { git -C "$main" merge-base --is-ancestor "refs/heads/agent-$n" "$base" 2>/dev/null &&
           ! git -C "$main" worktree list --porcelain | grep -qxF "branch refs/heads/agent-$n"; }; then
@@ -861,6 +867,23 @@ cmd_new() {
   [ "$detach" = 1 ] || panel_focus_session "$name"
 }
 
+# wt_hold <path> -- git-lock a worktree, so that only `reap` can remove it.
+#
+# wt_reap_reason binds only the callers that ask it. On 2026-11-06 a session cleaning up after
+# its finished run typed `git worktree remove` on dotfiles-agent-4, 57 s after dispatch had
+# re-cut that slot for another session; the tree was clean, so git let it go. A lock is the one
+# check git makes itself, so it binds every harness, the WorktreeRemove hook and any script:
+# `remove`, `remove --force` and `move` refuse, and `prune` skips it. Only `rm -rf` and
+# `remove -f -f` get past, and wt_next_slot clears what those leave.
+wt_hold() {
+  local out
+  out=$(git -C "$1" worktree lock --reason "$WT_HOLD_REASON" "$1" 2>&1) && return 0
+  case "$out" in
+  *'already locked'*) ;;
+  *) panel_warn "could not lock $(basename "$1"): $out" ;;
+  esac
+}
+
 # wt_prepare <main> <path> <n> <recycle|fresh> -- the slow half of `new`: fetch, then put
 # agent-<n> at the trunk, by resetting the idle worktree in place or cutting a fresh one.
 wt_prepare() {
@@ -879,6 +902,7 @@ wt_prepare() {
     git -C "$main" worktree add "$path" -B "agent-$n" "$base" >&2 ||
       panel_fail "git worktree add failed: $path" || return 1
   fi
+  wt_hold "$path"
 }
 
 # cmd_prepare <main> <path> <n> <kind> [<cmd>] -- `_prepare`, the first pane of a session
@@ -966,16 +990,22 @@ cmd_reap() {
   # removed a unity-core-playground worktree and they piled up at 15-20 GB each. wt_dirty_count
   # already counts edits, untracked files and unpushed commits inside submodules, so a tree it
   # calls clean is safe to remove with --force; the count is taken again right before.
+  #
+  # The policy passed above, so wt_hold's lock comes off here, and a refusal puts it back: the
+  # tree is staying. A tree that never had one fails the unlock harmlessly.
   local out
+  git -C "$main" worktree unlock "$path" 2>/dev/null || :
   if ! out=$(git -C "$main" worktree remove "$path" 2>&1); then
     case "$out" in
     *'containing submodules'*)
       [ "$(wt_dirty_count "$path")" -eq 0 ] &&
-        git -C "$main" worktree remove --force "$path" ||
-        panel_fail "git worktree remove refused $path" || return 1
+        out=$(git -C "$main" worktree remove --force "$path" 2>&1) && out=''
       ;;
-    *) panel_fail "git worktree remove refused $path: $out" || return 1 ;;
     esac
+    if [ -n "$out" ]; then
+      wt_hold "$path"
+      panel_fail "git worktree remove refused $path: $out" || return 1
+    fi
   fi
 
   # Take the branch with it, or the slot numbers ratchet forever: wt_next_slot treats an existing
