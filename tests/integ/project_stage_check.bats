@@ -282,7 +282,10 @@ EOF2
 # -- --file: each FAIL row becomes a story under the open epic for its target --
 
 epics() { jq -n --argjson e "$1" '[{name: "shooter", epics: $e}]' > "$NOTES_FIXTURE/stats.json"; }
-board_row() { mkdir -p "$LAB/agent"; printf '# shooter agent\n\n## Tasks\n%s\n' "$1" > "$LAB/agent/README.md"; }
+board_row() { mkdir -p "$LAB/agent"; printf '# shooter agent\n\n## Tasks\n%s\n' "$1" > "$LAB/agent/README.md"; parses "$1"; }
+# parses <row>: `notes row parse` answers it as chore(beta): A changelog (a lookup table, never the
+# grammar: that lives in notes-cli alone)
+parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/row.parse"; }
 
 @test "file: the stage epic names the target, and each FAIL row is filed once under it" {
   epics '[{"id":"sh-1","system":"stage","title":"beta for shooter, testers"}]'
@@ -298,6 +301,12 @@ board_row() { mkdir -p "$LAB/agent"; printf '# shooter agent\n\n## Tasks\n%s\n' 
   assert_success
   assert_line --regexp '^open +beta +A changelog$'
   assert_not_called 'ptask'
+  # A sheet notes cannot parse fails the run rather than filing a twin of every row on it.
+  mkdir -p "$HOME/bin"; printf '#!/usr/bin/env bash\n[ "$1" != row ] || exit 1\n' > "$HOME/bin/notes"; chmod +x "$HOME/bin/notes"
+  PATH="$HOME/bin:$PATH" run "$CHECK" shooter --file
+  assert_failure 2
+  assert_output --partial 'notes row parse failed'
+  assert_not_called 'ptask'
 }
 
 @test "file: a gap the human dropped or closed is never filed again" {
@@ -311,6 +320,7 @@ board_row() { mkdir -p "$LAB/agent"; printf '# shooter agent\n\n## Tasks\n%s\n' 
   # A row archived into a version note counts as well.
   rm "$LAB/agent/README.md"; mkdir -p "$LAB/agent/versions"
   printf '## Done rows\n- [x] chore(beta): A changelog #size/s <!-- id:sh-2 done:2026-10-01 pr:9 -->\n' > "$LAB/agent/versions/v0.0.9.md"
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-2 done:2026-10-01 pr:9 -->'
   run "$CHECK" shooter --file
   assert_line --regexp '^closed +beta +A changelog$'
   assert_not_called 'ptask'

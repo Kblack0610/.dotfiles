@@ -3089,14 +3089,30 @@ reds_live() {
   done
 }
 
+# red_titles <items> -> {<title>: {area, name}} for each red item whose title parses as
+# `type(area): <name> ...` with a name word, from one `notes row parse` (the grammar's home); fails, saying so,
+# when the verb fails or answers short. A newline in a title reads as a space, as in reds_json.
+red_titles() {
+  local titles parsed
+  titles=$(jq -c "$JQ_LIB"'[.[] | select(tagged("red")) | .title // .task // "" | gsub("\n"; " ")] | unique' <<<"$1") || return 1
+  [ "$titles" != '[]' ] || { echo '{}'; return 0; }
+  parsed=$(jq -r '.[]' <<<"$titles" | notes row parse) &&
+    jq -cRn --argjson t "$titles" '[inputs | split("\t")] as $p | if ($p | length) != ($t | length) then error("short") else . end
+      | [range($t | length) as $i | select($p[$i][3] == "1")
+         | {key: $t[$i], value: {area: $p[$i][1], name: ([$p[$i][2] | capture("^(?<n>[^ ,;]+)").n][0])}}
+         | select(.value.name != null)] | from_entries' <<<"$parsed" 2>/dev/null ||
+    { say "reds: notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)"; return 1; }
+}
+
 # reds_json <now> -> one JSON object a line per red queue item queued in the last REDS_DAYS, then
 # per merged cleanup item (cleanup: true, its outcome the hold: the reds line of the usage above): what
 # was red, its cause, when it was queued and finished, its PR and merge, and its outcome. A merged
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
 # after the merge is "came back", red the whole time is "still red". Counted, never judged.
 reds_json() {
-  local t="$1" items holds live watches='{}' f n
-  items=$(reds_items "$t") || return 1
+  local t="$1" items holds live watches='{}' f n parsed
+  items=$(reds_items "$t") || { say "reds: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
+  parsed=$(red_titles "$items") || return 1
   holds=$(hold_reds "$t" "$items" | jq -cs .)
   live=$({ reds_live; jq -r "$JQ_LIB"'.[] | hold_key' <<<"$holds"; } | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))')
   for f in "$TRIAGE_WATCH_STATE"/*.since; do
@@ -3105,7 +3121,7 @@ reds_json() {
     watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
   done
   jq -c --argjson live "$live" --argjson w "$watches" --argjson holds "$holds" --argjson clock "$t" \
-    --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+    --argjson parsed "$parsed" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
     def title: .title // .task // "";
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
@@ -3116,7 +3132,7 @@ reds_json() {
                      elif any($held[]; contains(" \($s) (")) then "recovered"
                      elif $clock - ((.finished | ep) // 0) < $h then "holding" else "held" end)}]) as $cleanups
     | (.[] | select(tagged("red")) | title as $t
-    | ($t | capture("^(?<kind>[a-z]+)\\((?<area>[a-z]+)\\): (?<name>[^ ,;]+)") // {}) as $r
+    | ($parsed[$t | gsub("\n"; " ")] // {}) as $r
     | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
     | (.finished | ep) as $fin
@@ -3156,7 +3172,7 @@ cmd_reds() {
     shift
   done
   [[ "$REDS_DAYS" =~ ^[1-9][0-9]*$ ]] || { say "reds: --days takes a day count"; return 2; }
-  rows=$(reds_json "$(now)") || { say "reds: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
+  rows=$(reds_json "$(now)") || return 1   # reds_json said why
   if [ "$json" = 1 ]; then [ -z "$rows" ] || printf '%s\n' "$rows"; return 0; fi
   [ -n "$rows" ] || { echo "no red fix queued in the last $REDS_DAYS days"; return 0; }
   jq -rs --arg d "$REDS_DAYS" '

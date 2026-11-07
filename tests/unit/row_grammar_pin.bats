@@ -18,9 +18,6 @@ SHAPE='(\[a-z\]|\[a-z0-9\]|\[a-z-\]|\[\[:alpha:\]\]|\\w)\+[)]?[(]*\\+[(]'
 KNOWN=(
   ".local/bin/day-log|reads PR titles (conventional commits), not board rows"
   ".local/bin/fleet-dispatch|DISPATCH_NIGHT_OBSERVER matches a row's area, not its grammar"
-  ".local/bin/fleet-bench|reads a red queue item's title for its area and name: arch-intake-one-path-copies"
-  ".local/bin/project-stage-check|strips a sheet row's prefix to compare titles: arch-intake-one-path-copies"
-  ".local/bin/project-system-check|strips a sheet row's prefix to compare titles: arch-intake-one-path-copies"
 )
 
 # row_regexes <root> -- the tracked paths on stdin (NUL-separated, relative to <root>), minus notes-cli
