@@ -7,6 +7,9 @@ Type=oneshot
 # minute this keeps is what `fleet-dispatch restore` reopens from.
 ExecStartPre=-%h/.local/bin/fleet-dispatch record
 ExecStartPre=-%h/.local/bin/agent-ask assume-due
+# The runner pool's failing tests, for the tick's SHARED rows. Allowed to fail: a missed read is
+# retried next minute, and the local gate's ledger still counts.
+ExecStartPre=-%h/.local/bin/pool-test-failures sync
 ExecStart=%h/.local/bin/fleet-sessions tick
 # Then one page for what is new on hub Home's NEEDS YOU list, under the bar and cap in
 # channels.toml [pager.needs]. Allowed to fail: a missed page leaves the list on Home and in the journal.
