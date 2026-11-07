@@ -118,8 +118,10 @@
 #                                that shares 4-word shingles (Jaccard >= 0.3) with a line
 #                                in another. Corpus: the --docs set plus every SKILL.md and
 #                                the agentctl roles and prompts. Each pair prints both homes
-#                                and the one that wins (higher rank; equal rank: a session
-#                                picks). Report-only: exit 0 with pairs, 2 on an empty corpus.
+#                                and the one that wins (higher rank in the agentctl conf's
+#                                instruction-homes.json; equal rank: a session picks).
+#                                Report-only: exit 0 with pairs, 2 on an empty corpus or no
+#                                homes file.
 #                                AUTO:START/END blocks are skipped (a file with `<!-- shared: -->`
 #                                markers holds none of the spliced text). A lexical floor: only
 #                                near-verbatim lines are found, paraphrase is not.
@@ -726,10 +728,12 @@ fi
 # --- dups: the same instruction written in two homes ---------------------------
 #
 # The corpus is doc_set plus the skills, roles and prompts that also carry rules. A pair is
-# two lines in different files, so a file restating itself never counts. Rank is the plan
-# arch-instructions-one-home.md order, provisional until P2 moves it to instruction-homes.json.
+# two lines in different files, so a file restating itself never counts. Kinds, globs and
+# ranks come from instruction-homes.json in the agentctl conf (private repo); the global file
+# is whatever $CLAUDE_MD resolves to, as everywhere else in this script.
+AGENTCTL_DIR="${AGENTCTL_CONF:-$HOME/.config/agentctl}"
 dup_corpus() {
-  local conf="${AGENTCTL_CONF:-$HOME/.config/agentctl}"
+  local conf="$AGENTCTL_DIR"
   { doc_set
     { find -L "$SKILLS" -maxdepth 3 -name SKILL.md
       find -L "$conf/roles" -maxdepth 1 -name '*.role'
@@ -741,26 +745,28 @@ dup_corpus() {
 if [ "$MODE" = dups ]; then
   nfiles=$(dup_corpus | wc -l)
   [ "$nfiles" -gt 0 ] || { echo "skill-drift --dups: no docs found - refusing to report success" >&2; exit 2; }
-  dup_corpus | DUPS_GLOBAL="$(readlink -e "$CLAUDE_MD" 2>/dev/null)" DUPS_JSON="$DOCS_JSON" DUPS_HOME="$HOME" python3 -c '
-import json, os, re, sys
+  homes="$AGENTCTL_DIR/instruction-homes.json"
+  [ -r "$homes" ] || { echo "skill-drift --dups: no $homes - no rank to pick a winner by" >&2; exit 2; }
+  dup_corpus | DUPS_GLOBAL="$(readlink -e "$CLAUDE_MD" 2>/dev/null)" DUPS_HOMES="$homes" DUPS_JSON="$DOCS_JSON" DUPS_HOME="$HOME" python3 -c '
+import fnmatch, json, os, re, sys
 from collections import Counter, defaultdict
 
 # Provisional, confidence low: revisit after two weeks of nightly counts (plan arch-instructions-one-home).
 MIN_CHARS, MIN_TOKENS, N, THRESHOLD = 90, 5, 4, 0.3
 HOME, GLOBAL = os.environ["DUPS_HOME"], os.environ.get("DUPS_GLOBAL", "")
+try:
+    KINDS = [(k["kind"], int(k["rank"]), list(k["globs"])) for k in json.load(open(os.environ["DUPS_HOMES"]))["kinds"]]
+    RANK = dict((k, r) for k, r, _ in KINDS)
+    assert KINDS and "global" in RANK
+except (OSError, ValueError, KeyError, TypeError, AssertionError) as e:
+    print("skill-drift --dups: %s is not a homes file (kinds with kind, rank, globs; one named global): %r" % (os.environ["DUPS_HOMES"], e), file=sys.stderr)
+    sys.exit(2)
 
 def home(path):
-    """(home, rank). The order is policy: global beats shared docs beats repo and runbooks
-    beats skills and roles beats lessons beats memory and anchors."""
-    if path == GLOBAL: return "global", 6
-    if "/.local/src/docs/" in path: return "shared-docs", 5
-    if "/.config/agentctl/roles/" in path or "/.config/agentctl/prompts/" in path: return "role", 3
-    if "/.config/agentctl/" in path: return "runbook", 4
-    if os.path.basename(path) in ("AGENTS.md", "CLAUDE.md"): return "repo", 4
-    if os.path.basename(path) == "SKILL.md": return "skill", 3
-    if "/.agent/lessons/" in path: return "lessons", 2
-    if "/.agent/anchors/" in path: return "anchor", 1
-    if "/memory/" in path: return "memory", 1
+    """(home, rank): the global file is $CLAUDE_MD; any other path takes the first kind whose glob matches."""
+    if path == GLOBAL: return "global", RANK["global"]
+    for kind, rank, globs in KINDS:
+        if any(fnmatch.fnmatchcase(path, g) for g in globs): return kind, rank
     return "other", 0
 
 nread = 0
