@@ -15,6 +15,9 @@ use crate::text::{cap, headline, TITLE_MAX};
 
 pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
 
+/// The harness of an item, or a session, that names none.
+pub const HARNESS_DEFAULT: &str = "claude";
+
 /// The store's states, in the order every surface shows them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -111,6 +114,20 @@ impl Item {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|v| !v.is_empty())
+    }
+
+    /// The harness the item runs on: its `agent` (claude, claude-lazer, lazer-reserve, opencode,
+    /// codex), else claude, the rule `agentctl-session-outcomes` stamps a session's harness by.
+    pub fn harness(&self) -> &str {
+        self.extra_str("agent").unwrap_or(HARNESS_DEFAULT)
+    }
+
+    /// The harness and, when the item names one, its model alias: `codex sol`, `opencode glm`.
+    pub fn harness_label(&self) -> String {
+        match self.extra_str("model") {
+            Some(m) => format!("{} {m}", self.harness()),
+            None => self.harness().to_string(),
+        }
     }
 
     /// What the item cost, in dollars: the metered gateway cost when it has one, else the
@@ -776,6 +793,33 @@ mod tests {
         assert_eq!(q.hold.as_deref(), Some("after w"));
         assert_eq!(d.status.as_deref(), Some("cancelled"));
         assert_eq!(d.pr.as_deref(), Some("812"));
+    }
+
+    #[test]
+    fn the_harness_is_the_items_agent_else_claude_with_its_model_alias() {
+        let item = |kv: &[(&str, &str)]| Item {
+            extra: kv
+                .iter()
+                .map(|(k, v)| (k.to_string(), Value::from(*v)))
+                .collect(),
+            ..Item::default()
+        };
+        assert_eq!(
+            item(&[]).harness(),
+            "claude",
+            "an item naming no agent ran claude"
+        );
+        assert_eq!(item(&[("agent", " ")]).harness_label(), "claude");
+        assert_eq!(
+            item(&[("agent", "codex"), ("model", "sol")]).harness_label(),
+            "codex sol"
+        );
+        let lazer = item(&[("agent", "claude-lazer"), ("model", "")]);
+        assert_eq!(
+            (lazer.harness(), lazer.harness_label().as_str()),
+            ("claude-lazer", "claude-lazer"),
+            "an empty model adds nothing"
+        );
     }
 
     #[test]

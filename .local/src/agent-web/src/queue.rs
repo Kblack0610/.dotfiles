@@ -53,11 +53,12 @@ pub async fn list() -> ApiResult<Json<Vec<serde_json::Value>>> {
     .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
-/// The item as agent-queue printed it plus what a row shows: `cost` (dollars, absent when
-/// unknown), the PR's label and link, `pr_merged` (the merge was recorded), `unproven`, and for a
+/// The item as agent-queue printed it plus what a row shows: `harness` (`Item::harness_label`,
+/// `claude` when the item names no agent), `cost` (dollars, absent when unknown), the PR's label and link, `pr_merged` (the merge was recorded), `unproven`, and for a
 /// done item its `day`, its `day_label` and that day's `day_total` line, so the page sums and words nothing.
 fn item_view(i: &Item, days: &BTreeMap<String, DayTotal>) -> serde_json::Value {
     let mut v = serde_json::to_value(i).unwrap_or_default();
+    v["harness"] = i.harness_label().into();
     if let Some(c) = i.cost() {
         v["cost"] = c.into();
         v["cost_label"] = hub_queue::money(c).into();
@@ -262,7 +263,7 @@ mod tests {
             "\n",
             r#"{"slug":"b","state":"done","status":"ok","cost_usd":"0","finished":"2026-11-06T12:05:00Z","task":"t"}"#,
             "\n",
-            r#"{"slug":"c","state":"queued","task":"t"}"#,
+            r#"{"slug":"c","state":"queued","agent":"codex","model":"sol","task":"t"}"#,
             "\n",
         ));
         let days = hub_queue::done_days(&items);
@@ -287,6 +288,10 @@ mod tests {
         assert_eq!(b["unproven"], true, "no PR and no report");
         assert!(b.get("cost").is_none(), "a ledger 0 is not a price");
         assert!(c.get("day").is_none() && c.get("unproven").is_none());
+        assert_eq!(
+            (a["harness"].as_str(), c["harness"].as_str()),
+            (Some("claude"), Some("codex sol"))
+        );
     }
 
     #[test]

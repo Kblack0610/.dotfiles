@@ -365,7 +365,7 @@ SH
   assert_equal "$(printf '%s\n' "$output" | jq -s 'length > 0')" true
   assert_equal "$(printf '%s\n' "$output" | jq -s 'map(.updated_epoch) == (map(.updated_epoch) | sort | reverse)')" true
   assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0] | keys')" \
-    '["account","cost_usd","project","prs_merged","prs_open","session_id","title","updated_epoch"]'
+    '["account","cost_usd","harness","project","prs_merged","prs_open","session_id","title","updated_epoch"]'
   SO_NOW=$((SO_NOW + 3651 * 86400)) run "$SUBJECT" ended --days 1
   assert_success
   assert_output ''
