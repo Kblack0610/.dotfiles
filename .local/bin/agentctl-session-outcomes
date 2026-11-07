@@ -30,7 +30,7 @@
 # Claude config dir its transcript lives under, as `agent-usage burn` names it.
 # An opencode or Codex session has no registry row, so its line comes from opencode's DB
 # (so_opencode_rows) or Codex's rollout files (so_codex_rows).
-# `harness` on a line is claude, or what the queue item it worked says. A gateway item's real spend
+# `harness` on a line is what its launcher recorded (HARNESS_DEF). A gateway item's real spend
 # goes on the item as gateway_cost_usd (gateway_push).
 # Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR
 # SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES SO_PROJECT_MAP SO_ROADMAP.
@@ -109,24 +109,22 @@ roadmap_index() {
   [ -s "$3" ] || printf '{}' > "$3"
 }
 
-# The one harness rule, for `run` and `backfill-harness`: what the row says (opencode, codex), else
-# what the Claude Code transcript ran on. The Stop hook records `base_url` (ANTHROPIC_BASE_URL): set,
-# it ran on the gateway, so it is the item's gateway harness or claude-lazer (a hand `cl --lazer`);
-# null or another endpoint, it ran on an account, so claude whatever the item later spilled to. The
-# gateway is the harness map's `gateway.url` ($gwurl); with no map, no endpoint is the gateway. A row from before that
-# field takes the item's agent, except a gateway agent on a transcript under another account's config
-# dir: a gateway run unsets CLAUDE_CONFIG_DIR, so it is always under ~/.claude.
+# The one harness rule, for `run` and `backfill-harness`: what the row says. The launcher records it:
+# opencode and codex rows carry theirs, and the Stop hook stores the session's AGENT_HARNESS
+# (claude-lazer exports it, fleet-dispatch names the gateway harness it starts), claude when unset.
+# A row from before that record keeps the harness an earlier `run` gave the session, else takes the
+# item's agent, except a gateway agent (one the harness map launches by claude-lazer) on a transcript
+# under another account's config dir: a gateway run unsets CLAUDE_CONFIG_DIR, so it is always under
+# ~/.claude.
 HARNESS_DEF='def harness_of($i):
-  ($i.agent // "claude") as $a | ($a == "claude-lazer" or $a == "lazer-reserve") as $gw
-  | .harness // (
-      if has("base_url") then (
-        if $gwurl == "" or ((.base_url // "") | startswith($gwurl) | not) then "claude"
-        elif $gw then $a else "claude-lazer" end)
-      elif $gw and ((.account // (.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a)) // "claude") != "claude" then "claude"
+  ($i.agent // "claude") as $a
+  | .harness // .prior_harness // (
+      if ($hm.harnesses[$a].launcher // $a) == "claude-lazer"
+         and ((.account // (.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a)) // "claude") != "claude" then "claude"
       else $a end);'
 
-# The gateway's URL from the harness map, or nothing when there is no map.
-gateway_url() { [ -r "$HARNESSES" ] && jq -r '.gateway.url // empty' "$HARNESSES"; }
+# The harness map as JSON, {} when there is none.
+harness_map() { { [ -r "$HARNESSES" ] && jq -c . "$HARNESSES"; } 2>/dev/null || echo '{}'; }
 
 die_stalled() {
   echo "$NAME: $1" >&2
@@ -166,7 +164,7 @@ cmd_run() {
       | group_by(.session_id) | map(max_by(.updated)) | .[]
       | . + {final: (($now - .updated) >= $days * 86400),
              rework_settled: (($now - .updated) >= $vdays * 86400),
-             prior_class: ($s[.session_id].class // null)}
+             prior_class: ($s[.session_id].class // null), prior_harness: ($s[.session_id].harness // null)}
       | select(($s[.session_id] // null) as $p
                | $all or $p == null
                  or $p.updated_epoch != .updated
@@ -184,7 +182,7 @@ cmd_run() {
   local queue_note=""
   queue_index "$work/queue.json" || queue_note="; queue unreadable, harness read as claude, items unknown"
   roadmap_index "$work/queue.json" "$work/due.jsonl" "$work/roadmap.json"
-  jq -c --slurpfile q "$work/queue.json" --slurpfile rm "$work/roadmap.json" --arg gwurl "$(gateway_url)" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
+  jq -c --slurpfile q "$work/queue.json" --slurpfile rm "$work/roadmap.json" --argjson hm "$(harness_map)" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
       | .items = ($i.items // [])
       | .class = (([($i.refs // [])[] | ($rm[0][.row] // {}) as $r
                    | {size: ($r.size // null), kind: ((($r.kind // "") | select(. != "")) // (.type | select(. != "")) // null)}
@@ -868,7 +866,7 @@ cmd_backfill_harness() {
     cp -p "$f" "$f.bak" || { echo "$NAME: no .bak for $f; left alone" >&2; continue; }
     next="$f.next"  # beside $f, so the mv below is a rename on one filesystem
     if ! { cp -p "$f.bak" "$next" &&
-        jq -c --slurpfile q "$work/queue.json" --arg gwurl "$(gateway_url)" "$HARNESS_DEF"'
+        jq -c --slurpfile q "$work/queue.json" --argjson hm "$(harness_map)" "$HARNESS_DEF"'
           if .harness == null then .harness = harness_of($q[0][.session_id // ""] // {}) else . end' "$f.bak" > "$next" &&
         [ "$(jq -cs 'map(del(.harness))' "$f.bak")" = "$(jq -cs 'map(del(.harness))' "$next")" ]; }; then
       rm -f "$next" "$f.bak"; echo "$NAME: $f would change beyond harness; left alone" >&2; continue
