@@ -387,8 +387,21 @@ fn file_date(path: &Path) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()
 }
 
-/// The morning briefing's file stem under today's refs dir. Written by `agentctl-briefing`.
+/// The morning briefing's file stem under a day's refs dir. Written by `agentctl-briefing`.
 const BRIEFING: &str = "briefing";
+
+/// A day's refs note `stem` (BRIEFING, SHIPPED): its file and the wikilink target that names it.
+fn refs_note(p: &Profile, day: &str, stem: &str) -> (std::path::PathBuf, String) {
+    (
+        p.refs.join(day).join(format!("{stem}.md")),
+        format!("{}/{day}/{stem}", p.refs_rel),
+    )
+}
+
+/// The day's briefing: its file and the wikilink target that names it.
+pub(crate) fn briefing(p: &Profile, day: &str) -> (std::path::PathBuf, String) {
+    refs_note(p, day, BRIEFING)
+}
 /// The day log's file stem under today's refs dir. Written by `day-log`.
 const SHIPPED: &str = "shipped";
 
@@ -398,7 +411,7 @@ const SHIPPED: &str = "shipped";
 /// headline, then what the knowledge engine compiled since the last note listed it.
 fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
     let today_s = today.format("%Y-%m-%d").to_string();
-    let briefing = p.refs.join(&today_s).join(format!("{BRIEFING}.md"));
+    let (briefing, link) = briefing(p, &today_s);
     let mut s = String::from("## Morning\n");
     // The outbox is cross-org like the board, so linked against the vault, and made when
     // missing so the link opens a file the sweep reads. The inbox page is this org's own.
@@ -418,7 +431,6 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
                 .find(|l| l.starts_with("As of "))
                 .unwrap_or("")
                 .trim();
-            let link = format!("{}/{today_s}/{BRIEFING}", p.refs_rel);
             if headline.is_empty() {
                 s.push_str(&format!("- Briefing: [[{link}]]\n"));
             } else {
@@ -437,8 +449,8 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
         Err(_) => s.push_str("- Briefing: not written yet\n"),
     }
     // The day log, as one line: its first sentence is the count of what merged.
-    if let Ok(text) = fs::read_to_string(p.refs.join(&today_s).join(format!("{SHIPPED}.md"))) {
-        let link = format!("{}/{today_s}/{SHIPPED}", p.refs_rel);
+    let (shipped, link) = refs_note(p, &today_s, SHIPPED);
+    if let Ok(text) = fs::read_to_string(shipped) {
         let first = text
             .lines()
             .map(str::trim)
