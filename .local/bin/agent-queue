@@ -380,9 +380,10 @@ item_rec() {
 # for a held queued item, hold. `ready` is when the item could first start: queued, or the finish of
 # its `after:` item when that came later, so a deliberate hold is not read as waiting; none while an
 # `after:` still holds it. The one rule for an item's wait: `stats` medians it, the hub shows it.
-# An item with no weight line gets item_weight's answer, so every reader sees a weight. `row` is the "<project>:<key>" of the sheet row the item closes on merge: its
-# own story (`row:`, file_story), else the board row it was promoted from (`from: board:`). The
-# one definition agent-land and fleet-dispatch read, whatever the item's origin.
+# An item with no weight line gets item_weight's answer, so every reader sees a weight.
+# `row` is the "<project>:<key>" of the sheet row the item closes on merge: its own story (`row:`,
+# file_story), else the board row it was promoted from (`from: board:`). The one definition
+# agent-land and fleet-dispatch read, whatever the item's origin.
 ITEM_JQ='split("\u001e")[:-1] | map(split("\u001f")[:-1] as $f
   | ([range(6; $f | length; 2) as $i | {($f[$i]): $f[$i + 1]}] | add // {})
     + {weight: $f[4], state: $f[0], file: $f[1], task: $f[2]}
