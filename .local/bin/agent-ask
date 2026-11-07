@@ -1072,7 +1072,7 @@ named_option() {
     o="${opt,,}"
     if [[ "$o" =~ ^[[:alnum:]]$ ]]; then
       tail="($|[^[:alnum:][:space:]]|[[:space:]]+([^[:alnum:][:space:]]|$list([^[:alnum:]]|$)))"
-      [[ "$t" =~ (^|[^[:alnum:]])$o$tail || "$t" =~ (^|[^[:alnum:]])$list[[:space:]]+$o([^[:alnum:]]|$) ]] && hits+=("$opt")
+      [[ "$t" =~ (^|[^[:alnum:]])$o$tail || "$t" =~ (^|[^[:alnum:]])${list}[[:space:]]+${o}([^[:alnum:]]|$) ]] && hits+=("$opt")
     else
       [ -n "$opt" ] && grep -qiwF -- "$opt" <<< "$2" && hits+=("$opt")
     fi
