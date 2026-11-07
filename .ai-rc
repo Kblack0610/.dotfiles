@@ -93,7 +93,7 @@ cl() {
         --acct=*) acct=(--acct "${1#--acct=}"); shift ;;
         --lazer)
             shift
-            ( unset CLAUDE_CONFIG_DIR
+            ( unset CLAUDE_CONFIG_DIR AGENT_HARNESS   # a hand start is claude-lazer, not a parent pane's harness
               command -v claude_telemetry_launch >/dev/null 2>&1 \
                   && export OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)"
               claude-lazer --dangerously-skip-permissions "$@" )
