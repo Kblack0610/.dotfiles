@@ -26,8 +26,12 @@
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), re-page the human on escalated rows left unchanged (remind_sample),
 #                          then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
-#                          once, when nothing is working), 2 if it could not refresh. A fleet-lead pass runs it first
+#                          once, when nothing is working), 2 if it could not refresh. Each due line is followed by
+#                          the skill and section that answer it (the routing table). A fleet-lead pass runs it first
 #                          and ends the turn on 1, so a quiet pass costs one call
+#   fleet-shepherd route "<due line>"
+#                          the skill and section that answer the line, tab separated, from the routing
+#                          table .config/fleet-lead/functions.tsv
 #   fleet-shepherd due     print what a pass would move, one line each; exit 0 if anything,
 #                          1 if nothing. Reads the document and the blocked sample as they
 #                          are, writes nothing
@@ -761,6 +765,20 @@ receipts() {
   printf '%s%s' "$owed" "$out" | sed '/^$/d'
 }
 
+# cmd_check_routed: cmd_check's lines, each followed by the skill and section that answers it, for a
+# pass run by hand (a runner pass has them in its prompt). `run` takes the bare lines from cmd_check.
+cmd_check_routed() {
+  local out rc=0 l skill section
+  out="$(cmd_check)" || rc=$?
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    printf '%s\n' "$l"
+    IFS=$'\t' read -r skill section < <(line_route "$l")
+    printf '  -> %s (~/.claude/skills/%s/SKILL.md), "%s"\n' "$skill" "$skill" "$section"
+  done <<< "$out"
+  return "$rc"
+}
+
 # last_working -> 0 when the pass running now is still at it.
 last_working() {
   local id st
@@ -779,23 +797,43 @@ cmd_skip() {
   cmd_log "skipped: $(due_key "$1"): ${2//[$'\t\n']/ }"   # a receipt the rundown shows, like a nudge
 }
 
-# line_role <due line> -> the role skill that answers it (fleet-lead, "Route"); finding, infra
-# and improve lines are fleet-lead's own.
-line_role() {
-  case "${1#unhandled: }" in
-    nudge*|escalate*|overdue*|"nightly red"*|"shared red"*) echo shepherd ;;
-    pace:*|blocked:*|limit:*) echo fleet-pace ;;
-    "watch: queue-starved "*) echo fleet-dispatch ;;   # its "Starved queue" self-heal
-    *) echo fleet-lead ;;
-  esac
+# The routing table: function -> skill -> due-line prefixes -> section, one row per function.
+# `.config/fleet-lead/functions.tsv` in the checkout this script lives in (a stow link resolves to it),
+# so there is no second copy to drift; a missing table fails loudly.
+FUNCTIONS="${FLEET_LEAD_FUNCTIONS:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/fleet-lead/functions.tsv}"
+
+# line_route <due line> -> "<skill>\t<section>" of the first table row with a prefix the line starts
+# with (after any `unhandled: `); a bare * prefix is the default row.
+line_route() {
+  [ -r "$FUNCTIONS" ] || die "no routing table at $FUNCTIONS"
+  awk -F'\t' -v l="${1#unhandled: }" '/^#/ || $3 == "" { next }
+    { n = split($3, p, "|"); for (i = 1; i <= n; i++) if (p[i] == "*" || index(l, p[i]) == 1) { print $2 "\t" $4; exit } }' "$FUNCTIONS"
+}
+
+# line_role <due line> -> the skill that answers it; the default row is the lead's own.
+line_role() { line_route "$1" | cut -f1; }
+
+# lead_skill -> the skill of the default row: the one running the pass, so it is never loaded as a role.
+lead_skill() { awk -F'\t' '!/^#/ && $3 ~ /(^|\|)\*($|\|)/ { print $2; exit }' "$FUNCTIONS"; }
+
+# routes_for <due lines> -> "<skill>\t<section>", once each, for the role skills these lines need.
+routes_for() {
+  local lead l
+  lead="$(lead_skill)"
+  while IFS= read -r l; do [ -z "$l" ] || line_route "$l"; done <<< "$1" | awk -F'\t' -v lead="$lead" '$1 != lead && !seen[$0]++'
 }
 
 # The role skills a pass needs for these due lines, so a headless pass loads only those.
 roles_for() {
   local r
-  r="$(while IFS= read -r l; do [ -z "$l" ] || line_role "$l"; done <<< "$1" \
-    | grep -vx fleet-lead | sort -u -r | paste -sd, - | sed 's/,/, /g')"
+  r="$(routes_for "$1" | cut -f1 | sort -u -r | paste -sd, - | sed 's/,/, /g')"
   printf '%s\n' "${r:-none}"
+}
+
+# route_block <due lines> -> where to read for each role: the skill's path and the section. A headless
+# pass lists no unlisted skill (`paths:`), so the path is what it opens.
+route_block() {
+  routes_for "$1" | awk -F'\t' '{ printf "  %s: ~/.claude/skills/%s/SKILL.md, \"%s\"\n", $1, $1, $2 }'
 }
 
 # --- the pass: an interactive claude in one tmux pane, a fresh one per run --------------------
@@ -911,7 +949,11 @@ score_pass() {
 
 # pass_prompt <due> [handover file]
 pass_prompt() {
-  printf '/fleet-lead pass\n\nRoles due: %s\n\nDue this pass (from fleet-shepherd due):\n%s\n' "$(roles_for "$1")" "${1:-nothing}"
+  local roles
+  roles="$(roles_for "$1")"
+  printf '/fleet-lead pass\n\nRoles due: %s\n' "$roles"
+  [ "$roles" = none ] || printf 'Read, per role:\n%s\n' "$(route_block "$1")"
+  printf '\nDue this pass (from fleet-shepherd due):\n%s\n' "${1:-nothing}"
   [ -z "${2:-}" ] || printf '\nHandover: %s\n' "$2"
 }
 
@@ -1261,7 +1303,8 @@ case "${1:-}" in
   stuck) cmd_stuck ;;
   open)  shift; cmd_open "$@" ;;
   passes) shift; cmd_passes "$@" ;;
-  check) cmd_check ;;
+  check) cmd_check_routed ;;
+  route) shift; line_route "${1:-}" ;;
   due)   cmd_due ;;
   infra) cmd_infra ;;
   holds) cmd_holds ;;
