@@ -2576,7 +2576,7 @@ impl App {
                 "b/B cut  w window  / query  s sort  S asc/desc  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
-                "type a query (tier:3 state:failed -who:x), Enter applies, Esc drops it".into()
+                "type a query (kind:session state:failed -who:x), Enter applies, Esc drops it".into()
             }
             Tab::Fleet if self.fleet_page.is_some() => format!(
                 "[ ] runner  Esc all runners  j/k PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
@@ -4547,8 +4547,14 @@ mod tests {
         assert!(a.fleet_table.is_default());
         assert!(screen(&mut a, 160, 40).contains("dream"));
 
-        // f steps the state chip (held leads), s the sort.
+        // f steps the chips: the kinds (lead first), then the states (held leads them); s the sort.
         a.handle(ch('f'));
+        assert_eq!(a.fleet_table.view.state, "lead");
+        let s = screen(&mut a, 160, 40);
+        assert!(s.contains("dream") && !s.contains("idle-one"), "{s}");
+        for _ in 0..6 {
+            a.handle(ch('f'));
+        }
         assert_eq!(a.fleet_table.view.state, "held");
         a.handle(ch('f'));
         assert_eq!(a.fleet_table.view.state, "failed");
@@ -4556,7 +4562,7 @@ mod tests {
         assert!(s.contains("dream") && !s.contains("idle-one"), "{s}");
         a.handle(ch('x'));
         a.handle(ch('s'));
-        assert_eq!(a.fleet_table.view.sort, "tier");
+        assert_eq!(a.fleet_table.view.sort, "kind");
     }
 
     #[test]

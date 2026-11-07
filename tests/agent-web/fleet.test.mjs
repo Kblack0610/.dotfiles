@@ -93,22 +93,22 @@ test("Log lists every answer verdict with why and what you did, and a filter nar
 
 // The table: hub_core::fleet::who's rows, and the Summary hub_core::table sends beside them.
 const st = vm.runInContext("st", ctx);
-const wrow = (o) => ({ tier: 3, who: "dotfiles-agent-11", opens: "session", key: "lab/dotfiles-agent-11:1", state: "working", since: 1793942000, doing: "editing fleet.js", under: "dispatch dotfiles", project: "dotfiles", parent: "fleet-dispatch", kids: 0, ...o });
-const COLS = ["tier", "who", "state", "since", "doing", "under", "project"];
+const wrow = (o) => ({ tier: 3, kind: "session", who: "dotfiles-agent-11", opens: "session", key: "lab/dotfiles-agent-11:1", state: "working", since: 1793942000, for: "fleet tab plan", doing: "editing fleet.js", under: "dispatch dotfiles", project: "dotfiles", parent: "fleet-dispatch", kids: 0, ...o });
+const COLS = ["kind", "who", "state", "since", "for", "doing", "under", "project"];
 const table = (o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total: 4, shown: 4,
-  states: [{ name: "all", n: 4 }, { name: "failed", n: 1 }, { name: "working", n: 2 }],
+  states: [{ name: "all", n: 4 }, { name: "lead", n: 1 }, { name: "observe", n: 1 }, { name: "session", n: 2 }, { name: "failed", n: 1 }, { name: "working", n: 2 }],
   columns: COLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "tier", on: null, clear: "", values: [{ value: "1", n: 1, q: "tier:1" }] }],
+  facets: [{ key: "kind", on: null, clear: "", values: [{ value: "lead", n: 1, q: "kind:lead" }] }],
   ...o,
 });
 const people = [
-  wrow({ tier: 1, who: "fleet-dispatch", opens: "runner", key: "fleet-dispatch", state: "idle", doing: "next 14:00", under: "2 sessions", parent: null, kids: 2 }),
-  wrow({ tier: 2, who: "ask-judge", opens: "runner", key: "ask-judge", state: "failed", doing: "no gateway route", under: "called by dream", parent: null, project: "observe" }),
+  wrow({ tier: 1, kind: "lead", who: "fleet-dispatch", opens: "runner", key: "fleet-dispatch", state: "idle", for: "Starts a one-shot session per small agent row", doing: "next 14:00", under: "2 sessions", parent: null, kids: 2 }),
+  wrow({ tier: 2, kind: "observe", who: "ask-judge", opens: "runner", key: "ask-judge", state: "failed", for: "Answers asks it can", doing: "no gateway route (2 failed 24h)", under: "called by dream", parent: null, project: "" }),
   wrow({}),
   wrow({ who: "dotfiles-agent-12", key: "lab/dotfiles-agent-12:1", state: "needs you" }),
 ];
-const fleetData = { ...data, who: people, table: table(), hidden: 0 };
+const fleetData = { ...data, who: people, legend: ["lead runs or watches the sessions", "observe reports"], table: table(), hidden: 0 };
 
 test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Sessions record, a runner its page", () => {
   vm.runInContext("st", ctx).tab = "fleet";
@@ -116,7 +116,7 @@ test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Ses
   f.data = fleetData;
   ctx.renderFleet();
   const h = box.innerHTML;
-  assert.match(h, /<tr class="wr" data-href="#fleet\/fleet-dispatch"><td class="n"><button class="thsort" data-fold="fleet-dispatch" aria-expanded="true"[^>]*>v<\/button> 1<\/td>/);
+  assert.match(h, /<tr class="wr" data-href="#fleet\/fleet-dispatch"><td class="muted"><button class="thsort" data-fold="fleet-dispatch" aria-expanded="true"[^>]*>v<\/button> lead<\/td>/);
   assert.match(h, /<a href="#fleet\/ask-judge">ask-judge<\/a>/);
   assert.match(h, /<tr class="wr" data-href="#sessions\/lab%2Fdotfiles-agent-11%3A1">/);
   assert.match(h, /<td class="bad">failed<\/td>/);
@@ -143,7 +143,23 @@ test("the header draws every hub-core column and the bar is the shared one", () 
   assert.doesNotMatch(h, /\$ 24h/, "a runner's spend is on Costs");
   assert.match(h, /spend on <a href="#costs\?by=runner&w=24h">Costs<\/a>/);
   assert.match(h, /id="fleet-q" data-tsearch/);
-  assert.match(h, /<option value="tier:1">1 \(1\)<\/option>/);
+  assert.match(h, /<option value="kind:lead">lead \(1\)<\/option>/);
+});
+
+test("KIND and FOR say what each row is and why it is deployed, under the lanes.tsv legend", () => {
+  vm.runInContext("st", ctx).tab = "fleet";
+  vm.runInContext("fst", ctx).data = fleetData;
+  doc.activeElement = null;
+  ctx.renderFleet();
+  const h = box.innerHTML;
+  assert.match(h, /<div class="muted legend">lead runs or watches the sessions \| observe reports<\/div>/);
+  assert.match(h, /<td class="muted">observe<\/td><td><a href="#fleet\/ask-judge">ask-judge<\/a>/);
+  assert.match(h, /<td class="wrap">Starts a one-shot session per small agent row<\/td>/);
+  assert.match(h, /<td class="wrap">no gateway route \(2 failed 24h\)<\/td>/);
+  for (const k of ["lead", "observe", "session"]) assert.match(h, new RegExp(`data-ts="${k}">${k} <span class="n">`));
+  vm.runInContext("fst", ctx).data = { ...fleetData, legend: [] };
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<div class="muted legend">-<\/div>/, "no lanes.tsv reads as -");
 });
 
 test("a click on a row sets the hash, a click on a link or the fold button does not", () => {
