@@ -311,10 +311,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
             };
             match a.state {
                 "unreadable" => notes.push(note("usage unreadable", p.bad())),
-                "stale" => notes.push(note(
-                    "stale, claude-acct's textfile is over an hour old",
-                    p.bad(),
-                )),
+                "stale" => notes.push(note(burn::STALE_NOTE, p.bad())),
                 "idle" => notes.push(note("idle, token refreshes on launch", p.dim())),
                 _ => {
                     let pc = |v: Option<f64>| v.map_or("-".into(), |v| format!("{}%", v.floor()));
@@ -325,7 +322,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
                         pc(a.used).into(),
                         pc(a.gone).into(),
                         match &a.room {
-                            Some(r) => cell(r.text(), if r.ok { p.good() } else { p.bad() }),
+                            Some(r) => cell(r.text.clone(), if r.ok { p.good() } else { p.bad() }),
                             None => cell("-", p.dim()),
                         },
                         cell(
@@ -690,6 +687,9 @@ mod tests {
                 all.push(series(n, k, v));
             }
         }
+        let mut age = series("", "textfile_age_seconds", 120.0);
+        age.labels.remove("account");
+        all.push(age);
         let drip = hub_core::burn::Drip {
             hour: 15,
             day: 349,

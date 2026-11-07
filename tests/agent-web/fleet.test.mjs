@@ -185,20 +185,26 @@ test("typing repaints the rows and leaves the search box in place", () => {
   doc.activeElement = null;
 });
 
-test("the accounts table prints claude-acct's room verdict, and a stale textfile says stale", () => {
-  const sr = (name, account, value, extra = {}) => ({ labels: { __name__: `claude_account_${name}`, ...(account ? { account } : {}), ...extra }, value });
-  const rows = (age) => [
-    sr("week_used_percent", "main", 22), sr("week_gone_percent", "main", 16), sr("room", "main", 0), sr("room_headroom_points", "main", -1),
-    sr("room_reason", "main", 1, { reason: "pace" }),
-    sr("week_used_percent", "alt", 18), sr("week_gone_percent", "alt", 16), sr("room", "alt", 1), sr("room_headroom_points", "alt", 3),
-    sr("room_reason", "alt", 1, { reason: "ok" }),
-    sr("textfile_age_seconds", "", age),
-  ];
-  const h = ctx.accountsTable({ accounts: rows(120) });
+test("the accounts table prints the server's room verdict, and a stale textfile says stale per account", () => {
+  const sr = (name, account, value) => ({ labels: { __name__: `claude_account_${name}`, account }, value });
+  const inst = {
+    accounts: [
+      sr("week_used_percent", "main", 22), sr("week_gone_percent", "main", 16),
+      sr("week_used_percent", "alt", 18), sr("week_gone_percent", "alt", 16),
+    ],
+    rooms: {
+      main: { ok: false, reasons: ["pace"], headroom: -1, text: "no room: pace 1 point past the line" },
+      alt: { ok: true, reasons: [], headroom: 3, text: "room, 3 points spare" },
+    },
+  };
+  const h = ctx.accountsTable(inst);
   assert.match(h, /no room: pace 1 point past the line/);
   assert.match(h, /room, 3 points spare/);
   assert.doesNotMatch(h, />(over|under)</, "over and under are not words of the verdict");
-  assert.match(ctx.accountsTable({ accounts: rows(7300) }), /<div class="bad">stale: claude-acct's textfile is 2h old/);
+  const stale = ctx.accountsTable({ ...inst, accounts_stale: "stale, claude-acct's textfile is not fresh" });
+  assert.match(stale, /<td>main<\/td><td class="bad">stale, claude-acct/);
+  assert.match(stale, /<td>alt<\/td><td class="bad">stale, claude-acct/);
+  assert.doesNotMatch(stale, /22%/, "old figures are not shown");
 });
 
 test("a search with no hit says so, and an unconfigured fleet says where runners are", () => {

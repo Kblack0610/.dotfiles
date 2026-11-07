@@ -42,7 +42,7 @@ const MODEL_COLS = ["model", "harness", "sessions", "tokens", "cost", "share", "
 // The table's columns are every Line column in Line::COLUMNS order, whatever the cut.
 const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src", "pr", "at"];
 // hub_core::burn::Burn as serialized: the 2026-11-06 fleet, 3.3x over what the weeks carry.
-const acct = (name, o) => ({ name, state: "ok", room: { ok: true, reasons: [], headroom: 4.2 }, live: 0, used: 10, gone: 5, burn: 1, sustain: 2, over: 0.5, idle_at: 1794003600, burn_at: null, run_out: null, resets: 1794200000, ...o });
+const acct = (name, o) => ({ name, state: "ok", room: { ok: true, reasons: [], headroom: 4.2, text: "room, 4 points spare" }, live: 0, used: 10, gone: 5, burn: 1, sustain: 2, over: 0.5, idle_at: 1794003600, burn_at: null, run_out: null, resets: 1794200000, ...o });
 const burn = (o = {}) => ({
   at: 1794000000, level: "bad", head: "4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live, carries ~11", drip_line: "15 started in 1h, 349 in 24h",
   accounts: [acct("alt", { live: 9, used: 55, gone: 25, burn: 1.04, sustain: 0.36 }), acct("bnb", { live: 17, used: 7, gone: 1, burn: 1.97, sustain: 0.56 }), acct("main", { live: 13, used: 33, gone: 12, burn: 1.51, sustain: 0.45, burn_at: 1794000600 })],
@@ -178,17 +178,17 @@ test("an account claude-acct could not read is named, and no data says so", () =
 });
 
 test("the room column prints claude-acct's verdict: points past the line, the reserve, a stale textfile", () => {
-  const room = (o) => ({ ok: false, reasons: ["pace"], headroom: -19.5, ...o });
-  const b = burn({ accounts: [
+  const room = (o) => ({ ok: false, reasons: ["pace"], headroom: -19.5, text: "no room: pace 20 points past the line", ...o });
+  const b = burn({ stale: "stale, claude-acct's textfile is not fresh", accounts: [
     acct("a", { room: room({}) }),
-    acct("b", { room: room({ reasons: ["reserve", "five_hour"], headroom: 3 }) }),
+    acct("b", { room: room({ reasons: ["reserve", "five_hour"], headroom: 3, text: "no room: reserve, five hour" }) }),
     acct("c", { state: "stale" }),
     acct("d", { room: null }),
   ] });
   const h = show(board({ burn: b }));
   assert.match(h, /<td class="bad">no room: pace 20 points past the line<\/td>/);
   assert.match(h, /<td class="bad">no room: reserve, five hour<\/td>/);
-  assert.match(h, /<td>c<\/td><td colspan="10" class="bad">stale, claude-acct's textfile is over an hour old<\/td>/);
+  assert.match(h, /<td>c<\/td><td colspan="10" class="bad">stale, claude-acct&#39;s textfile is not fresh<\/td>/);
   assert.match(h, /<td class="muted">-<\/td>/, "an account with no published verdict shows none, never a derived one");
 });
 

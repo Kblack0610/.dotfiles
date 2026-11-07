@@ -8,7 +8,7 @@
 #   claude-acct run [--acct <name>] [claude args]
 #                             # exec claude on the account pick returns: the one launcher for a
 #                             # human start (`cl`, `sessions` resume, the fzf picker, the hub)
-#   claude-acct status [--json]   # week used, week gone, pace, run-out, live sessions, 24h dollars
+#   claude-acct status [--json]   # week used, week gone, run-out, live sessions, 24h dollars
 #                                 # burn and sustainable points an hour, when it is back on pace,
 #                                 # and one fleet line: live, burn against what the weeks carry
 #   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter

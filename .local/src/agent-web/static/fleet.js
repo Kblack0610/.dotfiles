@@ -50,26 +50,23 @@ const cut = (s, n = FLEET_CLIP) => (s.length > n ? `<span title="${esc(s)}">${es
 // dollars are the OTel list-price estimate, for scale.
 function accountsTable(inst) {
   const by = {};
-  const reasons = {};
-  let age = null;
   for (const s of inst.accounts || []) {
     const key = s.labels.__name__.replace("claude_account_", "");
-    if (key === "textfile_age_seconds") age = +s.value;
-    else if (!s.labels.account) continue;
-    else if (key === "room_reason") (reasons[s.labels.account] = reasons[s.labels.account] || []).push(s.labels.reason);
-    else (by[s.labels.account] = by[s.labels.account] || {})[key] = +s.value;
+    if (!s.labels.account || key === "room_reason") continue;
+    (by[s.labels.account] = by[s.labels.account] || {})[key] = +s.value;
   }
   const names = Object.keys(by).sort();
   if (!names.length) return `<div class="empty">no data</div>`;
-  // Past an hour the textfile is not what is true now (hub_core::burn::STALE_AFTER_SECS).
-  if (age != null && age >= 3600) return `<div class="bad">stale: claude-acct's textfile is ${Math.floor(age / 3600)}h old (timer claude-acct-usage)</div>`;
+  // Past an hour the textfile is not what is true now: the server says so (hub_core::burn::STALE_NOTE)
+  // and the rows carry that in place of figures.
+  if (inst.accounts_stale) return `<table class="tbl">${names.map((n) => `<tr><td>${esc(n)}</td><td class="bad">${esc(inst.accounts_stale)}</td></tr>`).join("")}</table>`;
   return `<table class="tbl"><tr><th>account</th><th>week used</th><th class="n">used</th><th class="n">week gone</th><th>room</th><th>runs out</th><th>resets</th><th class="n">5h</th><th>5h resets</th><th class="n">live</th><th class="n">24h</th></tr>${names.map((n) => {
     const a = by[n];
     if (a.read_ok === 0) return `<tr><td>${esc(n)}</td><td colspan="10" class="bad">usage unreadable</td></tr>`;
     if (a.week_used_percent == null) return `<tr><td>${esc(n)}</td><td colspan="10" class="muted">idle, token refreshes on launch</td></tr>`;
-    const room = a.room == null ? null : { ok: a.room === 1, reasons: (reasons[n] || []).filter((x) => x !== "ok"), headroom: a.room_headroom_points ?? null };
+    const room = (inst.rooms || {})[n];
     const over = room != null && !room.ok;
-    return `<tr><td>${esc(n)}</td><td class="m">${meter(a.week_used_percent / 100, over ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${Math.floor(a.week_used_percent)}%</td><td class="n">${Math.floor(a.week_gone_percent)}%</td><td class="${room == null ? "muted" : over ? "bad" : "ok"}">${room == null ? "-" : esc(roomText(room))}</td><td>${when(a.run_out_timestamp_seconds)}</td><td>${when(a.resets_timestamp_seconds)}</td><td class="n">${a.five_hour_percent == null ? "-" : Math.floor(a.five_hour_percent) + "%"}</td><td>${when(a.five_hour_resets_timestamp_seconds)}</td><td class="n">${a.live_sessions ?? "-"}</td><td class="n">${usd(a.cost_24h_usd)}</td></tr>`;
+    return `<tr><td>${esc(n)}</td><td class="m">${meter(a.week_used_percent / 100, over ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${Math.floor(a.week_used_percent)}%</td><td class="n">${Math.floor(a.week_gone_percent)}%</td><td class="${room == null ? "muted" : over ? "bad" : "ok"}">${room == null ? "-" : esc(room.text)}</td><td>${when(a.run_out_timestamp_seconds)}</td><td>${when(a.resets_timestamp_seconds)}</td><td class="n">${a.five_hour_percent == null ? "-" : Math.floor(a.five_hour_percent) + "%"}</td><td>${when(a.five_hour_resets_timestamp_seconds)}</td><td class="n">${a.live_sessions ?? "-"}</td><td class="n">${usd(a.cost_24h_usd)}</td></tr>`;
   }).join("")}</table>`;
 }
 

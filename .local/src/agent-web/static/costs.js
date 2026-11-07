@@ -98,14 +98,14 @@ function burnPace(b) {
 // A back-on-pace cell: on pace, the time, or after the reset (Account::on_pace).
 const burnCell = (a, t, at) => (!(a.used > a.gone) || (t != null && t <= at) ? "on pace" : t == null ? "after reset" : when(t));
 
-function burnRow(a, at) {
+function burnRow(a, at, note) {
   if (a.state === "unreadable") return `<tr><td>${esc(a.name)}</td><td colspan="10" class="bad">usage unreadable</td></tr>`;
-  if (a.state === "stale") return `<tr><td>${esc(a.name)}</td><td colspan="10" class="bad">stale, claude-acct's textfile is over an hour old</td></tr>`;
+  if (a.state === "stale") return `<tr><td>${esc(a.name)}</td><td colspan="10" class="bad">${esc(note)}</td></tr>`;
   if (a.state === "idle") return `<tr><td>${esc(a.name)}</td><td colspan="10" class="muted">idle, token refreshes on launch</td></tr>`;
   const pc = (v) => (v == null ? "-" : Math.floor(v) + "%");
   const rate = (v) => (v == null ? "-" : v.toFixed(2));
   return `<tr><td>${esc(a.name)}</td><td class="n">${a.live}</td><td class="n">${pc(a.used)}</td><td class="n">${pc(a.gone)}</td>` +
-    `<td class="${a.room ? (a.room.ok ? "ok" : "bad") : "muted"}">${a.room ? esc(roomText(a.room)) : "-"}</td>` +
+    `<td class="${a.room ? (a.room.ok ? "ok" : "bad") : "muted"}">${a.room ? esc(a.room.text) : "-"}</td>` +
     `<td class="n${a.sustain != null && a.burn > a.sustain ? " warn" : ""}">${rate(a.burn)}</td><td class="n">${rate(a.sustain)}</td>` +
     `<td>${burnCell(a, a.burn_at, at)}</td><td>${burnCell(a, a.idle_at, at)}</td><td>${when(a.run_out)}</td><td>${when(a.resets)}</td></tr>`;
 }
@@ -121,7 +121,7 @@ function costsBurn(d) {
     `<div class="panel"><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
     `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
     `<div class="panel scroll"><table class="tbl"><tr><th>account</th>${["live", "used", "gone"].map(th).join("")}<th>room</th>${["burn/h", "keeps/h"].map(th).join("")}<th>at burn</th><th>if idle</th><th>runs out</th><th>resets</th></tr>` +
-    b.accounts.map((a) => burnRow(a, b.at)).join("") + `</table></div>` +
+    b.accounts.map((a) => burnRow(a, b.at, b.stale)).join("") + `</table></div>` +
     `<div class="muted fold">burn/h is the last 6h rate per live session; keeps/h is what the rest of the week can carry to the reset.</div></details>`;
 }
 

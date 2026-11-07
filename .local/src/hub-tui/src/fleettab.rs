@@ -433,11 +433,16 @@ fn accounts(series: &[Series], p: Palette, now: i64, w: usize) -> Vec<Line<'stat
         return vec![Line::styled("no data", p.dim())];
     }
     if read.stale() {
-        let hours = (read.age.unwrap_or_default() / 3600.0).floor();
-        return vec![Line::styled(
-            format!("stale: claude-acct's textfile is {hours}h old (timer claude-acct-usage)"),
-            p.bad(),
-        )];
+        return by
+            .keys()
+            .map(|n| {
+                Line::from(vec![
+                    Span::styled(n.to_string(), p.head()),
+                    Span::raw("  "),
+                    Span::styled(hub_core::burn::STALE_NOTE, p.bad()),
+                ])
+            })
+            .collect();
     }
     let when = |v: Option<&f64>| v.map_or("-".into(), |t| clock(*t as i64, now));
     let pc = |v: Option<&f64>| v.map_or("-".into(), |v| format!("{}%", v.floor()));
@@ -459,7 +464,7 @@ fn accounts(series: &[Series], p: Palette, now: i64, w: usize) -> Vec<Line<'stat
                 pc(a.get("week_used_percent")).into(),
                 pc(a.get("week_gone_percent")).into(),
                 match &room {
-                    Some(r) => cell(r.text(), if r.ok { p.good() } else { p.bad() }),
+                    Some(r) => cell(r.text.clone(), if r.ok { p.good() } else { p.bad() }),
                     None => cell("-", p.dim()),
                 },
                 when(a.get("run_out_timestamp_seconds")).into(),
@@ -1209,6 +1214,12 @@ pub mod tests {
         }
     }
 
+    fn age(secs: f64) -> Series {
+        let mut s = series("textfile_age_seconds", "", secs);
+        s.labels.remove("account");
+        s
+    }
+
     fn reason(account: &str, why: &str) -> Series {
         let mut s = series("room_reason", account, 1.0);
         s.labels.insert("reason".into(), why.into());
@@ -1220,6 +1231,8 @@ pub mod tests {
             tokens: None,
             at: NOW,
             errors: vec!["prometheus: timed out".into()],
+            rooms: Default::default(),
+            accounts_stale: None,
             accounts: vec![
                 series("week_used_percent", "main", 42.7),
                 series("week_gone_percent", "main", 50.0),
@@ -1228,6 +1241,7 @@ pub mod tests {
                 reason("main", "pace"),
                 series("cost_24h_usd", "main", 12.5),
                 series("read_ok", "alt", 0.0),
+                age(120.0),
             ],
             workers: vec![
                 Worker {
@@ -1438,13 +1452,15 @@ pub mod tests {
     #[test]
     fn a_stale_textfile_says_stale_instead_of_old_numbers() {
         let mut f = fixture();
-        let mut age = series("textfile_age_seconds", "", 7300.0);
-        age.labels.remove("account");
-        f.accounts.push(age);
-        let s = plain(&accounts(&f.accounts, Palette::default(), NOW, 160)[0]);
+        f.accounts
+            .retain(|x| !x.label("__name__").ends_with("textfile_age_seconds"));
+        f.accounts.push(age(7300.0));
+        let lines = accounts(&f.accounts, Palette::default(), NOW, 160);
+        let s = plain(&lines[0]);
+        assert!(s.starts_with("alt  stale, claude-acct's textfile"), "{s}");
         assert!(
-            s.starts_with("stale: claude-acct's textfile is 2h old"),
-            "{s}"
+            !lines.iter().map(plain).any(|l| l.contains("42%")),
+            "old figures are not shown"
         );
     }
 

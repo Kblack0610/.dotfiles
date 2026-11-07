@@ -48,10 +48,10 @@ const CALLS_TAIL: u64 = 2 << 20;
 const RECENT_CALLS: usize = 5;
 
 /// claude-acct's textfile, however old, plus one series for its age (`claude_account_textfile_age_seconds`,
-/// no account label) so a surface says "stale" past `burn::STALE_AFTER_SECS` instead of showing
+/// no account label, the oldest file when a second host exposes one) so a surface says "stale" past `burn::STALE_AFTER_SECS` instead of showing
 /// nothing; no `max without`, which would drop the metric names the table reads. An empty
 /// answer makes the table say no data.
-pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} or label_replace(min(time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"}), "__name__", "claude_account_textfile_age_seconds", "", "")"#;
+pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} or label_replace(max(time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"}), "__name__", "claude_account_textfile_age_seconds", "", "")"#;
 
 #[derive(Clone, Debug)]
 pub struct Paths {
@@ -102,6 +102,11 @@ pub struct Fleet {
     pub errors: Vec<String>,
     /// claude-acct's series as Prometheus gave them.
     pub accounts: Vec<Series>,
+    /// Each account's published room verdict, worded by `burn::Room`, for a surface that cannot
+    /// call Rust (agent-web).
+    pub rooms: std::collections::BTreeMap<String, crate::burn::Room>,
+    /// Set when the textfile is not fresh: the surfaces say this in place of the figures.
+    pub accounts_stale: Option<&'static str>,
     pub workers: Vec<Worker>,
     /// The Fleet tab's one table: runners by tier, then the live sessions (`who`).
     pub who: Vec<who::Who>,
@@ -508,6 +513,14 @@ impl Fleet {
     /// Lay a Prometheus read over the file read.
     pub fn apply(&mut self, p: &Prom) {
         self.accounts = p.accounts.clone();
+        let read = crate::burn::Accounts::read(&self.accounts);
+        self.rooms = read
+            .by
+            .keys()
+            .filter_map(|n| read.room(n).map(|r| (n.to_string(), r)))
+            .collect();
+        self.accounts_stale =
+            (!read.by.is_empty() && read.stale()).then_some(crate::burn::STALE_NOTE);
         self.errors.extend(p.errors.iter().cloned());
     }
 }

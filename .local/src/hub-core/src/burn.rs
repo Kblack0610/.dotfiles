@@ -28,11 +28,24 @@ pub struct Room {
     pub reasons: Vec<String>,
     /// Points under the line after slack, negative past it; None without a week.
     pub headroom: Option<f64>,
+    /// `words` of it, so a surface that cannot call Rust prints the same sentence.
+    pub text: String,
 }
 
 impl Room {
+    pub fn new(ok: bool, reasons: Vec<String>, headroom: Option<f64>) -> Self {
+        let mut r = Room {
+            ok,
+            reasons,
+            headroom,
+            text: String::new(),
+        };
+        r.text = r.words();
+        r
+    }
+
     /// The verdict in words: `room, 4 points spare`, or `no room: pace 20 points past the line`.
-    pub fn text(&self) -> String {
+    fn words(&self) -> String {
         let pts = |n: f64| format!("{n} point{}", if n == 1.0 { "" } else { "s" });
         if self.ok {
             return match self.headroom {
@@ -48,6 +61,9 @@ impl Room {
                 (r, _) => r.replace('_', " "),
             })
             .collect();
+        if why.is_empty() {
+            return "no room".into();
+        }
         format!("no room: {}", why.join(", "))
     }
 }
@@ -60,6 +76,9 @@ pub struct Accounts<'a> {
     pub reasons: BTreeMap<&'a str, Vec<String>>,
     pub age: Option<f64>,
 }
+
+/// What a surface says in place of an account's figures when the textfile is not fresh.
+pub const STALE_NOTE: &str = "stale, claude-acct's textfile is not fresh (timer claude-acct-usage)";
 
 /// A textfile older than this is not read (claude-acct's timer runs every 15 minutes).
 pub const STALE_AFTER_SECS: f64 = 3600.0;
@@ -90,9 +109,10 @@ impl<'a> Accounts<'a> {
         a
     }
 
-    /// The textfile is older than an hour: what it says is not what is true now.
+    /// The textfile is older than an hour, or Prometheus has no age for it: what it says cannot
+    /// be shown as what is true now.
     pub fn stale(&self) -> bool {
-        self.age.is_some_and(|age| age >= STALE_AFTER_SECS)
+        self.age.is_none_or(|age| age >= STALE_AFTER_SECS)
     }
 
     /// The account's published verdict; None when it has not published one (unreadable, or an
@@ -107,11 +127,8 @@ impl<'a> Accounts<'a> {
             .filter(|r| *r != "ok")
             .cloned()
             .collect();
-        Some(Room {
-            ok: *ok == 1.0,
-            reasons,
-            headroom: self.by[account].get("room_headroom_points").copied(),
-        })
+        let headroom = self.by[account].get("room_headroom_points").copied();
+        Some(Room::new(*ok == 1.0, reasons, headroom))
     }
 }
 
@@ -123,7 +140,7 @@ pub const AGE_KEY: &str = "textfile_age_seconds";
 pub struct Account {
     pub name: String,
     /// `ok`, `unreadable` (claude-acct could not read its usage), `idle` (no usage yet) or
-    /// `stale` (its textfile is over an hour old).
+    /// `stale` (its textfile is not fresh).
     pub state: &'static str,
     /// claude-acct's verdict on an automatic start.
     pub room: Option<Room>,
@@ -150,16 +167,16 @@ impl Account {
         self.sustain.is_some_and(|s| self.burn > s)
     }
 
-    /// Used is ahead of the week gone, so it has pace to win back.
-    pub fn is_ahead(&self) -> bool {
-        matches!((self.used, self.gone), (Some(u), Some(g)) if u > g)
+    /// claude-acct publishes the time it is back on pace as now when it already is, so the
+    /// verdict is read off the series and not derived again from used and gone.
+    pub fn is_ahead(&self, now: i64) -> bool {
+        !self.idle_at.is_some_and(|t| t <= now)
     }
 
     /// A back-on-pace cell: `on pace` when it already is, the time, or `after reset` when the
     /// reset puts it on pace first. The surface words the time.
     pub fn on_pace(&self, at: Option<i64>, now: i64, time: &dyn Fn(i64) -> String) -> String {
         match at {
-            _ if !self.is_ahead() => "on pace".into(),
             Some(t) if t <= now => "on pace".into(),
             Some(t) => time(t),
             None => "after reset".into(),
@@ -211,6 +228,8 @@ pub struct Burn {
     /// `bad` when the fleet is over, `warn` when one account is or none can be read, `ok`, or
     /// `none` with no data.
     pub level: &'static str,
+    /// Set when the textfile is not fresh: every figure below is then old, and the surfaces say so.
+    pub stale: Option<&'static str>,
     pub accounts: Vec<Account>,
     pub fleet: Fleet,
     pub drip: Drip,
@@ -290,6 +309,7 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
     };
     let mut b = Burn {
         at,
+        stale: stale.then_some(STALE_NOTE),
         level,
         accounts,
         fleet,
@@ -305,6 +325,9 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
 impl Burn {
     /// The headline: burn against what the weeks carry, and the sessions going.
     fn head_text(&self) -> String {
+        if let Some(note) = self.stale {
+            return note.into();
+        }
         let f = &self.fleet;
         let ratio = f.over.map_or(String::new(), |o| {
             format!(
@@ -325,7 +348,7 @@ impl Burn {
         let ahead: Vec<&Account> = self
             .accounts
             .iter()
-            .filter(|a| a.state == "ok" && a.is_ahead())
+            .filter(|a| a.state == "ok" && a.is_ahead(self.at))
             .collect();
         let mut at_burn: Vec<(String, i64)> = ahead
             .iter()
@@ -345,6 +368,9 @@ impl Burn {
     /// the way the surface does.
     pub fn pace_text(&self, time: &dyn Fn(i64) -> String) -> String {
         let p = &self.pace;
+        if self.stale.is_some() {
+            return "unknown, the figures are stale".into();
+        }
         if p.on_pace {
             return "every account is on pace".into();
         }
@@ -421,7 +447,16 @@ mod tests {
                 out.push(series(n, k, v));
             }
         }
+        out.push(age(120.0));
         out
+    }
+
+    /// The fixture with its textfile age replaced.
+    fn aged(secs: f64) -> Vec<Series> {
+        let mut s = fixture();
+        s.retain(|x| !x.label("__name__").ends_with(AGE_KEY));
+        s.push(age(secs));
+        s
     }
 
     fn quiet() -> Drip {
@@ -528,6 +563,11 @@ mod tests {
             if x.label("__name__").ends_with("week_gone_percent") {
                 x.value = Some(90.0);
             }
+            if x.label("__name__")
+                .ends_with("on_pace_idle_timestamp_seconds")
+            {
+                x.value = Some(NOW as f64);
+            }
         }
         assert_eq!(
             build(&s, None, quiet(), NOW).pace_text(&|t| t.to_string()),
@@ -595,10 +635,10 @@ mod tests {
                 .clone()
                 .unwrap()
         };
-        assert_eq!(room("a").text(), "no room: pace 1 point past the line");
-        assert_eq!(room("b").text(), "room, 3 points spare");
+        assert_eq!(room("a").text, "no room: pace 1 point past the line");
+        assert_eq!(room("b").text, "room, 3 points spare");
         assert!(room("b").reasons.is_empty(), "ok is not a refusal");
-        assert_eq!(room("c").text(), "no room: reserve, five hour");
+        assert_eq!(room("c").text, "no room: reserve, five hour");
     }
 
     #[test]
@@ -609,14 +649,10 @@ mod tests {
 
     #[test]
     fn a_textfile_over_an_hour_old_is_stale_not_a_green_fleet() {
-        let mut all = fixture();
-        all.push(age(7300.0));
-        let b = build(&all, None, Drip::default(), NOW);
+        let b = build(&aged(7300.0), None, Drip::default(), NOW);
         assert!(b.accounts.iter().all(|a| a.state == "stale"));
         assert_eq!(b.level, "warn");
-        let mut fresh = fixture();
-        fresh.push(age(120.0));
-        assert!(build(&fresh, None, Drip::default(), NOW)
+        assert!(build(&fixture(), None, Drip::default(), NOW)
             .accounts
             .iter()
             .all(|a| a.state == "ok"));
