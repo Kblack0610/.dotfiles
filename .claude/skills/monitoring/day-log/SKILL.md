@@ -1,7 +1,7 @@
 ---
 name: day-log
 description: >-
-  What a day shipped: merged PRs by area, the work item behind each, what waits on the human, spend. Use for "what got done today", "what merged this week", "what moved this week", "what landed #N". ETAs are fleet-bench.
+  What a day shipped: merged PRs by area, the work item behind each, what waits on the human, spend. Use for "what got done today", "daily summary", "what merged this week", "what moved this week", "what landed #N". ETAs are fleet-bench.
 metadata:
   category: monitoring
   tags: [fleet, prs, daily, history, observability]

@@ -165,3 +165,32 @@ skill_fixture() {
   assert_success
   assert_line '| alpha | observe | `daily` | - | - | - | none | purpose of alpha |'
 }
+
+@test "agentctl skill prints the conf's SKILL, and --dangling lists the ones that resolve to nothing" {
+  skill_fixture
+  sed -i '/^NAME=/a SKILL=dream' "$HOME/.config/agentctl/agents/alpha.conf"
+  run "$AGENTCTL_BIN" skill alpha
+  assert_success
+  assert_output dream
+  run "$AGENTCTL_BIN" skill beta
+  assert_success
+  assert_output ''
+  run "$AGENTCTL_BIN" skill --dangling
+  assert_success
+  assert_output ''
+  sed -i 's/^SKILL=.*/SKILL=no-such-skill/' "$HOME/.config/agentctl/agents/alpha.conf"
+  run "$AGENTCTL_BIN" skill --dangling
+  assert_failure
+  assert_output 'alpha SKILL=no-such-skill'
+  run "$AGENTCTL_BIN" skill no-such-agent
+  assert_failure
+}
+
+@test "AGENTCTL_CONF_DIR points agentctl at another conf dir" {
+  mkdir -p "$BATS_TEST_TMPDIR/other"
+  printf 'NAME=zed\nKIND=oneshot\nLANE=learn\nCOMMAND=true\nDESCRIPTION=z\nEFFECT=none\n' > "$BATS_TEST_TMPDIR/other/zed.conf"
+  AGENTCTL_CONF_DIR="$BATS_TEST_TMPDIR/other" run "$AGENTCTL_BIN" list --md
+  assert_success
+  assert_line --regexp '^\| zed \|'
+  refute_output --partial '| alpha |'
+}
