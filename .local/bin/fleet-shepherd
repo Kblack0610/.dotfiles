@@ -694,6 +694,7 @@ settle() {
 # Exit 1 is nothing to move. Exit 2 is a document it could not refresh or read, which is not
 # a quiet fleet.
 cmd_check() {
+  require_table
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   fleet-sessions --write >/dev/null || { echo "$NAME: fleet-sessions --write failed" >&2; return 2; }
   blocked_sample
@@ -769,6 +770,7 @@ receipts() {
 # pass run by hand (a runner pass has them in its prompt). `run` takes the bare lines from cmd_check.
 cmd_check_routed() {
   local out rc=0 l skill section
+  require_table
   out="$(cmd_check)" || rc=$?
   while IFS= read -r l; do
     [ -n "$l" ] || continue
@@ -802,12 +804,22 @@ cmd_skip() {
 # so there is no second copy to drift; a missing table fails loudly.
 FUNCTIONS="${FLEET_LEAD_FUNCTIONS:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/fleet-lead/functions.tsv}"
 
+# require_table: exit 2 unless the table is readable and has a default row. Called at the top level of
+# every verb that routes, because a die inside a $( ) subshell would only empty the role column.
+require_table() {
+  [ -r "$FUNCTIONS" ] || die "no routing table at $FUNCTIONS"
+  [ -n "$(lead_skill)" ] || die "routing table $FUNCTIONS has no default (*) row"
+}
+
 # line_route <due line> -> "<skill>\t<section>" of the first table row with a prefix the line starts
-# with (after any `unhandled: `); a bare * prefix is the default row.
+# with (after any `unhandled: `), ending at a word boundary (so `nudge` does not claim `nudged`); a bare *
+# prefix is the default row. The line goes in by ENVIRON: awk -v would read backslashes in it.
 line_route() {
   [ -r "$FUNCTIONS" ] || die "no routing table at $FUNCTIONS"
-  awk -F'\t' -v l="${1#unhandled: }" '/^#/ || $3 == "" { next }
-    { n = split($3, p, "|"); for (i = 1; i <= n; i++) if (p[i] == "*" || index(l, p[i]) == 1) { print $2 "\t" $4; exit } }' "$FUNCTIONS"
+  ROUTE_LINE="${1#unhandled: }" awk -F'\t' 'BEGIN { l = ENVIRON["ROUTE_LINE"] } /^#/ || $3 == "" { next }
+    { n = split($3, p, "|"); for (i = 1; i <= n; i++) {
+        rest = substr(l, length(p[i]) + 1)
+        if (p[i] == "*" || (index(l, p[i]) == 1 && rest !~ /^[A-Za-z0-9_-]/)) { print $2 "\t" $4; exit } } }' "$FUNCTIONS"
 }
 
 # line_role <due line> -> the skill that answers it; the default row is the lead's own.
@@ -823,17 +835,17 @@ routes_for() {
   while IFS= read -r l; do [ -z "$l" ] || line_route "$l"; done <<< "$1" | awk -F'\t' -v lead="$lead" '$1 != lead && !seen[$0]++'
 }
 
-# The role skills a pass needs for these due lines, so a headless pass loads only those.
+# roles_for <routes_for output> -> the role skills a pass needs, so a headless pass loads only those.
 roles_for() {
   local r
-  r="$(routes_for "$1" | cut -f1 | sort -u -r | paste -sd, - | sed 's/,/, /g')"
+  r="$(cut -f1 <<<"$1" | sort -u -r | paste -sd, - | sed 's/,/, /g')"
   printf '%s\n' "${r:-none}"
 }
 
-# route_block <due lines> -> where to read for each role: the skill's path and the section. A headless
+# route_block <routes_for output> -> where to read for each role: the skill's path and the section. A headless
 # pass lists no unlisted skill (`paths:`), so the path is what it opens.
 route_block() {
-  routes_for "$1" | awk -F'\t' '{ printf "  %s: ~/.claude/skills/%s/SKILL.md, \"%s\"\n", $1, $1, $2 }'
+  awk -F'\t' '{ printf "  %s: ~/.claude/skills/%s/SKILL.md, \"%s\"\n", $1, $1, $2 }' <<<"$1"
 }
 
 # --- the pass: an interactive claude in one tmux pane, a fresh one per run --------------------
@@ -949,10 +961,11 @@ score_pass() {
 
 # pass_prompt <due> [handover file]
 pass_prompt() {
-  local roles
-  roles="$(roles_for "$1")"
+  local routes roles
+  routes="$(routes_for "$1")"
+  roles="$(roles_for "$routes")"
   printf '/fleet-lead pass\n\nRoles due: %s\n' "$roles"
-  [ "$roles" = none ] || printf 'Read, per role:\n%s\n' "$(route_block "$1")"
+  [ "$roles" = none ] || printf 'Read, per role:\n%s\n' "$(route_block "$routes")"
   printf '\nDue this pass (from fleet-shepherd due):\n%s\n' "${1:-nothing}"
   [ -z "${2:-}" ] || printf '\nHandover: %s\n' "$2"
 }
@@ -1131,6 +1144,7 @@ replace_pass() {
 # server, a page sent in the background) inherits it and holds it past the run. The loser starts
 # nothing; a run that hangs holding it shows as `stuck` (no pass started in STUCK_MIN).
 run_locked() {
+  require_table
   [ -z "${FLEET_SHEPHERD_RUN_LOCKED:-}" ] || { cmd_run; return; }
   [ -n "$SERVER" ] || die "no world declares session $SESSION"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"

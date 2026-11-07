@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
 # .config/fleet-lead/functions.tsv is the one routing table: function -> skill -> due-line prefixes ->
 # section. This guard fails when (a) a row names a skill that does not exist or a section that is not a
-# heading in it, (b) a monitoring/fleet-* skill has no row, (c) a due line fleet-shepherd emits lands on
-# the default row instead of an explicit prefix, or (d) the script and the table disagree about where a
-# line goes. Each check takes the table as an argument, so the negative controls run it on a broken copy.
+# heading in it, (b) a monitoring/fleet-* skill has no row, (c) a due line fleet-shepherd emits matches no
+# explicit prefix (checked with the default row removed) or reaches the wrong skill, or (d) the invoked
+# column disagrees with the prefixes column. Each check takes the table as an argument, so the negative controls run it on a broken copy.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -32,13 +32,9 @@ fleet-lead\tinfra: k3s domain red
 fleet-lead\twatch: home-k3s-node-disk tripped (urgent)'
 }
 
-# skill_file <skill> -> its SKILL.md in either repo, empty when none
-skill_file() {
-  local d
-  for d in "$REPO_ROOT/.claude/skills" "$HOME/.dotfiles-private/.claude/skills"; do
-    ls "$d"/*/"$1"/SKILL.md 2>/dev/null | head -n 1
-  done | head -n 1
-}
+# skill_file <skill> -> its SKILL.md in this repo, empty when none. The fleet family lives here, so CI
+# and a laptop with the private overlay agree.
+skill_file() { ls "$REPO_ROOT"/.claude/skills/*/"$1"/SKILL.md 2>/dev/null | head -n 1; }
 
 # rows <table> -> function, skill, section, one per line, split by \037
 rows() { awk -F'\t' '!/^#/ && NF { print $1 "\037" $2 "\037" $4 }' "$1"; }
@@ -65,8 +61,19 @@ check_family() { # <table>: every monitoring/fleet-* skill has a row
 # routed <table> <line> -> the skill the script sends the line to
 routed() { FLEET_LEAD_FUNCTIONS="$1" "$SH" route "$2" | cut -f1; }
 
-check_emitted() { # <table>
-  local skill line bad=0 got
+check_invoked() { # <table>: "due line" exactly when the row has prefixes
+  local fn prefixes invoked bad=0
+  while IFS=$'\037' read -r fn prefixes invoked; do
+    if [ -n "$prefixes" ]; then want="due line"; else want="by name"; fi
+    [ "$invoked" = "$want" ] || { echo "$fn: invoked is '$invoked', want '$want'"; bad=1; }
+  done < <(awk -F'\t' '!/^#/ && NF { print $1 "\037" $3 "\037" $5 }' "$1")
+  return "$bad"
+}
+
+check_emitted() { # <table>: with the default row removed, so a line must match an explicit prefix
+  local skill line bad=0 got t="$BATS_TEST_TMPDIR/explicit.tsv"
+  sed 's/|\*\t/\t/' "$1" > "$t"
+  set -- "$t"
   while IFS=$'\t' read -r skill line; do
     got="$(routed "$1" "$line")"
     [ "$got" = "$skill" ] || { echo "'$line' -> '$got', want $skill"; bad=1; }
@@ -81,6 +88,11 @@ check_emitted() { # <table>
 
 @test "every monitoring/fleet-* skill has a row" {
   run check_family "$TABLE"
+  assert_success
+}
+
+@test "the invoked column agrees with the prefixes column" {
+  run check_invoked "$TABLE"
   assert_success
 }
 
@@ -120,6 +132,21 @@ check_emitted() { # <table>
   run check_emitted "$t"
   assert_failure
   assert_output --partial 'want fleet-pace'
+  # a due line that only the default row would catch fails, even though the default is the right skill
+  sed 's/finding|infra:|watch:|improve:/finding|infra:|improve:/' "$TABLE" > "$t"
+  run check_emitted "$t"
+  assert_failure
+  assert_output --partial 'watch: home-k3s-node-disk'
+  sed 's/\tby name$/\tdue line/' "$TABLE" > "$t"
+  run check_invoked "$t"
+  assert_failure
+}
+
+@test "a prefix ends at a word boundary" {
+  run routed "$TABLE" 'nudged x'
+  assert_output fleet-lead
+  run routed "$TABLE" 'watch: queue-starved-foo tripped (high)'
+  assert_output fleet-lead
 }
 
 @test "negative control: a missing heading or skill fails the row check" {
@@ -138,6 +165,14 @@ check_emitted() { # <table>
   FLEET_LEAD_FUNCTIONS="$BATS_TEST_TMPDIR/absent.tsv" run "$SH" route 'nudge DONE: x'
   assert_failure
   assert_output --partial 'no routing table'
+  # and every verb that routes refuses up front, not with an empty role column
+  FLEET_LEAD_FUNCTIONS="$BATS_TEST_TMPDIR/absent.tsv" run "$SH" check
+  assert_failure 2
+  assert_output --partial 'no routing table'
+  grep -v '|\*' "$TABLE" > "$BATS_TEST_TMPDIR/nodefault.tsv"
+  FLEET_LEAD_FUNCTIONS="$BATS_TEST_TMPDIR/nodefault.tsv" run "$SH" check
+  assert_failure 2
+  assert_output --partial 'no default'
 }
 
 @test "with no override the script reads the table in its own checkout" {
