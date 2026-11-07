@@ -311,6 +311,10 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
             };
             match a.state {
                 "unreadable" => notes.push(note("usage unreadable", p.bad())),
+                "stale" => notes.push(note(
+                    "stale, claude-acct's textfile is over an hour old",
+                    p.bad(),
+                )),
                 "idle" => notes.push(note("idle, token refreshes on launch", p.dim())),
                 _ => {
                     let pc = |v: Option<f64>| v.map_or("-".into(), |v| format!("{}%", v.floor()));
@@ -320,6 +324,10 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
                         a.live.to_string().into(),
                         pc(a.used).into(),
                         pc(a.gone).into(),
+                        match &a.room {
+                            Some(r) => cell(r.text(), if r.ok { p.good() } else { p.bad() }),
+                            None => cell("-", p.dim()),
+                        },
                         cell(
                             rate(Some(a.burn)),
                             if a.is_over() { p.warn() } else { Style::new() },
@@ -338,12 +346,12 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     out.extend(
         Table {
             header: vec![
-                "ACCOUNT", "LIVE", "USED", "GONE", "BURN/H", "KEEPS/H", "AT BURN", "IF IDLE",
-                "RUNS OUT", "RESETS",
+                "ACCOUNT", "LIVE", "USED", "GONE", "ROOM", "BURN/H", "KEEPS/H", "AT BURN",
+                "IF IDLE", "RUNS OUT", "RESETS",
             ],
             rows,
-            keep: vec![0, 4, 5, 1, 6, 7, 2, 3, 8, 9],
-            right: vec![1, 2, 3, 4, 5],
+            keep: vec![0, 4, 5, 6, 1, 7, 8, 2, 3, 9, 10],
+            right: vec![1, 2, 3, 5, 6],
             ..Default::default()
         }
         .fit(w, p.head()),

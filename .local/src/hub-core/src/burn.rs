@@ -17,12 +17,116 @@ pub const RATE_Q: &str = "claude_fleet_session_rate_points_per_hour";
 /// Where the dispatch hold is explained (the Sessions header), as `SPEND_BADGE` names Costs.
 pub const HOLD_BADGE: &str = "5 Sessions";
 
+/// claude-acct's published answer on an automatic start for one account (its `room` object in
+/// the textfile: `claude_account_room`, `_room_headroom_points`, `_room_reason`). The hub prints
+/// it and never re-derives it from used and gone.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Room {
+    pub ok: bool,
+    /// Every refusal that holds the account now (`unread`, `capped`, `reserve`, `pace`,
+    /// `five_hour`, `committed`); empty when it has room.
+    pub reasons: Vec<String>,
+    /// Points under the line after slack, negative past it; None without a week.
+    pub headroom: Option<f64>,
+}
+
+impl Room {
+    /// The verdict in words: `room, 4 points spare`, or `no room: pace 20 points past the line`.
+    pub fn text(&self) -> String {
+        let pts = |n: f64| format!("{n} point{}", if n == 1.0 { "" } else { "s" });
+        if self.ok {
+            return match self.headroom {
+                Some(h) if h >= 0.0 => format!("room, {} spare", pts(h.floor())),
+                _ => "room".into(),
+            };
+        }
+        let why: Vec<String> = self
+            .reasons
+            .iter()
+            .map(|r| match (r.as_str(), self.headroom) {
+                ("pace", Some(h)) => format!("pace {} past the line", pts((-h).ceil())),
+                (r, _) => r.replace('_', " "),
+            })
+            .collect();
+        format!("no room: {}", why.join(", "))
+    }
+}
+
+/// The account series by account, keyed by metric name, and the age in seconds of the textfile
+/// they came from (None when the age series is missing). The room reasons are labels of one
+/// metric, so they are collected apart.
+pub struct Accounts<'a> {
+    pub by: BTreeMap<&'a str, BTreeMap<&'a str, f64>>,
+    pub reasons: BTreeMap<&'a str, Vec<String>>,
+    pub age: Option<f64>,
+}
+
+/// A textfile older than this is not read (claude-acct's timer runs every 15 minutes).
+pub const STALE_AFTER_SECS: f64 = 3600.0;
+
+impl<'a> Accounts<'a> {
+    pub fn read(series: &'a [Series]) -> Self {
+        let mut a = Accounts {
+            by: BTreeMap::new(),
+            reasons: BTreeMap::new(),
+            age: None,
+        };
+        for s in series {
+            let key = s.label("__name__").trim_start_matches("claude_account_");
+            let Some(v) = s.value else { continue };
+            match (key, s.label("account")) {
+                (AGE_KEY, _) => a.age = Some(v),
+                (_, "") => {}
+                ("room_reason", acc) => a
+                    .reasons
+                    .entry(acc)
+                    .or_default()
+                    .push(s.label("reason").to_string()),
+                (_, acc) => {
+                    a.by.entry(acc).or_default().insert(key, v);
+                }
+            }
+        }
+        a
+    }
+
+    /// The textfile is older than an hour: what it says is not what is true now.
+    pub fn stale(&self) -> bool {
+        self.age.is_some_and(|age| age >= STALE_AFTER_SECS)
+    }
+
+    /// The account's published verdict; None when it has not published one (unreadable, or an
+    /// older textfile).
+    pub fn room(&self, account: &str) -> Option<Room> {
+        let ok = self.by.get(account)?.get("room")?;
+        let reasons = self
+            .reasons
+            .get(account)
+            .into_iter()
+            .flatten()
+            .filter(|r| *r != "ok")
+            .cloned()
+            .collect();
+        Some(Room {
+            ok: *ok == 1.0,
+            reasons,
+            headroom: self.by[account].get("room_headroom_points").copied(),
+        })
+    }
+}
+
+/// The metric name of the textfile's age, after the `claude_account_` prefix.
+pub const AGE_KEY: &str = "textfile_age_seconds";
+
 /// One Claude account's row.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Account {
     pub name: String,
-    /// `ok`, `unreadable` (claude-acct could not read its usage) or `idle` (no usage yet).
+    /// `ok`, `unreadable` (claude-acct could not read its usage), `idle` (no usage yet) or
+    /// `stale` (its textfile is over an hour old).
     pub state: &'static str,
+    /// claude-acct's verdict on an automatic start.
+    pub room: Option<Room>,
     pub live: u32,
     pub used: Option<f64>,
     pub gone: Option<f64>,
@@ -113,11 +217,13 @@ pub struct Burn {
     pub pace: Pace,
 }
 
-fn account(name: &str, a: &BTreeMap<&str, f64>) -> Account {
+fn account(name: &str, a: &BTreeMap<&str, f64>, room: Option<Room>, stale: bool) -> Account {
     let get = |k: &str| a.get(k).copied();
     let epoch = |k: &str| get(k).map(|v| v as i64);
     let used = get("week_used_percent");
-    let state = if get("read_ok") == Some(0.0) {
+    let state = if stale {
+        "stale"
+    } else if get("read_ok") == Some(0.0) {
         "unreadable"
     } else if used.is_none() {
         "idle"
@@ -129,6 +235,7 @@ fn account(name: &str, a: &BTreeMap<&str, f64>) -> Account {
     Account {
         name: name.into(),
         state,
+        room,
         live: get("live_sessions").unwrap_or(0.0) as u32,
         used,
         gone: get("week_gone_percent"),
@@ -144,14 +251,13 @@ fn account(name: &str, a: &BTreeMap<&str, f64>) -> Account {
 
 /// The section from claude-acct's series (fresh ones only; none is "no data") and the drip.
 pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn {
-    let mut by: BTreeMap<&str, BTreeMap<&str, f64>> = BTreeMap::new();
-    for s in series {
-        let key = s.label("__name__").trim_start_matches("claude_account_");
-        if let Some(v) = s.value {
-            by.entry(s.label("account")).or_default().insert(key, v);
-        }
-    }
-    let accounts: Vec<Account> = by.iter().map(|(n, a)| account(n, a)).collect();
+    let read = Accounts::read(series);
+    let stale = read.stale();
+    let accounts: Vec<Account> = read
+        .by
+        .iter()
+        .map(|(n, a)| account(n, a, read.room(n), stale))
+        .collect();
     // Burn and sustain sum over the same accounts: an unreadable or idle one has neither, and
     // one with no sustain (its week is spent or past its reset) would otherwise add burn to
     // the OVER ratio with nothing on the other side.
@@ -173,7 +279,7 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
     let level = if accounts.is_empty() {
         "none"
     } else if counted.is_empty() {
-        // Accounts exist but none can be read: a quiet fleet is not what this means.
+        // Accounts exist but none can be read (or the textfile is stale): a quiet fleet is not what this means.
         "warn"
     } else if burn > sustain {
         "bad"
@@ -451,5 +557,68 @@ mod tests {
             at.map(|i| format!("{} Sessions", (i + 1) % 10)).as_deref(),
             Some(HOLD_BADGE)
         );
+    }
+    fn reason(account: &str, why: &str) -> Series {
+        let mut s = series(account, "room_reason", 1.0);
+        s.labels.insert("reason".into(), why.into());
+        s
+    }
+
+    fn age(secs: f64) -> Series {
+        let mut s = series("", "textfile_age_seconds", secs);
+        s.labels.remove("account");
+        s
+    }
+
+    /// Used 22 against gone 16 and slack 5 is 1 point past the line; 18 is inside it.
+    #[test]
+    fn the_published_verdict_is_printed_as_given_with_its_points() {
+        let mut all = vec![];
+        for (n, ok, headroom, why) in [
+            ("a", 0.0, -1.0, "pace"),
+            ("b", 1.0, 3.0, "ok"),
+            ("c", 0.0, 12.0, "reserve"),
+        ] {
+            all.push(series(n, "week_used_percent", 20.0));
+            all.push(series(n, "room", ok));
+            all.push(series(n, "room_headroom_points", headroom));
+            all.push(reason(n, why));
+        }
+        all.push(reason("c", "five_hour"));
+        let b = build(&all, None, Drip::default(), NOW);
+        let room = |n: &str| {
+            b.accounts
+                .iter()
+                .find(|a| a.name == n)
+                .unwrap()
+                .room
+                .clone()
+                .unwrap()
+        };
+        assert_eq!(room("a").text(), "no room: pace 1 point past the line");
+        assert_eq!(room("b").text(), "room, 3 points spare");
+        assert!(room("b").reasons.is_empty(), "ok is not a refusal");
+        assert_eq!(room("c").text(), "no room: reserve, five hour");
+    }
+
+    #[test]
+    fn an_account_with_no_published_verdict_has_none_rather_than_a_derived_one() {
+        let b = build(&fixture(), None, Drip::default(), NOW);
+        assert!(b.accounts.iter().all(|a| a.room.is_none()));
+    }
+
+    #[test]
+    fn a_textfile_over_an_hour_old_is_stale_not_a_green_fleet() {
+        let mut all = fixture();
+        all.push(age(7300.0));
+        let b = build(&all, None, Drip::default(), NOW);
+        assert!(b.accounts.iter().all(|a| a.state == "stale"));
+        assert_eq!(b.level, "warn");
+        let mut fresh = fixture();
+        fresh.push(age(120.0));
+        assert!(build(&fresh, None, Drip::default(), NOW)
+            .accounts
+            .iter()
+            .all(|a| a.state == "ok"));
     }
 }

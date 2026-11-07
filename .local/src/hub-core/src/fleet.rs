@@ -47,9 +47,11 @@ const CALLS_TAIL: u64 = 2 << 20;
 /// Calls listed under a runner's row, newest first; the rest are `agentctl-run` lines on disk.
 const RECENT_CALLS: usize = 5;
 
-/// claude-acct's textfile, only while it is fresh; no `max without`, which would drop the
-/// metric names the table reads. An empty answer makes the table say no data.
-pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} and on (instance) (time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"} < 3600)"#;
+/// claude-acct's textfile, however old, plus one series for its age (`claude_account_textfile_age_seconds`,
+/// no account label) so a surface says "stale" past `burn::STALE_AFTER_SECS` instead of showing
+/// nothing; no `max without`, which would drop the metric names the table reads. An empty
+/// answer makes the table say no data.
+pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} or label_replace(min(time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"}), "__name__", "claude_account_textfile_age_seconds", "", "")"#;
 
 #[derive(Clone, Debug)]
 pub struct Paths {

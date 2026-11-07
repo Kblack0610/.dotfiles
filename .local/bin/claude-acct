@@ -299,18 +299,17 @@ usage_json() {
         used=$(jq -r '.seven_day.utilization // empty' <<< "$json")
         resets=$(jq -r '.seven_day.resets_at // empty' <<< "$json")
         resets=$([[ -n "$resets" ]] && date -d "$resets" +%s 2>/dev/null)
-        gone="" over="" run_out=""
+        gone="" run_out=""
         if [[ -n "$resets" && -n "$used" ]]; then
             start=$((resets - WEEK))
             gone=$(awk -v n="$now" -v s="$start" -v w="$WEEK" 'BEGIN { g = (n - s) * 100 / w; print (g < 0 ? 0 : g > 100 ? 100 : g) }')
-            over=$(awk -v u="$used" -v g="$gone" 'BEGIN { print (u > g ? "true" : "false") }')
             # Straight line from the window start; nothing when it lasts to the reset.
             run_out=$(awk -v u="$used" -v n="$now" -v s="$start" -v r="$resets" 'BEGIN {
                 if (u <= 0) exit; t = s + (n - s) * 100 / u; if (t < r) printf "%d", t }')
         fi
         live=$(grep -cxF -- "@$dir" <<< "$lives")
         jq -cn --arg name "$name" --arg dir "$dir" --arg email "$(email_of "$dir")" --arg state "$state" \
-            --argjson usage "$json" --arg used "$used" --arg gone "$gone" --arg over "$over" \
+            --argjson usage "$json" --arg used "$used" --arg gone "$gone" \
             --arg resets "$resets" --arg run_out "$run_out" --argjson live "${live:-0}" --argjson spend "$spend" \
             --argjson now "$now" --argjson reserve "$RESERVE_PCT" --argjson week "$WEEK" --argjson rate "$rate" \
             --argjson room_slack "$slack" --argjson room_reserve "$reserve" '
@@ -379,8 +378,6 @@ usage_json() {
              five_hour: ($usage.five_hour.utilization // null),
              five_hour_resets: ($usage.five_hour.resets_at // null | if . == null then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null) end),
              week_used: ($used | num), week_gone: ($gone | num),
-             # used past gone with no slack: a plain fact for display, not the gate; room is
-             over_pace: (if $over == "" then null else $over == "true" end),
              resets: ($resets | num), run_out: ($run_out | num), live: $live,
              # points an hour its live sessions burn: their count times the fleet rate
              burn: ($live * $rate), rate: $rate,
@@ -429,8 +426,8 @@ cmd_status() {
     fi
     local line state rows
     rows=$(usage_json)
-    printf '%-8s %-4s %-5s %-5s %-6s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %s\n' \
-        ACCOUNT 5H WEEK GONE PACE RUNS-OUT RESETS LIVE '24H-$' BURN/H KEEPS/H ON-PACE ROOM EMAIL
+    printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %s\n' \
+        ACCOUNT 5H WEEK GONE RUNS-OUT RESETS LIVE '24H-$' BURN/H KEEPS/H ON-PACE ROOM EMAIL
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
         state=$(jq -r .state <<< "$line")
@@ -439,12 +436,11 @@ cmd_status() {
             printf '%-8s %s (%s live)\n' "$(jq -r .name <<< "$line")" "$state" "$(jq -r .live <<< "$line")"
             continue
         fi
-        printf '%-8s %-4s %-5s %-5s %-6s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %s\n' \
+        printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %s\n' \
             "$(jq -r .name <<< "$line")" \
             "$(jq -r 'if .five_hour == null then "-" else "\(.five_hour | floor)%" end' <<< "$line")" \
             "$(jq -r 'if .week_used == null then "-" else "\(.week_used | floor)%" end' <<< "$line")" \
             "$(jq -r 'if .week_gone == null then "-" else "\(.week_gone | floor)%" end' <<< "$line")" \
-            "$(jq -r 'if .over_pace == null then "-" elif .over_pace then "over" else "under" end' <<< "$line")" \
             "$(day_time "$(jq -r .run_out <<< "$line")")" \
             "$(day_time "$(jq -r .resets <<< "$line")")" \
             "$(jq -r .live <<< "$line")" \
@@ -498,7 +494,6 @@ cmd_textfile() {
         (rows("claude_account_read_ok"; if .state == "unread" then 0 else 1 end)),
         (rows("claude_account_week_used_percent"; .week_used)),
         (rows("claude_account_week_gone_percent"; .week_gone)),
-        (rows("claude_account_over_pace"; if .over_pace == null then null elif .over_pace then 1 else 0 end)),
         (rows("claude_account_room"; if .state == "unread" then null elif .room.ok then 1 else 0 end)),
         (rows("claude_account_room_headroom_points"; .room.headroom_points)),
         # each refusal as a label, 1 on every reason that holds the account now (ok when it has room)

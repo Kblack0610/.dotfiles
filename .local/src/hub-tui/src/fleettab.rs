@@ -3,7 +3,7 @@
 //! (the same reader as agent-web's Fleet tab). Named apart from `fleet.rs`, which is the sessions' watch page. One runner's page
 //! (`runner_page`) is hub-core's `fleet::runner`, as agent-web's `#fleet/<runner>`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use hub_core::costs::tokens as count;
 use hub_core::fleet::runner::{Extras, Runner, Totals};
@@ -427,15 +427,17 @@ pub fn verdicts(f: &Fleet, filter: &str, p: Palette, now: i64, w: usize) -> Vec<
 
 /// One row per account from claude-acct's textfile, as agent-web's table.
 fn accounts(series: &[Series], p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-    let mut by: BTreeMap<&str, BTreeMap<&str, f64>> = BTreeMap::new();
-    for s in series {
-        let key = s.label("__name__").trim_start_matches("claude_account_");
-        if let Some(v) = s.value {
-            by.entry(s.label("account")).or_default().insert(key, v);
-        }
-    }
+    let read = hub_core::burn::Accounts::read(series);
+    let by = &read.by;
     if by.is_empty() {
         return vec![Line::styled("no data", p.dim())];
+    }
+    if read.stale() {
+        let hours = (read.age.unwrap_or_default() / 3600.0).floor();
+        return vec![Line::styled(
+            format!("stale: claude-acct's textfile is {hours}h old (timer claude-acct-usage)"),
+            p.bad(),
+        )];
     }
     let when = |v: Option<&f64>| v.map_or("-".into(), |t| clock(*t as i64, now));
     let pc = |v: Option<&f64>| v.map_or("-".into(), |v| format!("{}%", v.floor()));
@@ -451,15 +453,15 @@ fn accounts(series: &[Series], p: Palette, now: i64, w: usize) -> Vec<Line<'stat
                     cell("idle, token refreshes on launch", p.dim()),
                 ];
             }
-            let over = a.get("over_pace") == Some(&1.0);
+            let room = read.room(name);
             vec![
                 cell(*name, p.head()),
                 pc(a.get("week_used_percent")).into(),
                 pc(a.get("week_gone_percent")).into(),
-                cell(
-                    if over { "over" } else { "under" },
-                    if over { p.bad() } else { p.good() },
-                ),
+                match &room {
+                    Some(r) => cell(r.text(), if r.ok { p.good() } else { p.bad() }),
+                    None => cell("-", p.dim()),
+                },
                 when(a.get("run_out_timestamp_seconds")).into(),
                 when(a.get("resets_timestamp_seconds")).into(),
                 pc(a.get("five_hour_percent")).into(),
@@ -476,7 +478,7 @@ fn accounts(series: &[Series], p: Palette, now: i64, w: usize) -> Vec<Line<'stat
             "ACCOUNT",
             "WEEK",
             "GONE",
-            "PACE",
+            "ROOM",
             "RUNS OUT",
             "RESETS",
             "5H",
@@ -1207,6 +1209,12 @@ pub mod tests {
         }
     }
 
+    fn reason(account: &str, why: &str) -> Series {
+        let mut s = series("room_reason", account, 1.0);
+        s.labels.insert("reason".into(), why.into());
+        s
+    }
+
     pub fn fixture() -> Fleet {
         Fleet {
             tokens: None,
@@ -1215,7 +1223,9 @@ pub mod tests {
             accounts: vec![
                 series("week_used_percent", "main", 42.7),
                 series("week_gone_percent", "main", 50.0),
-                series("over_pace", "main", 0.0),
+                series("room", "main", 0.0),
+                series("room_headroom_points", "main", -7.3),
+                reason("main", "pace"),
                 series("cost_24h_usd", "main", 12.5),
                 series("read_ok", "alt", 0.0),
             ],
@@ -1415,6 +1425,7 @@ pub mod tests {
             "CLAUDE ACCOUNTS",
             "usage unreadable",
             "42%",
+            "no room: pace 8 points past the line",
             "$12.50",
             "dispatch 2 (9+ in 7d)  skip 0 (4+ in 7d)  started 2  reaped 1",
             "prompt 60c840b  agree 3 (75% precision)",
@@ -1422,6 +1433,19 @@ pub mod tests {
         ] {
             assert!(s.contains(want), "{want:?} missing from\n{s}");
         }
+    }
+
+    #[test]
+    fn a_stale_textfile_says_stale_instead_of_old_numbers() {
+        let mut f = fixture();
+        let mut age = series("textfile_age_seconds", "", 7300.0);
+        age.labels.remove("account");
+        f.accounts.push(age);
+        let s = plain(&accounts(&f.accounts, Palette::default(), NOW, 160)[0]);
+        assert!(
+            s.starts_with("stale: claude-acct's textfile is 2h old"),
+            "{s}"
+        );
     }
 
     #[test]

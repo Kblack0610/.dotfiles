@@ -178,3 +178,11 @@ function pushed(tab, kinds, refresh) {
     },
   };
 }
+
+// claude-acct's published verdict in words (hub_core::burn::Room::text).
+function roomText(r) {
+  const pts = (n) => `${n} point${n === 1 ? "" : "s"}`;
+  if (r.ok) return r.headroom != null && r.headroom >= 0 ? `room, ${pts(Math.floor(r.headroom))} spare` : "room";
+  const why = r.reasons.map((x) => (x === "pace" && r.headroom != null ? `pace ${pts(Math.ceil(-r.headroom))} past the line` : x.replace(/_/g, " ")));
+  return `no room: ${why.join(", ")}`;
+}
