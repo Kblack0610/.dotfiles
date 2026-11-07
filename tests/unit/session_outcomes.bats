@@ -889,6 +889,61 @@ cx_rollouts() {
   assert_equal "$(r '.models | join(" ")')" 'gpt-6-luna gpt-6.1-sol'
 }
 
+# cx_prices [MODEL...] -- a harness map pricing the named Codex models (USD per million tokens).
+cx_prices() {
+  export SO_HARNESSES="$SANDBOX/harnesses.json"
+  jq -n '{harnesses: {codex: {prices: {
+    "gpt-6.1-sol":  {input: 10, cached_input: 1,   output: 30},
+    "gpt-6-luna":   {input: 2,  cached_input: 0.2, output: 4}}}}}' > "$SO_HARNESSES"
+}
+
+@test "a codex session is priced from the config table: uncached, cached and output tokens, its subagent's model apart" {
+  cx_rollouts
+  cx_prices
+  queue_stub
+  run "$SUBJECT" run
+  assert_success
+  r() { cat "$SO_OUT"/proj/*.jsonl | jq -rs "map(select(.session_id == \"cx-root\")) | last | $1"; }
+  assert_equal "$(r '.cost_usd')" 0.0011
+  assert_equal "$(r '.cost_by_model | to_entries | sort_by(.key) | map("\(.key)=\(.value)") | join(" ")')" 'gpt-6-luna=0.00004 gpt-6.1-sol=0.00106'
+}
+
+@test "a codex session with any model the table does not price has no cost, not a partial one" {
+  cx_rollouts
+  cx_prices
+  jq 'del(.harnesses.codex.prices["gpt-6-luna"])' "$SO_HARNESSES" > "$SANDBOX/h2.json" && mv "$SANDBOX/h2.json" "$SO_HARNESSES"
+  queue_stub
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "cx-root")) | last | [.cost_usd, .cost_by_model] | tostring')" '[null,null]'
+}
+
+@test "a codex price entry missing a rate, a bad price file and a multi-model rollout cost nothing and drop no row" {
+  cx_rollouts
+  cx_prices
+  queue_stub
+  cx_cost() { cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "cx-root")) | last | [.cost_usd, .cost_src] | tostring'; }
+  run "$SUBJECT" run --all
+  assert_success
+  assert_equal "$(cx_cost)" '[0.0011,"price"]'
+  jq 'del(.harnesses.codex.prices["gpt-6-luna"].cached_input)' "$SO_HARNESSES" > "$SANDBOX/h2.json" && mv "$SANDBOX/h2.json" "$SO_HARNESSES"
+  run "$SUBJECT" run --all
+  assert_success
+  assert_equal "$(cx_cost)" '[null,null]'
+  printf '{not json\n' > "$SO_HARNESSES"
+  run "$SUBJECT" run --all
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("cx-"))] | unique | join(" ")')" cx-root
+  assert_equal "$(cx_cost)" '[null,null]'
+  cx_prices
+  jq -c 'select(.type == "turn_context") |= (.payload.model = "gpt-6-luna")' "$SO_CODEX_SESSIONS"/2026/10/19/rollout-*-cx-root.jsonl > "$SANDBOX/r.jsonl"
+  jq -cn --arg t "$(jq -r '.timestamp' "$SANDBOX/r.jsonl" | head -1)" '{timestamp: $t, type: "turn_context", payload: {model: "gpt-6.1-sol"}}' >> "$SANDBOX/r.jsonl"
+  mv "$SANDBOX/r.jsonl" "$SO_CODEX_SESSIONS"/2026/10/19/rollout-2026-10-19T00-00-00-cx-root.jsonl
+  run "$SUBJECT" run --all
+  assert_success
+  assert_equal "$(cx_cost)" '[null,null]'
+}
+
 @test "two sessions with no transcript side by side still let every PR get its state" {
   cx_rollouts
   jq -cn --arg t0 "$(date -u -d "@$STOP" +%Y-%m-%dT%H:%M:%S.000Z)" '
