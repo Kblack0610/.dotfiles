@@ -141,7 +141,7 @@ AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finishe
 AQ_EX_HELD=5       # agent-queue add's exit when admission held an automated add (its admit)
 LOG="$DIR/log.md"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
-IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which every gate reuses for DISPATCH_IDLE_WINDOW seconds
+IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session from a
@@ -551,7 +551,8 @@ panel_lists() { [ "$1" = claude ] || [ "$(harness_launcher "$1")" = claude-lazer
 # seconds (its claude may still be booting), or a panel it cannot read or that lists nobody.
 # An item that records its session ids is alive only while one of them is on the panel; the tmux
 # session counts only for one that records none: worktree lanes are recycled, and a new Claude in
-# an old item's lane is not its session (2026-11-07 ar-255, ar-487). REAP_PANEL caches one read per pass,
+# an old item's lane is not its session (2026-11-07 ar-255, ar-487). A recorded Claude whose process
+# still runs (claude_pid_live) is alive whatever the panel lists. REAP_PANEL caches one read per pass,
 # so its verdict is one witness: reap settles on it only when the reap before also missed (reap_confirm).
 claude_gone() {
   local server="$1" sess="$2" agent="$3" started="$4" sids="$5" t
@@ -570,7 +571,30 @@ claude_gone() {
     ($ids | split(" ") | map(select(. != ""))) as $ids
     | any(.[]; if $ids != [] then (.session_id // "") as $s | $s != "" and ($ids | index($s)) != null
                else $t != "/" and ((.target // "") | sub(":[^:/]*$"; "")) == $t end)
-    | not' <<<"$REAP_PANEL" >/dev/null
+    | not' <<<"$REAP_PANEL" >/dev/null || return 1
+  [ -z "$sids" ] || ! claude_pid_live "$sids"
+}
+
+# claude_pid_live <session ids> -- exit 0 when a Claude process recorded for one of those ids is
+# running: its ~/.claude*/sessions/<pid>.json names the id, the pid is alive and not a zombie, and,
+# when the file records procStart, started when the file says, so a reused pid is not a session.
+# agent-panel is a view of those files and can leave a live Claude out; the process is what makes a
+# session gone. Each file is parsed alone, so one half-written file hides no other.
+claude_pid_live() {
+  local f pid start st
+  for f in "$HOME"/.claude*/sessions/*.json; do
+    [ -e "$f" ] || continue
+    IFS=$'\t' read -r pid start < <(jq -r --arg ids "$1" '
+      ($ids | split(" ") | map(select(. != ""))) as $ids
+      | select((.sessionId // "") as $s | .pid != null and $s != "" and ($ids | index($s)) != null)
+      | [.pid, (.procStart // "")] | @tsv' "$f" 2>/dev/null) && [ -n "$pid" ] || continue
+    st=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null) || continue
+    [ -n "$st" ] || continue
+    [ "${st%% *}" != Z ] || continue
+    [ -z "$start" ] || [ "$(cut -d' ' -f20 <<<"$st")" = "$start" ] || continue
+    return 0
+  done
+  return 1
 }
 
 # reap_confirm <slug> -- exit 0 when an earlier reap, at least DISPATCH_REAP_CONFIRM seconds before,
@@ -2425,7 +2449,8 @@ cmd_starved() {
   # Held by load only when every closed gate is a load gate; an account with no room still starves,
   # and gate leaves that one out while a spill may start, so room is read here from the verdict gate
   # reads too (ACCT_ROWS, asked once for both).
-  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0
+  # Idle is the last pass's sample, as old as the window this verdict reads: a reader never samples.
+  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0 IDLE_CACHED=$(( DISPATCH_STARVED_MIN * 60 ))
   acct_room || room=$?
   why=$(gate)
   if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load |real idle )' &&
@@ -2760,16 +2785,20 @@ cpu_jiffies() { awk '$1 == "cpu" { printf "%.0f %.0f\n", $3 + $5, $2 + $3 + $4 +
 
 # real_idle -> percent of the machine free over a DISPATCH_IDLE_WINDOW-second /proc/stat delta.
 # The kernel has no idle event, so this samples: one sample serves every gate for a window, so a
-# pass and its headroom wait once. Prints nothing when /proc/stat cannot be read.
+# pass and its headroom wait once. Prints nothing when /proc/stat cannot be read (or, for a reader, with no sample in its window).
 # IDLE_NOW: a reading this call already took, so a report and its gate agree on one sample.
+# IDLE_CACHED=<seconds>: a reader's call (cmd_starved, so stats and the queue-starved watch) takes the
+# last sample up to that old and never waits out a new one, printing nothing without one: a reader
+# under a unit timeout (agent-mqtt-publish, 60s) cannot spend a whole window asleep.
 real_idle() {
   [ -z "${IDLE_NOW:-}" ] || { echo "$IDLE_NOW"; return; }
   local at pct f0 t0 f1 t1 age
   # A sample from the future (the clock stepped back) is no sample.
   if { read -r at pct < "$IDLE"; } 2>/dev/null && [[ "$at" =~ ^[0-9]+$ && "$pct" =~ ^[0-9.]+$ ]] &&
-    age=$(( $(date +%s) - at )) && [ "$age" -ge 0 ] && [ "$age" -lt "$DISPATCH_IDLE_WINDOW" ]; then
+    age=$(( $(date +%s) - at )) && [ "$age" -ge 0 ] && [ "$age" -lt "${IDLE_CACHED:-$DISPATCH_IDLE_WINDOW}" ]; then
     echo "$pct"; return
   fi
+  [ -z "${IDLE_CACHED:-}" ] || return 0
   read -r f0 t0 < <(cpu_jiffies) || return 0
   sleep "$DISPATCH_IDLE_WINDOW"
   read -r f1 t1 < <(cpu_jiffies) || return 0
@@ -2823,7 +2852,8 @@ load_why() {
 idle_why() {
   local idle
   if [ "$1" = 1 ] || floor_open || project_floor_open; then :
-  elif idle=$(real_idle) && [ -z "$idle" ]; then echo "real idle unreadable"
+  # A reader with no sample in its window knows of no idle hold, which is not a hold.
+  elif idle=$(real_idle) && [ -z "$idle" ]; then [ -n "${IDLE_CACHED:-}" ] || echo "real idle unreadable"
   elif awk -v i="$idle" -v m="$DISPATCH_MIN_IDLE" 'BEGIN { exit !(i < m) }'; then
     echo "real idle ${idle}% is under ${DISPATCH_MIN_IDLE}%"
   fi
