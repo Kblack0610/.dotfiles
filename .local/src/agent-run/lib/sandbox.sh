@@ -53,23 +53,39 @@ sandbox_git_common() {
   git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true
 }
 
+# The oldest claude that honours permissions.blockWritesOutsideWorkingDirectories. An older one
+# ignores the key, which would leave Edit and Write unbounded under the bypass a lane runs with.
+SANDBOX_CLAUDE_MIN="${SANDBOX_CLAUDE_MIN:-2.1.314}"
+
+# sandbox_claude_version_ok -> success when the claude on PATH is at least SANDBOX_CLAUDE_MIN.
+sandbox_claude_version_ok() {
+  local v
+  v="$(claude --version 2>/dev/null | grep -oE '^[0-9]+(\.[0-9]+)+' | head -n1)"
+  [ -n "$v" ] && [ "$(printf '%s\n%s\n' "$SANDBOX_CLAUDE_MIN" "$v" | sort -V | head -n1)" = "$SANDBOX_CLAUDE_MIN" ]
+}
+
 # sandbox_claude_settings -> the --settings JSON for claude: the profile, with the switches that
 # make it a hard gate forced on, and the git common dir writable except its hooks and config (code
-# and settings every later git run on that repo, sandboxed or not, would pick up). Each denyRead
-# path is also a Read() and Edit() deny rule, because the sandbox confines Bash only and the
-# Read, Edit and Write tools run in-process. Rule paths: ~/ passes through; an absolute path takes
-# the // prefix rules need.
+# and settings every later git run on that repo, sandboxed or not, would pick up). The sandbox
+# confines Bash only, so the in-process tools get the same bounds as permission settings: writes
+# outside allowWrite and the common dir are refused (blockWritesOutsideWorkingDirectories plus
+# additionalDirectories), each denyWrite path is an Edit() deny, each denyRead path a Read() and
+# Edit() deny. docs/contract.md "Lane sandbox" has the reasoning. Rule paths: ~/ passes through;
+# an absolute path takes the // prefix rules need.
 sandbox_claude_settings() {
-  jq -c --arg common "$(sandbox_git_common)" '
+  jq -c --arg common "$(sandbox_git_common)" --arg home "${HOME%/}" '
+    def rulepath: if startswith("/") then "/" + . else . end;
     .sandbox.enabled = true
     | .sandbox.failIfUnavailable = true
     | .sandbox.allowUnsandboxedCommands = false
     | .sandbox.network.strictAllowlist = true
     | .sandbox.filesystem.allowWrite = ((.sandbox.filesystem.allowWrite // []) + (if $common == "" then [] else [$common] end))
     | .sandbox.filesystem.denyWrite = ((.sandbox.filesystem.denyWrite // []) + (if $common == "" then [] else [$common + "/hooks", $common + "/config"] end))
+    | .permissions.blockWritesOutsideWorkingDirectories = true
+    | .permissions.additionalDirectories = [.sandbox.filesystem.allowWrite[] | sub("^~/"; $home + "/")]
     | .permissions.deny = ((.permissions.deny // [])
-        + [(.sandbox.filesystem.denyRead // [])[] | (if startswith("/") then "/" + . else . end)
-           | "Read(\(.))", "Read(\(.)/**)", "Edit(\(.))", "Edit(\(.)/**)"])' \
+        + [(.sandbox.filesystem.denyRead // [])[] | rulepath | "Read(\(.))", "Read(\(.)/**)", "Edit(\(.))", "Edit(\(.)/**)"]
+        + [.sandbox.filesystem.denyWrite[] | rulepath | "Edit(\(.))", "Edit(\(.)/**)"])' \
     "$SANDBOX_FILE"
 }
 

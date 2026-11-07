@@ -36,6 +36,7 @@ JSON
     cat > "$SANDBOX/bin/$h" <<EOF
 #!/usr/bin/env bash
 if [ "\$1 \$2" = "mcp list" ]; then echo '[]'; exit 0; fi
+if [ "\$1" = "--version" ]; then echo "\${FAKE_CLAUDE_VERSION:-2.1.319} (Claude Code)"; exit 0; fi
 printf '%s\n' "\$@" > "$SANDBOX/$h-argv.txt"
 printf '%s\n' "\${GH_TOKEN:-<unset>}" "\${GITHUB_TOKEN:-<unset>}" "\${GH_TOKEN_FILE:-<unset>}" > "$SANDBOX/$h-token.txt"
 cat >/dev/null
@@ -91,6 +92,51 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_output "[\"~/.agent\",\"$common\"]"
   run jq -c '.sandbox.filesystem.denyWrite' <<<"$(settings)"
   assert_output "[\"$common/hooks\",\"$common/config\"]"
+  run jq -r '.permissions.deny[]' <<<"$(settings)"
+  assert_line "Edit(/$common/hooks/**)"
+  assert_line "Edit(/$common/config)"
+}
+
+@test "a profile's own denyWrite paths are Edit() denies too, so Edit and Write cannot reach what Bash cannot" {
+  printf '{"sandbox": {"filesystem": {"allowWrite": ["~/proj"], "denyWrite": ["~/proj/.github", "/srv/locked"]}}}\n' > "$HOME/.config/agentctl/sandbox/dw.json"
+  cd "$SANDBOX"
+  SANDBOX_PROFILE=dw lane -p x
+  assert_success
+  run jq -r '.permissions.deny[]' <<<"$(settings)"
+  assert_line 'Edit(~/proj/.github/**)'
+  assert_line 'Edit(//srv/locked)'
+}
+
+@test "claude older than the key that bounds Edit and Write refuses a sandboxed lane and never starts; unsandboxed is unaffected (negative control)" {
+  FAKE_CLAUDE_VERSION=2.1.313 SANDBOX_PROFILE=lane lane -p x
+  assert_failure 78
+  assert_output --partial "Refusing to run unsandboxed"
+  [ ! -e "$SANDBOX/claude-argv.txt" ] || ! grep -qx -- '-p' "$SANDBOX/claude-argv.txt"
+  FAKE_CLAUDE_VERSION=2.1.313 lane -p x
+  assert_success
+}
+
+@test "the in-process Edit and Write tools are bounded to the writable set: blockWritesOutsideWorkingDirectories on, additionalDirectories is allowWrite with ~/ expanded, whatever the profile says" {
+  git init -q "$SANDBOX/repo"
+  git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+  git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/wt" -b lane
+  cd "$SANDBOX/wt"
+  jq '.permissions.blockWritesOutsideWorkingDirectories = false | .permissions.additionalDirectories = ["/srv/extra"]' \
+    "$HOME/.config/agentctl/sandbox/lane.json" > "$HOME/.config/agentctl/sandbox/loose.json"
+  SANDBOX_PROFILE=loose lane -p x
+  assert_success
+  common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
+  run jq -c '[.permissions.blockWritesOutsideWorkingDirectories, .permissions.additionalDirectories]' <<<"$(settings)"
+  assert_output "[true,[\"$HOME/.agent\",\"$common\"]]"
+}
+
+@test "outside a repo the writable set is just allowWrite, and a profile with no allowWrite adds no directories" {
+  cd "$SANDBOX"
+  printf '{"sandbox": {"network": {"allowedDomains": ["github.com"]}}}\n' > "$HOME/.config/agentctl/sandbox/bare.json"
+  SANDBOX_PROFILE=bare lane -p x
+  assert_success
+  run jq -c '[.permissions.blockWritesOutsideWorkingDirectories, .permissions.additionalDirectories]' <<<"$(settings)"
+  assert_output '[true,[]]'
 }
 
 @test "a named profile that is missing refuses the run, and claude never starts (negative control)" {
