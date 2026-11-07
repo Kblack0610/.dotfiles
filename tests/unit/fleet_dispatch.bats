@@ -4124,6 +4124,123 @@ harness_ready() {
   [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a bad knob reached the command line"
 }
 
+# --- lane sandbox: DISPATCH_SANDBOX_PROFILE (the pattern is tests/integ/agent_run_sandbox.bats) ---
+
+# A repo with a worktree-able git dir, and a profile that tries to switch every hard gate off.
+sandbox_ready() {
+  project game beta "$SANDBOX/repos/game"
+  git init -q "$SANDBOX/repos/game"
+  export AGENTCTL_SANDBOX_DIR="$SANDBOX/sbx"
+  SANDBOX_DIR=$AGENTCTL_SANDBOX_DIR   # lib/sandbox.sh read it when this file was sourced
+  mkdir -p "$AGENTCTL_SANDBOX_DIR"
+  cat > "$AGENTCTL_SANDBOX_DIR/lane.json" <<'JSON'
+{"sandbox": {"enabled": false, "failIfUnavailable": false, "allowUnsandboxedCommands": true,
+  "network": {"allowedDomains": ["github.com"], "strictAllowlist": false},
+  "filesystem": {"denyRead": ["~/.ssh", "/etc/fake-cred"], "allowWrite": ["~/.agent"]}},
+ "permissions": {"deny": ["Bash(rm -rf /)"]}}
+JSON
+  stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
+}
+# launch_settings -> the JSON the last launch line passed to --settings
+launch_settings() { eval "printf %s $(grep -m1 -e '--settings' "$NOTES_FIXTURE/cmds.log" | sed -E 's/.* --settings (.*) --permission-mode.*/\1/')"; }
+
+@test "with no DISPATCH_SANDBOX_PROFILE a start has no --settings and keeps the ambient GitHub token (control)" {
+  sandbox_ready
+  agent-queue add --project game --slug open "fix the menu"
+  cmd_start --item open >/dev/null || fail "start"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  refute_output --partial '--settings'
+  refute_output --partial 'GH_TOKEN'
+}
+
+@test "a sandboxed start passes the profile with every hard gate forced on, the git common dir writable, and no GitHub token" {
+  sandbox_ready
+  DISPATCH_SANDBOX_PROFILE=lane
+  agent-queue add --project game --slug closed "fix the menu"
+  cmd_start --item closed >/dev/null || fail "start"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_output --partial 'AGENT_QUEUE_ITEM=closed '
+  assert_output --partial 'env -u GH_TOKEN -u GITHUB_TOKEN claude --model opus'
+  common="$(cd "$SANDBOX/repos/game/.git" && pwd -P)"
+  run jq -c '[.sandbox.enabled, .sandbox.failIfUnavailable, .sandbox.allowUnsandboxedCommands, .sandbox.network.strictAllowlist, .sandbox.filesystem.allowWrite]' <<<"$(launch_settings)"
+  assert_output "[true,true,false,true,[\"~/.agent\",\"$common\"]]"
+  run jq -r '.permissions.deny[]' <<<"$(launch_settings)"
+  assert_line 'Bash(rm -rf /)'
+  assert_line 'Read(~/.ssh/**)'
+  assert_line 'Edit(//etc/fake-cred)'
+  [ -n "$(qitem running closed)" ] || fail "the item did not start"
+}
+
+@test "DISPATCH_SANDBOX_GH_TOKEN_FILE gives the pane the token by file: its value is never on the launch line" {
+  sandbox_ready
+  printf 'scoped-token\n' > "$SANDBOX/lane.token"
+  DISPATCH_SANDBOX_PROFILE=lane DISPATCH_SANDBOX_GH_TOKEN_FILE="$SANDBOX/lane.token"
+  agent-queue add --project game --slug tok "fix the menu"
+  cmd_start --item tok >/dev/null || fail "start"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_output --partial "GH_TOKEN=\"\$(tr -d '[:space:]' < ${SANDBOX// /\\ }/lane.token)\" env -u GITHUB_TOKEN claude --model opus"
+  refute_output --partial 'scoped-token'
+  # The pane's shell can read it that way.
+  run sh -c "$(grep -om1 'GH_TOKEN=.* env -u GITHUB_TOKEN' "$NOTES_FIXTURE/cmds.log") printenv GH_TOKEN"
+  assert_output scoped-token
+  # An unreadable token file refuses the start.
+  DISPATCH_SANDBOX_GH_TOKEN_FILE="$SANDBOX/missing"
+  agent-queue add --project game --slug tok2 "fix the footer"
+  run cmd_start --item tok2
+  assert_failure
+  assert_output --partial 'is not a readable, non-empty file'
+}
+
+@test "a missing or malformed profile refuses the start: wt never runs and the item stays queued (negative control)" {
+  sandbox_ready
+  agent-queue add --project game --slug nope "fix the menu"
+  DISPATCH_SANDBOX_PROFILE=absent
+  run cmd_start --item nope
+  assert_failure
+  assert_output --partial 'Refusing to run unsandboxed'
+  assert_output --partial 'nothing started'
+  printf '{"sandbox": {"filesystem": {"allowWrite": "~/.agent"}}}\n' > "$AGENTCTL_SANDBOX_DIR/bad.json"
+  DISPATCH_SANDBOX_PROFILE=bad
+  run cmd_start --item nope
+  assert_failure
+  assert_output --partial 'not a valid profile'
+  [ ! -e "$NOTES_FIXTURE/cmds.log" ] || fail "a session started without the sandbox it asked for"
+  [ -n "$(qitem queued nope)" ] || fail "the item left the queue"
+}
+
+@test "a start on a harness that cannot enforce the profile is refused, not run open" {
+  harness_ready
+  sandbox_ready
+  stub wt 'echo "wt $*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  DISPATCH_SANDBOX_PROFILE=lane
+  agent-queue add --project game --slug cx "fix the menu"
+  run cmd_start --item cx --harness codex --model sol
+  assert_failure 2
+  assert_output --partial "cannot enforce lane sandbox 'lane'"
+  assert_not_called 'wt new'
+}
+
+@test "with a sandbox profile set the spill is shut, so a pass waits BLOCKED instead of failing every Lazer start" {
+  DISPATCH_SPILL_MAX_LIVE=2
+  DISPATCH_SANDBOX_PROFILE=
+  run spill_shut
+  refute_output --partial 'DISPATCH_SANDBOX_PROFILE'
+  DISPATCH_SANDBOX_PROFILE=lane
+  run spill_shut
+  assert_output --partial 'DISPATCH_SANDBOX_PROFILE is set'
+}
+
+@test "a claude --resume reopens under the same profile" {
+  sandbox_ready
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  export DISPATCH_SANDBOX_PROFILE=lane
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game \
+    --server default --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called 'env -u GH_TOKEN -u GITHUB_TOKEN claude --settings '
+  assert_called '--permission-mode bypassPermissions --resume abc-123'
+}
+
 @test "an item queued with --agent and a model starts on them with no flags" {
   harness_ready
   agent-queue add --project game --slug by-field --agent opencode --priority high "Fix it" >/dev/null
