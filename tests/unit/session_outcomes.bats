@@ -859,6 +859,32 @@ EOF
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | [.prs[].number] | join(" ")')" '10 11'
 }
 
+@test "class: the size and kind of the item's roadmap row go on its session's row; the item's type stands in for a row off the roadmap; no item, no class" {
+  queue_stub
+  export SO_ROADMAP=roadmap-stub
+  printf '#!/usr/bin/env bash\n[ "$*" = "proj --json" ] || exit 9\necho %s\n' \
+    "'[{\"rows\":[{\"id\":\"r1\",\"size\":\"m\",\"kind\":\"fix\"}]}]'" > "$SANDBOX/bin/roadmap-stub"
+  chmod +x "$SANDBOX/bin/roadmap-stub"
+  {
+    jq -cn '{slug: "on-roadmap", row: "proj:r1", type: "feat", sessions: "sess-a"}'
+    jq -cn '{slug: "off-roadmap", row: "proj:gone", type: "check", sessions: "sess-b"}'
+  } > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '.class|tojson')" '{"size":"m","kind":"fix"}'
+  assert_equal "$(field b '.class|tojson')" '{"size":null,"kind":"check"}'
+  assert_equal "$(field c '.class|tojson')" 'null'
+}
+
+@test "class: an unreadable roadmap does not stop the run; the kind falls back to the item's type" {
+  queue_stub
+  export SO_ROADMAP=false
+  jq -cn '{slug: "x", row: "proj:r1", type: "fix", sessions: "sess-a"}' > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '.class|tojson')" '{"size":null,"kind":"fix"}'
+}
+
 @test "the harness is what the transcript ran on: a gateway session is claude-lazer with no item, an account session is claude on a spilled item" {
   queue_stub
   export SO_HARNESSES="$SANDBOX/harnesses.json"
