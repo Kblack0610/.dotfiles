@@ -46,7 +46,8 @@ cmd_take() {
 
 cmd_targets() {
   local rows ref map
-  rows="$(agent-panel list --json 2>/dev/null)" || rows=''
+  # Exit 3 is a read with a gap: its rows are still the agents it saw.
+  rows="$(agent-panel list --json 2>/dev/null)" || [ "$?" -eq 3 ] || rows=''
   ref="$(agent-notify list -n "$REF_PAGES" 2>/dev/null |
     awk -F'\t' '$5 ~ /^tmux:/ { r = substr($5, 6) } END { print r }')" || ref=''
   # A session in a dialog is left out: a line typed there would answer the dialog.
@@ -88,7 +89,7 @@ cmd_send() {
     pane:?*) key=pane ;;
     *) die "send: unknown target '$to' (tmux:, pane: or new:)" ;;
   esac
-  rows="$(agent-panel list --json 2>/dev/null | jq -c --arg k "$key" --arg v "${to#*:}" 'select(.[$k] == $v)')" || rows=''
+  rows="$(agent-panel list --json 2>/dev/null | jq -c --arg k "$key" --arg v "${to#*:}" 'select(.[$k] == $v)')" || [ "$?" -eq 3 ] || rows=''
   pane_one "${to#*:}" "$rows" || exit 2
   agent-panel send --pane "$PANE" "$text" || rc=$?
   case "$rc" in
