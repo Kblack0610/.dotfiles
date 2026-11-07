@@ -4060,6 +4060,26 @@ board_item() {
   assert_called "AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-plan"
 }
 
+@test "start --resume refuses a conversation still running, and one two items list without --item" {
+  project game beta "$SANDBOX/repos/game"
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%s,"sessionId":"conv-live"}' "$$" > "$HOME/.claude/sessions/$$.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s1 \
+    --cwd "$SANDBOX/repos/game" --resume conv-live
+  assert_failure
+  assert_output --partial 'conv-live is still running'
+
+  CLAUDE_CODE_SESSION_ID=conv-two agent-queue add --project game --running --slug one "one" >/dev/null
+  CLAUDE_CODE_SESSION_ID=conv-two agent-queue add --project game --running --slug two "two" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s2 \
+    --cwd "$SANDBOX/repos/game" --resume conv-two
+  assert_failure
+  assert_output --partial 'more than one item'
+  assert_output --partial 'pass --item'
+  assert_not_called 'new-session'
+}
+
 @test "start --resume --window makes the session when it is not there yet, named as asked" {
   project game beta "$SANDBOX/repos/game"
   : > "$NOTES_FIXTURE/tmux.sessions.default"

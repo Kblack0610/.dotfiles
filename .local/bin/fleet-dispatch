@@ -1269,8 +1269,15 @@ cmd_start() {
     say "start: give exactly one of --brief, --item or --resume"
     return 2
   fi
-  # A resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM too.
-  [ -z "$resume" ] || [ -n "$item" ] || item=$(agent-queue mine --sid "$resume" 2>/dev/null) || item=''
+  if [ -n "$resume" ]; then
+    # One writer per transcript: a second claude on a live conversation would also take its item.
+    ! conversation_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
+    # A resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM too.
+    if [ -z "$item" ]; then
+      item=$(agent-queue mine --sid "$resume" 2>&1)
+      case $? in 0) ;; 1) item='' ;; *) say "start: ${item#agent-queue: }; pass --item"; return 1 ;; esac
+    fi
+  fi
   if [ -n "$item" ] && [ -z "$resume" ]; then
     # Before the lock: model-lane may ask an LLM (20s timeout), and another start must not wait on it.
     verdict=${START_VERDICT:-}; [ -n "$verdict" ] || [ -n "$model" ] || verdict=$(lane_pick "$item" "$harness")
