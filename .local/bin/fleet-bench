@@ -1493,10 +1493,10 @@ ledger_counts() {
   echo "lesson_held_share=$($BENCH_LESSONS_CMD 2>/dev/null | jq -er '(.held + .recurring) as $n
     | if $n > 0 then .held / $n * 100 | round / 100 else "?" end' 2>/dev/null || echo '?')"
   # worktrees_held, worktrees_held_over_7d: trees held with nobody in them, and those idle past 7 days, from
-  # the newest worktree-gc row; ? with no row or one older than WORKTREE_GC_STALE_H
+  # the newest worktree-gc row; ? with no row, one older than WORKTREE_GC_STALE_H, or one dated in the future
   jq -nrR --argjson t "$t" --argjson h "$WORKTREE_GC_STALE_H" '
     ([inputs] | last // "" | try fromjson catch null) as $r
-    | if ($r | type) == "object" and ($r.epoch | numbers) != null and $r.epoch > $t - $h * 3600
+    | if ($r | type) == "object" and ($r.epoch | numbers) != null and $r.epoch > $t - $h * 3600 and $r.epoch <= $t + 3600
       then "worktrees_held=\($r.held // "?")", "worktrees_held_over_7d=\($r.held_over_7d // "?")"
       else "worktrees_held=?", "worktrees_held_over_7d=?" end' < <(tail -n 1 "$WORKTREE_GC_LOG" 2>/dev/null)
   chain_counts "$t"

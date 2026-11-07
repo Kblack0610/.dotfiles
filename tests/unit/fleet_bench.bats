@@ -3844,6 +3844,9 @@ epics_fixture() {
   printf '%s\n' "{\"epoch\":$((now - 3 * 86400)),\"held\":36,\"held_over_7d\":17}" > "$WORKTREE_GC_LOG"
   run "$SUBJECT" ledger
   assert_line 'worktrees_held=?'
+  printf '%s\n' "{\"epoch\":$((now + 86400)),\"held\":36,\"held_over_7d\":17}" > "$WORKTREE_GC_LOG"
+  run "$SUBJECT" ledger
+  assert_line 'worktrees_held=?'
   printf 'not json\n' > "$WORKTREE_GC_LOG"
   run "$SUBJECT" ledger
   assert_line 'worktrees_held_over_7d=?'
