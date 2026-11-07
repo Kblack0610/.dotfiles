@@ -642,6 +642,10 @@ wt_next_slot() {
       # wt_hold), and handing the slot out again landed the new worktree in the OLD session:
       # wt_ensure_session found the name taken and reused it, so you arrived among panes
       # still sitting in the deleted directory.
+      #
+      # With no session, a hold that outlived its directory is dropped here: `rm -rf` or a husk
+      # reap leaves the entry, and `prune` skips a locked one, so it would pin the slot for good.
+      { git -C "$main" worktree unlock "$path" && git -C "$main" worktree remove "$path"; } 2>/dev/null || :
       if ! git -C "$main" show-ref --verify --quiet "refs/heads/agent-$n" 2>/dev/null ||
         { git -C "$main" merge-base --is-ancestor "refs/heads/agent-$n" "$base" 2>/dev/null &&
           ! git -C "$main" worktree list --porcelain | grep -qxF "branch refs/heads/agent-$n"; }; then
@@ -869,7 +873,8 @@ cmd_new() {
 # its finished run typed `git worktree remove` on dotfiles-agent-4, 57 s after dispatch had
 # re-cut that slot for another session; the tree was clean, so git let it go. A lock is the one
 # check git makes itself, so it binds every harness, the WorktreeRemove hook and any script:
-# `remove`, `remove --force`, `move` and `prune` all refuse. Only `rm -rf` and `remove -f -f` pass.
+# `remove`, `remove --force` and `move` refuse, and `prune` skips it. Only `rm -rf` and
+# `remove -f -f` get past, and wt_next_slot clears what those leave.
 wt_hold() {
   local out
   out=$(git -C "$1" worktree lock --reason "$WT_HOLD_REASON" "$1" 2>&1) && return 0
@@ -994,7 +999,7 @@ cmd_reap() {
     case "$out" in
     *'containing submodules'*)
       [ "$(wt_dirty_count "$path")" -eq 0 ] &&
-        git -C "$main" worktree remove --force "$path" && out=''
+        out=$(git -C "$main" worktree remove --force "$path" 2>&1) && out=''
       ;;
     esac
     if [ -n "$out" ]; then

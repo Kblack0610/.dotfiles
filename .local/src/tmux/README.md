@@ -342,7 +342,7 @@ checkout, or when a tmux session for it is still live. "Clean and pushed" is a s
 a promise: an agent working detached is clean-and-pushed for a moment after every push, so
 the live-session rule is what stops a `gc` deleting a worktree mid-turn.
 
-**A slot is git-locked from `new` until `reap`.** The policy above binds only callers that ask it, so git itself enforces the rest: it refuses `remove`, `remove --force`, `move` and `prune` on a slot from any harness, hook or script, and the lock reason says to use `wt done` or `wt reap`. `reap` unlocks only after its policy passes. A slot with no lock is one cut before this rule, and it gets one the next time `new` hands it out. `rm -rf` and `remove -f -f` still get past it; do neither.
+**A slot is git-locked from `new` until `reap`.** The policy above binds only callers that ask it, so git itself enforces the rest: it refuses `remove`, `remove --force` and `move` on a slot from any harness, hook or script, and the lock reason says to use `wt done` or `wt reap`. `reap` unlocks only after its policy passes. A slot with no lock is one cut before this rule, and it gets one the next time `new` hands it out. `rm -rf` and `remove -f -f` still get past it, so do neither; `prune` skips a locked entry, and the next `new` drops one whose directory is gone and whose session is not live.
 
 **Tearing one down is `Prefix+X`, and it works from inside the session it is killing.** That
 sounds impossible - `tmux kill-session` takes your own shell with it, so any `wt reap` you

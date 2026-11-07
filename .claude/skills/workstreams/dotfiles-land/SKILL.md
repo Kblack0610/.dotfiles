@@ -99,7 +99,7 @@ gh pr merge <private#> --squash --delete-branch -R Kblack0610/.dotfiles-private
 gh pr view <#> --json state -q .state          # confirm MERGED, don't assume
 ```
 
-Cleanup: `wt reap "$WT"`, which takes the branch too and refuses a live session (a refusal is the answer, leave the tree); on each repo
+Cleanup: `wt reap "$WT"`, which refuses a live session (a refusal is the answer, leave the tree); delete the local feature branches it keeps, since `-d` keeps a squash-merged one; on each repo
 `git fetch` THEN `git checkout main && git merge --ff-only origin/main` (fetch first - `gh` merges
 server-side so the local ref is stale; skipping the fetch silently reverts the tree). Leave the
 private repo's unrelated dirty branch exactly as you found it (a worktree never disturbs it).

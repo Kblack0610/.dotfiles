@@ -912,6 +912,25 @@ held_slot() {
   assert_output --partial 'wt reap'
 }
 
+@test "a hold that outlived its directory frees the slot for the next new" {
+  held_slot
+  rm -rf "$SLOT"
+  run wt_next_slot repo "$MAIN" origin/main
+  assert_success
+  assert_output "1${PANEL_TAB}fresh"
+  run wt_prepare "$MAIN" "$SLOT" 1 fresh
+  assert_success
+  [ -f "$SLOT/file.txt" ]
+}
+
+@test "a live session keeps the hold on a slot whose directory is gone" {
+  held_slot
+  rm -rf "$SLOT"
+  rm "$NOTES_FIXTURE/tmux.no-session"
+  run wt_next_slot repo "$MAIN" origin/main
+  git -C "$MAIN" worktree list --porcelain | grep -q '^locked'
+}
+
 # -- husks: a dir with no .git left behind after its worktree went --
 
 @test "a husk holding only Unity caches is reaped" {
