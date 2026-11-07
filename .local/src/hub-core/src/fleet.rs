@@ -5,7 +5,7 @@
 //! | part         | source                                                                   |
 //! |--------------|--------------------------------------------------------------------------|
 //! | accounts     | `claude_account_*`, claude-acct's textfile, in Prometheus                 |
-//! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` (agent-proof), and the user timers (else the runner's own status `next=`); what each runner spent is `crate::costs` |
+//! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` and standing hold `held_since`/`held_why` (agent-proof), and the user timers (else the runner's own status `next=`); what each runner spent is `crate::costs` |
 //! | who          | the workers and `state.json`'s live sessions, one row each, tiered (`who::build`)  |
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
@@ -132,6 +132,10 @@ pub struct Worker {
     pub failed_24h: u32,
     /// The newest activity.log line: the runner's own word on why.
     pub why: Option<Outcome>,
+    /// The standing hold `lib/agent-proof.sh` writes in its state dir: `held_since`, its first
+    /// BLOCKED pass of an unbroken run, and `held_why`, the latest one's reason. None when not held.
+    pub held_since: Option<i64>,
+    pub held_why: String,
     pub next: Option<i64>,
     /// A call's CALLER: the runner (or program) that makes it.
     pub called_by: Option<String>,
@@ -409,6 +413,10 @@ pub fn files(paths: &Paths) -> Fleet {
             Some((c.name.clone(), text.lines().rev().find_map(parse_activity)?))
         })
         .collect();
+    let held: HashMap<String, (i64, String)> = confs
+        .iter()
+        .filter_map(|c| Some((c.name.clone(), read_held(&c.inbox)?)))
+        .collect();
     let roles = read_roles(&paths.roles, &confs);
     let lf = langfuse_sessions(&paths.agents.join("session-outcomes.conf"));
     let calls = match tail(&paths.calls, CALLS_TAIL) {
@@ -437,6 +445,10 @@ pub fn files(paths: &Paths) -> Fleet {
             .or_else(|| runner::status_next(&paths.jobs.agentctl, &w.name));
         w.registry = regs.get(&w.name).cloned().unwrap_or_default();
         w.score = scores.get(&w.name).cloned();
+        if let Some((since, why)) = held.get(&w.name) {
+            w.held_since = Some(*since);
+            w.held_why = why.clone();
+        }
     }
 
     let sessions = match std::fs::read_to_string(&paths.state) {
@@ -905,6 +917,13 @@ pub fn workers(
     out
 }
 
+/// A runner's standing hold from its state dir, None when it has no `held_since`.
+fn read_held(dir: &Path) -> Option<(i64, String)> {
+    let since = std::fs::read_to_string(dir.join("held_since")).ok()?;
+    let why = std::fs::read_to_string(dir.join("held_why")).unwrap_or_default();
+    Some((since.trim().parse().ok()?, why.trim().to_string()))
+}
+
 /// The 90th percentile of `lengths`, nearest rank; None under `USUAL_RUNS` of them.
 fn usual(mut lengths: Vec<i64>) -> Option<i64> {
     if lengths.len() < USUAL_RUNS {
@@ -1116,6 +1135,20 @@ mod tests {
             enabled,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_standing_hold_is_read_from_the_runner_dir_and_none_without_held_since() {
+        let dir = std::env::temp_dir().join(format!("hub-fleet-held-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_held(&dir), None);
+        std::fs::write(dir.join("held_since"), "1793992126\n").unwrap();
+        std::fs::write(dir.join("held_why"), "at its budget cap").unwrap();
+        assert_eq!(
+            read_held(&dir),
+            Some((1_793_992_126, "at its budget cap".to_string()))
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
