@@ -473,7 +473,7 @@ pub fn needs(
             continue;
         }
         work(&mut worked, Some(i));
-        let waited = i.extra.get("waiting").and_then(Value::as_str);
+        let waited = i.waiting.as_deref();
         let target = i.session.as_deref().and_then(|s| target_of(tmux_name(s)));
         let since = waited.or(i.started.as_deref()).and_then(ts);
         out.push(Need {

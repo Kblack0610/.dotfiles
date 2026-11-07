@@ -325,12 +325,10 @@ fn extra_str(i: &Item, k: &str) -> String {
         .to_string()
 }
 
-/// An item's own cost once the nightly pass has summed it, else its sessions' registry cost.
+/// An item's own cost once the nightly pass has summed it (`Item::cost`), else its sessions'
+/// registry cost.
 fn item_cost(i: &Item, sids: &[String], feed: &Feed) -> Option<f64> {
-    let own = ["gateway_cost_usd", "cost_usd"]
-        .iter()
-        .find_map(|k| i.extra.get(*k).and_then(Value::as_str)?.parse().ok());
-    own.or_else(|| {
+    i.cost().or_else(|| {
         let known: Vec<f64> = sids
             .iter()
             .filter_map(|s| feed.cost.get(s).copied())
@@ -343,7 +341,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
     let sids = item_sessions(i);
     let status = i.status.as_deref().unwrap_or("ok");
     let pr = i.pr.as_deref().filter(|p| !p.is_empty()).map(pr_number);
-    let merged = !extra_str(i, "merged").is_empty();
+    let merged = i.merged();
     SessionRow {
         key: i.slug.clone(),
         bucket: "DONE".into(),
@@ -366,8 +364,8 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         },
         finished: i.finished.as_deref().and_then(ts),
         cost_usd: item_cost(i, &sids, feed),
-        account: extra_str(i, "account"),
-        harness: queue::harness_of(i.harness(), &extra_str(i, "account")),
+        account: i.account.clone().unwrap_or_default(),
+        harness: queue::harness_of(i.harness(), i.account.as_deref().unwrap_or("")),
         source: Source::Queue,
         ..SessionRow::default()
     }

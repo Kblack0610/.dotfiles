@@ -206,8 +206,8 @@ fn row(i: &Item, p: Palette, now: i64) -> Vec<Cell> {
         "high" => p.warn(),
         _ => Default::default(),
     };
-    // The weight (agent-queue's, heavy or light) rides in extra; MODE shows it beside the mode.
-    let mode = match i.extra.get("weight").and_then(|w| w.as_str()) {
+    // The weight (agent-queue's, heavy or light): MODE shows it beside the mode.
+    let mode = match i.weight.as_deref() {
         Some(w) => format!("{} {w}", i.mode),
         None => i.mode.clone(),
     };

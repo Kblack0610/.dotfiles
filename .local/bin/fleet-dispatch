@@ -1130,7 +1130,7 @@ headless() { case "$(harness_launcher "$1")" in opencode|codex) return 0 ;; esac
 #                           It reopens in the mode its transcript last shows, bypass when none.
 cmd_start() {
   local project='' prof='' lane=human key='' server='' model='' brief_file='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' brief cmd label origin acct mode rec
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -1252,7 +1252,8 @@ cmd_start() {
     fi
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new --server "$server" --detach -c "$cwd" | tail -1)
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
-    agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" >/dev/null &&
+    size=$(item_size "$it")
+    agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} >/dev/null &&
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
     # The id was chosen above, so the claim is made here and not in the session's own start, where
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
@@ -1823,6 +1824,12 @@ item_headline() {
   jq -r '(.title // "" | select(test("\\S"))) // ([(.task // "") | split("\n")[] | select(test("\\S")) | sub("^\\s+"; "")][0] // "")' <<<"$1"
 }
 
+# item_size <item json> -> s, m or l from the `#size/` tag in its task, which promote copies from the
+# board row (size_back tags the row with the judge's size, so the row's tag is the effective size);
+# any case, as row_size reads it; nothing for an unsized or `xl` item, a size model-lane does not
+# take. The one read lane_pick and start's `size=` header share.
+item_size() { jq -r '[(.task // "") | match("#size/([sml])\\b"; "i").captures[0].string | ascii_downcase][0] // empty' <<<"$1"; }
+
 # lane_pick <slug> <harness> -> model-lane's verdict for a queued Claude item started with no --model,
 # at DISPATCH_LANE_FLOOR; nothing when it is not queued, runs another harness, or model-lane fails.
 # It classifies the item's headline and its board #size/ tag, never the whole task: the body carries
@@ -1834,7 +1841,7 @@ lane_pick() {
   local it size
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   [ "$(jq -r .state <<<"$it")" = queued ] && [ "${2:-$(jq -r '.agent // "claude"' <<<"$it")}" = claude ] || return 0
-  size=$(jq -r '[(.task // "") | match("#size/([sml])\\b").captures[0].string][0] // empty' <<<"$it")
+  size=$(item_size "$it")
   model-lane classify "$(item_headline "$it")" --floor "$DISPATCH_LANE_FLOOR" ${size:+--size "$size"} 2>/dev/null |
     jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null || true
 }

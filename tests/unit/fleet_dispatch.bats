@@ -3016,6 +3016,21 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_equal "$(qfield "$f" model) $(qfield "$f" origin) $(qfield "$f" lane_run)" 'sonnet hand run-8'
 }
 
+# ar-617: the Queue table's SIZE column reads the item, not the board, so start writes the size the
+# task's #size/ tag gives next to account= and model=, in any case as row_size reads it; an
+# unsized item gets no size line.
+@test "start --item writes size= from the task's #size/ tag, and none for an unsized item" {
+  game_ready
+  agent-queue add --project game --slug sized "Fix the menu sides #size/M" >/dev/null
+  agent-queue add --project game --slug plain "Fix the menu top" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item sized
+  assert_success
+  assert_equal "$(qfield "$(qitem running sized)" size)" m
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item plain
+  assert_success
+  ! grep -q '^size:' "$(qitem running plain)" || fail "wrote a size for an unsized item"
+}
+
 @test "a hand start whose model-lane fails starts opus and logs nothing" {
   game_ready
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null

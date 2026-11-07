@@ -62,6 +62,16 @@ test("negative control: no PR and no report is flagged, and an unknown cost read
   assert.doesNotMatch(html, /\$0/);
 });
 
+test("a card renders hub-core's timing: the state chip's age and a done item's run", () => {
+  assert.match(card({ state: "running", project: "p", slug: "s", timing: { in_state: 130 } }), /Running 2h/);
+  assert.match(card(done({ timing: { run: 62, lead: 90 } })), /took 1h 2m/);
+});
+
+test("negative control: with no timing the page works out no duration from the stamps", () => {
+  assert.doesNotMatch(card(done({})), /took/);
+  assert.doesNotMatch(card({ state: "running", project: "p", slug: "s", started: "2026-11-06T11:00:00Z" }), /Running \d/);
+});
+
 test("a PR with no recorded merge says so, and a bare older PR number keeps its words", () => {
   assert.match(card(done({ pr: "o/r#7", pr_label: "r#7", pr_url: "u", pr_merged: false })), /merge not recorded/);
   assert.match(card(done({ pr: "1796", pr_label: "#1796", pr_url: null, pr_merged: false })), /PR #1796 merge not recorded/);
