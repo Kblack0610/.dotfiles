@@ -7,7 +7,7 @@
 #     never the human ~/.notes/inbox (low-noise, agent-facing by design).
 #   - "Meaningful" = the session actually did work: >=1 Edit/Write tool_use in
 #     the transcript, OR a dirty git worktree, OR an agentctl runner (AGENTCTL_NAME,
-#     which agentctl-run exports): a read-only runner still spends, and its row
+#     which the agentctl runner wrapper exports): a read-only runner still spends, and its row
 #     carries the cost and the runner's name in `agentctl` (outcome rows already use
 #     `runner` as a boolean). Pure Q&A / read-only by hand -> no entry.
 #   - Upsert by session_id: exactly ONE line per session, not per turn.
