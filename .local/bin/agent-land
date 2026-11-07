@@ -13,7 +13,8 @@
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
-# files (agent-queue attribute), and moves to done, status ok), board (the
+# files (agent-queue attribute), and moves to done, status ok; a done ok item with no PR in this
+# PR's repo adds it to its pr: and merged: lists instead, one PR per repo), board (the
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
 # promoted from, done with proof "pr:<pr> commit:<sha>"), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"). After the merge, one "body:" line scores the PR body
@@ -199,11 +200,34 @@ fi
 [ -n "$item" ] || die "no queue item for this session: agent-queue add --running --project <p> \"<type(area): title>\" (or claim one), then re-run"
 # Checked before the merge, like the plan phase: a wrong slug cannot leave a merged PR unrecorded.
 it=$(agent-queue show "$item" --json 2>/dev/null) || die "no queue item $item (agent-queue show)"
-# A done item that already carries this PR is a re-run after a failed board step.
-case "$(jq -r --arg pr "$pr" 'if .state == "done" and ((.pr // "") | sub(".*#"; "")) == $pr then "rerun" else .state end' <<<"$it")" in
-running | waiting | queued | rerun) ;;
+# A done ok item takes more PRs: its `pr:` holds one <owner>/<repo>#<N> per repo, space separated,
+# and `merged:` their merge commits in the same order, so a task split across repos lands each on
+# its one item. Which repo this PR is in needs gh, so once_done checks it after the PR is read.
+case "$(jq -r 'if .state == "done" and .status == "ok" and (.pr // "") != "" then "done-ok" else .state end' <<<"$it")" in
+running | waiting | queued | done-ok) ;;
 *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
 esac
+# once_done -> how a done item takes this PR: "rerun" when it is the item's first PR (a re-run after
+# a failed board step), "again" when it is a later one, "more" when the item carries none in this
+# repo yet. A second PR in one repo is refused: that is a second task, so it gets its own item.
+once_done() {
+  local refs ref i
+  read -ra refs <<<"$(jq -r '.pr // ""' <<<"$it")"
+  # A bare ref (a PR whose URL did not parse, or an old item) matches on its number alone.
+  for i in "${!refs[@]}"; do
+    [ "${refs[i]}" = "$pr_ref" ] || { [[ "${refs[i]}" != */*#* || "$pr_ref" != */*#* ]] && [ "${refs[i]##*#}" = "$pr" ]; } ||
+      continue
+    [ "$i" -eq 0 ] && echo rerun || echo again
+    return 0
+  done
+  [[ "$pr_ref" == */*#* ]] || die "queue item $item is done, and #$pr names no repo to add it under"
+  for ref in "${refs[@]}"; do
+    [[ "$ref" == */*#* ]] || die "queue item $item is done with a bare pr:$ref, which names no repo to tell #$pr apart from"
+    [[ "$ref" != "${pr_ref%#*}#"* ]] ||
+      die "queue item $item is done with $ref, and an item carries one PR per repo: give #$pr its own item (agent-queue add --running), then --item <that slug>"
+  done
+  echo more
+}
 # The notes argv that closes the item's row (`row`, "<project>:<key>", agent-queue's one
 # definition), one word a line, as fleet-dispatch reads it; empty for an item with no row.
 row=$(jq -r 'select((.row // "") != "") | (.row | split(":")) as $r
@@ -310,6 +334,8 @@ read -r state base url head_oid cross head_ref <<<"$info"
 # The item's PR names its repo: a bare number is ambiguous across the repos one project spans.
 pr_ref=$(sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pulls?/([0-9]+).*#\1\#\2#' <<<"$url")
 [[ "$pr_ref" =~ ^[^/]+/[^/#]+#[0-9]+$ ]] || pr_ref="$pr"
+done_as=''
+if [ "$(jq -r .state <<<"$it")" = done ]; then done_as=$(once_done) || exit $?; fi
 # Before stamp_item, so a refused run leaves the PR untouched.
 [ "$state" = MERGED ] || own_head
 stamp_item
@@ -349,16 +375,29 @@ live=$("${DOTFILES_AUTOPULL:-$(dirname "$(readlink -f "$0")")/dotfiles-autopull}
 chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
   --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
 
-if [ "$(jq -r .state <<<"$it")" != "done" ]; then
+case "$done_as" in
+'')
   [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || agent-queue claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2
   out=$(agent-queue set "$item" "pr=$pr_ref" "merged=$merged" 2>&1) || fail item "$(lastline "$out")"
   credited=$(credit)
   out=$(agent-queue move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
-fi
+  ;;
+more)
+  # Its first PR credited the item and closed its row; this one joins the lists, in step. Read
+  # again here, not at the start, so a PR another run added during the checks is kept.
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || agent-queue claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2
+  it=$(agent-queue show "$item" --json 2>&1) || fail item "agent-queue show: $(lastline "$it")"
+  out=$(agent-queue set "$item" "pr=$(jq -r .pr <<<"$it") $pr_ref" "merged=$(jq -r '.merged // ""' <<<"$it") $merged" 2>&1) ||
+    fail item "$(lastline "$out")"
+  credited=", beside $(jq -r .pr <<<"$it")"
+  ;;
+esac
 echo "item: $item done with pr:$pr_ref${credited:-}"
 
 mapfile -t b < <(board_cmd)
-if [ "${#b[@]}" -gt 0 ]; then
+if [ "$done_as" = more ] || [ "$done_as" = again ]; then
+  [ "${#b[@]}" -eq 0 ] || echo "board: left to its first PR, $(jq -r '.pr | split(" ")[0]' <<<"$it") (agent-land on that one closes the row if its board step failed)"
+elif [ "${#b[@]}" -gt 0 ]; then
   out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
   echo "board: closed \"${b[-3]}\" with ${b[-1]}"
 fi
