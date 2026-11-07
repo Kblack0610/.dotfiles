@@ -170,10 +170,8 @@ fn classify<'a>(text: &'a str, area: &str) -> (&'a str, String, &'a str) {
 /// The row type a label names: one of the types (an epic is the human's to file), or a near miss.
 fn label_type(word: &str) -> Option<&'static str> {
     let word = word.to_lowercase();
-    projects::ROW_TYPES
-        .iter()
-        .copied()
-        .find(|t| *t == word && *t != "epic")
+    projects::filer_types()
+        .find(|t| *t == word)
         .or_else(|| {
             LABEL_TYPES
                 .iter()

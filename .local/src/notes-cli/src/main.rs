@@ -369,6 +369,12 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<CommsCmd>,
     },
+    /// The row grammar `type(area): title` (README "The task row"), for scripts and prompts
+    /// that would otherwise keep their own copy
+    Row {
+        #[command(subcommand)]
+        sub: RowCmd,
+    },
     /// Mirror in-progress ClickUp tickets assigned to me into today's `## Focus`.
     /// Opt-in per profile via `clickup_list`; a no-op where it is unset.
     Clickup {
@@ -432,6 +438,15 @@ enum ClickupCmd {
     /// Push status edits (`[/]`/`[x]`) on cu-linked `## Focus` items up to ClickUp (no fetch;
     /// the fast on-save path).
     Push,
+}
+
+#[derive(Subcommand)]
+enum RowCmd {
+    /// One row or row text per stdin line -> one `type area title ok` TSV line each, `ok` 1
+    /// when it parses; an empty field prints as `-`. Hashtags and stamps are not the title
+    Parse,
+    /// The types a filer may give a row, one space-separated line (`epic` is the human's)
+    Types,
 }
 
 #[derive(Subcommand)]
@@ -912,9 +927,35 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
     })
 }
 
+/// `notes row parse|types`. Parse reads bytes, so one line that is not UTF-8 still gets its
+/// own output line instead of failing the rest.
+fn row_cmd(sub: &RowCmd) -> Result<()> {
+    use std::io::{BufRead, Write};
+    let mut out = std::io::stdout().lock();
+    match sub {
+        RowCmd::Parse => {
+            let mut stdin = std::io::stdin().lock();
+            let mut buf = Vec::new();
+            while stdin.read_until(b'\n', &mut buf)? > 0 {
+                let line = String::from_utf8_lossy(&buf);
+                let line = line.strip_suffix('\n').unwrap_or(&line);
+                writeln!(out, "{}", projects::row_parse_tsv(line))?;
+                buf.clear();
+            }
+        }
+        RowCmd::Types => writeln!(out, "{}", projects::filer_types().collect::<Vec<_>>().join(" "))?,
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
+    // The grammar needs no profile, and its callers (agent-queue, the triage prompts) run where
+    // none may resolve.
+    if let Cmd::Row { sub } = &cli.cmd {
+        return row_cmd(sub);
+    }
     let prof = config::resolve(cli.profile.as_deref())?;
     let log = logging::Logger::new(prof.log_file.clone(), cli.verbose);
 
@@ -1515,6 +1556,7 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Row { .. } => unreachable!("handled before the profile resolves"),
         Cmd::Clickup { sub } => match sub {
             ClickupCmd::Sync => clickup::sync(&prof, &log)?,
             ClickupCmd::Push => clickup::push(&prof, &log)?,
