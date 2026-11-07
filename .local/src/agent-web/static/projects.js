@@ -85,13 +85,13 @@ async function pReadPage(name) {
 function pCards() {
   const d = pst.data, cards = d.cards;
   const flying = cards.filter((c) => c.in_flight).length;
-  const open = bst.feed ? bst.feed.rows.filter((r) => r.state !== "done").length : null;
+  const open = bst.feed ? bst.feed.table.total : null;
   let html = `<div class="muted qstats">${cards.length} projects, ${flying} in flight; ` +
     `progress is the open version's rows by size (#size/s 1, m 3, l 8)</div>`;
   html += (d.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   html += `<div class="card qitem pcard" data-open="all">` +
     cardHead("All projects", [cchip("", open == null ? "reading notes board" : `${open} open rows`)]) +
-    cardLine(["every project's rows, filtered by text, #tag, lane or priority"]) +
+    cardLine(["every project's rows, one table to search and sort"]) +
     `<div class="opts"><button class="btn sm" data-open="all">Open rows</button></div></div>`;
   html += cards.map(pCard).join("");
   if (d.unlinked && d.unlinked.length) {
@@ -112,20 +112,30 @@ function pDeep() {
   if (c && pst.open !== pKey(c)) pOpen(pKey(c));
 }
 
-// The rows view: the card (or the All heading) on top, then board.js's rows and controls.
+// The rows view: the card (or the All heading) on top, then board.js's rows and controls. The
+// rows are read for this project, under the view already in the URL.
 function pOpen(key) {
   pst.open = key;
-  const all = key === "all";
-  bst.filter.project = all ? "" : key;
-  bst.filter.q = "";
-  if (!all) {
+  if (key !== "all") {
     bst.draft.key = key;
     const c = pst.data && pst.data.cards.find((x) => pKey(x) === key);
     if (c) { delete pst.page[c.name]; pReadPage(c.name); }
   }
-  bst.form = null; bst.msg = ""; bst.controlsKey = "";
+  bst.feed = null; bst.sel = null; bst.form = null; bst.msg = ""; bst.all = false; bst.controlsKey = "";
   $("projects").scrollTop = 0;
   renderProjects();
+  refreshBoard();
+}
+
+// A click moves the tab: the URL names what is open and the old view's query goes with it. A
+// deep link is the other way in, and keeps its own (pDeep).
+function pGo(key) {
+  st.arg = key === null ? "" : key;
+  setQuery("");
+  if (key === null) {
+    pst.open = null; bst.feed = null;
+    renderProjects(); refreshProjects(); refreshBoard();
+  } else pOpen(key);
 }
 
 function renderProjects() {
@@ -144,20 +154,17 @@ function renderProjects() {
 }
 
 $("projects").addEventListener("click", (e) => {
-  if (e.target.id === "p-back") {
-    pst.open = null;
-    if (st.arg) { st.arg = ""; try { history.replaceState(null, "", "#projects"); } catch (err) { /* not fatal */ } }
-    renderProjects(); refreshProjects(); return;
-  }
+  if (e.target.id === "p-back") { pGo(null); return; }
   const o = e.target.closest("[data-open]");
-  if (o && !e.target.closest("#board")) pOpen(o.dataset.open);
+  if (o && !e.target.closest("#board")) pGo(o.dataset.open);
 });
 $("projects").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k === "unlinked") pst.unlinked = e.target.open;
 }, true);
 
 TABS.projects = {
-  show() { pDeep(); renderProjects(); refreshProjects(); refreshBoard(); },
+  // Back on the tab, what was open stays open and the URL names it again.
+  show() { if (pst.open && !st.arg) st.arg = pst.open; pDeep(); renderProjects(); refreshProjects(); refreshBoard(); },
   onEvent(ev) {
     if (st.tab !== "projects") return;
     if (["watch", "queue", "resync"].includes(ev.kind)) refreshProjects();
