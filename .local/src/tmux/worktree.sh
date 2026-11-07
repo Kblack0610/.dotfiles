@@ -501,7 +501,7 @@ wt_occupied_reason() {
   # under it mid-turn. Being unattached says nothing about whether anything is running there.
   # This is why wind-down -- and now `done` -- reap only AFTER the kill: by then there is no
   # session, and the check passes honestly rather than being waived.
-  if wt_session_exists "$(basename "$1")"; then
+  if wt_session_exists "$(panel_session_name "$1")"; then
     printf 'its tmux session is live\n'
     return 1
   fi
@@ -975,7 +975,7 @@ wt_land() {
 # anyway. waitpid's timeout is a guard; whatever is still there afterwards is what reap reports.
 wt_settle() {
   local path="$1" pids
-  wt_session_exists "$(basename "$path")" && return 0
+  wt_session_exists "$(panel_session_name "$path")" && return 0
   wt_pane_inside "$path" && return 0
   pids=$(wt_pids_inside "$path" exe)
   # shellcheck disable=SC2086 # one pid per word
@@ -1136,8 +1136,12 @@ cmd_gc() {
     # A submodule's worktree goes first: it pins the superproject tree its git dir lives in,
     # so reaping it first frees that tree in this pass rather than the next night's.
     local -a later=()
-    for d in "$WT_ROOT"/*; do
+    for d in "$WT_ROOT"/* "$WT_ROOT"/.[!.]*; do
       [ -d "$d" ] || continue
+      # A dot dir is a tool's (.preview, .xdg-agent18) unless it is a linked worktree (.git
+      # FILE): judged by wt_work_reason alone, a git-less one with only caches would read as a
+      # reapable husk, and one holding a clone would be listed as kept every night.
+      case "${d##*/}" in .*) [ -f "$d/.git" ] || continue ;; esac
       if [ -f "$d/.git" ] && [[ "$(<"$d/.git")" == 'gitdir: '*/modules/*/worktrees/* ]]; then
         candidates+=("$d")
       else
