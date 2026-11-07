@@ -201,6 +201,9 @@ impl CostsView {
         out.push(bar("by", b.cuts, &b.by, "b/B"));
         out.push(clip_line(Line::from(tiles(&b, p)), w));
         out.push(clip_line(Line::from(lazer(&b, p)), w));
+        if let Some(g) = glm(&b, p) {
+            out.push(clip_line(Line::from(g), w));
+        }
         out.push(clip_line(Line::from(direct(&b, p)), w));
         out.push(clip_line(Line::from(sources(&b, p)), w));
         for e in &b.errors {
@@ -488,6 +491,20 @@ fn lazer(b: &Board, p: Palette) -> Vec<Span<'static>> {
         Span::styled("RESERVE ", p.dim()),
         Span::raw(reserve),
     ]
+}
+
+/// The GLM pilot key against its cap, on its own line under the Lazer one (the two would not fit
+/// 80 columns). None until the key is minted and exports gauges, so no key reads as no line.
+fn glm(b: &Board, p: Palette) -> Option<Vec<Span<'static>>> {
+    let l = &b.live;
+    if l.glm_spend.is_none() && l.glm_budget.is_none() {
+        return None;
+    }
+    let mut cap = of_cap(l.glm_spend, l.glm_budget);
+    if let Some(h) = l.glm_reset_hours {
+        cap.push_str(&format!(" {:.0}d left", h / 24.0));
+    }
+    Some(vec![Span::styled("GLM ", p.dim()), Span::raw(cap)])
 }
 
 /// Direct Lazer use with what it cannot see beside it, so a low figure never reads as all of it.
@@ -861,6 +878,9 @@ mod tests {
             reserve_spend: Some(19.52),
             reserve_budget: Some(100.0),
             reserve_reset_hours: Some(575.0),
+            glm_spend: Some(5.0),
+            glm_budget: Some(50.0),
+            glm_reset_hours: Some(720.0),
             ..Default::default()
         };
         c.sessions.push(Spent {
@@ -881,6 +901,7 @@ mod tests {
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
         assert!(s.contains("LAZER $93.36 of $250 (37%)"), "{s}");
         assert!(s.contains("RESERVE $19.52 of $100 (20%) 24d left"), "{s}");
+        assert!(s.contains("GLM $5.00 of $50.00 (10%) 30d left"), "{s}");
         let direct = s.lines().find(|l| l.starts_with("DIRECT")).unwrap();
         assert!(direct.contains("$0.00 +1 unpriced"), "{s}");
         assert!(direct.ends_with(hub_core::costs::DIRECT_NOTE), "{s}");
@@ -888,6 +909,7 @@ mod tests {
         let s = screen(&CostsView::default(), 80);
         assert!(s.contains("LAZER -  RESERVE -"), "{s}");
         assert!(!s.contains("unpriced"), "{s}");
+        assert!(!s.contains("GLM"), "an unminted key is no line: {s}");
     }
 
     #[test]

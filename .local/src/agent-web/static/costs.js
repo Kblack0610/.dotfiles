@@ -66,13 +66,16 @@ function costsSwitch(name, all, on, key) {
 // "of $cap (pct%)" under a spend tile, or nothing when there is no cap.
 const ofCap = (spent, cap) => spent != null && cap ? `of ${usd(cap)} (${pct(spent / cap)})` : "";
 
-// The Lazer tiles, the TUI's `lazer` and `direct` lines: the gateway pool, the reserve key against its
-// cap, and direct use with what it cannot see beside it, so a low figure never reads as all of it.
+// The Lazer tiles, the TUI's `lazer` and `direct` lines: the gateway pool, the reserve key and the GLM
+// pilot key (once minted) against their caps, and direct use with what it cannot see beside it, so a low figure never reads as all of it.
 function lazerTiles(lz, dr) {
   const left = lz.reserve_reset_hours != null ? `${Math.round(lz.reserve_reset_hours / 24)}d left` : "";
+  const glmLeft = lz.glm_reset_hours != null ? `${Math.round(lz.glm_reset_hours / 24)}d left` : "";
+  const glm = lz.glm_spend != null || lz.glm_budget != null
+    ? tile("LAZER GLM", usd(lz.glm_spend), "var(--c3)", [ofCap(lz.glm_spend, lz.glm_budget), glmLeft].filter(Boolean).join(", ")) : "";
   const unpriced = dr.unpriced ? `<span class="warn">+${dr.unpriced} unpriced</span>, ` : "";
   return tile("LAZER POOL", usd(lz.lazer_spend), "var(--c3)", ofCap(lz.lazer_spend, lz.lazer_budget)) +
-    tile("LAZER RESERVE", usd(lz.reserve_spend), "var(--c3)", [ofCap(lz.reserve_spend, lz.reserve_budget), left].filter(Boolean).join(", ")) +
+    tile("LAZER RESERVE", usd(lz.reserve_spend), "var(--c3)", [ofCap(lz.reserve_spend, lz.reserve_budget), left].filter(Boolean).join(", ")) + glm +
     tile("LAZER DIRECT", usd(dr.usd), "var(--c3)", unpriced + esc(dr.note || "not read"));
 }
 

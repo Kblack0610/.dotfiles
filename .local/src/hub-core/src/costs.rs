@@ -52,16 +52,20 @@ pub const UNPRICED: &str =
 /// per period by the gateway, and inside the Lazer pool.
 pub const RESERVE_KEY: &str = "claude-reserve";
 
+/// The gateway key the GLM pilot and canary run on (`fleet-dispatch start --harness glm`): one
+/// route, capped per period by the gateway, inside the Lazer pool. Absent until the key is minted.
+pub const GLM_KEY: &str = "glm-pilot";
+
 /// What the direct figure covers and what it cannot, beside the pool on both surfaces. opencode's
 /// own DB prices a `lazer/*` session and the nightly outcomes run carries it; a direct call from
 /// anything else (a curl probe, another machine) reaches Lazer with no record here.
 pub const DIRECT_NOTE: &str = "opencode lazer/*, nightly; other direct use unseen";
 
 /// The gauges the live tiles read: Claude Code's 24h cost, the Lazer pool's spend and cap, and the
-/// reserve key's cap, what is left of it and the hours to its reset, as LiteLLM exports them.
+/// reserve and GLM keys' caps, what is left of each and the hours to its reset, as LiteLLM exports them.
 pub(crate) fn live_q() -> String {
     format!(
-        r#"{{__name__=~"cc:claude_code_cost_24h_usd|cc:lazer_spend_usd|cc:lazer_budget_usd"}} or {{__name__=~"litellm_(api_key_max_budget|remaining_api_key_budget|api_key_budget_remaining_hours)_metric",api_key_alias="{RESERVE_KEY}"}}"#
+        r#"{{__name__=~"cc:claude_code_cost_24h_usd|cc:lazer_spend_usd|cc:lazer_budget_usd"}} or {{__name__=~"litellm_(api_key_max_budget|remaining_api_key_budget|api_key_budget_remaining_hours)_metric",api_key_alias=~"{RESERVE_KEY}|{GLM_KEY}"}}"#
     )
 }
 
@@ -182,21 +186,32 @@ pub struct Live {
     pub reserve_spend: Option<f64>,
     pub reserve_budget: Option<f64>,
     pub reserve_reset_hours: Option<f64>,
+    /// The `GLM_KEY` key, the same three figures.
+    pub glm_spend: Option<f64>,
+    pub glm_budget: Option<f64>,
+    pub glm_reset_hours: Option<f64>,
 }
 
 /// The live gauges out of `live_q`'s series, and why the reserve is unknown when it is. A key with
-/// no cap exports +Inf, which `prom` reads as none. The reserve's cap and what is left pair by key
-/// hash (every pod exports the same key); two keys under the alias is unknown, never a mix of both.
+/// no cap exports +Inf, which `prom` reads as none. A key's cap and what is left pair by key
+/// hash (every pod exports the same key); two keys under one alias is unknown, never a mix of both.
+/// The GLM key does not exist until it is minted, so its absence is not a reason: it reads as none.
 pub fn live(series: &[crate::prom::Series]) -> (Live, Option<String>) {
     let mut l = Live::default();
-    let mut keys: BTreeMap<&str, [Option<f64>; 3]> = BTreeMap::new();
+    let mut reserve: BTreeMap<&str, [Option<f64>; 3]> = BTreeMap::new();
+    let mut glm: BTreeMap<&str, [Option<f64>; 3]> = BTreeMap::new();
     for s in series {
         let v = s.value;
         match s.label("__name__") {
             "cc:claude_code_cost_24h_usd" => l.claude_24h = v,
             "cc:lazer_spend_usd" => l.lazer_spend = v,
             "cc:lazer_budget_usd" => l.lazer_budget = v,
-            n if s.label("api_key_alias") == RESERVE_KEY => {
+            n => {
+                let keys = match s.label("api_key_alias") {
+                    RESERVE_KEY => &mut reserve,
+                    GLM_KEY => &mut glm,
+                    _ => continue,
+                };
                 let k = keys.entry(s.label("hashed_api_key")).or_default();
                 match n {
                     "litellm_api_key_max_budget_metric" => k[0] = v,
@@ -205,20 +220,26 @@ pub fn live(series: &[crate::prom::Series]) -> (Live, Option<String>) {
                     _ => {}
                 }
             }
-            _ => {}
         }
     }
-    let why = match keys.len() {
-        0 => Some(format!("Prometheus: no {RESERVE_KEY} key gauges")),
-        1 => {
+    // (spend, cap, hours to reset) of the one key under an alias, None for none or several
+    let one = |keys: BTreeMap<&str, [Option<f64>; 3]>| {
+        (keys.len() == 1).then(|| {
             let [cap, left, hours] = keys.into_values().next().unwrap_or_default();
-            l.reserve_budget = cap;
-            l.reserve_spend = cap.zip(left).map(|(cap, left)| cap - left);
-            l.reserve_reset_hours = hours;
-            None
-        }
+            (cap.zip(left).map(|(cap, left)| cap - left), cap, hours)
+        })
+    };
+    let why = match reserve.len() {
+        0 => Some(format!("Prometheus: no {RESERVE_KEY} key gauges")),
+        1 => None,
         n => Some(format!("Prometheus: {n} keys carry the {RESERVE_KEY} alias")),
     };
+    if let Some((spend, cap, hours)) = one(reserve) {
+        (l.reserve_spend, l.reserve_budget, l.reserve_reset_hours) = (spend, cap, hours);
+    }
+    if let Some((spend, cap, hours)) = one(glm) {
+        (l.glm_spend, l.glm_budget, l.glm_reset_hours) = (spend, cap, hours);
+    }
     (l, why)
 }
 
@@ -1642,6 +1663,19 @@ not json
         ]);
         assert_eq!(l.reserve_spend, None);
         assert_eq!(why.as_deref(), Some("Prometheus: 2 keys carry the claude-reserve alias"));
+        // the GLM key reads like the reserve, never lands on it, and its absence is no reason
+        let (l, why) = live(&[
+            gauge("litellm_api_key_max_budget_metric", RESERVE_KEY, 100.0),
+            gauge("litellm_remaining_api_key_budget_metric", RESERVE_KEY, 80.0),
+            gauge("litellm_api_key_max_budget_metric", GLM_KEY, 50.0),
+            gauge("litellm_remaining_api_key_budget_metric", GLM_KEY, 48.75),
+            gauge("litellm_api_key_budget_remaining_hours_metric", GLM_KEY, 700.0),
+        ]);
+        assert_eq!((l.glm_budget, l.glm_reset_hours), (Some(50.0), Some(700.0)));
+        assert!((l.glm_spend.unwrap() - 1.25).abs() < 1e-9);
+        assert_eq!((l.reserve_budget, why), (Some(100.0), None));
+        let (l, _) = live(&[gauge("litellm_api_key_max_budget_metric", RESERVE_KEY, 100.0)]);
+        assert_eq!((l.glm_budget, l.glm_spend), (None, None));
         // and no reserve gauge at all says so, so a renamed gauge is not a quiet "-"
         let (_, why) = live(&[gauge("cc:lazer_spend_usd", "", 1.0)]);
         assert_eq!(why.as_deref(), Some("Prometheus: no claude-reserve key gauges"));
