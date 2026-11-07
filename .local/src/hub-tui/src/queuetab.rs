@@ -251,9 +251,21 @@ pub fn pipeline_lines(
             w,
         )],
         Some(Ok(Some(pl))) => {
-            let mut out = vec![clip_line(Line::raw(format!("{}{hint}", pl.line())), w)];
-            if let Some(b) = pl.bottleneck_line() {
-                out.push(clip_line(Line::styled(b, p.warn()), w));
+            // The `as of` stamp can push the hint past the width; it then rides the line below.
+            let first = pl.line();
+            let fits = first.chars().count() + hint.chars().count() <= w;
+            let mut out = vec![clip_line(
+                Line::raw(format!("{first}{}", if fits { hint } else { "" })),
+                w,
+            )];
+            let late = if fits { "" } else { hint };
+            match pl.bottleneck_line() {
+                Some(b) => out.push(clip_line(Line::styled(format!("{b}{late}"), p.warn()), w)),
+                None if !late.is_empty() => out.push(clip_line(
+                    Line::styled(format!("{:10}{}", "", late.trim_start()), p.dim()),
+                    w,
+                )),
+                None => {}
             }
             out
         }
@@ -817,6 +829,27 @@ pub(crate) mod tests {
                 "          ! bottleneck: waiting, age p90 9h (bound 4h)",
             ]
         );
+    }
+
+    #[test]
+    fn a_stamp_that_pushes_the_hint_past_the_width_moves_it_to_the_next_line() {
+        let mut p = pipe(2.25).unwrap().unwrap();
+        let ten_ago = chrono::Local::now().timestamp() - 600;
+        p.as_of = Some(ten_ago);
+        let at = hub_core::capacity::clock(ten_ago);
+        let r = Ok(Some(p.clone()));
+        let l = lines_of(Some(&r), true);
+        assert_eq!(
+            l[0],
+            format!("pipeline  inbox 4  backlog 312  queued 3  running 5  waiting 2  as of {at}")
+        );
+        assert_eq!(
+            l[1],
+            "          ! bottleneck: waiting, age p90 9h (bound 4h)   o graph"
+        );
+        p.bottleneck = None;
+        let l = lines_of(Some(&Ok(Some(p))), true);
+        assert_eq!(l[1], "          o graph");
     }
 
     #[test]

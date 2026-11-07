@@ -83,3 +83,11 @@ test("Done days carry hub-core's day total in the heading, one per day", () => {
   const un = [done({ slug: "u1", finished: undefined }), done({ slug: "d", day: "2026-11-06", day_label: "Today" }), done({ slug: "u2", finished: undefined })];
   assert.equal((vm.runInContext(`qDoneDays(${JSON.stringify(un)})`, ctx).match(/Undated/g) || []).length, 1);
 });
+
+const tiles = (items) => vm.runInContext(`qst.items = ${JSON.stringify(items)}; qst.stats = {}; qTiles()`, ctx);
+
+test("the RUNNING tile links to Sessions filtered to Running, and no other count tile does", () => {
+  const html = tiles([{ state: "running" }, { state: "waiting" }]);
+  assert.match(html, /<a class="tile" href="#sessions\?s=running"[^>]*><span class="tl">RUNNING<\/span><span class="tv">1</);
+  assert.doesNotMatch(html, /<a class="tile"[^>]*><span class="tl">(NEEDS YOU|UP NEXT)/);
+});
