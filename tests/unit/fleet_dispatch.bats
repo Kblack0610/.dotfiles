@@ -3785,6 +3785,33 @@ landed_item() {
   assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
 }
 
+@test "reap: an item whose PR is in another of the project's repos proves its commit in that repo's checkout" {
+  # NEGATIVE CONTROL: proved in the project's own checkout (game), the tools commit read
+  # "evidence ... is not a commit in .../repos/game" and the row stayed started every pass (ar-965).
+  landed_item MERGED 'o/tools#9'
+  git init -q --bare "$SANDBOX/tools.git"
+  git -c init.defaultBranch=main init -q "$SANDBOX/repos/tools"
+  git -C "$SANDBOX/repos/tools" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "tools fix (#9)"
+  git -C "$SANDBOX/repos/tools" remote add origin "$SANDBOX/tools.git"
+  git -C "$SANDBOX/repos/tools" push -q origin HEAD:main
+  TOID=$(git -C "$SANDBOX/repos/tools" rev-parse HEAD)
+  jq --arg d "$SANDBOX/repos/tools" '.trackers.tools = {repo: "tools"} | .paths[$d] = "tools"' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/map.next"
+  mv "$SANDBOX/map.next" "$DISPATCH_PROJECT_MAP"
+  agent-queue set fix-crash "merged=$TOID" >/dev/null
+  run cmd_reap
+  assert_output --partial 'closed game: fix crash'
+  run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:9 commit:${TOID:0:12}"
+}
+
+@test "reap: an item whose PR names a repo with no checkout leaves its row started" {
+  landed_item MERGED 'o/tools#9'
+  agent-queue set fix-crash "merged=$OID" >/dev/null
+  run cmd_reap
+  refute_output --partial 'closed game'
+  grep -q 'row left started, no merge proof' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
+}
+
 @test "reap: a done item's open PR keeps its row started past the orphan grace" {
   landed_item OPEN
   orphan_seen game 'fix crash' 73
