@@ -12,6 +12,12 @@ metadata:
 
 Every message the fleet sends the human follows these rules, whether code or a model writes it. Each channel's numbers (length budgets, item caps, emoji, banned patterns) live in `~/.config/comms-lint/channels.toml`. `comms-lint` checks a message against them, and `comms-lint report` grades everything the fleet has already sent. Prose tells (dashes, "not X but Y", stock phrases) belong to `de-ai-writing`, and the lint runs its `check.py` on prose channels. The work voice for replies to a colleague is `work-comms`. Agent-to-agent messages are `fleet-comms`.
 
+## Scope and triggers
+
+Covers every message the fleet writes for the human to read: pages, the briefing, the Morning block, rundowns, status, PR bodies, client EODs, UI text and answers in chat.
+
+Use before writing or changing one, or when asked why a message is bad. Prose tells: `de-ai-writing`. The work voice: `work-comms`.
+
 ## Rules
 
 1. The first line stands alone: what happened, or what the reader must do. Why: a lock screen, the Morning block and the ntfy list show only that line. Checked: `lead-too-long`.

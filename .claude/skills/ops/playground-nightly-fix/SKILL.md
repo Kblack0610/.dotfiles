@@ -12,7 +12,7 @@ metadata:
 
 The loop that takes unity-core-playground's red nightly to green and proves it. The rules (stop-the-line, one gate per fix, quarantine with an expiry) live in the repo's `docs/operations/ci.md` (Rules, rule 10); this file is the procedure and restates none of them. Reading one run: `playground-headless-test`. Why reds recur across many runs: `ci-failures`.
 
-## When to Use
+## Scope and triggers
 
 - When a scheduled `test.yml` or `multi.yml` run on main is red, or Home's NEEDS YOU shows a Nightly row.
 - When a validation item from an earlier pass fires.

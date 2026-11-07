@@ -192,3 +192,81 @@ test("a failed proposals read does not say nothing is proposed", () => {
   assert.match(html, /Could not read proposals/);
   assert.doesNotMatch(html, /Nothing proposed/);
 });
+
+const night = (o) => ({ at: now(), since: now() - 3600, since_label: "Thu 18:00", rows: [], ok_line: "all 6 areas ok", errors: [], ...o });
+const area = (name, level, o) => ({ name, level, line: `${name} line`, details: [], link: "#fleet?s=failed", fix: null, ...o });
+function drawNight(n) {
+  ctx.input = n;
+  vm.runInContext("hst.night = input; hst.nightErr = null; hst.fix = {}", ctx);
+  return draw(home());
+}
+
+test("Since last night shows only what is not ok, links each row and folds the ok areas", () => {
+  assert.match(drawNight(night()), /<h2 class="sec">Since last night <span class="muted">since Thu 18:00 <a href="#daily">briefing<\/a><\/span><\/h2><div class="cline muted">all 6 areas ok<\/div>/);
+  const html = drawNight(night({
+    rows: [
+      area("Workers overnight", "bad", { details: ["wave-roll failed 02:10"], fix: { project: "agent-runtime", task: "Fix it" } }),
+      area("Sessions", "warn", { link: "#sessions" }),
+    ],
+    ok_line: "Infra, Nightly, Delivery, Costs ok",
+    errors: ["watches: no such dir"],
+  }));
+  assert.match(html, /<div class="cline warn">watches: no such dir<\/div>/);
+  assert.match(html, /<a href="#fleet\?s=failed">Workers overnight<\/a> <span class="cchip bad">bad<\/span> Workers overnight line <button class="btn sm" data-fix="Workers overnight">Queue a fix<\/button><\/div><div class="cline muted">wave-roll failed 02:10<\/div>/);
+  assert.match(html, /<a href="#sessions">Sessions<\/a> <span class="cchip warn">warn<\/span> Sessions line <\/div>/, "a warn row has no fix");
+  assert.equal(html.match(/data-fix=/g).length, 1);
+  assert.match(html, /Infra, Nightly, Delivery, Costs ok/);
+  assert.ok(html.indexOf("Needs you") < html.indexOf("Since last night") && html.indexOf("Since last night") < html.indexOf("Proposals"));
+});
+
+test("a failed briefing read says why instead of an all-clear", () => {
+  vm.runInContext("hst.night = null; hst.nightErr = 'agent-web: 502'", ctx);
+  const html = draw(home());
+  assert.match(html, /Since last night<\/h2><div class="cline warn">agent-web: 502<\/div>/);
+  assert.doesNotMatch(html, /areas ok/);
+  vm.runInContext("hst.nightErr = null", ctx);
+});
+
+test("Queue a fix posts the area's task to the queue once and says what it queued", async () => {
+  const sent = [];
+  const before = ctx.fetch;
+  ctx.fetch = async (path, o) => {
+    sent.push([path, o && o.body]);
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ out: "20261107-fix-it" }) };
+  };
+  drawNight(night({ rows: [area("Nightly", "bad", { fix: { project: "agent-runtime", task: "Fix the nightly" } })] }));
+  try {
+    await vm.runInContext(`queueFix("Nightly")`, ctx);
+  } finally { ctx.fetch = before; }
+  assert.deepEqual(sent, [["/api/queue", '{"project":"agent-runtime","task":"Fix the nightly"}']]);
+  const html = draw(home());
+  assert.match(html, /<span class="muted">queued 20261107-fix-it<\/span>/);
+  assert.doesNotMatch(html, /data-fix=/, "a queued fix is not offered again");
+  vm.runInContext("hst.night = null; hst.fix = {}", ctx);
+});
+
+test("a fix the queue already holds shows its item, and a new window offers fixes again", async () => {
+  const held = night({ rows: [area("Nightly", "bad", { fix: { project: "agent-runtime", task: "Fix the nightly", queued: "20261106-fix-nightly" } })] });
+  let html = drawNight(held);
+  assert.match(html, /<span class="muted">queued 20261106-fix-nightly<\/span>/);
+  assert.doesNotMatch(html, /data-fix=/, "a reload or the hub TUI does not queue it twice");
+
+  const before = ctx.fetch;
+  let answer = night({ rows: [area("Nightly", "bad", { fix: { project: "agent-runtime", task: "Fix the nightly" } })] });
+  ctx.fetch = async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => answer });
+  try {
+    vm.runInContext(`hst.fix = { Nightly: { ok: true, text: "queued x" } }`, ctx);
+    await vm.runInContext("refreshNight()", ctx);
+    assert.equal(vm.runInContext("hst.fix.Nightly.text", ctx), "queued x", "the same window keeps what was queued here");
+    answer = { ...answer, since: answer.since - 86400 };
+    await vm.runInContext("refreshNight()", ctx);
+    assert.equal(vm.runInContext("hst.fix.Nightly", ctx), undefined, "a new window forgets it");
+    answer = { error: "briefing: boom" };
+    await vm.runInContext("refreshNight()", ctx);
+    assert.equal(vm.runInContext("hst.nightErr", ctx), "briefing: boom");
+    html = draw(home());
+    assert.match(html, /<div class="cline warn">briefing: boom<\/div>/);
+    assert.match(html, /data-fix="Nightly"/, "the last good read stays up under a failed one");
+  } finally { ctx.fetch = before; }
+  vm.runInContext("hst.night = null; hst.nightErr = null; hst.fix = {}", ctx);
+});

@@ -16,8 +16,6 @@ Produces a step-by-step walkthrough of ONE user flow as a markdown file, real sc
 
 Walk one user flow end to end (web at desktop and phone width, mobile app) and write it up as a markdown report with a screenshot per step and a severity on every note (FIX / POLISH / VERIFY / OK), saved to the project's lab `docs/reviews/<date>-<slug>/` (synced to every device) with a PDF beside it, readable in the terminal with glow or yazi. Use when the user says "walk the payment flow and write it up", "do a flow review", "summary like the Julie one", "screenshot every step of X", "make a PDF of the review", or wants a readable walkthrough of one journey for a human. Can also convert an existing HTML walkthrough artifact into this format with `scripts/extract-artifact.py`. For a whole-app screen sweep with a coverage matrix use `ui-audit`; for audit-then-fix-and-merge use `delta-audit`. A walk that signs off a tree before it merges or ships follows `references/manual-leg.md`. This skill reports; it does not fix.
 
-## When to Use
-
 - The user wants one journey (pay, sign up, request care, onboard) walked and written up with screenshots.
 - The user has an HTML walkthrough artifact and wants it as markdown in the project's reviews.
 

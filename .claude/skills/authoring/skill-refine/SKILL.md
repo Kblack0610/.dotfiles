@@ -14,6 +14,12 @@ A `SKILL.md` is prose an agent obeys. It has no compiler, no test, and no import
 
 This skill is the maintenance pass for that corpus. It never trusts a skill's own account of itself; it checks against the filesystem, then against what the memory layers have since learned.
 
+## Scope and triggers
+
+Covers auditing and polishing the skill corpus: stale paths, lesson contradictions, overlaps and missing skills.
+
+Use for "audit the skills", "are my skills stale", "what skills am I missing". Propose-only when headless. Editing rules rather than skills: `update-rules`.
+
 ## Who changes a skill
 
 Skills are instructions, not code. An auto-rewrite that is subtly wrong does not throw - it changes how every future session behaves, invisibly. So no change reaches a skill without a reviewable diff:

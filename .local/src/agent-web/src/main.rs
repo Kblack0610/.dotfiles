@@ -13,6 +13,7 @@
 mod assets;
 mod auth;
 mod board;
+mod briefing;
 mod cli;
 mod cloud;
 mod costs;
@@ -82,6 +83,7 @@ struct AppState {
     session_table: sessions::Cache,
     fleet: fleet::Cache,
     pipeline: pipeline::Cache,
+    briefing: briefing::Cache,
 }
 
 type Shared = Arc<AppState>;
@@ -109,6 +111,7 @@ async fn main() -> Result<()> {
         session_table: sessions::Cache::default(),
         fleet: fleet::Cache::default(),
         pipeline: pipeline::Cache::default(),
+        briefing: briefing::Cache::default(),
     });
 
     let api = Router::new()
@@ -129,6 +132,7 @@ async fn main() -> Result<()> {
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
         .route("/api/home", get(home_board))
+        .route("/api/briefing", get(briefing_night))
         .route("/api/proposals/accept", post(proposals::accept))
         .route("/api/proposals/reject", post(proposals::reject))
         .route("/api/infra", get(infra_board))
@@ -1060,6 +1064,16 @@ async fn home_board(
     .await
     .map(Json)
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Home's "Since last night" (briefing.rs): the briefing's areas that are not ok since last night.
+async fn briefing_night(State(s): State<Shared>) -> Response {
+    let infra = s.infra.infra().await;
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.briefing.get(infra).await,
+    )
+        .into_response()
 }
 
 async fn infra_board(State(s): State<Shared>) -> Response {

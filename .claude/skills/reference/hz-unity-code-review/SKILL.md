@@ -20,7 +20,7 @@ metadata:
 
 # Unity Code Review for Meta VR
 
-## When to Use
+## Scope and triggers
 
 Use this skill when reviewing Unity C# code or project settings that target Meta VR headsets. This includes:
 

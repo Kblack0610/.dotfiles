@@ -1,6 +1,6 @@
 "use strict";
-// The Home tab, the front page: what needs you, what analysis proposes, what runs, the numbers
-// and the health strip.
+// The Home tab, the front page: what needs you, what changed since last night, what analysis
+// proposes, what runs, the numbers and the health strip.
 // The list and the numbers are hub_core::home (/api/home), the same join the hub TUI's Home tab
 // draws; this file only lays them out. An ask or an open dialog is drawn with waiting.js's
 // answer card, so it is answered in place.
@@ -9,12 +9,27 @@
 // state, the queue and the asks push file events and re-read on those.
 const HOME_REFRESH_MS = 60e3;
 // `prop`: the proposal row opened and the id whose accept or reject is in flight.
-const hst = { data: null, err: null, prop: { open: null, busy: null, err: null, all: false } };
+// `night`: Since last night (/api/briefing, hub_core::briefing::night) and its read error;
+// `fix`: per area, "busy", or what Queue a fix answered ({ ok, text }).
+const hst = { data: null, err: null, prop: { open: null, busy: null, err: null, all: false }, night: null, nightErr: null, fix: {} };
+
+const refreshNight = async () => {
+  try {
+    const n = await api("/api/briefing");
+    if (n.error) { hst.nightErr = n.error; return; }
+    // A new window offers every fix again; the last good read stays up under a failed one.
+    if (hst.night && hst.night.since !== n.since) hst.fix = {};
+    hst.night = n; hst.nightErr = null;
+  } catch (e) { hst.nightErr = e.message; }
+};
 
 const refreshHome = coalesce(async () => {
   const view = tblParams(st.views.home).toString();
+  // The briefing read is the slower one: Home draws without it and again when it answers.
+  const night = refreshNight().then(() => { if (st.tab === "home") renderHome(); });
   try { hst.data = await api("/api/home" + (view ? "?" + view : "")); hst.err = null; } catch (e) { hst.err = e.message; }
   if (st.tab === "home") renderHome();
+  await night;
 });
 
 const PROP_COLS = { stream: ["stream"], project: ["project"], proposal: ["proposal"], created: ["age", "n"], verb: ["action", "n"] };
@@ -137,6 +152,39 @@ function healthHtml(chips) {
     ` <span class="muted">${chips.length - bad.length} green</span>`;
 }
 
+// Since last night: the briefing's areas that are not ok, each linking to the tab that owns
+// its fact, a bad one with Queue a fix; the ok ones are one line (dashboards rule 4).
+function nightRow(r) {
+  const f = hst.fix[r.name];
+  const act = !r.fix ? "" : !f && r.fix.queued ? `<span class="muted">queued ${esc(r.fix.queued)}</span>`
+    : f && f !== "busy" ? `<span class="${f.ok ? "muted" : "warn"}">${esc(f.text)}</span>`
+    : `<button class="btn sm" data-fix="${esc(r.name)}"${f === "busy" ? " disabled" : ""}>Queue a fix</button>`;
+  const det = r.details.length ? `<div class="cline muted">${esc(r.details.join("; "))}</div>` : "";
+  return `<div class="cline"><a href="${esc(r.link)}">${esc(r.name)}</a> ${cchip(r.level, r.level)} ${esc(r.line)} ${act}</div>${det}`;
+}
+
+function nightSection() {
+  const n = hst.night;
+  const head = (extra) => `<h2 class="sec">Since last night${extra ? ` <span class="muted">${extra}</span>` : ""}</h2>`;
+  if (!n) return head("") + `<div class="${hst.nightErr ? "cline warn" : "empty"}">${esc(hst.nightErr || "Reading...")}</div>`;
+  const errs = [hst.nightErr, ...n.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
+  const ok = n.ok_line ? `<div class="cline muted">${esc(n.ok_line)}</div>` : "";
+  return head(`since ${esc(n.since_label)} <a href="#daily">briefing</a>`) + errs + n.rows.map(nightRow).join("") + ok;
+}
+
+// Queue a fix: the area's task, worded by hub-core, through the Queue tab's own POST.
+async function queueFix(name) {
+  const r = hst.night && hst.night.rows.find((x) => x.name === name);
+  if (!r || !r.fix) return;
+  hst.fix[name] = "busy";
+  renderHome();
+  try {
+    const out = await post("/api/queue", { project: r.fix.project, task: r.fix.task });
+    hst.fix[name] = { ok: true, text: `queued ${out.out || ""}`.trim() };
+  } catch (e) { hst.fix[name] = { ok: false, text: e.message }; }
+  renderHome();
+}
+
 function drawHome() {
   const el = $("home"), h = hst.data;
   if (!h) { paint(el, hst.err ? `<div class="err">${esc(hst.err)}</div>` : '<div class="empty">Reading...</div>', askst.open); return; }
@@ -154,7 +202,7 @@ function drawHome() {
   // The two summary lines lead, so a long Needs list never buries them.
   paint(el, errs + sec("Numbers", null, `<div class="cline hnum">${nums}</div>`) +
     sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) +
-    sec("Needs you", h.needs.length, needs) + propSection(h) + sec("Running", h.running.length, running), askst.open);
+    sec("Needs you", h.needs.length, needs) + nightSection() + propSection(h) + sec("Running", h.running.length, running), askst.open);
 }
 // Session events re-render this often; keep a reply that is being typed, and the proposal
 // search or dropdown in use, around which only the rows and chips repaint.
@@ -174,6 +222,7 @@ function propView(patch) {
 $("home").addEventListener("click", (e) => {
   if (e.target.closest("summary")) return;
   const t = e.target;
+  if (t.dataset.fix) { queueFix(t.dataset.fix); return; }
   if (t.dataset.accept) { propDecide("accept", t.dataset.accept); return; }
   if (t.dataset.reject) { propDecide("reject", t.dataset.reject); return; }
   if (t.dataset.propall) { hst.prop.all = true; renderHome(); return; }
