@@ -1,4 +1,4 @@
-//! The Queue tab: agent-queue's items, and adding, cancelling and re-ranking them.
+//! The Queue tab: agent-queue's items as one table (`render`), and adding, cancelling and re-ranking them.
 //!
 //! agent-queue is the only writer of `~/.agent/queue` (design: `~/.config/agentctl/QUEUE.md`).
 //! The list, add, cancel and bump go through `hub_core::queue`, which the hub TUI uses too.
@@ -6,12 +6,14 @@
 //! `candidates`; its Promote posts the board's Start (`POST /api/board`). Every call is plain
 //! arguments, never a shell, and agent-queue's stderr comes back as the error the page shows.
 
+use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
 use std::collections::BTreeMap;
 
-use hub_core::queue::{self as hub_queue, Candidates, DayTotal, Item};
+use hub_core::queue::{self as hub_queue, Candidates, DayTotal, Item, QueueRow};
 use hub_core::session_actions::System;
+use hub_core::table::View;
 use serde::Deserialize;
 
 use crate::{bad, ApiResult};
@@ -19,27 +21,68 @@ use crate::{bad, ApiResult};
 /// How many days back, today included, the page's Done section reaches.
 const DONE_DAYS: i64 = 7;
 
-/// Every active item plus those finished in the last `DONE_DAYS` days, in queue order, read
-/// through hub-core, each with the words hub-core gives a row (`item_view`).
-pub async fn list() -> ApiResult<Json<Vec<serde_json::Value>>> {
+/// The table view over the list: the same keys the page keeps in its URL (`#queue?q=&s=&sort=&dir=`).
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct QueueQuery {
+    pub q: String,
+    pub s: String,
+    pub sort: String,
+    pub dir: String,
+}
+
+/// Every active item plus those finished in the last `DONE_DAYS` days, read through hub-core,
+/// then filtered and sorted by `hub_core::table` so the page only draws (`render`).
+pub async fn list(Query(q): Query<QueueQuery>) -> ApiResult<Json<serde_json::Value>> {
     tokio::task::spawn_blocking(|| {
         hub_queue::list_since(&System, "all", &hub_queue::days_ago(DONE_DAYS - 1))
     })
     .await
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map(|items| {
-        let days = hub_queue::done_days(&items);
-        let now = chrono::Utc::now();
-        Json(items.iter().map(|i| item_view(i, &days, now)).collect())
-    })
+    .map(|items| Json(render(items, &q, chrono::Utc::now())))
     .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
+}
+
+/// The rows the view keeps, each worded by `item_view`, and the controls that drew them
+/// (`table`). `needs_you` counts every item whatever the view, for the tab's badge;
+/// `open_rows` is how many rows the page draws before "+N older"; `section_aliases` maps an old
+/// section id (`#queue/running`) to the state chip it opens.
+fn render(
+    items: Vec<Item>,
+    q: &QueueQuery,
+    now: chrono::DateTime<chrono::Utc>,
+) -> serde_json::Value {
+    let days = hub_queue::done_days(&items);
+    let needs_you = items
+        .iter()
+        .filter(|i| i.state == hub_queue::State::Waiting)
+        .count();
+    let queue = hub_queue::Queue {
+        items,
+        ..Default::default()
+    };
+    let rows = queue.rows(now);
+    let view = View::new::<QueueRow>(&q.q, &q.s, &q.sort, &q.dir);
+    let (shown, table) = view.summary(&rows);
+    let aliases: serde_json::Map<String, serde_json::Value> = hub_queue::SECTION_ALIASES
+        .iter()
+        .map(|(old, chip)| (old.to_string(), (*chip).into()))
+        .collect();
+    serde_json::json!({
+        "at": now.timestamp(),
+        "items": shown.iter().map(|r| item_view(r.item, &days, now)).collect::<Vec<_>>(),
+        "table": table,
+        "needs_you": needs_you,
+        "open_rows": hub_queue::TABLE_OPEN_ROWS,
+        "section_aliases": aliases,
+    })
 }
 
 /// The item as agent-queue printed it plus what a row shows: `harness` (`Item::harness_label`,
 /// `claude` when the item names no agent), `cost` (dollars, absent when unknown), the PR's
 /// label and link, `pr_merged` (the merge was recorded), `unproven`, and for a done item its
 /// `day`, its `day_label` and that day's `day_total` line, so the page sums and words nothing;
-/// and its `timing` now (`Item::timing`), so the page does no duration math.
+/// its `timing` now (`Item::timing`), so the page does no duration math, and its `timeline`.
 fn item_view(
     i: &Item,
     days: &BTreeMap<String, DayTotal>,
@@ -47,6 +90,7 @@ fn item_view(
 ) -> serde_json::Value {
     let mut v = serde_json::to_value(i).unwrap_or_default();
     v["timing"] = serde_json::to_value(i.timing(now)).unwrap_or_default();
+    v["timeline"] = serde_json::to_value(i.timeline()).unwrap_or_default();
     v["harness"] = i.harness_label().into();
     if let Some(c) = i.cost() {
         v["cost"] = c.into();
@@ -226,6 +270,75 @@ mod tests {
             (a["harness"].as_str(), c["harness"].as_str()),
             (Some("claude"), Some("codex sol"))
         );
+    }
+
+    #[test]
+    fn the_list_is_the_shared_table_in_hub_cores_order_with_its_controls() {
+        let items = hub_queue::parse(concat!(
+            r#"{"slug":"d1","state":"done","status":"ok","project":"dotfiles","finished":"2026-11-06T10:00:00Z","task":"fix(a): done"}"#,
+            "\n",
+            r#"{"slug":"q1","state":"queued","project":"dotfiles","queued":"2026-11-06T09:00:00Z","task":"feat(b): up"}"#,
+            "\n",
+            r#"{"slug":"w1","state":"waiting","project":"playground","waiting":"2026-11-06T10:00:00Z","task":"fix(c): ask"}"#,
+            "\n",
+            r#"{"slug":"r1","state":"running","project":"dotfiles","started":"2026-11-06T09:30:00Z","task":"fix(d): run"}"#,
+        ));
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let slugs = |v: &serde_json::Value| -> Vec<String> {
+            v["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["slug"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let v = render(items.clone(), &QueueQuery::default(), now);
+        assert_eq!(
+            slugs(&v),
+            ["w1", "r1", "q1", "d1"],
+            "needs you, running, up next, done"
+        );
+        assert_eq!(v["table"]["total"], 4);
+        assert_eq!(v["needs_you"], 1);
+        assert_eq!(v["open_rows"], hub_queue::TABLE_OPEN_ROWS);
+        assert_eq!(v["section_aliases"]["running"], "running");
+        assert_eq!(v["section_aliases"]["waiting"], "needs you");
+        assert_eq!(
+            v["items"][1]["timing"]["run"], 150,
+            "the page draws hub-core's minutes"
+        );
+        let q = QueueQuery {
+            q: "project:dotfiles".into(),
+            s: "running".into(),
+            ..Default::default()
+        };
+        let v = render(items.clone(), &q, now);
+        assert_eq!(slugs(&v), ["r1"]);
+        assert_eq!(v["table"]["total"], 4, "the chips count every row");
+        assert_eq!(v["needs_you"], 1, "the badge ignores the view");
+        let by_in = QueueQuery {
+            sort: "in".into(),
+            dir: "asc".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            slugs(&render(items, &by_in, now))[..3],
+            ["w1", "r1", "q1"].map(String::from),
+            "asc, none last"
+        );
+    }
+
+    #[test]
+    fn a_row_view_carries_hub_cores_timeline() {
+        let items = hub_queue::parse(
+            r#"{"slug":"a","state":"done","queued":"2026-11-06T09:00:00Z","started":"2026-11-06T09:14:00Z","merged":"abc123","task":"t"}"#,
+        );
+        let v = item_view(&items[0], &BTreeMap::new(), chrono::Utc::now());
+        assert_eq!(v["timeline"][1]["step"], "started");
+        assert_eq!(v["timeline"][1]["gap_min"], 14);
+        assert_eq!(v["timeline"][2]["sha"], "abc123");
     }
 
     #[test]

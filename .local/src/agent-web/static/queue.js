@@ -1,6 +1,8 @@
 "use strict";
-// The Queue tab: agent-queue's items (/api/queue), a box to queue a task, and cancel and
-// re-rank on each active row. Design: ~/.config/agentctl/QUEUE.md. The page never writes the
+// The Queue tab: agent-queue's items as one table (/api/queue), a box to queue a task, and a
+// row's detail with cancel and re-rank for an active one. The table is the shared one
+// (table.js): hub-core filters and sorts by the view in the tab's URL query, and the durations
+// are its `timing` minutes. Design: ~/.config/agentctl/QUEUE.md. The page never writes the
 // store itself; every change goes through agent-queue, and the SSE `queue` event re-reads it.
 // Below the queue, the Candidates fold: the ranked board rows (/api/queue/candidates, hub-core
 // over `fleet-dispatch suggest`), each with a Promote that is the board's Start.
@@ -10,23 +12,17 @@ const Q_PRIORITIES = ["urgent", "high", "low"];
 const PIPELINE_REFRESH_MS = 60e3;
 // The queue form's modes in the human's words; the option values stay what agent-queue takes.
 const Q_MODE = { oneshot: "Run to PR", plan: "Plan first" };
-const Q_SECTIONS = [
-  ["waiting", "Waiting for you"],
-  ["running", "Running"],
-  ["queued", "Up next"],
-  ["done", "Done, last 7 days"],
-];
-// Each state's chip on a card, with how long it has been in it.
-const Q_STATE = { waiting: "Waiting on you", running: "Running", queued: "Queued" };
-// Which folds are open, by data-k: a section (`sec:<state>`) or a card's task (`task:<slug>`).
-// Re-renders come with every event, so the page keeps what the human opened. Done and
-// Candidates start shut.
+// Which folds are open, by data-k: a section (`sec:candidates`) or a task (`task:<slug>`).
+// Re-renders come with every event, so the page keeps what the human opened. Candidates start shut.
+// items: the rows the view keeps; table: hub-core's controls for them; aliases: old section id ->
+// state chip; needs: every item waiting on the human, whatever the view; sel: the opened row.
 const qst = {
-  items: null, err: null, stats: null, projects: [], busy: false, msg: "", draft: null,
+  items: null, table: null, aliases: {}, needs: 0, openRows: 0, all: false, sel: "",
+  err: null, stats: null, projects: [], busy: false, msg: "", draft: null,
   cands: null, candErr: null, candMsg: "", promoting: null,
   // The Candidates filter: a reason chip ("" is every row) and the search words.
   candReason: "", candQ: "", candAutoOpened: false,
-  open: { "sec:done": false, "sec:candidates": false },
+  open: { "sec:candidates": false },
 };
 
 // The candidates read every board, so they are read on showing the tab and after a promote,
@@ -62,7 +58,20 @@ function qPipeline() {
 }
 
 const refreshQueue = coalesce(async () => {
-  try { qst.items = await api("/api/queue"); qst.err = null; } catch (e) { qst.err = e.message; }
+  try {
+    const q = tblParams(st.views.queue).toString();
+    const d = await api("/api/queue" + (q ? "?" + q : ""));
+    Object.assign(qst, { items: d.items, table: d.table, aliases: d.section_aliases || {}, needs: d.needs_you, openRows: d.open_rows, err: null });
+  } catch (e) { qst.err = e.message; }
+  // An old section id (`#queue/running`) opens the table on its chip; a new one scrolls there.
+  if (st.tab === "queue" && st.arg) {
+    const chip = qst.aliases[st.arg], arg = st.arg;
+    if (chip || ["flow", "table", "candidates"].includes(arg)) {
+      st.arg = "";
+      if (chip && !tblParams(st.views.queue).get("s")) { setQuery(tblSet(st.views.queue, { s: chip })); refreshQueue(); } else { setQuery(st.views.queue); }
+      if (!chip) st.section = arg;
+    }
+  }
   // The window's line and what sits now; the list still shows when agent-queue stats fails.
   try { qst.stats = await api("/api/queue/stats"); } catch (e) { qst.stats = { week: `stats: ${e.message}` }; }
   if (st.tab === "queue") renderQueue();
@@ -70,7 +79,7 @@ const refreshQueue = coalesce(async () => {
 });
 
 function renderQueueBadge() {
-  const n = (qst.items || []).filter((i) => i.state === "waiting").length;
+  const n = qst.needs;
   $("queue-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
 }
 
@@ -97,31 +106,6 @@ function qNeeds(i) {
   return `<div class="qhold" title="tmux session ${esc(i.session)}">${panes.length ? "Waiting on a prompt in its window" : "Its session window is closed"}</div>`;
 }
 
-// The state chip: what the item is doing and for how long, or how it ended.
-function qChip(i) {
-  if (i.state === "done") {
-    const s = i.status || "ok";
-    const [cls, word] = s === "ok" ? ["ok", "Done"] : s === "failed" ? ["bad", "Failed"] : ["off", "Cancelled"];
-    return cchip(cls, word);
-  }
-  const t = i.timing || {};
-  return cchip(esc(i.state), `${Q_STATE[i.state] || esc(i.state)}${t.in_state != null ? ` ${ageMin(t.in_state)}` : ""}`);
-}
-
-// When it will be done: the session's estimate (fleet-bench through fleet-sessions), late when
-// it has passed; a queued item's typical run; a done item's run time. Every duration is the
-// item's `timing`, which hub-core computes; the page does no time math of its own.
-function qEta(i, a) {
-  if (i.state === "done") {
-    const t = i.timing || {};
-    return t.run != null ? `took ${dur(t.run)}` : "";
-  }
-  const eta = etaText(a && a.phases);
-  if (eta) return eta;
-  const run = qst.stats && qst.stats.run_minutes_median;
-  return i.state === "queued" && run ? `usually ${dur(run)} once started` : "";
-}
-
 // The PR: the label and link hub-core words (`owner/repo#N` as agent-land records it), and for a
 // done item whether the ledger recorded the merge. An older bare number or URL keeps its link.
 function qPr(i) {
@@ -136,32 +120,99 @@ function qPr(i) {
 const qCost = (i) => (i.state === "done" ? `<span title="dollars of the sessions that worked it">${i.cost_label ? esc(i.cost_label) : "-"}</span>` : "");
 const qProof = (i) => (i.unproven ? `<span class="qbad" title="finished ok with no PR and no report">! no PR, no proof</span>` : "");
 
-// A card says what the item is, its state and since when, what it needs from the human and when
-// it will be done. The task as typed and the bookkeeping fold away.
-function qItem(i) {
+// A duration in minutes, exact: "42m", "1h05", "2d3h"; "-" when the item has not reached the stage.
+// Hub-core's `timing` is the only source; the page works nothing out from the stamps.
+function qMin(m) {
+  if (m == null || isNaN(m)) return "-";
+  if (m < 60) return `${m}m`;
+  if (m < 1440) return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+  return `${Math.floor(m / 1440)}d${Math.floor((m % 1440) / 60)}h`;
+}
+
+// The table's columns: key -> [header, class]. `qx` columns drop away at phone width (app.css),
+// leaving state, in, project and title.
+const Q_COLS = {
+  state: ["state"], in: ["in", "n"], wait: ["wait", "n qx"], run: ["run", "n qx"], project: ["project"],
+  kind: ["kind", "qx"], size: ["size", "qx"], acct: ["acct", "qx"], pr: ["pr", "qx"], title: ["title"],
+};
+
+// The state cell: what the item is. A finish says how it ended.
+function qState(i) {
+  if (i.state === "waiting") return `<td class="warn">needs</td>`;
+  if (i.state === "done") {
+    const s = i.status || "ok";
+    return s === "ok" ? `<td>done</td>` : `<td class="${s === "failed" ? "bad" : "muted"}">${s === "failed" ? "failed" : "cancelled"}</td>`;
+  }
+  return `<td>${esc(i.state)}</td>`;
+}
+
+// The PR cell: hub-core's label as a link; a done item with no recorded merge says so on hover.
+function qPrCell(i) {
+  if (!i.pr) return `<td class="qx muted">-</td>`;
+  const link = i.pr_url ? `<a href="${esc(i.pr_url)}" target="_blank" rel="noopener">${esc(i.pr_label || i.pr)}</a>` : esc(i.pr_label || i.pr);
+  const flag = i.state === "done" && i.pr_label && !i.pr_merged ? ` <span class="muted" title="merge not recorded">?</span>` : "";
+  return `<td class="qx">${link}${flag}</td>`;
+}
+
+function qRow(i) {
+  const t = i.timing || {};
+  const dash = (v) => (v ? esc(v) : "-");
+  return `<tr class="qr${i.slug === qst.sel ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
+    `<td class="n">${qMin(t.in_state)}</td><td class="n qx">${qMin(t.wait)}</td><td class="n qx">${qMin(t.run)}</td>` +
+    `<td>${esc(i.project)}</td><td class="qx">${dash(i.type)}</td><td class="qx">${dash(i.size)}</td><td class="qx">${dash(i.account)}</td>` +
+    `${qPrCell(i)}<td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>`;
+}
+
+// The table in its own scroll box, capped at the server's open_rows with the rest a click away.
+function qBody() {
+  const t = qst.table, shown = qst.items || [];
+  if (!shown.length) return `<div class="panel">${t.total ? "No item matches." : "Nothing in the queue."}</div>`;
+  const rows = qst.all ? shown : shown.slice(0, qst.openRows);
+  const more = shown.length - rows.length;
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, Q_COLS)}${rows.map(qRow).join("")}</table>` +
+    (more > 0 ? `<button class="btn sm" data-qall="1">+${more} older</button>` : "") + `</div>`;
+}
+
+// The stats window's prose, folded under the flow line; the chips above the table are the counts.
+function qFlowTail() {
+  const s = qst.stats || {};
+  const prose = [s.week, s.sitting].filter(Boolean).map(esc).join("<br>");
+  const typical = [["typical wait", s.wait_minutes_median], ["typical run", s.run_minutes_median], ["typical to PR", s.to_pr_minutes_median]]
+    .filter(([, v]) => v != null).map(([k, v]) => `${k} ${qMin(v)}`).join(", ");
+  const body = [prose, typical && esc(typical)].filter(Boolean).join("<br>");
+  return body ? cfold("stats", "Stats detail", `<div class="muted">${body}</div>`, qst.open) : "";
+}
+
+// An opened row: every header, the stages with the minutes between them (hub-core's `timeline`),
+// the task as typed, and for an active item what it needs from the human and its actions.
+function qDetail() {
+  const i = qst.sel && (qst.items || []).find((x) => x.slug === qst.sel);
+  if (!i) return "";
   const active = i.state !== "done";
   const a = qAgent(i);
   const p = a && a.phases;
+  const t = i.timing || {};
+  const line = (i.timeline || []).map((s) =>
+    `${esc(s.step)}${s.at ? " " + stamp(s.at) : s.sha ? " " + esc(s.sha.slice(0, 8)) : ""}${s.gap_min != null ? ` (+${qMin(s.gap_min)})` : ""}`).join(" -> ");
   const prio = i.priority && i.priority !== "low" ? cchip(`prio ${esc(i.priority)}`, esc(i.priority)) : "";
-  const when = i.state === "done" ? `finished ${stamp(i.finished)}`
-    : i.started ? `started ${stamp(i.started)}` : `queued ${stamp(i.queued)}`;
-  const line = cardLine([esc(i.project), i.harness && `<span title="harness">${esc(i.harness)}</span>`, when, p ? `phase ${p.done}/${p.total}` : "", qEta(i, a), qPr(i), qCost(i), qProof(i)]);
-  const next = active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "";
-  const hold = i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "";
-  const note = i.note ? `<div class="qhold">${esc(i.note)}</div>` : "";
-  const more = cfold(`task:${i.slug}`, "Full task and details", facts([
-    ["slug", i.slug], ["mode", [i.mode, i.weight].filter(Boolean).join(", ")], ["tags", i.tags],
-    ["from", i.from], ["session", i.session], ["queued", i.queued && stamp(i.queued)],
-    ["started", i.started && stamp(i.started)], ["plan", i.plan], ["phases", i.phases],
-  ]) + `<div class="q">${esc(i.task || "")}</div>`, qst.open);
   const prios = Q_PRIORITIES.map((x) => `<option${x === i.priority ? " selected" : ""}>${x}</option>`).join("");
   const acts = active
     ? `<div class="opts">${a && a.question && a.question.kind === "plan" ? "" : approveButtons(a)}${a ? `<button class="btn sm${a.actions && a.actions.includes("approve-plan") ? "" : " primary"}" data-open="${esc(i.slug)}">Open session</button>` : ""}` +
       `<select data-bump="${esc(i.slug)}" title="priority">${prios}</select>` +
       `<button class="btn sm quiet" data-cancel="${esc(i.slug)}">${i.state === "queued" ? "Cancel" : "Stop and cancel"}</button></div>`
     : "";
-  return `<div class="card qitem ${esc(i.state)}">${cardHead(i.title || i.slug, [prio, qChip(i)])}` +
-    `${line}${active ? qNeeds(i) : ""}${hold}${note}${next}${more}${acts}</div>`;
+  return `<h2 class="sec">Item <span class="muted">${esc(i.slug)}</span> <button class="btn sm quiet" data-qclose="1">Close</button></h2>` +
+    `<div class="card qitem ${esc(i.state)}">${cardHead(i.title || i.slug, [prio])}` +
+    cardLine([esc(i.project), i.harness && `<span title="harness">${esc(i.harness)}</span>`, p ? `phase ${p.done}/${p.total}` : "", active ? etaText(p) : "", qPr(i), qCost(i), qProof(i)]) +
+    (line ? `<div class="cline qline">${line}</div>` : "") +
+    (i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "") + (i.note ? `<div class="qhold">${esc(i.note)}</div>` : "") +
+    (active ? qNeeds(i) : "") + (active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "") +
+    cfold(`task:${i.slug}`, "Full task and details", facts([
+      ["state", i.state === "done" ? `done, ${i.status || "ok"}` : i.state], ["in state", qMin(t.in_state)], ["wait", qMin(t.wait)], ["run", qMin(t.run)],
+      ["project", i.project], ["kind", i.type], ["size", i.size], ["acct", i.account], ["pr", i.pr_label || i.pr],
+      ["slug", i.slug], ["mode", [i.mode, i.weight].filter(Boolean).join(", ")], ["tags", i.tags], ["from", i.from],
+      ["session", i.session], ["plan", i.plan], ["phases", i.phases],
+    ]) + `<div class="q">${esc(i.task || "")}</div>`, qst.open) + acts + `</div>`;
 }
 
 function qCompose() {
@@ -198,67 +249,36 @@ function renderQueueList() {
   drawQueueList(el);
 }
 
-// The counts at the top, one tile each, and the week's prose folded under them.
-function qTiles() {
-  const it = qst.items, n = (st8) => it.filter((i) => i.state === st8).length;
-  const held = it.filter((i) => i.state === "queued" && i.hold).length;
-  const failed = it.filter((i) => i.state === "done" && i.status === "failed").length;
-  const s = qst.stats || {};
-  const prose = [s.week, s.sitting].filter(Boolean).map(esc).join("<br>");
-  const k = "stats";
-  return `<div class="tiles qtiles">${tile("NEEDS YOU", n("waiting"), "var(--b-needs)")}${tile("RUNNING", n("running"), "var(--b-working)", "", "#sessions?s=running")}` +
-    `${tile("UP NEXT", n("queued"), "var(--c1)", held ? `${held} held` : "")}${tile("DONE, 7 DAYS", n("done"), "var(--b-done)", failed ? `${failed} failed` : "")}` +
-    `${s.wait_minutes_median != null ? tile("TYPICAL WAIT", dur(s.wait_minutes_median), "var(--c3)") : ""}` +
-    `${s.to_pr_minutes_median != null ? tile("TYPICAL TO PR", dur(s.to_pr_minutes_median), "var(--c3)") : ""}</div>` +
-    (prose ? cfold(k, "Stats detail", `<div class="muted">${prose}</div>`, qst.open) : "");
-}
-
-// Done items under a heading per day, newest day first. The day and its totals are hub-core's
-// (`day`, `day_label`, `day_total`, all on the server's clock), so the page sums nothing; an item with no readable finish groups apart.
-function qDoneDays(rows) {
-  const sorted = [...rows].sort((a, b) => (b.day || "").localeCompare(a.day || "") || (tms(b.finished) || 0) - (tms(a.finished) || 0));
-  let html = "", last;
-  for (const i of sorted) {
-    const d = i.day || "";
-    if (d !== last) {
-      last = d;
-      html += `<h3 class="qday">${esc(i.day_label || "Undated")}${i.day_total ? ` <span class="muted">${esc(i.day_total)}</span>` : ""}</h3>`;
-    }
-    html += qItem(i);
-  }
-  return html;
-}
-
-// Waiting: longest-waiting first. Running: soonest estimate first, none last. The rest as
-// agent-queue ordered them.
-function qSorted(state, rows) {
-  const key = state === "waiting" ? (i) => tms(i.waiting || i.started) || 0
-    : state === "running" ? (i) => { const a = qAgent(i); return (a && a.phases && a.phases.eta_epoch) || Infinity; }
-    : null;
-  return key ? [...rows].sort((a, b) => key(a) - key(b)) : rows;
-}
-
 function drawQueueList(el) {
-  if (!qst.items) { el.innerHTML = `<div class="empty">${qst.err ? esc(qst.err) : "Loading..."}</div>`; return; }
-  let html = qst.err ? `<div class="panel down">${esc(qst.err)}</div>` : "";
-  html += qPipeline() + qTiles();
-  for (const [state, title] of Q_SECTIONS) {
-    const rows = qSorted(state, qst.items.filter((i) => i.state === state));
-    if (!rows.length && state === "waiting") continue;
-    const k = `sec:${state}`, open = qst.open[k] != null ? qst.open[k] : true;
-    const failed = state === "done" ? rows.filter((i) => i.status === "failed").length : 0;
-    const body = !rows.length ? `<div class="card muted">Nothing ${state === "done" ? "finished this week" : "here"}.</div>`
-      : state === "done" ? qDoneDays(rows) : rows.map(qItem).join("");
-    html += `<details class="csec" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">${title} ` +
-      `<span class="muted">${rows.length}${failed ? `, <span class="qbad">${failed} failed</span>` : ""}</span></h2></summary>${body}</details>`;
+  if (!qst.table) { el.innerHTML = `<div class="empty">${qst.err ? esc(qst.err) : "Loading..."}</div>`; return; }
+  // A refresh must not take the search box from under the human: with focus in the bar only what
+  // is around it repaints.
+  if (tblRepaint("qt", qst.table, qBody)) {
+    paint($("qt-head"), qTableHead());
+    paint($("qt-detail"), qDetail());
+    paint($("q-flow"), qFlow());
+    return;
   }
-  html += qCandidates();
   const y = $("queue").scrollTop;
   // A redraw keeps the Candidates search box focused, its caret where it was.
   const typing = document.activeElement && document.activeElement.id === "qc-q" ? document.activeElement.selectionStart : null;
-  el.innerHTML = html;
+  el.innerHTML = (qst.err ? `<div class="panel down">${esc(qst.err)}</div>` : "") +
+    `<div id="q-flow">${qFlow()}</div><div id="qt-head">${qTableHead()}</div>` +
+    tblBar("qt", qst.table, "search, or project:dotfiles kind:fix -acct:k1") +
+    `<div id="qt-body">${qBody()}</div><div id="qt-detail">${qDetail()}</div>` + qCandidates();
   $("queue").scrollTop = y;
   if (typing != null && $("qc-q")) { $("qc-q").focus(); $("qc-q").setSelectionRange(typing, typing); }
+  seekSection();
+}
+
+const qFlow = () => `<h2 class="sec" id="sec-flow">Flow</h2>${qPipeline()}${qFlowTail()}`;
+const qTableHead = () => `<h2 class="sec" id="sec-table">Queue <span class="muted">${qst.table.shown} of ${qst.table.total}</span></h2>`;
+
+// The view changed: the URL follows it and the server applies it.
+function qView(patch) {
+  setQuery(tblSet(st.views.queue, patch));
+  qst.all = false;
+  refreshQueue();
 }
 
 // Every row the page has, in rank order: the first ones, then the rows kept per reason chip.
@@ -321,7 +341,7 @@ function qCandidates() {
       `${gap}<div id="qc-body">${qCandBody()}</div>`;
   }
   const msg = qst.candMsg ? `<div class="err">${esc(qst.candMsg)}</div>` : "";
-  return `<details class="csec" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">Candidates ` +
+  return `<details class="csec" id="sec-candidates" data-k="${k}"${open ? " open" : ""}><summary><h2 class="sec">Candidates ` +
     `<span class="muted">(${count})</span></h2></summary>${msg}${body}</details>`;
 }
 
@@ -383,6 +403,10 @@ $("queue").addEventListener("click", (e) => {
   if (t.id === "q-add") { qAdd(); return; }
   if (t.closest("[data-home]")) { e.preventDefault(); setTab("home"); return; }
   if (t.dataset.promote) { qPromote(Number(t.dataset.promote)); return; }
+  if (t.dataset.qall) { qst.all = true; renderQueueList(); return; }
+  if (t.dataset.qclose) { qst.sel = ""; renderQueueList(); return; }
+  const v = tblPatch(e);
+  if (v) { qView(v); return; }
   if (t.dataset.creason != null) { qst.candReason = t.dataset.creason; renderQueueList(); return; }
   if (t.dataset.open) {
     const a = qAgent((qst.items || []).find((i) => i.slug === t.dataset.open) || {});
@@ -396,8 +420,16 @@ $("queue").addEventListener("click", (e) => {
     qPending[s] = true;
     t.textContent = "Click again to cancel";
     setTimeout(() => { delete qPending[s]; }, 4000);
+    return;
+  }
+  // A click on a row (not its PR link) opens its detail; the same row again shuts it.
+  const row = t.closest("tr.qr");
+  if (row && !t.closest("a")) {
+    qst.sel = qst.sel === row.dataset.slug ? "" : row.dataset.slug;
+    renderQueueList();
   }
 });
+tblListen($("queue"), qView);
 $("queue").addEventListener("change", (e) => {
   const t = e.target;
   if (t.dataset.bump) { qAct("/api/queue/bump", { slug: t.dataset.bump, priority: t.value }); return; }

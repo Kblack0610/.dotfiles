@@ -1366,12 +1366,13 @@ impl App {
             }
             Msg::QueueFiles => self.read_queue(),
             Msg::Queue(q) => {
+                let now = jobs::now();
                 let was = self
                     .queue
                     .as_ref()
-                    .and_then(|old| self.qv.selected(old))
+                    .and_then(|old| self.qv.selected(old, now))
                     .map(|i| i.slug.clone());
-                self.qv.reselect(was, &q, cands_of(&self.candidates));
+                self.qv.reselect(was, &q, cands_of(&self.candidates), now);
                 self.queue = Some(*q);
                 if self.queue_read.done() {
                     self.read_queue();
@@ -1386,8 +1387,9 @@ impl App {
             Msg::Candidates(c) => {
                 self.candidates = Some(c);
                 if let Some(q) = &self.queue {
-                    let was = self.qv.selected(q).map(|i| i.slug.clone());
-                    self.qv.reselect(was, q, cands_of(&self.candidates));
+                    let now = jobs::now();
+                    let was = self.qv.selected(q, now).map(|i| i.slug.clone());
+                    self.qv.reselect(was, q, cands_of(&self.candidates), now);
                 }
                 if self.candidates_read.done() {
                     self.read_candidates();
@@ -1733,6 +1735,7 @@ impl App {
                 }
             }
             (Tab::Costs, Some(q)) => self.cv.open(&q),
+            (Tab::Queue, Some(q)) => self.qv.open(&q),
             (_, q) => self.open_project(q),
         }
     }
@@ -1869,12 +1872,16 @@ impl App {
     }
 
     /// The Queue tab's own keys (queuetab.rs): j/k, PgUp/PgDn, space, g/G and Ctrl-d/Ctrl-u
-    /// pick an active item or a candidate, c arms a cancel, +/- move its priority, f folds the
-    /// candidates and p promotes one. The draw keeps the selected row in view.
+    /// pick a row or a candidate, `/ f s S x` are the shared table's, Enter opens a row's detail
+    /// and Esc closes it or clears the view, c arms a cancel and +/- move the priority of an
+    /// active item, C folds the candidates and p promotes one. The draw keeps the selected row
+    /// in view.
     fn queue_key(&mut self, k: KeyEvent) -> bool {
         // g and G take the page to its very top (the headings) and bottom (the Candidates fold),
         // which keeping the selected row in view alone would stop short of.
+        let typing = self.qv.table.typing.is_some() || self.qv.confirm.is_some();
         match k.code {
+            _ if typing => {}
             KeyCode::Char('g') | KeyCode::Home => self.scroll = 0,
             KeyCode::Char('G') | KeyCode::End => self.scroll = usize::MAX / 2,
             _ => {}
@@ -1884,6 +1891,7 @@ impl App {
             self.queue.as_ref(),
             cands_of(&self.candidates),
             self.page,
+            jobs::now(),
         ) {
             queuetab::Ask::Pass => false,
             queuetab::Ask::Done => true,
@@ -2549,8 +2557,14 @@ impl App {
                 if self.day.is_some() { "  t today" } else { "" }
             ),
             Tab::Queue if self.qv.confirm.is_some() => "y/Enter yes  n/Esc no".into(),
+            Tab::Queue if self.qv.table.typing.is_some() => {
+                "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
+            }
+            Tab::Queue if self.qv.detail => format!(
+                "j/k another row  c cancel  +/- priority  Esc close  o Grafana  r refresh  {tabs} tabs  q quit"
+            ),
             Tab::Queue => format!(
-                "j/k PgUp/PgDn g/G ^d/^u pick  c cancel  +/- priority  f candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
+                "j/k PgUp/PgDn ^d/^u pick  Enter detail  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.tv.prompt.is_some() => {
                 "type, Enter submits, Esc cancels".into()
@@ -3157,13 +3171,69 @@ mod tests {
                 KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
                 Some(&queuetab::tests::fixture()),
                 &[],
-                10
+                10,
+                jobs::now()
             ),
             queuetab::Ask::Pass
         );
         // With no Grafana known nothing opens and nothing is spawned.
         a.handle(key('o'));
         assert!(!a.quit);
+    }
+
+    #[test]
+    fn a_queue_request_opens_the_table_on_the_chip_an_old_section_id_names() {
+        let mut a = app(Tab::Queue);
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        a.open_query(Some("waiting".into()));
+        assert_eq!(a.qv.table.view.state, "needs you");
+        let s = screen(&mut a, 140, 30);
+        assert!(
+            s.contains("Pick a side") && !s.contains("Fix the menu"),
+            "{s}"
+        );
+        // Any other word is the query, from the table's own view.
+        a.open_query(Some("project:dotfiles".into()));
+        assert_eq!(
+            (a.qv.table.view.state.as_str(), a.qv.table.view.q.as_str()),
+            ("", "project:dotfiles")
+        );
+        let s = screen(&mut a, 140, 30);
+        assert!(s.contains("Next") && !s.contains("Pick a side"), "{s}");
+        // No query leaves the view as it is.
+        a.open_query(None);
+        assert_eq!(a.qv.table.view.q, "project:dotfiles");
+    }
+
+    #[test]
+    fn typing_a_queue_query_keeps_every_key_for_the_query_and_the_footer_says_so() {
+        let esc = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc)));
+        let mut a = app(Tab::Queue);
+        a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
+        a.handle(key('/'));
+        a.handle(key('3'));
+        a.handle(key('q'));
+        a.handle(key('g'));
+        assert!(a.qv.table.typing.as_deref() == Some("3qg") && a.tab == Tab::Queue && !a.quit);
+        let s = screen(&mut a, 140, 30);
+        assert!(
+            s.lines()
+                .last()
+                .unwrap()
+                .contains("Enter applies, Esc cancels"),
+            "{s}"
+        );
+        a.handle(esc());
+        assert!(a.qv.table.typing.is_none() && !a.quit);
+        // Enter opens the selected row's detail, Esc closes it.
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        let s = screen(&mut a, 140, 40);
+        assert!(
+            s.contains("log: notes log --item pick-sides") && s.contains("timeline"),
+            "{s}"
+        );
+        a.handle(esc());
+        assert!(!a.qv.detail && !a.quit);
     }
 
     #[test]
@@ -3205,16 +3275,16 @@ mod tests {
     fn the_queue_page_follows_the_selection_past_the_bottom() {
         let mut a = app(Tab::Queue);
         a.handle(Msg::Queue(Box::new(long_queue(40))));
-        assert!(!screen(&mut a, 80, 20).contains("item-30"));
+        assert!(!screen(&mut a, 80, 20).contains("Task 30"));
         for _ in 0..30 {
             a.handle(key('j'));
         }
         let s = screen(&mut a, 80, 20);
         assert_eq!(a.qv.sel, 30);
         assert!(a.scroll > 0, "the page scrolled with the selection");
-        assert!(s.contains("item-30"), "the selected row is on screen:\n{s}");
+        assert!(s.contains("Task 30"), "the selected row is on screen:\n{s}");
         a.handle(key('k'));
-        assert!(screen(&mut a, 80, 20).contains("item-29"));
+        assert!(screen(&mut a, 80, 20).contains("Task 29"));
     }
 
     #[test]
@@ -3225,16 +3295,16 @@ mod tests {
         a.handle(key('G'));
         let s = screen(&mut a, 80, 20);
         assert_eq!(a.qv.sel, 39);
-        assert!(s.contains("item-39"), "{s}");
+        assert!(s.contains("Task 39"), "{s}");
         assert!(s.contains("CANDIDATES"), "G reaches the page's end:\n{s}");
         a.handle(key('g'));
         let s = screen(&mut a, 80, 20);
         assert_eq!((a.qv.sel, a.scroll), (0, 0));
-        assert!(s.contains("item-0"), "{s}");
+        assert!(s.contains("Task 0"), "{s}");
         // PgDn and space move the selection a page; the page follows rather than snapping back.
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::PageDown))));
         assert_eq!(a.qv.sel, a.page);
-        let want = format!("item-{}", a.page);
+        let want = format!("Task {}", a.page);
         assert!(screen(&mut a, 80, 20).contains(&want));
     }
 
@@ -3720,7 +3790,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
-            s.contains("WAITING FOR YOU  1") && s.contains("UP NEXT  2"),
+            s.contains("all 5  needs you 1  running 1  up next 2  done 1"),
             "{s}"
         );
         assert!(
@@ -3792,13 +3862,13 @@ mod tests {
         );
         assert!(screen(&mut a, 160, 40).contains("+ CANDIDATES (0, 0 auto)"));
         a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));
-        a.handle(key('f'));
-        for _ in 0..4 {
+        a.handle(key('C'));
+        for _ in 0..5 {
             a.handle(key('j'));
         }
         let s = screen(&mut a, 160, 40);
         assert!(s.contains("bar-17") && s.contains("auto dispatch"), "{s}");
-        assert!(s.contains("f candidates  p promote"), "{s}");
+        assert!(s.contains("C candidates  p promote"), "{s}");
         a.handle(key('p'));
         assert_eq!(a.qv.running.as_deref(), Some("promote shape-city bar-17"));
         loop {

@@ -213,9 +213,57 @@ pub struct Timing {
     pub lead: Option<i64>,
 }
 
+/// One stage of an item's life as the detail view lists it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Step {
+    /// queued, ready, started, waiting, finished or merged.
+    pub step: &'static str,
+    /// The stamp as the ledger wrote it; None for `merged`, which records a commit.
+    pub at: Option<String>,
+    /// Minutes since the step before that had a readable stamp.
+    pub gap_min: Option<i64>,
+    /// The merge commit, on `merged` only.
+    pub sha: Option<String>,
+}
+
 impl Item {
     pub fn tag_list(&self) -> impl Iterator<Item = &str> {
         self.tags.split_whitespace()
+    }
+
+    /// The item's stages in order, each with the minutes since the one before it: queued, ready,
+    /// started, waiting, finished, then `merged` (the ledger keeps a sha, so no time or gap).
+    /// A stage the item has not reached is left out. The one reader of this for both surfaces.
+    pub fn timeline(&self) -> Vec<Step> {
+        let mut out = vec![];
+        let mut prev: Option<chrono::DateTime<chrono::Utc>> = None;
+        for (step, v) in [
+            ("queued", &self.queued),
+            ("ready", &self.ready),
+            ("started", &self.started),
+            ("waiting", &self.waiting),
+            ("finished", &self.finished),
+        ] {
+            let Some(at) = said(v) else { continue };
+            let when = stamp(at);
+            let gap_min = prev.zip(when).map(|(p, w)| (w - p).num_minutes().max(0));
+            out.push(Step {
+                step,
+                at: Some(at.to_string()),
+                gap_min,
+                sha: None,
+            });
+            prev = when.or(prev);
+        }
+        if let Some(sha) = said(&self.merged) {
+            out.push(Step {
+                step: "merged",
+                at: None,
+                gap_min: None,
+                sha: Some(sha.to_string()),
+            });
+        }
+        out
     }
 
     /// What the item is in a few words: the `title:` header, else the task's first sentence
@@ -1879,5 +1927,27 @@ mod tests {
         for (_, chip) in SECTION_ALIASES {
             assert!(<QueueRow as crate::table::Row>::STATES.contains(&chip));
         }
+    }
+    #[test]
+    fn the_timeline_lists_each_stamp_with_minutes_since_the_one_before() {
+        let items = parse(concat!(
+            r#"{"slug":"a","state":"done","queued":"2026-11-06T09:00:00Z","ready":"2026-11-06T09:00:00Z","started":"2026-11-06T09:14:00Z","finished":"2026-11-06T10:00:00Z","merged":"abc123","task":"t"}"#,
+            "\n",
+            r#"{"slug":"b","state":"queued","task":"t"}"#,
+        ));
+        let t = items[0].timeline();
+        let got: Vec<(&str, Option<i64>)> = t.iter().map(|s| (s.step, s.gap_min)).collect();
+        assert_eq!(
+            got,
+            [
+                ("queued", None),
+                ("ready", Some(0)),
+                ("started", Some(14)),
+                ("finished", Some(46)),
+                ("merged", None)
+            ]
+        );
+        assert_eq!(t[4].sha.as_deref(), Some("abc123"));
+        assert!(items[1].timeline().is_empty(), "no stamp, no step");
     }
 }

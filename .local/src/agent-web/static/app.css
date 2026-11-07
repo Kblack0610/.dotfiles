@@ -144,12 +144,6 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .cfold pre.araw { margin: 0 0 8px; max-height: 16em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-xs); font-family: var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
 .qlate { color: var(--b-stalled); }
 .qnext { font-size: var(--fs-sm); margin-bottom: 6px; }
-.qitem.done { padding-block: 8px; }
-.qitem.done .chead { margin-bottom: 0; } .qitem.done .ctitle { font-size: var(--fs-md); font-weight: 500; }
-.qitem.done .cline { margin-bottom: 4px; }
-h3.qday { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 10px 0 6px; }
-.qtiles { margin: 0 0 6px; }
-.qtiles .tv { font-size: 22px; white-space: nowrap; }
 .qstats { font-size: 12px; margin: 4px 0 8px; }
 .qtag { display: inline-block; padding: 0 6px; margin-left: 4px; border-radius: 9px; background: var(--tool); }
 .qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
@@ -333,9 +327,9 @@ span.warn { color: var(--b-stalled); }
 .fw { overflow-wrap: anywhere; }
 /* Jobs tab */
 .btn.sm, .btn.sm.primary { padding: 2px 8px; font: 12px var(--mono); margin: 0 2px 4px 0; }
-.tbl tr.jr, .tbl tr.wr, .tbl tr.prop { cursor: pointer; }
-.tbl tr.jr:hover td, .tbl tr.wr:hover td, .tbl tr.prop:hover td { background: var(--bg); }
-.tbl tr.jr.sel td, .tbl tr.wr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tbl tr.jr, .tbl tr.wr, .tbl tr.prop, .tbl tr.qr { cursor: pointer; }
+.tbl tr.jr:hover td, .tbl tr.wr:hover td, .tbl tr.prop:hover td, .tbl tr.qr:hover td { background: var(--bg); }
+.tbl tr.jr.sel td, .tbl tr.wr.sel td, .tbl tr.qr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 /* An expanded table row: Schedules and Proposals. */
 .tbl tr.wdet > td { white-space: normal; padding: 6px 10px 10px; }
 .tbl tr.wdet .tbl { margin-top: 6px; }
@@ -344,6 +338,8 @@ span.warn { color: var(--b-stalled); }
 .sdet { position: sticky; left: 10px; max-width: calc(100cqw - 20px); overflow-wrap: anywhere; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
 @media (max-width: 760px) {
+  /* The Queue table keeps state, in, project and title; the detail has the rest. */
+  .tbl th.qx, .tbl td.qx { display: none; }
   .board { padding: 12px; }
   header { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
   .menu, .cur { display: inline-block; }
