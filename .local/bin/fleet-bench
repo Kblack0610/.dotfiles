@@ -3005,9 +3005,11 @@ hold_streak() {
 # stays out. A repo whose runs cannot be read says so, and counts as nothing rather than as green.
 hold_reds() {
   local t=$1 merges repo runs streak since w=fleet-liveness h=$((HOLD_HOURS * 3600))
-  merges=$(jq -c "$JQ_LIB"'[.[] | select(tagged("cleanup") and (.merged // "") != ""
-      and (.pr | tostring | test("^[^/# ]+/[^/# ]+#[0-9]+$")) and (.finished | ep) != null)
-    | {slug, repo: (.pr | split("#")[0]), n: (.pr | split("#")[1]), sha: .merged, at: (.finished | ep)}]' <<<"$2") || return 1
+  # pr: and merged: are lists in step, one PR per repo (agent-land)
+  merges=$(jq -c "$JQ_LIB"'[.[] | select(tagged("cleanup") and (.merged // "") != "" and (.finished | ep) != null)
+    | . as $i | [(.pr | tostring | split(" ")), (.merged | tostring | split(" "))] | transpose[]
+    | select((.[0] // "" | test("^[^/# ]+/[^/# ]+#[0-9]+$")) and .[1] != null)
+    | {slug: $i.slug, repo: (.[0] | split("#")[0]), n: (.[0] | split("#")[1]), sha: .[1], at: ($i.finished | ep)}]' <<<"$2") || return 1
   [ "$merges" != '[]' ] || return 0
   if since=$(watch_tripped_since "$w" "$t"); then
     jq -c --argjson s "$since" --argjson h "$h" --arg w "$w" \
@@ -4080,7 +4082,7 @@ epics_json() {
            open: $e.open, done: $e.done, open_weight: $e.open_weight, done_weight: $e.done_weight,
            progress: ratio($e.done_weight; $e.open_weight + $e.done_weight), step: $step, brief: $brief, plans: $ep,
            rows: ($er | map({id, kind, title, size, state, prs})), items: $ei,
-           prs: ([$er[].prs[]?, ($ei[].pr | select(. != null) | tostring)] | unique),
+           prs: ([$er[].prs[]?, ($ei[].pr | select(. != null) | tostring | split(" ")[])] | unique),
            eta: $x.eta, no_eta: $x.why,
            baseline: (if $b == null then null else $b | {made_epoch, reason, total, total_weight, p50, slow, basis, n} end),
            track: (if $b == null or $x.eta == null then null
