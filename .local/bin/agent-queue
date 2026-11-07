@@ -882,6 +882,14 @@ cmd_set() {
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  # merged: is the merge of the PR in pr:, so a new pr: drops an old merged: unless this set names
+  # one too (agent-land sets both), or done ok would pass on the last PR's merge (cmd_move).
+  case " $* " in
+    *" merged="*) ;;
+    *" pr="*) for kv in "$@"; do
+        [ "${kv%%=*}" = pr ] && [ "${kv#*=}" != "$(fm_get "$f" pr)" ] && header_del "$f" merged
+      done ;;
+  esac
   for kv in "$@"; do
     case "$kv" in session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;; esac
     header_set "$f" "${kv%%=*}" "${kv#*=}"

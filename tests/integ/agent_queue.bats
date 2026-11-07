@@ -466,6 +466,19 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-m2.md)" status)" = ok ]
 }
 
+@test "a new pr: drops the last PR's merged:, so done ok waits for the new merge" {
+  "$AQ" add --project game --running --slug re "re" >/dev/null
+  "$AQ" set re pr=o/game#1 merged=aaa111 >/dev/null
+  "$AQ" set re pr=o/game#1 >/dev/null
+  [ "$(field "$(item running re)" merged)" = aaa111 ]
+  "$AQ" set re pr=o/game#2 >/dev/null
+  [ -z "$(field "$(item running re)" merged)" ]
+  run "$AQ" move re done --status ok
+  assert_failure; assert_output --partial 'no merged:'
+  "$AQ" set re pr=o/game#2 merged=bbb222 >/dev/null
+  "$AQ" move re done --status ok
+}
+
 @test "a failing model-lane never fails the move" {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/model-lane"; chmod +x "$SANDBOX/bin/model-lane"
   "$AQ" add --project game --running --slug m "m" >/dev/null; "$AQ" set m lane_run=r1 >/dev/null
