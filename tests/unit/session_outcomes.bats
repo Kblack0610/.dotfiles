@@ -122,7 +122,7 @@ EOF
   assert_equal "$(field a .board_done.proof)" 1
 }
 
-@test "pr-link records: a subagent's PR and a persisted-output PR reach .prs once, a malformed record is skipped" {
+@test "pr-link records: a subagent's PR and a persisted-output PR reach .prs once, also when gh printed it; a malformed record is skipped" {
   cat > "$TR/e.jsonl" <<'EOF2'
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Agent","input":{"subagent_type":"general-purpose","prompt":"open the PR"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":[{"type":"text","text":"Done, the PR is open."}]}]}}
@@ -132,6 +132,10 @@ EOF
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e2","content":"<persisted-output>\nOutput too large (37.6KB). Full output saved to: /tmp/tool-results/e2.txt\n</persisted-output>"}]}}
 {"type":"pr-link","sessionId":"sess-e","prNumber":21,"prUrl":"https://github.com/o/r/pull/21","prRepository":"o/r"}
 {"type":"pr-link","sessionId":"sess-e","prUrl":"https://github.com/o/r/pull/22"}
+{"type":"pr-link","sessionId":"sess-e","prNumber":"23","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-e","prNumber":24,"prRepository":""}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e3","name":"Bash","input":{"command":"gh pr merge 20 --squash -R o/r"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e3","content":"Squashed and merged pull request o/r#20 (feat: e1)"}]}}
 EOF2
   jq -cn --arg t "$TR/e.jsonl" --argjson u "$STOP" \
     '{session_id: "sess-e", project: "proj", transcript: $t, title: "title e", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
