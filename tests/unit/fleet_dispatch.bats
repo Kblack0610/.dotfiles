@@ -1175,6 +1175,38 @@ game_ready() {
   assert_equal "$(grep -c 'id:gm-' "$NOTES_FIXTURE/rows.game.human")" 3
 }
 
+@test "promote: a row whose item already finished ok is never queued again; a human row goes back recorded failed" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'landed one' '- [ ] landed one <!-- id:gm-7 -->'
+  row game agent 'landed two' '- [ ] landed two <!-- id:gm-8 -->'
+  for k in gm-7 gm-8; do
+    agent-queue add --project game --from "board:game:$k" --slug "$k" "x" >/dev/null
+    agent-queue move "$k" done --status ok >/dev/null
+  done
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human", key: "gm-7"}')" "" task
+  assert_failure
+  assert_output --partial 'row un-started, recorded failed: gm-7 already finished ok'
+  grep -qF -- '- [ ] landed one' "$NOTES_FIXTURE/rows.game.human" || fail "human row left started"
+  assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r '.key + " " + .verdict')" "gm-7 failed"
+  # An agent row stays started for the orphan pass, which closes it on its item's merge proof.
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-8"}')" "" task
+  assert_failure
+  assert_output --partial 'row left started for the orphan pass: gm-8 already finished ok'
+  grep -qF -- '- [/] landed two' "$NOTES_FIXTURE/rows.game.agent" || fail "agent row un-started"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished row was queued again"
+}
+
+@test "fleet-dispatch promote: the human's Start queues a row whose item finished ok, as a repeat" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'landed one' '- [ ] landed one <!-- id:gm-7 -->'
+  agent-queue add --project game --from "board:game:gm-7" --slug gm-7 "x" >/dev/null
+  agent-queue move gm-7 done --status ok >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --raw '- [ ] landed one <!-- id:gm-7 -->'
+  assert_success
+  assert_output --partial "queued game: gm-7"
+  [ -n "$(qitem queued gm-7)" ] || fail "the human's Start did not queue the row"
+}
+
 @test "promote: a row start could not give an id is un-started and refused, with no item" {
   project game beta "$SANDBOX/repos/game"
   row game human 'the row' '- [ ] the row'

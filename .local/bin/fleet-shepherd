@@ -618,7 +618,7 @@ shared_sample() {
       | .slug' <<<"$active" 2>/dev/null | head -1)"
     if [ -z "$slug" ]; then
       out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
-        --slug "shared-red-$cls" --title "fix(test): $cls red on several branches at once" \
+        --slug "shared-red-$cls" --repeat --title "fix(test): $cls red on several branches at once" \
         "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"
       slug="$(sed -n 's/^[a-z]* \([^ ]*\) -> .*/\1/p; s/.*already in the queue: //p' <<<"$out" | head -1)"
     fi
