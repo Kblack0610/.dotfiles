@@ -2738,7 +2738,8 @@ promote() {
     say "could not queue $project row, un-started: $id ($out)"
     return 1
   fi
-  slug=$(awk '{ print $2; exit }' <<<"$out"); PROMOTED=$slug
+  # The `<state> <slug> -> <file>` line, not the first: a warning on add's stderr may come before it.
+  slug=$(awk '$3 == "->" { print $2; exit }' <<<"$out"); PROMOTED=$slug
   agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} >/dev/null
   logline "filled queue item $slug from $project $lane row${tags:+ ($tags)}: $id"
   echo "queued $project: $id"
