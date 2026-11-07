@@ -756,7 +756,7 @@ cmd_mine() {
 }
 
 # claim <slug> [--sid id] -- add a Claude session to the sessions that worked this item. Run by
-# the SessionStart hook for $AGENT_QUEUE_ITEM, and by agent-land; adding one already there is a no-op.
+# fleet-dispatch start for the id it launches with, and by agent-land; adding one already there is a no-op.
 cmd_claim() {
   local slug="${1:?usage: agent-queue claim <slug> [--sid id]}" sid f cur
   shift

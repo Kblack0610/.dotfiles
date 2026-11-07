@@ -40,6 +40,17 @@ start() { echo '{"source":"startup","session_id":"sid-1"}' | bash "$DEPLOY/sessi
   assert_equal "$(jq -c '[.process_ms, .ready_ms, .mcp]' "$CLAUDE_STARTUP_LOG")" '[null,null,[]]'
 }
 
+@test "the hook makes no network call and no queue write: no gh, no agent-queue claim, even for a queue item" {
+  # gh was 430 ms of every start and the claim waited on the queue lock; reading the item stays.
+  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/calls.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\n[ "$1" = show ] || echo "agent-queue $*" >> "%s/calls.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/agent-queue"
+  AGENT_QUEUE_ITEM=some-item run start
+  assert_success
+  assert_output --partial 'Session Preflight: repo'
+  [ ! -e "$SANDBOX/calls.log" ] || fail "the hook called: $(cat "$SANDBOX/calls.log")"
+}
+
 @test "under a claude process: process and ready ms, and each stdio MCP server's spawn offset or null" {
   # The fake claude spawns one child, as Claude Code spawns an MCP server. The child says when it
   # is up on one fifo and blocks on another, so nothing here waits on a timer.
