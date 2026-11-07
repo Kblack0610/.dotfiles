@@ -2394,7 +2394,7 @@ impl App {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Costs => format!(
-                "b/B cut  w window  / query  s sort  S asc/desc  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "b/B cut  w window  / query  s sort  S asc/desc  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
                 "type a query (tier:3 state:failed -who:x), Enter applies, Esc drops it".into()
@@ -3195,6 +3195,11 @@ mod tests {
         );
         assert!(!s.contains("FORECAST"), "the forecast is Log's: {s}");
         assert!(lines[29].contains("j/k pick  Enter detail  / query"), "{s}");
+        // HARNESS gives way before YOU and ASK; a wide screen names each row's.
+        let wide = screen(&mut a, 220, 30);
+        let wl: Vec<&str> = wide.lines().collect();
+        assert!(wl[3].contains("ACCOUNT  HARNESS"), "{wide}");
+        assert!(wl[4].contains("bnb      claude"), "{wide}");
 
         // The stages join by target: the NEEDS row is the live session, and it sorts first.
         a.handle(Msg::Boards(Box::new(boards())));
