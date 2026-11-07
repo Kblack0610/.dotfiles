@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [tokens, cost, usage, agents, fleet, context]
-  reviewed: "2026-11-05"
+  reviewed: "2026-11-07"
 ---
 
 # Usage cleanup
@@ -58,6 +58,12 @@ The human sets these, and dotfiles `CLAUDE.md` "Agent runtime" holds them: no de
    Publish it as an Artifact page and page the human with the link: `agent-notify -p normal -t usage-cleanup '<link>'`. With no Artifact tool (the Artifact tool is off by default; a session started with `CLAUDE_CODE_ARTIFACT=1` has it), page the report's path instead.
 
 8. **Queue the next pass,** in the session that writes the report, when its "left for the next pass" names at least one lever with a number: `agent-queue add --project agent-runtime --priority low --tags "at:$(date -d '+7 days' +%F 2>/dev/null || date -v+7d +%F)T09:00" --slug usage-cleanup-p<N+1> "usage-cleanup pass <N+1>: run the usage-cleanup skill; the baseline is ~/.notes/lab/projects/current/agent-runtime/docs/usage-cleanup-p<N>.md"`. First run `agent-queue show usage-cleanup-p<N+1>`: it finds a finished item too, and a hit means that pass is already queued or done. This is how passes recur without a runner (the `at:` rule: `~/.config/agentctl/QUEUE.md`); the human ends a series with `agent-queue cancel <slug>`. Queue it before `agent-land`.
+
+9. **Re-measure** one day after a lever goes live. Queue it with the report (step 8's `agent-queue add`, tag `at:<live time + 1 day>`, task text naming the plan and report); step 8's weekly pass is a different item. Read the window `t..t+24h` with explicit ISO times (`2026-11-06T05:40:00Z`; a bare date means midnight and shifts the window), and add one column to the report's table:
+   - `agent-usage burn --since <t> --before <t+24h>` and `claude-recall tool-calls --since <t> --until <t+24h>`.
+   - A subagent-model lever: read `subagents/*.meta.json` (`isBuiltIn` false, deduped by real path) and the model in the sibling `.jsonl`. The Opus share is `by_origin.subagent` `opus_turns` over `turns`; report `1 - that` as "not Opus", and Haiku turns from `by_model` separately.
+   - A deny lever: `tool-calls` counts a denied call, so subtract the `fail_text` rows that carry the lever hook's own message text (and no other hook's), and say how many were denied.
+   - Burn %/h: the `claude-acct status` fleet line, and for the window `sum(clamp_min(claude_account_week_used_percent @ <end epoch> - claude_account_week_used_percent @ <start epoch>, 0))` through `prom_q` in `claude-acct`, divided by 24. An account whose week reset inside the window clamps to 0: name it and call the figure a floor.
 
 ## Do NOT
 
