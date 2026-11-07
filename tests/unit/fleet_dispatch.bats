@@ -156,7 +156,7 @@ verdict() {
   jq -cn --arg p "$1" --arg l "$2" --arg k "$3" --arg v "$4" --arg s "${5:-S}" --argjson t "${6:-1}" \
     --arg sig "$(policy_sig)" --arg line "$(line_of "$1" "$2" "$3")" --arg a "${7-$3}" \
     '{project: $p, lane: $l, key: $k, verdict: $v, size: $s, tier: $t, area: $a, clear: true, agent_only: true,
-      reason: "r", policy: $sig, line: $line}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+      rule: "fits", reason: "r", policy: $sig, line: $line}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 }
 
 # --- candidates --------------------------------------------------------------------------
@@ -265,7 +265,7 @@ verdict() {
   verdict game agent 'current' skip
   echo 'policy v2' > "$DISPATCH_POLICY"
   verdict game agent 'current' skip
-  jq -cn --arg sig "$(policy_sig)" '{project: "game", lane: "agent", key: "retagged", verdict: "skip", policy: $sig, line: "old"}' \
+  jq -cn --arg sig "$(policy_sig)" '{project: "game", lane: "agent", key: "retagged", verdict: "skip", rule: "fits", policy: $sig, line: "old"}' \
     >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   jq -cn '{project: "game", lane: "agent", key: "died", verdict: "failed"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 
@@ -896,9 +896,12 @@ kinds_match() {
   assert_equal "$(jq -r .project <<<"$output" | paste -sd' ')" 'ok'
 }
 
-@test "picks: a dispatch verdict from an older policy does not launch" {
+@test "picks: a dispatch verdict from an older policy still launches while its rule stands, not once the rule is gone" {
   verdict game human k dispatch
-  echo 'policy v2' > "$DISPATCH_POLICY"
+  echo 'policy v2' >> "$DISPATCH_POLICY"
+  run picks '{"project":"game","stage":"beta","lane":"human","key":"k","prio":1,"tier":1,"line":""}' 1
+  assert_equal "$(jq -r .key <<<"$output")" k
+  printf '%s\n' 'policy' '- (tier3) tier 3' > "$DISPATCH_POLICY"
   run picks '{"project":"game","stage":"beta","lane":"human","key":"k","prio":1,"tier":1,"line":""}' 1
   assert_output ''
 }
@@ -2432,7 +2435,7 @@ night_verdict() {
   jq -cn --arg k "$1" --arg a "${2-$1}" --argjson t3 "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
     --arg line "$(line_of agent-runtime agent "$1")" \
     '{project: "agent-runtime", lane: "agent", key: $k, verdict: "skip", size: $s, tier: 3, area: $a,
-      clear: true, agent_only: true, tier3_only: $t3, reason: "tier 3", policy: $sig, line: $line}' \
+      clear: true, agent_only: true, tier3_only: $t3, rule: "tier3", reason: "tier 3", policy: $sig, line: $line}' \
     >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 }
 
@@ -2718,16 +2721,32 @@ J
   assert_equal "$(outcome)" FAILED
 }
 
-@test "policy_sig: a workers.json edit keeps every verdict fresh; a policy edit judges again" {
+@test "policy_sig: a workers.json edit keeps every verdict fresh; a policy edit judges again, and keeps the old verdict meanwhile" {
   project game beta "$SANDBOX/repos/game"
   row game agent 'judged' "- [ ] judged $T"
   verdict game agent 'judged' skip
   echo '{"fleet": {"max_tier": 1, "lane": "agent"}}' > "$DISPATCH_WORKERS"
   run cmd_candidates
   assert_output ''
-  echo 'policy v3' > "$DISPATCH_POLICY"
+  echo 'policy v3' >> "$DISPATCH_POLICY"
   run cmd_candidates
   assert_equal "$(jq -r .key <<<"$output")" 'judged'
+  # The edit voids nothing: the old verdict still counts as the row's verdict.
+  run cmd_suggest --json
+  assert_equal "$(jq -r .verdict <<<"$output")" skip
+}
+
+@test "judge: after a policy edit the rows with no verdict are judged before the ones with a stale verdict" {
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
+    printf "%s\n" "{\"verdicts\":[]}"'
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'old' "- [ ] old $T"
+  row game agent 'fresh' "- [ ] fresh $T"
+  verdict game agent 'old' skip
+  echo 'policy v2' >> "$DISPATCH_POLICY"
+  DISPATCH_JUDGE_MAX=1 run judge "$(jq -nc --arg l "$(line_of game agent old)" '{project:"game",stage:"beta",lane:"agent",key:"old",text:"- [ ] old",prio:1,line:$l}')
+$(jq -nc '{project:"game",stage:"beta",lane:"agent",key:"fresh",text:"- [ ] fresh",prio:1}')"
+  assert_equal "$(grep -o '"key":"[a-z]*"' "$NOTES_FIXTURE/prompt" | cut -d'"' -f4 | paste -sd,)" 'fresh'
 }
 
 @test "judge shares a capped batch across projects: each project's best row, then each one's next" {
