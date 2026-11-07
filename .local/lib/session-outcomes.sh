@@ -13,8 +13,27 @@
 # Field meanings and the observation rule: .config/agentctl/DREAMING.md
 # ("Session outcomes") in the private overlay.
 
+# SO_PR_JQ - the jq defs every harness's PR scan shares. pr_cmd: a command that opens or merges
+# a PR, `gh pr create|merge` or a POST to a Forgejo API `/api/v1/repos/.../pulls` URL. pr_refs:
+# the PRs a call's output names, as {repo, number}. A GitHub repo is `owner/repo`; a Forgejo one
+# is `host/owner/repo` (gh's own HOST/OWNER/REPO form), so a GitHub mirror of the same name stays
+# a different repo. Forgejo is told by its URL shape, `/pulls/N` on a host that is not github.com:
+# its hostnames are not named here, since this repo is public. A Forgejo merge prints no URL, so
+# its PR is found from the create call's `html_url`.
+SO_PR_JQ='
+  def pr_cmd: test("\\bgh\\s+pr\\s+(create|merge)\\b")
+    or (test("/api/v1/repos/") and test("/pulls\\b")
+        and test("(-X\\s*|--request[=\\s]+)POST\\b|\\s(-d|--data(-raw|-binary)?)[=\\s]"));
+  def pr_refs: [ (scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
+                  | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}),
+                 (scan("[Mm]erged pull request ([^/\\s]+)/([^#\\s]+)#([0-9]+)")
+                  | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}),
+                 (scan("https?://([^/\\s\"]+)/([^/\\s\"]+)/([^/\\s\"]+)/pulls/([0-9]+)") | select(.[0] != "github.com")
+                  | {repo: "\(.[0])/\(.[1])/\(.[2])", number: (.[3] | tonumber)}) ];
+'
+
 # so_transcript_metrics FILE - one pass over a transcript, one JSON object out.
-# A PR counts only when a `gh pr create|merge` call's own result printed it, so a PR
+# A PR counts only when a PR call's own result printed it (SO_PR_JQ), so a PR
 # merely viewed or pasted is not claimed. lessons_written counts corrections (the rule
 # is "after ANY correction, update lessons"); most land as `cat >>` through Bash, not
 # Edit, so both are counted. Malformed lines are skipped, not fatal:
@@ -35,7 +54,7 @@
 # plan_gate counts ExitPlanMode calls and how many of them plan-standard.sh denied;
 # the human rejecting a plan is `denied` under hard_errors, not a gate denial.
 so_transcript_metrics() {
-  jq -nR --argjson sigs "${2:-[]}" '
+  jq -nR --argjson sigs "${2:-[]}" "$SO_PR_JQ"'
     def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
     def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";
     def text_of: if type == "string" then .
@@ -75,7 +94,7 @@ so_transcript_metrics() {
               | (if ($c | test(test_run)) then .test_runs += 1 else . end)
               | (if ($c | test(ci_poll)) then .ci_polls += 1 else . end)
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
-              | (if ($c | test("\\bgh\\s+pr\\s+(create|merge)\\b")) then .pr_ids[$u.id] = true else . end)
+              | (if ($c | pr_cmd) then .pr_ids[$u.id] = true else . end)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)
               | reduce ($sigs[] | select((($r.timestamp // "") | .[0:10]) > .since)
                         | select(.sig as $re | try ($c | test($re)) catch false)) as $s (.;
@@ -113,10 +132,7 @@ so_transcript_metrics() {
                      else . end
                  else . end)
               | (if ($err | not) and .pr_ids[$c.tool_use_id] then
-                   .prs += ([ $t | scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
-                              | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ]
-                          + [ $t | scan("[Mm]erged pull request ([^/\\s]+)/([^#\\s]+)#([0-9]+)")
-                              | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ])
+                   .prs += ($t | pr_refs)
                  else . end)
               | (if ($err | not) and .lesson_ids[$c.tool_use_id] then .lessons_written += 1 else . end)
               | (if ($err | not) and .done_ids[$c.tool_use_id] then
@@ -147,7 +163,7 @@ so_transcript_metrics() {
 # has no Stop hook, and its own DB already holds cost and tokens. `session_v2` is the live table;
 # `session` and `part` stopped being written at 2.1.4. Times are milliseconds. A child session (a
 # subagent) adds to its root and gets no line. PRs follow the rule at the top of this file: a
-# `gh pr create|merge` call's own output printed it. `provider` is the session model's providerID:
+# PR call's own output printed it (SO_PR_JQ). `provider` is the session model's providerID:
 # `lazer` went to Lazer direct, which the gateway's lazer-pool never sees. No DB is no rows; a schema
 # it cannot read is rc 1.
 so_opencode_rows() {
@@ -163,21 +179,19 @@ so_opencode_rows() {
     FROM tree t JOIN session_v2 r ON r.id = t.root JOIN session_v2 s ON s.id = t.id GROUP BY t.root" > "$work/oc.sessions.json" || return 1
   sqlite3 -readonly -json "$db" "$tree
     SELECT t.root, m.data FROM tree t JOIN session_message m ON m.session_id = t.id
-    WHERE m.type = 'assistant' AND m.data LIKE '%gh pr %'" > "$work/oc.messages.json" || return 1
+    WHERE m.type = 'assistant' AND (m.data LIKE '%gh pr %' OR m.data LIKE '%/api/v1/repos/%')" > "$work/oc.messages.json" || return 1
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   jq -r '(. // [])[].directory' "$work/oc.sessions.json" | sort -u | while IFS= read -r dir; do
     jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
   done | jq -cs from_entries > "$work/oc.projects.json" || return 1
-  jq -cn --slurpfile s "$work/oc.sessions.json" --slurpfile m "$work/oc.messages.json" --slurpfile p "$work/oc.projects.json" '
+  jq -cn --slurpfile s "$work/oc.sessions.json" --slurpfile m "$work/oc.messages.json" --slurpfile p "$work/oc.projects.json" "$SO_PR_JQ"'
     (($m[0] // []) | group_by(.root)
      | map({key: .[0].root,
             value: [ .[].data | fromjson | .content[]?
                      | select(.type == "tool" and .name == "bash" and .state.status == "completed"
-                              and (.state.input.command // "" | test("\\bgh pr (create|merge)\\b")))
-                     | [.state.content[]?.text] | join("\n")
-                     | scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
-                     | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ] | unique})
+                              and (.state.input.command // "" | pr_cmd))
+                     | [.state.content[]?.text] | join("\n") | pr_refs[] ] | unique})
      | from_entries) as $prs
     | ($s[0] // [])[]
     | ((.model // "{}") | fromjson) as $model
@@ -200,7 +214,7 @@ so_opencode_rows() {
 # price with all three rates and no cache writes (OpenAI bills none), since the token total is not
 # split by model; a session with any unpriced rollout, or no
 # price file, has cost_usd null, never a partial figure. PRs follow the rule at the top of this
-# file, from a `gh pr create|merge` shell call paired with its own output.
+# file, from a PR call (SO_PR_JQ) paired with its own output.
 so_codex_rows() {
   local dir="$1" work="$2" prices="${3:-}" f pj='{}'
   [ -d "$dir" ] || return 0
@@ -208,9 +222,7 @@ so_codex_rows() {
     pj="$(jq -c '.harnesses.codex.prices // {}' "$prices" 2>/dev/null)" || { echo "so_codex_rows: unreadable $prices, no Codex cost" >&2; pj='{}'; }
   fi
   find "$dir" -name 'rollout-*.jsonl' -type f | while IFS= read -r f; do
-    jq -cs --argjson prices "$pj" 'def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
-      def prs: [scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)") | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}];
-      def pr_cmd: test("\\bgh pr (create|merge)\\b");
+    jq -cs --argjson prices "$pj" "$SO_PR_JQ"'def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
       (map(select(.type == "session_meta")) | first | .payload) as $m
       | select($m.id)
       | (map(select(.type == "response_item") | .payload)) as $r
@@ -238,12 +250,12 @@ so_codex_rows() {
                       cacheCreation: ($u.cache_write_input_tokens // 0), cacheRead: ($u.cached_input_tokens // 0),
                       total: ($u.input_tokens + $u.output_tokens)} end),
           prs: ([ ($r[] | select(.type == "function_call" and .name == "exec_command")
-                   | select((.arguments | fromjson? | .cmd // "") | pr_cmd) | $out[.call_id] // "" | prs[]),
+                   | select((.arguments | fromjson? | .cmd // "") | pr_cmd) | $out[.call_id] // "" | pr_refs[]),
                   ($r[] | select(.type == "custom_tool_call" and .name == "exec")
-                   | select(.input // "" | pr_cmd) | $out[.call_id] // "" | prs[]),
+                   | select(.input // "" | pr_cmd) | $out[.call_id] // "" | pr_refs[]),
                   (.[] | select(.type == "event_msg" and .payload.type == "item_completed" and .payload.item.type == "CommandExecution")
                    | .payload.item | select(.command | if type == "array" then join(" ") else tostring end | pr_cmd)
-                   | .aggregated_output // "" | prs[]) ] | unique) }' "$f" || echo "so_codex_rows: unreadable $f" >&2
+                   | .aggregated_output // "" | pr_refs[]) ] | unique) }' "$f" || echo "so_codex_rows: unreadable $f" >&2
   done > "$work/cx.rows.jsonl"
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1

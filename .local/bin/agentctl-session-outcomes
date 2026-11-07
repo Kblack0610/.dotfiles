@@ -32,6 +32,8 @@
 # (so_opencode_rows) or Codex's rollout files (so_codex_rows).
 # `harness` on a line is what its launcher recorded (HARNESS_DEF). A gateway item's real spend
 # goes on the item as gateway_cost_usd (gateway_push).
+# A Forgejo PR (repo `host/owner/repo`, session-outcomes.sh SO_PR_JQ) is looked up through that host's
+# API with the rbw token SO_FORGEJO_ENTRY; a failed lookup leaves its PRs UNKNOWN and the report says so.
 # Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR
 # SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES SO_PROJECT_MAP SO_ROADMAP.
 # `class` on a line is {size, kind} of the queue item the session worked: the size and kind of the
@@ -64,6 +66,8 @@ PROJECT_MAP="${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"   #
 # Money as `worst` and `card` print it.
 FMT_DEF='def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;'
 LF_URL="${SO_LF_URL:-}"   # set by the private runner conf; this repo is public
+FORGEJO_ENTRY="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}"   # rbw entry: a Forgejo token with repo scope
+FORGEJO_PAGE=50   # Forgejo's MAX_RESPONSE_ITEMS: it caps every list page at 50, whatever limit asks for
 LF_ENTRY="${SO_LF_ENTRY:-langfuse-api}"
 LF_TTL_DAYS=90    # Langfuse keeps traces 90 days; a score on a session older than that has nothing to point at
 SO_ASKS="${SO_ASKS:-$HOME/.agent/asks}"                          # the ask judge's verdicts
@@ -214,15 +218,20 @@ cmd_run() {
   done < "$work/due.jsonl"
 
   # One `gh pr list` per repo per run, never per PR: under fleet load per-PR calls are
-  # what tripped the 403 rate limit.
-  local repo
+  # what tripped the 403 rate limit. A Forgejo repo is one paged API read instead; it is the
+  # home cluster, so a failed one costs only its own PRs, not the whole run.
+  local repo forge_note=""
   { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo' | sort -u > "$work/repos"
   printf '{}' > "$work/index.json"
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
-    "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
-      --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err" \
-      || die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
+    if [[ "$repo" == */*/* ]]; then
+      forgejo_pr_list "$repo" "$work" > "$work/prs.json" || { forge_note="$forge_note; forgejo: $FORGEJO_ERR"; continue; }
+    else
+      "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
+        --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err" \
+        || die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
+    fi
     so_pr_index "$FINAL_DAYS" < "$work/prs.json" > "$work/idx.json" \
       || die_stalled "could not index PRs for $repo"
     jq -c --arg r "$repo" --slurpfile i "$work/idx.json" '. + {($r): $i[0]}' \
@@ -346,8 +355,34 @@ cmd_run() {
     written=$((written + 1))
   done < "$work/lines.jsonl"
 
-  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note$rework_note"
-  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$rework_note; $(lessons_note); $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
+  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note$forge_note$rework_note"
+  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$forge_note$rework_note; $(lessons_note); $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
+}
+
+# forgejo_pr_list HOST/OWNER/REPO WORKDIR - the repo's newest PR_LIMIT PRs from its Forgejo API, in
+# the `gh pr list --json number,state,title,mergedAt,body,mergeCommit` shape so_pr_index reads. The
+# token is read once per run and goes in on stdin (-K -), never argv. rc 1 with FORGEJO_ERR set
+# when there is no token or a page fails.
+FORGEJO_TOKEN=""
+forgejo_pr_list() {
+  local repo="$1" work="$2" page=1 got
+  if [ -z "$FORGEJO_TOKEN" ]; then
+    FORGEJO_TOKEN="$("$RBW" get "$FORGEJO_ENTRY" 2>/dev/null)" || FORGEJO_TOKEN=""
+    [ -n "$FORGEJO_TOKEN" ] || { FORGEJO_ERR="no token (rbw $FORGEJO_ENTRY), $repo unread"; return 1; }
+  fi
+  rm -f "$work"/fj.page.*
+  while :; do
+    printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN" |
+      "$CURL" -sSf -K - --max-time 30 -o "$work/fj.page.$page" \
+        "https://${repo%%/*}/api/v1/repos/${repo#*/}/pulls?state=all&limit=$FORGEJO_PAGE&page=$page" 2>"$work/fj.err" &&
+      got="$(jq 'length' "$work/fj.page.$page" 2>/dev/null)" ||
+      { FORGEJO_ERR="$repo unread: $(head -c 120 "$work/fj.err")"; return 1; }
+    [ "$got" -ge "$FORGEJO_PAGE" ] && [ $((page * FORGEJO_PAGE)) -lt "$PR_LIMIT" ] || break
+    page=$((page + 1))
+  done
+  jq -cs 'add | map({number, title, body, mergedAt: .merged_at,
+                     state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
+                     mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)})' "$work"/fj.page.*
 }
 
 # ledger_push - the work ledger's cost and time (~/.config/agentctl/QUEUE.md): every queue item
