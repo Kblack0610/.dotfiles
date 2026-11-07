@@ -257,8 +257,15 @@ pub fn loose_task(line: &str) -> Option<String> {
     let text = t
         .strip_prefix(['-', '*', '+'])
         .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
-        .unwrap_or(t);
-    Some(format!("- [ ] {}", text.trim()))
+        .unwrap_or(t)
+        .trim();
+    // `* [x] done` is a checklist in another bullet: it keeps its box.
+    let has_box = text.starts_with('[') && text.as_bytes().get(2) == Some(&b']');
+    Some(if has_box {
+        format!("- {text}")
+    } else {
+        format!("- [ ] {text}")
+    })
 }
 
 /// `- [ ]` with no text after it.
@@ -1624,6 +1631,9 @@ mod tests {
             Some("- [ ] [[a link]] words")
         );
         assert_eq!(task("- [docs](url)").as_deref(), Some("- [ ] [docs](url)"));
+        assert_eq!(task("* [ ] a list").as_deref(), Some("- [ ] a list"));
+        assert_eq!(task("+ [x] a done").as_deref(), Some("- [x] a done"));
+        assert_eq!(task("[ ] no bullet").as_deref(), Some("- [ ] no bullet"));
         assert_eq!(task("-").as_deref(), Some("- [ ] "), "the empty slot");
         for not_text in [
             "",

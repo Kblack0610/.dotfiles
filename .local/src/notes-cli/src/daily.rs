@@ -172,20 +172,16 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     // the lead window (consumed) and an `(every:…)` firing today (master line kept).
     let sched_before = fs::read_to_string(&p.schedule).unwrap_or_default();
     let (promoted, sched_pruned) = promote_schedule(&sched_before, today);
-    let n_promoted = promoted.len();
+    let n_promoted = promoted.iter().filter(|l| !is_note(l)).count();
 
     let mut focus_keys: std::collections::HashSet<String> = focus_keep
         .iter()
         .filter(|l| md::is_task(l))
         .map(|l| md::task_key(l))
         .collect();
-    for pr in promoted {
-        // Dedup against what already carried forward: a habit whose surfaced copy is still
-        // open from yesterday must not land twice.
-        if focus_keys.insert(md::task_key(&pr)) {
-            focus_keep.push(pr);
-        }
-    }
+    // Dedup against what already carried forward: a habit whose surfaced copy is still
+    // open from yesterday must not land twice.
+    focus_keep.extend(unseen(promoted, &mut focus_keys));
 
     let mut s = String::new();
     s.push_str("---\n");
@@ -218,11 +214,8 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         .filter(|l| md::is_task(l))
         .map(md::task_key)
         .collect();
-    let fresh: Vec<String> = defers
-        .into_iter()
-        .filter(|l| seen.insert(md::task_key(l)))
-        .collect();
-    let n_deferred = fresh.len();
+    let fresh = unseen(defers, &mut seen);
+    let n_deferred = fresh.iter().filter(|l| !is_note(l)).count();
     let sched_after = if fresh.is_empty() {
         sched_pruned
     } else {
@@ -297,6 +290,20 @@ fn is_note(line: &str) -> bool {
     line.starts_with(char::is_whitespace) && !line.trim().is_empty() && !md::is_task(line)
 }
 
+/// `lines` less the tasks `seen` already holds, each note going the way of its task.
+fn unseen(lines: Vec<String>, seen: &mut std::collections::HashSet<String>) -> Vec<String> {
+    let mut keep = true;
+    lines
+        .into_iter()
+        .filter(|l| {
+            if !is_note(l) {
+                keep = seen.insert(md::task_key(l));
+            }
+            keep
+        })
+        .collect()
+}
+
 /// A swept `## Focus` as it carries: each open task day-stamped, with the notes under it.
 fn carry_focus(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> Vec<String> {
     let mut out = Vec::new();
@@ -353,7 +360,13 @@ fn promote_schedule(content: &str, today: NaiveDate) -> (Vec<String>, String) {
     let mut promoted = Vec::new();
     let mut out: Vec<String> = Vec::new();
     let mut in_active = false;
+    let mut consumed = false; // the line above left the schedule, so its notes go too
     for line in content.lines() {
+        if consumed && is_note(line) {
+            promoted.push(line.to_string());
+            continue;
+        }
+        consumed = false;
         if let Some(rest) = line.strip_prefix("## ") {
             in_active = rest.trim().eq_ignore_ascii_case("Active");
             out.push(line.to_string());
@@ -364,7 +377,8 @@ fn promote_schedule(content: &str, today: NaiveDate) -> (Vec<String>, String) {
             if let Some(due) = md::find_due(line, today) {
                 if due <= horizon {
                     promoted.push(md::stamp_line(line, today, today));
-                    continue; // consumed
+                    consumed = true;
+                    continue;
                 }
             }
             // An `(every:…)` fires EVERY matching day: emit a copy, keep the master line.
@@ -2236,6 +2250,37 @@ mod tests {
         assert!(sched.contains("\n    later's note\n"), "{sched}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dated task surfaces with its note, so the schedule keeps no stray line.
+    #[test]
+    fn a_note_leaves_the_schedule_with_its_task() {
+        let content =
+            "## Active\n- [ ] soon [2026-06-30]\n    its note\n- [ ] far [2026-09-01]\n    stays\n";
+        let (promoted, remaining) = promote_schedule(content, d("2026-06-30"));
+        assert_eq!(promoted.len(), 2, "{promoted:?}");
+        assert_eq!(promoted[1], "    its note");
+        assert!(!remaining.contains("its note"), "{remaining}");
+        assert!(
+            remaining.contains("far [2026-09-01]\n    stays\n"),
+            "{remaining}"
+        );
+    }
+
+    /// A task already held drops with its note, and two tasks can share a note's words.
+    #[test]
+    fn a_note_goes_the_way_of_its_task() {
+        let mut seen = std::collections::HashSet::from([md::task_key("- [ ] held")]);
+        let lines = [
+            "- [ ] held",
+            "    see link",
+            "- [ ] new",
+            "    see link",
+            "- [ ] more",
+            "    see link",
+        ];
+        let out = unseen(lines.map(String::from).to_vec(), &mut seen);
+        assert_eq!(out, lines[2..]);
     }
 
     /// A day's Focus opens on the three lanes and Done, nothing above them.

@@ -274,7 +274,9 @@ return {
         if t:match "^[-*+]$" then
           return "- [ ] "
         end
-        return "- [ ] " .. (t:match "^[-*+]%s+(.*)$" or t)
+        local text = t:match "^[-*+]%s+(.*)$" or t
+        -- `* [x] done` is a checklist in another bullet: it keeps its box.
+        return (text:match "^%[.%]" and "- " or "- [ ] ") .. text
       end
 
       -- Which LANES index this scaffold line opens, or nil if it's a non-lane scaffold
