@@ -3809,7 +3809,7 @@ landed_item() {
   agent-queue set fix-crash "merged=$OID" >/dev/null
   run cmd_reap
   refute_output --partial 'closed game'
-  grep -q 'row left started, no merge proof' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
+  grep -qF 'no merge proof: no checkout of the repo o/tools#9 names' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
 }
 
 @test "reap: a done item's open PR keeps its row started past the orphan grace" {

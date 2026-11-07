@@ -1732,7 +1732,7 @@ close_row() {
   oid=$(jq -r '.merged // "" | split(" ")[0] // empty' <<<"$it"); pr=$(jq -r '.pr // "" | split(" ")[0] // empty' <<<"$it")
   dir=$(pr_repo_dir "$pr" "$project")
   if [ -z "$oid" ] || [ -z "$dir" ] || ! out=$(merge_proof "$dir" "${pr##*#}" "$(merge_proof_branch "$dir")" "$oid" 2>&1); then
-    logline "queue item $1: $project row left started, no merge proof: ${out:-no merged commit or checkout}"
+    logline "queue item $1: $project row left started, no merge proof: ${out:-${oid:+no checkout of the repo $pr names}${oid:-no merged commit}}"
     return 0
   fi
   np "$prof" ptask "$project" "${flag[@]}" done "$key" --proof "pr:${pr##*#} commit:${oid:0:12}" >/dev/null 2>&1 ||
