@@ -14,8 +14,10 @@
 # ("Session outcomes") in the private overlay.
 
 # so_transcript_metrics FILE - one pass over a transcript, one JSON object out.
-# A PR counts only when a `gh pr create|merge` call's own result printed it, so a PR
-# merely viewed or pasted is not claimed. lessons_written counts corrections (the rule
+# A PR counts when a `gh pr create|merge` call's own result printed it, so a PR merely
+# viewed or pasted is not claimed, or when Claude Code wrote a pr-link record for it: that
+# record is how a PR made in a subagent, or whose output was persisted to a file, reaches
+# this transcript, since neither prints its URL in a tool result here. lessons_written counts corrections (the rule
 # is "after ANY correction, update lessons"); most land as `cat >>` through Bash, not
 # Edit, so both are counted. Malformed lines are skipped, not fatal:
 # a transcript cut off by a crash is the session this feed most needs to see.
@@ -126,6 +128,8 @@ so_transcript_metrics() {
               .interrupts += 1
             else . end)
         end
+      elif $r.type == "pr-link" and ($r.prNumber | type) == "number" and ($r.prRepository | type) == "string" then
+        .prs += [{repo: $r.prRepository, number: $r.prNumber}]
       elif $r.type == "system" and $r.subtype == "compact_boundary" then
         .compactions[if $r.compactMetadata.trigger == "manual" then "manual" else "auto" end] += 1
       else . end)

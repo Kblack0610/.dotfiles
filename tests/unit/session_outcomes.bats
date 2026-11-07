@@ -122,6 +122,31 @@ EOF
   assert_equal "$(field a .board_done.proof)" 1
 }
 
+@test "pr-link records: a subagent's PR and a persisted-output PR reach .prs once, a malformed record is skipped" {
+  cat > "$TR/e.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Agent","input":{"subagent_type":"general-purpose","prompt":"open the PR"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":[{"type":"text","text":"Done, the PR is open."}]}]}}
+{"type":"pr-link","sessionId":"sess-e","prNumber":20,"prUrl":"https://github.com/o/r/pull/20","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-e","prNumber":20,"prUrl":"https://github.com/o/r/pull/20","prRepository":"o/r"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e2","name":"Bash","input":{"command":"gh pr create --title 'feat: e' --body x"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e2","content":"<persisted-output>\nOutput too large (37.6KB). Full output saved to: /tmp/tool-results/e2.txt\n</persisted-output>"}]}}
+{"type":"pr-link","sessionId":"sess-e","prNumber":21,"prUrl":"https://github.com/o/r/pull/21","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-e","prUrl":"https://github.com/o/r/pull/22"}
+EOF2
+  jq -cn --arg t "$TR/e.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-e", project: "proj", transcript: $t, title: "title e", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$GH_FIXTURE/prs.o-r" <<'EOF2'
+[{"number":10,"state":"MERGED","title":"feat: a","mergedAt":"2026-10-19T01:00:00Z"},
+ {"number":20,"state":"MERGED","title":"feat: e1","mergedAt":"2026-10-19T03:00:00Z"},
+ {"number":21,"state":"MERGED","title":"feat: e","mergedAt":"2026-10-19T04:00:00Z"}]
+EOF2
+  "$SUBJECT" run
+  assert_equal "$(field e '[.prs[].number] | join(",")')" "20,21"
+  assert_equal "$(field e .prs_merged)" 2
+  assert_equal "$(field a '[.prs[].number] | join(",")')" 10
+}
+
 @test "reverted PR: B's #11 is reverted by #12 within the window" {
   "$SUBJECT" run
   assert_equal "$(field b '.prs[0].number')" 11
