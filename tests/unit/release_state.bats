@@ -181,18 +181,34 @@ field() { row "$1" | jq -r "$2"; }
 }
 
 @test "refresh publishes its runner outcome, so agentctl never promotes PENDING to STALLED" {
-  export AGENTCTL_STATE_DIR="$SANDBOX/agentctl-state" AGENTCTL_NAME=release-state
+  # An inherited AGENTCTL_NAME (another runner's unit) must not take the outcome.
+  export AGENTCTL_STATE_DIR="$SANDBOX/agentctl-state" AGENTCTL_NAME=other-runner
   mkdir -p "$AGENTCTL_STATE_DIR/release-state"
   printf PENDING > "$AGENTCTL_STATE_DIR/release-state/last-outcome"
   run "$RS" refresh
   assert_success
+  assert_output --partial '3 rows, '
   [ "$(cat "$AGENTCTL_STATE_DIR/release-state/last-outcome")" = WORKED ]
   run grep -c 'outcome=WORKED 3 rows' "$AGENTCTL_STATE_DIR/release-state/activity.log"
   assert_output 1
+  [ ! -e "$AGENTCTL_STATE_DIR/other-runner" ]
   # Negative control: show and check are not passes and leave the outcome alone.
   printf PENDING > "$AGENTCTL_STATE_DIR/release-state/last-outcome"
   "$RS" show >/dev/null
+  "$RS" check >/dev/null || true
   [ "$(cat "$AGENTCTL_STATE_DIR/release-state/last-outcome")" = PENDING ]
+}
+
+@test "a refresh with no registry is FAILED with its reason and keeps the last snapshot" {
+  export AGENTCTL_STATE_DIR="$SANDBOX/agentctl-state"
+  "$RS" refresh >/dev/null
+  rm -f "$PROJECT_MAP_FILE"
+  run "$RS" refresh
+  assert_failure
+  [ "$(cat "$AGENTCTL_STATE_DIR/release-state/last-outcome")" = FAILED ]
+  run tail -1 "$AGENTCTL_STATE_DIR/release-state/activity.log"
+  assert_output --partial "outcome=FAILED why: no registry at $PROJECT_MAP_FILE"
+  [ "$(jq '.rows | length' "$RELEASE_STATE_DIR/state.json")" = 3 ]
 }
 
 @test "an old snapshot fails check as stale" {

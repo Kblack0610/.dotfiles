@@ -18,7 +18,7 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")
 . "$PROJECT_NAME_LIB"
 # shellcheck source=../lib/agent-proof.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
-NAME="${AGENTCTL_NAME:-release-state}"   # the agentctl runner that publishes refresh's outcome
+NAME=release-state   # the runner refresh publishes under, never an inherited AGENTCTL_NAME
 
 STATE_DIR="${RELEASE_STATE_DIR:-$HOME/.agent/releases}"
 STATE="$STATE_DIR/state.json"
@@ -28,7 +28,13 @@ KUBECTL="${KUBECTL:-kubectl}"
 # Timeout guard on every external call (git fetch, kubectl, curl), in seconds.
 PROBE_TIMEOUT="${RELEASE_PROBE_TIMEOUT:-20}"
 
-die() { echo "release-state: $*" >&2; exit 2; }
+# REFRESH_WHY (set by cmd_refresh) is where a dying pass leaves its reason for the outcome line;
+# the first die keeps it, so a caller's die does not hide the inner one that caused it.
+die() {
+  echo "release-state: $*" >&2
+  [ -n "${REFRESH_WHY:-}" ] && [ ! -s "$REFRESH_WHY" ] && printf '%s' "$*" > "$REFRESH_WHY"
+  exit 2
+}
 usage() { sed -n '4,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 now_epoch() { date +%s; }
 
@@ -235,22 +241,27 @@ row() {
       telemetry: $tel, deps: ($t.deps // []), probed_at: $now }'
 }
 
-cmd_refresh() {
-  local only="$*" prev="{}" rows tmp line proj t
-  mkdir -p "$STATE_DIR"
-  exec 9>"$STATE_DIR/.lock"
-  flock -w 120 9 || { proof_outcome "$NAME" FAILED "another refresh holds the lock"; die "another refresh holds $STATE_DIR/.lock"; }
+# refresh_snapshot [project...] -> probe, write the snapshot, print its one-line summary.
+refresh_snapshot() {
+  local only="$*" prev="{}" rows tmp line proj t targets summary
+  mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
+  exec 9>"$STATE_DIR/.lock" || die "cannot open $STATE_DIR/.lock"
+  flock -w 120 9 || die "another refresh holds $STATE_DIR/.lock"
   [ -f "$STATE" ] && prev="$(cat "$STATE")"
   jq -e . >/dev/null 2>&1 <<<"$prev" || prev="{}"
-  tmp="$(mktemp "$STATE_DIR/.rows.XXXXXX")"
+  # Read before the loop: a die inside a process substitution would only end that subshell,
+  # and a full refresh would then overwrite the snapshot with zero rows.
+  targets="$(targets_json "$only")" || die "cannot read the targets in $MAP"
+  tmp="$(mktemp "$STATE_DIR/.rows.XXXXXX")" || die "cannot write in $STATE_DIR"
   while IFS= read -r line; do
+    [ -n "$line" ] || continue
     proj="$(jq -r '.project' <<<"$line")"
     t="$(jq -c '.target' <<<"$line")"
     # A target with no id cannot be joined across refreshes or named by check.
     [ -n "$(jq -r '.id // empty' <<<"$t")" ] || { echo "release-state: $proj has a target with no id; skipped" >&2; continue; }
     row "$proj" "$t" "$prev" >>"$tmp"
-  done < <(targets_json "$only")
-  rows="$(jq -sc . "$tmp")"
+  done <<<"$targets"
+  rows="$(jq -sc . "$tmp")" || { rm -f "$tmp"; die "cannot read the probed rows"; }
   rm -f "$tmp"
   local out="$STATE_DIR/.state.$$"
   jq -n --argjson rows "$rows" --argjson prev "$prev" --arg only "$only" --argjson now "$(now_epoch)" '
@@ -258,13 +269,30 @@ cmd_refresh() {
     | { generated_at: ($now | todate), generated_epoch: $now,
         rows: ((if ($o | length) > 0
                 then ($prev.rows // []) | map(select(.project as $p | $o | index($p) | not))
-                else [] end) + $rows) }' >"$out" && mv -f "$out" "$STATE" \
-    || { rm -f "$out"; proof_outcome "$NAME" FAILED "could not write $STATE"; die "could not write $STATE"; }
-  local summary
-  summary="$(jq -r '.rows | "\(length) rows, \(map(select(.status == "drift")) | length) drift, \(map(select(.status == "unknown")) | length) unknown"' "$STATE")"
-  echo "$summary"
-  # Every pass rewrites the snapshot, so a written one is the artifact; drift is check's verdict.
-  proof_outcome "$NAME" WORKED "$summary"
+                else [] end) + $rows) }' >"$out" || { rm -f "$out"; die "cannot write $out"; }
+  summary="$(jq -r '.rows | "\(length) rows, \(map(select(.status == "drift")) | length) drift, \(map(select(.status == "unknown")) | length) unknown"' "$out")" \
+    || { rm -f "$out"; die "cannot summarize $out"; }
+  mv -f "$out" "$STATE" || { rm -f "$out"; die "cannot replace $STATE"; }
+  printf '%s\n' "$summary"
+}
+
+# One pass, one outcome, published here and nowhere else: a pass that fails at any step is
+# FAILED with that step's reason, so agentctl never promotes a silent PENDING to STALLED.
+cmd_refresh() {
+  local summary rc why
+  REFRESH_WHY="$(mktemp)" || die "mktemp failed"
+  if summary="$(refresh_snapshot "$@")"; then
+    rm -f "$REFRESH_WHY"
+    echo "$summary"
+    # Every pass rewrites the snapshot, so a written one is the artifact; drift is check's verdict.
+    proof_outcome "$NAME" WORKED "$summary"
+  else
+    rc=$?
+    why="$(cat "$REFRESH_WHY" 2>/dev/null)"
+    rm -f "$REFRESH_WHY"
+    proof_outcome "$NAME" FAILED "${why:-refresh exited $rc}"
+    exit "$rc"
+  fi
 }
 
 # severity order for show: broken first, then attention, then green.
