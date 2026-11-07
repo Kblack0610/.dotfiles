@@ -11,6 +11,7 @@ mod day;
 mod fit;
 mod fleet;
 mod fleettab;
+mod flowstrip;
 mod fmt;
 mod focustab;
 mod forecast;
@@ -368,6 +369,8 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.proposals = Some(hub_core::proposals::read(
             &hub_core::session_actions::System,
         ));
+        // Home leads with the flow strip, whose inbox and board are the gauges.
+        a.pipeline = Some(hub_core::pipeline::read());
     }
     // Home counts the queue too, so it is read for the default pages as well.
     if matches!(tab, None | Some(Tab::Home | Tab::Queue | Tab::Projects)) {

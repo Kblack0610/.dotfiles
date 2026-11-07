@@ -23,7 +23,7 @@ const ctx = vm.createContext({
 });
 // In the page's own order: a script that calls another at load needs it loaded first.
 const page = readFileSync(new URL("../src/index.html", dir), "utf8");
-const scripts = new Set(["ui.js", "md.js", "app.js", "actions.js", "table.js", "waiting.js", "home.js", "queue.js"]);
+const scripts = new Set(["ui.js", "md.js", "app.js", "actions.js", "table.js", "flow.js", "waiting.js", "home.js", "queue.js"]);
 for (const f of [...page.matchAll(/static\/([a-z]+\.js)/g)].map((m) => m[1]).filter((f) => scripts.has(f))) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -33,7 +33,7 @@ function draw(home, agents = [], asks = []) {
 }
 const table = (n) => ({ q: "", state: "", sort: "", dir: "desc", total: n, shown: n, states: [{ name: "all", n }], facets: [],
   columns: ["stream", "project", "proposal", "created", "verb"].map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })) });
-const home = (o) => ({ needs: [], proposals: [], proposals_head: "", proposals_table: table(0), running: [], numbers: [], health: [], errors: [], shown: 8, ...o });
+const home = (o) => ({ needs: [], proposals: [], proposals_head: "", proposals_table: table(0), running: [], flow: { chips: [{ key: "running", label: "running", value: "1", hot: false, to: { tab: "queue", state: "running" } }, { key: "inbox", label: "inbox", value: null, hot: false, to: null }], bottleneck: null, as_of: null, error: null }, numbers: [], health: [], errors: [], shown: 8, ...o });
 const prop = (id, o) => ({ id, stream: "dream", project: "dotfiles", title: `Keep ${id}`, why: "said twice", evidence: "", verb: "queue",
   does: "agent-queue add --project dotfiles -- x", created: "2026-11-05T10:00:00Z", expires: "2026-12-05T10:00:00Z", error: null, ...o });
 
@@ -108,10 +108,18 @@ test("the numbers and what could not be read are drawn as hub-core worded them",
   assert.match(html, /<span><b>queue<\/b> 1 running, 2 up next<\/span>/);
 });
 
+test("the flow strip leads Home, ahead of Numbers, and the queue and done-today numbers are gone", () => {
+  const html = draw(home({ numbers: [{ label: "sessions", value: "3 working" }] }));
+  assert.ok(html.indexOf("Flow") < html.indexOf("Numbers"), html);
+  assert.match(html, /href="#queue\?s=running" data-flow="running">running 1</);
+  assert.match(html, />inbox -</);
+  assert.doesNotMatch(html, /<b>queue<\/b>|done today/);
+});
+
 test("the summary leads, and a long list shows the cap with the rest folded", () => {
   const needs = Array.from({ length: 11 }, (_, i) => ({ kind: "nightly", project: "p", text: `red ${i}`, id: `r${i}` }));
   const html = draw(home({ needs, numbers: [{ label: "queue", value: "1 running" }], health: [{ name: "ci", level: "red" }] }));
-  assert.ok(html.indexOf("Numbers") < html.indexOf("Health") && html.indexOf("Health") < html.indexOf("Needs you"), html);
+  assert.ok(html.indexOf("Flow") < html.indexOf("Numbers") && html.indexOf("Numbers") < html.indexOf("Health") && html.indexOf("Health") < html.indexOf("Needs you"), html);
   const fold = html.indexOf('<details class="cfold" data-k="home-needs"');
   assert.ok(fold > html.indexOf("red 7") && fold < html.indexOf("red 8"), "rows past the cap sit in the fold");
   assert.match(html, /<summary>\+3 more<\/summary>/);
