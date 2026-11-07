@@ -97,10 +97,11 @@ run_hook() {
   assert_output "from the bnb account"
 }
 
-@test "a Stop records the endpoint it ran on: the gateway's URL for a claude-lazer session, null on an account" {
-  ANTHROPIC_BASE_URL=https://gateway.example run_hook
-  assert_equal "$(jq -r .base_url "$REG")" https://gateway.example
-  # negative control: no ANTHROPIC_BASE_URL is an account session, and the field is still there
-  env -u ANTHROPIC_BASE_URL bash -c "$(declare -f run_hook); TRANSCRIPT='$TRANSCRIPT' HOOK='$HOOK' run_hook"
-  assert_equal "$(jq -c '[has("base_url"), .base_url]' "$REG")" '[true,null]'
+@test "a Stop records the harness its launcher set: AGENT_HARNESS for a claude-lazer session, claude on an account" {
+  AGENT_HARNESS=lazer-reserve run_hook
+  assert_equal "$(jq -r .harness "$REG")" lazer-reserve
+  # negative control: no AGENT_HARNESS is an account session, and the row still says so
+  env -u AGENT_HARNESS bash -c "$(declare -f run_hook); TRANSCRIPT='$TRANSCRIPT' HOOK='$HOOK' run_hook"
+  assert_equal "$(jq -r .harness "$REG")" claude
+  [ "$(jq -c 'has("base_url")' "$REG")" = false ]
 }
