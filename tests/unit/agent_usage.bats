@@ -11,7 +11,7 @@
 #      A price table was tried and was 2.4x off ($164.66 against a true $68.49), so
 #      a wrong dollar figure must never reach a release changelog.
 #
-# PROM_URL points at a closed port throughout: these tests assert the local/offline
+# CC_PROM_URL points at a closed port throughout: these tests assert the local/offline
 # path and must give the same answer off-LAN as next to the cluster.
 
 setup() {
@@ -21,7 +21,7 @@ setup() {
   sandbox_init basic
 
   AU="$REPO_ROOT/.local/bin/agent-usage"
-  export AU PROM_URL='http://127.0.0.1:1' PROM_TIMEOUT=1
+  export AU CC_PROM_URL='http://127.0.0.1:1' PROM_TIMEOUT=1
 
   TX="$HOME/.claude/projects/-x/dedupe.jsonl"
   mkdir -p "$(dirname "$TX")"
@@ -93,10 +93,10 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
 #!/usr/bin/env bash
 q="$*"
 case "$q" in
-  *"by (type)"*) echo '{"data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
-  *"by (model) (claude_code_cost"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
-  *"by (model)"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
-  *) echo '{"data":{"result":[]}}' ;;
+  *"by (type)"*) echo '{"status":"success","data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
+  *"by (model) (claude_code_cost"*) echo '{"status":"success","data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
+  *"by (model)"*) echo '{"status":"success","data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
+  *) echo '{"status":"success","data":{"result":[]}}' ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/curl"
@@ -463,9 +463,20 @@ spend_curl() {
   done
 }
 
-@test "spend check: no PROM_URL exits 2" {
-  AGENT_USAGE_CONF=/nonexistent PROM_URL='' run "$AU" spend check 1h 150
+@test "spend check: no CC_PROM_URL exits 2" {
+  CC_PROM_URL='' run "$AU" spend check 1h 150
   assert_failure 2
+}
+
+@test "spend check: the endpoint is CC_PROM_URL from the command-center env file, a stray PROM_URL is ignored" {
+  mkdir -p "$HOME/.config/command-center"
+  echo 'CC_PROM_URL=http://from-env.test' > "$HOME/.config/command-center/env"
+  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[]}}' > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  SANDBOX="$SANDBOX" CC_PROM_URL='' PROM_URL=http://stale.test run "$AU" spend check 1h 150
+  assert_success
+  run grep -c 'http://from-env.test/api/v1/query' "$SANDBOX/q"
+  assert_output 1
 }
 
 @test "spend check: just over the ceiling prints a figure that shows it" {
