@@ -22,7 +22,9 @@ printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 case "$1 $2" in
 'pr view')
   case "$*" in
-  *baseRefName*) printf '%s main https://github.com/o/r/pull/42\n' "$(cat "$NOTES_FIXTURE/state")" ;;
+  # head.oid / head.ref / head.cross: the PR's head commit, branch and fork-ness (this checkout's HEAD, branch pr-42, same repo, by default)
+  *baseRefName*) printf '%s main https://github.com/o/r/pull/42 %s %s %s\n' "$(cat "$NOTES_FIXTURE/state")" \
+    "$(cat "$NOTES_FIXTURE/head.oid" 2>/dev/null || echo 0123456789abcdef)" "$(cat "$NOTES_FIXTURE/head.cross" 2>/dev/null || echo false)" "$(cat "$NOTES_FIXTURE/head.ref" 2>/dev/null || echo pr-42)" ;;
   *mergeable*)
     # mergeable.seq: one answer per call, popped as read; then this head, mergeable
     q="$NOTES_FIXTURE/mergeable.seq"
@@ -66,7 +68,9 @@ rev-list)
   # behind.seq: one count per call, popped as read; then behind
   q="$NOTES_FIXTURE/behind.seq"
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
-rev-parse) echo 0123456789abcdef ;;
+rev-parse) case "$2" in --show-toplevel) cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;; *) echo 0123456789abcdef ;; esac ;;
+# worktree.list: what `git worktree list --porcelain` prints (nothing when absent)
+worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
 # not.ancestor: the merge commit is not on the base branch (merge_proof refuses)
 merge-base) [ ! -f "$NOTES_FIXTURE/not.ancestor" ] ;;
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
@@ -119,6 +123,57 @@ item() {
     [ -z "${4:-}" ] || printf 'profile: %s\n' "$4"
     printf -- '---\n%s\n' "$1"
   } >"$AGENT_QUEUE_DIR/running/20261103-100000-$1.md"
+}
+
+@test "run from a checkout that is not the PR's head: stops before the body or anything else, names the PR's worktree" {
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  printf 'pr-42\n' >"$NOTES_FIXTURE/head.ref"
+  printf '%s\n' 'worktree /srv/main' 'HEAD 0123456789abcdef' 'branch refs/heads/main' '' \
+    'worktree /srv/wt/r-pr-42' 'HEAD aaaaaaaabbbbbbbb' 'branch refs/heads/pr-42' '' \
+    'worktree /srv/wt/r-pr-420' 'HEAD cccccccc' 'branch refs/heads/pr-420' >"$NOTES_FIXTURE/worktree.list"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial "head failed: HEAD 01234567 is not the PR's head aaaaaaaa: run from the PR's checkout: /srv/wt/r-pr-42"
+  run grep -c 'git fetch\|pr edit\|pr checks\|pr merge\|^notes' "$LOG"
+  assert_output 0
+}
+
+@test "head differs in the PR's own checkout (unpushed or unpulled): says push or pull, not run from here" {
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  printf '%s\n' 'worktree /srv/here' 'HEAD 0123456789abcdef' 'branch refs/heads/pr-42' >"$NOTES_FIXTURE/worktree.list"
+  printf '/srv/here\n' >"$NOTES_FIXTURE/toplevel"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'though this checkout has pr-42: push your commits, or pull the branch'
+  refute_output --partial "run from the PR's checkout"
+}
+
+@test "head differs and the PR's head is on a fork: points at gh pr checkout, never at a same-named local branch" {
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  printf 'true\n' >"$NOTES_FIXTURE/head.cross"
+  printf 'main\n' >"$NOTES_FIXTURE/head.ref"
+  printf '%s\n' 'worktree /srv/main' 'HEAD 0123456789abcdef' 'branch refs/heads/main' >"$NOTES_FIXTURE/worktree.list"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'on a fork: gh pr checkout 42'
+  refute_output --partial '/srv/main'
+}
+
+@test "head differs and no worktree has the PR's branch: says so instead of naming a path" {
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial "no checkout of pr-42 is listed"
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "an already MERGED PR is recorded from any checkout: the head check is skipped" {
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
 }
 
 @test "behind main: stops before the checks and the merge with exit 3" {
@@ -264,7 +319,8 @@ landed #42
 EOF
   run cat "$LOG"
   assert_output - <<'EOF'
-gh pr view 42 --json state,baseRefName,url -q .state + " " + .baseRefName + " " + .url
+gh pr view 42 --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q .state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + .isCrossRepository + " " + .headRefName
+git rev-parse HEAD
 gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
 git fetch -q origin
@@ -483,16 +539,17 @@ EOF
   run "$LAND" 42 --item ship --plan "$PLAN" --phase "6. agent-land" --dry-run
   assert_success
   assert_line --index 0 --partial 'item-line: gh pr view 42 --json body, then gh pr edit 42 --body-file -'
-  assert_line --index 1 --partial 'review: fleet-dispatch item-tier ship'
-  assert_line --index 2 --partial 'checks: gh pr checks 42 --watch'
-  assert_line --index 3 --partial 'fetch: git fetch origin'
-  assert_line --index 4 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 5 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
-  assert_line --index 6 --partial 'proof: gh pr view 42 --json mergeCommit'
-  assert_line --index 7 --partial 'live: dotfiles-autopull --now .'
-  assert_line --index 8 'item: agent-queue set ship pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 9 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 10 --partial 'plan: tick'
+  assert_line --index 1 --partial 'head: git rev-parse HEAD must equal the PR'
+  assert_line --index 2 --partial 'review: fleet-dispatch item-tier ship'
+  assert_line --index 3 --partial 'checks: gh pr checks 42 --watch'
+  assert_line --index 4 --partial 'fetch: git fetch origin'
+  assert_line --index 5 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
+  assert_line --index 6 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
+  assert_line --index 7 --partial 'proof: gh pr view 42 --json mergeCommit'
+  assert_line --index 8 --partial 'live: dotfiles-autopull --now .'
+  assert_line --index 9 'item: agent-queue set ship pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 10 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 11 --partial 'plan: tick'
   run cat "$LOG"
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -571,8 +628,8 @@ EOF
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 8 'item: agent-queue set tidy pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 9 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 9 'item: agent-queue set tidy pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 10 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
