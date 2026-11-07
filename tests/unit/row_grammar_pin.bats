@@ -12,7 +12,7 @@ setup() {
 
 # The shape every dialect of the grammar shares: `[a-z]+`, then the escaped paren that opens the area
 # (bash `)(\(`, awk and grep `\(`, jq `\\(`).
-SHAPE='\[a-z\]\+[)]?[(]*\\+[(]'
+SHAPE='(\[a-z\]|\[a-z0-9\]|\[a-z-\]|\[\[:alpha:\]\]|\\w)\+[)]?[(]*\\+[(]'
 
 # KNOWN: "<path>|<why it is not a copy of the row grammar, or the queue item that removes it>"
 KNOWN=(
@@ -46,8 +46,10 @@ row_regexes() {
   mkdir -p "$BATS_TEST_TMPDIR/.local/bin"
   printf '%s\n' '[[ "$1" =~ ^([a-z]+)(\([a-z0-9-]+\))?: ]] && echo "${BASH_REMATCH[1]}"' > "$BATS_TEST_TMPDIR/.local/bin/agent-queue"
   cp "$BATS_TEST_TMPDIR/.local/bin/agent-queue" "$BATS_TEST_TMPDIR/.local/bin/day-log"
-  run bash -c "$(declare -f row_regexes); SHAPE='$SHAPE'; KNOWN=(${KNOWN[*]@Q}); printf '%s\0' .local/bin/agent-queue .local/bin/day-log | row_regexes '$BATS_TEST_TMPDIR'"
+  printf '%s\n' "grep -E '^\\w+\\(x\\): '" > "$BATS_TEST_TMPDIR/.local/bin/other"
+  run bash -c "$(declare -f row_regexes); SHAPE='$SHAPE'; KNOWN=(${KNOWN[*]@Q}); printf '%s\0' .local/bin/agent-queue .local/bin/day-log .local/bin/other | row_regexes '$BATS_TEST_TMPDIR'"
   assert_output --partial ".local/bin/agent-queue:1:"
+  assert_output --partial ".local/bin/other:1:"
   refute_output --partial "day-log"
 }
 

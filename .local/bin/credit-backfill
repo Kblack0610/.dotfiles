@@ -120,7 +120,7 @@ applies() {
 }
 
 # typed <text> <area> <type> -> the text as a board row's `type(area): title`; one that already has
-# a type keeps it (notes refuses a type it does not know). `notes row parse` says whether it parses.
+# a type notes knows keeps it (`notes row parse` says whether the text parses); any other gets the prefix.
 typed() {
   local ok
   ok="$(printf '%s\n' "$1" | notes row parse | cut -f4)" && [ -n "$ok" ] || die "notes row parse failed (an old notes? notes-bootstrap --build-only)"
@@ -345,7 +345,7 @@ cmd_apply() {
           echo "credit-backfill: story under $key skipped: that epic is not applied" >&2
         else
           area="$sys"; [ "$area" != - ] || area="${epic_sys[$key]:-$prj}"
-          text="$(typed "$text" "$area" "$( [[ "$key" == std:* ]] && echo chore || echo feat)")"
+          text="$(typed "$text" "$area" "$( [[ "$key" == std:* ]] && echo chore || echo feat)")" || exit 1
           id="$(add_row "$prj" --agent "$text" "#size/$size${eid:+ #of/$eid}")" || id=""
         fi
         if [ -n "$id" ]; then
