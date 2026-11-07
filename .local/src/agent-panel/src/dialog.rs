@@ -222,39 +222,65 @@ pub fn run_card(target: &str, options: bool) -> Result<()> {
         return Ok(());
     }
     let color = std::env::var("AGENT_ASK_COLOR").is_ok_and(|v| v == "1");
-    let (bold, dim, off) = if color { ("\x1b[1m", "\x1b[2m", "\x1b[0m") } else { ("", "", "") };
-    let plan = (d.kind == Kind::Plan).then(|| {
-        a.jsonl
-            .as_deref()
-            .and_then(crate::jsonl::open_dialog_at)
-            .and_then(|(_, i)| i.get("plan")?.as_str().map(str::to_string))
-    });
-    // What to answer comes first; a plan can run to pages, so it follows the options.
-    match d.kind {
-        Kind::Plan => println!("{bold}plan waiting for your approval{off}"),
-        Kind::Question => println!("{bold}question waiting for your answer{off}"),
-    }
-    println!("{dim}{}  {}{off}", a.target, a.project);
-    if !d.tabs.is_empty() {
-        println!("{dim}{}{off}", d.tabs);
-    }
-    if !d.title.is_empty() {
-        println!("\n{}", d.title.join("\n"));
-    }
-    println!();
-    for o in &d.options {
-        let typed = if o.free { format!("  {dim}(t types it){off}") } else { String::new() };
-        println!(" {bold}{}{off}  {}{typed}", o.key, o.text);
-        for l in &o.detail {
-            println!("    {dim}{l}{off}");
+    let plan = Plan::of(&d, a.jsonl.as_deref().and_then(crate::jsonl::open_plan_at));
+    print!("{}", card(&d, &format!("{}  {}", a.target, a.project), plan, color, crate::md::width()));
+    Ok(())
+}
+
+/// What a dialog card shows under its options.
+pub enum Plan {
+    /// A question dialog: it has no plan.
+    None,
+    /// A plan dialog whose plan the transcript does not hold.
+    Unread,
+    /// A plan dialog's plan, from the session's transcript.
+    Text(String),
+}
+
+impl Plan {
+    /// The plan for `d`, given the open plan its transcript holds (`jsonl::open_plan_at`).
+    pub fn of(d: &Dialog, text: Option<String>) -> Plan {
+        match (d.kind, text) {
+            (Kind::Question, _) => Plan::None,
+            (Kind::Plan, None) => Plan::Unread,
+            (Kind::Plan, Some(t)) => Plan::Text(t),
         }
     }
-    match plan {
-        Some(Some(text)) => println!("\n{bold}the plan{off}\n\n{}", text.trim_end()),
-        Some(None) => println!("\n{dim}(the plan text is in its session; g goes there){off}"),
-        None => {}
+}
+
+/// The dialog's card, one format for the questions panel and the agent panel's preview: what it
+/// waits for and `who`, the question and the options as the pane numbers them, then the plan
+/// (`Plan`) as plain text folded at `width`. What to answer comes first; a plan can run to
+/// pages, so it follows the options.
+pub fn card(d: &Dialog, who: &str, plan: Plan, color: bool, width: usize) -> String {
+    use std::fmt::Write;
+    let (bold, dim, off) = if color { ("\x1b[1m", "\x1b[2m", "\x1b[0m") } else { ("", "", "") };
+    let mut s = String::new();
+    let _ = match d.kind {
+        Kind::Plan => writeln!(s, "{bold}plan waiting for your approval{off}"),
+        Kind::Question => writeln!(s, "{bold}question waiting for your answer{off}"),
+    };
+    let _ = writeln!(s, "{dim}{who}{off}");
+    if !d.tabs.is_empty() {
+        let _ = writeln!(s, "{dim}{}{off}", d.tabs);
     }
-    Ok(())
+    if !d.title.is_empty() {
+        let _ = writeln!(s, "\n{}", d.title.join("\n"));
+    }
+    s.push('\n');
+    for o in &d.options {
+        let typed = if o.free { format!("  {dim}(t types it){off}") } else { String::new() };
+        let _ = writeln!(s, " {bold}{}{off}  {}{typed}", o.key, o.text);
+        for l in &o.detail {
+            let _ = writeln!(s, "    {dim}{l}{off}");
+        }
+    }
+    let _ = match plan {
+        Plan::Text(text) => writeln!(s, "\n{bold}the plan{off}\n\n{}", crate::md::plain(&text, width)),
+        Plan::Unread => writeln!(s, "\n{dim}(the plan text is in its session; g goes there){off}"),
+        Plan::None => Ok(()),
+    };
+    s
 }
 
 /// `agent-panel answer <target> <key> --expect <text> [typed]`: exit 0 sent, 3 not taken,
@@ -320,6 +346,19 @@ Enter to select \u{b7} Tab/Arrow keys to navigate \u{b7} Esc to cancel
    3. No
  Esc to cancel \u{b7} Tab to amend
 ";
+
+    #[test]
+    fn the_card_puts_the_options_before_the_plan_and_reads_the_plan_as_plain_text() {
+        let d = parse(PLAN_PANE).unwrap();
+        let c = card(&d, "hub/s:1  dotfiles", Plan::Text("## Context\n\n**Bold** `code`".into()), false, 40);
+        assert!(c.starts_with("plan waiting for your approval\nhub/s:1  dotfiles\n"), "{c}");
+        let (opts, plan) = (c.find(" 3  Tell Claude what to change  (t types it)").unwrap(), c.find("the plan").unwrap());
+        assert!(opts < plan, "{c}");
+        assert!(c.ends_with("the plan\n\nContext\n\nBold code\n"), "{c}");
+        // Negative control: no plan in the transcript says where it is; a question has no plan line.
+        assert!(card(&d, "x", Plan::Unread, false, 40).contains("(the plan text is in its session; g goes there)"));
+        assert!(!card(&parse(QUESTION_PANE).unwrap(), "x", Plan::None, false, 40).contains("the plan"));
+    }
 
     #[test]
     fn reads_the_plan_dialog_options() {

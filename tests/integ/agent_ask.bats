@@ -412,28 +412,30 @@ outcomes_cli() {
 }
 
 # The panel's card reads on one screen (human, 2026-11-05): the newest words with the ask itself
-# and tables taken out, each story block capped, long meanings hung under themselves.
-@test "card fits a page: it said drops the repeated ask and tables, blocks are capped, notes hang" {
+# taken out, each story block capped, long meanings hung under themselves. The markdown goes in
+# `agent-panel plain` (md.rs, tested there; the stub passes text through), which every block reads
+# through.
+@test "card fits a page: it said drops the repeated ask, reads through plain, blocks are capped, notes hang" {
   mkdir -p "$HOME/.claude/projects/p" "$HOME/.agent/sessions/demo"
   : > "$HOME/.claude/projects/p/sid-p.jsonl"
   local long; long="$(printf 'word%.0s ' $(seq 1 120))"
   jq -cn --arg long "$long" '{first: $long, prompt: "go on", said: [
     "Older status that still says something.",
-    "Merged #1 and **rebuilt** the hub.\n\n| col | col |\n|---|---|\n| a | b |\n```\ncode here\n```\nShip it now?\n\n1. yes: ship\n2. no: wait\n\nIt stays open until you answer.",
+    "Merged #1 and rebuilt the hub.\nCheck: unit; Result: ok\nShip it now?\n\n1. yes: ship\n2. no: wait\n\nIt stays open until you answer.",
     "## Ship it now?\n\n1. yes: ship\n2. no: wait"]}' > "$NOTES_FIXTURE/agent-panel.said"
   local id; id="$(CLAUDE_CODE_SESSION_ID=sid-p "$AGENT_ASK" post --project demo \
     --options "yes=ship it to every store today, after the last check is green and the notes are in|no=wait" \
     --recommend no 'Ship it now?')"
   run env COLUMNS=60 "$AGENT_ASK" card "$id"
   assert_success
-  # The newest block only repeats the ask, so the one before it speaks; its tables, code, bold
-  # marks, the question and its option list are gone.
+  # The newest block only repeats the ask, so the one before it speaks; the question and its
+  # option list are gone, the rest stays.
   assert_line 'it said   Merged #1 and rebuilt the hub.'
+  assert_line '          Check: unit; Result: ok'
   assert_line '          It stays open until you answer.'
-  refute_output --partial '| col'  # the table row; a bare 'col' hits a random ask id (jcoluj)
-  refute_output --partial 'code here'
   refute_output --partial '1. yes'
   refute_output --partial 'Older status'
+  assert_equal "$(grep -c '^agent-panel plain --width 0$' "$NOTES_FIXTURE/calls.log")" 2
   # A request of 120 words keeps three lines, the last cut with "...".
   assert_equal "$(grep -c 'word' <<<"$output")" 3
   assert_line --regexp '^          (word )+\.\.\.$'

@@ -63,14 +63,15 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
   done
 }
 
-# The card reads on one screen (human, 2026-11-05): a full story (a long request, a turn with a
-# table and the ask repeated, a paragraph of context) still shows its last line beside the list.
+# The card reads on one screen (human, 2026-11-05): a full story (a long request, a turn with the
+# ask repeated, a paragraph of context) still shows its last line beside the list. The story reads
+# through `agent-panel plain` (the stub passes it through; tables and the rest are md.rs's tests).
 @test "at 144x33 the whole card, story and all, fits beside the list" {
   mkdir -p "$HOME/.claude/projects/p" "$HOME/.agent/sessions/delta"
   : > "$HOME/.claude/projects/p/sid-u.jsonl"
   printf '{"session_id":"sid-u","title":"runner-pool-tonight"}\n' > "$HOME/.agent/sessions/delta/sessions.jsonl"
   jq -cn --arg req "$(printf 'please sort out the runner pool for tonight %.0s' $(seq 1 12))" '{first: $req, prompt: "which goes first?",
-    said: ["| job | runner |\n|---|---|\n| sweep | pool |\n\nstep 1 done.\nstep 2 done.\nstep 3 done.\nstep 4 done.\nstep 5 done.\nstep 6 done.\nstep 7 done.\n\nSweep or rebuild first?\n\n1. sweep\n2. rebuild"]}' \
+    said: ["step 1 done.\nstep 2 done.\nstep 3 done.\nstep 4 done.\nstep 5 done.\nstep 6 done.\nstep 7 done.\n\nSweep or rebuild first?\n\n1. sweep\n2. rebuild"]}' \
     > "$NOTES_FIXTURE/agent-panel.said"
   local id; id="$(CLAUDE_CODE_SESSION_ID=sid-u "$AGENT_ASK" post --project delta --session delta-agent-4 \
     --options 'sweep=start the sweep before the nightly run so the cache is warm by morning|rebuild=rebuild the cache first and let the sweep wait for the next window' \
@@ -83,7 +84,6 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
   keep_screen story_144x33
   screen_has 'step 6 done. ...'
   screen_lacks 'step 7'
-  screen_lacks '| job'
   screen_has 'runner-pool-tonight: please sort out'
 }
 
