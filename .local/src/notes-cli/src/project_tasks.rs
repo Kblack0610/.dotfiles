@@ -259,11 +259,23 @@ impl Pick {
         let Some(span) = md::section_span(&lines, sheet::TASKS) else {
             return Ok(self);
         };
-        let hits: Vec<&str> = lines[span]
+        let rows: Vec<&str> = lines[span]
             .iter()
             .copied()
             .filter(|l| self.hits(l))
             .collect();
+        self.sole_among(rows.into_iter(), sheet)
+    }
+
+    /// The pick for the open rows `rows` it hits, all on `sheet`: unchanged for one or none,
+    /// the whole-words row when exactly one is those words whole, else refused naming each
+    /// row's id. The one rule behind [`Pick::resolve_in`] and the playtest verbs.
+    pub(crate) fn sole_among<'a>(
+        self,
+        rows: impl Iterator<Item = &'a str>,
+        sheet: &Path,
+    ) -> Result<Pick> {
+        let hits: Vec<&str> = rows.collect();
         if hits.len() < 2 {
             return Ok(self);
         }
@@ -284,7 +296,7 @@ impl Pick {
             })
             .collect();
         bail!(
-            "'{self}' matches {} open rows in {}, so nothing was written; name one by its id:\n{}",
+            "'{self}' matches {} open rows in {}, so nothing was written; name one by its id, or pass --exact with its whole line:\n{}",
             hits.len(),
             sheet.display(),
             named.join("\n")
