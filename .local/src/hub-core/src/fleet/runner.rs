@@ -602,7 +602,6 @@ mod tests {
             // Never run: no fixture conf below is a judge.
             judge_eval: root.join("no-judge-eval").display().to_string(),
             notes_state: root.join("notes"),
-            tokens: root.join("token-usage"),
         };
         (Fixture(root), paths)
     }

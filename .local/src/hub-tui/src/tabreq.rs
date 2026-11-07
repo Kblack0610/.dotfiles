@@ -43,7 +43,15 @@ pub fn parse(s: &str) -> Option<Req> {
     let q = Some(q.to_string())
         .filter(|q| !q.is_empty())
         .or_else(|| hub_core::layout::section(t).map(String::from));
-    Some((Tab::parse(t)?, q))
+    let tab = Tab::parse(t)?;
+    // A section that moved to another tab (`fleet tokens`) asks for it there.
+    if let Some((to, sec)) = q
+        .as_deref()
+        .and_then(|q| hub_core::layout::moved(tab.title(), q))
+    {
+        return Some((Tab::parse(to.title)?, Some(sec.to_string())));
+    }
+    Some((tab, q))
 }
 
 /// Send `t` to the hub listening in `dir`, else leave it in `dir/tab` for the next one.
@@ -147,6 +155,31 @@ mod tests {
         assert_eq!(parse("jobs"), Some((Tab::Infra, Some("jobs".into()))));
         assert_eq!(parse("infra"), Some((Tab::Infra, None)));
         assert_eq!(parse("infra ci"), Some((Tab::Infra, Some("ci".into()))));
+    }
+
+    #[test]
+    fn a_section_that_moved_off_fleet_asks_for_it_on_costs() {
+        assert_eq!(
+            parse("fleet tokens"),
+            Some((Tab::Costs, Some("tokens".into())))
+        );
+        assert_eq!(
+            parse("Fleet LANGFUSE"),
+            Some((Tab::Costs, Some("langfuse".into())))
+        );
+        assert_eq!(
+            parse("fleet accounts"),
+            Some((Tab::Costs, Some("burn".into())))
+        );
+        // Negative controls: a runner stays on Fleet, and Costs' own words are left alone.
+        assert_eq!(
+            parse("fleet inbox-triage"),
+            Some((Tab::Fleet, Some("inbox-triage".into())))
+        );
+        assert_eq!(
+            parse("costs tokens"),
+            Some((Tab::Costs, Some("tokens".into())))
+        );
     }
 
     #[test]
