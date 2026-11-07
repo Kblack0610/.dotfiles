@@ -28,6 +28,7 @@ Start from what the red wrote down, not from the row title, which stays stable o
 | Runner | `fix(runner): <name> is` | `~/.config/agentctl/agents/<name>.conf`, then the `fleet-runners` skill |
 | Unit | `fix(unit): <name> failed` | `systemctl --user status <name>`, `journalctl --user -u <name> -n 50` |
 | Log error | `fix(logs): <name> error <sig>:` | the sample on the row, and that runner's `~/.local/log/<name>.log` |
+| Cleanup hold | `fix(hold): <name> went red` | the row names each cleanup merge the red could be (item, PR, SHA) and what went red: the failed bats files of main's first red run, or fleet-liveness, whose evidence is its watch row above |
 
 A watch's `action` field is the owner's own first step: do that before inventing one. If the route line names a skill, read it now at `~/.claude/skills/<skill>/SKILL.md`. It knows this cause better than this page does.
 
@@ -41,7 +42,7 @@ Run the watch's `expect_cmd`, or the check that failed, by hand. Probes are read
 
 ## 3. Find the cause
 
-Name the cause in one sentence, with the evidence, before editing anything. A second red with the same cause is one fix. `fleet-bench triage --dry-run` lists what is red right now.
+Name the cause in one sentence, with the evidence, before editing anything. A `fix(hold)` row names suspects, not a proven cause: find which merge did it, then revert that merge in a PR or fix forward, whichever is smaller. No merge did it: say so, and fix the red itself. A second red with the same cause is one fix. `fleet-bench triage --dry-run` lists what is red right now.
 
 Use `root-cause-analyst` when the cause is not clear after one pass over the evidence.
 
@@ -63,7 +64,7 @@ A red fix merges itself, at any hour, because a fix held at a PR keeps the fleet
 2. Merge with `agent-land <N>`. On a tier-3 item (a harness project, or a `tier3` tag) it refuses a body without that `Review: /code-review <level>, ...` line (`n/a` or empty counts as none) or checks that never ran. The line is a claim; CI and the post-merge hold check are what catch a bad merge. It waits for every check, merges only that head and records the merge on the item. A red check is fixed, never re-run: after two failed attempts, stop and go to step 6.
 3. Once the merge is live (the project's post-land step), re-run the probe. Still red is a finding: say so on the board row.
 
-`fleet-bench reds` records whether each fix held: `fixed` while the red stays clear, `still red` or `came back` if not. `reds_unfixed` on `fleet-bench chain` counts the misses.
+`fleet-bench reds` records whether each fix held: `fixed` while the red stays clear, `still red` or `came back` if not. `reds_unfixed` on `fleet-bench chain` counts the misses. It records each merged cleanup item the same way: `holding`, `held`, `went red` or `recovered`.
 
 ## 6. When there is no fix
 

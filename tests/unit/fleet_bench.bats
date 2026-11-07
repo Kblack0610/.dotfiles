@@ -1559,7 +1559,7 @@ coverage_setup() {
   printf 'name: standing\nexpiry: null\n' > "$TRIAGE_WATCHES/standing.yaml"
   printf 'name: bake\nexpiry: 2026-11-07T00:00:00Z\n' > "$TRIAGE_WATCHES/bake.yaml"
   : > "$LEDGER_CONF_DIR/alpha.conf"
-  printf '^check.watch.: standing tripped\talert\t-\tpages\t-\n^fix.runner.: ([a-z-]+) is\tagent\t-\tfix it\t-\n' > "$TRIAGE_ROUTES"
+  printf '^check.watch.: standing tripped\talert\t-\tpages\t-\n^fix.runner.: ([a-z-]+) is\tagent\t-\tfix it\t-\n^fix.hold.: ([a-z0-9-]+) went red\tagent\t-\tfix it\t-\n' > "$TRIAGE_ROUTES"
 }
 
 @test "triage --coverage: every standing watch and runner resolves; a one-off watch needs no line" {
@@ -1580,6 +1580,11 @@ coverage_setup() {
   run "$SUBJECT" triage --coverage
   assert_failure
   assert_output 'runner alpha'
+  coverage_setup
+  sed -i '/hold/d' "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'hold'
 }
 
 @test "triage --route: each key gets the first line its row matches, and no line is a dash" {
@@ -1646,6 +1651,212 @@ red_item() {
   TRIAGE_ITEMS_CMD=false run "$SUBJECT" ledger
   assert_line 'reds_unfixed=?'
   assert_line 'red_fix_min_p50=?'
+}
+
+# hold_setup: the queue and watch stubs, plus a gh serving raw GitHub JSON through the real --jq
+hold_setup() {
+  log_triage_setup
+  : > "$AGENTCTL_STATE_DIR/runs.jsonl"
+  GHD="$SANDBOX/gh"; mkdir -p "$GHD"; printf '[]' > "$GHD/runs"
+  export FLEET_MAIN_TTL=0 # each test's runs decide
+  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
+  cat >> "$SANDBOX/bin/gh" <<'GH'
+[ -e "$D/down" ] && exit 1
+case "$*" in
+  *actions/runs*) for a in "$@"; do [ "${p:-}" = --jq ] && q=$a; p=$a; done
+    jq "$q" <<<"{\"workflow_runs\":$(cat "$D/runs")}" ;;
+  "run view "*) cat "$D/log.$3" 2>/dev/null ;;
+  *repos/o/r/commits/*) s=$*; s=${s##*commits/}; cat "$D/files.${s%%\?*}" ;;
+  *repos/o/r/contents/*) f=$*; f=${f##*/contents/}; f=${f%%\?*}; cat "$D/${f##*/}" ;;
+  *) exit 1 ;;
+esac
+GH
+  chmod +x "$SANDBOX/bin/gh"
+}
+
+# ci <id> <conclusion> <sha> <offset>: one run of main, appended
+ci() {
+  jq -c --argjson i "$1" --arg c "$2" --arg s "$3" --arg at "$(date -u -d "@$((T0 + $4))" +%FT%TZ)" \
+    '. + [{id: $i, event: ($ENV.CI_EVENT // "push"), name: "shell tests", status: "completed", conclusion: $c, head_sha: $s, created_at: $at}]' \
+    "$GHD/runs" > "$GHD/runs.new" && mv "$GHD/runs.new" "$GHD/runs"
+}
+
+# cleanup <slug> <finished offset> <pr number> <sha> <changed file...>: a merged cleanup item
+cleanup() {
+  red_item "$1" done "chore(x): $1" $(($2 - 60)) "$2" "o/r#$3" "$4" ok 'cleanup tier3'
+  printf '%s\n' "${@:5}" > "$GHD/files.$4"
+}
+
+# failed <run id> <test file...>: the run's --log-failed, in the shape bats prints it
+failed() {
+  local id=$1 f; shift
+  for f; do printf 'fast tier\tFast tier\t2026-11-06T17:49:03Z #  in test file %s, line 60)\n' "$f"; done > "$GHD/log.$id"
+}
+
+@test "hold: main going red on a merge's area test names that merge, and only that one" {
+  hold_setup
+  cleanup hit -7200 5 aaa11111 .local/bin/tool
+  cleanup other -7100 6 bbb22222 .local/bin/elsewhere
+  cleanup after -1200 7 ccc33333 .local/bin/tool
+  cleanup old -100000 8 ddd44444 .local/bin/tool
+  echo 'run tool' > "$GHD/tool.bats"
+  ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201; ci 3 failure bbb22222 -7101; ci 4 failure ccc33333 -1201
+  failed 2 integ/tool.bats
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge hit (PR 5 at aaa11111): shell tests red at aaa11111: tests/integ/tool.bats #high'
+}
+
+@test "hold: a merge whose own run stayed green still counts when its area goes red within the window" {
+  hold_setup
+  cleanup first -80000 5 aaa11111 .local/bin/tool
+  cleanup late -3700 6 bbb22222 .local/bin/other
+  echo 'run tool' > "$GHD/tool.bats"
+  ci 1 success aaa11111 -80001; ci 2 failure bbb22222 -3600
+  failed 2 unit/tool.bats
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'cleanup merge first (PR 5 at aaa11111)'
+}
+
+@test "hold: a changed test file is its own area, and the shared harness is every area" {
+  hold_setup
+  cleanup own -7200 5 aaa11111 tests/unit/plain.bats
+  cleanup harness -7100 6 bbb22222 tests/helpers/sandbox.bash
+  echo 'names nothing' > "$GHD/plain.bats"
+  ci 1 success zzz00000 -7300; ci 2 failure bbb22222 -7000
+  failed 2 unit/plain.bats
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'cleanup merges own (PR 5 at aaa11111), harness (PR 6 at bbb22222): '
+}
+
+@test "hold: a red naming no bats file counts only against the merges since the last green" {
+  hold_setup
+  cleanup before -7200 5 aaa11111 .local/bin/tool
+  cleanup inrange -3600 6 bbb22222 .local/bin/other
+  ci 1 success aaa11111 -7201; ci 2 failure bbb22222 -3601
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'fix(hold)'
+  assert_output --partial 'hold: cannot read the log of run 2 on o/r'
+  : > "$GHD/log.2"
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'hold: cannot read the log of run 2 on o/r'
+  echo 'lint: a red that is no bats file' > "$GHD/log.2"
+  run "$SUBJECT" triage --dry-run
+  assert_output 'fix(hold): ci-bbb22222-shell-tests went red after cleanup merge inrange (PR 6 at bbb22222): shell tests red at bbb22222, no bats file named #high'
+}
+
+@test "hold: no row for a main green again, a red already there before the merge, or no green in view" {
+  hold_setup
+  cleanup a -3600 5 aaa11111 .local/bin/tool
+  echo 'run tool' > "$GHD/tool.bats"
+  failed 2 unit/tool.bats
+  ci 1 success zzz00000 -7200; ci 2 failure aaa11111 -3601; ci 3 success fix00000 -600
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'fix(hold)'
+  printf '[]' > "$GHD/runs"; ci 1 success zzz00000 -9000; ci 2 failure yyy00000 -7200; ci 3 failure aaa11111 -3601
+  failed 2 unit/tool.bats
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'fix(hold)'
+  printf '[]' > "$GHD/runs"; ci 2 failure aaa11111 -3601
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'fix(hold)'
+}
+
+@test "hold: a scheduled run going red is no merge's fault, and what cannot change is read once" {
+  hold_setup
+  cleanup a -3600 5 aaa11111 .local/bin/tool
+  echo 'run tool' > "$GHD/tool.bats"
+  failed 2 unit/tool.bats
+  ci 1 success aaa11111 -3601; CI_EVENT=schedule ci 2 failure bbb22222 -1800
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'fix(hold)'
+  printf '[]' > "$GHD/runs"; ci 1 success zzz00000 -7200; ci 2 failure aaa11111 -3601
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'fix(hold): ci-aaa11111-shell-tests went red'
+  rm "$GHD/log.2" "$GHD/tool.bats" "$GHD/files.aaa11111"
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'unit/tool.bats'
+}
+
+@test "hold: a cancelled merge run still dates the merge, and an unreadable repo is said, not green" {
+  hold_setup
+  cleanup a -3590 5 aaa11111 .local/bin/tool
+  echo 'run tool' > "$GHD/tool.bats"
+  ci 1 success zzz00000 -7200; ci 2 cancelled aaa11111 -3600; ci 3 failure bbb22222 -3595
+  failed 3 unit/tool.bats
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'cleanup merge a (PR 5 at aaa11111)'
+  touch "$GHD/down"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'hold: cannot read the runs on o/r main'
+  refute_output --partial 'fix(hold)'
+}
+
+@test "hold: fleet-liveness going red after cleanup merges is one row naming them, in place of the watch's" {
+  hold_setup
+  cleanup near -7200 5 aaa11111 x
+  cleanup near2 -7100 6 bbb22222 y
+  cleanup after -600 7 ccc33333 z
+  cleanup old -100000 8 ddd44444 w
+  watch fleet-liveness TRIP -3600 urgent
+  run "$SUBJECT" triage --dry-run
+  assert_output "fix(hold): liveness-$((T0 - 3600)) went red after cleanup merges near (PR 5 at aaa11111), near2 (PR 6 at bbb22222): fleet-liveness tripped, evidence: watch-companion-loop list --long fleet-liveness #high"
+}
+
+@test "hold: a fleet-liveness flap is no row, and a trip no merge precedes stays the watch's own" {
+  hold_setup
+  cleanup near -7200 5 aaa11111 x
+  watch fleet-liveness TRIP -60 urgent
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'fix(hold)'
+  watch fleet-liveness TRIP -9000 urgent
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'check(watch): fleet-liveness tripped since'
+  refute_output --partial 'fix(hold)'
+}
+
+@test "hold: a routed hold row queues one red for the red, whatever the merges it names" {
+  hold_setup
+  printf '^fix\\(hold\\): ([a-z0-9-]+) went red\tagent\t-\trevert or fix it\t#size/s\n' > "$TRIAGE_ROUTES"
+  cleanup a -7200 5 aaa11111 x
+  cleanup b -7100 6 bbb22222 y
+  watch fleet-liveness TRIP -3600 urgent
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial '; fix: revert or fix it #size/s #high (agent)'
+}
+
+@test "reds: a merged cleanup item records its hold, and only a real red counts as unfixed" {
+  hold_setup
+  cleanup holding -3600 5 aaa11111 x
+  cleanup held -95000 6 bbb22222 y
+  cleanup gone -200000 7 ccc33333 z
+  cleanup broke -7200 8 ddd44444 w
+  red_item nomerge done 'chore(x): nomerge' -7200 -3600 - - failed 'cleanup tier3'
+  red_item fixit done 'fix(hold): ci-ccc33333-shell-tests went red after cleanup merge gone (PR 7 at ccc33333): x' -190000 -180000 o/r#9 eee55555 ok 'red cause:h1'
+  watch fleet-liveness TRIP -3600 urgent
+  run "$SUBJECT" reds --json
+  assert_success
+  run jq -rs 'map("\(.slug) \(.outcome) \(.fix_min) \(.cleanup)") | .[]' <<<"$output"
+  assert_output "$(printf '%s\n' 'fixit fixed 166 null' 'holding went red null true' 'held held null true' 'gone recovered null true' 'broke went red null true')"
+  run "$SUBJECT" reds
+  assert_line '1 red fix in 7d: 1 fixed'
+  assert_line '4 cleanup merges in 7d: 1 held, 1 recovered, 2 went red'
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 0
+  rm "$TRIAGE_WATCH_STATE/fleet-liveness.state"
+  run "$SUBJECT" reds
+  assert_line '4 cleanup merges in 7d: 1 held, 2 holding, 1 recovered'
+}
+
+@test "reds: a hold red that is red now counts as its own red, by the row it filed" {
+  hold_setup
+  cleanup a -7200 5 aaa11111 x
+  watch fleet-liveness TRIP -3600 urgent
+  red_item fixit done "fix(hold): liveness-$((T0 - 3600)) went red after cleanup merge a (PR 5 at aaa11111): x" -3000 -600 o/r#9 eee55555 ok 'red cause:h1'
+  run "$SUBJECT" reds --json
+  run jq -rs 'map("\(.slug) \(.red) \(.outcome)") | .[]' <<<"$output"
+  assert_output "$(printf '%s\n' "fixit hold liveness-$((T0 - 3600)) still red" 'a cleanup chore(x): a went red')"
 }
 
 # frow <rule> <scope> <episode offset> <epoch offset> <class>: one findings row, offsets from T0
