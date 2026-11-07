@@ -21,8 +21,9 @@ THROTTLE_SECS="${DOTFILES_AUTOPULL_INTERVAL:-21600}" # 6h
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-autopull"
 STAMP="$CACHE_DIR/last-pull"
 LOG="$CACHE_DIR/autopull.log"
-# The public checkout's own copy, so a pull that changed it runs the new one.
+# The public checkout's own copies, so a pull that changed them runs the new ones.
 OVERLAY_LINK="${REPOS[0]}/.local/bin/dotfiles-overlay-link"
+DEPLOY="${DOTFILES_DEPLOY:-${REPOS[0]}/.local/bin/dotfiles-deploy}"
 FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
 
 command -v git >/dev/null 2>&1 || exit 0
@@ -45,6 +46,19 @@ phys() { (cd "$1" 2>/dev/null && pwd -P); }
 say() {
   log "$1"
   echo "$1"
+}
+
+# attach_new -> ", linked N new file(s)" / ", <why the attach failed>" / nothing: a move can add a
+# tracked file, and stow never runs on pull, so link every deploy path that resolves to nothing
+# (both repos). --missing only attaches; a physical copy is left for `dotfiles-deploy --apply`.
+attach_new() {
+  local out rc n
+  [ -x "$DEPLOY" ] || return 0
+  out=$(DOTFILES="${REPOS[0]}" DOTFILES_PRIVATE="${REPOS[1]}" "$DEPLOY" --apply --missing 2>&1)
+  rc=$?
+  n=$(printf '%s\n' "$out" | grep -c '^  linked ')
+  [ "$n" -eq 0 ] || printf ', linked %s new file(s)' "$n"
+  [ "$rc" -eq 0 ] || printf ', dotfiles-deploy --apply --missing failed (exit %s), run it for the report' "$rc"
 }
 
 # pull <checkout> -> one line on stdout saying what happened; every outcome but "already current" is
@@ -77,13 +91,13 @@ pull() {
   if ! git -C "$repo" merge-base --is-ancestor HEAD '@{u}' 2>/dev/null; then
     say "$name: not fast-forwarded, $branch has local commits its upstream lacks"
   elif out=$(git -C "$repo" merge --ff-only '@{u}' 2>&1); then
-    say "$name: fast-forwarded $branch ${head:0:8}..${up:0:8}"
     # A move may have advanced submodule pointers (android-suite): check them out so their links do
     # not dangle. HTTPS avoids SSH:22 hangs on networks that block it; capped and fail-soft.
     capped 120 git -C "$repo" -c url."https://github.com/".insteadOf="git@github.com:" \
       submodule update --init --recursive --quiet >/dev/null 2>&1 || true
     # Attach anything the move added to, or moved into, the private overlay.
     [ ! -x "$OVERLAY_LINK" ] || "$OVERLAY_LINK" >/dev/null 2>&1 || true
+    say "$name: fast-forwarded $branch ${head:0:8}..${up:0:8}$(attach_new)"
   else
     # git lists each file it refused to overwrite, dirty or untracked, on its own tab-indented line.
     files=$(printf '%s\n' "$out" | awk 'sub(/^\t/, "")' | paste -sd ' ' -)

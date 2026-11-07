@@ -72,6 +72,10 @@
 #   dotfiles-deploy --apply    do the repair, then re-check; exit 1 if it did not converge
 #   dotfiles-deploy --quiet    print nothing; exit 1 if there is work to do (for a watch)
 #   dotfiles-deploy --json     machine-readable report
+#   dotfiles-deploy --missing  with any of the above: only MISSING paths, so --apply attaches a
+#                              link where nothing resolves and never converts a copy. Safe to run
+#                              unattended; dotfiles-autopull runs `--apply --missing` after every
+#                              fast-forward, so a newly tracked file is linked when it arrives.
 #
 # Exit codes:  0 clean   1 work to do / did not converge   2 refused (see below)
 #
@@ -93,6 +97,7 @@ BACKUP_ROOT="$HOME/.local/state/dotfiles-deploy/backup"
 
 MODE=check
 FORMAT=text
+ONLY_MISSING=0
 
 # Field separator for the internal record arrays. A unit separator rather than the `|` a
 # reader might expect, because these records carry filesystem paths and `|` is a legal
@@ -466,7 +471,11 @@ report_text() {
     printf 'dotfiles-deploy: NOT CHECKED - %s repo at %s is absent or not a git repo\n' "$sname" "$sdir"
   done
   if [ "$n" -eq 0 ]; then
-    printf 'dotfiles-deploy: clean - all %s deploy path(s) resolve to their tracked source\n' "${#MANIFEST[@]}"
+    if [ "$ONLY_MISSING" = 1 ]; then
+      printf 'dotfiles-deploy: clean - none of %s deploy path(s) is missing (copies not checked: --missing)\n' "${#MANIFEST[@]}"
+    else
+      printf 'dotfiles-deploy: clean - all %s deploy path(s) resolve to their tracked source\n' "${#MANIFEST[@]}"
+    fi
     return 0
   fi
   printf 'dotfiles-deploy: %s of %s deploy path(s) do NOT resolve to their tracked source\n\n' \
@@ -508,6 +517,18 @@ report_json() {
 
 # ── run ──────────────────────────────────────────────────────────────────────
 
+# classify - classify_all, narrowed to the MISSING findings under --missing.
+classify() {
+  classify_all
+  [ "$ONLY_MISSING" = 1 ] || return 0
+  local rec keep=()
+  for rec in "${FINDINGS[@]:-}"; do
+    [[ "$rec" == "MISSING$SEP"* ]] && keep+=("$rec")
+  done
+  FINDINGS=(${keep[@]+"${keep[@]}"})
+  return 0
+}
+
 main() {
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -515,6 +536,7 @@ main() {
       --apply) MODE=apply ;;
       --quiet) FORMAT=quiet ;;
       --json)  FORMAT=json ;;
+      --missing) ONLY_MISSING=1 ;;
       -h|--help)
         # Print the header block, stopping at the first line that is not a comment.
         awk 'NR==1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"
@@ -527,12 +549,16 @@ main() {
   done
 
   build_manifest
-  classify_all
+  classify
 
   if [ "$MODE" = apply ]; then
     if [ "${#FINDINGS[@]}" -eq 0 ]; then
-      printf 'dotfiles-deploy: nothing to do - all %s deploy path(s) already resolve to their tracked source\n' \
-        "${#MANIFEST[@]}"
+      if [ "$ONLY_MISSING" = 1 ]; then
+        printf 'dotfiles-deploy: nothing to attach - none of %s deploy path(s) is missing\n' "${#MANIFEST[@]}"
+      else
+        printf 'dotfiles-deploy: nothing to do - all %s deploy path(s) already resolve to their tracked source\n' \
+          "${#MANIFEST[@]}"
+      fi
       exit 0
     fi
     printf 'dotfiles-deploy: repairing %s path(s)\n' "${#FINDINGS[@]}"
@@ -545,7 +571,7 @@ main() {
     # proof that the repair took. dotfiles-overlay-link reports "attached N link(s)" and
     # then reports "already in sync" on every run after, while the mirrors it structurally
     # skipped are still sitting there serving the wrong content.
-    classify_all
+    classify
     if [ "${#FINDINGS[@]}" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
       printf '\ndotfiles-deploy: converged - %s path(s) repaired, re-check is clean\n' "$APPLIED"
       exit 0
