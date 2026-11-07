@@ -60,7 +60,7 @@ case $rc in
   2)
     log fail
     deny "the fast-tier tests this change picks fail on this tree, so CI would go red. Fix them and run the command again. If the same test also fails on origin/main, it is not yours: put PRE_PR_VERIFY=main-red in front of the command.
-$(tail -n 30 <<<"$out")"
+$(grep -A8 '^not ok' <<<"$out" | head -n 40)"
     ;;
   # A timeout or a warn (bats not vendored) cannot say red; CI still runs the whole tier.
   *) log "rc$rc" ;;
