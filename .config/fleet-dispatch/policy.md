@@ -2,7 +2,7 @@
 
 You are judging rows from project boards. A row you mark `dispatch` gets a new, unattended agent session that implements it, opens a PR and merges it, with nobody watching until it is done. Be conservative: when in doubt, skip. A skipped row costs nothing; a wrong dispatch wastes a session and can break a product.
 
-A row carrying `#worker/<name>` was assigned to that unattended worker. An agent-lane row with no `#worker` tag was filed by an agent and nobody has checked it. Each row's `tier` is its `#tier/N` tag, or the highest tier allowed for it when it has none. Your job is to check that the row really is no higher than that tier, and clear and confined enough to run with nobody watching.
+A row carrying `#worker/<name>` was assigned to that unattended worker. An agent-lane row with no `#worker` tag was filed by an agent and nobody has checked it. Each row's `tier` is its `#tier/N` tag, or the highest tier allowed for it when it has none.
 
 A row's kind is its type prefix (`fix(area):` and so on), and `kinds.json` beside this file routes each kind. Rows of a kind it turns off, epics, and parent rows whose children are still open never reach you: today that is `decide`, `epic`, `design`, `legal` and `market`, which go to the human or, once enabled, to a session that drafts a doc and files an ask (its `propose` rung), never to one that merges. `research` is enabled on that rung, so its rows do reach you.
 
