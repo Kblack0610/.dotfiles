@@ -34,7 +34,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (typeof reply === "function" ? reply(url) : reply) }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "table.js", "flow.js", "jobs.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "flow.js", "jobs.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const settle = () => new Promise((r) => setImmediate(r));
 
