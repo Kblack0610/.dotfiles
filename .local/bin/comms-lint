@@ -45,7 +45,7 @@ KPI_THRESHOLDS = os.path.expanduser(os.environ.get("KPI_THRESHOLDS", "~/.config/
 SNAPSHOT_WINDOWS = ("7d", "28d")
 QUIET_OK = {"low", "normal", "default", "min"}
 KEYS = {"ascii", "emoji", "max_emoji", "max_chars", "max_lines", "max_line", "max_lead", "lead_ids",
-        "prose", "items_under", "item", "max_items", "max_item", "require", "forbid", "quiet", "source",
+        "prose", "sections", "item", "max_items", "max_item", "require", "forbid", "quiet", "source",
         "max_title", "refs", "group", "option_meanings"}
 
 
@@ -176,10 +176,17 @@ def lint(text, ch, ids, priority=None, title=None, record=None):
         f.append(("empty", "nothing to read"))
 
     items = [l for l in content if item_re.match(l)]
-    # The count can be one section's (the briefing's Needs you); every other check reads it all.
-    counted = [l for l in under(lines, ch["items_under"]) if item_re.match(l)] if ch.get("items_under") else items
-    if ch["max_items"] and len(counted) > ch["max_items"]:
-        f.append(("items", f"{len(counted)} items, budget {ch['max_items']}"))
+    if ch["max_items"] and len(items) > ch["max_items"]:
+        f.append(("items", f"{len(items)} items, budget {ch['max_items']}"))
+    # A section's own caps (the briefing's Needs you and Areas), on top of the whole page's.
+    for heading, n_max, len_max in ch.get("sections", []):
+        sect = [l for l in under(lines, heading) if item_re.match(l)]
+        if n_max and len(sect) > n_max:
+            f.append(("items", f"{len(sect)} items under {heading!r}, budget {n_max}"))
+        for l in sect:
+            _, text_ = lead_of(l, item_re)
+            if len_max and len(text_) > len_max:
+                f.append(("item-too-long", f"{len(text_)} chars under {heading!r}, budget {len_max}: {text_[:50]!r}"))
     for l in items:
         _, text_ = lead_of(l, item_re)
         if ch["max_item"] and len(text_) > ch["max_item"]:
@@ -421,8 +428,13 @@ def build_report(window, only, channels, ids, rcfg):
                     if any(c == "quiet-buzzed" for c, _ in f):
                         quiet_buzz += 1
         group = ch.get("group", "messages")
+        held = {}
+        if src.get("kind") == "ledger":
+            # agent-notify's buzz budget writes each page it held to <ledger>.held, at its asked priority.
+            k = sum(1 for _, _, m in read_source({**src, "path": src["path"] + ".held"}, since) if not m.get("reject"))
+            held = {"held": k, "held_per_day": round(k / days, 1)}
         if not n:
-            out["channels"][name] = {"messages": 0, "group": group}
+            out["channels"][name] = {"messages": 0, "group": group, **held}
             continue
         q = statistics.quantiles(lengths, n=10) if len(lengths) > 1 else [lengths[0]] * 9
         row = {"group": group, "messages": n, "passed": passed, "pass_pct": round(100 * passed / n), "p50_chars": int(statistics.median(lengths)),
@@ -430,7 +442,7 @@ def build_report(window, only, channels, ids, rcfg):
                "worst": [{"findings": w[0], "when": w[1], "from": w[2], "text": w[3]}
                          for w in sorted(worst, key=lambda w: -w[0])[:3]]}
         if src.get("kind") == "ledger":
-            row.update({"buzzed": buzzed, "buzzed_per_day": round(buzzed / days, 1),
+            row.update({"buzzed": buzzed, "buzzed_per_day": round(buzzed / days, 1), **held,
                         "quiet_that_buzzed": quiet_buzz,
                         "buzzed_by_sender_per_day": {k: round(v / days, 1) for k, v in buzz_by.most_common(8)}})
         out["channels"][name] = row
@@ -450,7 +462,7 @@ def summary(out):
     rows, rows_pct = rate("rows")
     page = out["channels"].get("page", {})
     return {"messages": total, "pass_pct": pct, "rows": rows, "rows_pass_pct": rows_pct,
-            "buzzes_per_day": page.get("buzzed_per_day")}
+            "buzzes_per_day": page.get("buzzed_per_day"), "pages_held_per_day": page.get("held_per_day")}
 
 
 def kpi_threshold(key):
@@ -572,10 +584,11 @@ def main():
         if age_h > SNAPSHOT_MAX_AGE_H:
             die(f"newest comms snapshot is {age_h:.0f}h old ({snap['date']}); a stale number is not a KPI", 1)
         ws = snap["windows"]
-        # Keyed by fleet-bench KPI name: buzzes_per_day, comms_pass_pct, rows_pass_pct.
+        # Keyed by fleet-bench KPI name: buzzes_per_day, comms_pass_pct, rows_pass_pct, pages_held_per_day.
         print(json.dumps({kpi: {w: ws[w]["summary"].get(k) for w in SNAPSHOT_WINDOWS if w in ws}
                           for kpi, k in (("buzzes_per_day", "buzzes_per_day"), ("comms_pass_pct", "pass_pct"),
-                                         ("rows_pass_pct", "rows_pass_pct"))}
+                                         ("rows_pass_pct", "rows_pass_pct"),
+                                         ("pages_held_per_day", "pages_held_per_day"))}
                          | {"date": snap["date"]}))
         return 0
     if argv[:1] == ["report"]:

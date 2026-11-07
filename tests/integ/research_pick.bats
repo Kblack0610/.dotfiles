@@ -41,10 +41,18 @@ repo() {
 @test "the busier of two equally stale facets is queued, though a tie would go to the other, with its scope and lenses, and recorded" {
   run "$PICK" run
   assert_success
-  assert_called "agent-queue add --project hot --priority low --from research:hot --tags research --title research(hot) -- /rigor /stack-review research $SANDBOX/hot src, lenses: hot paths, duplication; findings on the b2 agent board tagged #research/hot"
+  assert_called "agent-queue add --project hot --priority low --from research:hot --tags research --repeat --slug research-hot --title research(hot) -- /rigor /stack-review research $SANDBOX/hot src, lenses: hot paths, duplication; findings on the b2 agent board tagged #research/hot"
   assert_not_called 'research(cold)'
   run jq -r .facet "$RESEARCH_DIR/picks.jsonl"
   assert_output hot
+}
+
+@test "a pick the queue's admission holds (exit 5) is said as held, not as a failure, and is not recorded" {
+  stub agent-queue 'case "$1" in add) echo "agent-queue: held by admission, nothing was added" >&2; exit 5 ;; esac; exit 0'
+  run "$PICK" run
+  assert_output --partial 'hot: held by queue admission, nothing queued'
+  refute_output --partial 'agent-queue add failed'
+  [ ! -e "$RESEARCH_DIR/picks.jsonl" ]
 }
 
 @test "while a research item is in flight nothing is queued; another project's item does not count" {
@@ -119,4 +127,19 @@ repo() {
   run "$PICK" run
   assert_success
   assert_output --partial 'no roster'
+}
+
+@test "against the real agent-queue: the pick is admitted, and the same facet picked again after it finished ok is queued as new work" {
+  ln -sf "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_PROJECT_MAP="$RESEARCH_MAP"
+  jq '.facets |= map(select(.id == "hot"))' "$RESEARCH_FACETS" > "$SANDBOX/f" && mv "$SANDBOX/f" "$RESEARCH_FACETS"
+  run "$PICK" run
+  assert_success
+  assert_output --partial 'queued hot'
+  agent-queue move research-hot done --status ok
+  run "$PICK" run
+  assert_success
+  assert_output --partial 'queued hot'
+  run agent-queue list --json --state queued
+  assert_output --partial '"research:hot"'
 }

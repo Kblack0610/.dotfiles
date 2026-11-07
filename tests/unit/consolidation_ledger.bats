@@ -14,14 +14,13 @@ setup() {
   export FLEET_BENCH_DIR="$HOME/.agent/bench"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
   export BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
-  export LEDGER_CONF_DIR="$SANDBOX/confs" LEDGER_TIMER_DIR="$SANDBOX/timers"
+  export LEDGER_CONF_DIR="$SANDBOX/confs"
   export LEDGER_SRC="$SANDBOX/src" LEDGER_BASELINE="$SANDBOX/baseline"
   export LEDGER_BOARDS="$SANDBOX/board.md"
   export BENCH_NEEDS_CMD=needs-stub BENCH_NOW=1793160000
-  mkdir -p "$LEDGER_CONF_DIR" "$LEDGER_TIMER_DIR" "$LEDGER_SRC" "$AGENTCTL_STATE_DIR"
+  mkdir -p "$LEDGER_CONF_DIR" "$LEDGER_SRC" "$AGENTCTL_STATE_DIR"
   for n in alpha beta; do
-    printf 'NAME=%s\nKIND=oneshot\n' "$n" > "$LEDGER_CONF_DIR/$n.conf"
-    : > "$LEDGER_TIMER_DIR/agentctl-$n.timer"
+    printf "NAME=%s\nKIND=oneshot\nSCHEDULE='*-*-* 03:00'\n" "$n" > "$LEDGER_CONF_DIR/$n.conf"
   done
   printf 'exec claude "${flags[@]}" "$@"\n' > "$LEDGER_SRC/harness.sh"
   printf 'runners=2\ntimers=2\nlaunches_direct=0\n' > "$LEDGER_BASELINE"
@@ -44,8 +43,28 @@ NS
   assert_success
   assert_line 'runners=2'
   assert_line 'runners_on=1'
-  assert_line 'timers=2'
+  assert_line 'timers=1'
   assert_line 'launches_direct=0'
+}
+
+@test "a timer is counted where agentctl reload writes one: a switched-on oneshot with a SCHEDULE" {
+  printf 'NAME=p\nKIND=persistent\nAUTOSTART=yes\n' > "$LEDGER_CONF_DIR/p.conf"
+  printf "NAME=h\nKIND=oneshot\nSCHEDULE=''\n" > "$LEDGER_CONF_DIR/h.conf"
+  printf "NAME=q\nKIND='oneshot'\nSCHEDULE=hourly\n" > "$LEDGER_CONF_DIR/q.conf"
+  run "$SUBJECT" ledger
+  assert_line 'runners=5'
+  assert_line 'timers=3'
+}
+
+@test "check reads only the roster, so a checkout with no live state counts the same (the ledger workflow)" {
+  printf '#!/bin/sh\ntouch "%s"\nexit 1\n' "$SANDBOX/needs-read" > "$SANDBOX/bin/needs-stub"
+  run "$SUBJECT" ledger --check
+  assert_success
+  assert_output ''
+  [ ! -e "$SANDBOX/needs-read" ]
+  # negative control: the full ledger does read the live asks
+  run "$SUBJECT" ledger
+  [ -e "$SANDBOX/needs-read" ]
 }
 
 @test "asks older than ASK_STALE_DAYS are stale, and open board rows count todo and in-progress" {
@@ -86,6 +105,14 @@ NS
   assert_output 'runners grew: 3 > baseline 2'
 }
 
+@test "a new scheduled conf grows runners and timers both" {
+  printf "NAME=gamma\nKIND=oneshot\nSCHEDULE=daily\n" > "$LEDGER_CONF_DIR/gamma.conf"
+  run "$SUBJECT" ledger --check
+  assert_failure
+  assert_line 'runners grew: 3 > baseline 2'
+  assert_line 'timers grew: 3 > baseline 2'
+}
+
 @test "a KIND=call agent is counted as a call, not a runner, and holds the check" {
   printf 'NAME=judge\nKIND=call\nROLE=observe\n' > "$LEDGER_CONF_DIR/judge.conf"
   run "$SUBJECT" ledger
@@ -109,10 +136,48 @@ NS
   assert_output 'launches_direct grew: 1 > baseline 0'
 }
 
+@test "the default scan reaches a launch owned by a skill in either repo" {
+  unset LEDGER_SRC
+  mkdir -p "$HOME/.dotfiles/.claude/skills/a" "$HOME/.dotfiles-private/.claude/skills/b"
+  printf 'claude -p "x"\n' > "$HOME/.dotfiles/.claude/skills/a/run.sh"
+  printf 'curl "$U/chat/completions"\n' > "$HOME/.dotfiles-private/.claude/skills/b/run.sh"
+  # a route config naming the endpoint and a doc quoting a launch are not launches
+  printf 'url: https://h/v1/chat/completions\n' > "$HOME/.dotfiles-private/.claude/skills/b/lanes.yaml"
+  printf 'claude -p "x"\n' > "$HOME/.dotfiles-private/.claude/skills/b/SKILL.md"
+  run "$SUBJECT" ledger
+  assert_line 'launches_direct=2'
+}
+
+@test "a caller that reads its model URL from config is found by its chat body" {
+  # model-lane's shape: the URL lives in lanes.yaml, the code only builds the payload
+  printf 'body = json.dumps({"model": llm["model"], "messages": [m]})\nurllib.request.Request(llm["url"], body)\n' > "$LEDGER_SRC/lane.py"
+  printf 'url: https://h/v1/chat/completions\n' > "$LEDGER_SRC/lanes.yaml"
+  # a per-model stats row (messages is a count, not a list) and a commented payload are not calls
+  printf 'row = {"model": m, "messages": n}\n# {"model": m, "messages": []}\n' > "$LEDGER_SRC/stats.py"
+  run "$SUBJECT" ledger --launches "$LEDGER_SRC"
+  assert_output "$LEDGER_SRC/lane.py:1:body = json.dumps({\"model\": llm[\"model\"], \"messages\": [m]})"
+}
+
 @test "a missing baseline fails rather than reading as held" {
   rm "$LEDGER_BASELINE"
   run "$SUBJECT" ledger --check
   assert_equal "$status" 2
+}
+
+@test "a gated key the roster has no count for fails rather than reading as held" {
+  echo 'bogus=5' >> "$LEDGER_BASELINE"
+  LEDGER_GATED="runners bogus" run "$SUBJECT" ledger --check
+  assert_failure
+  assert_output --partial 'no single count for bogus'
+  LEDGER_GATED="runners" run "$SUBJECT" ledger --check
+  assert_success
+}
+
+@test "a baseline value that is not a number fails rather than reading as held" {
+  sed -i 's/^runners=.*/runners=0 # note/' "$LEDGER_BASELINE"
+  run "$SUBJECT" ledger --check
+  assert_failure
+  assert_output --partial 'baseline has no number for runners'
 }
 
 @test "the scan skips gitignored build output" {

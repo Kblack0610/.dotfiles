@@ -104,12 +104,13 @@ prompt() { # prompt <project> <mode>
   refute_output --partial 'Target'
 }
 
-@test "game adds Playtest only" {
+@test "game adds Playtest and Release, and not Source of truth or Telemetry" {
   run gate agame "$(base)"
   assert_output --partial 'Missing ## Playtest'
+  assert_output --partial 'Missing ## Release'
   refute_output --partial 'Source of truth'
   refute_output --partial 'Telemetry'
-  run gate agame "$(base; printf '\n## Playtest\n\nWhich game, and how.\n')"
+  run gate agame "$(base; printf '\n## Playtest\n\nWhich game, and how.\n\n## Release\n\nSteam beta, rollback to the previous BuildID.\n')"
   assert_output ''
 }
 

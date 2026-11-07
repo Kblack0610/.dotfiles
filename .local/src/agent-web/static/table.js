@@ -6,28 +6,56 @@
 // the server reads; what a query means is decided in hub-core alone.
 
 // The view keys, in the tab's URL query (`#infra?q=source:ci&s=failed&sort=started&dir=asc`)
-// and in the API's, so a filtered view is a link.
+// and in the API's, so a filtered view is a link. A tab's second table names its keys with a
+// prefix (`pre`, Home's Needs you: nq, ns, nsort, ndir), the same in the URL and the API.
 const TBL_KEYS = ["q", "s", "sort", "dir"];
 
-// The view keys of a tab's URL query, as the API's query string.
-function tblParams(query) {
+// One table's view keys of a tab's URL query, as the API's query string.
+function tblParams(query, pre = "") {
   const p = new URLSearchParams(query || ""), out = new URLSearchParams();
-  for (const k of TBL_KEYS) if (p.get(k)) out.set(k, p.get(k));
+  for (const k of TBL_KEYS.map((k) => pre + k)) if (p.get(k)) out.set(k, p.get(k));
   return out;
 }
 
-// The URL query with the patch applied; a blank value drops its key, so the plain view is bare.
-function tblSet(query, patch) {
+// The URL query with the patch (tblPatch's plain keys) applied to one table's keys; a blank value
+// drops its key, so the plain view is bare.
+function tblSet(query, patch, pre = "") {
   const p = new URLSearchParams(query || "");
-  for (const [k, v] of Object.entries(patch)) { if (v) p.set(k, v); else p.delete(k); }
+  for (const [k, v] of Object.entries(patch)) { if (v) p.set(pre + k, v); else p.delete(pre + k); }
   return p.toString();
 }
+
+// Which of a tab's tables an event came from: the `data-tbl` (its key prefix) of the block
+// holding its bar and rows, "" outside one, so one delegated listener sends each patch to its own view.
+const tblOf = (e) => e.target?.closest?.("[data-tbl]")?.dataset.tbl || "";
 
 // One dropdown per facet, each option the whole query that picks its value.
 const tblFacets = (t) => t.facets.map((f) => `<select data-tq title="${esc(f.key)}"><option value="${esc(f.clear)}">every ${esc(f.key)}</option>` +
   f.values.map((v) => `<option value="${esc(v.q)}"${v.value === f.on ? " selected" : ""}>${esc(v.value)} (${v.n})</option>`).join("") + `</select>`).join("");
 // The state chips with their counts; the first keeps every row.
 const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
+
+// A refresh must not take the search box or an open dropdown from under the human: with focus
+// in the bar only what is around the control repaints. False when focus is elsewhere.
+function tblRepaint(id, t, body) {
+  const f = document.activeElement;
+  if (f?.id !== id + "-q" && (f?.dataset?.tq === undefined || !f.closest?.(`#${id}-facets`))) return false;
+  if (f.id === id + "-q") paint($(id + "-facets"), tblFacets(t));
+  paint($(id + "-chips"), tblChips(t));
+  paint($(id + "-body"), body());
+  return true;
+}
+
+// A picked dropdown lets go of focus, so the answer redraws it with the new counts. `onView`
+// gets the event too, for a tab with two tables (tblOf).
+function tblListen(el, onView) {
+  for (const ev of ["input", "change"]) el.addEventListener(ev, (e) => {
+    const v = tblPatch(e);
+    if (!v) return;
+    if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
+    onView(v, e);
+  });
+}
 
 // The search box, the dropdowns and the chips. `id` names the parts a repaint while the search
 // box has focus replaces around it: `<id>-facets` and `<id>-chips`.
@@ -37,12 +65,14 @@ function tblBar(id, t, hint) {
 }
 
 // The header row. `labels` maps a column key to [text, class]; a column it leaves out is not drawn.
-function tblHead(t, labels) {
+// `pre` names the data attributes a click reads (`data-<pre>sort`, `data-<pre>dir`): a second table
+// on a tab sorts apart from the first by naming its own.
+function tblHead(t, labels, pre = "t") {
   return "<tr>" + t.columns.filter((c) => labels[c.key]).map((c) => {
     const [label, cls] = labels[c.key];
     const aria = c.sort ? ` aria-sort="${c.sort === "asc" ? "ascending" : "descending"}"` : "";
     const mark = c.sort ? (c.sort === "asc" ? " ^" : " v") : "";
-    return `<th${cls ? ` class="${cls}"` : ""}${aria}><button class="thsort" data-tsort="${esc(c.next_sort)}" data-tdir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
+    return `<th${cls ? ` class="${cls}"` : ""}${aria}><button class="thsort" data-${pre}sort="${esc(c.next_sort)}" data-${pre}dir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
   }).join("") + "</tr>";
 }
 

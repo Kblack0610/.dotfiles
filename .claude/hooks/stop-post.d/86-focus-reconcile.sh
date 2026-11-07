@@ -244,7 +244,7 @@ OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | head -5 | sed 's/^- 
 if [ "$PR_WORK" -eq 1 ]; then
   REASON="focus-gate: this session opened or merged a PR, and no queue item records it. Every PR is a unit of work on the work ledger (the queue item), whatever else tracks it:
   agent-queue add --running --project <project> \"<type(area): title>\"   the work this PR is part of
-  agent-queue claim <slug>                                                   when an item for it already exists
+  agent-queue claim <slug>                                                   when an item for it already exists (done or not)
   agent-land <N> --item <slug>                                               merges and closes it
 
 A board row or a Focus item in progress does not count here: they are backlog and the human's list. Fires once per session; CLAUDE_SKIP_FOCUS_GATE=1 disables it."

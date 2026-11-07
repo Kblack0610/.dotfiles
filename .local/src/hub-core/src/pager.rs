@@ -232,7 +232,9 @@ pub fn run(needs: &[Need], now: i64, p: &Paths, r: &dyn Runner) -> Result<Option
         .collect();
     let d = decide(needs, &paged, buzzed(&read(&p.ledger)?, now, &cfg), &cfg);
     if let Some(page) = &d.page {
-        let mut argv = vec!["agent-notify", "-p", page.priority, "-t", TITLE];
+        // A decision only the human can make: agent-notify's buzz budget never holds it, and
+        // `max_buzz_day` above is this sender's own cap.
+        let mut argv = vec!["agent-notify", "-p", page.priority, "-k", "decision", "-t", TITLE];
         if let Some(r) = &page.reference {
             argv.extend(["-r", r]);
         }
@@ -354,6 +356,29 @@ mod tests {
     }
 
     #[test]
+    fn a_condition_never_pages_however_many_there_are() {
+        // The briefing-only inputs are conditions: no score, so the pager leaves them to the
+        // briefing and their own watches. Negative control: a scored ask beside them pages.
+        let condition = |kind: Kind, id: &str| Need {
+            score: None,
+            ..row(kind, id, true, 0)
+        };
+        let mut needs = vec![
+            condition(Kind::Stopped, "stopped:x"),
+            condition(Kind::Budget, "budget:dream"),
+            condition(Kind::Night, "night-1"),
+            condition(Kind::Janitor, "janitor:pvc"),
+            condition(Kind::Mail, "mail:a:b"),
+            condition(Kind::Nightly, "repo"),
+            condition(Kind::Red, "watch x"),
+        ];
+        assert_eq!(decide(&needs, &set(&[]), 0, &cfg()).page, None);
+        needs.push(row(Kind::Ask, "a1", true, 600));
+        let p = decide(&needs, &set(&[]), 0, &cfg()).page.unwrap();
+        assert_eq!(p.reference.as_deref(), Some("ask:a1"));
+    }
+
+    #[test]
     fn a_long_page_folds_its_tail_into_more() {
         let mut needs: Vec<Need> = (0..6)
             .map(|i| row(Kind::Ask, &format!("a{i}"), true, 100))
@@ -431,10 +456,10 @@ mod tests {
         let sent = r.0.into_inner();
         assert_eq!(sent.len(), 1);
         assert_eq!(
-            sent[0][..7],
-            ["agent-notify", "-p", "high", "-t", TITLE, "-r", "ask:a1"]
+            sent[0][..9],
+            ["agent-notify", "-p", "high", "-k", "decision", "-t", TITLE, "-r", "ask:a1"]
         );
-        assert_eq!(sent[0][7], page.text);
+        assert_eq!(sent[0][9], page.text);
         // comms-standard rule 12: the page as sent passes the page channel's lint.
         // The repo's channels file, not the stowed one: CI has no ~/.config.
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");

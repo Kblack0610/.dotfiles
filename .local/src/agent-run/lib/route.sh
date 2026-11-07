@@ -44,11 +44,14 @@ route_list() {
   done < <(route_dirs) | sort -u
 }
 
+# Reads the whole list before the loop: returning mid-read closed the pipe while route_dirs was
+# still writing, and its printf failed with a broken pipe on stderr (CI, 2026-11-07).
 route_file() {
-  local name="$1" d
-  while IFS= read -r d; do
+  local name="$1" d dirs
+  mapfile -t dirs < <(route_dirs)
+  for d in "${dirs[@]}"; do
     [ -r "$d/$name.route" ] && { printf '%s' "$d/$name.route"; return 0; }
-  done < <(route_dirs)
+  done
   return 1
 }
 

@@ -28,16 +28,8 @@ command -v jq >/dev/null 2>&1 || { echo "sessions: jq is required" >&2; exit 1; 
 
 # ---------------------------------------------------------------- helpers ---
 
-resolve_project() {
-  # Resolve the current project name the same way the hooks do.
-  local dir="${1:-$PWD}"
-  if [ -f "$HOME/.config/shared-hooks/project-name.sh" ]; then
-    . "$HOME/.config/shared-hooks/project-name.sh"
-    resolve_project_name "$dir"
-  else
-    local base="${dir##*/}"; echo "${base#.}"
-  fi
-}
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
 _age() {
   # epoch -> compact relative age ("now", "9m", "3h", "2d", "5w")
@@ -574,14 +566,15 @@ cmd_search() {
   # the background, detached so closing the popup does not kill it. A keystroke filters the
   # index as it stands by then. Not a start:reload: rows reordering under the cursor while
   # you arrow down to the session two back would resume the wrong one.
-  local id
+  local id hint=""
+  [ -n "$all" ] || hint=" | --all shows dispatched"
   [ -f "$INDEX" ] && setsid -f "$SELF" index >/dev/null 2>&1 </dev/null
   id=$(cmd_filter --cached $all "$q" | fzf \
         --delimiter="$TAB" --with-nth=2.. \
         --disabled --query="$q" --wrap \
         --bind="change:reload('$SELF' _filter --cached ${all:+$all }{q})" \
         --bind="ctrl-g:execute($RECALL search {q} --limit 40 2>&1 | \${PAGER:-less} -R)" \
-        --prompt="session> " --header='enter resume | ctrl-g full-text' \
+        --prompt="session> " --header="enter resume | ctrl-g full-text$hint" \
       | cut -f1)
   [ -n "$id" ] || return 0
   cmd_resume ${window:+"$window"} "$id"

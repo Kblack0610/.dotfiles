@@ -10,7 +10,7 @@ paths:
 metadata:
   category: monitoring
   tags: [claude-acct, accounts, pace, budget, dispatch]
-  reviewed: "2026-11-06"
+  reviewed: "2026-11-07"
 ---
 
 # fleet-accounts
@@ -28,14 +28,14 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 ## Read the room
 
 1. `claude-acct room` prints the account dir to use and exits 0. Exit 1 means none has room; exit 2 means none has room and one account is unreadable. When refused, the last stderr line names the closest account, its points over pace, and when it runs out at this rate.
-2. `claude-acct status` (or `--json`) is the table: 5H, WEEK, GONE (share of the week elapsed), PACE (points over or under), RUNS-OUT, RESETS, LIVE sessions, 24H-$. There is no `pace` verb; pace is that column and the `room` rule.
-3. The rule, per account: week used at most week gone plus the slack (`CLAUDE_ACCT_PACE_SLACK_PCT`, 5), week used under 100 minus the reserve (`CLAUDE_ACCT_RESERVE_PCT`, 15), and the 5 hour window under 100 minus the reserve. The reserve is kept for the human's own work. An account with an expired token counts as having room, so check `claude-acct check usage` when `status` looks odd. The machine-mode level scales slack and reserve. Both are set in `~/.config/agentctl/agents/fleet-dispatch.conf`.
+2. `claude-acct status` (or `--json`) is the table: 5H, WEEK, GONE (share of the week elapsed), RUNS-OUT, RESETS, LIVE sessions, 24H-$, ON-PACE, ROOM (ok, or the reason). There is no `pace` verb and no over or under word: the ROOM column is the gate. The hub Fleet and Costs tabs and agent-web print the same verdict as a ROOM cell (`no room: pace 20 points past the line`, `room, 4 points spare`) from the `claude_account_room*` series, and say `stale` when the textfile is over an hour old (the `claude-acct-usage` timer has stopped).
+3. The verdict is each account's `room` object in `claude-acct status --json` and in `claude-acct room --json`, whose answer is `{pick, why, accounts}`: `pick` names the best account with room (null when none), and `why` is the refusal sentence `room` prints. Each `room` object has `ok`, `reason` (`unread`, `capped`, `reserve`, `pace`, `five_hour`, `committed`, or `ok`, the first that refuses), `reasons` (every one that refuses, in that order), `why` (the sentence a refusal prints), `over_points` past the pace line after the slack, `headroom_points` (signed), `capped`. The rule is written once, in `usage_json`: week used at most week gone plus the slack, week used under 100 minus the reserve, the 5 hour window under 100 minus the reserve, and the live sessions not already using the rest of the week. The reserve is kept for the human's own work. An account with an expired token counts as having room, so check `claude-acct check usage` when `status` looks odd. The machine-mode level scales slack and reserve. The mid numbers are in `.config/claude-acct/pace.conf`, read by `claude-acct` only, with no env override. The textfile carries `claude_account_room`, `claude_account_room_headroom_points` and `claude_account_room_reason{reason}`, which the waybar queue chip names when the account gate holds dispatch. `fleet-dispatch` and `fleet-shepherd` read `room --json` and never re-derive the verdict.
 4. For the dispatch side run `fleet-dispatch stopped` (add `--json` for a parse) and `fleet-dispatch run --dry-run`. They name every gate in one line each: account room, `fleet-assess` HOLD, load against `DISPATCH_MAX_LOAD`, the idle floor, run units. "Clears when an account is back under its pace" is the line for this gate.
 
 ## What lifts it
 
 - Time. Pace is a share of the week, so a held account comes back under pace as the week goes by, or when its week resets (`RESETS`). Usually that is the only honest fix.
-- The run floor. `DISPATCH_RUN_FLOOR` (conf: 2; script default 0) keeps that many run sessions going: while live run sessions plus starts this pass are under it, the weekly pace slack and the idle gate do not hold a start. It does not lift load, a `fleet-assess` HOLD, the reserve, the 5 hour window or `agent-hold`. If the floor is already met (`fleet-dispatch headroom` prints it), a pace refusal is expected. Red items have a floor of their own, `DISPATCH_RED_FLOOR` (2), which also lifts load and a `fleet-assess` HOLD (fleet-dispatch skill, "A pass").
+- The run floor. `DISPATCH_RUN_FLOOR` (conf: 2; script default 0) keeps that many run sessions going: while live run sessions plus starts this pass are under it, an account whose only reason is `pace` may start, and the idle gate does not hold. It does not lift load, a `fleet-assess` HOLD, the reserve, the 5 hour window, committed burn or `agent-hold`; an account with room is taken before one past its pace. If the floor is already met (`fleet-dispatch headroom` prints it), a pace refusal is expected. Red items have a floor of their own, `DISPATCH_RED_FLOOR` (2), which also lifts load and a `fleet-assess` HOLD (fleet-dispatch skill, "A pass").
 - A hand start (`cl`, `claude-acct pick`) is told which account is closest and is never refused. The human's own work is not gated by pace.
 - Another account: `claude-acct status` shows who has room. Adding an account is a human login step, not an agent task.
 
@@ -47,7 +47,7 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 
 ## Do NOT
 
-- Do not raise `CLAUDE_ACCT_PACE_SLACK_PCT`, the reserve or `DISPATCH_RUN_FLOOR` to make a refusal go away. They set how much of the week the fleet may spend; changing one is the human's call and a private-repo conf PR.
+- Do not raise the slack or reserve in `.config/claude-acct/pace.conf`, or `DISPATCH_RUN_FLOOR` to make a refusal go away. They set how much of the week the fleet may spend; changing one is the human's call and a conf PR.
 - Do not refuse or block `cl`, a hand start or a running session on pace, and do not add a deny or a blanket model downgrade.
 - Do not hand-edit account token files or `budget-raise` files. Use `claude-acct` and `agentctl budget`.
 - Do not start a probe session to see if an account works; `claude-acct check usage` reads usage without one.

@@ -1,0 +1,34 @@
+#!/bin/bash
+# Post-checkout hook: record who moved a deployed checkout off its default branch.
+#
+# Stow links $HOME at this tree, so a checkout here changes what every session runs. The reflog
+# says when and to what, never who: on 2026-11-06 finding the actor took a search through subagent
+# transcripts. checkout-guard.py stops a Claude session's Bash call; this names everything else,
+# for the CHECKOUT row in fleet-sessions.
+#
+# Git runs the copy of this file on the commit it just checked out, so a branch cut before this
+# file existed leaves no record and the row says the actor is unknown. ~/.dotfiles-private has its
+# own hooks path, so a move there gets the same row with no actor.
+#
+# Worktrees share this hooks path; they leave at the toplevel test, the only cost they pay. Git runs
+# a hook at the toplevel, so $PWD is it.
+
+[ "${3:-0}" = 1 ] || exit 0
+top="$PWD"
+[ "$top" -ef "${DOTFILES:-$HOME/.dotfiles}" ] || exit 0
+default="$(git symbolic-ref -q --short refs/remotes/origin/HEAD)"; default="${default#origin/}"
+[ "$(git symbolic-ref -q --short HEAD)" = "${default:-main}" ] && exit 0
+
+chain="" pid=$PPID
+for _ in 1 2 3 4 5; do
+  read -r ppid comm < <(ps -o ppid=,comm= -p "$pid" 2>/dev/null) || break
+  chain="${chain:+$chain<-}$comm"
+  [ "${ppid:-0}" -gt 1 ] || break
+  pid=$ppid
+done
+actor="${CLAUDE_CODE_SESSION_ID:+session ${CLAUDE_CODE_SESSION_ID:0:8} }${AGENT_QUEUE_ITEM:+item $AGENT_QUEUE_ITEM }${TMUX_PANE:+pane $TMUX_PANE }$chain"
+
+ledger="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
+mkdir -p "$ledger" && printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$top" "$(git rev-parse HEAD)" "$actor" >> "$ledger/checkout-moves.tsv"
+echo "post-checkout: $top is off ${default:-main}: every stowed script now runs this commit. Go back with: git -C $top switch ${default:-main}" >&2
+exit 0

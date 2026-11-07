@@ -16,7 +16,7 @@ Core idea: depth comes from **isolated parallel contexts + an adversarial verify
 
 ## Scope and triggers
 
-Multi-agent deep-research harness - decompose a question into independent threads, fan out one subagent per thread, collect structured briefs, adversarially verify the load-bearing claims, then synthesize a cited report with a verified/unverified column. Use when the user wants a deep, multi-source, fact-checked answer on a broad or contested question (market analysis, competitive intel, "what should I buy/sell", current-events synthesis). Differs from /sc:research + deep-research-agent (single-agent, in-context multi-hop) - this skill ORCHESTRATES multiple isolated researcher subagents and adds an adversarial verification pass. Differs from Explore agents (codebase search, not web).
+Multi-agent deep-research harness - decompose a question into independent threads, fan out one subagent per thread, collect structured briefs, adversarially verify the load-bearing claims, then synthesize a cited report with a verified/unverified column. Use when the user wants a deep, multi-source, fact-checked answer on a broad or contested question (market analysis, competitive intel, "what should I buy/sell", current-events synthesis). Differs from deep-research-agent used solo (single-agent, in-context multi-hop) - this skill ORCHESTRATES multiple isolated researcher subagents and adds an adversarial verification pass. Differs from Explore agents (codebase search, not web).
 
 ## When to invoke
 - "deep research X", "fact-checked report on X", "research the market for X"
@@ -31,7 +31,7 @@ Do **not** use for: codebase search (use `Explore`), a single-fact lookup (just 
 ## Inputs
 - **Question** (required) - the refined research question.
 - **Depth** (optional) - `quick | standard | deep | exhaustive` (default `standard`). Scales thread count + verify rounds.
-- **Save** (optional) - report path. Default `claudedocs/research_{slug}_{YYYY-MM-DD}.md` (matches `/sc:research`).
+- **Save** (optional) - report path. Default `claudedocs/research_{slug}_{YYYY-MM-DD}.md`.
 
 ## The pattern
 1. **Clarify & scope** - confirm question, constraints, success criteria. Ask 2-3 questions only if genuinely underspecified.
@@ -89,14 +89,12 @@ Save to the report path and print a tight summary. Structure:
 
 ## Anti-patterns
 - Don't scale agent count for its own sake - **distinct angles**, not "as many as possible". 10 redundant finders < 5 distinct finders + a verify pass.
-- Don't let one agent research everything in one context (that's `/sc:research`'s weakness - context starves on later threads).
+- Don't let one agent research everything in one context (that is the solo deep-research-agent's weakness - context starves on later threads).
 - Don't present snippet-scraped numbers as verified - the verdict column is the point.
 - Don't skip the verify pass on the numbers that drive the decision; that's the one thing this skill exists to add.
 - Don't hide contradictions to make the narrative clean (codex `deep-research` guardrail).
 
 ## Related
 - `deep-research-agent` (Claude agent) - the per-thread researcher; also usable solo for a single-context investigation.
-- `/sc:research` - single-agent adaptive research command; this skill is its multi-agent + verify superset.
-- `~/.dotfiles/.config/codex/skills/deep-research/SKILL.md` - Codex-side thin methodology (keep conceptually in sync).
 - `Explore` agents - codebase (not web) fan-out.
 - Workflow tool - orchestration substrate for deep/exhaustive runs.

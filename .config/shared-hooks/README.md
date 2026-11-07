@@ -4,7 +4,7 @@ The cross-tool session hooks. Claude Code is the main consumer, but nothing here
 
 | file | when it runs | what it does |
 | --- | --- | --- |
-| `session-preflight.sh` | SessionStart | The turn-1 context injection: holds, stranded sprints, then in priority order the anchor's key facts (decisions log as one pointer line), the agent board (6 rows), the lessons digest, plans, an app's commits (scoped to its subtree; a whole repo's are Claude Code's gitStatus) and PRs, under one 9,000 B budget that names whatever it left out. Non-blocking. |
+| `session-preflight.sh` | SessionStart | The turn-1 context injection: holds, stranded sprints, then in priority order the anchor's key facts (decisions log as one pointer line), the agent board (6 rows), the lessons digest, plans, and an app's commits (scoped to its subtree; a whole repo's are Claude Code's gitStatus), with no gh call and no queue write, under one 9,000 B budget that names whatever it left out. Non-blocking. |
 | `focus-lib.sh` | sourced | The one parser for the daily note's `## Focus` section. Used by the reconcile gate. Read-only by contract. |
 | `project-name.sh` | sourced | Resolves a directory to its canonical project name via `project-map.json`. |
 | `worktree-create.sh` / `worktree-remove.sh` | WorktreeCreate / WorktreeRemove | Put harness-made worktrees (Agent `isolation: "worktree"`, `--worktree`, background sessions) at `~/.worktrees/<repo>-<name>` instead of `<repo>/.claude/worktrees/`. Remove never forces, so a dirty tree survives. |

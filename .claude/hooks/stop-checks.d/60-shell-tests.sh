@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop check: the fast-tier test files a change can affect (unit + integ), plus shellcheck.
+# Stop check: the fast-tier test files a change can affect (unit + integ).
 # Exit codes: 0=pass, 1=warn, 2=block.
 #
 # Only the fast tier runs here, and that is not just a latency call. The fast tier never
@@ -41,8 +41,7 @@ TESTS_DIR="$PROJECT_ROOT/tests"
 # Pick the fast-tier files this change can affect; CI's fast job runs all of them on every
 # PR. The whole tier outgrew the 300s Stop budget (5m24s in CI) and timed out on every Stop
 # of a checkout carrying someone else's theme churn, so the gate reported nothing at all.
-# A test is picked when it changed, or names a changed file's basename; a change to the
-# shared harness (helpers, fixtures, vendor, Makefile) picks every file.
+# .local/lib/test-pick.sh says what is picked.
 # Seam: SHELL_TESTS_CHANGED (newline list of repo-relative paths) replaces the git read.
 if [ -n "${SHELL_TESTS_CHANGED+x}" ]; then
   CHANGED="$SHELL_TESTS_CHANGED"
@@ -51,19 +50,13 @@ else
   CHANGED="$( { git -C "$PROJECT_ROOT" diff --name-only "$BASE"
                 git -C "$PROJECT_ROOT" ls-files --others --exclude-standard; } | sort -u)"
 fi
+# shellcheck source=/dev/null
+. "${_self%/*}/../../../.local/lib/test-pick.sh"
 mapfile -t ALL < <(ls "$TESTS_DIR"/unit/*.bats "$TESTS_DIR"/integ/*.bats 2>/dev/null)
 PICKED=()
-if grep -qE '^tests/(helpers|fixtures|vendor)/|^tests/Makefile$' <<<"$CHANGED"; then
-  PICKED=("${ALL[@]}")
-else
-  PATS="$(grep -v '^$' <<<"$CHANGED" | sed 's#.*/##' | sort -u)"
-  for t in "${ALL[@]}"; do
-    if grep -qxF "tests/${t#"$TESTS_DIR"/}" <<<"$CHANGED" \
-       || { [ -n "$PATS" ] && grep -qwFf <(printf '%s\n' "$PATS") "$t"; }; then
-      PICKED+=("$t")
-    fi
-  done
-fi
+for t in "${ALL[@]}"; do
+  test_picked "$CHANGED" "tests/${t#"$TESTS_DIR"/}" < "$t" && PICKED+=("$t")
+done
 if [ "${#PICKED[@]}" -eq 0 ]; then
   echo "shell-tests: no fast-tier test names a changed file ($(grep -c . <<<"$CHANGED") changed); CI runs the full tier"
   exit 0
@@ -72,14 +65,6 @@ echo "shell-tests: ${#PICKED[@]} of ${#ALL[@]} fast-tier files picked"
 
 FAILED=0
 make -C "$TESTS_DIR" test-files FILES="${PICKED[*]}" 2>&1 || FAILED=1
-
-# Linting is advisory here: a regression should be visible without blocking a commit that is
-# otherwise green. lint.sh owns the severity ratchet and is the same gate CI runs.
-# (Do not begin a comment with the word "shellcheck" -- it is parsed as a directive and
-# errors out with SC1072/SC1073.)
-if command -v shellcheck >/dev/null 2>&1; then
-  "$TESTS_DIR/lint.sh" 2>&1 || echo "shell-tests: lint findings (advisory)"
-fi
 
 [ $FAILED -eq 1 ] && exit 2
 exit 0
