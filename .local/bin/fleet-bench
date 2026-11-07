@@ -264,8 +264,8 @@ def run_rows: split("\n") | map(select(. != "") | split("\t")
 def total(f): map(f // 0) | add // 0;
 def key: "\(.repo)#\(.number)";
 def claimed: (.session_id // "") != "";
-def ran_gate: (.gate_runs // .ci_runs // 0) > 0;
-def first_try: (.gate_red // .ci_red // 0) == 0;
+def ran_gate: (.gate_runs // 0) > 0;
+def first_try: .gate_red == 0;
 def kind: sub("\\(.*"; "");
 # the ETA an estimate publishes and how it was made: calibrated when a factor was applied;
 # null for no estimate
@@ -1131,12 +1131,14 @@ ci_keep_newest() {
 # commit replaced, main moving or a review change alike. A path inside no root is `other`.
 pr_ci() {
   local pr runs paths=''
-  pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits) || return 1
+  pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
   runs=$(gh run list -R "$1" --branch "$(jq -r .headRefName <<<"$pr")" --limit 100 \
     --json conclusion,createdAt,startedAt,updatedAt,workflowName,headSha) || return 1
   if jq -e --arg r "$1" 'has($r)' <<<"$4" >/dev/null; then
-    # REST, not `pr view --json files`: that stops at 100 files, and the first 100 by path hide the rest
-    paths=$(gh api --paginate "repos/$1/pulls/$2/files?per_page=100" --jq '.[].filename') || return 1
+    # the merge commit, not pulls/N/files, which is a 422 on a diff too big to generate (#1403, 2.7M
+    # lines), nor `pr view --json files`, which stops at 100. A squash holds the whole PR; a
+    # multi-commit rebase merge would list its last commit only, and main has none
+    paths=$(gh api --paginate "repos/$1/commits/$(jq -r .mergeCommit.oid <<<"$pr")?per_page=100" --jq '.files[].filename') || return 1
   fi
   jq -cn --argjson pr "$pr" --argjson runs "$runs" --arg repo "$1" --argjson n "$2" --arg sid "$3" \
      --argjson cfg "$4" --arg paths "$paths" "$JQ_LIB"'
@@ -1161,7 +1163,7 @@ pr_ci() {
 }
 
 cmd_review() {
-  local t since cfg new repo num sid row n=0 red=0 msg days=''
+  local t since cfg new repo num sid row n=0 red=0 failed=0 msg days=''
   case "${1:-}" in
     '') ;;
     --days) days=${2:-}; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench review [--days N]"; return 2; } ;;
@@ -1178,12 +1180,17 @@ cmd_review() {
     [ -n "$repo" ] || continue
     if ! row=$(pr_ci "$repo" "$num" "$sid" "$cfg"); then
       say "gh failed counting $repo#$num"
-      report_outcome FAILED "gh failed counting CI"
-      return 1
+      failed=$((failed + 1))
+      continue
     fi
     printf '%s\n' "$row" >> "$CI"
     n=$((n + 1)); red=$((red + $(jq .ci_red <<<"$row")))
   done <<<"$new"
+  # a PR with no row is picked up by the next run, so one bad PR never holds back the rest
+  if [ "$failed" -gt 0 ]; then
+    report_outcome FAILED "gh failed counting $failed PRs, $n counted"
+    return 1
+  fi
   if [ "$n" -eq 0 ]; then
     report_outcome NOOP "nothing new merged in the window"
     return 0

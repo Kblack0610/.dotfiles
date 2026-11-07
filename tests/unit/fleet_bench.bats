@@ -542,7 +542,10 @@ case "$1 $2" in
   "pr view") cat "$D/pr-$3.json" ;;
   "run list") cat "$D/runs-$6.json" ;;
   "pr list") cat "$D/repo-prs.json" ;;
-  "api --paginate") n=${3#repos/o/r/pulls/}; cat "$D/files-${n%%/*}" ;;
+  "api --paginate") case $3 in
+      repos/o/r/commits/*) n=${3#repos/o/r/commits/sha}; cat "$D/files-${n%%\?*}" ;;
+      *) echo 'gh: Sorry, this diff is taking too long to generate. (HTTP 422)' >&2; exit 1 ;;
+    esac ;;
 esac
 GH
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/agentctl-run"
@@ -564,7 +567,7 @@ merged_pr() {
   jq -cn --argjson n "$2" --argjson l "$3" --arg c "$(iso $((m - 3600)))" --arg at "$(iso "$m")" \
     --arg first "$(iso $((m - 4200)))" \
     '{headRefName: "b\($n)", createdAt: $c, mergedAt: $at, additions: $l, deletions: 0,
-      commits: [{committedDate: $first}]}' > "$GHD/pr-$2.json"
+      commits: [{committedDate: $first}], mergeCommit: {oid: "sha\($n)"}}' > "$GHD/pr-$2.json"
   jq -cn --arg c "$(iso $((m - 60)))" '[{conclusion: "success", createdAt: $c}]' > "$GHD/runs-b$2.json"
 }
 
@@ -607,6 +610,25 @@ merged_pr() {
   [ ! -s "$FLEET_BENCH_DIR/pr-ci.jsonl" ]
   run outcome
   assert_output FAILED
+}
+
+@test "one PR gh cannot count is FAILED, the rest are counted, and the next run picks it up" {
+  stub_review
+  merged_pr s1 7 35
+  merged_pr s2 8 35
+  merged_pr s3 9 35
+  mv "$GHD/pr-8.json" "$GHD/held"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_failure
+  run jq -s -c 'map(.number) | sort' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7,9]'
+  run outcome
+  assert_output FAILED
+  mv "$GHD/held" "$GHD/pr-8.json"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -s -c 'map(.number) | sort' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7,8,9]'
 }
 
 # sections_map: o/r has sections, its gate is the Tests workflow
@@ -714,7 +736,7 @@ gate_runs_of() {
   # the second PR's file list kills this one review, as a timeout would; by pid, since the unit
   # tier runs other reviews beside it
   cat >> "$SANDBOX/bin/gh" <<'GH'
-[ "$3" != 'repos/o/r/pulls/8/files?per_page=100' ] || kill -TERM "$(cat "$D/pid")"
+[ "$3" != 'repos/o/r/commits/sha8?per_page=100' ] || kill -TERM "$(cat "$D/pid")"
 GH
   BENCH_NOW=$T0 run bash -c 'echo $$ > "$1"; exec "$2" review' _ "$GHD/pid" "$SUBJECT"
   assert_failure 143
@@ -783,12 +805,12 @@ GH
   assert_failure 2
 }
 
-@test "first_pass_share reads a PR's gate where it ran one, else any CI, and skips a PR with no runs" {
+@test "first_pass_share counts only PRs that ran a gate, so a repo with none cannot hide a red one" {
   mkdir -p "$FLEET_BENCH_DIR" "$HOME/.agent/outcomes/game"
   ci_row '{session_id: "s1", repo: "o/r", number: 1, merged_epoch: ($t - 60), ci_runs: 3, ci_red: 1, gate_runs: 1, gate_red: 0}'
   ci_row '{session_id: "s1", repo: "o/r", number: 2, merged_epoch: ($t - 60), ci_runs: 3, ci_red: 0, gate_runs: 2, gate_red: 1}'
   ci_row '{session_id: "s1", repo: "o/x", number: 3, merged_epoch: ($t - 60), ci_runs: 1, ci_red: 0}'
-  ci_row '{session_id: "s1", repo: "o/x", number: 4, merged_epoch: ($t - 60), ci_runs: 1, ci_red: 2}'
+  ci_row '{session_id: "s1", repo: "o/x", number: 4, merged_epoch: ($t - 60), ci_runs: 1, ci_red: 0}'
   ci_row '{session_id: "s1", repo: "o/x", number: 5, merged_epoch: ($t - 60), ci_runs: 0, ci_red: 0}'
   ci_row '{session_id: "s1", repo: "o/r", number: 6, merged_epoch: ($t - 60), ci_runs: 2, ci_red: 0, gate_runs: 0, gate_red: 0}'
   BENCH_NOW=$T0 run "$SUBJECT" kpi --json
