@@ -992,6 +992,14 @@ picks() {
 
 # --- launch --------------------------------------------------------------------------
 
+# new_sid -> a fresh session id for `claude --session-id`, so the item claims it before the pane
+# starts and the session's preflight never takes the queue lock.
+new_sid() {
+  local u
+  u=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null) && [ -n "$u" ] || return 1
+  printf '%s\n' "$u" | tr '[:upper:]' '[:lower:]'
+}
+
 # launch_mode <mode> -- set the caller's flags and ready: claude's flags for that mode, and the
 # footer that shows it came up. A session in any mode but bypass may still need bypass later (a
 # plan once approved), and claude offers it then only when it was allowed at launch.
@@ -1074,7 +1082,8 @@ gateway_launch() {
     claude-lazer)
       launch_mode "$(jq -r 'if .mode == "plan" then "plan" else "bypassPermissions" end' <<<"$it")"
       cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") $(telemetry_env "$cwd" "$slug")env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY=$(printf '%q' "$file")"
-      cmd="$cmd ANTHROPIC_CUSTOM_HEADERS=$(printf '%q' "x-litellm-tags: queue:$slug") claude-lazer --model $(printf '%q' "$id") $flags $(printf '%q' "$brief")"
+      sid=$(new_sid) || { say "start: no session id for queue item $slug; it stays queued"; return 1; }
+      cmd="$cmd ANTHROPIC_CUSTOM_HEADERS=$(printf '%q' "x-litellm-tags: queue:$slug") claude-lazer --model $(printf '%q' "$id") --session-id $sid $flags $(printf '%q' "$brief")"
       ;;
     opencode)
       [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: opencode runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
@@ -1217,7 +1226,8 @@ cmd_start() {
     # A window joined into a live session is one Claude among others there, so the item does not
     # take that session: reap goes by its `sessions:` ids instead (claude_gone).
     rec=("origin=$origin"); [ -n "$joined" ] || rec+=("session=$server:$session")
-    [ -z "$item" ] || agent-queue set "$item" "${rec[@]}" >/dev/null ||
+    # --resume keeps the conversation's session id, so that is the one the item claims.
+    [ -z "$item" ] || { agent-queue set "$item" "${rec[@]}" >/dev/null && agent-queue claim "$item" --sid "$resume" >/dev/null; } ||
       say "restored $session, but could not record it on queue item $item"
   else
     [ -n "$cwd" ] || cwd=$(repo_dir "$project")
@@ -1228,7 +1238,8 @@ cmd_start() {
       [ -n "$model" ] || model=$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)
       model=${model:-opus}
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
-      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")claude --model $(printf '%q' "$model")$(dropped_tools "$it")"
+      sid=$(new_sid) || { say "start: no session id for queue item $item; it stays queued"; return 1; }
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")claude --model $(printf '%q' "$model")$(dropped_tools "$it") --session-id $sid"
       [ "$mode" = plan ] || mode=bypassPermissions
       launch_mode "$mode"
       cmd="$cmd $flags $(printf '%q' "$(item_brief "$it")")"
@@ -1243,7 +1254,8 @@ cmd_start() {
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" >/dev/null &&
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
-    # Preflight and agent-land claim for Claude alone, and both outcome joins go through `sessions:`.
+    # The id was chosen above, so the claim is made here and not in the session's own start, where
+    # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
     if [ "$harness" = claude ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model"
     # A run pass's spill is not an experiment: it logs under the lane model-lane picked, with its harness.

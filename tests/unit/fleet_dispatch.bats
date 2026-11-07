@@ -46,6 +46,9 @@ setup() {
 }
 
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
+# mask_sid <log>... -> each launch's random `--session-id <uuid>` becomes `--session-id SID`, so a test
+# can assert the whole command line.
+mask_sid() { sed -i -E 's/--session-id [0-9a-f-]{36}/--session-id SID/g' "$@"; }
 
 # started_item <slug> <session> [origin] [area] [from] [state] [project] -- a started queue item on
 # that session (<server>:<name>): the one record of a running session.
@@ -2326,6 +2329,8 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   assert_called 'tmux -L default set-option -t =fix-crash: @dispatch game: fix-crash'
   f=$(qitem running fix-crash)
   assert_equal "$(qfield "$f" session) $(qfield "$f" origin)" 'default:fix-crash resume'
+  # --resume keeps the conversation's id, so the item claims that one: the session's own start no longer does.
+  assert_equal "$(qfield "$f" sessions)" 'abc-123'
 
   agent-queue add --project game --slug later "later" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session s2 --cwd "$SANDBOX/repos/game" --resume x --item later
@@ -2350,6 +2355,10 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
     --row 'tidy the loader' --brief "$SANDBOX/brief.md"
   assert_success
   assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  # The session id is chosen at launch and claimed on the item here, before the session's preflight.
+  sid=$(grep -o -- '--session-id [0-9a-f-]*' "$NOTES_FIXTURE/calls.log" | head -1 | cut -d' ' -f2)
+  [[ "$sid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "no session id in the launch: $sid"
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/running/*.md)" sessions)" "$sid"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default \
     --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
@@ -3032,11 +3041,12 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   agent-queue add --project game --slug n --tags night "do n"
   agent-queue add --project game --slug p --mode plan "plan p"
   for s in a n p; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
+  mask_sid "$NOTES_FIXTURE/cmds.log"
   run cat "$NOTES_FIXTURE/cmds.log"
-  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=a env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup --permission-mode bypassPermissions'
+  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=a env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup --session-id SID --permission-mode bypassPermissions'
   assert_output --partial '/one-shot do a'
   assert_output --partial '/one-shot --pr-only do n'
-  assert_output --partial 'AGENT_QUEUE_ITEM=p env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup --permission-mode plan --allow-dangerously-skip-permissions'
+  assert_output --partial 'AGENT_QUEUE_ITEM=p env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup --session-id SID --permission-mode plan --allow-dangerously-skip-permissions'
   refute_output --partial '/one-shot plan p'
   # An item with no board row still names itself in its PR body, and names no Task line.
   assert_output --partial 'The PR body carries the line "Item: a".'
@@ -3904,7 +3914,8 @@ harness_ready() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness claude-lazer --model sonnet
   assert_success
   assert_called 'env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY='
-  assert_called 'ANTHROPIC_CUSTOM_HEADERS=x-litellm-tags:\ queue:fix-menu claude-lazer --model sonnet --permission-mode bypassPermissions'
+  mask_sid "$NOTES_FIXTURE/calls.log"
+  assert_called 'ANTHROPIC_CUSTOM_HEADERS=x-litellm-tags:\ queue:fix-menu claude-lazer --model sonnet --session-id SID --permission-mode bypassPermissions'
   assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane eval --by human --harness claude-lazer --picked sonnet --ran sonnet'
   assert_not_called 'claude-acct pick'
   f=$(qitem running fix-menu)
@@ -3920,10 +3931,11 @@ harness_ready() {
   agent-queue add --project game --slug wf "run a Workflow over the PRs"
   for s in plain uc lp wf; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
   DISPATCH_DROP_TOOLS='' && agent-queue add --project game --slug off "fix the footer" && cmd_start --item off >/dev/null || fail "start off"
+  mask_sid "$NOTES_FIXTURE/cmds.log"
   run cat "$NOTES_FIXTURE/cmds.log"
-  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=plain env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup --permission-mode'
+  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=plain env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup --session-id SID --permission-mode'
   [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "only plain drops tools: $(cat "$NOTES_FIXTURE/cmds.log")"
-  assert_line --index 4 --partial 'AGENT_QUEUE_ITEM=off env -u CLAUDE_CONFIG_DIR claude --model opus --permission-mode'
+  assert_line --index 4 --partial 'AGENT_QUEUE_ITEM=off env -u CLAUDE_CONFIG_DIR claude --model opus --session-id SID --permission-mode'
   # A value that is not a list of tool names never reaches the command line.
   DISPATCH_DROP_TOOLS='Bash(rm:*);x' && agent-queue add --project game --slug bad "fix the header" >/dev/null
   run cmd_start --item bad
@@ -3940,15 +3952,18 @@ harness_ready() {
   assert_called 'opencode run --standalone'
 }
 
-@test "a claude start is unchanged: no eval log, no gateway read, no claim" {
+@test "a claude start is unchanged: no eval log, no gateway read; it claims the id it launches with" {
   harness_ready
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu
   assert_success
-  assert_called "claude --model opus --disallowedTools Workflow,ScheduleWakeup --permission-mode bypassPermissions \$'/one-shot Fix"
+  sid=$(grep -o -- '--session-id [0-9a-f-]*' "$NOTES_FIXTURE/calls.log" | head -1 | cut -d' ' -f2)
+  [ -n "$sid" ] || fail "no session id in the launch"
+  mask_sid "$NOTES_FIXTURE/calls.log"
+  assert_called "claude --model opus --disallowedTools Workflow,ScheduleWakeup --session-id SID --permission-mode bypassPermissions \$'/one-shot Fix"
   assert_not_called 'curl'
   assert_not_called 'lane eval'
   f=$(qitem running fix-menu)
-  assert_equal "$(qfield "$f" agent) $(qfield "$f" account) $(qfield "$f" sessions)" 'claude main '
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" account) $(qfield "$f" sessions)" "claude main $sid"
 }
 
 @test "gateway starts refuse what would mislabel or overspend, and the item stays queued" {
@@ -4069,7 +4084,8 @@ sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.l
   assert_success
   assert_output --partial 'started queue item fix-menu on Lazer (lazer-reserve, sonnet), spilled: no account has room; alt is the closest'
   assert_equal "$(outcome)" WORKED
-  assert_called 'claude-lazer --model sonnet --permission-mode bypassPermissions'
+  mask_sid "$NOTES_FIXTURE/calls.log"
+  assert_called 'claude-lazer --model sonnet --session-id SID --permission-mode bypassPermissions'
   assert_called 'reserve.key'
   assert_not_called 'eval.key'
   grep -q 'Bearer sk-reserve' "$NOTES_FIXTURE/curl.stdin" || fail "the budget check read another key"
