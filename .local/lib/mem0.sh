@@ -21,14 +21,16 @@ mem0_load() {
   export MEM0_BASE_URL MEM0_USER_ID MEM0_SECRET
 }
 
-# mem0_key: print the m0sk_ client key from the sops file MEM0_SECRET names (run mem0_load first).
+# mem0_key: print the m0sk_ client key from the sops file MEM0_SECRET names (run mem0_load first). sops stays quiet: a missing age key and
+# a wrong path both read as "no key", and the message names the file.
 # Only a key that looks like one is printed, so a partial read cannot pass as a credential and
 # bring back a silent 401.
 mem0_key() {
   local key
-  key="$(sops -d "${MEM0_SECRET:-/nonexistent}" 2>/dev/null | awk '/MEM0_API_KEY:/ {print $2}' | tr -d '"')"
+  [ -n "${MEM0_SECRET:-}" ] || { echo "no mem0 key: MEM0_SECRET is unset (run mem0_load)" >&2; return 1; }
+  key="$(sops -d "$MEM0_SECRET" 2>/dev/null | awk '/MEM0_API_KEY:/ {print $2}' | tr -d '"')"
   case "$key" in
     m0sk_*) printf '%s\n' "$key" ;;
-    *) echo "no mem0 key could be read from ${MEM0_SECRET:-an unset MEM0_SECRET}" >&2; return 1 ;;
+    *) echo "no mem0 key could be read from $MEM0_SECRET" >&2; return 1 ;;
   esac
 }

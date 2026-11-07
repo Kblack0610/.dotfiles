@@ -20,7 +20,6 @@ AP_KEEP_DAYS="${AGENT_PROPOSE_KEEP_DAYS:-90}" # a decided record, long enough to
 AP_MAX="${AGENT_PROPOSE_MAX:-12}"             # open per stream and project, above the largest real backlog (11)
 # Where the mem0 verb posts: MEM0_BASE_URL, MEM0_USER_ID and MEM0_SECRET (the sops file holding the
 # key), from the private overlay, since the URL may not enter this repo.
-AP_MEM0_ENV="${AGENT_PROPOSE_MEM0_ENV:-}"   # empty: the lib's default, ~/.config/agentctl/mem0.env
 AP_MEM0_LIB="${AGENT_PROPOSE_MEM0_LIB:-$HOME/.local/lib/mem0.sh}"
 
 die() { echo "agent-propose: $*" >&2; exit 1; }
@@ -123,7 +122,7 @@ mem0_post() {
   local key body out ids
   # shellcheck source=/dev/null
   . "$AP_MEM0_LIB" || { echo "no mem0 lib at $AP_MEM0_LIB" >&2; return 1; }
-  mem0_load ${AP_MEM0_ENV:+"$AP_MEM0_ENV"} || return 1
+  mem0_load || return 1   # ~/.config/agentctl/mem0.env, or MEM0_ENV
   key="$(mem0_key)" || return 1
   body="$(jq -cn --arg c "$1" --arg u "$MEM0_USER_ID" \
     '{messages: [{role: "user", content: $c}], user_id: $u, infer: false}')"

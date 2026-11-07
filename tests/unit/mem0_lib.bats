@@ -40,3 +40,28 @@ stub_sops() { printf '#!/bin/sh\necho "MEM0_API_KEY: \\"%s\\""\n' "$1" > "$BATS_
   assert_failure
   assert_output --partial "no mem0 key could be read from /x"
 }
+
+# .ai-rc is sourced by every interactive shell: only the key may reach the environment.
+ai_rc_home() {
+  H="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$H/.local/lib" "$H/.config/agentctl"
+  cp "$LIB" "$H/.local/lib/"
+  printf 'MEM0_BASE_URL=https://mem0.test\nMEM0_USER_ID=me\nMEM0_SECRET=%s/s.yaml\n' "$H" > "$H/.config/agentctl/mem0.env"
+}
+
+@test ".ai-rc exports only MEM0_API_KEY, and no mem0 function or name" {
+  ai_rc_home
+  stub_sops m0sk_abc
+  for sh in bash zsh; do
+    command -v "$sh" >/dev/null || continue
+    run env -u MEM0_API_KEY HOME="$H" "$sh" -c ". '$BATS_TEST_DIRNAME/../../.ai-rc' >/dev/null 2>&1; echo \"key=\${MEM0_API_KEY:-} url=\${MEM0_BASE_URL:-} user=\${MEM0_USER_ID:-}\"; type mem0_key >/dev/null 2>&1 && echo leaked-fn"
+    assert_output "key=m0sk_abc url= user="
+  done
+}
+
+@test ".ai-rc leaves MEM0_API_KEY unset when the key cannot be read" {
+  ai_rc_home
+  stub_sops "not a key"
+  run env -u MEM0_API_KEY HOME="$H" bash -c ". '$BATS_TEST_DIRNAME/../../.ai-rc' >/dev/null 2>&1; echo \"key=\${MEM0_API_KEY:-}\""
+  assert_output "key="
+}

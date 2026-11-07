@@ -21,11 +21,11 @@
 # ones agent-propose, agentctl-dream and agentctl-nightly-sync use: see mem0.sh.
 # Unset is a valid outcome, not a failure: on a corporate machine there is no
 # mem0.env or no age key, and personal memory should not be reachable from there.
+# A subshell reads it, so only the key reaches the environment: not the endpoint, the user,
+# the secret path, or mem0_load and mem0_key as shell functions.
 if [ -z "${MEM0_API_KEY:-}" ] && [ -r "$HOME/.local/lib/mem0.sh" ]; then
-    . "$HOME/.local/lib/mem0.sh"
-    if mem0_load 2>/dev/null; then
-        MEM0_API_KEY="$(mem0_key 2>/dev/null)" && export MEM0_API_KEY || unset MEM0_API_KEY
-    fi
+    MEM0_API_KEY="$( { . "$HOME/.local/lib/mem0.sh" && mem0_load && mem0_key; } 2>/dev/null )"
+    if [ -n "$MEM0_API_KEY" ]; then export MEM0_API_KEY; else unset MEM0_API_KEY; fi
 fi
 
 # Claude Code entry point — two-case permission cycle (pairs with settings.json

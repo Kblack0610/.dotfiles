@@ -147,8 +147,8 @@ STUB
 # test can tell where the key went.
 mem0_stubs() {
   export AGENT_PROPOSE_MEM0_LIB="$BATS_TEST_DIRNAME/../../.local/lib/mem0.sh"
-  export AGENT_PROPOSE_MEM0_ENV="$BATS_TEST_TMPDIR/mem0.env"
-  printf 'MEM0_BASE_URL=https://mem0.test\nMEM0_USER_ID=me\nMEM0_SECRET=%s/secret.yaml\n' "$BATS_TEST_TMPDIR" > "$AGENT_PROPOSE_MEM0_ENV"
+  export MEM0_ENV="$BATS_TEST_TMPDIR/mem0.env"
+  printf 'MEM0_BASE_URL=https://mem0.test\nMEM0_USER_ID=me\nMEM0_SECRET=%s/secret.yaml\n' "$BATS_TEST_TMPDIR" > "$MEM0_ENV"
   printf '#!/usr/bin/env bash\necho "sops $*" >> "$CALLS"\necho "MEM0_API_KEY: \\"m0sk_sekrit\\""\n' > "$BATS_TEST_TMPDIR/bin/sops"
   cat > "$BATS_TEST_TMPDIR/bin/curl" <<'C'
 #!/usr/bin/env bash
@@ -197,7 +197,7 @@ add_mem0() { "$AP" add --stream dream --project dotfiles --verb mem0 --arg "Pref
   printf '#!/bin/sh\necho "MEM0_API_KEY: "\n' > "$BATS_TEST_TMPDIR/bin/sops"
   run "$AP" accept "$id"
   assert_output --partial "no mem0 key could be read"
-  AGENT_PROPOSE_MEM0_ENV="$BATS_TEST_TMPDIR/none" run "$AP" accept "$id"
+  MEM0_ENV="$BATS_TEST_TMPDIR/none" run "$AP" accept "$id"
   assert_output --partial "no mem0 config"
   assert_equal "$(jq -r '.status' "$AGENT_PROPOSE_DIR/$id.json")" open
   grep -c curl "$CALLS" | grep -qx 1
