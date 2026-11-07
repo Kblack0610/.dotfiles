@@ -1712,18 +1712,21 @@ red_item() {
   red_item a running 'fix(watch): kitchen-puck, voice is down' -600 - - -
   red_item b running 'the kitchen puck is down' -600 - - -
   printf '{"slug":"c","state":"running","title":"fix(watch): two\\nlines","queued":null,"tags":"red"}\n' >> "$ITEMS"
+  red_item d done 'fix(watch): , x' -7200 -3600 r#4 sha4
+  parses 'fix(watch): , x' fix watch ', x'
   parses 'fix(watch): kitchen-puck, voice is down' fix watch 'kitchen-puck, voice is down'
   parses 'fix(watch): two lines' fix watch 'two lines'
   run "$SUBJECT" reds --json
   assert_success
   run jq -rs 'map("\(.slug) \(.red)") | .[]' <<<"$output"
-  assert_output "$(printf '%s\n' 'a watch kitchen-puck' 'b the kitchen puck is down' 'c watch two')"
+  assert_output "$(printf '%s\n' 'a watch kitchen-puck' 'b the kitchen puck is down' 'c watch two' 'd fix(watch): , x')"
   assert_equal "$(grep -c '^row parse' "$NLOG")" 1
   # NEGATIVE CONTROL: a notes that cannot parse is said, and the KPIs read ? rather than counting the reds untyped
   printf '#!/usr/bin/env bash\n[ "$1" != row ] || exit 1\n' > "$SANDBOX/bin/notes"
   run "$SUBJECT" reds
   assert_failure
   assert_output --partial 'reds: notes row parse failed'
+  refute_output --partial 'cannot read the queue'
   run "$SUBJECT" ledger
   assert_line 'reds_unfixed=?'
 }
