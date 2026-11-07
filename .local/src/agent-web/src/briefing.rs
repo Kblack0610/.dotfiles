@@ -1,7 +1,7 @@
 //! Home's "Since last night": `hub_core::briefing::night`, the reader the hub TUI's Home uses,
 //! over the same state, queue and board Home reads, with Infra's cached answer. It reads the
 //! runs, calls, day records and Prometheus, none of which pushes, so it is cached as the
-//! pipeline line is and Home's own refresh re-reads it.
+//! gauge read is (pipeline.rs) and Home's own refresh re-reads it.
 
 use std::time::Instant;
 

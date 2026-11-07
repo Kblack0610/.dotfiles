@@ -199,8 +199,8 @@ function drawHome() {
     capped("home-needs", rows, needHtml, "more", "Nothing waits on you.");
   const running = capped("home-running", h.running, runningCard, "more", "Nothing running from the queue.");
   const nums = h.numbers.map((n) => `<span><b>${esc(n.label)}</b> ${esc(n.value)}</span>`).join(", ");
-  // The two summary lines lead, so a long Needs list never buries them.
-  paint(el, errs + sec("Numbers", null, `<div class="cline hnum">${nums}</div>`) +
+  // The flow strip and the two summary lines lead, so a long Needs list never buries them.
+  paint(el, errs + sec("Flow", null, flowHtml(h.flow, h.grafana)) + sec("Numbers", null, `<div class="cline hnum">${nums}</div>`) +
     sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) +
     sec("Needs you", h.needs.length, needs) + nightSection() + propSection(h) + sec("Running", h.running.length, running), askst.open);
 }

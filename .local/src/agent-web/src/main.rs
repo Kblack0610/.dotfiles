@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
         .route("/api/cloud-runner", post(cloud::set))
         .route("/api/fleet", get(fleet_board))
         .route("/api/fleet/runner", get(fleet_runner))
-        .route("/api/pipeline", get(pipeline_line))
+        .route("/api/flow", get(flow_strip))
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/schedules", get(schedules_list))
@@ -1052,6 +1052,7 @@ async fn home_board(
     Query(q): Query<proposals::ViewQuery>,
 ) -> ApiResult<Json<proposals::HomePage>> {
     let infra = s.infra.infra().await;
+    let gauges = s.pipeline.get().await;
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
@@ -1059,6 +1060,7 @@ async fn home_board(
         let open = hub_core::proposals::read(&actions::System);
         let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
         home.set_proposals(&open);
+        home.set_pipeline(&gauges);
         proposals::page(home, &q)
     })
     .await
@@ -1084,12 +1086,19 @@ async fn infra_board(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
-async fn pipeline_line(State(s): State<Shared>) -> Response {
-    (
-        [(header::CONTENT_TYPE, "application/json")],
-        s.pipeline.get().await,
-    )
-        .into_response()
+/// The flow strip (hub_core::flow) over the live queue and the cached gauges: the Queue tab's
+/// copy of what Home's `/api/home` carries as `flow`.
+async fn flow_strip(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
+    let gauges = s.pipeline.get().await;
+    tokio::task::spawn_blocking(move || {
+        let queue = hub_core::queue::Queue::read(&actions::System);
+        let mut flow = hub_core::flow::Strip::build(Some(&queue));
+        flow.set_pipeline(&gauges);
+        serde_json::json!({ "flow": flow, "grafana": hub_core::infra::grafana() })
+    })
+    .await
+    .map(Json)
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 async fn fleet_board(State(s): State<Shared>, Query(q): Query<fleet::FleetQuery>) -> Response {

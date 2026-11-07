@@ -56,3 +56,18 @@ hook() {
   refute_output --partial '{'
   refute_output --partial 'hookSpecificOutput'
 }
+
+@test "worktree-remove: a slot wt holds survives the hook, which reports the refusal" {
+  git -C "$REPO" worktree add -q --lock "$SANDBOX/slot" -b agent-1
+  run --separate-stderr bash "$REPO_ROOT/.config/shared-hooks/worktree-remove.sh" \
+    <<<"$(jq -n --arg p "$SANDBOX/slot" '{worktree_path: $p}')"
+  assert_failure
+  [ -d "$SANDBOX/slot" ]
+}
+
+@test "worktree-remove: a harness tree with no hold is removed" {
+  git -C "$REPO" worktree add -q "$SANDBOX/own" -b own
+  bash "$REPO_ROOT/.config/shared-hooks/worktree-remove.sh" \
+    <<<"$(jq -n --arg p "$SANDBOX/own" '{worktree_path: $p}')"
+  [ ! -d "$SANDBOX/own" ]
+}

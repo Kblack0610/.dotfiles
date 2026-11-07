@@ -248,12 +248,10 @@ fn agents(i: &Inputs) -> Vec<Row> {
     out
 }
 
-fn queue(home: &Home, q: Option<&Queue>) -> Option<Row> {
-    let count = home.numbers.iter().find(|n| n.label == "queue")?;
-    let mut text = format!("Queue: {}", count.value);
-    let sitting = q
-        .and_then(|q| q.stats.as_ref())
-        .and_then(|s| s.sitting.as_ref());
+fn queue(q: Option<&Queue>) -> Option<Row> {
+    let q = q?;
+    let mut text = format!("Queue: {}", q.counts_line());
+    let sitting = q.stats.as_ref().and_then(|s| s.sitting.as_ref());
     if let Some(s) = sitting.filter(|s| s.runnable > 0) {
         text += &format!(", {} can start", s.runnable);
         if let Some(o) = s.oldest_runnable.first() {
@@ -389,7 +387,7 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
         rows.extend(needs(&waiting, i.now));
     }
     rows.extend(agents(i));
-    rows.extend(queue(home, i.queue));
+    rows.extend(queue(i.queue));
     rows.extend(i.infra.filter(|x| x.ok).and_then(ci));
     rows.extend(i.projects.map(projects).unwrap_or_default());
     let worst = |l: Level| rows.iter().any(|r| r.level == l);

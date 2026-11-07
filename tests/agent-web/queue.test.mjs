@@ -1,7 +1,7 @@
 // Unit tests for the Queue tab (.local/src/agent-web/static/queue.js), run by `node --test` from
 // tests/unit/agent_web_queue.bats. The real scripts load into one vm context; only the DOM is a
 // stub. What a query keeps, how it sorts and the minutes in `timing` are hub-core, tested in Rust;
-// this checks what the page draws from /api/queue and /api/pipeline and the view keys it sends back.
+// this checks what the page draws from /api/queue and /api/flow and the view keys it sends back.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -34,33 +34,52 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (typeof reply === "function" ? reply(url) : reply) }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "table.js", "jobs.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "table.js", "flow.js", "jobs.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const settle = () => new Promise((r) => setImmediate(r));
 
-const drawPipe = (data, err = null) => vm.runInContext(`qpl.data = ${JSON.stringify(data)}; qpl.err = ${JSON.stringify(err)}; qPipeline()`, ctx);
+const chips = (over = {}) => [
+  { key: "inbox", label: "inbox", value: "4", hot: false, to: null },
+  { key: "board", label: "board", value: "312", hot: false, to: { tab: "projects", state: "" } },
+  { key: "queued", label: "queued", value: "3 (2 ready)", hot: false, to: { tab: "queue", state: "up next" } },
+  { key: "running", label: "running", value: "5", hot: false, to: { tab: "queue", state: "running" } },
+  { key: "needs", label: "needs you", value: "2", hot: true, to: { tab: "queue", state: "needs you" } },
+  { key: "done", label: "done 24h", value: "9", hot: false, to: { tab: "queue", state: "done" } },
+  { key: "drain", label: "drain", value: "6h +4/-9 shrinking", hot: false, to: { tab: "queue", state: "" } },
+].map((c) => ({ ...c, ...(over[c.key] || {}) }));
+const drawStrip = (strip, grafana = null) => vm.runInContext(`qfl.data = ${JSON.stringify(strip && { flow: strip, grafana })}; qfl.err = null; qStrip()`, ctx);
 
-test("a bottleneck draws both lines and the graph link to Agents / Overview", () => {
-  const html = drawPipe({
-    lines: ["pipeline  inbox 4  backlog 312  queued 3  running 5  waiting 2", "          ! bottleneck: waiting, age p90 9h (bound 4h)"],
-    pipeline: { wip: [] }, error: null, grafana: "https://g.example",
-  });
-  assert.match(html, /pipeline {2}inbox 4 {2}backlog 312/);
-  assert.match(html, /<span class="qwarn">! bottleneck: waiting, age p90 9h \(bound 4h\)<\/span>/);
+test("the strip draws every chip as a link to the Queue on its filter, the board to Projects", () => {
+  const html = drawStrip({ chips: chips(), bottleneck: "bottleneck: waiting, age p90 9h (bound 4h)", as_of: "10:20", error: null }, "https://g.example");
+  assert.match(html, /<a class="cchip fchip" href="#queue\?s=up%20next" data-flow="queued">queued 3 \(2 ready\)<\/a>/);
+  assert.match(html, /href="#queue\?s=running" data-flow="running">running 5</);
+  assert.match(html, /href="#queue\?s=needs%20you"[^>]*>needs you 2</);
+  assert.match(html, /href="#queue" data-flow="drain">drain 6h \+4\/-9 shrinking</);
+  assert.match(html, /href="#projects" data-flow="board">board 312</);
+  assert.match(html, /<span class="cchip fchip" data-flow="inbox">inbox 4<\/span>/);
+});
+
+test("only the chip of a step past its bound is amber, and the bottleneck and graph link show", () => {
+  const html = drawStrip({ chips: chips(), bottleneck: "bottleneck: waiting, age p90 9h (bound 4h)", as_of: "10:20", error: null }, "https://g.example");
+  assert.equal((html.match(/fchip warn/g) || []).length, 1);
+  assert.match(html, /fchip warn" href="#queue\?s=needs%20you"/);
+  assert.match(html, /<div class="qwarn">! bottleneck: waiting, age p90 9h \(bound 4h\)<\/div>/);
+  assert.match(html, /inbox, board as of 10:20/);
   assert.match(html, /href="https:\/\/g\.example\/d\/kb-agents-overview"/);
 });
 
-test("negative control: absent gauges draw pipeline - , muted, with no counts", () => {
-  const html = drawPipe({ lines: ["pipeline -"], pipeline: null, error: null, grafana: null });
-  assert.match(html, /class="qpipe muted">pipeline -</);
-  assert.doesNotMatch(html, /inbox|href|qwarn/);
+test("negative control: absent gauges draw inbox - and board - , never 0, with no amber or link", () => {
+  const html = drawStrip({ chips: chips({ inbox: { value: null }, board: { value: null }, needs: { hot: false } }), bottleneck: null, as_of: null, error: null, absent: true });
+  assert.match(html, />inbox -</);
+  assert.match(html, />board -</);
+  assert.doesNotMatch(html, /inbox 0|board 0|fchip warn|qwarn|href="https:/);
+  assert.match(html, /inbox, board: no gauges/);
 });
 
-test("a failed read says why beside pipeline -, and no data yet says reading", () => {
-  assert.match(drawPipe({ lines: ["pipeline -"], pipeline: null, error: "no prom", grafana: null }), /pipeline -.*no prom/);
-  assert.match(drawPipe(null), /reading Prometheus/);
+test("a failed read says why beside the strip, and no data yet says reading", () => {
+  assert.match(drawStrip({ chips: chips({ inbox: { value: null }, board: { value: null } }), bottleneck: null, as_of: null, error: "no prom" }), /inbox, board: no prom/);
+  assert.match(drawStrip(null), /class="flow muted">reading</);
 });
-
 
 const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort: next[0], next_dir: next[1] });
 // The shape hub_core::table::Summary serializes to for the Queue table: opened in its own order

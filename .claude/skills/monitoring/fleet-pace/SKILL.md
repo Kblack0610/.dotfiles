@@ -61,7 +61,7 @@ Go down the ladder only as far as you need to:
 1. **Set the hold.** `agent-hold set <resource> --roster <the claude sessions> "<reason with the numbers>"`. This pages low (Binks acts on it, the human does not) and makes every new session and every gate see it.
 2. **Park the Claude sessions on the roster that are not mid-turn**, by `activity` in `fleet-sessions --json`, skipping `manual`:
    - `idle`: `claude-acct park <session>`. No message: it is told why when it is unparked.
-   - `shell`: `claude-acct park <session> --stop-shells`. It parks only when every background shell is a wait on GitHub (`gh run watch`, `gh pr checks --watch`, an `until ... gh ...; do sleep` loop), and refuses a local gate, suite or Unity run, which the hold's gate already holds; leave that one running.
+   - `shell`: `claude-acct park <session> --stop-shells`. It parks only when every background shell is a wait on GitHub (`gh-run-wait`, `gh run watch`, `gh pr checks --watch`, an `until ... gh ...; do sleep` loop), and refuses a local gate, suite or Unity run, which the hold's gate already holds; leave that one running.
    - `busy`: one `fleet-comms` PAUSE message naming the hold, and park it on a later pass once it reads idle.
    - `waiting`: the human's; leave it.
 3. **Lower the priority** of batch consumers that are still running: `renice -n 19 -p $(ls /proc/<pid>/task)` and `ionice -c3 -p $(ls /proc/<pid>/task)`. On Linux both act on one thread, so `-p <pid>` alone moves only the main thread: on 2026-10-27 a Unity compiler server (`VBCSCompiler`) kept 60 of its 61 threads at nice -4 after `renice -p`. Check with `ps -L -o ni= -p <pid> | sort | uniq -c`. This is reversible and needs no ask.
