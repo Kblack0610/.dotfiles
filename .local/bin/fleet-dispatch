@@ -1359,10 +1359,11 @@ cmd_start() {
   if [ -n "$host" ]; then
     [ -n "$item" ] && [ -z "$resume$brief_file" ] || { say "start: --host starts a queued --item"; return 2; }
     [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: a fleet worker cannot hold lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
-    hosts >/dev/null
+    fleet_hosts >/dev/null
     hjson=$(fleet_host "$host") || { say "start: $host is not in the fleet roster ($FLEET_HOSTS_GROUP)"; return 2; }
-    [ -n "$(jq -r .state_host <<<"$hjson")" ] || { say "start: $host has no fleet_state_host, so its session could not write the queue"; return 2; }
-    state_env="AGENT_STATE_HOST=$(printf '%q' "$(jq -r .state_host <<<"$hjson")") "
+    state_env=$(jq -r .state_host <<<"$hjson")
+    [ -n "$state_env" ] || { say "start: $host has no fleet_state_host, so its session could not write the queue"; return 2; }
+    state_env="AGENT_STATE_HOST=$(printf '%q' "$state_env") "
   fi
   # A new session goes where the manifests say; --server only puts a resume back where it was.
   [ -z "$server" ] || [ -n "$resume" ] || { say "start: --server is for --resume; the agent world comes from the manifests"; return 2; }
@@ -1994,7 +1995,7 @@ start_items() {
       PRESENT_LEFT=$(( left - 1 ))
       [ "$PRESENT_LEFT" -gt 0 ] || items=$(jq -c 'select(.from // "" | startswith("board:") | not)' <<<"$items")
     fi
-    if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( ${HOST_FREE[$PLACE_HOST]:-1} - 1 ))
+    if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( HOST_FREE[$PLACE_HOST] - 1 ))
     elif [ "$rc" -eq 0 ]; then UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
     fi
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
@@ -2075,12 +2076,8 @@ pick_item() {
 
 # --- fleet workers (fleet-hosts.sh): where a pass may place a session besides this machine --------
 
-# hosts -> the roster, home-config's inventory found through this runner's project map unless
-# FLEET_INVENTORY names one. With no roster every pass runs as it does with no workers.
-hosts() {
-  [ -n "${FLEET_INVENTORY:-}" ] || FLEET_INVENTORY="$(repo_dir home-config)/ansible/inventory.yml"
-  fleet_hosts
-}
+# The roster is fleet_hosts (home-config's inventory, or FLEET_INVENTORY). With none, every pass
+# runs as it does with no workers.
 
 # probe_hosts <live_runs> -- one ssh to each placed worker (fleet_place) for its load, its cores, and
 # whether wt and claude are on its PATH and its agent-queue forwards (an older one would write the
@@ -2090,20 +2087,19 @@ hosts() {
 # and pick in it reads the same numbers: a gate runs in a subshell and cannot write back.
 declare -A HOST_PROBE=() HOST_FREE=()
 probe_hosts() {
-  local h name out
+  local name place max out
   HOST_PROBE=() HOST_FREE=()
-  while IFS= read -r h; do
-    [ -n "$h" ] || continue
-    [ "$(jq -r .place <<<"$h")" = true ] || continue
-    name=$(jq -r .name <<<"$h")
-    HOST_FREE[$name]=$(( $(jq -r .max_live <<<"$h") - $(units_on "$name" <<<"$1") ))
+  fleet_hosts >/dev/null
+  while IFS=$'\t' read -r name place max; do
+    [ "$place" = true ] || continue
+    HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$1") ))
     # shellcheck disable=SC2016 # the worker's shell expands nothing here; the quotes are for cut
     if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && grep -qs state_forward "$(readlink -f "$(command -v agent-queue)")" && echo 1 || echo 0' 2>/dev/null); then
       HOST_PROBE[$name]=$(tr '\n' ' ' <<<"$out")
     else
       HOST_PROBE[$name]=unreachable
     fi
-  done < <(hosts)
+  done < <(fleet_hosts | jq -r '[.name, .place, .max_live] | @tsv')
 }
 
 # host_why <name> -> why that worker takes no session now, or nothing. Its pace is this runner's
@@ -2115,8 +2111,7 @@ host_why() {
   [ "${HOST_FREE[$1]:-0}" -gt 0 ] || { echo "$1 is at its fleet_max_live"; return; }
   read -r load cores ready <<<"$p"
   [ "$ready" = 1 ] || { echo "$1 has no wt, no claude, or an agent-queue that does not forward"; return; }
-  awk -v l="$load" -v c="${cores:-1}" -v m="$MAX_LOAD" 'BEGIN { exit !(l / c > m) }' &&
-    echo "$1: load $load on $cores cores is over the $MAX_LOAD pace"
+  over_pace "$load" "${cores:-1}" && echo "$1: load $load on $cores cores is over the $MAX_LOAD pace"
   return 0
 }
 
@@ -2131,16 +2126,14 @@ remote_open() {
 # item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos). Heavy work
 # (Unity), plans and other harnesses stay here: a worker is provisioned for light claude sessions.
 place_host() {
-  local dir h name
+  local dir name
   [ ${#HOST_PROBE[@]} -gt 0 ] || return 1
   jq -e '(.weight // "light") == "light" and (.agent // "claude") == "claude" and (.plan // "") == ""
     and ((" " + (.tags // "") + " ") | contains(" cloud-ok ") | not)' <<<"$1" >/dev/null || return 1
   dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 1
-  while IFS= read -r h; do
-    name=$(jq -r .name <<<"$h")
-    [ -n "${HOST_PROBE[$name]:-}" ] && jq -e --arg d "$dir" '.repos | index($d)' <<<"$h" >/dev/null &&
-      [ -z "$(host_why "$name")" ] && { echo "$name"; return 0; }
-  done < <(hosts)
+  while IFS= read -r name; do
+    [ -n "${HOST_PROBE[$name]:-}" ] && [ -z "$(host_why "$name")" ] && { echo "$name"; return 0; }
+  done < <(fleet_hosts | jq -r --arg d "$dir" 'select(.repos | index($d)) | .name')
   return 1
 }
 
@@ -2153,8 +2146,8 @@ cmd_hosts() {
     name=$(jq -r .name <<<"$h")
     rows+=("$(jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" \
       '{name, dest, place, max_live, free: ($f | tonumber? // null), probe: $p, why: $w, repos}' <<<"$h")")
-  done < <(hosts)
-  [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in ${FLEET_INVENTORY:-the inventory}"; return 0; }
+  done < <(fleet_hosts)
+  [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
   if [ "${1:-}" = --json ]; then printf '%s\n' "${rows[@]}"
   else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)"'; fi
 }
@@ -2800,12 +2793,16 @@ pending_load() {
 }
 
 # load_why <red 0|1> -> why this machine's load holds a start, or nothing; a red floor start goes past it.
+# over_pace <load> <cores> [pending] -- that load, plus what recent starts will add, is over the
+# MAX_LOAD pace per core. This machine's gate and each fleet worker's read it the same way.
+over_pace() { awk -v l="$1" -v c="$2" -v p="${3:-0}" -v m="$MAX_LOAD" 'BEGIN { exit !((l + p) / c > m) }'; }
+
 load_why() {
   local load cores starts pend
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
   cores=$(nproc 2>/dev/null || echo 1)
   read -r starts pend < <(pending_load)
-  [ "$1" = 0 ] && awk -v l="${load:-0}" -v p="$pend" -v c="$cores" -v m="$MAX_LOAD" 'BEGIN { exit !((l + p) / c > m) }' &&
+  [ "$1" = 0 ] && over_pace "${load:-0}" "$cores" "$pend" &&
     echo "load ${load}$([ "$starts" = 0 ] || echo " plus $pend for $starts started in the last ${DISPATCH_START_LOAD_MIN} min") on ${cores} cores is over the ${MAX_LOAD} pace"
   return 0
 }

@@ -31,14 +31,20 @@ fleet_inventory() {
 #   {name, dest: user@host, port, max_live, place, repos: [dir], state_host}
 # Vars merge as Ansible reads them for this file's shape: all.vars, then each group's vars, then
 # each host entry, later ones winning, so ansible_host may sit in another group. Nothing when the
-# file or group is missing. Read once per process (FLEET_HOSTS_JSON).
+# file or group is missing. Read once per shell (FLEET_HOSTS_JSON): a caller that loops over it, or
+# runs fleet_host_run in one, calls fleet_hosts >/dev/null first, so the subshells inherit it.
 fleet_hosts() {
   if [ -z "${FLEET_HOSTS_JSON+x}" ]; then
     local inv; inv=$(fleet_inventory) && [ -f "$inv" ] || inv=''
     FLEET_HOSTS_JSON=''
-    [ -z "$inv" ] || FLEET_HOSTS_JSON=$(python3 -I - "$inv" "$FLEET_HOSTS_GROUP" <<'PY' 2>/dev/null
+    # A file that never names the group has no workers; the common case skips python.
+    grep -qs "^[[:space:]]*$FLEET_HOSTS_GROUP:" "$inv" || inv=''
+    [ -z "$inv" ] || FLEET_HOSTS_JSON=$(python3 -I - "$inv" "$FLEET_HOSTS_GROUP" <<'PY'
 import json, os, sys
-import yaml
+try:
+    import yaml
+except ImportError:
+    sys.exit("fleet-hosts: python3 has no yaml module (python-yaml), so the fleet roster reads as empty")
 
 inv, group = sys.argv[1], sys.argv[2]
 doc = yaml.safe_load(open(inv)) or {}
@@ -85,7 +91,7 @@ PY
 }
 
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.
-fleet_host() { fleet_hosts | jq -ce --arg n "$1" 'select(.name == $n)' 2>/dev/null | head -1 | grep .; }
+fleet_host() { fleet_hosts | jq -c --arg n "$1" 'select(.name == $n)' 2>/dev/null | grep -m1 .; }
 
 # fleet_host_run <name> <command> [args...] -- run one command on the worker over ssh, each
 # argument quoted, with ~/.local/bin first on PATH (a non-interactive ssh shell reads no rc file).
@@ -94,9 +100,10 @@ fleet_host() { fleet_hosts | jq -ce --arg n "$1" 'select(.name == $n)' 2>/dev/nu
 # host or a refused key.
 fleet_host_run() {
   local h dest port
+  fleet_hosts >/dev/null
   h=$(fleet_host "$1") || { echo "fleet-hosts: $1 is not in $FLEET_HOSTS_GROUP" >&2; return 255; }
   shift
-  dest=$(jq -r .dest <<<"$h"); port=$(jq -r .port <<<"$h")
+  IFS=$'\t' read -r dest port < <(jq -r '[.dest, .port] | @tsv' <<<"$h")
   _fh_ssh "$dest" -p "$port" -- "$@"
 }
 

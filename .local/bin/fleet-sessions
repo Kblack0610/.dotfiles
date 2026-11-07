@@ -47,6 +47,9 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
+# Each fleet worker's sessions are rows too (remote_panel_lines).
+# shellcheck source=../lib/fleet-hosts.sh
+. "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
 
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
@@ -914,15 +917,12 @@ handoff_of() {
 # that does not answer, or runs no agent-panel, adds nothing: a laptop asleep is not this machine's
 # sources blinking ($CACHE/unreadable).
 remote_panel_lines() {
-  local h name out
-  # shellcheck source=../lib/fleet-hosts.sh
-  . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}" || return 0
-  while IFS= read -r h; do
-    [ -n "$h" ] || continue
-    name="$(jq -r .name <<<"$h")"
+  local name out
+  fleet_hosts >/dev/null
+  while IFS= read -r name; do
     out="$(fleet_host_run "$name" agent-panel list --json 2>/dev/null)" || continue
     jq -c --arg h "$name" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
-  done < <(fleet_hosts)
+  done < <(fleet_hosts | jq -r .name)
   return 0
 }
 

@@ -1547,9 +1547,11 @@ cmd_stats() {
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 # A session on a fleet worker writes the store on the workstation (AGENT_STATE_HOST, fleet-hosts.sh).
-# shellcheck source=../lib/fleet-hosts.sh
-. "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
-state_forward agent-queue "add attribute credit-of" "$@"
+if [ -n "${AGENT_STATE_HOST:-}" ]; then
+  # shellcheck source=../lib/fleet-hosts.sh
+  . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+  state_forward agent-queue "add attribute credit-of" "$@"
+fi
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | bump | set | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
