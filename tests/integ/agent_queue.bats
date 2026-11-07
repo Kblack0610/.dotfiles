@@ -1495,7 +1495,7 @@ started_item() {
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 1 ]
 }
 
-@test "a queue item's session adding without --from files item:<its slug>, held at the limit; its deferral and --from human are not" {
+@test "a queue item's session adding without --from files item:<its slug>, held at the limit; its deferral, urgent and --from human are not" {
   export AGENT_QUEUE_ADMIT_MIN=1 AGENT_QUEUE_ITEM=parent
   run "$AQ" add --project game --slug first "first follow-up"
   assert_success
@@ -1507,7 +1507,10 @@ started_item() {
   "$AQ" add --project game --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
   "$AQ" add --project game --slug asked --from human "the human asked" >/dev/null
   "$AQ" add --project game --slug own --running --session s1 "own work" >/dev/null
-  [ "$(field "$(item queued dated)" from)" = item:parent ]
+  "$AQ" add --project game --slug now --priority urgent "urgent for the human" >/dev/null
+  # Only an add admission gates is from the item; the rest keep human, as the readers of from expect.
+  [ "$(field "$(item queued dated)" from)" = human ]
+  [ "$(field "$(item queued now)" from)" = human ]
   [ "$(field "$(item queued asked)" from)" = human ]
   [ "$(field "$(item running own)" from)" = human ]
 }
@@ -1552,7 +1555,23 @@ started_item() {
   assert_success
   run "$AQ" add --project game --from auto:x --slug held "held"
   assert_failure 5
-  printf '{"at":"2000-01-01T00:00:00Z","from":"auto:x"}\n' >> "$AGENT_QUEUE_DIR/admission.jsonl"
+  printf '{"at":"2000-01-01T00:00:00Z","from":"auto:x","slug":"old"}\n' >> "$AGENT_QUEUE_DIR/admission.jsonl"
   run "$AQ" admission --json
   assert_equal "$(jq -c '[.held_7d, .admits]' <<<"$output")" '[1,false]'
+  # A filer retrying the same item counts once, and the next hold drops lines past the window.
+  run "$AQ" add --project game --from auto:x --slug held "held"
+  assert_failure 5
+  run "$AQ" admission --json
+  assert_equal "$(jq .held_7d <<<"$output")" 1
+  run jq -r .slug "$AGENT_QUEUE_DIR/admission.jsonl"
+  assert_output "$(printf 'held\nheld')"
+}
+
+@test "at the limit, a machine add of a slug already queued says so, not that admission held it" {
+  export AGENT_QUEUE_ADMIT_MIN=1
+  "$AQ" add --project game --slug one "one" >/dev/null
+  run "$AQ" add --project game --from auto:x --slug one "one again"
+  assert_failure 1
+  assert_output --partial "already in the queue: one"
+  [ ! -e "$AGENT_QUEUE_DIR/admission.jsonl" ]
 }
