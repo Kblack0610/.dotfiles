@@ -18,6 +18,10 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
+    /// Open the chooser with this search already typed, e.g. `'dotfiles` for one project's
+    /// agents (Prefix+p a).
+    #[arg(long)]
+    query: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -92,6 +96,10 @@ enum Cmd {
         #[arg(long, value_enum)]
         sort: Option<agent_panel::sort::Step>,
     },
+    /// Internal ctrl-n callback: a new Claude in a fresh worktree of the repo the agent at
+    /// `target` works in (not meant to be run by hand).
+    #[command(hide = true)]
+    NewAgent { target: String },
     /// Internal fzf preview callback (not meant to be run by hand).
     Preview {
         #[arg(long)]
@@ -104,7 +112,7 @@ enum Cmd {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        None => chooser::run_interactive(),
+        None => chooser::run_interactive(cli.query.as_deref()),
         Some(Cmd::Next) => chooser::run_next(),
         Some(Cmd::List { json, parked }) => chooser::run_list(json, parked),
         Some(Cmd::AsksHuman { transcript }) => {
@@ -132,6 +140,7 @@ fn main() -> anyhow::Result<()> {
         Some(Cmd::Dialog { target, options }) => agent_panel::dialog::run_card(&target, options),
         Some(Cmd::Answer { target, key, expect, text }) => agent_panel::dialog::run_answer(&target, key, &expect, &text),
         Some(Cmd::Rows { map_file, asking, sort }) => chooser::run_rows(&map_file, asking, sort),
+        Some(Cmd::NewAgent { target }) => chooser::run_new_agent(&target),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }
 }

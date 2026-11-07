@@ -69,7 +69,7 @@ fn fzf_gets_the_layout_the_helper_prints_and_the_one_saved_last() {
             fs::create_dir_all(state.join("panels")).unwrap();
             fs::write(state.join("panels/agent-panel.layout"), format!("{s}\n")).unwrap();
         }
-        let picked = agent_panel::fzf::run("hub/a:1\trow", &map, None).unwrap();
+        let picked = agent_panel::fzf::run("hub/a:1\trow", &map, None, None).unwrap();
         assert_eq!(picked, None, "an aborted fzf selects nothing");
         let argv = fzf_argv(&log);
         let want = helper_says();
@@ -97,7 +97,7 @@ fn fzf_gets_the_layout_the_helper_prints_and_the_one_saved_last() {
     // A saved value that is not a layout fails before fzf starts.
     fs::write(state.join("panels/agent-panel.layout"), "bogus\n").unwrap();
     fs::remove_file(&log).unwrap();
-    assert!(agent_panel::fzf::run("hub/a:1\trow", &map, None).is_err());
+    assert!(agent_panel::fzf::run("hub/a:1\trow", &map, None, None).is_err());
     assert!(!log.exists(), "fzf ran on an unknown layout");
 
     let _ = fs::remove_dir_all(&dir);
