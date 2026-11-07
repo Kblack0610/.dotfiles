@@ -518,3 +518,69 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_output --partial '- +1 reviewed'
   assert_output --regexp '- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
 }
+
+# ask-stub: the read-only answer call. It records the prompt and what it was run with, and replies
+# with $NOTES_FIXTURE/ask.out.
+ask_stub() {
+  printf '#!/usr/bin/env bash\necho "$*" >> "$NOTES_FIXTURE/ask.log"\ncat > "$NOTES_FIXTURE/ask-prompt.txt"\ncat "$NOTES_FIXTURE/ask.out" 2>/dev/null\n' >"$SANDBOX/bin/ask-stub"
+  chmod +x "$SANDBOX/bin/ask-stub"
+  export INBOX_ASK_CMD=ask-stub
+}
+
+@test "outbox: a #ask line is answered into today's notes inbox, leaves the outbox, files no row and starts no routing call" {
+  sheet '' ''
+  ask_stub
+  printf '%s\n' 'INBOX-ANSWER-START' 'Yes, the mac is fine.' 'up 3 days, load 0.2' 'INBOX-ANSWER-END' >"$NOTES_FIXTURE/ask.out"
+  outbox '- [ ] #ask is my mac ok? #p:scratch\n'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 0 from the outbox, filed 0, left 0, refused 0, answered 1'
+  run cat "$HOME/.notes/outbox.md"
+  refute_output --partial 'mac'
+  run cat "$HOME/.notes/lab/inbox/$(date +%F).md"
+  assert_output --regexp '- [0-9]{2}:[0-9]{2} ask: is my mac ok\? - Yes, the mac is fine\.'
+  assert_output --partial '  up 3 days, load 0.2'
+  refute_output --partial '#ask'
+  run tasks
+  refute_output --partial 'mac'
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the routing model was called for a lone question"
+  grep -q 'Question: is my mac ok?' "$NOTES_FIXTURE/ask-prompt.txt" || fail "$(cat "$NOTES_FIXTURE/ask-prompt.txt")"
+  grep -q 'Change nothing' "$NOTES_FIXTURE/ask-prompt.txt" || fail "the prompt never said read-only"
+  grep -qx -- '-p' "$NOTES_FIXTURE/ask.log" || fail "$(cat "$NOTES_FIXTURE/ask.log")"
+  grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
+}
+
+@test "outbox: a #ask line beside other lines never reaches the routing call, and --dry-run answers nothing" {
+  sheet '' ''
+  ask_stub
+  printf '%s\n' 'INBOX-ANSWER-START' 'Fine.' 'INBOX-ANSWER-END' >"$NOTES_FIXTURE/ask.out"
+  outbox '- [ ] is the nas up? #ask\n- [ ] stays for the model\n'
+  answer '{"n": 1, "action": "skip", "why": "no project named"}'
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_line 'would answer [outbox] - [ ] is the nas up? #ask'
+  [ ! -e "$NOTES_FIXTURE/ask.log" ] || fail "a dry run called the model"
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'answered 1'
+  grep -qx '1. \[outbox\] stays for the model' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  ! grep -q 'nas up' "$NOTES_FIXTURE/prompt.txt" || fail "the question was routed"
+  run cat "$HOME/.notes/outbox.md"
+  refute_output --partial 'nas up'
+  assert_output --partial 'stays for the model'
+}
+
+@test "outbox: a #ask answer with no block leaves the line, recorded refused so the next sweep does not ask again" {
+  sheet '' ''
+  ask_stub
+  printf 'no markers here\n' >"$NOTES_FIXTURE/ask.out"
+  outbox '- [ ] #ask is my mac ok?\n'
+  run "$TRIAGE"
+  assert_failure
+  run cat "$HOME/.notes/outbox.md"
+  assert_output --partial '#ask is my mac ok?'
+  [ ! -e "$HOME/.notes/lab/inbox/$(date +%F).md" ] || fail "an answer was written with no block"
+  [ "$(wc -l <"$NOTES_FIXTURE/ask.log")" = 1 ] || fail "asked more than once in a sweep"
+  run "$TRIAGE"
+  [ "$(wc -l <"$NOTES_FIXTURE/ask.log")" = 1 ] || fail "the refused question was asked again"
+}
