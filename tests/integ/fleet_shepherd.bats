@@ -32,14 +32,15 @@ esac'
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
   stub tmux-world '[ -z "${STUB_NO_WORLD:-}" ] && [ "$*" = "session hub" ] && echo hub'
   stub claude-acct 'case "$1" in
-  room) [ -z "${STUB_NO_ROOM:-}" ] || { [ -n "${STUB_ROOM_QUIET:-}" ] || echo "claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate" >&2; exit 1; }
+  room) [ "${2:-}" != --json ] || { printf "%b" "${STUB_ACCTS:-null}"; exit 0; }
+        [ -z "${STUB_NO_ROOM:-}" ] || { [ -n "${STUB_ROOM_QUIET:-}" ] || echo "claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 10:40 at this rate" >&2; exit 1; }
         echo "claude-acct: room on alt (2% of its week, 9% gone)" >&2
         printf "%s\n" "${STUB_ROOM-$HOME/.claude-acct2}" ;;
-  status) printf "%b" "${STUB_ACCTS:-}" ;;
   pick) echo "$HOME/.claude-best" ;;
   trust) echo "$*" >> "$HOME/trust.calls" ;;
 esac'
-  stub agentctl 'echo "$*" >> "$HOME/agentctl.calls"'
+  # `skill <name>` reads the conf's SKILL=; STUB_SKILL stands for it (unset: the conf names none)
+  stub agentctl 'if [ "$1" = skill ]; then echo "${STUB_SKILL-fleet-lead}"; else echo "$*" >> "$HOME/agentctl.calls"; fi'
   export PROM_LIB="$HOME/prom-stub.sh"
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
@@ -308,6 +309,21 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   doc "[$(row a WORKING false false)]"
   "$SH" run
   [ ! -e "$FLEET_SHEPHERD_DIR/.settled" ]
+}
+
+@test "the pass runs the skill the conf names, and a conf naming none starts no pass" {
+  doc "[$(row a DONE false false)]"
+  STUB_SKILL=fleet-chief run "$SH" run
+  assert_success
+  run prompt
+  assert_line '/fleet-chief pass'
+  refute_output --partial '/fleet-lead'
+  # a conf naming none fails the run before the live pass is replaced
+  local id; id="$(pass_id)"
+  STUB_SKILL= run "$SH" run
+  assert_output --partial 'no SKILL= in the'
+  assert_equal "$(pass_id)" "$id"
+  assert_equal "$(outcome)" FAILED
 }
 
 @test "run starts a pass in window shepherd of session hub on the hub server, as the runner, and does not wait for it" {
@@ -1108,17 +1124,24 @@ acct_row() {
   jq -n --arg t "$1" --arg p "$2" --arg a "$3" --arg c "$4" --argjson l "${5:-[]}" \
     '{target:$t, pane:$p, activity:$a, account:$c, idle_min:0, bucket:"WORKING", nudged:false, escalated:false, labels:$l}'
 }
-# accts <main week> <main 5h>: claude-acct status --json with main at those numbers, alt with room
+# accts <main capped> <main week> <main 5h> [noroom]: claude-acct room --json, main's verdict capped
+# or not with those numbers beside it, alt with room and the pick (noroom: none either, no pick). limit_due reads the verdict,
+# so a number that disagrees with it moves nothing.
 accts() {
-  printf '[{"name":"main","dir":"","state":"ok","week_used":%s,"five_hour":%s},{"name":"alt","dir":"%s","state":"ok","week_used":20,"five_hour":5}]' \
-    "$1" "$2" "$HOME/.claude-acct2"
+  jq -cn --argjson c "$1" --argjson w "$2" --argjson f "$3" --argjson ok "$([ "${4:-}" = noroom ] && echo false || echo true)" \
+    --arg alt "$HOME/.claude-acct2" '
+    {pick: (if $ok then "alt" else null end), why: (if $ok then null else "no account has room" end),
+     accounts: [{name: "main", dir: "", state: "ok", rank: 1, week_used: $w, five_hour: $f,
+                 room: {ok: false, reason: (if $c then "capped" else "pace" end), capped: $c}},
+                {name: "alt", dir: $alt, state: "ok", rank: 2, week_used: 20, five_hour: 5,
+                 room: {ok: $ok, reason: (if $ok then "ok" else "pace" end), capped: false}}]}'
 }
 
 @test "an account at its week cap: its idle sessions move to the room account, a dialog is listed, busy and shell wait" {
   doc "[$(acct_row hub/dotfiles:2 %27 idle main), $(acct_row hub/dotfiles:3 %19 waiting main),
         $(acct_row hub/dotfiles:4 %35 shell main), $(acct_row hub/dotfiles:5 %17 busy main),
         $(acct_row hub/dotfiles:7 %45 idle main '["manual"]'), $(acct_row lab/agent-1:1 %5 idle alt)]"
-  STUB_ACCTS="$(accts 100 40)" STUB_PANE='You have hit your weekly limit\n' run "$SH" due
+  STUB_ACCTS="$(accts true 100 40)" STUB_PANE='You have hit your weekly limit\n' run "$SH" due
   assert_success
   assert_output "limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt
 limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"
@@ -1129,21 +1152,34 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
 
 @test "a 5h cap moves sessions too; under both caps nothing moves; the pane line still reads sessions on other accounts" {
   doc "[$(acct_row hub/dotfiles:2 %27 idle main), $(idle_row lab/agent-1:1 %5 9)]"
-  STUB_ACCTS="$(accts 50 100)" run "$SH" due
+  STUB_ACCTS="$(accts true 50 100)" run "$SH" due
   assert_success
   assert_output 'limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
   # Negative control: main under both caps is not out of usage
-  STUB_ACCTS="$(accts 99 99)" run "$SH" due
+  STUB_ACCTS="$(accts false 99 99)" run "$SH" due
   assert_failure
-  STUB_ACCTS="$(accts 99 99)" STUB_PANE='hit your weekly limit\n' run "$SH" due
+  STUB_ACCTS="$(accts false 99 99)" STUB_PANE='hit your weekly limit\n' run "$SH" due
   assert_output 'limit: lab/agent-1:1 stopped on the usage limit'
 }
 
 @test "an account out of usage with no room anywhere is one line for the human" {
   doc "[$(acct_row hub/dotfiles:2 %27 idle main), $(acct_row hub/dotfiles:3 %19 idle main)]"
-  STUB_ACCTS="$(accts 100 40)" STUB_NO_ROOM=1 run "$SH" due
+  STUB_ACCTS="$(accts true 100 40 noroom)" run "$SH" due
   assert_success
   assert_output 'limit: main is out of usage and no account has room; then: tell the human once (2 live on it), and fleet-shepherd skip it'
+}
+
+@test "out of usage is the published verdict's capped, never the shepherd's own reading of the numbers" {
+  doc "[$(acct_row hub/dotfiles:2 %27 idle main)]"
+  # the numbers say spent, the verdict says not capped: nothing moves
+  STUB_ACCTS="$(accts false 100 100)" run "$SH" due
+  assert_failure
+  # the verdict says capped under numbers that do not: it moves, to the best account with room
+  STUB_ACCTS="$(accts true 40 40)" run "$SH" due
+  assert_success
+  assert_output 'limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
+  run grep -nE 'week_used // 0\) >= 100|five_hour // 0\) >= 100' "$REPO_ROOT/.local/bin/fleet-shepherd"
+  assert_failure
 }
 
 @test "an unreadable state document fails the run; it does not read as a quiet fleet, and the pass still starts, told why" {

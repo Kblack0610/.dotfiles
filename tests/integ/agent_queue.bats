@@ -68,6 +68,48 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .weight <<<"$("$AQ" show old --json)")" = heavy ]
 }
 
+@test "list and show read a hand-edited header the way fm_get does" {
+  # The listing reads headers in awk (queue_index, item_recs), the verbs in fm_get: a hold and a
+  # weight take a key's first line, with or without a space after the colon.
+  mkdir -p "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/done/2026-11-07"
+  printf 'slug: a\nproject: game\npriority: high\nqueued: 2026-11-07T01:00:00Z\nafter:gone\nafter: b\n:odd\n::x\n---\ntask a\n\nmore\n\n' \
+    > "$AGENT_QUEUE_DIR/queued/20261107-010000-a.md"
+  printf 'slug: b\nproject: game\npriority: high\nfinished: 2026-11-07T02:00:00Z\nstatus: ok\nweight: heavy\nweight: light\n---\ntask b\n' \
+    > "$AGENT_QUEUE_DIR/done/2026-11-07/20261107-000000-b.md"
+  a="$("$AQ" show a --json)"
+  [ "$(jq -r .hold <<<"$a")" = "after gone" ]
+  [ "$(jq -r .task <<<"$a")" = $'task a\n\nmore' ]
+  [ "$(jq -r .weight <<<"$a")" = light ]
+  [ "$(jq -r '.[":odd"] // .[""] // "none"' <<<"$a")" = none ]
+  [ "$(jq -r .weight <<<"$("$AQ" show b --json)")" = heavy ]
+  run "$AQ" list --json --state all --date 2026-11-07
+  assert_success
+  [ "$(jq -c 'select(.slug == "a")' <<<"$output")" = "$a" ]
+}
+
+@test "show and list give an item the same hold, ready and derived weight" {
+  # show reads one item (item_json), a listing the whole queue's index (items_json).
+  mkdir -p "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/done/2026-11-07"
+  hdr='project: game\npriority: high\nqueued: 2026-11-07T01:00:00Z\n'
+  printf "slug: b\n${hdr}finished: 2026-11-07T02:00:00Z\nstatus: ok\nweight: light\n---\nb\n" \
+    > "$AGENT_QUEUE_DIR/done/2026-11-07/20261107-000000-b.md"
+  printf "slug: c\n${hdr}after: b\nweight: light\n---\nc\n" > "$AGENT_QUEUE_DIR/queued/20261107-010000-c.md"
+  printf "slug: n\n${hdr}tags: night\nweight: light\n---\nn\n" > "$AGENT_QUEUE_DIR/queued/20261107-010001-n.md"
+  printf "slug: p\n${hdr}mode: plan\n---\np\n" > "$AGENT_QUEUE_DIR/queued/20261107-010002-p.md"
+  printf "slug: q\n${hdr}phases: one two\n---\nq\n" > "$AGENT_QUEUE_DIR/queued/20261107-010003-q.md"
+  export AGENT_QUEUE_NOW=12:00
+  list="$("$AQ" list --json --state all --date 2026-11-07)"
+  for s in b c n p q; do
+    [ "$(jq -c --arg s "$s" 'select(.slug == $s)' <<<"$list")" = "$("$AQ" show "$s" --json)" ]
+  done
+  c="$("$AQ" show c --json)"
+  [ "$(jq -r '.hold // "none"' <<<"$c")" = none ]
+  [ "$(jq -r .ready <<<"$c")" = 2026-11-07T02:00:00Z ]
+  [[ "$(jq -r .hold <<<"$("$AQ" show n --json)")" == night* ]]
+  [ "$(jq -r .weight <<<"$("$AQ" show p --json)")" = heavy ]
+  [ "$(jq -r .weight <<<"$("$AQ" show q --json)")" = heavy ]
+}
+
 @test "add reads a multi-line task from stdin" {
   printf 'Line one\nline two\n' | "$AQ" add --project game --slug two-lines
   run awk 'f { print } $0 == "---" { f = 1 }' "$(item queued two-lines)"
@@ -724,6 +766,8 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "add --running records the Claude session, a queued add does not; the row grammar's type and area; claim adds a session once" {
+  printf '%s\t%s\t%s\t%s\t1\n' "fix(agent-land): mine picks a waiting item" fix agent-land "mine picks a waiting item" \
+    "feat(queue): a ledger" feat queue "a ledger" > "$NOTES_FIXTURE/row.parse"
   CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug typed "fix(agent-land): mine picks a waiting item"
   f="$(item running typed)"
   [ "$(field "$f" sessions)" = sid-a ]
@@ -732,6 +776,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$f" type)" = fix ]
   [ "$(field "$f" area)" = agent-land ]
   "$AQ" add --project game --slug untyped "Menu: pick sides"
+  assert_called 'notes row parse'
   [ -z "$(field "$(item queued untyped)" sessions)" ]
   [ -z "$(field "$(item queued untyped)" type)" ]
   "$AQ" add --project game --slug titled --title "feat(queue): a ledger" "the long brief"
@@ -1233,6 +1278,9 @@ EOF
   assert_output $'\tarena level'
   run "$AQ" credit-of game <<<'Assets/Shared/S.cs'
   assert_success; assert_output ''
+  # outside every tracker path, a directory named after the app is the app's
+  run "$AQ" credit-of game <<<$'store/arena/listing.json\nstore/arena/art.png\nAssets/Level/L.cs\ndocs/x/arena.md'
+  assert_output $'arena\tarena level'
   [ ! -e "$AGENT_QUEUE_DIR" ]
 }
 
@@ -1310,7 +1358,7 @@ STUB
   run "$AQ" add --project game --epic lv-3 --priority low --slug menus "feat(menu): live main menus #night"
   assert_success
   assert_line "story lv-9 on the level agent board, under lv-3"
-  run grep '^notes' "$NOTES_FIXTURE/calls.log"
+  run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
   assert_line --index 0 'notes --profile bnb ptask level --agent propose -- feat(menu): live main menus'
   assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): live main menus #size/s #low #of/lv-3'
   assert_line --index 2 'notes --profile bnb ptask level --agent start lv-9'
@@ -1444,8 +1492,10 @@ OUT
 @test "an item write never fails on its event: a notes that cannot record leaves the write standing" {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/notes"
   chmod +x "$SANDBOX/bin/notes"
-  run "$AQ" add --project game --from board:level:lv-2 --slug sturdy "x"
+  run "$AQ" add --project game --from board:level:lv-2 --slug sturdy "fix(x): y"
   assert_success
+  assert_output --partial "notes row parse failed, so sturdy is untyped"
+  [ -z "$(field "$(item queued sturdy)" type)" ]
   run "$AQ" move sturdy running
   assert_success
   assert_output "sturdy: queued -> running"

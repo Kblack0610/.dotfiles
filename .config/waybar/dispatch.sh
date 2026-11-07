@@ -34,7 +34,12 @@ C_DIM="#7f7f7f"
 
 now="${DISPATCH_NOW:-$(date +%s)}"
 title="<b>Queue</b>"
+# claude-acct-usage.timer writes the accounts' textfile every 15 minutes; three missed is stale.
+ROOM_LATE_SECS=2700
+# The accounts' room verdicts (claude-acct textfile) ride the same query, only from a textfile
+# written lately: they name which account refuses and why when the account gate holds dispatch.
 q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
+q+=" or (claude_account_room_reason and on (instance) (time() - node_textfile_mtime_seconds{file=~\".*/claude_acct.prom\"} < $ROOM_LATE_SECS))"
 
 if ! raw="$(prom_q "$q")"; then
   emit "$(paint "$C_YEL" 'Q?')" "$title"$'\n'"cannot read $PROM_URL" warn
@@ -75,7 +80,11 @@ else
       load) paused="load is over the cap (DISPATCH_MAX_LOAD)" ;;
       idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
       assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
-      account) paused="no account has room under its weekly pace" ;;
+      account)
+        # Each account's published reasons, one entry per account: "alt reserve, main pace+five_hour".
+        reasons="$(jq -r '[.data.result[] | select(.metric.__name__ == "claude_account_room_reason") | .metric]
+            | group_by(.account) | map("\(.[0].account) \(map(.reason) | unique | join("+"))") | join(", ")' <<< "$raw")"
+        paused="no account has room${reasons:+: $reasons}" ;;
       other) paused="a gate (fleet-dispatch headroom says which)" ;;
     esac
   done

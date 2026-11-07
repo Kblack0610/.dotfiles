@@ -823,6 +823,70 @@ done_from_inside() {
   assert_output --partial 'a submodule worktree lives off it'
 }
 
+@test "a pushed submodule worktree whose dir is gone does not pin the worktree" {
+  # git marks it prunable; nothing is left but its HEAD, and that is on origin (ar-232).
+  make_drifted_submodule
+  git -C "$WT/sub" worktree add --quiet "$SANDBOX/sub-wt" -b side
+  rm -rf "$SANDBOX/sub-wt"
+  run wt_submodule_worktrees "$WT"
+  assert_failure
+  run wt_reap_reason "$WT"
+  assert_success
+}
+
+@test "an unpushed submodule worktree whose dir is gone still pins the worktree" {
+  # Its commit lives only in this tree's .git/modules, so removing the tree loses it.
+  make_drifted_submodule
+  git -C "$WT/sub" worktree add --quiet "$SANDBOX/sub-wt" -b side
+  git -C "$SANDBOX/sub-wt" commit --quiet --allow-empty -m local
+  rm -rf "$SANDBOX/sub-wt"
+  run wt_reap_reason "$WT"
+  assert_failure
+  assert_output --partial "a submodule worktree lives off it: $SANDBOX/sub-wt (its dir is gone"
+}
+
+@test "gc judges a submodule's worktree before the tree its git dir lives in" {
+  # Reaping it first frees the superproject tree in the same pass.
+  mkdir -p "$WT_ROOT/aa-super" "$WT_ROOT/zz-sub"
+  printf 'gitdir: %s/.git/worktrees/x/modules/sub/worktrees/zz-sub\n' "$SANDBOX" > "$WT_ROOT/zz-sub/.git"
+  printf 'apps\n' > "$WT_ROOT/aa-super/keep.txt"
+  run cmd_gc -n
+  assert_line --index 0 --partial 'zz-sub'
+  assert_line --index 1 --partial 'aa-super'
+}
+
+@test "gc judges a dot-prefixed worktree" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/.repo-agent-1" -b dotted
+  run cmd_gc -n
+  assert_success
+  assert_output --partial '.repo-agent-1'
+  assert_output --partial '1 of 1 reapable'
+}
+
+@test "gc keeps a dot-prefixed worktree whose session is live under the dotless name" {
+  # panel_session_name strips the leading dot, so the session is repo-agent-1, not .repo-agent-1.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/.repo-agent-1" -b dotted
+  wt_session_exists() { [ "$1" = repo-agent-1 ]; }
+  run cmd_gc
+  assert_output --partial 'its tmux session is live'
+  [ -d "$WT_ROOT/.repo-agent-1" ]
+}
+
+@test "gc leaves a dot dir that is no worktree alone, even one holding only caches" {
+  # .preview and .xdg-agent18 are tools' dirs; a cache-only one would read as a reapable husk.
+  mkdir -p "$WT_ROOT/.preview/Library" "$WT_ROOT/.xdg-agent18/Logs"
+  run cmd_gc
+  assert_output --partial 'no worktrees to consider'
+  [ -d "$WT_ROOT/.preview/Library" ]
+  [ -d "$WT_ROOT/.xdg-agent18/Logs" ]
+  # Nor one holding a clone: its .git is a directory, a main checkout, not a worktree.
+  mkdir -p "$WT_ROOT/.clone/.git"
+  run cmd_gc
+  assert_output --partial 'no worktrees to consider'
+}
+
 @test "reap removes a clean worktree that has an initialised submodule" {
   # Plain `git worktree remove` refuses every such tree, clean or not.
   make_drifted_submodule
@@ -943,14 +1007,37 @@ held_slot() {
   [ ! -e "$WT_ROOT/repo-agent-4" ]
 }
 
-@test "a git-less dir holding anything but Unity caches is kept" {
+@test "a husk holding only files tools rewrote is reaped" {
+  # Seen live 2026-11-07: Claude Code's local settings, Unity's package manifest and lock,
+  # and a pnpm install, each alone in a dir whose worktree had gone.
+  local h="$WT_ROOT/repo-agent-4"
+  mkdir -p "$h/.claude" "$h/Packages" "$h/node_modules/.pnpm/x" "$h/Library"
+  touch "$h/.claude/settings.local.json" "$h/Packages/manifest.json" "$h/Packages/packages-lock.json" \
+    "$h/pnpm-lock.yaml" "$h/node_modules/.pnpm/x/index.js"
+  run wt_reap_reason "$h"
+  assert_success
+}
+
+@test "a git-less dir holding anything but tool caches is kept" {
   # A source tree whose .git went missing may be the only copy of its work.
   mkdir -p "$WT_ROOT/repo-agent-4/Library" "$WT_ROOT/repo-agent-4/apps"
+  touch "$WT_ROOT/repo-agent-4/apps/main.ts"
   run wt_reap_reason "$WT_ROOT/repo-agent-4"
   assert_failure
-  assert_output 'no git, and it holds more than Unity caches'
-  mkdir -p "$WT_ROOT/repo-agent-5/.claude"
+  assert_output 'no git, and it holds more than tool caches'
+  # The named files pass only at their own path: an embedded package or a skill is work.
+  mkdir -p "$WT_ROOT/repo-agent-5/.claude/skills" "$WT_ROOT/repo-agent-6/Packages/com.x"
+  touch "$WT_ROOT/repo-agent-5/.claude/skills/SKILL.md" "$WT_ROOT/repo-agent-6/Packages/com.x/manifest.json"
   run wt_reap_reason "$WT_ROOT/repo-agent-5"
+  assert_failure
+  run wt_reap_reason "$WT_ROOT/repo-agent-6"
+  assert_failure
+  mkdir -p "$WT_ROOT/repo-agent-8" && ln -s /nowhere "$WT_ROOT/repo-agent-8/link"
+  run wt_reap_reason "$WT_ROOT/repo-agent-8"
+  assert_failure
+  # An empty skeleton is kept too: only the named files' own dirs are walked.
+  mkdir -p "$WT_ROOT/repo-agent-9/Library" "$WT_ROOT/repo-agent-9/Assets/Scenes"
+  run wt_reap_reason "$WT_ROOT/repo-agent-9"
   assert_failure
 }
 

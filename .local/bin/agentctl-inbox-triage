@@ -14,6 +14,7 @@
 set -uo pipefail
 
 NAME="${AGENTCTL_NAME:-inbox-triage}"
+TYPES=""   # the row types from `notes row types`, read once a pass
 : "${INBOX_TRIAGE_CMD:=agentctl-run --agent inbox-triage}"
 : "${INBOX_TRIAGE_PASSES:=3}"
 : "${INBOX_TRIAGE_MAX:=40}"   # the most lines one model call carries (route and --backlog); budget_batch sizes each call under it
@@ -172,10 +173,20 @@ homes_rule() {
   printf ' A row about a host or the cluster belongs on home-config.'
 }
 
+# row_types: the types a row may take, from the grammar's one home (`notes row types`). An
+# empty list would let the model file any type, so a failure stops the call.
+row_types() {
+  local t
+  t="$(notes row types 2>/dev/null)" && [ -n "$t" ] && { printf '%s\n' "$t"; return 0; }
+  say "notes row types failed (an old notes? notes-bootstrap --build-only)"
+  proof_why "notes row types failed"; return 1
+}
+
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
-  local lines="$1" board="$2" names homes srcs wide batch open epics prompt out
+  local lines="$1" board="$2" names homes srcs wide batch open epics prompt out types
+  types="$(row_types)" || return 1
   names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
   srcs="$(jq -c '[.[].from] | unique' <<<"$lines")"
@@ -194,7 +205,7 @@ route() {
   epics="$(epics_open "$board")"
   prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.$homes
 
-A row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci release research design market legal run decide check; a bug is fix. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
+A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is one short lowercase word for the part of the project it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": false}
@@ -312,7 +323,7 @@ backlog_batch() {
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
   prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.$homes
 
-A clean row is: type(area): title, then tags. type is one of feat fix perf refactor docs test chore ci release research design market legal run decide check; a bug is fix. area is one short lowercase word for the part of the project it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
+A clean row is: type(area): title, then tags. type is one of $TYPES; a bug is fix. area is one short lowercase word for the part of the project it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite that breaks these is refused and the row stays as it is.
 
 For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"rewrite\", \"row\": \"fix(audio): the gun sound plays late #size/s\"}
@@ -395,6 +406,7 @@ backlog_pass() {
   board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
+  TYPES="$(row_types)" || return 1   # once a pass, read by every backlog_batch
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true

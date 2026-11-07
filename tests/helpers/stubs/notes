@@ -87,6 +87,19 @@ case "${1:-}" in
       *) : ;;                      # add/done/rm: recorded only
     esac
     ;;
+  # `notes row parse`: each stdin line looked up in row.parse (text TAB type TAB area TAB title
+  # TAB ok), else untyped. A lookup table, never the grammar: that lives in notes-cli alone.
+  # `notes row types`: the row.types fixture, else a short made-up list.
+  row)
+    case "${2:-}" in
+      parse)
+        while IFS= read -r l; do
+          hit="$(awk -F'\t' -v l="$l" '$1 == l { print $2 "\t" $3 "\t" $4 "\t" $5; exit }' "$FIX/row.parse" 2>/dev/null)"
+          if [ -n "$hit" ]; then printf '%s\n' "$hit"; else printf -- '-\t-\t%s\t0\n' "${l:--}"; fi
+        done ;;
+      types) if [ -f "$FIX/row.types" ]; then cat "$FIX/row.types"; else echo "feat fix chore"; fi ;;
+    esac
+    ;;
   today)
     : ;;                           # bootstrap no-op
   *)

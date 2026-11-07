@@ -53,6 +53,7 @@
 #              the update-rules class and the reason this script exists.
 #   NOCMD      a command the skill tells you to RUN does not resolve on PATH.
 #              (`rulesync` lives at ~/.rulesync/bin/rulesync, never on PATH.)
+#              A name the same doc defines as a shell function is not a command.
 #   UNDEPLOYED a skill dir exists in a repo but has no link in ~/.claude/skills,
 #              so it is documented and unreachable.
 #   GHOST      CLAUDE.md bullets a skill that is not on disk (retired but still
@@ -418,10 +419,19 @@ at_line() {
 # with no flag, path, assignment, pipe or quote in it is English, not a command.
 # Without those, `bump the version` reports a missing tool called "bump".
 check_cmds() {
-  local skill="$1" f="$2" c
+  local skill="$1" f="$2" c defined
+  # A shell function a shell fence of the doc defines (`mem0() {`, `function mem0 {`) is
+  # called by the steps after it, not looked up on PATH.
+  defined=$(awk '
+      /^[[:space:]]*```(bash|sh|shell|console)[[:space:]]*$/ { inblock=1; next }
+      /^[[:space:]]*```/ { inblock=0; next }
+      inblock && match($0, /^[[:space:]]*(function[[:space:]]+[a-z][a-z0-9_-]*|[a-z][a-z0-9_-]*[[:space:]]*\(\))/) {
+        d = substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*(function[[:space:]]+)?/, "", d); sub(/[[:space:]]*\(\)$/, "", d); print d
+      }' "$f")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     is_common "$c" && continue
+    grep -qxF -- "$c" <<<"$defined" && continue
     command -v "$c" >/dev/null 2>&1 && continue
     add NOCMD "$skill" "$c" "command not found on PATH$(at_line "$f" "$c")"
   done < <(

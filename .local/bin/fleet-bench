@@ -215,12 +215,14 @@ set -uo pipefail
 : "${BENCH_LESSONS_CMD:=agentctl-session-outcomes lessons --cached --json}"   # each lesson with a sig: did it hold
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
+: "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile
 : "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
 : "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
 : "${BENCH_STEPS_CMD:=notes log --steps --json}"   # the record replayed per step: flows, dwell, the items it holds
 : "${BENCH_INBOX_CMD:=inbox_lines}"                # how many lines wait untriaged
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
+: "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 : "${BENCH_ROADMAP_CMD:=notes projects --roadmap}"   # given <project> --json: open and closed epics, leaf rows
@@ -1501,14 +1503,43 @@ ledger_counts() {
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
-# routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves (triage_coverage).
+# wants_unstamped: of the agent-lane rows the human's channels added over the last CHAIN_DAYS
+# (ingest.jsonl: an added or filed event whose writer is "human" or unnamed; only an agent row can
+# carry #requested), the share that carry no #requested.
+# routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves, and runners whose SKILL= names nothing (triage_coverage).
 # reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json).
 # admission_held: automated adds the queue's admission held in the last 7 days (agent-queue admit).
 # cost_per_merged_item rides the same read but is not a link: the work ledger's spend per landed
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
+
+# wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
+# CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
+wants_stats() {
+  [ -r "$BENCH_INGEST" ] || return 1
+  jq -Rnc --arg since "$(date -d "@$(( $1 - CHAIN_DAYS * 86400 ))" +%F)" '
+    [inputs | fromjson? | select((.ts // "")[0:10] >= $since and .lane == "agent" and (.action | IN("added", "filed")) and ((.by // "") | IN("", "human")))
+         | {from: (.from // "?"), stamped: ((.text // "") | test("#requested"))}] as $w
+    | {total: ($w | length), unstamped: ($w | map(select(.stamped | not)) | length),
+       by_project: ($w | group_by(.from) | map({key: .[0].from, value: {total: length, unstamped: map(select(.stamped | not)) | length}}) | from_entries)}' "$BENCH_INGEST"
+}
+
+# chain_notes <now>: the lines under the chain table that say which rows sit behind two of its numbers
+chain_notes() {
+  local t=$1 stats
+  $BENCH_BOARD_CMD 2>/dev/null | jq -r --argjson t "$t" '
+    [.rows[]? | select(.lane == "agent" and .requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))]
+    | sort_by(.since) | first // empty
+    | "requested_unstarted_h: oldest is \(.project):\(.id), open since \(.since) (\(($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor)h)"' 2>/dev/null
+  if stats=$(wants_stats "$t") && [ -n "$stats" ]; then
+    jq -r --argjson d "$CHAIN_DAYS" '"wants_unstamped: \(.unstamped) of \(.total) human-channel agent rows added in \($d)d carry no #requested, by project"
+      + (if .total == 0 then "" else " (" + ([.by_project | to_entries | sort_by(-.value.unstamped)[] | "\(.key) \(.value.unstamped)/\(.value.total)"] | join(", ")) + ")" end)' <<<"$stats"
+  else
+    echo "wants_unstamped: $BENCH_INGEST unreadable"
+  fi
+}
 
 # chain_counts <now> -> one key=value line per KPI_CHAIN entry, ? when its source cannot be read
 chain_counts() {
@@ -1557,6 +1588,8 @@ chain_counts() {
   local orphans
   if orphans=$(plans_orphaned); then echo "plans_unqueued=$(grep -c . <<<"$orphans")"; else echo "plans_unqueued=?"; fi
   echo "routes_unresolved=$(triage_coverage | grep -c .)"
+  local wants
+  if wants=$(wants_stats "$t"); then jq -r '"wants_unstamped=\(if .total == 0 then 0 else (.unstamped / .total * 1000 | round) / 1000 end)"' <<<"$wants"; else echo "wants_unstamped=?"; fi
   local held
   held=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -er '.held_7d | numbers' 2>/dev/null) || held='?'
   echo "admission_held=$held"
@@ -2306,7 +2339,7 @@ cmd_chain() {
   case "${1:-}" in
     --json) printf '%s\n' "$json" ;;
     --check) kpi_past "$json" ;;
-    *) kpi_table "$json" ;;
+    *) kpi_table "$json"; chain_notes "$t" ;;
   esac
 }
 
@@ -2897,11 +2930,16 @@ triage_promote() {
   echo "$n"
 }
 
-# triage_coverage -> each standing watch and each runner no TRIAGE_ROUTES line resolves, one a line.
+# triage_coverage -> each standing watch and each runner no TRIAGE_ROUTES line resolves, and each
+# runner whose SKILL names nothing (agentctl skill --dangling), one a line.
 # It builds the row each would file, so a line that stops matching the real row text counts too. A
 # watch with an expiry is a bake or a one-off: it pages and goes, so it needs no line.
 triage_coverage() {
-  local f n text rows=
+  local f n text out rows=
+  # Exit 1 is the answer "some are dangling"; any other failure means the check did not run, which
+  # counts too, so a missing agentctl cannot read as clean.
+  out=$(AGENTCTL_CONF_DIR="$LEDGER_CONF_DIR" $BENCH_SKILL_CMD 2>&1) || [ $? -eq 1 ] || out="the SKILL check failed: $out"
+  [ -z "$out" ] || sed 's/^/skill /' <<<"$out"
   for f in "$TRIAGE_WATCHES"/*.yaml; do
     [ -e "$f" ] || continue
     grep -qE '^expiry: *[^n[:space:]]' "$f" && continue
