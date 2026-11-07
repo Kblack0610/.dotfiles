@@ -28,7 +28,9 @@ struct Cli {
 enum Cmd {
     /// Jump to the next agent that needs you; with none, say so and stay put.
     Next,
-    /// Print one plain TSV row per live agent, for other surfaces to consume.
+    /// Print one plain TSV row per live agent, for other surfaces to consume. Exits 3, after
+    /// the rows it could read, when a source failed (named on stderr): the list may miss a
+    /// live session.
     List {
         /// One JSON object per line with session and transcript facts (fleet-sessions).
         #[arg(long)]
