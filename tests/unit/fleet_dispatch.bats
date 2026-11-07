@@ -3324,6 +3324,14 @@ OUT
   [ -n "$(qitem waiting mine)" ] || fail "the item's own Claude on a pending ask did not read waiting"
   [ -n "$(qitem running lane)" ] || fail "an item with no ids lost its lane"
   [ -n "$(qitem waiting away)" ] || fail "the flip read the lane's busy Claude, not the item's own waiting one"
+  # agent-panel lists no codex thread, so a codex item's ids say nothing and its lane still decides
+  started_item cx lab:game-agent-5 '' '' human waiting
+  sed -i 's/^agent: claude$/agent: codex\nsessions: thread-1/' "$AGENT_QUEUE_DIR"/waiting/*-cx.md
+  printf 'game-agent-%s\n' 1 2 3 4 5 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-5:1\",\"status\":\"waiting\",\"session_id\":\"c5\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  [ -n "$(qitem waiting cx)" ] || fail "a codex item's thread ids flipped it to running"
   # a running item whose lane went to another Claude settles on its open PR
   agent-queue move fix-crash running >/dev/null
   run cmd_reap
