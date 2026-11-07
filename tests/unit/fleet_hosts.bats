@@ -49,10 +49,16 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 @test "the roster is the inventory group, with group, host and all.vars merged and ansible_host from another group" {
   run fleet_hosts
   assert_success
-  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"state_host\": \"state.lan\"}"
+  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"state_host\": \"state.lan\", \"power\": \"\"}"
   assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.port) \(.max_live) \(.place)"')" 'kb@192.0.2.30 2222 1 true'
   run fleet_host laptop
   assert_failure
+}
+
+@test "a cloud worker is reached by fleet_ssh_host, not its ansible_host instance id, and carries its fleet_power" {
+  sed -i 's/^          fleet_place: true$/&\n          ansible_host: i-0123456789abcdef0\n          fleet_ssh_host: hp-victus.tail.example\n          fleet_power: governor/' "$FLEET_INVENTORY"
+  assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.power)"')" 'kb@hp-victus.tail.example governor'
+  assert_equal "$(fleet_host razer-laptop | jq -r '"\(.dest) [\(.power)]"')" 'kb@192.0.2.26 []'
 }
 
 @test "no inventory or no group is an empty roster, not an error" {

@@ -28,7 +28,10 @@ fleet_inventory() {
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
-#   {name, dest: user@host, port, max_live, place, repos: [dir], state_host}
+#   {name, dest: user@host, port, max_live, place, repos: [dir], state_host, power}
+# host is fleet_ssh_host when set, else ansible_host: a cloud worker's ansible_host is an instance
+# id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. power is fleet_power,
+# "governor" for a box the ci-runner-governor starts on demand (fleet-dispatch demand_pass).
 # Vars merge as Ansible reads them for this file's shape: all.vars, then group vars (a child group
 # over its parent), then the host's own entries over every group, a later entry winning among
 # equals, so ansible_host may sit in another group. Nothing when the
@@ -75,7 +78,7 @@ for h in members.get(group, []):
     v.update(gmerged.get(h, {}))
     v.update(hmerged.get(h, {}))
     user = v.get("ansible_user")
-    host = v.get("ansible_host", h)
+    host = v.get("fleet_ssh_host") or v.get("ansible_host", h)
     repos = [os.path.expanduser(str(r.get("dest") if isinstance(r, dict) else r)) for r in (v.get("fleet_repos") or [])]
     print(json.dumps({
         "name": h,
@@ -85,6 +88,7 @@ for h in members.get(group, []):
         "place": bool(v.get("fleet_place", True)),
         "repos": repos,
         "state_host": v.get("fleet_state_host", ""),
+        "power": str(v.get("fleet_power", "")),
     }))
 PY
 )
