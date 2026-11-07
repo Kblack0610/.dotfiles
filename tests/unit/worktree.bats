@@ -539,6 +539,34 @@ EOF
   assert_output "$MAIN"
 }
 
+@test "inside a submodule the main repo is the submodule's checkout" {
+  # Its --git-common-dir is <super>/.git/modules/sub, not */.git: this read as a bare repo
+  # and `wt new` died with "not inside a git repository" (ar-255).
+  make_drifted_submodule
+  run wt_main_repo "$MAIN/sub"
+  assert_success
+  assert_output "$MAIN/sub"
+  git -C "$MAIN/sub" worktree add --quiet "$WT_ROOT/sub-agent-1" -b agent-1
+  run wt_main_repo "$WT_ROOT/sub-agent-1"
+  assert_success
+  assert_output "$MAIN/sub"
+}
+
+@test "a submodule's main checkout is never listed as one of its worktrees" {
+  # git names a submodule's main worktree by its .git/modules dir, which matched no path.
+  make_drifted_submodule
+  git -C "$MAIN/sub" worktree add --quiet "$WT_ROOT/sub-agent-1" -b agent-1
+  run wt_worktrees_of "$MAIN/sub"
+  assert_success
+  assert_output "$WT_ROOT/sub-agent-1	agent-1"
+}
+
+@test "a bare repo still resolves to nothing" {
+  git init --quiet --bare "$SANDBOX/bare.git"
+  run wt_main_repo "$SANDBOX/bare.git"
+  assert_failure
+}
+
 @test "a directory outside any repo resolves to nothing" {
   mkdir -p "$SANDBOX/not-a-repo"
   run wt_main_repo "$SANDBOX/not-a-repo"
