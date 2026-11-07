@@ -1,0 +1,22 @@
+{
+  "id": "governor-restart-launch-hours",
+  "project": "home-config",
+  "pr": "Kblack0610/home-config#551",
+  "base": "196fbb638d32485a134382baf08066e9f3d16818",
+  "merge": "16ce2293ed5603b4e63fadcec2b10f0559baf2ee",
+  "task": "fix(ci-runner-governor): a restart counts the day's hours from the instance's launch time",
+  "accept": [
+    "unittest: test_a_restart_counts_the_day_from_the_launch_time"
+  ],
+  "oracle": {
+    "paths": [
+      "apps/ci-runner-governor/test_governor.py"
+    ],
+    "cmd": [
+      "python3",
+      "apps/ci-runner-governor/test_governor.py",
+      "-k",
+      "test_a_restart_counts_the_day_from_the_launch_time"
+    ]
+  }
+}
