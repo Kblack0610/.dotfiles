@@ -6,6 +6,11 @@
 # Also a lessons file (~/.agent/lessons/<project>.md), which the preflight ranks on every
 # start; it warns only on an edit that grows one already over budget (five sat at 2.5x).
 #
+# Every one of those, and any memory file or SKILL.md, also gets a restated-instruction check: a line
+# the edit wrote that shares its wording with a line in another home (skill-drift --dups --file) is
+# named with both homes and the winner, so the writer deletes the loser's copy in the same turn.
+# SKILL_DRIFT_BIN names the scorer (default: skill-drift on PATH, else the one in this repo).
+#
 # WARNS, does not block: exit 2 feeds stderr back to the writer so it can delete or merge
 # in the same turn (global CLAUDE.md "Subtract First").
 #
@@ -18,7 +23,7 @@ set -uo pipefail
 payload=$(cat)
 # Cheap exit for the common case: every Edit/Write in every session runs this.
 [[ $payload == *MEMORY.md* || $payload == *CLAUDE.md* || $payload == *AGENTS.md* ||
-  $payload == */.agent/lessons/* ]] || exit 0
+  $payload == */.agent/lessons/* || $payload == */memory/* || $payload == *SKILL.md* ]] || exit 0
 
 path=$(jq -r '.tool_input.file_path // empty' <<<"$payload" 2>/dev/null)
 [[ -n $path && -f $path ]] || exit 0
@@ -46,24 +51,49 @@ elif [[ ${path##*/} == CLAUDE.md || ${path##*/} == AGENTS.md ]] &&
   kind="repo root ${path##*/}"
   max_bytes="${CONTEXT_BUDGET_REPO:-12288}"
 else
-  exit 0
+  [[ $path == */memory/*.md || ${path##*/} == SKILL.md ]] || exit 0
+  kind=""
 fi
 
-bytes=$(wc -c <"$path")
-long=""
-[[ -n $max_line ]] &&
-  long=$(awk -v m="$max_line" 'length($0) > m { printf "    line %d: %d chars: %s...\n", NR, length($0), substr($0, 1, 70) }' "$path")
+bytes=0 long=""
+if [[ -n $kind ]]; then
+  bytes=$(wc -c <"$path")
+  [[ -n $max_line ]] &&
+    long=$(awk -v m="$max_line" 'length($0) > m { printf "    line %d: %d chars: %s...\n", NR, length($0), substr($0, 1, 70) }' "$path")
+fi
+over_budget=0
+[[ -n $kind && ( $bytes -gt $max_bytes || -n $long ) ]] && over_budget=1
 
-[[ $bytes -le $max_bytes && -z $long ]] && exit 0
+# The pairs of this file whose line on this side is text the edit just wrote.
+dups=""
+drift="${SKILL_DRIFT_BIN:-$(command -v skill-drift 2>/dev/null || echo "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/bin/skill-drift")}"
+if [[ -x $drift ]]; then
+  written=$(jq -r '.tool_input | (.content // .new_string // ([.edits[]?.new_string] | join("\n")) // "")' <<<"$payload" 2>/dev/null)
+  dups=$("$drift" --dups --file "$real" --json 2>/dev/null | jq -r --arg me "$real" --arg home "$HOME" --arg w "$written" '
+    .items[] | (if (.a.file | sub("^~"; $home)) == $me then [.a, .b] else [.b, .a] end) as [$mine, $other]
+    | select($w | contains($mine.text))
+    | "    \($mine.home) line \($mine.line) restates \($other.home) \($other.file):\($other.line); winner: \(.winner)"' 2>/dev/null)
+fi
+
+[[ $over_budget == 0 && -z $dups ]] && exit 0
 {
-  echo "context-budget-guard: $path ($kind) is over budget."
-  [[ $bytes -gt $max_bytes ]] && echo "  size $bytes bytes > $max_bytes"
-  [[ -n $long ]] && { echo "  lines over $max_line chars:"; printf '%s\n' "$long" | head -8; }
-  echo
-  echo "Make room by deleting, not by squeezing: remove what the new text supersedes, merge"
-  echo "overlapping lines, move detail or history to the doc or memory file it belongs in."
-  [[ -n $max_line ]] && echo "Each index line is '- [Label](file.md) - one clause'."
-  [[ $kind == "lessons file" ]] &&
-    echo "For lessons: merge the ones this supersedes; \`lessons archive --dry-run\` lists the stale ones."
+  if [[ $over_budget == 1 ]]; then
+    echo "context-budget-guard: $path ($kind) is over budget."
+    [[ $bytes -gt $max_bytes ]] && echo "  size $bytes bytes > $max_bytes"
+    [[ -n $long ]] && { echo "  lines over $max_line chars:"; printf '%s\n' "$long" | head -8; }
+    echo
+    echo "Make room by deleting, not by squeezing: remove what the new text supersedes, merge"
+    echo "overlapping lines, move detail or history to the doc or memory file it belongs in."
+    [[ -n $max_line ]] && echo "Each index line is '- [Label](file.md) - one clause'."
+    [[ $kind == "lessons file" ]] &&
+      echo "For lessons: merge the ones this supersedes; \`lessons archive --dry-run\` lists the stale ones."
+  fi
+  if [[ -n $dups ]]; then
+    echo "context-budget-guard: $path restates an instruction another home already holds."
+    printf '%s\n' "$dups" | head -8
+    echo
+    echo "The winner keeps the instruction: delete the losing home's line, or leave a one-line"
+    echo "pointer to the winner (ranks: instruction-homes.json; on a pick, choose one and delete the other)."
+  fi
 } >&2
 exit 2
