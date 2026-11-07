@@ -173,6 +173,7 @@ case "$MODE" in lint|write_lint_baseline|ratchet)
   LINT_DIR="${LINT_DIR:-$PWD}"
   # A typo here would run the wrong contract and report it clean.
   case "$PROFILE" in full|project) ;; *) echo "skill-drift: unknown profile '$PROFILE' (full|project)" >&2; exit 2 ;; esac
+  [ "$ALLOW_EMPTY" = 0 ] || [ "$MODE" = lint ] || { echo "skill-drift: --allow-empty goes with --lint only" >&2; exit 2; }
 esac
 
 LINT_BASELINE="${SKILL_LINT_BASELINE:-$LINT_DIR/tests/skill-lint.baseline}"
@@ -819,7 +820,7 @@ if [ "$MODE" = lint ]; then
   # "all good" is the purest form of it. --allow-empty is the caller saying so in
   # advance: a game repo whose only skills are generated and untracked.
   if [ "$((scanned + entries))" -eq 0 ]; then
-    if [ "$ALLOW_EMPTY" = 1 ]; then
+    if [ "$ALLOW_EMPTY" = 1 ] && [ "$errs" -eq 0 ]; then
       echo "skill-lint: no skills, commands or agents under $LINT_DIR/.claude, as --allow-empty expects"
       exit 0
     fi

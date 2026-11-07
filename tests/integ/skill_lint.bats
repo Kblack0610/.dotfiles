@@ -608,6 +608,12 @@ project() { run "$DRIFT" --lint "$REPO" --profile project; }
   assert_output --partial "as --allow-empty expects"
 }
 
+@test "--allow-empty: refused outside --lint" {
+  run "$DRIFT" --ratchet "$REPO" --allow-empty
+  assert_failure 2
+  assert_output --partial "goes with --lint only"
+}
+
 @test "--allow-empty: a bad skill still fails" {
   mkflat build >/dev/null
   sed -i 's/## Scope and triggers/## When to Use/' "$REPO/.claude/skills/build/SKILL.md"

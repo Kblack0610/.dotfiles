@@ -31,14 +31,15 @@ jobs:
     timeout-minutes: 5
     steps:
       # All history, for the ratchet's merge base, but no old file contents, and only the
-      # two folders the lint reads: a game repo's tree would not fit this job's timeout.
+      # two paths the lint reads: a game repo's tree would not fit this job's timeout.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           filter: blob:none
+          sparse-checkout-cone-mode: false
           sparse-checkout: |
-            .claude
-            tests
+            /.claude/
+            /tests/skill-lint.baseline
       # The linter comes from the public repo: its own commit when that repo is the caller,
       # so a PR is tested with the linter it changes, and main for everyone else.
       - uses: actions/checkout@v4
