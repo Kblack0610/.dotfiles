@@ -2585,7 +2585,10 @@ triage_log_rows() {
     [ -n "$name" ] || continue
     f="$sd/$name.stderr.log"
     [ -r "$f" ] && [ "$(stat -c %s "$f")" -ge "$b" ] || continue
-    tail -c +$((a + 1)) "$f" | head -c $((b - a)) | grep -aiE -- "$TRIAGE_ERR_RE" | tr -d '\t\r' |
+    # one dd reads the range: `tail | head -c` cut the pipe early, and under systemd (SIGPIPE
+    # ignored) tail logged a Broken pipe per range into the very logs this reads
+    dd if="$f" iflag=skip_bytes,count_bytes skip="$a" count=$((b - a)) status=none |
+      grep -aiE -- "$TRIAGE_ERR_RE" | tr -d '\t\r' |
       while IFS= read -r line; do printf '%s\t%s\t%s\t%s\n' "$name" "$a" "$(log_norm <<<"$line")" "$line"; done
   done <<<"$ledger" |
   awk -F'\t' -v min="$BENCH_GUARD_RECUR" '

@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::burn::{self, Burn};
 use crate::session_actions::Runner;
 use crate::table::{Row, Summary, Val, View};
 
@@ -248,6 +249,8 @@ pub struct Costs {
     /// Newest first.
     pub snapshots: Vec<Snapshot>,
     pub live: Live,
+    /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
+    pub burn: Burn,
     pub grafana: Option<String>,
 }
 
@@ -256,6 +259,10 @@ pub struct Costs {
 pub struct Paths {
     pub calls: PathBuf,
     pub tokens: PathBuf,
+    /// fleet-dispatch's `log.md`, whose `started` lines are the drip.
+    pub dispatch_log: PathBuf,
+    /// fleet-dispatch's `headroom.json`, the last real pass's `headroom --json`.
+    pub headroom: PathBuf,
 }
 
 impl Paths {
@@ -263,6 +270,8 @@ impl Paths {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         Paths {
             calls: crate::fleet::Paths::from_env().calls,
+            dispatch_log: crate::boards::dispatch_dir().join("log.md"),
+            headroom: crate::boards::dispatch_dir().join("headroom.json"),
             tokens: std::env::var_os("TOKENS_DIR")
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
@@ -309,7 +318,9 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         Err(e) => c.errors.push(format!("{}: {e}", paths.calls.display())),
     }
     c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize);
-    match crate::prom::base().and_then(|b| crate::prom::instant(&b, &live_q())) {
+    // One Prometheus base for the spend tiles and the Burn section; a failure is named once.
+    let base = crate::prom::base();
+    match base.clone().and_then(|b| crate::prom::instant(&b, &live_q())) {
         Ok(series) => {
             let (l, why) = live(&series);
             c.live = l;
@@ -317,7 +328,47 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         }
         Err(e) => c.errors.push(format!("Prometheus: {e}")),
     }
+    c.burn = read_burn(base.as_deref().ok(), paths, now, &mut c.errors);
     c
+}
+
+/// The Burn section's sources: claude-acct's series and rate in Prometheus (`base`, when it
+/// resolved), the dispatch log for the drip, and the cached headroom for why it is held. A
+/// source that fails is named in `errors` and the rest still show.
+fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<String>) -> Burn {
+    let (mut series, mut rate) = (vec![], None);
+    if let Some(b) = base {
+        match crate::prom::instant(b, crate::fleet::ACCOUNTS) {
+            Ok(s) => series = s,
+            Err(e) => errors.push(format!("claude-acct series: {e}")),
+        }
+        match crate::prom::instant(b, burn::RATE_Q) {
+            Ok(s) => rate = s.first().and_then(|s| s.value),
+            Err(e) => errors.push(format!("session rate: {e}")),
+        }
+    }
+    // The tail is bounded (LOG_TAIL), which covers a day of starts; a longer day undercounts.
+    let log = crate::fleet::tail(&paths.dispatch_log, crate::fleet::LOG_TAIL)
+        .map(|(text, _)| text)
+        .unwrap_or_else(|e| {
+            errors.push(format!("dispatch log: {e}"));
+            String::new()
+        });
+    burn::build(
+        &series,
+        rate,
+        burn::drip(&log, now, held(&paths.headroom)),
+        now,
+    )
+}
+
+/// The hold reason from the last pass's headroom, only when it names a kind: "nothing runnable"
+/// is an empty queue, not a hold. `fleet-dispatch headroom` itself walks the live units and takes
+/// seconds, so it stays off this path (the Sessions header runs it).
+fn held(path: &std::path::Path) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    v["held_kind"].as_str()?;
+    v["held"].as_str().map(String::from)
 }
 
 /// The outcomes CLI's lines; one that does not parse is skipped, as every hub reader does.
@@ -914,6 +965,7 @@ pub struct Board {
     pub totals: Vec<Total>,
     pub live: Live,
     pub direct: Direct,
+    pub burn: Burn,
     pub sources: Vec<Source>,
     pub errors: Vec<String>,
     /// This cut's columns, the only ones drawn.
@@ -1034,6 +1086,7 @@ pub fn board(c: &Costs, by: &str, w: &str, q: &str, sort: &str, dir: &str) -> Bo
         totals: totals(&c.sessions, c.at),
         live: c.live.clone(),
         direct: direct(&c.sessions, c.at),
+        burn: c.burn.clone(),
         sources: sources(c),
         errors: c.errors.clone(),
         columns: cols,
@@ -1068,6 +1121,29 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_800_000_000;
+
+    #[test]
+    fn a_hold_needs_a_kind_and_nothing_runnable_is_not_one() {
+        let dir = std::env::temp_dir().join(format!("hub-held-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("headroom.json");
+        let held = |j: &str| {
+            std::fs::write(&p, j).unwrap();
+            held(&p)
+        };
+        assert_eq!(
+            held(r#"{"held":"load 42 on 24 cores","held_kind":"load"}"#).as_deref(),
+            Some("load 42 on 24 cores")
+        );
+        assert_eq!(
+            held(r#"{"held":"nothing runnable","held_kind":null}"#),
+            None
+        );
+        assert_eq!(held(r#"{"held":null,"held_kind":null}"#), None);
+        assert_eq!(held("not json"), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(super::held(&p), None, "a missing file is no hold");
+    }
 
     fn spent(
         id: &str,

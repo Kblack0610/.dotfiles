@@ -41,6 +41,15 @@ const line = (o) => ({ session: null, title: null, tool: null, kind: null, proje
 const MODEL_COLS = ["model", "harness", "sessions", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
 // The table's columns are every Line column in Line::COLUMNS order, whatever the cut.
 const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src", "pr", "at"];
+// hub_core::burn::Burn as serialized: the 2026-11-06 fleet, 3.3x over what the weeks carry.
+const acct = (name, o) => ({ name, state: "ok", live: 0, used: 10, gone: 5, burn: 1, sustain: 2, over: 0.5, idle_at: 1794003600, burn_at: null, run_out: null, resets: 1794200000, ...o });
+const burn = (o = {}) => ({
+  at: 1794000000, level: "bad", head: "4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live, carries ~11", drip_line: "15 started in 1h, 349 in 24h",
+  accounts: [acct("alt", { live: 9, used: 55, gone: 25, burn: 1.04, sustain: 0.36 }), acct("bnb", { live: 17, used: 7, gone: 1, burn: 1.97, sustain: 0.56 }), acct("main", { live: 13, used: 33, gone: 12, burn: 1.51, sustain: 0.45, burn_at: 1794000600 })],
+  fleet: { live: 39, burn: 4.52, sustain: 1.37, over: 3.3, rate: 0.116, carries: 11 },
+  drip: { hour: 15, day: 349, held: "fleet-assess says HOLD" },
+  pace: { on_pace: false, at_burn: [["main", 1794000600]], idle_all_by: 1794003600, idle_rest_after_reset: false }, ...o,
+});
 const board = (o = {}) => ({
   at: 1794000000, by: "model", window: "7d",
   cuts: ["session", "model", "harness", "tool", "project", "runner", "kind"], windows: ["24h", "7d", "30d"],
@@ -55,7 +64,7 @@ const board = (o = {}) => ({
   ],
   shown_usd: 40,
   table: { q: "", state: "", sort: "cost", dir: "asc", total: 2, shown: 2, states: [], columns: LINE_COLS.map((k) => (k === "cost" ? col(k, "asc", ["", "desc"]) : col(k))), facets: [{ key: "harness", on: null, clear: "", values: [{ value: "codex", n: 1, q: "harness:codex" }] }] },
-  grafana: "https://grafana.example/d/kb-agents-overview", ...o,
+  grafana: "https://grafana.example/d/kb-agents-overview", burn: burn(), ...o,
 });
 const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("renderCosts()"); return box.innerHTML; };
 const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) ? { dataset: attrs } : null });
@@ -139,4 +148,31 @@ test("a failed read says why instead of drawing an empty table", () => {
   Object.assign(cost, { data: null, err: "502 bad gateway" });
   run("renderCosts()");
   assert.match(box.innerHTML, /<div class="empty">502 bad gateway<\/div>/);
+});
+
+test("the burn section leads the tab: headline, drip with its hold link, pace and a row per account", () => {
+  const h = show(board());
+  assert.ok(h.indexOf("sec-burn") < h.indexOf("sec-totals"), "burn is above the spend tiles");
+  assert.match(h, /<span class="burn bad">4\.5 pts\/h vs 1\.4 sustainable, 3\.3x OVER, 39 live, carries ~11<\/span>/);
+  assert.match(h, /<details class="csec" data-k="burn" id="sec-burn" open>/, "red starts open");
+  assert.match(h, /15 started in 1h, 349 in 24h <a class="warn" href="#sessions" title="fleet-assess says HOLD">dispatch held -> Sessions<\/a>/);
+  assert.match(h, /at this burn: main [^;]+; if idle: all by /);
+  assert.match(h, /<td>bnb<\/td><td class="n">17<\/td><td class="n">7%<\/td><td class="n">1%<\/td><td class="n warn">1\.97<\/td><td class="n">0\.56<\/td><td>after reset<\/td>/, "an account over its sustainable rate is amber; burn that never gets there is after the reset");
+  assert.doesNotMatch(h, /<td class="n warn">0\.45/, "keeps/h is never amber");
+});
+
+test("a green burn folds to its headline, and a fold the reader set is kept", () => {
+  const ok = board({ burn: burn({ level: "ok", head: "0.5 pts/h vs 1.4 sustainable, 0.4x, 5 live" }) });
+  assert.match(show(ok), /<details class="csec" data-k="burn" id="sec-burn"><summary>/, "green starts folded");
+  cost.open.burn = true;
+  assert.match(show(ok), /data-k="burn" id="sec-burn" open>/, "the reader's open wins");
+  cost.open = {};
+});
+
+test("an account claude-acct could not read is named, and no data says so", () => {
+  const b = burn({ accounts: [acct("old", { state: "unreadable" }), acct("new", { state: "idle" })] });
+  const h = show(board({ burn: b }));
+  assert.match(h, /<td>old<\/td><td colspan="9" class="bad">usage unreadable<\/td>/);
+  assert.match(h, /<td>new<\/td><td colspan="9" class="muted">idle, token refreshes on launch<\/td>/);
+  assert.match(show(board({ burn: burn({ accounts: [] }) })), /<div class="panel muted">no data from claude-acct<\/div>/);
 });

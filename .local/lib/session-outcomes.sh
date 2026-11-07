@@ -194,13 +194,21 @@ so_opencode_rows() {
 # files (DIR/YYYY/MM/DD/rollout-*.jsonl): Codex has no Stop hook either. Tokens are the last
 # token_count total; OpenAI's input counts the cached part, so input here is what was not cached,
 # as claude's rows read. A subagent's rollout (session_meta source.subagent) adds to its parent and
-# gets no line. A ChatGPT plan bills no dollars, so cost_usd is null. PRs follow the rule at the top
-# of this file, from a `gh pr create|merge` shell call paired with its own output.
+# gets no line. A ChatGPT plan bills no dollars, so cost_usd is an estimate: tokens times the
+# model's price in PRICES (a harnesses.json file, `.harnesses.codex.prices`, USD per million tokens
+# as {model: {input, cached_input, output}}). A rollout is priced only when it ran one model with a
+# price with all three rates and no cache writes (OpenAI bills none), since the token total is not
+# split by model; a session with any unpriced rollout, or no
+# price file, has cost_usd null, never a partial figure. PRs follow the rule at the top of this
+# file, from a `gh pr create|merge` shell call paired with its own output.
 so_codex_rows() {
-  local dir="$1" work="$2" f
+  local dir="$1" work="$2" prices="${3:-}" f pj='{}'
   [ -d "$dir" ] || return 0
+  if [ -r "$prices" ]; then
+    pj="$(jq -c '.harnesses.codex.prices // {}' "$prices" 2>/dev/null)" || { echo "so_codex_rows: unreadable $prices, no Codex cost" >&2; pj='{}'; }
+  fi
   find "$dir" -name 'rollout-*.jsonl' -type f | while IFS= read -r f; do
-    jq -cs 'def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+    jq -cs --argjson prices "$pj" 'def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
       def prs: [scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)") | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}];
       def pr_cmd: test("\\bgh pr (create|merge)\\b");
       (map(select(.type == "session_meta")) | first | .payload) as $m
@@ -210,13 +218,21 @@ so_codex_rows() {
                   | {key: .call_id, value: (.output | tostring)}) | from_entries) as $out
       | (map(select(.type == "event_msg" and .payload.type == "token_count") | .payload.info.total_token_usage // empty) | last) as $u
       | (map(.timestamp // empty | ts)) as $t
+      | (map(select(.type == "turn_context") | .payload.model // empty) | unique) as $mods
+      | (if $u != null and ($mods | length) == 1 and ($u.cache_write_input_tokens // 0) == 0
+            and ([$prices[$mods[0]].input, $prices[$mods[0]].cached_input, $prices[$mods[0]].output] | all(type == "number"))
+         then $prices[$mods[0]] as $pr
+           | ((($u.input_tokens - ($u.cached_input_tokens // 0)) * $pr.input + ($u.cached_input_tokens // 0) * $pr.cached_input
+               + $u.output_tokens * $pr.output) / 1000000 * 1000000 | round) / 1000000
+         else null end) as $cost
       | { session_id: $m.id, harness: "codex", cwd: $m.cwd,
           parent: ($m.source | if type == "object" then .subagent.thread_spawn.parent_thread_id else null end),
           title: (map(select(.type == "event_msg" and .payload.type == "user_message") | .payload.message) | first // "" | split("\n")[0] | .[0:120]),
           updated: ($t | max | floor), duration_s: ((($t | max) - ($t | min)) | floor),
           edits: ($r | map(select(.name == "apply_patch")) | length),
-          cost_usd: null,
-          models: (map(select(.type == "turn_context") | .payload.model // empty) | unique),
+          cost_by_model: (if $cost == null then null else {($mods[0]): $cost} end),
+          unpriced: ($u != null and $cost == null),
+          models: $mods,
           tokens: (if $u == null then null else
                      {input: ($u.input_tokens - ($u.cached_input_tokens // 0)), output: $u.output_tokens,
                       cacheCreation: ($u.cache_write_input_tokens // 0), cacheRead: ($u.cached_input_tokens // 0),
@@ -240,9 +256,14 @@ so_codex_rows() {
     (map(select(.parent == null) | {key: .session_id, value: .}) | from_entries) as $roots
     | reduce (.[] | select(.parent != null and $roots[.parent] != null)) as $c ($roots;
         .[$c.parent] |= (.edits += $c.edits | .tokens = add_tok(.tokens; $c.tokens)
+                         | .cost_by_model = add_tok(.cost_by_model; $c.cost_by_model) | .unpriced = (.unpriced or $c.unpriced)
                          | .models = (.models + $c.models | unique) | .prs = (.prs + $c.prs | unique)
                          | .updated = ([.updated, $c.updated] | max)))
-    | .[] | .project = $p[0][.cwd] | del(.cwd, .parent)' "$work/cx.rows.jsonl"
+    | .[] | .project = $p[0][.cwd]
+    | if .unpriced then .cost_by_model = null else . end
+    | .cost_usd = (if .cost_by_model == null then null else (.cost_by_model | add * 1000000 | round / 1000000) end)
+    | .cost_src = (if .cost_usd == null then null else "price" end)
+    | del(.cwd, .parent, .unpriced)' "$work/cx.rows.jsonl"
 }
 
 # so_lesson_sigs [DIR] - the lessons that carry a sig, as one JSON array of {sig, since, claim,

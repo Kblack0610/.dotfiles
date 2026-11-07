@@ -123,7 +123,7 @@ cmd_run() {
   local oc_note=""
   so_opencode_rows "$OC_DB" "$work" > "$work/opencode.jsonl" 2>"$work/oc.err" ||
     { oc_note="; opencode rows unread: $(head -c 120 "$work/oc.err")"; : > "$work/opencode.jsonl"; echo "$NAME${oc_note#;}" >&2; }
-  so_codex_rows "$CX_DIR" "$work" > "$work/codex.jsonl" 2>"$work/cx.err" ||
+  so_codex_rows "$CX_DIR" "$work" "$HARNESSES" > "$work/codex.jsonl" 2>"$work/cx.err" ||
     { oc_note="$oc_note; codex rows unread: $(head -c 120 "$work/cx.err")"; : > "$work/codex.jsonl"; echo "$NAME: codex rows unread" >&2; }
 
   # Registry rows due for an observation. A session id can sit in two project files
@@ -242,6 +242,7 @@ cmd_run() {
           edits: ($row.edits // 0),
           cost_usd: ($row.cost_usd // null),
           cost_by_model: ($row.cost_by_model // null),
+          cost_src: ($row.cost_src // null),
           models: ($row.models // null),
           account: ($row.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a // null),
           tokens_total: ($row.tokens.total // null),
