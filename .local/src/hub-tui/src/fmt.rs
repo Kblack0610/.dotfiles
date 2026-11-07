@@ -22,6 +22,15 @@ pub fn pct(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("{:.0}%", v * 100.0))
 }
 
+/// A count as 2.3M, 12k or 512.
+pub fn kilo(n: u64) -> String {
+    match n {
+        n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1e6),
+        n if n >= 1_000 => format!("{}k", (n + 500) / 1_000),
+        n => n.to_string(),
+    }
+}
+
 /// A unix time as the local clock: HH:MM today, else MM-DD HH:MM.
 pub fn clock(ts: i64, now: i64) -> String {
     let (Some(t), Some(n)) = (

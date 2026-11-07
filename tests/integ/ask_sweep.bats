@@ -27,7 +27,7 @@ setup() {
   # The board: add files a row, refused as an open twin (exit 3) when that text is open already;
   # list prints the open rows.
   stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; rows="$NOTES_FIXTURE/rows.$2"
-    case "$4" in add) grep -qxF -- "$5" "$rows" 2>/dev/null && exit 3; echo "$5" >> "$rows" ;; list) cat "$rows" 2>/dev/null ;; esac; exit 0'
+    case "$4" in add) grep -qxF -- "${@: -1}" "$rows" 2>/dev/null && exit 3; echo "${@: -1}" >> "$rows" ;; list) cat "$rows" 2>/dev/null ;; esac; exit 0'
 }
 
 # stub <name> <body>; a notes stub answers `notes row types` too, unless NO_ROW_TYPES is set.
@@ -62,7 +62,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan stale '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run
   assert_success
-  assert_called 'ptask board --agent add chore(plan): finish stale: 2 phases left, next: two #requested #tier/2 #size/m'
+  assert_called 'ptask board --agent add --want ask chore(plan): finish stale: 2 phases left, next: two #tier/2 #size/m'
   : > "$NOTES_FIXTURE/calls.log"
   run "$SWEEP" run
   assert_success
@@ -77,7 +77,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   : > "$NOTES_FIXTURE/calls.log"
   run "$SWEEP" run
   assert_success
-  assert_called 'ptask board --agent add chore(plan): finish twin'
+  assert_called 'ptask board --agent add --want ask chore(plan): finish twin'
   run ls "$ASK_SWEEP_DIR"
   assert_output 'first-run'
 }
@@ -114,17 +114,18 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   run "$SWEEP" run
   assert_success
   # the quoted message's own day; a quote found in no message gets the newest one's
-  assert_called "feat(gym): add a slide; asked $(date -u -d '40 hours ago' +%m-%d) \"add a slide\" #requested #tier/2 #size/s #worker/requested"
-  assert_called "feat(town): build a town; asked $TODAY \"new town\" #requested #tier/2 #size/l"
-  assert_not_called "build a town; asked $TODAY \"new town\" #requested #tier/2 #size/l #worker"
-  assert_not_called "tune ci; asked $TODAY \"retune ci\" #requested #tier/3 #size/s #worker"
+  assert_called "feat(gym): add a slide; asked $(date -u -d '40 hours ago' +%m-%d) \"add a slide\" #tier/2 #size/s #worker/requested"
+  assert_called "feat(town): build a town; asked $TODAY \"new town\" #tier/2 #size/l"
+  assert_not_called "build a town; asked $TODAY \"new town\" #tier/2 #size/l #worker"
+  assert_not_called "tune ci; asked $TODAY \"retune ci\" #tier/3 #size/s #worker"
+  assert_not_called '#requested'
 }
 
 @test "a human-only ask goes on the human sheet, never the agent board" {
   message 'buy the clip pack'
   answer '{"quote":"buy it","row":"buy the clip pack","tier":2,"size":"S","done_is_stated":true,"human_only":true}'
   run "$SWEEP" run
-  assert_called 'ptask board add buy the clip pack'
+  assert_called 'ptask board add --want ask buy the clip pack'
   assert_not_called 'ptask board --agent add buy'
 }
 
@@ -144,7 +145,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan slug-a '1 day ago 1 hour ago' "$OPEN"; plan slug-b '1 day ago 1 hour ago' "$OPEN"; plan slug-c '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run
   assert_success
-  [ "$(grep -c ' add chore(plan): finish ' "$NOTES_FIXTURE/calls.log")" -eq 2 ]
+  [ "$(grep -c ' add --want ask chore(plan): finish ' "$NOTES_FIXTURE/calls.log")" -eq 2 ]
   assert_output --partial 'over the cap 1'
 }
 

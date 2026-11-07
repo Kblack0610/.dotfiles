@@ -151,8 +151,8 @@ pub struct SnapshotTotals {
     pub carried_tokens: u64,
 }
 
-/// One day's snapshot: its tools and the cost no tool carried. The skipped fields are Fleet's
-/// (`fleet::tokens`), so the Costs answer stays the size it was.
+/// One day's snapshot: its tools and the cost no tool carried. The skipped fields are summed into
+/// `Costs::tokens` (`crate::tokens`), so the raw days are not sent twice.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Snapshot {
     pub date: String,
@@ -167,7 +167,7 @@ pub struct Snapshot {
     pub errors: usize,
     /// What Langfuse saw that day; None when its reader failed, `langfuse_error` says why.
     #[serde(skip)]
-    pub langfuse: Option<crate::fleet::tokens::Langfuse>,
+    pub langfuse: Option<crate::tokens::Langfuse>,
     #[serde(skip)]
     pub langfuse_error: Option<String>,
 }
@@ -217,7 +217,9 @@ pub fn live(series: &[crate::prom::Series]) -> (Live, Option<String>) {
             l.reserve_reset_hours = hours;
             None
         }
-        n => Some(format!("Prometheus: {n} keys carry the {RESERVE_KEY} alias")),
+        n => Some(format!(
+            "Prometheus: {n} keys carry the {RESERVE_KEY} alias"
+        )),
     };
     (l, why)
 }
@@ -281,6 +283,8 @@ pub struct Costs {
     pub burn: Burn,
     /// `fleet-bench sections --json`; empty when it failed (named in `errors`).
     pub sections: Sections,
+    /// Where the tokens go and what Langfuse sees, summed from `snapshots`; None with no snapshot.
+    pub tokens: Option<crate::tokens::Tokens>,
     pub grafana: Option<String>,
 }
 
@@ -318,7 +322,9 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         ..Costs::default()
     };
     // The longest window, or back to the 1st when the month is longer: the direct figure's period.
-    let days = (longest() / DAY).max((now - month_start(now)) / DAY + 1).to_string();
+    let days = (longest() / DAY)
+        .max((now - month_start(now)) / DAY + 1)
+        .to_string();
     let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match runner.run(&argv(&[
         "agentctl-session-outcomes",
@@ -346,14 +352,13 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         Ok(s) => c.sections = s,
         Err(e) => c.errors.push(format!("fleet-bench sections: {e}")),
     }
-    match std::fs::read_to_string(&paths.calls) {
-        Ok(text) => c.calls = calls(&text, now - longest()),
-        Err(e) => c.errors.push(format!("{}: {e}", paths.calls.display())),
-    }
-    c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize, &mut c.errors);
+    read_files(&mut c, paths, now);
     // One Prometheus base for the spend tiles and the Burn section; a failure is named once.
     let base = crate::prom::base();
-    match base.clone().and_then(|b| crate::prom::instant(&b, &live_q())) {
+    match base
+        .clone()
+        .and_then(|b| crate::prom::instant(&b, &live_q()))
+    {
         Ok(series) => {
             let (l, why) = live(&series);
             c.live = l;
@@ -365,13 +370,24 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
     c
 }
 
+/// The file sources: the calls ledger and the token snapshots, parsed once and summed into
+/// `tokens` (the tab's two token folds). A file that fails is named in `errors`.
+fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
+    match std::fs::read_to_string(&paths.calls) {
+        Ok(text) => c.calls = calls(&text, now - longest()),
+        Err(e) => c.errors.push(format!("{}: {e}", paths.calls.display())),
+    }
+    c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize, &mut c.errors);
+    c.tokens = crate::tokens::from_snapshots(&c.snapshots, now);
+}
+
 /// The Burn section's sources: claude-acct's series and rate in Prometheus (`base`, when it
 /// resolved), the dispatch log for the drip, and the cached headroom for why it is held. A
 /// source that fails is named in `errors` and the rest still show.
 fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<String>) -> Burn {
     let (mut series, mut rate) = (vec![], None);
     if let Some(b) = base {
-        match crate::prom::instant(b, crate::fleet::ACCOUNTS) {
+        match crate::prom::instant(b, burn::ACCOUNTS) {
             Ok(s) => series = s,
             Err(e) => errors.push(format!("claude-acct series: {e}")),
         }
@@ -451,7 +467,7 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
         commands: serde_json::from_value(v["by_command"].clone()).unwrap_or_default(),
         totals: serde_json::from_value(v["totals"].clone()).ok(),
         errors: v["errors"].as_array().map_or(0, Vec::len),
-        langfuse: crate::fleet::tokens::langfuse(&v["langfuse"]),
+        langfuse: crate::tokens::langfuse(&v["langfuse"]),
         langfuse_error: v["errors"]
             .as_array()
             .into_iter()
@@ -1006,6 +1022,9 @@ pub struct Board {
     pub live: Live,
     pub direct: Direct,
     pub burn: Burn,
+    /// Where the tokens go and what Langfuse sees: the newest week and day of snapshots, whatever
+    /// the window (the snapshots are nightly).
+    pub tokens: Option<crate::tokens::Tokens>,
     pub sections: sections::Block,
     pub sources: Vec<Source>,
     pub errors: Vec<String>,
@@ -1138,6 +1157,7 @@ pub fn board(
         live: c.live.clone(),
         direct: direct(&c.sessions, c.at),
         burn: c.burn.clone(),
+        tokens: c.tokens.clone(),
         sections: sections::board(&c.sections, sec.0, sec.1),
         sources: sources(c),
         errors: c.errors.clone(),
@@ -1173,6 +1193,44 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_800_000_000;
+
+    #[test]
+    fn the_file_read_sums_the_snapshots_into_tokens_and_names_one_that_does_not_parse() {
+        let d = std::env::temp_dir().join(format!("hub-costs-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let paths = Paths {
+            calls: d.join("calls.jsonl"),
+            tokens: d.clone(),
+            dispatch_log: d.join("log.md"),
+            headroom: d.join("headroom.json"),
+        };
+        std::fs::write(&paths.calls, "").unwrap();
+        // Negative control: no snapshot, no tokens and no error.
+        let mut c = Costs::default();
+        read_files(&mut c, &paths, NOW);
+        assert!(c.tokens.is_none() && c.errors.is_empty(), "{:?}", c.errors);
+        let doc = r#"{"generated_at":"2027-01-15T00:00:00Z","errors":[],"totals":{"responses":10,"context":1000,"carried_tokens":150},"by_tool":[{"tool":"Bash","calls":4,"chars":100,"carried_tokens":100}]}"#;
+        std::fs::write(d.join("2027-01-14.json"), doc).unwrap();
+        std::fs::write(d.join("2027-01-15.json"), "not json").unwrap();
+        let mut c = Costs::default();
+        read_files(&mut c, &paths, NOW);
+        let t = c.tokens.as_ref().expect("the good day still counts");
+        assert_eq!((t.date.as_str(), t.week.context), ("2027-01-14", 1000));
+        assert_eq!(c.snapshots.len(), 1, "one parse, kept for the tool cut");
+        assert_eq!(c.errors, ["tokens: 2027-01-15.json does not parse"]);
+        let b = board(
+            &c,
+            DEFAULT_CUT,
+            DEFAULT_WINDOW,
+            "",
+            "",
+            "desc",
+            ("", "desc"),
+        );
+        assert!(b.tokens.is_some() && b.errors.len() == 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn the_board_carries_the_sections_block_under_its_own_sort() {
@@ -1618,8 +1676,16 @@ not json
             gauge("cc:lazer_spend_usd", "", 93.36),
             gauge("cc:lazer_budget_usd", "", 250.0),
             gauge("litellm_api_key_max_budget_metric", RESERVE_KEY, 100.0),
-            gauge("litellm_remaining_api_key_budget_metric", RESERVE_KEY, 80.48),
-            gauge("litellm_api_key_budget_remaining_hours_metric", RESERVE_KEY, 575.0),
+            gauge(
+                "litellm_remaining_api_key_budget_metric",
+                RESERVE_KEY,
+                80.48,
+            ),
+            gauge(
+                "litellm_api_key_budget_remaining_hours_metric",
+                RESERVE_KEY,
+                575.0,
+            ),
             // another key's gauges never land on the reserve
             gauge("litellm_api_key_max_budget_metric", "lazer-eval", 150.0),
         ]);
@@ -1635,16 +1701,24 @@ not json
         assert_eq!((l.reserve_budget, l.reserve_spend, why), (None, None, None));
         // a second key under the alias is unknown, never one key's cap less the other's remainder
         let mut rotated = gauge("litellm_remaining_api_key_budget_metric", RESERVE_KEY, 99.0);
-        rotated.labels.insert("hashed_api_key".into(), "h-new".into());
+        rotated
+            .labels
+            .insert("hashed_api_key".into(), "h-new".into());
         let (l, why) = live(&[
             gauge("litellm_api_key_max_budget_metric", RESERVE_KEY, 100.0),
             rotated,
         ]);
         assert_eq!(l.reserve_spend, None);
-        assert_eq!(why.as_deref(), Some("Prometheus: 2 keys carry the claude-reserve alias"));
+        assert_eq!(
+            why.as_deref(),
+            Some("Prometheus: 2 keys carry the claude-reserve alias")
+        );
         // and no reserve gauge at all says so, so a renamed gauge is not a quiet "-"
         let (_, why) = live(&[gauge("cc:lazer_spend_usd", "", 1.0)]);
-        assert_eq!(why.as_deref(), Some("Prometheus: no claude-reserve key gauges"));
+        assert_eq!(
+            why.as_deref(),
+            Some("Prometheus: no claude-reserve key gauges")
+        );
     }
 
     #[test]

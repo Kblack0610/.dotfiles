@@ -55,7 +55,8 @@
 #   fleet-bench improve [--json] | file <kpi> <text> | claim <kpi> <ar-N|item:slug> | list [--json]
 #                                the KPI furthest past its threshold that no live claim owns (exit 1
 #                                when none, or BENCH_IMPROVE_MAX are live); file adds its row with a
-#                                check and claims it, claim records a row or item that owns it
+#                                check and claims it, claim records a row or item that owns it (a
+#                                row may claim each KPI its lever moves; the cap holds pick and file)
 #   fleet-bench retro            a verdict on each claim whose PR landed BENCH_EFFECT_DAYS ago (a
 #                                regression files a revert row), and one agent-board row per lesson
 #                                that recurred in BENCH_GUARD_RECUR sessions (a guard row), and
@@ -81,7 +82,9 @@
 #   fleet-bench reds [--json] [--days N]
 #                                each red fix queued in the last N days (REDS_DAYS) and what came
 #                                of it: fixing, needs merge, fixed (merged, not red now), still red,
-#                                came back (red again after the merge), cleared or no fix; and each
+#                                came back (red again after the merge), cancelled (closed cancelled
+#                                with no merge, as when handed to an owner), cleared (ok with no PR)
+#                                or no fix (failed with no PR); and each
 #                                merged cleanup item, its hold: holding (under HOLD_HOURS old), held,
 #                                went red (a red now names it) or recovered (a red named it, now over)
 #   fleet-bench findings [--open|--json|--run]
@@ -123,7 +126,7 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR.
 
 set -uo pipefail
@@ -174,7 +177,7 @@ set -uo pipefail
 : "${KPI_BOARD:=agent-runtime}"       # the agent board improve, retro and triage file rows on
 : "${BENCH_EFFECT_DAYS:=14}"        # effect: the window on each side of a change
 : "${BENCH_EFFECT_FLAT:=0.1}"       # effect: a relative move inside this is flat
-: "${BENCH_IMPROVE_MAX:=3}"         # improve: live claims at which the pick goes quiet (the WIP cap)
+: "${BENCH_IMPROVE_MAX:=3}"         # improve: live claims at which the pick and file go quiet (the WIP cap)
 : "${BENCH_LOG_CMD:=notes log --json}"   # improve: the row and item record, given --days N
 : "${TRIAGE_SYSTEMCTL:=systemctl}"     # triage: failed user units
 : "${TRIAGE_WATCH_STATE:=$HOME/.local/state/watch-companion}"   # triage: Sentinel's <watch>.state and .since
@@ -220,6 +223,7 @@ set -uo pipefail
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile
 : "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
+: "${BENCH_DOCS_CLEANUP_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/docs-cleanup}"   # the nightly docs-cleanup baselines, one dated dir each
 : "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
 : "${BENCH_STEPS_CMD:=notes log --steps --json}"   # the record replayed per step: flows, dwell, the items it holds
 : "${BENCH_INBOX_CMD:=inbox_lines}"                # how many lines wait untriaged
@@ -1504,12 +1508,15 @@ ledger_counts() {
 # ownerless_running: running items with no session. epic_linked_share: the agent rows filed under
 # an epic (#of/) in the projects that have one open. landed_unverified: open epics whose every leaf
 # is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
+# dup_pairs: instructions two homes restate, from the newest nightly docs-cleanup night's dups.json
+# (skill-drift --dups); the bound is dup_pairs_max, the same row skill-drift --dups --check holds.
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
 # wants_unstamped: of the agent-lane rows the human's channels added over the last CHAIN_DAYS
 # (ingest.jsonl: an added or filed event whose writer is "human" or unnamed; only an agent row can
-# carry #requested), the share that carry no #requested.
+# carry #requested), the share that carry no #requested. An event naming its channel (`want`, set by
+# `ptask --want`) was stamped by the writer.
 # routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves, and runners whose SKILL= names nothing (triage_coverage).
 # reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json).
 # admission_held: automated adds the queue's admission held in the last 7 days (agent-queue admit).
@@ -1517,7 +1524,7 @@ ledger_counts() {
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -1525,7 +1532,7 @@ wants_stats() {
   [ -r "$BENCH_INGEST" ] || return 1
   jq -Rnc --arg since "$(date -d "@$(( $1 - CHAIN_DAYS * 86400 ))" +%F)" '
     [inputs | fromjson? | select((.ts // "")[0:10] >= $since and .lane == "agent" and (.action | IN("added", "filed")) and ((.by // "") | IN("", "human")))
-         | {from: (.from // "?"), stamped: ((.text // "") | test("#requested"))}] as $w
+         | {from: (.from // "?"), stamped: ((.want // "") != "" or ((.text // "") | test("#requested")))}] as $w
     | {total: ($w | length), unstamped: ($w | map(select(.stamped | not)) | length),
        by_project: ($w | group_by(.from) | map({key: .[0].from, value: {total: length, unstamped: map(select(.stamped | not)) | length}}) | from_entries)}' "$BENCH_INGEST"
 }
@@ -1589,7 +1596,10 @@ chain_counts() {
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
         | if length == 0 then null else add / length * 100 | round / 100 end end))"'
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
-  local orphans
+  local orphans dups
+  # the newest night only: a runner that stopped must read ?, never an older night's count as now
+  dups=$(ls -d "$BENCH_DOCS_CLEANUP_DIR"/*/ 2>/dev/null | tail -1)
+  if [ -n "$dups" ] && dups=$(jq -er '.pairs | numbers' "${dups}dups.json" 2>/dev/null); then echo "dup_pairs=$dups"; else echo "dup_pairs=?"; fi
   if orphans=$(plans_orphaned); then echo "plans_unqueued=$(grep -c . <<<"$orphans")"; else echo "plans_unqueued=?"; fi
   echo "routes_unresolved=$(triage_coverage | grep -c .)"
   local wants
@@ -2475,7 +2485,7 @@ cmd_effect() {
 # subject, never a row's title. The verdict compares values, never the status, so an edit to
 # kpi-thresholds cannot turn a flat result into a pass.
 IMPROVE_JQ='
-def live: group_by(.subject) | map(sort_by(.at) | last | select(.type == "claim"));
+def live: group_by([.subject, .kpi]) | map(sort_by(.at) | last | select(.type == "claim"));
 def last_verdict($k): map(select(.type == "verdict" and .kpi == $k)) | sort_by(.at) | last
   | if . == null then null else {subject, verdict} end;
 # how far past its threshold a KPI is, relative to the threshold
@@ -2500,8 +2510,9 @@ improve_pick() {
 }
 
 # improve_target <kpi json> <kpi> [subject] -> the KPI as {kpi, value, threshold, bound}, or a why
-# and a failure: it must be past its threshold, unclaimed, under the cap, and the subject not
-# already a live claim
+# and a failure: it must be past its threshold and unclaimed, and with no subject (file: new work)
+# under the cap. A subject (claim) records a row or item that already exists, so the cap does not
+# hold it, and one subject may claim each KPI its lever moves.
 improve_target() {
   local why
   why=$(jq -r --arg k "$2" --arg s "${3:-}" --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
@@ -2509,8 +2520,7 @@ improve_target() {
     | if $v == null then "no KPI named \($k)"
       elif $v.status != "past" then "\($k) is not past its threshold (\($v.status))"
       elif ($live | any(.kpi == $k)) then "\($k) is already claimed by \([$live[] | select(.kpi == $k) | .subject] | first)"
-      elif ($live | any(.subject == $s)) then "\($s) already claims \([$live[] | select(.subject == $s) | .kpi] | first)"
-      elif ($live | length) >= $max then "\($live | length) claims are live (BENCH_IMPROVE_MAX \($max)); one must end first"
+      elif $s == "" and ($live | length) >= $max then "\($live | length) claims are live (BENCH_IMPROVE_MAX \($max)); one must end first"
       else empty end' <<<"$1") || return 1
   [ -z "$why" ] || { say "improve: $why"; return 1; }
   jq -c --arg k "$2" '.[$k] | {kpi: $k, value: .["7d"], threshold, bound}' <<<"$1"
@@ -3160,11 +3170,11 @@ reds_json() {
        outcome: (
          if .state == "queued" then "queued"
          elif .state == "running" or .state == "waiting" then "fixing"
-         elif .state == "cancelled" then "cancelled"
          elif .merged != null then
            (if $red | not then "fixed"
             elif $r.area == "watch" and $fin != null and ($w[$r.name] // 0) > $fin then "came back"
             else "still red" end)
+         elif .status == "cancelled" then "cancelled"
          elif .pr != null then "needs merge"
          elif .status == "ok" then "cleared"
          else "no fix" end)}), $cleanups[]' <<<"$items"

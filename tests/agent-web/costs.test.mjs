@@ -172,8 +172,8 @@ test("a green burn folds to its headline, and a fold the reader set is kept", ()
 test("an account claude-acct could not read is named, and no data says so", () => {
   const b = burn({ accounts: [acct("old", { state: "unreadable" }), acct("new", { state: "idle" })] });
   const h = show(board({ burn: b }));
-  assert.match(h, /<td>old<\/td><td colspan="10" class="bad">usage unreadable<\/td>/);
-  assert.match(h, /<td>new<\/td><td colspan="10" class="muted">idle, token refreshes on launch<\/td>/);
+  assert.match(h, /<td>old<\/td><td colspan="13" class="bad">usage unreadable<\/td>/);
+  assert.match(h, /<td>new<\/td><td colspan="13" class="muted">idle, token refreshes on launch<\/td>/);
   assert.match(show(board({ burn: burn({ accounts: [] }) })), /<div class="panel muted">no data from claude-acct<\/div>/);
 });
 
@@ -188,7 +188,7 @@ test("the room column prints claude-acct's verdict: points past the line, the re
   const h = show(board({ burn: b }));
   assert.match(h, /<td class="bad">no room: pace 20 points past the line<\/td>/);
   assert.match(h, /<td class="bad">no room: reserve, five hour<\/td>/);
-  assert.match(h, /<td>c<\/td><td colspan="10" class="bad">stale, claude-acct&#39;s textfile is not fresh<\/td>/);
+  assert.match(h, /<td>c<\/td><td colspan="13" class="bad">stale, claude-acct&#39;s textfile is not fresh<\/td>/);
   assert.match(h, /<td class="muted">-<\/td>/, "an account with no published verdict shows none, never a derived one");
 });
 
@@ -246,4 +246,160 @@ test("a Sections fold the reader opened stays open through the repaint a sort cl
   run("renderCosts()");
   assert.doesNotMatch(box.innerHTML, /id="sec-sections" open/, "and so does a fold they closed");
   box.querySelectorAll = () => [];
+});
+
+test("a burn row carries the 5h window, when it resets and the day's dollars", () => {
+  const h = show(board({ burn: burn({ accounts: [acct("main", { five_hour: 61.4, five_hour_resets: 1794007200, cost_24h: 12.5 }), acct("alt", { state: "idle" })] }) }));
+  assert.match(h, /<th>resets<\/th><th class="n">5h<\/th><th>5h resets<\/th><th class="n">24h<\/th><\/tr>/);
+  assert.match(h, /<td class="n">61%<\/td><td>[^<-][^<]*<\/td><td class="n">\$12\.50<\/td><\/tr>/);
+  assert.match(h, /<td>alt<\/td><td colspan="13" class="muted">idle/, "a note row spans every column");
+  const none = show(board({ burn: burn({ accounts: [acct("main", {})] }) }));
+  assert.match(none, /<td class="n">-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/, "the control: no figures, no numbers");
+});
+
+test("the token and Langfuse folds sit between Burn and Sections", () => {
+  run("cost.open = {}");
+  const h = show(board({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }), sections: null }));
+  const at = (id) => h.indexOf(`id="${id}"`);
+  assert.ok(at("sec-burn") >= 0 && at("sec-burn") < at("sec-tokens") && at("sec-tokens") < at("sec-langfuse") && at("sec-langfuse") < at("sec-totals"));
+  assert.match(show(board()), /id="sec-tokens"><span class="warn">no snapshot|Where the tokens go <span class="warn">no snapshot/);
+});
+
+test("a new token snapshot re-reads Costs while it is shown, and not from another tab", async () => {
+  asked = [];
+  run("st.tab = 'fleet'");
+  run("TABS.costs").onEvent({ kind: "costs" });
+  await tick();
+  assert.equal(asked.length, 0, "the control: not shown, not read");
+  run("st.tab = 'costs'");
+  run("TABS.costs").onEvent({ kind: "fleet" });
+  await tick();
+  assert.equal(asked.length, 0, "another tab's event is not Costs'");
+  run("TABS.costs").onEvent({ kind: "costs" });
+  await tick();
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /^\/api\/costs/);
+});
+
+test("a Fleet link to a moved section opens Costs at that section", () => {
+  const r = ctx.route("#fleet/tokens");
+  assert.equal(r.tab, "costs");
+  assert.equal(r.section, "tokens");
+  assert.equal(ctx.route("#fleet/LANGFUSE").section, "langfuse");
+  assert.deepEqual([ctx.route("#fleet/accounts").tab, ctx.route("#fleet/accounts").section], ["costs", "burn"]);
+  const runner = ctx.route("#fleet/inbox-triage");
+  assert.deepEqual([runner.tab, runner.arg, runner.section], ["fleet", "inbox-triage", undefined], "the control: a runner page stays on Fleet");
+});
+
+// Where the tokens go: hub_core::tokens's sums, folded while fresh.
+const tokenRow = (name, chars, share, other = false) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other });
+const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15, tools: [tokenRow("Bash", 331000000, 0.823), tokenRow("Other (22)", 10000000, 0.026, true)], commands: [tokenRow("sed", 89000000, 0.221)] });
+const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
+const tail = (t) => { const f = run("cost"); f.open = {}; f.tokWin = "week"; return ctx.tokensSection({ tokens: t }); };
+
+test("the tokens section is folded while fresh, with the week on its head", () => {
+  const h = tail(tokens());
+  assert.match(h, /<details class="csec" data-k="tokens" id="sec-tokens"><summary>/);
+  assert.match(h, /Where the tokens go <span class="muted">7d 18\.0B, tool output 15%/);
+  assert.match(h, /by tool/);
+  assert.match(h, /by Bash command/);
+  assert.match(h, /82\.3%/);
+  assert.match(h, /href="#costs\?by=tool&w=7d"/);
+});
+
+test("a named row takes its chart slot and Other its grey", () => {
+  const h = tail(tokens());
+  assert.match(h, /background:var\(--c1\)/);
+  assert.match(h, /background:var\(--c-other\)/);
+  assert.doesNotMatch(h, /background:var\(--c2\)/);
+});
+
+test("a stale snapshot opens the section with an amber head, until the human shuts it", () => {
+  const h = tail(tokens({ stale: true }));
+  assert.match(h, /id="sec-tokens" open>/);
+  assert.match(h, /class="warn">7d 18\.0B, tool output 15%, stale: newest snapshot 2026-11-05/);
+  run("cost").open["tokens-stale"] = false;
+  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
+});
+
+test("no snapshot is an amber head with nothing to open", () => {
+  const h = tail(null);
+  assert.match(h, /class="warn">no snapshot/);
+  assert.doesNotMatch(h, /<details/);
+});
+
+test("the window switch picks yesterday, and a partial window says so", () => {
+  const f = run("cost");
+  tail(tokens());
+  f.data = board({ tokens: tokens({ day: { ...tokenSplit(3900000000), days: 1, partial: 1 } }) });
+  run("st.tab = 'costs'");
+  on.click({ target: { closest: (sel) => (sel === "[data-tokwin]" ? { dataset: { tokwin: "day" } } : null) } });
+  assert.equal(f.tokWin, "day");
+  const h = ctx.tokensSection(f.data);
+  assert.match(box.innerHTML, /yesterday: 3\.9B context/, "the click repainted the tab");
+  assert.match(h, /yesterday: 3\.9B context/);
+  assert.match(h, /class="warn">, 1 of 1 partial/);
+  f.tokWin = "week";
+});
+
+test("a stale day names its date, not yesterday", () => {
+  const f = run("cost");
+  f.open = {};
+  f.tokWin = "day";
+  const h = ctx.tokensSection({ tokens: tokens({ stale: true }) });
+  assert.match(h, /2026-11-05: 3\.9B context/);
+  assert.doesNotMatch(h, /yesterday: /);
+  f.tokWin = "week";
+});
+
+test("the fold keeps what paint remembered, and going stale still opens it", () => {
+  const f = run("cost");
+  f.open = { tokens: true };
+  assert.match(ctx.tokensSection({ tokens: tokens() }), /id="sec-tokens" open>/);
+  f.open = { tokens: false };
+  assert.match(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /data-k="tokens-stale" id="sec-tokens" open>/);
+  f.open = { tokens: false, "tokens-stale": false };
+  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
+  f.open = {};
+});
+
+// What Langfuse sees: the newest snapshot's `.langfuse`, folded while it reads.
+const lfFigures = () => ({
+  tools: [{ tool: "Bash", calls: 35243, p50_ms: 99, p95_ms: 17487, total_s: 224341 }],
+  tool_executions: 38947, tool_errors: 854, tool_error_share: 0.0219, tool_error_classes: [{ name: "ShellError", n: 781 }],
+  gateway_calls: 194, gateway_errors: 26, gateway_error_share: 0.134, gateway_error_classes: [{ name: "invalid_key", n: 16 }],
+  gateway_cost_usd: 3.59, gateway_tokens: 2271863, gateway_models: [{ model: "claude-sonnet-5.5", calls: 33, errors: 0, cost_usd: 3.45 }], gateway_other_models: 14, truncated: false,
+});
+const lfTail = (t) => { const f = run("cost"); f.open = {}; return ctx.langfuseSection({ tokens: t }); };
+
+test("the langfuse section is folded while it reads, with both error shares and the gateway's cost on its head", () => {
+  const h = lfTail(tokens({ langfuse: { figures: lfFigures(), why: null } }));
+  assert.doesNotMatch(h, /id="sec-langfuse" open>/);
+  assert.match(h, /tool errors 2%, gateway errors 13%, \$3\.59 gateway/);
+});
+
+test("open, it draws the slowest tools, the error classes and the dearest models", () => {
+  const f = run("cost");
+  f.open = { langfuse: true };
+  const h = ctx.langfuseSection({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }) });
+  assert.match(h, /<td>Bash<\/td><td class="n">35,243<\/td><td class="n">99ms<\/td><td class="n">17\.5s<\/td>/);
+  assert.match(h, /854 of 38,947 executions \(ShellError 781\)/);
+  assert.match(h, /194 calls, 26 errors \(invalid_key 16\)/);
+  assert.match(h, /claude-sonnet-5\.5 \$3\.45, 14 more/);
+  f.open = {};
+});
+
+test("no figures opens the section amber and says why; a stale snapshot opens it too", () => {
+  const none = lfTail(tokens({ langfuse: { figures: null, why: "no key (rbw langfuse-api)" } }));
+  assert.match(none, /data-k="langfuse-stale" id="sec-langfuse" open>/);
+  assert.match(none, /class="warn">no figures in snapshot 2026-11-05/);
+  assert.match(none, /no key \(rbw langfuse-api\)/);
+  const stale = lfTail(tokens({ stale: true, langfuse: { figures: lfFigures(), why: null } }));
+  assert.match(stale, /data-k="langfuse-stale" id="sec-langfuse" open>/);
+  assert.match(stale, /stale: newest snapshot 2026-11-05/);
+});
+
+test("a snapshot from before the reader has no langfuse key and still draws the amber head", () => {
+  assert.match(lfTail(tokens()), /no figures in snapshot/);
+  assert.equal(ctx.langfuseSection({ tokens: null }), "");
 });

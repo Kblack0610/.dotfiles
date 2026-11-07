@@ -78,7 +78,7 @@ cmd_send() {
 
   case "$to" in
     new:?*)
-      out="$(printf '%s\n' "$text" | agent-queue add --project "${to#new:}" --from human)" ||
+      out="$(printf '%s\n' "$text" | agent-queue add --project "${to#new:}" --from human --want voice)" ||
         die "send: agent-queue add failed for ${to#new:}"
       read -r _ slug _ <<<"$out"
       fleet-dispatch start --item "$slug" ||

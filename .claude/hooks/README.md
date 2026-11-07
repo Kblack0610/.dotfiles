@@ -100,7 +100,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 - `long_runs` lists the stretches between compactions that ran 150 or more responses (`claude-recall tool-output --long-turns N` to change it), top 10 by carried cost.
 - `agent-usage tokens line` prints the one-line row that `day-log` and the `fleet-bench` scorecard show; `tokens json --date D` is the day's snapshot, which `day-log` copies into `.agents`.
 - `agent-usage tokens check` compares context per response, carried share and the start-context median with the median of the 7 days before. It exits 1 on a rise past 25% (worse) or a drop past 50% (measurement suspect; a drop inside that is an improvement and stays quiet), and 2 when the newest snapshot is more than 2 days old. The Sentinel watch `token-usage-drift` runs it every 6 hours. It only alerts; nothing caps or slows a session.
-- The `langfuse` section is the gateway's figures alone (LiteLLM calls, not Claude sessions): session cost stays `agent-usage burn`, so the two are never summed. The Fleet tab shows it as "What Langfuse sees" (hub `l`), from the newest snapshot.
+- The `langfuse` section is the gateway's figures alone (LiteLLM calls, not Claude sessions): session cost stays `agent-usage burn`, so the two are never summed. The Costs tab shows it as "What Langfuse sees" (hub `l`), from the newest snapshot.
 - `agent-usage tokens check --langfuse` is the read-health watch (`langfuse-read`): exit 1 when the newest two snapshots both carry a null `langfuse` section, naming the reader's reason from `.errors`. One null night is quiet; a snapshot with no `langfuse` key at all (written before the reader) is not a null night.
 
 | Symptom | Cause | Fix |

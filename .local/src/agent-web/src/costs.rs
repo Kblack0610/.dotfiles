@@ -33,6 +33,11 @@ pub struct CostsQuery {
     pub sdir: String,
 }
 
+/// Drop the kept read, so the refresh a new token snapshot asks for reads it.
+pub async fn forget() {
+    LAST.clear().await;
+}
+
 /// A read that failed to find any outcome is not kept: the next refresh tries again.
 fn kept(c: &Costs) -> bool {
     !c.sessions.is_empty() || c.errors.is_empty()
