@@ -958,6 +958,26 @@ pub(crate) const ROW_TYPES: &[&str] = &[
     "design", "market", "legal", "run", "decide", "check", "epic",
 ];
 
+/// The channels a human's want enters by (`ptask add|file --want`), and THE list: the writer
+/// stamps `#requested` on a row that names one, and records it as the ingest event's `want`.
+pub(crate) const WANT_CHANNELS: &[&str] = &[
+    "outbox", "focus", "voice", "request", "ask", "meeting", "human",
+];
+
+/// `--want`'s value, or the channels there are.
+pub(crate) fn want_channel(s: &str) -> anyhow::Result<&'static str> {
+    WANT_CHANNELS
+        .iter()
+        .find(|c| **c == s.trim())
+        .copied()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--want takes one of {}, not '{s}'",
+                WANT_CHANNELS.join(", ")
+            )
+        })
+}
+
 /// The `by_kind` key of a row with no well-formed `type(area):` prefix.
 pub(crate) const UNTYPED: &str = "untyped";
 
@@ -1016,7 +1036,11 @@ pub(crate) fn row_title(line: &str) -> String {
 /// with a tab IFS merges empty columns.
 pub(crate) fn row_parse_tsv(line: &str) -> String {
     let title = row_title(line);
-    let title = if title.is_empty() { "-".to_string() } else { title };
+    let title = if title.is_empty() {
+        "-".to_string()
+    } else {
+        title
+    };
     match row_type_area(line) {
         Some((ty, area)) => format!("{ty}\t{area}\t{title}\t1"),
         None => format!("-\t-\t{title}\t0"),
@@ -4316,9 +4340,17 @@ Version: v0.2.0
             "feat\tfleet-bench\ta row line\t1"
         );
         // the grammar's own refusals: an unknown type, a breaking `!`, an area with a slash
-        for text in ["feature(x): a", "fix(x)!: a", "fix(a/b): a", "no prefix at all"] {
+        for text in [
+            "feature(x): a",
+            "fix(x)!: a",
+            "fix(a/b): a",
+            "no prefix at all",
+        ] {
             let out = row_parse_tsv(text);
-            assert!(out.starts_with("-\t-\t") && out.ends_with("\t0"), "{text}: {out}");
+            assert!(
+                out.starts_with("-\t-\t") && out.ends_with("\t0"),
+                "{text}: {out}"
+            );
         }
         assert_eq!(row_parse_tsv(""), "-\t-\t-\t0");
         // a tab or CR inside the text never makes a fifth column: the title is its words

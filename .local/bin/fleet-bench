@@ -1506,7 +1506,8 @@ ledger_counts() {
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
 # wants_unstamped: of the agent-lane rows the human's channels added over the last CHAIN_DAYS
 # (ingest.jsonl: an added or filed event whose writer is "human" or unnamed; only an agent row can
-# carry #requested), the share that carry no #requested.
+# carry #requested), the share that carry no #requested. An event naming its channel (`want`, set by
+# `ptask --want`) was stamped by the writer.
 # routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves, and runners whose SKILL= names nothing (triage_coverage).
 # reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json).
 # admission_held: automated adds the queue's admission held in the last 7 days (agent-queue admit).
@@ -1522,7 +1523,7 @@ wants_stats() {
   [ -r "$BENCH_INGEST" ] || return 1
   jq -Rnc --arg since "$(date -d "@$(( $1 - CHAIN_DAYS * 86400 ))" +%F)" '
     [inputs | fromjson? | select((.ts // "")[0:10] >= $since and .lane == "agent" and (.action | IN("added", "filed")) and ((.by // "") | IN("", "human")))
-         | {from: (.from // "?"), stamped: ((.text // "") | test("#requested"))}] as $w
+         | {from: (.from // "?"), stamped: ((.want // "") != "" or ((.text // "") | test("#requested")))}] as $w
     | {total: ($w | length), unstamped: ($w | map(select(.stamped | not)) | length),
        by_project: ($w | group_by(.from) | map({key: .[0].from, value: {total: length, unstamped: map(select(.stamped | not)) | length}}) | from_entries)}' "$BENCH_INGEST"
 }
