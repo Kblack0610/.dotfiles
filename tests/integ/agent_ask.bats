@@ -430,7 +430,7 @@ outcomes_cli() {
   # marks, the question and its option list are gone.
   assert_line 'it said   Merged #1 and rebuilt the hub.'
   assert_line '          It stays open until you answer.'
-  refute_output --partial 'col'
+  refute_output --partial '| col'  # the table row; a bare 'col' hits a random ask id (jcoluj)
   refute_output --partial 'code here'
   refute_output --partial '1. yes'
   refute_output --partial 'Older status'

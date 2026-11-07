@@ -28,6 +28,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
     ("charts.js", JS, include_bytes!("../static/charts.js")),
+    ("convo.js", JS, include_bytes!("../static/convo.js")),
     ("app.js", JS, include_bytes!("../static/app.js")),
     ("waiting.js", JS, include_bytes!("../static/waiting.js")),
     ("home.js", JS, include_bytes!("../static/home.js")),
@@ -174,6 +175,7 @@ mod tests {
 
     const APP_JS: &str = include_str!("../static/app.js");
     const FLEET_JS: &str = include_str!("../static/fleet.js");
+    const WAITING_JS: &str = include_str!("../static/waiting.js");
 
     /// The quoted names in the `[...]` or `{...}` after `const <name> = ` in `js`.
     fn js_list(js: &str, name: &str) -> Vec<String> {
@@ -263,6 +265,15 @@ mod tests {
             .collect();
         let columns = hub_core::session_table::SessionRow::COLUMNS;
         assert_eq!(keys, columns[..columns.len() - 3]);
+    }
+
+    #[test]
+    fn need_kinds_are_the_readers() {
+        // docs/dashboards.md rule 8: hub_core::home names a row's kind; the page only labels it.
+        for k in hub_core::home::NeedKind::ALL {
+            let line = format!("  {}: \"{}\",", k.slug(), k.label());
+            assert!(WAITING_JS.contains(&line), "{line} is not in waiting.js");
+        }
     }
 
     #[test]

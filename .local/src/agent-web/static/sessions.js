@@ -1,9 +1,9 @@
 "use strict";
-// Sessions with no session open: the capacity header, the table and the folds under it. Rows and
-// the header come from hub-core (`session_table`, `capacity`) through /api/sessions/*, and the
-// server filters and sorts by the view in the URL (table.js). Any row opens that session's page,
-// `#sessions/<id>`, which is hub-core's `session_page` through /api/sessions/page; a session on a
-// pane here also has its Transcript and Screen beside it (app.js).
+// Sessions with no session open: the overview tiles, the capacity header, the table and the folds
+// under it. Rows, counts, spend and the header come from hub-core (`session_table`, `capacity`)
+// through /api/sessions/*, and the server filters and sorts by the view in the URL (table.js). Any
+// row opens that session's conversation, `#sessions/<id>` (app.js); its Details page is hub-core's
+// `session_page` through /api/sessions/page, and a session on a pane here also has its Screen.
 
 // A day's ended sessions on a busy day run to hundreds, so the table stops here until asked.
 const SESSIONS_OPEN = 200;
@@ -33,6 +33,18 @@ function capPart(p) {
     ? ` <span class="capask">${esc(p.confirm)} <button class="btn sm" data-go="${esc(p.start)}">Start</button> <button class="btn sm" data-keep>Cancel</button></span>`
     : ` <button class="btn sm" data-start="${esc(p.start)}">Start</button>`;
   return `<span class="${p.warn ? "capwarn" : ""}">${esc(p.text)}</span>${start}`;
+}
+
+// The overview row: the table's state chips as tiles, and what the shown rows cost. A tile is the
+// chip it replaces, so a tap filters the table and a tap on the one in force clears it.
+const TILE_COLOR = { running: "var(--b-working)", "needs you": "var(--b-needs)", stalled: "var(--b-stalled)", "done today": "var(--b-done)" };
+function sessionsTiles(d) {
+  const t = d.table;
+  const states = t.states.slice(1).map((c) => {
+    const on = c.name === t.state;
+    return `<button class="tile${on ? " on" : ""}" data-ts="${on ? "" : esc(c.name)}" style="--c:${TILE_COLOR[c.name] || "var(--c-other)"}"><span class="tl">${esc(c.name.toUpperCase())}</span><span class="tv">${c.n}</span></button>`;
+  });
+  return `<div class="tiles stiles">${states.join("")}${tile("SPEND", usd(d.spend_usd), "var(--accent)", `${t.shown} shown`)}</div>`;
 }
 
 function sessionsHead() {
@@ -92,14 +104,14 @@ function renderOverview() {
   }
   // A refresh must not take the search box from under the human, so everything around it repaints and it stays.
   if (document.activeElement?.id === "sessions-q") {
+    paint($("sessions-tiles"), sessionsTiles(d));
     paint($("sessions-head"), sessionsHead());
     paint($("sessions-facets"), tblFacets(d.table));
-    paint($("sessions-chips"), tblChips(d.table));
     paint($("sessions-body"), sessionsBody(d));
     paint($("sessions-folds"), overviewFolds(), wst.open);
     return;
   }
-  paint(el, `<div id="sessions-head">${sessionsHead()}</div>${tblBar("sessions", d.table, "search, or project:dotfiles pr:open item:none")}` +
+  paint(el, `<div id="sessions-tiles">${sessionsTiles(d)}</div><div id="sessions-head">${sessionsHead()}</div>${tblBar("sessions", d.table, "search, or project:dotfiles pr:open item:none", false)}` +
     `<div id="sessions-body">${sessionsBody(d)}</div><div id="sessions-folds">${overviewFolds()}</div>`, wst.open);
 }
 
@@ -148,8 +160,9 @@ function pagePart(p) {
   return pageRow(p.label, p.link ? `<a href="${esc(p.link)}"${out}>${esc(p.text)}</a>` : esc(p.text), p.warn);
 }
 
-// The parts are hub-core's; what is drawn here is the card for a session still in the state
-// document, and the folds. An ended session's card is what it was opened for, so it starts open.
+// The Details view. The parts are hub-core's; what is drawn here is the card for a session still in
+// the state document, and the folds. An ended session's card is what it was opened for, so it
+// starts open.
 function pageHtml(p) {
   const s = sessionsOf().find((x) => (p.session_id && x.session_id === p.session_id) || (p.target && x.target === p.target));
   wst.open["page-outcome"] ??= true;
@@ -157,7 +170,6 @@ function pageHtml(p) {
   return `<div class="pghead"><span class="chip" style="--c:${bucketColor(p.bucket)}">${esc(p.bucket)}</span> <span class="muted">${esc(p.idle)}</span> ${esc(p.task)}</div>` +
     p.errors.map((e) => `<div class="card err">${esc(e)}</div>`).join("") +
     p.parts.map(pagePart).join("") +
-    pageRow("Transcript", '<button class="btn sm" data-transcript>Load</button>') +
     outcome + (s ? fold("page-state", "Fleet state", card(s, maxContext(), Date.now())) : "");
 }
 
@@ -180,7 +192,7 @@ const loadPage = coalesce(async () => {
 
 $("scroll").addEventListener("click", (e) => {
   const d = e.target.dataset || {};
-  if (st.sel) { if (d.transcript !== undefined) setView("transcript"); return; }
+  if (st.sel) return;
   const patch = tblPatch(e);
   if (patch) sessionsView(patch);
   else if (d.start) { sst.confirm = d.start; renderOverview(); }

@@ -3,6 +3,7 @@ name: go
 description: "Proceed at this checkpoint with your best-practice recommendation — record assumptions, don't ask. Optional scope: $ARGUMENTS"
 allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, AskUserQuestion, EnterPlanMode, ExitPlanMode, TaskCreate, TaskUpdate, TaskList]
 argument-hint: "[optional scope, e.g. 'until tests pass' or 'just this PR']"
+disable-model-invocation: true
 ---
 
 # Go — best-judgment passthrough (one-shot)
