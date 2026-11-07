@@ -952,8 +952,9 @@ kpi_setup() {
   cat >> "$SANDBOX/bin/notes" <<'NS'
 echo "$*" >> "$L"
 [ "$1 $2" != "row parse" ] || exec bash "$S" row parse   # the shared stub's row.parse lookup table (parses)
-if [ "$1 $2" = "ptask home-config" ]; then
-  case "$3" in list) cat "$B.home" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$B.home" ;; esac
+if [ "$1" = ptask ] && [ "$3" != --agent ]; then   # a human sheet: home-config's in $B.home, another's in $B.<project>
+  H="$B.home"; [ "$2" = home-config ] || H="$B.$2"
+  case "$3" in list) cat "$H" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$H" ;; esac
   exit 0
 fi
 [ "$1 $2 $3" = "ptask agent-runtime --agent" ] || exit 9
@@ -1504,17 +1505,64 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   refute_output --partial 'none'
 }
 
-@test "triage: a cause already queued, or closed with the red still here, is not queued again" {
+# fix_item <slug> <state> <status> [pr] [merged]: one window item for the lock cause, as agent-queue lists it
+fix_item() {
+  jq -cn --arg t "red cause:$(cause_of)" --arg slug "$1" --arg s "$2" --arg st "$3" --arg pr "${4:-}" --arg m "${5:-}" \
+    '{slug: $slug, tags: $t, state: $s, status: (if $st == "" then null else $st end), queued: "2020-01-01T00:00:00Z",
+      pr: (if $pr == "" then null else $pr end), merged: (if $m == "" then null else $m end)}' >> "$ITEMS"
+}
+
+@test "triage: a cause in hand is not queued again: running, or closed with its PR waiting on a merge" {
   log_triage_setup
   lock_route
-  for state in running done; do
-    jq -cn --arg t "red cause:$(cause_of)" --arg s "$state" '{tags: $t, state: $s, queued: "2020-01-01T00:00:00Z"}' > "$ITEMS"
-    run "$SUBJECT" triage
-    assert_success
-    [ ! -s "$PLOG" ]
-  done
+  fix_item ar-1 running ''
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  : > "$ITEMS"; fix_item ar-1 done ok o/r#5 ''
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
   run grep -c 'fix(logs): alpha error' "$BOARD"   # the row still files
   assert_output 1
+}
+
+@test "triage: a fix that closed cancelled, failed or merged with the red still here is queued once more, naming it" {
+  log_triage_setup
+  lock_route
+  for row in "done cancelled" "done failed" "done ok o/r#5 2020-01-02T00:00:00Z"; do
+    : > "$ITEMS"; : > "$PLOG"
+    # shellcheck disable=SC2086
+    fix_item ar-1 $row
+    run "$SUBJECT" triage
+    assert_success
+    assert_output --partial '1 queued as red fixes'
+    run cat "$PLOG"
+    assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+  done
+}
+
+@test "triage: a cause whose two fixes did not hold goes to the human sheet and pages once, with no third item" {
+  log_triage_setup
+  lock_route
+  fix_item ar-1 done cancelled
+  fix_item ar-2 done ok o/r#5 2020-01-02T00:00:00Z
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 for the human'
+  [ ! -s "$PLOG" ]
+  run grep -c 'fix(logs): alpha error .*(red fixes that did not hold: ar-1,ar-2)' "$BOARD.agent-runtime"
+  assert_output 1
+  run "$SUBJECT" triage
+  assert_success
+  [ "$(grep -c 'agent-runtime sheet: fix(logs): alpha error' "$NOTIFY")" = 1 ]
+  [ "$(grep -c . "$BOARD.agent-runtime")" = 1 ]
+  # one more allowed try is one more item, not a page
+  : > "$PLOG"; rm "$BOARD.agent-runtime"
+  TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  refute_output --partial 'for the human'
 }
 
 @test "triage: a dispatch hold or an unreadable queue queues nothing, and the row still files" {
