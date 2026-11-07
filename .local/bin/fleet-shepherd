@@ -2,7 +2,7 @@
 # fleet-shepherd - the shepherd as a scheduled runner, over the fleet state document.
 #
 #   fleet-shepherd run     one scheduled pass (agentctl runner `shepherd`): refresh the state
-#                          document, score the last pass and start a fresh `/fleet-lead pass` in
+#                          document, score the last pass and start a fresh `/<skill> pass` (the conf's SKILL=, fleet-lead) in
 #                          its place, in the same pane of window hub:shepherd on the hub
 #                          server (Prefix o). A run starts nothing while the
 #                          lease holder is mid-sweep and nobody is talking to it, or while the
@@ -848,7 +848,7 @@ route_block() {
 }
 
 # --- the pass: an interactive claude in one tmux pane, a fresh one per run --------------------
-# A pass is a fresh `/fleet-lead pass` session in window $WINDOW of session $SESSION on server
+# A pass is a fresh `/<skill> pass` session (the conf's SKILL=, fleet-lead) in window $WINDOW of session $SESSION on server
 # $SERVER, so the human can attach, watch it work and type to it (`fleet-shepherd open`). The runner
 # does not wait for it: the next run scores it and starts the next in the same pane.
 
@@ -958,15 +958,23 @@ score_pass() {
   printf '%s\t%s\n' "$verdict" "$detail"
 }
 
-# pass_prompt <due> [handover file]
+# pass_skill -> the skill a pass runs: the one this runner's conf names, so a rename is one edit there.
+pass_skill() {
+  local skill
+  skill="$(agentctl skill "$NAME" 2>/dev/null)" && [ -n "$skill" ] && { printf '%s\n' "$skill"; return 0; }
+  echo "fleet-shepherd: no SKILL= in the $NAME conf (agentctl skill $NAME)" >&2
+  return 1
+}
+
+# pass_prompt <skill> <due> [handover file]
 pass_prompt() {
   local routes roles
-  routes="$(routes_for "$1")"
+  routes="$(routes_for "$2")"
   roles="$(roles_for "$routes")"
-  printf '/fleet-lead pass\n\nRoles due: %s\n' "$roles"
+  printf '/%s pass\n\nRoles due: %s\n' "$1" "$roles"
   [ "$roles" = none ] || printf 'Read, per role:\n%s\n' "$(route_block "$routes")"
-  printf '\nDue this pass (from fleet-shepherd due):\n%s\n' "${1:-nothing}"
-  [ -z "${2:-}" ] || printf '\nHandover: %s\n' "$2"
+  printf '\nDue this pass (from fleet-shepherd due):\n%s\n' "${2:-nothing}"
+  [ -z "${3:-}" ] || printf '\nHandover: %s\n' "$3"
 }
 
 # pass_account -> the config dir a pass starts on, empty for the main account: the one claude-acct
@@ -1027,7 +1035,8 @@ one_pass() {
 # with neither does the pass session get a new window. one_pass then closes any other. The
 # launcher carries the runner's environment, since a tmux pane gets the server's, not the caller's.
 launch_pass() {
-  local id="$1" n acct v cmd pane
+  local id="$1" n acct v cmd pane skill
+  skill="$(pass_skill)" || return 1
   n="$(printf '%s\n' "$2" | grep -c .)"
   acct="$(pass_account)"
   {
@@ -1042,7 +1051,7 @@ launch_pass() {
     printf 'export AGENTCTL_ACCOUNT=%q\n' "${acct:-default}"
     # shellcheck disable=SC2016
     echo '. "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null || true'
-    printf 'exec agentctl-run --role observe --session-id %q %q\n' "$id" "$(pass_prompt "$2" "${3:-}")"
+    printf 'exec agentctl-run --role observe --session-id %q %q\n' "$id" "$(pass_prompt "$skill" "$2" "${3:-}")"
   } > "$LEDGER/.pass.sh" || return 1
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_watch "$LEDGER/log.md" && proof_mark "$LEDGER/.proof-$id"
@@ -1179,7 +1188,9 @@ cmd_run() {
     due="$trouble: fleet-sessions --write, $STATE_FILE"
   fi
   [ -z "$due" ] || printf '%s: due\n%s\n' "$NAME" "$due"
-  local new hand turns reuse=""
+  local new hand turns reuse="" skill
+  # Before the last pass is replaced: a conf naming no skill must not cost the pass that is running.
+  skill="$(pass_skill)" || { publish FAILED "no SKILL= in the $NAME conf"; return 1; }
   new="$(cat /proc/sys/kernel/random/uuid)" || return 1
   hand="$LEDGER/.handover-$new"
   # The last pass is replaced in its own pane, and what the human said to it goes to the new one.
