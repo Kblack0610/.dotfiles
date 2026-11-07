@@ -548,8 +548,8 @@ claude_gone() {
 # read is not a witness: on 2026-11-07 (ar-900) a panel at 78% CPU under load 33 left a live session
 # out, and reap failed an urgent item whose re-read a minute later listed it. A reap that does not
 # read the item gone clears its mark (reap_seen), so only consecutive misses count. The mark stays
-# once confirmed, so an item settle_item leaves active (waiting on its open PR) stays gone, and goes
-# with the item (cmd_reap prunes marks of slugs no longer active).
+# once confirmed, so an item settle_item leaves active (waiting on its open PR) stays gone; it goes
+# when the item closes, and cmd_reap prunes the marks of slugs no longer active.
 reap_confirm() {
   local f="$DIR/reap-miss/$1" first
   first=$(cat "$f" 2>/dev/null)
@@ -1940,7 +1940,7 @@ held_outcome() { case "$1" in "held (agent-hold"*) echo NOOP ;; *) echo BLOCKED 
 # What a start takes out of runnable, as a jq condition: next_items and stats' urgent/high counts read it.
 TAKEN_JQ='(.waits | not) and (.agent // "claude") == "claude"'
 
-# next_items -> the queued items a pass may try, in agent-queue's order (red, priority, cleanup, age),
+# next_items -> the queued items a pass may try, in agent-queue's order (red, priority, project rank, cleanup, age),
 # one JSON object a line. An item whose `agent:` is a gateway harness is an eval run the human paired,
 # so only a hand or a batch starts it; a pass moves a claude item onto Lazer only as a spill, when no
 # account has room (start_item).
@@ -2488,6 +2488,8 @@ cmd_reap() {
     if [ -n "$gone" ]; then
       settle_item "$slug" "${sess:-${sids##* }}"
       settle_row "$slug"
+      # Closed, its mark goes at once: an item put back (agent-queue reopen) starts with no miss on record.
+      [ "$(item_state "$slug")" != "done" ] || reap_seen "$slug"
       continue
     fi
     [ -n "$sess" ] || continue
