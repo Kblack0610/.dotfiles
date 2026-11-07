@@ -96,3 +96,11 @@ run_hook() {
   run jq -r .first_prompt "$REG"
   assert_output "from the bnb account"
 }
+
+@test "a Stop records the endpoint it ran on: the gateway's URL for a claude-lazer session, null on an account" {
+  ANTHROPIC_BASE_URL=https://gateway.example run_hook
+  assert_equal "$(jq -r .base_url "$REG")" https://gateway.example
+  # negative control: no ANTHROPIC_BASE_URL is an account session, and the field is still there
+  env -u ANTHROPIC_BASE_URL bash -c "$(declare -f run_hook); TRANSCRIPT='$TRANSCRIPT' HOOK='$HOOK' run_hook"
+  assert_equal "$(jq -c '[has("base_url"), .base_url]' "$REG")" '[true,null]'
+}

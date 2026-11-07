@@ -125,7 +125,9 @@ jq -nc \
   --arg title "$TITLE" \
   --argjson updated "$NOW" \
   --argjson usage "${USAGE:-null}" \
-  '{session_id:$sid, project:$project, transcript:$transcript, resume:$resume, first_prompt:$first_prompt, edits:$edits, head_commit:$head_commit, title:$title, updated:$updated}
+  --arg base_url "${ANTHROPIC_BASE_URL:-}" \
+  '{session_id:$sid, project:$project, transcript:$transcript, resume:$resume, first_prompt:$first_prompt, edits:$edits, head_commit:$head_commit, title:$title, updated:$updated,
+    base_url: (if $base_url == "" then null else $base_url end)}
    + (if $usage == null then {} else {
         cost_usd:      $usage.cost_usd,
         usage_source:  $usage.usage_source,

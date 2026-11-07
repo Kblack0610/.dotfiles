@@ -220,6 +220,7 @@ fn row(i: &Item, p: Palette, now: i64) -> Vec<Cell> {
         cell(i.priority.clone(), prio),
         i.project.clone().into(),
         mode.into(),
+        i.harness_label().into(),
         t.into(),
         state(i, p),
         task.into(),
@@ -321,13 +322,13 @@ pub fn page(
         }
         let mut t = Table {
             header: vec![
-                "SLUG", "PRIORITY", "PROJECT", "MODE", "WHEN", "STATE", "TASK",
+                "SLUG", "PRIORITY", "PROJECT", "MODE", "HARNESS", "WHEN", "STATE", "TASK",
             ],
             rows: rows.iter().map(|i| row(i, p, now)).collect(),
-            keep: vec![0, 5, 1, 4, 2, 3],
-            flex: Some(6),
+            keep: vec![0, 6, 1, 5, 2, 3, 4],
+            flex: Some(7),
             flexmin: 20,
-            cap: vec![(0, 40), (5, 36)],
+            cap: vec![(0, 40), (4, 20), (6, 36)],
             ..Default::default()
         }
         .fit(w, p.head());
