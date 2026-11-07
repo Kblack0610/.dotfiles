@@ -34,7 +34,7 @@ Not for how dispatch picks and starts sessions (`fleet-dispatch`), or an account
 ## States and moves
 
 - queued -> running when a session starts on it; running -> waiting while its session waits on the human or owns a pending ask (`fleet-dispatch reap` does this); -> done when closed.
-- `agent-queue move <slug> <state>`; `done` needs `--status ok|failed|cancelled`, and `done --status ok` on an item with `pr:` refuses until it has `merged:` (agent-land, or reap on merge, writes it). `--if <state>` makes the move conditional and exits 3 when the item is elsewhere. `cancel <slug>`, `bump <slug> <priority>`, `set <slug> key=value` (for example `pr=<N>`). `reopen <slug> [--to running|waiting] [--why text]` puts back an item a false close finished (a reap that read a live session as gone) and starts its board row again; it refuses a landed item.
+- `agent-queue move <slug> <state>`; `done` needs `--status ok|failed|cancelled`, and `done --status ok` on an item with `pr:` refuses until it has `merged:` (agent-land, or reap on merge, writes it). `--if <state>` makes the move conditional and exits 3 when the item is elsewhere. `cancel <slug>`, `bump <slug> <priority>`, `set <slug> key=value` (for example `pr=<N>`). `reopen <slug> [--to running|waiting] [--why text]` puts back an item a false close finished (a reap that read a live session as gone) and starts its board row again; it refuses a cancelled or landed item.
 - `agent-land` normally does the closing. Use `move ... done` by hand only for work with no PR.
 
 ## Why an item is not starting
