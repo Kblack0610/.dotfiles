@@ -10,7 +10,7 @@ paths:
 metadata:
   category: monitoring
   tags: [claude-acct, accounts, pace, budget, dispatch]
-  reviewed: "2026-11-06"
+  reviewed: "2026-11-07"
 ---
 
 # fleet-accounts
@@ -28,7 +28,7 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 ## Read the room
 
 1. `claude-acct room` prints the account dir to use and exits 0. Exit 1 means none has room; exit 2 means none has room and one account is unreadable. When refused, the last stderr line names the closest account, its points over pace, and when it runs out at this rate.
-2. `claude-acct status` (or `--json`) is the table: 5H, WEEK, GONE (share of the week elapsed), PACE (over or under, no slack), RUNS-OUT, RESETS, LIVE sessions, 24H-$, ROOM (ok, or the reason). There is no `pace` verb; the ROOM column is the gate.
+2. `claude-acct status` (or `--json`) is the table: 5H, WEEK, GONE (share of the week elapsed), RUNS-OUT, RESETS, LIVE sessions, 24H-$, ON-PACE, ROOM (ok, or the reason). There is no `pace` verb and no over or under word: the ROOM column is the gate. The hub Fleet and Costs tabs and agent-web print the same verdict as a ROOM cell (`no room: pace 20 points past the line`, `room, 4 points spare`) from the `claude_account_room*` series, and say `stale` when the textfile is over an hour old (the `claude-acct-usage` timer has stopped).
 3. The verdict is each account's `room` object in `claude-acct status --json` and in `claude-acct room --json`, whose answer is `{pick, why, accounts}`: `pick` names the best account with room (null when none), and `why` is the refusal sentence `room` prints. Each `room` object has `ok`, `reason` (`unread`, `capped`, `reserve`, `pace`, `five_hour`, `committed`, or `ok`, the first that refuses), `reasons` (every one that refuses, in that order), `why` (the sentence a refusal prints), `over_points` past the pace line after the slack, `headroom_points` (signed), `capped`. The rule is written once, in `usage_json`: week used at most week gone plus the slack, week used under 100 minus the reserve, the 5 hour window under 100 minus the reserve, and the live sessions not already using the rest of the week. The reserve is kept for the human's own work. An account with an expired token counts as having room, so check `claude-acct check usage` when `status` looks odd. The machine-mode level scales slack and reserve. The mid numbers are in `.config/claude-acct/pace.conf`, read by `claude-acct` only, with no env override. The textfile carries `claude_account_room`, `claude_account_room_headroom_points` and `claude_account_room_reason{reason}`, which the waybar queue chip names when the account gate holds dispatch. `fleet-dispatch` and `fleet-shepherd` read `room --json` and never re-derive the verdict.
 4. For the dispatch side run `fleet-dispatch stopped` (add `--json` for a parse) and `fleet-dispatch run --dry-run`. They name every gate in one line each: account room, `fleet-assess` HOLD, load against `DISPATCH_MAX_LOAD`, the idle floor, run units. "Clears when an account is back under its pace" is the line for this gate.
 

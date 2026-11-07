@@ -50,9 +50,9 @@ If anything is missing: **STOP**. Report it and ask. Do not auto-fix, and do not
 wt gc "$(git rev-parse --show-toplevel)" --dry-run
 ```
 
-That is the whole assessment: one row per worktree, each either `would reap` or `kept` with the reason (`dirty (N uncommitted)`, `unpushed commits`, `its tmux session is live`). Show it to the user verbatim.
+That is the whole assessment: one row per worktree, its action (`would reap`, `kept`, `skipped`), its state word (`.local/src/tmux/README.md`, "Worktree states") and the reason (`dirty (N uncommitted)`, `unpushed commits`, `its tmux session is live`). Show it to the user verbatim.
 
-Anything `kept` for being **dirty or unpushed** is holding the only copy of real work. Surface it by name and branch and let the user decide — commit and push, or leave it. Do not auto-commit a dirty tree: a `wip:` commit over someone else's interleaved changes is exactly how foreign WIP gets shipped.
+Anything `held`, or `claimed` with a dirty or unpushed reason, is holding the only copy of real work. Surface it by name and branch and let the user decide — commit and push, or leave it. Do not auto-commit a dirty tree: a `wip:` commit over someone else's interleaved changes is exactly how foreign WIP gets shipped.
 
 If `--dry-run` was passed, stop here.
 

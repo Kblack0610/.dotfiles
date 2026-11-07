@@ -517,7 +517,7 @@ declare_in_lab() {
   [ -d "$WT_ROOT/repo-agent-2" ] || fail "gc deleted a dirty worktree"
 }
 
-@test "gc names a kept tree nobody is in as stranded, and counts it" {
+@test "gc names a kept tree nobody is in as held, and counts it" {
   # A dirty tree whose owner is gone is held every night forever; the kept line is the only
   # place anyone will notice it, so it has to say so.
   make_repo
@@ -525,12 +525,12 @@ declare_in_lab() {
   printf 'edit\n' > "$WT_ROOT/repo-agent-2/file.txt"
   run "$WT" gc --dry-run
   assert_success
-  assert_output --partial 'stranded, nobody in it'
-  assert_output --partial '1 kept, 1 stranded'
-  [ -d "$WT_ROOT/repo-agent-2" ] || fail "gc deleted a stranded worktree"
+  assert_line --regexp '^kept +repo-agent-2 +held +dirty'
+  assert_output --partial '1 kept, 0 skipped; landed 0, husk 0, claimed 0, held 1,'
+  [ -d "$WT_ROOT/repo-agent-2" ] || fail "gc deleted a held worktree"
 }
 
-@test "gc does not call a dirty tree with a live session stranded" {
+@test "gc calls a dirty tree with a live session claimed, not held" {
   make_repo
   add_wt repo-agent-2
   printf 'edit\n' > "$WT_ROOT/repo-agent-2/file.txt"
@@ -538,9 +538,8 @@ declare_in_lab() {
   printf 'repo-agent-2\n' > "$NOTES_FIXTURE/tmux.sessions"
   run "$WT" gc --dry-run
   assert_success
-  assert_output --partial 'dirty'
-  refute_output --partial 'stranded, nobody in it'
-  assert_output --partial '1 kept, 0 stranded'
+  assert_line --regexp '^kept +repo-agent-2 +claimed +dirty'
+  assert_output --partial 'claimed 1, held 0,'
 }
 
 @test "gc --dry-run removes NOTHING" {
