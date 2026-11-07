@@ -72,8 +72,7 @@ the `custom/*` ids from that config's `modules-*` lists in
 pin dies without `pin.sh`, the main bar takes its modules back on their next tick.
 A group in a pin's module list is expanded to its members (looked up in the pin config, then `config.base`), one level deep.
 
-Heads up when testing: `pin.sh` stops the pin with `pkill -f 'waybar.*config.pin'`,
-so a shell whose own command line contains both strings gets killed too.
+`pin.sh` finds the pin by that same pid (still a `waybar` in `/proc/<pid>/comm`) and stops it with `kill <pid>`, so no other process can match it.
 
 ## Status cluster
 
