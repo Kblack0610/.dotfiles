@@ -177,11 +177,13 @@ class Requests:
     def line(self, d):
         t = d.get("type")
         if t == "api-request-shape":
-            if d.get("shapeHash") not in self.shapes:
-                self.shapes[d.get("shapeHash")] = shape_parts(d.get("shape") or {})
+            h = d.get("shapeHash")
+            if h and h not in self.shapes:
+                self.shapes[h] = shape_parts(d.get("shape") or {})
         elif t == "api-request-blob":
-            if d.get("hash") not in self.blobs:
-                self.blobs[d.get("hash")] = blob_parts(d.get("message") or {})
+            h = d.get("hash")
+            if h and h not in self.blobs:
+                self.blobs[h] = blob_parts(d.get("message") or {})
         elif t == "api-request" and d.get("id"):
             base, keep, tail = d.get("base"), d.get("keep") or 0, d.get("tail") or []
             if base and base not in self.reqs:
@@ -201,7 +203,7 @@ class Requests:
     def parts(self, ref):
         """(parts, tools) of request `ref`, or None when it was not recorded."""
         r = self.reqs.get(ref)
-        if r is None or r["shape"] not in self.shapes:
+        if r is None or r["shape"] not in self.shapes:  # no hash is never a key, so it is unrecorded
             return None
         sp, tools = self.shapes[r["shape"]]
         return sp + r["parts"], tools
