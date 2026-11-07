@@ -233,6 +233,13 @@ def rank: sort_by((.cleanup // 1), (.pprio // 2), (.due // 3), (.req // 1), (.wr
 # shellcheck source=../lib/plan-phases.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
 repo_dir() { PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_repo_path "$1"; }
+# pr_repo_dir <pr ref> <project> -> the checkout an item's PR merged into: the repo an
+# <owner>/<repo>#<N> ref names (one project spans repos: agent-runtime lands in .dotfiles,
+# .dotfiles-private and home-config), else, for a bare number, the project's own.
+pr_repo_dir() {
+  [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] || { repo_dir "$2"; return; }
+  repo_dir "$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_of_repos_json "${BASH_REMATCH[1]}" | jq -r '.[]')"
+}
 # shellcheck source=../lib/agent-merge-proof.sh
 . "${MERGE_PROOF_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh}"
 # shellcheck source=../lib/chain-event.sh
@@ -1712,7 +1719,7 @@ item_row() {
 
 # close_row <slug> -- an item with a row, done ok, whose row is still started: the session died before
 # agent-land closed it, or closed the item before its PR merged (land_orphan). Closed only on merge proof (agent-merge-proof.sh) of the item's
-# merged: commit in the project's checkout, with proof "pr:<N> commit:<sha12>"; with no proof the
+# merged: commit in the checkout of the repo its PR names, with proof "pr:<N> commit:<sha12>"; with no proof the
 # row is left started and the reason logged, so a false close never happens.
 close_row() {
   local it row prof project lane key flag=() oid pr dir out
@@ -1723,9 +1730,9 @@ close_row() {
   [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || return 0
   # The row closes on the item's first PR: pr: and merged: are lists in step, one PR per repo.
   oid=$(jq -r '.merged // "" | split(" ")[0] // empty' <<<"$it"); pr=$(jq -r '.pr // "" | split(" ")[0] // empty' <<<"$it")
-  dir=$(repo_dir "$project")
+  dir=$(pr_repo_dir "$pr" "$project")
   if [ -z "$oid" ] || [ -z "$dir" ] || ! out=$(merge_proof "$dir" "${pr##*#}" "$(merge_proof_branch "$dir")" "$oid" 2>&1); then
-    logline "queue item $1: $project row left started, no merge proof: ${out:-no merged commit or checkout}"
+    logline "queue item $1: $project row left started, no merge proof: ${out:-${oid:+no checkout of the repo $pr names}${oid:-no merged commit}}"
     return 0
   fi
   np "$prof" ptask "$project" "${flag[@]}" done "$key" --proof "pr:${pr##*#} commit:${oid:0:12}" >/dev/null 2>&1 ||
