@@ -9,7 +9,8 @@
 # only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
 # "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item needs checks that ran), merge (--squash
 # --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
-# on origin/<base>, by agent-merge-proof.sh), item (the queue item gets pr:<owner>/<repo>#<pr>,
+# on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
+# checkout when this repo is ~/.dotfiles or ~/.dotfiles-private; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok), board (the
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
@@ -268,6 +269,7 @@ if [ "$dry" -eq 1 ]; then
   echo "merge: gh pr merge $pr --squash --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr --json state  (must be MERGED)"
   echo "body: gh pr view $pr --json body | comms-lint --channel pr-body -  (a score, never a gate)"
   echo "proof: gh pr view $pr --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
+  echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo; never fails the landing)"
   echo "item: agent-queue set $item pr=$pr merged=<sha> && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
   mapfile -t b < <(board_cmd)
   [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
@@ -309,6 +311,10 @@ merged=$(gh pr view "$pr" --json mergeCommit -q .mergeCommit.oid 2>&1) || fail p
 . "$(dirname "$(readlink -f "$0")")/../lib/agent-merge-proof.sh"
 out=$(merge_proof . "$pr" "$base" "$merged" 2>&1) || fail proof "$(lastline "$out")"
 echo "proof: $out"
+# Stow serves the main checkouts, so a merged dotfiles PR is live only once its checkout moves:
+# fast-forward it now. Prints nothing for any other repo, and never fails the landing.
+live=$("${DOTFILES_AUTOPULL:-$(dirname "$(readlink -f "$0")")/dotfiles-autopull}" --now . 2>/dev/null) || true
+[ -z "$live" ] || echo "live: $live"
 # shellcheck source=../lib/chain-event.sh
 . "${CHAIN_EVENT_LIB:-$(dirname "$(readlink -f "$0")")/../lib/chain-event.sh}"
 chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \

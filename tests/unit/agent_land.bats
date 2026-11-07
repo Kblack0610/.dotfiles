@@ -83,6 +83,16 @@ exit "$(cat "$NOTES_FIXTURE/lint.rc" 2>/dev/null || echo 0)"
 EOF
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git" "$SANDBOX/bin/comms-lint"
 
+  # dotfiles-autopull: logs its call, prints autopull.out, exits autopull.rc (0 by default)
+  cat >"$SANDBOX/bin/dotfiles-autopull" <<'EOF'
+#!/usr/bin/env bash
+printf 'dotfiles-autopull %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+cat "$NOTES_FIXTURE/autopull.out" 2>/dev/null
+exit "$(cat "$NOTES_FIXTURE/autopull.rc" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$SANDBOX/bin/dotfiles-autopull"
+  export DOTFILES_AUTOPULL="$SANDBOX/bin/dotfiles-autopull"
+
   # The real agent-queue, on a sandbox store: the item steps are its verbs.
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0
@@ -274,6 +284,7 @@ git -C . rev-parse --verify --quiet refs/remotes/origin/main
 git -C . rev-parse --verify --quiet fedcba9876543210fedcba9876543210fedcba98^{commit}
 git -C . merge-base --is-ancestor fedcba9876543210fedcba9876543210fedcba98 origin/main
 git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
+dotfiles-autopull --now .
 notes ingest record --stage land --action merged --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 -- ship
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
@@ -478,9 +489,10 @@ EOF
   assert_line --index 4 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
   assert_line --index 5 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
   assert_line --index 6 --partial 'proof: gh pr view 42 --json mergeCommit'
-  assert_line --index 7 'item: agent-queue set ship pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 8 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 9 --partial 'plan: tick'
+  assert_line --index 7 --partial 'live: dotfiles-autopull --now .'
+  assert_line --index 8 'item: agent-queue set ship pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 9 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 10 --partial 'plan: tick'
   run cat "$LOG"
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -559,8 +571,8 @@ EOF
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 7 'item: agent-queue set tidy pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 8 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 8 'item: agent-queue set tidy pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 9 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -724,4 +736,31 @@ EOF
   assert_line 'landed #42'
   run agent-queue show unread --json
   assert_equal "$(jq -r '"\(.state) \(.project)"' <<<"$output")" 'done dotfiles'
+}
+
+@test "live: after the merge proof, the stowed checkout of this repo is fast-forwarded and said" {
+  printf '~/.dotfiles: fast-forwarded main 01234567..fedcba98\n' >"$NOTES_FIXTURE/autopull.out"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'live: ~/.dotfiles: fast-forwarded main 01234567..fedcba98'
+  run grep 'pr merge 42\|^dotfiles-autopull' "$LOG"
+  assert_line --index 0 --partial 'pr merge 42'
+  assert_line --index 1 'dotfiles-autopull --now .'
+}
+
+@test "live: a repo that is not a stowed checkout gets no line" {
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'live:'
+  assert_line 'landed #42'
+}
+
+@test "live: a failing autopull never fails the landing" {
+  printf '1\n' >"$NOTES_FIXTURE/autopull.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
+  DOTFILES_AUTOPULL="$SANDBOX/no-such-autopull" run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
 }
