@@ -278,3 +278,85 @@ test("a fix the queue already holds shows its item, and a new window offers fixe
   } finally { ctx.fetch = before; }
   vm.runInContext("hst.night = null; hst.nightErr = null; hst.fix = {}", ctx);
 });
+
+test("a search reads the Proposals section alone and lays it over the Home already held", async () => {
+  const seen = [];
+  const before = ctx.fetch;
+  ctx.URLSearchParams = URLSearchParams;
+  ctx.fetch = async (path) => {
+    seen.push(path);
+    const body = path.startsWith("/api/home/proposals")
+      ? { proposals: [prop("b2")], proposals_head: "2 from 1 stream", proposals_table: table(2) }
+      : home({ needs: [{ kind: "queue", project: "p", text: "kept", id: "q1" }], proposals: [prop("a1"), prop("b2")], proposals_table: table(2) });
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body };
+  };
+  try {
+    draw(home({ needs: [{ kind: "queue", project: "p", text: "kept", id: "q1" }], proposals: [prop("a1"), prop("b2")], proposals_table: table(2) }));
+    seen.length = 0;
+    await vm.runInContext(`refreshProposals()`, ctx);
+  } finally { ctx.fetch = before; delete ctx.URLSearchParams; }
+  assert.equal(seen.length, 1);
+  assert.match(seen[0], /^\/api\/home\/proposals/);
+  assert.deepEqual(vm.runInContext("hst.data.proposals.map((p) => p.id)", ctx), ["b2"]);
+  assert.equal(vm.runInContext("hst.data.needs.length", ctx), 1, "the rest of Home is untouched");
+});
+
+test("a failed section read falls back to the full Home read, which shows the error", async () => {
+  const seen = [];
+  const before = ctx.fetch;
+  ctx.URLSearchParams = URLSearchParams;
+  ctx.fetch = async (path) => {
+    seen.push(path);
+    if (path === "/api/briefing") return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ error: "briefing: off" }) };
+    if (path.startsWith("/api/home/proposals")) return { ok: false, status: 502, statusText: "", text: async () => "agent-propose: boom" };
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => home({ proposals_failed: true, errors: ["agent-propose: boom, so no proposals are shown"] }) };
+  };
+  try {
+    draw(home({ proposals: [prop("a1")], proposals_table: table(1) }));
+    seen.length = 0;
+    await vm.runInContext(`refreshProposals()`, ctx);
+  } finally { ctx.fetch = before; delete ctx.URLSearchParams; }
+  assert.match(seen[0], /^\/api\/home\/proposals/);
+  assert.ok(seen.includes("/api/home"), seen.join());
+  assert.match(vm.runInContext("$('home').innerHTML", ctx), /Could not read proposals/);
+});
+
+test("a slow full read that started before a search cannot put the older rows back", async () => {
+  const before = ctx.fetch;
+  ctx.URLSearchParams = URLSearchParams;
+  let release;
+  const json = (body) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body });
+  ctx.fetch = (path) => {
+    if (path === "/api/briefing") return Promise.resolve(json({ error: "off" }));
+    if (path.startsWith("/api/home/proposals")) return Promise.resolve(json({ proposals: [prop("new")], proposals_head: "1 from 1 stream", proposals_table: table(1) }));
+    return new Promise((r) => { release = () => r(json(home({ needs: [{ kind: "queue", project: "p", text: "fresh", id: "q2" }], proposals: [prop("old")], proposals_table: table(1) }))); });
+  };
+  try {
+    draw(home({ proposals: [prop("old")], proposals_table: table(1) }));
+    const full = vm.runInContext(`refreshHome()`, ctx);
+    await vm.runInContext(`refreshProposals()`, ctx);
+    release();
+    await full;
+  } finally { ctx.fetch = before; delete ctx.URLSearchParams; }
+  assert.deepEqual(vm.runInContext("hst.data.proposals.map((p) => p.id)", ctx), ["new"]);
+  assert.equal(vm.runInContext("hst.data.needs.length", ctx), 1, "the rest of the full read still lands");
+});
+
+test("after a failed proposals read the next search goes to the full read, so the recovery shows", async () => {
+  const seen = [];
+  const before = ctx.fetch;
+  ctx.URLSearchParams = URLSearchParams;
+  ctx.fetch = async (path) => {
+    seen.push(path);
+    const body = path === "/api/briefing" ? { error: "off" } : home({ proposals: [prop("a1")], proposals_table: table(1) });
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body };
+  };
+  try {
+    draw(home({ proposals_failed: true, errors: ["agent-propose: boom, so no proposals are shown"] }));
+    seen.length = 0;
+    await vm.runInContext(`refreshProposals()`, ctx);
+  } finally { ctx.fetch = before; delete ctx.URLSearchParams; }
+  assert.ok(!seen.some((p) => p.startsWith("/api/home/proposals")), seen.join());
+  assert.equal(vm.runInContext("hst.data.proposals_failed", ctx), undefined);
+  assert.doesNotMatch(vm.runInContext("$('home').innerHTML", ctx), /Could not read proposals/);
+});
