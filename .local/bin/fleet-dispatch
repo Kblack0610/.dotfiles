@@ -624,13 +624,14 @@ busy_projects() {
   return 0
 }
 
-# idle_project_items <item json lines> -> in queue order, the first item of each project that
-# BUSY_PROJECTS (cmd_run's read before its first start) does not name: the project floor's picks.
+# idle_project_items <item json lines> -> in queue order, the light items of every project that
+# BUSY_PROJECTS (cmd_run's read before its first start) does not name: the project floor's picks. All
+# of a project's items, not its first, so a head item a finding holds does not starve the rest;
+# start_items starts one a project. Light only: real idle is the gate that keeps heavy Unity runs off.
 idle_project_items() {
   local busy=${BUSY_PROJECTS-$(busy_projects)}
-  jq -sc --arg busy "$busy" '($busy | split("\n") | map(select(. != ""))) as $b
-    | reduce .[] as $i ([]; if ($b | index($i.project // "")) or any(.[]; .project == $i.project) then . else . + [$i] end)
-    | .[]' <<<"$1"
+  jq -c --arg busy "$busy" '($busy | split("\n") | map(select(. != ""))) as $b
+    | select((.weight // "light") == "light" and ((.project // "") as $p | $b | index($p) | not))' <<<"$1"
 }
 
 # project_floor_open -- a project-floor start is due past real idle: PROJECT_PASS says the start is an
@@ -1898,7 +1899,10 @@ start_items() {
     [ "$rc" -ne 5 ] || continue
     [ "$rc" -eq 0 ] && STARTED=$(( ${STARTED:-0} + 1 ))
     [ "$rc" -eq 0 ] && is_red "$PICKED" && RED_STARTED=$(( ${RED_STARTED:-0} + 1 ))
-    [ "$rc" -eq 0 ] && [ "${PROJECT_PASS:-0}" = 1 ] && PROJECT_STARTED=$(( ${PROJECT_STARTED:-0} + 1 ))
+    if [ "$rc" -eq 0 ] && [ "${PROJECT_PASS:-0}" = 1 ]; then
+      PROJECT_STARTED=$(( ${PROJECT_STARTED:-0} + 1 ))
+      items=$(jq -c --arg p "$(jq -r '.project // ""' <<<"$PICKED")" 'select((.project // "") != $p)' <<<"$items")
+    fi
     if [ "$rc" -eq 0 ] && [[ "$(jq -r '.from // ""' <<<"$PICKED")" == board:* ]] && human_here; then
       left=${PRESENT_LEFT:-$(present_left)}
       [ "$DRY" = 1 ] || logline "present start: queue item $(jq -r .slug <<<"$PICKED") (DISPATCH_PRESENT_PER_HOUR=$DISPATCH_PRESENT_PER_HOUR)"
@@ -2241,7 +2245,7 @@ cmd_starved() {
   why=$(gate)
   if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load |real idle )' &&
     [ "$room" = 0 ]; then
-    echo "held by load ($why), so nothing is starved"; return 0
+    echo "held by load ($why), so nothing is starved"; [ -z "$dead" ]; return
   fi
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null &&
@@ -2257,12 +2261,13 @@ cmd_starved() {
   return 1
 }
 
-# dead_holds -> one line per queued item held on an ask that was cancelled or no longer exists: no
+# dead_holds -> one line per queued item held on an ask that was cancelled, no longer exists, or the
+# human answered with another option: no
 # answer can release it (agent-queue ask_pending), so it waits for good unless someone sees it. On
 # 2026-11-07 trader's Kalshi phases sat behind cancelled ask ybXZIM and nothing named them.
 dead_holds() {
   agent-queue list --json --state queued 2>/dev/null |
-    jq -r 'select((.hold // "") | test("^ask:[^ ]+ \\((cancelled|no such ask)\\)")) | "\(.slug) (\(.project), \(.hold))"'
+    jq -r 'select((.hold // "") | test("^ask:[^ ]+ \\((cancelled|no such ask|answered [^,]*, not [^)]+)\\)")) | "\(.slug) (\(.project), \(.hold))"'
   return 0
 }
 
@@ -2312,18 +2317,21 @@ cmd_headroom() {
   idle=$(real_idle)
   read -r starts pend < <(pending_load)
   runnable=$(next_items | grep -c . || true)
+  local idle_projects; idle_projects=$(idle_project_items "$(next_items)" | jq -r .project | sort -u | grep -c . || true)
   why=$(IDLE_NOW=$idle gate)
   if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$DISPATCH_MAX_LIVE" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
-    --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" '
+    --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" \
+    --argjson project_floor "${DISPATCH_PROJECT_FLOOR:-0}" --argjson idle_projects "$idle_projects" '
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
      load: ($load | num), starting: $starts, load_pending: $pend, load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_live: $red_live,
+     project_floor: $project_floor, idle_projects: $idle_projects,
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
      held: (if $held != "" then $held elif $live >= $max_live then "DISPATCH_MAX_LIVE: every run unit is used"
             elif $runnable == 0 then "nothing runnable" else null end)}
@@ -2340,7 +2348,7 @@ cmd_headroom() {
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace and idle do not hold a start",
         "  red floor: \(.red_live) of \(.red_floor) red sessions live; under it pace, idle, load and fleet-assess do not hold a red",
-        "  project floor: '"$DISPATCH_PROJECT_FLOOR"' start(s) a pass for a project nothing is working on; real idle does not hold them"'
+        "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle"'
     fi
 }
 

@@ -50,6 +50,7 @@ setup() {
   export DISPATCH_LOADAVG="$SANDBOX/loadavg"
   export DISPATCH_JUDGE_CMD=judge-stub   # on PATH: the command is a word list, and the sandbox path has a space
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  export DISPATCH_PROJECT_FLOOR=0   # off unless a test is about it ("project floor:"), so an idle-held machine stays held
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
   printf '%s\n' 'policy' '- (fits) dispatch' '- (tier3) tier 3' '- (unclear) not clear' > "$DISPATCH_POLICY"
   mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/app" "$SANDBOX/sheets"
@@ -1353,7 +1354,6 @@ refuses() {
 # room_on_floor: the one account's verdict refuses it for its pace alone, so it has room only while
 # a floor lifts the pace reason.
 room_on_floor() {
-  export DISPATCH_PROJECT_FLOOR=0   # these tests are about the run floor; the project floor has its own
   acct alt:pace:/home/u/.claude-personal
   stub top 'printf "%%Cpu(s): 1.0 id\n%%Cpu(s): 60.0 us,  5.0 sy, 25.0 ni, 10.0 id,  0.0 wa\n"'
 }
@@ -1617,6 +1617,16 @@ idle_held_machine() {
   refute_output --partial 'started queue item a2'
 }
 
+@test "project floor: one start a project even with room for more" {
+  idle_held_machine
+  export DISPATCH_PROJECT_FLOOR=2
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  agent-queue add --project app --slug a2 "more app work" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item a1 on the project floor'
+  refute_output --partial 'started queue item a2'
+}
+
 @test "project floor: an account past its pace, load and agent-hold still hold an idle project's item" {
   idle_held_machine
   export DISPATCH_PROJECT_FLOOR=1
@@ -1635,11 +1645,12 @@ idle_held_machine() {
   assert_not_called 'wt new'
 }
 
-@test "project floor: one item per idle project, open only on a project pass under DISPATCH_PROJECT_FLOOR" {
+@test "project floor: light items of idle projects, open only on a project pass under DISPATCH_PROJECT_FLOOR" {
   local items
   items=$(printf '%s\n' '{"slug":"g1","project":"game"}' '{"slug":"a1","project":"app"}' '{"slug":"a2","project":"app"}' '{"slug":"x1","project":"x"}')
+  items+=$'\n''{"slug":"h1","project":"y","weight":"heavy"}'
   BUSY_PROJECTS=game run idle_project_items "$items"
-  assert_output "$(printf '%s\n' '{"slug":"a1","project":"app"}' '{"slug":"x1","project":"x"}')"
+  assert_output "$(printf '%s\n' '{"slug":"a1","project":"app"}' '{"slug":"a2","project":"app"}' '{"slug":"x1","project":"x"}')"
   export DISPATCH_PROJECT_FLOOR=1
   PROJECT_PASS=1 run project_floor_open; assert_success
   PROJECT_PASS=1 PROJECT_STARTED=1 run project_floor_open; assert_failure
@@ -1653,6 +1664,8 @@ idle_held_machine() {
   printf 'id: live1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/live1.md"
   agent-queue add --project game --slug k8 --tags 'ask:dead1' "kalshi p8" >/dev/null
   agent-queue add --project game --slug k9 --tags 'ask:live1' "waits on the human" >/dev/null
+  # A machine held by load still names the dead hold and fails.
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run cmd_starved
   assert_failure
   assert_output --partial 'held on an ask that can never be answered:'
