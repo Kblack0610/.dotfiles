@@ -3156,7 +3156,7 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   agent-queue add --project game --slug c "do c"
   stub wt 'echo "game-$WT_N"'
   for s in a b c; do WT_N=$s cmd_start --item "$s" >/dev/null; done
-  agent-queue set a pr=12
+  agent-queue set a pr=12 merged=0123abcd
   agent-queue move c done --status ok
   printf 'game-c\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run cmd_reap
@@ -3222,6 +3222,19 @@ OUT
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
 }
 
+@test "reap: a --pr-only item its session left waiting closes ok with merged: once the PR merges" {
+  pr_item OPEN
+  agent-queue move fix-crash waiting >/dev/null
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  printf 'MERGED %s\n' "$OID" > "$NOTES_FIXTURE/pr.state"
+  run cmd_reap
+  assert_success
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
+}
+
 @test "reap: a gone session's closed PR fails its item and hands the row back" {
   pr_item CLOSED
   run cmd_reap
@@ -3273,13 +3286,15 @@ orphan_seen() {
   ! grep -q gm-1 "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "un-started row still tracked"
 }
 
-# landed_item <state> [pr] -- pr_item's item closed ok by its own session, no merged: recorded, as a
-# --pr-only run leaves it: the row stays started and no active item names it.
+# landed_item <state> [pr] -- pr_item's item closed ok by its own session with no merged: recorded,
+# as a --pr-only run left it before agent-queue refused that close (the store still holds those):
+# the row stays started and no active item names it.
 landed_item() {
   export DISPATCH_NIGHT_PROFILE=bnb
   pr_item "$1"
-  agent-queue set fix-crash "pr=${2:-o/game#12}" >/dev/null
+  agent-queue set fix-crash pr= >/dev/null
   agent-queue move fix-crash done --status ok >/dev/null
+  agent-queue set fix-crash "pr=${2:-o/game#12}" >/dev/null
 }
 
 @test "reap: a done item's PR merged after its session closed it records merged: and closes the row on merge proof" {

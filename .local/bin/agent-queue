@@ -882,6 +882,14 @@ cmd_set() {
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  # merged: is the merge of the PR in pr:, so a new pr: drops an old merged: unless this set names
+  # one too (agent-land sets both), or done ok would pass on the last PR's merge (cmd_move).
+  case " $* " in
+    *" merged="*) ;;
+    *" pr="*) for kv in "$@"; do
+        [ "${kv%%=*}" = pr ] && [ "${kv#*=}" != "$(fm_get "$f" pr)" ] && header_del "$f" merged
+      done ;;
+  esac
   for kv in "$@"; do
     case "$kv" in session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;; esac
     header_set "$f" "${kv%%=*}" "${kv#*=}"
@@ -959,6 +967,11 @@ cmd_move() {
   from="$(state_of "$f")"
   [ -z "$expect" ] || [ "$from" = "$expect" ] || { echo "agent-queue: $slug is $from, not $expect: left as it is" >&2; return 3; }
   [ "$from" != "$to" ] || { echo "$slug already $to"; return 0; }
+  # Done ok with a PR means merged: an ok close with the PR still open strands it, since nothing
+  # reads that item again and its after: items start on work that never landed (#1145, #1146).
+  if [ "$to" = done ] && [ "$status" = ok ] && [ -n "$(fm_get "$f" pr)" ] && [ -z "$(fm_get "$f" merged)" ]; then
+    die "$slug has pr:$(fm_get "$f" pr) and no merged:, so done ok would close it with the PR open: land it with agent-land <N>, which records the merge, or move it to waiting until the PR merges (fleet-dispatch reap closes it then)"
+  fi
   # The items after: this one, named before it closes, since an ok close starts them (start_next).
   if [ "$to" = done ] && [ "$status" = ok ]; then
     deps="$(dependents "$slug")"
