@@ -487,6 +487,10 @@ setup_dotfiles_private() {
         ( cd "$PRV" && git pull --ff-only 2>/dev/null || true )
     fi
 
+    # The overlay's pre-commit is its secret scan; a clone does not carry this setting.
+    git -C "$PRV" config core.hooksPath .githooks \
+        || log_warning "Could not wire the overlay's hooks; its secret scan is off"
+
     if ( cd "$PRV" && stow --no-folding --target="$HOME" . ); then
         log_info "Private overlay applied"
     else

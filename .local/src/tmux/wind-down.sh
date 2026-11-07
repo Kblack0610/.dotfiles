@@ -21,12 +21,7 @@
 #       agent-runtime axis: ~/.agent/sessions/<project>/<date>-wind-down.md.
 #       The skill writes the wrap-up there. Project resolution matches the hook.
 #
-#   wind-down.sh sweep [-n]
-#       Remove the scratchpads of Claude sessions that ended without winding down:
-#       <scratch-root>/<project>/<session-id>/ whose session is not live and which has
-#       not been touched for SWEEP_IDLE_HOURS (24). /tmp is a tmpfs here, so every dir
-#       left behind is RAM. -n prints what it would remove. Run hourly by
-#       claude-scratch-sweep.timer.
+#   (A dead session's scratchpad is reaped hourly by agentctl-tmp-gc, not here.)
 #
 # Sentinel format (key=val, one per line):
 #   scope=window|session
@@ -49,18 +44,9 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 HISTORY_CAPTURE="$SCRIPT_DIR/history-capture.sh"
 SPIN_DIR="$HOME/.agent/spin-down"
 
-# Resolve canonical project name (matches the Stop-hook's resolution).
-resolve_project() {
-  local pn="$HOME/.config/shared-hooks/project-name.sh"
-  if [ -f "$pn" ]; then
-    # shellcheck source=/dev/null
-    . "$pn"
-    resolve_project_name "${CLAUDE_PROJECT_DIR:-$PWD}"
-  else
-    local base="${CLAUDE_PROJECT_DIR:-$PWD}"
-    base="${base##*/}"; echo "${base#.}"
-  fi
-}
+# Canonical project name (matches the Stop-hook's resolution).
+# shellcheck source=../../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.config/shared-hooks/project-name.sh}"
 
 cmd_arm() {
   local scope="window"
@@ -117,7 +103,7 @@ cmd_arm() {
   fi
 
   local proj sentinel sid
-  proj=$(resolve_project)
+  proj=$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")
   sid="${CLAUDE_CODE_SESSION_ID:-}"
   mkdir -p "$SPIN_DIR"
   # Key the sentinel by Claude session id. Multiple Claude windows can run in the
@@ -275,7 +261,7 @@ cmd_fire() {
 
 cmd_note_path() {
   local proj dir
-  proj=$(resolve_project)
+  proj=$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")
   dir="$HOME/.agent/sessions/${proj}"
   mkdir -p "$dir"
   echo "$dir/$(date +%Y-%m-%d)-wind-down.md"
@@ -286,18 +272,6 @@ scratch_root() { echo "${CLAUDE_SCRATCH_ROOT:-/tmp/claude-$(id -u)}"; }
 
 is_session_id() {
   [[ "${1:-}" =~ ^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$ ]]
-}
-
-# Session ids of Claude processes that are alive right now. Claude writes
-# ~/.claude/sessions/<pid>.json per running session, and the file can outlive the
-# process, so the pid is checked too.
-live_session_ids() {
-  local f pid sid
-  for f in "$HOME/.claude/sessions"/*.json; do
-    [ -f "$f" ] || continue
-    read -r pid sid < <(jq -r '"\(.pid // "") \(.sessionId // "")"' "$f" 2>/dev/null)
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$sid"
-  done
 }
 
 # UserPromptSubmit hook: a new prompt cancels this session's pending teardown. A teardown
@@ -320,46 +294,6 @@ cmd_disarm() {
   return 0
 }
 
-cmd_sweep() {
-  local dry=0 a
-  for a in "$@"; do
-    case "$a" in
-      -n|--dry-run) dry=1 ;;
-      *) echo "wind-down sweep: unknown arg '$a'" >&2; return 2 ;;
-    esac
-  done
-
-  # No registry means no way to tell a live session from a dead one. Refuse rather than
-  # treat everyone as dead.
-  if [ ! -d "$HOME/.claude/sessions" ] || ! command -v jq >/dev/null 2>&1; then
-    echo "wind-down sweep: no ~/.claude/sessions registry (or no jq) -- cannot tell live sessions, sweeping nothing" >&2
-    return 1
-  fi
-
-  local root live idle_min d sid mb total=0 count=0
-  root=$(scratch_root)
-  [ -d "$root" ] || return 0
-  live=$(live_session_ids)
-  idle_min=$(( ${SWEEP_IDLE_HOURS:-24} * 60 ))
-
-  for d in "$root"/*/*/; do
-    d="${d%/}"; sid="${d##*/}"
-    is_session_id "$sid" || continue
-    grep -qxF "$sid" <<<"$live" && continue
-    # Anything touched inside the window keeps the dir: a resumed session can be writing
-    # under an id that is no longer the one in its registry entry.
-    [ -n "$(find "$d" -mmin "-$idle_min" -print -quit 2>/dev/null)" ] && continue
-    mb=$(du -sm "$d" 2>/dev/null | cut -f1)
-    if [ "$dry" = 1 ]; then
-      echo "would remove ${mb}M $d"
-    else
-      rm -rf -- "$d" && echo "removed ${mb}M $d"
-    fi
-    total=$(( total + ${mb:-0} )); count=$(( count + 1 ))
-  done
-  echo "wind-down sweep: $count dir(s), ${total}M$( [ "$dry" = 1 ] && echo ' (dry run)')"
-}
-
 # Sourced (by the test suite) rather than run: stop here with every function defined but
 # no verb dispatched. Without this, sourcing falls into the case below with $1 unset, hits
 # the usage arm and `exit 2`s the test runner -- which is why the suite had reached for
@@ -371,10 +305,9 @@ case "${1:-}" in
   arm)       shift; cmd_arm "$@" ;;
   fire)      shift; cmd_fire "$@" ;;
   note-path) shift; cmd_note_path "$@" ;;
-  sweep)     shift; cmd_sweep "$@" ;;
   disarm)    shift; cmd_disarm "$@" ;;
   *)
-    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | note-path | sweep [-n] | disarm}" >&2
+    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | note-path | disarm}" >&2
     exit 2
     ;;
 esac

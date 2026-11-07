@@ -1,8 +1,8 @@
 //! The Sessions table on both surfaces: every session in `fleet-sessions`' state document, then
 //! the sessions that ended, so done stays visible after a window closes. An ended row comes from
-//! today's finished queue items that ran a session or landed a PR, or from an outcome row
-//! (`agentctl-session-outcomes ended`) for a session with no item, which only exists after the
-//! nightly run; each row names its source.
+//! today's finished queue items that ran a session or landed a PR, or from
+//! `agentctl-session-outcomes ended` for a session with no item, which reads the Stop-hook
+//! registry so a session shows the day it ends; each row names its source.
 //! Filtering, sorting and the chips are `crate::table`'s; this module is the join.
 
 use std::collections::{HashMap, HashSet};
@@ -13,24 +13,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::fleet::ts;
-use crate::home::{dir_name, str_of};
+use crate::home::str_of;
 use crate::queue::{self, Item};
 use crate::session_actions::{argv, Runner, Session};
 use crate::table::{Row, Val};
 use crate::text::headline;
+use crate::vocab::Vocab;
 
-/// Buckets in the order the table lists them: what needs the human first.
-const RANK: [&str; 7] = [
-    "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED",
-];
-
-/// A bucket's place in RANK; an unknown one sorts last.
-pub fn rank(b: &str) -> usize {
-    RANK.iter().position(|r| *r == b).unwrap_or(RANK.len())
-}
-
-/// How far back outcome rows go. Outcomes are written once a night, so this reaches over the
-/// last run rather than a calendar day, which would be empty for most of it.
+/// How far back `agentctl-session-outcomes ended` reads. It covers today whatever the hour, and
+/// `feed` keeps only the rows that ended since local midnight, so "done today" means today.
 pub const ENDED_DAYS: u32 = 1;
 
 /// The shepherd's session and the NIGHTLY and SHARED rows: the fleet's own, not anyone's task.
@@ -101,7 +92,13 @@ pub struct SessionRow {
     /// When it ended, unix seconds.
     pub finished: Option<i64>,
     pub cost_usd: Option<f64>,
+    /// A live row's item across all its sessions, which is what the item's budget holds. A queue
+    /// row has none: its `cost_usd` already is that.
+    pub item_cost_usd: Option<f64>,
     pub account: String,
+    /// The harness it ran on (`harness_of`): the item's or outcome row's, claude-lazer on the gateway
+    /// account and claude on any other.
+    pub harness: String,
     pub source: Source,
     /// This live session counts as having no queue item (`item:none`).
     pub unlinked: bool,
@@ -109,13 +106,13 @@ pub struct SessionRow {
 
 impl Row for SessionRow {
     const COLUMNS: &'static [&'static str] = &[
-        "bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "item", "source",
-        "session",
+        "bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness", "item",
+        "source", "session",
     ];
     /// `all` comes first because the first chip keeps every row.
     const STATES: &'static [&'static str] =
         &["all", "running", "needs you", "stalled", "done today"];
-    const FACETS: &'static [&'static str] = &["project"];
+    const FACETS: &'static [&'static str] = &["project", "harness"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| {
@@ -134,6 +131,7 @@ impl Row for SessionRow {
             "idle" => self.idle_min.map_or(Val::None, |n| Val::Num(n as f64)),
             "cost" => self.cost_usd.map_or(Val::None, Val::Num),
             "acct" => text(&self.account),
+            "harness" => text(&self.harness),
             "item" if self.unlinked => Val::Text("none".into()),
             "item" => text(&self.item),
             "source" => Val::Text(self.source.name().into()),
@@ -168,6 +166,7 @@ pub struct Ended {
     pub project: String,
     pub title: String,
     pub account: Option<String>,
+    pub harness: Option<String>,
     pub cost_usd: Option<f64>,
     pub updated_epoch: Option<i64>,
     pub prs_merged: i64,
@@ -186,13 +185,17 @@ pub struct Feed {
     pub errors: Vec<String>,
 }
 
-/// The state document's `sessions`, empty when it is missing or unreadable.
-pub fn read_state(path: &Path) -> Vec<Value> {
-    std::fs::read_to_string(path)
+/// The state document's `sessions` and its bucket vocabulary, empty when it is missing or
+/// unreadable.
+pub fn read_state(path: &Path) -> (Vec<Value>, Vocab) {
+    let doc = std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v["sessions"].as_array().cloned())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (
+        doc["sessions"].as_array().cloned().unwrap_or_default(),
+        Vocab::from_state(&doc),
+    )
 }
 
 /// The session registry's root, `~/.agent/sessions`.
@@ -200,30 +203,52 @@ pub fn registry() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".agent/sessions")
 }
 
-/// Each session's cost from `<root>/<project>/sessions.jsonl`, whose rows the Stop hook appends;
-/// a later row for a session replaces an earlier one.
+/// Every row of `<root>/<project>/sessions.jsonl`, which the Stop hook appends to, oldest first
+/// within a project.
+fn registry_rows(root: &Path) -> impl Iterator<Item = Value> {
+    std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|d| std::fs::read_to_string(d.path().join("sessions.jsonl")).ok())
+        .flat_map(|text| {
+            text.lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .collect::<Vec<_>>()
+        })
+}
+
+/// Each session's cost; a later row for a session replaces an earlier one.
 pub fn costs(root: &Path) -> HashMap<String, f64> {
     let mut out = HashMap::new();
-    let dirs = std::fs::read_dir(root).into_iter().flatten().flatten();
-    for d in dirs {
-        let Ok(text) = std::fs::read_to_string(d.path().join("sessions.jsonl")) else {
-            continue;
-        };
-        for v in text
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        {
-            if let (Some(id), Some(c)) = (v["session_id"].as_str(), v["cost_usd"].as_f64()) {
-                out.insert(id.to_string(), c);
-            }
+    for v in registry_rows(root) {
+        if let (Some(id), Some(c)) = (v["session_id"].as_str(), v["cost_usd"].as_f64()) {
+            out.insert(id.to_string(), c);
         }
     }
     out
 }
 
+/// The transcript the registry names for a session: once a session has ended no other store does.
+pub fn transcript(root: &Path, session_id: &str) -> Option<PathBuf> {
+    registry_rows(root)
+        .filter(|v| v["session_id"] == session_id)
+        .filter_map(|v| v["transcript"].as_str().map(PathBuf::from))
+        .last()
+}
+
 fn ended_argv() -> Vec<String> {
     let days = ENDED_DAYS.to_string();
     argv(&["agentctl-session-outcomes", "ended", "--days", &days])
+}
+
+/// The `ended` rows that ended at or after `since`: the command reads a rolling day, the table
+/// shows a calendar one.
+fn ended_since(out: &str, since: i64) -> Vec<Ended> {
+    out.lines()
+        .filter_map(|l| serde_json::from_str::<Ended>(l).ok())
+        .filter(|e| e.updated_epoch.is_some_and(|t| t >= since))
+        .collect()
 }
 
 /// Read the feed. A source that fails leaves its part empty and says so in `errors`.
@@ -232,13 +257,10 @@ pub fn feed(runner: &dyn Runner, registry: &Path) -> Feed {
     let items = queue::list(runner, "all")
         .map_err(|e| errors.push(format!("agent-queue: {e}")))
         .unwrap_or_default();
+    let since = crate::text::local_day_start(chrono::Local::now().timestamp());
     let ended = runner
         .run(&ended_argv())
-        .map(|o| {
-            o.lines()
-                .filter_map(|l| serde_json::from_str(l).ok())
-                .collect()
-        })
+        .map(|o| ended_since(&o, since))
         .map_err(|e| errors.push(format!("session outcomes: {e}")))
         .unwrap_or_default();
     Feed {
@@ -257,7 +279,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
     SessionRow {
         key: str_of(s, "target").to_string(),
         bucket: str_of(s, "bucket").to_string(),
-        project: item.map_or_else(|| dir_name(str_of(s, "cwd")), |i| i.project.clone()),
+        project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
         task: item.map_or_else(|| headline(topic).0, |i| i.title()),
         item: slug.to_string(),
         target: str_of(s, "target").to_string(),
@@ -273,7 +295,15 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         phases_total: s["phases_total"].as_i64(),
         idle_min: s["idle_min"].as_i64(),
         cost_usd: feed.cost.get(sid).copied(),
+        item_cost_usd: item.and_then(|i| {
+            let mut sids = item_sessions(i);
+            sids.push(sid.to_string());
+            sids.sort();
+            sids.dedup();
+            item_cost(i, &sids, feed)
+        }),
         account: str_of(s, "account").to_string(),
+        harness: item.map_or_else(String::new, |i| i.harness().to_string()),
         unlinked: is_live(s) && is_unlinked(s),
         ..SessionRow::default()
     }
@@ -301,12 +331,10 @@ fn extra_str(i: &Item, k: &str) -> String {
         .to_string()
 }
 
-/// An item's own cost once the nightly pass has summed it, else its sessions' registry cost.
+/// An item's own cost once the nightly pass has summed it (`Item::cost`), else its sessions'
+/// registry cost.
 fn item_cost(i: &Item, sids: &[String], feed: &Feed) -> Option<f64> {
-    let own = ["gateway_cost_usd", "cost_usd"]
-        .iter()
-        .find_map(|k| i.extra.get(*k).and_then(Value::as_str)?.parse().ok());
-    own.or_else(|| {
+    i.cost().or_else(|| {
         let known: Vec<f64> = sids
             .iter()
             .filter_map(|s| feed.cost.get(s).copied())
@@ -319,7 +347,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
     let sids = item_sessions(i);
     let status = i.status.as_deref().unwrap_or("ok");
     let pr = i.pr.as_deref().filter(|p| !p.is_empty()).map(pr_number);
-    let merged = !extra_str(i, "merged").is_empty();
+    let merged = i.merged();
     SessionRow {
         key: i.slug.clone(),
         bucket: "DONE".into(),
@@ -342,7 +370,8 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         },
         finished: i.finished.as_deref().and_then(ts),
         cost_usd: item_cost(i, &sids, feed),
-        account: extra_str(i, "account"),
+        account: i.account.clone().unwrap_or_default(),
+        harness: queue::harness_of(i.harness(), i.account.as_deref().unwrap_or("")),
         source: Source::Queue,
         ..SessionRow::default()
     }
@@ -364,15 +393,24 @@ fn outcome_row(e: &Ended) -> SessionRow {
         finished: e.updated_epoch,
         cost_usd: e.cost_usd,
         account: e.account.clone().unwrap_or_default(),
+        harness: queue::harness_of(
+            e.harness.as_deref().unwrap_or(""),
+            e.account.as_deref().unwrap_or(""),
+        ),
         source: Source::Outcome,
         ..SessionRow::default()
     }
 }
 
-/// Every row in the table's own order: live sessions by bucket, what needs the human first and
-/// then by target, then the ended ones, newest first. An item or session that still has a live
+/// Every row in the table's own order: live sessions by the vocabulary's bucket order (what needs
+/// the human first), then by target, then the ended ones, newest first. An item or session that still has a live
 /// row shows only there, and a session counted through its queue item shows only there.
-pub fn rows(state: &[Value], feed: &Feed, agents: &[(Agent, Session)]) -> Vec<SessionRow> {
+pub fn rows(
+    state: &[Value],
+    vocab: &Vocab,
+    feed: &Feed,
+    agents: &[(Agent, Session)],
+) -> Vec<SessionRow> {
     let items: HashMap<&str, &Item> = feed.items.iter().map(|i| (i.slug.as_str(), i)).collect();
     let mut live: Vec<SessionRow> = state.iter().map(|s| live_row(s, feed, &items)).collect();
     let strays: Vec<SessionRow> = agents
@@ -390,7 +428,13 @@ pub fn rows(state: &[Value], feed: &Feed, agents: &[(Agent, Session)]) -> Vec<Se
             r.account = s.account.clone();
         }
     }
-    live.sort_by(|a, b| (rank(&a.bucket), &a.target).cmp(&(rank(&b.bucket), &b.target)));
+    // A live row's account is known only after the join above, so its harness is settled here.
+    for r in live.iter_mut() {
+        r.harness = queue::harness_of(&r.harness, &r.account);
+    }
+    live.sort_by(|a, b| {
+        (vocab.rank(&a.bucket), &a.target).cmp(&(vocab.rank(&b.bucket), &b.target))
+    });
     let live_items: HashSet<&str> = live.iter().map(|r| r.item.as_str()).collect();
     let mut seen: HashSet<String> = live.iter().map(|r| r.session_id.clone()).collect();
     let mut ended: Vec<SessionRow> = vec![];
@@ -434,6 +478,7 @@ fn stray_row(a: &Agent, s: &Session, feed: &Feed) -> SessionRow {
 mod tests {
     use super::*;
     use crate::table::View;
+    use agent_panel::account::GATEWAY;
     use serde_json::json;
 
     fn item(line: Value) -> Item {
@@ -448,17 +493,22 @@ mod tests {
         )
     }
 
+    fn vocab() -> Vocab {
+        Vocab::from_state(&json!({"vocab": {"buckets": [
+            "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]}}))
+    }
+
     fn state() -> Vec<Value> {
         vec![
-            json!({"target":"lab/d:1","bucket":"WORKING","session_id":"s1","cwd":"/w/.dotfiles",
+            json!({"target":"lab/d:1","bucket":"WORKING","session_id":"s1","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"a topic","pr":"-","account":"a","idle_min":3,"phases_done":2,"phases_total":4,
                 "item":{"slug":"own","is":"own","origin":"run"}}),
-            json!({"target":"lab/d:2","bucket":"NEEDS","session_id":"s2","cwd":"/w/.dotfiles",
+            json!({"target":"lab/d:2","bucket":"NEEDS","session_id":"s2","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"fix(mqtt) lock wait","pr":"12","pr_state":"OPEN","ci":"green","account":"a",
                 "idle_min":1980,"item":null}),
-            json!({"target":"lab/d:3","bucket":"WORKING","session_id":"s3","cwd":"/w/.dotfiles",
+            json!({"target":"lab/d:3","bucket":"WORKING","session_id":"s3","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"shepherd","labels":["shepherd"],"pr":"-","item":null}),
-            json!({"target":"lab/d:4","bucket":"DONE","session_id":"s4","cwd":"/w/.dotfiles",
+            json!({"target":"lab/d:4","bucket":"DONE","session_id":"s4","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"wound down","pr":"-","item":{"slug":"still-here","is":"own","origin":"hand"}}),
         ]
     }
@@ -502,8 +552,43 @@ mod tests {
     }
 
     #[test]
+    fn a_live_row_prices_its_item_across_all_of_the_items_sessions() {
+        let mut f = feed();
+        f.items[0].extra.insert("sessions".into(), "s0,s1".into());
+        f.cost.insert("s0".into(), 3.0);
+        let r = rows(&state(), &vocab(), &f, &[]);
+        let own = r.iter().find(|x| x.target == "lab/d:1").unwrap();
+        assert_eq!(own.cost_usd, Some(1.2));
+        assert_eq!(own.item_cost_usd, Some(4.2));
+    }
+
+    #[test]
+    fn a_session_with_no_item_shows_the_project_its_row_carries() {
+        let s = vec![
+            json!({"target":"lab/freqtrade_trading_attempt-agent-1:1","bucket":"WORKING",
+            "session_id":"f1","cwd":"/w/freqtrade_trading_attempt-agent-1","project":"trader","item":null}),
+        ];
+        let r = rows(&s, &vocab(), &feed(), &[]);
+        assert_eq!(r[0].project, "trader");
+    }
+
+    #[test]
+    fn the_vocabulary_orders_the_buckets_not_a_list_here() {
+        let swapped = Vocab::from_state(&json!({"vocab": {"buckets": ["WORKING", "NEEDS"]}}));
+        let by = |v: &Vocab| {
+            rows(&state(), v, &feed(), &[])
+                .iter()
+                .map(|r| r.bucket.clone())
+                .take(2)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(by(&swapped)[0], "WORKING");
+        assert_eq!(by(&vocab())[0], "NEEDS");
+    }
+
+    #[test]
     fn a_live_row_takes_its_task_and_project_from_the_item() {
-        let r = rows(&state(), &feed(), &[]);
+        let r = rows(&state(), &vocab(), &feed(), &[]);
         let own = r.iter().find(|x| x.target == "lab/d:1").unwrap();
         assert_eq!(own.task, "the item title");
         assert_eq!(own.project, "dotfiles");
@@ -517,8 +602,51 @@ mod tests {
     }
 
     #[test]
+    fn every_row_names_its_harness_and_the_harness_facet_filters() {
+        let mut s = state();
+        s[1]["account"] = json!(GATEWAY);
+        let mut f = feed();
+        f.items[0].extra.insert("agent".into(), "codex".into());
+        f.items[1].extra.insert("agent".into(), "opencode".into());
+        f.ended[2].harness = Some("claude-lazer".into());
+        let r = rows(&s, &vocab(), &f, &[]);
+        let h = |k: &str| r.iter().find(|x| x.key == k).unwrap().harness.as_str();
+        assert_eq!(h("lab/d:1"), "codex", "a live row takes its item's agent");
+        assert_eq!(
+            h("lab/d:2"),
+            "claude-lazer",
+            "no item on the gateway account"
+        );
+        assert_eq!(h("lab/d:3"), "claude", "no item on an account");
+        assert_eq!(h("ucp-394"), "opencode", "a queue row");
+        assert_eq!(h("h1"), "claude-lazer", "an outcome row says its own");
+        let mut o = f.ended[2].clone();
+        o.harness = None;
+        assert_eq!(outcome_row(&o).harness, "claude", "an older outcome row");
+        o.harness = Some(" ".into());
+        assert_eq!(outcome_row(&o).harness, "claude", "a blank one");
+        o.account = Some(GATEWAY.into());
+        assert_eq!(
+            outcome_row(&o).harness,
+            "claude-lazer",
+            "a blank one on the gateway"
+        );
+        f.items[0].extra.insert("agent".into(), "claude".into());
+        s[0]["account"] = json!(GATEWAY);
+        let gw = rows(&s, &vocab(), &f, &[]);
+        let own = gw.iter().find(|x| x.key == "lab/d:1").unwrap();
+        assert_eq!(
+            own.harness, "claude-lazer",
+            "a claude item on the gateway ran claude-lazer"
+        );
+        let v = View::new::<SessionRow>("harness:codex", "", "", "");
+        let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(kept, ["lab/d:1"]);
+    }
+
+    #[test]
     fn needs_sorts_first_and_ended_rows_last_newest_first() {
-        let r = rows(&state(), &feed(), &[]);
+        let r = rows(&state(), &vocab(), &feed(), &[]);
         let keys: Vec<&str> = r.iter().map(|x| x.key.as_str()).collect();
         assert_eq!(
             keys,
@@ -528,7 +656,7 @@ mod tests {
 
     #[test]
     fn an_ended_row_names_its_source_and_each_session_shows_once() {
-        let r = rows(&state(), &feed(), &[]);
+        let r = rows(&state(), &vocab(), &feed(), &[]);
         let q = r.iter().find(|x| x.key == "ucp-394").unwrap();
         assert_eq!(q.source, Source::Queue);
         assert_eq!(q.bucket, "DONE");
@@ -564,7 +692,12 @@ mod tests {
         };
         let known = agent("lab/d:1", "s1");
         let moved = agent("lab/d:77", "s2");
-        let r = rows(&state(), &feed(), &[known, moved, agent("lab/d:9", "s77")]);
+        let r = rows(
+            &state(),
+            &vocab(),
+            &feed(),
+            &[known, moved, agent("lab/d:9", "s77")],
+        );
         let parked: Vec<_> = r.iter().filter(|x| x.bucket == "PARKED").collect();
         assert_eq!(
             parked.len(),
@@ -585,7 +718,9 @@ mod tests {
     fn an_item_finished_by_a_session_that_moved_on_still_shows() {
         let mut f = feed();
         f.items.push(done("earlier", "s1", "2026-11-06T16:00:00Z"));
-        assert!(rows(&state(), &f, &[]).iter().any(|x| x.key == "earlier"));
+        assert!(rows(&state(), &vocab(), &f, &[])
+            .iter()
+            .any(|x| x.key == "earlier"));
     }
 
     #[test]
@@ -595,13 +730,13 @@ mod tests {
             json!({"slug":"bad","project":"p","state":"done","task":"t",
             "sessions":"s7","status":"failed","finished":"2026-11-06T19:00:00Z"}),
         ));
-        let r = rows(&[], &f, &[]);
+        let r = rows(&[], &vocab(), &f, &[]);
         assert_eq!(r.iter().find(|x| x.key == "bad").unwrap().ended, "failed");
     }
 
     #[test]
     fn the_chips_split_the_rows() {
-        let r = rows(&state(), &feed(), &[]);
+        let r = rows(&state(), &vocab(), &feed(), &[]);
         let v = View::new::<SessionRow>("", "", "", "");
         let n: Vec<(&str, usize)> = v.states(&r).iter().map(|c| (c.name, c.n)).collect();
         assert_eq!(
@@ -622,7 +757,7 @@ mod tests {
     fn item_none_lists_what_the_header_counts_so_a_parked_session_is_left_out() {
         let mut s = state();
         s.push(json!({"target":"lab/d:5","bucket":"PARKED","session_id":"s5","item":null}));
-        let unlinked: Vec<_> = rows(&s, &feed(), &[])
+        let unlinked: Vec<_> = rows(&s, &vocab(), &feed(), &[])
             .into_iter()
             .filter(|r| r.unlinked)
             .map(|r| r.key)
@@ -638,7 +773,7 @@ mod tests {
         f.items.push(item(
             json!({"slug":"landed","project":"p","state":"done","task":"t","pr":"o/r#7","status":"ok"}),
         ));
-        let r = rows(&state(), &f, &[]);
+        let r = rows(&state(), &vocab(), &f, &[]);
         let landed = r.iter().find(|x| x.key == "landed").unwrap();
         assert_eq!(landed.source, Source::Queue);
         assert_eq!(landed.pr.as_deref(), Some("7"));
@@ -647,7 +782,7 @@ mod tests {
 
     #[test]
     fn the_query_finds_unlinked_sessions_open_prs_and_sources() {
-        let r = rows(&state(), &feed(), &[]);
+        let r = rows(&state(), &vocab(), &feed(), &[]);
         let keys = |q: &str| -> Vec<String> {
             View::new::<SessionRow>(q, "", "", "")
                 .apply(&r)
@@ -676,6 +811,21 @@ mod tests {
     }
 
     #[test]
+    fn the_registry_names_a_sessions_last_transcript() {
+        let dir = std::env::temp_dir().join(format!("hub-transcript-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("p")).unwrap();
+        std::fs::write(
+            dir.join("p/sessions.jsonl"),
+            "{\"session_id\":\"a\",\"transcript\":\"/t/old\"}\n{\"session_id\":\"a\",\"transcript\":\"/t/new\"}\n{\"session_id\":\"b\"}\n",
+        )
+        .unwrap();
+        let (a, b) = (transcript(&dir, "a"), transcript(&dir, "b"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(a, Some(PathBuf::from("/t/new")));
+        assert_eq!(b, None);
+    }
+
+    #[test]
     fn outcomes_that_fail_leave_the_queue_rows_and_say_why() {
         struct R;
         impl Runner for R {
@@ -688,7 +838,46 @@ mod tests {
             }
         }
         let f = super::feed(&R, Path::new("/nonexistent"));
-        assert_eq!(rows(&[], &f, &[]).len(), 1);
+        assert_eq!(rows(&[], &vocab(), &f, &[]).len(), 1);
         assert_eq!(f.errors, ["session outcomes: exit 1"]);
+    }
+
+    #[test]
+    fn the_feed_drops_an_ended_row_from_before_midnight() {
+        struct R;
+        impl Runner for R {
+            fn run(&self, argv: &[String]) -> Result<String, String> {
+                let now = chrono::Local::now().timestamp();
+                Ok(match argv[0].as_str() {
+                    "agent-queue" => String::new(),
+                    _ => [
+                        json!({"session_id":"now","updated_epoch":now}),
+                        json!({"session_id":"two days ago","updated_epoch":now - 2 * 86_400}),
+                    ]
+                    .map(|v| v.to_string())
+                    .join("\n"),
+                })
+            }
+        }
+        let f = super::feed(&R, Path::new("/nonexistent"));
+        let ids: Vec<&str> = f.ended.iter().map(|e| e.session_id.as_str()).collect();
+        assert_eq!(ids, ["now"]);
+    }
+
+    #[test]
+    fn ended_keeps_only_the_rows_since_midnight() {
+        let midnight = 1_794_000_000;
+        let out = [
+            json!({"session_id":"yesterday","updated_epoch":midnight - 1}),
+            json!({"session_id":"today","updated_epoch":midnight}),
+            json!({"session_id":"undated"}),
+        ]
+        .map(|v| v.to_string())
+        .join("\n");
+        let ids: Vec<String> = super::ended_since(&out, midnight)
+            .into_iter()
+            .map(|e| e.session_id)
+            .collect();
+        assert_eq!(ids, ["today"]);
     }
 }

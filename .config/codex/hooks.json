@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          { "type": "command", "command": "bash $HOME/.config/shared-hooks/session-preflight.sh", "timeout": 30 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 $HOME/.claude/hooks/block-poll.py || true", "timeout": 10 },
+          { "type": "command", "command": "bash $HOME/.claude/hooks/block-pip.sh", "timeout": 10 },
+          { "type": "command", "command": "bash $HOME/.claude/hooks/block-root-search.sh", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}

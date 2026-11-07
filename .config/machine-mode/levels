@@ -3,7 +3,8 @@
 # A factor of 1 leaves the conf's value as it is, so mid is today's numbers. An integer stays an
 # integer, and no factor takes a nonzero limit to 0, so no level turns a gate off.
 #   DISPATCH_PER_PASS, DISPATCH_NIGHT_MAX, DISPATCH_MAX_LOAD   fleet-dispatch's start limits
-#   CLAUDE_ACCT_PACE_SLACK_PCT, CLAUDE_ACCT_RESERVE_PCT         claude-acct room, automatic starts only
+#   CLAUDE_ACCT_PACE_SLACK_PCT, CLAUDE_ACCT_RESERVE_PCT         claude-acct room, automatic starts only:
+#     column keys for pace.conf's PACE_SLACK_PCT and RESERVE_PCT; no env var of that name is read
 # Reserve falls as the level rises: high keeps less of each account back.
 
 level|DISPATCH_PER_PASS|DISPATCH_NIGHT_MAX|DISPATCH_MAX_LOAD|CLAUDE_ACCT_PACE_SLACK_PCT|CLAUDE_ACCT_RESERVE_PCT

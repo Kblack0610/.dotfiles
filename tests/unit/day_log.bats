@@ -198,6 +198,16 @@ day_record() { jq -n "{schema: 2, date: \"$1\", merged: []} | $2" > "$DAYLOG_DIR
   assert_output '[{"repo":"game","by":"raiders-x","scope":"hovercraft"},{"repo":"tools","by":null,"scope":"ci"}]'
 }
 
+@test "an item that carries one PR per repo credits each of them" {
+  # NEGATIVE CONTROL: a one-ref capture read "o/game#7 o/tools#7" as no PR, so neither was credited.
+  { pr game 7 'feat(raiders): x' 2026-10-28T20:00:00Z; pr tools 7 'docs(ci): y' 2026-10-28T20:00:00Z; } | merged
+  printf '%s\n' '{"slug":"split","pr":"o/game#7 o/tools#7"}' > "$SANDBOX/items"
+  run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -c '[.merged[] | {repo, by}]' 2026-10-28
+  assert_output '[{"repo":"game","by":"split"},{"repo":"tools","by":"split"}]'
+}
+
 @test "a pass that cannot read the ledger keeps the credits its last record held and names it" {
   pr game 7 'feat: x' 2026-10-28T20:00:00Z | merged
   echo '{"slug":"raiders-x","pr":"o/game#7"}' > "$SANDBOX/items"
@@ -309,6 +319,16 @@ status_day() {
   run bash -c "sed -n '/^## Next/,/^## Needs you/p' <<<\"\$1\" | grep -v '^\$'" _ "$output"
   assert_output "$(printf '%s\n' '## Next' '### Games' '- Bosses stay home. (game-agent-3, 1 of 3 done)' \
     '- Arena: rules 4.5:1, no doubles (game-agent-4, 1 of 2 done)' '## Needs you')"
+}
+
+@test "Next names a session's area by the project its row carries, not by stripping its folder name" {
+  status_day
+  jq '.sessions += [{target: "lab/freqtrade_trading_attempt-agent-1:1", cwd: "/w/freqtrade_trading_attempt-agent-1", project: "trader",
+    bucket: "WORKING", next_phase: "1. Backtest", phases_done: 0, phases_total: 2}]' "$DAYLOG_STATE" > "$SANDBOX/s.json"
+  mv "$SANDBOX/s.json" "$DAYLOG_STATE"
+  run "$SUBJECT" show
+  run bash -c "sed -n '/^## Next/,/^## Needs you/p' <<<\"\$1\" | grep -A2 '^### trader' | grep -v '^$'" _ "$output"
+  assert_output "$(printf '%s\n' '### trader' '- Backtest (freqtrade_trading_attempt-agent-1, 0 of 2 done)')"
 }
 
 @test "Needs you groups sessions by why, and asks are a count, the newest three and where to see all" {

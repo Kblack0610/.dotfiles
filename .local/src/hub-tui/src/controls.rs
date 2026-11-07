@@ -9,7 +9,9 @@ use std::cell::Cell as Remembered;
 
 use hub_core::capacity::{Capacity, Part};
 use hub_core::session_actions::{available, Action, Session, Snapshot};
+use hub_core::session_page::{Part as PagePart, SessionPage};
 use hub_core::session_table::{self, Feed, SessionRow, Source};
+use hub_core::vocab::Vocab;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -22,6 +24,8 @@ use crate::fmt::{clock, dur, older, Palette};
 
 /// Rows drawn; a day's ended sessions run to hundreds, and `/` reaches the rest.
 const OPEN: usize = 200;
+/// The fleet cells the detail leaves to the page's Worktree, PR and Plan parts.
+const ON_PAGE: [&str; 7] = ["SYNC", "CONFLICTS", "TREE", "PR", "PRS", "CI", "PLAN"];
 
 /// The key that asks for each action.
 pub const KEYS: [(char, Action); 7] = [
@@ -33,6 +37,9 @@ pub const KEYS: [(char, Action); 7] = [
     ('c', Action::Cancel),
     ('a', Action::ApprovePlan),
 ];
+
+/// What the open detail's heading starts with, which the page finds it by.
+pub const DETAIL_HEAD: &str = "DETAIL  ";
 
 /// An action asked for and waiting on y or n.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,10 +81,15 @@ pub struct Controls {
     pub said: Option<Result<String, String>>,
     /// fleet-sessions' session objects (state.json `sessions`), joined to the snapshot by target.
     pub state: Vec<Value>,
+    /// The state document's bucket vocabulary, which orders the rows.
+    vocab: Vocab,
     /// fleet-bench forecast's `schedule` rows: each session's phases and finish p50.
     pub schedule: Vec<Value>,
     /// The selected session's detail is shown under the table (Enter).
     pub open: bool,
+    /// The row whose page was last asked for, and its answer once read: None when nothing names it.
+    asked: Option<String>,
+    page: Option<(String, Option<SessionPage>)>,
     pub table: DataTable,
     /// What the table reads beyond the state document, and the header.
     pub feed: Feed,
@@ -139,7 +151,7 @@ impl Controls {
     fn moved(&mut self, change: impl FnOnce(&mut Self)) {
         let was = self.selected_key();
         change(self);
-        self.all = session_table::rows(&self.state, &self.feed, self.agents());
+        self.all = session_table::rows(&self.state, &self.vocab, &self.feed, self.agents());
         let rows = self.rows();
         self.sel = was
             .and_then(|t| rows.iter().position(|r| r.target == t))
@@ -153,18 +165,45 @@ impl Controls {
     }
 
     /// A new state document or forecast.
-    pub fn read(&mut self, state: Option<Vec<Value>>, schedule: Option<Vec<Value>>) {
+    pub fn read(&mut self, state: Option<&Value>, schedule: Option<Vec<Value>>) {
         if let Some(s) = schedule {
             self.schedule = s;
         }
-        if let Some(s) = state {
-            self.moved(|c| c.state = s);
+        if let Some(doc) = state {
+            let sessions = doc["sessions"].as_array().cloned().unwrap_or_default();
+            let vocab = Vocab::from_state(doc);
+            self.moved(|c| {
+                c.state = sessions;
+                c.vocab = vocab;
+            });
         }
     }
 
-    /// New ended rows.
+    /// New ended rows. The open page is read again with them.
     pub fn read_feed(&mut self, feed: Feed) {
         self.moved(|c| c.feed = feed);
+        self.asked = None;
+    }
+
+    /// What to read the open detail's page from, when it shows no read of the selected row yet.
+    pub fn wants_page(&mut self) -> Option<(String, Vec<SessionRow>, Vec<Value>)> {
+        if !self.open {
+            self.asked = None;
+            return None;
+        }
+        let id = self.selected_key()?;
+        if self.asked.as_ref() == Some(&id) {
+            return None;
+        }
+        self.asked = Some(id.clone());
+        Some((id, self.all.clone(), self.state.clone()))
+    }
+
+    /// A page read; one for a row left since is dropped.
+    pub fn read_page(&mut self, id: String, page: Option<SessionPage>) {
+        if self.asked.as_ref() == Some(&id) {
+            self.page = Some((id, page));
+        }
     }
 
     fn selected_key(&self) -> Option<String> {
@@ -383,18 +422,25 @@ impl Controls {
             let cells: Vec<Vec<Cell>> = rows.iter().map(|r| self.row(r, p, now)).collect();
             let mut t = Table {
                 mark: self.table.mark::<SessionRow>(),
-                // The first eleven are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
+                // The first twelve are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
-                    "STAGE", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST", "ACCOUNT", "ITEM",
-                    "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
+                    "STAGE", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST", "ACCOUNT", "HARNESS",
+                    "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
                 ],
                 rows: cells,
-                keep: vec![0, 2, 3, 4, 5, 10, 1, 6, 7, 13, 12, 11, 8, 9],
-                flex: Some(14),
+                keep: vec![0, 2, 3, 4, 5, 11, 1, 6, 7, 14, 13, 12, 8, 9, 10],
+                flex: Some(15),
                 flexmin: if w >= 100 { 30 } else { 12 },
                 flexkeep: w >= 100,
                 right: vec![5, 6],
-                cap: vec![(1, 16), (2, 30), (8, 22), (10, fleet::NAME_MAX), (11, 22)],
+                cap: vec![
+                    (1, 16),
+                    (2, 30),
+                    (8, 16),
+                    (9, 22),
+                    (11, fleet::NAME_MAX),
+                    (12, 22),
+                ],
             }
             .fit(w, p.head());
             if let Some(l) = t.get_mut(self.sel + 1) {
@@ -497,6 +543,7 @@ impl Controls {
             idle,
             x.cost_usd.map_or("-".into(), |c| format!("${c:.2}").into()),
             dash(&x.account),
+            dash(&x.harness),
             dash(&x.item),
             x.source.name().into(),
             session.into(),
@@ -523,7 +570,7 @@ impl Controls {
             Line::raw(""),
             clip_line(
                 Line::styled(
-                    format!("DETAIL  {}   Enter or Esc closes", r.target),
+                    format!("{DETAIL_HEAD}{}   Enter or Esc closes", r.target),
                     p.head(),
                 ),
                 w,
@@ -538,19 +585,27 @@ impl Controls {
                 w,
             )
         };
+        let page = self.page.as_ref().filter(|(id, _)| id == r.target);
+        match page.map(|(_, p)| p.as_ref()) {
+            None => out.push(field("PAGE", "reading")),
+            Some(None) => out.push(field("PAGE", "nothing names this session")),
+            Some(Some(page)) => {
+                for e in &page.errors {
+                    out.push(field("ERROR", e));
+                }
+                for part in &page.parts {
+                    out.push(page_field(part, p, w));
+                }
+            }
+        }
         if let Some(x) = r.state {
             for (k, c) in fleet::HEAD.iter().zip(fleet::row(x, p)).skip(1) {
-                if !matches!(c.text.as_str(), "-" | "") {
+                if !ON_PAGE.contains(k) && !matches!(c.text.as_str(), "-" | "") {
                     out.push(field(k, &c.text));
                 }
             }
-            for k in ["branch", "next_phase", "said"] {
-                if let Some(v) = x[k].as_str().filter(|v| !v.is_empty() && *v != "-") {
-                    out.push(field(
-                        &k.replace('_', " ").to_uppercase(),
-                        &v.replace('\n', " "),
-                    ));
-                }
+            if let Some(v) = x["said"].as_str().filter(|v| !v.is_empty() && *v != "-") {
+                out.push(field("SAID", &v.replace('\n', " ")));
             }
             for b in x["blockers"].as_array().into_iter().flatten() {
                 if let Some(b) = b.as_str() {
@@ -558,25 +613,18 @@ impl Controls {
                 }
             }
         }
-        if let Some((a, s)) = r.live {
+        if let Some((_, s)) = r.live {
             out.push(field("ACCOUNT", &s.account));
-            if !a.plan_slug.is_empty() {
-                out.push(field("PLAN FILE", &a.plan_slug));
-            }
-            if !s.items.is_empty() {
-                out.push(field("QUEUE", &s.items.join(", ")));
-            }
             let offered: Vec<&str> = available(s).iter().map(|a| a.name()).collect();
             out.push(field("OFFERS", &offered.join(", ")));
         }
         if r.row.source != Source::Live {
-            out.push(field("SOURCE", r.row.source.name()));
-            if !r.row.item.is_empty() {
-                out.push(field("ITEM", &r.row.item));
-            }
-            if !r.row.session_id.is_empty() {
-                let card = format!("agentctl-session-outcomes card {}", r.row.session_id);
-                out.push(field("CARD", &card));
+            let card = page
+                .and_then(|(_, p)| p.as_ref())
+                .map(|p| p.outcome.as_str());
+            out.push(field("OUTCOME", ""));
+            for l in card.unwrap_or_default().lines() {
+                out.push(clip_line(Line::raw(format!("  {l}")), w));
             }
             return out;
         }
@@ -621,6 +669,28 @@ impl Controls {
         };
         clip_line(l, w)
     }
+}
+
+/// One part of the page. A URL is printed, since nothing here is clicked; a `#tab` link is
+/// agent-web's own.
+fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
+    let url = part.link.as_deref().filter(|l| l.starts_with("http"));
+    let text = match url {
+        Some(u) => format!("{}  {u}", part.text),
+        None => part.text.clone(),
+    };
+    let style = if part.warn {
+        p.warn()
+    } else {
+        Default::default()
+    };
+    clip_line(
+        Line::from(vec![
+            Span::styled(format!("  {:<10} ", part.label.to_uppercase()), p.dim()),
+            Span::styled(text, style),
+        ]),
+        w,
+    )
 }
 
 fn dash(s: &str) -> Cell {

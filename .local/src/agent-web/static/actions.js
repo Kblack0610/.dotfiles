@@ -56,7 +56,9 @@ function actionsBody(d) {
 function renderActions() {
   const el = $("actions"), d = ast.data;
   if (!d || !d.table) { paint(el, `<div class="${ast.err ? "card err" : "empty"}">${esc(ast.err || "Loading.")}</div>`); return; }
-  tblPaint(el, "actions", d.table, "search, or actor:shepherd verb:nudge -actor:dispatch", { head: actionsHead(d), body: actionsBody(d) });
+  if (tblRepaint("actions", d.table, () => actionsBody(d))) { paint($("actions-head"), actionsHead(d)); return; }
+  paint(el, `<div id="actions-head">${actionsHead(d)}</div>${tblBar("actions", d.table, "search, or actor:shepherd verb:nudge -actor:dispatch")}` +
+    `<div id="actions-body">${actionsBody(d)}</div>`);
 }
 
 // The view changed: the URL follows it and the server applies it.
@@ -71,8 +73,10 @@ $("actions").addEventListener("click", (e) => {
   if (t.dataset.all) { ast.all = true; renderActions(); return; }
   const h = t.closest("[data-hours]");
   if (h) { actionsView({ hours: h.dataset.hours === String(ACTION_HOURS) ? "" : h.dataset.hours }); return; }
+  const v = tblPatch(e);
+  if (v) actionsView(v);
 });
-tblBind($("actions"), actionsView);
+tblListen($("actions"), actionsView);
 
 // The shepherd's log and agent-notify's push "actions"; the dispatch log and the run ledger
 // arrive as "fleet", the queue as "queue".

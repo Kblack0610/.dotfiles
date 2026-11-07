@@ -7,8 +7,10 @@
 #   agent-usage changelog <project> --since E [--until E]   markdown for a version note
 #   agent-usage backfill <project|--all>     fill telemetry into existing registry lines
 #   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
-#   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--json]   where the window's tokens went, by session too (usage-cleanup)
-#   agent-usage tokens snapshot|line|json|check [--date D]        the nightly token-usage record per day
+#   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--sort cost|turns|context] [--json]   where the window's tokens went, by session too (usage-cleanup)
+#   agent-usage tokens snapshot|line|json|check [--langfuse] [--date D]  the nightly token-usage record per day
+#   agent-usage spend check <window> <max-usd>                    fleet spend over a window vs a ceiling (the claude-spend-* watches)
+#   agent-usage langfuse --since T --until T                      tool latency, tool and gateway errors from Langfuse
 #
 # TWO SOURCES, AND THEY ARE NOT EQUIVALENT.
 #
@@ -46,21 +48,13 @@ set -uo pipefail
 SESS_ROOT="$HOME/.agent/sessions"
 PROJECTS_ROOT="$HOME/.claude/projects"
 
-# Where Claude Code's OTel metrics ended up. Machine-local, never hardcoded here:
-# this repo is public, and the endpoint is an internal host. Same convention as
-# notes-cockpit's ~/.config/notes-cockpit/llm.env.
-#
-#   $PROM_URL, else ~/.config/agent-usage/config  (a shell fragment: PROM_URL=...)
-#
-# With neither, the Prometheus path is simply skipped and everything falls back to
-# the transcript - which is the correct behaviour on a machine that has no metrics
-# stack anyway.
-AU_CONF="${AGENT_USAGE_CONF:-$HOME/.config/agent-usage/config}"
-if [ -z "${PROM_URL:-}" ] && [ -f "$AU_CONF" ]; then
-  # shellcheck disable=SC1090
-  . "$AU_CONF"
-fi
-PROM_URL="${PROM_URL:-}"
+# Where Claude Code's OTel metrics land: CC_PROM_URL, the one endpoint every Prometheus
+# reader shares. .local/lib/prom.sh (prom_q) reads it from ~/.config/command-center/env,
+# stowed from the private overlay: this repo is public and the endpoint is an internal host.
+# With it unset the Prometheus path is skipped and everything falls back to the
+# transcript, which is the correct behaviour on a machine that has no metrics stack.
+# shellcheck source=../lib/prom.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/prom.sh"
 # Kept short on purpose: every caller has a working fallback, and no one should wait on
 # a Prometheus that is unreachable because we are off-LAN.
 PROM_TIMEOUT="${PROM_TIMEOUT:-3}"
@@ -81,22 +75,10 @@ command -v jq >/dev/null 2>&1 || { echo "agent-usage: jq is required" >&2; exit 
 # without telemetry reports cost `null` and renders as `-`. Every session from here on
 # has real reported cost, which is what the changelog is for.
 
-# prom <promql> -> the scalar value of the first result, or nothing.
-prom() {
-  [ -n "$PROM_URL" ] || return 0
-  curl -s --get "$PROM_URL/api/v1/query" \
-    --connect-timeout 2 --max-time "$PROM_TIMEOUT" \
-    --data-urlencode "query=$1" 2>/dev/null \
-    | jq -r '.data.result[0].value[1] // empty' 2>/dev/null
-}
-
 # prom_by <label> <promql> -> "<label-value>\t<value>" per line.
 prom_by() {
-  [ -n "$PROM_URL" ] || return 0
-  curl -s --get "$PROM_URL/api/v1/query" \
-    --connect-timeout 2 --max-time "$PROM_TIMEOUT" \
-    --data-urlencode "query=$2" 2>/dev/null \
-    | jq -r --arg l "$1" '.data.result[]? | "\(.metric[$l] // "-")\t\(.value[1])"' 2>/dev/null
+  [ -n "${CC_PROM_URL:-}" ] || return 0
+  prom_q "$2" | jq -r --arg l "$1" '.data.result[]? | "\(.metric[$l] // "-")\t\(.value[1])"' 2>/dev/null
 }
 
 # transcript_of <id> -> path, or nothing. The registry knows it; otherwise search.
@@ -600,7 +582,7 @@ cmd_wakes() {
 # context, waits, cache writes by cause, idle wakes and dream runs. The usage-cleanup skill's
 # numbers; the logic lives in ../lib/agent-usage-burn.py.
 #
-#   burn [--days 7] [--before YYYY-MM-DD] [--json]
+#   burn [--days 7] [--before YYYY-MM-DD] [--top N] [--sort cost|turns|context] [--json]
 cmd_burn() {
   python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-burn.py" "$@"
 }
@@ -614,9 +596,39 @@ cmd_tokens() {
   python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-tokens.py" "$@"
 }
 
+# --- spend -----------------------------------------------------------------
+
+# spend check <window> <max-usd>: fleet-wide Claude Code cost over the last <window> (one
+# Prometheus unit: 30m, 1h, 24h, 7d) against a ceiling. The one check behind both the
+# claude-spend-hourly and claude-spend-daily watches; each watch passes its own window and
+# number in its expect_cmd. Exit 0 at or under the ceiling, 1 over, 2 when Prometheus cannot
+# be read or answers with anything but a vector (a watch must trip then too: a blind spend
+# alarm is a failed alarm), 64 for bad arguments. An empty vector counts as $0.
+cmd_spend() {
+  local verb="${1:-}" win="${2:-}" max="${3:-}" v
+  if [ "$verb" != check ] || ! [[ "$win" =~ ^[0-9]+[smhdw]$ ]] || ! [[ "$max" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "usage: agent-usage spend check <window e.g. 1h> <max-usd>" >&2; return 64
+  fi
+  [ -n "${CC_PROM_URL:-}" ] || { echo "spend: no CC_PROM_URL (set it in ~/.config/command-center/env)" >&2; return 2; }
+  local PROM_TIMEOUT=20
+  v="$(prom_q "sum(increase(claude_code_cost_usage_USD_total[$win]))" \
+       | jq -er '.data.result | if type != "array" then error("not a vector") elif length == 0 then "0" else .[0].value[1] end' 2>/dev/null)" \
+    && [[ "$v" =~ ^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$ ]] \
+    || { echo "spend: Prometheus unreadable or not a number" >&2; return 2; }
+  LC_ALL=C awk -v v="$v" -v m="$max" -v w="$win" 'BEGIN { printf "last %s: $%.1f (alert at $%s)\n", w, v, m; exit (v + 0 <= m + 0) ? 0 : 1 }'
+}
+
+# --- langfuse --------------------------------------------------------------
+
+# One window's tool latency, tool errors and gateway figures, for the token-usage snapshot.
+# Logic: ../lib/agent-usage-langfuse.py.
+cmd_langfuse() {
+  python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-langfuse.py" "$@"
+}
+
 # --- dispatch --------------------------------------------------------------
 
-usage() { sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Sourced (by the test suite) rather than run: every function is defined, nothing runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
@@ -631,6 +643,8 @@ case "$sub" in
   wakes)     cmd_wakes "$@" ;;
   burn)      cmd_burn "$@" ;;
   tokens)    cmd_tokens "$@" ;;
+  spend)     cmd_spend "$@" ;;
+  langfuse)  cmd_langfuse "$@" ;;
   -h|--help|help|'') usage ;;
   *) echo "agent-usage: unknown command '$sub'" >&2; usage; exit 1 ;;
 esac

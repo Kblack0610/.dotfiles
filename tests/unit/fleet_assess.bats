@@ -42,6 +42,39 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_output --partial 'HOLD memory 8%'
 }
 
+@test "the 2026-11-06 miss (48% free, kswapd swapping into zram) is HOLD on memory stall" {
+  run fleet_verdict 5 24 60 48 0 35
+  assert_output --partial 'HOLD memory stall 35.0%'
+}
+
+@test "memory stall: HOLD at the mark, OK just under; no stall argument means none" {
+  [ "$(fleet_verdict 5 24 60 48 0 20 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 5 24 60 48 0 19.9 | cut -d' ' -f1)" = OK ]
+  [ "$(fleet_verdict 5 24 60 48 0 | cut -d' ' -f1)" = OK ]
+}
+
+@test "CLEAR also needs the memory stall back under the low mark" {
+  [ "$(fleet_verdict 10 24 80 60 1 10 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 10 24 80 60 1 4.9 | cut -d' ' -f1)" = CLEAR ]
+}
+
+@test "swap sitting full of cold pages with no stall is not a hold" {
+  [ "$(fleet_verdict 5 24 60 48 0 0.1 | cut -d' ' -f1)" = OK ]
+}
+
+@test "read_mem_stall takes the some line's avg10, not full's; a missing PSI file reads 0" {
+  printf 'some avg10=12.34 avg60=1.00 avg300=0.00 total=1\nfull avg10=3.21 avg60=0.00 avg300=0.00 total=1\n' > "$BATS_TEST_TMPDIR/psi"
+  PSI_MEM="$BATS_TEST_TMPDIR/psi" run read_mem_stall
+  assert_output '12.34'
+  PSI_MEM="$BATS_TEST_TMPDIR/none" run read_mem_stall
+  assert_output '0'
+}
+
+@test "held with only the stall over the low mark: the reason names the stall, not load" {
+  run fleet_verdict 10 24 80 60 1 12
+  assert_output --partial 'HOLD held, memory stall 12.0%'
+}
+
 @test "between the marks: HOLD while held, OK when nothing is held" {
   [ "$(v 30 80 60 1)" = HOLD ]
   [ "$(v 30 80 60 0)" = OK ]
@@ -69,7 +102,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   FLEET_HOLD_LOAD_X=0 run "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_failure 1
   assert_output --partial 'HOLD'
-  FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOT_TCTL=1000 \
+  FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 \
     run "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_success
 }
@@ -95,7 +128,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
   mkdir -p "$AGENT_HOLD_DIR"
   touch "$AGENT_HOLD_DIR/dispatch" "$AGENT_HOLD_DIR/mac-desktop"
-  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
+  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_success
   assert_output --partial 'OK'
@@ -108,7 +141,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
 @test "--thermal-probe between the marks: a tripped watch stays tripped, and dispatch's --watch-probe does not" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch"
   mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
-  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
+  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_success
   echo OK > "$SENTINEL_STATE/fleet-thermal.state"
@@ -126,7 +159,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch"
   mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
   printf TRIP > "$SENTINEL_STATE/fleet-thermal.state"
-  run env FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=1000 FLEET_CLEAR_MEM_PCT=0 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  run env FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=1000 FLEET_CLEAR_MEM_PCT=0 FLEET_CLEAR_STALL_PCT=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_success
   assert_output --partial 'CLEAR'
 }
@@ -249,15 +282,52 @@ slot_fixture() {
 LOCKS
 }
 
+# Parents of the fixture editors (pids 101-103): 101 runs under slot 1's holder (pid 11), 102
+# under slot 3's holder (12) two levels up, 103 under a shell (900) that holds no slot.
+editor_parents() {
+  parent_of() { case "$1" in 101) echo 11 ;; 102) echo 50 ;; 50) echo 12 ;; 103) echo 900 ;; 900) echo 1 ;; esac; }
+}
+
 @test "textfile: slots, busy and queued come from slots.sh's files and /proc/locks" {
   textfile_fixture
   slot_fixture
+  editor_parents
+  gate_rows() { printf '%s\t%s\t%s\t%s\n' 2160 "$PROJ" PlayMode 101 30 "$PROJ" PlayMode 102; }
   write_textfile "$OUT"
   run cat "$OUT/fleet_local.prom"
   assert_line 'fleet_local_slots{kind="open"} 2'
   assert_line 'fleet_local_slots{kind="burst"} 8'
   assert_line 'fleet_local_slots_busy 2'
   assert_line 'fleet_local_queued 2'
+}
+
+@test "textfile: a batch editor started outside slots.sh counts as busy beside the held slots" {
+  textfile_fixture
+  slot_fixture
+  editor_parents
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_local_slots_busy 3'
+  assert_line 'fleet_local_unslotted_editors 1'
+}
+
+@test "unslotted_editors: a slot held with no editor adds none, and a chain to init with no holder is unslotted" {
+  parent_of() { case "$1" in 7) echo 8 ;; 8) echo 1 ;; esac; }
+  gate_rows() { :; }
+  run unslotted_editors 11,12
+  assert_output 0
+  gate_rows() { printf '%s\t%s\t%s\t%s\n' 5 /p editor 7; }
+  run unslotted_editors 11,12
+  assert_output 1
+  run unslotted_editors -
+  assert_output 1
+}
+
+@test "unslotted_editors: an editor whose parent vanished is not counted, and a holder nine levels up still slots it" {
+  gate_rows() { printf '%s\t%s\t%s\t%s\n' 5 /p editor 7 5 /p editor 20; }
+  parent_of() { case "$1" in 20) echo 19 ;; 19) echo 18 ;; 18) echo 17 ;; 17) echo 16 ;; 16) echo 15 ;; 15) echo 14 ;; 14) echo 13 ;; 13) echo 12 ;; 12) echo 11 ;; esac; }
+  run unslotted_editors 11
+  assert_output 0
 }
 
 @test "textfile: no capacity file publishes no slot series, never a guessed count" {
@@ -431,4 +501,70 @@ gh_stub() {
   gh_stub 2964 "$(( now + 3000 ))"
   run gh_budget
   assert_output "github: 2964/5000 REST calls left, resets $(date -d "@$(( now + 3000 ))" +%H:%M)"
+}
+
+# rows reads ps and /proc; ps is stubbed with a table (pid ppid ni pcpu comm args) and
+# classify with a fixed answer, so the selection is pinned without a hot machine.
+rows_with() {
+  classify() { printf 'shell\t-\t-\n'; }
+  worktree_of() { echo wt; }
+  ps() { printf '%s\n' "$PS_TABLE"; }
+  FLEET_ROW_CPU=50 rows
+}
+
+@test "rows: a runner whose children are each under the line shows with its subtree CPU (ar-231)" {
+  PS_TABLE='1 0 0 0.0 systemd systemd
+10 1 0 1.0 make make -j
+11 10 0 20.0 cc1 cc1 a.c
+12 10 0 20.0 cc1 cc1 b.c
+13 10 0 20.0 cc1 cc1 c.c
+99 1 0 3.0 bash bash'
+  run rows_with
+  assert_success
+  assert_line --regexp '^10 +1\.0 .* 61\.0$'
+  refute_output --partial 'cc1'
+  [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "rows: a heavy child shows, its parent does not repeat it, and TREE sums it in" {
+  PS_TABLE='20 1 0 2.0 node node run
+21 20 0 80.0 node node worker
+22 20 0 5.0 node node idle'
+  run rows_with
+  assert_line --regexp '^21 +80\.0 .* 80\.0$'
+  refute_output --regexp '^20 '
+}
+
+@test "rows: a heavy process with its own children still shows once, with the sum" {
+  PS_TABLE='30 1 0 60.0 cc1 cc1 big
+31 30 0 10.0 as as x'
+  run rows_with
+  assert_line --regexp '^30 +60\.0 .* 70\.0$'
+  [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "rows: load scattered under init, systemd and tmux does not put a row on the common ancestor" {
+  PS_TABLE='1 0 0 0.0 systemd systemd
+2 1 0 0.0 systemd systemd --user
+3 2 0 0.0 tmux: tmux: server
+40 3 0 20.0 bash bash
+41 3 0 20.0 bash bash
+42 3 0 20.0 bash bash'
+  run rows_with
+  refute_output --regexp '^(1|2|3) '
+  [ "${#lines[@]}" -eq 0 ]
+}
+
+@test "rows: a deep chain names only the lowest process that reaches the line, and Unity batchmode always shows" {
+  PS_TABLE='50 1 0 0.0 claude claude
+51 50 0 0.0 bash bash
+52 51 0 1.0 make make
+53 52 0 30.0 cc1 cc1 a
+54 52 0 30.0 cc1 cc1 b
+60 1 0 0.5 Unity Unity -batchmode -projectPath /p'
+  run rows_with
+  assert_line --regexp '^52 +1\.0 .* 61\.0$'
+  assert_line --regexp '^60 +0\.5 '
+  refute_output --regexp '^(50|51) '
+  [ "${#lines[@]}" -eq 2 ]
 }

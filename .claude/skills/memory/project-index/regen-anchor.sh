@@ -21,17 +21,10 @@ set -euo pipefail
 
 HOOKS_DIR="$HOME/.dotfiles/.config/shared-hooks"
 # project_map_file() from project-name.sh owns the path. It is defined there rather than
-# here because five files each defined it and one was wrong (see its comment). Fall back
-# only if the resolver is not on this machine yet.
-if [ -r "$HOME/.config/shared-hooks/project-name.sh" ]; then
-  # shellcheck source=/dev/null
-  . "$HOME/.config/shared-hooks/project-name.sh"
-fi
-if declare -F project_map_file >/dev/null 2>&1; then
-  MAP_FILE="$(project_map_file)"
-else
-  MAP_FILE="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
-fi
+# here because five files each defined it and one was wrong (see its comment).
+# shellcheck source=/dev/null
+. "$HOME/.config/shared-hooks/project-name.sh"
+MAP_FILE="$(project_map_file)"
 
 # The shared AUTO-block splicer. Hard-sourced (not guarded), same as
 # regen-project-index.sh: this script's whole job is that splice, and the inline awk it

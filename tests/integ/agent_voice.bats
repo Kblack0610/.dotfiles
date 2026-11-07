@@ -71,7 +71,7 @@ row() { # <pane> <target> [status] [idle_since]
   run "$AV" send --to new:dotfiles "Add a voice hotkey."
   assert_success
   assert_equal "$(cat "$NOTES_FIXTURE/queue.stdin")" 'Add a voice hotkey.'
-  run grep -c '^agent-queue add --project dotfiles --from human$' "$NOTES_FIXTURE/calls.log"
+  run grep -c '^agent-queue add --project dotfiles --from human --want voice$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
   run grep -c '^fleet-dispatch start --item said-it$' "$NOTES_FIXTURE/calls.log"
   assert_output 1

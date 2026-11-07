@@ -1,7 +1,7 @@
 ---
 name: day-log
 description: >-
-  What a day shipped: merged PRs by area, the work item behind each, what waits on the human, spend. Use for "what got done today", "what merged this week", "what moved this week", "what landed #N". ETAs are fleet-bench.
+  What a day shipped: merged PRs by area, the work item behind each, what waits on the human, spend. Use for "what got done today", "daily summary", "what merged this week", "what moved this week", "what landed #N". ETAs are fleet-bench.
 metadata:
   category: monitoring
   tags: [fleet, prs, daily, history, observability]
@@ -15,8 +15,6 @@ Answers "what did the day produce" from one record per day, so a chat answer, th
 ## Scope and triggers
 
 What a day shipped, from the day-log record: every PR merged in any repo grouped by area and scope, the work item that landed each one (the agent-queue item whose `pr:` it is), what is still open, what waits on the human (NIGHTLY reds, NEEDS sessions, pending asks), the fleet-bench scorecard, and spend. One JSON record per local day under ~/.agent/daylog, gathered by `day-log` with no model; the hub's Log tab (Prefix i, then 7) shows the same data, and `day-log.timer` snapshots it every 5 minutes. Use when the user asks "what got done today", "what did we ship yesterday", "summary of the day", "what merged this week", "show me the day log", "which session landed #N", or wants the day as a shareable page. Not for live session state (the hub Fleet tab, shepherd status), not for ETAs or the scorecard's method (fleet-bench), and not for one session's history after it ended (session-outcomes).
-
-## When to Use
 
 - The user asks what got done, merged or shipped today, yesterday, or on a given date.
 - The user asks for the week or what moved: `day-log week`, a table of 7 finished days against the 7 before (`--line` is the one-liner fleet-bench shows, `--json` the data, `--date D` a week ending on D).

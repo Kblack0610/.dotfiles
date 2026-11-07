@@ -20,7 +20,7 @@ metadata:
 
 # Perfetto Debug Skill
 
-## When to Use
+## Scope and triggers
 
 Use this skill when investigating VR performance issues on Meta VR devices:
 
@@ -31,6 +31,8 @@ Use this skill when investigating VR performance issues on Meta VR devices:
 - Frame timing variance and missed vsync deadlines
 - Thread contention and synchronization issues
 - High draw call counts or overdraw
+
+Not for CPU hotspots from sampling (`hz-simpleperf-debug`) or for logs, crashes and screenshots (`hz-vr-debug`). Not for our own games' perf pass: `game-eval`.
 
 ## VR Frame Time Targets
 

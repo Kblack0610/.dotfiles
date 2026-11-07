@@ -125,7 +125,9 @@ jq -nc \
   --arg title "$TITLE" \
   --argjson updated "$NOW" \
   --argjson usage "${USAGE:-null}" \
-  '{session_id:$sid, project:$project, transcript:$transcript, resume:$resume, first_prompt:$first_prompt, edits:$edits, head_commit:$head_commit, title:$title, updated:$updated}
+  --arg harness "${AGENT_HARNESS:-claude}" \
+  '{session_id:$sid, project:$project, transcript:$transcript, resume:$resume, first_prompt:$first_prompt, edits:$edits, head_commit:$head_commit, title:$title, updated:$updated,
+    harness:$harness}
    + (if $usage == null then {} else {
         cost_usd:      $usage.cost_usd,
         usage_source:  $usage.usage_source,

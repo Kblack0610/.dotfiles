@@ -33,7 +33,11 @@ echo "gh $*" >>"$NOTES_FIXTURE/gh.log"
 p="${2#repos/*/pulls/}" f="$GH_PRS/${p%/files}.json"
 [ ! -f "${f%.json}.err" ] || { cat "${f%.json}.err" >&2; exit 1; }
 [ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
-case "$p" in */files) jq -r '.files[]?.path' "$f" ;; *) jq -r '.additions + .deletions' "$f" ;; esac
+case "$p:$4" in
+  */files:*) jq -r '.files[]?.path' "$f" ;;
+  *:*merged_at*) jq -r '.merged_at // empty' "$f" ;;
+  *) jq -r '.additions + .deletions' "$f" ;;
+esac
 SH
   printf '#!/bin/sh\ncat "$NOTES_FIXTURE/criteria-$1.json" 2>/dev/null\n' >"$SANDBOX/bin/system-check"
   printf '#!/bin/sh\nexit 0\n' >"$SANDBOX/bin/fleet-dispatch"
@@ -43,13 +47,17 @@ SH
 
 # pr <N> <added+deleted> <path>... -- a PR fixture.
 pr() { local n="$1" size="$2"; shift 2; jq -n --argjson s "$size" '{additions: $s, deletions: 0, files: [$ARGS.positional[] | {path: .}]}' --args "$@" >"$GH_PRS/$n.json"; }
-# done_item <slug> <pr> [<plan> <phase>] -- a landed item on the repo's own project; `phases:` is
-# written as add --plan writes it, since set has no verb for it.
+# merged <N> <day> -- PR N merged at noon UTC on <day>.
+merged() { local f="$GH_PRS/$1.json"; jq --arg t "$2T12:00:00Z" '.merged_at = $t' "$f" >"$f.new" && mv "$f.new" "$f"; }
+# done_item <slug> <pr> [<plan> <phase>] -- a landed item on the repo's own project with no merged:,
+# as items closed before agent-queue required one are (so its pr: goes on after the close); `phases:`
+# is written as add --plan writes it, since set has no verb for it.
 done_item() { local s="$1" n="$2" aq="$REPO_ROOT/.local/bin/agent-queue"
   "$aq" add --project game --slug "$s" "$s" >/dev/null 2>&1
-  "$aq" set "$s" pr="acme/game#$n" ${3:+plan="$3"} >/dev/null
+  [ -z "${3:-}" ] || "$aq" set "$s" plan="$3" >/dev/null
   [ -z "${4:-}" ] || sed -i "0,/^plan: /s//phases: $4\nplan: /" "$AGENT_QUEUE_DIR"/queued/*-"$s".md
-  "$aq" move "$s" done --status ok >/dev/null; }
+  "$aq" move "$s" done --status ok >/dev/null
+  "$aq" set "$s" pr="acme/game#$n" >/dev/null; }
 lines() { grep -v '^#' "$CREDIT_BACKFILL_DIR/game.tsv" | cut -f1-9 | tr '\t' '|'; }
 
 @test "propose credits an item to the game its PR's files belong to, and keeps a shared one home" {
@@ -161,6 +169,63 @@ notes_vault() {
   # Every line now carries its id, so a rerun writes nothing.
   run "$CB" apply game
   assert_success; assert_output --partial "0 lines applied"
+}
+
+@test "apply closes a story on its PR's merge day and an epic on its last story's, not on the apply day" {
+  pr 11 40 Assets/Arena/A.cs
+  pr 21 40 Assets/Level/L.cs
+  pr 22 40 Assets/Level/M.cs
+  merged 11 2026-10-05; merged 21 2026-10-03; merged 22 2026-10-04
+  done_item arena-fix 11
+  notes_vault
+  printf '%s\n' '# Level: done' '' '## Phases' '' '- [x] P1 one (#21)' '- [x] P2 two (#22)' >"$CREDIT_BACKFILL_PLANS/game/lv-done.md"
+  "$CB" propose game
+  run "$CB" apply game
+  assert_success
+  today="$(date +%F)"
+  run rows arena
+  assert_line --regexp '^- \[x\] feat\(arena\): arena-fix .*done:2026-10-05 pr:11'
+  run rows level
+  assert_line --regexp '^- \[x\] feat\(gameplay\): P1 one \(#21\) .*done:2026-10-03 pr:21'
+  assert_line --regexp '^- \[x\] feat\(gameplay\): P2 two \(#22\) .*done:2026-10-04 pr:22'
+  assert_line --regexp '^- \[x\] epic\(gameplay\): Level: done .*done:2026-10-04 '
+  refute_output --partial "done:$today"
+}
+
+@test "apply closes a story today when gh cannot give its merge day, and redate then moves it, one project at a time" {
+  pr 11 40 Assets/Arena/A.cs
+  pr 21 40 Assets/Level/L.cs
+  pr 22 40 Assets/Level/M.cs
+  done_item arena-fix 11
+  notes_vault
+  printf '%s\n' '# Level: done' '' '## Phases' '' '- [x] P1 one (#21)' '- [x] P2 two (#22)' >"$CREDIT_BACKFILL_PLANS/game/lv-done.md"
+  "$CB" propose game
+  run "$CB" apply game
+  assert_output --partial "pr:21): no merge day from gh, closed today"
+  today="$(date +%F)"
+  run rows level
+  assert_line --regexp "^- \[x\] feat\(gameplay\): P1 one .*done:$today pr:21"
+  merged 11 2026-10-05; merged 21 2026-10-03; merged 22 2026-10-04
+  run "$CB" redate propose game
+  assert_success; assert_output --partial "4 to re-date"
+  run grep -v '^#' "$CREDIT_BACKFILL_DIR/game.redate.tsv"
+  assert_line --regexp "^arena	ar-[0-9]+	$today	2026-10-05	pr:11	\$"
+  assert_line --regexp "^level	lv-1	$today	2026-10-04	plan:lv-done	\$"
+  # The human reviews one project: only its lines are written, and a rerun writes none.
+  run "$CB" redate apply game level
+  assert_success; assert_output --partial "3 rows re-dated in level"
+  run rows level
+  assert_line --regexp '^- \[x\] feat\(gameplay\): P1 one .*done:2026-10-03 pr:21'
+  assert_line --regexp '^- \[x\] epic\(gameplay\): Level: done .*done:2026-10-04 '
+  run rows arena
+  assert_line --regexp "^- \[x\] feat\(arena\): arena-fix .*done:$today pr:11"
+  run "$CB" redate apply game level
+  assert_output --partial "0 rows re-dated in level"
+  run "$CB" redate propose game
+  assert_failure; assert_output --partial "delete it to propose again"
+  rm "$CREDIT_BACKFILL_DIR/game.redate.tsv"
+  run "$CB" redate propose game
+  assert_output --partial "1 to re-date"
 }
 
 @test "apply refuses an epic whose system is still ?" {

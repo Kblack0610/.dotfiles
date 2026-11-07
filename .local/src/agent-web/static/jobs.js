@@ -73,7 +73,13 @@ function renderJobs() {
     el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading..."}</div>`;
     return;
   }
-  tblPaint(el, "jobs", d.table, "search, or source:ci result:fail -name:dream", { head: jobsHead(d), body: jobsBody(d), tail: jobsTail() });
+  if (tblRepaint("jobs", d.table, () => jobsBody(d))) {
+    paint($("jobs-head"), jobsHead(d));
+    paint($("jobs-tail"), jobsTail());
+    return;
+  }
+  paint(el, `<div id="jobs-head">${jobsHead(d)}</div>${tblBar("jobs", d.table, "search, or source:ci result:fail -name:dream")}` +
+    `<div id="jobs-body">${jobsBody(d)}</div><div id="jobs-tail">${jobsTail()}</div>`);
   seekSection();
 }
 
@@ -109,12 +115,14 @@ $("jobs").addEventListener("click", (e) => {
   const h = t.closest("[data-hist]");
   if (h) { e.preventDefault(); jst.hist = h.dataset.hist || null; jst.data = null; renderJobs(); refreshJobs(); return; }
   if (t.dataset.all) { jst.all = true; renderJobs(); return; }
+  const v = tblPatch(e);
+  if (v) { jobsView(v); return; }
   const row = t.closest("tr.jr");
   if (!row) return;
   const j = (jst.data.jobs || []).find((x) => jobKey(x) === row.dataset.key);
   if (j) openLog(j);
 });
-tblBind($("jobs"), jobsView);
+tblListen($("jobs"), jobsView);
 
 // Shown and refreshed by TABS.infra (infra.js).
 const pollJobs = poll("infra", refreshJobs, JOBS_REFRESH_MS);

@@ -67,15 +67,20 @@ plans_orphaned() {
   local ledger="${PLAN_LEDGER:-$HOME/.agent/plans/approved.jsonl}" live items line plan sid t
   [ -s "$ledger" ] || return 0
   live=$(agent-ask live-sessions 2>/dev/null) || return 1
-  items=$(agent-queue list --json --state active 2>/dev/null | jq -sc .) && [ -n "$items" ] || return 1
+  # The queue goes in by file: as an argument it passes ARG_MAX and jq dies before it looks.
+  items=$(mktemp) || return 1
+  if ! agent-queue list --json --state active >"$items" 2>/dev/null || ! jq empty "$items" 2>/dev/null; then
+    rm -f "$items"; return 1
+  fi
   while IFS= read -r line; do
     plan=$(jq -r .plan <<<"$line"); sid=$(jq -r .session <<<"$line")
     plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 < $2 { ok = 1 } END { exit !ok }' || continue
     t=$(find "$HOME"/.claude*/projects -maxdepth 2 -name "$sid.jsonl" -mmin "-$PLAN_QUIET_MIN" -print -quit 2>/dev/null)
     [ -n "$t" ] || printf '%s\n' "$line"
-  done < <(jq -sc --arg live "$live" --argjson items "$items" \
+  done < <(jq -sc --arg live "$live" --slurpfile items "$items" \
     --argjson since "$(( $(date +%s) - PLAN_LEDGER_DAYS * 86400 ))" "$PLAN_ITEMS_JQ"'
     ($live | split("\n")) as $live
     | map(select(.epoch >= $since)) | group_by(.plan) | map(max_by(.epoch))[]
     | . as $l | select(($live | index($l.session) | not) and ($items | any(.[]; names_plan($l.plan)) | not))' "$ledger")
+  rm -f "$items"
 }

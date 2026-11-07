@@ -5,14 +5,14 @@ description: >-
 metadata:
   category: ops
   tags: [unity, testing, ci, playground, headless]
-  reviewed: 2026-11-03
+  reviewed: 2026-11-06
 ---
 
 # Playground headless test
 
 Runs the playground's tests without hurting the workstation, which is the human's and is shared with every other session, and turns a run into a merge decision. Every CI rule lives in the repo's `docs/operations/ci.md` (Rules); this file restates none of them. When the two disagree, the doc wins and this file gets fixed in the same turn.
 
-## When to Use
+## Scope and triggers
 
 - When iterating on one test class while writing or fixing it.
 - When gating and landing a playground PR.
@@ -22,7 +22,7 @@ Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP". 
 
 ## Steps
 
-1. Check holds first: `agent-hold list`. A `unity` hold means start no new Unity run until it clears; wait on it in the background.
+1. Check holds first: `agent-hold list`. What a `unity` hold pauses and how a run waits it out: the repo's `docs/development/testing.md`, Headless.
 2. Iterate locally on one class at a time:
    `scripts/test/run.sh --filter <Namespace.Class>` (add `--platform EditMode` for an EditMode class). A fresh worktree seeds `Library/` itself (`scripts/setup/library.sh`). Run it as one foreground call with `timeout: 600000`, unless you have other work to do while it runs: a background run costs a start ack and a wake, and past the timeout the harness moves the call to the background without stopping it. The `block-poll.py` hook denies a foreground wait loop and `gh run watch`.
 3. Read the counts. `0/0` or no `==> n/m` line means run.sh refused the arguments, not that tests passed. Failure detail is in `Logs/test-runs/<stamp>/results.xml`.

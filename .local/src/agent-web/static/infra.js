@@ -58,7 +58,6 @@ function kpis(cc) {
   const site = (n, s) => (cc[n] || {})[s] ?? (cc["cc:site_slots"] ? 0 : "?");
   const hosted = one("cc:github_hosted_running");
   const where = `local ${site("cc:site_busy", "local")}/${site("cc:site_slots", "local")}, cloud ${site("cc:site_busy", "cloud")}/${site("cc:site_slots", "cloud")}${hosted > 0 ? ` +${hosted} github-hosted` : ""}`;
-  const lazer = [one("cc:lazer_spend_usd"), one("cc:lazer_budget_usd")];
   const ok = (a, b) => (a != null && a === b ? "var(--b-done)" : "var(--b-needs)");
   return `<div class="tiles roomy">${
     tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, ok(nodes[0], nodes[1]))}${
@@ -66,8 +65,7 @@ function kpis(cc) {
     tile("CI BUSY", `${busy}/${slots}`, "var(--c1)", `${where}, ${waiting} waiting`)}${
     tile("RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, one("cc:runners_failed") ? "var(--b-needs)" : "var(--b-done)", `of ${one("cc:runners_total") ?? "?"}`)}${
     tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`)}${
-    tile("LAZER", usd(lazer[0]), "var(--c2)", `${meter(lazer[1] ? lazer[0] / lazer[1] : 0, "var(--c2)")} of ${usd(lazer[1])}`)}${
-    tile("CLAUDE 24H", usd(one("cc:claude_code_cost_24h_usd")), "var(--c2)")}${
+    tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
     tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
 }
 
