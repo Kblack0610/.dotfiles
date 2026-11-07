@@ -3200,6 +3200,43 @@ qstats_fixture() {
   assert_line '| sonnet | claude-lazer | 1 | 1 | 1 | 0 | 0 | 1 | $4.5 | $4.5 | gateway |'
 }
 
+@test "models --by class: each pairing splits by the class on its sessions' outcome rows, an unstamped item is unclassed, and the default view is unchanged" {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  {
+    echo '{"session_id":"s1","cost_usd":4,"class":{"size":"s","kind":"fix"}}'
+    echo '{"session_id":"s2","cost_usd":6,"class":{"size":"s","kind":"fix"}}'
+    echo '{"session_id":"s3","cost_usd":8,"class":{"size":null,"kind":"check"}}'
+    echo '{"session_id":"s4","cost_usd":2}'
+  } > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  {
+    echo '{"slug":"a","model":"sonnet","status":"ok","pr":"o/r#1","sessions":"s1"}'
+    echo '{"slug":"b","model":"sonnet","status":"failed","sessions":"s2"}'
+    echo '{"slug":"c","model":"sonnet","agent":"codex","status":"ok","pr":"o/r#3","sessions":"s3"}'
+    echo '{"slug":"d","model":"sonnet","status":"ok","pr":"o/r#4","sessions":"s4"}'
+    echo '{"slug":"e","model":"sonnet","status":"ok","pr":"o/r#5"}'
+  } > "$ITEMS"
+  now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
+  echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":\"redo\"}" > "$BENCH_LANE_LOG"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --by class --json
+  assert_success
+  assert_equal "$(jq -c '[.models[] | [.class, .harness, .done, .landed, .cost_usd, .redo]]' <<<"$output")" \
+    '[["fix/s","claude",2,1,10,null],["unclassed","claude",2,2,2,null],["check/-","codex",1,1,8,null]]'
+  assert_equal "$(jq -c '[.models[] | [.runs, .rated, .redo_rate]] | unique' <<<"$output")" '[[null,null,null]]'
+  run env BENCH_NOW=$T0 "$SUBJECT" models --by class
+  assert_success
+  assert_line '| fix/s | sonnet | claude | 2 | 1 | 0.5 | 1 | 0 | $10 | $10 | list |'
+  # the default view has no class split and keeps model-lane's redo
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_success
+  assert_equal "$(jq -c '[.models[] | [.harness, .done, .redo, has("class")]]' <<<"$output")" '[["claude",4,1,false],["codex",1,0,false]]'
+  run "$SUBJECT" models --by size
+  assert_failure 2
+}
+
 @test "models: an item with no model= takes the model its sessions spent most on, then the one their rows name; no row is unrecorded" {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
   export BENCH_DONE_ITEMS_CMD=done-stub
