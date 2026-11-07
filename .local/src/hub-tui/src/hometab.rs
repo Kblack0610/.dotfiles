@@ -1,7 +1,11 @@
-//! The Home tab: what needs you, what analysis proposes, what is running, the numbers and the health strip, from
-//! `hub_core::home` (the reader agent-web's Home uses too). The machines, pools and CI that sat
+//! The Home tab: what needs you, what changed since last night, what analysis proposes, what is
+//! running, the numbers and the health strip, from `hub_core::home` and `hub_core::briefing`
+//! (the readers agent-web's Home uses too). The machines, pools and CI that sat
 //! under it until phase 4 are the Infra tab's (docs/dashboards.md "Hub layout").
 
+use std::collections::BTreeMap;
+
+use hub_core::briefing::{self, Fix, Night};
 use hub_core::home::{Chip, Home, Kind, Level};
 use ratatui::text::{Line, Span};
 
@@ -36,7 +40,98 @@ fn more(out: &mut Vec<Line<'static>>, len: usize, shown: usize, what: &str, p: P
     }
 }
 
-pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// Queue a fix per area name: None while it runs, then what agent-queue answered.
+pub type Fixes = BTreeMap<String, Option<Result<String, String>>>;
+
+/// Since last night as Home draws it: the read (None until it answers) and the fixes queued.
+pub struct NightView<'a> {
+    pub night: Option<&'a Night>,
+    pub fixes: &'a Fixes,
+}
+
+/// The row `F` queues a fix for: the first bad area with no fix in the queue, or whose
+/// queueing failed here.
+pub fn next_fix<'a>(n: &'a Night, fixes: &Fixes) -> Option<(&'static str, &'a Fix)> {
+    n.rows.iter().find_map(|r| {
+        let f = r.fix.as_ref()?;
+        let open = match fixes.get(r.area.name) {
+            None => f.queued.is_none(),
+            Some(local) => matches!(local, Some(Err(_))),
+        };
+        open.then_some((r.area.name, f))
+    })
+}
+
+/// SINCE LAST NIGHT: the areas that are not ok, the ok ones in one dim line (dashboards rule 4).
+fn night_section(out: &mut Vec<Line<'static>>, v: &NightView, p: Palette, w: usize) {
+    let Some(n) = v.night else {
+        out.push(Line::from(vec![
+            Span::styled("SINCE LAST NIGHT  ", p.head()),
+            Span::styled("reading", p.dim()),
+        ]));
+        return;
+    };
+    out.push(Line::from(vec![
+        Span::styled("SINCE LAST NIGHT  ", p.head()),
+        Span::styled(format!("since {}", n.since_label), p.dim()),
+    ]));
+    for e in &n.errors {
+        out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
+    }
+    let next = next_fix(n, v.fixes).map(|(name, _)| name);
+    if !n.rows.is_empty() {
+        let t = Table {
+            mark: None,
+            header: vec!["AREA", "LEVEL", "WHAT", "FIX"],
+            rows: n
+                .rows
+                .iter()
+                .map(|r| {
+                    let a = &r.area;
+                    let level = match a.level {
+                        briefing::Level::Bad => cell(a.level.word(), p.bad()),
+                        _ => cell(a.level.word(), p.warn()),
+                    };
+                    let fix = match (&r.fix, v.fixes.get(a.name)) {
+                        (None, _) => "".into(),
+                        (_, Some(None)) => cell("queueing", p.dim()),
+                        (_, Some(Some(Ok(slug)))) => cell(format!("queued {slug}"), p.dim()),
+                        (_, Some(Some(Err(e)))) if next == Some(a.name) => {
+                            cell(format!("F retry: {e}"), p.warn())
+                        }
+                        (_, Some(Some(Err(e)))) => cell(format!("failed: {e}"), p.warn()),
+                        (
+                            Some(Fix {
+                                queued: Some(slug), ..
+                            }),
+                            None,
+                        ) => cell(format!("queued {slug}"), p.dim()),
+                        _ if next == Some(a.name) => "F queue a fix".into(),
+                        _ => cell("queue a fix", p.dim()),
+                    };
+                    let what = if a.details.is_empty() {
+                        a.line.clone()
+                    } else {
+                        format!("{} ({})", a.line, a.details.join("; "))
+                    };
+                    vec![a.name.into(), level, what.into(), fix]
+                })
+                .collect(),
+            keep: vec![0, 2, 1, 3],
+            flex: Some(2),
+            flexmin: 20,
+            flexkeep: true,
+            right: vec![],
+            cap: vec![(3, 34)],
+        };
+        out.extend(t.fit(w, p.dim()));
+    }
+    if !n.ok_line.is_empty() {
+        out.push(clip_line(Line::styled(n.ok_line.clone(), p.dim()), w));
+    }
+}
+
+pub fn page(h: &Home, night: &NightView, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![];
     for e in &h.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
@@ -121,6 +216,9 @@ pub fn page(h: &Home, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         out.extend(t.fit(w, p.dim()));
         more(&mut out, h.needs.len(), h.shown, "more", p);
     }
+
+    out.push(Line::raw(""));
+    night_section(&mut out, night, p, w);
 
     out.push(Line::raw(""));
     if h.proposals.is_empty() {
@@ -263,6 +361,7 @@ pub fn health_line(chips: &[Chip], p: Palette, w: usize) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::fit::plain;
+    use hub_core::briefing::NightRow;
     use hub_core::home::{Chip, Need, Number, Score};
 
     fn home() -> Home {
@@ -297,7 +396,12 @@ mod tests {
     }
 
     fn text(h: &Home) -> String {
-        page(h, Palette { no_color: true }, 1_000, 120)
+        night_text(h, None, &Fixes::new())
+    }
+
+    fn night_text(h: &Home, n: Option<&Night>, fixes: &Fixes) -> String {
+        let v = NightView { night: n, fixes };
+        page(h, &v, Palette { no_color: true }, 1_000, 120)
             .iter()
             .map(plain)
             .collect::<Vec<_>>()
@@ -367,5 +471,119 @@ mod tests {
             out.find("Which lobby?") < out.find("Keep the alias?"),
             "{out}"
         );
+    }
+
+    fn night() -> Night {
+        let area = |name, level, line: &str| briefing::Area {
+            name,
+            level,
+            line: line.into(),
+            details: vec![],
+            link: "#fleet",
+        };
+        let fix = |task: &str| {
+            Some(briefing::Fix {
+                project: briefing::FIX_PROJECT,
+                task: task.into(),
+                queued: None,
+            })
+        };
+        Night {
+            since_label: "Thu 18:00".into(),
+            rows: vec![
+                NightRow {
+                    area: briefing::Area {
+                        details: vec!["shepherd failed 02:10".into()],
+                        ..area(
+                            "Workers overnight",
+                            briefing::Level::Bad,
+                            "21 of 23 ok, $77",
+                        )
+                    },
+                    fix: fix("fix workers"),
+                },
+                NightRow {
+                    area: area("Nightly", briefing::Level::Bad, "playground Tests red"),
+                    fix: fix("fix nightly"),
+                },
+                NightRow {
+                    area: area("Sessions", briefing::Level::Warn, "2 stalled over 2h"),
+                    fix: None,
+                },
+            ],
+            ok_line: "Infra, Delivery, Costs ok".into(),
+            errors: vec!["watches: no such dir".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn since_last_night_sits_under_needs_you_and_only_names_what_is_not_ok() {
+        let n = night();
+        let out = night_text(&home(), Some(&n), &Fixes::new());
+        let at = |t: &str| out.find(t).unwrap_or_else(|| panic!("{t} missing: {out}"));
+        assert!(
+            at("NEEDS YOU") < at("SINCE LAST NIGHT  since Thu 18:00"),
+            "{out}"
+        );
+        assert!(at("SINCE LAST NIGHT") < at("PROPOSALS"), "{out}");
+        assert!(out.contains("watches: no such dir"), "{out}");
+        let row = |t: &str| out.lines().find(|l| l.contains(t)).unwrap().to_string();
+        let w = row("Workers overnight");
+        assert!(
+            w.contains("bad")
+                && w.contains("21 of 23 ok, $77 (shepherd failed 02:10)")
+                && w.contains("F queue a fix"),
+            "{out}"
+        );
+        let nl = row("playground Tests red");
+        assert!(
+            nl.contains("queue a fix") && !nl.contains("F queue"),
+            "only the next one is F: {out}"
+        );
+        assert!(
+            !row("2 stalled").contains("queue a fix"),
+            "a warn row has no fix: {out}"
+        );
+        assert!(out.contains("Infra, Delivery, Costs ok"), "{out}");
+
+        // Not read yet: it says so, never an all-clear.
+        let out = night_text(&home(), None, &Fixes::new());
+        assert!(out.contains("SINCE LAST NIGHT  reading"), "{out}");
+    }
+
+    #[test]
+    fn a_queued_fix_moves_f_to_the_next_bad_row_and_a_failed_one_takes_it_back() {
+        let n = night();
+        let mut fixes = Fixes::new();
+        fixes.insert(
+            "Workers overnight".into(),
+            Some(Ok("2026-fix-workers".into())),
+        );
+        assert_eq!(next_fix(&n, &fixes).unwrap().0, "Nightly");
+        let out = night_text(&home(), Some(&n), &fixes);
+        assert!(out.contains("queued 2026-fix-workers"), "{out}");
+        fixes.insert("Nightly".into(), None);
+        assert!(
+            next_fix(&n, &fixes).is_none(),
+            "one in flight is not queued twice"
+        );
+        assert!(night_text(&home(), Some(&n), &fixes).contains("queueing"));
+        fixes.insert(
+            "Workers overnight".into(),
+            Some(Err("no such project".into())),
+        );
+        assert_eq!(next_fix(&n, &fixes).unwrap().0, "Workers overnight");
+        assert!(night_text(&home(), Some(&n), &fixes).contains("F retry: no such project"));
+    }
+
+    #[test]
+    fn a_fix_the_queue_already_holds_is_shown_queued_and_not_offered() {
+        let mut n = night();
+        n.rows[0].fix.as_mut().unwrap().queued = Some("2026-fix-from-web".into());
+        let fixes = Fixes::new();
+        assert_eq!(next_fix(&n, &fixes).unwrap().0, "Nightly");
+        let out = night_text(&home(), Some(&n), &fixes);
+        assert!(out.contains("queued 2026-fix-from-web"), "{out}");
     }
 }
