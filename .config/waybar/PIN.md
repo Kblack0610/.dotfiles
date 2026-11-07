@@ -31,8 +31,9 @@ It fires while RustDesk grabs the keyboard, like the Ctrl+Alt+Shift escape keys.
 The agents leaves act in the terminal you typed in last, never a new window: a popup on it (`tmx popup`), or a hop of it (`o` and `h` land through `tmx goto`). With no tmux client attached anywhere, one floating kitty opens instead.
 
 ```
-Super+A                L1 pinbar          space control menu | a agents> | k keys | t toggle | u utils> | s settings> | esc/q exit
+Super+A                L1 pinbar          space control menu | a agents> | i inputs> | k keys | t toggle | u utils> | s settings> | esc/q exit
   a agents             L2 pinbar-agents   a agent panel | w all sessions | c scratch claude | n pick a page | o open newest page | h triage newest page | esc back
+  i inputs             L2 pinbar-input    m mic direct | g guitar | b guitar+mic | w guitar+webcam | esc back
   u utils              L2 pinbar-utils    h ssh | r reload | t timebox> | y sync> | g git> | esc back
     t timebox          L3 pinbar-timebox  s start | w switch | p pause | r resume | x stop | o status | esc back
     y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
@@ -123,6 +124,12 @@ removed, but stay off 8 too until the old bars are gone.) `RTMIN+11` belongs to
 `custom/webcam` (`webcam.sh`) needs no signal: it stays running on inotify and prints a line
 whenever a `/dev/video*` node gains or loses its holders.
 
+## Input chip
+
+`custom/audio-input` (`audio_input.sh`, workstation only) shows the input apps hear: PipeWire's default source. Click for the next input, right-click for the one before, or `Super+A i` and a key. The inputs and their keys are `~/.config/audio/inputs.conf`, which the audio repo (`~/dev/home/audio`) owns and its `install.sh` links in; how to use them in a call is its `docs/working-in-reaper.md`. With no list (the laptop) the chip prints nothing. On the desktop the `pulseaudio` chip drops its mic part, since this chip carries it (volume in the hover, mute as the dim class).
+
+Only the default moves. An app set to Default follows it mid-call (WirePlumber `linking.follow-default-target`). Streams are never moved by hand: WirePlumber remembers a moved target per app (`node.stream.restore-target`), so the next call would open on a stale input. gungan names its own mic (`GUNGAN_SOURCE` in `~/.config/gungan/config`), so dictation stays on the mic. Amber means a rig input with REAPER closed, which is silent.
+
 ## Files
 
 - `modules.sh`       - module toggles (`gate|list|menu|on|off|toggle`)
@@ -133,6 +140,7 @@ whenever a `/dev/video*` node gains or loses its holders.
 - `config.pin-full`  - bigger bar
 - `pin.sh`           - toggle / resize state machine (`/tmp/waybar-pin.state`)
 - `webcam.sh`        - `custom/webcam`, the red CAM pill while a process holds the webcam
+- `audio_input.sh`   - `custom/audio-input`, the input apps hear and the switch between them
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
 - `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme
 - `hypr/conf.d/keybindings.conf` - the `Super+Shift+M` / `Super+Shift+,` binds
