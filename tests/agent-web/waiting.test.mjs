@@ -32,7 +32,7 @@ function run(expr, input) {
   ctx.input = input;
   return vm.runInContext(expr, ctx);
 }
-const sessionHtml = (a) => run("st.agents = [input.a]; st.asks = []; sessionCard(input.a)", { a });
+const sessionHtml = (a, k = "perm") => run("st.agents = [input.a]; st.asks = []; sessionCard(input.a, input.k)", { a, k });
 const askHtml = (k, agents = []) => run("st.agents = input.agents; askCard(input.k)", { k, agents });
 
 test("a session card leads with its kind, project and wait, then what the session is", () => {
@@ -43,12 +43,11 @@ test("a session card leads with its kind, project and wait, then what the sessio
   assert.match(html, /<button class="btn sm" data-open>Open session<\/button>/);
   assert.match(html, /<details class="cfold" data-k="ses:lab:w-1"><summary>Details<\/summary><dl>.*<dt>target<\/dt><dd>lab:w-1<\/dd>/s);
   assert.doesNotMatch(html, /class="meta"|class="open"/, "the old routing line and floating link are gone");
-  assert.match(sessionHtml(agent({ question: { kind: "choice", text: "Which?", options: ["a"] } })), /need k-ask/);
-  assert.match(sessionHtml(agent({ question: { kind: "free", text: "Go on?" } })), /need k-turn.*<span class="nkind">Your turn<\/span>/s);
+  assert.match(sessionHtml(agent({ question: { kind: "free", text: "Go on?" } }), "turn"), /need k-turn.*<span class="nkind">Your turn<\/span>/s);
 });
 
 test("a plan card puts its buttons above the whole plan, uncapped", () => {
-  const html = sessionHtml(agent({ question: { kind: "plan", text: "# Plan\nstep" } }));
+  const html = sessionHtml(agent({ question: { kind: "plan", text: "# Plan\nstep" } }), "plan");
   assert.match(html, /need k-plan.*<span class="nkind">Plan to approve<\/span>/s);
   assert.match(html, /data-open>Open session<\/button><\/div><div class="q md planq">/, "buttons first, then the plan");
   assert.match(html, /placeholder="or tell it what to change"/);

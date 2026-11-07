@@ -1401,6 +1401,8 @@ mod tests {
     fn need(kind: Kind, id: &str, text: &str) -> Need {
         Need {
             kind,
+            need: home::NeedKind::Ask,
+            rank: 0,
             project: "p".into(),
             text: text.into(),
             id: id.into(),

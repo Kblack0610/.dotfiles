@@ -25,7 +25,7 @@ Each rule has its why. A rule a test checks names the test.
 
 - Tile: a label, one big number or word, and its colour by rule 5. Clicking it opens the section that explains it.
 - Progress bar: counted done over total, with the raw counts beside the percent and the unit named ("17/25 rows, weighted by size"). An ETA is shown only when its rate is above zero, and it says which window it used.
-- Needs-you list: one list, ranked by what each row holds and how long it waited (`hub_core::home::needs`), with what it holds shown on the row; every surface keeps that order. Each row is a kind (ask, plan, dialog, red), its owner, what to do, and the key or button that does it in place.
+- Needs-you list: one table on the shared component, ranked by what each row holds and how long it waited (`hub_core::home::needs`); every surface keeps that order until a sort is asked for. Each row is its rank, a kind (`home::NeedKind`, decided in the reader, so its chips and `kind:` terms are counted there), its project, its exact wait, what it holds and what to do; the web opens the record under the row, where an ask or a dialog is answered in place. A view narrows only that table: waybar, the phone, the pager and Numbers keep the whole list.
 - Folded section: `<details data-k>` on the web, with its open state kept by `static/ui.js`. In the TUI, a section head with a `+`/`-` marker. A folded head shows its count.
 - Long list: capped, with a "+N older" control ("+N more" when the list is not ordered by time). It is never unbounded at top level.
 

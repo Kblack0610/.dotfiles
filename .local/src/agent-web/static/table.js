@@ -6,22 +6,28 @@
 // the server reads; what a query means is decided in hub-core alone.
 
 // The view keys, in the tab's URL query (`#infra?q=source:ci&s=failed&sort=started&dir=asc`)
-// and in the API's, so a filtered view is a link.
+// and in the API's, so a filtered view is a link. A tab's second table names its keys with a
+// prefix (`pre`, Home's Needs you: nq, ns, nsort, ndir), the same in the URL and the API.
 const TBL_KEYS = ["q", "s", "sort", "dir"];
 
-// The view keys of a tab's URL query, as the API's query string.
-function tblParams(query) {
+// One table's view keys of a tab's URL query, as the API's query string.
+function tblParams(query, pre = "") {
   const p = new URLSearchParams(query || ""), out = new URLSearchParams();
-  for (const k of TBL_KEYS) if (p.get(k)) out.set(k, p.get(k));
+  for (const k of TBL_KEYS.map((k) => pre + k)) if (p.get(k)) out.set(k, p.get(k));
   return out;
 }
 
-// The URL query with the patch applied; a blank value drops its key, so the plain view is bare.
-function tblSet(query, patch) {
+// The URL query with the patch (tblPatch's plain keys) applied to one table's keys; a blank value
+// drops its key, so the plain view is bare.
+function tblSet(query, patch, pre = "") {
   const p = new URLSearchParams(query || "");
-  for (const [k, v] of Object.entries(patch)) { if (v) p.set(k, v); else p.delete(k); }
+  for (const [k, v] of Object.entries(patch)) { if (v) p.set(pre + k, v); else p.delete(pre + k); }
   return p.toString();
 }
+
+// Which of a tab's tables an event came from: the `data-tbl` (its key prefix) of the block
+// holding its bar and rows, "" outside one, so one delegated listener sends each patch to its own view.
+const tblOf = (e) => e.target?.closest?.("[data-tbl]")?.dataset.tbl || "";
 
 // One dropdown per facet, each option the whole query that picks its value.
 const tblFacets = (t) => t.facets.map((f) => `<select data-tq title="${esc(f.key)}"><option value="${esc(f.clear)}">every ${esc(f.key)}</option>` +
@@ -36,20 +42,28 @@ const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : 
 // in the bar only what is around the control repaints. False when focus is elsewhere.
 function tblRepaint(id, t, body) {
   const f = document.activeElement;
-  if (f?.id !== id + "-q" && f?.dataset?.tq === undefined) return false;
+  if (f?.id !== id + "-q" && (f?.dataset?.tq === undefined || !f.closest?.(`#${id}-facets`))) return false;
   if (f.id === id + "-q") paint($(id + "-facets"), tblFacets(t));
   paint($(id + "-chips"), tblChips(t));
   paint($(id + "-body"), body());
   return true;
 }
 
-// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
+// The same parts repainted with focus elsewhere: the dropdowns too, with their new counts.
+function tblRedraw(id, t, body) {
+  if ($(id + "-facets")) paint($(id + "-facets"), tblFacets(t));
+  if ($(id + "-chips")) paint($(id + "-chips"), tblChips(t));
+  paint($(id + "-body"), body());
+}
+
+// A picked dropdown lets go of focus, so the answer redraws it with the new counts. `onView`
+// gets the event too, for a tab with two tables (tblOf).
 function tblListen(el, onView) {
   for (const ev of ["input", "change"]) el.addEventListener(ev, (e) => {
     const v = tblPatch(e);
     if (!v) return;
     if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
-    onView(v);
+    onView(v, e);
   });
 }
 
@@ -73,7 +87,7 @@ function tblHead(t, labels, pre = "t") {
 }
 
 // The button a capped body ends in; the view's own click listener answers `data-all`.
-const tblMore = (n) => (n > 0 ? `<button class="btn sm" data-all="1">+${n} older</button>` : "");
+const tblMore = (n, word = "older") => (n > 0 ? `<button class="btn sm" data-all="1">+${n} ${word}</button>` : "");
 
 // The view patch an event on the bar or a header asks for, or null when it is not one of theirs.
 function tblPatch(e) {
