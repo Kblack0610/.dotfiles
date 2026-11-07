@@ -155,7 +155,7 @@ cmd_send() {
   if [ "$target" = queue ]; then
     [ -n "$title" ] || title="${ROOT##*/}: $n notes"
     local out
-    out="$(brief | agent-queue add --project "$PROJECT" --from human --title "$(one_line "$title")")" ||
+    out="$(brief | agent-queue add --project "$PROJECT" --from human --want request --title "$(one_line "$title")")" ||
       die "send: agent-queue add failed; the draft is kept"
     archive > /dev/null
     rm -f "$DRAFT"
