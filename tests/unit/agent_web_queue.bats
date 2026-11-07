@@ -63,6 +63,11 @@ setup() {
   assert_success
 }
 
+@test "agent-web Log Actions table: node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/actions.test.mjs"
+  assert_success
+}
+
 @test "agent-web schedules.js the Schedules tab: node unit tests pass" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/schedules.test.mjs"
   assert_success
