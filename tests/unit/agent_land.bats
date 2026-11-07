@@ -74,10 +74,13 @@ rev-list)
   q="$NOTES_FIXTURE/behind.seq"
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
 rev-parse) case "$2" in --show-toplevel) cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;; *) echo 0123456789abcdef ;; esac ;;
+# origin.url: this checkout's origin (o/r over ssh by default)
+remote) cat "$NOTES_FIXTURE/origin.url" 2>/dev/null || echo git@github.com:o/r.git ;;
 # worktree.list: what `git worktree list --porcelain` prints (nothing when absent)
 worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
 # not.ancestor: the merge commit is not on the base branch (merge_proof refuses)
-merge-base) [ ! -f "$NOTES_FIXTURE/not.ancestor" ] ;;
+# head.foreign: the PR's head commit is not in this checkout's HEAD
+merge-base) if [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 esac
 EOF
@@ -173,7 +176,7 @@ item() {
   assert_output 0
 }
 
-@test "an already MERGED PR is recorded from any checkout: the head check is skipped" {
+@test "an already MERGED PR is recorded from a checkout whose HEAD has its head: the head check is skipped" {
   printf 'MERGED\n' >"$NOTES_FIXTURE/state"
   printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
   run "$LAND" 42 --item ship
@@ -345,6 +348,7 @@ EOF
   run cat "$LOG"
   assert_output - <<'EOF'
 gh pr view 42 --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q .state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + (.isCrossRepository | tostring) + " " + .headRefName
+git remote get-url origin
 git rev-parse HEAD
 gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
@@ -700,6 +704,7 @@ EOF
   assert_success
   : >"$LOG"
   echo https://github.com/o/p/pull/552 >"$NOTES_FIXTURE/url"
+  echo https://github.com/o/p.git >"$NOTES_FIXTURE/origin.url"
   printf 'abcdef0123456789abcdef0123456789abcdef01\n' >"$NOTES_FIXTURE/merge.oid"
   run "$LAND" 552 --item split
   assert_success
@@ -728,14 +733,99 @@ EOF
   agent-queue set legacy pr=42 merged=fedcba9876543210fedcba9876543210fedcba98 >/dev/null
   agent-queue move legacy done --status ok >/dev/null
   printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  touch "$NOTES_FIXTURE/head.foreign"
   run "$LAND" 42 --item legacy
   assert_success
   echo https://github.com/o/p/pull/552 >"$NOTES_FIXTURE/url"
+  echo git@github.com:o/p.git >"$NOTES_FIXTURE/origin.url"
   run "$LAND" 552 --item legacy
   assert_failure 2
   assert_output --partial 'done with a bare pr:42, which names no repo'
   run agent-queue show legacy --json
   assert_equal "$(jq -r .pr <<<"$output")" 42
+}
+
+@test "a bare number read against the wrong repo: a MERGED PR that is not the item's is refused, nothing recorded or edited" {
+  # NEGATIVE CONTROL: before ar-886 this recorded an unrelated o/r#595 on the item (2026-11-07).
+  item p3 'board:game:fill the names' human
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  echo https://github.com/o/r/pull/595 >"$NOTES_FIXTURE/url"
+  printf 'agent-7\n' >"$NOTES_FIXTURE/head.ref"
+  touch "$NOTES_FIXTURE/head.foreign"
+  printf 'Item: some-other-item\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 595 --item p3
+  assert_failure 1
+  assert_output --partial 'match failed: #595 (o/r#595, from agent-7) is merged, and nothing ties it to p3'
+  assert_output --partial 'with --repo <owner>/<repo>'
+  run grep -c '^gh pr edit\|^notes\|^dotfiles-autopull' "$LOG"
+  assert_output 0
+  run agent-queue show p3 --json
+  assert_equal "$(jq -r '"\(.state) \(.pr // "-")"' <<<"$output")" 'running -'
+}
+
+@test "a MERGED PR whose head is not in HEAD is the item's when its body names the item, CRLF or not" {
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  touch "$NOTES_FIXTURE/head.foreign"
+  printf 'The change.\r\n\r\nItem: ship\r\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
+}
+
+@test "--repo: every gh pr and run call names the repo, and a checkout of another repo is refused before anything is touched" {
+  echo https://github.com/o/p/pull/42 >"$NOTES_FIXTURE/url"
+  run "$LAND" 42 --repo o/p --item ship
+  assert_failure 1
+  assert_output --partial 'repo failed: #42 is o/p#42 (--repo), but this checkout'"'"'s origin is o/r: run from a checkout of o/p, or pass --repo o/r for o/r#42'
+  run grep -c '^gh pr edit\|^git fetch' "$LOG"
+  assert_output 0
+  : >"$LOG"
+  echo https://github.com/O/P/ >"$NOTES_FIXTURE/origin.url"
+  run "$LAND" 42 --repo o/p --item ship
+  assert_success
+  assert_line 'item: ship done with pr:o/p#42'
+  run grep -E '^gh (pr|run) ' "$LOG"
+  refute_output --regexp '^gh (pr [a-z]+ 42|run list) (--[a-z]|$)'
+  assert_output --partial 'gh pr merge 42 -R o/p --squash'
+}
+
+@test "--repo takes <owner>/<repo> only" {
+  run "$LAND" 42 --repo o --item ship
+  assert_failure 2
+  assert_output --partial '--repo takes <owner>/<repo>, not o'
+  run cat "$LOG"
+  assert_output ''
+}
+
+@test "the item's own pr:<owner>/<repo>#N names the repo for a bare number, and makes a MERGED PR its own" {
+  item wait1
+  agent-queue set wait1 pr=o/p#42 >/dev/null
+  agent-queue move wait1 waiting >/dev/null
+  printf 'MERGED\n' >"$NOTES_FIXTURE/state"
+  echo https://github.com/o/p/pull/42 >"$NOTES_FIXTURE/url"
+  echo git@github.com:o/p.git >"$NOTES_FIXTURE/origin.url"
+  touch "$NOTES_FIXTURE/head.foreign"
+  run "$LAND" 42 --item wait1
+  assert_success
+  assert_line 'item: wait1 done with pr:o/p#42'
+  run grep -c '^gh pr view 42 -R o/p ' "$LOG"
+  refute_output 0
+  # From a checkout of the other repo, the item's ref still wins and the run is refused there.
+  item wait2
+  agent-queue set wait2 pr=o/p#43 >/dev/null
+  echo https://github.com/o/p/pull/43 >"$NOTES_FIXTURE/url"
+  echo git@github.com:o/r.git >"$NOTES_FIXTURE/origin.url"
+  run "$LAND" 43 --item wait2
+  assert_failure 1
+  assert_output --partial "#43 is o/p#43 (the item's pr:), but this checkout's origin is o/r"
+}
+
+@test "an item recording the number in two repos needs --repo" {
+  item two
+  agent-queue set two 'pr=o/r#42 o/p#42' >/dev/null
+  run "$LAND" 42 --item two
+  assert_failure 2
+  assert_output --partial 'queue item two records #42 in o/p o/r: pass --repo <owner>/<repo>'
 }
 
 @test "a merge commit not on origin/<base> is refused: the item stays open and no row closes" {
