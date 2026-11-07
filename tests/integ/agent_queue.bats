@@ -792,8 +792,13 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure
   assert_output --partial "no Claude session"
   "$AQ" move typed done --status ok
+  # sessions is the history of who worked the item, so a done item takes a later session (agent-land's second-repo PR).
   run "$AQ" claim typed --sid sid-c
+  assert_success
+  [ "$("$AQ" show typed --json | jq -r .sessions)" = "sid-a sid-b sid-c" ]
+  run "$AQ" claim nosuch --sid sid-c
   assert_failure
+  assert_output --partial "no item: nosuch"
 }
 
 @test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
