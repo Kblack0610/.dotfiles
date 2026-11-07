@@ -71,12 +71,15 @@ test-fast: test-unit test-integ
 
 # The unit tier runs its files in parallel when GNU parallel is there (bats needs it for
 # --jobs): serial it is about half the fast job, which has a 10-minute cap.
-# Jobs are the cores free now (nproc minus the 1-minute load, floor 2), not every core: on
-# 2026-11-07 three local gates at --jobs 24 each held a 24-core box at 54% sys and 8% idle,
-# which shut the dispatcher's idle gate for every other session (ar-885). An idle CI runner
-# still gets nproc. UNIT_LOADAVG is the load source, a file in /proc/loadavg's format.
+# Jobs are the cores free now, not every core: on 2026-11-07 three local gates at --jobs 24
+# each held a 24-core box at 54% sys and 8% idle, which shut the dispatcher's idle gate for
+# every other session (ar-885). Busy is the larger of the 1-minute load and the processes
+# running this instant (field 4 of /proc/loadavg, less this one), because the average lags
+# a minute and gates started together would all read it low. Free is nproc minus busy,
+# rounded, floor 2; an idle CI runner still gets nproc. UNIT_LOADAVG is the load source, a
+# file in /proc/loadavg's format; a missing or empty one gives 2.
 UNIT_LOADAVG ?= /proc/loadavg
-UNIT_JOBS ?= $(shell awk -v c="$$(nproc 2>/dev/null || echo 2)" '{ f = int(c - $$1); print (f < 2 ? 2 : f) }' $(UNIT_LOADAVG) 2>/dev/null || echo 2)
+UNIT_JOBS ?= $(shell awk -v c="$$(nproc 2>/dev/null || echo 2)" -f $(HERE)unit-jobs.awk $(UNIT_LOADAVG) 2>/dev/null || echo 2)
 UNIT_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)

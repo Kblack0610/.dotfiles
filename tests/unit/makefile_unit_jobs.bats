@@ -12,9 +12,9 @@ setup() {
 # unit_jobs [make args...] -> the UNIT_JOBS the Makefile computes.
 unit_jobs() { make -s --no-print-directory -f "$MK" "$@" --eval 'show-unit-jobs: ; @echo $(UNIT_JOBS)' show-unit-jobs; }
 
-# with_load <1-min load> -> UNIT_JOBS with that load in a /proc/loadavg-shaped file.
+# with_load <1-min load> [running now] -> UNIT_JOBS with that load in a /proc/loadavg-shaped file.
 with_load() {
-  printf '%s 1.00 1.00 1/100 1\n' "$1" > "$BATS_TEST_TMPDIR/loadavg"
+  printf '%s 1.00 1.00 %s/100 1\n' "$1" "${2:-1}" > "$BATS_TEST_TMPDIR/loadavg"
   unit_jobs UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg"
 }
 
@@ -30,6 +30,17 @@ with_load() {
   assert_output "3"
 }
 
+@test "a fractional load rounds, so a near-idle box still gets every core" {
+  run with_load 0.30
+  assert_output "$CORES"
+}
+
+@test "processes running now count when the average has not caught up (gates started together)" {
+  [ "$CORES" -ge 8 ] || skip "needs 8 cores"
+  run with_load 0.10 "$((CORES - 3))"
+  assert_output "4"
+}
+
 @test "a box at or over its cores gets the floor of 2, never 0 or less" {
   run with_load "$((CORES + 10)).00"
   assert_output "2"
@@ -37,6 +48,12 @@ with_load() {
 
 @test "an unreadable load source falls back to 2" {
   run unit_jobs UNIT_LOADAVG="$BATS_TEST_TMPDIR/missing"
+  assert_output "2"
+}
+
+@test "an empty load source gives 2, never an empty --jobs" {
+  : > "$BATS_TEST_TMPDIR/empty"
+  run unit_jobs UNIT_LOADAVG="$BATS_TEST_TMPDIR/empty"
   assert_output "2"
 }
 
