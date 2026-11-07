@@ -30,7 +30,12 @@ setup() {
     case "$4" in add) grep -qxF -- "$5" "$rows" 2>/dev/null && exit 3; echo "$5" >> "$rows" ;; list) cat "$rows" 2>/dev/null ;; esac; exit 0'
 }
 
-stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
+# stub <name> <body>; a notes stub answers `notes row types` too, unless NO_ROW_TYPES is set.
+stub() {
+  local pre=''
+  [ "$1" = notes ] && [ -z "${NO_ROW_TYPES:-}" ] && pre='[ "$1 $2" = "row types" ] && { echo "feat fix chore"; exit 0; }'
+  printf '#!/usr/bin/env bash\n%s\n%s\n' "$pre" "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"
+}
 
 # plan <slug> <age> <body>
 plan() {
@@ -168,6 +173,16 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output --partial 'why: board: model call failed (exit 1)'
 }
 
+@test "a notes with no row types asks no model and records why" {
+  message 'add a slide'
+  NO_ROW_TYPES=1 stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" = row ] && exit 2; exit 0'
+  run "$SWEEP" run
+  assert_failure
+  assert_output --partial 'board: notes row types failed'
+  [ ! -f "$NOTES_FIXTURE/model.log" ]
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" FAILED
+}
+
 @test "a budget stop is BLOCKED with its reason, and the board is asked again next run" {
   message 'add a slide'
   echo 75 > "$NOTES_FIXTURE/model.rc"
@@ -207,6 +222,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_equal "$(sort "$NOTES_FIXTURE/model.log" | paste -sd,)" 'board,two'
   run cat "$NOTES_FIXTURE/prompt.two"
   assert_output --partial '"two words"'
+  assert_output --partial $'## Row types\nfeat fix chore'
   assert_output --partial 'a two row'
   refute_output --partial 'board words'
   run cat "$NOTES_FIXTURE/prompt.board" "$NOTES_FIXTURE/prompt.two"

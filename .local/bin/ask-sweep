@@ -26,6 +26,7 @@ set -uo pipefail
 : "${ASK_SWEEP_QUIET_MIN:=60}"                  # a transcript written this recently is a live session
 : "${ASK_SWEEP_CMD:=agentctl-run --agent ask-sweep}"
 NAME="${AGENTCTL_NAME:-ask-sweep}"
+TYPES=""   # the row types from `notes row types`, read once a pass
 
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=/dev/null
@@ -145,6 +146,10 @@ sweep_board() {
   [ -s "$ASK_SWEEP_DIR/.cut" ] && say "$board: $(cat "$ASK_SWEEP_DIR/.cut") messages wait for the next run"
   rm -f -- "$ASK_SWEEP_DIR/.cut"
   [ -n "$msgs" ] || return 0
+  # The grammar's one home names the types, once a run; with none the model would file any word.
+  [ -n "$TYPES" ] || { TYPES="$(notes row types 2>/dev/null)" && [ -n "$TYPES" ]; } || {
+    FAULT=1; say "$board: notes row types failed (an old notes? notes-bootstrap --build-only)"
+    proof_why "$board: notes row types failed"; return 1; }
   ASKED=$((ASKED + 1))
   text="$(cut -f3 <<<"$msgs" | awk '!seen[$0]++')"
   open_rows="$({ notes ptask "$board" --agent list 2>/dev/null; notes ptask "$board" list 2>/dev/null; } | cut -f4 | cut -c1-90)"
@@ -160,7 +165,10 @@ $text
 $open_rows
 
 ## Merged PRs
-$prs"
+$prs
+
+## Row types
+$TYPES"
   wd="$(mktemp -d)"
   # shellcheck disable=SC2086 # a word list by design, overridable in tests
   # An empty directory, so no repo's Stop hook answers in place of the model.
