@@ -50,6 +50,10 @@ harness_exec() {
   fi
   [ -n "$model" ] && flags+=(-m "$model")
   if [ "$ROLE_WRITE" = no ]; then flags+=(--sandbox read-only)
+  elif [ -n "${SANDBOX_FILE:-}" ]; then
+    # A sandboxed lane writes only its workspace and the profile's roots (lib/sandbox.sh).
+    flags+=(--sandbox workspace-write)
+    while IFS= read -r o; do flags+=(-c "$o"); done < <(sandbox_codex_flags)
   else flags+=(--dangerously-bypass-approvals-and-sandbox); fi
   [ "$ROLE_TASK" = no ] && flags+=(--disable multi_agent)
   while IFS= read -r o; do [ -n "$o" ] && flags+=(-c "$o"); done < <(_codex_mcp_flags)

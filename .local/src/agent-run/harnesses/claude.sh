@@ -52,6 +52,10 @@ harness_exec() {
 
   [ -n "$mcp_file" ] && flags+=(--mcp-config "$mcp_file" --strict-mcp-config)
 
+  # A lane with SANDBOX_PROFILE runs its Bash in Claude's OS sandbox (lib/sandbox.sh): the
+  # bypass above stops prompts, and the sandbox bounds what a command can read, write and reach.
+  [ -n "${SANDBOX_FILE:-}" ] && flags+=(--settings "$(sandbox_claude_settings)")
+
   # There is no human on a timer to answer a prompt or read a plan file. Mirrors
   # the prompt agentctl-dream and agentctl-nightly-sync already use. A run with no
   # --print is a timer's pass in a tmux window (fleet-shepherd), which a human may
