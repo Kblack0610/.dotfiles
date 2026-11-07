@@ -179,9 +179,11 @@ state_of() { # file -> its state, from its directory
   case "$1" in "$AQ_DIR"/done/*) echo "done" ;; *) d="${1%/*}"; echo "${d##*/}" ;; esac
 }
 
-# The status of the most recent finished item with this slug, empty if none.
+# The status of the most recent finished item with this slug, empty if none. A slug with a live item
+# (queued, running or waiting) is not done, whatever done/ holds: a re-queued slug is work again.
 done_status() {
   local f
+  [ -z "$(find_item "$1")" ] || return 0
   f="$(latest_done "$1")"
   [ -n "$f" ] && fm_get "$f" status
 }

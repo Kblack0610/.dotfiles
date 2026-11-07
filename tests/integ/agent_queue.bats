@@ -145,6 +145,29 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
 }
 
+@test "an after: on a re-queued slug holds while the slug is live, whatever an old done record says" {
+  "$AQ" add --project game --slug first "a"
+  "$AQ" move first running
+  "$AQ" move first done --status ok
+  "$AQ" add --project game --slug second --priority urgent --after first "b"
+  # Negative control: the old done record alone releases the after.
+  [ "$("$AQ" next --json | jq -r .slug)" = second ]
+  # The same slug queued again is not done, so second holds on it in every live state.
+  "$AQ" add --project game --slug first "again"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first"
+  [ "$("$AQ" next --json | jq -r .slug)" = first ]
+  "$AQ" move first running
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first"
+  "$AQ" move first waiting
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first"
+  # It finishes ok again: now the hold lifts.
+  "$AQ" move first done --status ok
+  [ "$("$AQ" next --json | jq -r .slug)" = second ]
+}
+
 @test "after holds an item until that slug is done ok" {
   "$AQ" add --project game --slug first "a"
   "$AQ" add --project game --slug second --priority urgent --after first "b"
