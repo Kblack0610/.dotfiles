@@ -142,6 +142,22 @@ them — their independence comes from the `model:` frontmatter in
 needed. An allowlist alone still starts every user-scope server: that is how 11
 idle sessions each ended up holding a headed browser nobody asked for.
 
+## Lane sandbox
+
+A role says what an agent may do; a lane sandbox bounds what its shell can touch while doing it. A runner conf opts in with `SANDBOX_PROFILE=<name>`, which loads `~/.config/agentctl/sandbox/<name>.json` (override: `$AGENTCTL_SANDBOX_DIR`). The profile is Claude settings content: `sandbox.filesystem.denyRead` (credential paths), `sandbox.filesystem.allowWrite` (state dirs the lane writes), `sandbox.network.allowedDomains`. Unset means the lane runs unsandboxed. `lib/sandbox.sh` is the mechanism; `tests/integ/agent_run_sandbox.bats` checks it, and `tests/container/sandbox-proof.sh` proves the profile against the real sandbox runtime with a negative control.
+
+| | claude | codex |
+|---|---|---|
+| sandbox on | `--settings` with the profile, `sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands:false` and `network.strictAllowlist` forced on | `--sandbox workspace-write` in place of the bypass, for a writing role (a read-only role keeps `read-only`) |
+| writable (shell) | cwd, the profile's `allowWrite`, the git common dir (so `git commit` works from a worktree) minus its `hooks` and `config` | `writable_roots`: the profile's `allowWrite` and the git common dir |
+| read denial | each `denyRead` path in the sandbox, and as `Read()` and `Edit()` deny rules for the in-process tools | none, so a profile with `denyRead` is refused |
+| egress | `allowedDomains` only, strict | off; a profile with `allowedDomains` is refused, since codex network is all or nothing |
+
+- Fail closed (exit 78): a named profile that is missing, not the shape `SANDBOX_SHAPE` in `lib/sandbox.sh` checks (lists of strings, paths absolute or `~/`), or one the harness cannot hold refuses the run. A harness enforces a profile only by defining `harness_sandbox`; opencode, raw and binks do not, so they refuse every profile. `failIfUnavailable` makes a missing `bwrap` or `socat` a refusal, never an unsandboxed run.
+- GitHub: the profile hides gh's login, so `GH_TOKEN_FILE=<path>` in the conf gives the lane its own repo-scoped token as `GH_TOKEN`. A sandboxed lane with no `GH_TOKEN_FILE` gets no `GH_TOKEN` or `GITHUB_TOKEN` from the environment.
+- An `--agent` call inherits its caller's `SANDBOX_PROFILE`. A sandboxed lane's model cannot start a sandboxed call from its own shell (bwrap does not nest), so roll out one runner at a time.
+- Claude's sandbox confines Bash only. WebFetch is not held to `allowedDomains`, and the in-process Edit and Write tools are bounded only by permission rules: the `denyRead` paths become `Edit()` denies, and anything else a lane must not edit goes in the profile's `permissions.deny`.
+
 ## Known hole: `ROLE_BASH=yes` defeats `ROLE_WRITE=no`
 
 Measured, not theorised. A role with `ROLE_WRITE=no, ROLE_BASH=yes`, asked to use
@@ -155,7 +171,7 @@ This is not patched, deliberately:
 - A `Bash(...)` deny list is a blocklist on a shell, and shell blocklists leak:
   `tee`, `sed -i`, `python -c`, `dd`, any redirection you did not think of.
 
-The real fix is a sandbox with no writable mount. Until then, a role with
+The real fix is a sandbox with no writable mount (a lane sandbox, above, bounds writes to its roots but does not remove them). Until then, a role with
 `ROLE_WRITE=no, ROLE_BASH=yes` constrains the SHAPE of the work and must not be
 described as airtight. Say so in any doc that describes such a role. The codex
 harness is the exception: its read-only sandbox covers the shell.

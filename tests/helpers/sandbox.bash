@@ -149,6 +149,9 @@ sandbox_init() {
   # the human's shell, say), so a subject sees the clean environment CI gives it.
   # shellcheck disable=SC2046
   unset $(awk '/^\[/ { s = ($0 == "[scrub]") } s && /^[A-Z_]+([[:space:]]|$)/ { print $1 }' "$REPO_ROOT/.local/src/agent-run/lib/scrub.list")
+  # Detach from a sandboxed runner's lane keys (lib/sandbox.sh): a suite run inside one would
+  # otherwise sandbox, or hand a real token to, every agentctl-run it tests.
+  unset SANDBOX_PROFILE GH_TOKEN_FILE AGENTCTL_SANDBOX_DIR GH_TOKEN GITHUB_TOKEN
 
   # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
   # publish there as a side effect, and on the workstation it exists. A test that wants the

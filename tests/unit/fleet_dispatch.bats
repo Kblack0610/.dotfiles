@@ -2391,6 +2391,17 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   grep -qF 'AGENT_QUEUE_ITEM=gm-1' "$NOTES_FIXTURE/cmd" || fail "the session does not know its item"
 }
 
+@test "start --row matches the row's id whatever its case, and queues the item under the lower-case id" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [ ] tidy the loader <!-- id:gm-1 -->'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "%s\n" "$WT_NEW_CMD" > "$NOTES_FIXTURE/cmd"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row GM-1 --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_output --partial 'started game-agent-1: game: gm-1'
+  [ -n "$(qitem running gm-1)" ] || fail "the row's item is not running under gm-1"
+}
+
 @test "start --brief refuses a row that is not open, and starts nothing" {
   project game beta "$SANDBOX/repos/game"
   row game human 'taken' '- [/] taken'
