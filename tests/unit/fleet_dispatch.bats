@@ -98,6 +98,10 @@ case "${args[0]}" in
           { print }' "$f" > "$f.new" && mv "$f.new" "$f"
         [ -f "$f.out" ] || { echo "no open task matches" >&2; exit 1; }
         cat "$f.out"; rm -f "$f.out" ;;
+      done)   # closed rows leave `list`, as the real board's do
+        Q="${args[3]}" awk -F'\t' -v OFS='\t' '
+          !hit && $2 ~ /^- \[[ \/]\]/ && (index($2, "id:" ENVIRON["Q"] " ") || index($1, ENVIRON["Q"])) { hit = 1; sub(/^- \[[ \/]\]/, "- [x]", $2) }
+          { print }' "$f" > "$f.new" && mv "$f.new" "$f" ;;
       tag)   # tag --add <tag> <id>: the tag goes in ahead of the row's marker
         Q="${args[5]}" T="${args[4]}" awk -F'\t' -v OFS='\t' '
           !done && index($2, "id:" ENVIRON["Q"] " ") { done = 1; sub(/ <!--/, " #" ENVIRON["T"] " <!--", $2) } { print }' "$f" > "$f.new" &&
@@ -3142,6 +3146,74 @@ orphan_seen() {
   grep -qF -- '- [ ] fix x' "$NOTES_FIXTURE/rows.game.agent" || fail "row still started"
   assert_equal "$(jq -r 'select(.key == "gm-1") | .verdict + ": " + .reason' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 'failed: started 72h with no queue item'
   ! grep -q gm-1 "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "un-started row still tracked"
+}
+
+# landed_item <state> [pr] -- pr_item's item closed ok by its own session, no merged: recorded, as a
+# --pr-only run leaves it: the row stays started and no active item names it.
+landed_item() {
+  export DISPATCH_NIGHT_PROFILE=bnb
+  pr_item "$1"
+  agent-queue set fix-crash "pr=${2:-o/game#12}" >/dev/null
+  agent-queue move fix-crash done --status ok >/dev/null
+}
+
+@test "reap: a done item's PR merged after its session closed it records merged: and closes the row on merge proof" {
+  landed_item MERGED
+  run cmd_reap
+  assert_success
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .merged)" "$OID"
+  run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+}
+
+@test "reap: a done item with merged: recorded closes its row with no gh call" {
+  landed_item MERGED
+  agent-queue set fix-crash "merged=$OID" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run cmd_reap
+  assert_output --partial 'closed game: fix crash'
+  ! grep -q '^gh ' "$NOTES_FIXTURE/calls.log" || fail "read gh for a recorded merge"
+}
+
+@test "reap: a done item's open PR keeps its row started past the orphan grace" {
+  landed_item OPEN
+  orphan_seen game 'fix crash' 73
+  run cmd_reap
+  assert_success
+  refute_output --partial 'un-started'
+  grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row lost its start"
+}
+
+@test "reap: a done item's PR closed unmerged leaves the row to the orphan timer" {
+  landed_item CLOSED
+  orphan_seen game 'fix crash' 73
+  run cmd_reap
+  assert_output --partial 'un-started game: fix crash'
+}
+
+# bare_pr <body> -- landed_item with pr=12, and a gh that runs its real -q filter over a merged PR with
+# that body, so the filter itself is under test.
+bare_pr() {
+  landed_item MERGED 12
+  jq -n --arg o "$OID" --arg b "$1" '{state: "MERGED", mergeCommit: {oid: $o}, body: $b}' > "$NOTES_FIXTURE/pr.json"
+  stub gh 'printf "gh %s in %s\n" "$*" "$PWD" >> "$NOTES_FIXTURE/calls.log"; jq -r "${@: -1}" "$NOTES_FIXTURE/pr.json"'
+}
+
+@test "reap: a bare pr: reads the project's checkout and counts a PR whose body has the item's stamp" {
+  bare_pr $'Summary\r\nItem: fix-crash\r\nTask: gm-1'
+  run cmd_reap
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR 12 merged)'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .merged)" "$OID"
+  grep -q "^gh pr view 12 .* in $SANDBOX/repos/game$" "$NOTES_FIXTURE/calls.log" || fail "not read from the project's checkout"
+}
+
+@test "reap: a bare pr: whose PR stamps another item, even one this slug prefixes, never closes the row" {
+  bare_pr $'Summary\nItem: fix-crash-two'
+  run cmd_reap
+  assert_success
+  refute_output --partial 'closed game'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '.merged // "none"')" none
 }
 
 @test "reap: a row an active item names, and a human-lane row, are never orphans" {
