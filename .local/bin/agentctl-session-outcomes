@@ -81,8 +81,23 @@ queue_index() {
 }
 
 # The one harness rule, for `run` and `backfill-harness`: what the row says (opencode, codex), else
-# the queue item's agent, else claude, since every other row is a Claude Code transcript.
-HARNESS_DEF='def harness_of($i): .harness // $i.agent // "claude";'
+# what the Claude Code transcript ran on. The Stop hook records `base_url` (ANTHROPIC_BASE_URL): set,
+# it ran on the gateway, so it is the item's gateway harness or claude-lazer (a hand `cl --lazer`);
+# null or another endpoint, it ran on an account, so claude whatever the item later spilled to. The
+# gateway is the harness map's `gateway.url` ($gwurl); with no map, no endpoint is the gateway. A row from before that
+# field takes the item's agent, except a gateway agent on a transcript under another account's config
+# dir: a gateway run unsets CLAUDE_CONFIG_DIR, so it is always under ~/.claude.
+HARNESS_DEF='def harness_of($i):
+  ($i.agent // "claude") as $a | ($a == "claude-lazer" or $a == "lazer-reserve") as $gw
+  | .harness // (
+      if has("base_url") then (
+        if $gwurl == "" or ((.base_url // "") | startswith($gwurl) | not) then "claude"
+        elif $gw then $a else "claude-lazer" end)
+      elif $gw and ((.account // (.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a)) // "claude") != "claude" then "claude"
+      else $a end);'
+
+# The gateway's URL from the harness map, or nothing when there is no map.
+gateway_url() { [ -r "$HARNESSES" ] && jq -r '.gateway.url // empty' "$HARNESSES"; }
 
 die_stalled() {
   echo "$NAME: $1" >&2
@@ -135,7 +150,7 @@ cmd_run() {
 
   local queue_note=""
   queue_index "$work/queue.json" || queue_note="; queue unreadable, harness read as claude, items unknown"
-  jq -c --slurpfile q "$work/queue.json" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
+  jq -c --slurpfile q "$work/queue.json" --arg gwurl "$(gateway_url)" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
       | .items = ($i.items // [])
       | .harness = harness_of($i)
       | if .harness == "opencode" or .harness == "codex" then
@@ -215,6 +230,7 @@ cmd_run() {
           project: (if $runner then "_runner" else $row.project end),
           runner: $runner,
           harness: $row.harness,
+          provider: $row.provider,
           items: ($row.items // []),
           agent: (if $runner then ($agents[0][$row.session_id] // null) else null end),
           title: ($row.title // $row.first_prompt // ""),
@@ -461,7 +477,7 @@ cmd_costs() {
   so_latest "$OUT" | jq -cn --argjson now "$NOW" --argjson days "$days" '
     [inputs | select(.updated_epoch >= $now - $days * 86400)]
     | sort_by(-.updated_epoch)[]
-    | {session_id, project, title, harness, account, models: (.models // []), cost_usd, cost_by_model,
+    | {session_id, project, title, harness, account, provider, models: (.models // []), cost_usd, cost_by_model,
        tokens_total, updated_epoch, observed,
        runner: (if .runner then (.agent // "runner") else null end),
        kind: (if .runner or ((.items // []) | length > 0) then "automated" else "human" end),
@@ -549,7 +565,7 @@ cmd_backfill_harness() {
     cp -p "$f" "$f.bak" || { echo "$NAME: no .bak for $f; left alone" >&2; continue; }
     next="$f.next"  # beside $f, so the mv below is a rename on one filesystem
     if ! { cp -p "$f.bak" "$next" &&
-        jq -c --slurpfile q "$work/queue.json" "$HARNESS_DEF"'
+        jq -c --slurpfile q "$work/queue.json" --arg gwurl "$(gateway_url)" "$HARNESS_DEF"'
           if .harness == null then .harness = harness_of($q[0][.session_id // ""] // {}) else . end' "$f.bak" > "$next" &&
         [ "$(jq -cs 'map(del(.harness))' "$f.bak")" = "$(jq -cs 'map(del(.harness))' "$next")" ]; }; then
       rm -f "$next" "$f.bak"; echo "$NAME: $f would change beyond harness; left alone" >&2; continue
