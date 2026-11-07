@@ -31,27 +31,28 @@ pub fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Load every `~/.claude/sessions/<pid>.json` into a pid-keyed map. Unreadable
-/// or malformed files are silently skipped — a stale file shouldn't break the
-/// whole panel.
-pub fn load_all() -> HashMap<u32, Session> {
-    let mut out = HashMap::new();
+/// Load every `~/.claude/sessions/<pid>.json` into a pid-keyed map, and the pids (from the
+/// file names) whose file would not read or parse. A stale file must not break the panel, so
+/// the caller decides: one whose pid is live may be a file Claude was rewriting, and the read
+/// that skipped it is missing that session (ar-916).
+pub fn load_all() -> (HashMap<u32, Session>, Vec<u32>) {
+    let (mut out, mut unreadable) = (HashMap::new(), Vec::new());
     let Ok(rd) = fs::read_dir(sessions_dir()) else {
-        return out;
+        return (out, unreadable);
     };
     for entry in rd.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
-        if let Ok(sess) = serde_json::from_str::<Session>(&text) {
-            out.insert(sess.pid, sess);
+        match fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Session>(&t).ok()) {
+            Some(sess) => {
+                out.insert(sess.pid, sess);
+            }
+            None => unreadable.extend(path.file_stem().and_then(|s| s.to_str()?.parse::<u32>().ok())),
         }
     }
-    out
+    (out, unreadable)
 }
 
 /// Status glyph: `waiting`→`!` (needs input), `busy`/`shell`→`~`, anything

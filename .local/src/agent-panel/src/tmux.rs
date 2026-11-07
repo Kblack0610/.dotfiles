@@ -107,12 +107,21 @@ pub fn servers() -> Vec<String> {
     names
 }
 
-/// All panes across every server. Empty (not an error) when tmux isn't running.
-pub fn list_panes() -> Vec<Pane> {
-    servers().iter().flat_map(|srv| list_server_panes(srv)).collect()
+/// All panes across every server, and one line per live server whose `list-panes` failed: its
+/// panes are missing, so a list built on this is not whole (ar-916). Empty, with no gap, when
+/// tmux isn't running.
+pub fn list_panes() -> (Vec<Pane>, Vec<String>) {
+    let (mut panes, mut gaps) = (Vec::new(), Vec::new());
+    for srv in servers() {
+        match list_server_panes(&srv) {
+            Ok(p) => panes.extend(p),
+            Err(e) => gaps.push(e),
+        }
+    }
+    (panes, gaps)
 }
 
-fn list_server_panes(server: &str) -> Vec<Pane> {
+fn list_server_panes(server: &str) -> Result<Vec<Pane>, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -120,10 +129,15 @@ fn list_server_panes(server: &str) -> Vec<Pane> {
     // fleet-shepherd's own names and defaults for where its passes run.
     let home = (env("FLEET_SHEPHERD_SESSION", "hub"), env("FLEET_SHEPHERD_WINDOW", "shepherd"));
     let fmt = pane_format(now, (&home.0, &home.1));
-    let Ok(out) = tmux(Some(server)).args(["list-panes", "-a", "-F", &fmt]).output() else {
-        return Vec::new();
-    };
-    parse_panes(server, &String::from_utf8_lossy(&out.stdout))
+    let out = tmux(Some(server))
+        .args(["list-panes", "-a", "-F", &fmt])
+        .output()
+        .map_err(|e| format!("tmux -L {server} list-panes: {e}"))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("tmux -L {server} list-panes exited {}: {}", out.status, why.trim()));
+    }
+    Ok(parse_panes(server, &String::from_utf8_lossy(&out.stdout)))
 }
 
 /// The `list-panes -F` row. A pane is tagged `shepherd` when it holds the live shepherd lease or

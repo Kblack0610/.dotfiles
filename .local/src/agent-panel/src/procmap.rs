@@ -21,6 +21,7 @@ impl ProcMap {
             .args(["-axo", "pid=,ppid="])
             .output()
             .context("failed to run `ps -axo pid=,ppid=`")?;
+        anyhow::ensure!(out.status.success(), "`ps -axo pid=,ppid=` exited {}", out.status);
         let text = String::from_utf8_lossy(&out.stdout);
         let mut ppid = HashMap::new();
         for line in text.lines() {
@@ -44,8 +45,12 @@ impl ProcMap {
     /// For each live Claude pid we walk *up* its ancestry (claude → shell →
     /// tmux server …) and record every ancestor as pointing back at that
     /// Claude pid. A pane reports the shell's pid as `pane_pid`; after this
-    /// pass, resolving pane→Claude is an O(1) lookup. Mirrors the old
-    /// `__build_claude_pid_map` bash routine, last-writer-wins.
+    /// pass, resolving pane->Claude is an O(1) lookup.
+    ///
+    /// The walk stops at another Claude: a `claude -p` a session runs (store-console's browser
+    /// child) writes its own session file, and its ancestry runs through its parent to the pane.
+    /// Last-writer-wins there gave the pane to whichever came last in `claude_pids`, a HashMap's
+    /// random order, so the session the pane belongs to dropped out of half the reads (ar-916).
     pub fn pane_to_claude(&self, claude_pids: &[u32]) -> HashMap<u32, u32> {
         let mut map = HashMap::new();
         for &cpid in claude_pids {
@@ -57,7 +62,7 @@ impl ProcMap {
             let mut depth = 0;
             while depth < 20 {
                 let Some(&pp) = self.ppid.get(&cur) else { break };
-                if pp <= 1 {
+                if pp <= 1 || claude_pids.contains(&pp) {
                     break;
                 }
                 map.insert(pp, cpid);
@@ -87,6 +92,18 @@ mod tests {
         assert_eq!(m.get(&300), Some(&300)); // direct
         assert_eq!(m.get(&200), Some(&300)); // pane shell resolves to claude
         assert_eq!(m.get(&100), Some(&300)); // tmux server too (harmless)
+    }
+
+    #[test]
+    fn a_nested_claude_never_takes_its_parents_pane() {
+        // pane shell(200) -> claude(300) -> bash(400) -> claude -p(500), both with session files.
+        let pm = map_from(&[(500, 400), (400, 300), (300, 200), (200, 100), (100, 1)]);
+        for order in [[300, 500], [500, 300]] {
+            let m = pm.pane_to_claude(&order);
+            assert_eq!(m.get(&200), Some(&300), "{order:?}");
+            assert_eq!(m.get(&300), Some(&300), "{order:?}");
+            assert_eq!(m.get(&500), Some(&500), "{order:?}");
+        }
     }
 
     #[test]
