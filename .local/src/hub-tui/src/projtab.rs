@@ -125,7 +125,7 @@ fn bar(percent: Option<u32>, p: Palette) -> Vec<Span<'static>> {
 }
 
 /// `text` word-wrapped to `w` under a `lead` label, continuation lines indented to match.
-fn wrapped(
+pub(crate) fn wrapped(
     lead: &str,
     text: &str,
     style: ratatui::style::Style,
