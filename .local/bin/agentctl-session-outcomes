@@ -247,11 +247,14 @@ cmd_run() {
   local repo forge_note=""
   so_rework_repos "$PROJECT_MAP" > "$work/clones.tsv"
   # A due session's repo that cannot be listed stalls the run; a clone's alone is skipped and reported.
+  # A repo gh cannot resolve while `gh auth status` passes is no repo (a test fixture's o/r in a
+  # pr-link or printed URL): it is skipped, its claims are dropped from every line, and the report
+  # names it. With auth failing the same error is the token's fault, so it stalls like any other.
   { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo' |
     sort -u > "$work/repos.due"
   sort -u "$work/repos.due" <(cut -f1 "$work/clones.tsv") > "$work/repos"
-  : > "$work/index.jsonl"
-  local unlisted=0 list_note=""
+  : > "$work/index.jsonl"; : > "$work/repos.gone"
+  local unlisted=0 list_note="" gh_auth=""
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
     if [[ "$repo" == */*/* ]]; then
@@ -260,6 +263,10 @@ cmd_run() {
         forge_note="$forge_note; forgejo: $SO_FORGEJO_ERR"; continue; }
     elif ! "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
         --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err"; then
+      if grep -q 'Could not resolve to a Repository' "$work/gh.err"; then
+        [ -n "$gh_auth" ] || { "$GH" auth status >/dev/null 2>&1 && gh_auth=ok || gh_auth=fail; }
+        [ "$gh_auth" = ok ] && { printf '%s\n' "$repo" >> "$work/repos.gone"; continue; }
+      fi
       grep -qixF -- "$repo" "$work/repos.due" && die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
       unlisted=$((unlisted + 1)) list_note="; $((unlisted)) clone repo(s) unlisted, last $repo"
       continue
@@ -268,6 +275,9 @@ cmd_run() {
       || die_stalled "could not index PRs for $repo"
   done < "$work/repos"
   jq -cs 'add // {}' "$work/index.jsonl" > "$work/index.json" || die_stalled "could not merge the PR indexes"
+  if [ -s "$work/repos.gone" ]; then
+    list_note="$list_note; claims dropped, gh cannot resolve: $(paste -sd, "$work/repos.gone")"
+  fi
 
   # Session links. A PR whose body names a due session's link joins its prs. A link no local
   # transcript recorded, with a PR merged in the band (every one with --all), is a session that ran
@@ -390,11 +400,12 @@ cmd_run() {
     jq -c --argjson row "$row" --slurpfile idx "$work/index.due.json" --slurpfile time_use "$work/t.$sid.json" \
        --slurpfile bench "$work/bench.json" --slurpfile agents "$work/agents.json" --arg observed "$observed" \
        --slurpfile rw "$work/rework.json" --argjson now "$NOW" --argjson rdays "$SO_REWORK_DAYS" \
-       --slurpfile attr "$work/attr.json" --slurpfile rp "$work/repoproj.json" '
+       --slurpfile attr "$work/attr.json" --slurpfile rp "$work/repoproj.json" --rawfile gone "$work/repos.gone" '
       . as $m | $idx[0] as $ix
+      | ($gone | split("\n") | map(select(. != "") | {key: ., value: true}) | from_entries) as $gn
       | ($m // {}) as $mm
       | ($mm.entrypoint == "sdk-cli") as $runner
-      | [ (($mm.prs // []) + ($row.prs // []) | unique)[] | . as $p
+      | [ (($mm.prs // []) + ($row.prs // []) | unique)[] | select($gn[.repo] | not) | . as $p
           | ($ix[$p.repo][($p.number | tostring)] // {state: "UNKNOWN", merged_at: null, reverted: false})
           | {repo: $p.repo, number: $p.number, state, merged_at, reverted,
              project: ($attr[0]["\($p.repo)#\($p.number)"] // null)}

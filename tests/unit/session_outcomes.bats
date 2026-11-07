@@ -151,6 +151,33 @@ EOF2
   assert_equal "$(field a '[.prs[].number] | join(",")')" 10
 }
 
+@test "a claim in a repo gh cannot resolve (a fixture's pr-link, a search's output) is dropped and named, the run still WORKED" {
+  cat > "$TR/f.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"g1","name":"Bash","input":{"command":"rg -n 'gh pr create|pull/' tests/unit/x.bats"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g1","content":"36: https://github.com/x/fixture/pull/10"}]}}
+{"type":"pr-link","sessionId":"sess-f","prNumber":99,"prUrl":"https://github.com/x/fixture/pull/99","prRepository":"x/fixture"}
+{"type":"pr-link","sessionId":"sess-f","prNumber":10,"prUrl":"https://github.com/o/r/pull/10","prRepository":"o/r"}
+EOF2
+  jq -cn --arg t "$TR/f.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-f", project: "proj", transcript: $t, title: "title f", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  # gh as it answers for a repo that does not exist; every other repo is the stub's
+  printf '#!/bin/sh\ncase "$*" in *"-R x/fixture "*) echo "GraphQL: Could not resolve to a Repository with the name '"'x/fixture'"'. (repository)" >&2; exit 1;; esac\nexec gh "$@"\n' > "$SANDBOX/bin/gh-gone"
+  chmod +x "$SANDBOX/bin/gh-gone"
+  SO_GH=gh-gone run "$SUBJECT" run
+  assert_success
+  assert_output --partial "claims dropped, gh cannot resolve: x/fixture"
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(field f '[.prs[] | "\(.repo)#\(.number)"] | join(",")')" "o/r#10"
+  assert_equal "$(field a '[.prs[].number] | join(",")')" 10
+  # negative control: the same error with gh auth failing is the token's fault, not a missing repo
+  touch "$GH_FIXTURE/auth.fail"
+  rm -rf "$SO_OUT"
+  SO_GH=gh-gone run "$SUBJECT" run
+  assert_failure
+  assert_equal "$(outcome)" STALLED
+}
+
 @test "reverted PR: B's #11 is reverted by #12 within the window" {
   "$SUBJECT" run
   assert_equal "$(field b '.prs[0].number')" 11
@@ -302,6 +329,17 @@ STUB
   assert_equal "$(cmd 'curl -X POST -d @r.json "$API/pulls/12/reviews"')" false
   assert_equal "$(cmd 'curl -X POST -d @c.json "$API/issues/12/comments"')" false
   assert_equal "$(cmd 'gh pr view 9')" false
+  # run as a command: after a separator, sh -c, assignments or a wrapper; a search or quote is not one
+  assert_equal "$(cmd 'cd w && GH_TOKEN=$(t) gh pr create --title "a b"')" true
+  assert_equal "$(cmd 'bash -lc "gh pr merge 3"')" true
+  assert_equal "$(cmd "ssh mini 'gh pr create --fill'")" true
+  assert_equal "$(cmd 'if x; then timeout 30 gh pr merge 3; fi')" true
+  assert_equal "$(cmd 'GH_TOKEN=$(rbw get x) sudo gh pr create')" true
+  assert_equal "$(cmd $'git push\ngh pr create --fill')" true
+  assert_equal "$(cmd $'git commit -m "$(cat <<\'E\'\nsay "hi\nE\n)" && gh pr create')" true
+  assert_equal "$(cmd "rg -n 'gh pr create|pull/' tests/unit/session_outcomes.bats")" false
+  assert_equal "$(cmd 'grep -c "gh pr merge" x')" false
+  assert_equal "$(cmd 'echo gh pr create')" false
   refs() { jq -cn --arg t "$1" "$SO_PR_JQ"'$t | pr_refs'; }
   assert_equal "$(refs 'https://github.com/o/r/pull/10')" '[{"repo":"o/r","number":10}]'
   assert_equal "$(refs 'Squashed and merged pull request o/r#11 (x)')" '[{"repo":"o/r","number":11}]'
