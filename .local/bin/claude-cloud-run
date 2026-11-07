@@ -7,7 +7,7 @@
 # polls GitHub for the PR whose body carries the line "Item: <slug>", records it on the item, and
 # parks the item `waiting` for the merge (fleet-dispatch reap closes it on merge proof, as a night
 # item). CLOUD_TIMEOUT_MIN flags a session that opened no PR: this exits 1, reap reads that as
-# failed, and the cloud session itself keeps running.
+# failed, and the cloud session itself keeps running. A create that fails also exits 1, at once.
 set -uo pipefail
 
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
@@ -23,11 +23,18 @@ brief=${3:?usage: claude-cloud-run <slug> <owner/repo> <brief>}
 # transcript to read the session URL from.
 log=$(mktemp "${TMPDIR:-/tmp}/claude-cloud-run.XXXXXX")
 trap 'rm -f "$log"' EXIT
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+rc=0
 if command -v script >/dev/null 2>&1; then
-  script -qefc "$(printf '%q ' "$CLAUDE_BIN" --cloud "$brief")" "$log" || true
+  script -qefc "$(printf '%q ' "$CLAUDE_BIN" --cloud "$brief")" "$log" || rc=$?
 else
   echo "claude-cloud-run: no script(1); the session URL is not recorded" >&2
-  "$CLAUDE_BIN" --cloud "$brief" || true
+  "$CLAUDE_BIN" --cloud "$brief" || rc=$?
+fi
+if [ "$rc" -ne 0 ]; then
+  agent-queue set "$slug" "note=cloud session create failed (exit $rc)" >/dev/null || true
+  echo "claude-cloud-run: claude --cloud exited $rc; no session was created" >&2
+  exit 1
 fi
 url=$(grep -aoE 'https://claude\.ai/code/(session|cse)_[A-Za-z0-9]+' "$log" | head -n 1)
 [ -z "$url" ] || agent-queue set "$slug" "note=cloud session $url" >/dev/null || true
@@ -35,9 +42,13 @@ echo "claude-cloud-run: ${url:-no session URL}; waiting for the PR with the line
 
 deadline=$(( $(date +%s) + CLOUD_TIMEOUT_MIN * 60 ))
 while :; do
-  # The exact line, not a search hit: "Item: a-b" also matches the body of "Item: a-b-c".
-  pr=$(gh pr list --repo "$repo" --state all --search "\"Item: $slug\" in:body" --json number,body 2>/dev/null |
-    jq -r --arg l "Item: $slug" '[.[] | select(.body | split("\n") | map(sub("\\r$"; "")) | index($l) != null)] | first | .number // empty')
+  # The exact line, not a search hit: "Item: a-b" also matches the body of "Item: a-b-c". Only a PR
+  # created since this run started, so an older PR of a re-queued slug is not taken for this session's.
+  if out=$(gh pr list --repo "$repo" --state all --search "\"Item: $slug\" in:body" --json number,body,createdAt 2>&1); then
+    pr=$(jq -r --arg l "Item: $slug" --arg t "$started" '[.[] | select(.createdAt >= $t and (.body | split("\n") | map(sub("\\r$"; "")) | index($l) != null))] | first | .number // empty' <<<"$out")
+  else
+    pr=''; echo "claude-cloud-run: gh pr list failed: ${out:0:200}" >&2
+  fi
   [ -z "$pr" ] || break
   if [ "$(date +%s)" -ge "$deadline" ]; then
     agent-queue set "$slug" "note=cloud session ${url:-unknown} opened no PR in ${CLOUD_TIMEOUT_MIN} min" >/dev/null || true

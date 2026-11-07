@@ -1222,6 +1222,7 @@ gateway_launch() {
       [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: a cloud session cannot wait on a plan; $slug is a plan item"; return 2; }
       [ "$(item_tier "$it")" != 3 ] || { say "start: $slug is tier 3, which merges behind a local gate a cloud session lacks"; return 2; }
       repo=$(cloud_repo "$cwd") || { say "start: $slug has no GitHub repo for a cloud session to clone: $cwd"; return 2; }
+      # acct is cmd_start's (dynamic scope): the claude account this session bills, recorded as account=.
       dir=$(account_dir); acct=$(basename "${dir:-main}")
       cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") $(account_env "$dir")CLOUD_TIMEOUT_MIN=$(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")"
       cmd="$cmd claude-cloud-run $(printf '%q' "$slug") $(printf '%q' "$repo") $(printf '%q' "$brief")"
@@ -1240,9 +1241,11 @@ cloud_repo() {
 
 # cloud_routed <slug> -> rc 0 when the queued item is a claude one tagged cloud-ok, which runs in a cloud
 # session: the tag is the human's word that it is self-contained, on GitHub, and needs no local skill.
+# An item that names another model (agent: codex, model: opus) is not routed: the cloud has one model.
+# agent=claude-cloud is what a start recorded, so a re-queued item routes again.
 cloud_routed() {
   agent-queue show "$1" --json 2>/dev/null |
-    jq -e '(.agent // "claude") == "claude" and ((" " + (.tags // "") + " ") | contains(" cloud-ok "))' >/dev/null 2>&1
+    jq -e '((.agent // "claude") | . == "claude" or . == "claude-cloud") and ((.model // "") | . == "" or . == "cloud") and ((" " + (.tags // "") + " ") | contains(" cloud-ok "))' >/dev/null 2>&1
 }
 
 # headless <harness> -- the harness runs to its end with no slash commands, hooks or human at the pane.
@@ -1328,7 +1331,7 @@ cmd_start() {
     fi
   fi
   if [ -n "$item" ] && [ -z "$resume" ]; then
-    [ -n "$harness" ] || ! cloud_routed "$item" || harness=claude-cloud
+    [ -n "$harness" ] || [ -n "$model" ] || ! cloud_routed "$item" || harness=claude-cloud
     # Before the lock: model-lane may ask an LLM (20s timeout), and another start must not wait on it.
     verdict=${START_VERDICT:-}; [ -n "$verdict" ] || [ -n "$model" ] || verdict=$(lane_pick "$item" "$harness")
     # One start of a queue item at a time, from the queued check until the item is running: on

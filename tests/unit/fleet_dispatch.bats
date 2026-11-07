@@ -4707,7 +4707,7 @@ cloud_run_ready() {
 
 @test "claude-cloud-run records the session URL, finds the PR by its exact Item line, and parks the item waiting on it" {
   cloud_run_ready
-  printf '%s\n' '[{"number": 8, "body": "Item: cloud-fix-extra"}, {"number": 9, "body": "text\r\nItem: cloud-fix\r\nmore"}]' > "$NOTES_FIXTURE/prs.json"
+  printf '%s\n' '[{"number": 7, "createdAt": "2000-01-01T00:00:00Z", "body": "Item: cloud-fix"}, {"number": 8, "createdAt": "2099-01-01T00:00:00Z", "body": "Item: cloud-fix-extra"}, {"number": 9, "createdAt": "2099-01-01T00:00:00Z", "body": "text\r\nItem: cloud-fix\r\nmore"}]' > "$NOTES_FIXTURE/prs.json"
   run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
   assert_success
   assert_called 'claude --cloud do the task'
@@ -4716,6 +4716,36 @@ cloud_run_ready() {
   [ -n "$f" ] || fail "the item is not waiting"
   assert_equal "$(qfield "$f" pr)" 'acme/game#9'
   grep -q 'https://claude.ai/code/session_01AbC' "$f" || fail "the session URL is not on the item"
+}
+
+@test "claude-cloud-run exits 1 at once when the create fails, and polls nothing" {
+  cloud_run_ready
+  stub claude 'echo "claude $*" >> "$NOTES_FIXTURE/calls.log"; exit 3'
+  CLOUD_TIMEOUT_MIN=60 run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
+  assert_failure
+  assert_not_called 'gh pr list'
+  grep -q 'create failed (exit 3)' "$(qitem running cloud-fix)" || fail "the item is not flagged"
+}
+
+@test "claude-cloud-run names a gh failure instead of reading it as no PR yet, and never takes an older PR" {
+  cloud_run_ready
+  stub gh 'echo "gh auth: not logged in" >&2; exit 1'
+  CLOUD_TIMEOUT_MIN=0 run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
+  assert_failure
+  assert_output --partial 'gh pr list failed: gh auth: not logged in'
+  stub gh 'cat "$NOTES_FIXTURE/prs.json"'
+  echo '[{"number": 7, "createdAt": "2000-01-01T00:00:00Z", "body": "Item: cloud-fix"}]' > "$NOTES_FIXTURE/prs.json"
+  CLOUD_TIMEOUT_MIN=0 run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
+  assert_failure
+  [ -n "$(qitem running cloud-fix)" ] || fail "an older PR moved the item"
+}
+
+@test "a cloud-ok item that names a model, or a start with --model, stays on a local claude" {
+  cloud_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-fix --model opus
+  assert_success
+  assert_not_called 'claude-cloud-run'
+  assert_called 'claude --model opus'
 }
 
 @test "claude-cloud-run past its timeout with no PR exits 1 and flags the item, which stays running" {
