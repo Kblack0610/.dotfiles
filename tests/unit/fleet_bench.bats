@@ -948,9 +948,10 @@ kpi_setup() {
   printf '%s\n' revert_rate_max=0.1 interrupts_per_session_max=1 ci_red_per_pr_max=5 prs_per_session_min=1 > "$KPI_THRESHOLDS"
   BOARD="$SANDBOX/board.tsv"; NLOG="$SANDBOX/notes.log"
   printf 'board.md\t1\tother task\t- [ ] other task #low\n' > "$BOARD"
-  printf '#!/usr/bin/env bash\nB=%q; L=%q\n' "$BOARD" "$NLOG" > "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\nB=%q; L=%q; S=%q\n' "$BOARD" "$NLOG" "$REPO_ROOT/tests/helpers/stubs/notes" > "$SANDBOX/bin/notes"
   cat >> "$SANDBOX/bin/notes" <<'NS'
 echo "$*" >> "$L"
+[ "$1 $2" != "row parse" ] || exec bash "$S" row parse   # the shared stub's row.parse lookup table (parses)
 if [ "$1 $2" = "ptask home-config" ]; then
   case "$3" in list) cat "$B.home" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$B.home" ;; esac
   exit 0
@@ -1666,6 +1667,10 @@ coverage_setup() {
   refute_line --partial 'runner alpha'
 }
 
+# parses <text> <type> <area> <title>: what `notes row parse` answers for that text (a lookup
+# table, never the grammar: that lives in notes-cli alone)
+parses() { printf '%s\t%s\t%s\t%s\t1\n' "$@" >> "$NOTES_FIXTURE/row.parse"; }
+
 # red_item <slug> <state> <title> <queued offset> <finished offset|-> <pr|-> <merged|-> [status] [tags]
 red_item() {
   iso() { [ "$1" = - ] && echo null || echo "\"$(date -u -d "@$((T0 + $1))" +%FT%TZ)\""; }
@@ -1687,6 +1692,9 @@ red_item() {
   red_item f done 'check(watch): gone tripped since 2026-11-01' -7200 -3600 - - ok
   red_item g done 'check(watch): gone tripped since 2026-11-01' -7200 -3600 - - failed
   red_item h done 'fix: not a red' -7200 -3600 r#9 sha9 ok 'night'
+  for w in fine back stuck; do parses "check(watch): $w tripped since 2026-11-01, expected: $w" check watch "$w tripped since 2026-11-01, expected: $w"; done
+  for w in other gone; do parses "check(watch): $w tripped since 2026-11-01" check watch "$w tripped since 2026-11-01"; done
+  parses 'fix(runner): beta is FAILED: x' fix runner 'beta is FAILED: x'
   run "$SUBJECT" reds --json
   assert_success
   run jq -rs 'map("\(.slug) \(.red) \(.outcome) \(.fix_min)") | .[]' <<<"$output"
@@ -1697,6 +1705,27 @@ red_item() {
   assert_line '| a | watch fine | fixed | '"$(date -u -d "@$((T0 - 7200))" +%FT%H:%M)"' | 60 | r#1 |'
   run "$SUBJECT" chain --json
   assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 2
+}
+
+@test "reds: a red's area and name come from one notes row parse; a title it does not parse reads as itself, and a failed parse fails" {
+  log_triage_setup
+  red_item a running 'fix(watch): kitchen-puck, voice is down' -600 - - -
+  red_item b running 'the kitchen puck is down' -600 - - -
+  printf '{"slug":"c","state":"running","title":"fix(watch): two\\nlines","queued":null,"tags":"red"}\n' >> "$ITEMS"
+  parses 'fix(watch): kitchen-puck, voice is down' fix watch 'kitchen-puck, voice is down'
+  parses 'fix(watch): two lines' fix watch 'two lines'
+  run "$SUBJECT" reds --json
+  assert_success
+  run jq -rs 'map("\(.slug) \(.red)") | .[]' <<<"$output"
+  assert_output "$(printf '%s\n' 'a watch kitchen-puck' 'b the kitchen puck is down' 'c watch two')"
+  assert_equal "$(grep -c '^row parse' "$NLOG")" 1
+  # NEGATIVE CONTROL: a notes that cannot parse is said, and the KPIs read ? rather than counting the reds untyped
+  printf '#!/usr/bin/env bash\n[ "$1" != row ] || exit 1\n' > "$SANDBOX/bin/notes"
+  run "$SUBJECT" reds
+  assert_failure
+  assert_output --partial 'reds: notes row parse failed'
+  run "$SUBJECT" ledger
+  assert_line 'reds_unfixed=?'
 }
 
 @test "reds: an unreadable queue fails and says so, and its KPIs read ? instead of 0" {
@@ -1923,6 +1952,7 @@ failed() {
   cleanup a -7200 5 aaa11111 x
   watch fleet-liveness TRIP -3600 urgent
   red_item fixit done "fix(hold): liveness-$((T0 - 3600)) went red after cleanup merge a (PR 5 at aaa11111): x" -3000 -600 o/r#9 eee55555 ok 'red cause:h1'
+  parses "fix(hold): liveness-$((T0 - 3600)) went red after cleanup merge a (PR 5 at aaa11111): x" fix hold "liveness-$((T0 - 3600)) went red after cleanup merge a (PR 5 at aaa11111): x"
   run "$SUBJECT" reds --json
   run jq -rs 'map("\(.slug) \(.red) \(.outcome)") | .[]' <<<"$output"
   assert_output "$(printf '%s\n' "fixit hold liveness-$((T0 - 3600)) still red" 'a cleanup chore(x): a went red')"
