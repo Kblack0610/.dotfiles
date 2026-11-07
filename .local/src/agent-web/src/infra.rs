@@ -2,49 +2,46 @@
 //! and the judging of the answer are hub-core's `infra::gather`, shared with the TUI; this
 //! module only caches the answer as JSON.
 
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use hub_core::infra::Infra;
-use tokio::sync::Mutex;
+
+use crate::cache::{off, ReadCache};
 
 /// Prometheus evaluates the rules every minute; a second tab or a reload inside this window is
 /// served the last answer instead of asking again.
-const CACHE: Duration = Duration::from_secs(30);
+const CACHE_SECS: u64 = 30;
 
 /// The last answer, as hub-core's struct (Home joins it) and as JSON (the Infra tab serves it),
-/// and when it was made. Holding the lock while Prometheus is asked also folds concurrent
-/// requests into one round of queries.
+/// kept as a failed gather is, inside the answer. A panic in the gather is shown, not kept.
 #[derive(Default)]
-pub struct Cache(Mutex<Option<(Instant, Infra, String)>>);
+pub struct Cache(ReadCache<(Infra, String), CACHE_SECS>);
+
+/// The answer beside its JSON, made once for every request that shares it.
+fn with_body(infra: Infra) -> (Infra, String) {
+    let body = serde_json::to_string(&infra)
+        .unwrap_or_else(|e| serde_json::json!({"ok": false, "error": e.to_string()}).to_string());
+    (infra, body)
+}
 
 impl Cache {
-    async fn answer(&self) -> (Infra, String) {
-        let mut c = self.0.lock().await;
-        if let Some((at, infra, body)) = c.as_ref() {
-            if at.elapsed() < CACHE {
-                return (infra.clone(), body.clone());
-            }
-        }
-        let infra = tokio::task::spawn_blocking(hub_core::infra::gather)
-            .await
-            .unwrap_or_else(|e| Infra {
-                error: Some(e.to_string()),
+    async fn answer(&self) -> Arc<(Infra, String)> {
+        let read = async { off(hub_core::infra::gather).await.map(with_body) };
+        self.0.get((), read).await.unwrap_or_else(|e| {
+            Arc::new(with_body(Infra {
+                error: Some(e),
                 ..Default::default()
-            });
-        let body = serde_json::to_string(&infra).unwrap_or_else(|e| {
-            serde_json::json!({"ok": false, "error": e.to_string()}).to_string()
-        });
-        *c = Some((Instant::now(), infra.clone(), body.clone()));
-        (infra, body)
+            }))
+        })
     }
 
     /// The Infra tab's answer, as JSON.
     pub async fn get(&self) -> String {
-        self.answer().await.1
+        self.answer().await.1.clone()
     }
 
     /// The same answer for Home's health strip and red-now rows.
     pub async fn infra(&self) -> Infra {
-        self.answer().await.0
+        self.answer().await.0.clone()
     }
 }
