@@ -299,7 +299,7 @@ if [ "$dry" -eq 1 ]; then
   exit 0
 fi
 
-info=$(gh pr view "$pr" --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q '.state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + .isCrossRepository + " " + .headRefName' 2>&1) ||
+info=$(gh pr view "$pr" --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q '.state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + (.isCrossRepository | tostring) + " " + .headRefName' 2>&1) ||
   fail fetch "gh pr view $pr: $(lastline "$info")"
 read -r state base url head_oid cross head_ref <<<"$info"
 # The item's PR names its repo: a bare number is ambiguous across the repos one project spans.
