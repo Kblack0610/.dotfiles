@@ -58,11 +58,12 @@ pub struct Agent {
 
 impl Agent {
     /// Waiting on the human, the fleet's NEEDS (`~/.local/src/docs/fleet-states.md`): at a
-    /// prompt or dialog (`!`), holding a pending ask, or idle in plan mode, which is a plan
-    /// awaiting approval (`bucket_facts` in fleet-sessions). A question asked only in the
-    /// conversation is not a source: the Stop check makes the session file it.
+    /// prompt or dialog (`!`, a plan to approve included) or holding a pending ask. Idle in plan
+    /// mode with no dialog open waits on nothing, as fleet-sessions reads it since #1360. A
+    /// question asked only in the conversation is not a source: the Stop check makes the
+    /// session file it.
     pub fn needs_attention(&self) -> bool {
-        self.glyph == '!' || self.ask.is_some() || (self.plan && self.glyph == '✓')
+        self.glyph == '!' || self.ask.is_some()
     }
 }
 
@@ -536,13 +537,13 @@ mod tests {
     }
 
     #[test]
-    fn plan_mode_counts_only_while_idle() {
+    fn plan_mode_counts_only_with_its_dialog_open() {
+        let plan_dialog = Agent { glyph: '!', plan: true, ..live_agent("hub", "a", false) };
         let plan_idle = Agent { glyph: '✓', plan: true, ..live_agent("hub", "a", false) };
         let plan_busy = Agent { glyph: '~', plan: true, ..live_agent("hub", "b", false) };
-        let idle = Agent { glyph: '✓', ..live_agent("hub", "c", false) };
-        assert!(plan_idle.needs_attention());
+        assert!(plan_dialog.needs_attention());
+        assert!(!plan_idle.needs_attention());
         assert!(!plan_busy.needs_attention());
-        assert!(!idle.needs_attention());
     }
 
     #[test]

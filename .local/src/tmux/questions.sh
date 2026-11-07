@@ -5,19 +5,21 @@
 # d then enter drops it, g goes to the asking session (reopening it when it has ended). Data
 # and delivery are agent-ask's (list, card, answer, cancel, target).
 #
-# Below the questions, one row per session the fleet state document has in NEEDS for a prompt
-# open in its own terminal (a permission, an AskUserQuestion, a plan to approve): agent-ask
-# never sees those, yet the agents chip counts them in its !N, so a list of asks alone read 8
-# beside a chip of 12. Such a row's card is the session and the bottom of its pane; it is
-# answered in the session, so g goes there and the answer keys say so.
+# Below the asks, one row per session the fleet state document has in NEEDS for a dialog open
+# in its own terminal (a plan to approve, an AskUserQuestion, a permission): agent-ask never
+# sees those, yet the agents chip counts them in its !N. A plan or question row is answered
+# here too: its card and options come from `agent-panel dialog`, which reads the live pane, and
+# a number then enter presses that option there through `agent-panel answer`, which refuses
+# when the dialog changed since the card was drawn. A dialog the parser does not know (a
+# permission prompt) shows the bottom of its pane and is answered in the session (g).
 #
 # Usage: questions.sh [verb]
 #
 # Verbs:
 #   rows              pending questions, NUL-ended "<id><TAB><row>": this tmux session's first,
-#                     then oldest, then the sessions at a terminal prompt (id @<target>)
+#                     then oldest, then the sessions with a dialog open (id @<target>)
 #   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler)
-#   card <id>         the card for one row (agent-ask card, or a prompt's session and pane)
+#   card <id>         the card for one row (agent-ask card, or agent-panel dialog)
 #   --help, -h        this text
 #   (no verb)         open the panel
 
@@ -29,9 +31,10 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
 # fleet-sessions' state document, the one place a session's NEEDS reason is decided.
 FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-# The reason session_bucket gives a session waiting on its own terminal.
-PROMPT_REASON='waiting on a prompt or permission'
-# The armed choice between a key and its enter: "<mode> <option> <id>". The picker makes it.
+# The NEEDS reasons session_bucket gives a session waiting on a dialog in its own terminal.
+DIALOG_REASONS='["waiting on a prompt or permission", "plan awaiting approval"]'
+# The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]". The
+# picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . pgup/pgdn scroll card . C-/ layout . esc close'
 
@@ -40,14 +43,15 @@ QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . pgup/pgdn scrol
 # beside the card (a third of the panel). Rows are NUL-ended, so fzf shows the two lines as one
 # item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
 # selected row still reads on fzf's selection bar.
-# prompt_list: the sessions at a terminal prompt, "<target>\t<project>\t<idle min>\t<doing>\t<topic>",
-# the project resolved from the session's directory the way an ask's is.
+# prompt_list: the sessions with a dialog open,
+# "<target>\t<project>\t<idle min>\t<doing>\t<topic>\t<reason>", the project resolved from the
+# session's directory the way an ask's is.
 prompt_list() {
   [ -r "$FLEET_STATE_FILE" ] || return 0
   local t cwd rest
-  jq -r --arg r "$PROMPT_REASON" '.sessions[]? | select(.bucket == "NEEDS" and .reason == $r)
+  jq -r --argjson r "$DIALOG_REASONS" '.sessions[]? | select(.bucket == "NEEDS" and (.reason | IN($r[])))
     | [.target, (.cwd // ""), (.idle_min // 0),
-       (.doing // "" | gsub("[\t\n]"; " ")), (.topic // "" | gsub("[\t\n]"; " "))] | @tsv' \
+       (.doing // "" | gsub("[\t\n]"; " ")), (.topic // "" | gsub("[\t\n]"; " ")), .reason] | @tsv' \
     "$FLEET_STATE_FILE" 2>/dev/null |
     while IFS=$'\t' read -r t cwd rest; do
       printf '%s\t%s\t%s\n' "$t" "$( [ -n "$cwd" ] && resolve_project_name "$cwd" 2>/dev/null)" "$rest"
@@ -101,8 +105,8 @@ cmd_rows() {
         e = now - $3 * 60
         L[k] = sprintf("2\t%d\t@%s\t", e, $1); A[k] = age(e)
         tool = $4; sub(/:.*/, "", tool)
-        if (tool == "ExitPlanMode") Q[k] = "plan waiting for approval in its terminal"
-        else if (tool == "AskUserQuestion") Q[k] = "question waiting in its terminal"
+        if (tool == "ExitPlanMode" || $6 == "plan awaiting approval") Q[k] = "plan waiting for approval"
+        else if (tool == "AskUserQuestion") Q[k] = "question waiting for an answer"
         else Q[k] = "prompt waiting in its terminal" ($4 != "" ? ": " $4 : "")
         S[k] = ($5 != "") ? faint $5 off : ""
         next
@@ -129,9 +133,14 @@ cmd_rows() {
       }' <(printf '%s\n' "$titles") <(printf '%s\n' "$prompts") - |
     sort -t "$PANEL_TAB" -k1,1n -k2,2n | cut -f3- | tr '\n\037' '\000\n'
 }
-# rows_count: "<questions> <prompts>" in what cmd_rows printed (a row is NUL-ended; a prompt's
-# id starts with @).
-rows_count() { tr '\n\000' '\037\n' | awk '/^@/ { p++; next } { q++ } END { print q + 0, p + 0 }'; }
+# rows_count: "<asks> <plans> <questions> <prompts>" in what cmd_rows printed (a row is
+# NUL-ended; a dialog's id starts with @ and its first line names its kind).
+rows_count() {
+  tr '\n\000' '\037\n' | awk '{ split($0, L, "\037") }
+    !/^@/ { a++; next } L[1] ~ /plan waiting for approval/ { p++; next }
+    L[1] ~ /question waiting for an answer/ { q++; next } { o++ }
+    END { print a + 0, p + 0, q + 0, o + 0 }'
+}
 
 # One handler for every answer key. It prints fzf actions; the state file carries an armed
 # choice to the enter that sends it, so a stray key never sends anything. Texts go inside
@@ -190,21 +199,23 @@ after() {
   n="$(cmd_rows | rows_count)"
   st_write ""
   printf 'hide-input+change-prompt~~+reload(%s rows)+change-header~%s~+' "$(printf '%q' "$SELF")" "$(waiting $n)"
-  if [ "$n" = "0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
+  if [ "$n" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
 }
 # The header back to the count, once typing (which names the question there) is over.
 header_count() { printf 'change-header~%s~+' "$(waiting $(cmd_rows | rows_count))"; }
-# waiting <questions> <prompts>: the header, "8 questions . 4 prompts waiting".
+# waiting <asks> <plans> <questions> <prompts>: the header, "3 asks . 11 plans . 2 questions
+# waiting", a kind with none left out.
 waiting() {
-  local q="${1:-0}" p="${2:-0}" out=""
-  ((q + p == 0)) && { echo "no questions waiting"; return; }
-  ((q > 0)) && out="$q question$( ((q == 1)) || echo s)"
-  ((p > 0)) && out+="${out:+ . }$p prompt$( ((p == 1)) || echo s)"
-  echo "$out waiting"
+  local n i out="" kinds=(ask plan question prompt) counts=("${1:-0}" "${2:-0}" "${3:-0}" "${4:-0}")
+  for i in 0 1 2 3; do
+    n="${counts[i]}"
+    ((n > 0)) && out+="${out:+ . }$n ${kinds[i]}$( ((n == 1)) || echo s)"
+  done
+  echo "${out:-no questions} waiting"
 }
 
-# prompt_card <target>: a prompt row's card, the session from the state document and the bottom
-# of its pane, where the question or plan it waits on is drawn.
+# prompt_card <target>: the card for a dialog agent-panel cannot read (a permission prompt):
+# the session from the state document and the bottom of its pane, where the dialog is drawn.
 prompt_card() {
   local t="$1" world local_t
   world="${t%%/*}" local_t="${t#*/}"
@@ -216,14 +227,61 @@ prompt_card() {
 }
 cmd_card() {
   case "${1:-}" in
-  @*) prompt_card "${1#@}" ;;
+  @*) agent-panel dialog "${1#@}" 2>/dev/null || prompt_card "${1#@}" ;;
   *) "$QUESTIONS_ASK" card "$@" ;;
   esac
 }
 
+# dlg_load <target>: the open dialog's options as its pane numbers them, into D_KEYS, D_FREE
+# (1: the option takes typed text) and D_TEXT; false when no dialog agent-panel can read is open.
+dlg_load() {
+  local k f t
+  D_KEYS=() D_FREE=() D_TEXT=()
+  while IFS=$'\t' read -r k f t; do D_KEYS+=("$k") D_FREE+=("$f") D_TEXT+=("$t"); done \
+    < <(agent-panel dialog "$1" --options 2>/dev/null)
+  ((${#D_KEYS[@]} > 0))
+}
+# dialog_key <k> <target>: a number arms that option (one that takes text opens the answer
+# line instead), t opens the line for the option that takes text. The option's text goes in the
+# state, so the answer can refuse when the pane no longer shows it.
+dialog_key() {
+  local k="$1" t="$2" i at=-1
+  [ "$k" = d ] && { footer "a dialog is answered, not dropped . g goes there"; return 0; }
+  dlg_load "$t" || { footer "no dialog to answer here . g goes there"; return 0; }
+  for i in "${!D_KEYS[@]}"; do
+    if [ "$k" = t ]; then [ "${D_FREE[i]}" = 1 ] && { at=$i; break; }
+    elif [ "${D_KEYS[i]}" = "$k" ]; then at=$i; break; fi
+  done
+  if ((at < 0)); then
+    if [ "$k" = t ]; then footer "this one takes no typed answer . pick a number"
+    else footer "no option $k here . pick one the card shows"; fi
+    return 0
+  fi
+  if [ "${D_FREE[at]}" = 1 ]; then
+    st_write typing "${D_KEYS[at]}" "@$t" "${D_TEXT[at]}"
+    printf 'show-input+clear-query+change-prompt~answer> ~+change-header~%s~+' "$(tilde "$(fit "answering $t: ${D_TEXT[at]}" | head -4)")"
+    footer "enter sends . esc cancels"
+  else
+    st_write armed "${D_KEYS[at]}" "@$t" "${D_TEXT[at]}"
+    footer "send ${D_KEYS[at]} \"${D_TEXT[at]}\" to $t? enter sends . esc cancels"
+  fi
+}
+# dialog_send <k> <@target> <option text> [typed]: press the option in the pane. Whatever came
+# of it the list reloads, since the card may be stale.
+dialog_send() {
+  local k="$1" t="${2#@}" seen="$3" err rc=0
+  err="$(agent-panel answer "$t" "$k" --expect "$seen" -- ${4:+"$4"} 2>&1 >/dev/null)" || rc=$?
+  case "$rc" in
+  0) after "sent $k \"$seen\" to $t" ;;
+  3) after "not taken: $t did not move on . g goes there" ;;
+  4) after "not sent: ${err:-the dialog changed or closed}" ;;
+  *) after "not sent: ${err:-agent-panel answer failed}" ;;
+  esac
+}
+
 cmd_key() {
-  local k="${1:-}" id="${2:-}" q="${3:-}" mode="" opt="" sid=""
-  read -r mode opt sid <<<"$(st_read)"
+  local k="${1:-}" id="${2:-}" q="${3:-}" mode="" opt="" sid="" seen=""
+  read -r mode opt sid seen <<<"$(st_read)"
   case "$k" in
   focus)
     # Moving to another question disarms a choice made on the last one; typing keeps going.
@@ -257,7 +315,7 @@ cmd_key() {
   [1-9] | d | t)
     if [ "$mode" = typing ]; then printf 'put(%s)' "$k"; return 0; fi
     [ -n "$id" ] || return 0
-    if [[ "$id" == @* ]]; then footer "answer this one in its session . g goes there"; return 0; fi
+    if [[ "$id" == @* ]]; then dialog_key "$k" "${id#@}"; return 0; fi
     ask_load "$id"
     # A key pressed before the reload after a send lands on the row just answered: refresh.
     if [ "$A_STATUS" != pending ]; then
@@ -292,6 +350,7 @@ cmd_key() {
     local err
     case "$mode" in
     armed)
+      if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen"; return 0; fi
       ask_load "$sid"
       if err="$("$QUESTIONS_ASK" answer "$sid" "${A_OPTS[opt - 1]}" 2>&1 >/dev/null)"; then
         after "sent \"${A_OPTS[opt - 1]}\" to $A_WHO"
@@ -299,6 +358,7 @@ cmd_key() {
       ;;
     typing)
       [ -n "$q" ] || { footer "type an answer first . esc cancels"; return 0; }
+      if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen" "$q"; return 0; fi
       if err="$("$QUESTIONS_ASK" answer "$sid" "$q" 2>&1 >/dev/null)"; then after "sent your answer"
       else footer "not sent: ${err:-agent-ask answer failed}"; fi
       ;;
