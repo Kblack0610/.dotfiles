@@ -19,3 +19,4 @@ queue	fleet-queue		File an item	by name
 runners	fleet-runners		Read first	by name
 benchmarks	fleet-bench		Verbs	by name
 messages	fleet-comms		Pick the channel	by name
+memory	fleet-memory		Which job	by name
