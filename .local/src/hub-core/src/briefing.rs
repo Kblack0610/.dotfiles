@@ -15,10 +15,12 @@ use chrono::{Local, TimeZone};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::capacity::clock;
 use crate::costs::{Call, Live};
 use crate::fleet::runner::Watch;
 use crate::home::{self, Home, Kind, Need};
 use crate::jobs::{self, Job};
+use crate::queue::money;
 use crate::queue::{self, Item, Queue, State};
 use crate::text::{age, cap};
 
@@ -121,13 +123,6 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-fn clock(t: i64) -> String {
-    Local
-        .timestamp_opt(t, 0)
-        .single()
-        .map_or_else(String::new, |d| d.format("%H:%M").to_string())
-}
-
 /// The local date `days` before the one holding `t`, `YYYY-MM-DD`.
 fn date_before(t: i64, days: i64) -> String {
     Local
@@ -143,11 +138,6 @@ fn names(all: &[String], n: usize) -> String {
         s += &format!(" and {} more", all.len() - n);
     }
     s
-}
-
-fn dollars(v: f64) -> String {
-    // An empty f64 sum is -0.0, which would print "$-0".
-    format!("${:.0}", v + 0.0)
 }
 
 /// One Needs you line for a row.
@@ -441,8 +431,8 @@ fn workers(i: &Inputs) -> Area {
         format!("{} of {} ok", last.len() - failed.len(), last.len())
     };
     if let Some(calls) = &i.calls {
-        let spent: f64 = calls.iter().filter_map(|c| c.cost).sum();
-        line += &format!(", {}", dollars(spent));
+        let spent: f64 = calls.iter().filter_map(|c| c.cost).fold(0.0, |a, c| a + c); // not sum(): an empty f64 sum is -0.0
+        line += &format!(", {}", money(spent));
     }
     let mut level = Level::Ok;
     if !failed.is_empty() {
@@ -637,10 +627,10 @@ fn costs(i: &Inputs) -> Area {
     match yesterday_and_avg(i, spent) {
         Some((rec, avg)) if spent(rec).is_some() => {
             let y = spent(rec).unwrap_or(0.0);
-            let mut s = format!("{} yesterday", dollars(y));
+            let mut s = format!("{} yesterday", money(y));
             if let Some(a) = avg.filter(|a| *a > 0.0) {
                 let pct = (y / a - 1.0) * 100.0;
-                s += &format!(" (avg {}, {pct:+.0}%)", dollars(a));
+                s += &format!(" (avg {}, {pct:+.0}%)", money(a));
                 if y > a * BAD_RATIO {
                     level = Level::Bad;
                 } else if y > a * WARN_RATIO {
@@ -655,8 +645,8 @@ fn costs(i: &Inputs) -> Area {
         }
     }
     if let Some(calls) = &i.calls {
-        let r: f64 = calls.iter().filter_map(|c| c.cost).sum();
-        parts.push(format!("runners {} since {}", dollars(r), clock(i.since)));
+        let r: f64 = calls.iter().filter_map(|c| c.cost).fold(0.0, |a, c| a + c); // not sum(): an empty f64 sum is -0.0
+        parts.push(format!("runners {} since {}", money(r), clock(i.since)));
     }
     match i
         .live
@@ -667,7 +657,7 @@ fn costs(i: &Inputs) -> Area {
             if b > 0.0 && s >= b * LAZER_WARN {
                 level = level.max(Level::Warn);
             }
-            parts.push(format!("Lazer {} of {}", dollars(s), dollars(b)));
+            parts.push(format!("Lazer {} of {}", money(s), money(b)));
         }
         None => parts.push("Lazer unknown".into()),
     }
@@ -699,9 +689,9 @@ fn headline(i: &Inputs, n: usize) -> String {
             plural(row.repos, "repo", "repos")
         );
         if let Some(y) = spent(rec) {
-            s += &format!(", {} spent", dollars(y));
+            s += &format!(", {} spent", money(y));
             if let Some(a) = avg {
-                s += &format!(" ({AVG_DAYS}-day avg {})", dollars(a));
+                s += &format!(" ({AVG_DAYS}-day avg {})", money(a));
             }
         }
         s.push('.');
@@ -747,7 +737,7 @@ fn details(i: &Inputs, areas: &[Area]) -> Vec<String> {
                     count[name],
                     j.finished.map(clock).unwrap_or_default(),
                     j.result,
-                    cost.get(name).map_or_else(|| "-".into(), |c| dollars(*c))
+                    cost.get(name).map_or_else(|| "-".into(), |c| money(*c))
                 ));
             }
             out.push(String::new());
@@ -1112,14 +1102,14 @@ mod tests {
             b.areas
         );
         assert_eq!(b.areas.len(), 6);
-        assert_eq!(area(&b, "Workers overnight").line, "3 of 3 ok, $0");
+        assert_eq!(area(&b, "Workers overnight").line, "3 of 3 ok, $0.00");
         assert_eq!(area(&b, "Nightly").line, "dream, nightly-sync, day-log ok");
         assert_eq!(area(&b, "Infra").line, "2 of 2 watches green");
         assert!(b.needs.is_empty());
         let md = b.markdown();
         assert!(md.contains("- nothing\n"), "{md}");
         assert!(
-            md.contains("\n- Costs: ok, $810 yesterday (avg $800, +1%), runners $0 since"),
+            md.contains("\n- Costs: ok, $810 yesterday (avg $800, +1%), runners $0.00 since"),
             "{md}"
         );
         // Details holds the runner table and nothing an area raised.
@@ -1148,7 +1138,7 @@ mod tests {
         let w = area(&b, "Workers overnight");
         assert_eq!(w.level, Level::Bad);
         assert!(
-            w.line.starts_with("3 of 4 ok, $0. Failed: wave-roll "),
+            w.line.starts_with("3 of 4 ok, $0.00. Failed: wave-roll "),
             "{}",
             w.line
         );
