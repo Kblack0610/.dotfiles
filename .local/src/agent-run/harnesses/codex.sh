@@ -14,6 +14,13 @@ harness_supports() {
   return 0
 }
 
+# harness_sandbox - codex confines writes only, so a profile that also hides paths or lists hosts
+# is refused rather than run with less isolation than it names.
+harness_sandbox() {
+  local why; why="$(sandbox_codex_refusal)" || return 1
+  [ -z "$why" ] || { echo "codex cannot hold lane sandbox '$SANDBOX_PROFILE': $why." >&2; return 1; }
+}
+
 # _codex_mcp_flags -> one -c override per line pinning the run to ROLE_MCP's set
 _codex_mcp_flags() {
   local file; file="$(role_mcp_file)"

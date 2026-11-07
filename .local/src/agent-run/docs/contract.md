@@ -149,14 +149,14 @@ A role says what an agent may do; a lane sandbox bounds what its shell can touch
 | | claude | codex |
 |---|---|---|
 | sandbox on | `--settings` with the profile, `sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands:false` and `network.strictAllowlist` forced on | `--sandbox workspace-write` in place of the bypass, for a writing role (a read-only role keeps `read-only`) |
-| writable | cwd, the profile's `allowWrite`, the git common dir (so `git commit` works from a worktree) | `writable_roots`: the profile's `allowWrite` and the git common dir |
-| read denial | each `denyRead` path in the sandbox, and as `Read()` deny rules for the in-process Read tool | none: codex has no read denial |
-| egress | `allowedDomains` only, strict | all or nothing: `network_access` is on when the profile lists any host |
+| writable (shell) | cwd, the profile's `allowWrite`, the git common dir (so `git commit` works from a worktree) minus its `hooks` and `config` | `writable_roots`: the profile's `allowWrite` and the git common dir |
+| read denial | each `denyRead` path in the sandbox, and as `Read()` and `Edit()` deny rules for the in-process tools | none, so a profile with `denyRead` is refused |
+| egress | `allowedDomains` only, strict | off; a profile with `allowedDomains` is refused, since codex network is all or nothing |
 
-- Fail closed: a named profile that is missing or not JSON refuses the run (exit 78); `failIfUnavailable` makes a missing `bwrap` or `socat` a refusal, never an unsandboxed run.
+- Fail closed (exit 78): a named profile that is missing, not the shape `SANDBOX_SHAPE` in `lib/sandbox.sh` checks (lists of strings, paths absolute or `~/`), or one the harness cannot hold refuses the run. A harness enforces a profile only by defining `harness_sandbox`; opencode, raw and binks do not, so they refuse every profile. `failIfUnavailable` makes a missing `bwrap` or `socat` a refusal, never an unsandboxed run.
 - GitHub: the profile hides gh's login, so `GH_TOKEN_FILE=<path>` in the conf gives the lane its own repo-scoped token as `GH_TOKEN`. A sandboxed lane with no `GH_TOKEN_FILE` gets no `GH_TOKEN` or `GITHUB_TOKEN` from the environment.
 - An `--agent` call inherits its caller's `SANDBOX_PROFILE`. A sandboxed lane's model cannot start a sandboxed call from its own shell (bwrap does not nest), so roll out one runner at a time.
-- Claude's sandbox confines Bash only; WebFetch is not held to `allowedDomains`.
+- Claude's sandbox confines Bash only. WebFetch is not held to `allowedDomains`, and the in-process Edit and Write tools are bounded only by permission rules: the `denyRead` paths become `Edit()` denies, and anything else a lane must not edit goes in the profile's `permissions.deny`.
 
 ## Known hole: `ROLE_BASH=yes` defeats `ROLE_WRITE=no`
 

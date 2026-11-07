@@ -10,6 +10,7 @@
 #   - an unlisted host cannot be reached, a listed one can
 #   - a write outside the cwd and allowWrite fails
 #   - `git commit` works from a worktree, and fails without the common dir (why it is added)
+#   - the common dir's hooks and config stay unwritable (lib/sandbox.sh denies them)
 #
 # Usage: tests/container/sandbox-proof.sh [profile.json]   (default ~/.config/agentctl/sandbox/lane.json)
 # Needs docker and network. Exit 0 when every check holds.
@@ -50,9 +51,9 @@ echo 'oauth_token: FAKE' > ~/.config/gh/hosts.yml
 git init -q ~/repo && git -C ~/repo commit -q --allow-empty -m init && git -C ~/repo worktree add -q ~/wt -b lane
 common="$(git -C ~/wt rev-parse --path-format=absolute --git-common-dir)"
 # srt settings: the profile's sandbox keys, plus the cwd (Claude Code makes it writable itself,
-# srt does not) and the git common dir lib/sandbox.sh adds.
+# srt does not) and the git common dir with its hooks and config denied, as lib/sandbox.sh adds.
 jq --arg c "$common" --arg cwd "$HOME/wt" '.sandbox | {network: {allowedDomains: (.network.allowedDomains // []), deniedDomains: []},
-  filesystem: {denyRead: (.filesystem.denyRead // []), allowWrite: ((.filesystem.allowWrite // []) + [$cwd, $c]), denyWrite: []}}' \
+  filesystem: {denyRead: (.filesystem.denyRead // []), allowWrite: ((.filesystem.allowWrite // []) + [$cwd, $c]), denyWrite: ((.filesystem.denyWrite // []) + [$c + "/hooks", $c + "/config"])}}' \
   /profile.json > ~/with-common.json
 jq '.filesystem.allowWrite -= [$c]' --arg c "$common" ~/with-common.json > ~/no-common.json
 # argv after --, never one string: srt takes a lone quoted string as a command NAME, and reads
@@ -73,6 +74,9 @@ check ok     "sandbox: reach a listed host"         sb curl -sf --max-time 15 -o
 check denied "sandbox: write outside cwd and roots" sb touch ~/outside
 check ok     "sandbox: write in the cwd"            sb touch ~/wt/inside
 check ok     "sandbox: git commit from a worktree"  sb git commit -q --allow-empty -m lane
+check denied "sandbox: plant a hook in the common dir"  sb touch "$common/hooks/post-commit"
+check denied "sandbox: set git config in the common dir" sb git config core.fsmonitor /tmp/x
+check ok     "control: set git config unsandboxed"     git config core.fsmonitor false
 check denied "sandbox without the common dir: git commit" srt --settings ~/no-common.json -- git commit -q --allow-empty -m lane2
 exit "$fail"
 INNER
