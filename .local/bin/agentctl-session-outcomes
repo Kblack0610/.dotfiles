@@ -128,11 +128,16 @@ roadmap_index() {
 # A row from before that record keeps the harness an earlier `run` gave the session, else takes the
 # item's agent, except a gateway agent (one the harness map launches by claude-lazer) on a transcript
 # under another account's config dir: a gateway run unsets CLAUDE_CONFIG_DIR, so it is always under
-# ~/.claude.
+# ~/.claude. Only a Claude session reaches that fallback (opencode and codex rows carry their own
+# harness), so neither the prior harness nor the item's agent can make it an opencode or codex one:
+# a session that worked an `agent: codex` item reads claude.
 HARNESS_DEF='def harness_of($i):
+  def launcher: $hm.harnesses[.].launcher // .;
+  def claude_run: launcher | . != "opencode" and . != "codex";
   ($i.agent // "claude") as $a
-  | .harness // .prior_harness // (
-      if ($hm.harnesses[$a].launcher // $a) == "claude-lazer"
+  | .harness // (.prior_harness // empty | select(claude_run)) // (
+      if ($a | claude_run | not) then "claude"
+      elif ($a | launcher) == "claude-lazer"
          and ((.account // (.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a)) // "claude") != "claude" then "claude"
       else $a end);'
 

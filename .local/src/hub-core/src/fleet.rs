@@ -7,6 +7,7 @@
 //! |--------------|--------------------------------------------------------------------------|
 //! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` and standing hold `held_since`/`held_why` (agent-proof), and the user timers (else the runner's own status `next=`); what each runner spent is `crate::costs` |
 //! | who          | the workers and `state.json`'s live sessions, one row each, tiered (`who::build`)  |
+//! | legend       | `~/.config/agentctl/lanes.tsv`, each row kind (lead, a lane, session) to what it means (`who::legend`) |
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
 //! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
@@ -59,6 +60,8 @@ pub struct Paths {
     pub notes_state: PathBuf,
     /// fleet-sessions' `state.json`: the live sessions, tier 3 of the table.
     pub state: PathBuf,
+    /// agentctl's `lanes.tsv`: what each KIND in the table means, the legend above it.
+    pub lanes: PathBuf,
 }
 
 impl Paths {
@@ -77,6 +80,7 @@ impl Paths {
             judge_eval: std::env::var("JUDGE_EVAL").unwrap_or_else(|_| "judge-eval".into()),
             notes_state: home.join(".local/state/notes"),
             state: crate::boards::fleet_state(),
+            lanes: home.join(".config/agentctl/lanes.tsv"),
         }
     }
 }
@@ -90,6 +94,8 @@ pub struct Fleet {
     pub workers: Vec<Worker>,
     /// The Fleet tab's one table: runners by tier, then the live sessions (`who`).
     pub who: Vec<who::Who>,
+    /// The line above the table, one `kind meaning` per kind (`who::legend`).
+    pub legend: Vec<String>,
     pub dispatch: Dispatch,
     pub judge: Judge,
 }
@@ -433,12 +439,14 @@ pub fn files(paths: &Paths) -> Fleet {
         }
     };
     let who = who::build(&workers, &sessions, at);
+    let legend = who::legend(&paths.lanes);
     let dispatch = read_dispatch(&paths.dispatch, at, &mut errors);
     Fleet {
         at,
         errors,
         workers,
         who,
+        legend,
         dispatch,
         judge,
     }

@@ -65,6 +65,8 @@
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 . "${SELF%/*}/worlds.sh" || exit 1
+# shellcheck source=../../lib/origin-repo.sh
+. "${SELF%/*}/../../lib/origin-repo.sh" || exit 1
 # shellcheck source=../../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-${SELF%/*}/../../../.config/shared-hooks/project-name.sh}" || exit 1
 
@@ -238,14 +240,10 @@ wt_landed() {
 # Fails closed: no gh, no jq, a non-GitHub origin, a detached HEAD or a network error all
 # answer "not landed", which only ever keeps a worktree.
 wt_pr_merged_at_head() {
-  local branch head url slug
+  local branch head slug
   branch=$(git -C "$1" symbolic-ref --short -q HEAD) || return 1
   head=$(git -C "$1" rev-parse HEAD 2>/dev/null) || return 1
-  url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
-  case "$url" in
-  *github.com[:/]*) slug="${url#*github.com[:/]}" slug="${slug%.git}" ;;
-  *) return 1 ;;
-  esac
+  slug=$(origin_repo "$1" github.com) || return 1
   panel_have gh && panel_have jq || return 1
   timeout 20 gh pr list -R "$slug" --head "$branch" --state merged --json headRefName,headRefOid,state 2>/dev/null |
     jq -e --arg b "$branch" --arg h "$head" \

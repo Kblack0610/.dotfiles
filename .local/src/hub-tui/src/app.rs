@@ -1853,13 +1853,13 @@ impl App {
             }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
         }
-        if self.tv.prompt.is_none() && self.tv.project.is_some() && k.code == KeyCode::Char('f') {
+        if !self.tv.typing() && self.tv.project.is_some() && k.code == KeyCode::Char('F') {
             self.pv.folds = !self.pv.folds;
             return true;
         }
-        if self.tv.prompt.is_none() {
+        if !self.tv.typing() {
             let v = &self.tv;
-            let filtered = !v.search.is_empty() || v.lane.is_some() || v.said.is_some();
+            let filtered = !v.table.is_default() || v.said.is_some();
             if k.code == KeyCode::Backspace || (k.code == KeyCode::Esc && !filtered) {
                 self.pv.close(&mut self.tv);
                 self.scroll = 0;
@@ -1870,7 +1870,7 @@ impl App {
         if self.board_key(k) {
             return true;
         }
-        if k.code == KeyCode::Esc && self.tv.prompt.is_none() {
+        if k.code == KeyCode::Esc && !self.tv.typing() {
             self.pv.close(&mut self.tv);
             return true;
         }
@@ -2615,7 +2615,7 @@ impl App {
                 "b/B cut  w window  / query  s sort  S asc/desc  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
-                "type a query (tier:3 state:failed -who:x), Enter applies, Esc drops it".into()
+                "type a query (kind:session state:failed -who:x), Enter applies, Esc drops it".into()
             }
             Tab::Fleet if self.fleet_page.is_some() => format!(
                 "[ ] runner  Esc all runners  j/k PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
@@ -2649,12 +2649,12 @@ impl App {
             Tab::Queue => format!(
                 "j/k PgUp/PgDn ^d/^u pick  Enter detail  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Projects if self.tv.prompt.is_some() => {
+            Tab::Projects if self.tv.typing() => {
                 "type, Enter submits, Esc cancels".into()
             }
             Tab::Projects if self.pv.open => format!(
-                "j/k pick  / search  l lane  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
-                if self.tv.project.is_some() { "f page sections  " } else { "" }
+                "j/k pick  / search  f chip  c sort  S flip  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
+                if self.tv.project.is_some() { "F page sections  " } else { "" }
             ),
             Tab::Projects => format!(
                 "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
@@ -4196,15 +4196,15 @@ mod tests {
         assert!(ran(&fake).contains("fleet-bench epics --json --project demo"));
         let s = screen(&mut a, 140, 40);
         assert!(s.contains("NEEDS YOU") && s.contains("NEXT STAGE"), "{s}");
-        assert!(s.contains("f opens it"), "{s}");
-        assert!(s.lines().last().unwrap().contains("f page sections"), "{s}");
-        a.handle(key('f'));
+        assert!(s.contains("F opens it"), "{s}");
+        assert!(s.lines().last().unwrap().contains("F page sections"), "{s}");
+        a.handle(key('F'));
         assert!(a.pv.folds);
-        assert!(!screen(&mut a, 140, 40).contains("f opens it"));
-        a.handle(key('f'));
+        assert!(!screen(&mut a, 140, 40).contains("F opens it"));
+        a.handle(key('F'));
         let s = screen(&mut a, 140, 30);
         assert!(
-            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 open rows"),
+            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 of 3 open rows"),
             "{s}"
         );
         assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");
@@ -4649,8 +4649,14 @@ mod tests {
         assert!(a.fleet_table.is_default());
         assert!(screen(&mut a, 160, 40).contains("dream"));
 
-        // f steps the state chip (held leads), s the sort.
+        // f steps the chips: the kinds (lead first), then the states (held leads them); s the sort.
         a.handle(ch('f'));
+        assert_eq!(a.fleet_table.view.state, "lead");
+        let s = screen(&mut a, 160, 40);
+        assert!(s.contains("dream") && !s.contains("idle-one"), "{s}");
+        for _ in 0..6 {
+            a.handle(ch('f'));
+        }
         assert_eq!(a.fleet_table.view.state, "held");
         a.handle(ch('f'));
         assert_eq!(a.fleet_table.view.state, "failed");
@@ -4658,7 +4664,7 @@ mod tests {
         assert!(s.contains("dream") && !s.contains("idle-one"), "{s}");
         a.handle(ch('x'));
         a.handle(ch('s'));
-        assert_eq!(a.fleet_table.view.sort, "tier");
+        assert_eq!(a.fleet_table.view.sort, "kind");
     }
 
     #[test]
