@@ -356,6 +356,9 @@ cmd_run() {
         dir=$(cmd_pick)
     fi
     if [[ -n "$dir" ]]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
+    # An account session's harness is claude, which the Stop hook records when none is set: a
+    # gateway parent's AGENT_HARNESS (claude-lazer) must not label it.
+    unset AGENT_HARNESS
     set +u
     # shellcheck source=/dev/null
     . "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null
