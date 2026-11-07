@@ -25,7 +25,8 @@ bucket() {
   local f="$FLEET_STATE_FILE" row
   row=$(printf '{"target":"%s/%s:%s","bucket":"%s"}' "$1" "$2" "$3" "$4")
   printf '%s\n' "$row" >> "$NOTES_FIXTURE/state.rows"
-  printf '{"sessions":[%s]}\n' "$(paste -sd, "$NOTES_FIXTURE/state.rows")" > "$f"
+  printf '{"generated_epoch":%s,"unreadable":%s,"sessions":[%s]}\n' \
+    "${STATE_EPOCH:-$(date +%s)}" "${STATE_UNREADABLE:-[]}" "$(paste -sd, "$NOTES_FIXTURE/state.rows")" > "$f"
 }
 
 # ── no agents ────────────────────────────────────────────────────────────────
@@ -106,6 +107,26 @@ bucket() {
   assert_output '✓1'
 }
 
+@test "a stale state document is ignored, leaving the glyphs alone" {
+  STATE_EPOCH=$(( $(date +%s) - 3600 ))
+  agent hub work 0 '✓'; bucket hub work 0 NEEDS
+  run get_session_status work
+  assert_output '✓1'
+}
+
+@test "a document written without agent-panel is ignored, leaving the glyphs alone" {
+  STATE_UNREADABLE='["agent-panel"]'
+  agent hub work 0 '✓'; bucket hub work 0 NEEDS
+  run get_session_status work
+  assert_output '✓1'
+}
+
+@test "an unknown glyph shows the bare count, not a check" {
+  agent hub work 0 '?'
+  run get_session_status work
+  assert_output '·1'
+}
+
 # ── session and server scoping ───────────────────────────────────────────────
 
 @test "status is scoped to the requested session" {
@@ -137,6 +158,14 @@ bucket() {
   agent lab  work 1 '!'
   run get_session_status work
   assert_output '!1'
+}
+
+@test "a NEEDS bucket on another server's same-named session does not leak" {
+  export STUB_SOCKET=/tmp/tmux-1000/hub
+  agent hub work 0 '✓'
+  agent lab work 0 '✓'; bucket lab work 0 NEEDS
+  run get_session_status work
+  assert_output '✓1'
 }
 
 # ── get_short_name ───────────────────────────────────────────────────────────
