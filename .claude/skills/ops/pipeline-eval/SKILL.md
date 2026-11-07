@@ -25,7 +25,7 @@ Every number comes from a deterministic source, never a model's score of a trans
 
 The day-log skill's "The snapshot schema" says what each record field means. When a source lacks a number you need, extend the tool that owns it, with a fixture test, and add it to the day-log record; never count by hand. This file holds only the procedure.
 
-## When to Use
+## Scope and triggers
 
 - The human asks where a task's time goes, why work waits, or for "pipeline eval pass N".
 - A queue wait, a NEEDS total or the ETA error in `day-log week` keeps growing and nobody can say which stage.

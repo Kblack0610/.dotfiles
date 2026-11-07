@@ -154,6 +154,8 @@ pub struct BoardFiles {
     pub proposals: PathBuf,
     pub shepherd: PathBuf,
     pub daylog: PathBuf,
+    /// The nightly token snapshots behind Fleet's Where the tokens go.
+    pub tokens: PathBuf,
 }
 
 impl BoardFiles {
@@ -164,6 +166,7 @@ impl BoardFiles {
             proposals: boards::proposals_dir(),
             shepherd: boards::shepherd_dir(),
             daylog: boards::daylog_dir(),
+            tokens: boards::token_usage_dir(),
         }
     }
     fn watch_log(&self) -> PathBuf {
@@ -175,6 +178,10 @@ impl BoardFiles {
     }
     pub fn is_proposal_file(&self, p: &Path) -> bool {
         hub_core::boards::is_proposal_file(&self.proposals, p)
+    }
+
+    pub fn is_token_file(&self, p: &Path) -> bool {
+        p.parent() == Some(self.tokens.as_path()) && p.extension().is_some_and(|e| e == "json")
     }
 
     /// Whether a changed path is one the board tabs read (the shepherd dir holds other files).
@@ -222,6 +229,10 @@ pub enum Msg {
     /// agent-propose wrote a record.
     ProposalFiles,
     Proposals(Box<Result<Vec<Proposal>, String>>),
+    /// Home's Since last night (hub_core::briefing::night).
+    Night(Box<hub_core::briefing::Night>),
+    /// What Queue a fix answered for the area it names.
+    FixQueued(String, Result<String, String>),
     /// What an accept or a reject answered.
     ProposalActed(Result<String, String>),
     /// A job source's file changed (a run started or ended).
@@ -337,6 +348,8 @@ pub struct App {
     pub fleet_page: Option<String>,
     /// That page's read; None until it comes back.
     pub fleet_runner: Option<Result<hub_core::fleet::runner::Runner, String>>,
+    /// The tokens fold: open or shut, and which window.
+    pub fleet_tokens: fleettab::TokensView,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -357,6 +370,11 @@ pub struct App {
     /// Every project's open rows, for the Projects tab; None until the first read.
     pub tasks: Option<Result<Feed, String>>,
     pub proposals: Option<Result<Vec<Proposal>, String>>,
+    pub night: Option<hub_core::briefing::Night>,
+    night_read: Read,
+    night_at: Option<std::time::Instant>,
+    /// Queue a fix per area name: None while it runs, then what agent-queue answered.
+    pub fixes: hometab::Fixes,
     pub prv: ProposalsView,
     pub tv: TaskView,
     /// The Projects tab's card inputs; None until the first read.
@@ -464,6 +482,7 @@ impl App {
             fleet_sel: 0,
             fleet_page: None,
             fleet_runner: None,
+            fleet_tokens: Default::default(),
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -473,6 +492,10 @@ impl App {
             queue_dir: queue_dir(),
             tasks: None,
             proposals: None,
+            night: None,
+            night_read: Read::default(),
+            night_at: None,
+            fixes: Default::default(),
             prv: ProposalsView::default(),
             tv: TaskView::default(),
             projects: None,
@@ -538,6 +561,7 @@ impl App {
             (self.queue_dir.clone(), true),
             (self.files.asks.clone(), true),
             (self.files.proposals.clone(), false),
+            (self.files.tokens.clone(), false),
         ];
         for f in [&self.paths.unity_runs, &self.files.state] {
             if let Some(d) = f.parent() {
@@ -651,9 +675,9 @@ impl App {
         }
     }
 
-    /// The Fleet tab mixes Prometheus (no push) with agentctl's ledger and the dispatch and ask
-    /// files, so it reads on entering, on `r`, on the tick and on an agentctl file event while
-    /// it is shown.
+    /// The Fleet tab mixes Prometheus (no push) with agentctl's ledger, the dispatch and ask
+    /// files and the token snapshots, so it reads on entering, on `r`, on the tick and on an
+    /// agentctl or snapshot file event while it is shown.
     pub fn read_fleet(&mut self) {
         if self.fleet_read.want() {
             let tx = self.tx.clone();
@@ -893,10 +917,70 @@ impl App {
         }
     }
 
-    /// Home's reads beside the fleet state: the human-sheet rows and the proposals.
+    /// Home's reads beside the fleet state: the human-sheet rows, the proposals and, at most
+    /// every `briefing::NIGHT_REFRESH`, Since last night.
     pub fn read_home(&mut self) {
         self.read_tasks();
         self.read_proposals();
+        self.read_night();
+    }
+
+    /// Since last night over the fleet state, queue and Home this App already holds, so only
+    /// what Home does not read is read again. Before the fleet state has loaded it waits: the
+    /// tick asks again, and Sessions is never worded from an empty state.
+    fn read_night(&mut self) {
+        let due = self
+            .night_at
+            .is_none_or(|t| t.elapsed() >= hub_core::briefing::NIGHT_REFRESH);
+        let Some(state) = self
+            .boards
+            .as_ref()
+            .filter(|_| due)
+            .map(|b| b.watch.state.clone())
+        else {
+            return;
+        };
+        if !self.night_read.want() {
+            return;
+        }
+        let home = hub_core::home::build(
+            &state,
+            self.queue.as_ref(),
+            self.tasks.as_ref(),
+            self.infra.as_ref(),
+        );
+        let queue = self.queue.clone();
+        let (tx, runner) = (self.tx.clone(), self.runner.clone());
+        std::thread::spawn(move || {
+            let now = jobs::now();
+            let queue = queue.unwrap_or_else(|| hub_core::queue::Queue::read(runner.as_ref()));
+            let n = hub_core::briefing::since_last_night(now, state, queue, home);
+            let _ = tx.send(Msg::Night(Box::new(n)));
+        });
+    }
+
+    /// Queue a fix for the first bad area not queued yet (`hometab::next_fix`), through the
+    /// same `agent-queue add` agent-web's Queue a fix posts to.
+    fn queue_fix(&mut self) {
+        let Some((name, fix)) = self
+            .night
+            .as_ref()
+            .and_then(|n| hometab::next_fix(n, &self.fixes))
+            .map(|(name, fix)| (name.to_string(), fix.clone()))
+        else {
+            return;
+        };
+        self.fixes.insert(name.clone(), None);
+        let (tx, runner) = (self.tx.clone(), self.runner.clone());
+        std::thread::spawn(move || {
+            let add = hub_core::queue::Add {
+                project: fix.project.into(),
+                task: fix.task,
+                ..Default::default()
+            };
+            let r = hub_core::queue::add(runner.as_ref(), &add).map(|o| o.trim().to_string());
+            let _ = tx.send(Msg::FixQueued(name, r));
+        });
     }
 
     fn read_proposals(&mut self) {
@@ -1098,6 +1182,9 @@ impl App {
                     && self.costs_at.is_none_or(|t| t.elapsed() >= COSTS_REFRESH)
                 {
                     self.read_costs();
+                }
+                if self.tab == Tab::Home {
+                    self.read_night();
                 }
                 // With no file watch, the board files are only read here.
                 if self.watch_failed.is_some() {
@@ -1327,6 +1414,19 @@ impl App {
                     self.read_proposals();
                 }
             }
+            Msg::Night(n) => {
+                if self.night.as_ref().is_some_and(|o| o.since != n.since) {
+                    self.fixes.clear();
+                }
+                self.night = Some(*n);
+                self.night_at = Some(std::time::Instant::now());
+                if self.night_read.done() && self.tab == Tab::Home {
+                    self.read_night();
+                }
+            }
+            Msg::FixQueued(name, r) => {
+                self.fixes.insert(name, Some(r));
+            }
             Msg::ProposalActed(r) => {
                 self.prv.said = Some(r);
                 self.read_proposals();
@@ -1457,6 +1557,10 @@ impl App {
                 if self.tab == Tab::Log {
                     self.read_log_folds();
                 }
+                if self.tab == Tab::Home {
+                    self.night_at = None;
+                    self.read_home();
+                }
                 if self.tab == Tab::Daily {
                     self.read_daily();
                 }
@@ -1508,7 +1612,8 @@ impl App {
     /// The Fleet tab's own keys; false leaves the key to the page's defaults. On a runner's page
     /// `[ ]` step to the previous or next runner and Esc goes back to the tab; on the tab the
     /// table keys (`/ f s S x`), j/k pick a row, Enter opens it (a runner's page, or a session on
-    /// the Sessions tab) and `z` folds a tier 1 row's children.
+    /// the Sessions tab) and `z` folds a tier 1 row's children. `t` opens or folds Where the
+    /// tokens go and `w` switches its window; neither moves the row, so the view stays put.
     fn fleet_key(&mut self, k: KeyEvent) -> bool {
         if let Some(page) = self.fleet_page.clone() {
             let names = self.fleet_runners();
@@ -1540,6 +1645,20 @@ impl App {
             }
             Took::Typing => return true,
             Took::No => {}
+        }
+        let tokens = self.fleet.as_ref().and_then(|f| f.tokens.as_ref());
+        match k.code {
+            KeyCode::Char('t') if tokens.is_some() => {
+                let open = !self.fleet_tokens.is_open(tokens);
+                self.fleet_tokens.open = Some(open);
+                self.seek = open.then_some("tokens");
+                return true;
+            }
+            KeyCode::Char('w') if tokens.is_some() => {
+                self.fleet_tokens.day = !self.fleet_tokens.day;
+                return true;
+            }
+            _ => {}
         }
         let rows: Vec<(Opens, String)> = self.fleet.as_ref().map_or(vec![], |f| {
             fleettab::shown(f, &self.fleet_table, &self.fleet_folded)
@@ -1627,6 +1746,9 @@ impl App {
         {
             self.log_open.push(sec);
             self.read_log_folds();
+        }
+        if self.tab == Tab::Fleet && sec == "tokens" {
+            self.fleet_tokens.open = Some(true);
         }
         if !self.infra_jobs && !self.log_days {
             self.seek = Some(sec);
@@ -2019,9 +2141,14 @@ impl App {
         }
     }
 
-    /// Home's own keys. The page: Enter and the table keys (/ f s) open the proposals table.
-    /// The table: those keys, j/k, Enter the record, a accept, d reject; Esc steps back out.
+    /// Home's own keys. The page: F queues a fix for Since last night's next bad area, Enter
+    /// and the table keys (/ f s) open the proposals table. The table: those keys, j/k, Enter
+    /// the record, a accept, d reject; Esc steps back out.
     fn home_key(&mut self, k: KeyEvent) -> bool {
+        if !self.prv.open && k.code == KeyCode::Char('F') {
+            self.queue_fix();
+            return true;
+        }
         if !self.prv.open {
             let opens = k.code == KeyCode::Enter || DataTable::owns(k.code);
             if !opens || open_rows(&self.proposals).is_empty() {
@@ -2403,7 +2530,7 @@ impl App {
                 "[ ] runner  Esc all runners  j/k PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Fleet => format!(
-                "j/k pick  Enter open  z fold  / query  f state  s/S sort  x clear  PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
+                "j/k pick  Enter open  z fold  t tokens  w window  / query  f state  s/S sort  x clear  PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
@@ -2435,7 +2562,7 @@ impl App {
             Tab::Projects => format!(
                 "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
             ),
-            _ => format!("Enter proposals  {tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
+            Tab::Home => format!("F queue a fix  Enter proposals  {tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
         }
     }
 
@@ -2495,7 +2622,11 @@ impl App {
                     Some(open) => home.set_proposals(open),
                     None => home.proposals_unread = true,
                 }
-                (hometab::page(&home, self.p, now, w), vec![])
+                let night = hometab::NightView {
+                    night: self.night.as_ref(),
+                    fixes: &self.fixes,
+                };
+                (hometab::page(&home, &night, self.p, now, w), vec![])
             }
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {
                 None => reading("notes projects"),
@@ -2588,8 +2719,8 @@ impl App {
             ),
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
-                Some(f) => (
-                    fleettab::page(
+                Some(f) => {
+                    let mut l = fleettab::page(
                         f,
                         &self.fleet_table,
                         &self.fleet_folded,
@@ -2597,9 +2728,18 @@ impl App {
                         self.p,
                         now,
                         w,
-                    ),
-                    vec![],
-                ),
+                    );
+                    l.push(Line::raw(""));
+                    let at = l.len();
+                    l.extend(fleettab::tokens(
+                        f.tokens.as_ref(),
+                        self.fleet_tokens,
+                        self.p,
+                        now,
+                        w,
+                    ));
+                    (l, vec![("tokens", at)])
+                }
             },
             // Daily's outbox view: the outbox and today's intake steps (outboxtab.rs); Enter
             // edits the file.
@@ -3140,6 +3280,7 @@ mod tests {
         a.gather = no_sessions;
         // No test reaches Prometheus: a read in flight is never started again.
         a.pipeline_read.busy = true;
+        a.night_read.busy = true;
         a
     }
 
@@ -4018,6 +4159,51 @@ mod tests {
     }
 
     #[test]
+    fn f_on_home_queues_the_next_bad_area_once_through_agent_queue() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        let fake = Arc::new(Fake::default());
+        a.runner = fake.clone();
+        a.night = Some(hub_core::briefing::Night {
+            rows: vec![hub_core::briefing::NightRow {
+                area: hub_core::briefing::Area {
+                    name: "Nightly",
+                    level: hub_core::briefing::Level::Bad,
+                    line: "red".into(),
+                    details: vec![],
+                    link: "#infra",
+                },
+                fix: Some(hub_core::briefing::Fix {
+                    project: "agent-runtime",
+                    task: "Fix the nightly".into(),
+                    queued: None,
+                }),
+            }],
+            ..Default::default()
+        });
+        for _ in 0..2 {
+            a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('F')))));
+        }
+        loop {
+            if let Msg::FixQueued(name, r) = rx.recv().unwrap() {
+                assert_eq!(name, "Nightly");
+                assert!(r.is_ok(), "{r:?}");
+                a.handle(Msg::FixQueued(name, r));
+                break;
+            }
+        }
+        let calls = fake.0.lock().unwrap();
+        let added: Vec<_> = calls.iter().filter(|c| c.contains(" add ")).collect();
+        assert_eq!(
+            added,
+            ["agent-queue add --from human --project agent-runtime --mode oneshot --priority high -- Fix the nightly"],
+            "the second F finds it in flight: {calls:?}"
+        );
+        drop(calls);
+        assert!(matches!(a.fixes.get("Nightly"), Some(Some(Ok(_)))));
+    }
+
+    #[test]
     fn home_draws_what_needs_you_and_green_collapses() {
         let mut a = app(Tab::Home);
         a.infra = Some(board::tests::fixture());
@@ -4323,6 +4509,62 @@ mod tests {
         a.handle(Msg::Tab(t, q));
         assert!(a.fleet_page.is_none());
         assert_eq!(a.seek, Some("accounts"));
+    }
+
+    #[test]
+    fn only_a_finished_snapshot_is_a_token_file() {
+        let f = BoardFiles {
+            tokens: "/a/token-usage".into(),
+            ..BoardFiles::from_env()
+        };
+        assert!(f.is_token_file(Path::new("/a/token-usage/2027-01-15.json")));
+        assert!(!f.is_token_file(Path::new("/a/token-usage/2027-01-15.json.tmp")));
+        assert!(!f.is_token_file(Path::new("/a/other/2027-01-15.json")));
+    }
+
+    #[test]
+    fn t_opens_the_tokens_fold_and_goes_to_it_w_switches_its_window_and_the_row_stays() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = app(Tab::Fleet);
+        let mut f = fleettab::tests::fixture();
+        f.tokens = Some(Default::default());
+        a.handle(Msg::Fleet(Box::new(f)));
+        a.handle(k(KeyCode::Char('j')));
+        let sel = a.fleet_sel;
+        a.handle(k(KeyCode::Char('t')));
+        assert_eq!(a.fleet_tokens.open, Some(true));
+        assert_eq!(a.seek, Some("tokens"));
+        let s = screen(&mut a, 80, 12);
+        assert!(s.contains("WHERE THE TOKENS GO"), "{s}");
+        assert_eq!(a.seek, None, "the section is on the page, so seek lands");
+        a.handle(k(KeyCode::Char('w')));
+        assert!(a.fleet_tokens.day);
+        assert!(screen(&mut a, 80, 12).contains("yesterday:"));
+        a.handle(k(KeyCode::Char('t')));
+        assert_eq!(a.fleet_tokens.open, Some(false));
+        assert_eq!(a.fleet_sel, sel);
+    }
+
+    #[test]
+    fn t_and_w_wait_for_a_snapshot_so_the_first_one_lands_folded() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = app(Tab::Fleet);
+        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
+        a.handle(k(KeyCode::Char('t')));
+        a.handle(k(KeyCode::Char('w')));
+        assert_eq!(a.fleet_tokens.open, None);
+        assert!(!a.fleet_tokens.day);
+    }
+
+    #[test]
+    fn hub_tab_fleet_tokens_opens_the_fold() {
+        let mut a = app(Tab::Home);
+        a.fleet_read.busy = true;
+        let (t, q) = crate::tabreq::parse("fleet tokens").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert!(a.fleet_page.is_none());
+        assert_eq!(a.fleet_tokens.open, Some(true));
+        assert_eq!(a.seek, Some("tokens"));
     }
 
     #[test]

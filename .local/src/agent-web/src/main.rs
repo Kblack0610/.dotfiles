@@ -13,6 +13,7 @@
 mod assets;
 mod auth;
 mod board;
+mod briefing;
 mod cli;
 mod cloud;
 mod costs;
@@ -82,6 +83,7 @@ struct AppState {
     session_table: sessions::Cache,
     fleet: fleet::Cache,
     pipeline: pipeline::Cache,
+    briefing: briefing::Cache,
 }
 
 type Shared = Arc<AppState>;
@@ -109,6 +111,7 @@ async fn main() -> Result<()> {
         session_table: sessions::Cache::default(),
         fleet: fleet::Cache::default(),
         pipeline: pipeline::Cache::default(),
+        briefing: briefing::Cache::default(),
     });
 
     let api = Router::new()
@@ -129,6 +132,7 @@ async fn main() -> Result<()> {
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
         .route("/api/home", get(home_board))
+        .route("/api/briefing", get(briefing_night))
         .route("/api/proposals/accept", post(proposals::accept))
         .route("/api/proposals/reject", post(proposals::reject))
         .route("/api/infra", get(infra_board))
@@ -276,6 +280,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let proposals = boards::proposals_dir();
     std::fs::create_dir_all(&proposals)?;
     targets.push((proposals, flat));
+    // The nightly token snapshots: Fleet's Where the tokens go. The first one must still push.
+    let tokens = boards::token_usage_dir();
+    std::fs::create_dir_all(&tokens)?;
+    targets.push((tokens, flat));
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
         boards::fleet_state().parent().map(Path::to_path_buf),
@@ -343,6 +351,13 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
 fn classify(p: &Path) -> Option<String> {
     if p.ends_with(".local/state/fleet/state.json") || p.ends_with(".agent/shepherd/watch.log") {
         return Some(r#"{"kind":"watch"}"#.to_string());
+    }
+    // The token snapshots are named by day too, so they go before day-log's rule below.
+    if p.parent()? == boards::token_usage_dir().as_path() {
+        return p
+            .extension()
+            .is_some_and(|e| e == "json")
+            .then(|| r#"{"kind":"fleet"}"#.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -1051,6 +1066,16 @@ async fn home_board(
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+/// Home's "Since last night" (briefing.rs): the briefing's areas that are not ok since last night.
+async fn briefing_night(State(s): State<Shared>) -> Response {
+    let infra = s.infra.infra().await;
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.briefing.get(infra).await,
+    )
+        .into_response()
+}
+
 async fn infra_board(State(s): State<Shared>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
@@ -1279,6 +1304,15 @@ mod tests {
             None
         );
         assert_eq!(classify(Path::new("/h/.agent/daylog/.lock")), None);
+        // A token snapshot is named by day, but it is Fleet's, never a Log refresh.
+        assert_eq!(
+            classify(&boards::token_usage_dir().join("2026-11-05.json")).as_deref(),
+            Some(r#"{"kind":"fleet"}"#)
+        );
+        assert_eq!(
+            classify(&boards::token_usage_dir().join("2026-11-05.json.tmp")),
+            None
+        );
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),
             None

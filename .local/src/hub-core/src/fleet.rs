@@ -10,6 +10,7 @@
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
 //! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
+//! | tokens       | the nightly `~/.agent/token-usage/<day>.json` (`TOKENS_DIR`), summed by `tokens::read` |
 //!
 //! One runner's page (`#fleet/<name>`, read only when opened) is `runner::read`.
 //!
@@ -28,6 +29,7 @@ use crate::jobs::{self, Job, State};
 use crate::prom::{self, Series};
 
 pub mod runner;
+pub mod tokens;
 pub mod who;
 
 const DAY: i64 = 24 * 3600;
@@ -65,6 +67,8 @@ pub struct Paths {
     pub notes_state: PathBuf,
     /// fleet-sessions' `state.json`: the live sessions, tier 3 of the table.
     pub state: PathBuf,
+    /// `agent-usage tokens snapshot`'s day records.
+    pub tokens: PathBuf,
 }
 
 impl Paths {
@@ -83,6 +87,7 @@ impl Paths {
             judge_eval: std::env::var("JUDGE_EVAL").unwrap_or_else(|_| "judge-eval".into()),
             notes_state: home.join(".local/state/notes"),
             state: crate::boards::fleet_state(),
+            tokens: crate::boards::token_usage_dir(),
         }
     }
 }
@@ -100,6 +105,8 @@ pub struct Fleet {
     pub who: Vec<who::Who>,
     pub dispatch: Dispatch,
     pub judge: Judge,
+    /// Where the tokens go; None until the first snapshot.
+    pub tokens: Option<tokens::Tokens>,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -444,6 +451,7 @@ pub fn files(paths: &Paths) -> Fleet {
     };
     let who = who::build(&workers, &sessions, at);
     let dispatch = read_dispatch(&paths.dispatch, at, &mut errors);
+    let tokens = tokens::read(&paths.tokens, at, &mut errors);
     Fleet {
         at,
         errors,
@@ -451,6 +459,7 @@ pub fn files(paths: &Paths) -> Fleet {
         who,
         dispatch,
         judge,
+        tokens,
         ..Default::default()
     }
 }

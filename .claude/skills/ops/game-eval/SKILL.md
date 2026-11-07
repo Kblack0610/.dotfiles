@@ -16,8 +16,6 @@ Turns "it lagged here" or "this looks wrong" into numbers or pictures, a named c
 
 Evaluate a game the same way every time, on any engine and platform, in lanes: perf (lag, hitches, low fps, GC, server tick) and look (style, design and look of worlds and UI). One spine of nine steps (report, adapter, rule out the harness, capture against a baseline, localize, generalize to the pattern, repeatable probe, file rows, fix and prove) plus a lane file for each lane's instruments and patterns. Verbs: triage <lane> for a reported problem or a capture/mark file, review <lane> for a whole-game pass. Use when the user says "it lags here", "is it the editor or the game", "why is this slow", "perf pass", "this looks off", "review the look of <game>", "art/style pass", "go through my lag marks", or after a big content wave. Each game repo keeps one adapter doc (commands, budgets, views, boards); the skill never hardcodes a repo's tools. Not for network feel under load or server capacity (the repo's multiplayer ladder, e.g. load.sh / Edgegap bench), not for functional bugs (bug-bash), not for a whole-repo code health pass (stack-review, which this hands structural findings to), and not for menu-by-menu coverage audits (ui-audit).
 
-## When to Use
-
 - When the human reports lag, a hitch or low fps somewhere, or hands you capture/mark files.
 - When the human says a place, a screen or a whole game looks off, or asks for a style pass.
 - When a content wave landed and the game needs a perf or look review.

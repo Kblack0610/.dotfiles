@@ -1399,6 +1399,35 @@ red_held_machine() {
   assert_not_called 'wt new'
 }
 
+# 2026-11-06 (P3 live): a red started on the red floor at 13:03 past a load hold while an account
+# had room, and the hold that had stood since 10:48 ended: settle asked only for account room.
+@test "red floor: a red start past the machine gates leaves the hold standing, with an account's room too" {
+  local d="$HOME/.local/state/agentctl/fleet-dispatch"
+  red_held_machine
+  stub claude-acct '[ "$1" = room ] && echo /home/u/.claude-personal; exit 0'
+  agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r" >/dev/null
+  mkdir -p "$d"; echo "$(( $(date +%s) - 3 * 3600 - 30 ))" > "$d/held_since"; printf 'fleet-assess says HOLD' > "$d/held_why"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item r on the red floor'
+  assert_equal "$(outcome)" WORKED
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output --partial 'Dispatch stopped 3h00m: fleet-assess says HOLD'
+  # Negative control: the machine gates open, and the next start ends the hold.
+  stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  stub top 'printf "%%Cpu(s):  1.0 us,  1.0 sy,  0.0 ni, 98.0 id,  0.0 wa\n%%Cpu(s):  5.0 us,  5.0 sy,  0.0 ni, 90.0 id,  0.0 wa\n"'
+  agent-queue add --project game --slug r2 --tags 'red cause:cd34' "fix r2" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item r2'
+  refute_output --partial 'r2 on the red floor'
+  [ ! -e "$d/held_since" ] || fail "a start past open gates left the hold standing"
+  [ ! -e "$d/held_why" ] || fail "a start past open gates left held_why"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_success
+  assert_output ''
+}
+
 @test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
   game_ready
   # the gate's ask finds room; the start's ask, a moment later, finds none
@@ -3481,6 +3510,26 @@ hold_for() {
   assert_output --partial 'Dispatch stopped 2d2h: no account has room; bnb is the closest, 98% of its week used'
   run cmd_stopped --json
   jq -e '.runner == "fleet-dispatch" and (.line | startswith("Dispatch stopped 2d2h")) and (.since | type == "number")' <<<"$output"
+}
+
+# 2026-11-06 (P3 live): with every account full and spill open, gate names no account, so each pass
+# fleet-assess held too read "held by load" and queue-starved cleared five times under one hold.
+@test "starved: an account hold under a load hold still starves while a spill may start" {
+  queued_item stuck high "$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
+  spill_ready
+  HARNESSES=$DISPATCH_HARNESSES   # the sourced script read it before spill_ready set it
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  hold_for 125 'no account has room; alt is the closest, 4 points over its weekly pace'
+  run gate
+  assert_output 'fleet-assess says HOLD'
+  run cmd_starved
+  assert_failure
+  assert_line --index 0 --partial 'Dispatch stopped 2h05m: no account has room'
+  # Negative control: an account with room, and the same load hold is fleet-thermal's alarm.
+  stub claude-acct '[ "$1" = room ] && echo /home/u/.claude-personal; exit 0'
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by load (fleet-assess says HOLD)'
 }
 
 @test "stats: held_s is how long the hold has stood, 0 with none" {

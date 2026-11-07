@@ -282,3 +282,73 @@ test("a judge has no tile on the Fleet tab, and Log's verdict headers link to th
   assert.match(logBox.innerHTML, /<h3 class="sub">Dispatch judge <span/);
   st.tab = "fleet";
 });
+
+// Where the tokens go: hub_core::fleet::tokens's sums, folded while fresh.
+const tokenRow = (name, chars, share, other = false) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other });
+const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15, tools: [tokenRow("Bash", 331000000, 0.823), tokenRow("Other (22)", 10000000, 0.026, true)], commands: [tokenRow("sed", 89000000, 0.221)] });
+const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
+const tail = (t) => { const f = vm.runInContext("fst", ctx); f.open = {}; f.tokWin = "week"; return ctx.tokensSection({ tokens: t }); };
+
+test("the tokens section is folded while fresh, with the week on its head", () => {
+  const h = tail(tokens());
+  assert.match(h, /<details class="sec-d" data-k="tokens" id="sec-tokens"><summary>/);
+  assert.match(h, /Where the tokens go <span class="muted">7d 18\.0B, tool output 15%/);
+  assert.match(h, /by tool/);
+  assert.match(h, /by Bash command/);
+  assert.match(h, /82\.3%/);
+  assert.match(h, /href="#costs\?by=tool&w=7d"/);
+});
+
+test("a named row takes its chart slot and Other its grey", () => {
+  const h = tail(tokens());
+  assert.match(h, /background:var\(--c1\)/);
+  assert.match(h, /background:var\(--c-other\)/);
+  assert.doesNotMatch(h, /background:var\(--c2\)/);
+});
+
+test("a stale snapshot opens the section with an amber head, until the human shuts it", () => {
+  const h = tail(tokens({ stale: true }));
+  assert.match(h, /id="sec-tokens" open>/);
+  assert.match(h, /class="warn">7d 18\.0B, tool output 15%, stale: newest snapshot 2026-11-05/);
+  vm.runInContext("fst", ctx).open["tokens-stale"] = false;
+  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
+});
+
+test("no snapshot is an amber head with nothing to open", () => {
+  const h = tail(null);
+  assert.match(h, /class="warn">no snapshot/);
+  assert.doesNotMatch(h, /<details/);
+});
+
+test("the window switch picks yesterday, and a partial window says so", () => {
+  const f = vm.runInContext("fst", ctx);
+  tail(tokens());
+  f.data = { ...data, table: table(), who: people, hidden: 0, errors: [], tokens: tokens({ day: { ...tokenSplit(3900000000), days: 1, partial: 1 } }) };
+  click({ target: { closest: (sel) => (sel === "[data-tokwin]" ? { dataset: { tokwin: "day" } } : null) } });
+  assert.equal(f.tokWin, "day");
+  const h = ctx.tokensSection(f.data);
+  assert.match(h, /yesterday: 3\.9B context/);
+  assert.match(h, /class="warn">, 1 of 1 partial/);
+  f.tokWin = "week";
+});
+
+test("a stale day names its date, not yesterday", () => {
+  const f = vm.runInContext("fst", ctx);
+  f.open = {};
+  f.tokWin = "day";
+  const h = ctx.tokensSection({ tokens: tokens({ stale: true }) });
+  assert.match(h, /2026-11-05: 3\.9B context/);
+  assert.doesNotMatch(h, /yesterday: /);
+  f.tokWin = "week";
+});
+
+test("the fold keeps what paint remembered, and going stale still opens it", () => {
+  const f = vm.runInContext("fst", ctx);
+  f.open = { tokens: true };
+  assert.match(ctx.tokensSection({ tokens: tokens() }), /id="sec-tokens" open>/);
+  f.open = { tokens: false };
+  assert.match(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /data-k="tokens-stale" id="sec-tokens" open>/);
+  f.open = { tokens: false, "tokens-stale": false };
+  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
+  f.open = {};
+});

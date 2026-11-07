@@ -1,8 +1,8 @@
 //! The Queue tab: agent-queue's items, and adding, cancelling and re-ranking them.
 //!
 //! agent-queue is the only writer of `~/.agent/queue` (design: `~/.config/agentctl/QUEUE.md`).
-//! The list, cancel and bump go through `hub_core::queue`, which the hub TUI reads too; add
-//! shells out here, since its task goes on stdin. The Candidates section is hub-core's
+//! The list, add, cancel and bump go through `hub_core::queue`, which the hub TUI uses too.
+//! The Candidates section is hub-core's
 //! `candidates`; its Promote posts the board's Start (`POST /api/board`). Every call is plain
 //! arguments, never a shell, and agent-queue's stderr comes back as the error the page shows.
 
@@ -10,30 +10,11 @@ use axum::http::StatusCode;
 use axum::Json;
 use std::collections::BTreeMap;
 
-use hub_core::queue::{self as hub_queue, Candidates, DayTotal, Item, PRIORITIES};
+use hub_core::queue::{self as hub_queue, Candidates, DayTotal, Item};
 use hub_core::session_actions::System;
 use serde::Deserialize;
 
-use crate::{bad, run_cmd, ApiResult};
-
-const MODES: &[&str] = &["oneshot", "plan"];
-
-/// A slug or a project name: what agent-queue itself writes, so nothing else reaches its argv.
-fn is_word(s: &str) -> bool {
-    !s.is_empty()
-        && !s.starts_with('-')
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-}
-
-/// Tags are free words plus `at:HH:MM`; agent-queue checks the time, this only keeps them words.
-fn is_tags(s: &str) -> bool {
-    s.split([' ', ',']).filter(|t| !t.is_empty()).all(|t| {
-        !t.starts_with('-')
-            && t.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
-    })
-}
+use crate::{bad, ApiResult};
 
 /// How many days back, today included, the page's Done section reaches.
 const DONE_DAYS: i64 = 7;
@@ -155,61 +136,14 @@ pub async fn act(
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
-#[derive(Deserialize)]
-pub struct AddBody {
-    project: String,
-    #[serde(default)]
-    mode: String,
-    #[serde(default)]
-    priority: String,
-    #[serde(default)]
-    tags: String,
-    task: String,
-}
-
-/// The argv for `agent-queue add`, or why the body is refused. The task goes on stdin.
-fn add_args(b: &AddBody) -> Result<Vec<String>, &'static str> {
-    let mode = if b.mode.is_empty() {
-        "oneshot"
-    } else {
-        &b.mode
-    };
-    let priority = if b.priority.is_empty() {
-        "high"
-    } else {
-        &b.priority
-    };
-    if !is_word(&b.project) {
-        return Err("pick a project");
-    }
-    if !MODES.contains(&mode) {
-        return Err("mode is oneshot or plan");
-    }
-    if !PRIORITIES.contains(&priority) {
-        return Err("priority is urgent, high or low");
-    }
-    if !is_tags(&b.tags) {
-        return Err("tags are words, or at:HH:MM");
-    }
-    if b.task.trim().is_empty() {
-        return Err("type the task");
-    }
-    let mut args: Vec<String> = ["add", "--from", "human", "--project", &b.project]
-        .into_iter()
-        .chain(["--mode", mode, "--priority", priority])
-        .map(String::from)
-        .collect();
-    if !b.tags.trim().is_empty() {
-        args.extend(["--tags".into(), b.tags.trim().into()]);
-    }
-    Ok(args)
-}
-
 /// Queue a task; a plan item starts its session at once (agent-queue does that, not this).
-pub async fn add(Json(b): Json<AddBody>) -> ApiResult<Json<serde_json::Value>> {
-    let args = add_args(&b).map_err(|m| bad(StatusCode::BAD_REQUEST, m))?;
-    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = run_cmd("agent-queue", &argv, Some(b.task.trim())).await?;
+pub async fn add(Json(b): Json<hub_queue::Add>) -> ApiResult<Json<serde_json::Value>> {
+    // A refusal is the request's fault; agent-queue failing to run is the server's.
+    hub_queue::add_argv(&b).map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
+    let out = tokio::task::spawn_blocking(move || hub_queue::add(&System, &b))
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(serde_json::json!({ "out": out.trim() })))
 }
 
@@ -243,7 +177,7 @@ fn project_names(map: &str) -> Vec<String> {
         .into_iter()
         .flat_map(|m| m.values())
         .filter_map(|p| p.as_str().map(String::from))
-        .filter(|p| is_word(p))
+        .filter(|p| hub_queue::is_slug(p))
         .collect();
     names.sort();
     names.dedup();
@@ -253,16 +187,6 @@ fn project_names(map: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn body(project: &str, mode: &str, priority: &str, tags: &str, task: &str) -> AddBody {
-        AddBody {
-            project: project.into(),
-            mode: mode.into(),
-            priority: priority.into(),
-            tags: tags.into(),
-            task: task.into(),
-        }
-    }
 
     #[test]
     fn a_row_view_adds_cost_pr_flag_and_the_days_total() {
@@ -305,38 +229,6 @@ mod tests {
     }
 
     #[test]
-    fn add_defaults_to_a_high_oneshot_from_the_human() {
-        let args = add_args(&body("dotfiles", "", "", "", "do it")).unwrap();
-        assert_eq!(
-            args,
-            [
-                "add",
-                "--from",
-                "human",
-                "--project",
-                "dotfiles",
-                "--mode",
-                "oneshot",
-                "--priority",
-                "high"
-            ]
-        );
-        let args = add_args(&body("dotfiles", "plan", "high", "night at:02:30", "x")).unwrap();
-        assert_eq!(args[args.len() - 2..], ["--tags", "night at:02:30"]);
-    }
-
-    #[test]
-    fn add_refuses_what_would_reach_argv_as_an_option() {
-        assert!(add_args(&body("--slug", "", "", "", "x")).is_err());
-        assert!(add_args(&body("", "", "", "", "x")).is_err());
-        assert!(add_args(&body("dotfiles", "wave", "", "", "x")).is_err());
-        assert!(add_args(&body("dotfiles", "", "now", "", "x")).is_err());
-        assert!(add_args(&body("dotfiles", "", "", "--after x", "x")).is_err());
-        assert!(add_args(&body("dotfiles", "", "", "a;b", "x")).is_err());
-        assert!(add_args(&body("dotfiles", "", "", "", "  \n")).is_err());
-    }
-
-    #[test]
     fn candidates_carry_the_counts_and_each_rows_title_and_label() {
         let c = hub_queue::parse_candidates(concat!(
             r##"{"key":"k-0","text":"- [ ] row 0 #high <!-- id:k-0 -->","auto":true,"verdict":"dispatch"}"##,
@@ -369,15 +261,6 @@ mod tests {
         );
         let none = candidates_view(&Candidates::default());
         assert_eq!(none["rows"].as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn a_slug_is_one_word() {
-        assert!(is_word("20261103-fix-the-menu"));
-        assert!(!is_word("-rf"));
-        assert!(!is_word("a b"));
-        assert!(!is_word("../x"));
-        assert!(!is_word(""));
     }
 
     #[test]

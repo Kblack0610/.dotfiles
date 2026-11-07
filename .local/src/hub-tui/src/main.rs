@@ -334,7 +334,12 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
                         name,
                     ));
                 }
-                None => a.fleet = Some(hub_core::fleet::collect()),
+                None => {
+                    a.fleet = Some(hub_core::fleet::collect());
+                    if section.as_deref().is_some_and(|s| s.trim() == "tokens") {
+                        a.fleet_tokens.open = Some(true);
+                    }
+                }
             }
         }
         a.tab = t;
@@ -502,11 +507,13 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         let tabs = tx.clone();
         std::thread::spawn(move || tabreq::serve(l, tabs));
     }
-    // A job starting or ending writes one of the job files, fleet-sessions and day-log write
-    // the board files, and agent-queue its item files: each re-reads only its own part.
+    // A job starting or ending writes one of the job files, the nightly run a token snapshot,
+    // fleet-sessions and day-log the board files, and agent-queue its item files: each re-reads
+    // only its own part.
     let files = tx;
     // agent-propose makes its store on the first write, and a watch needs it to exist now.
     std::fs::create_dir_all(hub_core::boards::proposals_dir()).ok();
+    std::fs::create_dir_all(&app.files.tokens).ok();
     let paths = app.watched();
     let probe = app.paths.clone();
     let boards = app.files.clone();
@@ -516,7 +523,10 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         if !app::is_write(&e.kind) {
             return;
         }
-        if e.paths.iter().any(|p| app::is_job_file(&probe, p)) {
+        if e.paths
+            .iter()
+            .any(|p| app::is_job_file(&probe, p) || boards.is_token_file(p))
+        {
             let _ = files.send(Msg::Files);
         }
         if e.paths.iter().any(|p| boards.is_board_file(p)) {

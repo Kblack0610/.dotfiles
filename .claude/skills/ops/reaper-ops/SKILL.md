@@ -16,8 +16,6 @@ REAPER runs on the workstation under PipeWire's JACK layer. Everything an agent 
 
 Drive a running REAPER (the DAW) on Linux from an agent - run ReaScripts inside the open instance, read results back, change tracks/FX/MIDI, save the default template, and edit REAPER's config files safely. Use when the user asks to set up, fix or extend anything in REAPER - "add a track", "load the amp", "the piano isn't playing", "save the template", "add a shortcut", "insert a beat", "why can't I hear X" - or when working in the audio repo (~/dev/home/audio). It encodes the traps that cost hours the first time (scripts silently queue behind popups, config files are rewritten on exit, new plugins need a restart, "All MIDI inputs" misses PipeWire devices). Not for PipeWire routing in general or non-REAPER audio (Snapcast, HA speakers) - those are home-config docs. The user-facing guide is the audio repo's docs/working-in-reaper.md, which this skill keeps current.
 
-## When to Use
-
 - Changing anything in an open REAPER project (tracks, FX, MIDI inputs, levels, items).
 - Diagnosing "no sound / no input / meter not moving" in REAPER.
 - Saving the default template, registering actions or shortcuts, setting preferences.

@@ -131,19 +131,40 @@ pub struct Call {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolDay {
+    /// `head` in `by_command`, whose rows have the same shape.
+    #[serde(alias = "head")]
     pub tool: String,
     pub calls: u64,
+    /// Fleet's measure, so the Costs answer does not carry it.
+    #[serde(skip_serializing)]
+    pub chars: u64,
     pub carried_tokens: u64,
     pub allocated_cost_usd: Option<f64>,
 }
 
-/// One day's snapshot: its tools and the cost no tool carried.
+/// A snapshot's whole-day counts.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct SnapshotTotals {
+    pub responses: u64,
+    pub context: u64,
+    pub carried_tokens: u64,
+}
+
+/// One day's snapshot: its tools and the cost no tool carried. The skipped fields are Fleet's
+/// (`fleet::tokens`), so the Costs answer stays the size it was.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Snapshot {
     pub date: String,
     pub generated_at: Option<i64>,
     pub tools: Vec<ToolDay>,
     pub unallocated_usd: Option<f64>,
+    #[serde(skip)]
+    pub commands: Vec<ToolDay>,
+    #[serde(skip)]
+    pub totals: Option<SnapshotTotals>,
+    #[serde(skip)]
+    pub errors: usize,
 }
 
 /// The live gauges; any can be missing.
@@ -271,15 +292,11 @@ pub struct Paths {
 
 impl Paths {
     pub fn from_env() -> Paths {
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         Paths {
             calls: crate::fleet::Paths::from_env().calls,
             dispatch_log: crate::boards::dispatch_dir().join("log.md"),
             headroom: crate::boards::dispatch_dir().join("headroom.json"),
-            tokens: std::env::var_os("TOKENS_DIR")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".agent/token-usage")),
+            tokens: crate::boards::token_usage_dir(),
         }
     }
 }
@@ -328,7 +345,7 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         Ok(text) => c.calls = calls(&text, now - longest()),
         Err(e) => c.errors.push(format!("{}: {e}", paths.calls.display())),
     }
-    c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize);
+    c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize, &mut c.errors);
     // One Prometheus base for the spend tiles and the Burn section; a failure is named once.
     let base = crate::prom::base();
     match base.clone().and_then(|b| crate::prom::instant(&b, &live_q())) {
@@ -405,25 +422,18 @@ pub fn calls(text: &str, since: i64) -> Vec<Call> {
         .collect()
 }
 
-/// The newest `n` day snapshots in `dir`, newest first.
-pub fn snapshots(dir: &Path, n: usize) -> Vec<Snapshot> {
-    let mut days: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            let date = name.strip_suffix(".json")?;
-            let ok =
-                date.len() == 10 && chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok();
-            ok.then(|| (date.to_string(), e.path()))
-        })
-        .collect();
-    days.sort_by(|a, b| b.0.cmp(&a.0));
-    days.into_iter()
-        .take(n)
-        .filter_map(|(date, p)| snapshot(&date, &std::fs::read_to_string(p).ok()?))
-        .collect()
+/// The newest `n` day snapshots in `dir`, newest first. One that does not parse is named in
+/// `errors` and the others still count.
+pub fn snapshots(dir: &Path, n: usize, errors: &mut Vec<String>) -> Vec<Snapshot> {
+    let mut found = vec![];
+    for date in crate::boards::days(dir).into_iter().rev().take(n) {
+        let text = std::fs::read_to_string(dir.join(format!("{date}.json")));
+        match text.ok().and_then(|t| snapshot(&date, &t)) {
+            Some(s) => found.push(s),
+            None => errors.push(format!("tokens: {date}.json does not parse")),
+        }
+    }
+    found
 }
 
 pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
@@ -433,6 +443,9 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
         generated_at: v["generated_at"].as_str().and_then(epoch),
         tools: serde_json::from_value(v["by_tool"].clone()).unwrap_or_default(),
         unallocated_usd: v["by_tool_unallocated_usd"].as_f64(),
+        commands: serde_json::from_value(v["by_command"].clone()).unwrap_or_default(),
+        totals: serde_json::from_value(v["totals"].clone()).ok(),
+        errors: v["errors"].as_array().map_or(0, Vec::len),
     })
 }
 
@@ -1307,15 +1320,18 @@ mod tests {
                         calls: 30,
                         carried_tokens: 900,
                         allocated_cost_usd: Some(7.0),
+                        ..Default::default()
                     },
                     ToolDay {
                         tool: "Read".into(),
                         calls: 5,
                         carried_tokens: 100,
                         allocated_cost_usd: Some(2.0),
+                        ..Default::default()
                     },
                 ],
                 unallocated_usd: Some(1.0),
+                ..Default::default()
             }],
             ..Costs::default()
         }

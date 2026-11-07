@@ -932,8 +932,8 @@ pub fn candidates(runner: &dyn Runner) -> Result<Candidates, String> {
     runner.run(&argv).map(|out| parse_candidates(&out))
 }
 
-/// A slug as agent-queue writes it, so nothing else reaches its argv.
-fn is_slug(s: &str) -> bool {
+/// A slug or a project name as agent-queue writes it, so nothing else reaches its argv.
+pub fn is_slug(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with('-')
         && s.chars()
@@ -958,6 +958,75 @@ pub fn bump(runner: &dyn Runner, slug: &str, priority: &str) -> Result<String, S
         return Err("priority is urgent, high or low".into());
     }
     runner.run(&argv(&["bump", slug, priority]))
+}
+
+/// The modes `agent-queue add` takes.
+pub const MODES: [&str; 2] = ["oneshot", "plan"];
+
+/// A task to queue from the human (agent-web's Add and both Homes' "Queue a fix"): an empty
+/// mode or priority is a high oneshot.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+pub struct Add {
+    pub project: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub priority: String,
+    #[serde(default)]
+    pub tags: String,
+    pub task: String,
+}
+
+/// Tags are free words plus `at:HH:MM`; agent-queue checks the time, this only keeps them words.
+fn is_tags(s: &str) -> bool {
+    s.split([' ', ',']).filter(|t| !t.is_empty()).all(|t| {
+        !t.starts_with('-')
+            && t.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
+    })
+}
+
+/// The argv for `agent-queue add`, or why the task is refused. The task goes after `--`, so
+/// nothing in it reaches agent-queue as an option.
+pub fn add_argv(a: &Add) -> Result<Vec<String>, &'static str> {
+    let mode = if a.mode.is_empty() {
+        "oneshot"
+    } else {
+        &a.mode
+    };
+    let priority = if a.priority.is_empty() {
+        "high"
+    } else {
+        &a.priority
+    };
+    if !is_slug(&a.project) {
+        return Err("pick a project");
+    }
+    if !MODES.contains(&mode) {
+        return Err("mode is oneshot or plan");
+    }
+    if !PRIORITIES.contains(&priority) {
+        return Err("priority is urgent, high or low");
+    }
+    if !is_tags(&a.tags) {
+        return Err("tags are words, or at:HH:MM");
+    }
+    let task = a.task.trim();
+    if task.is_empty() {
+        return Err("type the task");
+    }
+    let mut args = argv(&["add", "--from", "human", "--project", &a.project]);
+    args.extend(["--mode", mode, "--priority", priority].map(String::from));
+    if !a.tags.trim().is_empty() {
+        args.extend(["--tags".into(), a.tags.trim().into()]);
+    }
+    args.extend(["--".into(), task.into()]);
+    Ok(args)
+}
+
+/// `agent-queue add`: what it printed (the new slug), or why it was refused.
+pub fn add(runner: &dyn Runner, a: &Add) -> Result<String, String> {
+    runner.run(&add_argv(a)?)
 }
 
 #[cfg(test)]
@@ -997,6 +1066,59 @@ mod tests {
         r#"{"slug":"d","project":"game","priority":"low","state":"done","status":"cancelled","finished":"2026-11-03T12:00:00Z","pr":"812","task":"t"}"#,
         "\n",
     );
+
+    fn add_of(project: &str, mode: &str, priority: &str, tags: &str, task: &str) -> Add {
+        Add {
+            project: project.into(),
+            mode: mode.into(),
+            priority: priority.into(),
+            tags: tags.into(),
+            task: task.into(),
+        }
+    }
+
+    #[test]
+    fn add_defaults_to_a_high_oneshot_from_the_human_with_the_task_after_dashes() {
+        let args = add_argv(&add_of("dotfiles", "", "", "", " --slug x\n")).unwrap();
+        assert_eq!(
+            args.join(" "),
+            "agent-queue add --from human --project dotfiles --mode oneshot --priority high -- --slug x"
+        );
+        let args = add_argv(&add_of("dotfiles", "plan", "high", "night at:02:30", "x")).unwrap();
+        assert_eq!(
+            args[args.len() - 4..],
+            ["--tags", "night at:02:30", "--", "x"]
+        );
+        let fake = Fake::default();
+        add(&fake, &add_of("dotfiles", "", "", "", "do it")).unwrap();
+        assert!(fake.calls.borrow()[0].ends_with("-- do it"));
+    }
+
+    #[test]
+    fn a_slug_is_one_word() {
+        assert!(is_slug("20261103-fix-the-menu"));
+        assert!(!is_slug("-rf"));
+        assert!(!is_slug("a b"));
+        assert!(!is_slug("../x"));
+        assert!(!is_slug(""));
+    }
+
+    #[test]
+    fn add_refuses_what_would_reach_argv_as_an_option() {
+        assert!(add_argv(&add_of("--slug", "", "", "", "x")).is_err());
+        assert!(add_argv(&add_of("", "", "", "", "x")).is_err());
+        assert!(add_argv(&add_of("dotfiles", "wave", "", "", "x")).is_err());
+        assert!(add_argv(&add_of("dotfiles", "", "now", "", "x")).is_err());
+        assert!(add_argv(&add_of("dotfiles", "", "", "--after x", "x")).is_err());
+        assert!(add_argv(&add_of("dotfiles", "", "", "a;b", "x")).is_err());
+        assert!(add_argv(&add_of("dotfiles", "", "", "", "  \n")).is_err());
+        let fake = Fake::default();
+        assert!(add(&fake, &add_of("", "", "", "", "x")).is_err());
+        assert!(
+            fake.calls.borrow().is_empty(),
+            "a refused task runs nothing"
+        );
+    }
 
     #[test]
     fn list_types_each_item_and_skips_a_line_that_is_not_one() {

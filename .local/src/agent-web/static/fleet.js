@@ -1,15 +1,17 @@
 "use strict";
 // The Fleet tab: who is working, on what, and can I afford it. One table (the shared one,
 // table.js) of every runner and live session by tier; a row opens its record, and a tier 1 row
-// folds the rows under it. Below it, who pays (Claude accounts). The judges' verdict lists are
+// folds the rows under it. Below it, who pays (Claude accounts) and where the tokens go (the
+// nightly snapshots, folded while they are fresh). The judges' verdict lists are
 // Log's Judges' verdicts section. From /api/fleet (hub-core `fleet`, the same reader as the hub's
 // Fleet tab). `#fleet/<runner>` is one runner's page, read from /api/fleet/runner only when it
 // opens (hub-core `fleet::runner`).
 
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
-// fold: the tier 1 rows the human closed, kept across refreshes; said: the answer judge's filter on Log.
-const fst = { data: null, err: null, fold: new Set(), said: "all" };
+// fold: the tier 1 rows the human closed, kept across refreshes; said: the answer judge's filter on Log;
+// open: the folded sections' state; tokWin: the tokens section's window.
+const fst = { data: null, err: null, fold: new Set(), said: "all", open: {}, tokWin: "week" };
 
 // The open runner page: whose, what it read, and the run whose log is shown.
 const rst = { name: "", data: null, err: null, log: null, sel: "" };
@@ -117,7 +119,36 @@ function fleetHead(d) {
     (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
 }
 
-const fleetTail = (d) => `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>`;
+// One table of a tokens window; a named row takes its chart slot, Other its grey (rule 5).
+function tokensTable(title, rows) {
+  const row = (r, i) => `<tr><td>${esc(r.name)}</td><td class="n">${r.calls.toLocaleString()}</td><td class="n">${kfmt(r.chars)} ch</td>` +
+    `<td class="m">${meter(r.share, SLOTS[i] && !r.other ? SLOTS[i] : OTHER)}</td><td class="n">${(r.share * 100).toFixed(1)}%</td><td class="n">${kfmt(r.carried_tokens)}</td></tr>`;
+  return `<table class="tbl"><tr><th>${title}</th><th class="n">calls</th><th class="n">output</th><th>share</th><th class="n">%</th><th class="n">re-read</th></tr>${rows.map(row).join("")}</table>`;
+}
+
+const TOK_WINDOWS = { day: "yesterday", week: "7d" };
+
+// Where the tokens go: hub-core's `fleet::tokens` sums the snapshots; shut while fresh, open and
+// amber once stale (rule 4), which is its own fold key because paint remembers every fold it saw.
+// The dollars per tool are Costs' tool cut, so this links there.
+function tokensSection(d) {
+  const t = d.tokens;
+  if (!t) return `<h2 class="sec" id="sec-tokens">Where the tokens go <span class="warn">no snapshot in ~/.agent/token-usage</span></h2>`;
+  const w = t[fst.tokWin], key = t.stale ? "tokens-stale" : "tokens";
+  const open = fst.open[key] ?? t.stale;
+  const week = `7d ${kfmt(t.week.context)}, tool output ${pct(t.week.carried_share)}`;
+  const head = t.stale ? `<span class="warn">${week}, stale: newest snapshot ${esc(t.date)}</span>` : `<span class="muted">${week}</span>`;
+  const seg = `<div class="seg fseg"><span class="muted">window</span>` + Object.entries(TOK_WINDOWS).map(([k, l]) =>
+    `<button class="${k === fst.tokWin ? "on" : ""}" data-tokwin="${k}">${l}</button>`).join("") + `</div>`;
+  const partial = w.partial ? `<span class="warn">, ${w.partial} of ${w.days} partial</span>` : "";
+  return `<details class="sec-d" data-k="${key}" id="sec-tokens"${open ? " open" : ""}><summary><h2 class="sec">Where the tokens go ${head}</h2></summary>` +
+    `<div class="panel scroll">${seg}<div class="muted">${fst.tokWin === "day" && t.stale ? esc(t.date) : TOK_WINDOWS[fst.tokWin]}: ${kfmt(w.context)} context, ${kfmt(w.per_response)}/response, tool output carried ${pct(w.carried_share)} ` +
+    `(snapshot ${esc(t.date.slice(5))}, ${t.generated_at ? clock(t.generated_at * 1e3) : "-"}${partial})</div>` +
+    tokensTable("by tool", w.tools) + tokensTable("by Bash command", w.commands) +
+    `<div class="muted more">counted by claude-recall tool-output, nightly; dollars per tool on <a href="#costs?by=tool&w=7d">Costs</a></div></div></details>`;
+}
+
+const fleetTail = (d) => `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>${tokensSection(d)}`;
 
 const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--c-other)", failed: "var(--b-needs)", error: "var(--b-needs)" };
 const verdictColor = (v) => VERDICT_COLOR[v] || "var(--c1)";
@@ -184,11 +215,11 @@ function renderFleet() {
     if (f.id === "fleet-q") paint($("fleet-facets"), tblFacets(d.table));
     paint($("fleet-chips"), tblChips(d.table));
     paint($("fleet-body"), fleetBody(d));
-    paint($("fleet-tail"), fleetTail(d));
+    paint($("fleet-tail"), fleetTail(d), fst.open);
     return;
   }
   paint(el, `<div id="fleet-head">${fleetHead(d)}</div>${tblBar("fleet", d.table, "search, or tier:3 state:failed project:dotfiles -who:shepherd")}` +
-    `<div id="fleet-body">${fleetBody(d)}</div><div id="fleet-tail">${fleetTail(d)}</div>`);
+    `<div id="fleet-body">${fleetBody(d)}</div><div id="fleet-tail">${fleetTail(d)}</div>`, fst.open);
 }
 
 // The view changed: the URL follows it and the server applies it.
@@ -310,6 +341,8 @@ $("fleet").addEventListener("click", (e) => {
   const t = e.target;
   const said = t.closest("[data-said]");
   if (said) { fst.said = said.dataset.said; renderFleet(); return; }
+  const win = t.closest("[data-tokwin]");
+  if (win) { fst.tokWin = win.dataset.tokwin; renderFleet(); return; }
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
   const fold = t.closest("[data-fold]");

@@ -12,6 +12,12 @@ metadata:
 
 The delivery role of `fleet-lead` (Binks). Binks aims at measured improvement of the fleet, one KPI at a time with a check (`fleet-lead`, step 3); this role is the means. It answers one question: is every session either working, waiting on the human, or finished and wound down? A session that is none of these gets one nudge per fact, and a fact that survives its nudge goes to the human. It never does a session's work for it.
 
+## Scope and triggers
+
+Covers moving every agent session through its plan: the buckets (WORKING, STALLED, LANDED, DONE), one nudge per fact, escalation and overdue phases.
+
+Use for "which sessions are stuck", "nudge the stalled ones", "wind down the finished ones", "/shepherd status". Load: `fleet-pace`. One pass over everything: `fleet-lead`.
+
 ## Verb: `status`
 
 Run `fleet-sessions` and show its table. It sorts every live Claude session into one bucket from facts (session status, plan mode, the ask queue, `fleet-assess` rows, git, and `gh pr list`), with no judgment:
@@ -42,7 +48,7 @@ What a `fleet-lead pass` runs for `nudge`, `escalate`, `overdue`, `nightly red` 
    - DONE `its item <slug> moved on (<where>)`: "Your queue item `<slug>` moved on (<where>), so nothing here is left for you to finish. Run /wind-down auto."
    - DONE `its worktree was removed`: "Your worktree was removed, so nothing here is left to land. Run /wind-down auto."
    - STALLED `PR #N closed without merging`: "PR #N closed without merging and no PR of yours merged. If another PR replaced it, say which; if the work is still wanted, open a new PR; if it is not, say so and run /wind-down auto."
-   - STALLED `its item <slug> is running here`: "Your queue item `<slug>` is still running here, but your branch has nothing on it and there is no plan file. Carry on with it to a PR; if it is done or blocked, `agent-queue move <slug> done` (or `waiting` with an `agent-ask`) and run /wind-down auto."
+   - STALLED `its item <slug> is running here`: "Your queue item `<slug>` is still running here, and nothing unlanded on your branch is its work (a PR that merged may be another item's). Carry on with it to a PR; if it is done or blocked, `agent-queue move <slug> done` (or `waiting` with an `agent-ask`) and run /wind-down auto."
    - LANDED with no checklist (`phases_total` null, nothing merged yet): "No PR of yours has merged. Add a `## Phases` checklist to your plan (`<plan_file>`), one line per phase: `- [x] <name> (#PR)` for what landed, `- [ ] <name>` for what is left, `- [-] <name>: <why>, <board row>` only for what the human deferred. Then queue them with `agent-queue add --plan <plan_file> --priority high` and run /wind-down auto."
    - STALLED `nightly red after PR #N`: "The default branch's `<workflows>` went red in the range that includes your PR #N. Reproduce it, fix it on a new branch off origin/main, land it, then carry on with your plan."
    - `nudge SHARED:` due line (a test red on several branches, owned by the queue item it names): send each session id it lists: "`<test>` is red on several branches at once and queue item `<slug>` owns it. Do not gate again on it; carry on with other work and merge main once `<slug>` lands." Then run the line's `fleet-sessions mark` call.
