@@ -1233,6 +1233,9 @@ EOF
   assert_output $'\tarena level'
   run "$AQ" credit-of game <<<'Assets/Shared/S.cs'
   assert_success; assert_output ''
+  # outside every tracker path, a directory named after the app is the app's
+  run "$AQ" credit-of game <<<$'store/arena/listing.json\nstore/arena/art.png\nAssets/Level/L.cs\ndocs/x/arena.md'
+  assert_output $'arena\tarena level'
   [ ! -e "$AGENT_QUEUE_DIR" ]
 }
 
