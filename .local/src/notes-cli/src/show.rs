@@ -146,8 +146,9 @@ fn locate(p: &Profile, roots: &[PathBuf], target: &str) -> Result<(PathBuf, Opti
     }
 }
 
-/// The JSON a viewer renders: the note's markdown, where it is, its day neighbours when it is a
-/// daily note, and each link it holds with whether that link resolves.
+/// The JSON a viewer renders: the note's markdown, where it is, its day neighbours and its
+/// briefing's target (when that day has one) when it is a daily note, and each link it holds
+/// with whether that link resolves.
 pub fn note(p: &Profile, target: &str) -> Result<Value> {
     let roots = roots(p);
     let (file, date) = locate(p, &roots, target)?;
@@ -186,6 +187,10 @@ pub fn note(p: &Profile, target: &str) -> Result<Value> {
         }
         None => (None, None),
     };
+    let brief = date
+        .map(|d| crate::daily::briefing(p, &d.to_string()))
+        .filter(|(file, _)| file.is_file())
+        .map(|(_, target)| target);
     let links: Vec<Value> = links(&markdown)
         .into_iter()
         .map(|(t, label)| json!({"target": t, "label": label, "exists": resolve_link(p, &roots, &t).is_some()}))
@@ -200,6 +205,7 @@ pub fn note(p: &Profile, target: &str) -> Result<Value> {
         "date": date.map(|d| d.to_string()),
         "prev": prev,
         "next": next,
+        "brief": brief,
         "hash": md::fnv1a(&markdown),
         "markdown": markdown,
         "links": links,
@@ -335,6 +341,25 @@ mod tests {
                 ("gone".into(), "gone".into(), false),
             ]
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_day_names_its_briefing_only_when_that_day_has_one() {
+        let (root, p) = vault("brief");
+        assert!(note(&p, "daily:2026-11-04").unwrap()["brief"].is_null());
+        fs::create_dir_all(p.refs.join("2026-11-04")).unwrap();
+        fs::write(p.refs.join("2026-11-04/briefing.md"), "# Briefing\n").unwrap();
+        let v = note(&p, "daily:2026-11-04").unwrap();
+        let target = format!("{}/2026-11-04/briefing", p.refs_rel);
+        assert_eq!(v["brief"], target.as_str());
+        assert_eq!(
+            note(&p, &target).unwrap()["exists"],
+            true,
+            "the target opens"
+        );
+        assert!(note(&p, "daily:2026-11-05").unwrap()["brief"].is_null());
+        assert!(note(&p, "outbox").unwrap()["brief"].is_null(), "not a day");
         fs::remove_dir_all(root).unwrap();
     }
 
