@@ -246,6 +246,7 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .fr { display: grid; grid-template-columns: 44px minmax(100px, 220px) minmax(0, 1fr); gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
 .fr:last-child { border-bottom: 0; }
 /* Log tab */
+.stiles { margin-bottom: 10px; }
 .tiles.roomy { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .daynav b { margin: 0 6px; font-family: var(--mono); }
 .daynav .btn:disabled { opacity: .4; cursor: default; }

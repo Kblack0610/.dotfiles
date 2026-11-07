@@ -398,7 +398,13 @@ impl Controls {
             }
         }
         out.extend(self.feed.errors.iter().map(warn));
-        out.push(clip_line(Line::from(self.table.status(&self.all, p)), w));
+        let mut chips = self.table.status(&self.all, p);
+        let spend = session_table::spend(self.table.view.apply(&self.all));
+        chips.push(Span::raw(format!(
+            " | spend {}",
+            hub_core::costs::usd(Some(spend))
+        )));
+        out.push(clip_line(Line::from(chips), w));
         out
     }
 

@@ -3,10 +3,10 @@
 // answer cards are waiting.js, Home is home.js, and each board tab is its own static/*.js and
 // registers in TABS. Sessions' table and header are sessions.js, its fleet-state facts and the
 // last day are watch.js, the shepherd's pass, due lines and rundowns are shepherd.js. An open
-// session starts on its page (sessions.js); its transcript is read only when asked for.
+// session starts on its conversation; its Details page (sessions.js) is read only when asked for.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "page", start: null, end: null, tab: "home", asks: [], views: {} };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 // Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
@@ -134,7 +134,7 @@ function renderHead() {
 function select(a) {
   if (!st.sel || st.sel.target !== a.target) st.act = { confirm: null, busy: st.act.busy, msg: "", err: false };
   st.sel = a; st.start = null; st.end = null;
-  showView("page");
+  showView("transcript");
   $("main").classList.add("open");
   $("err").textContent = "";
   renderHead(); renderFacts();
