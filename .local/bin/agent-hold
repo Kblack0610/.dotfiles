@@ -7,6 +7,8 @@
 #                                   while another session holds it, and the holder's own
 #                                   `check` passes (the agent machine's desktop: mac-desktop)
 #   agent-hold grant <resource> <session>...   GO for those sessions while the hold stays
+#   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
+#                                   agentctl unit, recorded on the hold; release restores it
 #   agent-hold release <resource>
 #   agent-hold check <resource>     exit 1 (and print the hold) while held, 0 when free or
 #                                   when the caller's session has been granted
@@ -23,10 +25,19 @@
 # starts with no grants. Before this, GO was a message telling a session to run with
 # UNITY_TEST_IGNORE_HOLD=1, a flag that never expired: on 2026-10-28 all 6 Unity runs live
 # under a hold carried it.
+#
+# `lower` slows a consumer by its cgroup, not its nice: ananicy-cpp types bash and zsh nice
+# -4 and re-applies that to each new child, so a reniced bats run's new shells came back at
+# -4 (2026-11-07: 583 threads reniced under 20 sessions, ni share stayed 0.4%). Nice only
+# orders tasks inside one cgroup; each tmux pane is its own systemd scope, so a CPUWeight
+# on the scope holds for every process in it, whatever its nice.
 
 set -uo pipefail
 
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
+PROC_ROOT="${AGENT_HOLD_PROC:-/proc}"
+# 1 of the default 100: a held scope gets about 1% of a contended CPU, near nice 19's share.
+LOW_CPU_WEIGHT=1
 
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
@@ -59,6 +70,15 @@ default_by() {
 
 notify() { agent-notify "$@" >/dev/null 2>&1 || true; }
 
+# set_field <file> <key> <value>: replace one key line atomically, keeping the rest. The
+# rename is also the wake-up: a gate waiting on the hold dir sees it and re-checks.
+set_field() {
+  local f="$1" tmp
+  tmp="$(mktemp "$HOLD_ROOT/.${f##*/}.XXXXXX")" || return 1
+  { grep -v "^$2:" "$f"; printf '%s: %s\n' "$2" "$3"; } > "$tmp"
+  mv "$tmp" "$f"
+}
+
 cmd_set() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
@@ -76,7 +96,9 @@ cmd_set() {
   [ -n "$by" ] || by="$(default_by)"
   mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
 
-  local f="$HOLD_ROOT/$resource" tmp
+  local f="$HOLD_ROOT/$resource" tmp lowered
+  # A re-set keeps what `lower` changed, so the release that ends it still restores it.
+  lowered="$(field "$f" lowered)"
   tmp="$(mktemp "$HOLD_ROOT/.${resource}.XXXXXX")" || exit 1
   {
     printf 'resource: %s\n' "$resource"
@@ -84,10 +106,11 @@ cmd_set() {
     printf 'by: %s\n'       "$(oneline "$by")"
     printf 'roster: %s\n'   "$(oneline "$roster")"
     printf 'granted: \n'
+    [ -n "$lowered" ] && printf 'lowered: %s\n' "$lowered"
     printf 'reason: %s\n'   "$(oneline "$reason")"
   } > "$tmp"
-  # Re-setting an existing hold replaces it (new reason, new roster), atomically, so a
-  # reader never sees half a file.
+  # Re-setting an existing hold replaces it (new reason, new roster, no grants),
+  # atomically, so a reader never sees half a file.
   mv "$tmp" "$f"
   # Low on set and on release: fleet-pace sets and lifts holds itself, so a hold is the
   # fleet pacing itself, not something the human acts on. At high it was 10 of the phone's
@@ -142,7 +165,7 @@ cmd_grant() {
   [ $# -gt 0 ] || { echo "agent-hold grant: name at least one session" >&2; exit 2; }
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || { echo "agent-hold: $resource is not held, nothing to grant" >&2; exit 1; }
-  local granted name tmp
+  local granted name
   granted="$(field "$f" granted)"
   for name in "$@"; do
     name="$(oneline "$name")"
@@ -150,13 +173,49 @@ cmd_grant() {
     case "$name" in *,*) echo "agent-hold grant: bad session name '$name'" >&2; exit 2 ;; esac
     in_list "$name" "$granted" || granted="${granted:+$granted,}$name"
   done
-  tmp="$(mktemp "$HOLD_ROOT/.${resource}.XXXXXX")" || exit 1
-  # Older hold files have no granted line; drop any and write one, keeping the rest.
-  { grep -v '^granted:' "$f"; printf 'granted: %s\n' "$granted"; } > "$tmp"
-  # The rename is also the wake-up: a gate waiting on the hold dir sees it and re-checks.
-  mv "$tmp" "$f"
+  set_field "$f" granted "$granted" || exit 1
   notify -p normal -t "go: $resource" "granted $*; the rest stay held"
   echo "granted: $resource for $granted"
+}
+
+# unit_of <pid> -> the user unit the process runs in (the last .scope or .service on its
+# cgroup path under user@<uid>.service), or exit 1.
+unit_of() {
+  local path part unit=""
+  path="$(sed -n 's/^0:://p' "$PROC_ROOT/$1/cgroup" 2>/dev/null)"
+  case "$path" in */user@"$(id -u)".service/*) ;; *) return 1 ;; esac
+  path="${path#*/user@"$(id -u)".service/}"
+  local IFS=/
+  for part in $path; do
+    case "$part" in *.scope|*.service) unit="$part" ;; esac
+  done
+  [ -n "$unit" ] && printf '%s' "$unit"
+}
+
+cmd_lower() {
+  local resource="${1:-}"; shift || true
+  need_resource "$resource"
+  [ $# -gt 0 ] || { echo "agent-hold lower: name at least one pid" >&2; exit 2; }
+  local f="$HOLD_ROOT/$resource"
+  [ -f "$f" ] || { echo "agent-hold: $resource is not held; set it first, so its release restores what lower changes" >&2; exit 1; }
+  local lowered before pid unit rc=0
+  lowered="$(field "$f" lowered)"; before="$lowered"
+  for pid in "$@"; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || { echo "agent-hold lower: bad pid '$pid'" >&2; rc=2; continue; }
+    unit="$(unit_of "$pid")" || { echo "agent-hold lower: pid $pid has no unit under the user manager (gone?)" >&2; rc=1; continue; }
+    # Only units that are batch work: a desktop terminal's or app's scope is the human's.
+    case "$unit" in
+      tmux-spawn-*.scope|agentctl@*.service) ;;
+      *) echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane or agentctl unit; left alone" >&2; rc=1; continue ;;
+    esac
+    if in_list "$unit" "$lowered"; then echo "lowered: $unit (pid $pid, already)"; continue; fi
+    systemctl --user set-property --runtime "$unit" "CPUWeight=$LOW_CPU_WEIGHT" ||
+      { echo "agent-hold lower: systemctl could not set CPUWeight on $unit" >&2; rc=1; continue; }
+    lowered="${lowered:+$lowered,}$unit"
+    echo "lowered: $unit (pid $pid)"
+  done
+  [ "$lowered" = "$before" ] || set_field "$f" lowered "$lowered" || exit 1
+  return "$rc"
 }
 
 cmd_release() {
@@ -166,6 +225,15 @@ cmd_release() {
   [ -f "$f" ] || { echo "agent-hold: $resource is not held" >&2; exit 1; }
   local reason roster
   reason="$(field "$f" reason)"; roster="$(field "$f" roster)"
+  local unit
+  for unit in $(field "$f" lowered | tr ',' ' '); do
+    # An empty CPUWeight= drops the runtime setting. A pane closed since has no scope left.
+    if systemctl --user set-property --runtime "$unit" CPUWeight= 2>/dev/null; then
+      echo "restored: $unit"
+    else
+      echo "not restored: $unit (gone, or systemctl failed)"
+    fi
+  done
   rm -f "$f"
   notify -p low -t "go: $resource" "released (was: $reason)"
   echo "released: $resource"
@@ -209,13 +277,14 @@ cmd_show() {
   cat "$HOLD_ROOT/$resource" 2>/dev/null || { echo "agent-hold: $resource is not held" >&2; exit 1; }
 }
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
   set)     cmd_set "$@" ;;
   claim)   cmd_claim "$@" ;;
   grant)   cmd_grant "$@" ;;
+  lower)   cmd_lower "$@" ;;
   release) cmd_release "$@" ;;
   check)   cmd_check "$@" ;;
   list)    cmd_list ;;

@@ -157,3 +157,78 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   run env TMUX= bash -c "cd \"\$(mktemp -d)\" && mkdir binks && cd binks && \"$HOLD\" check unity-tests"
   assert_failure 1
 }
+
+# lower: a fake /proc with one cgroup file per pid, and a systemctl that records its args.
+lower_setup() {
+  export AGENT_HOLD_PROC="$SANDBOX/proc"
+  SYSTEMCTL_LOG="$SANDBOX/systemctl.log"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\n' "$SYSTEMCTL_LOG" > "$SANDBOX/bin/systemctl"
+  chmod +x "$SANDBOX/bin/systemctl"
+  local u="/user.slice/user-$(id -u).slice/user@$(id -u).service"
+  fake_pid 101 "$u/session.slice/tmux-spawn-aaa.scope"
+  fake_pid 102 "$u/session.slice/tmux-spawn-aaa.scope"
+  fake_pid 103 "$u/app.slice/agentctl@sentinel.service"
+  fake_pid 104 "$u/session.slice/kitty-9327-0.scope"
+  fake_pid 105 "/system.slice/docker.service"
+}
+fake_pid() { mkdir -p "$AGENT_HOLD_PROC/$1"; printf '0::%s\n' "$2" > "$AGENT_HOLD_PROC/$1/cgroup"; }
+
+@test "lower sets CPUWeight=1 once per unit and records it on the hold" {
+  lower_setup
+  "$HOLD" set unity-tests --by c "hot"
+  run "$HOLD" lower unity-tests 101 102 103
+  assert_success
+  assert_line 'lowered: tmux-spawn-aaa.scope (pid 101)'
+  assert_line 'lowered: tmux-spawn-aaa.scope (pid 102, already)'
+  run cat "$SYSTEMCTL_LOG"
+  assert_output $'--user set-property --runtime tmux-spawn-aaa.scope CPUWeight=1\n--user set-property --runtime agentctl@sentinel.service CPUWeight=1'
+  run "$HOLD" show unity-tests
+  assert_line 'lowered: tmux-spawn-aaa.scope,agentctl@sentinel.service'
+}
+
+@test "lower leaves a desktop scope, a system unit and a gone pid alone, and says so" {
+  lower_setup
+  "$HOLD" set unity-tests --by c "hot"
+  run "$HOLD" lower unity-tests 104 105 999 101
+  assert_failure 1
+  assert_output --partial 'kitty-9327-0.scope, not a tmux pane'
+  assert_output --partial 'pid 105 has no unit under the user manager'
+  assert_output --partial 'pid 999 has no unit'
+  run cat "$SYSTEMCTL_LOG"
+  assert_output '--user set-property --runtime tmux-spawn-aaa.scope CPUWeight=1'
+}
+
+@test "lower needs a hold to record on, so release can undo it" {
+  lower_setup
+  run "$HOLD" lower unity-tests 101
+  assert_failure 1
+  assert_output --partial 'is not held'
+  [ ! -e "$SYSTEMCTL_LOG" ]
+}
+
+@test "a re-set keeps the lowered units, and release restores each one" {
+  lower_setup
+  "$HOLD" set unity-tests --by c "hot"
+  "$HOLD" lower unity-tests 101 103
+  "$HOLD" set unity-tests --by c "hotter"
+  run "$HOLD" show unity-tests
+  assert_line 'lowered: tmux-spawn-aaa.scope,agentctl@sentinel.service'
+  run "$HOLD" release unity-tests
+  assert_success
+  assert_line 'restored: tmux-spawn-aaa.scope'
+  assert_line 'restored: agentctl@sentinel.service'
+  run tail -n 2 "$SYSTEMCTL_LOG"
+  assert_output $'--user set-property --runtime tmux-spawn-aaa.scope CPUWeight=\n--user set-property --runtime agentctl@sentinel.service CPUWeight='
+}
+
+@test "release names a lowered unit it could not restore and still frees the hold" {
+  lower_setup
+  "$HOLD" set unity-tests --by c "hot"
+  "$HOLD" lower unity-tests 101
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/systemctl"
+  run "$HOLD" release unity-tests
+  assert_success
+  assert_line 'not restored: tmux-spawn-aaa.scope (gone, or systemctl failed)'
+  run "$HOLD" check unity-tests
+  assert_success
+}
