@@ -20,6 +20,10 @@ set -uo pipefail
 : "${FLEET_CLEAR_LOAD_X:=1}"     # below this (and memory below) -> CLEAR
 : "${FLEET_HOLD_MEM_PCT:=10}"    # MemAvailable % below this -> HOLD
 : "${FLEET_CLEAR_MEM_PCT:=25}"   # at or above this -> may CLEAR
+: "${FLEET_HOLD_STALL_PCT:=20}"  # memory stall (PSI some avg10, %) at or above this -> HOLD: swapping hard while MemAvailable
+                                 # still reads fine (2026-11-06: 48% free, 63G in zram, kswapd0 at 95% CPU).
+                                 # Provisional: revisit if fleet-thermal pages on a stall HOLD with no swap-in activity.
+: "${FLEET_CLEAR_STALL_PCT:=5}"  # stall under this -> may CLEAR
 : "${FLEET_HOT_TCTL:=95}"        # Tctl at the throttle point ...
 : "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD
 : "${FLEET_ROW_CPU:=50}"         # a process at or above this %CPU gets a row
@@ -28,12 +32,14 @@ set -uo pipefail
 : "${FLEET_GH_LOW:=1000}"        # GitHub REST calls left under this, with over 20 min to the reset -> LOW
                                  # (2026-10-29 the fleet spent all 5,000 and every gh call failed 40 min)
 : "${FLEET_GH_PROBE_REPO:=Kblack0610/.dotfiles}" # any repo the token reads: both buckets are per user
+PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
-# fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> -> "VERDICT reason"
+# fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> [<mem_stall_pct>] -> "VERDICT reason"
 fleet_verdict() {
-  awk -v l="$1" -v c="$2" -v t="$3" -v m="$4" -v held="$5" \
+  awk -v l="$1" -v c="$2" -v t="$3" -v m="$4" -v held="$5" -v s="${6:-0}" \
+      -v hs="$FLEET_HOLD_STALL_PCT" -v cs="$FLEET_CLEAR_STALL_PCT" \
       -v hx="$FLEET_HOLD_LOAD_X" -v cx="$FLEET_CLEAR_LOAD_X" \
       -v hm="$FLEET_HOLD_MEM_PCT" -v cm="$FLEET_CLEAR_MEM_PCT" \
       -v ht="$FLEET_HOT_TCTL" -v htx="$FLEET_HOT_LOAD_X" 'BEGIN {
@@ -41,9 +47,11 @@ fleet_verdict() {
     hot = (t != "-" && t + 0 >= ht && x >= htx)
     if (x >= hx)  { printf "HOLD load %.1fx cores >= %sx\n", x, hx; exit }
     if (m < hm)   { printf "HOLD memory %d%% free < %d%%\n", m, hm; exit }
+    if (s >= hs)  { printf "HOLD memory stall %.1f%% >= %s%% (swapping)\n", s, hs; exit }
     if (hot)      { printf "HOLD tctl %s C at %.1fx cores\n", t, x; exit }
-    low = (x < cx && m >= cm)
-    if (held && low)  { printf "CLEAR load %.1fx < %sx, memory %d%% free\n", x, cx, m; exit }
+    low = (x < cx && m >= cm && s < cs)
+    if (held && low)  { printf "CLEAR load %.1fx < %sx, memory %d%% free, stall %.1f%%\n", x, cx, m, s; exit }
+    if (held && s >= cs) { printf "HOLD held, memory stall %.1f%% not yet under %s%%\n", s, cs; exit }
     if (held)         { printf "HOLD held, load %.1fx not yet under %sx\n", x, cx; exit }
     printf "OK load %.1fx cores\n", x
   }'
@@ -70,6 +78,17 @@ read_tctl() {
 read_mem_pct() {
   awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 }
        END { if (t > 0) printf "%d\n", a * 100 / t; else print 100 }' /proc/meminfo 2>/dev/null || echo 100
+}
+
+# Percent of the last 10 s that some task stalled on memory (PSI some avg10); 0 when the kernel has no PSI.
+read_mem_stall() {
+  awk '/^some / { for (i = 2; i <= NF; i++) if ($i ~ /^avg10=/) { sub(/avg10=/, "", $i); print $i; found = 1 } }
+       END { if (!found) print 0 }' "$PSI_MEM" 2>/dev/null || echo 0
+}
+
+# Swap in use, in GiB (zram here): shown beside the stall, not gated on, since cold pages sit there harmlessly.
+read_swap_used_gb() {
+  awk '/^SwapTotal:/ { t = $2 } /^SwapFree:/ { f = $2 } END { printf "%.1f\n", (t - f) / 1048576 }' /proc/meminfo 2>/dev/null || echo 0
 }
 
 # A hold on a machine resource (unity, cpu) keeps the verdict at HOLD until CLEAR. A hold
@@ -360,21 +379,21 @@ main() {
     gh_budget
     return
   fi
-  local load cores tctl mem held=0 verdict blocked
-  load="$(read_load)"; cores="$(read_cores)"; tctl="$(read_tctl)"; mem="$(read_mem_pct)"
+  local load cores tctl mem stall held=0 verdict blocked
+  load="$(read_load)"; cores="$(read_cores)"; tctl="$(read_tctl)"; mem="$(read_mem_pct)"; stall="$(read_mem_stall)"
   holds_set && held=1
   # The watch's own trip counts as a hold, so it clears at the low mark. With no hold set it
   # cleared at the first dip under 1.75x: about 31 trips and 63 pages in the 7 days to 2026-11-06.
   # Only the watch: fleet-dispatch's gate on --watch-probe keeps the high mark.
   [ "${1:-}" != --thermal-probe ] || [ "$(cat "$WATCH_TRIP_FILE" 2>/dev/null)" != TRIP ] || held=1
-  verdict="$(fleet_verdict "$load" "$cores" "$tctl" "$mem" "$held")"
+  verdict="$(fleet_verdict "$load" "$cores" "$tctl" "$mem" "$held" "$stall")"
 
   if [ "${1:-}" = --watch-probe ] || [ "${1:-}" = --thermal-probe ]; then
-    echo "$verdict (load $load/$cores, tctl ${tctl} C, mem ${mem}% free)"
+    echo "$verdict (load $load/$cores, tctl ${tctl} C, mem ${mem}% free, stall ${stall}%)"
     case "$verdict" in HOLD*) return 1 ;; *) return 0 ;; esac
   fi
 
-  echo "headroom: load $load / $cores cores, tctl ${tctl} C, memory ${mem}% free, $(d_sample | d_threads) threads blocked on I/O"
+  echo "headroom: load $load / $cores cores, tctl ${tctl} C, memory ${mem}% free (stall ${stall}%, swap $(read_swap_used_gb)G used), $(d_sample | d_threads) threads blocked on I/O"
   gh_budget
   if [ "$held" = 1 ]; then
     echo "holds:"
