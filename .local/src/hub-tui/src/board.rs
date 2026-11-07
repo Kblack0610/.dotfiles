@@ -143,9 +143,6 @@ impl<'a> Board<'a> {
     fn int(&self, k: &str) -> String {
         self.get(k).map_or("-".into(), |x| format!("{x:.0}"))
     }
-    fn usd(&self, k: &str) -> String {
-        self.get(k).map_or("?".into(), |x| format!("${x:.0}"))
-    }
     /// The sum of the per-pool or per-host values of these rules, or ? when none has any.
     fn sum(&self, rules: &[&str]) -> String {
         let mut t = None;
@@ -347,12 +344,7 @@ impl<'a> Board<'a> {
                 self.num("cc:watches_tripped"),
                 self.num("cc:watches_total")
             ),
-            format!(
-                "lazer {}/{}",
-                self.usd("cc:lazer_spend_usd"),
-                self.usd("cc:lazer_budget_usd")
-            ),
-            format!("claude 24h {}", self.usd("cc:claude_code_cost_24h_usd")),
+            hub_core::costs::SPEND_BADGE.into(),
         ];
         if self.get("cc:agent_sessions_running").is_some() {
             items.push(format!(
@@ -1823,7 +1815,7 @@ pub(crate) mod tests {
             "nodes ",
             "heartbeats ",
             "ci local 3/7 cloud 0/0, waiting 4",
-            "claude 24h ",
+            "spend: 0 Costs",
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");
         }

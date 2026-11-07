@@ -15,6 +15,7 @@ mod auth;
 mod board;
 mod cli;
 mod cloud;
+mod costs;
 mod feed;
 mod fleet;
 mod focus;
@@ -154,6 +155,7 @@ async fn main() -> Result<()> {
         .route("/api/outcomes", get(outcomes::ranked))
         .route("/api/outcomes/card", get(outcomes::card))
         .route("/api/reds", get(reds::get))
+        .route("/api/costs", get(costs::get))
         .route("/api/actions", get(feed::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))

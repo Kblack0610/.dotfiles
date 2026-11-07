@@ -45,6 +45,9 @@ pub const REDS_REFRESH: Duration = Duration::from_secs(300);
 /// A Schedules read shells out to systemd and Prometheus for seconds, and a schedule changes by
 /// the hour: agent-web's cache keeps one this long too.
 pub const SCHEDULES_REFRESH: Duration = Duration::from_secs(60);
+/// The Costs sources are written nightly or per call and none is watched, so the tick re-reads
+/// them this often while the tab is shown; entering it and `r` read at once.
+pub const COSTS_REFRESH: Duration = Duration::from_secs(300);
 /// Under this many body lines the Projects rows keep the whole window and get no preview pane.
 const PREVIEW_MIN_HEIGHT: u16 = 18;
 
@@ -59,11 +62,12 @@ pub enum Tab {
     Log,
     Fleet,
     Schedules,
+    Costs,
 }
 
 impl Tab {
     /// hub-core's layout order; digit N opens `ALL[N - 1]` (`tabs_are_the_layout` checks).
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Home,
         // The daily note; `o` shows the outbox under it (`hub --tab outbox` opens it there).
         Tab::Daily,
@@ -74,6 +78,7 @@ impl Tab {
         Tab::Log,
         Tab::Fleet,
         Tab::Schedules,
+        Tab::Costs,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -86,6 +91,7 @@ impl Tab {
             Tab::Log => "Log",
             Tab::Fleet => "Fleet",
             Tab::Schedules => "Schedules",
+            Tab::Costs => "Costs",
         }
     }
     /// A tab by its title, or by a name hub-core's layout knows (an id or a retired name such as
@@ -102,20 +108,21 @@ impl Tab {
         Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
     }
     /// The digit that opens this tab, as the tab bar shows it.
+    /// The number row's order: 1 to 9, then 0 for the tenth.
     fn digit(self) -> char {
-        char::from_digit(self.index() as u32 + 1, 10).unwrap_or(' ')
+        char::from_digit((self.index() as u32 + 1) % 10, 10).unwrap_or(' ')
     }
-    /// The tab a digit opens; 0 opens none.
+    /// The tab a digit opens, 0 the tenth.
     fn by_digit(c: char) -> Option<Tab> {
         let n = c.to_digit(10)? as usize;
-        n.checked_sub(1).and_then(|i| Tab::ALL.get(i).copied())
+        Tab::ALL.get((n + 9) % 10).copied()
     }
     /// The Grafana dashboard that keeps this page's trends; the file-fed pages have none.
     fn dashboard(self) -> Option<&'static str> {
         match self {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
-            Tab::Queue => Some("kb-agents-overview"),
+            Tab::Queue | Tab::Costs => Some(hub_core::costs::DASHBOARD),
             Tab::Daily | Tab::Projects | Tab::Sessions | Tab::Log | Tab::Fleet | Tab::Schedules => {
                 None
             }
@@ -237,6 +244,8 @@ pub enum Msg {
     Ranked(Result<Vec<Ranked>, String>),
     /// `fleet-bench reds`, split for Infra's Red fixes section, or why it failed.
     Reds(Result<hub_core::reds::Reds, String>),
+    /// The Costs tab's one read of every source it cuts (hub_core::costs::read).
+    Costs(Box<hub_core::costs::Costs>),
     Fleet(Box<hub_core::fleet::Fleet>),
     /// One runner's page (hub_core::fleet::runner), for the name it was read for.
     Runner(Box<(String, Result<hub_core::fleet::runner::Runner, String>)>),
@@ -311,6 +320,10 @@ pub struct App {
     pub ranked: Option<Result<Vec<Ranked>, String>>,
     /// Infra's Red fixes section; None until the first read.
     pub reds: Option<Result<hub_core::reds::Reds, String>>,
+    /// The Costs tab's read; None until the first.
+    pub costs: Option<hub_core::costs::Costs>,
+    /// The Costs tab's cut, window, query and sort.
+    pub cv: crate::coststab::CostsView,
     pub fleet: Option<hub_core::fleet::Fleet>,
     /// The Queue tab's pipeline line: None until the first read.
     pub pipeline: Option<Result<Option<hub_core::pipeline::Pipeline>, String>>,
@@ -396,6 +409,8 @@ pub struct App {
     reds_at: Option<std::time::Instant>,
     /// When the last Schedules read finished, for `SCHEDULES_REFRESH`.
     schedules_at: Option<std::time::Instant>,
+    costs_read: Read,
+    costs_at: Option<std::time::Instant>,
     actions_read: Read,
     fleet_read: Read,
     fleet_runner_read: Read,
@@ -435,6 +450,8 @@ impl App {
             forecast: None,
             ranked: None,
             reds: None,
+            costs: None,
+            cv: crate::coststab::CostsView::default(),
             fleet: None,
             pipeline: None,
             focus: None,
@@ -483,6 +500,8 @@ impl App {
             schedules_read: Read::default(),
             reds_at: None,
             schedules_at: None,
+            costs_read: Read::default(),
+            costs_at: None,
             actions_read: Read::default(),
             fleet_read: Read::default(),
             fleet_runner_read: Read::default(),
@@ -554,6 +573,19 @@ impl App {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Ranked(outcomes::ranked(runner.as_ref())));
+            });
+        }
+    }
+
+    /// The Costs tab's sources have no file watch, so it reads them on entering, on `r` and on
+    /// the tick while it is shown, at most every `COSTS_REFRESH`.
+    pub fn read_costs(&mut self) {
+        if self.costs_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let paths = hub_core::costs::Paths::from_env();
+                let c = hub_core::costs::read(runner.as_ref(), &paths, jobs::now());
+                let _ = tx.send(Msg::Costs(Box::new(c)));
             });
         }
     }
@@ -1059,6 +1091,11 @@ impl App {
                 {
                     self.read_reds();
                 }
+                if self.tab == Tab::Costs
+                    && self.costs_at.is_none_or(|t| t.elapsed() >= COSTS_REFRESH)
+                {
+                    self.read_costs();
+                }
                 // With no file watch, the board files are only read here.
                 if self.watch_failed.is_some() {
                     self.read_boards();
@@ -1122,6 +1159,13 @@ impl App {
                 self.ranked = Some(r);
                 if self.ranked_read.done() {
                     self.read_ranked();
+                }
+            }
+            Msg::Costs(c) => {
+                self.costs = Some(*c);
+                self.costs_at = Some(std::time::Instant::now());
+                if self.costs_read.done() && self.tab == Tab::Costs {
+                    self.read_costs();
                 }
             }
             Msg::Reds(r) => {
@@ -1358,6 +1402,16 @@ impl App {
         if self.tab == Tab::Schedules && self.schedules_key(k) {
             return;
         }
+        // A Ctrl or Alt chord is never one of the tab's letters, nor text for its query.
+        if self.tab == Tab::Costs
+            && !k
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && self.cv.key(k.code)
+        {
+            self.scroll = 0;
+            return;
+        }
         let n = self.page.max(1);
         let tabs = Tab::ALL.len();
         match k.code {
@@ -1382,6 +1436,9 @@ impl App {
                 }
                 if self.tab == Tab::Schedules {
                     self.read_schedules();
+                }
+                if self.tab == Tab::Costs {
+                    self.read_costs();
                 }
                 if self.tab == Tab::Queue {
                     self.read_candidates();
@@ -1552,6 +1609,7 @@ impl App {
                     }
                 }
             }
+            (Tab::Costs, Some(q)) => self.cv.open(&q),
             (_, q) => self.open_project(q),
         }
     }
@@ -1601,6 +1659,9 @@ impl App {
         }
         if t == Tab::Schedules {
             self.read_schedules();
+        }
+        if t == Tab::Costs {
+            self.read_costs();
         }
         if t == Tab::Daily {
             self.daily_outbox = false;
@@ -2274,7 +2335,7 @@ impl App {
     }
 
     fn hints(&self) -> String {
-        let tabs = "1-9";
+        let tabs = "0-9";
         match self.tab {
             Tab::Home if self.prv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
@@ -2312,6 +2373,12 @@ impl App {
             }
             Tab::Sessions => format!(
                 "j/k pick  Enter detail  / query  f state  s sort  S asc/desc  Esc clear  i p u m x c a act  T start timer  PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Costs if self.cv.typing.is_some() => {
+                "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
+            }
+            Tab::Costs => format!(
+                "b/B cut  w window  / query  s sort  S asc/desc  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
                 "type a query (tier:3 state:failed -who:x), Enter applies, Esc drops it".into()
@@ -2480,6 +2547,11 @@ impl App {
                 };
                 (l, vec![])
             }
+            // Every dollar, cut seven ways (coststab.rs, the same board agent-web draws).
+            (Tab::Costs, ..) => match &self.costs {
+                None => reading("the costs"),
+                Some(c) => (self.cv.lines(c, self.p, w), vec![]),
+            },
             // Who is working (runners by tier, then the live sessions), then who pays.
             (Tab::Fleet, ..) if self.fleet_page.is_some() => (
                 fleettab::runner_page(
@@ -3898,15 +3970,15 @@ mod tests {
     #[test]
     fn the_tabs_are_the_layout_and_each_digit_its_place() {
         // docs/dashboards.md rule 8: both surfaces list hub_core::layout's tabs in its order,
-        // and the digits follow that order, 1 for the first.
+        // and the digits follow that order along the number row, 1 for the first, 0 the tenth.
         let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
         let layout: Vec<&str> = hub_core::layout::TABS.iter().map(|t| t.title).collect();
         assert_eq!(titles, layout);
         for (i, t) in Tab::ALL.iter().enumerate() {
-            let d = char::from_digit(i as u32 + 1, 10).unwrap();
+            let d = char::from_digit((i as u32 + 1) % 10, 10).unwrap();
             assert_eq!((t.digit(), Tab::by_digit(d)), (d, Some(*t)));
         }
-        assert_eq!(Tab::by_digit('0'), None);
+        assert_eq!(Tab::Costs.digit(), '0');
     }
 
     #[test]
@@ -4466,8 +4538,10 @@ mod tests {
         assert_eq!((a.tab, a.seek), (Tab::Infra, None));
         a.handle(key('7'));
         assert_eq!(a.tab, Tab::Log);
+        a.costs_read.busy = true;
         a.handle(key('0'));
-        assert_eq!(a.tab, Tab::Log, "0 opens nothing");
+        assert_eq!(a.tab, Tab::Costs, "0 opens the tenth tab");
+        a.handle(key('7'));
         a.fleet_read.busy = true;
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
         assert_eq!(a.tab, Tab::Fleet);
