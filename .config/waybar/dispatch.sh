@@ -63,7 +63,7 @@ if [ -z "$ready" ]; then
 else
   pass="$(get dispatch.last_pass_epoch)" start="$(get dispatch.last_run_start_epoch)"
   reaped="$(get dispatch.reaped_1h)" flapping="$(get dispatch.flapping_items)" could="$(get dispatch.could_start)"
-  oldest="$(get dispatch.oldest_runnable_s)" urgent_s="$(get dispatch.oldest_urgent_s)"
+  oldest="$(get dispatch.oldest_runnable_s)" urgent_s="$(get dispatch.oldest_urgent_s)" high_s="$(get dispatch.oldest_high_s)"
   pass_age=$((now - ${pass:-0})) start_age=-
   [ -n "$start" ] && start_age="$(prom_dur $((now - start)))"
   # paused by: the one gate that stopped the last pass, if any, by name.
@@ -129,6 +129,7 @@ else
   [ -z "$low" ] || ready_line+=" of low water $low"
   queue="queued: $ready_line, $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag)"
   queue+=$'\n'"oldest: ready $(prom_dur "$oldest"), urgent $uw"
+  [ -z "$high_s" ] || queue+=", high $(prom_dur "$high_s")"
   [ -z "$(get dispatch.present_per_hour)" ] ||
     queue+=$'\n'"present trickle: $(d present_starts_1h) of $(d present_per_hour) board starts this hour"
   queue+=$'\n'"last hour: $(flow 1)"

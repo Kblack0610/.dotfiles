@@ -3701,11 +3701,12 @@ board_item() {
   run cmd_stats
   assert_success
   assert_equal "$(jq -c '[.runnable_urgent, .runnable_high]' <<<"$output")" '[1,2]'
-  jq -e '.oldest_urgent_s >= 10790 and .oldest_urgent_s <= 10900' <<<"$output"
+  jq -e '.oldest_urgent_s >= 10790 and .oldest_urgent_s <= 10900 and .oldest_high_s >= 10790 and .oldest_high_s <= 10900' <<<"$output"
   # No urgent item a start would take: none counted and no age, not the high ones' age.
   rm "$AGENT_QUEUE_DIR"/queued/*-urgent-ok.md
   run cmd_stats
   assert_equal "$(jq -c '[.runnable_urgent, .runnable_high, .oldest_urgent_s]' <<<"$output")" '[0,2,null]'
+  jq -e '.oldest_high_s >= 10790' <<<"$output"
 }
 
 @test "a real pass leaves its headroom for stats; a dry pass, or one older than three passes, gives none" {

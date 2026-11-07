@@ -111,6 +111,13 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   assert_output --partial "urgent <span color='$R'>12h59m</span>"
 }
 
+@test "the oldest high item's wait rides after the urgent one; a feed without it reads as before" {
+  feed summary_dispatch.oldest_urgent_s=1800 summary_dispatch.oldest_high_s=7200
+  run "$MODULE"
+  run tip
+  assert_line --index 3 "oldest: ready 12h59m, urgent 30m, high 2h00m"
+}
+
 @test "each capacity number takes its own colour: green with room, amber near its limit, red past it" {
   feed summary_dispatch.room_live_runs=24 summary_dispatch.room_load=40 summary_dispatch.room_idle=20
   run "$MODULE"
