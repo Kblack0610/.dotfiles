@@ -39,6 +39,6 @@ jobs:
           rc=0; public/.local/bin/fleet-bench ledger --check || rc=$?
           case $rc in
             0) ;;
-            1) echo "::error::the ledger grew or lost a count (see above): retire one, or raise .config/agentctl/ledger-baseline in this PR with a why"; exit 1 ;;
+            1) echo "::error::the ledger check failed, see the lines above. A 'grew' line means retire one, or raise .config/agentctl/ledger-baseline in this PR with a why; any other line is a fault in the check"; exit 1 ;;
             *) echo "::error::the ledger check could not run (exit $rc, see above)"; exit "$rc" ;;
           esac

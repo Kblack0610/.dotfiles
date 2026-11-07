@@ -1648,11 +1648,11 @@ ledger_check() {
   local k cur base bad=0
   [ -r "$LEDGER_BASELINE" ] || { say "no ledger baseline at $LEDGER_BASELINE"; return 2; }
   for k in $LEDGER_GATED; do
-    cur=$(sed -n "s/^$k=//p" <<<"$1")
+    cur=$(sed -n "s/^$k=//p" <<<"$1"); cur=${cur//[[:blank:]]/}   # BSD wc pads its count
     base=$(sed -n "s/^$k=//p" "$LEDGER_BASELINE" | tail -1)
-    [ -n "$base" ] || { say "baseline has no $k"; bad=1; continue; }
-    # A missing count fails: `[ "" -gt 8 ]` errors and reads as not grown.
-    [[ $cur =~ ^[0-9]+$ ]] || { say "no count for $k"; bad=1; continue; }
+    # A missing or non-numeric value fails: `[ "" -gt 8 ]` errors and reads as not grown.
+    [[ $base =~ ^[0-9]+$ ]] || { say "baseline has no number for $k: '$base'"; bad=1; continue; }
+    [[ $cur =~ ^[0-9]+$ ]] || { say "no single count for $k: '$cur'"; bad=1; continue; }
     if [ "$cur" -gt "$base" ]; then
       echo "$k grew: $cur > baseline $base"
       bad=1

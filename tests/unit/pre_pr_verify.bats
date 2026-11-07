@@ -39,6 +39,13 @@ runs() { if [ -f "$T/runs" ]; then grep -c . "$T/runs"; else echo 0; fi; }
   refute_output --partial 'ok 40 a later test'
 }
 
+@test "a red with no failing test line still shows the output's tail" {
+  printf '#!/bin/sh\necho "make: *** [Makefile:91: test-files] Error 1"\nexit 2\n' > "$PRE_PR_CHECK"
+  run hook 'git push'
+  run jq -r .hookSpecificOutput.permissionDecisionReason <<<"$output"
+  assert_output --partial 'make: *** [Makefile:91'
+}
+
 @test "a green check allows, and the PR after the push reuses the pass" {
   run hook 'git push -u origin feat/x'
   assert_success
