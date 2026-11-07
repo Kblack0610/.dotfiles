@@ -4,7 +4,7 @@
 # Usage: worktree.sh [verb]
 #
 # Verbs:
-#   new [-c <dir>] [--server <name>] [--detach] [--claude]
+#   new [-c <dir>] [--server <name>] [--detach] [--claude] [--host <worker>]
 #                     cut a fresh worktree off the repo containing <dir> (default $PWD),
 #                     open a tmux session rooted in it, and land there. Reuses the lowest
 #                     IDLE agent-N (reapable, see `reap`) before cutting a new one: an idle
@@ -19,6 +19,8 @@
 #                     timer) start a session. --claude starts Claude in it (`claude-acct
 #                     run`, the launcher `cl` uses): the one "new agent for this repo"
 #                     that Prefix+p c, Prefix+f ctrl-n and Prefix+g ctrl-n all call.
+#                     --host runs the same `new` on a fleet worker over ssh (fleet-hosts.sh),
+#                     detached; <dir> is then a path on the worker.
 #                                                                               [Prefix+F]
 #   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
 #                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
@@ -841,9 +843,14 @@ wt_ensure_session() {
 }
 
 cmd_new() {
-  local dir="$PWD" detach=0
+  local dir="$PWD" detach=0 host=''
   while [ $# -gt 0 ]; do
     case "$1" in
+    --host)
+      host="${2:-}"
+      [ -n "$host" ] || panel_die "--host needs a fleet worker name"
+      shift 2
+      ;;
     -c | --cwd)
       dir="${2:-}"
       shift 2 || panel_die "-c needs a directory"
@@ -867,6 +874,7 @@ cmd_new() {
     *) panel_die "new: unknown arg: $1" ;;
     esac
   done
+  [ -z "$host" ] || { wt_new_remote "$host" "$dir"; return; }
   # tmux reports a pane whose directory was deleted as `<path> (deleted)`, which is how Linux
   # reads /proc/<pid>/cwd. `new` only needs the REPO, so the same path re-created is as good
   # as the original; if nothing is there now, say so rather than "not a directory".
@@ -933,6 +941,20 @@ cmd_new() {
   wt_ensure_session "$name" "$path" || panel_die "could not create session $name"
   printf '%s\n' "$name"
   [ "$detach" = 1 ] || panel_focus_session "$name"
+}
+
+# wt_new_remote <host> <dir> -- `new` on a fleet worker (fleet-hosts.sh): the same verb runs
+# there over ssh, detached (a remote session has no client here to focus), on the same tmux
+# server, with WT_NEW_CMD passed as its environment. <dir> is a path on the worker. Prints the
+# session name the worker printed.
+wt_new_remote() {
+  local host="$1" dir="$2" out args=(new --detach -c "$dir")
+  # shellcheck source=../../lib/fleet-hosts.sh
+  . "${FLEET_HOSTS_LIB:-${SELF%/*}/../../lib/fleet-hosts.sh}" || exit 1
+  [ -z "${WT_SERVER:-}" ] || args+=(--server "$WT_SERVER")
+  out=$(fleet_host_run "$host" WT_NEW_CMD="${WT_NEW_CMD:-}" wt "${args[@]}") ||
+    panel_die "could not open a session on $host"
+  printf '%s\n' "${out##*$'\n'}"
 }
 
 # wt_hold <path> -- git-lock a worktree, so that only `reap` can remove it.

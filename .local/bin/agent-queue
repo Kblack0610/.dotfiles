@@ -1100,21 +1100,32 @@ cmd_claim() {
   echo "$slug: claimed by $sid"
 }
 
+# close_on <host> <tmux-close args...> -- tmux-close here, or on that fleet worker over ssh.
+close_on() {
+  local host="$1"; shift
+  [ -n "$host" ] || { "$TMUX_CLOSE" "$@"; return; }
+  # shellcheck source=../lib/fleet-hosts.sh
+  declare -F fleet_host_run >/dev/null || . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+  fleet_host_run "$host" tmux-close "$@"
+}
+
 cmd_cancel() {
-  local slug="${1:?usage: agent-queue cancel <slug>}" f session server window dest
+  local slug="${1:?usage: agent-queue cancel <slug>}" f session server window host dest
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   # `session:` is <server>:<tmux session>; a value with no server names nothing to kill.
   session="$(fm_get "$f" session)"; server="${session%%:*}"; window="$(fm_get "$f" window)"
   case "$session" in *:*) session="${session#*:}" ;; *) session='' ;; esac
+  # A session on a fleet worker is closed there: here the same name is some other session.
+  host="$(fm_get "$f" host)"
   # Close what the item owns: its window when it recorded one (a hand start), its session only
   # when fleet-dispatch made it (`origin:`), else nothing. tmux-close spares world sessions.
   if [ -n "$session" ] && [ "$(state_of "$f")" != queued ]; then
     if [ -n "$window" ]; then
-      "$TMUX_CLOSE" -L "$server" window "$window" 2>/dev/null && echo "closed window $window of $session" ||
+      close_on "$host" -L "$server" window "$window" 2>/dev/null && echo "closed window $window of $session" ||
         echo "agent-queue: window $window was not open on $server" >&2
     elif [ -n "$(fm_get "$f" origin)" ]; then
-      "$TMUX_CLOSE" -L "$server" session "$session" && echo "killed session $session" ||
+      close_on "$host" -L "$server" session "$session" && echo "killed session $session" ||
         echo "agent-queue: session $session was not closed on $server" >&2
     else
       echo "agent-queue: left $server:$session open: a hand-started item that recorded no window owns no session" >&2
@@ -1139,7 +1150,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting finished session window account model size lane_run plan pr merged cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row "
+SETTABLE=" project mode priority tags type after agent started waiting finished session window account model size lane_run plan pr merged cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -1260,8 +1271,9 @@ cmd_move() {
     # Back in the queue, the item runs nowhere: the next start launches a fresh session and
     # records it, and until then a stale `session:` points shepherd and fleet-sessions at a window
     # that no longer works it. `sessions:` stays: it is the history of who worked the item.
-    # lane_run goes too: the next start logs a run of its own.
-    queued) header_del "$f" session window started waiting origin lane_run ;;
+    # lane_run goes too: the next start logs a run of its own, and host: too, since the next start
+    # may run it here.
+    queued) header_del "$f" session window started waiting origin lane_run host ;;
     running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)"
       # A hold: tag gates one start: once running, the item's own session may claim that resource,
       # and a tag left on would hold the item behind its own claim if it is ever requeued.
@@ -1546,6 +1558,12 @@ cmd_stats() {
 
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
+# A session on a fleet worker writes the store on the workstation (AGENT_STATE_HOST, fleet-hosts.sh).
+if [ -n "${AGENT_STATE_HOST:-}" ]; then
+  # shellcheck source=../lib/fleet-hosts.sh
+  . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+  state_forward agent-queue "add attribute credit-of" "$@"
+fi
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | bump | set | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;

@@ -83,6 +83,8 @@ A session object carries `bucket`, `reason`, `fact` (bucket + reason + branch, m
 
 `time` splits the session's closed gaps, from `agent-panel list --json`. A gap under 5 minutes is `work_min`, and so is a longer one ended by the session's own next turn. A longer gap counts by what was still running through it, first match wins: an open `AskUserQuestion` or `ExitPlanMode` is `human_min`; a job whose command `~/.config/agent-panel/time-use.conf` names as a gate is `gate_min`, as a test `test_min`; any other job or foreground tool is `jobs_min`. With nothing running, what ended the gap decides: a typed prompt is `human_min`, a notification from a job not seen starting is `jobs_min`, and a peer's message, or nothing real within 60 seconds, is `parked_min`. A job ends with its result, or for a background one its notification or a `TaskStop`. It stops counting at 12 hours, or when a resume reports that it died with the old process. Parked says nothing was running and leaves the reason open: a deliberate `agent-hold` reads the same as a forgotten session. The open gap since the last entry is not counted; `idle_min` shows it, counting from the session's start when it has no transcript yet.
 
+A session object carries `host`: null for a session on this machine, else the fleet worker it runs on (`fleet-hosts.sh`, the home-config inventory group `fleet_workers`). A worker's row has the target `<host>@<server>/<session>:<window>`, so no local session can match it, and no git or PR facts: its checkout is on the worker. A worker that does not answer over ssh drops its rows from the pass rather than reading them as gone.
+
 Adding a field does not bump `schema`. Readers ignore fields they do not know.
 
 ## Readers

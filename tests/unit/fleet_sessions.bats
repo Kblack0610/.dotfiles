@@ -775,6 +775,27 @@ SH
   [ "$(jq -r 'select(.target == "lab/s1:1") | .reason' <<<"$output")" != 'heavy child process' ]
 }
 
+@test "end to end: a fleet worker's session is a row with its host and a target no local session can match" {
+  landed_fixture
+  export FLEET_INVENTORY="$SANDBOX/inventory.yml"
+  printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        razer-laptop:\n          ansible_host: 192.0.2.26\n' > "$FLEET_INVENTORY"
+  # The worker's agent-panel answers the same row the local one does; ssh is how it is read.
+  cp "$SANDBOX/bin/agent-panel" "$SANDBOX/remote-panel"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/ssh.log"\nexec %q\n' "$SANDBOX" "$SANDBOX/remote-panel" > "$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  assert_equal "$(jq -r 'select(.host == null) | .target' <<<"$output")" 'lab/s1:1'
+  assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
+  grep -q 'agent-panel list --json' "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
+  # An unreachable worker drops its rows and is not named as an unreadable source.
+  printf '#!/usr/bin/env bash\nexit 255\n' > "$SANDBOX/bin/ssh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  assert_equal "$(jq -r .target <<<"$output")" 'lab/s1:1'
+}
+
 @test "end to end: a merged PR in an idle worktree comes out LANDED with its fact" {
   landed_fixture
 

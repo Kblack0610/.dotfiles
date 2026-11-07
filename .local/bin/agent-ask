@@ -1457,6 +1457,12 @@ usage() {
 # Sourced (by the test suite) rather than run: every function is defined, no subcommand runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
+# A session on a fleet worker asks on the workstation (AGENT_STATE_HOST, fleet-hosts.sh).
+if [ -n "${AGENT_STATE_HOST:-}" ]; then
+  # shellcheck source=../lib/fleet-hosts.sh
+  . "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+  state_forward agent-ask "" "$@"
+fi
 sub="${1:-list}"; shift 2>/dev/null || true
 case "$sub" in
   post)   cmd_post "$@" ;;
