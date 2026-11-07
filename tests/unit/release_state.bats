@@ -180,6 +180,21 @@ field() { row "$1" | jq -r "$2"; }
   [ "$(jq '.rows | length' "$RELEASE_STATE_DIR/state.json")" = 3 ]
 }
 
+@test "refresh publishes its runner outcome, so agentctl never promotes PENDING to STALLED" {
+  export AGENTCTL_STATE_DIR="$SANDBOX/agentctl-state" AGENTCTL_NAME=release-state
+  mkdir -p "$AGENTCTL_STATE_DIR/release-state"
+  printf PENDING > "$AGENTCTL_STATE_DIR/release-state/last-outcome"
+  run "$RS" refresh
+  assert_success
+  [ "$(cat "$AGENTCTL_STATE_DIR/release-state/last-outcome")" = WORKED ]
+  run grep -c 'outcome=WORKED 3 rows' "$AGENTCTL_STATE_DIR/release-state/activity.log"
+  assert_output 1
+  # Negative control: show and check are not passes and leave the outcome alone.
+  printf PENDING > "$AGENTCTL_STATE_DIR/release-state/last-outcome"
+  "$RS" show >/dev/null
+  [ "$(cat "$AGENTCTL_STATE_DIR/release-state/last-outcome")" = PENDING ]
+}
+
 @test "an old snapshot fails check as stale" {
   "$RS" refresh >/dev/null
   jq '.generated_epoch -= 7200' "$RELEASE_STATE_DIR/state.json" > "$SANDBOX/s" && mv "$SANDBOX/s" "$RELEASE_STATE_DIR/state.json"

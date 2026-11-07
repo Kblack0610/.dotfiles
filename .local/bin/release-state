@@ -16,6 +16,9 @@ set -uo pipefail
 PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$PROJECT_NAME_LIB"
+# shellcheck source=../lib/agent-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
+NAME="${AGENTCTL_NAME:-release-state}"   # the agentctl runner that publishes refresh's outcome
 
 STATE_DIR="${RELEASE_STATE_DIR:-$HOME/.agent/releases}"
 STATE="$STATE_DIR/state.json"
@@ -236,7 +239,7 @@ cmd_refresh() {
   local only="$*" prev="{}" rows tmp line proj t
   mkdir -p "$STATE_DIR"
   exec 9>"$STATE_DIR/.lock"
-  flock -w 120 9 || die "another refresh holds $STATE_DIR/.lock"
+  flock -w 120 9 || { proof_outcome "$NAME" FAILED "another refresh holds the lock"; die "another refresh holds $STATE_DIR/.lock"; }
   [ -f "$STATE" ] && prev="$(cat "$STATE")"
   jq -e . >/dev/null 2>&1 <<<"$prev" || prev="{}"
   tmp="$(mktemp "$STATE_DIR/.rows.XXXXXX")"
@@ -255,8 +258,13 @@ cmd_refresh() {
     | { generated_at: ($now | todate), generated_epoch: $now,
         rows: ((if ($o | length) > 0
                 then ($prev.rows // []) | map(select(.project as $p | $o | index($p) | not))
-                else [] end) + $rows) }' >"$out" && mv -f "$out" "$STATE"
-  jq -r '.rows | "\(length) rows, \(map(select(.status == "drift")) | length) drift, \(map(select(.status == "unknown")) | length) unknown"' "$STATE"
+                else [] end) + $rows) }' >"$out" && mv -f "$out" "$STATE" \
+    || { rm -f "$out"; proof_outcome "$NAME" FAILED "could not write $STATE"; die "could not write $STATE"; }
+  local summary
+  summary="$(jq -r '.rows | "\(length) rows, \(map(select(.status == "drift")) | length) drift, \(map(select(.status == "unknown")) | length) unknown"' "$STATE")"
+  echo "$summary"
+  # Every pass rewrites the snapshot, so a written one is the artifact; drift is check's verdict.
+  proof_outcome "$NAME" WORKED "$summary"
 }
 
 # severity order for show: broken first, then attention, then green.
