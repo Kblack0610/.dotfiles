@@ -275,17 +275,26 @@ editor_parents() {
   write_textfile "$OUT"
   run cat "$OUT/fleet_local.prom"
   assert_line 'fleet_local_slots_busy 3'
+  assert_line 'fleet_local_unslotted_editors 1'
 }
 
-@test "unslotted_editors: a slot held with no editor yet adds none, and an editor with no parent chain is unslotted" {
-  slot_fixture
-  parent_of() { :; }
+@test "unslotted_editors: a slot held with no editor adds none, and a chain to init with no holder is unslotted" {
+  parent_of() { case "$1" in 7) echo 8 ;; 8) echo 1 ;; esac; }
   gate_rows() { :; }
   run unslotted_editors 11,12
   assert_output 0
   gate_rows() { printf '%s\t%s\t%s\t%s\n' 5 /p editor 7; }
   run unslotted_editors 11,12
   assert_output 1
+  run unslotted_editors -
+  assert_output 1
+}
+
+@test "unslotted_editors: an editor whose parent vanished is not counted, and a holder nine levels up still slots it" {
+  gate_rows() { printf '%s\t%s\t%s\t%s\n' 5 /p editor 7 5 /p editor 20; }
+  parent_of() { case "$1" in 20) echo 19 ;; 19) echo 18 ;; 18) echo 17 ;; 17) echo 16 ;; 16) echo 15 ;; 15) echo 14 ;; 14) echo 13 ;; 13) echo 12 ;; 12) echo 11 ;; esac; }
+  run unslotted_editors 11
+  assert_output 0
 }
 
 @test "textfile: no capacity file publishes no slot series, never a guessed count" {
