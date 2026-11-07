@@ -111,7 +111,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" add --project game --slug landed "x" >/dev/null
   "$AQ" move landed done --status ok >/dev/null
   run "$AQ" add --project game --slug landed "x again"
-  assert_failure
+  assert_failure 4
   assert_output --partial "landed already finished ok ("
   assert_output --partial "pass --repeat to queue it again as new work"
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished slug was queued again"
@@ -124,16 +124,35 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_success
 }
 
-@test "add --plan refuses a phase whose slug finished ok, adding nothing, unless --repeat" {
+@test "a slug cut from the task's words is refused only for the same words: a 40-character twin is other work" {
+  t="fix(queue): one long subject line that runs past forty characters"
+  "$AQ" add --project game "$t" >/dev/null
+  s="$(field "$(ls "$AGENT_QUEUE_DIR"/queued/*)" slug)"
+  "$AQ" move "$s" done --status ok >/dev/null
+  run "$AQ" add --project game "$t"
+  assert_failure 4
+  # negative control: same first 40 characters, so the same slug, but different work
+  run "$AQ" add --project game "${t% characters} chars, and then some"
+  assert_success
+  [ -n "$(item queued "$s")" ] || fail "the different task was not queued under $s"
+}
+
+@test "add --plan skips a phase whose slug finished ok and queues the rest after it; all landed is refused" {
   printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/rq.md"
   AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq >/dev/null
   "$AQ" cancel rq-p2 >/dev/null
   "$AQ" move rq-p1 done --status ok >/dev/null
   run "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq
-  assert_failure
-  assert_output --partial "rq-p1 already finished ok"
-  assert_output --partial "(nothing was added)"
-  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a phase was queued past the refusal"
+  assert_success
+  assert_output --partial "skipped rq-p1 already finished ok"
+  assert_output --partial "tick its box in $SANDBOX/rq.md"
+  [ -z "$(item queued rq-p1)" ] || fail "a landed phase was queued again"
+  [ "$(field "$(item queued rq-p2)" after)" = rq-p1 ] || fail "p2 does not go after the landed p1"
+  "$AQ" move rq-p2 done --status ok >/dev/null
+  run "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq
+  assert_failure 4
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a landed phase was queued again"
+  # negative control: --repeat queues every phase as new work
   run "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq --repeat
   assert_success
   [ -n "$(item queued rq-p1)" ] && [ -n "$(item queued rq-p2)" ]
@@ -185,7 +204,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   # Negative control: the old done record alone releases the after.
   [ "$("$AQ" next --json | jq -r .slug)" = second ]
   # The same slug queued again is not done, so second holds on it in every live state.
-  "$AQ" add --project game --slug first "again"
+  "$AQ" add --project game --slug first --repeat "again"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
   assert_output "after first"
   [ "$("$AQ" next --json | jq -r .slug)" = first ]
@@ -210,7 +229,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move first done --status failed
   run "$AQ" next
   assert_failure
-  "$AQ" add --project game --slug first "again"
+  "$AQ" add --project game --slug first --repeat "again"
   "$AQ" move first done --status ok
   [ "$("$AQ" next --json | jq -r .slug)" = second ]
 }

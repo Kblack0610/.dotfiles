@@ -1159,6 +1159,17 @@ game_ready() {
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished row was queued again"
 }
 
+@test "fleet-dispatch promote: the human's Start queues a row whose item finished ok, as a repeat" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'landed one' '- [ ] landed one <!-- id:gm-7 -->'
+  agent-queue add --project game --from "board:game:gm-7" --slug gm-7 "x" >/dev/null
+  agent-queue move gm-7 done --status ok >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --raw '- [ ] landed one <!-- id:gm-7 -->'
+  assert_success
+  assert_output --partial "queued game: gm-7"
+  [ -n "$(qitem queued gm-7)" ] || fail "the human's Start did not queue the row"
+}
+
 @test "promote: a row start could not give an id is un-started and refused, with no item" {
   project game beta "$SANDBOX/repos/game"
   row game human 'the row' '- [ ] the row'

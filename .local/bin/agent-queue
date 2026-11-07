@@ -187,14 +187,18 @@ done_status() {
   [ -n "$f" ] && fm_get "$f" status
 }
 
-# finished_ok <slug> -> why an add under this slug is refused: its latest done item closed ok, so a
-# second item would do landed work again. A failed or cancelled one is a retry and passes. A recurring
-# item (a nightly pass, a shared red that came back) is new work and says so with --repeat. On
-# 2026-11-06 a plan's re-queue ran an ok phase again (id-like-to-setup-abundant-seahor-p8).
+# finished_ok <slug> [<task>] -> why an add under this slug is refused: its latest done item closed ok,
+# so a second item would do landed work again. A failed or cancelled one is a retry and passes. A
+# recurring item (a nightly pass, a shared red that came back) is new work and says so with --repeat.
+# A slug cut from the task's words (pass the task) is refused only when the words are that item's
+# too: two tasks can share a 40-character slug and be different work. Refused adds exit
+# AQ_EX_FINISHED. On 2026-11-06 a plan's re-queue ran an ok phase again (id-like-to-setup-abundant-seahor-p8).
+AQ_EX_FINISHED=4
 finished_ok() {
   local f
   f="$(latest_done "$1")"
   [ -n "$f" ] && [ "$(fm_get "$f" status)" = ok ] || return 0
+  [ -z "${2-}" ] || [ "$(fm_body "$f" | head -1)" = "$(head -1 <<<"$2")" ] || return 0
   printf '%s already finished ok (%s%s): pass --repeat to queue it again as new work\n' \
     "$1" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
 }
@@ -632,13 +636,16 @@ cmd_add() {
   [ -n "$epic" ] || epic="$(plan_epic "${AQ_ITEM_PLAN:-}")"
   project="$(project_credit "$resolved" "$from" "$epic")"
   [ -n "$weight" ] || weight="$(item_weight "$project" "$mode" "${AQ_ITEM_PHASES:-}")"
+  local slug_from_text=''
+  [ -n "$slug" ] || slug_from_text=1
   slug="$(slugify "${slug:-$text}")"
   [ -n "$slug" ] || die "could not derive a slug; pass --slug"
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug"
   local why
-  [ -n "$repeat" ] || why="$(finished_ok "$slug")"
-  [ -z "${why:-}" ] || die "$why"
+  # Checked before slug is reused below: an explicit --slug is the same work by name.
+  [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}")"
+  [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
   if [ -n "$after" ] && [ -z "$(find_item "$after")" ] && [ -z "$(done_status "$after")" ]; then
     die "--after $after: no item has that slug"
   fi
@@ -745,18 +752,23 @@ add_plan() {
        "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)"]
     | @tsv' <<<"$groups")"
   local s ph text prev="$after"
-  local why
   while IFS=$'\t' read -r s ph text _; do
     [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"
-    [ -n "$repeat" ] || why="$(finished_ok "$s")"
-    [ -z "${why:-}" ] || die "$why (nothing was added)"
   done <<<"$rows"
   if [ -n "$after" ] && [ -z "$(find_item "$after")" ] && [ -z "$(done_status "$after")" ]; then
     die "--after $after: no item has that slug"
   fi
-  local n=0 total
+  # A phase whose item already finished ok landed with its box left unticked: it is skipped, never run
+  # twice, and the next phase still goes after it (an ok after: releases at once).
+  local n=0 total why skipped=0
   total="$(wc -l <<<"$rows")"
   while IFS=$'\t' read -r s ph text ttl; do
+    why=''
+    [ -n "$repeat" ] || why="$(finished_ok "$s")"
+    if [ -n "$why" ]; then
+      echo "agent-queue: skipped $why; tick its box in $planf" >&2
+      skipped=$((skipped + 1)); prev="$s"; continue
+    fi
     if [ -n "$dry" ]; then
       printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${prev:--}" "$text"
     else
@@ -767,6 +779,7 @@ add_plan() {
     fi
     n=$((n + 1)); prev="$s"
   done <<<"$rows"
+  [ "$skipped" -lt "$total" ] || exit "$AQ_EX_FINISHED"
 }
 # One item through cmd_add, in a subshell so its die stops only that item.
 cmd_add_one() { (cmd_add "$@"); }
