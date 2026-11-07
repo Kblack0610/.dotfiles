@@ -1121,7 +1121,7 @@ headless() { case "$(harness_launcher "$1")" in opencode|codex) return 0 ;; esac
 #   --harness NAME          with --item: run it on claude or a gateway harness in harnesses.json, not
 #                           the item's `agent:`: claude-lazer and opencode on the eval key, codex on the ChatGPT plan, lazer-reserve
 #                           (a run pass's spill) on the claude-reserve key.
-#   --brief FILE --row KEY  claim the open row, promote it into a queue item with the brief as
+#   --brief FILE --row KEY  claim the open row (an id in any case), promote it into a queue item with the brief as
 #                           its task, and start that item as --item does.
 #   --resume ID             a new session --session NAME in --cwd DIR running claude --resume.
 #                           The sheet is not touched: the row was claimed before the reboot.
@@ -1142,7 +1142,7 @@ cmd_start() {
     case "$1" in
       --project) project=$2 ;;
       --profile) prof=$2 ;;
-      --row) key=$2 ;;
+      --row) key=$2; if [[ "$key" =~ ^[A-Za-z]{2,4}-[0-9]+$ ]]; then key=${key,,}; fi ;; # ids are written lower-case, typed both ways
       --server) server=$2 ;;
       --model) model=$2 ;;
       --brief) brief_file=$2 ;;
