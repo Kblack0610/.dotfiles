@@ -108,7 +108,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `plan_gate_deny_rate` | sum `plan_gate.denied` / sum `plan_gate.exits`. No threshold: near 1 means the posture is not landing, near 0 with thin sections means the gate is too easy |
 | `cost_per_pr` | sum `cost_usd` / sum `prs_merged` |
 | `ci_red_per_pr` | sum `ci_red` / rows a session claims in `pr-ci.jsonl` by `merged_epoch`, headless sessions' PRs left out |
-| `first_pass_share` | the same rows whose gate never went red / those that ran one; a row with no gate fields reads `ci_red` over `ci_runs` the same way |
+| `first_pass_share` | the same rows whose gate never went red / those that ran one; only a repo with `sections` has gate fields, so this is that repo's rate, and a repo with none cannot lift it |
 | `human_answered_per_day` | asks answered by a human (`answered_by` human or empty) with `answered_at` in the window / its days, from `agent-ask list --all` |
 | `ask_wait_p90_min` | p90 minutes from `created` to answered or closed, still-open asks counted to now; cancelled asks left out. Replaced `asks_stale`, which stays a ledger count |
 | `runners_bad` (now) | switched-on runner confs whose `last-outcome` is FAILED or STALLED (also in `ledger`) |
