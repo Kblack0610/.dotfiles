@@ -154,6 +154,22 @@ NS
   assert_equal "$status" 2
 }
 
+@test "a gated key the roster has no count for fails rather than reading as held" {
+  echo 'bogus=5' >> "$LEDGER_BASELINE"
+  LEDGER_GATED="runners bogus" run "$SUBJECT" ledger --check
+  assert_failure
+  assert_output --partial 'no single count for bogus'
+  LEDGER_GATED="runners" run "$SUBJECT" ledger --check
+  assert_success
+}
+
+@test "a baseline value that is not a number fails rather than reading as held" {
+  sed -i 's/^runners=.*/runners=0 # note/' "$LEDGER_BASELINE"
+  run "$SUBJECT" ledger --check
+  assert_failure
+  assert_output --partial 'baseline has no number for runners'
+}
+
 @test "the scan skips gitignored build output" {
   mkdir -p "$LEDGER_SRC/target"
   printf 'claude -p x\n' > "$LEDGER_SRC/target/built"
