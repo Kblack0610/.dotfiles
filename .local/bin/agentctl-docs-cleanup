@@ -59,6 +59,7 @@ fi
 
 # One pass at a time under one slug: agent-queue refuses a second active item with it, and a
 # finished one sits in done/ where `show` still finds it, so only an active state means "open".
+# Each night's pass is new work under that slug, so it is queued --repeat.
 state="$(agent-queue show "$SLUG" --json 2>/dev/null | jq -r '.state // empty')"
 case "$state" in
     queued|running|waiting)
@@ -72,6 +73,6 @@ if [ "$DRY" = 1 ]; then
     echo "docs-cleanup: would queue: $task"
     exit 0
 fi
-agent-queue add --project dotfiles --slug "$SLUG" --priority low --tags night "$task" \
+agent-queue add --project dotfiles --slug "$SLUG" --repeat --priority low --tags night "$task" \
     || fail "could not queue the pass ($summary)"
 report WORKED "queued $SLUG ($summary)"
