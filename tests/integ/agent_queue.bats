@@ -238,6 +238,39 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
 }
 
+@test "the map's queue_rank puts a ranked project first within a priority, under red and urgent, over cleanup" {
+  "$AQ" add --project app --slug a-app "a"
+  "$AQ" add --project app --slug b-app-cleanup --tags cleanup "b"
+  "$AQ" add --project game --slug c-game "c"
+  "$AQ" add --project app --slug d-app-urgent --priority urgent "d"
+  "$AQ" add --project tools --slug e-tools "e"
+  # Without queue_rank the order is as before: cleanup first, then queued time.
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  assert_output $'d-app-urgent\nb-app-cleanup\na-app\nc-game\ne-tools'
+  jq '.queue_rank = ["game"]' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  # urgent still heads; game, ranked, beats the older app items and the app cleanup.
+  assert_output $'d-app-urgent\nc-game\nb-app-cleanup\na-app\ne-tools'
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
+}
+
+@test "a multi-project queue_rank orders by list position; a rank that is not a list ranks nothing" {
+  "$AQ" add --project tools --slug a-tools "a"
+  "$AQ" add --project app --slug b-app "b"
+  "$AQ" add --project game --slug c-game "c"
+  jq '.queue_rank = ["game", "app"]' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  assert_output $'c-game\nb-app\na-tools'
+  # A string or an object where the list belongs falls back to queued time, never an error.
+  for bad in '"game"' '{"game": 1}'; do
+    jq --argjson r "$bad" '.queue_rank = $r' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+    run bash -c "'$AQ' list --json | jq -r .slug"
+    assert_success
+    assert_output $'a-tools\nb-app\nc-game'
+  done
+}
+
 @test "an after: on a re-queued slug holds while the slug is live, whatever an old done record says" {
   "$AQ" add --project game --slug first "a"
   "$AQ" move first running

@@ -1900,7 +1900,7 @@ held_outcome() { case "$1" in "held (agent-hold"*) echo NOOP ;; *) echo BLOCKED 
 # What a start takes out of runnable, as a jq condition: next_items and stats' urgent/high counts read it.
 TAKEN_JQ='(.waits | not) and (.agent // "claude") == "claude"'
 
-# next_items -> the queued items a pass may try, in agent-queue's order (red, priority, cleanup, age),
+# next_items -> the queued items a pass may try, in agent-queue's order (red, priority, project rank, cleanup, age),
 # one JSON object a line. An item whose `agent:` is a gateway harness is an eval run the human paired,
 # so only a hand or a batch starts it; a pass moves a claude item onto Lazer only as a spill, when no
 # account has room (start_item).

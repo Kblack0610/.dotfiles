@@ -594,13 +594,24 @@ item_json() {
     jq -Rsc "$ITEM_JQ | .[]"
 }
 
-# Queue order: a `red` item first (something is broken), then priority, then a `cleanup` item within
-# its priority (the fleet fixes itself before it adds), then queued time. The one queue order: every
-# reader (next, list, fleet-dispatch next_items) takes it as is. `after` and other tags hold, not reorder.
-# A red outranks urgent on purpose: the human's rule is that anything broken goes first.
+# Queue order: a `red` item first (something is broken), then priority, then the project's place in
+# the project map's `queue_rank` (listed projects in list order, then every other), then a `cleanup`
+# item within that, then queued time. The one queue order: every reader (next, list, fleet-dispatch
+# next_items) takes it as is. `after` and other tags hold, not reorder.
+# A red outranks urgent on purpose: the human's rule is that anything broken goes first. The rank
+# sits under priority, so an urgent fix still jumps it, and over cleanup, so a ranked project's work
+# is not queued behind the fleet's own housekeeping (the human: games go first).
 ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
     | [splits("\\s+")] | index([$t])) == null;
-  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority] // 1), untagged("cleanup"), .queued)'
+  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority] // 1),
+    ((.project // "") as $p | $rank | index([$p]) // length), untagged("cleanup"), .queued)'
+# order_filter -> ORDER with the map's queue_rank bound to $rank. A map without one, or with one
+# that is not a list of names, ranks nothing (project-map-doctor fails it).
+order_filter() {
+  local rank
+  rank="$(jq -c '.queue_rank | if type == "array" then map(strings) else [] end' "$AQ_MAP" 2>/dev/null)" || rank='[]'
+  printf '%s as $rank | %s' "$rank" "$ORDER"
+}
 
 # list_files <states...> [--date D] [--since D] -> appends the caller's FILES with the item files in
 # those states, each state oldest first; done is one day (--date, today by default) or every day
@@ -629,7 +640,7 @@ list_files() {
 collect() {
   local FILES=()
   list_files "$@"
-  items_json "$ORDER" "${FILES[@]}"
+  items_json "$(order_filter)" "${FILES[@]}"
 }
 
 # header_set <file> <key> <value> -> rewrite the header field in place, atomically.
