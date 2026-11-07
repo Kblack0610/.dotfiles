@@ -123,6 +123,45 @@ add_wt() {
   assert_called "-c $WT_ROOT/repo-agent-1"
 }
 
+# push_lands <wt> <branch> -- commit in <wt>, `git push -u origin <branch>`, and assert the
+# commit landed on refs/heads/<branch> while main did not move.
+push_lands() {
+  local wt="$1" branch="$2" main_before
+  main_before=$(git -C "$ORIGIN" rev-parse main)
+  printf '%s\n' "$branch" >> "$wt/file.txt"
+  git -C "$wt" commit --quiet -am "$branch"
+  git -C "$wt" push --quiet -u origin "$branch"
+  assert_equal "$(git -C "$ORIGIN" rev-parse "refs/heads/$branch")" "$(git -C "$wt" rev-parse HEAD)"
+  assert_equal "$(git -C "$ORIGIN" rev-parse main)" "$main_before"
+}
+
+@test "a fresh worktree branch pushes to its own name, never to main (ar-746)" {
+  # Both ways a branch is cut here track origin/main: `wt new` (-B agent-N origin/main) and
+  # the CLAUDE.md recipe (-b <branch> origin/main). Under git's default push.default=simple
+  # `git push -u origin <branch>` goes to <branch>; under push.default=upstream, set by hand
+  # in ~/.dotfiles/.git/config on 2026-11-06, the same command went to main.
+  make_repo
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" rev-parse --abbrev-ref '@{upstream}')" origin/main
+  push_lands "$WT_ROOT/repo-agent-1" agent-1
+
+  git -C "$MAIN" fetch --quiet origin
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-recipe" -b fix/recipe origin/main
+  assert_equal "$(git -C "$WT_ROOT/repo-recipe" rev-parse --abbrev-ref '@{upstream}')" origin/main
+  push_lands "$WT_ROOT/repo-recipe" fix/recipe
+  assert_equal "$(git -C "$WT_ROOT/repo-recipe" rev-parse --abbrev-ref '@{upstream}')" origin/fix/recipe
+
+  # Negative control: the same recipe under push.default=upstream moves main, so the
+  # assertions above are what would catch it coming back.
+  git -C "$MAIN" fetch --quiet origin
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-control" -b fix/control origin/main
+  git -C "$MAIN" config push.default upstream
+  run push_lands "$WT_ROOT/repo-control" fix/control
+  assert_failure
+  assert_equal "$(git -C "$ORIGIN" rev-parse main)" "$(git -C "$WT_ROOT/repo-control" rev-parse HEAD)"
+}
+
 @test "new --server --detach opens the session on that server and focuses nothing" {
   # fleet-dispatch runs from a timer with no tmux of its own and puts sessions on the lab
   # server; attaching would grab a terminal it does not have.
