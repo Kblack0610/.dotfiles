@@ -40,6 +40,10 @@
 #                                --check exits 1 past a threshold, on the KPIs whose name matches ERE
 #   fleet-bench chain [--json|--check]
 #                                the work-chain KPIs counted now (also in kpi); --check exits 1 past a threshold
+#   fleet-bench startup [--json|--check]
+#                                Claude Code start times (CLAUDE_STARTUP_LOG): medians over the last
+#                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
+#                                2 with no SessionStart row in startup_stale_h (the claude-startup watch)
 #   fleet-bench pipeline [--json]
 #                                where every item sits, inbox to done: WIP and age per step, in and out,
 #                                dwell, the bottleneck step and the record's drift from the queue folders
@@ -187,6 +191,7 @@ set -uo pipefail
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
 : "${BENCH_TOKENS_CMD:=agent-usage tokens line}"   # the newest nightly token-usage snapshot's row
+: "${CLAUDE_STARTUP_LOG:=$HOME/.agent/telemetry/claude-startup.jsonl}"   # one row per SessionStart (startup-telemetry.sh)
 : "${BENCH_TOKENS_DIR:=$HOME/.agent/token-usage}"  # the nightly token-usage snapshots: the token KPIs' days
 : "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
 : "${BENCH_COMMS_CMD:=comms-lint}"                 # the newest nightly comms snapshot: `line` and `kpi --json`
@@ -1707,6 +1712,7 @@ KPI_NOW="runners_bad failed_unexplained board_open loop_dark $KPI_CHAIN cost_per
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
+KPI_STARTUP="startup_ready_ms_p50"
 # Each scored runner's runner_score_<name> is judge-eval's too, listed from its output and the
 # thresholds rather than here: the runner confs' SCORE= is the one list of lanes.
 
@@ -1737,6 +1743,22 @@ ask_kpi() {
            ask_wait_p90_min: ([$r[] | select(.status != "cancelled" and .c > $s and .c <= $t)
                                | (([.a // .x // $t, $t] | min) - .c) / 60] | p90 | if . == null then null else round end)};
     w(7) as $x | w(28) as $y | $x | keys_unsorted | map({(.): {"7d": $x[.], "28d": $y[.]}}) | add'
+}
+
+# startup_rows -> every SessionStart row, oldest first; jq's starts keeps the process starts
+startup_rows() {
+  [ -s "$CLAUDE_STARTUP_LOG" ] || return 0
+  jq -c 'objects' "$CLAUDE_STARTUP_LOG" 2>/dev/null || true
+}
+STARTUP_JQ='def starts: map(select(.source == "startup" and (.ready_ms | numbers)));'
+
+# startup_kpi <now> -> the startup KPI object, the same shape as comms_kpi: the median ms from a
+# process start to the turn-1 context over the starts in the window, all sessions (a headless start
+# is as slow as a human one)
+startup_kpi() {
+  jq -nc --argjson t "$1" --slurpfile r <(startup_rows) "$JQ_LIB$STARTUP_JQ"'
+    def w($d): [$r | starts[] | select(.epoch > $t - $d * 86400 and .epoch <= $t) | .ready_ms] | median;
+    {startup_ready_ms_p50: {"7d": w(7), "28d": w(28)}}'
 }
 
 # KPI_DEFS: the windowed KPIs as jq, shared by kpi, its --trend and effect. win($t; $d) is every
@@ -1803,10 +1825,10 @@ kpi_tokens() {
 kpi_json() {
   local lim='{}' cm='{}'
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
-  [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1"))
+  [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1"))
   jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
-     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS" "$KPI_DEFS"'
+     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
        ((($commskeys | split(" ")) + ([$cm, $lim | keys[] | select(startswith("runner_score_")) | sub("_(min|max)$"; "")] | unique))[]
@@ -2208,6 +2230,48 @@ cmd_chain() {
     --check) kpi_past "$json" ;;
     *) kpi_table "$json" ;;
   esac
+}
+
+# startup [--json|--check] -- Claude Code start times over the last startup_rolling_n (20) starts:
+# the medians of ready, process (harness boot) and hook ms, each hook phase and each MCP server's
+# spawn. The threshold and window are kpi-thresholds keys, the same startup_ready_ms_p50_max the KPI
+# table uses. --check is the claude-startup watch's probe: exit 1 past the threshold, 2 when no
+# SessionStart row (a resume counts) is newer than startup_stale_h (48): a quiet recorder trips too.
+cmd_startup() {
+  local lim='{}' json
+  case "${1:-}" in ""|--json|--check) ;; *) say "usage: fleet-bench startup [--json|--check]"; return 2 ;; esac
+  [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
+  json=$(jq -nc --argjson t "$(now)" --argjson lim "$lim" --slurpfile r <(startup_rows) "$JQ_LIB$STARTUP_JQ"'
+    def p50(f): map(f | numbers) | median | if . == null then null else round end;
+    def p50by(s): [s] | group_by(.key) | map({key: .[0].key, value: p50(.value)}) | from_entries;
+    ($lim.startup_rolling_n // 20) as $n | ($lim.startup_stale_h // 48) as $stale
+    | ($r | starts | .[-$n:]) as $w | $lim.startup_ready_ms_p50_max as $max
+    | ($w | p50(.ready_ms)) as $ready | ($r | last | .epoch) as $newest
+    | {starts: ($w | length), newest_epoch: $newest, ready_ms_p50: $ready,
+       process_ms_p50: ($w | p50(.process_ms)), hook_ms_p50: ($w | p50(.hook_ms)),
+       phases_p50: p50by($w[] | .hooks[]? | .name as $h | .phases // {} | to_entries[] | {key: "\($h).\(.key)", value}),
+       mcp_spawn_ms_p50: p50by($w[] | .mcp[]? | {key: .name, value: .spawn_ms}),
+       threshold: $max, window: $n, stale_h: $stale,
+       status: (if $newest == null or $newest < $t - $stale * 3600 then "stale"
+                elif $max != null and $ready > $max then "past" else "ok" end)}') || return 1
+  [ "${1:-}" = --json ] && { printf '%s\n' "$json"; return 0; }
+  jq -r "$JQ_LIB"'
+    def s: if . == null then "-" else "\(. / 1000 | round2)s" end;
+    if .status == "stale" then
+      if .newest_epoch == null then "startup: no Claude Code start recorded, is startup-telemetry.sh deployed?"
+      else "startup: no Claude Code start recorded in \(.stale_h)h (newest \(.newest_epoch | todate))" end
+    else "startup: ready p50 \(.ready_ms_p50 | s) over the last \(.starts) starts"
+         + (if .threshold == null then ", no startup_ready_ms_p50_max"
+            elif .status == "past" then ", past startup_ready_ms_p50_max \(.threshold | s)"
+            else " (max \(.threshold | s))" end)
+         + ": process \(.process_ms_p50 | s), hooks \(.hook_ms_p50 | s)"
+         + ([.phases_p50 | to_entries | sort_by(-.value) | .[:3][] | "\(.key) \(.value | s)"]
+            | if length > 0 then " (" + join(", ") + ")" else "" end)
+         + ([.mcp_spawn_ms_p50 | to_entries[] | "\(.key) \(.value | s)"]
+            | if length > 0 then ", mcp spawn " + join(", ") else "" end)
+    end' <<<"$json"
+  [ "${1:-}" = --check ] || return 0
+  case "$(jq -r .status <<<"$json")" in ok) return 0 ;; past) return 1 ;; *) return 2 ;; esac
 }
 
 # effect <T | owner/repo#N> [--days N] [--json] -- what changed after a change landed: each windowed
@@ -3884,6 +3948,7 @@ main() {
     rules) shift; cmd_rules "$@" ;;
     kpi) shift; cmd_kpi "$@" ;;
     chain) shift; cmd_chain "$@" ;;
+    startup) shift; cmd_startup "$@" ;;
     pipeline) shift; cmd_pipeline "$@" ;;
     effect) shift; cmd_effect "$@" ;;
     improve) shift; cmd_improve "$@" ;;
