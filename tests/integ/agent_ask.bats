@@ -136,6 +136,19 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
     assert_line "closed_reason: replied in session: $msg"
     assert_line 'answer: '
   done
+  # A one-letter option is named only as a token of its own: "a" before a word is the article.
+  for msg in "found a new problem first" "A different plan, then" "a or b, whichever"; do
+    c="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options 'a=yes|b=no' 'three?')"
+    "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    run "$AGENT_ASK" show "$c"
+    assert_line 'status: cancelled'
+  done
+  for msg in "B, it is a better fit" "go with b" "b (a is out of date)"; do
+    c="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options 'a=yes|b=no' 'four?')"
+    "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    run "$AGENT_ASK" show "$c"
+    assert_line 'answer: b'
+  done
   # A board's typed-in answer settles nothing: `answer` already closed its ask (2026-11-05 it
   # stamped "a" on every other ask of the session).
   c="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options 'a=yes|b=no' 'one?')"
@@ -1300,7 +1313,8 @@ live_answer_file() {
   old() { printf 'id: %s\nproject: demo\nkind: question\nstatus: answered\nquestion: %s\noptions: fix|wait\noption_notes: fix it now|leave it\nrecommend: fix\nanswer: %s\nanswered_at: %s\nanswered_by: %s\n%s' "$1" "$2" "$3" "$4" "${5:-human}" "${6:-}" > "$d/$1.md"; }
   old P1 'quarantine the flake?' wait 2026-11-01T10:00:00-0800
   old P2 'same but agreed?' fix 2026-11-01T11:00:00-0800
-  old P3 'same but free text?' 'wait, and tell me why' 2026-11-01T12:00:00-0800
+  old P3 'same but with a note?' 'wait, and tell me why' 2026-11-01T12:00:00-0800
+  old P7 'free text naming none?' 'tell me more first' 2026-11-01T12:30:00-0800
   old P4 'overridden live?' fix 2026-11-01T13:00:00-0800 judge $'judge_override: wait\njudge_override_at: 2026-11-02T09:00:00-0800\n'
   old P5 'reviewed live?' fix 2026-11-01T14:00:00-0800 judge $'judge_override: none\n'
   old P6 'typed in the session?' 'in session: no, wait for it' 2026-11-01T15:00:00-0800
@@ -1309,8 +1323,9 @@ live_answer_file() {
   assert_success
   assert_equal "${lines[0]}" 'P4 (demo): overridden live? | recommended: fix (fix it now) | the human chose: wait (leave it)'
   assert_equal "${lines[1]}" 'P6 (demo): typed in the session? | recommended: fix (fix it now) | the human chose: wait (leave it)'
-  assert_equal "${lines[2]}" 'P1 (demo): quarantine the flake? | recommended: fix (fix it now) | the human chose: wait (leave it)'
-  assert_equal "${#lines[@]}" 3
+  assert_equal "${lines[2]}" 'P3 (demo): same but with a note? | recommended: fix (fix it now) | the human chose: wait (leave it)'
+  assert_equal "${lines[3]}" 'P1 (demo): quarantine the flake? | recommended: fix (fix it now) | the human chose: wait (leave it)'
+  assert_equal "${#lines[@]}" 4
   # an offset is read, not compared as text: 16:59 UTC is before P4's override at 17:00 UTC
   run "$AGENT_ASK" precedents 2026-11-02T16:59:00+0000
   refute_output --partial 'P4'
