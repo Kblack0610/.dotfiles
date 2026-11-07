@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # claude-status.sh generates the tmux status-left string: the !n / ~n / checkmark-n / dot-n
-# counts that tell you at a glance which agent windows need you. It classifies each Claude
-# pane by grepping its last 15 lines, so every branch is drivable from canned pane content.
+# counts that tell you at a glance which agent windows need you. It classifies nothing from
+# pane text: it joins `agent-panel list` (the live glyph) to the fleet state document (the
+# bucket) by target, so every branch is drivable from a canned list and a canned document.
 #
 # This is the surface where a wrong answer is worst: a missed `!` means an agent sat blocked
 # on a permission prompt while the status bar said everything was fine.
@@ -11,147 +12,160 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
+  export FLEET_STATE_FILE="$NOTES_FIXTURE/state.json"
   source "$STATUS_SH"
 }
 
-# pane <session> <idx> <cmd> -- register a pane in the fake `list-panes -a` output
-pane() {
-  printf '%s:%s:%s:%s:1234:/tmp\n' "$1" "$2" "win$2" "$3" >> "$NOTES_FIXTURE/tmux.panes"
+# agent <server> <session> <idx> <glyph> -- one live agent in the fake `agent-panel list`
+agent() {
+  printf '%s/%s:%s\t%s\tproj\tsummary\n' "$1" "$2" "$3" "$4" >> "$NOTES_FIXTURE/agent-panel.list"
 }
-# content <session> <idx> <text...> -- what capture-pane returns for that pane
-content() {
-  local s="$1" i="$2"; shift 2
-  printf '%s\n' "$@" > "$NOTES_FIXTURE/tmux.capture.${s}_${i}"
-}
-# activity <session> <idx> <seconds-ago>
-activity() {
-  printf '%s' "$(( $(date +%s) - $3 ))" > "$NOTES_FIXTURE/tmux.activity.${1}_${2}"
+# bucket <server> <session> <idx> <BUCKET> -- that agent's row in the fleet state document
+bucket() {
+  local f="$FLEET_STATE_FILE" row
+  row=$(printf '{"target":"%s/%s:%s","bucket":"%s"}' "$1" "$2" "$3" "$4")
+  printf '%s\n' "$row" >> "$NOTES_FIXTURE/state.rows"
+  printf '{"generated_epoch":%s,"unreadable":%s,"sessions":[%s]}\n' \
+    "${STATE_EPOCH:-$(date +%s)}" "${STATE_UNREADABLE:-[]}" "$(paste -sd, "$NOTES_FIXTURE/state.rows")" > "$f"
 }
 
-# ── no Claude panes ──────────────────────────────────────────────────────────
+# ── no agents ────────────────────────────────────────────────────────────────
 
-@test "an empty pane list yields an empty status, not a stray glyph" {
+@test "an empty agent list yields an empty status, not a stray glyph" {
   run get_session_status ""
   assert_success
   assert_output ''
 }
 
-@test "panes that are not claude are ignored entirely" {
-  pane work 0 zsh
-  pane work 1 nvim
+@test "agent-panel failing yields an empty status" {
+  printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/agent-panel"
   run get_session_status work
+  assert_success
   assert_output ''
 }
 
 # ── attention: the branch that matters most ──────────────────────────────────
 
-@test "a [y/N] prompt counts as needing attention" {
-  pane work 0 claude
-  content work 0 'Do you want to continue? [y/N]'
-  activity work 0 60
+@test "a prompt glyph counts as needing attention" {
+  agent hub work 0 '!'
   run get_session_status work
   assert_output '!1'
 }
 
-@test "a [Y/n] prompt counts as needing attention" {
-  pane work 0 claude
-  content work 0 'Proceed? [Y/n]'
-  activity work 0 60
+@test "a pending ask (bucket NEEDS) counts as needing attention while the pane looks idle" {
+  agent hub work 0 '✓'
+  bucket hub work 0 NEEDS
   run get_session_status work
   assert_output '!1'
 }
 
-@test "an Allow once permission prompt counts as needing attention" {
-  pane work 0 claude
-  content work 0 'Allow once' 'Allow always' 'Deny'
-  activity work 0 60
+@test "attention wins over working even when the pane is busy" {
+  agent hub work 0 '~'
+  bucket hub work 0 NEEDS
   run get_session_status work
   assert_output '!1'
 }
 
-@test "a Do you want to prompt counts as needing attention" {
-  pane work 0 claude
-  content work 0 'Do you want to make this edit?'
-  activity work 0 60
-  run get_session_status work
-  assert_output '!1'
-}
-
-@test "attention wins over working even when output is recent" {
-  pane work 0 claude
-  content work 0 'Do you want to continue? [y/N]'
-  activity work 0 0          # actively outputting
-  run get_session_status work
-  assert_output '!1'
-}
-
-@test "multiple blocked panes are counted, not collapsed to one" {
-  pane work 0 claude; content work 0 'Do you want to continue? [y/N]'; activity work 0 60
-  pane work 1 claude; content work 1 'Allow once'                    ; activity work 1 60
+@test "multiple blocked agents are counted, not collapsed to one" {
+  agent hub work 0 '!'
+  agent hub work 1 '✓'; bucket hub work 1 NEEDS
   run get_session_status work
   assert_output '!2'
 }
 
-# ── working / idle ───────────────────────────────────────────────────────────
-
-@test "recent output with no prompt counts as working" {
-  pane work 0 claude
-  content work 0 'writing the file...'
-  activity work 0 0
-  run get_session_status work
-  assert_output '~1'
-}
-
-@test "a pane sitting at the prompt counts as idle" {
-  pane work 0 claude
-  content work 0 '> ' 'bypass permissions'
-  activity work 0 60
-  run get_session_status work
-  assert_output --partial '1'
-  refute_output --partial '!'
-  refute_output --partial '~'
-}
-
 @test "attention outranks working when both are present" {
-  pane work 0 claude; content work 0 'Do you want to continue? [y/N]'; activity work 0 60
-  pane work 1 claude; content work 1 'writing...'                    ; activity work 1 0
+  agent hub work 0 '!'
+  agent hub work 1 '~'
   run get_session_status work
   assert_output '!1'
 }
 
-@test "working outranks idle when both are present" {
-  pane work 0 claude; content work 0 'writing...'  ; activity work 0 0
-  pane work 1 claude; content work 1 '> '          ; activity work 1 60
+# ── working / idle ───────────────────────────────────────────────────────────
+
+@test "a busy glyph counts as working" {
+  agent hub work 0 '~'
   run get_session_status work
   assert_output '~1'
 }
 
-# ── session scoping and window dedup ─────────────────────────────────────────
+@test "an idle agent counts as idle, whatever its bucket other than NEEDS" {
+  agent hub work 0 '✓'; bucket hub work 0 STALLED
+  run get_session_status work
+  assert_output '✓1'
+}
+
+@test "working outranks idle when both are present" {
+  agent hub work 0 '~'
+  agent hub work 1 '✓'
+  run get_session_status work
+  assert_output '~1'
+}
+
+@test "a missing state document degrades to the glyphs alone" {
+  agent hub work 0 '✓'
+  run get_session_status work
+  assert_output '✓1'
+}
+
+@test "a stale state document is ignored, leaving the glyphs alone" {
+  STATE_EPOCH=$(( $(date +%s) - 3600 ))
+  agent hub work 0 '✓'; bucket hub work 0 NEEDS
+  run get_session_status work
+  assert_output '✓1'
+}
+
+@test "a document written without agent-panel is ignored, leaving the glyphs alone" {
+  STATE_UNREADABLE='["agent-panel"]'
+  agent hub work 0 '✓'; bucket hub work 0 NEEDS
+  run get_session_status work
+  assert_output '✓1'
+}
+
+@test "an unknown glyph shows the bare count, not a check" {
+  agent hub work 0 '?'
+  run get_session_status work
+  assert_output '·1'
+}
+
+# ── session and server scoping ───────────────────────────────────────────────
 
 @test "status is scoped to the requested session" {
-  pane alpha 0 claude; content alpha 0 'Do you want to continue? [y/N]'; activity alpha 0 60
-  pane beta  0 claude; content beta  0 'writing...'                    ; activity beta  0 0
+  agent hub alpha 0 '!'
+  agent hub beta  0 '~'
   run get_session_status alpha
   assert_output '!1'
   run get_session_status beta
   assert_output '~1'
 }
 
-@test "two panes in one window count once, not twice" {
-  # Same session:window_index twice -- a split. seen_windows must dedup it.
-  pane work 0 claude
-  pane work 0 claude
-  content work 0 'Do you want to continue? [y/N]'
-  activity work 0 60
+@test "a session name that prefixes another is not matched" {
+  agent hub work-2 0 '!'
+  run get_session_status work
+  assert_output ''
+}
+
+@test "an empty target session counts every agent" {
+  agent hub alpha 0 '!'
+  agent hub beta  1 '✓'; bucket hub beta 1 NEEDS
+  run get_session_status ""
+  assert_output '!2'
+}
+
+@test "only agents on this tmux server count" {
+  export STUB_SOCKET=/tmp/tmux-1000/hub
+  agent hub  work 0 '!'
+  agent lab  work 0 '!'
+  agent lab  work 1 '!'
   run get_session_status work
   assert_output '!1'
 }
 
-@test "an empty target session counts every claude pane across sessions" {
-  pane alpha 0 claude; content alpha 0 'Do you want to continue? [y/N]'; activity alpha 0 60
-  pane beta  1 claude; content beta  1 'Allow once'                    ; activity beta  1 60
-  run get_session_status ""
-  assert_output '!2'
+@test "a NEEDS bucket on another server's same-named session does not leak" {
+  export STUB_SOCKET=/tmp/tmux-1000/hub
+  agent hub work 0 '✓'
+  agent lab work 0 '✓'; bucket lab work 0 NEEDS
+  run get_session_status work
+  assert_output '✓1'
 }
 
 # ── get_short_name ───────────────────────────────────────────────────────────
