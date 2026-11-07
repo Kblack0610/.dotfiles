@@ -1384,7 +1384,7 @@ cmd_asks() {
 # grade. --check holds the three that may only shrink to the committed baseline: to add
 # one, retire one or raise the baseline in the same PR with a why.
 
-LEDGER_GATED="runners timers launches_direct"
+: "${LEDGER_GATED:=runners timers launches_direct}"
 
 # headless_launches DIR... -> file:line of every executable line that starts a headless
 # claude, opencode or codex outside agentctl-run, or calls a model's HTTP API (an OpenAI-style chat/completions or
@@ -1651,6 +1651,8 @@ ledger_check() {
     cur=$(sed -n "s/^$k=//p" <<<"$1")
     base=$(sed -n "s/^$k=//p" "$LEDGER_BASELINE" | tail -1)
     [ -n "$base" ] || { say "baseline has no $k"; bad=1; continue; }
+    # A missing count fails: `[ "" -gt 8 ]` errors and reads as not grown.
+    [[ $cur =~ ^[0-9]+$ ]] || { say "no count for $k"; bad=1; continue; }
     if [ "$cur" -gt "$base" ]; then
       echo "$k grew: $cur > baseline $base"
       bad=1
