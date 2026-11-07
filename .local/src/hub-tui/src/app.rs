@@ -9,6 +9,7 @@ use std::time::Duration;
 use hub_core::boards::{self, DayRow, Watch};
 use hub_core::fleet::who::{Opens, Who};
 use hub_core::fleet::ASK_FILTERS;
+use hub_core::home::Need;
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
@@ -343,6 +344,8 @@ pub struct App {
     pub infra: Option<Infra>,
     pub jobs: Option<Jobs>,
     pub jv: JobsView,
+    /// The view over Home's Needs you table.
+    pub hv: DataTable,
     pub sv: SchedulesView,
     pub schedules: Option<Schedules>,
     pub files: BoardFiles,
@@ -486,6 +489,7 @@ impl App {
             infra: None,
             jobs: None,
             jv: JobsView::default(),
+            hv: DataTable::default(),
             sv: SchedulesView::default(),
             schedules: None,
             files: BoardFiles::from_env(),
@@ -1507,10 +1511,10 @@ impl App {
             }
             return;
         }
-        if self.tab == Tab::Infra && self.infra_key(k) {
+        if self.tab == Tab::Home && self.home_key(k) {
             return;
         }
-        if self.tab == Tab::Home && self.home_key(k) {
+        if self.tab == Tab::Infra && self.infra_key(k) {
             return;
         }
         if self.tab == Tab::Log && self.log_key(k) {
@@ -2200,29 +2204,60 @@ impl App {
         }
     }
 
-    /// Home's own keys. The page: F queues a fix for Since last night's next bad area, Enter
-    /// and the table keys (/ f s) open the proposals table. The table: those keys, j/k, Enter
-    /// the record, a accept, d reject; Esc steps back out.
+    /// Home's own keys. The page: the Needs you table's keys (/ f s S x, Esc clears its view
+    /// first), F queues a fix for Since last night's next bad area, a flow key opens its chip,
+    /// and Enter opens the proposals table. The proposals table: the table keys, j/k, Enter the
+    /// record, a accept, d reject; Esc steps back out.
+    /// Home from the reads held, as the page draws it.
+    fn home_build(&self) -> hub_core::home::Home {
+        let null = serde_json::Value::Null;
+        let state = self.boards.as_ref().map_or(&null, |b| &b.watch.state);
+        hub_core::home::build(
+            state,
+            self.queue.as_ref(),
+            self.tasks.as_ref(),
+            self.infra.as_ref(),
+        )
+    }
+
     fn home_key(&mut self, k: KeyEvent) -> bool {
-        if !self.prv.open && k.code == KeyCode::Char('F') {
-            self.queue_fix();
-            return true;
-        }
         if !self.prv.open {
-            if let KeyCode::Char(c) = k.code {
-                if let Some(chip) = hometab::FLOW_KEYS.iter().find(|(key, _)| *key == c) {
-                    self.open_flow(chip.1);
+            if self.hv.typing.is_none() {
+                if k.code == KeyCode::Char('F') {
+                    self.queue_fix();
+                    return true;
+                }
+                if let KeyCode::Char(c) = k.code {
+                    if let Some(chip) = hometab::FLOW_KEYS.iter().find(|(key, _)| *key == c) {
+                        self.open_flow(chip.1);
+                        return true;
+                    }
+                }
+                if k.code == KeyCode::Enter && !open_rows(&self.proposals).is_empty() {
+                    self.prv.open = true;
+                    return true;
+                }
+                if k.code == KeyCode::Esc && !self.hv.is_default() {
+                    self.hv.clear();
+                    self.scroll = 0;
+                    return true;
+                }
+                // Needs you hides its empty chips, so `f` steps over the ones drawn.
+                if k.code == KeyCode::Char('f') {
+                    let needs = self.home_build().needs;
+                    self.hv.view.cycle_shown(&needs);
+                    self.scroll = 0;
                     return true;
                 }
             }
-            let opens = k.code == KeyCode::Enter || DataTable::owns(k.code);
-            if !opens || open_rows(&self.proposals).is_empty() {
-                return false;
-            }
-            self.prv.open = true;
-            if k.code == KeyCode::Enter {
-                return true;
-            }
+            return match self.hv.key::<Need>(k.code) {
+                Took::View => {
+                    self.scroll = 0;
+                    true
+                }
+                Took::Typing => true,
+                Took::No => false,
+            };
         }
         match self.prv.table.key::<Proposal>(k.code) {
             Took::View => {
@@ -2566,7 +2601,7 @@ impl App {
     fn hints(&self) -> String {
         let tabs = "0-9";
         match self.tab {
-            Tab::Home if self.prv.table.typing.is_some() => {
+            Tab::Home if self.hv.typing.is_some() || self.prv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Home if self.prv.open => format!(
@@ -2658,7 +2693,10 @@ impl App {
             Tab::Projects => format!(
                 "j/k pick  Enter open  a all rows  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Home => format!("u w n e m b open a flow chip  F queue a fix  Enter proposals  {tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
+            Tab::Home => format!(
+                "/ query  f state  s/S sort  x clear  u w n e m b flow  F fix  {}{tabs}/Tab pages  j/k scroll  r refresh  o Grafana  q quit",
+                if open_rows(&self.proposals).is_empty() { "" } else { "Enter proposals  " }
+            ),
         }
     }
 
@@ -2705,15 +2743,8 @@ impl App {
         };
         let (lines, sections) = match (self.tab, &self.boards, &self.infra) {
             // What needs you; the machinery is Infra's.
-            (Tab::Home, b, i) => {
-                let null = serde_json::Value::Null;
-                let state = b.as_ref().map_or(&null, |b| &b.watch.state);
-                let mut home = hub_core::home::build(
-                    state,
-                    self.queue.as_ref(),
-                    self.tasks.as_ref(),
-                    i.as_ref(),
-                );
+            (Tab::Home, _, i) => {
+                let mut home = self.home_build();
                 match &self.proposals {
                     Some(open) => home.set_proposals(open),
                     None => home.proposals_unread = true,
@@ -2727,7 +2758,10 @@ impl App {
                 };
                 let graph = i.as_ref().is_some_and(|i| i.grafana.is_some());
                 let flow = (self.pipeline.is_none(), graph);
-                (hometab::page(&home, &night, self.p, now, w, flow), vec![])
+                (
+                    hometab::page(&home, &self.hv, &night, self.p, now, w, flow),
+                    vec![],
+                )
             }
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {
                 None => reading("notes projects"),
@@ -4358,15 +4392,32 @@ mod tests {
     }
 
     #[test]
-    fn table_keys_stay_on_home_with_nothing_proposed() {
+    fn table_keys_on_home_drive_needs_you_and_only_enter_opens_proposals() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
-        a.proposals = Some(Ok(vec![]));
-        for c in ['s', 'f', '/'] {
-            a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c)))));
+        a.proposals = Some(Ok(vec![proposal("aa", "dream")]));
+        let key = |a: &mut App, c| a.handle(Msg::Input(Event::Key(KeyEvent::from(c))));
+        for c in ['s', 'f', '/', 'u'] {
+            key(&mut a, KeyCode::Char(c));
         }
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
-        assert!(!a.prv.open);
+        // The flow key u is typed into the query, not taken as a chip.
+        assert_eq!(a.hv.typing.as_deref(), Some("u"));
+        key(&mut a, KeyCode::Enter);
+        assert!(!a.prv.open && a.prv.table.is_default() && !a.hv.is_default());
+        // Esc clears the Needs you view first; Enter then opens the proposals table.
+        key(&mut a, KeyCode::Esc);
+        assert!(a.hv.is_default() && !a.prv.open);
+        key(&mut a, KeyCode::Enter);
+        assert!(a.prv.open);
+    }
+
+    #[test]
+    fn the_home_hint_offers_enter_only_with_something_proposed() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        assert!(!a.hints().contains("Enter proposals"));
+        a.proposals = Some(Ok(vec![proposal("aa", "dream")]));
+        assert!(a.hints().contains("Enter proposals"));
     }
 
     #[test]

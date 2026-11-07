@@ -25,7 +25,7 @@ Each rule has its why. A rule a test checks names the test.
 
 - Tile: a label, one big number or word, and its colour by rule 5. Clicking it opens the section that explains it.
 - Progress bar: counted done over total, with the raw counts beside the percent and the unit named ("17/25 rows, weighted by size"). An ETA is shown only when its rate is above zero, and it says which window it used.
-- Needs-you list: one list, ranked by what each row holds and how long it waited (`hub_core::home::needs`), with what it holds shown on the row; every surface keeps that order. Each row is a kind (ask, plan, dialog, red), its owner, what to do, and the key or button that does it in place.
+- Needs-you list: one table on the shared component, ranked by what each row holds and how long it waited (`hub_core::home::needs`); every surface keeps that order until a sort is asked for. Each row is its rank, a kind (`home::NeedKind`, decided in the reader, so its chips and `kind:` terms are counted there), its project, its exact wait, what it holds and what to do; the web opens the record under the row, where an ask or a dialog is answered in place. A view narrows only that table: waybar, the phone, the pager and Numbers keep the whole list.
 - Folded section: `<details data-k>` on the web, with its open state kept by `static/ui.js`. In the TUI, a section head with a `+`/`-` marker. A folded head shows its count.
 - Long list: capped, with a "+N older" control ("+N more" when the list is not ordered by time). It is never unbounded at top level.
 
@@ -84,9 +84,10 @@ Both surfaces show the layout below, built in the phases of the plan `~/.agent/p
 | Web Shepherd pass card | Sessions header, its shepherd part | It is one status line, too small for a tab |
 | Web Shepherd chat | Sessions: the shepherd session, a row like any other (search `shepherd`) | The chat is that session's transcript and compose box, which Sessions already has |
 | Web Sessions list column and bucket tiles, TUI stage counts line | Sessions table and its chips (#1246) | One table on the shared component; the chips are the counts, and a tile and a chip for one number is two homes (rule 2) |
+| Web Sessions state chips under the search box | The overview tiles leading the tab, plus a SPEND tile (`session_table::spend`, also on the TUI chip line) | The human asked for an overview row up top (2026-11-07); the tiles are the chips, so the counts keep one home (rule 2) |
 | Web Sessions Asks and Nightly tiles | Home: Needs you, Health (#1246) | Home already owns both |
 | Web Sessions inline row unfold (fleet-state card, outcome card) | The session's page, `#sessions/<id>`, in its Fleet state and Outcome card folds | Every session opens the same page, ended or live, and it has a URL |
-| Web open session's first view, the transcript | A view beside the page, read on click | Heavy detail on open (rule 10); the page answers what the session is first |
+| Web open session's first view, the page (#1271), and its Transcript Load row | Details, the second view after Conversation; an opened session lands on its conversation | The human asked for the conversation on open (2026-11-07); its transcript is still read only when that session is opened (rule 10) |
 | TUI detail fields BRANCH, NEXT PHASE, PLAN FILE, QUEUE, SOURCE, ITEM, CARD, SYNC, CONFLICTS, TREE, PR, PRS, CI, PLAN | The page's Worktree, PR, Plan and Queue item parts, and its outcome card in place of the card command | One reader for both surfaces (rule 8) |
 | TUI Sessions columns SYNC, CONFLICTS, TREE, PRS, WORK, WAIT, AGE, LABELS | The session's detail pane (#1246) | They did not fit beside the shared columns; Enter shows every one |
 | Web Infra LAZER and CLAUDE 24H tiles | Costs: its LIVE 24H and LAZER POOL tiles; Infra keeps one SPEND tile linking to `#costs` | Spend had four homes (rule 2); one reader, `hub_core::costs`, for both surfaces (rule 8) |

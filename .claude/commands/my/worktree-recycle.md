@@ -3,6 +3,7 @@ name: worktree-recycle
 description: "Recycle git worktrees: reap what has landed, report what has not, reset long-lived worktrees to fresh branches"
 allowed-tools: [Bash, Read, Grep, Glob, AskUserQuestion]
 argument-hint: "[--dry-run]"
+disable-model-invocation: true
 ---
 
 # Worktree Recycle

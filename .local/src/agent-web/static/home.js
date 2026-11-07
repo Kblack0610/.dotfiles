@@ -2,16 +2,18 @@
 // The Home tab, the front page: what needs you, what changed since last night, what analysis
 // proposes, what runs, the numbers and the health strip.
 // The list and the numbers are hub_core::home (/api/home), the same join the hub TUI's Home tab
-// draws; this file only lays them out. An ask or an open dialog is drawn with waiting.js's
-// answer card, so it is answered in place.
+// draws; this file only lays them out. Needs you is the shared table (table.js, the view in the
+// URL); a row opens its record under it, an ask or an open dialog waiting.js's answer card, so it
+// is answered in place.
 
 // Prometheus pushes nothing, so the open tab also re-reads on the board's cadence; the fleet
 // state, the queue and the asks push file events and re-read on those.
 const HOME_REFRESH_MS = 60e3;
+// `open` holds the Needs you rows opened under the table, by needKey; `all` lifts its cap.
 // `prop`: the proposal row opened and the id whose accept or reject is in flight.
 // `night`: Since last night (/api/briefing, hub_core::briefing::night) and its read error;
 // `fix`: per area, "busy", or what Queue a fix answered ({ ok, text }).
-const hst = { data: null, err: null, prop: { open: null, busy: null, err: null, all: false }, night: null, nightErr: null, fix: {} };
+const hst = { data: null, err: null, open: new Set(), all: false, prop: { open: null, busy: null, err: null, all: false }, night: null, nightErr: null, fix: {} };
 
 const refreshNight = async () => {
   try {
@@ -28,8 +30,12 @@ const refreshNight = async () => {
 const PROP_KEYS = ["proposals", "proposals_head", "proposals_table"];
 let homeSeq = 0;
 
+// Two tables share Home, so Needs you's view keys carry this prefix (nq, ns, nsort, ndir) in the
+// URL and in /api/home; Proposals came first and keeps the plain ones, so links to it stay valid.
+const NEED_PRE = "n";
+
 const refreshHome = coalesce(async () => {
-  const view = tblParams(st.views.home).toString();
+  const view = new URLSearchParams([...tblParams(st.views.home), ...tblParams(st.views.home, NEED_PRE)]).toString();
   const seq = ++homeSeq;
   // The briefing read is the slower one: Home draws without it and again when it answers.
   const night = refreshNight().then(() => { if (st.tab === "home") renderHome(); });
@@ -37,6 +43,9 @@ const refreshHome = coalesce(async () => {
     const d = await api("/api/home" + (view ? "?" + view : ""));
     if (seq !== homeSeq && hst.data) for (const k of PROP_KEYS) d[k] = hst.data[k];
     hst.data = d; hst.err = null;
+    // A row that left the list closes, so a returning id never comes back open or holds the cap.
+    const keys = new Set((d.needs || []).map(needKey));
+    for (const k of hst.open) if (!keys.has(k)) hst.open.delete(k);
   } catch (e) { hst.err = e.message; }
   if (st.tab === "home") renderHome();
   await night;
@@ -101,26 +110,12 @@ async function propDecide(verb, id) {
   refreshHome();
 }
 
-// The Needs you kind of a row hub_core::home sent (waiting.js NEED_KINDS): an ask is a
-// question, a session its open dialog's kind, a waiting queue item blocked, a human-sheet row
-// to do, a runner at its budget blocked, a stopped dispatch stopped, and the other conditions
-// (a failed night item, the janitor, critical mail, a red main, red now) failing.
-function needKind(n) {
-  if (n.kind === "stopped") return "stopped";
-  if (n.kind === "ask") return "ask";
-  if (n.kind === "session") {
-    const a = st.agents.find((x) => x.target === n.target && x.question);
-    return a ? dialog(a.question) : "turn";
-  }
-  if (n.kind === "queue" || n.kind === "budget") return "blocked";
-  if (n.kind === "sheet") return "todo";
-  return "red";
-}
+const needKey = (n) => `${n.kind}:${n.id}`;
 
-// What a ranked row holds (hub_core::home::Score::holds), or a sheet row's priority: the
-// reason it sits where it does.
-const holds = (n) => (n.score && n.score.holds ? `holds ${esc(n.score.holds)}`
-  : n.score && n.score.priority ? `#${esc(n.score.priority)}` : "");
+// What a ranked row holds (hub_core::home::Need::holds), or a sheet row's priority: the reason it
+// sits where it does. `holds` is the same on a card, where no header names it.
+const held = (n) => n.score?.holds || (n.score?.priority ? `#${n.score.priority}` : "");
+const holds = (n) => (n.score?.holds ? `holds ${esc(n.score.holds)}` : esc(held(n)));
 
 // A row with no answer card: what it is, how long it has waited, and a way to it.
 const CARD_WHAT = {
@@ -131,7 +126,7 @@ function needCard(n) {
   const k = n.need;
   const what = CARD_WHAT[n.kind] || "";
   const id = n.kind === "stopped" || [n.text, n.target, n.project].includes(n.id) ? "" : esc(n.id);
-  const band = needBand(k, [esc(n.project), what, id, n.since ? ago(n.since) : "", holds(n)]);
+  const band = needBand(k, [esc(n.project), what, id, n.since ? waited(n.since) : "", holds(n)]);
   const live = n.target && st.agents.find((a) => a.target === n.target);
   const btn = live ? `<div class="opts"><button class="btn sm" data-open="${esc(n.target)}">Open session</button></div>`
     : n.kind === "queue" ? `<div class="opts"><button class="btn sm" data-tab="queue">Open the queue</button></div>` : "";
@@ -146,18 +141,35 @@ function needHtml(n) {
   }
   if (n.kind === "session") {
     const a = st.agents.find((x) => x.target === n.target && x.question);
-    if (a) return sessionCard(a);
+    if (a) return sessionCard(a, n.need);
   }
   return needCard(n);
 }
 
-// Needs you in the server's order (hub_core::home::needs ranks it; nothing here re-sorts), each
-// row carrying its kind as `need`; and one chip per kind with its count, so the list reads at a
-// glance.
-function needsTally(needs) {
-  const c = {};
-  for (const n of needs) c[n.need] = (c[n.need] || 0) + 1;
-  return NEED_ORDER.filter((k) => c[k]).map((k) => `<span class="nchip k-${k}">${esc(NEED_KINDS[k])} <b>${c[k]}</b></span>`).join("");
+// One row of Needs you, and under it the record it opens.
+function needRow(n) {
+  const k = needKey(n), open = hst.open.has(k);
+  const at = n.since ? ` title="${new Date(n.since * 1e3).toISOString()}"` : "";
+  const row = `<tr class="jr${open ? " sel" : ""}" data-need="${esc(k)}"><td class="n">${n.rank}</td><td>${esc(NEED_KINDS[n.need])}</td>` +
+    `<td>${esc(n.project) || "-"}</td><td class="n"${at}>${n.since ? waited(n.since) : "-"}</td>` +
+    `<td class="wrap muted">${esc(held(n)) || "-"}</td><td class="wrap">${esc(n.text)}</td></tr>`;
+  return open ? `${row}<tr class="wdet"><td colspan="6">${needHtml(n)}</td></tr>` : row;
+}
+
+// The rows in the server's order (hub_core::home::needs ranks them; nothing here re-sorts), the
+// rank marked as the sort when none is asked for.
+const needCols = (t) => ({ rank: [t.sort ? "rank" : "rank ^", "n"], kind: ["kind"], project: ["project"], waited: ["waited", "n"], holds: ["holds"], what: ["what"] });
+
+// The first `shown` rows (dashboards: capped lists), or down to the last opened one, so a refresh
+// that reranks never takes an answer being typed off the page.
+function needsBody(h) {
+  const t = h.table, rows = h.needs;
+  if (!rows.length) return `<div class="empty">${t.total ? "No needs match." : "Nothing waits on you."}</div>`;
+  const last = rows.reduce((at, n, i) => (hst.open.has(needKey(n)) ? i + 1 : at), 0);
+  const cap = hst.all ? rows.length : Math.max(h.shown, last);
+  const more = rows.length - cap;
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, needCols(t))}${rows.slice(0, cap).map(needRow).join("")}</table>` +
+    tblMore(more, "more") + `</div>`;
 }
 
 function runningCard(r) {
@@ -176,6 +188,9 @@ function healthHtml(chips) {
   return bad.map((c) => cchip(LEVEL[c.level][0], `${esc(c.name)} ${LEVEL[c.level][1]}`)).join(" ") +
     ` <span class="muted">${chips.length - bad.length} green</span>`;
 }
+
+const sec = (title, n, body) => `<h2 class="sec">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}</h2>${body}`;
+const needsHead = (t) => sec("Needs you", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`, "");
 
 // Since last night: the briefing's areas that are not ok, each linking to the tab that owns
 // its fact, a bad one with Queue a fix; the ok ones are one line (dashboards rule 4).
@@ -213,27 +228,29 @@ async function queueFix(name) {
 function drawHome() {
   const el = $("home"), h = hst.data;
   if (!h) { paint(el, hst.err ? `<div class="err">${esc(hst.err)}</div>` : '<div class="empty">Reading...</div>', askst.open); return; }
-  const sec = (title, n, body) => `<h2 class="sec">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}</h2>${body}`;
   const errs = [hst.err, ...h.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
   // A long list shows its first `shown` rows; the rest fold under "+N more" (dashboards: capped lists).
   const capped = (k, rows, card, word, empty) => !rows.length ? `<div class="empty">${empty}</div>` :
     rows.slice(0, h.shown).map(card).join("") +
     (rows.length > h.shown ? cfold(k, `+${rows.length - h.shown} ${word}`, rows.slice(h.shown).map(card).join(""), askst.open) : "");
-  const rows = h.needs.map((n) => ({ ...n, need: needKind(n) }));
-  const needs = (rows.length ? `<div class="ntally">${needsTally(rows)}</div>` : "") +
-    capped("home-needs", rows, needHtml, "more", "Nothing waits on you.");
-  const running = capped("home-running", h.running, runningCard, "more", "Nothing running from the queue.");
+  const running = sec("Running", h.running.length, capped("home-running", h.running, runningCard, "more", "Nothing running from the queue."));
   const nums = h.numbers.map((n) => `<span><b>${esc(n.label)}</b> ${esc(n.value)}</span>`).join(", ");
+  const t = h.table;
+  const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
+  const needs = `<div data-tbl="${NEED_PRE}"><div id="home-nhead">${needsHead(t)}</div>${bar}<div id="home-need-body">${needsBody(h)}</div></div>`;
   // The flow strip and the two summary lines lead, so a long Needs list never buries them.
   paint(el, errs + sec("Flow", null, flowHtml(h.flow, h.grafana)) + sec("Numbers", null, `<div class="cline hnum">${nums}</div>`) +
-    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) +
-    sec("Needs you", h.needs.length, needs) + nightSection() + propSection(h) + sec("Running", h.running.length, running), askst.open);
+    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + needs + nightSection() + propSection(h) + running, askst.open);
 }
-// Session events re-render this often; keep a reply that is being typed, and the proposal
-// search or dropdown in use, around which only the rows and chips repaint.
+// Session events re-render this often; keep a reply that is being typed, and a table's search
+// or dropdown in use, around which only that table's rows and chips repaint.
+// The table without focus repaints whole, so a search in one never leaves the other stale.
 const renderHome = () => {
   const h = hst.data;
-  if (h?.proposals_table.total && $("home-prop-body") && tblRepaint("home-prop", h.proposals_table, () => propBody(h))) return;
+  const need = () => { paint($("home-nhead"), needsHead(h.table)); tblRedraw("home-need", h.table, () => needsBody(h)); };
+  const prop = () => tblRedraw("home-prop", h.proposals_table, () => propBody(h));
+  if (h?.proposals_table.total && $("home-prop-body") && tblRepaint("home-prop", h.proposals_table, () => propBody(h))) { if ($("home-need-body")) need(); return; }
+  if (h && $("home-need-body") && tblRepaint("home-need", h.table, () => needsBody(h))) { paint($("home-nhead"), needsHead(h.table)); if ($("home-prop-body")) prop(); return; }
   keepTyping("#home .card", drawHome);
 };
 
@@ -244,6 +261,15 @@ function propView(patch) {
   refreshProposals();
 }
 
+function needView(patch) {
+  setQuery(tblSet(st.views.home, patch, NEED_PRE));
+  hst.all = false;
+  refreshHome();
+}
+
+// Both tables sit under #home: each bar's and header's events go to the view of the table they are in.
+const homeView = (v, e) => (tblOf(e) === NEED_PRE ? needView : propView)(v);
+
 $("home").addEventListener("click", (e) => {
   if (e.target.closest("summary")) return;
   const t = e.target;
@@ -252,7 +278,7 @@ $("home").addEventListener("click", (e) => {
   if (t.dataset.reject) { propDecide("reject", t.dataset.reject); return; }
   if (t.dataset.propall) { hst.prop.all = true; renderHome(); return; }
   const v = tblPatch(e);
-  if (v) { propView(v); return; }
+  if (v) { homeView(v, e); return; }
   const prow = t.closest("tr.prop");
   if (prow && !t.closest("a")) {
     hst.prop.open = hst.prop.open === prow.dataset.prop ? null : prow.dataset.prop;
@@ -266,10 +292,15 @@ $("home").addEventListener("click", (e) => {
     return;
   }
   if (e.target.dataset.tab) { setTab(e.target.dataset.tab); return; }
+  if (e.target.dataset.all) { hst.all = true; renderHome(); return; }
   const card = e.target.closest(".card[data-t], .card[data-id]");
-  if (card) answerCard(card, e).then(refreshHome);
+  if (card) { answerCard(card, e).then(refreshHome); return; }
+  const row = e.target.closest("tr.jr[data-need]");
+  if (!row) return;
+  if (!hst.open.delete(row.dataset.need)) hst.open.add(row.dataset.need);
+  renderHome();
 });
-tblListen($("home"), propView);
+tblListen($("home"), homeView);
 $("home").addEventListener("keydown", answerOnEnter);
 $("home").addEventListener("toggle", (e) => {
   askTrace(e, renderHome);
