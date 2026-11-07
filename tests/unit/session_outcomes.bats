@@ -1264,3 +1264,69 @@ rework_repo() {
   "$SUBJECT" run
   assert_equal "$(field a '.rework | tojson')" '{"measured":1,"candidate_7d":0,"verified_30d":0}'
 }
+
+# lessons: one project, 3-day windows, now 2026-10-20 UTC. s1 and s2 stop before the 10-10 lessons,
+# s3 and s4 after them, s5 before the 10-18 one; s7's transcript is pruned, so it is not counted,
+# and s6 is another project's. Project tiny has one session each side, a hit then none: held on
+# the ratio, but MIN_SESSIONS is 2 here, so thin. The transcript path is the registry's: an outcome
+# row keeps only a boolean, which must not be read as a path.
+lessons_fixture() {
+  export TZ=UTC SO_OUT="$SANDBOX/lo" SO_LESSONS_DIR="$SANDBOX/lessons" SO_SESSIONS="$SANDBOX/reg" SO_LESSON_MIN_SESSIONS=2
+  mkdir -p "$SO_OUT/proj" "$SO_LESSONS_DIR" "$TR/l" "$SO_SESSIONS/proj" "$SO_SESSIONS/other" "$SO_SESSIONS/tiny"
+  bash_line() { jq -cn --arg c "$1" '{type: "assistant", message: {content: [{type: "tool_use", id: "x", name: "Bash", input: {command: $c}}]}}'; }
+  { bash_line 'killall node'; bash_line 'cd x && chmod -R 777 y'; } > "$TR/l/s1.jsonl"
+  bash_line 'ls' > "$TR/l/s2.jsonl"
+  bash_line 'chmod -R 777 z' > "$TR/l/s3.jsonl"
+  bash_line 'grep killall notes.md' > "$TR/l/s4.jsonl"
+  bash_line 'docker system prune -af' > "$TR/l/s5.jsonl"
+  bash_line 'git push --tags' > "$TR/l/t1.jsonl"
+  bash_line 'ls' > "$TR/l/t2.jsonl"
+  cp "$TR/l/s1.jsonl" "$TR/l/s6.jsonl"
+  local s day proj
+  for s in s1:2026-10-08 s2:2026-10-09 s3:2026-10-12 s4:2026-10-13 s5:2026-10-16 s7:2026-10-12 s6:2026-10-08 t1:2026-10-08 t2:2026-10-12; do
+    day=$(date -d "${s#*:}T12:00:00Z" +%s)
+    case "${s%%:*}" in s6) proj=other ;; t*) proj=tiny ;; *) proj=proj ;; esac
+    # an older registry row first: the newest row per session is the one read
+    jq -cn --arg id "${s%%:*}" --argjson at "$((day - 30 * 86400))" --arg p "$proj" '{session_id: $id, project: $p, updated: $at}' >> "$SO_SESSIONS/$proj/sessions.jsonl"
+    jq -cn --arg id "${s%%:*}" --argjson at "$day" --arg p "$proj" --arg tr "$TR/l/${s%%:*}.jsonl" \
+      '{session_id: $id, project: $p, updated: $at, transcript: $tr}' >> "$SO_SESSIONS/$proj/sessions.jsonl"
+    jq -cn --arg id "${s%%:*}" --argjson at "$day" --arg p "$proj" \
+      '{session_id: $id, project: $p, updated: ($at | todate), updated_epoch: $at, observed: $at, transcript: true}' >> "$SO_OUT/proj/2026-10.jsonl"
+  done
+  cat > "$SO_LESSONS_DIR/proj.md" <<'L'
+- **Never killall node; name the pid.** (2026-10-10, dream sweep) <!-- sig:2026-10-10 (^|[;&|]\s*)killall\s -->
+- **chmod 777 opens the key dir.** <!-- sig:2026-10-10 (^|[;&|]\s*)chmod\s+-R\s+777\b -->
+- **Never rm -rf a mount.** <!-- sig:2026-10-10 (^|[;&|]\s*)rm\s+-rf\s+/mnt -->
+- **docker prune takes the cache.** <!-- sig:2026-10-18 (^|[;&|]\s*)docker\s+system\s+prune -->
+- A note with no sig (2026-10-11, dream sweep)
+L
+  printf '%s\n' '- **Push tags one by one.** <!-- sig:2026-10-10 (^|[;&|]\s*)git\s+push\s+--tags -->' > "$SO_LESSONS_DIR/tiny.md"
+}
+
+@test "lessons: held, recurring, no-baseline, thin and early from the windows before and after; whole windows only are cached" {
+  lessons_fixture
+  run "$SUBJECT" lessons --days 3 --json
+  assert_success
+  run jq -c '[.lessons[] | [.claim[0:12], .verdict, .before.hits, .before.sessions, .after.hits, .after.sessions]], [.held, .recurring, .no_baseline, .thin, .early, .dream_lessons, .dream_with_sig]' <<<"$output"
+  assert_line '[["chmod 777 op","recurring",1,2,1,2],["docker prune","early",1,1,null,null],["Push tags on","thin",1,1,0,1],["Never killal","held",1,2,0,2],["Never rm -rf","no-baseline",0,2,0,2]]'
+  assert_line '[1,1,1,1,1,2,1]'
+  # the after window of the 10-18 lesson is not whole, so it is not cached; the other nine are
+  assert_equal "$(wc -l < "$SO_OUT/lesson-effect.jsonl")" 9
+  run "$SUBJECT" lessons --days 3
+  assert_line --partial '| held | proj | 2026-10-10 | 1/2 50% | 0/2 0% | Never killall node'
+  assert_line '1 held, 1 recurring, 1 no-baseline, 1 thin, 1 early (3d windows); 1 of 2 dream-sweep lessons carry a sig'
+}
+
+@test "lessons: a cached window is not scanned again; --cached reads only the cache; a bad arg is usage" {
+  lessons_fixture
+  run "$SUBJECT" lessons --cached --days 3 --json
+  assert_success
+  assert_equal "$(jq -c '[.held, .recurring, .early]' <<<"$output")" '[0,0,5]'
+  "$SUBJECT" lessons --days 3 >/dev/null
+  rm "$TR/l/s3.jsonl"   # the chmod recurrence: gone from disk, still in the cache
+  run "$SUBJECT" lessons --days 3 --json
+  assert_equal "$(jq -c '[.held, .recurring]' <<<"$output")" '[1,1]'
+  assert_equal "$(wc -l < "$SO_OUT/lesson-effect.jsonl")" 9
+  run "$SUBJECT" lessons --days 0
+  assert_failure 2
+}

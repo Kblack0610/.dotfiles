@@ -24,7 +24,7 @@ A day is the local calendar day, the window both tools are given exactly.
 check exits 0 unless a watched number moved the worse way by more than TOKENS_DRIFT_PCT of the
 median of the TOKENS_BASELINE_DAYS days before it, or the better way by more than TOKENS_SUSPECT_PCT
 (a broken counter looks like a cliff); 1 on either, 2 when there is no fresh snapshot. It only
-reports: nothing here stops, limits or slows a session (dotfiles CLAUDE.md "Agent runtime").
+reports: nothing here stops, limits or slows a session (dotfiles CLAUDE.md "Hard limits on budgets").
 
 check --langfuse is the read-health watch: 1 when the newest two snapshots both carry a null
 langfuse section (the reader failed two nights running, the reason is in their errors), 0 when

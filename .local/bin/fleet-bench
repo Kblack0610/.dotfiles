@@ -121,7 +121,7 @@
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
-# BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
+# BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR.
 
@@ -212,6 +212,7 @@ set -uo pipefail
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
 : "${BENCH_ADMISSION_CMD:=agent-queue admission --json}"   # the queue's admission: automated adds it held
+: "${BENCH_LESSONS_CMD:=agentctl-session-outcomes lessons --cached --json}"   # each lesson with a sig: did it hold
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
 : "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile
@@ -1481,6 +1482,10 @@ ledger_counts() {
   fi
   echo "board_open=$(board_open_count)"
   echo "loop_dark=$(loop_episodes "$t" $((t - LOOP_WINDOW_S)) | jq -s 'map(select(.dark and .open)) | length')"
+  # lesson_held_share: of the lessons with a sig whose before and after windows are both read, the share
+  # that held (session-outcomes lessons); ? when none has a verdict yet or the cache cannot be read
+  echo "lesson_held_share=$($BENCH_LESSONS_CMD 2>/dev/null | jq -er '(.held + .recurring) as $n
+    | if $n > 0 then .held / $n * 100 | round / 100 else "?" end' 2>/dev/null || echo '?')"
   chain_counts "$t"
 }
 
@@ -1742,7 +1747,7 @@ cmd_rules() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open loop_dark $KPI_CHAIN cost_per_merged_item red_fix_min_p50"
+KPI_NOW="runners_bad failed_unexplained board_open loop_dark $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
@@ -1798,8 +1803,9 @@ startup_kpi() {
 # KPI_DEFS: the windowed KPIs as jq, shared by kpi, its --trend and effect. win($t; $d) is every
 # ratio over the human sessions whose last update fell in the $d days up to $t, with $o the outcome
 # rows, $c the CI rows and $k the canary score rows (slurped). The token KPIs are sums over the
-# nightly token-usage snapshots ($tk) of the whole days in the window, all sessions, so a token lever
-# gets the same kpi, improve and effect verdicts as a process one. Older lines have no runner field;
+# nightly token-usage snapshots ($tk) of the whole days in the window, all sessions (start_context_median
+# is the median of those days' first-turn context medians), so a token lever gets the same kpi, improve
+# and effect verdicts as a process one. Older lines have no runner field;
 # _runner is where headless runs are filed. A canary session is an eval, not work: it leaves the
 # human KPIs and makes the canary_ ones, scored by the oracle and costed from its outcome row.
 # The rework KPIs are shares of merged PRs (session-outcomes.sh "rework") that a fix rewrote within
@@ -1845,6 +1851,7 @@ KPI_DEFS="$JQ_LIB"'
        reread_share: ratio(($tw | total(.reads.reread_same_lines)); $tw | total(.reads.reads)),
        cache_write_share: ratio(($tw | total(.totals.cache_write)); $tw | total(.totals.context)),
        start_share: ratio(($ts | total(.context_split.start)); $ts | total(.totals.context)),
+       start_context_median: ($tw | map(.start_context_median | numbers) | median),
        compactions_per_session: ratio(($tw | total(.compactions)); $tw | total(.sessions)),
        rework_candidate_7d: reworked($bot; $t; $d; "rework_candidate_7d"),
        rework_verified_30d: reworked($bot; $t; $d; "rework_verified_30d")};
@@ -1853,7 +1860,7 @@ KPI_DEFS="$JQ_LIB"'
                cost_per_pr: -1, ci_red_per_pr: -1, first_pass_share: 1, plan_gate_deny_rate: -1, canary_runs: 0, canary_pass_rate: 1,
                canary_cost_per_task: -1, canary_min_per_task: -1, canary_turns_per_task: -1,
                responses_per_merged_pr: -1, context_per_merged_pr: -1, tool_chars_per_call: -1,
-               locate_read_share: -1, reread_share: -1, cache_write_share: -1, start_share: -1,
+               locate_read_share: -1, reread_share: -1, cache_write_share: -1, start_share: -1, start_context_median: -1,
                compactions_per_session: -1, rework_candidate_7d: -1, rework_verified_30d: -1};'
 
 # kpi_canary -> the canary score rows file, or /dev/null when there are none
@@ -1863,7 +1870,7 @@ kpi_canary() { [ -s "$CANARY" ] && printf '%s' "$CANARY" || printf /dev/null; }
 kpi_tokens() {
   local f=("$BENCH_TOKENS_DIR"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json)
   [ -e "${f[0]}" ] || return 0
-  jq -c '{date, merged_prs, compactions, context_split, reads, sessions: ([.by_kind[]?.sessions | numbers] | add),
+  jq -c '{date, merged_prs, compactions, context_split, reads, start_context_median, sessions: ([.by_kind[]?.sessions | numbers] | add),
            totals: (.totals // {} | {responses, context, cache_write, tool_chars, tool_calls})}' "${f[@]}" 2>/dev/null || true
 }
 
