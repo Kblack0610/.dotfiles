@@ -300,7 +300,12 @@ pub fn answer(p: &Profile, log: &Logger, raw: &str, answer: &str) -> Result<i32>
         rows.next().unwrap_or_default().trim()
     );
     for r in rows {
-        body.push_str(&format!("\n  {}", r.trim_end()));
+        // A continuation that begins `- ` would read as a capture of its own.
+        let r = r.trim();
+        let r = r
+            .strip_prefix("- ")
+            .map_or(r.to_string(), |t| format!("* {t}"));
+        body.push_str(&format!("\n  {r}"));
     }
     let file = crate::inbox::append(p, &body)?;
     md::write_atomic(&p.outbox, &rest)?;
@@ -384,12 +389,14 @@ mod tests {
         )
         .unwrap();
         assert!(md::ask_tag("- [ ] #ask is my mac ok? #p:demo"));
+        assert!(md::ask_tag("- [ ] is the nas up? #ask #p:demo"));
+        assert!(!md::ask_tag("- [ ] document the #ask flow in the README"));
         assert_eq!(
             answer(
                 &p,
                 &log,
                 "- [ ] #ask is my mac ok? #p:demo",
-                "Yes, up 3 days.\nload 0.2\n"
+                "Yes, up 3 days.\n- load 0.2\n"
             )
             .unwrap(),
             0
@@ -399,7 +406,7 @@ mod tests {
         let day = chrono::Local::now().format("%Y-%m-%d").to_string();
         let note = fs::read_to_string(p.inbox.join(format!("{day}.md"))).unwrap();
         assert!(
-            note.contains("ask: is my mac ok? - Yes, up 3 days.\n  load 0.2\n"),
+            note.contains("ask: is my mac ok? - Yes, up 3 days.\n  * load 0.2\n"),
             "{note}"
         );
         let sheet = fs::read_to_string(root.join("lab/projects/current/demo/README.md")).unwrap();

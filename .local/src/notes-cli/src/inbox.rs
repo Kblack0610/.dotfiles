@@ -209,6 +209,13 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<()> {
 pub(crate) fn append(p: &Profile, body: &str) -> Result<PathBuf> {
     fs::create_dir_all(&p.inbox)
         .with_context(|| format!("creating inbox dir {}", p.inbox.display()))?;
+    // One writer at a time: the sweep's answers and `notes inbox add` both read and rewrite the file.
+    let _lock = crate::md::lock_file(
+        &p.inbox
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(".inbox.lock"),
+    )?;
     let now = Local::now();
     let date = now.date_naive().format("%Y-%m-%d").to_string();
     let file = p.inbox.join(format!("{date}.md"));

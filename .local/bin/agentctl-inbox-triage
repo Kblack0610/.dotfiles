@@ -94,10 +94,12 @@ answered() {
 # ask_line <raw> <text> <details>: a `#ask` outbox line. One read-only call answers it, `notes
 # outbox answer` writes question and answer to today's notes inbox and takes the line out of the
 # outbox. A failed call leaves the line to the next sweep; an answer that came back without its
-# block, or a call too big for its cap, is recorded refused so the line waits for the person.
+# block, a call too big for its cap, or a line with no question is recorded refused so the line
+# waits for the person.
 ask_line() {
   local raw="$1" text="$2" details="$3" q reply rc
-  q="$(md_ascii <<<"$text" | tr -cd ' -~' | sed -E 's/(^|[[:space:]])#(ask|p:[^[:space:]]*)([[:space:]]|$)/ /Ig; s/(^|[[:space:]])#(ask|p:[^[:space:]]*)([[:space:]]|$)/ /Ig; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  q="$(md_ascii <<<"$text" | tr -cd ' -~' | sed -E ':a; s/(^|[[:space:]])#(ask|p:[^[:space:]]*)([[:space:]]|$)/ /I; ta; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  if [ -z "$q" ]; then note refused outbox "the #ask line holds no question" "$text"; FAILED=$((FAILED + 1)); return 1; fi
   if [ "$DRY" = 1 ]; then printf 'would answer [outbox] %s\n' "$raw"; ANSWERED=$((ANSWERED + 1)); return 0; fi
   ask "You answer one question a person left in their notes outbox. Look things up with read-only commands (ping, curl, uptime, df, free, systemctl status, git log, kubectl get, reading files) and run at most a handful. Change nothing: no writes, edits, installs, restarts, deletes or sends, and no command that alters state. If answering needs a write or a decision, say so in one line instead of doing it.
 

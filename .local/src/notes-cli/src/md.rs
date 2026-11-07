@@ -919,11 +919,21 @@ pub fn without_agent_tag(line: &str) -> String {
     without_words(line, is_agent_word)
 }
 
-/// Whether `line` carries an `#ask` word: an outbox question for a quick read-only answer.
-/// Only the text before the marker comment counts.
+/// Whether `line` is marked `#ask`, an outbox question for a quick read-only answer: the word
+/// is first (after any bullet or checkbox) or last. Only the text before the marker comment counts.
 pub fn ask_tag(line: &str) -> bool {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
-    head.split_whitespace().any(is_ask_word)
+    let mut words = head.split_whitespace().skip_while(|w| {
+        matches!(*w, "-" | "*" | "[" | "]") || (w.starts_with('[') && w.ends_with(']'))
+    });
+    let first = words.next();
+    // The tag leads the question or ends it (ignoring `#p:` words), so "document the #ask flow"
+    // stays a task.
+    let last = head
+        .split_whitespace()
+        .rev()
+        .find(|w| project_tag_word(w).is_none());
+    first.is_some_and(is_ask_word) || last.is_some_and(is_ask_word)
 }
 
 fn is_ask_word(w: &str) -> bool {
