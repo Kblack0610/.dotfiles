@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::home::{self, Running};
 use crate::queue::{Item, Queue, State};
 use crate::session_actions::Runner;
+use crate::table::Val;
 use crate::tasks::Feed;
 
 /// The open version's rows and closes, as notes-cli counts them (`Progress` there).
@@ -149,6 +150,79 @@ pub struct Card {
 impl Card {
     pub fn in_flight(&self) -> bool {
         !self.running.is_empty() || self.waiting > 0
+    }
+
+    /// Rows closed per week: the open version's rows closed in the last 28 days, over 4. Rounded
+    /// here to the one decimal a surface prints: quarters are ties, and Rust and JS break them
+    /// apart, so a surface formatting the raw value would read differently from the next.
+    pub fn pace(&self) -> f64 {
+        (f64::from(self.progress.closed_28d) * 2.5).round() / 10.0
+    }
+}
+
+/// The list of projects, one row a card. Its own order is in flight first, so no column is
+/// sorted until asked. Empty words read as no value, the `-` a surface draws.
+impl crate::table::Row for Card {
+    const COLUMNS: &'static [&'static str] = &[
+        "project", "profile", "stage", "version", "prio", "open", "done", "pct", "pace", "eta",
+        "run", "wait", "queued",
+    ];
+    const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
+    const FACETS: &'static [&'static str] = &["profile", "stage"];
+
+    fn val(&self, col: &str) -> Val {
+        let word = |s: &str| {
+            if s.is_empty() {
+                Val::None
+            } else {
+                Val::Text(s.to_string())
+            }
+        };
+        let num = |n: Option<u32>| n.map_or(Val::None, |n| Val::Num(f64::from(n)));
+        match col {
+            "project" => word(&self.name),
+            "profile" => word(&self.profile),
+            "stage" => word(&self.stage),
+            "version" => self.version.as_deref().map_or(Val::None, word),
+            "prio" => word(&self.prio),
+            "open" => num(Some(self.progress.open)),
+            "done" => num(Some(self.progress.done)),
+            "pct" => num(self.percent),
+            "pace" => Val::Num(self.pace()),
+            "eta" => num(self.eta_days),
+            "run" => Val::Num(self.running.len() as f64),
+            "wait" => Val::Num(self.waiting as f64),
+            "queued" => Val::Num(self.queued as f64),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        match s {
+            "in flight" => self.in_flight(),
+            "waiting" => self.waiting > 0,
+            _ => false,
+        }
+    }
+
+    /// A bare word searches what a project is called, what it is for and its note.
+    fn text(&self) -> String {
+        format!("{}\n{}\n{}", self.name, self.goal, self.status).to_lowercase()
+    }
+
+    fn rank(&self, col: &str) -> Val {
+        match col {
+            // `next_prio`'s words, normal being blank, lowest first.
+            "prio" => ["low", "", "high", "focus"]
+                .iter()
+                .position(|p| *p == self.prio)
+                .map_or(Val::None, |i| Val::Num(i as f64)),
+            "version" => self
+                .version
+                .as_deref()
+                .map_or(Val::None, |v| Val::Text(crate::tasks::release_order(v))),
+            _ => self.val(col),
+        }
     }
 }
 
@@ -287,8 +361,8 @@ pub fn summary(c: &Card) -> String {
     s
 }
 
-/// The card's queue in one line, on the list card's first line: `1 running, 0 waiting, 2 queued`.
-pub fn queue(c: &Card) -> String {
+/// The card's queue in one line, at the head of `counts`: `1 running, 0 waiting, 2 queued`.
+fn queue(c: &Card) -> String {
     format!(
         "{} running, {} waiting, {} queued",
         c.running.len(),
@@ -327,8 +401,8 @@ pub fn gather() -> Projects {
     }
 }
 
-/// The cards as JSON, each with its `summary` line and `in_flight`, so a reader prints the same
-/// words the TUI does and computes nothing.
+/// The cards as JSON, each with its `summary` line, `in_flight` and `pace`, so a reader prints
+/// the same words the TUI does and computes nothing.
 pub fn to_json(p: &Projects) -> Value {
     let mut v = serde_json::to_value(p).unwrap_or_default();
     if let Some(cards) = v["cards"].as_array_mut() {
@@ -337,6 +411,7 @@ pub fn to_json(p: &Projects) -> Value {
             j["counts"] = counts(c).into();
             j["note_says"] = note_says(c).into();
             j["in_flight"] = c.in_flight().into();
+            j["pace"] = c.pace().into();
         }
     }
     v
@@ -347,6 +422,72 @@ mod tests {
     use super::*;
     use crate::tasks::{Project, Row};
     use serde_json::json;
+
+    #[test]
+    fn the_list_sorts_filters_and_searches_on_the_one_view() {
+        use crate::table::View;
+        let card = |name: &str, stage: &str, prio: &str, version: &str, closed: u32| Card {
+            profile: "personal".into(),
+            name: name.into(),
+            stage: stage.into(),
+            prio: prio.into(),
+            version: Some(version.into()),
+            goal: format!("{name} goal"),
+            progress: Progress {
+                closed_28d: closed,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut cards = vec![
+            card("low", "alpha", "low", "v0.10.0", 10),
+            card("normal", "beta", "", "v0.9.0", 2),
+            card("focus", "alpha", "focus", "v0.2.0", 0),
+            Card {
+                name: "bare".into(),
+                ..Default::default()
+            },
+        ];
+        cards[1].waiting = 1;
+        cards[2].running = vec![Running {
+            slug: "s1".into(),
+            title: "wire it".into(),
+            project: "focus".into(),
+            started: None,
+            target: None,
+            phases: None,
+        }];
+        let names = |q: &str, s: &str, sort: &str, dir: &str| -> Vec<String> {
+            View::new::<Card>(q, s, sort, dir)
+                .apply(&cards)
+                .iter()
+                .map(|c| c.name.clone())
+                .collect()
+        };
+        assert_eq!(cards[0].pace(), 2.5, "28-day closes over 4 weeks");
+        assert_eq!(card("", "", "", "", 1).pace(), 0.3, "a tie rounds up, once");
+        assert_eq!(
+            names("pace:0.5", "", "", ""),
+            ["normal"],
+            "the figure shown"
+        );
+        assert_eq!(names("", "", "", ""), ["low", "normal", "focus", "bare"]);
+        assert_eq!(names("", "in flight", "", ""), ["normal", "focus"]);
+        assert_eq!(names("", "waiting", "", ""), ["normal"]);
+        assert_eq!(names("stage:alpha", "", "", ""), ["low", "focus"]);
+        assert_eq!(names("-stage:alpha normal", "", "", ""), ["normal"]);
+        assert_eq!(
+            names("", "", "prio", ""),
+            ["focus", "normal", "bare", "low"],
+            "focus outranks normal outranks low, not the alphabet"
+        );
+        assert_eq!(
+            names("stage:alpha", "", "version", ""),
+            ["low", "focus"],
+            "v0.10.0 is newer than v0.2.0"
+        );
+        assert_eq!(names("", "", "pace", "")[0], "low");
+    }
 
     #[test]
     fn each_card_carries_the_summary_the_tui_prints() {
