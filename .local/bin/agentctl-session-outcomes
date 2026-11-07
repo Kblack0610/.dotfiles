@@ -9,6 +9,7 @@
 #   agentctl-session-outcomes langfuse [--all]             push outcomes and judge verdicts to Langfuse as scores
 #   agentctl-session-outcomes backfill-harness YYYY-MM     give that month's rows with no harness one
 #   agentctl-session-outcomes rework DIR [--days N] [--until T] [--sample N]   rework over a repo's commits
+#   agentctl-session-outcomes lessons [--days N] [--json] [--cached]   did each lesson with a sig change behaviour
 #
 # run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
 # resumed, or just turned SO_FINAL_DAYS old gets one line in ~/.agent/outcomes. Outcomes:
@@ -174,7 +175,7 @@ cmd_run() {
 
   if [ ! -s "$work/due.jsonl" ]; then
     echo "$NAME: nothing due"
-    proof_report "$NAME" NOOP "nothing due$oc_note; $(gateway_push); $(lf_push "" "$work")"
+    proof_report "$NAME" NOOP "nothing due$oc_note; $(lessons_note); $(gateway_push); $(lf_push "" "$work")"
     return 0
   fi
 
@@ -346,7 +347,7 @@ cmd_run() {
   done < "$work/lines.jsonl"
 
   echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note$rework_note"
-  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$rework_note; $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
+  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$rework_note; $(lessons_note); $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
 }
 
 # ledger_push - the work ledger's cost and time (~/.config/agentctl/QUEUE.md): every queue item
@@ -684,6 +685,123 @@ cmd_card() {
       end' <<<"$rows"
 }
 
+# lessons [--days N] [--json] [--cached] - did a lesson change behaviour. For each lesson with a sig
+# (so_lesson_sigs), the share of its project's sessions (the lesson file's name) whose Bash commands
+# match the sig in the N days (14) before the day it was written, against the N days after that day.
+# The sessions are the registry's (newest row per session, as `run` reads it, since an outcome row
+# keeps only whether its transcript was read): one sits in the window its last stop falls in, and only
+# one whose transcript is still on disk counts, hit or not. The sig is matched afresh rather than read
+# from lesson_hits, which counts only after the lesson's date and so has no before window. Each window is scanned once, when it is whole (LESSON_LAG_DAYS after its
+# end, so the 02:30 run has rows for it), and kept in $OUT/lesson-effect.jsonl; --cached reads only
+# that file. Verdicts: held (the after share is at most LESSON_HELD_RATIO of the before share),
+# recurring, no-baseline (no session hit it before, so nothing to compare), thin (a whole window with
+# fewer than LESSON_MIN_SESSIONS sessions, too few to call), early (a window not whole yet).
+# The last line counts the dream-sweep lessons and how many carry a sig: a lesson with none is not
+# measured. `run` refreshes it nightly; fleet-bench KPI lesson_held_share reads the --json.
+LESSON_HELD_RATIO="${SO_LESSON_HELD_RATIO:-0.5}"  # provisional (standards.md): revisit once 10 lessons have a verdict
+LESSON_MIN_SESSIONS="${SO_LESSON_MIN_SESSIONS:-5}"  # provisional: a window below this is thin; same revisit
+LESSON_LAG_DAYS=2
+
+# lesson_window ROWS SIG PROJECT FROM TO - one cache line {sessions, hits} for that window, over
+# ROWS (the registry's newest row per session, read once per refresh).
+lesson_window() {
+  local rows="$1" sig="$2" proj="$3" from="$4" to="$5" tr hits=0 list=()
+  while IFS= read -r tr; do
+    [ -f "$tr" ] && list+=("$tr")
+  done < <(jq -r --arg p "$proj" --argjson f "$from" --argjson t "$to" '
+    select(.project == $p and .updated >= $f and .updated < $t) | .transcript // empty' "$rows")
+  if [ "${#list[@]}" -gt 0 ]; then
+    hits=$(printf '%s\0' "${list[@]}" | xargs -0 jq -rR --arg re "$sig" '
+      fromjson? | select(.type == "assistant") | .message.content[]?
+      | select(.type == "tool_use" and .name == "Bash")
+      | select((.input.command // "") | try test($re) catch false) | input_filename' 2>/dev/null | sort -u | wc -l)
+  fi
+  jq -cn --argjson s "${#list[@]}" --argjson h "$hits" '{sessions: $s, hits: $h}'
+}
+
+# lessons_refresh DAYS - scan every whole window not yet in the cache. Prints how many it added.
+lessons_refresh() {
+  local days="$1" cache="$OUT/lesson-effect.jsonl" sigs added=0 l sig since proj day0 w from to r rows
+  sigs=$(so_lesson_sigs | jq -c '.[] | {sig, since, p: (.file | sub("\\.md$"; ""))}') || return 1
+  [ -n "$sigs" ] || { echo 0; return 0; }
+  mkdir -p "$OUT" && touch "$cache" || return 1
+  rows=$(mktemp) || return 1
+  if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then cat "$SESSIONS"/*/sessions.jsonl; fi |
+    jq -cn '[inputs | select(type == "object" and .session_id and (.updated | numbers))]
+            | group_by(.session_id)[] | max_by(.updated)' > "$rows" || { rm -f "$rows"; return 1; }
+  while IFS= read -r l; do
+    sig=$(jq -r .sig <<<"$l"); since=$(jq -r .since <<<"$l"); proj=$(jq -r .p <<<"$l")
+    day0=$(date -d "$since" +%s) || continue
+    for w in before after; do
+      if [ "$w" = before ]; then from=$((day0 - days * 86400)) to=$day0
+      else from=$((day0 + 86400)) to=$((day0 + 86400 + days * 86400)); fi
+      [ "$NOW" -ge $((to + LESSON_LAG_DAYS * 86400)) ] || continue
+      jq -e --arg s "$sig" --arg d "$since" --argjson n "$days" --arg w "$w" \
+        'select(.sig == $s and .since == $d and .days == $n and .window == $w)' "$cache" >/dev/null 2>&1 && continue
+      r=$(lesson_window "$rows" "$sig" "$proj" "$from" "$to") &&
+        jq -c --arg s "$sig" --arg d "$since" --argjson n "$days" --arg w "$w" --arg p "$proj" --argjson at "$NOW" \
+          '{sig: $s, since: $d, project: $p, days: $n, window: $w} + . + {at: $at}' <<<"$r" >> "$cache" ||
+        { rm -f "$rows"; return 1; }
+      added=$((added + 1))
+    done
+  done <<<"$sigs"
+  rm -f "$rows"
+  echo "$added"
+}
+
+# lessons_note - the nightly refresh, as a clause for run's report. A failed scan is said, not fatal:
+# the rows are written, and the next run scans the windows again.
+lessons_note() {
+  local n
+  n=$(lessons_refresh 14) && printf 'lessons: %s window(s) scanned' "$n" || printf 'lessons: scan failed'
+}
+
+cmd_lessons() {
+  local days=14 json=false cached=false use="usage: $NAME lessons [--days N] [--json] [--cached]"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { echo "$use" >&2; return 2; }; days="$2"; shift 2 ;;
+      --json) json=true; shift ;;
+      --cached) cached=true; shift ;;
+      *) echo "$use" >&2; return 2 ;;
+    esac
+  done
+  $cached || lessons_refresh "$days" >/dev/null || { echo "$NAME lessons: scan failed" >&2; return 1; }
+  local dir="${SO_LESSONS_DIR:-$HOME/.agent/lessons}" dream sigd sigs
+  dream=$(cat "$dir"/*.md 2>/dev/null | grep -c 'dream sweep')
+  sigd=$(cat "$dir"/*.md 2>/dev/null | grep 'dream sweep' | grep -c '<!-- sig:')
+  sigs=$(so_lesson_sigs) || return 1
+  { [ -f "$OUT/lesson-effect.jsonl" ] && cat "$OUT/lesson-effect.jsonl"; true; } |
+  jq -rn --argjson sigs "$sigs" --argjson days "$days" --argjson ratio "$LESSON_HELD_RATIO" --argjson min "$LESSON_MIN_SESSIONS" --argjson json "$json" \
+     --argjson dream "$dream" --argjson sigd "$sigd" '
+    def share: if . == null or .sessions == 0 then null else .hits / .sessions end;
+    def pct: if . == null then "-" else "\(. * 1000 | round / 10)%" end;
+    [inputs | select(.days == $days)] as $c
+    | [$sigs[] | . as $l
+       | ($c | map(select(.sig == $l.sig and .since == $l.since and .window == "before")) | last) as $b
+       | ($c | map(select(.sig == $l.sig and .since == $l.since and .window == "after")) | last) as $a
+       | {sig, since, claim, project: (.file | sub("\\.md$"; "")),
+          before: ($b | if . then {sessions, hits} else null end), after: ($a | if . then {sessions, hits} else null end)}
+       | .verdict = (if .before == null then "early"
+                     elif .before.hits == 0 then "no-baseline"
+                     elif .after == null then "early"
+                     elif .before.sessions < $min or .after.sessions < $min then "thin"
+                     elif (.after | share) <= ($ratio * (.before | share)) then "held"
+                     else "recurring" end)] as $ls
+    | ($ls | map(.verdict) | {held: (map(select(. == "held")) | length), recurring: (map(select(. == "recurring")) | length),
+                              no_baseline: (map(select(. == "no-baseline")) | length), thin: (map(select(. == "thin")) | length), early: (map(select(. == "early")) | length)}) as $t
+    | if $json then {lessons: $ls, days: $days} + $t + {dream_lessons: $dream, dream_with_sig: $sigd} | tojson
+      else
+        (if ($ls | length) == 0 then "_(no lesson carries a sig, so none is measured)_"
+         else (["| verdict | project | since | before | after | lesson |", "|---|---|---|---|---|---|"]
+               + ($ls | map("| \(.verdict) | \(.project) | \(.since) | "
+                            + (.before | if . then "\(.hits)/\(.sessions) \(share | pct)" else "-" end) + " | "
+                            + (.after | if . then "\(.hits)/\(.sessions) \(share | pct)" else "-" end) + " | "
+                            + (.claim | gsub("[|\n]"; " ") | .[0:70]) + " |"))) | join("\n") end),
+        "\($t.held) held, \($t.recurring) recurring, \($t.no_baseline) no-baseline, \($t.thin) thin, \($t.early) early (\($days)d windows); \($sigd) of \($dream) dream-sweep lessons carry a sig"
+      end'
+}
+
 # rework DIR [--days N] [--until T] [--sample N] - the rework count over a repo's own commits:
 # every commit on its default branch in the N days (60) to T (now), the same method `run` puts on
 # each merged PR. Non-fix commits old enough for their window are the base; the review's figure
@@ -769,6 +887,7 @@ case "${1:-run}" in
   langfuse) shift; cmd_langfuse "$@" ;;
   backfill-harness) shift; cmd_backfill_harness "$@" ;;
   rework) shift; cmd_rework "$@" ;;
-  -h|--help) sed -n '2,39p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--by hook|skill] [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | costs [--days N] | langfuse [--all] | backfill-harness YYYY-MM | rework DIR [--days N] [--until T] [--sample N]" >&2; exit 2 ;;
+  lessons) shift; cmd_lessons "$@" ;;
+  -h|--help) sed -n '2,40p' "$0" ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--by hook|skill] [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | costs [--days N] | langfuse [--all] | backfill-harness YYYY-MM | rework DIR [--days N] [--until T] [--sample N] | lessons [--days N] [--json] [--cached]" >&2; exit 2 ;;
 esac

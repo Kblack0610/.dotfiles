@@ -115,6 +115,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `failed_unexplained` (now) | FAILED, STALLED or BLOCKED lines of the last 24h in any runner's `activity.log` that end `why: unrecorded`: a failure path with no `proof_why` (also in `ledger`) |
 | `board_open` (now) | the ledger's `board_open` |
 | `loop_dark` (now) | finding episodes of the last 7d still firing that reached class human with no response but a page (`loop`) |
+| `lesson_held_share` (now) | lessons with a sig that held / those that held or recurred (`agentctl-session-outcomes lessons --cached --json`); `?` until one has a verdict |
 | `ledger_coverage` (now) | PRs merged in the last `CHAIN_DAYS` (7) in `pr-ci.jsonl` that an active or done item's `pr` names (`owner/repo#N` or a forge URL by repo, a bare `N` by number) / all of them |
 | `untracked_merged_prs` (now) | those same PRs no item names |
 | `board_orphan_started` (now) | started (`[/]`) agent rows in `notes board --json` that no active item's `row` names |
