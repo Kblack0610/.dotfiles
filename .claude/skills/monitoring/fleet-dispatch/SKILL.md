@@ -14,6 +14,12 @@ The intake role of `fleet-lead` (Binks). `fleet-dispatch` keeps the queue fed: t
 
 Away comes from `fleet-presence`: no keypress in any tmux client and no desktop input for `AWAY_AFTER_MIN` minutes (set in the conf). It takes no time of day, because a night is a long away. When the human comes back, board starts drop to the present trickle at the next pass and running sessions carry on; night items wait for away. If it prints `unread`, usually because `hypridle` is not running, dispatch treats the human as here: the trickle.
 
+## Scope and triggers
+
+Covers keeping the agent-queue topped up from the board, the away rate and present trickle, and starting a session by hand (`fleet-dispatch start`).
+
+Use for "what would dispatch pick", "why did it skip that row", "start a session for this row", "pause dispatch". Moving live sessions through their plans: `shepherd`. Load and holds: `fleet-pace`.
+
 Who may take a row is `~/.config/fleet-dispatch/workers.json`, walked in file order:
 
 - `requested`: `#requested` rows tagged `#worker/requested`, on `unity-core-playground`, up to tier 2.

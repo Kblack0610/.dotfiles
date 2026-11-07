@@ -12,7 +12,7 @@ metadata:
 
 Turns a day of work into a Slack-ready EOD, or a week of EODs into a weekly recap, for any job. The shape and rules are shared, and each job has its own config. The draft is saved under the job's notes, linted on the job's channel, and never sent. When the human pastes back what they sent, the edit size is recorded, and that number is how the prompts get better.
 
-## When to Use
+## Scope and triggers
 
 - "write my EOD", "EOD for <job>", "draft today's update".
 - "draft the weekly", "weekly recap for <job>" (on the job's `weekly_day`, after that day's EOD).

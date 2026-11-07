@@ -14,7 +14,7 @@ One pass that spends fewer tokens on the same work. It produces a measured basel
 
 The numbers come from `agent-usage burn` (`.local/bin/agent-usage`, `.local/lib/agent-usage-burn.py`). It owns cost, PRs and the session splits; per-response tokens and tool output are `claude-recall tool-output`'s, and what each call costs in responses is `claude-recall tool-calls`'s. The nightly `agent-usage tokens snapshot` keeps both per day in `~/.agent/token-usage/`, so read the last 7 for a trend before measuring anew. When a tool lacks a number you need, extend it with a fixture test instead of counting by hand. This file holds only the procedure.
 
-## When to Use
+## Scope and triggers
 
 - The human says usage or spend is too high, or asks for "usage cleanup pass N".
 - A spend watch from `sentinel` keeps firing and nobody can say where the tokens go.

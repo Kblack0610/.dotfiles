@@ -20,6 +20,12 @@ The fleet lead is persona **Binks** (`~/.dotfiles-private/.claude/PERSONAS.md`):
 
 The aim is measured improvement: the KPIs in `fleet-bench kpi` move the better way, one at a time, each through a row that carries its check (an `improve:` line, step 3), and nothing counts as improved until retro has read the number after the PR. Pace is the means. The human wants every session moving and the machine working hard but responsive: about 70% of its CPU (load near 17 on 24 cores, `top` idle near 30%). A fleet sitting near 100% idle is as much a failure as one at 0% idle. Every pass looks at both directions.
 
+## Scope and triggers
+
+Covers one pass over every live agent session: routing each due line to its role skill, and keeping the standing orders, log, pages and rundowns.
+
+Use for "what are my agents doing", "where are we", "run a fleet pass". Load and holds: `fleet-pace`. Nudges and delivery state: `shepherd`. Queue top-up: `fleet-dispatch`.
+
 ## Verb: `pass`
 
 One pass. It runs two ways, and neither waits for the other:

@@ -21,8 +21,6 @@ Takes one downloaded Asset Store pack to a library package a playground game pla
 
 Bring an Asset Store pack into the BNB asset-library and then into a unity-core-playground game, in the order the repo runbook gives, ending on its Done when list. Use when the user says "bring this pack in", "ingest X into the library", "add this asset store pack to the game", "make these items usable in <game>", or after asset-store-audit marked a pack Adopt. It is a thin driver: the procedure lives in the playground's docs/authoring/asset-library.md (Bringing a package in) and the library's docs/ingesting-a-pack.md, and this skill only says where to start, what to read, and which traps have cost sessions hours. Not for deciding whether a pack is worth bringing in (that is asset-store-audit, run it first), not for adding a map or character that uses library art (that is playground-new-content), and not for running tests (that is playground-headless-test).
 
-## When to Use
-
 - When a pack has an Adopt verdict and should become a `com.blacknbrown.lib.*` package.
 - When library items exist but a game cannot load them (`InvalidKeyException`, missing from a picker).
 
