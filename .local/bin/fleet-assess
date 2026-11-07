@@ -111,18 +111,25 @@ holds_set() {
 # --- process rows -----------------------------------------------------------------------
 # Who drives a process decides how it can be stopped: a `claude` ancestor can take a
 # message, a tmux pane with none is a `shell` loop (gate or kill only), an `agentctl` unit
-# stops through agentctl, and anything else was reparented to init: an `orphan`.
+# stops through agentctl, another systemd service is a `unit` (systemctl --user stop, its
+# name in the session column), and anything else was reparented to init: an `orphan`.
+# 2026-11-07 (ar-916) the `agent-panel list` of the fleet-state tick read as an orphan.
 classify() {
-  local pid="$1" q="$1" i comm class="" pane=""
-  if grep -q 'agentctl@' "/proc/$pid/cgroup" 2>/dev/null; then class=agentctl; fi
+  local pid="$1" q="$1" i comm class="" pane="" cg unit="" proc="${FLEET_PROC:-/proc}"
+  cg="$(cat "$proc/$pid/cgroup" 2>/dev/null)"
+  case "$cg" in *agentctl@*) class=agentctl ;; esac
+  unit="$(sed -n 's|^0::.*/||p' <<<"$cg")"; case "$unit" in *.service) ;; *) unit="" ;; esac
   for i in $(seq 1 12); do
     # ppid counted after the last ")": comm itself may hold spaces or parens.
-    q="$(sed 's/.*) //' "/proc/$q/stat" 2>/dev/null | cut -d' ' -f2)"
+    q="$(sed 's/.*) //' "$proc/$q/stat" 2>/dev/null | cut -d' ' -f2)"
     [ -n "$q" ] && [ "$q" -gt 1 ] || break
-    comm="$(cat "/proc/$q/comm" 2>/dev/null)"
+    comm="$(cat "$proc/$q/comm" 2>/dev/null)"
     [ -z "$class" ] && [ "$comm" = claude ] && class=claude
     case "$comm" in "tmux: server") pane=1; break ;; systemd) break ;; esac
   done
+  if [ -z "$class" ] && [ -z "$pane" ] && [ -n "$unit" ]; then
+    printf 'unit\t%s\t-\n' "$unit"; return
+  fi
   [ -n "$class" ] || { [ -n "$pane" ] && class=shell || class=orphan; }
   printf '%s\t%s\t%s\n' "$class" "$(session_of "$pid")" "$(pane_of "$pid")"
 }
