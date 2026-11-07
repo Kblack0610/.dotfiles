@@ -374,9 +374,9 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field main .week_gone <<<"$output")" = 50 ]
-  [ "$(field main .over_pace <<<"$output")" = false ]
+  [ "$(field main .room.ok <<<"$output")" = true ]
   [ "$(field main .run_out <<<"$output")" = null ]
-  [ "$(field alt .over_pace <<<"$output")" = true ]
+  [ "$(field alt .room.reason <<<"$output")" = pace ]
   # 84h gone for 80%, so 100% lands 21h from now
   [ "$(field alt .run_out <<<"$output")" = "$((NOW + 21 * 3600))" ]
 }
@@ -387,9 +387,9 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   week alt 104 10
   run --separate-stderr "$ACCT" status --json
   assert_success
-  [ "$(field main .over_pace <<<"$output")" = false ]
+  [ "$(field main .room.ok <<<"$output")" = true ]
   [ "$(field main .run_out <<<"$output")" = null ]
-  [ "$(field alt .over_pace <<<"$output")" = true ]
+  [ "$(field alt .room.ok <<<"$output")" = false ]
   [ "$(field alt '.run_out < '$NOW <<<"$output")" = true ]
 }
 
@@ -413,8 +413,8 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   export CC_PROM_URL=http://prom.test
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +30% +50% +under .*\$600 +0 +0\.83 +now +ok +m@x$'
-  assert_line --regexp '^alt +- +80% +50% +over .*\$0 +0 +0\.24 +[A-Z][a-z]{2} [0-9:]{5} +pace +a@x$'
+  assert_line --regexp '^main +- +30% +50% +.*\$600 +0 +0\.83 +now +ok +m@x$'
+  assert_line --regexp '^alt +- +80% +50% +.*\$0 +0 +0\.24 +[A-Z][a-z]{2} [0-9:]{5} +pace +a@x$'
 }
 
 @test "status: Prometheus down leaves the percents and blanks only the dollars" {
@@ -424,7 +424,7 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   export CC_PROM_URL=http://prom.test   # the curl stub fails
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +30% +50% +under .* - +0 +0\.83 +now +ok +m@x$'
+  assert_line --regexp '^main +- +30% +50% +.* - +0 +0\.83 +now +ok +m@x$'
 }
 
 @test "live sessions count per account, only claude processes" {
@@ -459,7 +459,8 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   assert_line 'claude_account_read_ok{account="main"} 1'
   assert_line 'claude_account_week_used_percent{account="main"} 30'
   assert_line 'claude_account_week_gone_percent{account="main"} 50'
-  assert_line 'claude_account_over_pace{account="main"} 0'
+  assert_line 'claude_account_room{account="main"} 1'
+  refute_line --partial 'over_pace'
   refute_line --partial 'five_hour'
   assert_line 'claude_account_read_ok{account="alt"} 0'
   refute_line --partial 'week_used_percent{account="alt"}'
@@ -638,7 +639,7 @@ STUB
   assert_equal "$stderr" 'claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Tue 02:40 at this rate'
   # the same row status prints
   run "$ACCT" status
-  assert_line --regexp '^alt +- +15% +9% +over +Tue 02:40 '
+  assert_line --regexp '^alt +- +15% +9% +Tue 02:40 '
   # the reserve, when that is what refuses the closest one; it lasts to its reset
   week main 88 2
   week alt 90 100
@@ -1028,5 +1029,8 @@ seen_claude() {
   run grep -nE 'SLACK_PCT:-[0-9]|RESERVE_PCT:-[0-9]|SESSION_RATE:-[0-9]' "$ACCT"
   assert_failure
   [[ "$(grep -cE '\$u > \$g \+ \$slack' "$ACCT")" == 1 ]]
+  # the plain used-past-gone flag is gone: it called an account over that dispatch still starts on
+  run grep -n 'over_pace' "$ACCT"
+  assert_failure
   [[ "$(grep -c 'RESERVE_PCT=' "$REPO_ROOT/.config/claude-acct/pace.conf")" == 1 ]]
 }

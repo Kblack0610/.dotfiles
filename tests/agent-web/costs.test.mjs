@@ -42,7 +42,7 @@ const MODEL_COLS = ["model", "harness", "sessions", "tokens", "cost", "share", "
 // The table's columns are every Line column in Line::COLUMNS order, whatever the cut.
 const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src", "pr", "at"];
 // hub_core::burn::Burn as serialized: the 2026-11-06 fleet, 3.3x over what the weeks carry.
-const acct = (name, o) => ({ name, state: "ok", live: 0, used: 10, gone: 5, burn: 1, sustain: 2, over: 0.5, idle_at: 1794003600, burn_at: null, run_out: null, resets: 1794200000, ...o });
+const acct = (name, o) => ({ name, state: "ok", room: { ok: true, reasons: [], headroom: 4.2, text: "room, 4 points spare" }, live: 0, used: 10, gone: 5, burn: 1, sustain: 2, over: 0.5, idle_at: 1794003600, burn_at: null, run_out: null, resets: 1794200000, ...o });
 const burn = (o = {}) => ({
   at: 1794000000, level: "bad", head: "4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live, carries ~11", drip_line: "15 started in 1h, 349 in 24h",
   accounts: [acct("alt", { live: 9, used: 55, gone: 25, burn: 1.04, sustain: 0.36 }), acct("bnb", { live: 17, used: 7, gone: 1, burn: 1.97, sustain: 0.56 }), acct("main", { live: 13, used: 33, gone: 12, burn: 1.51, sustain: 0.45, burn_at: 1794000600 })],
@@ -157,7 +157,7 @@ test("the burn section leads the tab: headline, drip with its hold link, pace an
   assert.match(h, /<details class="csec" data-k="burn" id="sec-burn" open>/, "red starts open");
   assert.match(h, /15 started in 1h, 349 in 24h <a class="warn" href="#sessions" title="fleet-assess says HOLD">dispatch held -> Sessions<\/a>/);
   assert.match(h, /at this burn: main [^;]+; if idle: all by /);
-  assert.match(h, /<td>bnb<\/td><td class="n">17<\/td><td class="n">7%<\/td><td class="n">1%<\/td><td class="n warn">1\.97<\/td><td class="n">0\.56<\/td><td>after reset<\/td>/, "an account over its sustainable rate is amber; burn that never gets there is after the reset");
+  assert.match(h, /<td>bnb<\/td><td class="n">17<\/td><td class="n">7%<\/td><td class="n">1%<\/td><td class="ok">room, 4 points spare<\/td><td class="n warn">1\.97<\/td><td class="n">0\.56<\/td><td>after reset<\/td>/, "an account over its sustainable rate is amber; burn that never gets there is after the reset");
   assert.doesNotMatch(h, /<td class="n warn">0\.45/, "keeps/h is never amber");
 });
 
@@ -172,9 +172,24 @@ test("a green burn folds to its headline, and a fold the reader set is kept", ()
 test("an account claude-acct could not read is named, and no data says so", () => {
   const b = burn({ accounts: [acct("old", { state: "unreadable" }), acct("new", { state: "idle" })] });
   const h = show(board({ burn: b }));
-  assert.match(h, /<td>old<\/td><td colspan="9" class="bad">usage unreadable<\/td>/);
-  assert.match(h, /<td>new<\/td><td colspan="9" class="muted">idle, token refreshes on launch<\/td>/);
+  assert.match(h, /<td>old<\/td><td colspan="10" class="bad">usage unreadable<\/td>/);
+  assert.match(h, /<td>new<\/td><td colspan="10" class="muted">idle, token refreshes on launch<\/td>/);
   assert.match(show(board({ burn: burn({ accounts: [] }) })), /<div class="panel muted">no data from claude-acct<\/div>/);
+});
+
+test("the room column prints claude-acct's verdict: points past the line, the reserve, a stale textfile", () => {
+  const room = (o) => ({ ok: false, reasons: ["pace"], headroom: -19.5, text: "no room: pace 20 points past the line", ...o });
+  const b = burn({ stale: "stale, claude-acct's textfile is not fresh", accounts: [
+    acct("a", { room: room({}) }),
+    acct("b", { room: room({ reasons: ["reserve", "five_hour"], headroom: 3, text: "no room: reserve, five hour" }) }),
+    acct("c", { state: "stale" }),
+    acct("d", { room: null }),
+  ] });
+  const h = show(board({ burn: b }));
+  assert.match(h, /<td class="bad">no room: pace 20 points past the line<\/td>/);
+  assert.match(h, /<td class="bad">no room: reserve, five hour<\/td>/);
+  assert.match(h, /<td>c<\/td><td colspan="10" class="bad">stale, claude-acct&#39;s textfile is not fresh<\/td>/);
+  assert.match(h, /<td class="muted">-<\/td>/, "an account with no published verdict shows none, never a derived one");
 });
 
 // hub_core::sections::Block as serialized: All PRs, then the rows as printed cells.

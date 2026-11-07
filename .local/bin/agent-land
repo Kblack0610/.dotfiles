@@ -465,7 +465,9 @@ case "$done_as" in
 more)
   # Its first PR credited the item and closed its row; this one joins the lists, in step. Read
   # again here, not at the start, so a PR another run added during the checks is kept.
-  [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || agent-queue claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && ! out=$(agent-queue claim "$item" 2>&1); then
+    echo "item: could not record this session on $item: $(lastline "$out")" >&2
+  fi
   it=$(agent-queue show "$item" --json 2>&1) || fail item "agent-queue show: $(lastline "$it")"
   out=$(agent-queue set "$item" "pr=$(jq -r .pr <<<"$it") $pr_ref" "merged=$(jq -r '.merged // ""' <<<"$it") $merged" 2>&1) ||
     fail item "$(lastline "$out")"
