@@ -1,9 +1,9 @@
 [Unit]
-Description=Sync GitHub scheduled-run facts into ~/.local/state/schedules/state.json every 10 minutes
+Description=Sync CI runs into ~/.local/state/schedules/state.json and ~/.local/state/ci/runs.jsonl every 10 minutes
 
-# GitHub sends this machine no event when a scheduled run ends, so this samples. A warm pass
-# is about two gh calls per repo in day-log-ci; ten minutes is how late a hold or the hub can
-# read a nightly's end.
+# GitHub sends this machine no event when a run ends, so this samples. A warm pass is one gh
+# call per GitHub repo in day-log-ci plus a conditional runs page, a 304 that costs no rate
+# limit when nothing changed; ten minutes is how late a hold or the hub can read a run's end.
 [Timer]
 OnBootSec=3min
 OnUnitActiveSec=10min
