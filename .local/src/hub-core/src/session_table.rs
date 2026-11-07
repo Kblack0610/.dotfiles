@@ -97,7 +97,7 @@ pub struct SessionRow {
     /// row has none: its `cost_usd` already is that.
     pub item_cost_usd: Option<f64>,
     pub account: String,
-    /// The harness it ran on (`queue::Item::harness`); with no item, claude-lazer on the gateway
+    /// The harness it ran on (`harness_of`): the item's or outcome row's, claude-lazer on the gateway
     /// account and claude on any other.
     pub harness: String,
     pub source: Source,
@@ -368,7 +368,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         finished: i.finished.as_deref().and_then(ts),
         cost_usd: item_cost(i, &sids, feed),
         account: extra_str(i, "account"),
-        harness: i.harness().to_string(),
+        harness: harness_of(i.harness(), &extra_str(i, "account")),
         source: Source::Queue,
         ..SessionRow::default()
     }
@@ -390,13 +390,24 @@ fn outcome_row(e: &Ended) -> SessionRow {
         finished: e.updated_epoch,
         cost_usd: e.cost_usd,
         account: e.account.clone().unwrap_or_default(),
-        harness: e
-            .harness
-            .clone()
-            .unwrap_or_else(|| queue::HARNESS_DEFAULT.into()),
+        harness: harness_of(
+            e.harness.as_deref().unwrap_or(""),
+            e.account.as_deref().unwrap_or(""),
+        ),
         source: Source::Outcome,
         ..SessionRow::default()
     }
+}
+
+/// The harness a row shows: what its item or outcome row says (empty or blank is claude), except
+/// that a session on the gateway account that says claude, or nothing, ran claude-lazer.
+fn harness_of(said: &str, account: &str) -> String {
+    match said.trim() {
+        "" | queue::HARNESS_DEFAULT if account == GATEWAY => queue::HARNESS_GATEWAY,
+        "" => queue::HARNESS_DEFAULT,
+        h => h,
+    }
+    .to_string()
 }
 
 /// Every row in the table's own order: live sessions by the vocabulary's bucket order (what needs
@@ -425,13 +436,9 @@ pub fn rows(
             r.account = s.account.clone();
         }
     }
-    for r in live.iter_mut().filter(|r| r.harness.is_empty()) {
-        r.harness = if r.account == GATEWAY {
-            "claude-lazer"
-        } else {
-            queue::HARNESS_DEFAULT
-        }
-        .into();
+    // A live row's account is known only after the join above, so its harness is settled here.
+    for r in live.iter_mut() {
+        r.harness = harness_of(&r.harness, &r.account);
     }
     live.sort_by(|a, b| {
         (vocab.rank(&a.bucket), &a.target).cmp(&(vocab.rank(&b.bucket), &b.target))
@@ -623,6 +630,22 @@ mod tests {
         let mut o = f.ended[2].clone();
         o.harness = None;
         assert_eq!(outcome_row(&o).harness, "claude", "an older outcome row");
+        o.harness = Some(" ".into());
+        assert_eq!(outcome_row(&o).harness, "claude", "a blank one");
+        o.account = Some(GATEWAY.into());
+        assert_eq!(
+            outcome_row(&o).harness,
+            "claude-lazer",
+            "a blank one on the gateway"
+        );
+        f.items[0].extra.insert("agent".into(), "claude".into());
+        s[0]["account"] = json!(GATEWAY);
+        let gw = rows(&s, &vocab(), &f, &[]);
+        let own = gw.iter().find(|x| x.key == "lab/d:1").unwrap();
+        assert_eq!(
+            own.harness, "claude-lazer",
+            "a claude item on the gateway ran claude-lazer"
+        );
         let v = View::new::<SessionRow>("harness:codex", "", "", "");
         let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
         assert_eq!(kept, ["lab/d:1"]);

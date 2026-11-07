@@ -54,8 +54,9 @@ pub async fn list() -> ApiResult<Json<Vec<serde_json::Value>>> {
 }
 
 /// The item as agent-queue printed it plus what a row shows: `harness` (`Item::harness_label`,
-/// `claude` when the item names no agent), `cost` (dollars, absent when unknown), the PR's label and link, `pr_merged` (the merge was recorded), `unproven`, and for a
-/// done item its `day`, its `day_label` and that day's `day_total` line, so the page sums and words nothing.
+/// `claude` when the item names no agent), `cost` (dollars, absent when unknown), the PR's
+/// label and link, `pr_merged` (the merge was recorded), `unproven`, and for a done item its
+/// `day`, its `day_label` and that day's `day_total` line, so the page sums and words nothing.
 fn item_view(i: &Item, days: &BTreeMap<String, DayTotal>) -> serde_json::Value {
     let mut v = serde_json::to_value(i).unwrap_or_default();
     v["harness"] = i.harness_label().into();

@@ -18,6 +18,10 @@ pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
 /// The harness of an item, or a session, that names none.
 pub const HARNESS_DEFAULT: &str = "claude";
 
+/// The harness of a session on the Lazer gateway (`agent_panel::account::GATEWAY`) whose item
+/// names no other: claude-lazer's launcher sets `ANTHROPIC_BASE_URL`.
+pub const HARNESS_GATEWAY: &str = "claude-lazer";
+
 /// The store's states, in the order every surface shows them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

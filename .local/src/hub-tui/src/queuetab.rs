@@ -325,7 +325,7 @@ pub fn page(
                 "SLUG", "PRIORITY", "PROJECT", "MODE", "HARNESS", "WHEN", "STATE", "TASK",
             ],
             rows: rows.iter().map(|i| row(i, p, now)).collect(),
-            keep: vec![0, 6, 1, 5, 4, 2, 3],
+            keep: vec![0, 6, 1, 5, 2, 3, 4],
             flex: Some(7),
             flexmin: 20,
             cap: vec![(0, 40), (4, 20), (6, 36)],
