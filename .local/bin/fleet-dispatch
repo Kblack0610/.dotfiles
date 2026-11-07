@@ -61,7 +61,9 @@ unset _k _v
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
 : "${DISPATCH_START_LOAD:=2.5}"   # 1-min load one session started in the last DISPATCH_START_LOAD_MIN minutes will still add; 0 is off. Provisional: 2.8 measured over 21 starts on 24 cores (2026-11-07), medium confidence; re-measure when the session mix changes
 : "${DISPATCH_START_LOAD_MIN:=5}"   # minutes a start counts as not yet in the load
-: "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine really idle: niced Unity runs fill it while load looks fine
+: "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine free, idle plus nice time, over the real idle sample (real_idle); the conf holds the human's floor
+: "${DISPATCH_IDLE_WINDOW:=60}"   # seconds the real idle sample spans: one 2 s top frame swung 17-41% on one busy hour (human, ask bo20dU, 2026-11-07)
+: "${DISPATCH_PROC_STAT:=/proc/stat}"
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06)
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running or waiting item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
@@ -135,6 +137,7 @@ AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finishe
 AQ_EX_HELD=5       # agent-queue add's exit when admission held an automated add (its admit)
 LOG="$DIR/log.md"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
+IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which every gate reuses for DISPATCH_IDLE_WINDOW seconds
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session from a
@@ -2609,9 +2612,31 @@ waiting_sessions() {
   return 0
 }
 
-# real_idle -> percent of the machine idle over a two-frame top sample; the first frame is since boot.
+# cpu_jiffies -> "<free> <total>" since boot from the aggregate cpu line of /proc/stat. Free is idle
+# plus nice: nice-19 work (the Unity editors) yields to whatever a start brings, by design. Total is
+# the first eight counters; guest time is already inside user and nice.
+cpu_jiffies() { awk '$1 == "cpu" { printf "%.0f %.0f\n", $3 + $5, $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9; exit }' "$DISPATCH_PROC_STAT" 2>/dev/null; }
+
+# real_idle -> percent of the machine free over a DISPATCH_IDLE_WINDOW-second /proc/stat delta.
+# The kernel has no idle event, so this samples: one sample serves every gate for a window, so a
+# pass and its headroom wait once. Prints nothing when /proc/stat cannot be read.
 # IDLE_NOW: a reading this call already took, so a report and its gate agree on one sample.
-real_idle() { [ -z "${IDLE_NOW:-}" ] || { echo "$IDLE_NOW"; return; }; LC_ALL=C top -bn2 -d2 2>/dev/null | sed -n 's/^%Cpu.* \([0-9.]*\) id,.*/\1/p' | tail -n 1; }
+real_idle() {
+  [ -z "${IDLE_NOW:-}" ] || { echo "$IDLE_NOW"; return; }
+  local at pct f0 t0 f1 t1 age
+  # A sample from the future (the clock stepped back) is no sample.
+  if { read -r at pct < "$IDLE"; } 2>/dev/null && [[ "$at" =~ ^[0-9]+$ && "$pct" =~ ^[0-9.]+$ ]] &&
+    age=$(( $(date +%s) - at )) && [ "$age" -ge 0 ] && [ "$age" -lt "$DISPATCH_IDLE_WINDOW" ]; then
+    echo "$pct"; return
+  fi
+  read -r f0 t0 < <(cpu_jiffies) || return 0
+  sleep "$DISPATCH_IDLE_WINDOW"
+  read -r f1 t1 < <(cpu_jiffies) || return 0
+  [ $(( t1 - t0 )) -gt 0 ] || return 0
+  pct=$(LC_ALL=C awk -v f=$(( f1 - f0 )) -v t=$(( t1 - t0 )) 'BEGIN { printf "%.1f", 100 * f / t }')
+  { mkdir -p "$DIR" && echo "$(date +%s) $pct" > "$IDLE.$$" && mv -f "$IDLE.$$" "$IDLE"; } 2>/dev/null || rm -f "$IDLE.$$"
+  echo "$pct"
+}
 
 # firing_findings -> the shared faults firing now, one per line. Open is not firing: a finding stays
 # open for an hour after its last sample, which would hold starts long after the fault cleared.
@@ -2670,9 +2695,9 @@ gate() {
     '' | *unreadable*) why+=("github budget unreadable") ;;
     *LOW*) why+=("$github") ;;
   esac
-  idle=$(real_idle)
+  # Read only when it decides: a floor start goes past it and should not wait out a sample.
   if [ "$red" = 1 ] || floor_open || project_floor_open; then :
-  elif [ -z "$idle" ]; then why+=("real idle unreadable")
+  elif idle=$(real_idle) && [ -z "$idle" ]; then why+=("real idle unreadable")
   elif awk -v i="$idle" -v m="$DISPATCH_MIN_IDLE" 'BEGIN { exit !(i < m) }'; then
     why+=("real idle ${idle}% is under ${DISPATCH_MIN_IDLE}%")
   fi
