@@ -35,7 +35,8 @@
 #                                recorded confidence, its measure died, or a rule's text left its source
 #   fleet-bench kpi [--json] [--at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
-#                                nightly token-usage snapshots), against KPI_THRESHOLDS;
+#                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS),
+#                                against KPI_THRESHOLDS;
 #                                --at as of a past time, --trend one row a day of the 7d values,
 #                                --check exits 1 past a threshold, on the KPIs whose name matches ERE
 #   fleet-bench chain [--json|--check]
@@ -207,6 +208,7 @@ set -uo pipefail
 : "${WORKTREE_GC_LOG:=$HOME/.agent/telemetry/worktree-gc.jsonl}"   # one row a night: trees by state (agentctl-worktree-gc is its writer)
 : "${WORKTREE_GC_STALE_H:=48}"                                   # a last row older than this reads ?, a dead runner is not a flat count
 : "${CLAUDE_STARTUP_LOG:=$HOME/.agent/telemetry/claude-startup.jsonl}"   # one row per SessionStart (startup-telemetry.sh)
+: "${BENCH_CALLS:=${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/calls.jsonl}}"   # one row per agent call (agent-run lib/calls.sh)
 : "${BENCH_TOKENS_DIR:=$HOME/.agent/token-usage}"  # the nightly token-usage snapshots: the token KPIs' days
 : "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
 : "${BENCH_COMMS_CMD:=comms-lint}"                 # the newest nightly comms snapshot: `line` and `kpi --json`
@@ -281,6 +283,8 @@ def leaves_landed: .open == 0 and .done > 0;
 # agent-ask stamps date +%Y-%m-%dT%H:%M:%S%z; jq has no offset-aware parser
 def ask_epoch: (.[0:19] + "Z" | fromdateiso8601)
   - ((if .[19:20] == "-" then -1 else 1 end) * ((.[20:22] | tonumber) * 3600 + (.[22:24] | tonumber) * 60));
+# iso_epoch: an ISO time with a Z, +HH:MM or +HHMM offset (date -Iseconds writes the colon form)
+def iso_epoch: if endswith("Z") then fromdateiso8601 else sub(":(?<m>[0-9]{2})$"; "\(.m)") | ask_epoch end;
 def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;   # 3 places, null over none
 # move($before; $after; $dir; $flat): improved or regressed when the value moved more than $flat
 # (relative) the way $dir says (-1 lower is better, 1 higher), flat inside that, - with no value
@@ -1807,6 +1811,7 @@ KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_false_defer_pct ask_unclear_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
 KPI_STARTUP="startup_ready_ms_p50"
+KPI_SANDBOX="sandboxed_lane_pct"
 # Each scored runner's runner_score_<name> is judge-eval's too, listed from its output and the
 # thresholds rather than here: the runner confs' SCORE= is the one list of lanes.
 
@@ -1853,6 +1858,20 @@ startup_kpi() {
   jq -nc --argjson t "$1" --slurpfile r <(startup_rows) "$JQ_LIB$STARTUP_JQ"'
     def w($d): [$r | starts[] | select(.epoch > $t - $d * 86400 and .epoch <= $t) | .ready_ms] | median;
     {startup_ready_ms_p50: {"7d": w(7), "28d": w(28)}}'
+}
+
+# sandbox_kpi <now> -> the lane sandbox KPI object, the same shape as comms_kpi. sandboxed_lane_pct: of
+# the named lanes that ran claude or codex in the window (calls.jsonl, agent-run lib/calls.sh), the
+# percent whose newest call ran under a lane sandbox profile (the record's sandbox field). A refused
+# run makes no call (lib/sandbox.sh records it elsewhere). A raw-harness call has no shell to confine.
+sandbox_kpi() {
+  [ -s "$BENCH_CALLS" ] || { echo '{}'; return 0; }
+  jq -nc --argjson t "$1" "$JQ_LIB"'
+    [inputs | objects | select((.agent // "") != "" and (.harness == "claude" or .harness == "codex") and (.at | type) == "string")
+     | {agent, sb: ((.sandbox // "") != ""), e: (try (.at | iso_epoch) catch null)} | select(.e)] as $c
+    | def w($d): [$c[] | select(.e > $t - $d * 86400 and .e <= $t)] | group_by(.agent) | map(max_by(.e).sb)
+        | if length == 0 then null else (map(select(.)) | length) * 100 / length | round1 end;
+    {sandboxed_lane_pct: {"7d": w(7), "28d": w(28)}}' "$BENCH_CALLS" 2>/dev/null || echo '{}'
 }
 
 # KPI_DEFS: the windowed KPIs as jq, shared by kpi, its --trend and effect. win($t; $d) is every
@@ -1934,10 +1953,10 @@ kpi_tokens() {
 kpi_json() {
   local lim='{}' cm='{}'
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
-  [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1"))
+  [ "${3:-0}" = 1 ] || cm=$(jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1") <(sandbox_kpi "$1"))
   jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
-     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP" "$KPI_DEFS"'
+     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP $KPI_SANDBOX" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
        ((($commskeys | split(" ")) + ([$cm, $lim | keys[] | select(startswith("runner_score_")) | sub("_(min|max)$"; "")] | unique))[]
@@ -2603,7 +2622,7 @@ improve_check() {
   v=$(jq -c --argjson now "$(now)" --argjson d "$BENCH_EFFECT_DAYS" --argjson flat "$BENCH_EFFECT_FLAT" \
       --argjson k "$json" --slurpfile log <(printf '%s\n' "$log") "$JQ_LIB"'
     def log_epoch: sub("\\.[0-9]+"; "")
-      | if endswith("Z") then fromdateiso8601 else sub(":(?<m>[0-9]{2})$"; "\(.m)") | ask_epoch end;
+      | iso_epoch;
     .[] | . as $c | ($c.subject | ltrimstr("item:")) as $slug | ($c.subject | startswith("item:")) as $item
     | [$log[] | select(if $item then .item == $slug and ((.action == "item-moved" and .to == "done") or .action == "item-cancelled")
                        else .id == $c.subject and (.action | IN("done", "dropped", "dup")) end)
