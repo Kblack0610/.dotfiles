@@ -567,29 +567,33 @@ claude_gone() {
   [ $(( $(date +%s) - t )) -ge "$DISPATCH_REAP_GRACE" ] || return 1
   [ -n "${REAP_PANEL+set}" ] || REAP_PANEL=$(agent-panel list --json 2>/dev/null) || REAP_PANEL=''
   [ -n "$REAP_PANEL" ] || return 1
-  [ -z "$sids" ] || ! claude_pid_live "$sids" || return 1
   jq -e -s --arg t "$server/$sess" --arg ids "$sids" '
     ($ids | split(" ") | map(select(. != ""))) as $ids
     | any(.[]; if $ids != [] then (.session_id // "") as $s | $s != "" and ($ids | index($s)) != null
                else $t != "/" and ((.target // "") | sub(":[^:/]*$"; "")) == $t end)
-    | not' <<<"$REAP_PANEL" >/dev/null
+    | not' <<<"$REAP_PANEL" >/dev/null || return 1
+  [ -z "$sids" ] || ! claude_pid_live "$sids"
 }
 
 # claude_pid_live <session ids> -- exit 0 when a Claude process recorded for one of those ids is
-# running: its ~/.claude*/sessions/<pid>.json names the id, the pid is alive and (when the file
-# records it) has the start time the file records, so a reused pid is not a session. agent-panel is
-# a view of those files and can leave a live Claude out (under load, around a compaction); the
-# process is what makes a session gone. 2026-11-07 steam-beta-cut-1106 was failed with its Claude working.
+# running: its ~/.claude*/sessions/<pid>.json names the id, the pid is alive and not a zombie, and,
+# when the file records procStart, started when the file says, so a reused pid is not a session.
+# agent-panel is a view of those files and can leave a live Claude out; the process is what makes a
+# session gone. Each file is parsed alone, so one half-written file hides no other.
 claude_pid_live() {
-  local pid start ids="$1" cur
-  while IFS=$'\t' read -r pid start; do
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
-    [ -n "$start" ] && { cur=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f20); [ -z "$cur" ] || [ "$cur" = "$start" ] || continue; }
+  local f pid start st
+  for f in "$HOME"/.claude*/sessions/*.json; do
+    [ -e "$f" ] || continue
+    IFS=$'\t' read -r pid start < <(jq -r --arg ids "$1" '
+      ($ids | split(" ") | map(select(. != ""))) as $ids
+      | select((.sessionId // "") as $s | .pid != null and $s != "" and ($ids | index($s)) != null)
+      | [.pid, (.procStart // "")] | @tsv' "$f" 2>/dev/null) && [ -n "$pid" ] || continue
+    st=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null) || continue
+    [ -n "$st" ] || continue
+    [ "${st%% *}" != Z ] || continue
+    [ -z "$start" ] || [ "$(cut -d' ' -f20 <<<"$st")" = "$start" ] || continue
     return 0
-  done < <(cat "$HOME"/.claude*/sessions/*.json 2>/dev/null | jq -r --arg ids "$ids" '
-    ($ids | split(" ") | map(select(. != ""))) as $ids
-    | select((.sessionId // "") as $s | .pid != null and $s != "" and ($ids | index($s)) != null)
-    | [.pid, (.procStart // "")] | @tsv' 2>/dev/null)
+  done
   return 1
 }
 

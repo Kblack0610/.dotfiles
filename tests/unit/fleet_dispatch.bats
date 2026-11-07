@@ -2672,9 +2672,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   [ ! -e "$mark" ] || fail "a stale mark survived a reap that read active items"
 }
 
-# 2026-11-07 steam-beta-cut-1106: failed "session ended" while its Claude worked. agent-panel left it
-# out (load, a compaction), and the item recorded session ids, so the live tmux session did not count.
-# A recorded Claude whose process still runs is alive whatever the panel lists.
+# steam-beta-cut-1106 was failed "session ended" while its Claude worked: agent-panel left it out.
 @test "reap keeps an item whose recorded Claude process is running though agent-panel leaves it out, and settles it once the process is gone" {
   project game beta "$SANDBOX/repos/game"
   started_item busy lab:game-agent-1
@@ -2688,6 +2686,17 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   jq -nc --argjson p "$pid" '{pid: $p, sessionId: "s2"}' > "$HOME/.claude-bnb/sessions/$pid.json"
   cmd_reap >/dev/null; cmd_reap >/dev/null; cmd_reap >/dev/null
   [ -n "$(qitem running busy)" ] || { kill "$pid"; fail "reaped an item whose Claude process is running"; }
+  # procStart is the pid's /proc start time: a match keeps the item, a different one is a reused pid.
+  st=$(sed 's/.*) //' "/proc/$pid/stat" | cut -d' ' -f20)
+  jq -nc --argjson p "$pid" --arg s "$st" '{pid: $p, sessionId: "s2", procStart: $s}' > "$HOME/.claude-bnb/sessions/$pid.json"
+  echo '{"pid": 1' > "$HOME/.claude-bnb/sessions/0.json"   # a half-written file hides no other
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(qitem running busy)" ] || { kill "$pid"; fail "a matching procStart did not keep the item"; }
+  jq -nc --argjson p "$pid" '{pid: $p, sessionId: "s2", procStart: "1"}' > "$HOME/.claude-bnb/sessions/$pid.json"
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-busy.md 2>/dev/null)" ] || { kill "$pid"; fail "a reused pid kept the item"; }
+  rm -f "$FLEET_DISPATCH_DIR"/reap-miss/*
+  agent-queue reopen busy --why test >/dev/null
   # A pid file for another session id, or a dead pid, is not this item's Claude.
   jq -nc --argjson p "$pid" '{pid: $p, sessionId: "other"}' > "$HOME/.claude-bnb/sessions/$pid.json"
   cmd_reap >/dev/null; cmd_reap >/dev/null
