@@ -331,9 +331,21 @@ breaking all three at once.
 | `wt new [-c <dir>]` | take the next agent-N of `<dir>`'s repo and land in its session at once; the fetch and checkout run visibly in that session's first pane |
 | `wt done [<name>]` | **the cleanup**: kill the session and reap the worktree, in one go |
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
-| `wt gc [<repo>] [-n]` | reap everything eligible and **name** what it kept, with the reason. An orphan daemon (binary in the tree's Library/, parent gone, no Unity editor open) does not hold a tree: it is ended and its pid named |
+| `wt gc [<repo>] [-n] [--tsv]` | reap everything eligible and **name** what it kept, one state word per tree (below) and the reason. `--tsv` prints `state action name path reason` per tree and no total. An orphan daemon (binary in the tree's Library/, parent gone, no Unity editor open) does not hold a tree: it is ended and its pid named |
 | `wt --list` | every worktree on the machine, TSV |
 | `wt` (no verb) | an fzf picker over that list. Typed, not bound to a key. |
+
+**Worktree states.** `wt gc` gives every entry under `~/.worktrees` one state word, derived each pass from `wt_reap_reason`, git and tmux, never stored. `WT_GC_STATES` in `worktree.sh` lists the same words, and `tests/unit/worktree.bats` fails when this table and that list differ.
+
+| state | what it is | gc does | left by |
+|---|---|---|---|
+| `landed` | clean, its work merged into the trunk or pushed (PR open), nobody in it | reaps it | the reap |
+| `husk` | no `.git`, only caches a tool rewrote after the tree was removed | reaps it | the reap |
+| `claimed` | a live session, pane, Unity editor or process is in it; the reason says what work it holds | keeps it | the session ends |
+| `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, or a submodule worktree lives off it | keeps it and names it every night | commit and push, `ingest-worktree`, or the human |
+| `not-a-worktree` | a symlink, a main checkout, a dir with no `.git` holding more than caches, or a `.git` git cannot resolve | skips it, and does not count it as held | the human |
+
+A plain file in `~/.worktrees` is not listed at all. `wt new` creates a tree (or recycles an idle agent-N in place) and its session claims it at once, so `created` and `recycled` are moments, not states gc can see.
 
 **Reaping is the load-bearing half.** Cheap creation with no reaper is how
 `~/dev/bnb/platform` reached 35 worktrees. `reap` refuses - with the reason, and there is no

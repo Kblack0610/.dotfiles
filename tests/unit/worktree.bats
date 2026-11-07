@@ -53,6 +53,9 @@ make_repo() {
   export ORIGIN MAIN
 }
 
+# no_color -- blank panel-lib's colours, so a test can match a gc line's shape.
+no_color() { C_SEL='' C_INP='' C_DIM='' C_OFF=''; }
+
 # ── Naming: the basename IS the identity ─────────────────────────────────────
 
 @test "a leading dot is stripped, so ~/.dotfiles yields dotfiles-agent-N" {
@@ -656,9 +659,10 @@ orphan_tree() {
 
 @test "gc ends an orphan daemon and reaps the tree it pinned" {
   orphan_tree
+  no_color
   run cmd_gc
   assert_success
-  assert_output --partial 'repo-agent-1 (orphan daemon 500)'
+  assert_line --regexp '^reaped +repo-agent-1 +landed +\(orphan daemon 500\)$'
   assert_output --partial '1 of 1 reapable'
   [ ! -d "$T" ]
   assert_equal "$(cat "$SANDBOX/kill.log")" '-TERM 500'
@@ -666,9 +670,10 @@ orphan_tree() {
 
 @test "gc -n names the orphan daemon and signals nothing" {
   orphan_tree
+  no_color
   run cmd_gc -n
   assert_success
-  assert_output --partial 'repo-agent-1 (orphan daemon 500)'
+  assert_line --regexp '^would reap +repo-agent-1 +landed +\(orphan daemon 500\)$'
   [ -d "$T" ]
   [ ! -e "$SANDBOX/kill.log" ]
 }
@@ -758,11 +763,12 @@ orphan_tree() {
   [ ! -e "$SANDBOX/kill.log" ]
 }
 
-@test "a dirty tree held only by an orphan reads stranded and the orphan lives" {
+@test "a dirty tree held only by an orphan reads held and the orphan lives" {
   orphan_tree
   echo edit > "$T/wip"
+  no_color
   run cmd_gc
-  assert_output --partial 'stranded, nobody in it'
+  assert_line --regexp '^kept +repo-agent-1 +held +dirty'
   [ -d "$T" ]
   [ ! -e "$SANDBOX/kill.log" ]
 }
@@ -885,6 +891,77 @@ done_from_inside() {
   mkdir -p "$WT_ROOT/.clone/.git"
   run cmd_gc
   assert_output --partial 'no worktrees to consider'
+}
+
+# ── gc state words: README "Worktree states" ─────────────────────────────────
+
+@test "gc classifies dirty and unpushed trees as held, a symlink as not-a-worktree, and ignores a loose file" {
+  # The negative control: nothing here is reapable, so a real (not dry) pass must remove none.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b dirty
+  printf 'edit\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-2" -b unpushed
+  git -C "$WT_ROOT/repo-agent-2" commit --quiet --allow-empty -m local
+  ln -s "$MAIN" "$WT_ROOT/repo"
+  printf 'notes\n' > "$WT_ROOT/loose.txt"
+  run cmd_gc --tsv
+  assert_success
+  assert_line --regexp $'^held\tkept\trepo-agent-1\t[^\t]+\tdirty'
+  assert_line --regexp $'^held\tkept\trepo-agent-2\t[^\t]+\tnot merged'
+  assert_line --regexp $'^not-a-worktree\tskipped\trepo\t[^\t]+\ta symlink to '
+  refute_output --partial 'loose.txt'
+  assert_equal "${#lines[@]}" 3
+  [ -d "$WT_ROOT/repo-agent-1" ] && [ -d "$WT_ROOT/repo-agent-2" ] && [ -L "$WT_ROOT/repo" ] && [ -f "$WT_ROOT/loose.txt" ]
+  [ -f "$MAIN/file.txt" ]
+}
+
+@test "gc never judges a tree through a symlink, even one pointing at a reapable worktree" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$SANDBOX/elsewhere" -b landed
+  ln -s "$SANDBOX/elsewhere" "$WT_ROOT/repo-agent-3"
+  no_color
+  run cmd_gc
+  assert_line --regexp '^skipped +repo-agent-3 +not-a-worktree'
+  assert_output --partial '0 of 1 reapable, 0 kept, 1 skipped;'
+  [ -d "$SANDBOX/elsewhere" ]
+}
+
+@test "gc calls a tree someone is in claimed, and a cache-only husk husk" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b live
+  mkdir -p "$WT_ROOT/repo-agent-2/Library"
+  wt_session_exists() { [ "$1" = repo-agent-1 ]; }
+  run cmd_gc -n --tsv
+  assert_success
+  assert_line --regexp $'^claimed\tkept\trepo-agent-1\t[^\t]+\tits tmux session is live$'
+  assert_line --regexp $'^husk\twould reap\trepo-agent-2\t[^\t]+\t$'
+}
+
+@test "gc a main checkout and an unresolvable .git are not-a-worktree, not held" {
+  mkdir -p "$WT_ROOT/clone/.git" "$WT_ROOT/broken"
+  git init --quiet "$WT_ROOT/clone"
+  printf 'gitdir: %s/no/such/dir\n' "$SANDBOX" > "$WT_ROOT/broken/.git"
+  no_color
+  run cmd_gc -n
+  assert_success
+  assert_line --regexp '^skipped +broken +not-a-worktree'
+  assert_line --regexp '^skipped +clone +not-a-worktree +a main checkout'
+  assert_output --partial 'held 0, not-a-worktree 2'
+}
+
+@test "gc --tsv over nothing keeps stdout empty" {
+  run --separate-stderr cmd_gc --tsv
+  assert_success
+  assert_output ''
+}
+
+@test "the README states table names exactly the words gc prints" {
+  local readme="$REPO_ROOT/.local/src/tmux/README.md" doc code
+  doc=$(awk '/^\*\*Worktree states\.\*\*/ {on = 1; next} on && /^\| `/ {print} on && /^$/ && seen {exit} on && /^\|/ {seen = 1}' "$readme" |
+    sed -E 's/^\| `([^`]+)`.*/\1/' | sort)
+  code=$(printf '%s\n' $WT_GC_STATES | sort)
+  [ -n "$doc" ] || fail "no states table under **Worktree states.** in the README"
+  assert_equal "$doc" "$code"
 }
 
 @test "reap removes a clean worktree that has an initialised submodule" {

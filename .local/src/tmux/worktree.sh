@@ -27,8 +27,11 @@
 #   reap [<path>]     remove one worktree, but ONLY when it is clean, landed (merged or
 #                     pushed) and has no live tmux session. Refuses with the reason
 #                     otherwise. There is no --force.
-#   gc [<repo>] [-n]  reap every eligible worktree and NAME the ones it kept. With no repo,
-#                     everything under $WT_ROOT; with one, that repo's linked worktrees.
+#   gc [<repo>] [-n] [--tsv]
+#                     reap every eligible worktree and NAME the ones it kept, one state word
+#                     per tree (README: "Worktree states"). With no repo, everything under
+#                     $WT_ROOT; with one, that repo's linked worktrees. --tsv prints
+#                     state, action, name, path, reason per tree and no total.
 #                     An orphan daemon in Library/ does not hold a tree: gc ends it and names its pid.
 #   --list            the rows, TSV. The data behind the picker, split out so it is
 #                     assertable without a terminal.
@@ -1114,11 +1117,16 @@ cmd_done() {
   printf 'done: killing %s, then reaping its worktree unless something still holds it (log: %s)\n' "$name" "$logf"
 }
 
+# The one state word gc prints per tree, derived each pass and never stored. The states table
+# in .local/src/tmux/README.md names the same words; tests/unit/worktree.bats pins the two.
+WT_GC_STATES='landed husk claimed held not-a-worktree'
+
 cmd_gc() {
-  local dry=0 repo='' arg
+  local dry=0 tsv=0 repo='' arg
   for arg in "$@"; do
     case "$arg" in
     -n | --dry-run) dry=1 ;;
+    --tsv) tsv=1 ;;
     -*) panel_die "gc: unknown flag: $arg" ;;
     *) repo="$arg" ;;
     esac
@@ -1154,40 +1162,78 @@ cmd_gc() {
   # An empty candidate list is a RESULT, not a success. Every silent-success bug in this
   # tree has looked exactly like a sweep that ran over nothing and said "done".
   if [ "${#candidates[@]}" -eq 0 ]; then
-    panel_hint "no worktrees to consider${repo:+ in $repo}"
+    if [ "$tsv" -eq 1 ]; then
+      panel_hint "no worktrees to consider${repo:+ in $repo}" >&2
+    else
+      panel_hint "no worktrees to consider${repo:+ in $repo}"
+    fi
     return 0
   fi
 
-  # STRANDED: kept, and nobody is in it, so it is held for its work (dirty, unlanded) by an
-  # owner that is gone. Nothing comes back for such a tree on its own, so gc names it every
+  # Each tree gets one state (WT_GC_STATES) and one action. HELD is the tree nobody will come
+  # back for: kept for its work (dirty, unlanded) by an owner that is gone, so gc names it every
   # night rather than keeping it silently (2026-11-02: 30 of 70 playground trees, some for weeks).
-  local reaped=0 kept=0 stranded=0 reason ends
+  # A symlink, a main checkout or a dir git cannot resolve is NOT-A-WORKTREE and is skipped, so
+  # it no longer inflates that count (2026-11-06: 12 of 44 "stranded" were such entries).
+  local reaped=0 kept=0 skipped=0 state action reason ends states='' w
   for path in "${candidates[@]}"; do
-    if reason=$(wt_reap_reason "$path"); then
+    ends=''
+    if [ -L "$path" ]; then
+      # Never judged through the link: it may point at a main checkout or anyone's tree.
+      state=not-a-worktree reason="a symlink to $(readlink "$path")"
+    elif reason=$(wt_reap_reason "$path"); then
+      state=landed
+      [ -e "$path/.git" ] || state=husk
       # gc runs unattended, so a daemon it ends goes in the log by pid.
       ends=$(wt_orphans_inside "$path" | paste -sd, -)
-      [ -z "$ends" ] || ends=" (orphan daemon $ends)"
+      [ -z "$ends" ] || ends="(orphan daemon $ends)"
+    elif [ ! -e "$path/.git" ] || ! wt_is_linked "$path"; then
+      state=not-a-worktree
+    elif wt_occupied_reason "$path" >/dev/null; then
+      state=held
+    else
+      state=claimed
+    fi
+
+    case "$state" in
+    landed | husk)
       if [ "$dry" -eq 1 ]; then
-        printf '%swould reap%s  %s%s\n' "$C_SEL" "$C_OFF" "$(basename "$path")" "$ends"
+        action='would reap'
         reaped=$((reaped + 1))
       elif reason=$(cmd_reap "$path" 2>&1 >/dev/null); then
-        printf '%sreaped%s      %s%s\n' "$C_SEL" "$C_OFF" "$(basename "$path")" "$ends"
+        action=reaped
         reaped=$((reaped + 1))
       else
-        printf '%skept%s        %-28s %s%s%s%s\n' "$C_INP" "$C_OFF" "$(basename "$path")" "$C_DIM" "$reason" "$ends" "$C_OFF"
+        action=kept
         kept=$((kept + 1))
       fi
-    else
-      if wt_occupied_reason "$path" >/dev/null; then
-        reason="$reason; stranded, nobody in it"
-        stranded=$((stranded + 1))
-      fi
-      printf '%skept%s        %-28s %s%s%s\n' "$C_INP" "$C_OFF" "$(basename "$path")" "$C_DIM" "$reason" "$C_OFF"
+      ;;
+    not-a-worktree)
+      action=skipped
+      skipped=$((skipped + 1))
+      ;;
+    *)
+      action=kept
       kept=$((kept + 1))
+      ;;
+    esac
+    states+="$state"$'\n'
+    reason="$reason${reason:+${ends:+ }}$ends"
+
+    if [ "$tsv" -eq 1 ]; then
+      printf '%s\t%s\t%s\t%s\t%s\n' "$state" "$action" "$(basename "$path")" "$path" "$reason"
+    else
+      case "$action" in reaped | would*) printf '%s' "$C_SEL" ;; *) printf '%s' "$C_INP" ;; esac
+      printf '%-10s%s  %-28s %-14s %s%s%s\n' "$action" "$C_OFF" "$(basename "$path")" "$state" "$C_DIM" "$reason" "$C_OFF"
     fi
   done
 
-  printf '\n%s of %s reapable, %s kept, %s stranded%s\n' "$reaped" "${#candidates[@]}" "$kept" "$stranded" \
+  [ "$tsv" -eq 0 ] || return 0
+  local by=''
+  for w in $WT_GC_STATES; do
+    by+="${by:+, }$w $(grep -cx -- "$w" <<<"$states")"
+  done
+  printf '\n%s of %s reapable, %s kept, %s skipped; %s%s\n' "$reaped" "${#candidates[@]}" "$kept" "$skipped" "$by" \
     "$([ "$dry" -eq 1 ] && printf ' (dry run, nothing removed)')"
 }
 
