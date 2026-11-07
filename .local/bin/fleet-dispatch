@@ -673,12 +673,13 @@ rows() {
 }
 
 # row_line <profile> <project> <lane> <key> -> that row's raw line, nothing when it is not on the
-# board. The board is read whole first: piped into something that stops early, a large board dies
-# of SIGPIPE and pipefail reads the 141 as "not there".
+# board. The key matches whatever its case: ids are written lower-case and are typed both ways. The
+# board is read whole first: piped into something that stops early, a large board dies of SIGPIPE
+# and pipefail reads the 141 as "not there".
 row_line() {
   local board
   board=$(rows "$1" "$2" "$3")
-  K="$4" awk -F'\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2); exit }' <<<"$board"
+  K="$4" awk -F'\t' 'tolower($1) == tolower(ENVIRON["K"]) { print substr($0, length($1) + 2); exit }' <<<"$board"
 }
 
 # row_priority <raw line> [project] -> the queue priority the row asks for: a bare row is high, the
@@ -2613,6 +2614,9 @@ promote() {
   [ "$lane" = agent ] && flag=(--agent)
   line=$(row_line "$prof" "$project" "$lane" "$key")
   [[ "$line" == '- [ ]'* ]] || { say "skip $project: row no longer open: $key"; return 1; }
+  # The row's own id is the key from here on, however the caller typed it.
+  id=$(sed -nE 's/.*<!--([^>]* )?id:([a-z]{2,4}-[0-9]+)( [^>]*)?-->.*/\2/p' <<<"$line")
+  [ -z "$id" ] || key=$id; id=''
   out=$(np "$prof" ptask "$project" "${flag[@]}" --exact start -- "$line" 2>&1) ||
     { say "skip $project: could not start row: $key ($out)"; return 1; }
   id=$(sed -n 's/^  id://p' <<<"$out")
