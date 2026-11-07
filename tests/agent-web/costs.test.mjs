@@ -45,7 +45,8 @@ const board = (o = {}) => ({
   at: 1794000000, by: "model", window: "7d",
   cuts: ["session", "model", "harness", "tool", "project", "runner", "kind"], windows: ["24h", "7d", "30d"],
   totals: [{ window: "24h", usd: 12.5, sessions: 3, unpriced: 0 }, { window: "7d", usd: 40, sessions: 9, unpriced: 2 }, { window: "30d", usd: 90, sessions: 20, unpriced: 2 }],
-  live: { claude_24h: 11, lazer_spend: 50, lazer_budget: 250 },
+  live: { claude_24h: 11, lazer_spend: 50, lazer_budget: 250, reserve_spend: 19.52, reserve_budget: 100, reserve_reset_hours: 575 },
+  direct: { usd: 1.25, sessions: 3, unpriced: 1, since: 0, note: "opencode lazer/*, nightly; other direct use unseen" },
   sources: [{ name: "outcomes", as_of: 1793990000, stale: false }, { name: "token snapshot", as_of: 1793000000, stale: true }, { name: "calls", as_of: null, stale: true }],
   errors: [], columns: MODEL_COLS, source: "outcomes rows", eval_days: 7, unpriced: null,
   rows: [
@@ -82,9 +83,18 @@ test("the head says spend, the live gauges and how old each source is", () => {
   const h = show(board());
   assert.match(h, /SPEND 7D[\s\S]*\$40\.00[\s\S]*9 sessions, 2 unpriced/);
   assert.match(h, /LAZER POOL[\s\S]*of \$250 \(20%\)/);
+  assert.match(h, /LAZER RESERVE<\/span><span class="tv">\$19\.52<\/span><span class="ts1">of \$100 \(20%\), 24d left</);
+  assert.match(h, /LAZER DIRECT<\/span><span class="tv">\$1\.25<\/span><span class="ts1"><span class="warn">\+1 unpriced<\/span>, opencode lazer\/\*, nightly; other direct use unseen</);
   assert.match(h, /<span class="warn">token snapshot /, "a stale source is amber");
   assert.match(h, /<span class="warn">calls never<\/span>/);
   assert.match(h, /<span class="muted">outcomes /);
+});
+
+test("with no gauges and no direct rows the Lazer tiles say unknown, never $0 or blank", () => {
+  const h = show(board({ live: {}, direct: undefined }));
+  assert.match(h, /LAZER RESERVE<\/span><span class="tv">-<\/span><\/div>/, "no gauge is unknown");
+  assert.match(h, /LAZER DIRECT<\/span><span class="tv">-<\/span><span class="ts1">not read</, "no direct figure says so");
+  assert.doesNotMatch(h, /unpriced<\/span>, /);
 });
 
 test("the tool cut with no allocated dollars prints no dollars", () => {

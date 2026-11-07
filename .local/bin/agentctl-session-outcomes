@@ -81,8 +81,17 @@ queue_index() {
 }
 
 # The one harness rule, for `run` and `backfill-harness`: what the row says (opencode, codex), else
-# the queue item's agent, else claude, since every other row is a Claude Code transcript.
-HARNESS_DEF='def harness_of($i): .harness // $i.agent // "claude";'
+# what the Claude Code transcript ran on. The Stop hook records `base_url` (ANTHROPIC_BASE_URL): set,
+# it ran on the gateway, so it is the item's gateway harness or claude-lazer (a hand `cl --lazer`);
+# null, it ran on an account, so claude whatever the item later spilled to. A row from before that
+# field takes the item's agent, except a gateway agent on a transcript under another account's config
+# dir: a gateway run unsets CLAUDE_CONFIG_DIR, so it is always under ~/.claude.
+HARNESS_DEF='def harness_of($i):
+  ($i.agent // "claude") as $a | ($a == "claude-lazer" or $a == "lazer-reserve") as $gw
+  | .harness // (
+      if has("base_url") then (if .base_url then (if $gw then $a else "claude-lazer" end) else "claude" end)
+      elif $gw and ((.account // (.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a)) // "claude") != "claude" then "claude"
+      else $a end);'
 
 die_stalled() {
   echo "$NAME: $1" >&2
@@ -215,6 +224,7 @@ cmd_run() {
           project: (if $runner then "_runner" else $row.project end),
           runner: $runner,
           harness: $row.harness,
+          provider: ($row.provider // null),
           items: ($row.items // []),
           agent: (if $runner then ($agents[0][$row.session_id] // null) else null end),
           title: ($row.title // $row.first_prompt // ""),
@@ -460,7 +470,7 @@ cmd_costs() {
   so_latest "$OUT" | jq -cn --argjson now "$NOW" --argjson days "$days" '
     [inputs | select(.updated_epoch >= $now - $days * 86400)]
     | sort_by(-.updated_epoch)[]
-    | {session_id, project, title, harness, account, models: (.models // []), cost_usd, cost_by_model,
+    | {session_id, project, title, harness, account, provider, models: (.models // []), cost_usd, cost_by_model,
        tokens_total, updated_epoch, observed,
        runner: (if .runner then (.agent // "runner") else null end),
        kind: (if .runner or ((.items // []) | length > 0) then "automated" else "human" end),

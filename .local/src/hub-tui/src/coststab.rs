@@ -160,6 +160,8 @@ impl CostsView {
         out.push(bar("window", &b.windows, &b.window, "w"));
         out.push(bar("by", b.cuts, &b.by, "b/B"));
         out.push(clip_line(Line::from(tiles(&b, p)), w));
+        out.push(clip_line(Line::from(lazer(&b, p)), w));
+        out.push(clip_line(Line::from(direct(&b, p)), w));
         out.push(clip_line(Line::from(sources(&b, p)), w));
         for e in &b.errors {
             out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
@@ -230,8 +232,12 @@ fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
     }
     s.push(Span::styled("LIVE 24H ", p.dim()));
     s.push(Span::raw(format!("{}  ", costs::usd(b.live.claude_24h))));
-    s.push(Span::styled("LAZER ", p.dim()));
-    let pool = match (b.live.lazer_spend, b.live.lazer_budget) {
+    s
+}
+
+/// `<spent> of <cap> (<pct>%)`, or the spend alone when there is no cap.
+fn of_cap(spent: Option<f64>, cap: Option<f64>) -> String {
+    match (spent, cap) {
         (Some(sp), Some(cap)) if cap > 0.0 => format!(
             "{} of {} ({:.0}%)",
             costs::usd(Some(sp)),
@@ -239,8 +245,35 @@ fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
             sp / cap * 100.0
         ),
         (sp, _) => costs::usd(sp),
-    };
-    s.push(Span::raw(pool));
+    }
+}
+
+/// Every Lazer figure on one line: the gateway pool, the reserve key against its cap, and direct use.
+fn lazer(b: &Board, p: Palette) -> Vec<Span<'static>> {
+    let l = &b.live;
+    let mut reserve = of_cap(l.reserve_spend, l.reserve_budget);
+    if let Some(h) = l.reserve_reset_hours {
+        reserve.push_str(&format!(" {:.0}d left", h / 24.0));
+    }
+    vec![
+        Span::styled("LAZER ", p.dim()),
+        Span::raw(format!("{}  ", of_cap(l.lazer_spend, l.lazer_budget))),
+        Span::styled("RESERVE ", p.dim()),
+        Span::raw(reserve),
+    ]
+}
+
+/// Direct Lazer use with what it cannot see beside it, so a low figure never reads as all of it.
+fn direct(b: &Board, p: Palette) -> Vec<Span<'static>> {
+    let d = &b.direct;
+    let mut s = vec![
+        Span::styled("DIRECT ", p.dim()),
+        Span::raw(costs::usd(Some(d.usd))),
+    ];
+    if d.unpriced > 0 {
+        s.push(Span::styled(format!(" +{} unpriced", d.unpriced), p.warn()));
+    }
+    s.push(Span::styled(format!("  {}", d.note), p.dim()));
     s
 }
 
@@ -407,6 +440,44 @@ mod tests {
         assert!(s.contains("[model]") && s.contains("[7d]"), "{s}");
         assert!(s.contains("LANDED") && s.contains("0.75"), "{s}");
         assert!(s.contains("opus-5-5") && s.contains("$12.50"), "{s}");
+    }
+
+    #[test]
+    fn the_lazer_line_shows_pool_reserve_and_direct_with_what_direct_cannot_see() {
+        let mut c = costs();
+        c.live = hub_core::costs::Live {
+            lazer_spend: Some(93.36),
+            lazer_budget: Some(250.0),
+            reserve_spend: Some(19.52),
+            reserve_budget: Some(100.0),
+            reserve_reset_hours: Some(575.0),
+            ..Default::default()
+        };
+        c.sessions.push(Spent {
+            session_id: "oc-direct".into(),
+            harness: Some("opencode".into()),
+            provider: Some("lazer".into()),
+            cost_usd: Some(0.0),
+            tokens_total: Some(900.0),
+            updated_epoch: Some(c.at - 60),
+            ..Spent::default()
+        });
+        let s = CostsView::default()
+            .lines(&c, Palette::default(), 80)
+            .iter()
+            .map(crate::fit::plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
+        assert!(s.contains("LAZER $93.36 of $250 (37%)"), "{s}");
+        assert!(s.contains("RESERVE $19.52 of $100 (20%) 24d left"), "{s}");
+        let direct = s.lines().find(|l| l.starts_with("DIRECT")).unwrap();
+        assert!(direct.contains("$0.00 +1 unpriced"), "{s}");
+        assert!(direct.ends_with(hub_core::costs::DIRECT_NOTE), "{s}");
+        // negative control: with no gauges the line still names each figure, and none reads as $0
+        let s = screen(&CostsView::default(), 80);
+        assert!(s.contains("LAZER -  RESERVE -"), "{s}");
+        assert!(!s.contains("unpriced"), "{s}");
     }
 
     #[test]

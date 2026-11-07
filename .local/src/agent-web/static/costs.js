@@ -63,13 +63,25 @@ function costsSwitch(name, all, on, key) {
     `<button class="${x === on ? "on" : ""}" data-cv="${key}" data-cval="${esc(x)}">${esc(x)}</button>`).join("") + `</div>`;
 }
 
+// "of $cap (pct%)" under a spend tile, or nothing when there is no cap.
+const ofCap = (spent, cap) => spent != null && cap ? `of ${usd(cap)} (${Math.round(spent / cap * 100)}%)` : "";
+
+// The Lazer tiles, the TUI's `lazer` and `direct` lines: the gateway pool, the reserve key against its
+// cap, and direct use with what it cannot see beside it, so a low figure never reads as all of it.
+function lazerTiles(lz, dr) {
+  const left = lz.reserve_reset_hours != null ? `, ${Math.round(lz.reserve_reset_hours / 24)}d left` : "";
+  const unpriced = dr.unpriced ? `<span class="warn">+${dr.unpriced} unpriced</span>, ` : "";
+  return tile("LAZER POOL", usd(lz.lazer_spend), "var(--c3)", ofCap(lz.lazer_spend, lz.lazer_budget)) +
+    tile("LAZER RESERVE", usd(lz.reserve_spend), "var(--c3)", ofCap(lz.reserve_spend, lz.reserve_budget) + left) +
+    tile("LAZER DIRECT", usd(dr.usd), "var(--c3)", unpriced + esc(dr.note || "not read"));
+}
+
 function costsTiles(d) {
   const lz = d.live || {};
-  const pool = lz.lazer_spend != null && lz.lazer_budget ? `of ${usd(lz.lazer_budget)} (${Math.round(lz.lazer_spend / lz.lazer_budget * 100)}%)` : "";
   return `<div class="tiles roomy">` + (d.totals || []).map((t) =>
     tile(`SPEND ${t.window.toUpperCase()}`, usd(t.usd), t.window === d.window ? "var(--c1)" : "var(--c-other)", `${t.sessions} sessions${t.unpriced ? `, ${t.unpriced} unpriced` : ""}`)).join("") +
     tile("LIVE 24H", usd(lz.claude_24h), "var(--c2)", "Prometheus, exported sessions only") +
-    tile("LAZER POOL", usd(lz.lazer_spend), "var(--c3)", pool) + `</div>`;
+    lazerTiles(lz, d.direct || {}) + `</div>`;
 }
 
 function costsHead(d) {

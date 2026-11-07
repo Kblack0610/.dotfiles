@@ -380,7 +380,7 @@ SH
   assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.project == "_runner")) | map([.runner, .kind])')" '[["dream","automated"]]'
   assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0] | [.runner, .kind]')" '[null,"human"]'
   assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0] | keys')" \
-    '["account","cost_by_model","cost_usd","harness","kind","models","observed","pr","project","runner","session_id","title","tokens_total","updated_epoch"]'
+    '["account","cost_by_model","cost_usd","harness","kind","models","observed","pr","project","provider","runner","session_id","title","tokens_total","updated_epoch"]'
   assert_equal "$(printf '%s\n' "$output" | jq -s 'map(.updated_epoch) == (map(.updated_epoch) | sort | reverse)')" true
   SO_NOW=$((SO_NOW + 3651 * 86400)) run "$SUBJECT" costs --days 1
   assert_success
@@ -768,6 +768,45 @@ EOF
   assert_success
   assert_equal "$(field a .harness) $(field b .harness)" 'claude-lazer claude'
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | [.prs[].number] | join(" ")')" '10 11'
+}
+
+@test "the harness is what the transcript ran on: a gateway session is claude-lazer with no item, an account session is claude on a spilled item" {
+  queue_stub
+  {
+    jq -cn '{slug: "spilled", agent: "lazer-reserve", sessions: "sess-a sess-b sess-c"}'
+  } > "$SANDBOX/items.jsonl"
+  mkdir -p "$HOME/.claude-personal/projects/p"
+  cp "$TR/c.jsonl" "$HOME/.claude-personal/projects/p/c.jsonl"
+  # a: the reserve run (gateway); b: the item's first try on an account; c: a row from before
+  # base_url, under another account's config dir; d: a hand `cl --lazer` on no item.
+  jq -c --arg tc "$HOME/.claude-personal/projects/p/c.jsonl" '
+    if .session_id == "sess-a" then . + {base_url: "https://gateway.example"}
+    elif .session_id == "sess-b" then . + {base_url: null}
+    elif .session_id == "sess-c" then .transcript = $tc
+    else . + {base_url: "https://gateway.example"} end' "$SO_SESSIONS/proj/sessions.jsonl" > "$SANDBOX/reg" &&
+    mv "$SANDBOX/reg" "$SO_SESSIONS/proj/sessions.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a .harness) $(field b .harness) $(field c .harness) $(field d .harness)" 'lazer-reserve claude claude claude-lazer'
+  # the same rule over old outcomes rows: under ~/.claude keeps the gateway agent, another account does not
+  jq -cn '{slug: "spilled", agent: "lazer-reserve", sessions: "old-gw old-acct"}' > "$SANDBOX/items.jsonl"
+  mkdir -p "$SO_OUT/old"
+  { jq -cn '{session_id: "old-gw", account: "claude"}'; jq -cn '{session_id: "old-acct", account: "claude-personal"}'; } > "$SO_OUT/old/2026-11.jsonl"
+  run "$SUBJECT" backfill-harness 2026-11
+  assert_success
+  assert_equal "$(jq -r .harness "$SO_OUT/old/2026-11.jsonl" | paste -sd' ')" 'lazer-reserve claude'
+}
+
+@test "an opencode session on Lazer direct says so: provider lazer on the row and in costs" {
+  oc_db
+  sqlite3 "$SO_OPENCODE_DB" "UPDATE session_v2 SET model = '{\"id\":\"claude-sonnet-5.5\",\"providerID\":\"lazer\"}' WHERE id = 'ses_root'"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | .provider')" lazer
+  run "$SUBJECT" costs --days 3650
+  assert_equal "$(printf '%s\n' "$output" | jq -rs 'map(select(.session_id == "ses_root"))[0] | "\(.provider) \(.cost_usd)"')" 'lazer 1.75'
+  # negative control: a Claude transcript's row has no provider
+  assert_equal "$(printf '%s\n' "$output" | jq -rs 'map(select(.session_id == "sess-a"))[0].provider')" null
 }
 
 @test "backfill-harness: a month's rows with no harness get the run's rule, nothing else changes, and the old file stays as .bak" {
