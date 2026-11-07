@@ -20,7 +20,7 @@ const COST_COLS = {
 
 function costsParams() {
   const v = new URLSearchParams(st.views.costs || ""), p = tblParams(st.views.costs);
-  for (const k of ["by", "w"]) if (v.get(k)) p.set(k, v.get(k));
+  for (const k of ["by", "w", "ssort", "sdir"]) if (v.get(k)) p.set(k, v.get(k));
   return p;
 }
 
@@ -111,10 +111,24 @@ function costsBurn(d) {
     `<div class="muted fold">burn/h is the last 6h rate per live session; keeps/h is what the rest of the week can carry to the reset.</div></details>`;
 }
 
+// The Sections block (hub_core::sections, the TUI's coststab.rs `sections`): what each section of
+// the repo costs to build. Folded to the All PRs headline until opened; its headers sort apart from
+// the main table's (ssort/sdir), All PRs stays on top, and the note says what the figures cannot.
+function costsSections(d) {
+  const b = d.sections;
+  if (!b || !b.table) return "";
+  const cells = (r, cls) => `<tr${cls}>` + r.map((c, i) => `<td class="${i ? "n" : ""}">${esc(c)}</td>`).join("") + `</tr>`;
+  const shown = b.rows.slice(0, LOG_ROWS);
+  return `<details class="csec" data-k="sections" id="sec-sections"${cost.open.sections ? " open" : ""}><summary><h2 class="sec">Sections <span class="muted">${esc(b.head)}</span></h2></summary>` +
+    `<div class="panel scroll"><table class="tbl">${tblHead(b.table, Object.fromEntries(b.columns.map((k, i) => [k, i ? [b.headers[i], "n"] : [b.headers[i]]])), "s")}` +
+    cells(b.all, ' class="allrow"') + shown.map((r) => cells(r, "")).join("") + `</table>${older(b.rows.length - shown.length)}</div>` +
+    `<div class="muted fold">${b.notes.map(esc).join(" ")}</div></details>`;
+}
+
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
-  let html = `${costsBurn(d)}<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`;
+  let html = `${costsBurn(d)}${costsSections(d)}<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`;
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -135,6 +149,9 @@ function renderCosts() {
     el.innerHTML = `<div class="empty">${cost.err ? esc(cost.err) : "Loading..."}</div>`;
     return;
   }
+  // A fold the reader just opened is in the page and not yet in `cost.open`, and the head below is
+  // built from that map: record it first, or the next repaint (a sort click) closes it again.
+  el.querySelectorAll("details[data-k]").forEach((f) => { cost.open[f.dataset.k] = f.open; });
   if (tblRepaint("costs", d.table, () => costsBody(d))) {
     paint($("costs-tail"), costsTail(d));
     return;
@@ -159,6 +176,8 @@ $("costs").addEventListener("click", (e) => {
   if (t.closest && t.closest("a[target]")) return;
   const sw = t.closest && t.closest("[data-cv]");
   if (sw) { costsView({ [sw.dataset.cv]: sw.dataset.cval }); return; }
+  const ss = t.closest && t.closest("[data-ssort]");
+  if (ss) { costsView({ ssort: ss.dataset.ssort, sdir: ss.dataset.ssort && ss.dataset.sdir === "asc" ? "asc" : "" }); return; }
   const v = tblPatch(e);
   if (v) costsView(v);
 });

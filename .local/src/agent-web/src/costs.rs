@@ -30,6 +30,9 @@ pub struct CostsQuery {
     pub q: String,
     pub sort: String,
     pub dir: String,
+    /// The Sections block's own sort, which a click on its headers sets.
+    pub ssort: String,
+    pub sdir: String,
 }
 
 fn cached() -> Arc<Costs> {
@@ -53,5 +56,13 @@ pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
     let c = tokio::task::spawn_blocking(cached)
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(costs::board(&c, &q.by, &q.w, &q.q, &q.sort, &q.dir)))
+    Ok(Json(costs::board(
+        &c,
+        &q.by,
+        &q.w,
+        &q.q,
+        &q.sort,
+        &q.dir,
+        (&q.ssort, &q.sdir),
+    )))
 }
