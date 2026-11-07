@@ -53,6 +53,9 @@ target
 ^/\.claude/tasks$
 ^/\.claude/session-env$
 ^/\.claude/output-styles$
+# Path-scoped project rules for sessions in this repo. Stowed, they would land in
+# ~/.claude/rules and load as USER rules in every project (CLAUDE.md "Path-scoped rules").
+^/\.claude/rules$
 # Named individually, NOT as ^/\.claude/.*\.json$ — that pattern also swallows the
 # TRACKED .claude/settings.json and would silently stop it deploying on a fresh install.
 ^/\.claude/settings\.local\.json$
