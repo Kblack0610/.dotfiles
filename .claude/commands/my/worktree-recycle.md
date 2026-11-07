@@ -65,7 +65,7 @@ wt gc "$(git rev-parse --show-toplevel)"
 
 ## Branches
 
-`wt gc` also deletes the merged `agent-N` and `worktree-agent-*` branches that no worktree has checked out, with `git branch -d`, and lists them under `branches:`. There is no hand branch step. A long-lived worktree you want to keep is yours to reset; `wt reap` and `wt new` are the only things that remove or reset one.
+`wt gc` also deletes the merged `agent-N` and `worktree-agent-*` branches that no worktree has checked out, with `git branch -d`, and lists them under `branches:`. There is no hand branch step; `git remote prune origin` drops the stale remote refs. A long-lived worktree you want to keep is yours to reset; `wt reap` and `wt new` are the only things that remove or reset one.
 
 ## Phase 3: Report
 

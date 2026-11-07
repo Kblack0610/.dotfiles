@@ -572,6 +572,21 @@ declare_in_lab() {
   [ -d "$WT_ROOT/repo-keep" ] || fail "gc deleted a dirty worktree"
 }
 
+@test "gc: a repo with no trees left is pruned when named; a symlink to a repo is never pruned" {
+  make_repo
+  git -C "$MAIN" branch agent-7 origin/main
+  run "$WT" gc "$MAIN"
+  assert_success
+  assert_output --partial 'no worktrees to consider'
+  git -C "$MAIN" rev-parse --verify --quiet agent-7 >/dev/null && fail "merged slot branch survived gc of a treeless repo"
+
+  git -C "$MAIN" branch agent-9 origin/main
+  ln -s "$MAIN" "$WT_ROOT/linked"
+  run "$WT" gc
+  assert_success
+  git -C "$MAIN" rev-parse --verify --quiet agent-9 >/dev/null || fail "gc pruned a repo it reached through a symlink"
+}
+
 @test "gc --dry-run removes NOTHING" {
   make_repo
   add_wt repo-agent-1

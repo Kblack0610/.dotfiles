@@ -9,4 +9,8 @@ set -euo pipefail
 path=$(jq -r '.worktree_path' <<<"$(cat)")
 [ -d "$path" ] || exit 0
 wt="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.local/src/tmux/worktree.sh"
+[ -x "$wt" ] || {
+  echo "worktree-remove: no wt beside $0 ($wt)" >&2
+  exit 1
+}
 "$wt" reap "$path" >&2

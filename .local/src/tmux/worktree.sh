@@ -1213,6 +1213,10 @@ cmd_gc() {
   # An empty candidate list is a RESULT, not a success. Every silent-success bug in this
   # tree has looked exactly like a sweep that ran over nothing and said "done".
   if [ "${#candidates[@]}" -eq 0 ]; then
+    # A repo whose every tree is gone can still hold merged slot branches `-d` refused earlier.
+    if [ -n "$repo" ]; then
+      wt_prune_branches "$repo" "$dry" | sed "s|^|${repo##*/}: |" >&2
+    fi
     if [ "$tsv" -eq 1 ]; then
       panel_hint "no worktrees to consider${repo:+ in $repo}" >&2
     else
@@ -1229,10 +1233,14 @@ cmd_gc() {
   local reaped=0 skipped=0 line state action hue reason ends out states='' w by='' main
   local -a mains=()
   for path in "${candidates[@]}"; do
-    # Taken before the reap: afterwards the tree is gone and cannot be asked.
-    main=$(wt_main_repo "$path" 2>/dev/null) && [[ " ${mains[*]-} " != *" $main "* ]] && mains+=("$main")
     line=$(wt_state "$path")
     state=${line%%$'\t'*} reason=${line#*$'\t'}
+    # The repos whose branches get pruned, taken before the reap (afterwards the tree is gone).
+    # Never through a not-a-worktree entry: a symlink or a plain dir with its own clone is not
+    # a repo gc manages.
+    if [ "$state" != not-a-worktree ] && main=$(wt_main_repo "$path" 2>/dev/null); then
+      [[ " ${mains[*]-} " == *" $main "* ]] || mains+=("$main")
+    fi
     action=kept hue=$C_INP
     case "$state" in
     landed | husk)
