@@ -178,6 +178,8 @@ wt_is_husk() {
   for e in "$1"/* "$1"/.[!.]*; do
     [ -e "$e" ] || [ -L "$e" ] || continue
     case "$WT_HUSK_CACHES" in *" ${e##*/} "*) continue ;; esac
+    # Only a named file or its parent dir is walked; any other entry, even an empty dir, is kept.
+    case "$WT_HUSK_FILES" in *" ${e##*/} "* | *" ${e##*/}/"*) ;; *) return 1 ;; esac
     while IFS= read -r -d '' f; do
       case "$WT_HUSK_FILES" in *" ${f#"$1"/} "*) ;; *) return 1 ;; esac
     done < <(find "$e" ! -type d -print0 2>/dev/null)
@@ -262,7 +264,7 @@ wt_submodule_worktrees() {
   while read -r _ sub _; do
     [ -e "$1/$sub/.git" ] || continue
     while IFS=$'\t' read -r path head prunable; do
-      if [ -z "$prunable" ]; then
+      if [ "$prunable" != prunable ]; then
         printf '%s\n' "$path"
         return 0
       fi
@@ -272,7 +274,7 @@ wt_submodule_worktrees() {
     done < <(git -C "$1/$sub" worktree list --porcelain 2>/dev/null |
       awk 'BEGIN { RS = ""; FS = "\n" }
         NR > 1 {
-          p = h = pr = ""
+          p = ""; h = pr = "-" # a placeholder, as read collapses an empty tab-split field
           for (i = 1; i <= NF; i++) {
             if ($i ~ /^worktree /) p = substr($i, 10)
             else if ($i ~ /^HEAD /) h = substr($i, 6)
@@ -998,10 +1000,10 @@ cmd_reap() {
 
   name="$(basename "$path")"
   # A husk has no worktree for git to remove, and wt_reap_reason has just proved it holds
-  # nothing but Unity caches and nobody is in it.
+  # nothing but tool caches and nobody is in it.
   if wt_is_husk "$path"; then
     rm -rf -- "$path" || panel_fail "could not remove $path" || return 1
-    printf 'reaped %s (no git, Unity caches only)\n' "$name"
+    printf 'reaped %s (no git, tool caches only)\n' "$name"
     return 0
   fi
 
@@ -1136,13 +1138,13 @@ cmd_gc() {
     local -a later=()
     for d in "$WT_ROOT"/*; do
       [ -d "$d" ] || continue
-      if [ -f "$d/.git" ] && grep -q '/modules/' "$d/.git"; then
+      if [ -f "$d/.git" ] && [[ "$(<"$d/.git")" == 'gitdir: '*/modules/*/worktrees/* ]]; then
         candidates+=("$d")
       else
         later+=("$d")
       fi
     done
-    candidates+=("${later[@]}")
+    candidates+=(${later[@]+"${later[@]}"})
   fi
 
   # An empty candidate list is a RESULT, not a success. Every silent-success bug in this

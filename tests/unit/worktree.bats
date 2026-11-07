@@ -1003,6 +1003,10 @@ held_slot() {
   mkdir -p "$WT_ROOT/repo-agent-8" && ln -s /nowhere "$WT_ROOT/repo-agent-8/link"
   run wt_reap_reason "$WT_ROOT/repo-agent-8"
   assert_failure
+  # An empty skeleton is kept too: only the named files' own dirs are walked.
+  mkdir -p "$WT_ROOT/repo-agent-9/Library" "$WT_ROOT/repo-agent-9/Assets/Scenes"
+  run wt_reap_reason "$WT_ROOT/repo-agent-9"
+  assert_failure
 }
 
 @test "a husk with a process inside it is kept" {
