@@ -123,7 +123,7 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR.
 
 set -uo pipefail
@@ -219,6 +219,7 @@ set -uo pipefail
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile
 : "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
+: "${BENCH_DOCS_CLEANUP_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/docs-cleanup}"   # the nightly docs-cleanup baselines, one dated dir each
 : "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
 : "${BENCH_STEPS_CMD:=notes log --steps --json}"   # the record replayed per step: flows, dwell, the items it holds
 : "${BENCH_INBOX_CMD:=inbox_lines}"                # how many lines wait untriaged
@@ -1501,6 +1502,8 @@ ledger_counts() {
 # ownerless_running: running items with no session. epic_linked_share: the agent rows filed under
 # an epic (#of/) in the projects that have one open. landed_unverified: open epics whose every leaf
 # is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
+# dup_pairs: instructions two homes restate, from the newest nightly docs-cleanup night's dups.json
+# (skill-drift --dups); the bound is dup_pairs_max, the same row skill-drift --dups --check holds.
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
@@ -1515,7 +1518,7 @@ ledger_counts() {
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -1587,7 +1590,10 @@ chain_counts() {
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
         | if length == 0 then null else add / length * 100 | round / 100 end end))"'
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
-  local orphans
+  local orphans dups
+  # the newest night only: a runner that stopped must read ?, never an older night's count as now
+  dups=$(ls -d "$BENCH_DOCS_CLEANUP_DIR"/*/ 2>/dev/null | tail -1)
+  if [ -n "$dups" ] && dups=$(jq -er '.pairs | numbers' "${dups}dups.json" 2>/dev/null); then echo "dup_pairs=$dups"; else echo "dup_pairs=?"; fi
   if orphans=$(plans_orphaned); then echo "plans_unqueued=$(grep -c . <<<"$orphans")"; else echo "plans_unqueued=?"; fi
   echo "routes_unresolved=$(triage_coverage | grep -c .)"
   local wants
