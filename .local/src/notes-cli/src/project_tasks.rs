@@ -1178,6 +1178,7 @@ pub fn step(
 ///
 /// Either way the stamp stays on the row, which is what turns a pile of ticked boxes into an
 /// evidence trail somebody can audit.
+#[allow(clippy::too_many_arguments)]
 pub fn done(
     p: &Profile,
     log: &Logger,
@@ -1185,19 +1186,84 @@ pub fn done(
     pick: &Pick,
     proof: Option<&str>,
     unverified: Option<&str>,
+    on: Option<&str>,
     lane: Lane,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
+    let day = close_day(on)?;
     refuse_open_children(p, name, pick, lane, "finish")?;
     if proof.is_some() {
         refuse_landed_as_proof(p, name, pick, lane, &stamp)?;
     }
-    let on = done_token(chrono::Local::now().date_naive());
+    let on = done_token(day);
     Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
         let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
         Some(md::add_marker(&ticked, &stamp))
     })?
     .0)
+}
+
+/// The day a close is stamped with: `--on <day>`, else today. A future day is refused: a close
+/// is something that happened, and the pace counts read a later day as not yet closed.
+fn close_day(on: Option<&str>) -> Result<chrono::NaiveDate> {
+    let today = chrono::Local::now().date_naive();
+    let Some(raw) = on else { return Ok(today) };
+    let day = chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
+        .map_err(|_| anyhow::anyhow!("--on takes a day as YYYY-MM-DD, not '{raw}'"))?;
+    if day > today {
+        bail!("--on {raw} is in the future");
+    }
+    Ok(day)
+}
+
+/// `notes ptask <name> redate --on <day> <id>` - move a closed row's `done:` day. `done` takes
+/// the day itself now; this is for a row an earlier writer stamped with the wrong one (the
+/// credit backfill stamped its apply day). Only a closed row that already carries a `done:`
+/// day is touched, and only that day changes.
+pub fn redate(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    id: &str,
+    on: &str,
+    dry_run: bool,
+    lane: Lane,
+) -> Result<i32> {
+    let day = close_day(Some(on))?;
+    if !md::is_row_id(id) {
+        bail!("redate takes a row id such as ar-142, not '{id}'");
+    }
+    let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
+        bail!("'{name}' has no task sheet yet");
+    };
+    let hit = |l: &str| {
+        l.trim_start().starts_with("- [x]")
+            && md::row_id(l).as_deref() == Some(id)
+            && done_on(l).is_some()
+    };
+    let Some((new, matched)) = md::edit_first_in_section(&content, sheet::TASKS, hit, |l| {
+        // Only inside the trailing marker: a title that quotes `done:<day>` stays as written.
+        let old = md::marker_token(l, "done:")?;
+        let at = l.rfind("<!--")?;
+        let marker = l[at..].replacen(&format!("done:{old}"), &done_token(day), 1);
+        Some(format!("{}{marker}", &l[..at]))
+    }) else {
+        eprintln!("no closed task with id {id} and a done day in {name}");
+        return Ok(1);
+    };
+    if dry_run {
+        let old = done_on(&matched).map(|d| d.to_string()).unwrap_or_default();
+        println!("{id}\t{old}\t{day}");
+        return Ok(0);
+    }
+    if new == content {
+        println!("unchanged {}", matched.trim());
+        return Ok(0);
+    }
+    md::write_atomic(&sheet, &new)?;
+    log.info("ptask", &format!("redated in {} ({name})", sheet.display()));
+    println!("redated {id} to {day}");
+    Ok(0)
 }
 
 /// The marker token `done` stamps beside the proof: the day the row closed, what a project's
@@ -2140,6 +2206,22 @@ Version: v1.13.0
     }
 
     #[test]
+    fn close_day_takes_a_past_day_and_refuses_a_future_or_malformed_one() {
+        let today = chrono::Local::now().date_naive();
+        assert_eq!(close_day(None).unwrap(), today);
+        let past = chrono::NaiveDate::from_ymd_opt(2026, 10, 3).unwrap();
+        assert_eq!(close_day(Some("2026-10-03")).unwrap(), past);
+        let next = (today + chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        assert!(close_day(Some(&next))
+            .unwrap_err()
+            .to_string()
+            .contains("future"));
+        assert!(close_day(Some("last week")).is_err());
+    }
+
+    #[test]
     fn done_stamps_the_day_it_closed_and_reads_it_back() {
         let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
         let row = md::add_marker("- [x] shipped <!-- id:ar-1 -->", &done_token(day));
@@ -2657,6 +2739,7 @@ mod inbox_tests {
             &one,
             Some("pr:7"),
             None,
+            None,
             Lane::Human,
         )
         .unwrap();
@@ -2698,6 +2781,86 @@ mod inbox_tests {
         assert_eq!(ev[1].why.as_deref(), Some("seen on the pause screen"));
         assert_eq!(ev[2].why.as_deref(), Some("pr:7"));
         assert_eq!(ev[3].why.as_deref(), Some("dropped: stale"));
+    }
+
+    // NEGATIVE CONTROL: without `--on` the close carries today, which is what stamped the apply
+    // day on every backfilled row; redate moves only a closed row's `done:` day.
+    #[test]
+    fn done_takes_the_close_day_and_redate_moves_a_closed_rows_day() {
+        let v = vault(
+            "redate",
+            "",
+            "- [ ] feat(ui): one #high <!-- id:sc-1 -->\n\
+             - [ ] feat(ui): two, not done:2026-10-05 yet #high <!-- id:sc-2 -->\n",
+        );
+        let sheet = v.root.join("projects/scratch/README.md");
+        let (one, two) = (Pick::Id("sc-1".into()), Pick::Id("sc-2".into()));
+        let today = done_token(chrono::Local::now().date_naive());
+        done(
+            &v.p,
+            &v.log,
+            "scratch",
+            &one,
+            Some("pr:7"),
+            None,
+            Some("2026-10-03"),
+            Lane::Human,
+        )
+        .unwrap();
+        done(
+            &v.p,
+            &v.log,
+            "scratch",
+            &two,
+            Some("pr:8"),
+            None,
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        let text = fs::read_to_string(&sheet).unwrap();
+        assert!(text.contains("id:sc-1 done:2026-10-03 pr:7"), "{text}");
+        assert!(text.contains(&format!("id:sc-2 {today} pr:8")), "{text}");
+        assert_eq!(
+            redate(
+                &v.p,
+                &v.log,
+                "scratch",
+                "sc-2",
+                "2026-10-05",
+                false,
+                Lane::Human
+            )
+            .unwrap(),
+            0
+        );
+        let text = fs::read_to_string(&sheet).unwrap();
+        assert!(text.contains("id:sc-2 done:2026-10-05 pr:8"), "{text}");
+        assert!(text.contains("two, not done:2026-10-05 yet"), "{text}");
+        assert!(text.contains("id:sc-1 done:2026-10-03 pr:7"), "{text}");
+        assert_eq!(
+            redate(
+                &v.p,
+                &v.log,
+                "scratch",
+                "sc-9",
+                "2026-10-05",
+                false,
+                Lane::Human
+            )
+            .unwrap(),
+            1
+        );
+        assert!(redate(
+            &v.p,
+            &v.log,
+            "scratch",
+            "sc-2",
+            "2999-01-01",
+            false,
+            Lane::Human
+        )
+        .is_err());
     }
 
     fn vault(tag: &str, inbox: &str, tasks: &str) -> Vault {
