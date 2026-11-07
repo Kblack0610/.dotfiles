@@ -371,6 +371,31 @@ SH
   assert_output ''
 }
 
+@test "costs lists the window's sessions with the runners, each with its kind and runner" {
+  mkdir -p "$AGENTCTL_STATE_DIR"
+  printf '%s\n' '{"id":"c1","agent":"dream","session_id":"sess-d"}' > "$AGENTCTL_STATE_DIR/calls.jsonl"
+  AGENTCTL_CALLS="$AGENTCTL_STATE_DIR/calls.jsonl" "$SUBJECT" run
+  run "$SUBJECT" costs --days 3650
+  assert_success
+  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.project == "_runner")) | map([.runner, .kind])')" '[["dream","automated"]]'
+  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0] | [.runner, .kind]')" '[null,"human"]'
+  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0] | keys')" \
+    '["account","cost_by_model","cost_usd","harness","kind","models","observed","pr","project","runner","session_id","title","tokens_total","updated_epoch"]'
+  assert_equal "$(printf '%s\n' "$output" | jq -s 'map(.updated_epoch) == (map(.updated_epoch) | sort | reverse)')" true
+  SO_NOW=$((SO_NOW + 3651 * 86400)) run "$SUBJECT" costs --days 1
+  assert_success
+  assert_output ''
+}
+
+@test "costs --days takes a whole number, and says so instead of a jq error" {
+  run "$SUBJECT" costs --days abc
+  assert_failure 2
+  assert_output --partial 'costs: --days takes a whole number of days'
+  run "$SUBJECT" costs --days
+  assert_failure 2
+  assert_output --partial '--days takes a whole number'
+}
+
 # bench_fx: fleet-bench stats rows for A (2 nudges, 1 CI red before merge, 30 lines) and for
 # a session the registry does not know, which must not become a row.
 bench_fx() {

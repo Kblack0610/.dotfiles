@@ -56,9 +56,11 @@ const between = (html, a, b) => html.slice(html.indexOf(a), b ? html.indexOf(b) 
 
 test("the hour chart stacks each hour by project, top four by colour, the rest as Other", () => {
   const html = draw(rec());
-  const legend = between(html, "Merged by hour", "Spend by project");
+  const legend = between(html, "Merged by hour", '<h2 class="sec">Merged');
   assert.deepEqual([...legend.matchAll(/data-proj="([^"]*)"/g)].map((m) => m[1]), ["dotfiles", "unity-core-playground", "dotfiles-private", "home-config", "\u0000other"]);
   assert.match(legend, />Other<\/button>/);
+  assert.doesNotMatch(html, /Spend by project|Spend per day/, "spend is on Costs");
+  assert.match(html, /<a class="tile" href="#costs\?by=project&w=24h"/, "and the Log links there");
   const h = hourOf("2026-11-05T11:00:00Z");
   const tip = legend.match(new RegExp(`data-key="h${h}" data-tip="([^"]*)"`))[1];
   assert.equal(tip, `${String(h).padStart(2, "0")}:00 3 merged\ndotfiles-private 1\nhome-config 1\nunity-core 1`);
@@ -88,7 +90,7 @@ test("a legend pick shows one project's group in both lists; Other is every proj
 
 test("a day with nothing merged has no legend and says so", () => {
   const html = draw(rec({ merged: [], hours: { hours: [], rows: [], total: [] }, projects: ["bnb-platform"] }));
-  assert.doesNotMatch(between(html, "Merged by hour", "Spend by project"), /data-proj/);
+  assert.doesNotMatch(between(html, "Merged by hour", '<h2 class="sec">Merged'), /data-proj/);
   assert.match(html, /Nothing merged\./);
 });
 

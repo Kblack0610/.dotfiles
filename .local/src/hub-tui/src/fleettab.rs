@@ -54,10 +54,10 @@ pub fn page(
         heading(
             "FLEET",
             format!(
-                "  {} of {} rows, {} in 24h across every agentctl run",
+                "  {} of {} rows, {}",
                 rows.len(),
                 f.who.len(),
-                usd(f.cost_24h)
+                hub_core::costs::SPEND_BADGE
             ),
             p,
         ),
@@ -81,9 +81,7 @@ pub fn page(
 }
 
 /// `Who::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
-const WHO_HEADER: [&str; 8] = [
-    "TIER", "WHO", "STATE", "SINCE", "DOING", "UNDER", "$24H", "PROJECT",
-];
+const WHO_HEADER: [&str; 7] = ["TIER", "WHO", "STATE", "SINCE", "DOING", "UNDER", "PROJECT"];
 
 #[allow(clippy::too_many_arguments)]
 fn who_table(
@@ -134,7 +132,6 @@ fn who_table(
                 r.since.map_or("-".into(), |s| dur((now - s) as f64)).into(),
                 r.doing.clone().into(),
                 cell(r.under.clone(), p.dim()),
-                usd(r.cost).into(),
                 cell(r.project.clone(), p.dim()),
             ]
         })
@@ -143,11 +140,11 @@ fn who_table(
         header: WHO_HEADER.to_vec(),
         rows: cells,
         // DOING is the flex column and stays where the rest can drop around it.
-        keep: vec![1, 2, 4, 3, 6, 0, 7, 5],
+        keep: vec![1, 2, 4, 3, 0, 6, 5],
         flex: Some(4),
         flexmin: 16,
-        right: vec![3, 6],
-        cap: vec![(1, 28), (5, 22), (7, 16)],
+        right: vec![3],
+        cap: vec![(1, 28), (5, 22), (6, 16)],
         mark: t.mark::<Who>(),
         ..Default::default()
     }
@@ -944,7 +941,6 @@ pub mod tests {
             } else {
                 String::new()
             },
-            cost: Some(1.25),
             project: "dotfiles".into(),
             parent: parent.map(String::from),
             kids,
@@ -983,7 +979,6 @@ pub mod tests {
                         text: "claude exited 1".into(),
                     }),
                     next: Some(NOW + 3600),
-                    cost_24h: Some(1.25),
                     score: Some(RunnerScore {
                         text: "81% kept".into(),
                         title: "7d, 34 of 42 right, 0 pending, lessons-kept".into(),
@@ -1047,7 +1042,6 @@ pub mod tests {
                     ..Default::default()
                 },
             ],
-            cost_24h: Some(4.5),
             who: vec![
                 who_row(1, "dream", "dream", Opens::Runner, "failed", 1, None),
                 who_row(2, "idle-one", "idle-one", Opens::Runner, "off", 0, None),
@@ -1152,7 +1146,7 @@ pub mod tests {
         let s = text(&fixture(), 160);
         for want in [
             "prometheus: timed out",
-            "FLEET  3 of 3 rows, $4.50 in 24h",
+            "FLEET  3 of 3 rows, spend: 0 Costs",
             "all 3",
             "TIER  WHO",
             "1 sessions",
