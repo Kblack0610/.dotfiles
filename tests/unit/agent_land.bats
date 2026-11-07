@@ -33,6 +33,12 @@ case "$1 $2" in
     # mergeable.seq: one answer per call, popped as read; then this head, mergeable
     q="$NOTES_FIXTURE/mergeable.seq"
     if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else echo '0123456789abcdef MERGEABLE'; fi ;;
+  *headRefOid*)
+    # head.seq: the PR's head on each poll after a fresh push, popped as read; then head.oid. head.fail: the call fails
+    [ ! -f "$NOTES_FIXTURE/head.fail" ] || { echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; }
+    q="$NOTES_FIXTURE/head.seq"
+    if [ -s "$q" ]; then h=$(head -1 "$q"); sed -i 1d "$q"; else h=$(cat "$NOTES_FIXTURE/head.oid" 2>/dev/null || echo 0123456789abcdef); fi
+    printf '{"headRefOid":"%s"}' "$h" | jq -r "${@: -1}" || exit 1 ;;
   *body*) cat "$NOTES_FIXTURE/body" ;;
   # merge.oid: the PR's merge commit
   *mergeCommit*) cat "$NOTES_FIXTURE/merge.oid" 2>/dev/null || echo fedcba9876543210fedcba9876543210fedcba98 ;;
@@ -74,6 +80,10 @@ rev-list)
   q="$NOTES_FIXTURE/behind.seq"
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
 rev-parse) case "$2" in --show-toplevel) cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;; *) echo 0123456789abcdef ;; esac ;;
+# remote.tip: origin's tip of the asked branch, as `git ls-remote` prints it (nothing when absent)
+# remote.fail: the call fails (no network); a decoy ref that only tail-matches comes first
+ls-remote) [ ! -f "$NOTES_FIXTURE/remote.fail" ] || { echo 'fatal: unable to access' >&2; exit 128; }
+  [ ! -f "$NOTES_FIXTURE/remote.tip" ] || printf 'ffffffffffffffff\trefs/heads/x/%s\n%s\t%s\n' "$3" "$(cat "$NOTES_FIXTURE/remote.tip")" "$3" ;;
 # worktree.list: what `git worktree list --porcelain` prints (nothing when absent)
 worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
 # not.ancestor: the merge commit is not on the base branch (merge_proof refuses)
@@ -147,10 +157,63 @@ item() {
   printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
   printf '%s\n' 'worktree /srv/here' 'HEAD 0123456789abcdef' 'branch refs/heads/pr-42' >"$NOTES_FIXTURE/worktree.list"
   printf '/srv/here\n' >"$NOTES_FIXTURE/toplevel"
+  # origin's tip is the PR's head, not HEAD: unpushed, so no wait on the PR
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/remote.tip"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'though this checkout has pr-42: push your commits, or pull the branch'
   refute_output --partial "run from the PR's checkout"
+  run grep -c "headRefOid -q" "$LOG"
+  assert_output 0
+}
+
+@test "a fresh push the PR has not read yet: waits until it reads HEAD, then lands that head" {
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  printf '0123456789abcdef\n' >"$NOTES_FIXTURE/remote.tip"
+  printf '%s\n' aaaaaaaabbbbbbbb 0123456789abcdef >"$NOTES_FIXTURE/head.seq"
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'head: the PR read the pushed head 01234567 after 2 polls'
+  assert_line 'landed #42'
+  run grep -c '^git ls-remote origin refs/heads/pr-42$' "$LOG"
+  assert_output 1
+  run grep -c 'pr view 42 --json headRefOid -q .headRefOid' "$LOG"
+  assert_output 2
+  # The wait comes before the body is touched, and the merge pins the pushed head.
+  [ "$(grep -n 'headRefOid -q' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'pr edit' "$LOG" | cut -d: -f1)" ]
+  run grep -c 'pr merge 42 --squash --match-head-commit 0123456789abcdef' "$LOG"
+  assert_output 1
+}
+
+@test "a fresh push the PR never reads within the bound: stops at head, nothing edited or merged" {
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  printf '0123456789abcdef\n' >"$NOTES_FIXTURE/remote.tip"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial "head failed: HEAD 01234567 is origin's pr-42, but the PR still reads aaaaaaaa after 3 polls"
+  run grep -c 'pr view 42 --json headRefOid -q .headRefOid' "$LOG"
+  assert_output 3
+  run grep -c 'pr edit\|pr checks\|pr merge\|^notes' "$LOG"
+  assert_output 0
+}
+
+@test "a fresh push and gh cannot read the PR: names the gh error, not an empty head" {
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  printf '0123456789abcdef\n' >"$NOTES_FIXTURE/remote.tip"
+  touch "$NOTES_FIXTURE/head.fail"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'but the PR still reads nothing (gh: gh: API rate limit exceeded (HTTP 403)) after 2 polls'
+}
+
+@test "head differs and ls-remote fails: the old diagnostics run, no wait and no silent exit" {
+  printf 'aaaaaaaabbbbbbbb\n' >"$NOTES_FIXTURE/head.oid"
+  touch "$NOTES_FIXTURE/remote.fail"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial "no checkout of pr-42 is listed"
+  run grep -c "headRefOid -q" "$LOG"
+  assert_output 0
 }
 
 @test "head differs and the PR's head is on a fork: points at gh pr checkout, never at a same-named local branch" {
