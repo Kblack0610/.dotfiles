@@ -2061,10 +2061,36 @@ gate() { printf '{"name":"%s","event":"%s","status":"%s","conclusion":%s,"head_s
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
 
+  # an older green alone adds nothing: whether it still covers the head is Checks' call
+  open_pr_gh '[]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed success "$old" 1)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .ci <<<"$output")" = PASS ]
+
+  # only a gate workflow counts, and a stale run decides nothing, as in MAIN_STREAKS
+  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Multi (named)' completed failure "$oid" 4),$(gate 'Tests (affected)' completed stale "$oid" 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  FLEET_GATE_WORKFLOWS='^(Tests|Multi)( |$)' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+
   # a rollup still running stays running, whatever the gate says
   open_pr_gh '[{"status":"IN_PROGRESS","conclusion":""}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed failure "$oid" 5)]}"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+}
+
+@test "gate_ci: a branch run list gh cannot read keeps the rollup's answer and is named unreadable (ar-191)" {
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/one.git
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run gate_ci "$SANDBOX/one" feat/x deadbeef PASS
+  assert_output PASS
+  grep -qx 'gh api actions/runs (one feat/x)' "$CACHE/unreadable"
+  # a red or running rollup is not asked about at all
+  : > "$CACHE/unreadable"
+  run gate_ci "$SANDBOX/one" feat/x deadbeef FAIL
+  assert_output FAIL
+  [ ! -s "$CACHE/unreadable" ]
 }
 
 @test "end to end: an open PR's fact carries its head, so a new push that is still red is nudged again" {

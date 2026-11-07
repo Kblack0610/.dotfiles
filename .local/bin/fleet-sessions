@@ -59,6 +59,10 @@ set -uo pipefail
 # the week to 2026-11-06.
 : "${FLEET_SHARED_RED_BRANCHES:=3}"
 : "${FLEET_SHARED_RED_MIN:=120}"
+# Run names (ERE) of the dispatched workflows that gate a PR (gate_ci). Tests is unity-core-playground's
+# pool gate, `Tests (affected)` from ci-gate.sh; a dispatched Multi, Shots or tour is not a merge gate,
+# and counting one held ready PRs at CI red.
+: "${FLEET_GATE_WORKFLOWS:=^Tests( |$)}"
 # The local gate's per-test failures, one line each: epoch, worktree, branch (- when detached), test.
 TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/test-failures.tsv}"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
@@ -457,14 +461,16 @@ prs_for() {
   cat "$key"
 }
 
-# gate_ci <dir> <branch> <head_oid> <ci> -> <ci> with the branch's dispatched runs folded in.
-# A pool gate (unity-core-playground's Tests, from ci-gate.sh) is a workflow_dispatch run, which
-# never appears in a PR's statusCheckRollup, so a PR whose Checks passed read green while its
-# gate was queued or red (#1175, #1180). Each workflow's newest dispatched run on a commit the PR
-# head holds (a reused slot branch's old runs are on commits it does not) counts as a check, by
-# CI_JQ's order: running is PENDING, else a red is FAIL. Cancelled and skipped runs decide nothing,
-# as gate-line.py passes over a cancelled one. Only a PASS or NONE can change; the run list is
-# main_runs', reused for FLEET_MAIN_TTL, and one gh cannot read keeps <ci> and is named unreadable.
+# gate_ci <dir> <branch> <head_oid> <ci> -> <ci> with the branch's dispatched gate runs folded in.
+# A pool gate is a workflow_dispatch run, which never appears in a PR's statusCheckRollup, so a PR
+# whose Checks passed read green while its gate was queued or red (#1175, #1180). Each
+# FLEET_GATE_WORKFLOWS workflow's newest dispatched run on a commit the PR head holds (a reused
+# slot branch's old runs are on commits it does not) counts as a check, by CI_JQ's order: running
+# is PENDING, else a red is FAIL. A run decides by MAIN_STREAKS' conclusions, so a cancelled,
+# skipped or stale one decides nothing, as gate-line.py passes over a cancelled one. Whether an
+# older gate still covers the head is Checks' call (gate-line.py), so an older green adds nothing.
+# Only a PASS or NONE can change; the run list is main_runs', reused for FLEET_MAIN_TTL, and one
+# gh cannot read keeps <ci> and is named unreadable.
 gate_ci() {
   local d="$1" br="$2" oid="$3" ci="$4" runs wf st c sha seen="" pend=0 fail=0 pass=0
   case "$ci" in PASS|NONE) ;; *) echo "$ci"; return ;; esac
@@ -478,8 +484,10 @@ gate_ci() {
     if [ "$st" != completed ]; then pend=1
     elif [ "$c" = success ]; then pass=1
     else fail=1; fi
-  done < <(jq -r 'map(select(.event == "workflow_dispatch"
-                     and ((.conclusion // "") | test("^(cancelled|skipped|neutral)$") | not)))
+  done < <(jq -r --arg gates "$FLEET_GATE_WORKFLOWS" \
+             'map(select(.event == "workflow_dispatch" and (.workflowName | test($gates))
+                     and (.status != "completed"
+                          or ((.conclusion // "") | test("^(success|failure|timed_out|startup_failure)$")))))
                   | sort_by(.createdAt) | reverse | .[]
                   | [.workflowName, .status, ((.conclusion // "") | if . == "" then "-" else . end), .headSha]
                   | @tsv' <<<"$runs")  # "-": IFS tab would merge an empty field into the next
