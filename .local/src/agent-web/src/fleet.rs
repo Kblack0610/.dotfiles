@@ -113,7 +113,6 @@ mod tests {
             since: None,
             doing: String::new(),
             under: String::new(),
-            cost: None,
             project: "dotfiles".into(),
             parent: parent.map(String::from),
             kids,

@@ -5,6 +5,7 @@
 #   agentctl-session-outcomes worst [--project P] [--days N] [-n N] [--json]
 #   agentctl-session-outcomes card <session-id prefix> [--json]   one session's full card
 #   agentctl-session-outcomes ended [--days N]             the sessions observed that recently, one JSON line each, newest first
+#   agentctl-session-outcomes costs [--days N]             what each session in the window cost and on what, runners too (the hub's Costs tab)
 #   agentctl-session-outcomes langfuse [--all]             push outcomes and judge verdicts to Langfuse as scores
 #   agentctl-session-outcomes backfill-harness YYYY-MM     give that month's rows with no harness one
 #
@@ -444,6 +445,29 @@ cmd_ended() {
     | {session_id, project, title, account, cost_usd, updated_epoch, prs_merged, prs_open}'
 }
 
+# costs: one line per session updated in the window, runner calls included, with what the hub's
+# Costs tab (hub_core::costs) cuts it by. kind is automated for a runner or a queue item's session.
+cmd_costs() {
+  local days=7
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days)
+        [[ "${2:-}" =~ ^[0-9]+$ ]] || { echo "$NAME costs: --days takes a whole number of days" >&2; return 2; }
+        days="$2"; shift 2 ;;
+      *) echo "$NAME costs: unknown arg $1" >&2; return 2 ;;
+    esac
+  done
+  so_latest "$OUT" | jq -cn --argjson now "$NOW" --argjson days "$days" '
+    [inputs | select(.updated_epoch >= $now - $days * 86400)]
+    | sort_by(-.updated_epoch)[]
+    | {session_id, project, title, harness, account, models: (.models // []), cost_usd, cost_by_model,
+       tokens_total, updated_epoch, observed,
+       runner: (if .runner then (.agent // "runner") else null end),
+       kind: (if .runner or ((.items // []) | length > 0) then "automated" else "human" end),
+       pr: ((.prs // []) | map(select(.state == "MERGED")) | first
+            | if . then "\(.repo)#\(.number)" else null end)}'
+}
+
 # cmd_card PREFIX [--json] - one session's newest row as its full card: time, stages, cost,
 # delivery, the friction sum term by term, activity and what it reached for. --json is the
 # row plus friction and why. A prefix that names no session or more than one is an error.
@@ -541,8 +565,9 @@ case "${1:-run}" in
   worst) shift; cmd_worst "$@" ;;
   card) shift; cmd_card "$@" ;;
   ended) shift; cmd_ended "$@" ;;
+  costs) shift; cmd_costs "$@" ;;
   langfuse) shift; cmd_langfuse "$@" ;;
   backfill-harness) shift; cmd_backfill_harness "$@" ;;
-  -h|--help) sed -n '2,27p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | langfuse [--all] | backfill-harness YYYY-MM" >&2; exit 2 ;;
+  -h|--help) sed -n '2,28p' "$0" ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | costs [--days N] | langfuse [--all] | backfill-harness YYYY-MM" >&2; exit 2 ;;
 esac

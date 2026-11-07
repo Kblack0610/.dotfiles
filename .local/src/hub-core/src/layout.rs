@@ -12,7 +12,7 @@ pub struct Tab {
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 9] = [
+pub const TABS: [Tab; 10] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -69,12 +69,20 @@ pub const TABS: [Tab; 9] = [
         question: "Who is working, on what, and can I afford it?",
         sections: &["workers", "accounts"],
     },
-    // Last, so the older tabs keep their digits.
+    // After the older tabs, so they keep their digits.
     Tab {
         id: "schedules",
         title: "Schedules",
         question: "What runs on its own, and why?",
         sections: &["table", "detail"],
+    },
+    // Last, the tenth (key 0), so no digit shifts. Every dollar figure the other tabs showed is
+    // here, cut seven ways; they keep a one-line badge that links in.
+    Tab {
+        id: "costs",
+        title: "Costs",
+        question: "What does the fleet cost, and is each model worth it?",
+        sections: &["totals", "table"],
     },
 ];
 
@@ -170,6 +178,7 @@ mod tests {
         assert_eq!(resolve("history").map(|t| t.id), Some("log"));
         assert_eq!(resolve("actions").map(|t| t.id), Some("log"));
         assert_eq!(resolve("fleet").map(|t| t.id), Some("fleet"));
+        assert_eq!(resolve("Costs").map(|t| t.id), Some("costs"));
         assert_eq!(resolve("nope"), None);
     }
 

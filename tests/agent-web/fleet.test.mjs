@@ -37,7 +37,7 @@ for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
   name, lane: "observe", description: "", schedule: "", enabled: true, state: "idle", running_since: null, usual_s: null, overdue: false, last: null,
-  runs_24h: 0, failed_24h: 0, why: null, next: null, cost_24h: null, score: null, detail: "",
+  runs_24h: 0, failed_24h: 0, why: null, next: null, score: null, detail: "",
   registry: {
     kind: "call", trigger: "called by its caller", role: "distill", role_desc: "reads and returns data",
     caps: "write no, task no, bash no, mcp none", model: "claude-sonnet-5-5", effect: "acts",
@@ -55,7 +55,7 @@ const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, 
     { id: "c", project: "ucp", question: "quarantine it?", type: "ci_capacity_ops", rule: "ci_capacity_ops", said: "would answer", judge: "a", reason: "rule says so", evidence: "", you: "b", score: "wrong", at: 1793942500 },
   ] };
 const data = {
-  at: 1793942659, errors: [], accounts: [], cost_24h: 1, judge,
+  at: 1793942659, errors: [], accounts: [], judge,
   dispatch: { counts_24h: {}, counts_7d: {}, log_24h: {}, recent: [], partial: false },
   workers: [
     worker("ask-judge", {
@@ -93,8 +93,8 @@ test("Log lists every answer verdict with why and what you did, and a filter nar
 
 // The table: hub_core::fleet::who's rows, and the Summary hub_core::table sends beside them.
 const st = vm.runInContext("st", ctx);
-const wrow = (o) => ({ tier: 3, who: "dotfiles-agent-11", opens: "session", key: "lab/dotfiles-agent-11:1", state: "working", since: 1793942000, doing: "editing fleet.js", under: "dispatch dotfiles", cost: 1.5, project: "dotfiles", parent: "fleet-dispatch", kids: 0, ...o });
-const COLS = ["tier", "who", "state", "since", "doing", "under", "cost", "project"];
+const wrow = (o) => ({ tier: 3, who: "dotfiles-agent-11", opens: "session", key: "lab/dotfiles-agent-11:1", state: "working", since: 1793942000, doing: "editing fleet.js", under: "dispatch dotfiles", project: "dotfiles", parent: "fleet-dispatch", kids: 0, ...o });
+const COLS = ["tier", "who", "state", "since", "doing", "under", "project"];
 const table = (o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total: 4, shown: 4,
   states: [{ name: "all", n: 4 }, { name: "failed", n: 1 }, { name: "working", n: 2 }],
@@ -103,8 +103,8 @@ const table = (o = {}) => ({
   ...o,
 });
 const people = [
-  wrow({ tier: 1, who: "fleet-dispatch", opens: "runner", key: "fleet-dispatch", state: "idle", doing: "next 14:00", under: "2 sessions", parent: null, kids: 2, cost: 0.2 }),
-  wrow({ tier: 2, who: "ask-judge", opens: "runner", key: "ask-judge", state: "failed", doing: "no gateway route", under: "called by dream", parent: null, cost: null, project: "observe" }),
+  wrow({ tier: 1, who: "fleet-dispatch", opens: "runner", key: "fleet-dispatch", state: "idle", doing: "next 14:00", under: "2 sessions", parent: null, kids: 2 }),
+  wrow({ tier: 2, who: "ask-judge", opens: "runner", key: "ask-judge", state: "failed", doing: "no gateway route", under: "called by dream", parent: null, project: "observe" }),
   wrow({}),
   wrow({ who: "dotfiles-agent-12", key: "lab/dotfiles-agent-12:1", state: "needs you" }),
 ];
@@ -130,6 +130,8 @@ test("the header draws every hub-core column and the bar is the shared one", () 
   ctx.renderFleet();
   const h = box.innerHTML;
   assert.equal((h.match(/data-tsort=/g) || []).length, COLS.length);
+  assert.doesNotMatch(h, /\$ 24h/, "a runner's spend is on Costs");
+  assert.match(h, /spend on <a href="#costs\?by=runner&w=24h">Costs<\/a>/);
   assert.match(h, /id="fleet-q" data-tsearch/);
   assert.match(h, /<option value="tier:1">1 \(1\)<\/option>/);
 });

@@ -5,6 +5,7 @@
 mod app;
 mod board;
 mod controls;
+mod coststab;
 mod datatable;
 mod day;
 mod fit;
@@ -379,6 +380,22 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         // its rows, what Enter shows: the Prefix+p preview.
         a.open_project(section);
         a.read_proj_page_now(&sys);
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
+    // `--tab 'costs by=runner&w=24h'` prints that view of the Costs tab.
+    if tab == Some(Tab::Costs) {
+        let sys = hub_core::session_actions::System;
+        let paths = hub_core::costs::Paths::from_env();
+        a.costs = Some(hub_core::costs::read(
+            &sys,
+            &paths,
+            chrono::Utc::now().timestamp(),
+        ));
+        a.tab = Tab::Costs;
+        a.open_query(section);
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }

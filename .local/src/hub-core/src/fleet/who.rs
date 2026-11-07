@@ -1,4 +1,5 @@
-//! The Fleet tab's one table: who is working, on what, and can I afford it. Tier 1 is the
+//! The Fleet tab's one table: who is working, on what, and can I afford it (the accounts; what each runner spent is
+//! `crate::costs`). Tier 1 is the
 //! supervisors (a runner whose conf says `TIER=1`), tier 2 every other agentctl runner, tier 3
 //! every live session from fleet-sessions' `state.json`. It is a [`Row`], so both surfaces get
 //! the shared table's search, chips and sort, and a row opens its own record: a runner's page
@@ -40,7 +41,6 @@ pub struct Who {
     pub since: Option<i64>,
     pub doing: String,
     pub under: String,
-    pub cost: Option<f64>,
     /// A runner's lane, a session's project.
     pub project: String,
     /// The tier 1 row that folds this one.
@@ -50,9 +50,8 @@ pub struct Who {
 }
 
 impl Row for Who {
-    const COLUMNS: &'static [&'static str] = &[
-        "tier", "who", "state", "since", "doing", "under", "cost", "project",
-    ];
+    const COLUMNS: &'static [&'static str] =
+        &["tier", "who", "state", "since", "doing", "under", "project"];
     const STATES: &'static [&'static str] = &["all", "failed", "working", "needs you", "stalled"];
     const FACETS: &'static [&'static str] = &["tier", "state", "project"];
 
@@ -71,7 +70,6 @@ impl Row for Who {
             "since" => self.since.map_or(Val::None, |t| Val::Num(t as f64)),
             "doing" => text(&self.doing),
             "under" => text(&self.under),
-            "cost" => self.cost.map_or(Val::None, Val::Num),
             "project" => text(&self.project),
             _ => Val::None,
         }
@@ -120,7 +118,6 @@ fn runner(w: &Worker, at: i64) -> Who {
             .called_by
             .as_ref()
             .map_or(String::new(), |c| format!("called by {c}")),
-        cost: w.cost_24h,
         project: w.lane.clone(),
         parent: None,
         kids: 0,
@@ -200,7 +197,6 @@ fn session(sess: &Value, at: i64) -> Option<Who> {
         since: sess["age_min"].as_i64().map(|m| at - m * 60),
         doing: doing.to_string(),
         under,
-        cost: None,
         parent: None,
         kids: 0,
     })

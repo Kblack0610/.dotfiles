@@ -574,14 +574,15 @@ cmd_search() {
   # the background, detached so closing the popup does not kill it. A keystroke filters the
   # index as it stands by then. Not a start:reload: rows reordering under the cursor while
   # you arrow down to the session two back would resume the wrong one.
-  local id
+  local id hint=""
+  [ -n "$all" ] || hint=" | --all shows dispatched"
   [ -f "$INDEX" ] && setsid -f "$SELF" index >/dev/null 2>&1 </dev/null
   id=$(cmd_filter --cached $all "$q" | fzf \
         --delimiter="$TAB" --with-nth=2.. \
         --disabled --query="$q" --wrap \
         --bind="change:reload('$SELF' _filter --cached ${all:+$all }{q})" \
         --bind="ctrl-g:execute($RECALL search {q} --limit 40 2>&1 | \${PAGER:-less} -R)" \
-        --prompt="session> " --header='enter resume | ctrl-g full-text' \
+        --prompt="session> " --header="enter resume | ctrl-g full-text$hint" \
       | cut -f1)
   [ -n "$id" ] || return 0
   cmd_resume ${window:+"$window"} "$id"

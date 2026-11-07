@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod boards;
 pub mod capacity;
+pub mod costs;
 pub mod epics;
 pub mod fleet;
 pub mod focus;

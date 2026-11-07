@@ -90,7 +90,7 @@ const callsTable = (recent) => `<table class="tbl"><tr><th class="n">when</th><t
   `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
 
 // The table's headers: hub_core::fleet::who::Who::COLUMNS (checked by assets.rs).
-const FLEET_COLS = { tier: ["tier", "n"], who: ["who"], state: ["state"], since: ["since", "n"], doing: ["doing now"], under: ["under it"], cost: ["$ 24h", "n"], project: ["project"] };
+const FLEET_COLS = { tier: ["tier", "n"], who: ["who"], state: ["state"], since: ["since", "n"], doing: ["doing now"], under: ["under it"], project: ["project"] };
 const STATE_CLASS = { failed: "bad", "needs you": "warn", stalled: "warn", idle: "muted", off: "muted", chat: "muted", parked: "muted", landed: "muted" };
 // A runner opens its page, a session its record on the Sessions tab.
 const whoHref = (r) => (r.opens === "runner" ? runnerHref(r.key) : "#sessions/" + encodeURIComponent(r.key));
@@ -100,7 +100,7 @@ function whoRow(r) {
   const fold = r.kids ? `<button class="thsort" data-fold="${esc(r.key)}" aria-expanded="${!shut}" title="${shut ? "unfold" : "fold"} the ${r.kids} rows under it">${shut ? "&gt;" : "v"}</button> ` : "";
   return `<tr class="wr" data-href="${esc(whoHref(r))}"><td class="n">${fold}${r.tier}</td><td><a href="${esc(whoHref(r))}">${esc(r.who)}</a></td>` +
     `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
-    `<td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="n">${usd(r.cost)}</td><td class="muted">${esc(r.project)}</td></tr>`;
+    `<td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${esc(r.project)}</td></tr>`;
 }
 
 function fleetBody(d) {
@@ -113,7 +113,7 @@ function fleetBody(d) {
 
 function fleetHead(d) {
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
-  return `<div class="bhead"><span>fleet <span class="muted">who is working, on what, and can I afford it; ${d.table.shown} of ${d.table.total} rows, ${usd(d.cost_24h)} in 24h across every agentctl run, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
+  return `<div class="bhead"><span>fleet <span class="muted">who is working, on what, and can I afford it; ${d.table.shown} of ${d.table.total} rows, spend on <a href="#costs?by=runner&w=24h">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
     (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
 }
 
