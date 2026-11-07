@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# gh-run-wait <run-id> [label] - wait for one GitHub Actions run to finish, print its result, exit
+# by its conclusion. Another repo: GH_REPO=<owner>/<repo> gh-run-wait <run-id>.
+#
+# Start it with run_in_background and act on its completion notice. agent-panel's time-use.conf
+# names it as a gate, so fleet-sessions reads the wait as CI; a session's own wrapper script hides
+# its `gh run view` and reads as STALLED. A PR's checks: agent-land waits on those itself.
+#
+# Why it polls: nothing a shell can block on tells it a run finished (a workflow_run webhook
+# needs a public endpoint), and `gh run watch` is denied by block-poll.py for reading the API
+# every 3s. Each `gh run view` spends one call from the actions REST bucket (fleet-assess
+# gh_budget), so the cadence is slow.
+#
+# Exit: 0 success, neutral or skipped; 1 any other conclusion; 2 usage; 3 MAX_ERRORS reads failed
+# in a row; 4 still open after MAX_SECS.
+set -uo pipefail
+
+POLL_SECS=60            # the one cadence: a CI run takes minutes, and every read costs a call
+MAX_SECS=$((12 * 3600)) # guard, not a cadence: a run still open after 12h is not worth a session's wait
+MAX_ERRORS=5            # consecutive failed reads (network, auth, rate limit) before giving up
+
+case "${1:-}" in
+  '' | -h | --help) echo "usage: gh-run-wait <run-id> [label]" >&2; exit 2 ;;
+esac
+[[ "$1" =~ ^[0-9]+$ ]] || { echo "gh-run-wait: run id must be a number, got '$1'" >&2; exit 2; }
+id="$1" label="${2:-run $1}"
+
+echo "$label: waiting on run $id, one read every ${POLL_SECS}s"
+errors=0 status=unread
+while :; do
+  if out="$(gh run view "$id" --json status,conclusion,url \
+              --jq '"\(.status) \(.conclusion // "-") \(.url)"')"; then
+    errors=0
+    read -r status conclusion url <<<"$out"
+    if [ "$status" = completed ]; then
+      echo "$label: run $id $conclusion $url"
+      case "$conclusion" in success | neutral | skipped) exit 0 ;; *) exit 1 ;; esac
+    fi
+  else
+    errors=$((errors + 1))
+    if [ "$errors" -ge "$MAX_ERRORS" ]; then
+      echo "gh-run-wait: $MAX_ERRORS reads of run $id failed in a row (gh's errors above)" >&2
+      exit 3
+    fi
+  fi
+  if [ "$SECONDS" -ge "$MAX_SECS" ]; then
+    echo "gh-run-wait: run $id still $status after $((MAX_SECS / 3600))h" >&2
+    exit 4
+  fi
+  sleep "$POLL_SECS"
+done
