@@ -1559,7 +1559,8 @@ close_row() {
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
   [ "$lane" = agent ] && flag=(--agent)
   [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || return 0
-  oid=$(jq -r '.merged // empty' <<<"$it"); pr=$(jq -r '.pr // empty' <<<"$it")
+  # The row closes on the item's first PR: pr: and merged: are lists in step, one PR per repo.
+  oid=$(jq -r '.merged // "" | split(" ")[0] // empty' <<<"$it"); pr=$(jq -r '.pr // "" | split(" ")[0] // empty' <<<"$it")
   dir=$(repo_dir "$project")
   if [ -z "$oid" ] || [ -z "$dir" ] || ! out=$(merge_proof "$dir" "${pr##*#}" "$(merge_proof_branch "$dir")" "$oid" 2>&1); then
     logline "queue item $1: $project row left started, no merge proof: ${out:-no merged commit or checkout}"
