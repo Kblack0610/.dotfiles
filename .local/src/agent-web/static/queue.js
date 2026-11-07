@@ -205,7 +205,7 @@ function qTiles() {
   const s = qst.stats || {};
   const prose = [s.week, s.sitting].filter(Boolean).map(esc).join("<br>");
   const k = "stats";
-  return `<div class="tiles qtiles">${tile("NEEDS YOU", n("waiting"), "var(--b-needs)")}${tile("RUNNING", n("running"), "var(--b-working)")}` +
+  return `<div class="tiles qtiles">${tile("NEEDS YOU", n("waiting"), "var(--b-needs)")}${tile("RUNNING", n("running"), "var(--b-working)", "", "#sessions?s=running")}` +
     `${tile("UP NEXT", n("queued"), "var(--c1)", held ? `${held} held` : "")}${tile("DONE, 7 DAYS", n("done"), "var(--b-done)", failed ? `${failed} failed` : "")}` +
     `${s.wait_minutes_median != null ? tile("TYPICAL WAIT", dur(s.wait_minutes_median), "var(--c3)") : ""}` +
     `${s.to_pr_minutes_median != null ? tile("TYPICAL TO PR", dur(s.to_pr_minutes_median), "var(--c3)") : ""}</div>` +
