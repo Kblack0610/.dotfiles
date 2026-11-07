@@ -49,18 +49,9 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 HISTORY_CAPTURE="$SCRIPT_DIR/history-capture.sh"
 SPIN_DIR="$HOME/.agent/spin-down"
 
-# Resolve canonical project name (matches the Stop-hook's resolution).
-resolve_project() {
-  local pn="$HOME/.config/shared-hooks/project-name.sh"
-  if [ -f "$pn" ]; then
-    # shellcheck source=/dev/null
-    . "$pn"
-    resolve_project_name "${CLAUDE_PROJECT_DIR:-$PWD}"
-  else
-    local base="${CLAUDE_PROJECT_DIR:-$PWD}"
-    base="${base##*/}"; echo "${base#.}"
-  fi
-}
+# Canonical project name (matches the Stop-hook's resolution).
+# shellcheck source=../../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.config/shared-hooks/project-name.sh}"
 
 cmd_arm() {
   local scope="window"
@@ -117,7 +108,7 @@ cmd_arm() {
   fi
 
   local proj sentinel sid
-  proj=$(resolve_project)
+  proj=$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")
   sid="${CLAUDE_CODE_SESSION_ID:-}"
   mkdir -p "$SPIN_DIR"
   # Key the sentinel by Claude session id. Multiple Claude windows can run in the
@@ -275,7 +266,7 @@ cmd_fire() {
 
 cmd_note_path() {
   local proj dir
-  proj=$(resolve_project)
+  proj=$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")
   dir="$HOME/.agent/sessions/${proj}"
   mkdir -p "$dir"
   echo "$dir/$(date +%Y-%m-%d)-wind-down.md"

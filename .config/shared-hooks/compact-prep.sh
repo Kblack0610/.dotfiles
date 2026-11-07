@@ -23,17 +23,10 @@ set -uo pipefail
 # the stowed home path.
 PN="$(dirname "$0")/project-name.sh"
 [ -f "$PN" ] || PN="$HOME/.config/shared-hooks/project-name.sh"
-resolve_project() {
-  if [ -f "$PN" ]; then
-    # shellcheck source=/dev/null
-    . "$PN"
-    resolve_project_name "${CLAUDE_PROJECT_DIR:-$PWD}"
-  else
-    local b="${CLAUDE_PROJECT_DIR:-$PWD}"; b="${b##*/}"; echo "${b#.}"
-  fi
-}
+# shellcheck source=project-name.sh
+. "$PN"
 
-PROJECT="$(resolve_project)"
+PROJECT="$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")"
 AGENT="$HOME/.agent"
 MARKER="$AGENT/compact/$PROJECT.pending"
 

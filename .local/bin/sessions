@@ -28,16 +28,8 @@ command -v jq >/dev/null 2>&1 || { echo "sessions: jq is required" >&2; exit 1; 
 
 # ---------------------------------------------------------------- helpers ---
 
-resolve_project() {
-  # Resolve the current project name the same way the hooks do.
-  local dir="${1:-$PWD}"
-  if [ -f "$HOME/.config/shared-hooks/project-name.sh" ]; then
-    . "$HOME/.config/shared-hooks/project-name.sh"
-    resolve_project_name "$dir"
-  else
-    local base="${dir##*/}"; echo "${base#.}"
-  fi
-}
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
 _age() {
   # epoch -> compact relative age ("now", "9m", "3h", "2d", "5w")

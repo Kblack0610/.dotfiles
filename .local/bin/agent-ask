@@ -126,24 +126,12 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 : "${AGENT_ASK_JUDGE_BOARD:=agent-runtime}"
 # shellcheck source=../lib/judge.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
-SHARED_HOOKS="$HOME/.config/shared-hooks"
+# shellcheck source=../lib/fmt.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
 # --- helpers ---------------------------------------------------------------
-
-resolve_project() {
-  # Canonical project name, the same way the hooks + sessions CLI do it.
-  local dir="${1:-$PWD}"
-  if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
-    # shellcheck disable=SC1091
-    . "$SHARED_HOOKS/project-name.sh"
-    resolve_project_name "$dir"
-  else
-    local base="${dir##*/}"; echo "${base#.}"
-  fi
-}
-
-# now_iso [<date -d spec>]: the one timestamp format, now or at an offset ("+30 minutes").
-now_iso() { date -d "${1:-now}" +%Y-%m-%dT%H:%M:%S%z; }
 
 # collapse a value to a single physical line (files are one key:value per line)
 oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
@@ -229,16 +217,8 @@ wrap() {
 }
 
 # card_slug <project>: its short name (project-name.sh project_slug), the one the questions
-# panel rows use; the name itself where the shared hooks are not installed.
-card_slug() {
-  if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
-    # shellcheck disable=SC1091
-    . "$SHARED_HOOKS/project-name.sh"
-    project_slug "$1"
-  else
-    printf '%s\n' "$1"
-  fi
-}
+# panel rows use.
+card_slug() { project_slug "$1"; }
 
 # judge_line: the loaded ask's (load_ask) judge verdict as one line, worded as agent-web's
 # judgeText words it: what the judge did or would do, the rule that decided it, an override,
@@ -381,12 +361,8 @@ cmd_post() {
   if [ -n "$project" ]; then
     # An explicit --project must be the canonical name, or the ask files where no reader looks
     # for it. The resolver's own answer (no --project) is canonical by construction.
-    if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
-      # shellcheck disable=SC1091
-      . "$SHARED_HOOKS/project-name.sh"
-      project_known "$project"
-      [ $? = 1 ] && { echo "agent-ask post: '$project' is not a canonical project (project-map.json)" >&2; return 2; }
-    fi
+    project_known "$project"
+    [ $? = 1 ] && { echo "agent-ask post: '$project' is not a canonical project (project-map.json)" >&2; return 2; }
   else
     project="$(resolve_project)"
   fi
@@ -896,11 +872,7 @@ file_board_row() {
   local f="$1" text="$2" project profile board q
   project="$(field "$f" project)"; profile="$(field "$f" profile)"
   [ -n "$project" ] || return 0
-  if [ -f "$SHARED_HOOKS/project-name.sh" ]; then
-    # shellcheck disable=SC1091
-    . "$SHARED_HOOKS/project-name.sh"
-    board="$(project_lab_names "$project" 2>/dev/null | head -1)"
-  fi
+  board="$(project_lab_names "$project" 2>/dev/null | head -1)"
   # Boards are plain ASCII, and a # in the question would read as a tag.
   q="$(printf '%s' "$text" | tr -cd ' -~' | tr -d '#' | cut -c1-240)"
   notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add \

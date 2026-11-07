@@ -827,7 +827,8 @@ if [ "$MODE" = lint ]; then
 fi
 
 # A YAML parser error quotes the text it choked on, and the nightly reads this as JSON.
-json_esc() { local v="${1//\\/\\\\}"; printf '%s' "${v//\"/\\\"}"; }
+# shellcheck source=../lib/fmt.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
 
 is_new() { [ -f "$BASELINE" ] || return 0; ! grep -qxF "$1" "$BASELINE"; }
 

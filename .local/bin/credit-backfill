@@ -16,7 +16,6 @@ CB_DIR="${CREDIT_BACKFILL_DIR:-$HOME/.agent/backfill}"
 CB_CACHE="${CREDIT_BACKFILL_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/credit-backfill}"
 CB_PLANS="${CREDIT_BACKFILL_PLANS:-$HOME/.agent/plans}"
 CB_LIVE_PLANS="${CREDIT_BACKFILL_LIVE_PLANS:-$HOME/.claude/plans}"
-AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 SYSTEMS_MD="${CREDIT_BACKFILL_SYSTEMS:-$HERE/../src/docs/systems.md}"
 SYSTEM_CHECK="${CREDIT_BACKFILL_SYSTEM_CHECK:-$HERE/project-system-check}"
@@ -43,9 +42,10 @@ telemetry	telemetry|crash|crashes|sentry|logs
 security	secret|secrets|security|auth'
 
 die() { echo "credit-backfill: $*" >&2; exit 1; }
-PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
+AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$(project_map_file)}"
+PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../lib/plan-phases.sh
 . "${PLAN_PHASES_LIB:-$HERE/../lib/plan-phases.sh}"
 

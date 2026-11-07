@@ -65,7 +65,7 @@ plan_epic_dir() {
   local code map proj
   code=$(sed -nE 's/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/\1/p' "$1" 2>/dev/null | head -1)
   [ -n "$code" ] || return 0
-  map="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
+  map="$(project_map_file)"
   proj=$(jq -r --arg c "$code" 'first(.trackers // {} | to_entries[] | select((.value | objects | .code) == $c) | .key) // empty' "$map" 2>/dev/null)
   [ -n "$proj" ] && printf '%s\n' "$PLANS_ROOT/$proj"
 }

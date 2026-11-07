@@ -78,7 +78,6 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$HERE/../lib/judge.sh"
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, stages, enabled, off (load_kinds)
-: "${DISPATCH_PROJECT_MAP:=$HOME/.config/shared-hooks/project-map.json}"
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
 : "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
 : "${DISPATCH_DROP_TOOLS=Workflow,ScheduleWakeup}"   # tools a new queue session starts without (see dropped_tools); empty keeps every tool
@@ -217,6 +216,7 @@ def rank: sort_by((.cleanup // 1), (.pprio // 2), (.due // 3), (.req // 1), (.wr
 # The registry's own resolver (project-name.sh), reading DISPATCH_PROJECT_MAP.
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+: "${DISPATCH_PROJECT_MAP:=$(project_map_file)}"
 # shellcheck source=../lib/plan-phases.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
 repo_dir() { PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_repo_path "$1"; }
