@@ -344,23 +344,22 @@ overdue_due() {
     | @tsv')
 }
 
-# limit_due -> what a pass moves off an account that is out of usage. Each account at its week or
-# 5h cap (`claude-acct status`) gets a line per live session on it: an idle one moves to the account
-# `claude-acct room` names, one in a dialog is listed for the human, and a busy one or one with
+# limit_due -> what a pass moves off an account that is out of usage. Each account whose published
+# verdict says capped (`room.capped` in `claude-acct room --json`: its week or 5h window spent) gets a
+# line per live session on it: an idle one moves to the account that answer picks (the best with
+# room), one in a dialog is listed for the human, and a busy one or one with
 # shells running waits for a later pass (a move would stop its gate or test). No room anywhere is
 # one line per capped account, for the human. A session the account read does not cover (its
 # account unread, or not in the row) still gets the pane line: only the pane says it stopped. An
 # escalated row is left out of the pane line, since that is where a pass puts one no account has
 # room for, and only the human can add room.
 limit_due() {
-  local rows capped room room_name target pane server
-  rows="$(claude-acct status --json 2>/dev/null)" || rows=''
-  capped="$(jq -c '[.[]? | select(.state == "ok" and ((.week_used // 0) >= 100 or (.five_hour // 0) >= 100)) | .name]' \
-    <<<"${rows:-[]}" 2>/dev/null)" || capped='[]'
+  local rows capped room_name target pane server
+  # One ask: room --json exits 1 or 2 when no account has room, and still prints every verdict.
+  rows="$(claude-acct room --json 2>/dev/null)"
+  capped="$(jq -c '[(.accounts // [])[] | select(.room.capped) | .name]' <<<"${rows:-null}" 2>/dev/null)" || capped='[]'
   if [ "${capped:-[]}" != '[]' ]; then
-    room_name=''
-    room="$(claude-acct room 2>/dev/null)" \
-      && room_name="$(jq -r --arg d "$room" 'first(.[] | select(.dir == $d) | .name) // empty' <<<"$rows")"
+    room_name="$(jq -r '.pick // empty' <<<"$rows")"
     jq -r --argjson capped "$capped" --arg room "$room_name" '
       (.sessions // []) | map((.account // "") as $a
         | select(((.labels // []) | index("manual") | not) and ($capped | index($a)) != null))

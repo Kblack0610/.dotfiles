@@ -364,7 +364,8 @@ week() {
   printf '{"five_hour":null,"seven_day":{"utilization":%s,"resets_at":"%s"}}\n' "$2" "$resets" \
     > "$XDG_CACHE_HOME/claude-acct/$1.json"
 }
-field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
+# field <name> <jq>: from status --json's rows or room --json's accounts
+field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | .[] | select(.name == \$a) | $2"; }
 
 @test "status --json: half the week gone, used under it, is under pace and lasts to the reset" {
   export CLAUDE_ACCT_NOW=$NOW
@@ -647,7 +648,7 @@ STUB
 }
 
 @test "room: the slack is the edge of the pace line" {
-  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PACE_SLACK_PCT=5
+  export CLAUDE_ACCT_NOW=$NOW   # pace.conf's 5 of slack
   week main 55 84
   week alt 56 84
   run --separate-stderr "$ACCT" room
@@ -897,6 +898,49 @@ seen_claude() {
   [[ "$(field alt .room.reason <<< "$output")" == ok ]]
 }
 
+@test "room object: reasons lists every refusal, so a floor can tell pace alone from pace and more" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 22 141   # 1 point past its line and nothing else
+  week alt 22 141
+  printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/alt.json")" > "$XDG_CACHE_HOME/claude-acct/alt.json"
+  run --separate-stderr "$ACCT" room --json
+  assert_failure 1
+  [[ "$(field main '.room.reasons | join(",")' <<< "$output")" == pace ]]
+  [[ "$(field alt '.room.reasons | join(",")' <<< "$output")" == pace,five_hour ]]
+  [[ "$(field alt .room.reason <<< "$output")" == pace ]]
+  # the textfile carries every reason, so the chip can say what else holds alt
+  mkdir -p "$SANDBOX/prom" && "$ACCT" textfile "$SANDBOX/prom"
+  grep -q '^claude_account_room_reason{account="alt",reason="pace"} 1$' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room_reason{account="alt",reason="five_hour"} 1$' "$SANDBOX/prom/claude_acct.prom"
+  [[ "$(field main .room.why <<< "$output")" == '1 point over its weekly pace (22% used, 16% of its week gone, 5 points of slack)' ]]
+  # the refusal sentence is claude-acct's own, in the answer, so no reader rebuilds or parses it
+  assert_equal "$(jq -r .pick <<< "$output")" null
+  [[ "$(jq -r .why <<< "$output")" == 'no account has room; main is the closest, 1 point over its weekly pace (22% used, 16% of its week gone, 5 points of slack)'* ]]
+  assert_equal "$stderr" ''
+  # early in the week the reserve is past the line too, and both are named
+  week main 87 141
+  run --separate-stderr "$ACCT" room --json
+  [[ "$(field main '.room.reasons | join(",")' <<< "$output")" == reserve,pace ]]
+  [[ "$(field main .room.why <<< "$output")" == '87% of its week used, inside the last 15% kept for the human' ]]
+  week main 10 84
+  run --separate-stderr "$ACCT" room --json
+  assert_success
+  [[ "$(field main '.room.reasons | length' <<< "$output")" == 0 ]]
+  [[ "$(field main .room.why <<< "$output")" == 'it has room' ]]
+}
+
+@test "room object: the old env overrides move nothing; pace.conf is the one source" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 22 141
+  week alt 22 141
+  CLAUDE_ACCT_PACE_SLACK_PCT=100 CLAUDE_ACCT_RESERVE_PCT=0 run --separate-stderr "$ACCT" room --json
+  assert_failure 1
+  [[ "$(field main .room.slack <<< "$output")" == 5 ]]
+  [[ "$(field main .room.reserve <<< "$output")" == 15 ]]
+  run grep -nE 'CLAUDE_ACCT_(PACE_SLACK|RESERVE)_PCT:-' "$ACCT"
+  assert_failure
+}
+
 @test "room --json: exit codes match room, an unread account is not a room verdict, and a window at the reserve refuses" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 10 84
@@ -905,9 +949,11 @@ seen_claude() {
   assert_success
   [[ "$(field alt .room.reason <<< "$output")" == unread ]]
   [[ "$(field main .room.ok <<< "$output")" == true ]]
+  assert_equal "$(jq -r '"\(.pick) \(.why)"' <<< "$output")" 'main null'
   week main 70 84
   run --separate-stderr "$ACCT" room --json
   assert_failure 2
+  assert_equal "$(jq -r '"\(.pick) \(.why)"' <<< "$output")" 'null no account has room and one cannot be read'
   week main 10 84
   week alt 20 84
   printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
@@ -946,6 +992,7 @@ seen_claude() {
   "$ACCT" textfile "$SANDBOX/prom"
   grep -q '^claude_account_room{account="main"} 0$' "$SANDBOX/prom/claude_acct.prom"
   grep -q '^claude_account_room_headroom_points{account="main"} -0\.9' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room_reason{account="main",reason="pace"} 1$' "$SANDBOX/prom/claude_acct.prom"
   # the one number lives in pace.conf: lift the slack there and every surface moves with it
   sed 's/^PACE_SLACK_PCT=.*/PACE_SLACK_PCT=10/' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$SANDBOX/pace.conf"
   export CLAUDE_ACCT_PACE_CONF="$SANDBOX/pace.conf"
@@ -955,6 +1002,9 @@ seen_claude() {
   [[ "$stderr" != *'no room'* ]] || fail "$stderr"
   "$ACCT" textfile "$SANDBOX/prom"
   grep -q '^claude_account_room{account="main"} 1$' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room_reason{account="main",reason="ok"} 1$' "$SANDBOX/prom/claude_acct.prom"
+  run grep -c '^claude_account_room_reason{account="main",' "$SANDBOX/prom/claude_acct.prom"
+  assert_output 1
 }
 
 @test "pace.conf: a number missing from it stops claude-acct and names the file" {
