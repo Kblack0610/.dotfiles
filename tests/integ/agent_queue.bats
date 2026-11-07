@@ -68,6 +68,25 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .weight <<<"$("$AQ" show old --json)")" = heavy ]
 }
 
+@test "list and show read a hand-edited header the way fm_get does" {
+  # The listing reads headers in awk (queue_index, item_recs), the verbs in fm_get: a hold and a
+  # weight take a key's first line, with or without a space after the colon.
+  mkdir -p "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/done/2026-11-07"
+  printf 'slug: a\nproject: game\npriority: high\nqueued: 2026-11-07T01:00:00Z\nafter:gone\nafter: b\n:odd\n---\ntask a\n\nmore\n\n' \
+    > "$AGENT_QUEUE_DIR/queued/20261107-010000-a.md"
+  printf 'slug: b\nproject: game\npriority: high\nfinished: 2026-11-07T02:00:00Z\nstatus: ok\nweight: heavy\nweight: light\n---\ntask b\n' \
+    > "$AGENT_QUEUE_DIR/done/2026-11-07/20261107-000000-b.md"
+  a="$("$AQ" show a --json)"
+  [ "$(jq -r .hold <<<"$a")" = "after gone" ]
+  [ "$(jq -r .task <<<"$a")" = $'task a\n\nmore' ]
+  [ "$(jq -r .weight <<<"$a")" = light ]
+  [ "$(jq -r '.[":odd"] // "none"' <<<"$a")" = none ]
+  [ "$(jq -r .weight <<<"$("$AQ" show b --json)")" = heavy ]
+  run "$AQ" list --json --state all --date 2026-11-07
+  assert_success
+  [ "$(jq -c 'select(.slug == "a")' <<<"$output")" = "$a" ]
+}
+
 @test "add reads a multi-line task from stdin" {
   printf 'Line one\nline two\n' | "$AQ" add --project game --slug two-lines
   run awk 'f { print } $0 == "---" { f = 1 }' "$(item queued two-lines)"
