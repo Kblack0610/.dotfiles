@@ -1131,6 +1131,14 @@ unpark_ledger() {
     scope=""; [[ "$what" == *:* ]] && scope="$pane"
     [[ -z "$(find_claude "$server" "$session" "" "$scope")" ]] ||
         { refuse "a claude is already live in ${scope:-its panes}; delete $file if it is this session"; return; }
+    # claude finds a session by its folder, so with the worktree gone nothing can resume it; the
+    # ledger would only fail every later unpark (and unpark --all) after a typed cd and a timeout.
+    if [[ ! -d "$cwd" ]]; then
+        rm -f "$file"
+        echo "claude-acct: $verb $what: its worktree $cwd is gone, so session $sid cannot resume; dropped $file" >&2
+        record "$what" "dropped: worktree $cwd is gone"
+        return 0
+    fi
     cmd=$(resume_cmd "$direct" "$cwd" "$to" "$base" "$(resume_prompt "${why:-park}" "$(name_of "$from")" "$name" "$status")")
 
     cmd_link

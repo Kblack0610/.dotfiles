@@ -702,6 +702,21 @@ trust_prompt() {
   refute_output --partial 'send-keys'
 }
 
+@test "unpark drops a ledger whose worktree is gone, and types no resume" {
+  session lab agent-1 %5 100 101 idle ""
+  run "$ACCT" park agent-1 --server lab
+  assert_success
+  rmdir "$HOME/wt"
+  run "$ACCT" unpark agent-1
+  assert_success
+  assert_output --partial "its worktree $HOME/wt is gone, so session sid-1 cannot resume; dropped $(PARKED_LEDGER agent-1)"
+  assert_called 'agent-notify -p low -t park: agent-1 dropped: worktree '
+  [ ! -e "$(PARKED_LEDGER agent-1)" ]
+  run tmux_calls
+  refute_output --partial '--resume'
+  refute_output --partial 'respawn-pane'
+}
+
 @test "unpark --all resumes every parked session, and says so when none is" {
   run "$ACCT" unpark --all
   assert_success; assert_output 'claude-acct: unpark: nothing is parked'
