@@ -27,6 +27,7 @@ pub mod proposals;
 pub mod queue;
 pub mod reds;
 pub mod schedules;
+pub mod sections;
 pub mod session_actions;
 pub mod session_page;
 pub mod session_table;
