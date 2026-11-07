@@ -3,8 +3,8 @@
 #
 #   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog] [--watch]
 #
-# `#p:` outbox lines, `<id>: <words>` answers and typed inbox lines need no model; the rest of a sweep goes to ONE model
-# call (the conf's MODEL), which only proposes rows, a dup, a skip, and whether to plan first.
+# `#p:` outbox lines naming a project exactly, `<id>: <words>` answers and typed inbox lines need no model; the rest of a sweep goes to ONE model
+# call (the conf's MODEL; it also gets a `#p:` word that names no project, as a hint), which only proposes rows, a dup, a skip, and whether to plan first.
 # Every write is the CLI's (`notes outbox move`, `notes ptask --exact file`), so this script never
 # edits a sheet, and a skipped or refused line stays put, recorded in the ingest record so later
 # sweeps pass it over until its words change. --watch is the runner: a sweep after each save,
@@ -20,6 +20,8 @@ NAME="${AGENTCTL_NAME:-inbox-triage}"
 : "${INBOX_SWEEP_QUIET:=30}"  # --watch: seconds with no save before a sweep runs
 : "${INBOX_RETRY_S:=900}"      # --watch: wait before a failed sweep runs again by itself; doubles each failure
 : "${INBOX_RETRY_MAX_S:=7200}" # --watch: the longest that wait grows to
+
+EX_NO_PROJECT=3   # `notes outbox move`: the name matches no current project
 
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 LIB="$HERE/../lib"
@@ -115,14 +117,23 @@ file_line() {
   fi
 }
 
-# move_out <project> <raw> <text>: one outbox line into <project>'s inbox. A name that is no
-# project is recorded as refused, and the line stays in the outbox.
+# move_out <project> <raw> <text> [tagged]: one outbox line into <project>'s inbox, MOVED_RAW set to the
+# line as the inbox now holds it. A name that is no project (the CLI exits 3) is recorded as refused and the line stays in the outbox, unless the
+# line was `tagged` with it: then it is the caller's to route, so nothing is recorded or counted.
 move_out() {
-  local p="$1" raw="$2" text="$3" err
+  local p="$1" raw="$2" text="$3" tagged="${4:-}" out err rc errf
+  MOVED_RAW="$raw"
   if [ "$DRY" = 1 ]; then printf 'would move [outbox -> %s] %s\n' "$p" "$raw"; ROUTED=$((ROUTED + 1)); return 0; fi
-  if { err="$(notes outbox move --project "$p" -- "$raw" 2>&1 1>&3)"; } 3>&1; then
+  errf="$(mktemp)"
+  if out="$(notes outbox move --project "$p" -- "$raw" 2>"$errf")"; then
+    rm -f -- "$errf"
+    printf '%s\n' "$out"
+    # The line as the inbox holds it now: the `#p:` word is gone, so this is what to file.
+    MOVED_RAW="$(sed -n 's/^  line: //p' <<<"$out" | head -n 1)"; MOVED_RAW="${MOVED_RAW:-$raw}"
     ROUTED=$((ROUTED + 1))
   else
+    rc=$?; err="$(<"$errf")"; rm -f -- "$errf"
+    if [ -n "$tagged" ] && [ "$rc" = "$EX_NO_PROJECT" ]; then return "$EX_NO_PROJECT"; fi
     say "outbox: not moved to $p, left in the outbox: $raw${err:+ ($err)}"
     note refused outbox "$(tail -n 1 <<<"${err:-not moved}" | clean 160)" "$text"
     FAILED=$((FAILED + 1)); return 1
@@ -143,6 +154,7 @@ answer() {
   [ -n "$row" ] || { left outbox "$text" "no open row $id"; return 0; }
   IFS=$'\x1f' read -r p lane ty <<<"$row"
   move_out "$p" "$raw" "$text" || return 1
+  raw="$MOVED_RAW"
   file_line "$p" "$raw" "$text" --dup "$id" --lane "$lane" || return 1
   [ "$ty" = decide ] || return 0
   pt "$p" "$lane" done "$id" --proof "ingest:$(date +%F)"
@@ -172,7 +184,7 @@ route() {
   mapfile -d '' -t froms < <(jq -j '.[] | .from, "\u0000"' <<<"$lines")
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$lines")
   mapfile -d '' -t texts < <(jq -j '.[] | .text, "\u0000"' <<<"$lines")
-  batch="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.from)] \(.value.text)", (.value.details[]? | "   " + .)' <<<"$lines")"
+  batch="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.from)] \(.value.text)" + (if (.value.hint // "") != "" then " (tagged #p:\(.value.hint), which is no project; it may name one of the projects above)" else "" end), (.value.details[]? | "   " + .)' <<<"$lines")"
   # Every open row of a project a line waits in, for dups. An outbox line can go anywhere, so
   # with one in the batch each other project shows its newest rows too, which is what it is for.
   open="$(jq -r --argjson src "$srcs" --argjson wide "$wide" '
@@ -190,7 +202,7 @@ For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-ST
 {\"n\": 3, \"action\": \"skip\", \"why\": \"<a few words>\"}
 file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human. plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
 dup: only when an open row below already asks for the same thing.
-skip: the line is not a task (a thought, a question, a note to self), you cannot tell what it asks, or for an [outbox] line which project it is for.
+skip: the line is not a task (a thought, a question, a note to self), you cannot tell what it asks, or for an [outbox] line which project it is for. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
 A filed row that plainly belongs to an open epic of its project ends with #of/<the epic's id>. When none plainly fits, add no #of.
 
 ## Lines
@@ -234,6 +246,7 @@ $open"
         if [ "$from" = outbox ]; then
           [ -n "$dest" ] || { left outbox "$text" "no project"; continue; }
           move_out "$dest" "$raw" "$text" || continue
+          raw="$MOVED_RAW"
           src="$dest"
         elif [ -n "$dest" ] && [ "$dest" != "$from" ]; then
           args+=(--project "$dest")
@@ -397,16 +410,23 @@ backlog_pass() {
 
 # One sweep's pass: the outbox, then every inbox.
 pass() {
-  local ob board all seen rc=0 p lines from raw text size r
+  local ob board all seen rc=0 mrc p lines from raw text size r
   ob="$(notes outbox list --json 2>/dev/null)" || { say "notes outbox list failed"; proof_why "notes outbox list failed"; return 1; }
   # What the record says was left or refused, by where it waited and its words.
   seen='{}'
   [ -s "$RECORD" ] && seen="$(jq -cn '[inputs | select(.action == "left" or .action == "refused")
     | {key: (.from + "\t" + .text), value: true}] | from_entries' "$RECORD" 2>/dev/null || echo '{}')"
   local fresh='select($seen[.from + "\t" + .text] | not)'
-  # A `#p:` line names its project, so it moves with no model and is triaged from that inbox.
+  # A `#p:` line that names a project exactly moves with no model and is triaged from that inbox.
+  # One that names none (a typo, a short name) is not refused: it goes to the model with the word
+  # as a hint, like a line with no tag.
+  local missed='[]'
   while IFS=$'\x1f' read -r -d '' p raw text; do
-    move_out "$p" "$raw" "$text" || rc=1
+    move_out "$p" "$raw" "$text" tagged; mrc=$?
+    if [ "$mrc" = "$EX_NO_PROJECT" ]; then
+      say "outbox: #p:$p names no project, left for the model: $raw"
+      missed="$(jq -c --arg raw "$raw" '. + [$raw]' <<<"$missed")"
+    elif [ "$mrc" != 0 ]; then rc=1; fi
   done < <(jq -j --argjson seen "$seen" --arg only "$ONLY" ".[] | select(.project and (\$only == \"\" or .project == \$only))
     | {from: \"outbox\", raw, text, project} | $fresh | .project, \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
 
@@ -414,11 +434,12 @@ pass() {
   # A `<id>: <words>` line answers its open row, with no model.
   [ -z "$ONLY" ] && while IFS=$'\x1f' read -r -d '' p raw text; do
     answer "$p" "$raw" "$text" "$board" || rc=1
-  done < <(jq -j --argjson seen "$seen" --arg re "$ID_LINE_RE" ".[] | select((.project | not) and (.text | test(\$re)))
+  done < <(jq -j --argjson seen "$seen" --arg re "$ID_LINE_RE" --argjson missed "$missed" ".[] | select(((.project | not) or (.raw as \$r | \$missed | index(\$r) != null)) and (.text | test(\$re)))
     | {from: \"outbox\", raw, text} | $fresh | (.text | capture(\$re).id), \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
   all='[]'
-  [ -z "$ONLY" ] && all="$(jq -c --arg re "$ID_LINE_RE" '[.[] | select((.project | not) and (.text | test($re) | not))
-    | {from: "outbox", raw, text, details, typed: false}]' <<<"$ob")"
+  [ -z "$ONLY" ] && all="$(jq -c --arg re "$ID_LINE_RE" --argjson missed "$missed" '[.[]
+    | select(((.project | not) or (.raw as $r | $missed | index($r) != null)) and (.text | test($re) | not))
+    | {from: "outbox", raw, text, details, typed: false, hint: (.project // "")}]' <<<"$ob")"
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
