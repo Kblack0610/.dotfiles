@@ -1826,8 +1826,9 @@ item_headline() {
 
 # item_size <item json> -> s, m or l from the `#size/` tag in its task, which promote copies from the
 # board row (size_back tags the row with the judge's size, so the row's tag is the effective size);
-# nothing for an unsized item. The one read lane_pick and start's `size=` header share.
-item_size() { jq -r '[(.task // "") | match("#size/([sml])\\b").captures[0].string][0] // empty' <<<"$1"; }
+# any case, as row_size reads it; nothing for an unsized or `xl` item, a size model-lane does not
+# take. The one read lane_pick and start's `size=` header share.
+item_size() { jq -r '[(.task // "") | match("#size/([sml])\\b"; "i").captures[0].string | ascii_downcase][0] // empty' <<<"$1"; }
 
 # lane_pick <slug> <harness> -> model-lane's verdict for a queued Claude item started with no --model,
 # at DISPATCH_LANE_FLOOR; nothing when it is not queued, runs another harness, or model-lane fails.
