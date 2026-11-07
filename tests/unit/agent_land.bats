@@ -23,8 +23,10 @@ case "$1 $2" in
 'pr view')
   case "$*" in
   # head.oid / head.ref / head.cross: the PR's head commit, branch and fork-ness (this checkout's HEAD, branch pr-42, same repo, by default)
-  *baseRefName*) printf '%s main https://github.com/o/r/pull/42 %s %s %s\n' "$(cat "$NOTES_FIXTURE/state")" \
-    "$(cat "$NOTES_FIXTURE/head.oid" 2>/dev/null || echo 0123456789abcdef)" "$(cat "$NOTES_FIXTURE/head.cross" 2>/dev/null || echo false)" "$(cat "$NOTES_FIXTURE/head.ref" 2>/dev/null || echo pr-42)" ;;
+  # The caller's real -q runs through jq on the JSON gh would return, so a query gh rejects fails here too.
+  *baseRefName*) printf '{"state":"%s","baseRefName":"main","url":"https://github.com/o/r/pull/42","headRefOid":"%s","isCrossRepository":%s,"headRefName":"%s"}' "$(cat "$NOTES_FIXTURE/state")" \
+    "$(cat "$NOTES_FIXTURE/head.oid" 2>/dev/null || echo 0123456789abcdef)" "$(cat "$NOTES_FIXTURE/head.cross" 2>/dev/null || echo false)" "$(cat "$NOTES_FIXTURE/head.ref" 2>/dev/null || echo pr-42)" |
+    jq -r "${@: -1}" || exit 1 ;;
   *mergeable*)
     # mergeable.seq: one answer per call, popped as read; then this head, mergeable
     q="$NOTES_FIXTURE/mergeable.seq"
