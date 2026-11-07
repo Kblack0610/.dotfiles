@@ -3539,8 +3539,7 @@ queued_item() {
   ago2h=$(date -d '-2 hours' '+%Y-%m-%d %H:%M')
   queued_item fresh urgent "$new"
   queued_item low-old low "$old"
-  # A dated tag a day out: an at:HH:MM tag is past its time for part of every day (2026-11-07,
-  # at:23:59 read runnable in the 23:59 minute and failed the full run from agent-15).
+  # A dated tag a day out: an at:HH:MM tag is past its time for part of every day.
   queued_item tagged-old high "$old" "at:$(date -d '+1 day' +%Y-%m-%dT%H:%M)"
   queued_item after-old urgent "$old" '' never-done
   run cmd_starved
@@ -3711,10 +3710,11 @@ board_item() {
   run cmd_starved
   assert_success
   # An old judge and an unjudged row: starved again.
-  touch -d '-2 hours' "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  local judged; judged=$(date -d '-2 hours' '+%Y-%m-%d %H:%M')
+  touch -d "$judged" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   run cmd_starved
   assert_failure
-  assert_output --partial '1 board rows unjudged, none judged since '"$(date -d '-2 hours' +%Y-%m-%d)"
+  assert_output --partial "1 board rows unjudged, none judged since ${judged% *}"
 }
 
 @test "starved: a board item waits out the human's presence once the trickle is spent, and counts from when they left" {
