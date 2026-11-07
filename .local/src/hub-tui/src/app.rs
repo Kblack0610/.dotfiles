@@ -433,6 +433,9 @@ pub struct App {
     pub tab_failed: Option<String>,
 }
 
+/// The Sessions tab's open detail, as a section `seek` goes to.
+const DETAIL: &str = "detail";
+
 impl App {
     pub fn new(tab: Tab, tx: Sender<Msg>) -> App {
         App {
@@ -1498,6 +1501,7 @@ impl App {
         if let Some(i) = self.controls.rows().iter().position(|r| r.target == target) {
             self.controls.sel = i;
             self.controls.open = true;
+            self.seek = Some(DETAIL);
         }
     }
 
@@ -1783,9 +1787,11 @@ impl App {
     /// The Sessions tab's keys (controls.rs): j/k pick a session, a letter arms an action's
     /// confirm, and with one armed every key is the confirm's; `/ f s S` are the shared table's
     /// and Esc clears its view; T starts a stopped timer; Enter opens the selected session's
-    /// detail. The page scrolls with PgUp/PgDn, space and g/G, and keeps the selected
-    /// row in view.
+    /// detail and goes to it. The page scrolls with PgUp/PgDn, space and g/G, and keeps
+    /// the selected row in view while no detail is open.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
+        let armed = |c: &Controls| c.confirm.is_some() || c.starting.is_some();
+        let was = (self.controls.open, self.controls.sel, armed(&self.controls));
         match self.controls.key(k) {
             Ask::Pass => return false,
             Ask::Done => {}
@@ -1793,6 +1799,16 @@ impl App {
             Ask::Start(name) => self.start_timer(name),
         }
         self.read_page();
+        // The detail draws under the whole table, so the view goes to it when it opens, changes
+        // row or a confirm is armed, and otherwise stays where the reader scrolled it.
+        if self.controls.open {
+            let now_armed = armed(&self.controls);
+            if !was.0 || was.1 != self.controls.sel || (now_armed && !was.2) {
+                self.seek = Some(DETAIL);
+            }
+            return true;
+        }
+        self.seek = None;
         // The stage counts line, then the table's own header.
         let at = 1 + self.controls.above() + self.controls.sel;
         let h = self.page.max(1);
@@ -2545,7 +2561,14 @@ impl App {
                     }
                     Some(b) => fleet::page(&b.watch, table, self.p, now, w),
                 };
-                (l, vec![])
+                // From the status line, two above, so an armed action's confirm stays on screen.
+                let at = self.controls.open.then(|| {
+                    l.iter().position(|x| {
+                        crate::fit::plain(x).starts_with(crate::controls::DETAIL_HEAD)
+                    })
+                });
+                let at = at.flatten().map(|at| (DETAIL, at.saturating_sub(2)));
+                (l, at.into_iter().collect())
             }
             // Every dollar, cut seven ways (coststab.rs, the same board agent-web draws).
             (Tab::Costs, ..) => match &self.costs {
@@ -3244,6 +3267,62 @@ mod tests {
         assert!(s.contains("PAGE       reading"), "{s}");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         assert!(!screen(&mut a, 200, 60).contains("DETAIL"));
+    }
+
+    #[test]
+    fn opening_a_row_of_a_table_taller_than_the_window_goes_to_its_detail() {
+        let target = "lab/unity-core-playground-agent-10:1";
+        let enter = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter)));
+        let mut a = app(Tab::Sessions);
+        a.handle(Msg::Boards(Box::new(boards())));
+        a.handle(key('j'));
+        assert!(!screen(&mut a, 200, 8).contains("DETAIL"));
+        a.handle(enter());
+        assert!(screen(&mut a, 200, 8).contains(&format!("DETAIL  {target}")));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        let s = screen(&mut a, 200, 8);
+        assert!(!s.contains("DETAIL") && s.contains("unity-core"), "{s}");
+
+        let mut a = app(Tab::Fleet);
+        a.handle(Msg::Boards(Box::new(boards())));
+        a.open_session(target);
+        assert!(screen(&mut a, 200, 8).contains(&format!("DETAIL  {target}")));
+    }
+
+    #[test]
+    fn a_scrolled_detail_stays_put_until_a_confirm_is_armed_and_a_close_drops_the_seek() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = app(Tab::Sessions);
+        a.controls.set(crate::controls::tests::fixture());
+        screen(&mut a, 140, 7);
+        a.handle(k(KeyCode::Enter));
+        screen(&mut a, 140, 7);
+        a.handle(k(KeyCode::PageDown));
+        screen(&mut a, 140, 7);
+        let read_to = a.scroll;
+        a.handle(key('s'));
+        screen(&mut a, 140, 7);
+        assert_eq!(a.scroll, read_to, "a sort is not a move");
+        a.handle(key('x'));
+        assert!(screen(&mut a, 140, 7).contains("It will"));
+        a.handle(k(KeyCode::Esc));
+        a.handle(k(KeyCode::Enter));
+        assert!(!a.controls.open);
+        a.handle(k(KeyCode::Enter));
+        assert_eq!(a.seek, Some(DETAIL), "opened, not drawn yet");
+        a.handle(k(KeyCode::Esc));
+        assert_eq!(a.seek, None);
+    }
+
+    #[test]
+    fn the_status_line_stays_above_the_detail_so_a_confirm_is_on_screen() {
+        let mut a = app(Tab::Sessions);
+        a.controls.set(crate::controls::tests::fixture());
+        screen(&mut a, 140, 7);
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        a.handle(key('x'));
+        let s = screen(&mut a, 140, 7);
+        assert!(s.contains("It will") && s.contains("DETAIL"), "{s}");
     }
 
     #[test]

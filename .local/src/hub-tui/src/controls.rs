@@ -38,6 +38,9 @@ pub const KEYS: [(char, Action); 7] = [
     ('a', Action::ApprovePlan),
 ];
 
+/// What the open detail's heading starts with, which the page finds it by.
+pub const DETAIL_HEAD: &str = "DETAIL  ";
+
 /// An action asked for and waiting on y or n.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Confirm {
@@ -559,7 +562,7 @@ impl Controls {
             Line::raw(""),
             clip_line(
                 Line::styled(
-                    format!("DETAIL  {}   Enter or Esc closes", r.target),
+                    format!("{DETAIL_HEAD}{}   Enter or Esc closes", r.target),
                     p.head(),
                 ),
                 w,
