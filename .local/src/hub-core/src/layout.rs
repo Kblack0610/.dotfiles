@@ -67,7 +67,7 @@ pub const TABS: [Tab; 10] = [
         id: "fleet",
         title: "Fleet",
         question: "Who is working, on what, and can I afford it?",
-        sections: &["workers", "accounts"],
+        sections: &["workers", "accounts", "tokens"],
     },
     // After the older tabs, so they keep their digits.
     Tab {

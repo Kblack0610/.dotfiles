@@ -154,6 +154,8 @@ pub struct BoardFiles {
     pub proposals: PathBuf,
     pub shepherd: PathBuf,
     pub daylog: PathBuf,
+    /// The nightly token snapshots behind Fleet's Where the tokens go.
+    pub tokens: PathBuf,
 }
 
 impl BoardFiles {
@@ -164,6 +166,7 @@ impl BoardFiles {
             proposals: boards::proposals_dir(),
             shepherd: boards::shepherd_dir(),
             daylog: boards::daylog_dir(),
+            tokens: boards::token_usage_dir(),
         }
     }
     fn watch_log(&self) -> PathBuf {
@@ -175,6 +178,10 @@ impl BoardFiles {
     }
     pub fn is_proposal_file(&self, p: &Path) -> bool {
         hub_core::boards::is_proposal_file(&self.proposals, p)
+    }
+
+    pub fn is_token_file(&self, p: &Path) -> bool {
+        p.parent() == Some(self.tokens.as_path()) && p.extension().is_some_and(|e| e == "json")
     }
 
     /// Whether a changed path is one the board tabs read (the shepherd dir holds other files).
@@ -341,6 +348,8 @@ pub struct App {
     pub fleet_page: Option<String>,
     /// That page's read; None until it comes back.
     pub fleet_runner: Option<Result<hub_core::fleet::runner::Runner, String>>,
+    /// The tokens fold: open or shut, and which window.
+    pub fleet_tokens: fleettab::TokensView,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -473,6 +482,7 @@ impl App {
             fleet_sel: 0,
             fleet_page: None,
             fleet_runner: None,
+            fleet_tokens: Default::default(),
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -551,6 +561,7 @@ impl App {
             (self.queue_dir.clone(), true),
             (self.files.asks.clone(), true),
             (self.files.proposals.clone(), false),
+            (self.files.tokens.clone(), false),
         ];
         for f in [&self.paths.unity_runs, &self.files.state] {
             if let Some(d) = f.parent() {
@@ -664,9 +675,9 @@ impl App {
         }
     }
 
-    /// The Fleet tab mixes Prometheus (no push) with agentctl's ledger and the dispatch and ask
-    /// files, so it reads on entering, on `r`, on the tick and on an agentctl file event while
-    /// it is shown.
+    /// The Fleet tab mixes Prometheus (no push) with agentctl's ledger, the dispatch and ask
+    /// files and the token snapshots, so it reads on entering, on `r`, on the tick and on an
+    /// agentctl or snapshot file event while it is shown.
     pub fn read_fleet(&mut self) {
         if self.fleet_read.want() {
             let tx = self.tx.clone();
@@ -1601,7 +1612,8 @@ impl App {
     /// The Fleet tab's own keys; false leaves the key to the page's defaults. On a runner's page
     /// `[ ]` step to the previous or next runner and Esc goes back to the tab; on the tab the
     /// table keys (`/ f s S x`), j/k pick a row, Enter opens it (a runner's page, or a session on
-    /// the Sessions tab) and `z` folds a tier 1 row's children.
+    /// the Sessions tab) and `z` folds a tier 1 row's children. `t` opens or folds Where the
+    /// tokens go and `w` switches its window; neither moves the row, so the view stays put.
     fn fleet_key(&mut self, k: KeyEvent) -> bool {
         if let Some(page) = self.fleet_page.clone() {
             let names = self.fleet_runners();
@@ -1633,6 +1645,20 @@ impl App {
             }
             Took::Typing => return true,
             Took::No => {}
+        }
+        let tokens = self.fleet.as_ref().and_then(|f| f.tokens.as_ref());
+        match k.code {
+            KeyCode::Char('t') if tokens.is_some() => {
+                let open = !self.fleet_tokens.is_open(tokens);
+                self.fleet_tokens.open = Some(open);
+                self.seek = open.then_some("tokens");
+                return true;
+            }
+            KeyCode::Char('w') if tokens.is_some() => {
+                self.fleet_tokens.day = !self.fleet_tokens.day;
+                return true;
+            }
+            _ => {}
         }
         let rows: Vec<(Opens, String)> = self.fleet.as_ref().map_or(vec![], |f| {
             fleettab::shown(f, &self.fleet_table, &self.fleet_folded)
@@ -1720,6 +1746,9 @@ impl App {
         {
             self.log_open.push(sec);
             self.read_log_folds();
+        }
+        if self.tab == Tab::Fleet && sec == "tokens" {
+            self.fleet_tokens.open = Some(true);
         }
         if !self.infra_jobs && !self.log_days {
             self.seek = Some(sec);
@@ -2501,7 +2530,7 @@ impl App {
                 "[ ] runner  Esc all runners  j/k PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Fleet => format!(
-                "j/k pick  Enter open  z fold  / query  f state  s/S sort  x clear  PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
+                "j/k pick  Enter open  z fold  t tokens  w window  / query  f state  s/S sort  x clear  PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
@@ -2690,8 +2719,8 @@ impl App {
             ),
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
-                Some(f) => (
-                    fleettab::page(
+                Some(f) => {
+                    let mut l = fleettab::page(
                         f,
                         &self.fleet_table,
                         &self.fleet_folded,
@@ -2699,9 +2728,18 @@ impl App {
                         self.p,
                         now,
                         w,
-                    ),
-                    vec![],
-                ),
+                    );
+                    l.push(Line::raw(""));
+                    let at = l.len();
+                    l.extend(fleettab::tokens(
+                        f.tokens.as_ref(),
+                        self.fleet_tokens,
+                        self.p,
+                        now,
+                        w,
+                    ));
+                    (l, vec![("tokens", at)])
+                }
             },
             // Daily's outbox view: the outbox and today's intake steps (outboxtab.rs); Enter
             // edits the file.
@@ -4471,6 +4509,62 @@ mod tests {
         a.handle(Msg::Tab(t, q));
         assert!(a.fleet_page.is_none());
         assert_eq!(a.seek, Some("accounts"));
+    }
+
+    #[test]
+    fn only_a_finished_snapshot_is_a_token_file() {
+        let f = BoardFiles {
+            tokens: "/a/token-usage".into(),
+            ..BoardFiles::from_env()
+        };
+        assert!(f.is_token_file(Path::new("/a/token-usage/2027-01-15.json")));
+        assert!(!f.is_token_file(Path::new("/a/token-usage/2027-01-15.json.tmp")));
+        assert!(!f.is_token_file(Path::new("/a/other/2027-01-15.json")));
+    }
+
+    #[test]
+    fn t_opens_the_tokens_fold_and_goes_to_it_w_switches_its_window_and_the_row_stays() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = app(Tab::Fleet);
+        let mut f = fleettab::tests::fixture();
+        f.tokens = Some(Default::default());
+        a.handle(Msg::Fleet(Box::new(f)));
+        a.handle(k(KeyCode::Char('j')));
+        let sel = a.fleet_sel;
+        a.handle(k(KeyCode::Char('t')));
+        assert_eq!(a.fleet_tokens.open, Some(true));
+        assert_eq!(a.seek, Some("tokens"));
+        let s = screen(&mut a, 80, 12);
+        assert!(s.contains("WHERE THE TOKENS GO"), "{s}");
+        assert_eq!(a.seek, None, "the section is on the page, so seek lands");
+        a.handle(k(KeyCode::Char('w')));
+        assert!(a.fleet_tokens.day);
+        assert!(screen(&mut a, 80, 12).contains("yesterday:"));
+        a.handle(k(KeyCode::Char('t')));
+        assert_eq!(a.fleet_tokens.open, Some(false));
+        assert_eq!(a.fleet_sel, sel);
+    }
+
+    #[test]
+    fn t_and_w_wait_for_a_snapshot_so_the_first_one_lands_folded() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = app(Tab::Fleet);
+        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
+        a.handle(k(KeyCode::Char('t')));
+        a.handle(k(KeyCode::Char('w')));
+        assert_eq!(a.fleet_tokens.open, None);
+        assert!(!a.fleet_tokens.day);
+    }
+
+    #[test]
+    fn hub_tab_fleet_tokens_opens_the_fold() {
+        let mut a = app(Tab::Home);
+        a.fleet_read.busy = true;
+        let (t, q) = crate::tabreq::parse("fleet tokens").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert!(a.fleet_page.is_none());
+        assert_eq!(a.fleet_tokens.open, Some(true));
+        assert_eq!(a.seek, Some("tokens"));
     }
 
     #[test]
