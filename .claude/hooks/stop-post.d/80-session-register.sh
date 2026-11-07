@@ -8,7 +8,8 @@
 #   - "Meaningful" = the session actually did work: >=1 Edit/Write tool_use in
 #     the transcript, OR a dirty git worktree, OR an agentctl runner (AGENTCTL_NAME,
 #     which agentctl-run exports): a read-only runner still spends, and its row
-#     carries the cost. Pure Q&A / read-only by hand -> no entry.
+#     carries the cost and the runner's name in `agentctl` (outcome rows already use
+#     `runner` as a boolean). Pure Q&A / read-only by hand -> no entry.
 #   - Upsert by session_id: exactly ONE line per session, not per turn.
 #   - Self-heals: drops lines whose transcript file no longer exists.
 
@@ -49,8 +50,8 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     DIRTY=true
   fi
 fi
-RUNNER="${AGENTCTL_NAME:-}"
-if [ "${EDITS:-0}" -lt 1 ] && [ "$DIRTY" = false ] && [ -z "$RUNNER" ]; then
+AGENTCTL="${AGENTCTL_NAME:-}"
+if [ "${EDITS:-0}" -lt 1 ] && [ "$DIRTY" = false ] && [ -z "$AGENTCTL" ]; then
   exit 0
 fi
 
@@ -100,6 +101,10 @@ REG="$REG_DIR/sessions.jsonl"
 mkdir -p "$REG_DIR" 2>/dev/null || exit 0
 
 # --- upsert + self-heal: rewrite dropping this id and any dead transcripts ---
+# Under a lock: two Stops that read the same registry would each mv their copy over it, and
+# the second drops the first's row. Runner passes made that common. No flock on macOS.
+exec 9>>"$REG.lock"
+command -v flock >/dev/null 2>&1 && flock -w 10 9
 TMP=$(mktemp 2>/dev/null) || exit 0
 # Two jq passes, no per-line forks: the old loop ran jq twice per registry line, ~6 s per
 # Stop on a 1,400-line registry. Pass 1 lists transcript paths so bash only stats short
@@ -129,10 +134,10 @@ jq -nc \
   --argjson updated "$NOW" \
   --argjson usage "${USAGE:-null}" \
   --arg harness "${AGENT_HARNESS:-claude}" \
-  --arg runner "$RUNNER" \
+  --arg agentctl "$AGENTCTL" \
   '{session_id:$sid, project:$project, transcript:$transcript, resume:$resume, first_prompt:$first_prompt, edits:$edits, head_commit:$head_commit, title:$title, updated:$updated,
     harness:$harness}
-   + (if $runner == "" then {} else {runner: $runner} end)
+   + (if $agentctl == "" then {} else {agentctl: $agentctl} end)
    + (if $usage == null then {} else {
         cost_usd:      $usage.cost_usd,
         usage_source:  $usage.usage_source,

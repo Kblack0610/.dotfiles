@@ -91,13 +91,20 @@ run_hook() {
 @test "a read-only agentctl runner is registered, with its runner name" {
   : > "$TRANSCRIPT"
   AGENTCTL_NAME=shepherd run_hook
-  run jq -c '[.session_id, .edits, .runner]' "$REG"
+  run jq -c '[.session_id, .edits, .agentctl]' "$REG"
   assert_output '["self",0,"shepherd"]'
 }
 
-@test "a session by hand carries no runner field" {
+@test "a runner's second Stop replaces its row and keeps the runner name" {
+  AGENTCTL_NAME=shepherd run_hook
+  AGENTCTL_NAME=shepherd run_hook
+  run jq -sc 'map([.session_id, .agentctl])' "$REG"
+  assert_output '[["self","shepherd"]]'
+}
+
+@test "a session by hand carries no runner name" {
   AGENTCTL_NAME= run_hook
-  run jq -c 'has("runner")' "$REG"
+  run jq -c 'has("agentctl")' "$REG"
   assert_output false
 }
 
