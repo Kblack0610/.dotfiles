@@ -1,5 +1,6 @@
 #!/bin/bash
-# Install Firefox/Floorp customizations (user.js and userChrome.css)
+# Install Firefox/Floorp customizations: per-profile files, then policies and
+# autoconfig in the Firefox install dir. Linux and macOS.
 # Run: ~/.dotfiles/.config/firefox/install.sh
 
 set -e
@@ -51,15 +52,13 @@ find_and_install() {
 
 installed=0
 
-# Try Firefox
-if find_and_install "$HOME/.mozilla/firefox" "Firefox"; then
-    installed=$((installed + 1))
-fi
-
-# Try Floorp
-if find_and_install "$HOME/.floorp" "Floorp"; then
-    installed=$((installed + 1))
-fi
+MAC_SUPPORT="$HOME/Library/Application Support"
+for root in "$HOME/.mozilla/firefox:Firefox" "$MAC_SUPPORT/Firefox/Profiles:Firefox" \
+            "$HOME/.floorp:Floorp" "$MAC_SUPPORT/Floorp/Profiles:Floorp"; do
+    if find_and_install "${root%:*}" "${root##*:}"; then
+        installed=$((installed + 1))
+    fi
+done
 
 if [[ $installed -eq 0 ]]; then
     echo "Error: No Firefox or Floorp profile found."
@@ -67,15 +66,31 @@ if [[ $installed -eq 0 ]]; then
     exit 1
 fi
 
-# Install policies.json to Firefox distribution directory
-install_policies() {
-    local firefox_dir=""
-    for candidate in "${FIREFOX_DIR:-}" /usr/lib/firefox /usr/lib64/firefox /opt/firefox /snap/firefox/current/usr/lib/firefox; do
-        if [[ -d "$candidate" ]]; then
-            firefox_dir="$candidate"
-            break
+# The dir holding Firefox's omni.ja. On macOS that is inside the app bundle;
+# extra candidates (read-only snap) are tried last.
+find_firefox_dir() {
+    local candidate
+    for candidate in "${FIREFOX_DIR:-}" /usr/lib/firefox /usr/lib64/firefox /opt/firefox \
+                     /Applications/Firefox.app/Contents/Resources "$@"; do
+        if [[ -n "$candidate" && -d "$candidate" ]]; then
+            echo "$candidate"
+            return
         fi
     done
+}
+
+# macOS blocks writes into another app's bundle unless the terminal has App
+# Management, and says only "Operation not permitted".
+explain_bundle_denied() {
+    [[ "$(uname -s)" == Darwin ]] || return 0
+    echo "Error: macOS refused the write into $1."
+    echo "  System Settings > Privacy & Security > App Management: allow your terminal, then rerun."
+}
+
+# Install policies.json to Firefox distribution directory
+install_policies() {
+    local firefox_dir
+    firefox_dir=$(find_firefox_dir /snap/firefox/current/usr/lib/firefox)
 
     if [[ -z "$firefox_dir" ]]; then
         echo "Warning: Could not find Firefox install directory for policies.json"
@@ -86,7 +101,7 @@ install_policies() {
     local dist_dir="$firefox_dir/distribution"
     if [[ ! -d "$dist_dir" ]]; then
         echo "Creating $dist_dir (requires sudo)"
-        sudo mkdir -p "$dist_dir"
+        sudo mkdir -p "$dist_dir" || { explain_bundle_denied "$firefox_dir"; exit 1; }
     fi
     # Personal-machine overlay from the private repo (Karakeep search engine
     # etc.): deep-merged over the public base, which cannot name LAN hosts.
@@ -108,13 +123,8 @@ install_policies() {
 # a WebExtension new-tab handler. Wiped on every Firefox upgrade -- a pacman
 # hook (installed below) restores it post-transaction.
 install_autoconfig() {
-    local firefox_dir=""
-    for candidate in "${FIREFOX_DIR:-}" /usr/lib/firefox /usr/lib64/firefox /opt/firefox; do
-        if [[ -d "$candidate" ]]; then
-            firefox_dir="$candidate"
-            break
-        fi
-    done
+    local firefox_dir
+    firefox_dir=$(find_firefox_dir)
 
     if [[ -z "$firefox_dir" ]]; then
         echo "Warning: Could not find Firefox install directory for autoconfig"
@@ -123,6 +133,8 @@ install_autoconfig() {
 
     sudo install -m 0644 "$SCRIPT_DIR/mozilla.cfg" "$firefox_dir/mozilla.cfg"
     echo "  - Installed mozilla.cfg to $firefox_dir"
+    # Linux packages ship defaults/pref; the macOS bundle does not.
+    sudo install -d -m 0755 "$firefox_dir/defaults/pref"
     sudo install -m 0644 "$SCRIPT_DIR/autoconfig.js" "$firefox_dir/defaults/pref/autoconfig.js"
     echo "  - Installed autoconfig.js to $firefox_dir/defaults/pref"
 }

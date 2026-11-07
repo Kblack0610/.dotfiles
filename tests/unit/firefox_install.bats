@@ -46,3 +46,20 @@ STUB
   assert_success
   jq -e --arg want "file://$HOME/a.xpi" '.policies.ExtensionSettings["x@y"].install_url == $want' "$FIREFOX_DIR/distribution/policies.json"
 }
+
+@test "a macOS profile under Application Support is installed" {
+  rm -rf "$HOME/.mozilla"
+  MAC="$HOME/Library/Application Support/Firefox/Profiles/xyz.default-release"
+  mkdir -p "$MAC"
+  run bash "$REPO/.config/firefox/install.sh"
+  assert_success
+  assert_output --partial "profile: $MAC"
+  [ -L "$MAC/user.js" ] || [ -f "$MAC/user.js" ]
+}
+
+@test "an install dir without defaults/pref gets one, as the macOS bundle needs" {
+  rm -rf "$FIREFOX_DIR/defaults"
+  run bash "$REPO/.config/firefox/install.sh"
+  assert_success
+  grep -q "install -d -m 0755 $FIREFOX_DIR/defaults/pref" "$HOME/sudo.log"
+}
