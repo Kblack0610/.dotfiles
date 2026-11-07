@@ -4162,13 +4162,14 @@ start_rows() {
   export BENCH_CALLS="$SANDBOX/calls.jsonl"
   at() { date -d "@$1" +%Y-%m-%dT%H:%M:%S%:z; }
   {
-    # a: sandboxed now, unsandboxed 3 days ago; b: unsandboxed; c: sandboxed 20 days ago only, then off
+    # a: sandboxed now, unsandboxed 3 days ago; b: unsandboxed; c: unsandboxed 21 days ago, sandboxed 20 days ago
     printf '{"agent":"a","harness":"claude","at":"%s"}\n' "$(at $((T0 - 3 * 86400)))"
     printf '{"agent":"a","harness":"claude","sandbox":"lane","at":"%s"}\n' "$(at $((T0 - 3600)))"
     printf '{"agent":"b","harness":"codex","at":"%s"}\n' "$(at $((T0 - 3600)))"
-    printf '{"agent":"c","harness":"claude","sandbox":"lane","subtype":"sandbox_refused","exit":78,"at":"%s"}\n' "$(at $((T0 - 20 * 86400)))"
+    printf '{"agent":"c","harness":"claude","sandbox":"lane","at":"%s"}\n' "$(at $((T0 - 20 * 86400)))"
     printf '{"agent":"c","harness":"claude","at":"%s"}\n' "$(at $((T0 - 21 * 86400)))"
-    # left out: a raw-harness call (no shell), a hand call (no agent), a call after now
+    # left out: a raw-harness call (no shell), a hand call (no agent), a call after now, an unparseable time
+    printf '{"agent":"d","harness":"claude","sandbox":"lane","at":"yesterday"}\n'
     printf '{"agent":"r","harness":"raw","at":"%s"}\n' "$(at $((T0 - 3600)))"
     printf '{"harness":"claude","sandbox":"lane","at":"%s"}\n' "$(at $((T0 - 3600)))"
     printf '{"agent":"b","harness":"codex","sandbox":"lane","at":"%s"}\n' "$(at $((T0 + 3600)))"

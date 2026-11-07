@@ -44,6 +44,8 @@ echo '{"result":"ok","session_id":"s-1"}'
 EOF
     chmod +x "$SANDBOX/bin/$h"
   done
+  # What claude's sandbox needs on PATH (SANDBOX_CLAUDE_NEEDS); stubs, so the suite does not need them installed.
+  for b in bwrap socat; do printf '#!/bin/sh\n' > "$SANDBOX/bin/$b"; chmod +x "$SANDBOX/bin/$b"; done
 }
 
 lane() { run "$RUN" --role build --data-class public "$@"; }
@@ -113,6 +115,17 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_output --partial "Refusing to run unsandboxed"
   [ ! -e "$SANDBOX/claude-argv.txt" ] || ! grep -qx -- '-p' "$SANDBOX/claude-argv.txt"
   FAKE_CLAUDE_VERSION=2.1.313 lane -p x
+  assert_success
+}
+
+@test "claude refuses a lane sandbox when a tool its sandbox needs is missing, and the refusal names it" {
+  AGENTCTL_NAME=probe SANDBOX_CLAUDE_NEEDS="bwrap no-such-socat" SANDBOX_PROFILE=lane lane -p x
+  assert_failure 78
+  assert_output --partial "no-such-socat is not installed"
+  [ ! -e "$SANDBOX/claude-argv.txt" ] || ! grep -qx -- '-p' "$SANDBOX/claude-argv.txt"
+  run jq -r '.why' "$HOME/.local/state/agentctl/sandbox-refusals.jsonl"
+  assert_output --partial "no-such-socat is not installed"
+  SANDBOX_CLAUDE_NEEDS="bwrap no-such-socat" lane -p x
   assert_success
 }
 

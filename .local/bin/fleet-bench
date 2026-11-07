@@ -1849,7 +1849,7 @@ sandbox_kpi() {
   [ -s "$BENCH_CALLS" ] || { echo '{}'; return 0; }
   jq -nc --argjson t "$1" "$JQ_LIB"'
     [inputs | objects | select((.agent // "") != "" and (.harness == "claude" or .harness == "codex") and (.at | type) == "string")
-     | {agent, sb: ((.sandbox // "") != ""), e: (.at | iso_epoch)}] as $c
+     | {agent, sb: ((.sandbox // "") != ""), e: (try (.at | iso_epoch) catch null)} | select(.e)] as $c
     | def w($d): [$c[] | select(.e > $t - $d * 86400 and .e <= $t)] | group_by(.agent) | map(max_by(.e).sb)
         | if length == 0 then null else (map(select(.)) | length) * 100 / length | round1 end;
     {sandboxed_lane_pct: {"7d": w(7), "28d": w(28)}}' "$BENCH_CALLS" 2>/dev/null || echo '{}'
