@@ -502,3 +502,69 @@ gh_stub() {
   run gh_budget
   assert_output "github: 2964/5000 REST calls left, resets $(date -d "@$(( now + 3000 ))" +%H:%M)"
 }
+
+# rows reads ps and /proc; ps is stubbed with a table (pid ppid ni pcpu comm args) and
+# classify with a fixed answer, so the selection is pinned without a hot machine.
+rows_with() {
+  classify() { printf 'shell\t-\t-\n'; }
+  worktree_of() { echo wt; }
+  ps() { printf '%s\n' "$PS_TABLE"; }
+  FLEET_ROW_CPU=50 rows
+}
+
+@test "rows: a runner whose children are each under the line shows with its subtree CPU (ar-231)" {
+  PS_TABLE='1 0 0 0.0 systemd systemd
+10 1 0 1.0 make make -j
+11 10 0 20.0 cc1 cc1 a.c
+12 10 0 20.0 cc1 cc1 b.c
+13 10 0 20.0 cc1 cc1 c.c
+99 1 0 3.0 bash bash'
+  run rows_with
+  assert_success
+  assert_line --regexp '^10 +1\.0 .* 61\.0$'
+  refute_output --partial 'cc1'
+  [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "rows: a heavy child shows, its parent does not repeat it, and TREE sums it in" {
+  PS_TABLE='20 1 0 2.0 node node run
+21 20 0 80.0 node node worker
+22 20 0 5.0 node node idle'
+  run rows_with
+  assert_line --regexp '^21 +80\.0 .* 80\.0$'
+  refute_output --regexp '^20 '
+}
+
+@test "rows: a heavy process with its own children still shows once, with the sum" {
+  PS_TABLE='30 1 0 60.0 cc1 cc1 big
+31 30 0 10.0 as as x'
+  run rows_with
+  assert_line --regexp '^30 +60\.0 .* 70\.0$'
+  [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "rows: load scattered under init, systemd and tmux does not put a row on the common ancestor" {
+  PS_TABLE='1 0 0 0.0 systemd systemd
+2 1 0 0.0 systemd systemd --user
+3 2 0 0.0 tmux: tmux: server
+40 3 0 20.0 bash bash
+41 3 0 20.0 bash bash
+42 3 0 20.0 bash bash'
+  run rows_with
+  refute_output --regexp '^(1|2|3) '
+  [ "${#lines[@]}" -eq 0 ]
+}
+
+@test "rows: a deep chain names only the lowest process that reaches the line, and Unity batchmode always shows" {
+  PS_TABLE='50 1 0 0.0 claude claude
+51 50 0 0.0 bash bash
+52 51 0 1.0 make make
+53 52 0 30.0 cc1 cc1 a
+54 52 0 30.0 cc1 cc1 b
+60 1 0 0.5 Unity Unity -batchmode -projectPath /p'
+  run rows_with
+  assert_line --regexp '^52 +1\.0 .* 61\.0$'
+  assert_line --regexp '^60 +0\.5 '
+  refute_output --regexp '^(50|51) '
+  [ "${#lines[@]}" -eq 2 ]
+}
