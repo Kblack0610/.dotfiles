@@ -42,3 +42,15 @@ decision() {
     assert_output allow
   done
 }
+
+@test "no tracked script or config line runs a -f kill: the hook guards only agent Bash calls" {
+  # A hypr bind runs under sh -c, so a -f pattern kills that shell first and the rest of the line
+  # never runs (keybindings.conf Super+Ctrl+R did; waybar/pin.sh's stop had the same form). The
+  # hook is the one definition of the bad form, so each line goes through it.
+  cd "$BATS_TEST_DIRNAME/../.."
+  local line hits=()
+  while IFS= read -r line; do
+    [ "$(decision "${line#*:*:}")" = allow ] || hits+=("$line")
+  done < <(git grep -nwI -e pkill -e pgrep -- . ':!tests' ':!*.md' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|//)')
+  [ "${#hits[@]}" -eq 0 ] || { printf '%s\n' "${hits[@]}"; false; }
+}

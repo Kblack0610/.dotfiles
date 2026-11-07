@@ -3438,6 +3438,16 @@ landed_item() {
   ! grep -q '^gh ' "$NOTES_FIXTURE/calls.log" || fail "read gh for a recorded merge"
 }
 
+@test "reap: an item with one PR per repo closes its row on its first PR's merge proof" {
+  # NEGATIVE CONTROL: the whole list as one ref gave merge_proof "pr 9" and a two-sha commit, so no proof.
+  landed_item MERGED 'o/game#12 o/tools#9'
+  agent-queue set fix-crash "merged=$OID 1111111111111111111111111111111111111111" >/dev/null
+  run cmd_reap
+  assert_output --partial 'closed game: fix crash'
+  run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+}
+
 @test "reap: a done item's open PR keeps its row started past the orphan grace" {
   landed_item OPEN
   orphan_seen game 'fix crash' 73
@@ -3534,11 +3544,13 @@ queued_item() {
 }
 
 @test "starved: an urgent or high item runnable over the limit with no run start in that time fails and names it; holds, low, new, a recent run start and a dispatch hold do not, a hand start does not clear it" {
-  local old new
+  local old new ago2h
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
+  ago2h=$(date -d '-2 hours' '+%Y-%m-%d %H:%M')
   queued_item fresh urgent "$new"
   queued_item low-old low "$old"
-  queued_item tagged-old high "$old" at:23:59
+  # A dated tag a day out: an at:HH:MM tag is past its time for part of every day.
+  queued_item tagged-old high "$old" "at:$(date -d '+1 day' +%Y-%m-%dT%H:%M)"
   queued_item after-old urgent "$old" '' never-done
   run cmd_starved
   assert_success
@@ -3561,10 +3573,10 @@ queued_item() {
   printf -- '- %s started game-agent-1 on lab (redispatch) for game: queue item x, resume 1\n' "$(date '+%Y-%m-%d %H:%M')" > "$FLEET_DISPATCH_DIR/log.md"
   run cmd_starved
   assert_failure
-  printf -- '- %s started game-agent-1 on lab (run) for game: queue item other\n' "$(date -d '-2 hours' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
+  printf -- '- %s started game-agent-1 on lab (run) for game: queue item other\n' "$ago2h" >> "$FLEET_DISPATCH_DIR/log.md"
   run cmd_starved
   assert_failure
-  assert_output --partial 'last run start: '"$(date -d '-2 hours' '+%Y-%m-%d')"
+  assert_output --partial "last run start: $ago2h"
   printf -- '- %s started game-agent-2 on lab (hand) for game: queue item other2\n' "$(date -d '-10 minutes' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
   run cmd_starved
   assert_failure
@@ -3708,10 +3720,11 @@ board_item() {
   run cmd_starved
   assert_success
   # An old judge and an unjudged row: starved again.
-  touch -d '-2 hours' "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  local judged; judged=$(date -d '-2 hours' '+%Y-%m-%d %H:%M')
+  touch -d "$judged" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   run cmd_starved
   assert_failure
-  assert_output --partial '1 board rows unjudged, none judged since '"$(date -d '-2 hours' +%Y-%m-%d)"
+  assert_output --partial "1 board rows unjudged, none judged since ${judged% *}"
 }
 
 @test "starved: a board item waits out the human's presence once the trickle is spent, and counts from when they left" {
