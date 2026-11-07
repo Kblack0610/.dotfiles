@@ -6,7 +6,9 @@
 #   - Destination is the AGENT axis ~/.agent/sessions/{project}/sessions.jsonl,
 #     never the human ~/.notes/inbox (low-noise, agent-facing by design).
 #   - "Meaningful" = the session actually did work: >=1 Edit/Write tool_use in
-#     the transcript, OR a dirty git worktree. Pure Q&A / read-only -> no entry.
+#     the transcript, OR a dirty git worktree, OR an agentctl runner (AGENTCTL_NAME,
+#     which agentctl-run exports): a read-only runner still spends, and its row
+#     carries the cost. Pure Q&A / read-only by hand -> no entry.
 #   - Upsert by session_id: exactly ONE line per session, not per turn.
 #   - Self-heals: drops lines whose transcript file no longer exists.
 
@@ -47,7 +49,8 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     DIRTY=true
   fi
 fi
-if [ "${EDITS:-0}" -lt 1 ] && [ "$DIRTY" = false ]; then
+RUNNER="${AGENTCTL_NAME:-}"
+if [ "${EDITS:-0}" -lt 1 ] && [ "$DIRTY" = false ] && [ -z "$RUNNER" ]; then
   exit 0
 fi
 
@@ -126,8 +129,10 @@ jq -nc \
   --argjson updated "$NOW" \
   --argjson usage "${USAGE:-null}" \
   --arg harness "${AGENT_HARNESS:-claude}" \
+  --arg runner "$RUNNER" \
   '{session_id:$sid, project:$project, transcript:$transcript, resume:$resume, first_prompt:$first_prompt, edits:$edits, head_commit:$head_commit, title:$title, updated:$updated,
     harness:$harness}
+   + (if $runner == "" then {} else {runner: $runner} end)
    + (if $usage == null then {} else {
         cost_usd:      $usage.cost_usd,
         usage_source:  $usage.usage_source,

@@ -84,8 +84,21 @@ run_hook() {
 
 @test "a read-only session is not registered" {
   : > "$TRANSCRIPT"
-  run_hook
+  AGENTCTL_NAME= run_hook
   [ ! -e "$REG" ]
+}
+
+@test "a read-only agentctl runner is registered, with its runner name" {
+  : > "$TRANSCRIPT"
+  AGENTCTL_NAME=shepherd run_hook
+  run jq -c '[.session_id, .edits, .runner]' "$REG"
+  assert_output '["self",0,"shepherd"]'
+}
+
+@test "a session by hand carries no runner field" {
+  AGENTCTL_NAME= run_hook
+  run jq -c 'has("runner")' "$REG"
+  assert_output false
 }
 
 @test "first_prompt comes from the running account's history, not ~/.claude's" {
