@@ -114,14 +114,21 @@
 #                                finding names the doc and its first line. Override
 #                                the set with DRIFT_DOCS (newline-separated paths).
 #                                The nightly docs-cleanup runner reads --docs --json.
-#   skill-drift --dups [--json]  RESTATED instructions: a line of 90+ chars in one home
+#   skill-drift --dups [--json] [--check | --file PATH]
+#                                RESTATED instructions: a line of 90+ chars in one home
 #                                that shares 4-word shingles (Jaccard >= 0.3) with a line
 #                                in another. Corpus: the --docs set plus every SKILL.md and
 #                                the agentctl roles and prompts. Each pair prints both homes
 #                                and the one that wins (higher rank in the agentctl conf's
 #                                instruction-homes.json; equal rank: a session picks).
-#                                Report-only: exit 0 with pairs, 2 on an empty corpus or no
-#                                homes file.
+#                                Exit 0 with pairs, 2 on an empty corpus or no homes file.
+#                                --check holds the pair count to dup_pairs_max in kpi-thresholds
+#                                (the stored baseline; lower it as pairs are removed): exit 1
+#                                with the pairs listed while the count is over it, 2 when the
+#                                row is missing. --json adds max and over. --file PATH keeps the
+#                                pairs that have a line in that file, exit 1 when there are any
+#                                (the edit-time guard's question). Anchor/anchor pairs are not
+#                                counted: every anchor is one generated template.
 #                                AUTO:START/END blocks are skipped (a file with `<!-- shared: -->`
 #                                markers holds none of the spliced text). A lexical floor: only
 #                                near-verbatim lines are found, paraphrase is not.
@@ -169,9 +176,24 @@ case "${1:-}" in
   --write-lint-baseline) MODE=write_lint_baseline ;;
   --ratchet)             MODE=ratchet ;;
   --docs)           MODE=docs; [ "${2:-}" = --json ] && DOCS_JSON=1 ;;
-  --dups)           MODE=dups; [ "${2:-}" = --json ] && DOCS_JSON=1 ;;
+  --dups)           MODE=dups ;;
   -h|--help) sed -n '2,/^set -uo pipefail/{/^#/p}' "$0" | sed 's/^# \?//'; exit 0 ;;
 esac
+
+DUPS_CHECK=0 DUPS_FILE=""
+if [ "$MODE" = dups ]; then
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json)  DOCS_JSON=1 ;;
+      --check) DUPS_CHECK=1 ;;
+      --file)  DUPS_FILE="${2:-}"; case "$DUPS_FILE" in ""|--*) DUPS_FILE="" ;; esac; [ -n "$DUPS_FILE" ] || { echo "skill-drift --dups --file needs a path" >&2; exit 2; }; shift ;;
+      *) echo "skill-drift --dups: unknown argument $1" >&2; exit 2 ;;
+    esac
+    shift
+  done
+  [ "$DUPS_CHECK" = 1 ] && [ -n "$DUPS_FILE" ] && { echo "skill-drift --dups: --check and --file do not combine" >&2; exit 2; }
+fi
 
 # The modes that work on one checkout take [DIR] [--profile P]; --ratchet also takes BASE.
 case "$MODE" in lint|write_lint_baseline|ratchet)
@@ -747,7 +769,14 @@ if [ "$MODE" = dups ]; then
   [ "$nfiles" -gt 0 ] || { echo "skill-drift --dups: no docs found - refusing to report success" >&2; exit 2; }
   homes="$AGENTCTL_DIR/instruction-homes.json"
   [ -r "$homes" ] || { echo "skill-drift --dups: no $homes - no rank to pick a winner by" >&2; exit 2; }
-  dup_corpus | DUPS_GLOBAL="$(readlink -e "$CLAUDE_MD" 2>/dev/null)" DUPS_HOMES="$homes" DUPS_JSON="$DOCS_JSON" DUPS_HOME="$HOME" python3 -c '
+  dups_max=""
+  if [ "$DUPS_CHECK" = 1 ]; then
+    thr="${KPI_THRESHOLDS:-$AGENTCTL_DIR/kpi-thresholds}"
+    dups_max=$(sed -n 's/^dup_pairs_max=\([0-9][0-9]*\)$/\1/p' "$thr" 2>/dev/null | tail -1)
+    [ -n "$dups_max" ] || { echo "skill-drift --dups --check: no dup_pairs_max=<n> in $thr - nothing to hold the count to" >&2; exit 2; }
+  fi
+  dups_only="$DUPS_FILE"; [ -z "$dups_only" ] || dups_only=$(readlink -m -- "$DUPS_FILE")
+  dup_corpus | DUPS_MAX="$dups_max" DUPS_ONLY="$dups_only" DUPS_GLOBAL="$(readlink -e "$CLAUDE_MD" 2>/dev/null)" DUPS_HOMES="$homes" DUPS_JSON="$DOCS_JSON" DUPS_HOME="$HOME" python3 -c '
 import fnmatch, json, os, re, sys
 from collections import Counter, defaultdict
 
@@ -792,12 +821,14 @@ index = defaultdict(list)
 for n, (_, _, _, sh) in enumerate(lines):
     for g in sh: index[g].append(n)
 
+ONLY, MAX = os.environ.get("DUPS_ONLY", ""), os.environ.get("DUPS_MAX", "")
 pairs = []
 for a, (pa, _, _, sa) in enumerate(lines):
     shared = Counter(b for g in sa for b in index[g] if b > a and lines[b][0] != pa)
     for b, c in shared.items():
         score = c / (len(sa) + len(lines[b][3]) - c)
-        if score >= THRESHOLD: pairs.append((score, a, b))
+        # Every anchor is one generated template, so two anchors always share its lines.
+        if score >= THRESHOLD and not (home(pa)[0] == "anchor" == home(lines[b][0])[0]): pairs.append((score, a, b))
 pairs.sort(key=lambda t: (-t[0], t[1], t[2]))
 
 def side(n):
@@ -810,20 +841,27 @@ for score, a, b in pairs:
     x, y = side(a), side(b)
     win = "pick" if x["rank"] == y["rank"] else (x if x["rank"] > y["rank"] else y)["home"]
     items.append({"score": round(score, 2), "a": x, "b": y, "winner": win})
+if ONLY: items = [i for i in items if ONLY in (os.path.realpath(i[s]["file"].replace("~", HOME, 1)) for s in "ab")]
 involved = len({(i[s]["file"], i[s]["line"]) for i in items for s in "ab"})
 by_home = Counter("/".join(sorted((i["a"]["home"], i["b"]["home"]))) for i in items)
 
+over = max(len(items) - int(MAX), 0) if MAX else 0
 if os.environ["DUPS_JSON"] == "1":
-    print(json.dumps({"files": nread, "pairs": len(items), "lines": involved,
-                      "threshold": THRESHOLD, "by_home": dict(by_home.most_common()), "items": items}))
+    out = {"files": nread, "pairs": len(items), "lines": involved,
+           "threshold": THRESHOLD, "by_home": dict(by_home.most_common()), "items": items}
+    if MAX: out.update(max=int(MAX), over=over)
+    print(json.dumps(out))
 else:
-    for i in items:
+    for i in (items if not MAX or over else []):
         a, b = i["a"], i["b"]
         print("  %.2f  %s %s:%d  <->  %s %s:%d  winner: %s" % (i["score"], a["home"], a["file"], a["line"], b["home"], b["file"], b["line"], i["winner"]))
         print("        %s" % a["text"][:100])
         print("        %s" % b["text"][:100])
     for k, v in by_home.most_common(): print("  %3d  %s" % (v, k))
     print("skill-drift --dups: %d pair(s), %d line(s) across %d file(s)" % (len(items), involved, nread))
+    if MAX and over: print("skill-drift --dups --check: %d over the baseline of %s (dup_pairs_max): remove the restated line, keep the winning copy" % (over, MAX))
+    elif MAX and len(items) < int(MAX): print("skill-drift --dups --check: %d under the baseline: lower dup_pairs_max to %d" % (int(MAX) - len(items), len(items)))
+sys.exit(1 if (over or (ONLY and items)) else 0)
 '
   exit "${PIPESTATUS[1]}"
 fi
