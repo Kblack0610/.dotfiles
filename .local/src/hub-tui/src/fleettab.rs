@@ -146,7 +146,7 @@ pub fn tokens(
     out.push(clip_line(
         Line::styled(
             format!(
-                "  {label}: {} context, {}/response, tool output carried {}  (snapshot {}, {read}{partial})",
+                "  {label}: {} context, {}/response, tool output {}  ({}, {read}{partial})",
                 count(Some(s.context as f64)),
                 count(Some(s.per_response as f64)),
                 pct(Some(s.carried_share)),
@@ -160,7 +160,7 @@ pub fn tokens(
     out.extend(token_table("BY BASH COMMAND", &s.commands, p, w));
     out.push(clip_line(
         Line::styled(
-            "  counted by claude-recall tool-output, nightly; w yesterday | 7d; dollars per tool: 0 Costs",
+            "  nightly, claude-recall tool-output; w yesterday | 7d; dollars: 0 Costs",
             p.dim(),
         ),
         w,
