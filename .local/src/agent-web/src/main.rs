@@ -132,6 +132,7 @@ async fn main() -> Result<()> {
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
         .route("/api/home", get(home_board))
+        .route("/api/home/proposals", get(proposals::list))
         .route("/api/briefing", get(briefing_night))
         .route("/api/proposals/accept", post(proposals::accept))
         .route("/api/proposals/reject", post(proposals::reject))

@@ -32,6 +32,18 @@ const refreshHome = coalesce(async () => {
   await night;
 });
 
+// A search keystroke or a sort changes only the Proposals section, so it asks for that alone:
+// /api/home also reads the queue, its stats, the board and Prometheus (about 1.6s at load 20).
+// Before Home has loaded, or if this read fails, the full read answers and shows the error.
+const refreshProposals = coalesce(async () => {
+  if (!hst.data) return refreshHome();
+  const view = tblParams(st.views.home).toString();
+  let p;
+  try { p = await api("/api/home/proposals" + (view ? "?" + view : "")); } catch { return refreshHome(); }
+  Object.assign(hst.data, p);
+  if (st.tab === "home") renderHome();
+});
+
 const PROP_COLS = { stream: ["stream"], project: ["project"], proposal: ["proposal"], created: ["age", "n"], verb: ["action", "n"] };
 
 // One row, and under it when opened the record: why, the evidence and what accept runs.
@@ -216,7 +228,7 @@ const renderHome = () => {
 function propView(patch) {
   setQuery(tblSet(st.views.home, patch));
   hst.prop.all = false;
-  refreshHome();
+  refreshProposals();
 }
 
 $("home").addEventListener("click", (e) => {
