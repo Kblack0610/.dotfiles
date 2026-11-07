@@ -230,6 +230,8 @@ pub enum Msg {
     /// The Sessions table's ended rows, then its header, which waits on headroom.
     SessionFeed(Box<hub_core::session_table::Feed>),
     Capacity(Box<hub_core::capacity::Capacity>),
+    /// One session's page (hub_core::session_page), for the row it was read for.
+    SessionPage(Box<(String, Option<hub_core::session_page::SessionPage>)>),
     Forecast(Box<Forecast>),
     /// `agentctl-session-outcomes worst`, or why it failed.
     Ranked(Result<Vec<Ranked>, String>),
@@ -738,6 +740,21 @@ impl App {
         }
     }
 
+    /// Read the page of the session whose detail is open, in a worker.
+    fn read_page(&mut self) {
+        let Some((id, rows, state)) = self.controls.wants_page() else {
+            return;
+        };
+        let tx = self.tx.clone();
+        let runner = self.runner.clone();
+        std::thread::spawn(move || {
+            use hub_core::{boards, session_page};
+            let ledger = boards::shepherd_dir();
+            let page = session_page::read(runner.as_ref(), &ledger, &id, &rows, &state);
+            let _ = tx.send(Msg::SessionPage(Box::new((id, page))));
+        });
+    }
+
     /// What `read_sessions` reads in its workers, here and now, for `--once`.
     pub fn read_sessions_now(&mut self) {
         use hub_core::{capacity, session_table as table};
@@ -1186,7 +1203,11 @@ impl App {
                     self.read_jobs();
                 }
             }
-            Msg::SessionFeed(f) => self.controls.read_feed(*f),
+            Msg::SessionFeed(f) => {
+                self.controls.read_feed(*f);
+                self.read_page();
+            }
+            Msg::SessionPage(p) => self.controls.read_page(p.0, p.1),
             Msg::Capacity(c) => {
                 self.controls.capacity = Some(*c);
                 if self.feed_read.done() {
@@ -1710,6 +1731,7 @@ impl App {
             Ask::Run(t, a, acct) => self.act(t, a, acct),
             Ask::Start(name) => self.start_timer(name),
         }
+        self.read_page();
         // The stage counts line, then the table's own header.
         let at = 1 + self.controls.above() + self.controls.sel;
         let h = self.page.max(1);
@@ -3142,12 +3164,62 @@ mod tests {
             s.contains("DETAIL  lab/unity-core-playground-agent-10:1"),
             "{s}"
         );
-        for want in ["3 behind", "2 ahead", "test 10m", "cargo test", "feat/x"] {
+        for want in ["test 10m", "cargo test"] {
             assert!(s.contains(want), "{want} missing from\n{s}");
         }
+        assert!(!s.contains("3 behind"), "the page's Worktree says it: {s}");
         assert!(s.contains("TIMELINE"), "{s}");
+        assert!(s.contains("PAGE       reading"), "{s}");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         assert!(!screen(&mut a, 200, 60).contains("DETAIL"));
+    }
+
+    #[test]
+    fn the_detail_draws_the_page_for_its_row_and_drops_one_for_a_row_left_since() {
+        use hub_core::session_page::{Part, SessionPage};
+        let mut a = app(Tab::Sessions);
+        a.handle(Msg::Boards(Box::new(boards())));
+        a.handle(key('j'));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        let id = "lab/unity-core-playground-agent-10:1".to_string();
+        let part = |label, text: &str, link: Option<&str>, warn| Part {
+            label,
+            text: text.into(),
+            link: link.map(String::from),
+            warn,
+        };
+        let page = SessionPage {
+            parts: vec![
+                part("Queue item", "the-item (running)", Some("#queue"), false),
+                part("Worktree", "~/w  branch feat/x", None, false),
+                part(
+                    "PR",
+                    "#12 open",
+                    Some("https://github.com/o/r/pull/12"),
+                    true,
+                ),
+            ],
+            errors: vec!["notes board: exit 1".into()],
+            ..SessionPage::default()
+        };
+        a.handle(Msg::SessionPage(Box::new((
+            "other:1".into(),
+            Some(page.clone()),
+        ))));
+        assert!(screen(&mut a, 200, 80).contains("PAGE       reading"));
+        a.handle(Msg::SessionPage(Box::new((id.clone(), Some(page)))));
+        let s = screen(&mut a, 200, 80);
+        for want in [
+            "QUEUE ITEM the-item (running)",
+            "WORKTREE   ~/w  branch feat/x",
+            "PR         #12 open  https://github.com/o/r/pull/12",
+            "ERROR      notes board: exit 1",
+        ] {
+            assert!(s.contains(want), "{want} missing from\n{s}");
+        }
+        assert!(!s.contains("#queue"), "a tab link means nothing here: {s}");
+        a.handle(Msg::SessionPage(Box::new((id, None))));
+        assert!(screen(&mut a, 200, 80).contains("nothing names this session"));
     }
 
     #[test]

@@ -151,7 +151,7 @@ async function answerSession(card, e) {
   const t = card.dataset.t;
   if (e.target.dataset.open !== undefined) {
     const a = st.agents.find((x) => x.target === t);
-    if (a) { setTab("sessions"); select(a); }
+    if (a) openAgent(a);
     return;
   }
   const key = e.target.dataset.k;

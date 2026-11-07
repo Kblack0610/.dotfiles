@@ -2,11 +2,11 @@
 // The open session, the tab switch and the live-update stream. Shared helpers are in ui.js; the
 // answer cards are waiting.js, Home is home.js, and each board tab is its own static/*.js and
 // registers in TABS. Sessions' table and header are sessions.js, its fleet-state facts and the
-// last day are watch.js, the shepherd's pass, due lines and rundowns are shepherd.js; a
-// transcript is read only when its session is opened.
+// last day are watch.js, the shepherd's pass, due lines and rundowns are shepherd.js. An open
+// session starts on its page (sessions.js); its transcript is read only when asked for.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [], views: {} };
+const st = { agents: [], sel: null, view: "page", start: null, end: null, tab: "home", asks: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 // Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
@@ -24,7 +24,8 @@ const refreshAgents = coalesce(async () => {
   if (st.tab === "queue") renderQueueList();
   if (st.sel) {
     const a = st.agents.find((x) => x.target === st.sel.target);
-    if (a) { st.sel = a; renderHead(); } else { $("d-dot").className = "dot"; $("d-name").textContent = st.sel.target + " (gone)"; }
+    if (a) { st.sel = a; renderHead(); }
+    else if (!st.sel.paneless) { $("d-dot").className = "dot"; $("d-name").textContent = st.sel.target + " (gone)"; }
   }
 });
 
@@ -122,21 +123,18 @@ $("acts").addEventListener("click", async (e) => {
 function renderHead() {
   $("v-seg").hidden = $("d-dot").hidden = false;
   $("d-dot").className = "dot " + st.sel.status;
-  $("d-name").textContent = `${st.sel.target}  ${st.sel.summary || ""}`;
+  $("d-name").textContent = `${st.sel.name || st.sel.target}  ${st.sel.summary || ""}`;
   // A parked session has no claude to type into or screen to show: only its transcript.
-  $("compose").hidden = !!st.sel.parked;
-  $("v-screen").disabled = !!st.sel.parked;
+  const noPane = !!(st.sel.parked || st.sel.paneless);
+  $("compose").hidden = noPane;
+  $("v-screen").disabled = noPane;
   renderActs();
 }
 
 function select(a) {
   if (!st.sel || st.sel.target !== a.target) st.act = { confirm: null, busy: st.act.busy, msg: "", err: false };
   st.sel = a; st.start = null; st.end = null;
-  if (a.parked && st.view === "screen") {
-    st.view = "transcript";
-    $("v-transcript").classList.add("on");
-    $("v-screen").classList.remove("on");
-  }
+  showView("page");
   $("main").classList.add("open");
   $("err").textContent = "";
   renderHead(); renderFacts();
@@ -156,7 +154,7 @@ function overview() {
   renderFacts(); renderOverview(); refreshSessions();
 }
 
-$("back").onclick = () => overview();
+$("back").onclick = () => setTab("sessions", "");
 
 function evHtml(e) {
   const ts = e.ts ? `<div class="ts">${esc(e.ts.replace("T", " ").slice(0, 19))}</div>` : "";
@@ -170,12 +168,13 @@ function evHtml(e) {
 }
 
 async function load() {
+  if (st.view === "page") return loadPage();
   if (st.view === "screen") return loadScreen();
-  const a = st.sel;
+  const a = st.sel, still = () => st.sel === a && st.view === "transcript";
   let page;
   try { page = await api(`/api/transcript?t=${encodeURIComponent(a.target)}`); }
-  catch (e) { $("scroll").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
-  if (st.sel !== a) return;
+  catch (e) { if (still()) $("scroll").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (!still()) return;
   st.start = page.start; st.end = page.end;
   $("scroll").innerHTML = olderBtn() + page.events.map(evHtml).join("");
   toBottom($("scroll"));
@@ -221,12 +220,15 @@ const loadScreen = coalesce(async () => {
   toBottom($("scroll"));
 });
 
-function setView(v) {
+function showView(v) {
   st.view = v;
-  $("v-transcript").classList.toggle("on", v === "transcript");
-  $("v-screen").classList.toggle("on", v === "screen");
-  if (st.sel) load();
+  for (const n of ["page", "transcript", "screen"]) $("v-" + n).classList.toggle("on", v === n);
 }
+function setView(v) {
+  showView(v);
+  if (st.sel) { renderFacts(); load(); }
+}
+$("v-page").onclick = () => setView("page");
 $("v-transcript").onclick = () => setView("transcript");
 $("v-screen").onclick = () => setView("screen");
 

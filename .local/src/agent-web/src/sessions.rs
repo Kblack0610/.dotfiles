@@ -7,9 +7,11 @@ use std::time::{Duration, Instant};
 use hub_core::boards;
 use hub_core::capacity::{self, Capacity};
 use hub_core::session_actions::{self as actions, System};
+use hub_core::session_page::{self, SessionPage};
 use hub_core::session_table::{self, SessionRow};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::Mutex;
 
 /// Folds concurrent tabs, quick reloads and every keystroke in the search into one read.
@@ -28,10 +30,11 @@ pub struct TableQuery {
     pub dir: String,
 }
 
-/// Every row and what could not be read.
+/// Every row, the state document under it and what could not be read.
 #[derive(Default)]
 struct Read {
     rows: Vec<SessionRow>,
+    state: Vec<Value>,
     buckets: Vec<String>,
     errors: Vec<String>,
 }
@@ -48,6 +51,7 @@ struct Shown<'a> {
 #[derive(Default)]
 pub struct Cache {
     table: Mutex<Option<(Instant, Arc<Read>)>>,
+    page: Mutex<Option<(Instant, String, Arc<SessionPage>)>>,
     capacity: Mutex<Option<(Instant, Arc<Capacity>)>>,
 }
 
@@ -69,30 +73,61 @@ fn failed(e: String) -> String {
 }
 
 impl Cache {
+    async fn read(&self) -> Result<Arc<Read>, String> {
+        let mut c = self.table.lock().await;
+        if let Some((_, r)) = c.as_ref().filter(|(at, _)| at.elapsed() < CACHE) {
+            return Ok(r.clone());
+        }
+        let r = tokio::task::spawn_blocking(|| {
+            let (state, vocab) = session_table::read_state(&boards::fleet_state());
+            let feed = session_table::feed(&System, &session_table::registry());
+            Read {
+                rows: session_table::rows(&state, &vocab, &feed, &actions::gather(&System).agents),
+                state,
+                buckets: vocab.buckets().to_vec(),
+                errors: feed.errors,
+            }
+        })
+        .await
+        .map(Arc::new)
+        .map_err(|e| e.to_string())?;
+        *c = Some((Instant::now(), r.clone()));
+        Ok(r)
+    }
+
     /// The view `q` asks for; every view is applied to the shared read outside the lock.
     pub async fn table(&self, q: TableQuery) -> String {
-        let mut c = self.table.lock().await;
-        let read = match c.as_ref().filter(|(at, _)| at.elapsed() < CACHE) {
-            Some((_, r)) => Ok(r.clone()),
-            None => tokio::task::spawn_blocking(|| {
-                let (state, vocab) = session_table::read_state(&boards::fleet_state());
-                let feed = session_table::feed(&System, &session_table::registry());
-                Read {
-                    rows: session_table::rows(&state, &vocab, &feed, &actions::gather(&System).agents),
-                    buckets: vocab.buckets().to_vec(),
-                    errors: feed.errors,
-                }
-            })
-            .await
-            .map(|r| {
-                let r = Arc::new(r);
-                *c = Some((Instant::now(), r.clone()));
-                r
-            })
-            .map_err(|e| e.to_string()),
-        };
-        drop(c);
-        read.map_or_else(failed, |r| render(&r, &q))
+        self.read().await.map_or_else(failed, |r| render(&r, &q))
+    }
+
+    /// One session's page, or None when nothing names `id`. The open page refreshes with the
+    /// list, so the last one is kept as the list's read is.
+    pub async fn page(&self, id: String) -> Result<Option<Arc<SessionPage>>, String> {
+        let mut c = self.page.lock().await;
+        let kept = c
+            .as_ref()
+            .filter(|(at, k, _)| *k == id && at.elapsed() < CACHE);
+        if let Some((_, _, p)) = kept {
+            return Ok(Some(p.clone()));
+        }
+        let read = self.read().await?;
+        let key = id.clone();
+        let page = tokio::task::spawn_blocking(move || {
+            session_page::read(
+                &System,
+                &boards::shepherd_dir(),
+                &id,
+                &read.rows,
+                &read.state,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map(Arc::new);
+        if let Some(p) = &page {
+            *c = Some((Instant::now(), key, p.clone()));
+        }
+        Ok(page)
     }
 
     pub async fn capacity(&self) -> Result<Arc<Capacity>, String> {
@@ -138,6 +173,7 @@ mod tests {
             ],
             buckets: vec!["NEEDS".into(), "DONE".into()],
             errors: vec!["session outcomes: exit 1".into()],
+            ..Read::default()
         };
         let q = TableQuery {
             s: "done today".into(),
@@ -168,9 +204,10 @@ mod tests {
         let r = Read {
             rows: session_table::rows(&state, &vocab, &session_table::Feed::default(), &[]),
             buckets: vocab.buckets().to_vec(),
-            errors: vec![],
+            ..Read::default()
         };
-        let v: serde_json::Value = serde_json::from_str(&render(&r, &TableQuery::default())).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&r, &TableQuery::default())).unwrap();
         assert_eq!(v["rows"][0]["project"], "trader");
         assert_eq!(v["buckets"], serde_json::json!(["NEEDS", "WORKING"]));
     }
