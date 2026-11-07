@@ -156,7 +156,7 @@ verdict() {
   jq -cn --arg p "$1" --arg l "$2" --arg k "$3" --arg v "$4" --arg s "${5:-S}" --argjson t "${6:-1}" \
     --arg sig "$(policy_sig)" --arg line "$(line_of "$1" "$2" "$3")" --arg a "${7-$3}" \
     '{project: $p, lane: $l, key: $k, verdict: $v, size: $s, tier: $t, area: $a, clear: true, agent_only: true,
-      reason: "r", policy: $sig, line: $line}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+      rule: "fits", reason: "r", policy: $sig, line: $line}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 }
 
 # --- candidates --------------------------------------------------------------------------
@@ -265,7 +265,7 @@ verdict() {
   verdict game agent 'current' skip
   echo 'policy v2' > "$DISPATCH_POLICY"
   verdict game agent 'current' skip
-  jq -cn --arg sig "$(policy_sig)" '{project: "game", lane: "agent", key: "retagged", verdict: "skip", policy: $sig, line: "old"}' \
+  jq -cn --arg sig "$(policy_sig)" '{project: "game", lane: "agent", key: "retagged", verdict: "skip", rule: "fits", policy: $sig, line: "old"}' \
     >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   jq -cn '{project: "game", lane: "agent", key: "died", verdict: "failed"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 
@@ -896,9 +896,12 @@ kinds_match() {
   assert_equal "$(jq -r .project <<<"$output" | paste -sd' ')" 'ok'
 }
 
-@test "picks: a dispatch verdict from an older policy does not launch" {
+@test "picks: a dispatch verdict from an older policy still launches while its rule stands, not once the rule is gone" {
   verdict game human k dispatch
-  echo 'policy v2' > "$DISPATCH_POLICY"
+  echo 'policy v2' >> "$DISPATCH_POLICY"
+  run picks '{"project":"game","stage":"beta","lane":"human","key":"k","prio":1,"tier":1,"line":""}' 1
+  assert_equal "$(jq -r .key <<<"$output")" k
+  printf '%s\n' 'policy' '- (tier3) tier 3' > "$DISPATCH_POLICY"
   run picks '{"project":"game","stage":"beta","lane":"human","key":"k","prio":1,"tier":1,"line":""}' 1
   assert_output ''
 }
@@ -1535,6 +1538,28 @@ echo "claude-acct: no account has room; alt is the closest, 1 point over its wee
   [ -n "$f" ] || fail "the floor did not promote the cleanup row"
   assert_equal "$(qfield "$f" title) | $(qfield "$f" priority) | $(qfield "$f" tags)" 'fix(game): crash on load | high | cleanup tier1'
   [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row that is not cleanup"
+}
+
+@test "run with DISPATCH_CLEANUP_FLOOR cleanup items already runnable does not read the board, so a fresh cleanup row waits" {
+  export DISPATCH_CLEANUP_PROJECTS=game DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=2
+  project game beta "$SANDBOX/repos/game"
+  row game human 'crash' "- [ ] fix(game): crash on load $T"
+  verdict game human 'crash' dispatch S 1 crash
+  agent-queue add --project game --slug c1 --tags cleanup "c1"
+  agent-queue add --project game --slug c2 --tags cleanup "c2"
+  agent-queue add --project game --slug c3 --tags cleanup "c3"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  # the pass starts c1, which leaves 2 runnable cleanup items: the floor is met (low water is 1, so only the floor decides)
+  assert_output --partial 'started game-agent-1: game: c1'
+  refute_output --partial 'under the floor'
+  assert_not_called 'judge called'
+  [ -z "$(qitem queued gm-1)" ] || fail "the floor read the board with the cleanup floor met"
+  # negative control: with the floor at 3 the next pass starts c2, leaves 1 cleanup item, and promotes the same row
+  export DISPATCH_CLEANUP_FLOOR=3
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'runnable cleanup 1 is under the floor 3'
+  [ -n "$(qitem queued gm-1)" ] || fail "under the floor the cleanup row was not promoted"
 }
 
 @test "the cleanup floor's fill reads and judges only cleanup rows of the cleanup projects; a plain fill judges them all" {
@@ -2432,7 +2457,7 @@ night_verdict() {
   jq -cn --arg k "$1" --arg a "${2-$1}" --argjson t3 "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
     --arg line "$(line_of agent-runtime agent "$1")" \
     '{project: "agent-runtime", lane: "agent", key: $k, verdict: "skip", size: $s, tier: 3, area: $a,
-      clear: true, agent_only: true, tier3_only: $t3, reason: "tier 3", policy: $sig, line: $line}' \
+      clear: true, agent_only: true, tier3_only: $t3, rule: "tier3", reason: "tier 3", policy: $sig, line: $line}' \
     >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 }
 
@@ -2718,16 +2743,38 @@ J
   assert_equal "$(outcome)" FAILED
 }
 
-@test "policy_sig: a workers.json edit keeps every verdict fresh; a policy edit judges again" {
+@test "policy_sig: a workers.json edit keeps every verdict fresh; a policy edit judges again, and keeps the old verdict meanwhile" {
   project game beta "$SANDBOX/repos/game"
   row game agent 'judged' "- [ ] judged $T"
   verdict game agent 'judged' skip
   echo '{"fleet": {"max_tier": 1, "lane": "agent"}}' > "$DISPATCH_WORKERS"
   run cmd_candidates
   assert_output ''
-  echo 'policy v3' > "$DISPATCH_POLICY"
+  echo 'policy v3' >> "$DISPATCH_POLICY"
   run cmd_candidates
   assert_equal "$(jq -r .key <<<"$output")" 'judged'
+  # The edit voids nothing: the old verdict still counts as the row's verdict.
+  run cmd_suggest --json
+  assert_equal "$(jq -r .verdict <<<"$output")" skip
+}
+
+@test "judge: after a policy edit rows with no verdict go first, then a stale dispatch, then a stale skip; a reply that names no rule keeps the stale verdict" {
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
+    printf "%s\n" "{\"verdicts\":[{\"project\":\"game\",\"lane\":\"agent\",\"key\":\"oldskip\",\"verdict\":\"skip\",\"rule\":\"nope\"}]}"'
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'oldskip' "- [ ] oldskip $T"
+  row game agent 'olddisp' "- [ ] olddisp $T"
+  row game agent 'fresh' "- [ ] fresh $T"
+  verdict game agent 'oldskip' skip
+  verdict game agent 'olddisp' dispatch
+  echo 'policy v2' >> "$DISPATCH_POLICY"
+  cand() { jq -nc --arg k "$1" --arg l "$(line_of game agent "$1")" '{project:"game",stage:"beta",lane:"agent",key:$k,text:("- [ ] " + $k),prio:1,line:$l}'; }
+  DISPATCH_JUDGE_MAX=3 run judge "$(cand oldskip)
+$(cand olddisp)
+$(jq -nc '{project:"game",stage:"beta",lane:"agent",key:"fresh",text:"- [ ] fresh",prio:1}')"
+  assert_equal "$(grep -o '"key":"[a-z]*"' "$NOTES_FIXTURE/prompt" | cut -d'"' -f4 | paste -sd,)" 'fresh,olddisp,oldskip'
+  # The reply named a rule the policy lacks: that is an error record, and it leaves both stale verdicts in force.
+  assert_equal "$(latest_verdicts | jq -r 'select(.key == "oldskip" or .key == "olddisp") | .verdict' | paste -sd,)" 'dispatch,skip'
 }
 
 @test "judge shares a capped batch across projects: each project's best row, then each one's next" {
