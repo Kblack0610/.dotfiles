@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# WorktreeRemove hook, the pair of worktree-create.sh. Removes a harness-made worktree without
-# --force, so git refuses a dirty tree and the work survives; a failure exits non-zero and the
-# harness reports it. The branch is left alone, since a subagent's commits may be all that is left.
+# WorktreeRemove hook, the pair of worktree-create.sh. `wt reap` is the only code that removes a
+# worktree, so this asks it: it refuses a dirty or unlanded tree, one a session, pane or process
+# is inside, and a submodule worktree git alone cannot remove, and it deletes the branch with
+# `-d`. A refusal exits non-zero, the harness reports it, and the tree waits for the nightly
+# `wt gc`. wt is found beside this file (the stow link resolves to the checkout), never by PATH.
 set -euo pipefail
 
 path=$(jq -r '.worktree_path' <<<"$(cat)")
 [ -d "$path" ] || exit 0
-git -C "$path" worktree remove "$path" >&2
+wt="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.local/src/tmux/worktree.sh"
+"$wt" reap "$path" >&2

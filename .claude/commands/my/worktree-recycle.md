@@ -2,18 +2,17 @@
 name: worktree-recycle
 description: "Recycle git worktrees: reap what has landed, report what has not, reset long-lived worktrees to fresh branches"
 allowed-tools: [Bash, Read, Grep, Glob, AskUserQuestion]
-argument-hint: "[--force] [--dry-run]"
+argument-hint: "[--dry-run]"
 ---
 
 # Worktree Recycle
 
-Bring a repo's worktrees back to a clean state: **reap** the ones whose work has landed, **report** the ones whose has not, and reset any long-lived worktree you are deliberately keeping to a fresh branch off the trunk.
+Bring a repo's worktrees back to a clean state: **reap** the ones whose work has landed and **report** the ones whose has not.
 
 **Arguments:** `$ARGUMENTS`
 
 Parse flags:
 - `--dry-run` — show what would happen, change nothing
-- `--force` — also delete unmerged *orphaned branches* (never worktrees; see below)
 
 ## What changed, and why this file no longer says "never remove a worktree"
 
@@ -64,28 +63,10 @@ wt gc "$(git rev-parse --show-toplevel)"
 
 `wt` removes only what it just said it would and prints what it kept. Nothing else to do.
 
-## Phase 3: Reset a worktree you are KEEPING
+## Branches
 
-Only for a long-lived worktree the user explicitly wants to hold (a warm build cache, a stack that takes an hour to rebuild). For anything else the answer is: reap it and cut a fresh one with `wt new`. That *is* the reset, and it costs one keypress.
+`wt gc` also deletes the merged `agent-N` and `worktree-agent-*` branches that no worktree has checked out, with `git branch -d`, and lists them under `branches:`. There is no hand branch step. A long-lived worktree you want to keep is yours to reset; `wt reap` and `wt new` are the only things that remove or reset one.
 
-For each such worktree, in its own directory:
+## Phase 3: Report
 
-1. If dirty, stop and ask. Never auto-commit.
-2. Push the current branch: `git push origin "$(git branch --show-current)" --set-upstream`. If the push fails the work is still committed locally — say so and stop.
-3. `git fetch origin --quiet`
-4. `git checkout -b <new-branch> origin/<default-branch>`
-
-## Phase 4: Clean orphaned BRANCHES
-
-Branches are not worktrees; deleting a merged one loses nothing.
-
-```bash
-default=$(git symbolic-ref --short refs/remotes/origin/HEAD | cut -d/ -f2-)
-git branch --merged "origin/$default" --list 'agent-*' 'worktree-agent-*' 'agent-*-tmp'
-```
-
-Skip any branch checked out in a worktree (`git worktree list --porcelain | grep '^branch '`). Delete merged ones with `git branch -d`. Unmerged ones need an explicit `--force`, and even then list them for the user before touching anything. Finish with `git remote prune origin`.
-
-## Phase 5: Report
-
-State what was reaped, what was kept and why, which branches went, and which worktrees are holding unlanded work. A sweep that ran over an empty list must say so — "nothing to consider" is a result, not a success.
+State what was reaped, what was kept and why, which branches `wt gc` deleted, and which worktrees are holding unlanded work. A sweep that ran over an empty list must say so — "nothing to consider" is a result, not a success.

@@ -542,6 +542,36 @@ declare_in_lab() {
   assert_output --partial 'claimed 1, held 0,'
 }
 
+@test "gc: merged slot branches are deleted, an unmerged or checked-out one is not" {
+  make_repo
+  add_wt repo-keep agent-3                              # checked out, dirty: tree and branch stay
+  printf 'edit\n' > "$WT_ROOT/repo-keep/file.txt"
+  git -C "$MAIN" branch agent-7 origin/main              # merged, checked out nowhere
+  git -C "$MAIN" branch worktree-agent-ab12 origin/main  # same, the harness's name
+  git -C "$MAIN" branch feature origin/main              # merged, but not a slot branch
+  git -C "$MAIN" branch agent-8 origin/main
+  git -C "$MAIN" worktree add --quiet "$SANDBOX/side" agent-8
+  git -C "$SANDBOX/side" commit --quiet --allow-empty -m unmerged
+  git -C "$MAIN" worktree remove --force "$SANDBOX/side"  # agent-8 now has a commit and no tree
+
+  run "$WT" gc --dry-run
+  assert_success
+  assert_output --partial 'would delete agent-7'
+  git -C "$MAIN" rev-parse --verify --quiet agent-7 >/dev/null || fail "a dry run deleted a branch"
+
+  run "$WT" gc
+  assert_success
+  assert_output --partial 'deleted agent-7'
+  assert_output --partial 'deleted worktree-agent-ab12'
+  refute_output --partial 'agent-3'
+  git -C "$MAIN" rev-parse --verify --quiet agent-7 >/dev/null && fail "merged slot branch survived gc"
+  git -C "$MAIN" rev-parse --verify --quiet worktree-agent-ab12 >/dev/null && fail "merged harness branch survived gc"
+  git -C "$MAIN" rev-parse --verify --quiet feature >/dev/null || fail "gc deleted a branch that is not a slot"
+  git -C "$MAIN" rev-parse --verify --quiet agent-8 >/dev/null || fail "gc deleted an unmerged branch"
+  git -C "$MAIN" rev-parse --verify --quiet agent-3 >/dev/null || fail "gc deleted a checked-out branch"
+  [ -d "$WT_ROOT/repo-keep" ] || fail "gc deleted a dirty worktree"
+}
+
 @test "gc --dry-run removes NOTHING" {
   make_repo
   add_wt repo-agent-1
