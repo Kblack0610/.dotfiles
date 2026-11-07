@@ -248,6 +248,130 @@ EOF2
   [ ! -d "$SO_OUT/proj" ]
 }
 
+# -- Forgejo PRs --
+# fj_setup - session E opened PR 12 on a Forgejo host through its API, the create printing its
+# html_url, and merged it the same way, which prints no URL; it also read PR 7 with a GET, which
+# it must not claim. curl-fj serves that API: page 1 is 50 open PRs (#100-#149), page 2 holds
+# #12 merged and #7 closed, so a repo past one page is read whole. FJ_FAIL makes every read fail.
+fj_setup() {
+  cat > "$TR/e.jsonl" <<'EOF'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"f1","name":"Bash","input":{"command":"API=\"https://git.example.test/api/v1/repos/o/audio\"\ncurl -s -X POST -H \"Authorization: token $TOKEN\" -d @pr.json \"$API/pulls\" | jq -r '.number, .html_url'"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"f1","content":"12\nhttps://git.example.test/o/audio/pulls/12"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"f2","name":"Bash","input":{"command":"curl -s -X POST -d '{\"Do\":\"squash\"}' \"$API/pulls/12/merge\""}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"f2","content":""}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"f3","name":"Bash","input":{"command":"curl -s https://git.example.test/api/v1/repos/o/audio/pulls/7 | jq -r .html_url"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"f3","content":"https://git.example.test/o/audio/pulls/7"}]}}
+EOF
+  jq -cn --arg t "$TR/e.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-e", project: "proj", transcript: $t, title: "title e", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  printf 'fj-secret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
+  export SO_FORGEJO_HOSTS="git.other.test git.example.test"
+  cat > "$SANDBOX/bin/curl-fj" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/fj.argv"
+cat >> "$BATS_TEST_TMPDIR/fj.stdin"
+out="" url=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift ;; http*) url="$1" ;; esac
+  shift
+done
+[ -z "${FJ_FAIL:-}" ] || { echo "curl: (22) The requested URL returned error: 502" >&2; exit 22; }
+case "$url" in
+  *"&page=1") jq -cn '[range(100; 150) | {number: ., state: "open", merged: false, merged_at: null, merge_commit_sha: null, title: "t\(.)", body: ""}]' ;;
+  *"&page=2") jq -cn '[{number: 12, state: "closed", merged: true, merged_at: "2026-10-19T03:00:00Z", merge_commit_sha: "587713a", title: "docs: e", body: ""},
+                       {number: 7, state: "closed", merged: false, merged_at: null, merge_commit_sha: null, title: "seven", body: ""}]' ;;
+esac > "$out"
+STUB
+  chmod +x "$SANDBOX/bin/curl-fj"
+  export SO_CURL=curl-fj
+}
+
+@test "SO_PR_JQ: pr_cmd takes gh pr create|merge and a POST to a Forgejo pulls API; pr_refs keys a Forgejo PR by host/owner/repo" {
+  # shellcheck source=/dev/null
+  . "$SO_LIB_DIR/session-outcomes.sh"
+  cmd() { jq -rn --arg c "$1" "$SO_PR_JQ"'$c | pr_cmd'; }
+  assert_equal "$(cmd 'gh pr create --fill')" true
+  assert_equal "$(cmd 'gh pr merge 3 --squash')" true
+  assert_equal "$(cmd 'curl -X POST https://h/api/v1/repos/o/r/pulls')" true
+  assert_equal "$(cmd 'curl --data @b.json "$API/pulls" # API=https://h/api/v1/repos/o/r')" true
+  assert_equal "$(cmd 'curl -s -X POST -H "Authorization: token $TOKEN" -d @/tmp/pr.json "$API/pulls" | jq -r .html_url')" true
+  assert_equal "$(cmd "curl -s -d'{\"Do\":\"squash\"}' \"\$API/pulls/12/merge\"")" true
+  assert_equal "$(cmd 'curl -s https://h/api/v1/repos/o/r/pulls/7')" false
+  assert_equal "$(cmd 'curl -X POST https://h/api/v1/repos/o/r/issues')" false
+  assert_equal "$(cmd 'curl -X POST -d @r.json "$API/pulls/12/reviews"')" false
+  assert_equal "$(cmd 'curl -X POST -d @c.json "$API/issues/12/comments"')" false
+  assert_equal "$(cmd 'gh pr view 9')" false
+  refs() { jq -cn --arg t "$1" "$SO_PR_JQ"'$t | pr_refs'; }
+  assert_equal "$(refs 'https://github.com/o/r/pull/10')" '[{"repo":"o/r","number":10}]'
+  assert_equal "$(refs 'Squashed and merged pull request o/r#11 (x)')" '[{"repo":"o/r","number":11}]'
+  assert_equal "$(refs '{"html_url":"https://git.example.test/o/audio/pulls/12","diff_url":"https://git.example.test/o/audio/pulls/12.diff"}')" '[{"repo":"git.example.test/o/audio","number":12}]'
+  assert_equal "$(refs 'https://github.com/o/r/pulls/3 https://h/api/v1/repos/o/r/pulls/4')" '[]'
+}
+
+@test "a Forgejo PR: claimed from its create's html_url, looked up across API pages with the token on stdin, merged; a GET is not claimed and gh is never asked" {
+  fj_setup
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(field e '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
+  assert_equal "$(field e .prs_merged)" 1
+  assert_equal "$(grep -c 'git.example.test/api/v1/repos/o/audio/pulls?state=all&sort=newest&limit=50&page=' "$BATS_TEST_TMPDIR/fj.argv")" 2
+  run grep -c 'git.example.test' "$GH_FIXTURE/calls.log"
+  assert_output 0
+  # GitHub sessions are untouched beside it
+  assert_equal "$(field a '[.prs[].number] | join(",")')" 10
+  assert_equal "$(field a .prs_merged)" 1
+  # the token goes in on stdin, never curl's argv
+  run grep -c 'fj-secret-token' "$BATS_TEST_TMPDIR/fj.argv"
+  assert_output 0
+  grep -q 'header = "Authorization: token fj-secret-token"' "$BATS_TEST_TMPDIR/fj.stdin"
+}
+
+@test "a Forgejo read with no token or a failed page holds that session back, writes the rest, and a later run records it" {
+  fj_setup
+  rm "$RBW_FIXTURE/forgejo_repo_admin"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(field e .session_id)" null
+  assert_equal "$(field a .prs_merged)" 1
+  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: no token (rbw forgejo_repo_admin), git.example.test/o/audio unread; 1 session(s) held for the next run'
+
+  printf 'fj-secret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
+  FJ_FAIL=1 run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field e .session_id)" null
+  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: git.example.test/o/audio unread: curl: (22)'
+
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field e '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
+}
+
+@test "a Forgejo host SO_FORGEJO_HOSTS does not list is never called: its PR stays UNKNOWN and the report names the host" {
+  fj_setup
+  export SO_FORGEJO_HOSTS="git.other.test"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field e '.prs[0].state')" UNKNOWN
+  [ ! -e "$BATS_TEST_TMPDIR/fj.argv" ]
+  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: git.example.test is not in SO_FORGEJO_HOSTS'
+}
+
+@test "so_forgejo_hosts: SO_FORGEJO_HOSTS when set, even empty; else the runner conf's" {
+  # shellcheck source=/dev/null
+  . "$SO_LIB_DIR/session-outcomes.sh"
+  mkdir -p "$BATS_TEST_TMPDIR/conf"
+  printf 'NAME=session-outcomes\nSO_FORGEJO_HOSTS="a.test b.test"\n' > "$BATS_TEST_TMPDIR/conf/session-outcomes.conf"
+  export AGENTCTL_CONF_DIR="$BATS_TEST_TMPDIR/conf"
+  unset SO_FORGEJO_HOSTS
+  assert_equal "$(so_forgejo_hosts)" "a.test b.test"
+  assert_equal "$(SO_FORGEJO_HOSTS='' so_forgejo_hosts)" ""
+  assert_equal "$(SO_FORGEJO_HOSTS=c.test so_forgejo_hosts)" c.test
+  assert_equal "$(AGENTCTL_CONF_DIR="$BATS_TEST_TMPDIR/none" so_forgejo_hosts)" ""
+}
+
 # One API message split across two records, a commit message that names a
 # test command, a test run, a CI poll, an edit, then a message spent after it, ending on a
 # write to its own notes, which does not reset the count.
@@ -862,6 +986,18 @@ EOF
   assert_equal "$(r '[.prs[].number] | join(" ")')" 10
   assert_equal "$(r '.prs_merged')" 1
   assert_equal "$(r '.models | join(" ")')" claude-sonnet-5
+}
+
+@test "an opencode session's Forgejo PR: a POST to the pulls API that printed its html_url is claimed" {
+  oc_db
+  fj_setup
+  local fj
+  fj=$(jq -cn '{content: [{type: "tool", name: "bash", state: {status: "completed", input: {command: "curl -X POST -d @pr.json https://git.example.test/api/v1/repos/o/audio/pulls"}, content: [{type: "text", text: "https://git.example.test/o/audio/pulls/12"}]}}]}')
+  sqlite3 "$SO_OPENCODE_DB" "INSERT INTO session_message VALUES ('ses_root', 'assistant', '$fj');"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | [.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" \
+    "o/r#10 MERGED,git.example.test/o/audio#12 MERGED"
 }
 
 @test "an opencode session is observed once, and turns final like any other" {
