@@ -1662,8 +1662,8 @@ cmd_ledger() {
   local counts
   case "${1:-}" in
     --launches) shift; headless_launches "$@"; return 0 ;;
+    --check) ledger_check "$(ledger_roster)"; return ;;
   esac
-  [ "${1:-}" = --check ] && { ledger_check "$(ledger_roster)"; return; }
   counts=$(ledger_counts)
   case "${1:-}" in
     --json) jq -Rn '[inputs | split("=") | {key: .[0], value: (.[1] | tonumber? // .)}] | from_entries' <<<"$counts" ;;
