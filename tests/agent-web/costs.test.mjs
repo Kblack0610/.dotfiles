@@ -15,7 +15,8 @@ const el = () => new Proxy({}, {
 });
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const box = Object.assign(part(), { addEventListener: (ev, f) => { on[ev] = f; } });
+const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
+const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 const doc = { getElementById: (id) => (id === "costs" ? box : el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let body = {};
@@ -66,7 +67,7 @@ const board = (o = {}) => ({
   table: { q: "", state: "", sort: "cost", dir: "asc", total: 2, shown: 2, states: [], columns: LINE_COLS.map((k) => (k === "cost" ? col(k, "asc", ["", "desc"]) : col(k))), facets: [{ key: "harness", on: null, clear: "", values: [{ value: "codex", n: 1, q: "harness:codex" }] }] },
   grafana: "https://grafana.example/d/kb-agents-overview", burn: burn(), ...o,
 });
-const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("renderCosts()"); return box.innerHTML; };
+const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("cost.render()"); return box.innerHTML; };
 const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) || (sel === "[data-ssort]" && "ssort" in attrs) ? { dataset: attrs } : null });
 
 test("the model cut draws the server's columns, order and sort, with its evaluation", () => {
@@ -133,18 +134,18 @@ test("a click becomes the view keys in the URL and the request", async () => {
   asked = [];
   body = board();
   run("st.tab = 'costs'; st.views.costs = 'q=harness%3Acodex&sort=cost&dir=asc'");
-  on.click({ type: "click", target: target({ cv: "w", cval: "24h" }) });
+  fire("click", { type: "click", target: target({ cv: "w", cval: "24h" }) });
   await tick();
   assert.equal(ctx.history.url, "#costs?q=harness%3Acodex&sort=cost&dir=asc&w=24h", "a window keeps the query and sort");
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&dir=asc&w=24h");
-  on.click({ type: "click", target: target({ cv: "by", cval: "runner" }) });
+  fire("click", { type: "click", target: target({ cv: "by", cval: "runner" }) });
   await tick();
   assert.equal(ctx.history.url, "#costs?q=harness%3Acodex&w=24h&by=runner", "a new cut drops the old cut's sort");
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&by=runner&w=24h");
-  on.click({ type: "click", target: target({ tsort: "cost", tdir: "asc" }) });
+  fire("click", { type: "click", target: target({ tsort: "cost", tdir: "asc" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&dir=asc&by=runner&w=24h");
-  on.input({ type: "input", target: { ...target({ tsearch: "" }), value: "-model:opus" } });
+  fire("input", { type: "input", target: { ...target({ tsearch: "" }), value: "-model:opus" } });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=-model%3Aopus&sort=cost&dir=asc&by=runner&w=24h");
 });
@@ -152,7 +153,7 @@ test("a click becomes the view keys in the URL and the request", async () => {
 test("a failed read says why instead of drawing an empty table", () => {
   run("st.tab = 'costs'");
   Object.assign(cost, { data: null, err: "502 bad gateway" });
-  run("renderCosts()");
+  run("cost.render()");
   assert.match(box.innerHTML, /<div class="empty">502 bad gateway<\/div>/);
 });
 
@@ -224,13 +225,13 @@ test("a header click sorts the Sections block both ways without touching the mai
   asked = [];
   body = board({ sections: sections() });
   run("st.tab = 'costs'; st.views.costs = 'q=harness%3Acodex&sort=cost'");
-  on.click({ type: "click", target: target({ ssort: "gate_h", sdir: "desc" }) });
+  fire("click", { type: "click", target: target({ ssort: "gate_h", sdir: "desc" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&ssort=gate_h");
-  on.click({ type: "click", target: target({ ssort: "gate_h", sdir: "asc" }) });
+  fire("click", { type: "click", target: target({ ssort: "gate_h", sdir: "asc" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&ssort=gate_h&sdir=asc");
-  on.click({ type: "click", target: target({ ssort: "", sdir: "desc" }) });
+  fire("click", { type: "click", target: target({ ssort: "", sdir: "desc" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost", "the third click is the default order");
 });
@@ -246,10 +247,10 @@ test("a Sections fold the reader opened stays open through the repaint a sort cl
   const d = board({ sections: sections() });
   assert.doesNotMatch(show(d), /id="sec-sections" open/, "starts folded");
   box.querySelectorAll = () => [{ dataset: { k: "sections" }, open: true }];
-  run("renderCosts()");
+  run("cost.render()");
   assert.match(box.innerHTML, /id="sec-sections" open/, "the reader's open survives the repaint");
   box.querySelectorAll = () => [{ dataset: { k: "sections" }, open: false }];
-  run("renderCosts()");
+  run("cost.render()");
   assert.doesNotMatch(box.innerHTML, /id="sec-sections" open/, "and so does a fold they closed");
   box.querySelectorAll = () => [];
 });
@@ -339,7 +340,7 @@ test("the window switch picks yesterday, and a partial window says so", () => {
   tail(tokens());
   f.data = board({ tokens: tokens({ day: { ...tokenSplit(3900000000), days: 1, partial: 1 } }) });
   run("st.tab = 'costs'");
-  on.click({ target: { closest: (sel) => (sel === "[data-tokwin]" ? { dataset: { tokwin: "day" } } : null) } });
+  fire("click", { target: { closest: (sel) => (sel === "[data-tokwin]" ? { dataset: { tokwin: "day" } } : null) } });
   assert.equal(f.tokWin, "day");
   const h = ctx.tokensSection(f.data);
   assert.match(box.innerHTML, /yesterday: 3\.9B context/, "the click repainted the tab");

@@ -223,7 +223,7 @@ test("a refresh repaints around the search box in use and leaves it alone", () =
   doc.activeElement = undefined;
   assert.equal(again, first, "the board with the box in it is not repainted");
   assert.match(parts["home-need-body"].innerHTML, /Second/);
-  assert.match(parts["home-nhead"].innerHTML, /Needs you/);
+  assert.match(parts["home-need-head"].innerHTML, /Needs you/);
   assert.equal(typeof parts["home-need-chips"].innerHTML, "string");
 });
 

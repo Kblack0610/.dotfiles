@@ -16,14 +16,31 @@ const Q_MODE = { oneshot: "Run to PR", plan: "Plan first" };
 // Re-renders come with every event, so the page keeps what the human opened. Candidates start shut.
 // items: the rows the view keeps; table: hub-core's controls for them; aliases: old section id ->
 // state chip; needs: every item waiting on the human, whatever the view; sel: the opened row.
-const qst = {
-  items: null, table: null, aliases: {}, needs: 0, openRows: 0, all: false, sel: "",
-  err: null, stats: null, projects: [], busy: false, msg: "", draft: null,
-  cands: null, candErr: null, candMsg: "", promoting: null,
-  // The Candidates filter: a reason chip ("" is every row) and the search words.
-  candReason: "", candQ: "", candAutoOpened: false,
-  open: { "sec:candidates": false },
-};
+// The read is the tab's own (refreshQueue): it also follows old section links and reads the stats.
+const qst = tblTab({
+  tab: "queue", id: "qt", el: "q-list", on: "queue", refresh: () => refreshQueue(), table: (t) => t.table,
+  hint: "search, or project:dotfiles kind:fix -acct:k1",
+  state: {
+    items: null, table: null, aliases: {}, needs: 0, openRows: 0, all: false, sel: "",
+    stats: null, projects: [], busy: false, msg: "", draft: null,
+    cands: null, candErr: null, candMsg: "", promoting: null,
+    // The Candidates filter: a reason chip ("" is every row) and the search words.
+    candReason: "", candQ: "", candAutoOpened: false,
+    open: { "sec:candidates": false },
+  },
+  head: (t) => (t.err ? `<div class="panel down">${esc(t.err)}</div>` : "") + qFlow() + qTableHead(),
+  body: () => qBody(), tail: () => qDetail() + qCandidates(),
+  reset: (t) => { t.all = false; },
+  draw: (html) => {
+    const y = $("queue").scrollTop;
+    // A redraw keeps the Candidates search box focused, its caret where it was.
+    const typing = document.activeElement && document.activeElement.id === "qc-q" ? document.activeElement.selectionStart : null;
+    $("q-list").innerHTML = html;
+    $("queue").scrollTop = y;
+    if (typing != null && $("qc-q")) { $("qc-q").focus(); $("qc-q").setSelectionRange(typing, typing); }
+    seekSection();
+  },
+});
 
 // The candidates read every board, so they are read on showing the tab and after a promote,
 // never on a queue event.
@@ -34,7 +51,7 @@ const refreshCands = coalesce(async () => {
     qst.candAutoOpened = true;
     qst.open["sec:candidates"] = true;
   }
-  if (st.tab === "queue") renderQueueList();
+  if (st.tab === "queue") qst.render();
 });
 
 // The flow strip (flow.js) above the table: /api/flow is hub-core's `flow::Strip` over the live
@@ -43,7 +60,7 @@ const refreshCands = coalesce(async () => {
 const qfl = { data: null, err: null };
 const refreshFlow = coalesce(async () => {
   try { qfl.data = await api("/api/flow"); qfl.err = null; } catch (e) { qfl.err = e.message; }
-  if (st.tab === "queue") renderQueueList();
+  if (st.tab === "queue") qst.render();
 });
 const pollFlow = poll("queue", refreshFlow, FLOW_REFRESH_MS);
 
@@ -230,50 +247,15 @@ function renderQueue() {
   // Re-rendering must not eat what the human is typing.
   if (document.activeElement && document.activeElement.closest(".qadd") && $("q-msg")) {
     $("q-msg").textContent = qst.msg;
-    renderQueueList();
+    qst.render();
     return;
   }
   el.innerHTML = qCompose() + `<div id="q-list"></div>`;
-  renderQueueList();
-}
-
-function renderQueueList() {
-  const el = $("q-list");
-  if (!el) return;
-  drawQueueList(el);
-}
-
-function drawQueueList(el) {
-  if (!qst.table) { el.innerHTML = `<div class="empty">${qst.err ? esc(qst.err) : "Loading..."}</div>`; return; }
-  // A refresh must not take the search box from under the human: with focus in the bar only what
-  // is around it repaints.
-  if (tblRepaint("qt", qst.table, qBody)) {
-    paint($("qt-head"), qTableHead());
-    paint($("qt-detail"), qDetail());
-    paint($("q-flow"), qFlow());
-    return;
-  }
-  const y = $("queue").scrollTop;
-  // A redraw keeps the Candidates search box focused, its caret where it was.
-  const typing = document.activeElement && document.activeElement.id === "qc-q" ? document.activeElement.selectionStart : null;
-  el.innerHTML = (qst.err ? `<div class="panel down">${esc(qst.err)}</div>` : "") +
-    `<div id="q-flow">${qFlow()}</div><div id="qt-head">${qTableHead()}</div>` +
-    tblBar("qt", qst.table, "search, or project:dotfiles kind:fix -acct:k1") +
-    `<div id="qt-body">${qBody()}</div><div id="qt-detail">${qDetail()}</div>` + qCandidates();
-  $("queue").scrollTop = y;
-  if (typing != null && $("qc-q")) { $("qc-q").focus(); $("qc-q").setSelectionRange(typing, typing); }
-  seekSection();
+  qst.render();
 }
 
 const qFlow = () => `<h2 class="sec" id="sec-flow">Flow</h2>${qStrip()}${qFlowTail()}`;
 const qTableHead = () => `<h2 class="sec" id="sec-table">Queue <span class="muted">${qst.table.shown} of ${qst.table.total}</span></h2>`;
-
-// The view changed: the URL follows it and the server applies it.
-function qView(patch) {
-  setQuery(tblSet(st.views.queue, patch));
-  qst.all = false;
-  refreshQueue();
-}
 
 // Every row the page has, in rank order: the first ones, then the rows kept per reason chip.
 const qCandAll = () => (qst.cands ? qst.cands.rows.concat(qst.cands.blocked_rows || []) : []);
@@ -343,7 +325,7 @@ async function qPromote(i) {
   const c = qCandAll()[i];
   if (!c || qst.promoting) return;
   qst.promoting = c.key; qst.candMsg = "";
-  renderQueueList();
+  qst.render();
   try {
     // The board's Start: fleet-dispatch promote, as board.js and the hub TUI's p run it.
     const r = await post("/api/board", { verb: "start", profile: c.profile, project: c.project, lane: c.lane, raw: c.text });
@@ -352,7 +334,7 @@ async function qPromote(i) {
     qst.candMsg = e.message;
   }
   qst.promoting = null;
-  renderQueueList();
+  qst.render();
   refreshQueue();
   refreshCands();
 }
@@ -397,11 +379,9 @@ $("queue").addEventListener("click", (e) => {
   if (t.id === "q-add") { qAdd(); return; }
   if (t.closest("[data-home]")) { e.preventDefault(); setTab("home"); return; }
   if (t.dataset.promote) { qPromote(Number(t.dataset.promote)); return; }
-  if (t.dataset.qall) { qst.all = true; renderQueueList(); return; }
-  if (t.dataset.qclose) { qst.sel = ""; renderQueueList(); return; }
-  const v = tblPatch(e);
-  if (v) { qView(v); return; }
-  if (t.dataset.creason != null) { qst.candReason = t.dataset.creason; renderQueueList(); return; }
+  if (t.dataset.qall) { qst.all = true; qst.render(); return; }
+  if (t.dataset.qclose) { qst.sel = ""; qst.render(); return; }
+  if (t.dataset.creason != null) { qst.candReason = t.dataset.creason; qst.render(); return; }
   if (t.dataset.open) {
     const a = qAgent((qst.items || []).find((i) => i.slug === t.dataset.open) || {});
     if (a) openAgent(a);
@@ -420,10 +400,9 @@ $("queue").addEventListener("click", (e) => {
   const row = t.closest("tr.qr");
   if (row && !t.closest("a")) {
     qst.sel = qst.sel === row.dataset.slug ? "" : row.dataset.slug;
-    renderQueueList();
+    qst.render();
   }
 });
-tblListen($("queue"), qView);
 $("queue").addEventListener("change", (e) => {
   const t = e.target;
   if (t.dataset.bump) { qAct("/api/queue/bump", { slug: t.dataset.bump, priority: t.value }); return; }

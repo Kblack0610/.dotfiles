@@ -10,25 +10,18 @@
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
 // fold: the lead rows the human closed, kept across refreshes; said: the answer judge's filter on Log.
-const fst = { data: null, err: null, fold: new Set(), said: "all" };
+// A read also answers Log's verdicts and the open runner page.
+const fst = tblTab({
+  tab: "fleet", id: "fleet", el: "fleet", api: "/api/fleet", hint: "search, or kind:session state:failed project:dotfiles -who:shepherd",
+  state: { fold: new Set(), said: "all" }, shown: () => st.tab === "fleet" && !st.arg,
+  params: (p, t) => { if (t.fold.size) p.set("fold", [...t.fold].join(",")); },
+  head: (t) => fleetHead(t.data), body: (t) => fleetBody(t.data),
+  after: () => { if (st.tab === "log") renderLogVerdicts(); else if (st.tab === "fleet" && st.arg) renderFleet(); },
+});
 
 // The open runner page: whose, what it read, and the run whose log is shown.
 const rst = { name: "", data: null, err: null, log: null, sel: "" };
 const runnerHref = (name) => "#fleet/" + encodeURIComponent(name);
-
-// The view keys of the URL plus the closed rows, as the API's query.
-function fleetParams() {
-  const p = tblParams(st.views.fleet);
-  if (fst.fold.size) p.set("fold", [...fst.fold].join(","));
-  const q = p.toString();
-  return q ? "?" + q : "";
-}
-
-const refreshFleet = coalesce(async () => {
-  try { fst.data = await api("/api/fleet" + fleetParams()); fst.err = null; } catch (e) { fst.err = e.message; }
-  if (st.tab === "fleet") renderFleet();
-  if (st.tab === "log") renderLogVerdicts();
-});
 
 const refreshRunner = coalesce(async () => {
   const name = st.arg;
@@ -39,7 +32,7 @@ const refreshRunner = coalesce(async () => {
 
 // The rows re-read on their own events (onEvent); the open tab also re-reads on Infra's cadence,
 // so the ages and a runner page's status move with no event.
-const pollFleet = poll("fleet", () => (st.arg ? refreshRunner() : refreshFleet()), INFRA_REFRESH_MS);
+const pollFleet = poll("fleet", () => (st.arg ? refreshRunner() : fst.refresh()), INFRA_REFRESH_MS);
 
 const cut = (s, n = FLEET_CLIP) => (s.length > n ? `<span title="${esc(s)}">${esc(s.slice(0, n - 2))}..</span>` : esc(s));
 
@@ -152,28 +145,7 @@ function judgeList(j) {
 }
 
 function renderFleet() {
-  const el = $("fleet");
-  if (st.arg) { renderRunner(el); return; }
-  const d = fst.data;
-  if (!d || !d.table) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading..."}</div>`; return; }
-  // A refresh must not take the search box or an open dropdown from under the human, so
-  // everything around the control in use repaints and it stays.
-  const f = document.activeElement;
-  if (f?.id === "fleet-q" || f?.dataset?.tq !== undefined) {
-    paint($("fleet-head"), fleetHead(d));
-    if (f.id === "fleet-q") paint($("fleet-facets"), tblFacets(d.table));
-    paint($("fleet-chips"), tblChips(d.table));
-    paint($("fleet-body"), fleetBody(d));
-    return;
-  }
-  paint(el, `<div id="fleet-head">${fleetHead(d)}</div>${tblBar("fleet", d.table, "search, or kind:session state:failed project:dotfiles -who:shepherd")}` +
-    `<div id="fleet-body">${fleetBody(d)}</div>`);
-}
-
-// The view changed: the URL follows it and the server applies it.
-function fleetView(patch) {
-  setQuery(tblSet(st.views.fleet, patch));
-  refreshFleet();
+  if (st.arg) renderRunner($("fleet")); else fst.render();
 }
 
 // One run's log on the runner page, through Infra's reader and the run's byte range.
@@ -292,17 +264,13 @@ $("fleet").addEventListener("click", (e) => {
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
   const fold = t.closest("[data-fold]");
-  if (fold) { const k = fold.dataset.fold; if (!fst.fold.delete(k)) fst.fold.add(k); refreshFleet(); return; }
-  const v = tblPatch(e);
-  if (v) { fleetView(v); return; }
+  if (fold) { const k = fold.dataset.fold; if (!fst.fold.delete(k)) fst.fold.add(k); fst.refresh(); return; }
   if (t.closest("a, button, select, input")) return;
   const row = t.closest("tr.wr");
   if (row) location.hash = row.dataset.href;
 });
-// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
-for (const ev of ["input", "change"]) $("fleet").addEventListener(ev, (e) => { const v = tblPatch(e); if (!v) return; if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.(); fleetView(v); });
 
-const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], refreshFleet);
+const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], fst.refresh);
 LOG_PARTS.push({ show() { renderLogVerdicts(); logFleetFeed.show(!fst.data); }, onEvent: logFleetFeed.onEvent });
 TABS.fleet = {
   show() {
@@ -311,6 +279,6 @@ TABS.fleet = {
     pollFleet();
   },
   onEvent(ev) {
-    if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "sessions" || ev.kind === "resync")) (st.arg ? refreshRunner() : refreshFleet());
+    if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "sessions" || ev.kind === "resync")) (st.arg ? refreshRunner() : fst.refresh());
   },
 };

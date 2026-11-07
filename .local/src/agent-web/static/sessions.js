@@ -7,23 +7,24 @@
 
 // A day's ended sessions on a busy day run to hundreds, so the table stops here until asked.
 const SESSIONS_OPEN = 200;
-const sst = { data: null, err: null, cap: null, capErr: null, all: false, confirm: null };
+const sst = tblTab({
+  tab: "sessions", id: "sessions", el: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
+  wait: "Loading the sessions.", state: { cap: null, capErr: null, all: false, confirm: null },
+  shown: () => !st.sel && st.tab === "sessions", got: (t) => setBuckets(t.data.buckets), open: () => wst.open,
+  head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
+  reset: (t) => { t.all = false; },
+});
 
 const SESSION_COLS = { bucket: ["bucket"], project: ["project"], task: ["task"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"] };
 
-const refreshTable = coalesce(async () => {
-  const q = tblParams(st.views.sessions).toString();
-  try { sst.data = await api("/api/sessions/table" + (q ? "?" + q : "")); setBuckets(sst.data.buckets); sst.err = null; } catch (e) { sst.err = e.message; }
-  renderOverview();
-});
 const refreshCapacity = coalesce(async () => {
   try { sst.cap = await api("/api/sessions/capacity"); sst.capErr = null; } catch (e) { sst.capErr = e.message; }
-  renderOverview();
+  sst.render();
 });
 // The table's sources move only with what is on screen, so a session open reads only its page.
 function refreshSessions() {
   if (st.sel) { if (st.view === "page") loadPage(); return; }
-  refreshTable();
+  sst.refresh();
   refreshCapacity();
 }
 
@@ -78,36 +79,8 @@ function sessionsBody(d) {
   const more = shown.length - rows.length;
   return shown.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, SESSION_COLS)}${rows.map(sessionRow).join("")}</table>` +
-      (more ? `<button class="btn sm" data-all="1">+${more} older</button>` : "") + `</div>`
+      tblMore(more) + `</div>`
     : `<div class="panel">${t.total ? "No sessions match." : "No sessions, live or ended today."}</div>`;
-}
-
-function renderOverview() {
-  if (st.sel || st.tab !== "sessions") return;
-  const el = $("scroll"), d = sst.data;
-  if (!d || !d.table) {
-    const why = sst.err || (d?.errors || [])[0];
-    el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading the sessions."}</div>`;
-    return;
-  }
-  // A refresh must not take the search box from under the human, so everything around it repaints and it stays.
-  if (document.activeElement?.id === "sessions-q") {
-    paint($("sessions-head"), sessionsHead());
-    paint($("sessions-facets"), tblFacets(d.table));
-    paint($("sessions-chips"), tblChips(d.table));
-    paint($("sessions-body"), sessionsBody(d));
-    paint($("sessions-folds"), overviewFolds(), wst.open);
-    return;
-  }
-  paint(el, `<div id="sessions-head">${sessionsHead()}</div>${tblBar("sessions", d.table, "search, or project:dotfiles pr:open item:none")}` +
-    `<div id="sessions-body">${sessionsBody(d)}</div><div id="sessions-folds">${overviewFolds()}</div>`, wst.open);
-}
-
-// The view changed: the URL follows it and the server applies it.
-function sessionsView(patch) {
-  setQuery(tblSet(st.views.sessions, patch));
-  sst.all = false;
-  refreshTable();
 }
 
 async function startTimer(name) {
@@ -181,25 +154,17 @@ const loadPage = coalesce(async () => {
 $("scroll").addEventListener("click", (e) => {
   const d = e.target.dataset || {};
   if (st.sel) { if (d.transcript !== undefined) setView("transcript"); return; }
-  const patch = tblPatch(e);
-  if (patch) sessionsView(patch);
-  else if (d.start) { sst.confirm = d.start; renderOverview(); }
-  else if (d.keep !== undefined) { sst.confirm = null; renderOverview(); }
+  if (d.start) { sst.confirm = d.start; sst.render(); }
+  else if (d.keep !== undefined) { sst.confirm = null; sst.render(); }
   else if (d.go) startTimer(d.go);
-  else if (d.unlinked !== undefined) sessionsView({ q: "item:none", s: "" });
-  else if (d.all) { sst.all = true; renderOverview(); }
+  else if (d.unlinked !== undefined) sst.view({ q: "item:none", s: "" });
+  else if (d.all) { sst.all = true; sst.render(); }
   else {
     const tr = e.target.closest("tr[data-key]");
     const r = tr && sst.data && sst.data.rows.find((x) => x.key === tr.dataset.key);
     if (r) sessionClick(r);
   }
 });
-for (const kind of ["input", "change"]) {
-  $("scroll").addEventListener(kind, (e) => {
-    const patch = !st.sel && tblPatch(e);
-    if (patch) sessionsView(patch);
-  });
-}
 
 // fleet-state writes every minute and the shepherd on each pass; only the open tab reads them.
 const watchFeed = pushed("sessions", ["watch"], refreshWatch);

@@ -35,13 +35,12 @@ pub fn shown<'a>(f: &'a Fleet, t: &DataTable, folded: &HashSet<String>) -> Vec<&
     who::unfolded(t.view.apply(&f.who), folded, &t.view)
 }
 
-/// The Fleet page: the table of who is working.
-/// `sel` is the row j/k picked, drawn reversed: Enter opens it.
+/// The Fleet page: the table of who is working, the row j/k picked (`t.sel`) drawn reversed:
+/// Enter opens it.
 pub fn page(
     f: &Fleet,
     t: &DataTable,
     folded: &HashSet<String>,
-    sel: usize,
     p: Palette,
     now: i64,
     w: usize,
@@ -68,16 +67,7 @@ pub fn page(
         out.push(clip_line(Line::styled(l, p.dim()), w));
     }
     out.extend(wrap_spans(t.status(&f.who, p), w));
-    out.extend(who_table(
-        &rows,
-        t,
-        folded,
-        sel,
-        p,
-        now,
-        w,
-        f.who.is_empty(),
-    ));
+    out.extend(who_table(&rows, t, folded, p, now, w, f.who.is_empty()));
     out
 }
 
@@ -111,12 +101,10 @@ const WHO_HEADER: [&str; 8] = [
     "KIND", "WHO", "STATE", "SINCE", "FOR", "DOING", "UNDER", "PROJECT",
 ];
 
-#[allow(clippy::too_many_arguments)]
 fn who_table(
     rows: &[&Who],
     t: &DataTable,
     folded: &HashSet<String>,
-    sel: usize,
     p: Palette,
     now: i64,
     w: usize,
@@ -178,7 +166,8 @@ fn who_table(
         ..Default::default()
     }
     .fit(w, p.head());
-    if let Some(l) = out.get_mut(sel.min(rows.len() - 1) + 1) {
+    // A re-read or a fold can leave fewer rows than the selection until the next key.
+    if let Some(l) = out.get_mut(t.sel.min(rows.len() - 1) + 1) {
         l.style = p.sel();
     }
     out
@@ -1065,14 +1054,8 @@ pub mod tests {
         }
     }
 
-    fn lines(
-        f: &Fleet,
-        t: &DataTable,
-        folded: &HashSet<String>,
-        sel: usize,
-        w: usize,
-    ) -> Vec<String> {
-        page(f, t, folded, sel, Palette { no_color: true }, NOW, w)
+    fn lines(f: &Fleet, t: &DataTable, folded: &HashSet<String>, w: usize) -> Vec<String> {
+        page(f, t, folded, Palette { no_color: true }, NOW, w)
             .iter()
             .map(plain)
             .collect()
@@ -1081,7 +1064,7 @@ pub mod tests {
     /// The Fleet page, then Log's verdicts section drawn from the same read.
     fn text(f: &Fleet, w: usize) -> String {
         let p = Palette { no_color: true };
-        lines(f, &DataTable::default(), &HashSet::new(), usize::MAX, w)
+        lines(f, &DataTable::default(), &HashSet::new(), w)
             .into_iter()
             .chain(verdicts(f, "all", p, NOW, w).iter().map(plain))
             .collect::<Vec<_>>()
@@ -1132,7 +1115,7 @@ pub mod tests {
         let mut q = DataTable::default();
         q.view.q = "agent".into();
         assert_eq!(names(&q), ["dotfiles-agent-11"], "a hit is never hidden");
-        let rows = lines(&f, &t, &folded, 0, 160);
+        let rows = lines(&f, &t, &folded, 160);
         assert!(
             rows.iter()
                 .any(|l| l.contains("> lead") && l.contains("dream")),
@@ -1149,7 +1132,7 @@ pub mod tests {
         let p = Palette::default();
         let mut f = fixture();
         f.who[1] = who_row(2, "ask-judge", "ask-judge", Opens::Runner, "held", 0, None);
-        let out = page(&f, &DataTable::default(), &HashSet::new(), 0, p, NOW, 160);
+        let out = page(&f, &DataTable::default(), &HashSet::new(), p, NOW, 160);
         let span = |word: &str| {
             out.iter()
                 .flat_map(|l| l.spans.iter())
@@ -1165,7 +1148,11 @@ pub mod tests {
     fn the_selected_row_is_the_reversed_one() {
         let p = Palette { no_color: true };
         let f = fixture();
-        let out = page(&f, &DataTable::default(), &HashSet::new(), 1, p, NOW, 160);
+        let t = DataTable {
+            sel: 1,
+            ..Default::default()
+        };
+        let out = page(&f, &t, &HashSet::new(), p, NOW, 160);
         let at = out
             .iter()
             .position(|l| plain(l).contains("idle-one"))
@@ -1176,7 +1163,7 @@ pub mod tests {
 
     #[test]
     fn a_narrow_fleet_page_fits() {
-        for l in lines(&fixture(), &DataTable::default(), &HashSet::new(), 0, 40) {
+        for l in lines(&fixture(), &DataTable::default(), &HashSet::new(), 40) {
             assert!(l.chars().count() <= 40, "{l:?}");
         }
     }
@@ -1185,7 +1172,7 @@ pub mod tests {
     fn a_search_that_keeps_nothing_says_so() {
         let mut t = DataTable::default();
         t.view.q = "nothing-matches".into();
-        let l = lines(&fixture(), &t, &HashSet::new(), 0, 160);
+        let l = lines(&fixture(), &t, &HashSet::new(), 160);
         assert!(
             l.iter().any(|l| l.contains("No runner or session matches")),
             "{l:#?}"

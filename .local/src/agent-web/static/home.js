@@ -34,6 +34,17 @@ let homeSeq = 0;
 // URL and in /api/home; Proposals came first and keeps the plain ones, so links to it stay valid.
 const NEED_PRE = "n";
 
+// Both tables are drawn by drawHome from the one Home read; these keep their views and their
+// repaints around a search or dropdown in use. A search in Proposals reads only that section.
+const needT = tblTab({
+  tab: "home", id: "home-need", el: "home", pre: NEED_PRE, refresh: () => refreshHome(), table: () => hst.data?.table,
+  head: () => needsHead(hst.data.table), body: () => needsBody(hst.data), reset: () => { hst.all = false; },
+});
+const propT = tblTab({
+  tab: "home", id: "home-prop", el: "home", refresh: () => refreshProposals(), table: () => hst.data?.proposals_table,
+  body: () => propBody(hst.data), reset: () => { hst.prop.all = false; },
+});
+
 const refreshHome = coalesce(async () => {
   const view = new URLSearchParams([...tblParams(st.views.home), ...tblParams(st.views.home, NEED_PRE)]).toString();
   const seq = ++homeSeq;
@@ -237,7 +248,7 @@ function drawHome() {
   const nums = h.numbers.map((n) => `<span><b>${esc(n.label)}</b> ${esc(n.value)}</span>`).join(", ");
   const t = h.table;
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
-  const needs = `<div data-tbl="${NEED_PRE}"><div id="home-nhead">${needsHead(t)}</div>${bar}<div id="home-need-body">${needsBody(h)}</div></div>`;
+  const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${needsBody(h)}</div></div>`;
   // The flow strip and the two summary lines lead, so a long Needs list never buries them.
   paint(el, errs + sec("Flow", null, flowHtml(h.flow, h.grafana)) + sec("Numbers", null, `<div class="cline hnum">${nums}</div>`) +
     sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + needs + nightSection() + propSection(h) + running, askst.open);
@@ -246,29 +257,10 @@ function drawHome() {
 // or dropdown in use, around which only that table's rows and chips repaint.
 // The table without focus repaints whole, so a search in one never leaves the other stale.
 const renderHome = () => {
-  const h = hst.data;
-  const need = () => { paint($("home-nhead"), needsHead(h.table)); tblRedraw("home-need", h.table, () => needsBody(h)); };
-  const prop = () => tblRedraw("home-prop", h.proposals_table, () => propBody(h));
-  if (h?.proposals_table.total && $("home-prop-body") && tblRepaint("home-prop", h.proposals_table, () => propBody(h))) { if ($("home-need-body")) need(); return; }
-  if (h && $("home-need-body") && tblRepaint("home-need", h.table, () => needsBody(h))) { paint($("home-nhead"), needsHead(h.table)); if ($("home-prop-body")) prop(); return; }
+  if (propT.repaint()) { if ($("home-need-body")) needT.redraw(); return; }
+  if (needT.repaint()) { if ($("home-prop-body")) propT.redraw(); return; }
   keepTyping("#home .card", drawHome);
 };
-
-// The view changed: the URL follows it and the server applies it.
-function propView(patch) {
-  setQuery(tblSet(st.views.home, patch));
-  hst.prop.all = false;
-  refreshProposals();
-}
-
-function needView(patch) {
-  setQuery(tblSet(st.views.home, patch, NEED_PRE));
-  hst.all = false;
-  refreshHome();
-}
-
-// Both tables sit under #home: each bar's and header's events go to the view of the table they are in.
-const homeView = (v, e) => (tblOf(e) === NEED_PRE ? needView : propView)(v);
 
 $("home").addEventListener("click", (e) => {
   if (e.target.closest("summary")) return;
@@ -277,8 +269,6 @@ $("home").addEventListener("click", (e) => {
   if (t.dataset.accept) { propDecide("accept", t.dataset.accept); return; }
   if (t.dataset.reject) { propDecide("reject", t.dataset.reject); return; }
   if (t.dataset.propall) { hst.prop.all = true; renderHome(); return; }
-  const v = tblPatch(e);
-  if (v) { homeView(v, e); return; }
   const prow = t.closest("tr.prop");
   if (prow && !t.closest("a")) {
     hst.prop.open = hst.prop.open === prow.dataset.prop ? null : prow.dataset.prop;
@@ -300,7 +290,6 @@ $("home").addEventListener("click", (e) => {
   if (!hst.open.delete(row.dataset.need)) hst.open.add(row.dataset.need);
   renderHome();
 });
-tblListen($("home"), homeView);
 $("home").addEventListener("keydown", answerOnEnter);
 $("home").addEventListener("toggle", (e) => {
   askTrace(e, renderHome);

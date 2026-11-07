@@ -38,35 +38,6 @@ const chipBtn = (on, attr, val, label, n) =>
 // The state chips with their counts; the first keeps every row.
 const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
 
-// A refresh must not take the search box or an open dropdown from under the human: with focus
-// in the bar only what is around the control repaints. False when focus is elsewhere.
-function tblRepaint(id, t, body) {
-  const f = document.activeElement;
-  if (f?.id !== id + "-q" && (f?.dataset?.tq === undefined || !f.closest?.(`#${id}-facets`))) return false;
-  if (f.id === id + "-q") paint($(id + "-facets"), tblFacets(t));
-  paint($(id + "-chips"), tblChips(t));
-  paint($(id + "-body"), body());
-  return true;
-}
-
-// The same parts repainted with focus elsewhere: the dropdowns too, with their new counts.
-function tblRedraw(id, t, body) {
-  if ($(id + "-facets")) paint($(id + "-facets"), tblFacets(t));
-  if ($(id + "-chips")) paint($(id + "-chips"), tblChips(t));
-  paint($(id + "-body"), body());
-}
-
-// A picked dropdown lets go of focus, so the answer redraws it with the new counts. `onView`
-// gets the event too, for a tab with two tables (tblOf).
-function tblListen(el, onView) {
-  for (const ev of ["input", "change"]) el.addEventListener(ev, (e) => {
-    const v = tblPatch(e);
-    if (!v) return;
-    if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
-    onView(v, e);
-  });
-}
-
 // The search box, the dropdowns and the chips. `id` names the parts a repaint while the search
 // box has focus replaces around it: `<id>-facets` and `<id>-chips`.
 function tblBar(id, t, hint) {
@@ -101,4 +72,84 @@ function tblPatch(e) {
   const chip = t.closest("[data-ts]");
   if (chip) return { s: chip.dataset.ts };
   return null;
+}
+
+// One table of a tab on the shared table, the skeleton every such tab draws with. `o` names:
+//   tab    the tab whose URL query (st.views[tab]) holds the view; it is drawn only while open
+//   id     the parts' prefix: `<id>-head`, the bar's `<id>-q`, `-facets` and `-chips`, `<id>-body`, `<id>-tail`
+//   el     the id of the element it draws into, and `on` the one its listener sits on (el)
+//   pre    the view keys' prefix (tblParams), for a tab's second table; its block carries data-tbl
+//   api    the path read with the view keys, plus what params(p, t) adds; with no api the tab reads
+//          itself and `refresh` is that read
+//   hint   the search box's placeholder; wait: what shows before the first read
+//   head, body, tail (t)  the html above the bar, the rows and below them; table(t): the summary
+//          (data.table); shown(): whether it is on screen (the tab is open)
+//   got(t) after a good read; after(t): after every read, once drawn; reset(t): on a view change
+//   open() the fold map paint keeps (ui.js); draw(html): the whole paint, when it is more than paint(el, html)
+//   state  the tab's own fields, kept beside data, err and sel on the object this returns, which
+//          also carries refresh(), render(), view(patch), repaint(), redraw() and html().
+function tblTab(o) {
+  const t = Object.assign({ data: null, err: null, sel: null }, o.state), id = o.id, pre = o.pre || "";
+  const shown = o.shown || (() => st.tab === o.tab);
+  const table = () => (o.table ? o.table(t) : t.data?.table);
+  const part = (k, f) => (f ? `<div id="${id}-${k}">${f(t)}</div>` : "");
+  const open = () => o.open && o.open();
+  const around = () => { if (o.head) paint($(id + "-head"), o.head(t), open()); if (o.tail) paint($(id + "-tail"), o.tail(t), open()); };
+  t.refresh = o.refresh || coalesce(async () => {
+    const p = tblParams(st.views[o.tab], pre);
+    if (o.params) o.params(p, t);
+    const q = p.toString();
+    try { t.data = await api(o.api + (q ? "?" + q : "")); t.err = null; if (o.got) o.got(t); } catch (e) { t.err = e.message; }
+    t.render();
+    if (o.after) o.after(t);
+  });
+  // A refresh must not take the search box or an open dropdown from under the human: with focus
+  // in the bar only what is around the control repaints. False when focus is elsewhere.
+  t.repaint = () => {
+    const v = table(), f = document.activeElement;
+    if (!v || !$(id + "-body")) return false;
+    if (f?.id !== id + "-q" && (f?.dataset?.tq === undefined || !f.closest?.(`#${id}-facets`))) return false;
+    if (f.id === id + "-q") paint($(id + "-facets"), tblFacets(v));
+    paint($(id + "-chips"), tblChips(v));
+    paint($(id + "-body"), o.body(t));
+    around();
+    return true;
+  };
+  // The same parts repainted with focus elsewhere: the dropdowns too, with their new counts.
+  t.redraw = () => {
+    const v = table();
+    if ($(id + "-facets")) paint($(id + "-facets"), tblFacets(v));
+    if ($(id + "-chips")) paint($(id + "-chips"), tblChips(v));
+    paint($(id + "-body"), o.body(t));
+    around();
+  };
+  t.html = () => part("head", o.head) + tblBar(id, table(), o.hint) + part("body", o.body) + part("tail", o.tail);
+  t.render = () => {
+    const el = $(o.el), m = open();
+    if (!el || !shown()) return;
+    // A fold just opened is in the page and not yet in the map the html is built from: record it first.
+    if (m) el.querySelectorAll("details[data-k]").forEach((d) => { m[d.dataset.k] = d.open; });
+    if (!table()) {
+      const why = t.err || (t.data?.errors || [])[0];
+      paint(el, `<div class="empty">${why ? esc(why) : o.wait || "Loading..."}</div>`);
+      return;
+    }
+    if (t.repaint()) return;
+    if (o.draw) o.draw(t.html()); else paint(el, t.html(), open());
+  };
+  // The view changed: the URL follows it and the server applies it.
+  t.view = (patch) => {
+    setQuery(tblSet(st.views[o.tab], patch, pre));
+    if (o.reset) o.reset(t);
+    t.refresh();
+  };
+  // The bar's and the headers' events from this table's own block. A picked dropdown lets go of
+  // focus, so the answer redraws it with the new counts.
+  for (const ev of ["input", "change", "click"]) $(o.on || o.el).addEventListener(ev, (e) => {
+    const v = tblOf(e) === pre && shown() && tblPatch(e);
+    if (!v) return;
+    if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
+    t.view(v);
+  });
+  return t;
 }

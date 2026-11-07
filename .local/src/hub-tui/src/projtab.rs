@@ -38,9 +38,7 @@ const HEADER: [&str; 13] = [
 
 #[derive(Debug, Default)]
 pub struct ProjView {
-    /// The selected row of the list, an index into what the view keeps.
-    pub card: usize,
-    /// The list's search, chip and sort.
+    /// The list's search, chip and sort, and its selected row.
     pub table: DataTable,
     /// The rows are open (tasktab), for one project or for every project.
     pub open: bool,
@@ -58,7 +56,7 @@ impl ProjView {
 
     /// The selected row of `n`: a re-read can leave `card` past what the view now keeps.
     fn at(&self, n: usize) -> usize {
-        self.card.min(n.saturating_sub(1))
+        self.table.sel.min(n.saturating_sub(1))
     }
 
     /// The selected project, when the view keeps one.
@@ -72,7 +70,6 @@ impl ProjView {
         tv.project = c.map(|c| (c.profile.clone(), c.name.clone()));
         tv.table.clear();
         tv.said = None;
-        tv.sel = 0;
         self.open = true;
     }
 
@@ -93,7 +90,7 @@ impl ProjView {
         match cards.iter().find(|c| named(c)) {
             Some(c) => {
                 if let Some(i) = self.shown(cards).iter().position(|s| named(s)) {
-                    self.card = i;
+                    self.table.sel = i;
                 }
                 self.open(tv, Some(c));
             }
@@ -106,36 +103,19 @@ impl ProjView {
 
     /// The list's keys; false for one it does not take.
     pub fn key(&mut self, tv: &mut TaskView, k: KeyEvent, cards: &[Card], page: usize) -> bool {
-        match self.table.key::<Card>(k.code) {
-            Took::Typing => return true,
-            Took::View => {
-                self.card = 0;
-                return true;
-            }
-            Took::No => {}
+        if self.table.key::<Card>(k.code) != Took::No
+            || self.table.moves(k, self.shown(cards).len(), page)
+        {
+            return true;
         }
-        let n = self.shown(cards).len();
-        let last = n.saturating_sub(1);
-        self.card = self.at(n);
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => self.card = (self.card + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => self.card = self.card.saturating_sub(1),
-            KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.card = (self.card + page.max(1)).min(last)
-            }
-            KeyCode::PageUp => self.card = self.card.saturating_sub(page.max(1)),
-            KeyCode::Char('g') | KeyCode::Home => self.card = 0,
-            KeyCode::Char('G') | KeyCode::End => self.card = last,
             KeyCode::Enter => {
                 if let Some(c) = self.selected(cards) {
                     self.open(tv, Some(c));
                 }
             }
             KeyCode::Char('a') => self.open(tv, None),
-            KeyCode::Esc if !self.table.is_default() => {
-                self.table.clear();
-                self.card = 0;
-            }
+            KeyCode::Esc if !self.table.is_default() => self.table.clear(),
             _ => return false,
         }
         true
@@ -588,21 +568,21 @@ pub(crate) mod tests {
         for _ in 0..3 {
             assert!(pv.key(&mut tv, key('j'), &pr.cards, 10));
         }
-        assert_eq!(pv.card, 1, "j stops at the last row");
+        assert_eq!(pv.table.sel, 1, "j stops at the last row");
         pv.key(&mut tv, enter(), &pr.cards, 10);
         assert!(pv.open);
         assert_eq!(tv.project, Some(("personal".into(), "demo".into())));
         pv.close(&mut tv);
         assert!(!pv.open);
-        assert_eq!(pv.card, 1, "back on the row it opened");
+        assert_eq!(pv.table.sel, 1, "back on the row it opened");
         pv.key(&mut tv, key('a'), &pr.cards, 10);
         assert!(pv.open && tv.project.is_none());
-        assert_eq!(pv.card, 1, "All leaves the selection where it was");
+        assert_eq!(pv.table.sel, 1, "All leaves the selection where it was");
         assert!(!pv.key(&mut tv, key('z'), &pr.cards, 10));
 
         pv.go(&mut tv, &pr.cards, "personal/Garden");
         assert_eq!(
-            (pv.card, tv.project.clone()),
+            (pv.table.sel, tv.project.clone()),
             (0, Some(("personal".into(), "garden".into())))
         );
         pv.go(&mut tv, &pr.cards, "menu");
@@ -626,7 +606,10 @@ pub(crate) mod tests {
         let pr = fixture();
         let (mut pv, mut tv) = (
             ProjView {
-                card: 5,
+                table: DataTable {
+                    sel: 5,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             TaskView::default(),
@@ -635,7 +618,7 @@ pub(crate) mod tests {
         let (l, at) = page(&pr, None, &pv, Palette { no_color: true }, 200);
         assert!(plain(&l[at.unwrap()]).starts_with("demo"));
         pv.key(&mut tv, key('k'), &pr.cards, 10);
-        assert_eq!(pv.card, 0, "k moves from the row on screen");
+        assert_eq!(pv.table.sel, 0, "k moves from the row on screen");
     }
 
     #[test]
@@ -651,7 +634,7 @@ pub(crate) mod tests {
         pv.key(&mut tv, enter(), &pr.cards, 10);
         assert!(!pv.open, "Enter ends the search, it opens nothing");
         assert_eq!(
-            pv.card, 0,
+            pv.table.sel, 0,
             "the view changed, so the selection is back on top"
         );
         assert_eq!(pv.shown(&pr.cards).len(), 1);
@@ -661,7 +644,7 @@ pub(crate) mod tests {
 
         // A project the view hides still opens by name, and Back keeps the selection.
         pv.go(&mut tv, &pr.cards, "garden");
-        assert_eq!(pv.card, 0);
+        assert_eq!(pv.table.sel, 0);
         pv.close(&mut tv);
 
         assert!(pv.key(&mut tv, KeyEvent::from(KeyCode::Esc), &pr.cards, 10));
@@ -690,7 +673,10 @@ pub(crate) mod tests {
         pr.cards[1].version = None;
         pr.cards[1].eta_days = None;
         let pv = ProjView {
-            card: 1,
+            table: DataTable {
+                sel: 1,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let (l, at) = page(&pr, None, &pv, Palette { no_color: true }, 200);

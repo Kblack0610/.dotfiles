@@ -18,10 +18,10 @@ const refreshAgents = coalesce(async () => {
   const waiting = st.agents.filter((a) => a.status === "waiting").length;
   $("wait-badge").innerHTML = waiting ? `<span class="badge">${waiting}</span>` : "";
   renderBadge();
-  renderOverview();
+  sst.render();
   if (st.tab === "home") renderHome();
   // A session coming or going changes which queue rows have an Open button.
-  if (st.tab === "queue") renderQueueList();
+  if (st.tab === "queue") qst.render();
   if (st.sel) {
     const a = st.agents.find((x) => x.target === st.sel.target);
     if (a) { st.sel = a; renderHead(); }
@@ -47,7 +47,7 @@ function approveButtons(a) {
 }
 function rerenderApprove() {
   if (st.tab === "home") renderHome();
-  if (st.tab === "queue") renderQueueList();
+  if (st.tab === "queue") qst.render();
 }
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-approve],[data-approve-go],[data-approve-no]");
@@ -151,7 +151,7 @@ function overview() {
   $("compose").hidden = true;
   $("main").classList.remove("open");
   $("scroll").innerHTML = "";
-  renderFacts(); renderOverview(); refreshSessions();
+  renderFacts(); sst.render(); refreshSessions();
 }
 
 $("back").onclick = () => setTab("sessions", "");

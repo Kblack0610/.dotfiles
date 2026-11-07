@@ -8,7 +8,13 @@
 const ACTION_WINDOWS = [[12, "12h"], [24, "24h"], [72, "3d"], [168, "7d"]];
 const ACTION_HOURS = 24;
 // `read` is the view the data answers; `all` shows past the first LOG_ROWS.
-const ast = { data: null, err: null, read: null, all: false };
+const ast = tblTab({
+  tab: "log", id: "actions", el: "actions", api: "/api/actions", hint: "search, or actor:shepherd verb:nudge -actor:dispatch",
+  wait: "Loading.", state: { read: null, all: false },
+  params: (p, t) => { p.set("hours", actionHours()); t.asked = st.views.log || ""; }, got: (t) => { t.read = t.asked; },
+  head: (t) => actionsHead(t.data), body: (t) => actionsBody(t.data),
+  reset: (t) => { t.all = false; },
+});
 
 // The URL's window, when it is one of the buttons: the head says what the server was asked for.
 function actionHours() {
@@ -16,12 +22,6 @@ function actionHours() {
   return ACTION_WINDOWS.some(([w]) => w === h) ? h : ACTION_HOURS;
 }
 
-const refreshActions = coalesce(async () => {
-  const view = st.views.log || "", p = tblParams(view);
-  p.set("hours", actionHours());
-  try { ast.data = await api("/api/actions?" + p); ast.err = null; ast.read = view; } catch (e) { ast.err = e.message; }
-  if (st.tab === "log") renderActions();
-});
 
 // Open Log at its Actions section filtered to one actor (and verb), from another tab's link.
 function showActions(actor, verb) {
@@ -53,40 +53,22 @@ function actionsBody(d) {
     : `<div class="empty">${d.table.total ? "No action matches." : "Nothing recorded in the window."}</div>`;
 }
 
-function renderActions() {
-  const el = $("actions"), d = ast.data;
-  if (!d || !d.table) { paint(el, `<div class="${ast.err ? "card err" : "empty"}">${esc(ast.err || "Loading.")}</div>`); return; }
-  if (tblRepaint("actions", d.table, () => actionsBody(d))) { paint($("actions-head"), actionsHead(d)); return; }
-  paint(el, `<div id="actions-head">${actionsHead(d)}</div>${tblBar("actions", d.table, "search, or actor:shepherd verb:nudge -actor:dispatch")}` +
-    `<div id="actions-body">${actionsBody(d)}</div>`);
-}
-
-// The view changed: the URL follows it and the server applies it.
-function actionsView(patch) {
-  setQuery(tblSet(st.views.log, patch));
-  ast.all = false;
-  refreshActions();
-}
-
 $("actions").addEventListener("click", (e) => {
   const t = e.target;
-  if (t.dataset.all) { ast.all = true; renderActions(); return; }
+  if (t.dataset.all) { ast.all = true; ast.render(); return; }
   const h = t.closest("[data-hours]");
-  if (h) { actionsView({ hours: h.dataset.hours === String(ACTION_HOURS) ? "" : h.dataset.hours }); return; }
-  const v = tblPatch(e);
-  if (v) actionsView(v);
+  if (h) ast.view({ hours: h.dataset.hours === String(ACTION_HOURS) ? "" : h.dataset.hours });
 });
-tblListen($("actions"), actionsView);
 
 // The shepherd's log and agent-notify's push "actions"; the dispatch log and the run ledger
 // arrive as "fleet", the queue as "queue".
-const actionsFeed = pushed("log", ["actions", "fleet", "queue"], refreshActions);
+const actionsFeed = pushed("log", ["actions", "fleet", "queue"], ast.refresh);
 LOG_PARTS.push({
   show() {
     // A view this page has not read asks the server, and when it came by a link opens its section.
     const view = st.views.log || "", fresh = ast.read !== view;
     if (fresh && view) $("sec-actions").open = true;
-    renderActions();
+    ast.render();
     actionsFeed.show(fresh);
   },
   onEvent: actionsFeed.onEvent,
