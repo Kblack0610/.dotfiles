@@ -133,8 +133,8 @@ This dir is loaded by Claude Code as the project's harness layer:
 - **`.claude/CLAUDE.md`** — workflow rules (plan-first, verification, lessons loop, memory routing).
 - **`.claude/agents/`** - subagents, each with an explicit tool ceiling: the generic specialists here (`deep-research-agent`, `technical-writer`, `quality-engineer`, `root-cause-analyst`, `security-engineer`, `compliance-counsel`); the `kb-*` delivery pipeline and `release-coordinator` live in the private overlay. Which ones actually run: `claude-recall stats --kind agent`.
 - **`.claude/skills/`** — 53 domain skills invoked by name; the canonical index is the list in `.claude/CLAUDE.md`, which spans both this repo and the private overlay.
-- **`.claude/commands/`** - 17 slash commands across four namespaces, counting the private overlay's:
-  `/sc:*` (analyze, manual-test, research), `/my:*` (autopilot, fix-ci, go, worktree-recycle), `/kb:*` (workflow, implement, ci), `/daily:*` (analysis, standup, summary), plus `dream` and `remember`.
+- **`.claude/commands/`** - 13 slash commands across four namespaces, counting the private overlay's:
+  `/sc:*` (analyze, manual-test), `/my:*` (autopilot, fix-ci, go, worktree-recycle), `/kb:*` (workflow, implement, ci), `/daily:*` (analysis, standup), plus `dream` and `remember`.
 
   These counts are load-bearing only as a rough orientation — treat `ls ~/.claude/{agents,skills,commands}` as the truth, since the live registry merges this repo with the private overlay.
 - **`.claude/hooks/`** - Stop-hook gate runs `stop-checks.d/` (git/node/cargo/python/go/shell-test health), then `stop-post.d/` (session register, plan sync to `~/.agent/plans/{project}/`, focus reconcile, anchor regen, ask-filed check, wind-down). Plus PreToolUse guards such as `block-pip.sh` and `large-file-warning.sh`. Topology and the per-script list: `.claude/hooks/README.md`.
