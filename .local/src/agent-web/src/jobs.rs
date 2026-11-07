@@ -2,16 +2,16 @@
 //! The list is filtered and sorted here by `hub_core::table`, so the page only draws.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths, Source};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+
+use crate::cache::{off, ReadCache};
 
 /// The default list folds concurrent tabs, quick reloads and every keystroke in the search
 /// into one collection; a one-job history (`name=`) is asked for by a click and is always fresh.
-const CACHE: Duration = Duration::from_secs(15);
+const CACHE_SECS: u64 = 15;
 /// The longest history a request may ask for: the journal and the exporter hold about a day,
 /// the ledgers longer.
 const MAX_WINDOW_SECS: i64 = 7 * 24 * 3600;
@@ -41,7 +41,7 @@ struct Shown<'a> {
 }
 
 #[derive(Default)]
-pub struct Cache(Mutex<Option<(Instant, Arc<Jobs>)>>);
+pub struct Cache(ReadCache<Jobs, CACHE_SECS>);
 
 /// Collect what `q` names, off the async workers.
 async fn collect(q: &JobsQuery) -> Result<Jobs, String> {
@@ -55,9 +55,7 @@ async fn collect(q: &JobsQuery) -> Result<Jobs, String> {
     if let Some(s) = q.source {
         opts.sources = vec![s];
     }
-    tokio::task::spawn_blocking(move || jobs::collect(&Paths::from_env(), &opts))
-        .await
-        .map_err(|e| e.to_string())
+    off(move || jobs::collect(&Paths::from_env(), &opts)).await
 }
 
 fn render(js: &Jobs, q: &JobsQuery) -> String {
@@ -80,19 +78,11 @@ fn failed(e: String) -> String {
 
 impl Cache {
     /// The view `q` asks for. The plain collection (no name, window or source) is shared for
-    /// `CACHE`, and every view is applied to it outside the lock.
+    /// `CACHE_SECS`, and every view is applied to it outside the lock.
     pub async fn get(&self, q: JobsQuery) -> String {
         let plain = q.name.is_none() && q.window.is_none() && q.source.is_none();
         let js = if plain {
-            let mut c = self.0.lock().await;
-            match c.as_ref().filter(|(at, _)| at.elapsed() < CACHE) {
-                Some((_, js)) => Ok(js.clone()),
-                None => collect(&q).await.map(|js| {
-                    let js = Arc::new(js);
-                    *c = Some((Instant::now(), js.clone()));
-                    js
-                }),
-            }
+            self.0.get((), collect(&q)).await
         } else {
             collect(&q).await.map(Arc::new)
         };
@@ -104,9 +94,7 @@ impl Cache {
 /// The outer error is a reference that does not parse; the inner one, a log that cannot be read.
 pub async fn log(raw: String) -> Result<Result<String, String>, String> {
     let r: LogRef = serde_json::from_str(&raw).map_err(|e| format!("bad log reference: {e}"))?;
-    tokio::task::spawn_blocking(move || jobs::read_log(&Paths::from_env(), &r))
-        .await
-        .map_err(|e| e.to_string())
+    off(move || jobs::read_log(&Paths::from_env(), &r)).await
 }
 
 #[cfg(test)]

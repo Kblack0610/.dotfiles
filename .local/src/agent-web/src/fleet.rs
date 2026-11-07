@@ -2,17 +2,17 @@
 //! request, so a file event shows at once; the Prometheus part is cached here as Infra's is.
 //! A runner's page (`/api/fleet/runner?name=`) is read only when it is opened, never cached.
 
-use std::time::{Duration, Instant};
-
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use hub_core::fleet::{self, who, who::Who, Fleet, Paths, Prom};
 use hub_core::table::View;
 use serde::Deserialize;
-use tokio::sync::Mutex;
+
+use crate::cache::{off, ReadCache};
 
 /// As Infra's cache: a second tab or a reload inside this window reuses the last answer.
-const CACHE: Duration = Duration::from_secs(30);
+const CACHE_SECS: u64 = 30;
 
 /// The table view the page keeps in its URL (`q`, `s`, `sort`, `dir`, as every table's) and the
 /// tier 1 rows it has folded (`fold`, comma-separated runner names).
@@ -27,31 +27,24 @@ pub struct FleetQuery {
 }
 
 #[derive(Default)]
-pub struct Cache(Mutex<Option<(Instant, Prom)>>);
+pub struct Cache(ReadCache<Prom, CACHE_SECS>);
 
 impl Cache {
-    async fn prom(&self) -> Prom {
-        let mut c = self.0.lock().await;
-        if let Some((at, p)) = c.as_ref() {
-            if at.elapsed() < CACHE {
-                return p.clone();
-            }
-        }
-        let p = tokio::task::spawn_blocking(fleet::prom)
-            .await
-            .unwrap_or_else(|e| Prom {
-                errors: vec![e.to_string()],
+    /// A panic in the read is shown, not kept: the next request asks again.
+    async fn prom(&self) -> Arc<Prom> {
+        self.0.get((), off(fleet::prom)).await.unwrap_or_else(|e| {
+            Arc::new(Prom {
+                errors: vec![e],
                 ..Default::default()
-            });
-        *c = Some((Instant::now(), p.clone()));
-        p
+            })
+        })
     }
 
     pub async fn get(&self, q: FleetQuery) -> String {
-        let files = tokio::task::spawn_blocking(|| fleet::files(&Paths::from_env()));
+        let files = off(|| fleet::files(&Paths::from_env()));
         let p = self.prom().await;
         let mut f = files.await.unwrap_or_else(|e| Fleet {
-            errors: vec![e.to_string()],
+            errors: vec![e],
             ..Default::default()
         });
         f.apply(&p);
@@ -88,9 +81,7 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
 
 /// One runner's page, read only when `#fleet/<name>` opens. An unknown name is the caller's 404.
 pub async fn runner(name: String) -> Result<String, String> {
-    let r = tokio::task::spawn_blocking(move || fleet::runner::read(&Paths::from_env(), &name))
-        .await
-        .map_err(|e| e.to_string())??;
+    let r = off(move || fleet::runner::read(&Paths::from_env(), &name)).await??;
     serde_json::to_string(&r).map_err(|e| e.to_string())
 }
 
