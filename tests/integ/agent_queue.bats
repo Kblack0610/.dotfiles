@@ -107,6 +107,57 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "already in the queue: dup"
 }
 
+@test "add refuses a slug that finished ok unless --repeat; a failed or cancelled one is a retry" {
+  "$AQ" add --project game --slug landed "x" >/dev/null
+  "$AQ" move landed done --status ok >/dev/null
+  run "$AQ" add --project game --slug landed "x again"
+  assert_failure 4
+  assert_output --partial "landed already finished ok ("
+  assert_output --partial "pass --repeat to queue it again as new work"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished slug was queued again"
+  # negative control: a repeat is new work under the same slug, and a failed one re-queues as is
+  run "$AQ" add --project game --slug landed --repeat "tonight's pass"
+  assert_success
+  "$AQ" add --project game --slug broke "y" >/dev/null
+  "$AQ" move broke done --status failed >/dev/null
+  run "$AQ" add --project game --slug broke "y, retried"
+  assert_success
+}
+
+@test "a slug cut from the task's words is refused only for the same words: a 40-character twin is other work" {
+  t="fix(queue): one long subject line that runs past forty characters"
+  "$AQ" add --project game "$t" >/dev/null
+  s="$(field "$(ls "$AGENT_QUEUE_DIR"/queued/*)" slug)"
+  "$AQ" move "$s" done --status ok >/dev/null
+  run "$AQ" add --project game "$t"
+  assert_failure 4
+  # negative control: same first 40 characters, so the same slug, but different work
+  run "$AQ" add --project game "${t% characters} chars, and then some"
+  assert_success
+  [ -n "$(item queued "$s")" ] || fail "the different task was not queued under $s"
+}
+
+@test "add --plan skips a phase whose slug finished ok and queues the rest after it; all landed is refused" {
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/rq.md"
+  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq >/dev/null
+  "$AQ" cancel rq-p2 >/dev/null
+  "$AQ" move rq-p1 done --status ok >/dev/null
+  run "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq
+  assert_success
+  assert_output --partial "skipped rq-p1 already finished ok"
+  assert_output --partial "tick its box in $SANDBOX/rq.md"
+  [ -z "$(item queued rq-p1)" ] || fail "a landed phase was queued again"
+  [ "$(field "$(item queued rq-p2)" after)" = rq-p1 ] || fail "p2 does not go after the landed p1"
+  "$AQ" move rq-p2 done --status ok >/dev/null
+  run "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq
+  assert_failure 4
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a landed phase was queued again"
+  # negative control: --repeat queues every phase as new work
+  run "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq --repeat
+  assert_success
+  [ -n "$(item queued rq-p1)" ] && [ -n "$(item queued rq-p2)" ]
+}
+
 @test "a project inside a repo is runnable; a notes-only one is refused, as dispatch would" {
   run "$AQ" add --project level --slug in-repo "x"
   assert_success
@@ -153,7 +204,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   # Negative control: the old done record alone releases the after.
   [ "$("$AQ" next --json | jq -r .slug)" = second ]
   # The same slug queued again is not done, so second holds on it in every live state.
-  "$AQ" add --project game --slug first "again"
+  "$AQ" add --project game --slug first --repeat "again"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
   assert_output "after first"
   [ "$("$AQ" next --json | jq -r .slug)" = first ]
@@ -178,7 +229,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move first done --status failed
   run "$AQ" next
   assert_failure
-  "$AQ" add --project game --slug first "again"
+  "$AQ" add --project game --slug first --repeat "again"
   "$AQ" move first done --status ok
   [ "$("$AQ" next --json | jq -r .slug)" = second ]
 }
@@ -346,6 +397,16 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" add --project game --slug blocked --tags "pr:Org/game#9" "a"
   run bash -c "'$AQ' list --json | jq -r '.hold'"
   assert_output "pr:Org/game#9 not merged"
+}
+
+@test "a pr: tag on a PR closed unmerged holds and says it never releases" {
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  echo CLOSED > "$SANDBOX/pr-11"
+  "$AQ" add --project game --slug dead --tags "pr:Org/game#11" "a"
+  run bash -c "'$AQ' list --json | jq -r '.hold'"
+  assert_output "pr:Org/game#11 closed unmerged, never releases: cancel the item or set its tags without it"
+  [ -z "$("$AQ" next --json)" ] || fail "a closed PR released its hold"
 }
 
 @test "a nightly: tag holds while today's scheduled runs go, and releases when they finish" {
@@ -1201,7 +1262,8 @@ EOF
 }
 
 # story_notes -- give the level and arena games a lab sheet, and a notes stub for the story write:
-# every call lands in calls.log; `ptask ... add` prints its row with id lv-9 and exits 0, or, with
+# every call lands in calls.log; `ptask ... start <id>` fails once closed.<id> exists (no open row);
+# `ptask ... add` prints its row with id lv-9 and exits 0, or, with
 # story.rc set, prints story.out on stderr and exits story.rc (3 is ptask's "already open").
 # `ptask ... propose` prints propose.out, else its words unchanged; propose.rc makes it refuse.
 story_notes() {
@@ -1219,6 +1281,7 @@ case " $* " in
   rc=$(cat "$NOTES_FIXTURE/story.rc" 2>/dev/null || echo 0)
   if [ "$rc" = 0 ]; then printf -- '- [ ] %s #c1105 <!-- id:lv-9 -->\n' "${@: -1}"; else cat "$NOTES_FIXTURE/story.out" >&2; fi
   exit "$rc" ;;
+*' start '*) [ ! -e "$NOTES_FIXTURE/closed.${@: -1}" ] || { echo "no open task matches" >&2; exit 1; } ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/notes"
@@ -1297,6 +1360,30 @@ STUB
   [ "$(field "$(item queued taken)" row)" = level:lv-5 ]
   run grep -c -- '--agent start lv-5' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+}
+
+@test "a re-queue links its last item's open row by id, whatever its words; a closed one gets a new row" {
+  story_notes
+  "$AQ" add --project level --slug again "feat(menu): first words" >/dev/null
+  "$AQ" move again done --status failed >/dev/null
+  # The row was written before rows were typed: no text the new add proposes would match it.
+  echo 'feat(menu): other words entirely' > "$NOTES_FIXTURE/propose.out"
+  run "$AQ" add --project level --slug again "feat(menu): first words"
+  assert_success
+  assert_line "story lv-9 on the level agent board"
+  [ "$(field "$(item queued again)" row)" = level:lv-9 ]
+  [ "$(field "$(item queued again)" profile)" = bnb ]
+  run grep -c -- '--agent add' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  run grep -c -- '--agent start lv-9$' "$NOTES_FIXTURE/calls.log"
+  assert_output 2
+  # negative control: a repeat after an ok close finds its row done, so it files a new one
+  "$AQ" move again done --status ok >/dev/null
+  touch "$NOTES_FIXTURE/closed.lv-9"
+  run "$AQ" add --project level --slug again --repeat "feat(menu): first words"
+  assert_success
+  run grep -c -- '--agent add' "$NOTES_FIXTURE/calls.log"
+  assert_output 2
 }
 
 @test "a notes that cannot type the words files no row and never stops the add" {
