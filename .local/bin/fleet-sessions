@@ -94,7 +94,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
-#                <open job: gate|test|agent|human|jobs|none|- (agent-panel's open_job; - unknown)> \
+#                <open job: gate|test|agent|human|jobs|none|- (agent-panel's open_job, or a live gate/test process in the worktree: live_wait; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
 #                 none open and every state known (a closed one was replaced or dropped), or -;
@@ -159,6 +159,40 @@ session_bucket() {
       fi ;;
   esac
   echo "$(bucket_facts "$@")$cn$note"
+}
+
+# live_wait <cwd>: gate or test when a process running in <cwd> (or below it) matches a `gate` or
+# `test` line of agent-panel's time-use.conf, else nothing. The transcript shows a gate detached
+# with & only as the until-loop watching its output file (2026-11-07 unity-core-playground-agent-30:
+# Tests run in progress, row STALLED), so agent-panel reads it as `jobs`; the process itself is the
+# fact. No event API names a gate's process, so this reads /proc, one `ls -l` of every cwd link per
+# session whose open job reads jobs or none. Not counted: a `-c` command line (a shell holding its
+# script's text, not the gate), the session's own `claude` (its argv carries the dispatch prompt,
+# which names agent-land), and this pass's own ancestors.
+live_wait() {
+  local cwd="$1" conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text line pid cmd
+  [ -r "$conf" ] && cwd="$(realpath "$cwd" 2>/dev/null)" || return 0
+  local -A skip=()
+  pid=$$; while [ "${pid:-0}" -gt 1 ]; do skip[$pid]=1; pid="$(awk '/^PPid:/ {print $2}' "/proc/$pid/status" 2>/dev/null)"; done
+  local -a cmds=()
+  while read -r line; do
+    [[ "$line" =~ \ /proc/([0-9]+)/cwd\ -\>\ (.*)$ ]] || continue
+    pid="${BASH_REMATCH[1]}"
+    [ "${BASH_REMATCH[2]}" = "$cwd" ] || [[ "${BASH_REMATCH[2]}" == "$cwd"/* ]] || continue
+    [ -z "${skip[$pid]:-}" ] || continue
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    case "$cmd" in "" | *" -c "* | claude" "* | */claude" "*) continue ;; esac
+    cmds+=("$cmd")
+  done < <(ls -l /proc/[0-9]*/cwd 2>/dev/null)
+  [ "${#cmds[@]}" -gt 0 ] || return 0
+  for want in gate test; do
+    while read -r kind text; do
+      [ "$kind" = "$want" ] && [ -n "$text" ] || continue
+      for cmd in "${cmds[@]}"; do
+        case "$cmd" in *"$text"*) echo "$want"; return 0 ;; esac
+      done
+    done < "$conf"
+  done
 }
 
 # bucket_facts: session_bucket past the session status, from the same arguments.
@@ -884,7 +918,7 @@ collect() {
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob acct pq names landed
+          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live
     IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
@@ -901,6 +935,10 @@ collect() {
     # only while the dialog is: status waiting with ExitPlanMode as the last tool call. `doing`
     # outlives the dialog (a rejected plan leaves it), so it counts only together with waiting.
     if [ "$plan" = 1 ] && { [ "$status" != waiting ] || [[ "$doing" != ExitPlanMode* ]]; }; then plan=0; fi
+    # A gate or test running in the worktree is a wait whatever the transcript's open job says.
+    if [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ]; }; then
+      live="$(live_wait "$cwd")"; ojob="${live:-$ojob}"
+    fi
     prs="$(session_prs "$transcript")"
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
@@ -1003,9 +1041,10 @@ collect() {
 }
 
 # One NIGHTLY row per red repo seen this pass. Its ledger id is main-<repo slug>, so the shepherd
-# escalates a nightly red once per fact; owners are the live sessions whose merge is a suspect.
+# escalates a nightly red once per fact; owners are the live sessions whose merge is a suspect, nudged
+# on their own STALLED rows. Its nudged and escalated cells read that ledger, as every row's do.
 main_rows() {
-  local f slug st wfs sha prs repo sid reason owners e
+  local f slug st wfs sha prs repo sid reason owners nu e
   for f in "$CACHE"/main_*; do
     [ -f "$f" ] || continue
     IFS=$'\t' read -r st wfs sha prs repo < "$f"
@@ -1016,8 +1055,8 @@ main_rows() {
       *) continue ;;
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
-    e=0; escalated "$sid" "NIGHTLY $reason" && e=1
-    printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tNIGHTLY %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
+    nu=0; nudged "$sid" "NIGHTLY $reason" && nu=1; e=0; escalated "$sid" "NIGHTLY $reason" && e=1
+    printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t%s\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tNIGHTLY %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$nu" "$reason" "$e" "${owners:--}" "$reason"
   done
 }
 
@@ -1288,7 +1327,7 @@ write_state() {
          sessions: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") | not)
                      | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end)),
          main: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT"))
-                     | {repo: .target, id: .session_id, reason, escalated, owners})),
+                     | {repo: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
          shared: ($r | map(select(.bucket == "SHARED")
                      | {test: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t")
