@@ -104,6 +104,9 @@ note() {
 # left <from> <text> <why>: a line the model passed over, counted and recorded.
 left() { KEPT=$((KEPT + 1)); note left "$1" "$3" "$2"; }
 
+# want_channel <from>: the channel a filed line came in by - the outbox, or a project's own inbox (the human's).
+want_channel() { if [ "$1" = outbox ]; then echo outbox; else echo human; fi; }
+
 # file_line <project> <raw> <text> <args...>: one `ptask file`, counted. A refusal is recorded
 # with the CLI's reason.
 file_line() {
@@ -253,6 +256,8 @@ $open"
           done
           [ "${#args[@]}" -gt 0 ] || { left "$from" "$text" "no row"; continue; }
           [ "$lane" = agent ] && args+=(--lane agent)
+          # A routed line is a want: the writer stamps it, so no row text here carries #requested.
+          args+=(--want "$(want_channel "$from")")
         fi
         if [ "$from" = outbox ]; then
           [ -n "$dest" ] || { left outbox "$text" "no project"; continue; }
@@ -463,7 +468,7 @@ pass() {
   # Typed already (the CLI reads the row grammar, so this script holds no copy of it): `file`
   # with no --as files it as written.
   while IFS=$'\x1f' read -r -d '' from raw text; do
-    file_line "$from" "$raw" "$text"
+    file_line "$from" "$raw" "$text" --want "$(want_channel "$from")"
   done < <(jq -j '.[] | select(.typed) | .from, "\u001f", .raw, "\u001f", .text, "\u0000"' <<<"$all")
   size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
   all="$(jq -c --argjson max "$size" '[.[] | select(.typed | not)] | {take: .[:$max], over: (.[$max:] | length)}' <<<"$all")"

@@ -192,6 +192,18 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_line 'refused the jump is floaty'
 }
 
+@test "a filed want is stamped #requested by the writer on the agent board, and its channel is recorded" {
+  sheet '- the gun sound is off\n- the menu is slow\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"], "lane": "agent"}' \
+    '{"n": 2, "action": "file", "rows": ["fix(ui): the menu is slow #high #size/s"]}'
+  run "$TRIAGE"
+  assert_success
+  grep -qE 'fix\(audio\): the gun sound plays late .*#requested' "$PROJ/scratch/agent/README.md" || fail "$(cat "$PROJ/scratch/agent/README.md")"
+  run tasks
+  refute_output --partial '#requested'
+  [ "$(grep -c '"want":"human"' "$HOME/.local/state/notes/ingest.jsonl")" = 2 ] || fail "$(cat "$HOME/.local/state/notes/ingest.jsonl")"
+}
+
 @test "a duplicate joins its open row, and a line about another project moves there" {
   sheet '- menu still flickers on resize\n- other needs a logo\n' '- [ ] fix(ui): the menu flickers <!-- id:sc-4 -->\n'
   answer '{"n": 1, "action": "dup", "id": "sc-4"}' \

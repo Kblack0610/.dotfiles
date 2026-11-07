@@ -2334,16 +2334,16 @@ pipeline_fixture() {
   [ "$(wc -l < "$FLEET_BENCH_DIR/effect.jsonl")" -eq 1 ]
 }
 
-@test "improve claim: a row id or item:slug adopts a KPI with no board write; a bad subject exits 2, a live one is refused; list shows both" {
+@test "improve claim: a row id or item:slug adopts a KPI with no board write; a bad subject exits 2, a claimed KPI is refused; list shows both" {
   kpi_setup; kpi_fixture
   run "$SUBJECT" improve claim revert_rate ar-141
   assert_success
   assert_output 'ar-141 claims revert_rate from 0.25'
   run "$SUBJECT" improve claim interrupts_per_session 'ar-1; rm -rf'
   assert_failure 2
-  run "$SUBJECT" improve claim interrupts_per_session ar-141
+  run "$SUBJECT" improve claim revert_rate item:judge-stage-3
   assert_failure 1
-  assert_output --partial 'ar-141 already claims revert_rate'
+  assert_output --partial 'already claimed by ar-141'
   run "$SUBJECT" improve claim interrupts_per_session item:judge-stage-3
   assert_success
   [ ! -e "$NLOG" ]
@@ -2351,6 +2351,28 @@ pipeline_fixture() {
   assert_line 'live claims: 2 of 3'
   assert_line '  ar-141 revert_rate from 0.25 (max 0.1), 0d'
   assert_line '  item:judge-stage-3 interrupts_per_session from 2 (max 1), 0d'
+}
+
+@test "improve claim: one row claims each KPI its lever moved, at the cap too, and each claim ends on its own verdict; file at the cap is refused" {
+  kpi_setup; kpi_fixture
+  claim ar-7 cost_per_pr 2 max 1 1
+  BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve file revert_rate 'another lever'
+  assert_failure 1
+  assert_output --partial 'claims are live (BENCH_IMPROVE_MAX 1)'
+  BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve claim revert_rate ar-596
+  assert_success
+  BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve claim interrupts_per_session ar-596
+  assert_success
+  assert_output 'ar-596 claims interrupts_per_session from 2'
+  run "$SUBJECT" improve claim revert_rate ar-596
+  assert_failure 1
+  assert_output --partial 'already claimed by ar-596'
+  run "$SUBJECT" improve list --json
+  [ "$(jq -c '[.live[] | [.subject, .kpi]] | sort' <<<"$output")" = '[["ar-596","interrupts_per_session"],["ar-596","revert_rate"],["ar-7","cost_per_pr"]]' ]
+  # a verdict on one KPI of the row leaves its other claim live
+  printf '%s\n' '{"type":"verdict","at":9999999999,"kpi":"revert_rate","subject":"ar-596","verdict":"flat"}' >> "$FLEET_BENCH_DIR/effect.jsonl"
+  run "$SUBJECT" improve list --json
+  [ "$(jq -c '[.live[] | [.subject, .kpi]] | sort' <<<"$output")" = '[["ar-596","interrupts_per_session"],["ar-7","cost_per_pr"]]' ]
 }
 
 # check_fixture: one claim of each kind, closed 15 days ago unless said
@@ -3761,23 +3783,24 @@ epics_fixture() {
   [ "$h" -ge 72 ] && [ "$h" -lt 96 ] || fail "oldest open requested row reads $h hours"
 }
 
-@test "chain: wants_unstamped is the share of human-channel adds in the window with no #requested; session, sheet-lane and old events do not count" {
+@test "chain: wants_unstamped is the share of human-channel adds in the window with no #requested (an event naming its channel was stamped by the writer); session, sheet-lane and old events do not count" {
   chain_fixture
   local day old; day=$(date -d "@$((T0 - 86400))" +%F) old=$(date -d "@$((T0 - 20 * 86400))" +%F)
   jq -cn --arg d "$day" --arg o "$old" '
     {ts: "\($d)T10:00:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): one #requested"},
     {ts: "\($d)T10:01:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): two"},
     {ts: "\($d)T10:02:00.1-08:00", lane: "agent", action: "filed", from: "tools", text: "fix(a): three"},
+    {ts: "\($d)T10:02:30.1-08:00", lane: "agent", action: "filed", from: "tools", want: "outbox", text: "the raw words, stamped by the writer"},
     {ts: "\($d)T10:03:30.1-08:00", lane: "human", action: "filed", from: "tools", text: "a sheet row can never be stamped"},
     {ts: "\($d)T10:03:00.1-08:00", action: "moved", from: "outbox", by: "human", text: "fix(a): moved is not an add"},
     {ts: "\($d)T10:04:00.1-08:00", lane: "agent", action: "added", from: "game", by: "abc123", text: "fix(a): a session follow-up"},
     {ts: "\($o)T10:00:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): outside the window"}' > "$BENCH_INGEST"
   run "$SUBJECT" chain --json
   assert_success
-  assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.667
+  assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.5
   run "$SUBJECT" chain
   assert_success
-  assert_line 'wants_unstamped: 2 of 3 human-channel agent rows added in 7d carry no #requested, by project (game 1/2, tools 1/1)'
+  assert_line 'wants_unstamped: 2 of 4 human-channel agent rows added in 7d carry no #requested, by project (game 1/2, tools 1/2)'
 }
 
 @test "chain: the table names the oldest open #requested row behind requested_unstarted_h" {

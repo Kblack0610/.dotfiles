@@ -25,6 +25,7 @@ mod queuetab;
 mod schedules;
 mod tabreq;
 mod tasktab;
+mod tokens;
 
 use std::io::Write;
 use std::sync::mpsc;
@@ -334,12 +335,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
                     ));
                 }
                 None => {
-                    a.fleet = Some(hub_core::fleet::collect());
-                    match section.as_deref().map(str::trim) {
-                        Some("tokens") => a.fleet_tokens.open = Some(true),
-                        Some("langfuse") => a.fleet_langfuse = Some(true),
-                        _ => {}
-                    }
+                    a.fleet = Some(hub_core::fleet::files(&hub_core::fleet::Paths::from_env()));
                 }
             }
         }
@@ -526,11 +522,11 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         if !app::is_write(&e.kind) {
             return;
         }
-        if e.paths
-            .iter()
-            .any(|p| app::is_job_file(&probe, p) || boards.is_token_file(p))
-        {
+        if e.paths.iter().any(|p| app::is_job_file(&probe, p)) {
             let _ = files.send(Msg::Files);
+        }
+        if e.paths.iter().any(|p| boards.is_token_file(p)) {
+            let _ = files.send(Msg::TokenFiles);
         }
         if e.paths.iter().any(|p| boards.is_board_file(p)) {
             let _ = files.send(Msg::BoardFiles);
