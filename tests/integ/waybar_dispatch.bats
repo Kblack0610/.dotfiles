@@ -164,10 +164,10 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run tip
   assert_output --partial "paused by: <span color='$Y'>no account has room</span>"
   # The accounts' published verdicts name each one's reason; the gate reads them, never its own guess.
-  feed summary_dispatch.room_held_account=1 acct:main.pace=1 acct:alt.reserve=1
+  feed summary_dispatch.room_held_account=1 acct:main.pace=1 acct:main.five_hour=1 acct:alt.reserve=1
   run "$MODULE"
   run tip
-  assert_output --partial "paused by: <span color='$Y'>no account has room: alt reserve, main pace</span>"
+  assert_output --partial "paused by: <span color='$Y'>no account has room: alt reserve, main five_hour+pace</span>"
   refute_output --partial "under its weekly pace"
   feed summary_dispatch.room_held_assess=1
   run "$MODULE"

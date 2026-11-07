@@ -34,9 +34,12 @@ C_DIM="#7f7f7f"
 
 now="${DISPATCH_NOW:-$(date +%s)}"
 title="<b>Queue</b>"
-# The accounts' room verdicts (claude-acct textfile) ride the same query: they name which account
-# refuses and why when the account gate holds dispatch.
-q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live) or claude_account_room_reason'
+# claude-acct-usage.timer writes the accounts' textfile every 15 minutes; three missed is stale.
+ROOM_LATE_SECS=2700
+# The accounts' room verdicts (claude-acct textfile) ride the same query, only from a textfile
+# written lately: they name which account refuses and why when the account gate holds dispatch.
+q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
+q+=" or (claude_account_room_reason and on (instance) (time() - node_textfile_mtime_seconds{file=~\".*/claude_acct.prom\"} < $ROOM_LATE_SECS))"
 
 if ! raw="$(prom_q "$q")"; then
   emit "$(paint "$C_YEL" 'Q?')" "$title"$'\n'"cannot read $PROM_URL" warn
@@ -78,9 +81,9 @@ else
       idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
       assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
       account)
-        # Each account's published refusal reason, one "name reason" per account: "alt reserve, main pace".
-        reasons="$(jq -r '[.data.result[] | select(.metric.__name__ == "claude_account_room_reason") | .metric
-            | {account, reason}] | unique_by(.account) | map("\(.account) \(.reason)") | join(", ")' <<< "$raw")"
+        # Each account's published reasons, one entry per account: "alt reserve, main pace+five_hour".
+        reasons="$(jq -r '[.data.result[] | select(.metric.__name__ == "claude_account_room_reason") | .metric]
+            | group_by(.account) | map("\(.[0].account) \(map(.reason) | unique | join("+"))") | join(", ")' <<< "$raw")"
         paused="no account has room${reasons:+: $reasons}" ;;
       other) paused="a gate (fleet-dispatch headroom says which)" ;;
     esac

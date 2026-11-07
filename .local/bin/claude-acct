@@ -501,8 +501,9 @@ cmd_textfile() {
         (rows("claude_account_over_pace"; if .over_pace == null then null elif .over_pace then 1 else 0 end)),
         (rows("claude_account_room"; if .state == "unread" then null elif .room.ok then 1 else 0 end)),
         (rows("claude_account_room_headroom_points"; .room.headroom_points)),
-        # the first refusal as a label, 1 on the account'"'"'s one current reason (ok when it has room)
-        (.[] | select(.state != "unread") | "claude_account_room_reason{account=\"\(.name)\",reason=\"\(.room.reason)\"} 1"),
+        # each refusal as a label, 1 on every reason that holds the account now (ok when it has room)
+        (.[] | select(.state != "unread") | .name as $n | (.room.reasons | if . == [] then ["ok"] else . end)[]
+            | "claude_account_room_reason{account=\"\($n)\",reason=\"\(.)\"} 1"),
         (rows("claude_account_five_hour_percent"; .five_hour)),
         (rows("claude_account_five_hour_resets_timestamp_seconds"; .five_hour_resets)),
         (rows("claude_account_resets_timestamp_seconds"; .resets)),
@@ -527,7 +528,7 @@ cmd_textfile() {
 # prints the same answer for readers: {pick (that account's name, or null), why (the refusal
 # sentence, or null), accounts (every account's name, dir, state, rank, live and room)}.
 cmd_room() {
-    local rows json=0 pick unread closest cwhy run_out resets why='' t=''
+    local rows json=0 pick pdir pline unread closest cwhy run_out resets why='' t=''
     case "${1:-}" in
         "") ;;
         --json) json=1 ;;
@@ -537,10 +538,12 @@ cmd_room() {
     # One read: the best account with room, whether one is unread, and the account a refused start
     # would fall back to (pick's best) with its own why and clock. \x1f, not a tab: read collapses
     # a run of tabs, so an empty field would shift the rest.
-    IFS=$'\x1f' read -r pick unread closest cwhy run_out resets < <(jq -r '
-        ([.[] | select(.room.ok)] | sort_by(.rank) | first | .name // "") as $p
+    IFS=$'\x1f' read -r pick pdir pline unread closest cwhy run_out resets < <(jq -r '
+        ([.[] | select(.room.ok)] | sort_by(.rank) | first) as $p
         | ([.[] | select(.state != "unread")] | sort_by(.rank) | first) as $c
-        | [$p, any(.[]; .state == "unread"), ($c.name // ""), ($c.room.why // ""), ($c.run_out // "-"), ($c.resets // "-")]
+        | [($p.name // ""), ($p.dir // ""),
+           ($p // {} | "\(.name) (\(.week_used // "?")% of its week, \(.week_gone // "?" | if type == "number" then floor else . end)% gone)"),
+           any(.[]; .state == "unread"), ($c.name // ""), ($c.room.why // ""), ($c.run_out // "-"), ($c.resets // "-")]
         | map(tostring) | join("\u001f")' <<< "$rows")
     if [[ -n "$pick" ]]; then :
     elif [[ "$unread" == true ]]; then why="no account has room and one cannot be read"
@@ -557,9 +560,8 @@ cmd_room() {
         jq --arg p "$pick" --arg w "$why" '{pick: (if $p == "" then null else $p end), why: (if $w == "" then null else $w end),
             accounts: [.[] | {name, dir, state, rank, live, week_used, week_gone, five_hour, room}]}' <<< "$rows"
     elif [[ -n "$pick" ]]; then
-        jq -r --arg p "$pick" '.[] | select(.name == $p)
-            | "claude-acct: room on \(.name) (\(.week_used // "?")% of its week, \(.week_gone // "?" | if type == "number" then floor else . end)% gone)", .dir' <<< "$rows" |
-            { read -r line; echo "$line" >&2; cat; }
+        echo "claude-acct: room on $pline" >&2
+        printf '%s\n' "$pdir"
     else
         echo "claude-acct: $why" >&2
     fi

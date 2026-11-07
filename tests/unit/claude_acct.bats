@@ -908,6 +908,10 @@ seen_claude() {
   [[ "$(field main '.room.reasons | join(",")' <<< "$output")" == pace ]]
   [[ "$(field alt '.room.reasons | join(",")' <<< "$output")" == pace,five_hour ]]
   [[ "$(field alt .room.reason <<< "$output")" == pace ]]
+  # the textfile carries every reason, so the chip can say what else holds alt
+  mkdir -p "$SANDBOX/prom" && "$ACCT" textfile "$SANDBOX/prom"
+  grep -q '^claude_account_room_reason{account="alt",reason="pace"} 1$' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room_reason{account="alt",reason="five_hour"} 1$' "$SANDBOX/prom/claude_acct.prom"
   [[ "$(field main .room.why <<< "$output")" == '1 point over its weekly pace (22% used, 16% of its week gone, 5 points of slack)' ]]
   # the refusal sentence is claude-acct's own, in the answer, so no reader rebuilds or parses it
   assert_equal "$(jq -r .pick <<< "$output")" null
