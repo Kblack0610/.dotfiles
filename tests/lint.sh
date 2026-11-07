@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The lint gate. Single entry point for `make -C tests lint`, the Stop hook, and CI, so all
-# three enforce exactly the same thing -- a gate that differs between local and CI gets
+# The lint gate. Single entry point for `make -C tests lint` and CI, so both
+# enforce exactly the same thing -- a gate that differs between local and CI gets
 # ignored the first time it disagrees.
 #
 # THE RATCHET
