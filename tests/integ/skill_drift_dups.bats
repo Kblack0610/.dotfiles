@@ -172,3 +172,87 @@ $HOME/proj/.claude/CLAUDE.md"
   run "$DRIFT" --dups
   assert_failure 2
 }
+
+# --- the gate: the count may not rise over dup_pairs_max in kpi-thresholds ------------------------
+
+@test "--check passes at the baseline and fails, listing the pairs, once a copy is added; removing it passes again" {
+  export KPI_THRESHOLDS="$HOME/kpi-thresholds"
+  printf 'revert_rate_max=0.05\ndup_pairs_max=1\n' > "$KPI_THRESHOLDS"
+  run "$DRIFT" --dups --check
+  assert_success
+  # NEGATIVE CONTROL: the global rule copied into a lesson is the second pair
+  printf '# lessons\n%s\n%s\n' "$OTHER" "$RULE" > "$HOME/.agent/lessons/p.md"
+  run "$DRIFT" --dups --check
+  assert_failure 1
+  assert_output --partial 'winner: global'
+  assert_output --partial '1 over the baseline of 1'
+  printf '# lessons\n%s\n' "$OTHER" > "$HOME/.agent/lessons/p.md"
+  run "$DRIFT" --dups --check
+  assert_success
+}
+
+@test "--check says when the baseline can drop, and --json carries max and over" {
+  export KPI_THRESHOLDS="$HOME/kpi-thresholds"
+  printf 'dup_pairs_max=4\n' > "$KPI_THRESHOLDS"
+  run "$DRIFT" --dups --check
+  assert_success
+  assert_output --partial 'lower dup_pairs_max to 1'
+  run "$DRIFT" --dups --check --json
+  run jq -c '[.pairs, .max, .over]' <<< "$output"
+  assert_output '[1,4,0]'
+  printf 'dup_pairs_max=0\n' > "$KPI_THRESHOLDS"
+  run "$DRIFT" --dups --check --json
+  assert_failure 1
+  run jq -c '[.pairs, .max, .over]' <<< "$output"
+  assert_output '[1,0,1]'
+}
+
+@test "--check with no dup_pairs_max row refuses to report success" {
+  export KPI_THRESHOLDS="$HOME/kpi-thresholds"
+  printf 'revert_rate_max=0.05\n' > "$KPI_THRESHOLDS"
+  run "$DRIFT" --dups --check
+  assert_failure 2
+  assert_output --partial 'no dup_pairs_max'
+  rm "$KPI_THRESHOLDS"
+  run "$DRIFT" --dups --check
+  assert_failure 2
+}
+
+@test "two anchors sharing the generated template are not a pair" {
+  mkdir -p "$HOME/.agent/anchors"
+  printf -- '- **Tracker:** the agent board, `notes ptask alpha --agent list` (project-map `trackers`) and the rest.\n' > "$HOME/.agent/anchors/alpha.md"
+  printf -- '- **Tracker:** the agent board, `notes ptask beta --agent list` (project-map `trackers`) and the rest.\n' > "$HOME/.agent/anchors/beta.md"
+  export DRIFT_DOCS="$HOME/.agent/anchors/alpha.md
+$HOME/.agent/anchors/beta.md"
+  rm "$HOME/.claude/skills/x/SKILL.md"
+  run "$DRIFT" --dups --json
+  run jq -r '.pairs' <<< "$output"
+  assert_output '0'
+}
+
+@test "--file keeps the pairs that touch one file and fails while it has any" {
+  printf '# lessons\n%s\n%s\n' "$OTHER" "$RULE" > "$HOME/.agent/lessons/p.md"
+  run "$DRIFT" --dups --file "$CLAUDE_MD"
+  assert_failure 1
+  assert_output --partial 'winner: global'
+  assert_output --partial '1 pair(s)'
+  # the skill is in the lesson's other pair only, never the global file's
+  run "$DRIFT" --dups --file "$HOME/.claude/skills/x/SKILL.md"
+  assert_failure 1
+  assert_output --partial 'winner: skill'
+  assert_output --partial '1 pair(s)'
+  rm "$HOME/.claude/skills/x/SKILL.md"
+  printf '# lessons\n%s\n' "$OTHER" > "$HOME/.agent/lessons/p.md"
+  run "$DRIFT" --dups --file "$CLAUDE_MD"
+  assert_success
+  assert_output --partial '0 pair(s)'
+}
+
+@test "--check and --file do not combine; an unknown flag is refused" {
+  run "$DRIFT" --dups --check --file "$CLAUDE_MD"
+  assert_failure 2
+  run "$DRIFT" --dups --bogus
+  assert_failure 2
+  run "$DRIFT" --dups --file --json
+  assert_failure 2
+}

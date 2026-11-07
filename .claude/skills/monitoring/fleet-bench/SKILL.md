@@ -124,6 +124,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `epic_linked_share` (now) | open agent rows filed under an epic (`#of/`) / open agent rows, in projects with an open epic (`notes projects --stats --json`) |
 | `landed_unverified` (now) | open epics whose every leaf is done: landed, waiting on proof of the outcome |
 | `doctor_fail` (now) | `FAIL` lines in the last `notes doctor` run (`BENCH_DOCTOR_LAST`) |
+| `dup_pairs` (now) | instructions two homes restate: `pairs` in the newest `docs-cleanup/<date>/dups.json` (`skill-drift --dups`, `BENCH_DOCS_CLEANUP_DIR`), `?` when that night has none. Bound `dup_pairs_max`, the row `skill-drift --dups --check` holds |
 | `chain_drift` (now) | queue items the record and the queue folders place apart: at another step, held by the record but gone from the queue, or queued after the record's `items_since` with no event. Work older than `items_since` is not counted |
 | `canary_runs` | `canary.jsonl` rows in the window |
 | `canary_pass_rate` | passing canary rows / canary rows |
