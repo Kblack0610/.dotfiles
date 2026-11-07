@@ -140,11 +140,10 @@ session_bucket() {
     esac
     cn=", conflicts with the default branch"
   fi
-  # A gate, a test or a background subagent is work, and a subagent's lands in its own worktree,
-  # so this tree's facts (clean, merged, all phases ticked) say nothing about it until the job
-  # ends. 2026-11-03 agent-10 read DONE, agent-56 LANDED and agent-49 STALLED, each mid-gate.
-  local job="${17:--}" wait=0
-  case "$job" in gate | test | agent) wait=1 ;; esac
+  # A background subagent's work lands in its own worktree, so this tree's facts (clean, merged,
+  # all phases ticked) say nothing about it until it ends: 2026-11-03 agent-10 read DONE and
+  # agent-56 LANDED mid-phase. A gate or test left running past a finished plan is not its work.
+  local job="${17:--}"
   case "$st" in
     busy) echo "WORKING busy$cn"; return ;;
     idle)
@@ -155,7 +154,7 @@ session_bucket() {
       fi ;;
     shell)
       # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
-      if [ "$5" -ge "$FLEET_IDLE_MIN" ] && [ "$wait" = 0 ] && session_finished "$@"; then
+      if [ "$5" -ge "$FLEET_IDLE_MIN" ] && [ "$job" != agent ] && session_finished "$@"; then
         note=", background shell still running"
       elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && { [ "$job" = jobs ] || [ "$job" = none ]; }; then
         # Only a gate, a test or a subagent is work worth waiting 120m on. Anything else is a sleep
@@ -182,7 +181,8 @@ session_bucket() {
 # fact. No event API names a gate's process, so this reads /proc, one `ls -l` of every cwd link and one `ps` per
 # session whose open job reads jobs or none. Not counted: a `-c` command line (a shell holding its
 # script's text, not the gate), the session's own `claude` (its argv carries the dispatch prompt,
-# which names agent-land), and this pass's own ancestors.
+# which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
+# without .pid) only the worktree is read.
 live_wait() {
   local cwd="$1" root="${2:-0}" conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text line pid cmd
   [ -r "$conf" ] && cwd="$(realpath "$cwd" 2>/dev/null)" || return 0
