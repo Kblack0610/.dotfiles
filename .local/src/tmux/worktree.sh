@@ -1148,6 +1148,30 @@ cmd_done() {
   printf 'done: killing %s, then reaping its worktree unless something still holds it (log: %s)\n' "$name" "$logf"
 }
 
+# wt_prune_branches <main> <dry> -- delete the slot branches (agent-N, worktree-agent-*) that
+# are merged into the trunk and checked out in no worktree, which `reap` leaves when `-d`
+# refused at the time (2026-11-06: 11 in dotfiles, 5 in private). `-d`, never `-D`, so git
+# re-checks every one. Prints one line per branch: "deleted <b>" or "kept <b>".
+wt_prune_branches() {
+  local main="$1" dry="$2" def base b wtpath
+  def=$(wt_default_branch "$main") || return 0
+  base=$(wt_base_ref "$main" "$def") || return 0
+  while IFS=' ' read -r b wtpath; do
+    [ -z "$wtpath" ] || continue
+    case "$b" in
+    agent-[0-9]* | worktree-agent-*) ;;
+    *) continue ;;
+    esac
+    if [ "$dry" -eq 1 ]; then
+      printf 'would delete %s\n' "$b"
+    elif git -C "$main" branch -d "$b" >/dev/null 2>&1; then
+      printf 'deleted %s\n' "$b"
+    else
+      printf 'kept %s\n' "$b"
+    fi
+  done < <(git -C "$main" branch --merged "$base" --format='%(refname:short) %(worktreepath)' 2>/dev/null)
+}
+
 cmd_gc() {
   local dry=0 tsv=0 repo='' arg
   for arg in "$@"; do
@@ -1189,6 +1213,10 @@ cmd_gc() {
   # An empty candidate list is a RESULT, not a success. Every silent-success bug in this
   # tree has looked exactly like a sweep that ran over nothing and said "done".
   if [ "${#candidates[@]}" -eq 0 ]; then
+    # A repo whose every tree is gone can still hold merged slot branches `-d` refused earlier.
+    if [ -n "$repo" ]; then
+      wt_prune_branches "$repo" "$dry" | sed "s|^|${repo##*/}: |" >&2
+    fi
     if [ "$tsv" -eq 1 ]; then
       panel_hint "no worktrees to consider${repo:+ in $repo}" >&2
     else
@@ -1202,10 +1230,17 @@ cmd_gc() {
   # night rather than keeping it silently (2026-11-02: 30 of 70 playground trees, some for weeks).
   # A symlink, a main checkout or a dir git cannot resolve is NOT-A-WORKTREE and is skipped, so
   # it no longer inflates that count (2026-11-06: 12 of 44 "stranded" were such entries).
-  local reaped=0 skipped=0 line state action hue reason ends out states='' w by=''
+  local reaped=0 skipped=0 line state action hue reason ends out states='' w by='' main
+  local -a mains=()
   for path in "${candidates[@]}"; do
     line=$(wt_state "$path")
     state=${line%%$'\t'*} reason=${line#*$'\t'}
+    # The repos whose branches get pruned, taken before the reap (afterwards the tree is gone).
+    # Never through a not-a-worktree entry: a symlink or a plain dir with its own clone is not
+    # a repo gc manages.
+    if [ "$state" != not-a-worktree ] && main=$(wt_main_repo "$path" 2>/dev/null); then
+      [[ " ${mains[*]-} " == *" $main "* ]] || mains+=("$main")
+    fi
     action=kept hue=$C_INP
     case "$state" in
     landed | husk)
@@ -1235,7 +1270,18 @@ cmd_gc() {
     fi
   done
 
-  [ "$tsv" -eq 0 ] || return 0
+  # After the loop, so a branch whose tree was reaped just now (and kept by `-d`) is seen too.
+  local pruned='' got
+  for main in ${mains[@]+"${mains[@]}"}; do
+    got=$(wt_prune_branches "$main" "$dry" | sed "s|^|${main##*/}: |")
+    [ -z "$got" ] || pruned+="${pruned:+$'\n'}$got"
+  done
+
+  if [ "$tsv" -eq 1 ]; then
+    [ -z "$pruned" ] || printf '%s\n' "$pruned" >&2
+    return 0
+  fi
+  [ -z "$pruned" ] || printf '\nbranches:\n%s\n' "$pruned"
   for w in $WT_GC_STATES; do
     by+="${by:+, }$w $(grep -cx -- "$w" <<<"$states")"
   done
