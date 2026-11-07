@@ -2646,6 +2646,21 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   assert_equal "$(night_keys)" 'add a panel,bump jq'
 }
 
+@test "night_picks caps the count inside jq: n rows, and none for 0, so no pipe closes on a writing jq (ar-487)" {
+  night_ready
+  local k
+  for k in alpha beta gamma; do
+    row agent-runtime agent "$k" "- [ ] feat($k): add $k #tier/3"
+    night_verdict "$k" "$k"
+  done
+  run night_picks "$(night_rows '')" 2
+  assert_success
+  assert_equal "$(wc -l <<<"$output")" 2
+  run night_picks "$(night_rows '')" 0
+  assert_success
+  assert_output ''
+}
+
 @test "cleanup lane: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
   night_ready
   sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/agent-runtime/README.md"
