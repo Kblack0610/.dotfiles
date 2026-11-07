@@ -409,6 +409,53 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$(item running forms)" tags)" = night ]
 }
 
+# ar-900: reap failed a live item on one agent-panel read, and the shepherd had to mv its file back by hand.
+@test "reopen puts a falsely-done item back with its session and starts its row again; an active or landed slug is refused" {
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  "$AQ" add --project game --running --slug cut "cut the beta" >/dev/null
+  "$AQ" set cut "session=lab:game-agent-1" "row=game:gm-7" "profile=bnb" "lane=human" >/dev/null
+  "$AQ" claim cut --sid e4347d61 >/dev/null
+  run "$AQ" reopen cut
+  assert_failure; assert_output --partial "still active"
+  "$AQ" move cut done --status failed >/dev/null
+  "$AQ" set cut "note=session lab:game-agent-1 ended before it closed the item" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" reopen cut --to sideways
+  assert_failure
+  run "$AQ" reopen cut --why "reap read live e4347d61 as gone"
+  assert_success; assert_output --partial "cut: done -> running (reopened, was failed)"
+  f="$(item running cut)"
+  [ -z "$(field "$f" status)" ] || fail "status: survived the reopen"
+  [ -z "$(field "$f" finished)" ] || fail "finished: survived the reopen"
+  [ "$(field "$f" session)" = "lab:game-agent-1" ] || fail "session: was lost"
+  [ "$(field "$f" sessions)" = e4347d61 ] || fail "sessions: was lost"
+  [ "$(field "$f" note)" = "reopened from done (failed): reap read live e4347d61 as gone" ] || fail "note: $(field "$f" note)"
+  # A human-lane row, so no --agent: started again on its own board.
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game start gm-7"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cut.md 2>/dev/null)" ] || fail "a done copy was left behind"
+  # --to waiting stamps waiting:; no lane is the agent lane, and no profile is notes' default.
+  "$AQ" move cut done --status failed >/dev/null
+  sed -i '/^lane: /d; /^profile: /d' "$AGENT_QUEUE_DIR"/done/*/*-cut.md
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" reopen cut --to waiting >/dev/null
+  [ -n "$(field "$(item waiting cut)" waiting)" ] || fail "--to waiting did not stamp waiting:"
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes ptask game --agent start gm-7"
+  # A cancel was a decision, and a landed item is new work: neither is a reopen.
+  "$AQ" cancel cut >/dev/null
+  run "$AQ" reopen cut
+  assert_failure; assert_output --partial "cancelled"
+  "$AQ" add --project game --running --slug cut "cut the beta again" >/dev/null
+  "$AQ" set cut "pr=Org/game#3" "merged=abc123" >/dev/null
+  "$AQ" move cut done --status ok >/dev/null
+  run "$AQ" reopen cut
+  assert_failure; assert_output --partial "landed"
+  run "$AQ" reopen nosuch
+  assert_failure; assert_output --partial "no finished item"
+}
+
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh stub: the state for PR N is the file $SANDBOX/pr-N; every call is logged.
