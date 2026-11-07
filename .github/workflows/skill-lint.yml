@@ -16,6 +16,10 @@ on:
         description: "full for the dotfiles layout, project for a game repo's flat skills"
         type: string
         default: full
+      allow-empty:
+        description: "true for a repo that tracks no skills on purpose; it fails on finding none otherwise"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,12 +30,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # All history, for the ratchet's merge base, but no old file contents: the blobs this
-      # job reads arrive on demand, which matters on a game repo.
+      # All history, for the ratchet's merge base, but no old file contents, and only the
+      # two folders the lint reads: a game repo's tree would not fit this job's timeout.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           filter: blob:none
+          sparse-checkout: |
+            .claude
+            tests
       # The linter comes from the public repo: its own commit when that repo is the caller,
       # so a PR is tested with the linter it changes, and main for everyone else.
       - uses: actions/checkout@v4
@@ -41,11 +48,12 @@ jobs:
           path: .skill-lint
           sparse-checkout: .local/bin
       # Exits 2 if it finds nothing at all, so a path change that silently empties the
-      # input list fails the job instead of reporting success.
+      # input list fails the job instead of reporting success. allow-empty is the one exception.
       - name: Lint skills, commands and agents
         env:
           PROFILE: ${{ inputs.profile }}
-        run: .skill-lint/.local/bin/skill-drift --lint . --profile "$PROFILE"
+          ALLOW_EMPTY: ${{ inputs.allow-empty && '1' || '' }}
+        run: .skill-lint/.local/bin/skill-drift --lint . --profile "$PROFILE" ${ALLOW_EMPTY:+--allow-empty}
       - name: The baseline only shrinks
         if: github.event_name == 'pull_request'
         env:
