@@ -19,7 +19,8 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-NEW_BRANCH = {"-b", "-B", "-c", "-C", "--orphan", "--detach", "-d"}
+NEW_BRANCH_SHORT = set("bBcCd")  # also inside a cluster: -qb
+NEW_BRANCH_LONG = ("--orphan", "--detach")
 
 MSG = (
     "checkout-guard: {top} is the checkout stow deploys, so {what} would make every session run "
@@ -53,11 +54,12 @@ def deployed(d):
 
 
 def moves_head(top, verb, args):
-    """True when `git <verb> <args>` would leave the default branch. `--` makes a checkout a file
-    restore, and so do two words or a word that names no commit."""
-    if verb == "checkout" and "--" in args:
+    """True when `git <verb> <args>` would leave the default branch. Paths after `--` make a
+    checkout a file restore, and so do two words or a word that names no commit or origin branch,
+    which git would otherwise check out as a new tracking branch."""
+    if verb == "checkout" and "--" in args[:-1]:
         return False
-    if NEW_BRANCH & set(args):
+    if any(a.startswith(NEW_BRANCH_LONG) or (a[:2] != "--" and a[:1] == "-" and NEW_BRANCH_SHORT & set(a)) for a in args):
         return True
     words = [a for a in args if a == "-" or not a.startswith("-")]
     if not words or (verb == "checkout" and len(words) > 1):
@@ -66,11 +68,24 @@ def moves_head(top, verb, args):
     default = FORGE.git(top, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD").removeprefix("origin/") or "main"
     if target == default:
         return False
-    return target == "-" or verb == "switch" or bool(FORGE.git(top, "rev-parse", "-q", "--verify", target + "^{commit}"))
+    if target == "-" or verb == "switch":
+        return True
+    return any(FORGE.git(top, "rev-parse", "-q", "--verify", r + "^{commit}") for r in (target, "refs/remotes/origin/" + target))
+
+
+def gh_words(argv):
+    """gh's command words, without its flags: `gh -R o/r pr checkout 1` is a checkout too."""
+    words, rest = [], iter(argv[1:])
+    for a in rest:
+        if a in ("-R", "--repo"):
+            next(rest, None)
+        elif not a.startswith("-"):
+            words.append(a)
+    return words
 
 
 def check(head, argv, env, cwd):
-    if head == "gh" and argv[1:3] == ["pr", "checkout"]:
+    if head == "gh" and gh_words(argv)[:2] == ["pr", "checkout"]:
         top = deployed(cwd)
         return MSG.format(top=top, what="`gh pr checkout`") if top else None
     if head != "git":

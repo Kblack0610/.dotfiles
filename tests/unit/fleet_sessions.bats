@@ -785,6 +785,12 @@ SH
   assert_success
   [ "$(jq '[.sessions[] | select(.bucket == "CHECKOUT")] | length' "$FLEET_STATE_FILE")" = 0 ]
   [ "$(jq -r '.main[] | select(.id == "checkout-dots") | .escalated' "$FLEET_STATE_FILE")" = true ]
+
+  # a session's cwd is a real path, so $DOTFILES reaching the checkout by a symlink still matches it
+  ln -s "$DOTFILES" "$SANDBOX/dots-link"
+  DOTFILES="$SANDBOX/dots-link" run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.session_id == "sid-9") | .ahead' <<<"$output")" = 0 ]
 }
 
 @test "end to end: one test red on three branches in the window is one SHARED row, escalated once per episode" {

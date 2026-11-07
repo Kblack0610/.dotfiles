@@ -14,6 +14,7 @@ setup() {
   g -C "$T/dots" commit --allow-empty -m init
   g -C "$T/dots" branch fix/x
   g -C "$T/dots" update-ref refs/remotes/origin/fix/x HEAD
+  g -C "$T/dots" update-ref refs/remotes/origin/only-on-origin HEAD
   g -C "$T/dots" update-ref refs/remotes/origin/main HEAD
   g -C "$T/dots" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
   touch "$T/dots/f"
@@ -39,7 +40,9 @@ allowed() { assert_success; assert_output ''; }
   local c
   for c in 'git checkout fix/x' 'git checkout origin/main' 'git checkout -b new' 'git checkout -' 'git checkout --detach' \
            'git switch fix/x' 'git switch -c new' 'git switch --detach main' 'git switch -' 'gh pr checkout 1240' \
-           "git -C $T/dots switch fix/x" 'bash -c "git switch fix/x"'; do
+           "git -C $T/dots switch fix/x" 'bash -c "git switch fix/x"' \
+           'git checkout -qb new' 'git checkout --orphan=new' 'git checkout fix/x --' 'git checkout only-on-origin' \
+           'gh -R o/r pr checkout 1240' 'gh pr --repo o/r checkout 1240' 'gh pr checkout -R o/r 1240'; do
     run at "$T/dots" "$c"
     denied
   done
@@ -47,7 +50,7 @@ allowed() { assert_success; assert_output ''; }
 
 @test "going to the default branch and restoring files are allowed" {
   local c
-  for c in 'git checkout main' 'git switch main' 'git checkout -- f' 'git checkout fix/x -- f' 'git checkout HEAD f' 'git checkout f' 'git checkout .'; do
+  for c in 'git checkout main' 'git switch main' 'git checkout -- f' 'git checkout fix/x -- f' 'git checkout HEAD f' 'git checkout f' 'git checkout .' 'git checkout -q f' 'gh pr view 1240' 'gh -R o/r pr list'; do
     run at "$T/dots" "$c"
     allowed
   done

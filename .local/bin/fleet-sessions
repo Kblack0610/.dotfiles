@@ -684,7 +684,8 @@ sync_facts() {
 
 # off_default_checkouts -> each checkout stow deploys (the two dotfiles-drift reads) that is not on
 # its default branch, one per line. Worktrees are never in it: a branch is what they are for.
-# The local symref settles the usual case, so a clean pass costs no gh call.
+# The local symref settles the usual case, so a clean pass costs no gh call. Each is its real path,
+# which is how a session's cwd reads.
 off_default_checkouts() {
   local d cur base
   for d in "${DOTFILES:-$HOME/.dotfiles}" "${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"; do
@@ -692,7 +693,7 @@ off_default_checkouts() {
     cur="$(git -C "$d" symbolic-ref -q --short HEAD)"
     [ "origin/$cur" = "$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD)" ] && continue
     base="$(default_base "$d")"
-    [ "$cur" = "${base#origin/}" ] || echo "$d"
+    [ "$cur" = "${base#origin/}" ] || realpath "$d"
   done
 }
 
