@@ -744,8 +744,7 @@ spill_money() {
   pct=$(lazer-spend --json 2>/dev/null | jq -e '.spend / .max_budget * 100 | floor' 2>/dev/null) ||
     { echo "shut: the Lazer pool's spend is unreadable"; return; }
   [ "$pct" -lt "$DISPATCH_SPILL_POOL_PCT" ] || { echo "shut: the Lazer pool is at $pct%, the line is DISPATCH_SPILL_POOL_PCT=$DISPATCH_SPILL_POOL_PCT%"; return; }
-  left=$(gateway_left "$SPILL_HARNESS") || { echo "shut: cannot read the $SPILL_HARNESS key's budget"; return; }
-  awk -v l="$left" 'BEGIN { exit !(l > 0) }' || echo "shut: the $SPILL_HARNESS key is spent (\$$left left)"
+  left=$(claude-acct room --source "$(harness_source "$SPILL_HARNESS")" 2>&1) || echo "shut: the $SPILL_HARNESS key has no room: $left"
 }
 
 # item_tier <item json> -> the item's tier: what its title or task says (row_tier), else its `tier<N>`
@@ -1222,14 +1221,9 @@ harness_launcher() { jq -er --arg h "$1" '.harnesses[$h].launcher // $h' "$HARNE
 # harness_key_file <harness> -> the key file it spends: its own `key_file`, else the gateway's (the eval key).
 harness_key_file() { jq -r --arg h "$1" '(.harnesses[$h].key_file // .gateway.key_file) | sub("^~"; env.HOME)' "$HARNESSES"; }
 
-# gateway_left <harness> -> dollars left on the key that harness spends, from the gateway itself; rc 1
-# when it cannot say. The key goes in on stdin, off the process list.
-gateway_left() {
-  local file key
-  file=$(harness_key_file "$1") && key=$(cat "$file") || return 1
-  curl -fsS -m 10 -K - "$(jq -r .gateway.url "$HARNESSES")/key/info" <<<"header = \"Authorization: Bearer $key\"" 2>/dev/null |
-    jq -e '.info | .max_budget - .spend' 2>/dev/null
-}
+# harness_source <harness> -> the source its runs spend, its `source` in the map (a row of claude-acct's
+# sources file; claude-acct is the one reader of how much that source has left).
+harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESSES" 2>/dev/null; }
 
 # gateway_launch <harness> <model> <item json> <brief> -- past every refusal, set cmd to the launch
 # line, and sid to the session id an opencode run takes. Refuses (rc 2, or 1 for the budget or room) before
@@ -1237,19 +1231,20 @@ gateway_left() {
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file room repo dir
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
   id=$(jq -r --arg h "$harness" --arg m "$model" '.harnesses[$h].models[$m] // empty' "$HARNESSES")
   [ -n "$id" ] || { say "start: harness $harness has no model $model"; return 2; }
-  room=$(jq -r --arg h "$harness" '.harnesses[$h].room // empty' "$HARNESSES")
-  if [ -n "$room" ]; then
-    # A plan-billed harness has no key budget; its `room` command says whether the plan has use left.
-    left=$($room 2>&1) || { say "start: $harness has no room: $left"; return 1; }
+  # Room is claude-acct's verdict on the source the harness spends; a cloud session spends a Claude
+  # account, picked at launch, so it asks for any account with room.
+  if [ "$(harness_launcher "$harness")" = claude-cloud ]; then
+    left=$(claude-acct room 2>&1) || { say "start: $harness has no room: $left"; return 1; }
   else
-    left=$(gateway_left "$harness") || { say "start: cannot read the $harness key's budget from the gateway"; return 1; }
-    awk -v l="$left" 'BEGIN { exit !(l > 0) }' || { say "start: the $harness key is spent (\$$left left)"; return 1; }
+    src=$(harness_source "$harness")
+    [ -n "$src" ] || { say "start: harness $harness has no source in $HARNESSES"; return 2; }
+    left=$(claude-acct room --source "$src" 2>&1) || { say "start: $harness has no room: $left"; return 1; }
   fi
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")
@@ -1485,9 +1480,9 @@ cmd_start() {
       # A cloud session's model is its environment's, so the map's one entry stands for it.
       [ "$(harness_launcher "$harness")" != claude-cloud ] || model=${model:-cloud}
       gateway_launch "$harness" "$model" "$it" "$(item_brief "$it" "$harness")" || return
-      # What the run bills: the map's `account` for a plan login (codex: chatgpt), else the gateway key;
-      # a cloud session bills the claude account gateway_launch chose (acct).
-      [ "$(harness_launcher "$harness")" = claude-cloud ] || acct=$(jq -r --arg h "$harness" '.harnesses[$h].account // "gateway"' "$HARNESSES")
+      # What the run bills: the source the map names for the harness; a cloud session bills the claude
+      # account gateway_launch chose (acct).
+      [ "$(harness_launcher "$harness")" = claude-cloud ] || acct=$(harness_source "$harness")
       on=$harness
     fi
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new ${host:+--host "$host"} --server "$server" --detach -c "$cwd" | tail -1)
