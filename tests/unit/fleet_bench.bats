@@ -16,6 +16,7 @@ setup() {
   export BENCH_BASIS_MIN_N=1   # most fixtures measure one phase; the minimum has its own tests
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
+  export BENCH_SKILL_CMD=true   # nor the real runner confs: no dangling SKILL unless a test serves one
   export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
   export BENCH_NEEDS_CMD='echo {"needs":[],"errors":[]}'   # nor the real hub: no needs unless a test serves them
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
@@ -1619,6 +1620,23 @@ coverage_setup() {
   run "$SUBJECT" triage --coverage
   assert_failure
   assert_output 'hold'
+}
+
+@test "triage --coverage: a runner whose SKILL resolves to nothing fails and names it (negative control)" {
+  coverage_setup
+  printf '#!/usr/bin/env bash\nexec "%s" skill --dangling\n' "$REPO_ROOT/.local/bin/agentctl" > "$SANDBOX/bin/skill-stub"
+  chmod +x "$SANDBOX/bin/skill-stub"
+  export BENCH_SKILL_CMD=skill-stub AGENTCTL_SKILLS_DIR="$SANDBOX/skills" AGENTCTL_COMMANDS_DIR="$SANDBOX/commands"
+  mkdir -p "$AGENTCTL_SKILLS_DIR/dream" "$AGENTCTL_COMMANDS_DIR"
+  : > "$AGENTCTL_SKILLS_DIR/dream/SKILL.md"
+  printf 'NAME=alpha\nKIND=oneshot\nLANE=observe\nCOMMAND=true\nDESCRIPTION=a\nEFFECT=none\nSKILL=dream\n' > "$LEDGER_CONF_DIR/alpha.conf"
+  run "$SUBJECT" triage --coverage
+  assert_success
+  assert_output ''
+  sed -i 's/^SKILL=.*/SKILL=no-such-skill/' "$LEDGER_CONF_DIR/alpha.conf"
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'skill alpha SKILL=no-such-skill'
 }
 
 @test "triage --route: each key gets the first line its row matches, and no line is a dash" {

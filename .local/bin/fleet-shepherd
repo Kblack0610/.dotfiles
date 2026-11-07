@@ -958,15 +958,23 @@ score_pass() {
   printf '%s\t%s\n' "$verdict" "$detail"
 }
 
-# pass_prompt <due> [handover file]
+# pass_skill -> the skill a pass runs: the one this runner's conf names, so a rename is one edit there.
+pass_skill() {
+  local skill
+  skill="$(agentctl skill "$NAME" 2>/dev/null)" && [ -n "$skill" ] && { printf '%s\n' "$skill"; return 0; }
+  echo "fleet-shepherd: no SKILL= in the $NAME conf (agentctl skill $NAME)" >&2
+  return 1
+}
+
+# pass_prompt <skill> <due> [handover file]
 pass_prompt() {
   local routes roles
-  routes="$(routes_for "$1")"
+  routes="$(routes_for "$2")"
   roles="$(roles_for "$routes")"
-  printf '/fleet-lead pass\n\nRoles due: %s\n' "$roles"
+  printf '/%s pass\n\nRoles due: %s\n' "$1" "$roles"
   [ "$roles" = none ] || printf 'Read, per role:\n%s\n' "$(route_block "$routes")"
-  printf '\nDue this pass (from fleet-shepherd due):\n%s\n' "${1:-nothing}"
-  [ -z "${2:-}" ] || printf '\nHandover: %s\n' "$2"
+  printf '\nDue this pass (from fleet-shepherd due):\n%s\n' "${2:-nothing}"
+  [ -z "${3:-}" ] || printf '\nHandover: %s\n' "$3"
 }
 
 # pass_account -> the config dir a pass starts on, empty for the main account: the one claude-acct
@@ -1027,7 +1035,8 @@ one_pass() {
 # with neither does the pass session get a new window. one_pass then closes any other. The
 # launcher carries the runner's environment, since a tmux pane gets the server's, not the caller's.
 launch_pass() {
-  local id="$1" n acct v cmd pane
+  local id="$1" n acct v cmd pane skill
+  skill="$(pass_skill)" || return 1
   n="$(printf '%s\n' "$2" | grep -c .)"
   acct="$(pass_account)"
   {
@@ -1042,7 +1051,7 @@ launch_pass() {
     printf 'export AGENTCTL_ACCOUNT=%q\n' "${acct:-default}"
     # shellcheck disable=SC2016
     echo '. "$HOME/.config/shared-hooks/claude-telemetry.sh" 2>/dev/null || true'
-    printf 'exec agentctl-run --role observe --session-id %q %q\n' "$id" "$(pass_prompt "$2" "${3:-}")"
+    printf 'exec agentctl-run --role observe --session-id %q %q\n' "$id" "$(pass_prompt "$skill" "$2" "${3:-}")"
   } > "$LEDGER/.pass.sh" || return 1
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_watch "$LEDGER/log.md" && proof_mark "$LEDGER/.proof-$id"

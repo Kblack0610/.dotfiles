@@ -222,6 +222,7 @@ set -uo pipefail
 : "${BENCH_STEPS_CMD:=notes log --steps --json}"   # the record replayed per step: flows, dwell, the items it holds
 : "${BENCH_INBOX_CMD:=inbox_lines}"                # how many lines wait untriaged
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
+: "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 : "${BENCH_ROADMAP_CMD:=notes projects --roadmap}"   # given <project> --json: open and closed epics, leaf rows
@@ -2929,11 +2930,13 @@ triage_promote() {
   echo "$n"
 }
 
-# triage_coverage -> each standing watch and each runner no TRIAGE_ROUTES line resolves, one a line.
+# triage_coverage -> each standing watch and each runner no TRIAGE_ROUTES line resolves, and each
+# runner whose SKILL names nothing (agentctl skill --dangling), one a line.
 # It builds the row each would file, so a line that stops matching the real row text counts too. A
 # watch with an expiry is a bake or a one-off: it pages and goes, so it needs no line.
 triage_coverage() {
   local f n text rows=
+  { AGENTCTL_CONF_DIR="$LEDGER_CONF_DIR" $BENCH_SKILL_CMD || true; } | sed 's/^/skill /'
   for f in "$TRIAGE_WATCHES"/*.yaml; do
     [ -e "$f" ] || continue
     grep -qE '^expiry: *[^n[:space:]]' "$f" && continue

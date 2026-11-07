@@ -39,7 +39,8 @@ esac'
   pick) echo "$HOME/.claude-best" ;;
   trust) echo "$*" >> "$HOME/trust.calls" ;;
 esac'
-  stub agentctl 'echo "$*" >> "$HOME/agentctl.calls"'
+  # `skill <name>` reads the conf's SKILL=; STUB_SKILL stands for it (unset: the conf names none)
+  stub agentctl 'if [ "$1" = skill ]; then echo "${STUB_SKILL-fleet-lead}"; else echo "$*" >> "$HOME/agentctl.calls"; fi'
   export PROM_LIB="$HOME/prom-stub.sh"
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
@@ -308,6 +309,19 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   doc "[$(row a WORKING false false)]"
   "$SH" run
   [ ! -e "$FLEET_SHEPHERD_DIR/.settled" ]
+}
+
+@test "the pass runs the skill the conf names, and a conf naming none starts no pass" {
+  doc "[$(row a DONE false false)]"
+  STUB_SKILL=fleet-chief run "$SH" run
+  assert_success
+  run prompt
+  assert_line '/fleet-chief pass'
+  refute_output --partial '/fleet-lead'
+  rm -f "$FLEET_SHEPHERD_DIR/.pass.sh" "$FLEET_SHEPHERD_DIR/.pass"
+  STUB_SKILL= run "$SH" run
+  assert_output --partial 'no SKILL= in the'
+  [ ! -e "$FLEET_SHEPHERD_DIR/.pass.sh" ] || fail 'a launcher was written without a skill'
 }
 
 @test "run starts a pass in window shepherd of session hub on the hub server, as the runner, and does not wait for it" {
