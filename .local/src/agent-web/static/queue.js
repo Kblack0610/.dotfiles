@@ -65,7 +65,7 @@ const refreshQueue = coalesce(async () => {
   } catch (e) { qst.err = e.message; }
   // An old section id (`#queue/running`) opens the table on its chip; a new one scrolls there.
   if (st.tab === "queue" && st.arg) {
-    const chip = qst.aliases[st.arg], arg = st.arg;
+    const arg = st.arg, key = arg.toLowerCase(), chip = Object.hasOwn(qst.aliases, key) ? qst.aliases[key] : "";
     if (chip || ["flow", "table", "candidates"].includes(arg)) {
       st.arg = "";
       if (chip && !tblParams(st.views.queue).get("s")) { setQuery(tblSet(st.views.queue, { s: chip })); refreshQueue(); } else { setQuery(st.views.queue); }
@@ -143,7 +143,7 @@ function qState(i) {
     const s = i.status || "ok";
     return s === "ok" ? `<td>done</td>` : `<td class="${s === "failed" ? "bad" : "muted"}">${s === "failed" ? "failed" : "cancelled"}</td>`;
   }
-  return `<td>${esc(i.state)}</td>`;
+  return `<td>${i.state === "queued" ? (i.hold ? "held" : "ready") : esc(i.state)}</td>`;
 }
 
 // The PR cell: hub-core's label as a link; a done item with no recorded merge says so on hover.
@@ -204,7 +204,7 @@ function qDetail() {
   return `<h2 class="sec">Item <span class="muted">${esc(i.slug)}</span> <button class="btn sm quiet" data-qclose="1">Close</button></h2>` +
     `<div class="card qitem ${esc(i.state)}">${cardHead(i.title || i.slug, [prio])}` +
     cardLine([esc(i.project), i.harness && `<span title="harness">${esc(i.harness)}</span>`, p ? `phase ${p.done}/${p.total}` : "", active ? etaText(p) : "", qPr(i), qCost(i), qProof(i)]) +
-    (line ? `<div class="cline qline">${line}</div>` : "") +
+    (line ? `<div class="cline">${line}</div>` : "") +
     (i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "") + (i.note ? `<div class="qhold">${esc(i.note)}</div>` : "") +
     (active ? qNeeds(i) : "") + (active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "") +
     cfold(`task:${i.slug}`, "Full task and details", facts([

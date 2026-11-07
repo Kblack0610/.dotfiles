@@ -356,7 +356,7 @@ fn detail(i: &Item, t: Timing, p: Palette, now: i64, w: usize) -> Vec<Line<'stat
         ("pr", i.pr_words().unwrap_or_default()),
         ("cost", i.cost().map(money).unwrap_or_default()),
         (
-            "in/wait",
+            "timing",
             format!(
                 "in {}  wait {}  run {}  lead {}",
                 mins(t.in_state),

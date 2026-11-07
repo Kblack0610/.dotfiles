@@ -9,9 +9,7 @@
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
-use std::collections::BTreeMap;
-
-use hub_core::queue::{self as hub_queue, Candidates, DayTotal, Item, QueueRow};
+use hub_core::queue::{self as hub_queue, Candidates, Item, QueueRow};
 use hub_core::session_actions::System;
 use hub_core::table::View;
 use serde::Deserialize;
@@ -52,7 +50,6 @@ fn render(
     q: &QueueQuery,
     now: chrono::DateTime<chrono::Utc>,
 ) -> serde_json::Value {
-    let days = hub_queue::done_days(&items);
     let needs_you = items
         .iter()
         .filter(|i| i.state == hub_queue::State::Waiting)
@@ -70,7 +67,7 @@ fn render(
         .collect();
     serde_json::json!({
         "at": now.timestamp(),
-        "items": shown.iter().map(|r| item_view(r.item, &days, now)).collect::<Vec<_>>(),
+        "items": shown.iter().map(|r| item_view(r.item, now)).collect::<Vec<_>>(),
         "table": table,
         "needs_you": needs_you,
         "open_rows": hub_queue::TABLE_OPEN_ROWS,
@@ -80,14 +77,9 @@ fn render(
 
 /// The item as agent-queue printed it plus what a row shows: `harness` (`Item::harness_label`,
 /// `claude` when the item names no agent), `cost` (dollars, absent when unknown), the PR's
-/// label and link, `pr_merged` (the merge was recorded), `unproven`, and for a done item its
-/// `day`, its `day_label` and that day's `day_total` line, so the page sums and words nothing;
-/// its `timing` now (`Item::timing`), so the page does no duration math, and its `timeline`.
-fn item_view(
-    i: &Item,
-    days: &BTreeMap<String, DayTotal>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> serde_json::Value {
+/// label and link, `pr_merged` (the merge was recorded), `unproven`, its `timing` now
+/// (`Item::timing`), so the page does no duration math, and its `timeline`.
+fn item_view(i: &Item, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value {
     let mut v = serde_json::to_value(i).unwrap_or_default();
     v["timing"] = serde_json::to_value(i.timing(now)).unwrap_or_default();
     v["timeline"] = serde_json::to_value(i.timeline()).unwrap_or_default();
@@ -104,15 +96,6 @@ fn item_view(
     if i.unproven() {
         v["unproven"] = true.into();
     }
-    if i.state == hub_queue::State::Done {
-        if let Some(d) = i.finished.as_deref().and_then(hub_queue::day_of) {
-            if let Some(t) = days.get(&d) {
-                v["day_total"] = t.line().into();
-            }
-            v["day_label"] = hub_queue::day_label(&d).into();
-            v["day"] = d.into();
-        }
-    }
     v
 }
 
@@ -122,8 +105,8 @@ pub async fn stats() -> ApiResult<Json<serde_json::Value>> {
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))?;
-    // The prose lines for the folded detail, and the typical times the page's tiles show; the
-    // tiles count the items themselves.
+    // The prose lines for the folded detail, and the typical times for the page's folded
+    // detail.
     Ok(Json(serde_json::json!({
         "week": s.week(),
         "sitting": s.sitting_line(),
@@ -242,8 +225,7 @@ mod tests {
             r#"{"slug":"c","state":"queued","agent":"codex","model":"sol","task":"t"}"#,
             "\n",
         ));
-        let days = hub_queue::done_days(&items);
-        let [a, b, c] = [0, 1, 2].map(|n| item_view(&items[n], &days, chrono::Utc::now()));
+        let [a, b, c] = [0, 1, 2].map(|n| item_view(&items[n], chrono::Utc::now()));
         assert_eq!(
             (a["cost"].as_f64(), a["cost_label"].as_str()),
             (Some(6.1), Some("$6.10"))
@@ -256,12 +238,6 @@ mod tests {
         assert_eq!(a["merged"], "abc", "the ledger's own key is left alone");
         assert_eq!(a["timing"]["run"], 60, "the page renders hub-core's timing");
         assert!(b["timing"]["run"].is_null(), "no started, no run");
-        assert_eq!(a["day_total"], "2 done, $6.10, 1 unpriced");
-        assert_eq!(a["day_total"], b["day_total"]);
-        assert_eq!(
-            a["day_label"],
-            hub_queue::day_label(a["day"].as_str().unwrap())
-        );
         assert!(a.get("unproven").is_none());
         assert_eq!(b["unproven"], true, "no PR and no report");
         assert!(b.get("cost").is_none(), "a ledger 0 is not a price");
@@ -335,7 +311,7 @@ mod tests {
         let items = hub_queue::parse(
             r#"{"slug":"a","state":"done","queued":"2026-11-06T09:00:00Z","started":"2026-11-06T09:14:00Z","merged":"abc123","task":"t"}"#,
         );
-        let v = item_view(&items[0], &BTreeMap::new(), chrono::Utc::now());
+        let v = item_view(&items[0], chrono::Utc::now());
         assert_eq!(v["timeline"][1]["step"], "started");
         assert_eq!(v["timeline"][1]["gap_min"], 14);
         assert_eq!(v["timeline"][2]["sha"], "abc123");

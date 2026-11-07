@@ -780,7 +780,16 @@ impl QueueRow<'_> {
         match self.item.state {
             State::Waiting => o.timing.in_state.cmp(&self.timing.in_state),
             State::Running => o.timing.run.cmp(&self.timing.run),
-            State::Done => o.item.finished.cmp(&self.item.finished),
+            State::Done => {
+                // Newest finish first; a stamp that does not parse sorts last.
+                let at = |r: &QueueRow<'_>| r.item.finished.as_deref().and_then(stamp);
+                match (at(o), at(self)) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (None, None) => Equal,
+                }
+            }
             State::Queued => Equal,
         }
     }
