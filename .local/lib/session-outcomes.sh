@@ -14,10 +14,13 @@
 # ("Session outcomes") in the private overlay.
 
 # so_transcript_metrics FILE - one pass over a transcript, one JSON object out.
-# A PR counts only when a `gh pr create|merge` call's own result printed it, so a PR
-# merely viewed or pasted is not claimed. lessons_written counts corrections (the rule
-# is "after ANY correction, update lessons"); most land as `cat >>` through Bash, not
-# Edit, so both are counted. Malformed lines are skipped, not fatal:
+# A PR counts when a `gh pr create|merge` call's own result printed it, so a PR merely
+# viewed or pasted is not claimed, or when Claude Code wrote a pr-link record for it: that
+# record is how a PR made in a subagent, or whose output was persisted to a file, reaches
+# this transcript, since neither prints its URL in a tool result here. A pr-link is the
+# session's own record (none carries another session's id), so it is not a viewed PR.
+# lessons_written counts corrections (the rule is "after ANY correction, update lessons");
+# most land as `cat >>` through Bash, not Edit, so both are counted. Malformed lines are skipped, not fatal:
 # a transcript cut off by a crash is the session this feed most needs to see.
 # entrypoint is the first one a record carries: "sdk-cli" is a headless `claude -p`.
 # activity is how the session spent itself. A test run is a test command at the start of a
@@ -126,6 +129,8 @@ so_transcript_metrics() {
               .interrupts += 1
             else . end)
         end
+      elif $r.type == "pr-link" and ($r.prNumber | type) == "number" and (($r.prRepository // "") | test("^[^/\\s]+/[^/\\s]+$")) then
+        .prs += [{repo: $r.prRepository, number: $r.prNumber}]
       elif $r.type == "system" and $r.subtype == "compact_boundary" then
         .compactions[if $r.compactMetadata.trigger == "manual" then "manual" else "auto" end] += 1
       else . end)
