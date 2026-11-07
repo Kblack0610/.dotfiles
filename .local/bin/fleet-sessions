@@ -43,6 +43,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
@@ -519,13 +521,7 @@ default_base() {
 # fact holds still while a red streak runs on, and the suspect range ends where it broke.
 # Cancelled, skipped and running runs decide nothing, so they are passed over.
 main_state() {
-  jq -r 'map(select(.status == "completed"
-                    and (.conclusion | test("^(success|failure|timed_out|startup_failure)$"))))
-    | group_by(.workflowName)[] | sort_by(.createdAt) | reverse
-    | select(.[0].conclusion != "success")
-    | (map(.conclusion == "success") | index(true)) as $g
-    | [.[0].workflowName, (if $g == null then .[-1] else .[$g - 1] end).headSha,
-       (if $g == null then "-" else .[$g].headSha end)] | @tsv'
+  jq -r "$MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
 }
 
 # main_runs <dir> <branch> -> the branch's runs in gh run list field names, reused for

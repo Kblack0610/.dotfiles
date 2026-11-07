@@ -66,14 +66,17 @@
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
 #                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
 #                                stderr error signature recurring in BENCH_GUARD_RECUR runs and
-#                                cc:red_now item nothing here reads; TRIAGE_ROUTES decides where
+#                                cc:red_now item nothing here reads, plus one per red that started
+#                                within HOLD_HOURS after a cleanup merge; TRIAGE_ROUTES decides where
 #                                each one goes, and an agent route queues a red fix. --route prints
 #                                each key (watch X, runner X, unit X) with its route, skill and
 #                                tags, filing nothing
 #   fleet-bench reds [--json] [--days N]
 #                                each red fix queued in the last N days (REDS_DAYS) and what came
 #                                of it: fixing, needs merge, fixed (merged, not red now), still red,
-#                                came back (red again after the merge), cleared or no fix
+#                                came back (red again after the merge), cleared or no fix; and each
+#                                merged cleanup item, its hold: holding (under HOLD_HOURS old), held,
+#                                went red (a red now names it) or recovered (a red named it, now over)
 #   fleet-bench findings [--open|--json|--run]
 #                                conclusions that want a decision, from rules over counted facts
 #                                on every machine; --run evaluates and appends (each sample does)
@@ -127,6 +130,10 @@ set -uo pipefail
 # The forecast names each open phase from its plan with the one checklist parser.
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/test-pick.sh"
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
 : "${BENCH_CAL_MIN_N:=5}"            # scored ETAs a basis needs before its median ratio scales new ones
@@ -171,6 +178,7 @@ set -uo pipefail
 : "${TRIAGE_FIX_CAP:=4}"            # triage: red fixes queued a day, every route together
 : "${TRIAGE_FIX_DAYS:=7}"           # triage: days a queued fix keeps its cause from being queued again
 : "${REDS_DAYS:=7}"                 # reds: days of red fixes the report and its KPIs read
+: "${HOLD_HOURS:=24}"               # reds: hours after a cleanup merge that a new red counts against it
 : "${TRIAGE_HOLD_CMD:=agent-hold check dispatch}"   # triage: a dispatch hold stops queueing, never filing
 : "${TRIAGE_ITEMS_CMD:=agent-queue list --json --state all}"   # triage: given --since <date>
 : "${TRIAGE_RED_CMD:=red_items}"    # triage: given the epoch, the cc:red_now items that stayed red
@@ -248,6 +256,8 @@ def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
 def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
 def round1: . * 10 | round / 10;
 def round2: . * 100 | round / 100;
+def ep: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | fromdateiso8601? // null) end;   # a queue or gh time
+def tagged($t): (" " + (.tags // "") + " ") | contains(" \($t) ");
 # an epic (notes projects rollup) whose every leaf has closed: ready to verify
 def leaves_landed: .open == 0 and .done > 0;
 # agent-ask stamps date +%Y-%m-%dT%H:%M:%S%z; jq has no offset-aware parser
@@ -2520,6 +2530,11 @@ upsert_report() {
 # watch held at TRIP past TRIAGE_WATCH_AFTER, or TRIAGE_WATCH_HIGH_AFTER when high or urgent.
 # FAILED, a failed unit and a high or urgent watch are #high. Sentinel stays observe-only: this
 # reads its state files.
+# watch_sev <name> -> the severity in its manifest. watch_after <severity> -> seconds it must stay
+# at TRIP before it is a red.
+watch_sev() { sed -n 's/^severity:[[:space:]]*//p' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null | head -1; }
+watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
+
 triage_rows() {
   local c name sd v detail u res load f n since sev what why t after
   t=$(now)
@@ -2549,8 +2564,8 @@ triage_rows() {
     [ "$(cat "$f")" = TRIP ] || continue
     n=$(basename "$f" .state)
     since=$(cat "$TRIAGE_WATCH_STATE/$n.since" 2>/dev/null) || continue
-    sev=$(sed -n 's/^severity:[[:space:]]*//p' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null | head -1)
-    case "$sev" in high|urgent) after=$TRIAGE_WATCH_HIGH_AFTER ;; *) after=$TRIAGE_WATCH_AFTER ;; esac
+    sev=$(watch_sev "$n")
+    after=$(watch_after "$sev")
     [[ "$since" =~ ^[0-9]+$ ]] && [ $((t - since)) -ge "$after" ] || continue
     # `what:` is one line or a folded block whose first sentence is the healthy state
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
@@ -2742,6 +2757,102 @@ triage_coverage() {
   [ -z "$rows" ] || triage_route "${rows%$'\n'}" | awk -F'\t' '$4 == "-" { print $1 }'
 }
 
+# A cleanup item merges itself at any hour behind the red-fix gate (policy.md), so nobody is there
+# when it breaks something: these are its post-merge guard. Each red reads as one record naming
+# every merge it could be, because one red that queued a fix per merge would be a stampede.
+
+# hold_runs <owner/repo> -> the runs main's pushes started, as gh run fields. A scheduled run is left
+# out: it fails on the environment moving, not on a merge. actions/runs: see main_runs.
+hold_runs() {
+  gh api -X GET "repos/$1/actions/runs" -f branch=main -f event=push -f per_page=100 \
+    --jq '[.workflow_runs[] | {id, workflowName: .name, status, conclusion, headSha: .head_sha, createdAt: .created_at}]' 2>/dev/null
+}
+
+# hold_failed <owner/repo> <run id> -> the bats files that failed in that run, repo-relative
+hold_failed() {
+  gh run view "$2" -R "$1" --log-failed 2>/dev/null | grep -oE 'in test file [^,]+\.bats' |
+    sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
+}
+
+# hold_area_hit <owner/repo> <merge sha> <red sha> <failed files>: status 0 when a failed file is one
+# of the merge's area tests, the ones the Stop hook would pick for what it changed.
+hold_area_hit() {
+  local paths f text
+  paths=$(gh api --paginate "repos/$1/commits/$2?per_page=100" --jq '.files[].filename' 2>/dev/null) ||
+    { say "hold: cannot read the files of $1 ${2:0:8}"; return 1; }
+  while IFS= read -r f; do
+    text=$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/$1/contents/$f?ref=$3" 2>/dev/null)
+    test_picked "$paths" "$f" <<<"$text" && return 0
+  done <<<"$4"
+  return 1
+}
+
+# hold_streak <owner/repo> <streak> <runs> <merges> -> the record for main's red streak, if it counts
+# against a merge: one landed at or before the first red and within HOLD_HOURS of it. A merge's time
+# is its own run's, since the item finishes after the push. The failed bats files narrow that to the
+# merges whose area they are; a red that names none (lint, rust, a timeout) leaves only the merges
+# in last green..first red.
+hold_streak() {
+  local repo=$1 streak=$2 near failed sha m hits=
+  near=$(jq -c --arg repo "$repo" --argjson s "$streak" --argjson runs "$3" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+    ($s.red.createdAt | ep) as $red | .[] | select(.repo == $repo)
+    | . as $m | .at = (([$runs[] | select(.workflowName == $s.workflow and .headSha == $m.sha) | .createdAt | ep] | first) // $m.at)
+    | select(.at <= $red and $red - .at <= $h)' <<<"$4")
+  [ -n "$near" ] || return 0
+  failed=$(hold_failed "$repo" "$(jq -r .red.id <<<"$streak")")
+  sha=$(jq -r .red.headSha <<<"$streak")
+  if [ -n "$failed" ]; then
+    while IFS= read -r m; do
+      hold_area_hit "$repo" "$(jq -r .sha <<<"$m")" "$sha" "$failed" && hits+="$m"$'\n'
+    done <<<"$near"
+  else
+    hits=$(jq -c --argjson s "$streak" "$JQ_LIB"'select(.at > ($s.green.createdAt | ep))' <<<"$near")
+  fi
+  [ -n "$hits" ] || return 0
+  jq -cs --argjson s "$streak" --arg failed "$failed" '
+    {name: "ci-\($s.red.headSha[0:8])-\($s.workflow | ascii_downcase | gsub("[^a-z0-9]+"; "-"))",
+     what: "\($s.workflow) red at \($s.red.headSha[0:8])\(if $failed == "" then ", no bats file named" else ": " + ($failed | split("\n") | join(", ")) end)",
+     merges: .}' <<<"$hits"
+}
+
+# hold_reds <now> <queue items> -> one record a line for each red now that counts against a cleanup
+# merge: {name, what, merges}. fleet-liveness counts once it is past triage's patience, so a flap
+# stays out. A repo whose runs cannot be read says so, and counts as nothing rather than as green.
+hold_reds() {
+  local t=$1 merges repo runs streak since w=fleet-liveness h=$((HOLD_HOURS * 3600))
+  merges=$(jq -c "$JQ_LIB"'[.[] | select(tagged("cleanup") and (.merged // "") != ""
+      and (.pr | tostring | test("^[^/# ]+/[^/# ]+#[0-9]+$")) and (.finished | ep) != null)
+    | {slug, repo: (.pr | split("#")[0]), n: (.pr | split("#")[1]), sha: .merged, at: (.finished | ep)}]' <<<"$2") || return 1
+  [ "$merges" != '[]' ] || return 0
+  if [ "$(cat "$TRIAGE_WATCH_STATE/$w.state" 2>/dev/null)" = TRIP ]; then
+    since=$(cat "$TRIAGE_WATCH_STATE/$w.since" 2>/dev/null)
+    [[ "$since" =~ ^[0-9]+$ ]] && [ $((t - since)) -ge "$(watch_after "$(watch_sev "$w")")" ] &&
+      jq -c --argjson s "$since" --argjson h "$h" --arg w "$w" \
+        '{name: "liveness-\($s)", what: "\($w) tripped, evidence: watch-companion-loop list --long \($w)",
+          merges: map(select(.at <= $s and $s - .at <= $h))} | select(.merges != [])' <<<"$merges"
+  fi
+  while IFS= read -r repo; do
+    runs=$(hold_runs "$repo") || { say "hold: cannot read the runs on $repo main"; continue; }
+    jq -c "$MAIN_STREAKS"' | select(.green)' <<<"$runs" | while IFS= read -r streak; do
+      hold_streak "$repo" "$streak" "$runs" "$merges"
+    done
+  done < <(jq -r '.[].repo' <<<"$merges" | sort -u)
+}
+
+# reds_items <now> -> the queue items of the last REDS_DAYS as one array; rc 1 when unreadable
+reds_items() {
+  $TRIAGE_ITEMS_CMD --since "$(date -d "@$(($1 - REDS_DAYS * 86400))" +%F)" 2>/dev/null | jq -cs .
+}
+
+# triage_hold_rows -> a row per red that counts against a cleanup merge, naming each merge
+triage_hold_rows() {
+  local t items
+  t=$(now)
+  items=$(reds_items "$t") || return 0
+  hold_reds "$t" "$items" | jq -r '(.merges | map("\(.slug) (PR \(.n) at \(.sha[0:8]))") | join(", ")) as $m
+    | "fix(hold): \(.name) went red\tfix(hold): \(.name) went red after cleanup merge\(if (.merges | length) > 1 then "s" else "" end) \($m): \(.what)\t#high"'
+}
+
 # reds_live -> the row key of each thing red right now, one a line: every triage row, plus every
 # watch at TRIP whatever its age, so a fix that came back counts before triage would file it.
 reds_live() {
@@ -2754,23 +2865,32 @@ reds_live() {
   done
 }
 
-# reds_json <now> -> one JSON object a line per red queue item queued in the last REDS_DAYS: what
+# reds_json <now> -> one JSON object a line per red queue item queued in the last REDS_DAYS, then
+# per merged cleanup item (cleanup: true, its outcome the hold: the reds line of the usage above): what
 # was red, its cause, when it was queued and finished, its PR and merge, and its outcome. A merged
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
 # after the merge is "came back", red the whole time is "still red". Counted, never judged.
 reds_json() {
-  local t="$1" items live watches='{}' f n
-  items=$($TRIAGE_ITEMS_CMD --since "$(date -d "@$((t - REDS_DAYS * 86400))" +%F)" 2>/dev/null |
-    jq -cs '[.[] | select((" " + (.tags // "") + " ") | contains(" red "))]') || return 1
-  live=$(reds_live | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))')
+  local t="$1" items holds live watches='{}' f n
+  items=$(reds_items "$t") || return 1
+  holds=$(hold_reds "$t" "$items" | jq -cs .)
+  live=$({ reds_live; jq -r '.[] | "fix(hold): \(.name) went red"' <<<"$holds"; } | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))')
   for f in "$TRIAGE_WATCH_STATE"/*.since; do
     [ -e "$f" ] || continue
     n=${f##*/} n=${n%.since}
     watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
   done
-  jq -c --argjson live "$live" --argjson w "$watches" '
-    def ep: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | fromdateiso8601? // null) end;
-    .[] | (.title // .task // "") as $t
+  jq -c --argjson live "$live" --argjson w "$watches" --argjson holds "$holds" --argjson clock "$t" \
+    --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+    ([$holds[].merges[].slug]) as $went
+    | ([.[] | select(tagged("red")) | .title // .task // "" | select(startswith("fix(hold): "))]) as $held
+    | (map(select(tagged("cleanup") and (tagged("red") | not) and (.merged // "") != ""))
+       | map({slug, red: ("cleanup " + ((.title // .task // "")[0:60])), cause: null, state, queued, finished, pr, merged,
+              fix_min: null, cleanup: true,
+              outcome: (.slug as $s | if any($went[]; . == $s) then "went red"
+                        elif any($held[]; contains(" \($s) (")) then "recovered"
+                        elif $clock - ((.finished | ep) // 0) < $h then "holding" else "held" end)})) as $cleanups
+    | (.[] | select(tagged("red")) | (.title // .task // "") as $t
     | ($t | capture("^(?<kind>[a-z]+)\\((?<area>[a-z]+)\\): (?<name>[^ ,;]+)") // {}) as $r
     | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
@@ -2788,7 +2908,7 @@ reds_json() {
             else "still red" end)
          elif .pr != null then "needs merge"
          elif .status == "ok" then "cleared"
-         else "no fix" end)}' <<<"$items"
+         else "no fix" end)}), $cleanups[]' <<<"$items"
 }
 
 # reds_counts <now> -> the KPI lines: merged fixes whose red is back or never went (reds_unfixed),
@@ -2815,7 +2935,10 @@ cmd_reds() {
   if [ "$json" = 1 ]; then [ -z "$rows" ] || printf '%s\n' "$rows"; return 0; fi
   [ -n "$rows" ] || { echo "no red fix queued in the last $REDS_DAYS days"; return 0; }
   jq -rs --arg d "$REDS_DAYS" '
-    "\(length) red fix\(if length == 1 then "" else "es" end) in \($d)d: " + (group_by(.outcome) | map("\(length) \(.[0].outcome)") | join(", ")),
+    def words: group_by(.outcome) | map("\(length) \(.[0].outcome)") | join(", ");
+    map(select(.cleanup | not)) as $f | map(select(.cleanup)) as $c
+    | (if $f == [] then empty else "\($f | length) red fix\(if ($f | length) == 1 then "" else "es" end) in \($d)d: \($f | words)" end),
+    (if $c == [] then empty else "\($c | length) cleanup merge\(if ($c | length) == 1 then "" else "s" end) in \($d)d: \($c | words)" end),
     "", "| item | red | outcome | queued | fix min | PR |", "|---|---|---|---|---|---|",
     (.[] | "| \(.slug) | \(.red) | \(.outcome) | \(.queued // "-" | .[0:16]) | \(.fix_min // "-") | \(.pr // "-") |")' <<<"$rows"
 }
@@ -2845,7 +2968,9 @@ cmd_triage() {
       ;;
     *) say "usage: fleet-bench triage [--dry-run|--coverage|--route <key>...]"; return 2 ;;
   esac
-  rows=$({ triage_rows; triage_log_rows; triage_red_rows; } | grep .)
+  rows=$({ triage_rows; triage_log_rows; triage_red_rows; triage_hold_rows; } | grep .)
+  # A liveness hold row is the same red as the watch's own row, with its suspects named: one fix.
+  grep -q '^fix(hold): liveness-' <<<"$rows" && rows=$(grep -v '^check(watch): fleet-liveness tripped since' <<<"$rows")
   [ -n "$rows" ] && rows=$(triage_route "$rows")
   if [ "$dry" = 1 ]; then
     [ -z "$rows" ] || awk -F'\t' '{ print $2, $3 ($4 == "-" ? "" : " (" $4 ")") }' <<<"$rows"
