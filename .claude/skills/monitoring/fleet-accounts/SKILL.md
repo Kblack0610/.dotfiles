@@ -28,8 +28,8 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 ## Read the room
 
 1. `claude-acct room` prints the account dir to use and exits 0. Exit 1 means none has room; exit 2 means none has room and one account is unreadable. When refused, the last stderr line names the closest account, its points over pace, and when it runs out at this rate.
-2. `claude-acct status` (or `--json`) is the table: 5H, WEEK, GONE (share of the week elapsed), PACE (points over or under), RUNS-OUT, RESETS, LIVE sessions, 24H-$. There is no `pace` verb; pace is that column and the `room` rule.
-3. The rule, per account: week used at most week gone plus the slack (`CLAUDE_ACCT_PACE_SLACK_PCT`, 5), week used under 100 minus the reserve (`CLAUDE_ACCT_RESERVE_PCT`, 15), and the 5 hour window under 100 minus the reserve. The reserve is kept for the human's own work. An account with an expired token counts as having room, so check `claude-acct check usage` when `status` looks odd. The machine-mode level scales slack and reserve. Both are set in `~/.config/agentctl/agents/fleet-dispatch.conf`.
+2. `claude-acct status` (or `--json`) is the table: 5H, WEEK, GONE (share of the week elapsed), PACE (over or under, no slack), RUNS-OUT, RESETS, LIVE sessions, 24H-$, ROOM (ok, or the reason). There is no `pace` verb; the ROOM column is the gate.
+3. The verdict is each account's `room` object in `claude-acct status --json` and `claude-acct room --json`: `ok`, `reason` (`unread`, `capped`, `reserve`, `pace`, `five_hour`, `committed`, or `ok`), `over_points` past the pace line after the slack, `headroom_points` (signed), `capped`. The rule is written once, in `usage_json`: week used at most week gone plus the slack, week used under 100 minus the reserve, the 5 hour window under 100 minus the reserve, and the live sessions not already using the rest of the week. The reserve is kept for the human's own work. An account with an expired token counts as having room, so check `claude-acct check usage` when `status` looks odd. The machine-mode level scales slack and reserve. The mid numbers are in `.config/claude-acct/pace.conf`, read by `claude-acct` only. The textfile carries `claude_account_room` and `claude_account_room_headroom_points`.
 4. For the dispatch side run `fleet-dispatch stopped` (add `--json` for a parse) and `fleet-dispatch run --dry-run`. They name every gate in one line each: account room, `fleet-assess` HOLD, load against `DISPATCH_MAX_LOAD`, the idle floor, run units. "Clears when an account is back under its pace" is the line for this gate.
 
 ## What lifts it
@@ -47,7 +47,7 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 
 ## Do NOT
 
-- Do not raise `CLAUDE_ACCT_PACE_SLACK_PCT`, the reserve or `DISPATCH_RUN_FLOOR` to make a refusal go away. They set how much of the week the fleet may spend; changing one is the human's call and a private-repo conf PR.
+- Do not raise the slack or reserve in `.config/claude-acct/pace.conf`, or `DISPATCH_RUN_FLOOR` to make a refusal go away. They set how much of the week the fleet may spend; changing one is the human's call and a conf PR.
 - Do not refuse or block `cl`, a hand start or a running session on pace, and do not add a deny or a blanket model downgrade.
 - Do not hand-edit account token files or `budget-raise` files. Use `claude-acct` and `agentctl budget`.
 - Do not start a probe session to see if an account works; `claude-acct check usage` reads usage without one.
