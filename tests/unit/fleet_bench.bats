@@ -1003,7 +1003,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"compactions_per_session":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"compactions_per_session":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
@@ -3695,4 +3695,75 @@ STUB
   assert_failure 2
   run env BENCH_DONE_ITEMS_CMD=false "$SUBJECT" sizes
   assert_failure 1
+}
+
+# start_rows <count> <ready ms> [epoch] -> that many startup rows, the shape startup-telemetry.sh writes
+start_rows() {
+  local i
+  for ((i = 0; i < $1; i++)); do
+    printf '{"epoch":%s,"sid":"s%s","source":"startup","ready_ms":%s,"process_ms":%s,"hook_ms":500,"hooks":[{"name":"session-preflight","ms":500,"phases":{"git":400,"board":100}}],"mcp":[{"name":"k8s","spawn_ms":450}]}\n' \
+      "${3:-$T0}" "$i" "$2" $(( $2 - 500 ))
+  done
+}
+
+@test "startup --check: a forced slow fixture trips past startup_ready_ms_p50_max, and a fast one passes" {
+  export CLAUDE_STARTUP_LOG="$SANDBOX/startup.jsonl" BENCH_NOW=$((T0 + 60))
+  printf '%s\n' startup_ready_ms_p50_max=5000 > "$KPI_THRESHOLDS"
+  # Negative control first: fast starts, and a resume row (no process start) that must not count.
+  { start_rows 20 2000; echo '{"epoch":'"$T0"',"source":"resume","ready_ms":999999}'; } > "$CLAUDE_STARTUP_LOG"
+  run "$SUBJECT" startup --check
+  assert_success
+  assert_output 'startup: ready p50 2s over the last 20 starts (max 5s): process 1.5s, hooks 0.5s (session-preflight.git 0.4s, session-preflight.board 0.1s), mcp spawn k8s 0.45s'
+  start_rows 20 9000 > "$CLAUDE_STARTUP_LOG"
+  run "$SUBJECT" startup --check
+  assert_failure 1
+  assert_output --partial 'startup: ready p50 9s over the last 20 starts, past startup_ready_ms_p50_max 5s'
+}
+
+@test "startup: the median rolls over the last startup_rolling_n starts, so old slow ones age out" {
+  export CLAUDE_STARTUP_LOG="$SANDBOX/startup.jsonl" BENCH_NOW=$((T0 + 60))
+  printf '%s\n' startup_ready_ms_p50_max=5000 startup_rolling_n=3 > "$KPI_THRESHOLDS"
+  { start_rows 10 9000; start_rows 3 1000; } > "$CLAUDE_STARTUP_LOG"
+  run "$SUBJECT" startup --json
+  assert_success
+  assert_equal "$(jq -c '[.starts, .ready_ms_p50, .status, .phases_p50["session-preflight.git"]]' <<<"$output")" '[3,1000,"ok",400]'
+  start_rows 2 9000 >> "$CLAUDE_STARTUP_LOG"
+  run "$SUBJECT" startup --check
+  assert_failure 1
+}
+
+@test "startup --check: exit 2 when no start was recorded, none in startup_stale_h, or the newest has no ready time" {
+  export CLAUDE_STARTUP_LOG="$SANDBOX/startup.jsonl" BENCH_NOW=$((T0 + 60))
+  run "$SUBJECT" startup --check
+  assert_failure 2
+  assert_output 'startup: no Claude Code start recorded, is startup-telemetry.sh deployed?'
+  start_rows 5 1000 > "$CLAUDE_STARTUP_LOG"
+  BENCH_NOW=$((T0 + 49 * 3600)) run "$SUBJECT" startup --check
+  assert_failure 2
+  assert_output --partial 'no Claude Code start recorded in 48h'
+  # A resume proves the recorder is alive though it adds nothing to the medians.
+  jq -nc --argjson e $((T0 + 48 * 3600)) '{epoch: $e, source: "resume", ready_ms: null}' >> "$CLAUDE_STARTUP_LOG"
+  BENCH_NOW=$((T0 + 49 * 3600)) run "$SUBJECT" startup --check
+  assert_success
+  # A start whose claude process was not found is a blind recorder, not a fast one.
+  jq -nc --argjson e $((T0 + 48 * 3600)) '{epoch: $e, source: "startup", ready_ms: null}' >> "$CLAUDE_STARTUP_LOG"
+  BENCH_NOW=$((T0 + 49 * 3600)) run "$SUBJECT" startup --check
+  assert_failure 2
+  assert_output --partial 'the newest start has no ready time'
+  start_rows 5 1000 > "$CLAUDE_STARTUP_LOG"
+  printf '%s\n' startup_stale_h=72 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 49 * 3600)) run "$SUBJECT" startup --check
+  assert_success
+}
+
+@test "kpi: startup_ready_ms_p50 is the median start over 7d and 28d against its threshold" {
+  kpi_setup
+  export CLAUDE_STARTUP_LOG="$SANDBOX/startup.jsonl"
+  printf '%s\n' startup_ready_ms_p50_max=5000 >> "$KPI_THRESHOLDS"
+  { start_rows 3 1000 $((T0 - 20 * 86400)); start_rows 3 9000 "$T0"; } > "$CLAUDE_STARTUP_LOG"
+  BENCH_NOW=$((T0 + 60)) run "$SUBJECT" kpi
+  assert_line '| startup_ready_ms_p50 | 9000 | 5000 | max 5000 | past |'
+  BENCH_NOW=$((T0 + 60)) run "$SUBJECT" kpi --check '^startup_'
+  assert_failure 1
+  assert_line 'startup_ready_ms_p50 9000 (max 5000)'
 }
