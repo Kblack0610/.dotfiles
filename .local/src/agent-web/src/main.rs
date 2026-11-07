@@ -80,6 +80,7 @@ struct AppState {
     watch_off: WatchOff,
     infra: infra::Cache,
     jobs: jobs::Cache,
+    actions: feed::Cache,
     schedules: schedules::Cache,
     session_table: sessions::Cache,
     pipeline: pipeline::Cache,
@@ -103,6 +104,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         oauth,
         sessions,
+        actions: feed::Cache::new(events.subscribe()),
         events,
         watch_off,
         infra: infra::Cache::default(),
