@@ -237,6 +237,7 @@ EOF
     '{session_id: "sess-e", project: "proj", transcript: $t, title: "title e", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
     >> "$SO_SESSIONS/proj/sessions.jsonl"
   printf 'fj-secret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
+  export SO_FORGEJO_HOSTS="git.other.test git.example.test"
   cat > "$SANDBOX/bin/curl-fj" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/fj.argv"
@@ -265,13 +266,17 @@ STUB
   assert_equal "$(cmd 'gh pr merge 3 --squash')" true
   assert_equal "$(cmd 'curl -X POST https://h/api/v1/repos/o/r/pulls')" true
   assert_equal "$(cmd 'curl --data @b.json "$API/pulls" # API=https://h/api/v1/repos/o/r')" true
+  assert_equal "$(cmd 'curl -s -X POST -H "Authorization: token $TOKEN" -d @/tmp/pr.json "$API/pulls" | jq -r .html_url')" true
+  assert_equal "$(cmd "curl -s -d'{\"Do\":\"squash\"}' \"\$API/pulls/12/merge\"")" true
   assert_equal "$(cmd 'curl -s https://h/api/v1/repos/o/r/pulls/7')" false
   assert_equal "$(cmd 'curl -X POST https://h/api/v1/repos/o/r/issues')" false
+  assert_equal "$(cmd 'curl -X POST -d @r.json "$API/pulls/12/reviews"')" false
+  assert_equal "$(cmd 'curl -X POST -d @c.json "$API/issues/12/comments"')" false
   assert_equal "$(cmd 'gh pr view 9')" false
   refs() { jq -cn --arg t "$1" "$SO_PR_JQ"'$t | pr_refs'; }
   assert_equal "$(refs 'https://github.com/o/r/pull/10')" '[{"repo":"o/r","number":10}]'
   assert_equal "$(refs 'Squashed and merged pull request o/r#11 (x)')" '[{"repo":"o/r","number":11}]'
-  assert_equal "$(refs '{"html_url":"https://git.example.test/o/audio/pulls/12","diff_url":"https://git.example.test/o/audio/pulls/12.diff"}' | jq -c unique)" '[{"repo":"git.example.test/o/audio","number":12}]'
+  assert_equal "$(refs '{"html_url":"https://git.example.test/o/audio/pulls/12","diff_url":"https://git.example.test/o/audio/pulls/12.diff"}')" '[{"repo":"git.example.test/o/audio","number":12}]'
   assert_equal "$(refs 'https://github.com/o/r/pulls/3 https://h/api/v1/repos/o/r/pulls/4')" '[]'
 }
 
@@ -282,7 +287,7 @@ STUB
   assert_equal "$(outcome)" WORKED
   assert_equal "$(field e '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
   assert_equal "$(field e .prs_merged)" 1
-  assert_equal "$(grep -c 'git.example.test/api/v1/repos/o/audio/pulls?state=all&limit=50&page=' "$BATS_TEST_TMPDIR/fj.argv")" 2
+  assert_equal "$(grep -c 'git.example.test/api/v1/repos/o/audio/pulls?state=all&sort=newest&limit=50&page=' "$BATS_TEST_TMPDIR/fj.argv")" 2
   run grep -c 'git.example.test' "$GH_FIXTURE/calls.log"
   assert_output 0
   # GitHub sessions are untouched beside it
@@ -294,21 +299,48 @@ STUB
   grep -q 'header = "Authorization: token fj-secret-token"' "$BATS_TEST_TMPDIR/fj.stdin"
 }
 
-@test "a Forgejo read with no token or a failed page leaves its PR UNKNOWN, still writes every row, and says so" {
+@test "a Forgejo read with no token or a failed page holds that session back, writes the rest, and a later run records it" {
   fj_setup
   rm "$RBW_FIXTURE/forgejo_repo_admin"
   run "$SUBJECT" run
   assert_success
   assert_equal "$(outcome)" WORKED
-  assert_equal "$(field e '.prs[0].state')" UNKNOWN
+  assert_equal "$(field e .session_id)" null
   assert_equal "$(field a .prs_merged)" 1
-  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: no token (rbw forgejo_repo_admin), git.example.test/o/audio unread'
+  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: no token (rbw forgejo_repo_admin), git.example.test/o/audio unread; 1 session(s) held for the next run'
 
   printf 'fj-secret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
-  FJ_FAIL=1 run "$SUBJECT" run --all
+  FJ_FAIL=1 run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field e .session_id)" null
+  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: git.example.test/o/audio unread: curl: (22)'
+
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field e '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
+}
+
+@test "a Forgejo host SO_FORGEJO_HOSTS does not list is never called: its PR stays UNKNOWN and the report names the host" {
+  fj_setup
+  export SO_FORGEJO_HOSTS="git.other.test"
+  run "$SUBJECT" run
   assert_success
   assert_equal "$(field e '.prs[0].state')" UNKNOWN
-  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: git.example.test/o/audio unread: curl: (22)'
+  [ ! -e "$BATS_TEST_TMPDIR/fj.argv" ]
+  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: git.example.test is not in SO_FORGEJO_HOSTS'
+}
+
+@test "so_forgejo_hosts: SO_FORGEJO_HOSTS when set, even empty; else the runner conf's" {
+  # shellcheck source=/dev/null
+  . "$SO_LIB_DIR/session-outcomes.sh"
+  mkdir -p "$BATS_TEST_TMPDIR/conf"
+  printf 'NAME=session-outcomes\nSO_FORGEJO_HOSTS="a.test b.test"\n' > "$BATS_TEST_TMPDIR/conf/session-outcomes.conf"
+  export AGENTCTL_CONF_DIR="$BATS_TEST_TMPDIR/conf"
+  unset SO_FORGEJO_HOSTS
+  assert_equal "$(so_forgejo_hosts)" "a.test b.test"
+  assert_equal "$(SO_FORGEJO_HOSTS='' so_forgejo_hosts)" ""
+  assert_equal "$(SO_FORGEJO_HOSTS=c.test so_forgejo_hosts)" c.test
+  assert_equal "$(AGENTCTL_CONF_DIR="$BATS_TEST_TMPDIR/none" so_forgejo_hosts)" ""
 }
 
 # One API message split across two records, a commit message that names a

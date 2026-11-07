@@ -14,7 +14,8 @@
 # ("Session outcomes") in the private overlay.
 
 # SO_PR_JQ - the jq defs every harness's PR scan shares. pr_cmd: a command that opens or merges
-# a PR, `gh pr create|merge` or a POST to a Forgejo API `/api/v1/repos/.../pulls` URL. pr_refs:
+# a PR, `gh pr create|merge` or a curl POST to a Forgejo `.../pulls` or `.../pulls/N/merge` URL (often
+# `"$API/pulls"`, API set in an earlier call; a POST to a PR's comments or reviews is not one). pr_refs:
 # the PRs a call's output names, as {repo, number}. A GitHub repo is `owner/repo`; a Forgejo one
 # is `host/owner/repo` (gh's own HOST/OWNER/REPO form), so a GitHub mirror of the same name stays
 # a different repo. Forgejo is told by its URL shape, `/pulls/N` on a host that is not github.com:
@@ -22,14 +23,14 @@
 # its PR is found from the create call's `html_url`.
 SO_PR_JQ='
   def pr_cmd: test("\\bgh\\s+pr\\s+(create|merge)\\b")
-    or (test("/api/v1/repos/") and test("/pulls\\b")
-        and test("(-X\\s*|--request[=\\s]+)POST\\b|\\s(-d|--data(-raw|-binary)?)[=\\s]"));
+    or (test("\\bcurl\\b") and test("/pulls(/[0-9]+/merge)?([\"\u0027?\\s]|$)")
+        and test("(-X\\s*|--request[=\\s]+)POST\\b|\\s(-d|--data[a-z-]*)([=\\s@\u0027\"]|$)"));
   def pr_refs: [ (scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
                   | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}),
                  (scan("[Mm]erged pull request ([^/\\s]+)/([^#\\s]+)#([0-9]+)")
                   | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}),
                  (scan("https?://([^/\\s\"]+)/([^/\\s\"]+)/([^/\\s\"]+)/pulls/([0-9]+)") | select(.[0] != "github.com")
-                  | {repo: "\(.[0])/\(.[1])/\(.[2])", number: (.[3] | tonumber)}) ];
+                  | {repo: "\(.[0])/\(.[1])/\(.[2])", number: (.[3] | tonumber)}) ] | unique;
 '
 
 # so_transcript_metrics FILE - one pass over a transcript, one JSON object out.
@@ -297,12 +298,17 @@ so_lesson_sigs() {
 # so_forgejo_pr_list HOST/OWNER/REPO WORKDIR LIMIT - the repo's newest LIMIT PRs from its Forgejo API,
 # in the `gh pr list --json number,state,title,mergedAt,body,mergeCommit` shape, so a reader of
 # gh's list takes them unchanged. The token is rbw entry SO_FORGEJO_ENTRY (one with repo scope),
-# read once per process, and goes in on stdin (-K -), never argv. rc 1 with SO_FORGEJO_ERR set when
-# there is no token or a page fails. Seams: SO_CURL SO_RBW.
+# read once per process, and goes in on stdin (-K -), never argv, and only to a host so_forgejo_hosts
+# lists. SO_FORGEJO_ERR says why on a failure: rc 1 = no token or a page failed (worth a retry),
+# rc 2 = the host is not listed (never called). Seams: SO_CURL SO_RBW.
 SO_FORGEJO_PAGE=50   # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50, whatever limit asks for
 SO_FORGEJO_TOKEN=""
 so_forgejo_pr_list() {
   local repo="$1" work="$2" limit="$3" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}" page=1 got
+  case " $(so_forgejo_hosts) " in
+    *" ${repo%%/*} "*) ;;
+    *) SO_FORGEJO_ERR="${repo%%/*} is not in SO_FORGEJO_HOSTS, $repo unread"; return 2 ;;
+  esac
   if [ -z "$SO_FORGEJO_TOKEN" ]; then
     SO_FORGEJO_TOKEN="$("${SO_RBW:-rbw}" get "$entry" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
     [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (rbw $entry), $repo unread"; return 1; }
@@ -310,16 +316,25 @@ so_forgejo_pr_list() {
   rm -f "$work"/fj.page.*
   while :; do
     printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
-      "${SO_CURL:-curl}" -sSf -K - --max-time 30 -o "$work/fj.page.$page" \
-        "https://${repo%%/*}/api/v1/repos/${repo#*/}/pulls?state=all&limit=$SO_FORGEJO_PAGE&page=$page" 2>"$work/fj.err" &&
-      got="$(jq 'length' "$work/fj.page.$page" 2>/dev/null)" ||
+      "${SO_CURL:-curl}" -sSf -K - --max-time 30 -o "$work/fj.page.$(printf %04d "$page")" \
+        "https://${repo%%/*}/api/v1/repos/${repo#*/}/pulls?state=all&sort=newest&limit=$SO_FORGEJO_PAGE&page=$page" 2>"$work/fj.err" &&
+      got="$(jq 'length' "$work/fj.page.$(printf %04d "$page")" 2>/dev/null)" ||
       { SO_FORGEJO_ERR="$repo unread: $(head -c 120 "$work/fj.err")"; return 1; }
     [ "$got" -ge "$SO_FORGEJO_PAGE" ] && [ $((page * SO_FORGEJO_PAGE)) -lt "$limit" ] || break
     page=$((page + 1))
   done
-  jq -cs 'add | map({number, title, body, mergedAt: .merged_at,
+  jq -cs --argjson n "$limit" 'add | .[:$n] | map({number, title, body, mergedAt: .merged_at,
                      state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
                      mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)})' "$work"/fj.page.*
+}
+
+# so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:
+# SO_FORGEJO_HOSTS when set (even empty), else the private session-outcomes runner conf's. A host
+# comes from transcript text, so one not listed is never called.
+so_forgejo_hosts() {
+  if [ -n "${SO_FORGEJO_HOSTS+set}" ]; then printf '%s' "$SO_FORGEJO_HOSTS"; return; fi
+  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/session-outcomes.conf" 2>/dev/null
+    printf '%s' "${SO_FORGEJO_HOSTS:-}" ) || true
 }
 
 # so_pr_index FINAL_DAYS - stdin: a `gh pr list --json number,state,title,mergedAt,body,mergeCommit`

@@ -1578,10 +1578,18 @@ while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done
 echo '[{"number":12,"state":"closed","merged":true,"merged_at":"2026-10-30T12:00:00Z","merge_commit_sha":"587713a"}]' > "$out"
 SH
   chmod +x "$SANDBOX/bin/curl-fj"
-  export SO_CURL=curl-fj FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
   [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["git.example.test/o/audio",12,"MERGED","2026-10-30T12:00:00Z"]]' ]
+  [ ! -s "$SANDBOX/gh.log" ]
+  # the clone's origin names owner/repo only: the PR is still this session's, and never a sibling for gh
+  git init -q "$SANDBOX/audio"; git -C "$SANDBOX/audio" remote add origin ssh://git@git.example.test:2222/o/audio.git
+  run pr_made_here "$SANDBOX/audio" 12 - '[{"repo":"git.example.test/o/audio","number":12,"state":"MERGED"}]' /dev/null -
+  assert_success
+  run sibling_pr "$SANDBOX/one-missing" '[{"repo":"git.example.test/o/audio","number":13,"state":"OPEN"}]'
+  assert_success
+  assert_output ""
   [ ! -s "$SANDBOX/gh.log" ]
 }
 

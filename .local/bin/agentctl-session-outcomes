@@ -33,7 +33,9 @@
 # `harness` on a line is what its launcher recorded (HARNESS_DEF). A gateway item's real spend
 # goes on the item as gateway_cost_usd (gateway_push).
 # A Forgejo PR (repo `host/owner/repo`, session-outcomes.sh SO_PR_JQ) is looked up through that host's
-# API (so_forgejo_pr_list); a failed lookup leaves its PRs UNKNOWN and the report says so.
+# API (so_forgejo_pr_list), only on a host SO_FORGEJO_HOSTS lists (the private runner conf sets
+# it). A failed read holds back the sessions naming that repo until a later run reads it; a host
+# not listed leaves its PRs UNKNOWN. The report says which.
 # Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_FORGEJO_ENTRY SO_BENCH SO_QUEUE SO_LESSONS_DIR
 # SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES SO_PROJECT_MAP SO_ROADMAP.
 # `class` on a line is {size, kind} of the queue item the session worked: the size and kind of the
@@ -224,7 +226,9 @@ cmd_run() {
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
     if [[ "$repo" == */*/* ]]; then
-      so_forgejo_pr_list "$repo" "$work" "$PR_LIMIT" > "$work/prs.json" || { forge_note="$forge_note; forgejo: $SO_FORGEJO_ERR"; continue; }
+      so_forgejo_pr_list "$repo" "$work" "$PR_LIMIT" > "$work/prs.json" || {
+        [ $? = 1 ] && printf '%s\n' "$repo" >> "$work/fj.held"
+        forge_note="$forge_note; forgejo: $SO_FORGEJO_ERR"; continue; }
     else
       "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
         --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err" \
@@ -342,6 +346,15 @@ cmd_run() {
           delivery: ($bench[0][$row.session_id] // null) }
     ' "$work/m.$sid.json" >> "$work/lines.jsonl" || die_stalled "could not build the line for $sid"
   done < "$work/due.jsonl"
+
+  # A session naming a repo whose read failed gets no line this run, so the next run sees it
+  # due again and records its PR's state instead of a lasting UNKNOWN.
+  if [ -s "$work/fj.held" ]; then
+    jq -c --rawfile h "$work/fj.held" '($h | split("\n")) as $held | select(all(.prs[]?.repo; IN($held[]) | not))' \
+      "$work/lines.jsonl" > "$work/lines.keep" || die_stalled "could not hold back the unread Forgejo sessions"
+    forge_note="$forge_note; $(( $(wc -l < "$work/lines.jsonl") - $(wc -l < "$work/lines.keep") )) session(s) held for the next run"
+    mv "$work/lines.keep" "$work/lines.jsonl"
+  fi
 
   # Append last, all at once: a run that fails above leaves the output untouched.
   local line proj month written=0
