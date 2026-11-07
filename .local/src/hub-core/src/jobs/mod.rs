@@ -285,6 +285,21 @@ pub fn agentctl_runs(paths: &Paths, since: i64) -> (Vec<Job>, Vec<String>) {
     systemd::agentctl(paths, since, now())
 }
 
+/// Every timer-started unit's runs since `since`, none folded.
+pub(crate) fn timer_runs(since: i64, at: i64) -> (Vec<Job>, Vec<String>) {
+    systemd::timers(since, at)
+}
+
+/// Every CronJob's Jobs since `since`, none folded.
+pub(crate) fn k8s_runs(at: i64, since: i64) -> (Vec<Job>, Vec<String>) {
+    remote::k8s(at, since)
+}
+
+/// A GitHub conclusion as passed, failed, or neither.
+pub(crate) fn conclusion_ok(c: &str) -> Option<bool> {
+    remote::conclusion_ok(c)
+}
+
 /// The run ledger's text as runs, and how many lines could not be read.
 pub fn parse_agentctl_ledger(text: &str, since: i64) -> (Vec<Job>, usize) {
     systemd::parse_ledger(text, since)
