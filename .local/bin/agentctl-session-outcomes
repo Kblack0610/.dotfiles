@@ -265,7 +265,7 @@ cmd_run() {
 # active or finished in the last FINAL_DAYS days gets cost_usd and work_min (agent-panel's
 # time_use.work_min) summed over the newest outcome row of each session its `sessions:` lists,
 # through `agent-queue set`, only where a value changed. work_min is left out when no session has
-# a time_use. Prints one status phrase; never fails the run, the outcome rows are already written.
+# a time_use, and cost_usd when no session row has a cost (a 0 would claim free). Prints one status phrase; never fails the run, the outcome rows are already written.
 ledger_push() {
   local items since lines slug kv n=0 bad=0
   since="$(date -u -d "@$((NOW - FINAL_DAYS * 86400))" +%F)"
@@ -275,7 +275,7 @@ ledger_push() {
     | $items[] | select(.sessions) | . as $it
     | [(.sessions | split(" "))[] | $o[.] // empty] as $rows
     | select($rows | length > 0)
-    | {cost_usd: ($rows | map(.cost_usd // 0) | add * 100 | round / 100 | tostring),
+    | {cost_usd: (if any($rows[]; .cost_usd != null) then $rows | map(.cost_usd // 0) | add * 100 | round / 100 | tostring else null end),
        work_min: (if any($rows[]; .time_use) then $rows | map(.time_use.work_min // 0) | add | tostring else null end)}
     | to_entries | map(select(.value != null and .value != ($it[.key] // null)) | "\(.key)=\(.value)")
     | select(length > 0) | [$it.slug] + . | join("\t")')" || { echo "ledger join failed"; return 0; }

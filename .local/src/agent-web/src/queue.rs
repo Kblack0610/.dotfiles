@@ -8,7 +8,9 @@
 
 use axum::http::StatusCode;
 use axum::Json;
-use hub_core::queue::{self as hub_queue, Candidates, Item, PRIORITIES};
+use std::collections::BTreeMap;
+
+use hub_core::queue::{self as hub_queue, Candidates, DayTotal, Item, PRIORITIES};
 use hub_core::session_actions::System;
 use serde::Deserialize;
 
@@ -37,15 +39,47 @@ fn is_tags(s: &str) -> bool {
 const DONE_DAYS: i64 = 7;
 
 /// Every active item plus those finished in the last `DONE_DAYS` days, in queue order, read
-/// through hub-core.
-pub async fn list() -> ApiResult<Json<Vec<Item>>> {
+/// through hub-core, each with the words hub-core gives a row (`item_view`).
+pub async fn list() -> ApiResult<Json<Vec<serde_json::Value>>> {
     tokio::task::spawn_blocking(|| {
         hub_queue::list_since(&System, "all", &hub_queue::days_ago(DONE_DAYS - 1))
     })
     .await
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map(Json)
+    .map(|items| {
+        let days = hub_queue::done_days(&items);
+        Json(items.iter().map(|i| item_view(i, &days)).collect())
+    })
     .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
+}
+
+/// The item as agent-queue printed it plus what a row shows: `cost` (dollars, absent when
+/// unknown), the PR's label and link, `pr_merged` (the merge was recorded), `unproven`, and for a
+/// done item its `day`, its `day_label` and that day's `day_total` line, so the page sums and words nothing.
+fn item_view(i: &Item, days: &BTreeMap<String, DayTotal>) -> serde_json::Value {
+    let mut v = serde_json::to_value(i).unwrap_or_default();
+    if let Some(c) = i.cost() {
+        v["cost"] = c.into();
+        v["cost_label"] = hub_queue::money(c).into();
+    }
+    if let Some((label, url)) = i.pr_link() {
+        v["pr_label"] = label.into();
+        v["pr_url"] = url.into();
+        v["pr_merged"] = i.merged().into();
+    }
+    if i.unproven() {
+        v["unproven"] = true.into();
+    }
+    if i.state == hub_queue::State::Done {
+        if let Some(d) = i.finished.as_deref().and_then(hub_queue::day_of) {
+            if let Some(t) = days.get(&d) {
+                v["day_total"] = t.line().into();
+            }
+            v["day_label"] = hub_queue::day_label(&d).into();
+            v["day"] = d.into();
+        }
+    }
+    v
 }
 
 /// The window's line and what sits now, worded by hub-core as the hub TUI words them.
@@ -219,6 +253,40 @@ mod tests {
             tags: tags.into(),
             task: task.into(),
         }
+    }
+
+    #[test]
+    fn a_row_view_adds_cost_pr_flag_and_the_days_total() {
+        let items = hub_queue::parse(concat!(
+            r#"{"slug":"a","state":"done","status":"ok","pr":"o/r#7","merged":"abc","cost_usd":"6.1","finished":"2026-11-06T12:00:00Z","task":"t"}"#,
+            "\n",
+            r#"{"slug":"b","state":"done","status":"ok","cost_usd":"0","finished":"2026-11-06T12:05:00Z","task":"t"}"#,
+            "\n",
+            r#"{"slug":"c","state":"queued","task":"t"}"#,
+            "\n",
+        ));
+        let days = hub_queue::done_days(&items);
+        let [a, b, c] = [0, 1, 2].map(|n| item_view(&items[n], &days));
+        assert_eq!(
+            (a["cost"].as_f64(), a["cost_label"].as_str()),
+            (Some(6.1), Some("$6.10"))
+        );
+        assert_eq!(
+            (a["pr_label"].as_str(), a["pr_merged"].as_bool()),
+            (Some("r#7"), Some(true))
+        );
+        assert_eq!(a["pr_url"], "https://github.com/o/r/pull/7");
+        assert_eq!(a["merged"], "abc", "the ledger's own key is left alone");
+        assert_eq!(a["day_total"], "2 done, $6.10, 1 unpriced");
+        assert_eq!(a["day_total"], b["day_total"]);
+        assert_eq!(
+            a["day_label"],
+            hub_queue::day_label(a["day"].as_str().unwrap())
+        );
+        assert!(a.get("unproven").is_none());
+        assert_eq!(b["unproven"], true, "no PR and no report");
+        assert!(b.get("cost").is_none(), "a ledger 0 is not a price");
+        assert!(c.get("day").is_none() && c.get("unproven").is_none());
     }
 
     #[test]

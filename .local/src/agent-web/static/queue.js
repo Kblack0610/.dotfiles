@@ -121,10 +121,19 @@ function qEta(i, a) {
   return i.state === "queued" && run ? `usually ${dur(run)} once started` : "";
 }
 
-function qPr(pr) {
-  if (!pr) return "";
-  return /^https?:\/\//.test(pr) ? `<a href="${esc(pr)}" target="_blank" rel="noopener">PR</a>` : `PR ${esc(pr)}`;
+// The PR: the label and link hub-core words (`owner/repo#N` as agent-land records it), and for a
+// done item whether the ledger recorded the merge. An older bare number or URL keeps its link.
+function qPr(i) {
+  if (!i.pr) return "";
+  if (!i.pr_label) return /^https?:\/\//.test(i.pr) ? `<a href="${esc(i.pr)}" target="_blank" rel="noopener">PR</a>` : `PR ${esc(i.pr)}`;
+  const link = i.pr_url ? `<a href="${esc(i.pr_url)}" target="_blank" rel="noopener">${esc(i.pr_label)}</a>` : esc(i.pr_label);
+  return `PR ${link}${i.state === "done" ? (i.pr_merged ? " merged" : " merge not recorded") : ""}`;
 }
+
+// A done item's dollars (hub-core's cost: unknown shows "-", never $0) and the flag for a finish
+// that shows nothing for its work.
+const qCost = (i) => (i.state === "done" ? `<span title="dollars of the sessions that worked it">${i.cost_label ? esc(i.cost_label) : "-"}</span>` : "");
+const qProof = (i) => (i.unproven ? `<span class="qbad" title="finished ok with no PR and no report">! no PR, no proof</span>` : "");
 
 // A card says what the item is, its state and since when, what it needs from the human and when
 // it will be done. The task as typed and the bookkeeping fold away.
@@ -135,7 +144,7 @@ function qItem(i) {
   const prio = i.priority && i.priority !== "low" ? cchip(`prio ${esc(i.priority)}`, esc(i.priority)) : "";
   const when = i.state === "done" ? `finished ${stamp(i.finished)}`
     : i.started ? `started ${stamp(i.started)}` : `queued ${stamp(i.queued)}`;
-  const line = cardLine([esc(i.project), when, p ? `phase ${p.done}/${p.total}` : "", qEta(i, a), qPr(i.pr)]);
+  const line = cardLine([esc(i.project), when, p ? `phase ${p.done}/${p.total}` : "", qEta(i, a), qPr(i), qCost(i), qProof(i)]);
   const next = active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "";
   const hold = i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "";
   const note = i.note ? `<div class="qhold">${esc(i.note)}</div>` : "";
@@ -203,19 +212,16 @@ function qTiles() {
     (prose ? cfold(k, "Stats detail", `<div class="muted">${prose}</div>`, qst.open) : "");
 }
 
-// Done items under a heading per day, newest day first.
+// Done items under a heading per day, newest day first. The day and its totals are hub-core's
+// (`day`, `day_label`, `day_total`, all on the server's clock), so the page sums nothing; an item with no readable finish groups apart.
 function qDoneDays(rows) {
-  const day = (i) => new Date(tms(i.finished)).toDateString();
-  const today = new Date().toDateString(), yday = new Date(Date.now() - 864e5).toDateString();
-  const sorted = [...rows].sort((a, b) => tms(b.finished) - tms(a.finished));
-  let html = "", last = null;
+  const sorted = [...rows].sort((a, b) => (b.day || "").localeCompare(a.day || "") || (tms(b.finished) || 0) - (tms(a.finished) || 0));
+  let html = "", last;
   for (const i of sorted) {
-    const d = day(i);
+    const d = i.day || "";
     if (d !== last) {
       last = d;
-      const label = d === today ? "Today" : d === yday ? "Yesterday"
-        : new Date(tms(i.finished)).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
-      html += `<h3 class="qday">${label}</h3>`;
+      html += `<h3 class="qday">${esc(i.day_label || "Undated")}${i.day_total ? ` <span class="muted">${esc(i.day_total)}</span>` : ""}</h3>`;
     }
     html += qItem(i);
   }
