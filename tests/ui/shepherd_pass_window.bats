@@ -33,7 +33,7 @@ setup() {
         printf "%s\n" "${STUB_ROOM:-}" ;;
   pick) echo "$HOME/.claude-best" ;;
 esac'
-  stub agentctl ':'
+  stub agentctl '[ "$1" != skill ] || echo fleet-lead'   # the conf's SKILL=
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
   # With $HOME/hold there, the pass stays in its pane the way a claude does, until the server goes.
   stub agentctl-run "pwd >> \"\$HOME/pass.cwd\"
