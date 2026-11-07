@@ -1,2 +1,4 @@
 {"type":"user","timestamp":"2026-01-01T00:00:10.000Z","isSidechain":true,"message":{"content":"explore"}}
-{"type":"assistant","timestamp":"2026-01-01T00:00:11.000Z","isSidechain":true,"message":{"id":"sa1","model":"claude-sonnet-5-5","content":[{"type":"text","text":"found"}],"usage":{"input_tokens":5,"output_tokens":20,"cache_creation_input_tokens":3000,"cache_read_input_tokens":0}}}
+{"type": "api-request-shape", "shapeHash": "sh2", "timestamp": "2026-01-01T00:00:10.500Z", "shape": {"system": [{"type": "text", "text": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}], "tools": [{"name": "Bash", "description": "run"}]}}
+{"type": "api-request", "id": "ra1", "timestamp": "2026-01-01T00:00:10.600Z", "shapeHash": "sh2", "keep": 0, "tail": ["x1"]}
+{"type":"assistant","timestamp":"2026-01-01T00:00:11.000Z","isSidechain":true,"message":{"id":"sa1","model":"claude-sonnet-5-5","content":[{"type":"text","text":"found"}],"usage":{"input_tokens":5,"output_tokens":20,"cache_creation_input_tokens":3000,"cache_read_input_tokens":0}},"requestRef":"ra1"}
