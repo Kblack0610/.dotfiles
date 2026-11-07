@@ -1090,17 +1090,21 @@ gw_ready() {
   ! grep -q gateway_cost_usd "$SANDBOX/sets.log" || fail "a tag with no requests wrote \$0"
 }
 
-# rework_repo [fix] - a clone of o/r whose origin cannot be reached (GIT_SSH_COMMAND=false), so the
+# rework_repo [fix|move] - a clone of o/r whose origin cannot be reached (GIT_SSH_COMMAND=false), so the
 # fetch fails and the refs as they stand are read. "feat: a (#10)" lands at PR 10's merge time;
-# with "fix", a fix 11h later rewrites its line and names #10; without it, a feat rewrites it.
+# with "fix", a fix 11h later rewrites its line and names #10; with "move", a fix naming #10 only
+# renames the file; without either, a feat rewrites it.
 rework_repo() {
   R="$SANDBOX/r"; export GIT_SSH_COMMAND=false
   git init -q -b main "$R"; git -C "$R" remote add origin git@github.com:o/r.git
   c() { GIT_AUTHOR_DATE="@$1 +0000" GIT_COMMITTER_DATE="@$1 +0000" git -C "$R" -c user.name=t -c user.email=t@t commit -qam "$2"; }
   printf 'one\n' > "$R/a.sh"; git -C "$R" add a.sh; c 1792371600 "feat: a (#10)"
   FEAT=$(git -C "$R" rev-parse HEAD)
-  printf 'two\n' > "$R/a.sh"
-  if [ "${1:-}" = fix ]; then c 1792411200 "fix: a again, after #10 (#13)"; else c 1792411200 "feat: a grows (#13)"; fi
+  case "${1:-}" in
+    fix) printf 'two\n' > "$R/a.sh"; c 1792411200 "fix: a again, after #10 (#13)" ;;
+    move) git -C "$R" mv a.sh b.sh; c 1792411200 "fix: move a.sh to b.sh, after #10 (#13)" ;;
+    *) printf 'two\n' > "$R/a.sh"; c 1792411200 "feat: a grows (#13)" ;;
+  esac
   git -C "$R" update-ref refs/remotes/origin/main HEAD
   jq -cn --arg d "$R" '{paths: {($d): "proj"}}' > "$SANDBOX/map.json"; export SO_PROJECT_MAP="$SANDBOX/map.json"
   jq --arg o "$FEAT" 'map(if .number == 10 then . + {mergeCommit: {oid: $o}} else . end)' "$GH_FIXTURE/prs.o-r" > "$SANDBOX/prs" &&
@@ -1136,8 +1140,10 @@ rework_repo() {
   assert_output --partial "observed 2 session(s)"   # A and B merged; C and D did not
   assert_equal "$(field a .rework_settled)" true
   assert_equal "$(field c .rework_settled)" false
+  # B's PR has no merge commit to measure, so B is not settled and is read again the next night
+  assert_equal "$(field b .rework_settled)" false
   run env SO_NOW=$((STOP + 32 * 86400)) "$SUBJECT" run
-  refute_output --partial "observed 2"
+  assert_output --partial "observed 1 session(s)"
   # past 30d + the 7d band, a session never seen settled is not reprocessed
   rm -rf "$SO_OUT"
   SO_NOW=$((STOP + 8 * 86400)) "$SUBJECT" run
@@ -1158,4 +1164,12 @@ rework_repo() {
   assert_line --partial "${FEAT:0:10} feat: a (#10) <- "
   run "$SUBJECT" rework "$R" --days 0
   assert_failure 2
+  run timeout 10 "$SUBJECT" rework "$R" --days
+  assert_failure 2
+}
+
+@test "rework: a fix that only moves a file rewrites no line, so the change is no candidate" {
+  rework_repo move
+  "$SUBJECT" run
+  assert_equal "$(field a '.rework | tojson')" '{"measured":1,"candidate_7d":0,"verified_30d":0}'
 }

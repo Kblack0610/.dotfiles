@@ -1788,7 +1788,7 @@ startup_kpi() {
 # human KPIs and makes the canary_ ones, scored by the oracle and costed from its outcome row.
 # The rework KPIs are shares of merged PRs (session-outcomes.sh "rework") that a fix rewrote within
 # 7 days (candidate) or rewrote within 30 days and named (verified). Each reads the cohort that has
-# had its whole window: sessions that ended rework_kpi lag days before the window, counting only PRs observed
+# had its whole window: sessions that ended 7 or 30 days (rework_kpi .lag) before the window, counting only PRs observed
 # that long after their merge. A candidate is a lead, not a defect.
 KPI_DEFS="$JQ_LIB"'
   def bots: ($o | map(select(.runner == true or .project == "_runner") | .session_id))
@@ -2343,7 +2343,9 @@ cmd_effect() {
     t=$(throughput_epoch "$ref") || { say "effect: cannot read the time $ref"; return 2; }
   fi
   local cmp out
-  cmp=$(throughput_epoch "${compare:-$((t - days * 86400))}") || { say "effect: cannot read the compare time $compare"; return 2; }
+  cmp=$(throughput_epoch "${compare:-$((t - days * 86400))}") || { say "effect: cannot read the compare time ${compare:-T - $days days}"; return 2; }
+  # a control split within N days of T would hold the change it is the control for
+  [ $(( cmp > t ? cmp - t : t - cmp )) -ge $((days * 86400)) ] || { say "effect: --compare must be $days days or more from the change"; return 2; }
   out=$(jq -n --argjson t "$t" --argjson cmp "$cmp" --argjson d "$days" --argjson now "$(now)" --argjson flat "$BENCH_EFFECT_FLAT" \
         --arg ref "$ref" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS"'
     bots as $bot

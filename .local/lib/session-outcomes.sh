@@ -338,7 +338,7 @@ so_rework_fixes() {
     [[ "${subj,,}" =~ $SO_REWORK_FIX_RE ]] || continue
     # Header lines are read only between `diff --git` and the first hunk: a deleted line
     # reading "-- a/x" shows as "--- a/x" in a hunk. One blame per file, with every range.
-    intros=$(git -C "$dir" -c core.quotePath=false show -U0 --format= --no-renames --no-ext-diff "$sha" 2>/dev/null |
+    intros=$(git -C "$dir" -c core.quotePath=false show -U0 --format= -M --no-ext-diff "$sha" 2>/dev/null |
       awk '/^diff --git / { h = 1; p = ""; next }
            h && /^--- a\// { p = substr($0, 7); next }
            h && /^--- / { p = ""; next }

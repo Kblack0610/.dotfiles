@@ -1182,6 +1182,10 @@ ask_row() {
   assert_output "[\"$(date -u -d @$((T0 - 4320000)) +%FT%TZ)\",[\"revert_rate\",\"regressed\",\"flat\",\"regressed\"],[\"cost_per_pr\",\"improved\",\"improved\",\"as control\"]]"
   run "$SUBJECT" effect $((T0 - 1728000)) --compare 'not a time'
   assert_failure 2
+  # a control inside the change's own windows would hold the change
+  run "$SUBJECT" effect $((T0 - 1728000)) --days 10 --compare $((T0 - 1296000))
+  assert_failure 2
+  assert_output --partial "10 days or more from the change"
 }
 
 @test "kpi: rework reads the lagged cohort, PRs observed a whole window after merge, humans only" {

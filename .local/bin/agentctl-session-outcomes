@@ -296,7 +296,8 @@ cmd_run() {
                      else {measured: ($m | length),
                            candidate_7d: ([$m[] | select(.rework.candidate)] | length),
                            verified_30d: ([$m[] | select(.rework.verified)] | length)} end),
-          rework_settled: ($row.rework_settled // false),
+          # settled only once every merged PR was measured, so a failed read is retried inside the band
+          rework_settled: (($row.rework_settled // false) and all($prs[] | select(.state == "MERGED"); .rework != null)),
           board_done: ($mm.board_done // null),
           corrections: (if $runner then null else ($mm.corrections // null) end),
           hard_errors: ($mm.hard_errors // null),
@@ -631,10 +632,11 @@ cmd_rework() {
   local dir="" days=60 until="$NOW" sample=0 branch ref since idx commits
   local use="usage: $NAME rework DIR [--days N] [--until T] [--sample N]"
   while [ $# -gt 0 ]; do
+    case "$1" in --days|--until|--sample) [ -n "${2:-}" ] || { echo "$use" >&2; return 2; } ;; esac
     case "$1" in
-      --days) days="${2:-}"; shift 2 ;;
-      --until) until=$(date -d "${2:-}" +%s) || return 2; shift 2 ;;
-      --sample) sample="${2:-}"; shift 2 ;;
+      --days) days="$2"; shift 2 ;;
+      --until) until=$(date -d "$2" +%s) || return 2; shift 2 ;;
+      --sample) sample="$2"; shift 2 ;;
       -*) echo "$use" >&2; return 2 ;;
       *) dir="$1"; shift ;;
     esac
