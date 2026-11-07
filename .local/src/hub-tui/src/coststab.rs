@@ -251,35 +251,50 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
             w,
         ),
     ];
+    // An unreadable or idle account has no figures: a line of its own, so its words do not
+    // widen the table's columns.
+    let mut notes = vec![];
     let rows = b
         .accounts
         .iter()
-        .map(|a| {
+        .filter_map(|a| {
             let n = || cell(a.name.clone(), p.head());
+            let note = |text: &str, style| {
+                clip_line(
+                    Line::from(vec![
+                        Span::styled(a.name.clone(), p.head()),
+                        Span::raw("  "),
+                        Span::styled(text.to_string(), style),
+                    ]),
+                    w,
+                )
+            };
             match a.state {
-                "unreadable" => return vec![n(), cell("usage unreadable", p.bad())],
-                "idle" => return vec![n(), cell("idle, token refreshes on launch", p.dim())],
-                _ => {}
+                "unreadable" => notes.push(note("usage unreadable", p.bad())),
+                "idle" => notes.push(note("idle, token refreshes on launch", p.dim())),
+                _ => {
+                    let pc = |v: Option<f64>| v.map_or("-".into(), |v| format!("{}%", v.floor()));
+                    let rate = |v: Option<f64>| v.map_or("-".into(), |v| format!("{v:.2}"));
+                    return Some(vec![
+                        n(),
+                        a.live.to_string().into(),
+                        pc(a.used).into(),
+                        pc(a.gone).into(),
+                        cell(
+                            rate(Some(a.burn)),
+                            if a.is_over() { p.warn() } else { Style::new() },
+                        ),
+                        rate(a.sustain).into(),
+                        a.on_pace(a.burn_at, b.at, &time).into(),
+                        a.on_pace(a.idle_at, b.at, &time).into(),
+                        a.run_out.map_or("-".into(), time).into(),
+                        a.resets.map_or("-".into(), time).into(),
+                    ]);
+                }
             }
-            let pc = |v: Option<f64>| v.map_or("-".into(), |v| format!("{}%", v.floor()));
-            let rate = |v: Option<f64>| v.map_or("-".into(), |v| format!("{v:.2}"));
-            vec![
-                n(),
-                a.live.to_string().into(),
-                pc(a.used).into(),
-                pc(a.gone).into(),
-                cell(
-                    rate(Some(a.burn)),
-                    if a.is_over() { p.warn() } else { Style::new() },
-                ),
-                rate(a.sustain).into(),
-                a.on_pace(a.burn_at, b.at, &time).into(),
-                a.on_pace(a.idle_at, b.at, &time).into(),
-                a.run_out.map_or("-".into(), time).into(),
-                a.resets.map_or("-".into(), time).into(),
-            ]
+            None
         })
-        .collect();
+        .collect::<Vec<_>>();
     out.extend(
         Table {
             header: vec![
@@ -293,6 +308,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
         }
         .fit(w, p.head()),
     );
+    out.extend(notes);
     out.push(clip_line(
         Line::styled(
             "BURN/H: last 6h rate per session. KEEPS/H: what the week can carry.",

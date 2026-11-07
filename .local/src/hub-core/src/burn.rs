@@ -81,7 +81,7 @@ pub struct Fleet {
 pub struct Drip {
     pub hour: u32,
     pub day: u32,
-    /// Why dispatch is held (`fleet-dispatch headroom`), shown as a badge to Sessions.
+    /// Why dispatch is held (headroom's `held`, only when it names a `held_kind`), shown as a badge to Sessions.
     pub held: Option<String>,
 }
 
@@ -104,7 +104,8 @@ pub struct Burn {
     /// The headline and the drip, worded here so both surfaces print the same.
     pub head: String,
     pub drip_line: String,
-    /// `bad` when the fleet is over, `warn` when one account is, `ok`, or `none` with no data.
+    /// `bad` when the fleet is over, `warn` when one account is or none can be read, `ok`, or
+    /// `none` with no data.
     pub level: &'static str,
     pub accounts: Vec<Account>,
     pub fleet: Fleet,
@@ -151,9 +152,15 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
         }
     }
     let accounts: Vec<Account> = by.iter().map(|(n, a)| account(n, a)).collect();
-    let counted = accounts.iter().filter(|a| a.state == "ok");
-    let burn: f64 = counted.clone().map(|a| a.burn).sum();
-    let sustain: f64 = counted.filter_map(|a| a.sustain).sum();
+    // Burn and sustain sum over the same accounts: an unreadable or idle one has neither, and
+    // one with no sustain (its week is spent or past its reset) would otherwise add burn to
+    // the OVER ratio with nothing on the other side.
+    let counted: Vec<&Account> = accounts
+        .iter()
+        .filter(|a| a.state == "ok" && a.sustain.is_some())
+        .collect();
+    let burn: f64 = counted.iter().map(|a| a.burn).sum();
+    let sustain: f64 = counted.iter().filter_map(|a| a.sustain).sum();
     let rate = rate.filter(|r| *r > 0.0);
     let fleet = Fleet {
         live: accounts.iter().map(|a| a.live).sum(),
@@ -165,6 +172,9 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
     };
     let level = if accounts.is_empty() {
         "none"
+    } else if counted.is_empty() {
+        // Accounts exist but none can be read: a quiet fleet is not what this means.
+        "warn"
     } else if burn > sustain {
         "bad"
     } else if accounts.iter().any(Account::is_over) {
@@ -380,6 +390,22 @@ mod tests {
         assert_eq!(old.state, "unreadable");
         assert!((b.fleet.burn - 4.52).abs() < 1e-9, "its burn is not summed");
         assert_eq!(b.fleet.live, 41, "its sessions are live all the same");
+    }
+
+    #[test]
+    fn an_account_with_no_sustain_adds_no_burn_to_the_ratio() {
+        let mut s = fixture();
+        s.push(series("spent", "week_used_percent", 100.0));
+        s.push(series("spent", "burn_points_per_hour", 3.0));
+        let b = build(&s, None, quiet(), NOW);
+        assert!((b.fleet.burn - 4.52).abs() < 1e-9, "{:?}", b.fleet);
+        assert!((b.fleet.sustain - 1.37).abs() < 1e-9);
+    }
+
+    #[test]
+    fn accounts_that_cannot_be_read_are_not_a_green_fleet() {
+        let b = build(&[series("old", "read_ok", 0.0)], None, Drip::default(), NOW);
+        assert_eq!(b.level, "warn", "{b:?}");
     }
 
     #[test]
