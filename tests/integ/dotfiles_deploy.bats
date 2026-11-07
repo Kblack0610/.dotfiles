@@ -327,7 +327,7 @@ world_wt_private() {
   refute_output --partial '.local/bin/svc'
   run "$DEPLOY" --apply --missing
   assert_success
-  assert_output --partial '1 path(s) repaired'
+  assert_output --partial '1 path(s) linked, none missing now (copies not checked'
   assert_equal "$(readlink -f "$HOME/.local/bin/new-tool")" "$(readlink -f "$PUB/.local/bin/new-tool")"
   [ ! -L "$PUB/.local/bin/svc" ] || fail '--missing converted a physical copy'
   assert_equal "$(cat "$PUB/.local/bin/svc")" 'running'

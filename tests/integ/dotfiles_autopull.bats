@@ -64,21 +64,42 @@ head_of() { git -C "$1" rev-parse HEAD; }
   add_upstream pub .local/bin/new-tool v1
   run "$PULL" --now "$PUB"
   assert_success
-  assert_output --regexp '^~/\.dotfiles: fast-forwarded main [0-9a-f]{8}\.\.[0-9a-f]{8}, linked 1 new file\(s\)$'
+  assert_line --index 0 --regexp '^~/\.dotfiles: fast-forwarded main [0-9a-f]{8}\.\.[0-9a-f]{8}$'
+  assert_line --index 1 '~: linked 1 missing file(s) into $HOME (dotfiles-deploy --apply --missing)'
   assert_equal "$(readlink -f "$HOME/.local/bin/new-tool")" "$(readlink -f "$PUB/.local/bin/new-tool")"
   [ ! -L "$HOME/f" ] || fail 'a physical copy was converted on pull'
   assert_equal "$(cat "$HOME/f")" local
 }
 
 @test "a failed attach after a fast-forward is named on the line, and the pull still succeeds" {
-  printf '#!/bin/sh\nexit 2\n' >"$SANDBOX/deploy-stub" && chmod +x "$SANDBOX/deploy-stub"
+  printf '#!/bin/sh\necho refused: stub\nexit 2\n' >"$SANDBOX/deploy-stub" && chmod +x "$SANDBOX/deploy-stub"
   export DOTFILES_DEPLOY="$SANDBOX/deploy-stub"
   merge pub v2
   run "$PULL" --now "$PUB"
   assert_success
-  assert_output --partial 'fast-forwarded main'
-  assert_output --partial 'dotfiles-deploy --apply --missing failed (exit 2)'
+  assert_line --index 0 --partial 'fast-forwarded main'
+  assert_line --index 1 --partial 'dotfiles-deploy --apply --missing failed (exit 2); report in'
   assert_equal "$(cat "$PUB/f")" v2
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'dotfiles-deploy --apply --missing exited 2, its report:'
+  assert_output --partial '    refused: stub'
+}
+
+@test "the shell pass moves both checkouts, then links what both added in one deploy run" {
+  export DOTFILES_DEPLOY="$REPO_ROOT/.local/bin/dotfiles-deploy"
+  printf 'local\n' >"$HOME/f"
+  add_upstream priv .stow-local-ignore '^/f$'
+  add_upstream pub .local/bin/new-tool v1
+  add_upstream priv .local/bin/priv-tool v1
+  run "$PULL"
+  assert_success
+  assert_equal "$(readlink -f "$HOME/.local/bin/new-tool")" "$(readlink -f "$PUB/.local/bin/new-tool")"
+  assert_equal "$(readlink -f "$HOME/.local/bin/priv-tool")" "$(readlink -f "$PRIV/.local/bin/priv-tool")"
+  [ ! -L "$HOME/f" ] || fail 'a physical copy was converted on pull'
+  run grep -c 'linked' "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output 1
+  run grep -c 'fast-forwarded main' "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output 2
 }
 
 @test "--now from the private repo fast-forwards ~/.dotfiles-private" {

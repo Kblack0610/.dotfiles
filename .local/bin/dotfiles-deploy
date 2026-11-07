@@ -573,7 +573,11 @@ main() {
     # skipped are still sitting there serving the wrong content.
     classify
     if [ "${#FINDINGS[@]}" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
-      printf '\ndotfiles-deploy: converged - %s path(s) repaired, re-check is clean\n' "$APPLIED"
+      if [ "$ONLY_MISSING" = 1 ]; then
+        printf '\ndotfiles-deploy: converged - %s path(s) linked, none missing now (copies not checked: --missing)\n' "$APPLIED"
+      else
+        printf '\ndotfiles-deploy: converged - %s path(s) repaired, re-check is clean\n' "$APPLIED"
+      fi
       exit 0
     fi
     printf '\ndotfiles-deploy: DID NOT CONVERGE - %s repaired, %s refused, %s still wrong\n' \
