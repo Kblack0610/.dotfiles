@@ -25,6 +25,8 @@ BUDGET_DEFAULT_CALLS_HOUR=20
 # shellcheck source=calls.sh
 . "$(dirname "${BASH_SOURCE[0]}")/calls.sh"
 budget_state() { printf '%s/%s' "$(proof_state_dir)" "$1"; }
+# The reason a budget stop holds its name with (agent-proof's held_why); a call let through ends it.
+BUDGET_HELD_WHY="at its budget cap"
 
 # A runner that sends a model many items a call sizes the call to fit BUDGET_CALL_USD: halve
 # the batch when a call stops at the cap (CALLS_RC_CAPPED), grow it a quarter after a clean full
@@ -86,7 +88,7 @@ budget_spent() {
 budget_stop() {
   local raise="agentctl budget $1 raise <usd>" seen
   echo "agentctl-run: $1 $2; not calling. To go on today: $raise" >&2
-  proof_why "at its budget cap"
+  proof_why "$BUDGET_HELD_WHY"
   proof_report "$1" BLOCKED "budget: $2" || true
   seen="$(budget_state "$1")/budget-paged"
   if [ "$(cat "$seen" 2>/dev/null)" != "$(date +%F)" ] && command -v agent-notify >/dev/null 2>&1; then
@@ -109,6 +111,7 @@ budget_check() {
   if [ "$hour" -ge "$cap" ]; then
     budget_stop "$name" "rate: $hour calls in the last hour, cap $cap (MAX_CALLS_HOUR)"
   fi
+  proof_unhold "$name" "$BUDGET_HELD_WHY"
   return 0
 }
 

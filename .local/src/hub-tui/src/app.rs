@@ -4557,7 +4557,9 @@ mod tests {
         assert!(a.fleet_table.is_default());
         assert!(screen(&mut a, 160, 40).contains("dream"));
 
-        // f steps the state chip, s the sort.
+        // f steps the state chip (held leads), s the sort.
+        a.handle(ch('f'));
+        assert_eq!(a.fleet_table.view.state, "held");
         a.handle(ch('f'));
         assert_eq!(a.fleet_table.view.state, "failed");
         let s = screen(&mut a, 160, 40);

@@ -1287,7 +1287,7 @@ STUB
   chmod +x "$SANDBOX/bin/notes"
 }
 
-@test "a canary item files no story row, and --from takes only the known origins" {
+@test "a canary item files no story row, and --from takes only the known origins, research:<facet> among them" {
   story_notes
   run "$AQ" add --project level --from canary --tags 'night canary' --slug c1 "check(canary): greet 2026w45"
   assert_success
@@ -1295,9 +1295,14 @@ STUB
   run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   [ "$(field "$(item queued c1)" from)" = canary ]
+  run "$AQ" add --project game --from research:dotfiles-hooks --slug r1 "research(dotfiles-hooks): look"
+  assert_success
+  [ "$(field "$(item queued r1)" from)" = research:dotfiles-hooks ]
   run "$AQ" add --project game --from robot --slug c2 "x"
   assert_failure
-  assert_output --partial 'human, shepherd, canary or board'
+  assert_output --partial 'human, shepherd, canary, research:<facet> or board'
+  run "$AQ" add --project game --from research: --slug c3 "x"
+  assert_failure
 }
 
 @test "add files a started story row under the item's epic and links it as row:" {
