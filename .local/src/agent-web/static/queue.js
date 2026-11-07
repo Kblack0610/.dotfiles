@@ -385,7 +385,7 @@ $("queue").addEventListener("click", (e) => {
   if (t.dataset.creason != null) { qst.candReason = t.dataset.creason; renderQueueList(); return; }
   if (t.dataset.open) {
     const a = qAgent((qst.items || []).find((i) => i.slug === t.dataset.open) || {});
-    if (a) { setTab("sessions"); select(a); }
+    if (a) openAgent(a);
     return;
   }
   if (t.dataset.cancel) {

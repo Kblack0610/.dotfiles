@@ -92,6 +92,9 @@ pub struct SessionRow {
     /// When it ended, unix seconds.
     pub finished: Option<i64>,
     pub cost_usd: Option<f64>,
+    /// A live row's item across all its sessions, which is what the item's budget holds. A queue
+    /// row has none: its `cost_usd` already is that.
+    pub item_cost_usd: Option<f64>,
     pub account: String,
     pub source: Source,
     /// This live session counts as having no queue item (`item:none`).
@@ -184,7 +187,10 @@ pub fn read_state(path: &Path) -> (Vec<Value>, Vocab) {
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .unwrap_or_default();
-    (doc["sessions"].as_array().cloned().unwrap_or_default(), Vocab::from_state(&doc))
+    (
+        doc["sessions"].as_array().cloned().unwrap_or_default(),
+        Vocab::from_state(&doc),
+    )
 }
 
 /// The session registry's root, `~/.agent/sessions`.
@@ -192,25 +198,38 @@ pub fn registry() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".agent/sessions")
 }
 
-/// Each session's cost from `<root>/<project>/sessions.jsonl`, whose rows the Stop hook appends;
-/// a later row for a session replaces an earlier one.
+/// Every row of `<root>/<project>/sessions.jsonl`, which the Stop hook appends to, oldest first
+/// within a project.
+fn registry_rows(root: &Path) -> impl Iterator<Item = Value> {
+    std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|d| std::fs::read_to_string(d.path().join("sessions.jsonl")).ok())
+        .flat_map(|text| {
+            text.lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .collect::<Vec<_>>()
+        })
+}
+
+/// Each session's cost; a later row for a session replaces an earlier one.
 pub fn costs(root: &Path) -> HashMap<String, f64> {
     let mut out = HashMap::new();
-    let dirs = std::fs::read_dir(root).into_iter().flatten().flatten();
-    for d in dirs {
-        let Ok(text) = std::fs::read_to_string(d.path().join("sessions.jsonl")) else {
-            continue;
-        };
-        for v in text
-            .lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        {
-            if let (Some(id), Some(c)) = (v["session_id"].as_str(), v["cost_usd"].as_f64()) {
-                out.insert(id.to_string(), c);
-            }
+    for v in registry_rows(root) {
+        if let (Some(id), Some(c)) = (v["session_id"].as_str(), v["cost_usd"].as_f64()) {
+            out.insert(id.to_string(), c);
         }
     }
     out
+}
+
+/// The transcript the registry names for a session: once a session has ended no other store does.
+pub fn transcript(root: &Path, session_id: &str) -> Option<PathBuf> {
+    registry_rows(root)
+        .filter(|v| v["session_id"] == session_id)
+        .filter_map(|v| v["transcript"].as_str().map(PathBuf::from))
+        .last()
 }
 
 fn ended_argv() -> Vec<String> {
@@ -265,6 +284,13 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         phases_total: s["phases_total"].as_i64(),
         idle_min: s["idle_min"].as_i64(),
         cost_usd: feed.cost.get(sid).copied(),
+        item_cost_usd: item.and_then(|i| {
+            let mut sids = item_sessions(i);
+            sids.push(sid.to_string());
+            sids.sort();
+            sids.dedup();
+            item_cost(i, &sids, feed)
+        }),
         account: str_of(s, "account").to_string(),
         unlinked: is_live(s) && is_unlinked(s),
         ..SessionRow::default()
@@ -364,7 +390,12 @@ fn outcome_row(e: &Ended) -> SessionRow {
 /// Every row in the table's own order: live sessions by the vocabulary's bucket order (what needs
 /// the human first), then by target, then the ended ones, newest first. An item or session that still has a live
 /// row shows only there, and a session counted through its queue item shows only there.
-pub fn rows(state: &[Value], vocab: &Vocab, feed: &Feed, agents: &[(Agent, Session)]) -> Vec<SessionRow> {
+pub fn rows(
+    state: &[Value],
+    vocab: &Vocab,
+    feed: &Feed,
+    agents: &[(Agent, Session)],
+) -> Vec<SessionRow> {
     let items: HashMap<&str, &Item> = feed.items.iter().map(|i| (i.slug.as_str(), i)).collect();
     let mut live: Vec<SessionRow> = state.iter().map(|s| live_row(s, feed, &items)).collect();
     let strays: Vec<SessionRow> = agents
@@ -501,9 +532,22 @@ mod tests {
     }
 
     #[test]
+    fn a_live_row_prices_its_item_across_all_of_the_items_sessions() {
+        let mut f = feed();
+        f.items[0].extra.insert("sessions".into(), "s0,s1".into());
+        f.cost.insert("s0".into(), 3.0);
+        let r = rows(&state(), &vocab(), &f, &[]);
+        let own = r.iter().find(|x| x.target == "lab/d:1").unwrap();
+        assert_eq!(own.cost_usd, Some(1.2));
+        assert_eq!(own.item_cost_usd, Some(4.2));
+    }
+
+    #[test]
     fn a_session_with_no_item_shows_the_project_its_row_carries() {
-        let s = vec![json!({"target":"lab/freqtrade_trading_attempt-agent-1:1","bucket":"WORKING",
-            "session_id":"f1","cwd":"/w/freqtrade_trading_attempt-agent-1","project":"trader","item":null})];
+        let s = vec![
+            json!({"target":"lab/freqtrade_trading_attempt-agent-1:1","bucket":"WORKING",
+            "session_id":"f1","cwd":"/w/freqtrade_trading_attempt-agent-1","project":"trader","item":null}),
+        ];
         let r = rows(&s, &vocab(), &feed(), &[]);
         assert_eq!(r[0].project, "trader");
     }
@@ -511,7 +555,13 @@ mod tests {
     #[test]
     fn the_vocabulary_orders_the_buckets_not_a_list_here() {
         let swapped = Vocab::from_state(&json!({"vocab": {"buckets": ["WORKING", "NEEDS"]}}));
-        let by = |v: &Vocab| rows(&state(), v, &feed(), &[]).iter().map(|r| r.bucket.clone()).take(2).collect::<Vec<_>>();
+        let by = |v: &Vocab| {
+            rows(&state(), v, &feed(), &[])
+                .iter()
+                .map(|r| r.bucket.clone())
+                .take(2)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(by(&swapped)[0], "WORKING");
         assert_eq!(by(&vocab())[0], "NEEDS");
     }
@@ -579,7 +629,12 @@ mod tests {
         };
         let known = agent("lab/d:1", "s1");
         let moved = agent("lab/d:77", "s2");
-        let r = rows(&state(), &vocab(), &feed(), &[known, moved, agent("lab/d:9", "s77")]);
+        let r = rows(
+            &state(),
+            &vocab(),
+            &feed(),
+            &[known, moved, agent("lab/d:9", "s77")],
+        );
         let parked: Vec<_> = r.iter().filter(|x| x.bucket == "PARKED").collect();
         assert_eq!(
             parked.len(),
@@ -600,7 +655,9 @@ mod tests {
     fn an_item_finished_by_a_session_that_moved_on_still_shows() {
         let mut f = feed();
         f.items.push(done("earlier", "s1", "2026-11-06T16:00:00Z"));
-        assert!(rows(&state(), &vocab(), &f, &[]).iter().any(|x| x.key == "earlier"));
+        assert!(rows(&state(), &vocab(), &f, &[])
+            .iter()
+            .any(|x| x.key == "earlier"));
     }
 
     #[test]
@@ -688,6 +745,21 @@ mod tests {
         let c = costs(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(c, HashMap::from([("a".to_string(), 2.5)]));
+    }
+
+    #[test]
+    fn the_registry_names_a_sessions_last_transcript() {
+        let dir = std::env::temp_dir().join(format!("hub-transcript-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("p")).unwrap();
+        std::fs::write(
+            dir.join("p/sessions.jsonl"),
+            "{\"session_id\":\"a\",\"transcript\":\"/t/old\"}\n{\"session_id\":\"a\",\"transcript\":\"/t/new\"}\n{\"session_id\":\"b\"}\n",
+        )
+        .unwrap();
+        let (a, b) = (transcript(&dir, "a"), transcript(&dir, "b"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(a, Some(PathBuf::from("/t/new")));
+        assert_eq!(b, None);
     }
 
     #[test]

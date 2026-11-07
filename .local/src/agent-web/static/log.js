@@ -189,7 +189,7 @@ $("log").addEventListener("click", (e) => {
   const col = t.closest(".cc[data-key]");
   if (col && /^\d{4}-/.test(col.dataset.key)) { const ds = lst.hist.map((r) => r.date); goDay(col.dataset.key === ds[ds.length - 1] ? null : col.dataset.key); return; }
   const by = t.closest("[data-target]");
-  if (by) { e.preventDefault(); const a = st.agents.find((x) => x.target === by.dataset.target); if (a) { setTab("sessions"); select(a); } return; }
+  if (by) { e.preventDefault(); const a = st.agents.find((x) => x.target === by.dataset.target); if (a) openAgent(a); return; }
   if (t.closest("[data-asks]")) { e.preventDefault(); setTab("home"); }
 });
 document.addEventListener("keydown", (e) => {

@@ -1,12 +1,13 @@
 "use strict";
 // Sessions with no session open: the capacity header, the table and the folds under it. Rows and
 // the header come from hub-core (`session_table`, `capacity`) through /api/sessions/*, and the
-// server filters and sorts by the view in the URL (table.js). A row with a session here opens it
-// (app.js); any other row unfolds in place, to its fleet-state card or its outcome card.
+// server filters and sorts by the view in the URL (table.js). Any row opens that session's page,
+// `#sessions/<id>`, which is hub-core's `session_page` through /api/sessions/page; a session on a
+// pane here also has its Transcript and Screen beside it (app.js).
 
 // A day's ended sessions on a busy day run to hundreds, so the table stops here until asked.
 const SESSIONS_OPEN = 200;
-const sst = { data: null, err: null, cap: null, capErr: null, all: false, open: null, cards: {}, confirm: null };
+const sst = { data: null, err: null, cap: null, capErr: null, all: false, confirm: null };
 
 const SESSION_COLS = { bucket: ["bucket"], project: ["project"], task: ["task"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"] };
 
@@ -19,9 +20,9 @@ const refreshCapacity = coalesce(async () => {
   try { sst.cap = await api("/api/sessions/capacity"); sst.capErr = null; } catch (e) { sst.capErr = e.message; }
   renderOverview();
 });
-// The table's sources move only with what is on screen, so a session open reads neither.
+// The table's sources move only with what is on screen, so a session open reads only its page.
 function refreshSessions() {
-  if (st.sel) return;
+  if (st.sel) { if (st.view === "page") loadPage(); return; }
   refreshTable();
   refreshCapacity();
 }
@@ -62,26 +63,13 @@ function sessionPr(r) {
   return `#${esc(r.pr)}${r.pr_state ? " " + esc(r.pr_state.toLowerCase()) : ""}${ci}`;
 }
 
-// The unfolded row: a fleet-state row's card, else the outcome card, which only exists once the
-// nightly run has seen the session.
-function sessionFold(r) {
-  const s = r.source === "live" && sessionsOf().find((x) => x.target === r.target);
-  if (s) return card(s, maxContext(), Date.now());
-  const said = r.item ? `<div class="muted">queue item ${esc(r.item)}</div>` : "";
-  if (!r.session_id) return said;
-  const text = sst.cards[r.session_id];
-  return `${said}<pre class="joblog">${text == null ? "Loading the card." : esc(text)}</pre>`;
-}
-
 function sessionRow(r) {
   const a = sessionAgent(r);
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "-" : dur(r.idle_min);
   const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
-  const open = sst.open === r.key;
-  const row = `<tr class="click" data-key="${esc(r.key)}"><td><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td>` +
+  return `<tr class="click" data-key="${esc(r.key)}"><td><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td>` +
     `<td>${esc(r.project)}</td><td class="wrap">${esc(r.task)} ${sessionTags(r, a)}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
     `<td class="n">${idle}</td><td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td></tr>`;
-  return open ? row + `<tr><td colspan="8" class="wrap">${sessionFold(r)}</td></tr>` : row;
 }
 
 function sessionsBody(d) {
@@ -128,22 +116,72 @@ async function startTimer(name) {
   refreshCapacity();
 }
 
-async function openOutcome(sid) {
-  try { sst.cards[sid] = await api(`/api/outcomes/card?sid=${encodeURIComponent(sid)}`); } catch (e) { sst.cards[sid] = `No outcome card yet: ${e.message}`; }
-  renderOverview();
+const sessionId = (a) => a.session || a.target;
+
+// A row is a link, so Back returns to the table as it was left.
+function sessionClick(r) {
+  const a = sessionAgent(r), q = st.views.sessions;
+  location.hash = `#sessions/${encodeURIComponent(a ? sessionId(a) : r.session_id || r.key)}${q ? "?" + q : ""}`;
 }
 
-function sessionClick(r) {
-  const a = sessionAgent(r);
-  if (a) { select(a); return; }
-  sst.open = sst.open === r.key ? null : r.key;
-  if (sst.open && r.source !== "live" && r.session_id) openOutcome(r.session_id);
-  renderOverview();
+// Open a session from another tab: the URL names it, and the tab opens what the URL names.
+function openAgent(a) {
+  setTab("sessions", sessionId(a));
 }
+
+// What `#sessions/<id>` names: its session on a pane here, else one with no pane (it ended, or
+// runs where this page cannot reach), which has its page and transcript and nothing to type into.
+async function openSession(id) {
+  if (st.sel && (sessionId(st.sel) === id || st.sel.target === id)) return;
+  if (!st.agents.length) {
+    await refreshAgents();
+    if (st.arg !== id) return;
+  }
+  const a = st.agents.find((x) => x.session === id || x.target === id);
+  select(a || { target: id, session: id, paneless: true, status: "", summary: "", actions: [] });
+}
+
+const pageRow = (label, html, warn) => `<div class="pgrow"><span class="pgk">${esc(label)}</span><span class="pgv${warn ? " capwarn" : ""}">${html}</span></div>`;
+
+function pagePart(p) {
+  const out = p.link && !p.link.startsWith("#") ? ' target="_blank" rel="noopener"' : "";
+  return pageRow(p.label, p.link ? `<a href="${esc(p.link)}"${out}>${esc(p.text)}</a>` : esc(p.text), p.warn);
+}
+
+// The parts are hub-core's; what is drawn here is the card for a session still in the state
+// document, and the folds. An ended session's card is what it was opened for, so it starts open.
+function pageHtml(p) {
+  const s = sessionsOf().find((x) => (p.session_id && x.session_id === p.session_id) || (p.target && x.target === p.target));
+  wst.open["page-outcome"] ??= true;
+  const outcome = p.outcome ? fold("page-outcome", "Outcome card", `<pre class="joblog">${esc(p.outcome)}</pre>`) : pageRow("Outcome card", "after it ends");
+  return `<div class="pghead"><span class="chip" style="--c:${bucketColor(p.bucket)}">${esc(p.bucket)}</span> <span class="muted">${esc(p.idle)}</span> ${esc(p.task)}</div>` +
+    p.errors.map((e) => `<div class="card err">${esc(e)}</div>`).join("") +
+    p.parts.map(pagePart).join("") +
+    pageRow("Transcript", '<button class="btn sm" data-transcript>Load</button>') +
+    outcome + (s ? fold("page-state", "Fleet state", card(s, maxContext(), Date.now())) : "");
+}
+
+const loadPage = coalesce(async () => {
+  const a = st.sel;
+  if (!a || st.view !== "page") return;
+  const id = sessionId(a);
+  const still = () => st.sel && sessionId(st.sel) === id && st.view === "page";
+  let html;
+  try {
+    const p = await api(`/api/sessions/page?t=${encodeURIComponent(id)}`);
+    if (still() && st.sel.paneless) {
+      Object.assign(st.sel, { name: p.name, summary: p.task, target: p.session_id || st.sel.target });
+      renderHead();
+    }
+    html = pageHtml(p);
+  } catch (e) { html = `<div class="empty">${esc(e.message)}</div>`; }
+  if (still()) paint($("scroll"), html, wst.open);
+});
 
 $("scroll").addEventListener("click", (e) => {
-  if (st.sel) return;
-  const patch = tblPatch(e), d = e.target.dataset || {};
+  const d = e.target.dataset || {};
+  if (st.sel) { if (d.transcript !== undefined) setView("transcript"); return; }
+  const patch = tblPatch(e);
   if (patch) sessionsView(patch);
   else if (d.start) { sst.confirm = d.start; renderOverview(); }
   else if (d.keep !== undefined) { sst.confirm = null; renderOverview(); }
@@ -167,18 +205,9 @@ for (const kind of ["input", "change"]) {
 const watchFeed = pushed("sessions", ["watch"], refreshWatch);
 const shepFeed = pushed("sessions", ["shepherd", "sessions"], refreshShepherd);
 const tableFeed = pushed("sessions", ["watch", "queue"], refreshSessions);
-// #sessions/<target> opens that session, as a Fleet row does. The agents list may not be
-// loaded yet, so the open waits for it (refreshAgents returns once it has).
-async function openArg() {
-  const target = st.arg;
-  if (!st.agents.length) await refreshAgents();
-  const a = st.agents.find((x) => x.target === target);
-  if (a && st.arg === target && (!st.sel || st.sel.target !== target)) select(a);
-}
 TABS.sessions = {
   show() {
-    if (st.arg) openArg();
-    else if (!st.sel) overview();
+    if (st.arg) openSession(st.arg); else overview();
     watchFeed.show(!wst.data); shepFeed.show(!shst.data); tableFeed.show(!sst.data);
   },
   onEvent(ev) { watchFeed.onEvent(ev); shepFeed.onEvent(ev); tableFeed.onEvent(ev); },

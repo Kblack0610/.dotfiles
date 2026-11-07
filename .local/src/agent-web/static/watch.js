@@ -136,7 +136,7 @@ const maxContext = () => Math.max(200e3, ...sessionsOf().map((s) => s.context_to
 // The open session's fleet-state card, folded to one line above its transcript.
 function renderFacts() {
   const el = $("facts");
-  const s = st.sel && sessionsOf().find((x) => (x.session_id && x.session_id === st.sel.session) || x.target === st.sel.target);
+  const s = st.sel && st.view !== "page" && sessionsOf().find((x) => (x.session_id && x.session_id === st.sel.session) || x.target === st.sel.target);
   el.hidden = !s;
   if (!s) return;
   const pr = s.pr && s.pr !== "-" ? ` PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "";
