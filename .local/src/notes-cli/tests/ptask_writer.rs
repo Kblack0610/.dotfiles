@@ -248,6 +248,27 @@ fn ambiguous_words_write_nothing() {
     assert_eq!(h.board(), before);
 }
 
+// nc-47: start and drop (rm) refuse an ambiguous match like done does.
+#[test]
+fn start_and_drop_refuse_ambiguous_words_too() {
+    let h = Home::new("ambig-verbs");
+    ok(&agent(&h, &["add", "fix(ui): menu flickers #size/s"]));
+    ok(&agent(&h, &["add", "fix(ui): menu lags on load #size/s"]));
+    let before = h.board();
+    for verb in [
+        &["start", "menu"][..],
+        &["drop", "--why", "stale", "menu"][..],
+    ] {
+        let o = agent(&h, verb);
+        assert_eq!(o.status.code(), Some(1), "{verb:?}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains("dm-1") && err.contains("dm-2"), "{err}");
+        assert_eq!(h.board(), before, "{verb:?} wrote");
+    }
+    ok(&agent(&h, &["start", "flickers"]));
+    assert_ne!(h.board(), before);
+}
+
 #[test]
 fn concurrent_adds_mint_distinct_ids() {
     let h = Home::new("race");
