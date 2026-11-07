@@ -24,8 +24,8 @@
 #                                     phase ticks, per project (.local/lib/fleet-stages.py)
 #
 # Buckets: PARKED, NEEDS, STALLED, WORKING, LANDED, DONE and CHAT, one per session, plus one NIGHTLY
-# row per repo whose default branch is red and one SHARED row per test red on several branches at
-# once. Each is defined once, with its entry facts, exit,
+# row per repo whose default branch is red, one SHARED row per test red on several branches at once
+# and one CHECKOUT row per deployed checkout off its default branch. Each is defined once, with its entry facts, exit,
 # actor, action and pinning test, in the bucket table of .local/src/docs/fleet-states.md, and
 # tests/unit/fleet_states_doc.bats fails when the words emitted here differ from that table.
 # The --json `finished` field is DONE without the idle and status checks, so a session can check
@@ -682,6 +682,31 @@ sync_facts() {
   echo "$behind $conflicts ${fork:--}"
 }
 
+# off_default_checkouts -> each checkout stow deploys (the two dotfiles-drift reads) that is not on
+# its default branch, one per line. Worktrees are never in it: a branch is what they are for.
+# The local symref settles the usual case, so a clean pass costs no gh call. Each is its real path,
+# which is how a session's cwd reads.
+off_default_checkouts() {
+  local d cur base
+  for d in "${DOTFILES:-$HOME/.dotfiles}" "${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"; do
+    [ -e "$d/.git" ] || continue
+    cur="$(git -C "$d" symbolic-ref -q --short HEAD)"
+    [ "origin/$cur" = "$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD)" ] && continue
+    base="$(default_base "$d")"
+    [ "$cur" = "${base#origin/}" ] || realpath "$d"
+  done
+}
+
+# in_checkout <dir> <checkouts, one per line>: <dir> is one of them or inside one.
+in_checkout() {
+  local c
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    case "$1/" in "$c"/*) return 0 ;; esac
+  done <<<"$2"
+  return 1
+}
+
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
 # plus branch, sync, the PR head and the dirty names (last: they may hold spaces):
 # "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names".
@@ -789,7 +814,8 @@ collect() {
   . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh" || return 1
   now="$(date +%s)"
   heavy="$(heavy_panes)"
-  local panel items qjson qall qitems
+  local panel items qjson qall qitems off
+  off="$(off_default_checkouts)"
   # A week of done items too: a session whose item finished, was requeued or moved to another
   # session has to see that, or it reads as never started (ar-343).
   qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)"
@@ -851,6 +877,9 @@ collect() {
         irow="${irow:--}"; iorigin="${iorigin:--}" ;;
     esac
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
+    # What a deployed checkout off its default branch holds is one fault, its CHECKOUT row, and no
+    # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.
+    if [ "$g" = 1 ] && in_checkout "$cwd" "$off"; then ahead=0 pr=- state=- ci=- oid=- inpr=1; fi
     # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
     # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
     if [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \
@@ -915,6 +944,7 @@ collect() {
       "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")"
   done
   main_rows
+  checkout_rows "$off"
   shared_rows
 }
 
@@ -935,6 +965,26 @@ main_rows() {
     e=0; escalated "$sid" "NIGHTLY $reason" && e=1
     printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tNIGHTLY %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$reason" "$e" "${owners:--}" "$reason"
   done
+}
+
+# checkout_rows <checkouts, one per line>: one CHECKOUT row each. The reflog says where to and when,
+# the post-checkout hook's record for this HEAD says who. The row is born escalated: Sentinel's
+# main-checkout-branch watch is the one page, and it trips from an inline probe that needs nothing
+# from the tree this fault may have replaced. Its fact is the HEAD, so a further move is a new one.
+checkout_rows() {
+  local d name head short base at gs where actor reason
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    name="${d##*/}" head="$(git -C "$d" rev-parse HEAD)" base="$(default_base "$d")"
+    short="${head:0:12}" at= gs=
+    IFS=$'\t' read -r at gs < <(git -C "$d" log -g -1 --date=unix --format='%gd%x09%gs' --grep-reflog='^checkout: moving' 2>/dev/null)
+    where="$(git -C "$d" symbolic-ref -q --short HEAD)"
+    [ -n "$where" ] || where="${gs##* to }"
+    at="${at//[^0-9]/}"
+    actor="$(awk -F'\t' -v h="$head" '$3 == h { a = $4 } END { print a }' "$LEDGER/checkout-moves.tsv" 2>/dev/null)"
+    reason="$name checkout on ${where:-$short} since $(date -d "@$at" '+%a %H:%M' 2>/dev/null || echo unknown), moved by ${actor:-an unrecorded actor}: stowed scripts run it, git -C $d switch ${base#origin/}"
+    printf 'CHECKOUT\t%s\tcheckout-%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t1\t-\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tCHECKOUT %s @%s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$name" "$name" "$reason" "$name" "$short"
+  done <<<"$1"
 }
 
 # One SHARED row per test that failed on FLEET_SHARED_RED_BRANCHES branches (a detached checkout
@@ -993,7 +1043,7 @@ eta_cells() {
 # Columns 3-11 are the stages a transition is read from; idle, age and eta move without a stage
 # changing, and reason rides along to explain a stage change. Newer cells come last so a
 # watch.state written before them still lines up. now is what WHY shows: on a WORKING row, the
-# session's last action (its reason only says busy or shell), else the reason. NIGHTLY and SHARED
+# session's last action (its reason only says busy or shell), else the reason. NIGHTLY, CHECKOUT and SHARED
 # rows are rendered separately.
 board_cells() {
   awk -F'\t' -v OFS='\t' -v etaf="${1:-}" -v order="$BUCKET_ORDER" '
@@ -1020,7 +1070,7 @@ board_cells() {
       split("gate test jobs you parked", wait_names, " ")
       if (etaf != "") while ((getline l < etaf) > 0) { split(l, kv, "\t"); eta[kv[1]] = kv[2] }
     }
-    $1 == "NIGHTLY" || $1 == "SHARED" { next }
+    $1 == "NIGHTLY" || $1 == "CHECKOUT" || $1 == "SHARED" { next }
     {
       t = $2; sub(/^[^\/]*\//, "", t)
       git = ($5 != "-")
@@ -1181,9 +1231,9 @@ write_state() {
       | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
          vocab: {buckets: ($order | split(" ")), finished: ($finished | split(" ")), in_progress: ($progress | split(" "))},
          unreadable: ($unread | split("\n") | map(select(length > 0))),
-         sessions: ($r | map(select(.bucket | IN("NIGHTLY", "SHARED") | not)
+         sessions: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") | not)
                      | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end)),
-         main: ($r | map(select(.bucket == "NIGHTLY")
+         main: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT"))
                      | {repo: .target, id: .session_id, reason, escalated, owners})),
          shared: ($r | map(select(.bucket == "SHARED")
                      | {test: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
@@ -1268,7 +1318,7 @@ main() {
     --write) write_state "$t0" "$rows"; return ;;
   esac
   local b
-  for b in NIGHTLY SHARED $BUCKET_ORDER; do
+  for b in NIGHTLY CHECKOUT SHARED $BUCKET_ORDER; do
     awk -F'\t' -v b="$b" '$1 == b' <<<"$rows" | sort -t$'\t' -k2 | {
       first=1
       while IFS=$'\t' read -r _ target _ _ branch pr idle _ _ n reason _ _ _ dsp _ _ _ _ _ _ _ _ _ _ lbl _; do
