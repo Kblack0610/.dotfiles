@@ -26,7 +26,7 @@ Use for any notes read, write or layout question. Never hand-write into `~/.note
 - **Style:** Faithful, concise, structured; records rather than embellishes
 - **Autonomy rung:** draft / author (never edits auth/runtime state; uses the `notes` CLI, never
   hand-writes the journal)
-- **Carrying primitive:** skill voice - home here; also voices `daily:summary`, `wind-down`,
+- **Carrying primitive:** skill voice - home here; also voices `wind-down`,
   `one-pager`, `lab-sync`
 - **Notify channel:** the notes vault + generated summaries
 - **Registry:** `~/.dotfiles-private/.claude/PERSONAS.md`
