@@ -602,6 +602,26 @@ project() { run "$DRIFT" --lint "$REPO" --profile project; }
   assert_failure 2
 }
 
+@test "--allow-empty: an empty corpus passes and says so" {
+  run "$DRIFT" --lint "$REPO" --profile project --allow-empty
+  assert_success
+  assert_output --partial "as --allow-empty expects"
+}
+
+@test "--allow-empty: refused outside --lint" {
+  run "$DRIFT" --ratchet "$REPO" --allow-empty
+  assert_failure 2
+  assert_output --partial "goes with --lint only"
+}
+
+@test "--allow-empty: a bad skill still fails" {
+  mkflat build >/dev/null
+  sed -i 's/## Scope and triggers/## When to Use/' "$REPO/.claude/skills/build/SKILL.md"
+  run "$DRIFT" --lint "$REPO" --profile project --allow-empty
+  assert_failure 1
+  assert_output --partial "NOHEADING"
+}
+
 @test "--write-lint-baseline honours the profile" {
   mkflat build >/dev/null
   d=$(mkflat headless)
