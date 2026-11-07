@@ -547,6 +547,10 @@ enum PtaskCmd {
         /// A detail line under the row: evidence, file:line, the original words. Repeatable
         #[arg(long, value_name = "LINE")]
         detail: Vec<String>,
+        /// The channel a human's want entered by (outbox, focus, voice, request, ask, meeting,
+        /// human): the row gets `#requested` and the ingest event names the channel
+        #[arg(long, value_name = "CHANNEL")]
+        want: Option<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -703,6 +707,9 @@ enum PtaskCmd {
         /// Another detail line under each row, after the `was:` line. Repeatable
         #[arg(long, value_name = "LINE")]
         detail: Vec<String>,
+        /// The channel the line came in by (as `add --want`): each row gets `#requested`
+        #[arg(long, value_name = "CHANNEL", conflicts_with = "dup")]
+        want: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -898,6 +905,7 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             game,
             pr,
             detail,
+            want: None,
             text,
         }) if detail.is_empty() => playtest::Op::Add {
             game,
@@ -943,7 +951,11 @@ fn row_cmd(sub: &RowCmd) -> Result<()> {
                 buf.clear();
             }
         }
-        RowCmd::Types => writeln!(out, "{}", projects::filer_types().collect::<Vec<_>>().join(" "))?,
+        RowCmd::Types => writeln!(
+            out,
+            "{}",
+            projects::filer_types().collect::<Vec<_>>().join(" ")
+        )?,
     }
     Ok(())
 }
@@ -1119,6 +1131,7 @@ fn main() -> Result<()> {
                     game,
                     pr,
                     detail,
+                    want,
                     text,
                 }) => {
                     if game.is_some() || pr.is_some() {
@@ -1131,6 +1144,7 @@ fn main() -> Result<()> {
                         &text.join(" "),
                         &detail,
                         to.as_deref(),
+                        want.as_deref(),
                         lane,
                     )?
                 }
@@ -1192,6 +1206,7 @@ fn main() -> Result<()> {
                     lane: to_lane,
                     to,
                     detail,
+                    want,
                     query,
                 }) => {
                     let to_lane = match to_lane.as_str() {
@@ -1202,6 +1217,7 @@ fn main() -> Result<()> {
                     let how = project_tasks::Filing {
                         project,
                         lane: to_lane,
+                        want: want.as_deref().map(projects::want_channel).transpose()?,
                         how: match dup {
                             Some(id) => project_tasks::How::Dup(id),
                             None => project_tasks::How::Rows {

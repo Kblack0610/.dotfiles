@@ -63,7 +63,7 @@ pane_row() { # <cwd> <pane> [status]
   run "$AR" send --queue
   assert_success
   assert_output --partial 'queued demo-slug'
-  run grep -c '^agent-queue add --project repo --from human --title repo: 2 notes$' "$NOTES_FIXTURE/calls.log"
+  run grep -c '^agent-queue add --project repo --from human --want request --title repo: 2 notes$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
   run cat "$NOTES_FIXTURE/queue.stdin"
   assert_line '- cfg/a.json:2-3: raise spawn: to 5'
@@ -156,7 +156,7 @@ ar.send_queue()
 '
   assert_success
   assert_line 'qf 1 2 bump spawn rate'
-  run grep -c '^agent-queue add --project repo --from human --title repo: 1 notes$' "$NOTES_FIXTURE/calls.log"
+  run grep -c '^agent-queue add --project repo --from human --want request --title repo: 1 notes$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
   run cat "$NOTES_FIXTURE/queue.stdin"
   assert_line '- cfg/a.json:2: bump spawn rate'

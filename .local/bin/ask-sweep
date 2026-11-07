@@ -45,14 +45,15 @@ say() { printf 'ask-sweep: %s\n' "$*" >&2; }
 ascii() { tr -cd ' -~' | tr -d '#' | cut -c1-"${1:-200}"; }
 
 # file_row [--sheet] <board> <text>: one row within the run's cap. Returns 1 when not filed;
-# an open twin already on the board (`ptask add` exit 3) counts as filed.
+# an open twin already on the board (`ptask add` exit 3) counts as filed. Every row is a want by
+# the `ask` channel, so the notes writer stamps #requested and no caller composes the tag.
 file_row() {
   local lane=(--agent); [ "$1" = --sheet ] && { lane=(); shift; }
   local board="$1" text="$2"
   if [ "$FILED" -ge "$ASK_SWEEP_MAX" ]; then OVER=$((OVER + 1)); return 1; fi
   FILED=$((FILED + 1))
   if [ "$DRY" = 1 ]; then printf 'would file [%s] %s\n' "$board" "$text"; return 0; fi
-  notes ptask "$board" "${lane[@]}" add "$text" >/dev/null 2>&1
+  notes ptask "$board" "${lane[@]}" add --want ask "$text" >/dev/null 2>&1
   local rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 3 ]
 }
@@ -85,7 +86,7 @@ sweep_plans() {
     board="$(board_of "$(basename "$project")")"
     [ -n "$board" ] || continue
     notes ptask "$board" --agent list 2>/dev/null | grep -qF "$slug" && continue
-    file_row "$board" "chore(plan): finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #requested #tier/2 #size/m"
+    file_row "$board" "chore(plan): finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #tier/2 #size/m"
   done < <(find "$ASK_SWEEP_PLANS" -maxdepth 1 -name '*.md' -mmin +1440 -print0 2>/dev/null)
 }
 
@@ -193,7 +194,7 @@ $TYPES"
     asked="$(awk -F'\t' -v q="$(tr '[:upper:]' '[:lower:]' <<<"$quote")" 'index(tolower($3), q) { print $2; exit }' <<<"$msgs")"
     [ -n "$asked" ] || asked="$(cut -f2 <<<"$msgs" | sort | tail -1)"
     asked="${asked:5:5}"
-    tags="#requested #tier/$tier #size/${size,,}"
+    tags="#tier/$tier #size/${size,,}"
     [ "$tier" -le 2 ] && [ "$size" = S ] && [ "$done_is" = true ] && [ "$human" != true ] && tags+=" #worker/requested"
     if [ "$human" = true ]; then
       file_row --sheet "$board" "$row; asked $asked \"$quote\" #low"
