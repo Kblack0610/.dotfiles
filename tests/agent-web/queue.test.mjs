@@ -68,6 +68,11 @@ test("a PR with no recorded merge says so, and a bare older PR number keeps its 
   assert.match(card({ state: "running", project: "p", slug: "s", pr: "812" }), /PR 812/);
 });
 
+test("a card names the harness hub-core words, model alias and all", () => {
+  assert.match(card({ state: "queued", project: "p", slug: "s", harness: "codex sol" }), /<div class="cline">p, <span title="harness">codex sol<\/span>, queued/);
+  assert.match(card(done({ harness: "claude" })), /<span title="harness">claude<\/span>/);
+});
+
 test("Done days carry hub-core's day total in the heading, one per day", () => {
   const rows = [
     done({ slug: "a", day: "2026-11-06", day_label: "Today", day_total: "2 done, 1 failed, $9.12" }),

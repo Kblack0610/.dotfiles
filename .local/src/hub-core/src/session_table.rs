@@ -96,6 +96,9 @@ pub struct SessionRow {
     /// row has none: its `cost_usd` already is that.
     pub item_cost_usd: Option<f64>,
     pub account: String,
+    /// The harness it ran on (`harness_of`): the item's or outcome row's, claude-lazer on the gateway
+    /// account and claude on any other.
+    pub harness: String,
     pub source: Source,
     /// This live session counts as having no queue item (`item:none`).
     pub unlinked: bool,
@@ -103,13 +106,13 @@ pub struct SessionRow {
 
 impl Row for SessionRow {
     const COLUMNS: &'static [&'static str] = &[
-        "bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "item", "source",
-        "session",
+        "bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness", "item",
+        "source", "session",
     ];
     /// `all` comes first because the first chip keeps every row.
     const STATES: &'static [&'static str] =
         &["all", "running", "needs you", "stalled", "done today"];
-    const FACETS: &'static [&'static str] = &["project"];
+    const FACETS: &'static [&'static str] = &["project", "harness"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| {
@@ -128,6 +131,7 @@ impl Row for SessionRow {
             "idle" => self.idle_min.map_or(Val::None, |n| Val::Num(n as f64)),
             "cost" => self.cost_usd.map_or(Val::None, Val::Num),
             "acct" => text(&self.account),
+            "harness" => text(&self.harness),
             "item" if self.unlinked => Val::Text("none".into()),
             "item" => text(&self.item),
             "source" => Val::Text(self.source.name().into()),
@@ -162,6 +166,7 @@ pub struct Ended {
     pub project: String,
     pub title: String,
     pub account: Option<String>,
+    pub harness: Option<String>,
     pub cost_usd: Option<f64>,
     pub updated_epoch: Option<i64>,
     pub prs_merged: i64,
@@ -292,6 +297,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
             item_cost(i, &sids, feed)
         }),
         account: str_of(s, "account").to_string(),
+        harness: item.map_or_else(String::new, |i| i.harness().to_string()),
         unlinked: is_live(s) && is_unlinked(s),
         ..SessionRow::default()
     }
@@ -361,6 +367,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         finished: i.finished.as_deref().and_then(ts),
         cost_usd: item_cost(i, &sids, feed),
         account: extra_str(i, "account"),
+        harness: queue::harness_of(i.harness(), &extra_str(i, "account")),
         source: Source::Queue,
         ..SessionRow::default()
     }
@@ -382,6 +389,10 @@ fn outcome_row(e: &Ended) -> SessionRow {
         finished: e.updated_epoch,
         cost_usd: e.cost_usd,
         account: e.account.clone().unwrap_or_default(),
+        harness: queue::harness_of(
+            e.harness.as_deref().unwrap_or(""),
+            e.account.as_deref().unwrap_or(""),
+        ),
         source: Source::Outcome,
         ..SessionRow::default()
     }
@@ -412,6 +423,10 @@ pub fn rows(
         if let Some((_, s)) = agents.iter().find(|(_, s)| s.target == r.target) {
             r.account = s.account.clone();
         }
+    }
+    // A live row's account is known only after the join above, so its harness is settled here.
+    for r in live.iter_mut() {
+        r.harness = queue::harness_of(&r.harness, &r.account);
     }
     live.sort_by(|a, b| {
         (vocab.rank(&a.bucket), &a.target).cmp(&(vocab.rank(&b.bucket), &b.target))
@@ -459,6 +474,7 @@ fn stray_row(a: &Agent, s: &Session, feed: &Feed) -> SessionRow {
 mod tests {
     use super::*;
     use crate::table::View;
+    use agent_panel::account::GATEWAY;
     use serde_json::json;
 
     fn item(line: Value) -> Item {
@@ -579,6 +595,49 @@ mod tests {
         assert_eq!(hand.project, "dotfiles");
         assert_eq!(hand.pr.as_deref(), Some("12"));
         assert_eq!(hand.pr_state, "open");
+    }
+
+    #[test]
+    fn every_row_names_its_harness_and_the_harness_facet_filters() {
+        let mut s = state();
+        s[1]["account"] = json!(GATEWAY);
+        let mut f = feed();
+        f.items[0].extra.insert("agent".into(), "codex".into());
+        f.items[1].extra.insert("agent".into(), "opencode".into());
+        f.ended[2].harness = Some("claude-lazer".into());
+        let r = rows(&s, &vocab(), &f, &[]);
+        let h = |k: &str| r.iter().find(|x| x.key == k).unwrap().harness.as_str();
+        assert_eq!(h("lab/d:1"), "codex", "a live row takes its item's agent");
+        assert_eq!(
+            h("lab/d:2"),
+            "claude-lazer",
+            "no item on the gateway account"
+        );
+        assert_eq!(h("lab/d:3"), "claude", "no item on an account");
+        assert_eq!(h("ucp-394"), "opencode", "a queue row");
+        assert_eq!(h("h1"), "claude-lazer", "an outcome row says its own");
+        let mut o = f.ended[2].clone();
+        o.harness = None;
+        assert_eq!(outcome_row(&o).harness, "claude", "an older outcome row");
+        o.harness = Some(" ".into());
+        assert_eq!(outcome_row(&o).harness, "claude", "a blank one");
+        o.account = Some(GATEWAY.into());
+        assert_eq!(
+            outcome_row(&o).harness,
+            "claude-lazer",
+            "a blank one on the gateway"
+        );
+        f.items[0].extra.insert("agent".into(), "claude".into());
+        s[0]["account"] = json!(GATEWAY);
+        let gw = rows(&s, &vocab(), &f, &[]);
+        let own = gw.iter().find(|x| x.key == "lab/d:1").unwrap();
+        assert_eq!(
+            own.harness, "claude-lazer",
+            "a claude item on the gateway ran claude-lazer"
+        );
+        let v = View::new::<SessionRow>("harness:codex", "", "", "");
+        let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(kept, ["lab/d:1"]);
     }
 
     #[test]

@@ -32,15 +32,15 @@ const state = (target, bucket, o) => ({ target, session_id: target + "-id", buck
 const run = (code, d) => { ctx.__d = d; return vm.runInContext(code, ctx); };
 run(`var __api = api`);
 
-const row = (key, o) => ({ key, bucket: "WORKING", project: "dotfiles", task: `task of ${key}`, item: "", target: key, session_id: key + "-id", pr: null, pr_state: "", ci: "", phases_done: null, phases_total: null, idle_min: 3, ended: "", finished: null, cost_usd: null, account: "a", source: "live", unlinked: false, ...o });
+const row = (key, o) => ({ key, bucket: "WORKING", project: "dotfiles", task: `task of ${key}`, item: "", target: key, session_id: key + "-id", pr: null, pr_state: "", ci: "", phases_done: null, phases_total: null, idle_min: 3, ended: "", finished: null, cost_usd: null, account: "a", harness: "claude", source: "live", unlinked: false, ...o });
 const ROWS = [
   row("hub/b:1", { bucket: "NEEDS", pr: "12", pr_state: "open", ci: "PASS", phases_done: 2, phases_total: 4, cost_usd: 1.2 }),
   row("lab/x:1", { bucket: "STALLED", idle_min: 1980 }),
-  row("ucp-394", { bucket: "DONE", target: "", session_id: "s9", item: "ucp-394", pr: "1915", pr_state: "merged", ended: "ended", idle_min: null, source: "queue" }),
+  row("ucp-394", { bucket: "DONE", target: "", session_id: "s9", item: "ucp-394", pr: "1915", pr_state: "merged", ended: "ended", idle_min: null, source: "queue", harness: "codex" }),
 ];
 const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: "", values: [{ q: "project:dotfiles", value: "dotfiles", n: 3 }] }],
   states: [{ name: "all", n: 3 }, { name: "running", n: 0 }, { name: "needs you", n: 1 }, { name: "stalled", n: 1 }, { name: "done today", n: 1 }],
-  columns: ["bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
+  columns: ["bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
 const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 3 per pass), 6 other", warn: false, start: null, confirm: "" },
   { text: "dispatch on, next 13:01", warn: false, start: null, confirm: "" },
   { text: "shepherd timer stopped", warn: true, start: "shepherd", confirm: "Start the shepherd timer?" }], live: 38, unlinked: 21, errors: ["fleet-dispatch headroom: exit 1"] };
@@ -83,6 +83,8 @@ test("the table is the server's rows in its order, with the chips and the facet"
   assert.match(html, /<option value="project:dotfiles">dotfiles \(3\)/);
   assert.match(html, /#12 open <b class="ci pass">PASS<\/b>/);
   assert.match(html, /<td class="n">2\/4<\/td><td class="n">3m<\/td><td class="n">\$1\.20<\/td>/);
+  assert.match(html, /title="sort by harness">harness<\/button>/, "the harness is a column");
+  assert.match(html, /<td>a<\/td><td>codex<\/td><\/tr>/, "each row names its harness after its account");
   assert.doesNotMatch(html, /data-tsort="(item|source)"/, "item and source are search keys, not columns");
 });
 

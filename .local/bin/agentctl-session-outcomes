@@ -459,7 +459,7 @@ cmd_ended() {
   so_latest "$OUT" | jq -cn --argjson now "$NOW" --argjson days "$days" '
     [inputs | select(.project != "_runner" and .updated_epoch >= $now - $days * 86400)]
     | sort_by(-.updated_epoch)[]
-    | {session_id, project, title, account, cost_usd, updated_epoch, prs_merged, prs_open}'
+    | {session_id, project, title, harness, account, cost_usd, updated_epoch, prs_merged, prs_open}'
 }
 
 # costs: one line per session updated in the window, runner calls included, with what the hub's

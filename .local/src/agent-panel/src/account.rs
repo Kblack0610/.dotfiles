@@ -110,11 +110,14 @@ pub fn name_of(dir: &str, accounts: &[Account]) -> String {
         })
 }
 
+/// The account a session on the Lazer gateway (claude-lazer) is named by.
+pub const GATEWAY: &str = "gateway";
+
 /// The account name process `pid` runs on, or `gateway` for one on the Lazer gateway: the
 /// shepherd must never move or park that one onto an account.
 pub fn of_pid(proc_root: &Path, pid: u32, home: &Path, accounts: &[Account]) -> String {
     if !env_of(proc_root, pid, "ANTHROPIC_BASE_URL").is_empty() {
-        return "gateway".into();
+        return GATEWAY.into();
     }
     name_of(&config_dir_of(proc_root, pid, home), accounts)
 }
