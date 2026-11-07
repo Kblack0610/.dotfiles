@@ -201,3 +201,55 @@ week() { for d in 25 26 27 28 29 30 31; do day "2025-12-$d" 100000 0.15 40000; d
   assert_success
   assert_equal "$(snap '[.langfuse, .totals.responses > 0, (.errors | map(select(startswith("langfuse: "))) | length)]')" '[null,true,1]'
 }
+
+# check --langfuse: the read-health watch trips on two nights of a null section in a row.
+lf_day() {
+  mkdir -p "$TOKENS_DIR"
+  jq -n --arg d "$1" --argjson l "$2" --argjson e "$3" '{date: $d, errors: $e, langfuse: $l}' > "$TOKENS_DIR/$1.json"
+}
+lf_nokey() { mkdir -p "$TOKENS_DIR"; echo "{\"date\":\"$1\",\"errors\":[]}" > "$TOKENS_DIR/$1.json"; }
+
+@test "check --langfuse: two null nights in a row trip, naming both days and the reader's reason" {
+  lf_day 2025-12-31 null '["langfuse: no key (rbw langfuse-api)"]'; lf_day 2026-01-01 null '["langfuse: no key (rbw langfuse-api)","recall: x"]'
+  run "$AU" tokens check --langfuse
+  assert_failure 1
+  assert_output 'langfuse unread on 2025-12-31 and 2026-01-01: no key (rbw langfuse-api)'
+}
+
+@test "check --langfuse: figures on either night are quiet, and the plain check is unchanged (negative control)" {
+  lf_day 2025-12-31 '{"gateway":{"calls":3}}' '[]'; lf_day 2026-01-01 null '["langfuse: curl exit 7"]'
+  run "$AU" tokens check --langfuse
+  assert_success
+  lf_day 2025-12-31 null '["langfuse: x"]'; lf_day 2026-01-01 '{"gateway":{"calls":3}}' '[]'
+  run "$AU" tokens check --langfuse
+  assert_success
+}
+
+@test "check --langfuse: a gap day or an empty object is not two null nights" {
+  lf_day 2025-12-30 null '["langfuse: x"]'; lf_day 2026-01-01 null '["langfuse: x"]'
+  run "$AU" tokens check --langfuse
+  assert_success
+  lf_day 2025-12-31 '{}' '[]'; rm "$TOKENS_DIR/2025-12-30.json"
+  run "$AU" tokens check --langfuse
+  assert_success
+}
+
+@test "check --langfuse: a snapshot from before the reader is not a null night" {
+  lf_nokey 2025-12-31; lf_day 2026-01-01 null '["langfuse: x"]'
+  run "$AU" tokens check --langfuse
+  assert_success
+  lf_nokey 2026-01-01
+  run "$AU" tokens check --langfuse
+  assert_success
+}
+
+@test "check --langfuse: one snapshot is not two nights, and no or a stale snapshot still exits 2" {
+  lf_day 2026-01-01 null '["langfuse: x"]'
+  run "$AU" tokens check --langfuse
+  assert_success
+  TOKENS_TODAY=2026-01-05 run "$AU" tokens check --langfuse
+  assert_failure 2
+  rm "$TOKENS_DIR"/*.json
+  run "$AU" tokens check --langfuse
+  assert_failure 2
+}

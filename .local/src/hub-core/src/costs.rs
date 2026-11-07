@@ -165,6 +165,11 @@ pub struct Snapshot {
     pub totals: Option<SnapshotTotals>,
     #[serde(skip)]
     pub errors: usize,
+    /// What Langfuse saw that day; None when its reader failed, `langfuse_error` says why.
+    #[serde(skip)]
+    pub langfuse: Option<crate::fleet::tokens::Langfuse>,
+    #[serde(skip)]
+    pub langfuse_error: Option<String>,
 }
 
 /// The live gauges; any can be missing.
@@ -446,6 +451,14 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
         commands: serde_json::from_value(v["by_command"].clone()).unwrap_or_default(),
         totals: serde_json::from_value(v["totals"].clone()).ok(),
         errors: v["errors"].as_array().map_or(0, Vec::len),
+        langfuse: crate::fleet::tokens::langfuse(&v["langfuse"]),
+        langfuse_error: v["errors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.as_str()?.strip_prefix("langfuse: "))
+            .next()
+            .map(str::to_string),
     })
 }
 

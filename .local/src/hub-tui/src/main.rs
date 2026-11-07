@@ -337,8 +337,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
                 }
                 None => {
                     a.fleet = Some(hub_core::fleet::collect());
-                    if section.as_deref().is_some_and(|s| s.trim() == "tokens") {
-                        a.fleet_tokens.open = Some(true);
+                    match section.as_deref().map(str::trim) {
+                        Some("tokens") => a.fleet_tokens.open = Some(true),
+                        Some("langfuse") => a.fleet_langfuse = Some(true),
+                        _ => {}
                     }
                 }
             }
