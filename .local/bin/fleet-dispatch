@@ -123,6 +123,7 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 : "${DISPATCH_SPILL_POOL_PCT:=80}"   # percent of the Lazer pool's budget (lazer-spend) at which spilling stops
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
+AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finished ok (its finished_ok)
 LOG="$DIR/log.md"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
@@ -2576,7 +2577,7 @@ fill_night() {
 # on a row with none; a row still without one (its project has no code) is refused, since nothing
 # could join an item to it. The new item's slug is left in PROMOTED.
 promote() {
-  local c="$1" tags="$2" task="$3" prof project lane key area line out id slug flag=()
+  local c="$1" tags="$2" task="$3" repeat="${4-}" prof project lane key area line out id slug flag=() rc=0
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
@@ -2594,8 +2595,22 @@ promote() {
   # The row's words are the item's title: no checkbox, id comment or #tags.
   local title
   title=$(sed -E 's/^- \[.\] //; s/<!--[^>]*-->//g; s/(^| )#[A-Za-z0-9_/:.-]+//g; s/ +$//' <<<"$line")
-  if ! out=$(agent-queue add --project "$project" --priority "$(row_priority "$line" "$project")" --from "board:$project:$id" --slug "$id" \
-      ${title:+--title "$title"} ${tags:+--tags "$tags"} -- "$task" 2>&1); then
+  out=$(agent-queue add --project "$project" --priority "$(row_priority "$line" "$project")" --from "board:$project:$id" --slug "$id" \
+      ${title:+--title "$title"} ${tags:+--tags "$tags"} ${repeat:+--repeat} -- "$task" 2>&1) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # The row's own item already finished ok, so its work landed and the row escaped closing. An agent
+    # row stays started: the orphan pass closes it on that item's merge proof (land_orphan), or hands it
+    # back after DISPATCH_ORPHAN_HOURS. A human row goes back now with a failed verdict naming why, so
+    # neither is queued again every pass. The human's own Start (cmd_promote) passes --repeat instead.
+    if [ "$rc" -eq "$AQ_EX_FINISHED" ]; then
+      if [ "$lane" = agent ]; then say "skip $project: row left started for the orphan pass: ${out#agent-queue: }"; return 1; fi
+      np "$prof" ptask "$project" "${flag[@]}" unstart "$id" >/dev/null 2>&1
+      mkdir -p "$DIR"
+      jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg r "${out#agent-queue: }" --arg at "$(date -Iseconds)" \
+        '{project: $p, lane: $l, key: $k, verdict: "failed", reason: $r, at: $at}' >> "$VERDICTS"
+      say "skip $project: row un-started, recorded failed: ${out#agent-queue: }"
+      return 1
+    fi
     np "$prof" ptask "$project" "${flag[@]}" unstart "$id" >/dev/null 2>&1
     say "could not queue $project row, un-started: $id ($out)"
     return 1
@@ -2625,7 +2640,7 @@ cmd_promote() {
   key=$(R="$raw" awk -F'\t' 'substr($0, length($1) + 2) == ENVIRON["R"] { print $1; exit }' <<<"$board")
   [ -n "$key" ] || { say "promote: not on the $project $lane board as given, so it changed: $raw"; return 1; }
   promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" \
-    '{profile: $profile, project: $project, lane: $lane, key: $key}')" "$tags" "$(sed 's/^- \[.\] //' <<<"$raw")"
+    '{profile: $profile, project: $project, lane: $lane, key: $key}')" "$tags" "$(sed 's/^- \[.\] //' <<<"$raw")" repeat
 }
 
 # all_open -- candidates without the judged filter: every open, eligible row
