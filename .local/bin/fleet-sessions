@@ -917,10 +917,14 @@ handoff_of() {
 # that does not answer, or runs no agent-panel, adds nothing: a laptop asleep is not this machine's
 # sources blinking ($CACHE/unreadable).
 remote_panel_lines() {
-  local name out
+  local name out rc
   fleet_hosts >/dev/null
   while IFS= read -r name; do
-    out="$(fleet_host_run "$name" agent-panel list --json 2>/dev/null)" || continue
+    # Exit 3 is a read with a gap (agent-panel README): keep its rows, and name it so tick does
+    # not log the sessions it missed as gone.
+    rc=0; out="$(fleet_host_run "$name" agent-panel list --json 2>/dev/null)" || rc=$?
+    [ "$rc" -eq 3 ] && echo "agent-panel@$name" >> "$CACHE/unreadable"
+    [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || continue
     jq -c --arg h "$name" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
   done < <(fleet_hosts | jq -r .name)
   return 0
@@ -955,6 +959,7 @@ collect() {
     | (.session | sub(":"; "/")) + "\t\(.project): \(.slug[:60])"' 2>/dev/null)"
   # A pass that could not read a source says so in $CACHE/unreadable, so tick never logs a
   # blink (every session "gone", every PR "-") as a change.
+  # Exit 3 (a read with a gap) still prints the rows it read; they are kept, and the pass is named.
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do
     [ -n "$line" ] || continue

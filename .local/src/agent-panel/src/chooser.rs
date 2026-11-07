@@ -70,14 +70,33 @@ impl Agent {
 /// Walk every tmux pane, keep those whose process tree contains a live Claude
 /// session, and build an ordered agent list.
 pub fn collect() -> Vec<Agent> {
-    live(tmux::list_panes(), &asks::pending_sessions(&asks::root()))
+    collect_read().0
 }
 
-fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> Vec<Agent> {
-    let Ok(procmap) = ProcMap::capture() else {
-        return Vec::new();
+/// What one read of the live agents could not see, one line per source that failed: a live
+/// tmux server's panes, `ps`, a live claude's session file. Empty when the read was whole. A
+/// view can show a partial list; a caller that decides a session is gone must not (ar-916).
+pub type Gaps = Vec<String>;
+
+/// `collect`, and what that read could not see.
+pub fn collect_read() -> (Vec<Agent>, Gaps) {
+    let (panes, mut gaps) = tmux::list_panes();
+    let (agents, more) = live(panes, &asks::pending_sessions(&asks::root()));
+    gaps.extend(more);
+    (agents, gaps)
+}
+
+fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>, Gaps) {
+    let procmap = match ProcMap::capture() {
+        Ok(p) => p,
+        Err(e) => return (Vec::new(), vec![format!("{e:#}")]),
     };
-    let sessions = session::load_all();
+    let (sessions, unreadable) = session::load_all();
+    let gaps: Gaps = unreadable
+        .into_iter()
+        .filter(|&pid| procmap.is_live(pid))
+        .map(|pid| format!("~/.claude/sessions/{pid}.json would not read, and pid {pid} is live"))
+        .collect();
     let accounts = account::load();
     let (proc_root, home) = (account::proc_root(), session::home());
     let live_claude: Vec<u32> = sessions
@@ -150,24 +169,30 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> Vec<Agent> 
             parked: false,
         });
     }
-    agents
+    (agents, gaps)
 }
 
 /// The live agents plus a row per parked session, the human's own session first: what a
 /// view that acts on sessions lists (agent-web, `list --json --parked`).
 pub fn collect_all() -> Vec<Agent> {
-    let panes = tmux::list_panes();
+    collect_all_read().0
+}
+
+/// `collect_all`, and what that read could not see (`Gaps`).
+pub fn collect_all_read() -> (Vec<Agent>, Gaps) {
+    let (panes, mut gaps) = tmux::list_panes();
     let attached: HashSet<(String, String)> = panes
         .iter()
         .filter(|p| p.attached)
         .map(|p| (p.server.clone(), p.session.clone()))
         .collect();
     let asking = asks::pending_sessions(&asks::root());
-    let agents = live(panes, &asking);
+    let (agents, more) = live(panes, &asking);
+    gaps.extend(more);
     let rows = parked::load(&parked::root());
     let mut all = with_parked(agents, rows, &attached, &asking, &account::load());
     attached_first(&mut all);
-    all
+    (all, gaps)
 }
 
 /// Append a row for each ledger whose tmux session has no live claude: one with a live claude
@@ -355,8 +380,13 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// entry's time as `idle_since`, the process start as `started_at`, and `edited_files`), and
 /// what an action on the session needs (server, tmux session, window id, claude pid, account,
 /// attached, parked, plan slug, ask id). `parked` adds the parked rows (`collect_all`).
+///
+/// A read with gaps still prints the rows it has, then names each gap on stderr and exits 3:
+/// a partial list must not pass for a whole one to a caller that reads a missing session as
+/// gone (fleet-dispatch reap, ar-916).
 pub fn run_list(json: bool, parked: bool) -> Result<()> {
-    for a in if parked { collect_all() } else { collect() } {
+    let (agents, gaps) = if parked { collect_all_read() } else { collect_read() };
+    for a in agents {
         if !json {
             println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
             continue;
@@ -406,7 +436,14 @@ pub fn run_list(json: bool, parked: bool) -> Result<()> {
         });
         println!("{row}");
     }
-    Ok(())
+    if gaps.is_empty() {
+        return Ok(());
+    }
+    let _ = std::io::Write::flush(&mut std::io::stdout()); // a reader gone (EPIPE) still gets the 3
+    for g in &gaps {
+        eprintln!("agent-panel: incomplete read: {g}");
+    }
+    std::process::exit(3)
 }
 
 /// The last entry's own timestamp; the mtime when no entry carries one; with no transcript at
