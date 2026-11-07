@@ -426,17 +426,28 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run "$AQ" reopen cut --why "reap read live e4347d61 as gone"
   assert_success; assert_output --partial "cut: done -> running (reopened, was failed)"
   f="$(item running cut)"
-  [ -z "$(field "$f" status)" ] && [ -z "$(field "$f" finished)" ]
-  [ "$(field "$f" session)" = "lab:game-agent-1" ] && [ "$(field "$f" sessions)" = e4347d61 ]
-  [ "$(field "$f" note)" = "reopened from done (failed): reap read live e4347d61 as gone" ]
+  [ -z "$(field "$f" status)" ] || fail "status: survived the reopen"
+  [ -z "$(field "$f" finished)" ] || fail "finished: survived the reopen"
+  [ "$(field "$f" session)" = "lab:game-agent-1" ] || fail "session: was lost"
+  [ "$(field "$f" sessions)" = e4347d61 ] || fail "sessions: was lost"
+  [ "$(field "$f" note)" = "reopened from done (failed): reap read live e4347d61 as gone" ] || fail "note: $(field "$f" note)"
   # A human-lane row, so no --agent: started again on its own board.
   run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
   assert_output "notes --profile bnb ptask game start gm-7"
-  [ -z "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cut.md 2>/dev/null)" ]
-  # --to waiting stamps waiting:; a landed item is new work, not a reopen.
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cut.md 2>/dev/null)" ] || fail "a done copy was left behind"
+  # --to waiting stamps waiting:; no lane is the agent lane, and no profile is notes' default.
   "$AQ" move cut done --status failed >/dev/null
+  sed -i '/^lane: /d; /^profile: /d' "$AGENT_QUEUE_DIR"/done/*/*-cut.md
+  : > "$NOTES_FIXTURE/calls.log"
   "$AQ" reopen cut --to waiting >/dev/null
-  [ -n "$(field "$(item waiting cut)" waiting)" ]
+  [ -n "$(field "$(item waiting cut)" waiting)" ] || fail "--to waiting did not stamp waiting:"
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes ptask game --agent start gm-7"
+  # A cancel was a decision, and a landed item is new work: neither is a reopen.
+  "$AQ" cancel cut >/dev/null
+  run "$AQ" reopen cut
+  assert_failure; assert_output --partial "cancelled"
+  "$AQ" add --project game --running --slug cut "cut the beta again" >/dev/null
   "$AQ" set cut "pr=Org/game#3" "merged=abc123" >/dev/null
   "$AQ" move cut done --status ok >/dev/null
   run "$AQ" reopen cut

@@ -2514,11 +2514,30 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   echo $(( $(date +%s) - DISPATCH_REAP_CONFIRM - 1 )) > "$mark"
   run cmd_reap; assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-flaky.md 2>/dev/null)" ] || fail "two misses a reap apart did not settle the item"
-  [ ! -e "$mark" ] || fail "the settled item kept its mark"
-  # A mark whose item is no longer active is pruned, so a later item under the slug starts clean.
-  date +%s > "$FLEET_DISPATCH_DIR/reap-miss/closed-meanwhile"
+  # A mark whose item is no longer active is pruned on a pass that read active items, so a later item
+  # under the slug starts clean; a pass that read none (the queue may not have been readable) keeps them.
   run cmd_reap
-  [ ! -e "$FLEET_DISPATCH_DIR/reap-miss/closed-meanwhile" ] || fail "a mark for an inactive slug survived the reap"
+  [ -e "$mark" ] || fail "a pass that read no active item pruned the marks"
+  started_item other lab:game-agent-1
+  run cmd_reap
+  [ ! -e "$mark" ] || fail "the settled item's mark survived the reap"
+}
+
+# Confirmed gone stays gone: settle_item leaves an item whose PR is open waiting, and it must not
+# re-enter the mark-then-confirm cycle, logging a fresh miss and settling half as often.
+@test "reap keeps a confirmed miss for an item it leaves waiting on its open PR" {
+  pr_item OPEN
+  agent-queue move fix-crash waiting >/dev/null
+  sed -i 's/^agent: claude$/agent: claude\nsessions: old-1/' "$AGENT_QUEUE_DIR"/waiting/*-fix-crash.md
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-1:1\",\"status\":\"busy\",\"session_id\":\"new-1\"}"'
+  stub agent-ask 'exit 0'
+  export DISPATCH_REAP_CONFIRM=0
+  for _ in 1 2 3 4; do cmd_reap >/dev/null; done
+  [ -n "$(qitem waiting fix-crash)" ] || fail "the item left waiting"
+  [ -e "$FLEET_DISPATCH_DIR/reap-miss/fix-crash" ] || fail "the confirmed mark was dropped"
+  run grep -c 'is not on agent-panel' "$FLEET_DISPATCH_DIR/log.md"
+  assert_output 1
 }
 
 @test "reap moves nothing when it cannot read the sessions or the asks" {

@@ -1341,17 +1341,20 @@ cmd_reopen() {
   f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
   [ -z "$(fm_get "$f" merged)" ] || die "$slug landed (merged: $(fm_get "$f" merged)); new work under it is agent-queue add --repeat"
   status="$(fm_get "$f" status)"
+  # A cancel was someone's decision, and it closed the item's session: that is new work, not a false close.
+  [ "$status" != cancelled ] || die "$slug was cancelled, which closed its session: add it again instead"
   header_del "$f" status finished
   [ "$to" = running ] || header_set "$f" waiting "$(now_utc)"
   header_set "$f" note "reopened from done ($status)${why:+: $why}"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "done ($status) -> $to: reopened${why:+: $why}"
   echo "$slug: done -> $to (reopened, was $status)"
-  # The row, through notes, the rows' one writer; a row already started is left as it is.
+  # The row, through notes, the rows' one writer (it leaves a row already started as it is), read as
+  # fleet-dispatch's settle_row un-started it: no profile is notes' default, no lane is the agent lane.
   row="$(fm_get "$dest" row)" prof="$(fm_get "$dest" profile)"
-  [ -n "$row" ] && [ -n "$prof" ] || return 0
-  [ "$(fm_get "$dest" lane)" = human ] || flag=(--agent)
-  if notes --profile "$prof" ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1; then
+  [ -n "$row" ] || return 0
+  case "$(fm_get "$dest" lane)" in '' | agent) flag=(--agent) ;; esac
+  if notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1; then
     echo "$slug: board row ${row#*:} started again"
   else
     echo "agent-queue: $slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again" >&2
