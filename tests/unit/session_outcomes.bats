@@ -874,6 +874,11 @@ EOF
   assert_equal "$(field a '.class|tojson')" '{"size":"m","kind":"fix"}'
   assert_equal "$(field b '.class|tojson')" '{"size":null,"kind":"check"}'
   assert_equal "$(field c '.class|tojson')" 'null'
+  # the item is gone from the queue: a re-observation keeps the class the last row had
+  : > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run --all
+  assert_success
+  assert_equal "$(field a '.class|tojson')" '{"size":"m","kind":"fix"}'
 }
 
 @test "class: an unreadable roadmap does not stop the run; the kind falls back to the item's type" {

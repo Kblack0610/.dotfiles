@@ -3224,6 +3224,7 @@ qstats_fixture() {
   assert_success
   assert_equal "$(jq -c '[.models[] | [.class, .harness, .done, .landed, .cost_usd, .redo]]' <<<"$output")" \
     '[["fix/s","claude",2,1,10,null],["unclassed","claude",2,2,2,null],["check/-","codex",1,1,8,null]]'
+  assert_equal "$(jq -c '[.models[] | [.runs, .rated, .redo_rate]] | unique' <<<"$output")" '[[null,null,null]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models --by class
   assert_success
   assert_line '| fix/s | sonnet | claude | 2 | 1 | 0.5 | 1 | 0 | $10 | $10 | list |'

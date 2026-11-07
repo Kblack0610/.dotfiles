@@ -36,7 +36,8 @@
 # `class` on a line is {size, kind} of the queue item the session worked: the size and kind of the
 # item's `row:` on its project's roadmap, the item's own `type:` when the row is not there. The first
 # item of a chain that has either wins; a session with no item has no class. fleet-bench models --by
-# class reads it. A row written before the stamp has none until the session is observed again.
+# class reads it. A row written before the stamp has none until the session is observed again; an
+# observation that cannot resolve the item or its roadmap row keeps the class the last row had.
 # Rework (session-outcomes.sh "rework"): each merged PR whose repo has a clone in the project map
 # carries the fixes that rewrote its lines, from one blame pass per repo per run. A session with a
 # merged PR is observed once more when it turns SO_REWORK_VERIFY_DAYS (30) old, so the verified
@@ -94,15 +95,17 @@ queue_index() {
   return 1
 }
 
-# roadmap_index QUEUE_FILE FILE - {"<project>:<id>": {size, kind}} for every row a session's items
-# name, one roadmap read per project. An unreadable roadmap leaves its rows out (the item's type
-# then stands in for the kind) and the run goes on: a class is a label, not a gate.
+# roadmap_index QUEUE_FILE DUE_FILE FILE - {"<project>:<id>": {size, kind}} for every row the due
+# sessions' items name, one roadmap read per project. An unreadable roadmap leaves its rows out (the
+# row's last class, else the item's type, then stands in) and the run goes on: a class is a label,
+# not a gate.
 roadmap_index() {
   local p
-  for p in $(jq -r '[.[].refs[]?.row | select(test(":")) | split(":")[0]] | unique[]' "$1"); do
-    $ROADMAP "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: {size, kind}}'
-  done | jq -cs 'from_entries' > "$2" 2>/dev/null || printf '{}' > "$2"
-  [ -s "$2" ] || printf '{}' > "$2"
+  for p in $(jq -r --slurpfile d "$2" '[$d[].session_id] as $ids
+      | [to_entries[] | select(.key as $k | $ids | index($k)) | .value.refs[]?.row | select(test(":")) | split(":")[0]] | unique[]' "$1"); do
+    $ROADMAP "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: {size, kind}}' 2>/dev/null
+  done | jq -cs 'from_entries' > "$3" 2>/dev/null || printf '{}' > "$3"
+  [ -s "$3" ] || printf '{}' > "$3"
 }
 
 # The one harness rule, for `run` and `backfill-harness`: what the row says (opencode, codex), else
@@ -161,7 +164,8 @@ cmd_run() {
       | [inputs | fromjson? | select(type == "object" and .session_id and .updated)]
       | group_by(.session_id) | map(max_by(.updated)) | .[]
       | . + {final: (($now - .updated) >= $days * 86400),
-             rework_settled: (($now - .updated) >= $vdays * 86400)}
+             rework_settled: (($now - .updated) >= $vdays * 86400),
+             prior_class: ($s[.session_id].class // null)}
       | select(($s[.session_id] // null) as $p
                | $all or $p == null
                  or $p.updated_epoch != .updated
@@ -178,12 +182,12 @@ cmd_run() {
 
   local queue_note=""
   queue_index "$work/queue.json" || queue_note="; queue unreadable, harness read as claude, items unknown"
-  roadmap_index "$work/queue.json" "$work/roadmap.json"
+  roadmap_index "$work/queue.json" "$work/due.jsonl" "$work/roadmap.json"
   jq -c --slurpfile q "$work/queue.json" --slurpfile rm "$work/roadmap.json" --arg gwurl "$(gateway_url)" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
       | .items = ($i.items // [])
-      | .class = ([($i.refs // [])[] | ($rm[0][.row] // {}) as $r
+      | .class = (([($i.refs // [])[] | ($rm[0][.row] // {}) as $r
                    | {size: ($r.size // null), kind: ((($r.kind // "") | select(. != "")) // (.type | select(. != "")) // null)}
-                   | select(.size != null or .kind != null)] | first)
+                   | select(.size != null or .kind != null)] | first) // .prior_class)
       | .harness = harness_of($i)
       | if .harness == "opencode" or .harness == "codex" then
           .prs = (((.prs // []) + [$i.pr // "" | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)

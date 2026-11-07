@@ -2089,11 +2089,11 @@ models_json() {
         | ($priced_items | map(select(.landed and .source)) | length) as $priced
         | {model: $m, harness: $h, done: ($it | length), landed: $landed, landed_rate: ratio($landed; $it | length),
            failed: ($it | map(select(.status == "failed")) | length),
-           runs: ($r | length), rated: $rated, redo: (if $by == "class" then null else $redo end), redo_rate: ratio($redo; $rated),
+           runs: ($r | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
            cost_usd: ($cost * 100 | round / 100), priced: $priced, cost_per_pr: (if $priced > 0 then ($cost / $priced * 100 | round / 100) else null end),
            source: (if ($src | length) > 1 then "mixed" else ($src[0] // "-") end)}
-          + (if $by == "class" then {class: $c} else {} end)))}'
+          + (if $by == "class" then {class: $c, runs: null, rated: null, redo: null, redo_rate: null} else {} end)))}'
 }
 
 # models_section <now> [class]: the models table, in the scorecard; "class" splits each pairing by
