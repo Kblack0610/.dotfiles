@@ -4272,11 +4272,13 @@ restore_setup() {
 harness_ready() {
   game_ready
   printf 'sk-test\n' > "$SANDBOX/eval.key"
-  jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" '{
+  printf 'sk-glm\n' > "$SANDBOX/glm.key"
+  jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" --arg gk "$SANDBOX/glm.key" --arg gc "$SANDBOX/eval-glm.json" '{
     gateway: {url: "https://gw.test", key_file: $k},
     harnesses: {
       "claude-lazer": {timeout_min: 180, models: {sonnet: "sonnet"}},
       opencode: {config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
+      glm: {launcher: "opencode", config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
       codex: {account: "chatgpt", room: "agent-codex room", timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
   stub curl "cat > \"\$NOTES_FIXTURE/curl.stdin\"; echo \"curl \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '{\"info\":{\"spend\":${1:-1},\"max_budget\":150}}'"
@@ -4300,6 +4302,29 @@ harness_ready() {
   assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account) $(qfield "$f" lane_run)" 'opencode qwen gateway run-9'
   grep -q 'ses_eval' <<<"$(qfield "$f" sessions)" || fail "the run's session id is not on the item"
   grep -qF "$(qfield "$f" sessions | tr -d '[] ' | cut -d, -f1)" "$NOTES_FIXTURE/calls.log" || fail "claimed id is not the launched one"
+}
+
+@test "--harness glm runs opencode on its own overlay and reads the glm key's budget, not the eval key's" {
+  harness_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_success
+  assert_called "OPENCODE_CONFIG='$SANDBOX/eval-glm.json'"
+  assert_called '--model litellm/reasoning\ \(glm-5.3\)'
+  grep -q 'Bearer sk-glm' "$NOTES_FIXTURE/curl.stdin" || fail "the budget was not read with the glm key"
+  # one gateway call, so the stdin file the stub overwrites per call is the whole story
+  assert_equal "$(grep -c '^curl' "$NOTES_FIXTURE/calls.log")" 1
+  ! grep -q 'sk-test' "$NOTES_FIXTURE/curl.stdin" || fail "the eval key reached the glm lane"
+  f=$(qitem running fix-menu)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" model)" 'glm glm'
+}
+
+@test "--harness glm refuses once its key is spent, and starts nothing" {
+  harness_ready
+  stub curl "echo '{\"info\":{\"spend\":50,\"max_budget\":50}}'"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  assert_failure
+  assert_output --partial 'the glm key is spent'
+  assert_not_called 'opencode run'
 }
 
 @test "the key goes to the gateway on stdin, never on the command line" {
