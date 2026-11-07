@@ -3704,22 +3704,23 @@ epics_fixture() {
   [ "$h" -ge 72 ] && [ "$h" -lt 96 ] || fail "oldest open requested row reads $h hours"
 }
 
-@test "chain: wants_unstamped is the share of human-channel adds in the window with no #requested; session and old events do not count" {
+@test "chain: wants_unstamped is the share of human-channel adds in the window with no #requested; session, sheet-lane and old events do not count" {
   chain_fixture
   local day old; day=$(date -d "@$((T0 - 86400))" +%F) old=$(date -d "@$((T0 - 20 * 86400))" +%F)
   jq -cn --arg d "$day" --arg o "$old" '
-    {ts: "\($d)T10:00:00.1-08:00", action: "added", from: "game", by: "human", text: "fix(a): one #requested"},
-    {ts: "\($d)T10:01:00.1-08:00", action: "added", from: "game", by: "human", text: "fix(a): two"},
-    {ts: "\($d)T10:02:00.1-08:00", action: "filed", from: "tools", text: "fix(a): three"},
+    {ts: "\($d)T10:00:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): one #requested"},
+    {ts: "\($d)T10:01:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): two"},
+    {ts: "\($d)T10:02:00.1-08:00", lane: "agent", action: "filed", from: "tools", text: "fix(a): three"},
+    {ts: "\($d)T10:03:30.1-08:00", lane: "human", action: "filed", from: "tools", text: "a sheet row can never be stamped"},
     {ts: "\($d)T10:03:00.1-08:00", action: "moved", from: "outbox", by: "human", text: "fix(a): moved is not an add"},
-    {ts: "\($d)T10:04:00.1-08:00", action: "added", from: "game", by: "abc123", text: "fix(a): a session follow-up"},
-    {ts: "\($o)T10:00:00.1-08:00", action: "added", from: "game", by: "human", text: "fix(a): outside the window"}' > "$BENCH_INGEST"
+    {ts: "\($d)T10:04:00.1-08:00", lane: "agent", action: "added", from: "game", by: "abc123", text: "fix(a): a session follow-up"},
+    {ts: "\($o)T10:00:00.1-08:00", lane: "agent", action: "added", from: "game", by: "human", text: "fix(a): outside the window"}' > "$BENCH_INGEST"
   run "$SUBJECT" chain --json
   assert_success
   assert_equal "$(jq -r '.wants_unstamped["7d"]' <<<"$output")" 0.667
   run "$SUBJECT" chain
   assert_success
-  assert_line 'wants_unstamped: 2 of 3 human-channel adds in 7d carry no #requested, by project (game 1/2, tools 1/1)'
+  assert_line 'wants_unstamped: 2 of 3 human-channel agent rows added in 7d carry no #requested, by project (game 1/2, tools 1/1)'
 }
 
 @test "chain: the table names the oldest open #requested row behind requested_unstarted_h" {
