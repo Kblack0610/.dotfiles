@@ -7,12 +7,14 @@
 # for the CHECKOUT row in fleet-sessions.
 #
 # Git runs the copy of this file on the commit it just checked out, so a branch cut before this
-# file existed leaves no record and the row says the actor is unknown.
+# file existed leaves no record and the row says the actor is unknown. ~/.dotfiles-private has its
+# own hooks path, so a move there gets the same row with no actor.
 #
-# Worktrees share this hooks path; they leave at the toplevel test, the only cost they pay.
+# Worktrees share this hooks path; they leave at the toplevel test, the only cost they pay. Git runs
+# a hook at the toplevel, so $PWD is it.
 
 [ "${3:-0}" = 1 ] || exit 0
-top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+top="$PWD"
 [ "$top" -ef "${DOTFILES:-$HOME/.dotfiles}" ] || exit 0
 default="$(git symbolic-ref -q --short refs/remotes/origin/HEAD)"; default="${default#origin/}"
 [ "$(git symbolic-ref -q --short HEAD)" = "${default:-main}" ] && exit 0

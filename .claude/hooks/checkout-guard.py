@@ -14,7 +14,6 @@ command runs in comes from forge-guard's walker, which also sets what is not cov
 `fleet-sessions` CHECKOUT rows and the main-checkout-branch watch catch what gets past this.
 Fail-open: any error allows the command.
 """
-import importlib.util
 import json
 import os
 import sys
@@ -31,13 +30,15 @@ MSG = (
 
 
 def _forge():
+    import importlib.util
+
     spec = importlib.util.spec_from_file_location("forge_guard", os.path.join(HERE, "forge-guard.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-FORGE = _forge()
+FORGE = None  # loaded past main's prefilter: this hook runs on every Bash call
 
 
 def deployed(d):
@@ -84,12 +85,14 @@ def check(head, argv, env, cwd):
 
 
 def main():
+    global FORGE
     data = json.load(sys.stdin)
     if data.get("tool_name", "Bash") != "Bash":
         return
     cmd = (data.get("tool_input") or {}).get("command") or ""
     if not any(w in cmd for w in ("checkout", "switch")):
         return
+    FORGE = _forge()
     r = FORGE.reason(cmd, data.get("cwd") or os.getcwd(), check)
     if r:
         print(json.dumps({"hookSpecificOutput": {

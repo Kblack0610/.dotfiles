@@ -684,11 +684,15 @@ sync_facts() {
 
 # off_default_checkouts -> each checkout stow deploys (the two dotfiles-drift reads) that is not on
 # its default branch, one per line. Worktrees are never in it: a branch is what they are for.
+# The local symref settles the usual case, so a clean pass costs no gh call.
 off_default_checkouts() {
-  local d
+  local d cur base
   for d in "${DOTFILES:-$HOME/.dotfiles}" "${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"; do
     [ -e "$d/.git" ] || continue
-    [ "$(git -C "$d" symbolic-ref -q --short HEAD)" = "$(base="$(default_base "$d")"; echo "${base#origin/}")" ] || echo "$d"
+    cur="$(git -C "$d" symbolic-ref -q --short HEAD)"
+    [ "origin/$cur" = "$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD)" ] && continue
+    base="$(default_base "$d")"
+    [ "$cur" = "${base#origin/}" ] || echo "$d"
   done
 }
 
@@ -967,19 +971,18 @@ main_rows() {
 # main-checkout-branch watch is the one page, and it trips from an inline probe that needs nothing
 # from the tree this fault may have replaced. Its fact is the HEAD, so a further move is a new one.
 checkout_rows() {
-  local d name head base at gs where actor reason fact
+  local d name head short base at gs where actor reason
   while IFS= read -r d; do
     [ -n "$d" ] || continue
     name="${d##*/}" head="$(git -C "$d" rev-parse HEAD)" base="$(default_base "$d")"
-    at=- gs=
+    short="${head:0:12}" at= gs=
     IFS=$'\t' read -r at gs < <(git -C "$d" log -g -1 --date=unix --format='%gd%x09%gs' --grep-reflog='^checkout: moving' 2>/dev/null)
     where="$(git -C "$d" symbolic-ref -q --short HEAD)"
     [ -n "$where" ] || where="${gs##* to }"
-    at="${at#*\{}"
+    at="${at//[^0-9]/}"
     actor="$(awk -F'\t' -v h="$head" '$3 == h { a = $4 } END { print a }' "$LEDGER/checkout-moves.tsv" 2>/dev/null)"
-    reason="$name checkout on ${where:-${head:0:12}} since $(date -d "@${at%\}}" '+%a %H:%M' 2>/dev/null || echo unknown), moved by ${actor:-an unrecorded actor}: stowed scripts run it, git -C $d switch ${base#origin/}"
-    fact="CHECKOUT $name @${head:0:12}"
-    printf 'CHECKOUT\t%s\tcheckout-%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t1\t-\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\t%s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$name" "$name" "$reason" "$fact"
+    reason="$name checkout on ${where:-$short} since $(date -d "@$at" '+%a %H:%M' 2>/dev/null || echo unknown), moved by ${actor:-an unrecorded actor}: stowed scripts run it, git -C $d switch ${base#origin/}"
+    printf 'CHECKOUT\t%s\tcheckout-%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t1\t-\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tCHECKOUT %s @%s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$name" "$name" "$reason" "$name" "$short"
   done <<<"$1"
 }
 
