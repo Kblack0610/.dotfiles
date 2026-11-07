@@ -1,5 +1,6 @@
-//! The Fleet tab's machinery, below the sessions: one table of who is working (runners by tier,
-//! then the live sessions), from hub-core's `fleet` (the same reader as agent-web's Fleet tab).
+//! The Fleet tab's machinery, below the sessions: one table of who is working and why each one
+//! is deployed (runners by kind, then the live sessions), under the legend of what each kind
+//! means, from hub-core's `fleet` (the same reader as agent-web's Fleet tab).
 //! The Claude accounts and the token folds are the Costs tab's (coststab.rs, tokens.rs). Named
 //! apart from `fleet.rs`, which is the sessions' watch page. One runner's page (`runner_page`) is
 //! hub-core's `fleet::runner`, as agent-web's `#fleet/<runner>`.
@@ -12,7 +13,7 @@ use hub_core::fleet::{AskVerdict, Dispatch, Eval, Fleet, Judge, Registry, ASK_FI
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
-use crate::fit::{cell, clip_line, Table};
+use crate::fit::{cell, clip_line, len, wrap, Table};
 use crate::fmt::{clock, dur, kilo, older, pct, Palette};
 use hub_core::layout::FOLD_ROWS;
 
@@ -63,7 +64,10 @@ pub fn page(
         ),
         w,
     ));
-    out.push(clip_line(Line::from(t.status(&f.who, p)), w));
+    for l in wrap(&f.legend, " | ", w) {
+        out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
+    out.extend(wrap_spans(t.status(&f.who, p), w));
     out.extend(who_table(
         &rows,
         t,
@@ -77,8 +81,35 @@ pub fn page(
     out
 }
 
+/// The chip line broken between chips so every chip shows in a narrow pane; a chip's own
+/// leading gap is dropped where a line starts.
+fn wrap_spans(spans: Vec<Span<'static>>, w: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Vec<Span<'static>>> = vec![vec![]];
+    let mut used = 0;
+    for sp in spans {
+        let n = len(&sp.content);
+        if used > 0 && used + n > w {
+            lines.push(vec![]);
+            used = 0;
+        }
+        let sp = if used == 0 {
+            Span::styled(sp.content.trim_start().to_string(), sp.style)
+        } else {
+            sp
+        };
+        used += len(&sp.content);
+        lines.last_mut().unwrap().push(sp);
+    }
+    lines
+        .into_iter()
+        .map(|l| clip_line(Line::from(l), w))
+        .collect()
+}
+
 /// `Who::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
-const WHO_HEADER: [&str; 7] = ["TIER", "WHO", "STATE", "SINCE", "DOING", "UNDER", "PROJECT"];
+const WHO_HEADER: [&str; 8] = [
+    "KIND", "WHO", "STATE", "SINCE", "FOR", "DOING", "UNDER", "PROJECT",
+];
 
 #[allow(clippy::too_many_arguments)]
 fn who_table(
@@ -116,7 +147,7 @@ fn who_table(
                 (_, false) => "v ",
             };
             vec![
-                format!("{fold}{}", r.tier).into(),
+                cell(format!("{fold}{}", r.kind), p.dim()),
                 cell(
                     r.who.clone(),
                     if r.tier == 3 {
@@ -127,6 +158,7 @@ fn who_table(
                 ),
                 cell(r.state.clone(), state),
                 r.since.map_or("-".into(), |s| dur((now - s) as f64)).into(),
+                r.purpose.clone().into(),
                 r.doing.clone().into(),
                 cell(r.under.clone(), p.dim()),
                 cell(r.project.clone(), p.dim()),
@@ -136,12 +168,12 @@ fn who_table(
     let mut out = Table {
         header: WHO_HEADER.to_vec(),
         rows: cells,
-        // DOING is the flex column and stays where the rest can drop around it.
-        keep: vec![1, 2, 4, 3, 0, 6, 5],
-        flex: Some(4),
-        flexmin: 16,
+        // FOR, capped, keeps its place beside WHO; DOING is the flex column and takes the rest.
+        keep: vec![1, 0, 2, 4, 5, 3, 7, 6],
+        flex: Some(5),
+        flexmin: 12,
         right: vec![3],
-        cap: vec![(1, 28), (5, 22), (6, 16)],
+        cap: vec![(1, 18), (4, 40), (6, 22), (7, 16)],
         mark: t.mark::<Who>(),
         ..Default::default()
     }
@@ -844,11 +876,18 @@ pub mod tests {
     ) -> Who {
         Who {
             tier,
+            kind: match tier {
+                1 => "lead",
+                2 => "observe",
+                _ => "session",
+            }
+            .into(),
             who: name.into(),
             opens,
             key: key.into(),
             state: state.into(),
             since: Some(NOW - 600),
+            purpose: format!("{name} for"),
             doing: format!("{name} doing"),
             under: if kids > 0 {
                 format!("{kids} sessions")
@@ -865,6 +904,7 @@ pub mod tests {
         Fleet {
             at: NOW,
             errors: vec!["dispatch: unreadable".into()],
+            legend: vec!["lead runs the sessions".into(), "observe reports".into()],
             workers: vec![
                 Worker {
                     name: "dream".into(),
@@ -1054,8 +1094,11 @@ pub mod tests {
         for want in [
             "dispatch: unreadable",
             "FLEET  3 of 3 rows, spend: 0 Costs",
-            "all 3",
-            "TIER  WHO",
+            "all 3  lead 1  deliver 0  observe 1  learn 0  maintain 0  session 1",
+            "KIND",
+            "FOR",
+            "dream for",
+            "lead runs the sessions | observe reports",
             "1 sessions",
             "dotfiles-agent-11",
             "dispatch 2 (9+ in 7d)  skip 0 (4+ in 7d)  started 2  reaped 1",
@@ -1092,7 +1135,7 @@ pub mod tests {
         let rows = lines(&f, &t, &folded, 0, 160);
         assert!(
             rows.iter()
-                .any(|l| l.contains("> 1") && l.contains("dream")),
+                .any(|l| l.contains("> lead") && l.contains("dream")),
             "{rows:#?}"
         );
         assert!(

@@ -1,14 +1,15 @@
 "use strict";
-// The Fleet tab: who is working, and on what. One table (the shared one, table.js) of every
-// runner and live session by tier; a row opens its record, and a tier 1 row folds the rows under
-// it. Who pays, where the tokens go and what Langfuse sees are Costs' (costs.js). The judges'
+// The Fleet tab: who is working, on what, and why it is deployed. One table (the shared one,
+// table.js) of every runner and live session, its KIND (lead, a lane, session) explained by the
+// legend above it (lanes.tsv, read by hub-core); a row opens its record, and a lead row folds the
+// rows under it. Who pays, where the tokens go and what Langfuse sees are Costs' (costs.js). The judges'
 // verdict lists are Log's Judges' verdicts section. From /api/fleet (hub-core `fleet`, the same reader as the hub's
 // Fleet tab). `#fleet/<runner>` is one runner's page, read from /api/fleet/runner only when it
 // opens (hub-core `fleet::runner`).
 
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
-// fold: the tier 1 rows the human closed, kept across refreshes; said: the answer judge's filter on Log.
+// fold: the lead rows the human closed, kept across refreshes; said: the answer judge's filter on Log.
 const fst = { data: null, err: null, fold: new Set(), said: "all" };
 
 // The open runner page: whose, what it read, and the run whose log is shown.
@@ -70,7 +71,7 @@ const callsTable = (recent) => `<table class="tbl"><tr><th class="n">when</th><t
   `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
 
 // The table's headers: hub_core::fleet::who::Who::COLUMNS (checked by assets.rs).
-const FLEET_COLS = { tier: ["tier", "n"], who: ["who"], state: ["state"], since: ["since", "n"], doing: ["doing now"], under: ["under it"], project: ["project"] };
+const FLEET_COLS = { kind: ["kind"], who: ["who"], state: ["state"], since: ["since", "n"], for: ["for"], doing: ["doing now"], under: ["under it"], project: ["project"] };
 const STATE_CLASS = { failed: "bad", held: "bad", "needs you": "warn", stalled: "warn", idle: "muted", off: "muted", chat: "muted", parked: "muted", landed: "muted" };
 // A runner opens its page, a session its record on the Sessions tab.
 const whoHref = (r) => (r.opens === "runner" ? runnerHref(r.key) : "#sessions/" + encodeURIComponent(r.key));
@@ -78,14 +79,14 @@ const whoHref = (r) => (r.opens === "runner" ? runnerHref(r.key) : "#sessions/" 
 function whoRow(r) {
   const shut = fst.fold.has(r.key);
   const fold = r.kids ? `<button class="thsort" data-fold="${esc(r.key)}" aria-expanded="${!shut}" title="${shut ? "unfold" : "fold"} the ${r.kids} rows under it">${shut ? "&gt;" : "v"}</button> ` : "";
-  return `<tr class="wr" data-href="${esc(whoHref(r))}"><td class="n">${fold}${r.tier}</td><td><a href="${esc(whoHref(r))}">${esc(r.who)}</a></td>` +
+  return `<tr class="wr" data-href="${esc(whoHref(r))}"><td class="muted">${fold}${esc(r.kind)}</td><td><a href="${esc(whoHref(r))}">${esc(r.who)}</a></td>` +
     `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
-    `<td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${esc(r.project)}</td></tr>`;
+    `<td class="wrap">${esc(r.for)}</td><td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${esc(r.project)}</td></tr>`;
 }
 
 function fleetBody(d) {
   const t = d.table;
-  const more = d.hidden ? `<div class="muted more">+ ${d.hidden} folded under a tier 1 row</div>` : "";
+  const more = d.hidden ? `<div class="muted more">+ ${d.hidden} folded under a lead row</div>` : "";
   return d.who.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, FLEET_COLS)}${d.who.map(whoRow).join("")}</table>${more}</div>`
     : `<div class="panel">${t.total ? "No runner or session matches." : "No runner configured in ~/.config/agentctl/agents."}</div>`;
@@ -94,6 +95,7 @@ function fleetBody(d) {
 function fleetHead(d) {
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
   return `<div class="bhead"><span>fleet <span class="muted">who is working, and on what; ${d.table.shown} of ${d.table.total} rows, accounts and spend on <a href="#costs?by=runner&w=24h">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
+    `<div class="muted legend">${esc((d.legend || []).join(" | ") || "-")}</div>` +
     (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
 }
 
@@ -164,7 +166,7 @@ function renderFleet() {
     paint($("fleet-body"), fleetBody(d));
     return;
   }
-  paint(el, `<div id="fleet-head">${fleetHead(d)}</div>${tblBar("fleet", d.table, "search, or tier:3 state:failed project:dotfiles -who:shepherd")}` +
+  paint(el, `<div id="fleet-head">${fleetHead(d)}</div>${tblBar("fleet", d.table, "search, or kind:session state:failed project:dotfiles -who:shepherd")}` +
     `<div id="fleet-body">${fleetBody(d)}</div>`);
 }
 
