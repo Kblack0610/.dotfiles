@@ -8,7 +8,7 @@ Install: the installer's `build_local_rust_tools` builds it and links `~/.local/
 
 ```
 hub                              the board, on the Home tab
-hub --tab fleet                  start on another tab (home, daily, queue, projects, sessions, infra, log, fleet, schedules; a retired name such as overview, focus, outbox, board, today, history, actions, forecast, watch, shepherd, jobs, ci or machines lands on its new tab, outbox on Daily's outbox)
+hub --tab fleet                  start on another tab (an id from `hub tabs`; a retired name in `hub_core::layout::RETIRED`, such as overview or ci, lands on its new tab and section)
 hub tab fleet inbox-triage       print one runner's page and exit (any word but a Fleet section name is a runner; `--tab 'fleet RUNNER'` starts there)
 hub --tab 'infra ci'             start on a section of Infra (health, red, machines, ci, jobs, cloud, governor); `--tab ci` is the same, and `jobs` opens the jobs table
 hub --popup --tab queue          a floating window (the waybar clicks): Esc with nothing left to close quits

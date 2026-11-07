@@ -44,10 +44,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub projects --json
        hub projects --page NAME
        hub tabs
-  TAB     home|daily|queue|infra|sessions|today|history|fleet|schedules|projects, or a retired name
-          (overview, waiting, asks, focus, outbox, board, forecast, watch, shepherd, jobs, ci,
-          machines) that lands on its new tab; jobs, ci and machines open that section of
-          Infra, outbox the outbox under Daily
+  TAB     a tab id (`hub tabs` lists them), or a retired name (hub_core::layout::RETIRED)
+          that lands on its new tab, on the section it became when it became one
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
