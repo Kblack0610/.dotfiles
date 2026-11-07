@@ -115,22 +115,84 @@ return {
       --            stopping at either end of low -> high -> urgent
       local PRIORITIES = { "low", "high", "urgent" }
 
-      -- Return (base_without_tag, current_level_or_nil): strip the priority tag wherever it
-      -- sits and trim trailing whitespace.
+      -- Every inline hashtag on `line`, plus where the scan began. Mirrors md::for_each_tag and
+      -- md::tag_span, the one tag grammar, so this file and the `notes` CLI agree on where a tag
+      -- ends: the body runs over letters, digits and `_-/.`, and a trailing `-/.` is not part of
+      -- the name. So `#high-priority` is its own tag rather than `#high`, and a sentence-final
+      -- `#high.` still names `high`. A `#` glued to a word (`foo#high`, `[[a#high]]`), inside a
+      -- code span, or opening a heading starts no tag. Each tag is
+      -- `{ hash, from, to, scan }`: the `#`, the first and last byte of its name, and the byte
+      -- after the body the scan stopped at.
+      local function each_tag(line)
+        local start = 1
+        local indent = #line:match "^%s*"
+        local marker = line:match("^#+ ", indent + 1)
+        if marker then
+          start = indent + #marker + 1
+        end
+        local tags, i, in_code = {}, start, false
+        while i <= #line do
+          local c = line:sub(i, i)
+          if c == "`" then
+            in_code = not in_code
+          elseif
+            c == "#"
+            and not in_code
+            and not (i > 1 and line:sub(i - 1, i - 1):match "[%w_/.%[#]")
+            and line:sub(i + 1, i + 1):match "%a"
+          then
+            local k = i + 1
+            while k <= #line and line:sub(k, k):match "[%w_%-/.]" do
+              k = k + 1
+            end
+            local e = k - 1
+            while e > i + 1 and line:sub(e, e):match "[%-/.]" do
+              e = e - 1
+            end
+            tags[#tags + 1] = { hash = i, from = i + 1, to = e, scan = k }
+            i = k - 1
+          end
+          i = i + 1
+        end
+        return tags, start
+      end
+
+      -- Return (base_without_tag, current_level_or_nil): strip every priority tag wherever it
+      -- sits and trim trailing whitespace; the level is the most urgent one. Mirrors
+      -- md::split_priority, cut for cut: each tag goes with one neighbouring space (the one
+      -- before it, else the one after), and a trailing `.` is given back to the prose.
       --
-      -- Deliberately NOT anchored to end-of-line. It used to be, which was fine while a
-      -- priority tag was always last; a release tag now follows it (`#high #v0.0.2`), and an
-      -- anchored match reads such a task as untagged, so `<leader>tP` would restart the ladder
-      -- from nothing every time. Mirrors md::split_priority, which never anchored.
+      -- Deliberately NOT anchored to end-of-line: a release tag follows the priority tag
+      -- (`#high #v0.0.2`), and an anchored match read such a task as untagged.
       local function strip_priority(line)
-        local level
-        for i = #PRIORITIES, 1, -1 do
-          local stripped, n = line:gsub("%s*#" .. PRIORITIES[i] .. "%f[%W]", "")
-          if n > 0 then
-            line, level = stripped, level or PRIORITIES[i]
+        local tags, start = each_tag(line)
+        local level, rank, out, cursor = nil, 0, {}, 1
+        for _, t in ipairs(tags) do
+          local name = line:sub(t.from, t.to):lower()
+          for r, p in ipairs(PRIORITIES) do
+            if p == name then
+              if r > rank then
+                level, rank = p, r
+              end
+              local cs, ce = t.hash, t.scan - 1
+              while ce > t.to and line:sub(ce, ce) == "." do
+                ce = ce - 1
+              end
+              if cs > start and line:sub(cs - 1, cs - 1) == " " then
+                cs = cs - 1
+              elseif line:sub(ce + 1, ce + 1) == " " then
+                ce = ce + 1
+              end
+              out[#out + 1] = line:sub(cursor, cs - 1)
+              cursor = math.max(cursor, ce + 1)
+            end
           end
         end
-        return (line:gsub("%s+$", "")), level
+        if not level then
+          return (line:gsub("%s+$", "")), nil
+        end
+        out[#out + 1] = line:sub(cursor)
+        return (table.concat(out):gsub("%s+$", "")), level
       end
 
       -- Set the priority tag on a range to `level` ("urgent"/"high"/"low"), or clear it
@@ -209,18 +271,6 @@ return {
         { "high", "### High" },
         { "low", "### Low" },
       }
-
-      -- Lane index for an open task by its priority tag (space-preceded #tag, word-ended),
-      -- else #LANES + 1 (untagged). Most-urgent tag wins.
-      local function task_lane(line)
-        for i, lane in ipairs(LANES) do
-          local pat = "%f[%S]#" .. lane[1] .. "%f[%W]"
-          if line:match(pat) then
-            return i
-          end
-        end
-        return #LANES + 1
-      end
 
       -- Any `### `-heading / `---` rule this sweep owns (stripped, re-emitted only where a
       -- lane is non-empty). An unrelated authored heading is preserved as content.
@@ -342,7 +392,7 @@ return {
             elseif l:match "^%s*%- %[" then
               local _, lvl = strip_priority(l)
               if lvl then
-                local i = task_lane(l)
+                local i = lane_index(lvl)
                 table.insert(open[i], l) -- tag is the source of truth
                 last = i
               else
@@ -968,9 +1018,11 @@ return {
             return
           end
           vim.w.task_priority_matched = true
-          vim.fn.matchadd("TaskPriorityUrgent", [[#urgent\>]])
-          vim.fn.matchadd("TaskPriorityHigh", [[#high\>]])
-          vim.fn.matchadd("TaskPriorityLow", [[#low\>]])
+          -- The tag grammar of each_tag: no `#` glued to a word, and no tag that runs on
+          -- (`#high-priority` is not `#high`, a sentence-final `#high.` is).
+          for _, m in ipairs { { "TaskPriorityUrgent", "urgent" }, { "TaskPriorityHigh", "high" }, { "TaskPriorityLow", "low" } } do
+            vim.fn.matchadd(m[1], [[\%([[:alnum:]_/.[#]\)\@<!#]] .. m[2] .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
+          end
         end,
       })
     end,

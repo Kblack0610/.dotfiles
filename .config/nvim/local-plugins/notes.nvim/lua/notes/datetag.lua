@@ -86,7 +86,8 @@ function M.note_date(path)
 end
 
 -- Pure: stamp `#cMMDD` (of `date`, a {year,month,day} table) onto every open task in the
--- `## Focus` section that has no origin yet. Returns (lines, changed_row_numbers).
+-- `## Focus` section that has no origin yet, bounded as md::section_end bounds it (next H2,
+-- the link footer, the rollup sentinel). Returns (lines, changed_row_numbers).
 -- Done `[x]` tasks and the empty `- [ ] ` placeholder are left alone.
 function M.stamp_focus(lines, date)
   local tag = string.format("#c%02d%02d", date.month, date.day)
@@ -97,6 +98,8 @@ function M.stamp_focus(lines, date)
       in_focus = l:match "^##%s+Focus%s*$" ~= nil
     elseif in_focus and l:match "^%-%-%-%s*$" and (lines[i + 1] or ""):find("[[", 1, true) then
       in_focus = false -- the link footer, as sweep_focus bounds the section
+    elseif in_focus and l:match "^%s*<!%-%- rollup:start %-%->%s*$" then
+      in_focus = false -- the rollup mirrors other notes' tasks, so their dates are not this note's
     end
     if in_focus and l:match "^%s*%- %[[ /]%]%s+%S" and not has_origin(l) then
       l = insert_tag(l, tag)
