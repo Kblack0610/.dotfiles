@@ -68,7 +68,9 @@ case "$state" in
         exit 0 ;;
 esac
 
-task="Run the docs-cleanup skill (~/.claude/skills/docs-cleanup/SKILL.md) on tonight's baseline in ${dir/#$HOME/\~}: $summary. Fix by cause, one area per PR, and write the pass report."
+# The skill is the one this runner's conf names, so a rename is one edit in the conf.
+skill="$(agentctl skill "$NAME" 2>/dev/null)" && [ -n "$skill" ] || fail "no SKILL= in the $NAME conf (agentctl skill $NAME)"
+task="Run the $skill skill on tonight's baseline in ${dir/#$HOME/\~}: $summary. Fix by cause, one area per PR, and write the pass report."
 if [ "$DRY" = 1 ]; then
     echo "docs-cleanup: would queue: $task"
     exit 0

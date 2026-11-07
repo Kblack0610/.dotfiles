@@ -40,6 +40,20 @@ outbox() { printf '# Outbox\n\n## Outbox\n%b' "$1" >"$HOME/.notes/outbox.md"; }
 inbox() { sed -n '/^## Inbox/,/^## Tasks/p' "$SHEET"; }
 tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
 
+@test "a notes with no row types asks no model, keeps the line and says why" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"]}'
+  # Replace the link, never write through it: it points at the built binary.
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$1" = row ] && exit 2\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$TRIAGE"
+  assert_output --partial 'notes row types failed'
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the model was asked with no type list"
+  run inbox
+  assert_output --partial 'gun sound'
+}
+
 @test "end to end: a raw line is filed as one typed row with an id, its words as the detail" {
   sheet '- the gun sound is off since the top-down patch\n' ''
   answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays off since the top-down patch #high #size/s"]}'
@@ -53,6 +67,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial '  was: the gun sound is off since the top-down patch'
   [ "$(grep -c 'fix(audio)' "$SHEET")" = 1 ] || fail "filed more than once: $(cat "$SHEET")"
   grep -qx '1. \[scratch\] the gun sound is off since the top-down patch' "$NOTES_FIXTURE/prompt.txt" || fail "the line never reached the model"
+  grep -qF "type is one of $("$NOTES_BIN" row types); a bug is fix." "$NOTES_FIXTURE/prompt.txt" || fail "the row types never reached the model"
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"

@@ -1011,6 +1011,24 @@ pub(crate) fn row_title(line: &str) -> String {
     split_row_prefix(&bare).unwrap_or(&bare).to_string()
 }
 
+/// One `notes row parse` line for a row or its bare text: `type area title ok`, tab-separated,
+/// `ok` 1 when the grammar parses it. An empty field prints as `-`, because a shell `read`
+/// with a tab IFS merges empty columns.
+pub(crate) fn row_parse_tsv(line: &str) -> String {
+    let title = row_title(line);
+    let title = if title.is_empty() { "-".to_string() } else { title };
+    match row_type_area(line) {
+        Some((ty, area)) => format!("{ty}\t{area}\t{title}\t1"),
+        None => format!("-\t-\t{title}\t0"),
+    }
+}
+
+/// The types a filer (a script, a prompt, `propose`) may give a row: every [`ROW_TYPES`]
+/// entry but `epic`, which is the human's to file. `notes row types` prints them.
+pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
+    ROW_TYPES.iter().copied().filter(|t| *t != "epic")
+}
+
 /// The row grammar the board feed parses, per top-level row: a retired priority word, two
 /// priorities, a retired tag or `since:` stamp, a malformed tier, `#size/xl` on a row that
 /// is not an epic, an epic on the agent board, and on the agent board a
@@ -4285,6 +4303,35 @@ Version: v0.2.0
         }
         // a bug is a fix row, not a type of its own
         assert_eq!(row_type_area("- [ ] bug(store): a title"), None);
+    }
+
+    #[test]
+    fn row_parse_prints_four_columns_for_every_line() {
+        assert_eq!(
+            row_parse_tsv("fix(audio): the gun sound plays late #high #size/s"),
+            "fix\taudio\tthe gun sound plays late\t1"
+        );
+        assert_eq!(
+            row_parse_tsv("- [/] feat(fleet-bench): a row line #c1107 <!-- id:ar-1 -->"),
+            "feat\tfleet-bench\ta row line\t1"
+        );
+        // the grammar's own refusals: an unknown type, a breaking `!`, an area with a slash
+        for text in ["feature(x): a", "fix(x)!: a", "fix(a/b): a", "no prefix at all"] {
+            let out = row_parse_tsv(text);
+            assert!(out.starts_with("-\t-\t") && out.ends_with("\t0"), "{text}: {out}");
+        }
+        assert_eq!(row_parse_tsv(""), "-\t-\t-\t0");
+        // a tab or CR inside the text never makes a fifth column: the title is its words
+        assert_eq!(row_parse_tsv("fix(x): a\tb\r"), "fix\tx\ta b\t1");
+        assert_eq!(row_parse_tsv("fix(x): a").split('\t').count(), 4);
+    }
+
+    #[test]
+    fn filer_types_are_the_row_types_but_epic() {
+        let types: Vec<_> = filer_types().collect();
+        assert!(!types.contains(&"epic"));
+        assert_eq!(types.len(), ROW_TYPES.len() - 1);
+        assert_eq!(types[..2], ["feat", "fix"]);
     }
 
     #[test]

@@ -59,6 +59,8 @@ unset _k _v
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
 : "${DISPATCH_MAX_LIVE:=6}"   # run units the runner's own sessions may hold: a heavy item 2, a light one 1
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
+: "${DISPATCH_START_LOAD:=2.5}"   # 1-min load one session started in the last DISPATCH_START_LOAD_MIN minutes will still add; 0 is off. Provisional: 2.8 measured over 21 starts on 24 cores (2026-11-07), medium confidence; re-measure when the session mix changes
+: "${DISPATCH_START_LOAD_MIN:=5}"   # minutes a start counts as not yet in the load
 : "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine really idle: niced Unity runs fill it while load looks fine
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06)
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
@@ -2186,7 +2188,7 @@ board_starved() {
 # load and idle. The human reads it before raising DISPATCH_PER_PASS or DISPATCH_MAX_LIVE; nothing
 # here raises a limit.
 cmd_headroom() {
-  local live hand slots load cores idle runnable why could=0 floor_live red_live
+  local live hand slots load cores idle runnable why could=0 floor_live red_live starts pend
   live=$(live_units)
   floor_live=$(live_runs | grep -c . || true)
   red_live=$(live_reds | grep -c . || true)
@@ -2195,18 +2197,19 @@ cmd_headroom() {
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
   cores=$(nproc 2>/dev/null || echo 1)
   idle=$(real_idle)
+  read -r starts pend < <(pending_load)
   runnable=$(next_items | grep -c . || true)
   why=$(IDLE_NOW=$idle gate)
   if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$DISPATCH_MAX_LIVE" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
-    --arg load "${load:-}" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
+    --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" '
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
-     load: ($load | num), load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
-     load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber)) * 100 | round / 100 end),
+     load: ($load | num), starting: $starts, load_pending: $pend, load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
+     load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_live: $red_live,
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
      held: (if $held != "" then $held elif $live >= $max_live then "DISPATCH_MAX_LIVE: every run unit is used"
@@ -2220,7 +2223,7 @@ cmd_headroom() {
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts up to \(.per_pass), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
-        "  load:      \(.load // "?") of a \(.load_cap) cap, \(.load_room // "?") room",
+        "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace and idle do not hold a start",
         "  red floor: \(.red_live) of \(.red_floor) red sessions live; under it pace, idle, load and fleet-assess do not hold a red"'
@@ -2436,6 +2439,19 @@ firing_findings() {
     | select((.epoch // $now) >= $now - $fresh * 60) | {rule, scope, repos, bind}'
 }
 
+# pending_load -> "<starts> <load>": the sessions started in the last DISPATCH_START_LOAD_MIN minutes
+# (the `started` lines the log already holds, as present_left counts its own) and the load they have
+# not yet put on the 1-min average. A start's load arrives minutes late, so a loop of starts that
+# each read the load sees the same low number; counting the starts closes that. Hand starts and a
+# pass's own earlier starts are in the log the moment cmd_start returns. A resume counts too: a
+# restored session boots and loads like a new one. An unreadable window refuses, like every gate.
+pending_load() {
+  local n
+  [ "$DISPATCH_START_LOAD" != 0 ] || { echo "0 0.0"; return; }
+  n=$(awk -v c="$(date -d "-$DISPATCH_START_LOAD_MIN min" '+%Y-%m-%d %H:%M')" '$4 == "started" && ($2 " " $3) >= c' "$LOG" 2>/dev/null | grep -c . || true)
+  LC_ALL=C awk -v n="${n:-0}" -v l="$DISPATCH_START_LOAD" 'BEGIN { printf "%d %.1f\n", n, n * l }'
+}
+
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
 # refuses: a start nobody can justify costs more than waiting for the next pass. Findings are not
 # here: one is about a pool or a repo, so pick_item asks them per item.
@@ -2461,8 +2477,9 @@ gate() {
   infra="$(fleet-shepherd infra 2>/dev/null)" && why+=("$infra")
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
   cores=$(nproc 2>/dev/null || echo 1)
-  [ "$red" = 0 ] && awk -v l="${load:-0}" -v c="$cores" -v m="$MAX_LOAD" 'BEGIN { exit !(l / c > m) }' &&
-    why+=("load ${load} on ${cores} cores is over the ${MAX_LOAD} pace")
+  local starts pend; read -r starts pend < <(pending_load)
+  [ "$red" = 0 ] && awk -v l="${load:-0}" -v p="$pend" -v c="$cores" -v m="$MAX_LOAD" 'BEGIN { exit !((l + p) / c > m) }' &&
+    why+=("load ${load}$([ "$starts" = 0 ] || echo " plus $pend for $starts started in the last ${DISPATCH_START_LOAD_MIN} min") on ${cores} cores is over the ${MAX_LOAD} pace")
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in
     '' | *unreadable*) why+=("github budget unreadable") ;;
@@ -2721,7 +2738,8 @@ promote() {
     say "could not queue $project row, un-started: $id ($out)"
     return 1
   fi
-  slug=$(awk '{ print $2; exit }' <<<"$out"); PROMOTED=$slug
+  # The `<state> <slug> -> <file>` line, not the first: a warning on add's stderr may come before it.
+  slug=$(awk '$3 == "->" { print $2; exit }' <<<"$out"); PROMOTED=$slug
   agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} >/dev/null
   logline "filled queue item $slug from $project $lane row${tags:+ ($tags)}: $id"
   echo "queued $project: $id"

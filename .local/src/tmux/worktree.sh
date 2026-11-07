@@ -164,18 +164,25 @@ wt_is_linked() {
   [ "$gd" != "$common" ]
 }
 
-# wt_is_husk <path> -- true when <path> has no .git and holds nothing but caches a Unity
-# editor or its MCP server rewrote after the worktree was removed. Such a dir is no worktree,
-# so nothing git-based ever reaped it, and it pinned its agent-N slot for good: 2026-11-03,
-# 15 of them, eight holding a slot number. Anything else in a git-less dir may be someone's
-# only copy of their work, so it stays out.
-WT_HUSK_ENTRIES=' Library Logs Temp obj UserSettings '
+# wt_is_husk <path> -- true when <path> has no .git and holds nothing but what a tool rewrote
+# after the worktree was removed: whole cache dirs (WT_HUSK_CACHES), and a few named files
+# (WT_HUSK_FILES) a Unity editor, Claude Code or pnpm writes into a project it still has open.
+# Such a dir is no worktree, so nothing git-based ever reaped it, and it pinned its agent-N
+# slot for good: 2026-11-03, 15 of them, eight holding a slot number. Anything else in a
+# git-less dir may be someone's only copy of their work, so it stays out.
+WT_HUSK_CACHES=' Library Logs Temp obj UserSettings node_modules '
+WT_HUSK_FILES=' .claude/settings.local.json Packages/manifest.json Packages/packages-lock.json pnpm-lock.yaml '
 wt_is_husk() {
-  local e
+  local e f
   [ -d "$1" ] && [ ! -e "$1/.git" ] || return 1
   for e in "$1"/* "$1"/.[!.]*; do
-    [ -e "$e" ] || continue
-    case "$WT_HUSK_ENTRIES" in *" ${e##*/} "*) ;; *) return 1 ;; esac
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    case "$WT_HUSK_CACHES" in *" ${e##*/} "*) continue ;; esac
+    # Only a named file or its parent dir is walked; any other entry, even an empty dir, is kept.
+    case "$WT_HUSK_FILES" in *" ${e##*/} "* | *" ${e##*/}/"*) ;; *) return 1 ;; esac
+    while IFS= read -r -d '' f; do
+      case "$WT_HUSK_FILES" in *" ${f#"$1"/} "*) ;; *) return 1 ;; esac
+    done < <(find "$e" ! -type d -print0 2>/dev/null)
   done
 }
 
@@ -198,9 +205,10 @@ wt_dirty_count() {
   printf '%s\n' "$n"
 }
 
-# wt_submodule_pushed <dir> -- true when the submodule's checked-out commit is on a remote ref.
+# wt_submodule_pushed <dir> [<rev>] -- true when <rev> (default: the submodule's checked-out
+# commit) is on a remote ref.
 wt_submodule_pushed() {
-  [ -n "$(git -C "$1" for-each-ref --count=1 --contains HEAD refs/remotes 2>/dev/null)" ]
+  [ -n "$(git -C "$1" for-each-ref --count=1 --contains "${2:-HEAD}" refs/remotes 2>/dev/null)" ]
 }
 
 # wt_landed <path> <base-ref> -- has this worktree's work gone somewhere durable?
@@ -245,13 +253,35 @@ wt_pr_merged_at_head() {
 # submodule of <path>; nothing, and rc 1, when there are none. A worktree cut from a
 # submodule (`git -C External/unity-core worktree add ~/.worktrees/unity-core-x`) keeps its
 # git dir INSIDE this worktree's .git/modules, so removing this one orphans that one.
+#
+# One whose dir is gone (git marks it prunable) holds nothing but its HEAD, so it counts only
+# while that commit is on no remote ref. Counting every one kept a tree for good over a scratch
+# worktree deleted with its /tmp dir (2026-11-07: unity-core-playground-unity63b, two pushed).
+# The main worktree is the first record, skipped by position: git names a submodule's by its
+# .git/modules dir.
 wt_submodule_worktrees() {
-  local sub
+  local sub path head prunable
   while read -r _ sub _; do
     [ -e "$1/$sub/.git" ] || continue
-    git -C "$1/$sub" worktree list --porcelain 2>/dev/null |
-      awk 'NR > 1 && /^worktree / { print substr($0, 10); found = 1; exit } END { exit !found }' &&
+    while IFS=$'\t' read -r path head prunable; do
+      if [ "$prunable" != prunable ]; then
+        printf '%s\n' "$path"
+        return 0
+      fi
+      wt_submodule_pushed "$1/$sub" "$head" && continue
+      printf '%s (its dir is gone and %s is on no remote)\n' "$path" "${head:0:12}"
       return 0
+    done < <(git -C "$1/$sub" worktree list --porcelain 2>/dev/null |
+      awk 'BEGIN { RS = ""; FS = "\n" }
+        NR > 1 {
+          p = ""; h = pr = "-" # a placeholder, as read collapses an empty tab-split field
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^worktree /) p = substr($i, 10)
+            else if ($i ~ /^HEAD /) h = substr($i, 6)
+            else if ($i ~ /^prunable/) pr = "prunable"
+          }
+          print p "\t" h "\t" pr
+        }')
   done < <(git -C "$1" submodule status 2>/dev/null)
   return 1
 }
@@ -400,7 +430,7 @@ wt_work_reason() {
   }
   if [ ! -e "$path/.git" ]; then
     wt_is_husk "$path" && return 0
-    printf 'no git, and it holds more than Unity caches\n'
+    printf 'no git, and it holds more than tool caches\n'
     return 1
   fi
   wt_is_linked "$path" || {
@@ -471,7 +501,7 @@ wt_occupied_reason() {
   # under it mid-turn. Being unattached says nothing about whether anything is running there.
   # This is why wind-down -- and now `done` -- reap only AFTER the kill: by then there is no
   # session, and the check passes honestly rather than being waived.
-  if wt_session_exists "$(basename "$1")"; then
+  if wt_session_exists "$(panel_session_name "$1")"; then
     printf 'its tmux session is live\n'
     return 1
   fi
@@ -945,7 +975,7 @@ wt_land() {
 # anyway. waitpid's timeout is a guard; whatever is still there afterwards is what reap reports.
 wt_settle() {
   local path="$1" pids
-  wt_session_exists "$(basename "$path")" && return 0
+  wt_session_exists "$(panel_session_name "$path")" && return 0
   wt_pane_inside "$path" && return 0
   pids=$(wt_pids_inside "$path" exe)
   # shellcheck disable=SC2086 # one pid per word
@@ -970,10 +1000,10 @@ cmd_reap() {
 
   name="$(basename "$path")"
   # A husk has no worktree for git to remove, and wt_reap_reason has just proved it holds
-  # nothing but Unity caches and nobody is in it.
+  # nothing but tool caches and nobody is in it.
   if wt_is_husk "$path"; then
     rm -rf -- "$path" || panel_fail "could not remove $path" || return 1
-    printf 'reaped %s (no git, Unity caches only)\n' "$name"
+    printf 'reaped %s (no git, tool caches only)\n' "$name"
     return 0
   fi
 
@@ -1103,9 +1133,22 @@ cmd_gc() {
       candidates+=("${line%%$PANEL_TAB*}")
     done < <(wt_worktrees_of "$repo")
   else
-    for d in "$WT_ROOT"/*; do
-      [ -d "$d" ] && candidates+=("$d")
+    # A submodule's worktree goes first: it pins the superproject tree its git dir lives in,
+    # so reaping it first frees that tree in this pass rather than the next night's.
+    local -a later=()
+    for d in "$WT_ROOT"/* "$WT_ROOT"/.[!.]*; do
+      [ -d "$d" ] || continue
+      # A dot dir is a tool's (.preview, .xdg-agent18) unless it is a linked worktree (.git
+      # FILE): judged by wt_work_reason alone, a git-less one with only caches would read as a
+      # reapable husk, and one holding a clone would be listed as kept every night.
+      case "${d##*/}" in .*) [ -f "$d/.git" ] || continue ;; esac
+      if [ -f "$d/.git" ] && [[ "$(<"$d/.git")" == 'gitdir: '*/modules/*/worktrees/* ]]; then
+        candidates+=("$d")
+      else
+        later+=("$d")
+      fi
     done
+    candidates+=(${later[@]+"${later[@]}"})
   fi
 
   # An empty candidate list is a RESULT, not a success. Every silent-success bug in this

@@ -39,7 +39,7 @@ help:
 	@echo "make bootstrap    vendor bats-core + helpers (once)"
 	@echo ""
 	@echo "host-safe (no tmux server started):"
-	@echo "  make test-fast    unit + integ (CI fast job)"
+	@echo "  make test-fast    unit + integ (CI runs them in shards: shard.sh)"
 	@echo "  make test-files   FILES=... only these (the stop-hook picks them)"
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
@@ -82,7 +82,7 @@ test-unit: $(BATS)
 test-integ: $(BATS)
 	@$(BATS) $(BATS_FLAGS) $(HERE)integ
 
-# The Stop hook's entry: only the fast-tier files 60-shell-tests.sh picked for the change.
+# The Stop hook's entry (the files 60-shell-tests.sh picked for the change) and CI's (one shard.sh shard).
 # Unit files run in parallel like test-unit, integ files serially like test-integ; both run
 # even when the first fails, so one report names every red.
 UNIT_FILES  = $(strip $(foreach f,$(FILES),$(if $(filter unit/%,$(f))$(findstring /unit/,$(f)),$(f))))
