@@ -50,6 +50,7 @@ setup() {
   export DISPATCH_LOADAVG="$SANDBOX/loadavg"
   export DISPATCH_JUDGE_CMD=judge-stub   # on PATH: the command is a word list, and the sandbox path has a space
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
   printf '%s\n' 'policy' '- (fits) dispatch' '- (tier3) tier 3' '- (unclear) not clear' > "$DISPATCH_POLICY"
   mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/app" "$SANDBOX/sheets"
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
@@ -1987,6 +1988,47 @@ held_game_app_row() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   assert_output --partial 'could start now: 2 of 2 runnable (a pass starts up to 1, level mid)'
   assert_not_called 'wt new'
+}
+
+@test "headroom counts sessions started in the last few minutes against the load room, though the load has not moved" {
+  two_items
+  export DISPATCH_START_LOAD=1 DISPATCH_START_LOAD_MIN=5
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  { printf -- '- %s started s1 on agents (hand) for app: queue item a\n' "$(date -d '-1 min' '+%Y-%m-%d %H:%M')"
+    printf -- '- %s started s2 on agents (hand) for app: queue item b\n' "$(date -d '-2 min' '+%Y-%m-%d %H:%M')"
+    printf -- '- %s started s3 on agents (hand) for app: queue item c\n' "$(date -d '-30 min' '+%Y-%m-%d %H:%M')"
+    printf -- '- %s present start: queue item d\n' "$(date -d '-1 min' '+%Y-%m-%d %H:%M')"; } > "$FLEET_DISPATCH_DIR/log.md"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_success
+  assert_equal "$(jq -r '[.starting, .load_pending, .load_room] | @tsv' <<<"$output")" "$(printf '2\t2.0\t%s' "$(awk -v c="$(nproc)" 'BEGIN { printf "%g", c * 0.7 - 0.1 - 2 }')")"
+}
+
+@test "a loop of hand starts is held once the starts not yet in the load fill the room, and an older start no longer counts" {
+  two_items
+  export DISPATCH_START_LOAD="$(nproc)" DISPATCH_START_LOAD_MIN=5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.could_start, .starting] | @tsv' <<<"$output")" $'2\t0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-app
+  assert_success
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.could_start, .starting] | @tsv' <<<"$output")" $'0\t1'
+  assert_equal "$(jq -r .held <<<"$output")" "load 0.10 plus $(nproc).0 for 1 started in the last 5 min on $(nproc) cores is over the 0.7 pace"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial "plus $(nproc).0 for 1 started in the last 5 min"
+  # the start ages out of the window: the load average has had its minutes
+  sed -i "s/^- [0-9-]* [0-9:]* started /- $(date -d '-6 min' '+%Y-%m-%d %H:%M') started /" "$FLEET_DISPATCH_DIR/log.md"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.could_start, .starting] | @tsv' <<<"$output")" $'1\t0'
+}
+
+@test "a pass's own earlier start counts against the load room too" {
+  two_items
+  export DISPATCH_START_LOAD="$(nproc)" DISPATCH_PER_PASS=2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
+  assert_output --partial 'for 1 started in the last 5 min on'
+  assert_output --partial 'the pass stops after 1 started'
 }
 
 @test "headroom is 0 and names what holds: a gate, or every run unit used" {
