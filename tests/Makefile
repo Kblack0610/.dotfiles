@@ -85,7 +85,7 @@ test-integ: $(BATS)
 # The Stop hook's entry: only the fast-tier files 60-shell-tests.sh picked for the change.
 # Unit files run in parallel like test-unit, integ files serially like test-integ; both run
 # even when the first fails, so one report names every red.
-UNIT_FILES  = $(foreach f,$(FILES),$(if $(findstring /unit/,$(f)),$(f)))
+UNIT_FILES  = $(strip $(foreach f,$(FILES),$(if $(filter unit/%,$(f))$(findstring /unit/,$(f)),$(f))))
 OTHER_FILES = $(filter-out $(UNIT_FILES),$(FILES))
 test-files: $(BATS)
 	@rc=0; \
