@@ -47,6 +47,9 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
+# Each fleet worker's sessions are rows too (remote_panel_lines).
+# shellcheck source=../lib/fleet-hosts.sh
+. "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
 
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
@@ -907,6 +910,22 @@ handoff_of() {
   return 0
 }
 
+# remote_panel_lines -> each fleet worker's agent-panel lines (fleet-hosts.sh, the home-config
+# roster), each with the worker in `host` and its target as <host>@<server>/<session>:<window>. That
+# names no tmux server here, so a nudge or a set-option aimed at the row can never land on a local
+# session that shares its name, and item_of joins it to its queue item by session id alone. A worker
+# that does not answer, or runs no agent-panel, adds nothing: a laptop asleep is not this machine's
+# sources blinking ($CACHE/unreadable).
+remote_panel_lines() {
+  local name out
+  fleet_hosts >/dev/null
+  while IFS= read -r name; do
+    out="$(fleet_host_run "$name" agent-panel list --json 2>/dev/null)" || continue
+    jq -c --arg h "$name" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
+  done < <(fleet_hosts | jq -r .name)
+  return 0
+}
+
 collect() {
   local now heavy line
   # The one `project` every row carries is the name the hooks give its directory; a pass that cannot
@@ -937,14 +956,18 @@ collect() {
   # A pass that could not read a source says so in $CACHE/unreadable, so tick never logs a
   # blink (every session "gone", every PR "-") as a change.
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
-  { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; } | while IFS= read -r line; do
+  { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid
-    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started cpid < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
+          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host
+    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started cpid host < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
-      (.plan_file | if . == "" then "-" else . end), (.started_at // "-"), (.pid // 0)] | @tsv' <<<"$line")
+      (.plan_file | if . == "" then "-" else . end), (.started_at // "-"), (.pid // 0), (.host // "-")] | @tsv' <<<"$line")
+    # A worker's session: its cwd, pid, plan file and panes are paths and ids on that machine, so
+    # nothing here reads them (a worktree of the same name here is another session's). Its row says
+    # what its agent-panel says; its PR is its queue item's.
+    [ "$host" = - ] || planf=-
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
     IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob acct < <(jq -r '
@@ -959,7 +982,7 @@ collect() {
     # outlives the dialog (a rejected plan leaves it), so it counts only together with waiting.
     if [ "$plan" = 1 ] && { [ "$status" != waiting ] || [[ "$doing" != ExitPlanMode* ]]; }; then plan=0; fi
     # A gate or test running in the worktree is a wait whatever the transcript's open job says.
-    if [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ]; }; then
+    if [ "$host" = - ] && [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ]; }; then
       live="$(live_wait "$cwd" "$cpid")"; ojob="${live:-$ojob}"
     fi
     prs="$(session_prs "$transcript")"
@@ -970,7 +993,7 @@ collect() {
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     askids="$(asks_for "$sid" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
-    hv=0; [ -n "$pane" ] && grep -qxF "${target%%/*}/$pane" <<<"$heavy" && hv=1
+    hv=0; [ "$host" = - ] && [ -n "$pane" ] && grep -qxF "${target%%/*}/$pane" <<<"$heavy" && hv=1
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
@@ -991,7 +1014,8 @@ collect() {
               | if . == "" then "-" else . end), (.origin // "-")] | @tsv' <<<"$qall" 2>/dev/null | head -1)
         irow="${irow:--}"; iorigin="${iorigin:--}" ;;
     esac
-    read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
+    if [ "$host" = - ]; then read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
+    else read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names <<<"0 0 0 - - - 1 - - - - - -"; fi
     # What a deployed checkout off its default branch holds is one fault, its CHECKOUT row, and no
     # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.
     if [ "$g" = 1 ] && in_checkout "$cwd" "$off"; then ahead=0 pr=- state=- ci=- oid=- inpr=1; fi
@@ -1032,7 +1056,7 @@ collect() {
         printf '%s\t%s\n' "$(repo_slug "$cwd")" "$sid" >> "$CACHE/owners"
       fi
     fi
-    printf '%s\t%s\n' "${cwd##*/}" "$sid" >> "$CACHE/cwds"   # SHARED rows' owners, by worktree
+    [ "$host" != - ] || printf '%s\t%s\n' "${cwd##*/}" "$sid" >> "$CACHE/cwds"   # SHARED rows' owners, by worktree
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
@@ -1051,12 +1075,12 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")"
+      "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host"
   done
   main_rows
   checkout_rows "$off"
@@ -1320,7 +1344,8 @@ json_rows() {
       item: (if (.[46] // "-") == "-" then null else
         {slug: .[46], is: .[47], row: (if .[48] == "-" then null else .[48] end),
          origin: (if .[49] == "-" then null else .[49] end)} end),
-      project: (if (.[50] // "") == "" then null else .[50] end)}'
+      project: (if (.[50] // "") == "" then null else .[50] end),
+      host: (if (.[51] // "-") == "-" then null else .[51] end)}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
