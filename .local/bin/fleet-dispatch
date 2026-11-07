@@ -2590,6 +2590,19 @@ promote() {
   title=$(sed -E 's/^- \[.\] //; s/<!--[^>]*-->//g; s/(^| )#[A-Za-z0-9_/:.-]+//g; s/ +$//' <<<"$line")
   if ! out=$(agent-queue add --project "$project" --priority "$(row_priority "$line" "$project")" --from "board:$project:$id" --slug "$id" \
       ${title:+--title "$title"} ${tags:+--tags "$tags"} -- "$task" 2>&1); then
+    # The row's own item already finished ok, so its work landed and the row escaped closing. An agent
+    # row stays started: the orphan pass closes it on that item's merge proof (land_orphan), or hands it
+    # back after DISPATCH_ORPHAN_HOURS. A human row goes back now with a failed verdict naming why, so
+    # neither is queued again every pass.
+    if [[ "$out" == *"already finished ok"* ]]; then
+      if [ "$lane" = agent ]; then say "skip $project: row left started for the orphan pass: ${out#agent-queue: }"; return 1; fi
+      np "$prof" ptask "$project" "${flag[@]}" unstart "$id" >/dev/null 2>&1
+      mkdir -p "$DIR"
+      jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg r "${out#agent-queue: }" --arg at "$(date -Iseconds)" \
+        '{project: $p, lane: $l, key: $k, verdict: "failed", reason: $r, at: $at}' >> "$VERDICTS"
+      say "skip $project: row un-started, recorded failed: ${out#agent-queue: }"
+      return 1
+    fi
     np "$prof" ptask "$project" "${flag[@]}" unstart "$id" >/dev/null 2>&1
     say "could not queue $project row, un-started: $id ($out)"
     return 1

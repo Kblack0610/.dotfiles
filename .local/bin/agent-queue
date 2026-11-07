@@ -3,9 +3,10 @@
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
 #       [--weight heavy|light] [--after slug] [--from human|shepherd|canary|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
-#       [--epic <code>-<N>] [--running [--session s]] [task...]    the task from args, or stdin when there are none
-#       An item not from the board files its own story row: see file_story.
-#   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug] [--slug prefix]
+#       [--epic <code>-<N>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
+#       An item not from the board files its own story row: see file_story. A slug that already
+#       finished ok is refused unless --repeat says this is new work under it: see finished_ok.
+#   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before
 #   list [--json] [--state queued|running|waiting|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
@@ -20,7 +21,7 @@
 # `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see item_weight.
 # Holds: `after <slug>`, and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
-# pr:<owner>/<repo>#<N> (until that PR merges) and nightly:<repo> (until today's scheduled runs of that repo
+# pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until today's scheduled runs of that repo
 # have finished; see nightly_pending) and ask:<id>[=<option>] (until the human answers that agent-ask,
 # with that option when named; see ask_pending) and hold:<resource> (while agent-hold holds it; see
 # hold_pending). A start on a later day is the dated form, never a held session.
@@ -186,6 +187,18 @@ done_status() {
   [ -n "$f" ] && fm_get "$f" status
 }
 
+# finished_ok <slug> -> why an add under this slug is refused: its latest done item closed ok, so a
+# second item would do landed work again. A failed or cancelled one is a retry and passes. A recurring
+# item (a nightly pass, a shared red that came back) is new work and says so with --repeat. On
+# 2026-11-06 a plan's re-queue ran an ok phase again (id-like-to-setup-abundant-seahor-p8).
+finished_ok() {
+  local f
+  f="$(latest_done "$1")"
+  [ -n "$f" ] && [ "$(fm_get "$f" status)" = ok ] || return 0
+  printf '%s already finished ok (%s%s): pass --repeat to queue it again as new work\n' \
+    "$1" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
+}
+
 # hhmm_in <HH:MM> <from-to> -> true when the time is inside the window, which may wrap midnight.
 hhmm_in() {
   local t="${1/:/}" a="${2%-*}" b="${2#*-}"
@@ -261,7 +274,13 @@ hold_for() {
       night) hhmm_in "$now" "$AQ_NIGHT" || { HOLD="night ($AQ_NIGHT)"; return; } ;;
       at:[0-9][0-9]:[0-9][0-9]) [ "${now/:/}" -ge "$(printf '%s' "${tag#at:}" | tr -d :)" ] || { HOLD="$tag"; return; } ;;
       at:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]) [[ ! "$stamp" < "${tag#at:}" ]] || { HOLD="$tag"; return; } ;;
-      pr:?*/?*#[0-9]*) [ "$(pr_state "${tag#pr:}")" = MERGED ] || { HOLD="$tag not merged"; return; } ;;
+      pr:?*/?*#[0-9]*)
+        case "$(pr_state "${tag#pr:}")" in
+          MERGED) ;;
+          # Closed unmerged, it can never release: say so, so the list and the hub show a dead hold.
+          CLOSED) HOLD="$tag closed unmerged, never releases: cancel the item or set its tags without it"; return ;;
+          *) HOLD="$tag not merged"; return ;;
+        esac ;;
       nightly:?*)
         memo "nightly:${tag#nightly:}" nightly_pending "${tag#nightly:}" "$stamp"
         [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; } ;;
@@ -543,10 +562,23 @@ file_story() {
   printf '%s\t%s\n' "$lab" "$id"
 }
 
+# prior_story <slug> <project> -> "<profile><TAB><id>" of the row this slug's last item recorded, when
+# that row is still open on this project's board (started now if it was not), else nothing. A re-queue
+# keeps its row by its id, not by its words: on 2026-11-06 two re-queued trader phases got second rows
+# (tr-76, tr-77) because the first ones were written before rows were typed, so no text matched.
+prior_story() {
+  local f row prof
+  f="$(latest_done "$1")"; [ -n "$f" ] || return 0
+  row="$(fm_get "$f" row)"; prof="$(fm_get "$f" profile)"
+  [ "${row%%:*}" = "$2" ] && [ -n "$prof" ] && command -v notes >/dev/null || return 0
+  notes --profile "$prof" ptask "$2" --agent start "${row#*:}" >/dev/null 2>&1 || return 0
+  printf '%s\t%s\n' "$prof" "${row#*:}"
+}
+
 # --- verbs ---
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
-  local running="" session="" task=() tag planf="" dry="" weight="" title="" epic=""
+  local running="" session="" task=() tag planf="" dry="" weight="" title="" epic="" repeat=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:?}"; shift 2 ;;
@@ -564,6 +596,7 @@ cmd_add() {
       --session) session="${2:?}"; shift 2 ;;
       --plan) planf="${2:?}"; shift 2 ;;
       --dry-run) dry=1; shift ;;
+      --repeat) repeat=1; shift ;;
       --) shift; task+=("$@"); break ;;
       -*) die "unknown option: $1" ;;
       *) task+=("$1"); shift ;;
@@ -603,6 +636,9 @@ cmd_add() {
   [ -n "$slug" ] || die "could not derive a slug; pass --slug"
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug"
+  local why
+  [ -n "$repeat" ] || why="$(finished_ok "$slug")"
+  [ -z "${why:-}" ] || die "$why"
   if [ -n "$after" ] && [ -z "$(find_item "$after")" ] && [ -z "$(done_status "$after")" ]; then
     die "--after $after: no item has that slug"
   fi
@@ -618,7 +654,11 @@ cmd_add() {
   [ -z "$running" ] || sid="$(claude_sid)" || sid=
   local story=''
   # A canary item is an eval of the fleet, not work on the project: fleet-bench canary is its record.
-  case "$from" in board:* | canary) ;; *) story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic")" ;; esac
+  case "$from" in
+    board:* | canary) ;;
+    *) story="$(prior_story "$slug" "$project")"
+       [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic")" ;;
+  esac
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
@@ -705,8 +745,11 @@ add_plan() {
        "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)"]
     | @tsv' <<<"$groups")"
   local s ph text prev="$after"
+  local why
   while IFS=$'\t' read -r s ph text _; do
     [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"
+    [ -n "$repeat" ] || why="$(finished_ok "$s")"
+    [ -z "${why:-}" ] || die "$why (nothing was added)"
   done <<<"$rows"
   if [ -n "$after" ] && [ -z "$(find_item "$after")" ] && [ -z "$(done_status "$after")" ]; then
     die "--after $after: no item has that slug"
@@ -719,7 +762,7 @@ add_plan() {
     else
       AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" \
         cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
-          --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${prev:+--after "$prev"} -- "$text" ||
+          --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${prev:+--after "$prev"} ${repeat:+--repeat} -- "$text" ||
         die "added $n of $total items from $planf; $s and the rest are not queued"
     fi
     n=$((n + 1)); prev="$s"
