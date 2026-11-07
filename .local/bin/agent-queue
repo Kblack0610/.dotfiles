@@ -440,47 +440,65 @@ pr_state() {
   echo "$state"
 }
 
+# HDR_AWK: the awk function both header readers (header_rows, item_recs) split a line by, as fm_get
+# reads a key: hdr(line) is true for a `key: value` line and sets HK to the key, up to the first
+# colon (never empty), and HV to the value with its leading spaces dropped.
+HDR_AWK='function hdr(line,  i) { i = index(line, ":"); if (i < 2) return 0
+  HK = substr(line, 1, i - 1); HV = substr(line, i + 1); sub(/^ +/, "", HV); return 1 }'
+
 # header_rows < "<mtime>\t<file>" lines -> one line per file, fields split by \x1f: the file, its
 # mtime, then the first slug, finished, status, after, tags, project, mode, phases and weight of its
-# header. Header keys as fm_get reads them, the same rule item_recs reads them by: up to the first
-# colon, the value's leading spaces dropped.
+# header (HDR_AWK).
 header_rows() {
-  awk -F '\t' '{
+  awk -F '\t' "$HDR_AWK"'{
     f = $2; delete h
-    while ((getline line < f) > 0 && line != "---") {
-      i = index(line, ":")
-      if (i > 1) { k = substr(line, 1, i - 1); if (!(k in h)) { v = substr(line, i + 1); sub(/^ +/, "", v); h[k] = v } }
-    }
+    while ((getline line < f) > 0 && line != "---") if (hdr(line) && !(HK in h)) h[HK] = HV
     close(f)
     printf "%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n", f, $1, h["slug"], h["finished"],
       h["status"], h["after"], h["tags"], h["project"], h["mode"], h["phases"], h["weight"] }'
 }
 
-# queue_index -> header_rows for every item file in the queue, active and done: one find, one awk.
+# queue_index active | done [slug...] -> header_rows for every item file in the active states, or
+# in done/, there only the files named for these slugs when some are given (as slug_files narrows):
+# one find, one awk.
 queue_index() {
-  local d=() s
-  for s in $ACTIVE; do [ -d "$AQ_DIR/$s" ] && d+=("$AQ_DIR/$s"); done
-  {
-    [ "${#d[@]}" -eq 0 ] || find "${d[@]}" -maxdepth 1 -name '*.md' ! -name '.*' -printf '%T@\t%p\n'
+  local d=() s n=()
+  if [ "$1" = done ]; then
+    shift
+    for s in "$@"; do [ ${#n[@]} -eq 0 ] || n+=(-o); n+=(-name "*$s*.md"); done
+    [ ${#n[@]} -gt 0 ] || n=(-name '*.md')
     [ ! -d "$AQ_DIR/done" ] ||
-      find "$AQ_DIR/done" -mindepth 2 -maxdepth 2 -name '*.md' ! -name '.*' ! -path "$AQ_DIR/done/.*" -printf '%T@\t%p\n'
-  } | header_rows
+      find "$AQ_DIR/done" -mindepth 2 -maxdepth 2 \( "${n[@]}" \) ! -name '.*' ! -path "$AQ_DIR/done/.*" -printf '%T@\t%p\n'
+  else
+    for s in $ACTIVE; do [ -d "$AQ_DIR/$s" ] && d+=("$AQ_DIR/$s"); done
+    [ "${#d[@]}" -eq 0 ] || find "${d[@]}" -maxdepth 1 -name '*.md' ! -name '.*' -printf '%T@\t%p\n'
+  fi | header_rows
 }
 
 # index_load -> fills the caller's index (items_json declares it) from queue_index: QI_LIVE, the
 # slugs with a live item; QI_ST and QI_FIN, each slug's latest done status and finish, the item
-# latest_done picks (finished, then mtime); and by file QI_AFTER, QI_TAGS and, for an item with no
-# weight line, QI_WMETA (project, mode and phases).
-index_load() {
-  local idx f m slug fin st after tags project mode phases w key
+# latest_done picks (finished, then mtime, then path); and by file QI_AFTER, QI_TAGS and, for an
+# item with no weight line, QI_WMETA (project, mode and phases). done/ holds most of the queue, so
+# a listing of active items reads there only the files of the slugs its items wait on.
+index_load() { # <listed file>...
+  local f
+  local -A want=()
+  index_rows "$(queue_index active)"
+  for f in "$@"; do
+    case "$f" in "$AQ_DIR"/done/*) index_rows "$(queue_index done)"; return ;; esac
+    [ -z "${QI_AFTER[$f]-}" ] || want[${QI_AFTER[$f]}]=1
+  done
+  [ ${#want[@]} -eq 0 ] || index_rows "$(queue_index done "${!want[@]}")"
+}
+index_rows() { # <queue_index output>
+  local f m slug fin st after tags project mode phases w key
   local -A latest=()
-  idx="$(queue_index)"
   while IFS=$'\x1f' read -r f m slug fin st after tags project mode phases w; do
     [ -n "$f" ] || continue
     if [ -n "$slug" ]; then
       case "$f" in
         "$AQ_DIR"/done/*)
-          key="$fin"$'\t'"$m"
+          key="$fin"$'\t'"$m"$'\t'"$f"
           [[ "$key" < "${latest[$slug]-}" ]] || { latest[$slug]="$key"; QI_ST[$slug]="$st"; QI_FIN[$slug]="$fin"; } ;;
         *) QI_LIVE[$slug]=1 ;;
       esac
@@ -488,25 +506,20 @@ index_load() {
     [ -z "$after" ] || QI_AFTER[$f]="$after"
     [ -z "$tags" ] || QI_TAGS[$f]="$tags"
     [ -n "$w" ] || QI_WMETA[$f]="$project"$'\x1f'"$mode"$'\x1f'"$phases"
-  done <<<"$idx"
+  done <<<"$1"
 }
 
 # item_recs <file>... -> one record per item file for ITEM_JQ, all read by one awk: state, file,
 # task and the first weight in its header, then its header keys and values; fields end in \x1f and
-# the record in \x1e. Header keys as fm_get reads them: up to the first colon, the value's leading
-# spaces dropped; the object keeps the last of a repeated key and the rules (after, tags, weight)
-# read the first.
+# the record in \x1e. Header keys by HDR_AWK; the object keeps the last of a repeated key and the
+# rules (after, tags, weight) read the first.
 item_recs() {
-  printf '%s\n' "$@" | AQ_DONE="$AQ_DIR/done/" awk '{
+  printf '%s\n' "$@" | AQ_DONE="$AQ_DIR/done/" awk "$HDR_AWK"'{
     f = $0; task = ""; body = 0; w = ""; sw = 0; kv = ""
     while ((getline line < f) > 0) {
       if (body) { task = task line "\n"; continue }
       if (line == "---") { body = 1; continue }
-      if (index(substr(line, 2), ":")) {
-        i = index(line, ":"); k = substr(line, 1, i - 1); v = substr(line, i + 1); sub(/^ +/, "", v)
-        kv = kv k "\037" v "\037"
-        if (k == "weight" && !sw++) w = v
-      }
+      if (hdr(line)) { kv = kv HK "\037" HV "\037"; if (HK == "weight" && !sw++) w = HV }
     }
     close(f)
     sub(/\n+$/, "", task)
@@ -556,7 +569,7 @@ items_json() {
   [ $# -gt 0 ] || { jq -nc "[] | $filter"; return; }
   local -A LIST_MEMO=() QI_LIVE=() QI_ST=() QI_FIN=() QI_AFTER=() QI_TAGS=() QI_WMETA=()
   local LIST_MEMO_ON=1
-  index_load
+  index_load "$@"
   {
     for f in "$@"; do
       a="${QI_AFTER[$f]-}" w=1 p="" mo="" ph=""
