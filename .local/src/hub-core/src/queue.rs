@@ -46,13 +46,26 @@ pub enum State {
     Done,
 }
 
-/// The sections a Queue view shows, with their headings, as agent-web's page names them.
-pub const SECTIONS: [(State, &str); 4] = [
-    (State::Waiting, "Waiting for you"),
-    (State::Running, "Running"),
-    (State::Queued, "Up next"),
-    (State::Done, "Done today"),
+/// The old section ids (`#queue/running`, `hub --tab "queue running"`) and the state chip each
+/// one opens the table on, so a link made before the table still lands on that view.
+pub const SECTION_ALIASES: [(&str, &str); 4] = [
+    ("waiting", "needs you"),
+    ("running", "running"),
+    ("queued", "up next"),
+    ("done", "done"),
 ];
+
+/// The state chip an old section id opens, or None for any other word.
+pub fn section_chip(section: &str) -> Option<&'static str> {
+    let s = section.trim().to_ascii_lowercase();
+    SECTION_ALIASES
+        .iter()
+        .find(|(old, _)| *old == s)
+        .map(|(_, chip)| *chip)
+}
+
+/// How many table rows a view draws before "+N older"; the chips still count every row.
+pub const TABLE_OPEN_ROWS: usize = 200;
 
 /// One item: its header keys as agent-queue prints them, plus `state`, `task` and, for a
 /// queued item that cannot start yet, `hold`. A key this does not name is kept in `extra`, so
@@ -200,9 +213,57 @@ pub struct Timing {
     pub lead: Option<i64>,
 }
 
+/// One stage of an item's life as the detail view lists it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Step {
+    /// queued, ready, started, waiting, finished or merged.
+    pub step: &'static str,
+    /// The stamp as the ledger wrote it; None for `merged`, which records a commit.
+    pub at: Option<String>,
+    /// Minutes since the step before that had a readable stamp.
+    pub gap_min: Option<i64>,
+    /// The merge commit, on `merged` only.
+    pub sha: Option<String>,
+}
+
 impl Item {
     pub fn tag_list(&self) -> impl Iterator<Item = &str> {
         self.tags.split_whitespace()
+    }
+
+    /// The item's stages in order, each with the minutes since the one before it: queued, ready,
+    /// started, waiting, finished, then `merged` (the ledger keeps a sha, so no time or gap).
+    /// A stage the item has not reached is left out. The one reader of this for both surfaces.
+    pub fn timeline(&self) -> Vec<Step> {
+        let mut out = vec![];
+        let mut prev: Option<chrono::DateTime<chrono::Utc>> = None;
+        for (step, v) in [
+            ("queued", &self.queued),
+            ("ready", &self.ready),
+            ("started", &self.started),
+            ("waiting", &self.waiting),
+            ("finished", &self.finished),
+        ] {
+            let Some(at) = said(v) else { continue };
+            let when = stamp(at);
+            let gap_min = prev.zip(when).map(|(p, w)| (w - p).num_minutes().max(0));
+            out.push(Step {
+                step,
+                at: Some(at.to_string()),
+                gap_min,
+                sha: None,
+            });
+            prev = when.or(prev);
+        }
+        if let Some(sha) = said(&self.merged) {
+            out.push(Step {
+                step: "merged",
+                at: None,
+                gap_min: None,
+                sha: Some(sha.to_string()),
+            });
+        }
+        out
     }
 
     /// What the item is in a few words: the `title:` header, else the task's first sentence
@@ -684,15 +745,53 @@ pub struct QueueRow<'a> {
 }
 
 impl Queue {
-    /// Every item as a table row, timed at `now`.
+    /// Every item as a table row, timed at `now`, in the table's own order: what needs the human,
+    /// then running by the longest run, then the queued that could start (agent-queue's order),
+    /// then the held, then done, the newest finish first.
     pub fn rows(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<QueueRow<'_>> {
-        self.items
+        let mut rows: Vec<QueueRow<'_>> = self
+            .items
             .iter()
             .map(|item| QueueRow {
                 item,
                 timing: item.timing(now),
             })
-            .collect()
+            .collect();
+        rows.sort_by(|a, b| a.rank().cmp(&b.rank()).then_with(|| a.within(b)));
+        rows
+    }
+}
+
+impl QueueRow<'_> {
+    /// Where the row sits in the table's own order.
+    fn rank(&self) -> u8 {
+        match (self.item.state, self.item.hold.is_some()) {
+            (State::Waiting, _) => 0,
+            (State::Running, _) => 1,
+            (State::Queued, false) => 2,
+            (State::Queued, true) => 3,
+            (State::Done, _) => 4,
+        }
+    }
+
+    /// The order inside one rank; equal rows keep agent-queue's order (the sort is stable).
+    fn within(&self, o: &QueueRow<'_>) -> std::cmp::Ordering {
+        use std::cmp::Ordering::Equal;
+        match self.item.state {
+            State::Waiting => o.timing.in_state.cmp(&self.timing.in_state),
+            State::Running => o.timing.run.cmp(&self.timing.run),
+            State::Done => {
+                // Newest finish first; a stamp that does not parse sorts last.
+                let at = |r: &QueueRow<'_>| r.item.finished.as_deref().and_then(stamp);
+                match (at(o), at(self)) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (None, None) => Equal,
+                }
+            }
+            State::Queued => Equal,
+        }
     }
 }
 
@@ -1755,7 +1854,8 @@ mod tests {
                 "",
                 ""
             )),
-            ["a", "d"]
+            ["d", "a"],
+            "what needs the human comes first"
         );
         assert_eq!(
             slugs(View::new::<QueueRow>("-acct:k1 hub", "", "", "")),
@@ -1764,8 +1864,8 @@ mod tests {
         );
         assert_eq!(
             slugs(View::new::<QueueRow>("", "", "run", "")),
-            ["c", "d", "a", "b"],
-            "run sorts biggest first, none last"
+            ["d", "c", "a", "b"],
+            "run sorts biggest first (a tie keeps the table order), none last"
         );
         assert_eq!(slugs(View::new::<QueueRow>("", "up next", "", "")), ["b"]);
         let chips: Vec<(&str, usize)> = View::new::<QueueRow>("project:dotfiles", "", "", "")
@@ -1791,5 +1891,72 @@ mod tests {
             .map(|v| (v.value.as_str(), v.n))
             .collect();
         assert_eq!(counts, [("feat", 1), ("fix", 2)]);
+    }
+    #[test]
+    fn the_table_opens_in_exceptions_first_order() {
+        use crate::table::View;
+        let q = Queue {
+            items: parse(concat!(
+                r#"{"slug":"held","state":"queued","hold":"after x","queued":"2026-11-06T01:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"old","state":"done","finished":"2026-11-05T10:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"q1","state":"queued","queued":"2026-11-06T08:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"short","state":"running","started":"2026-11-06T11:30:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"q2","state":"queued","queued":"2026-11-06T09:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"long","state":"running","started":"2026-11-06T09:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"new","state":"done","finished":"2026-11-06T11:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"need","state":"waiting","waiting":"2026-11-06T10:00:00Z","started":"2026-11-06T09:30:00Z","task":"t"}"#,
+            )),
+            ..Queue::default()
+        };
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        let order: Vec<&str> = View::default()
+            .apply(&rows)
+            .iter()
+            .map(|r| r.item.slug.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            ["need", "long", "short", "q1", "q2", "held", "new", "old"],
+            "needs you, longest run, ready queued as agent-queue ordered them, held, newest done"
+        );
+    }
+
+    #[test]
+    fn an_old_section_id_opens_its_state_chip() {
+        assert_eq!(section_chip("Waiting"), Some("needs you"));
+        assert_eq!(section_chip("queued"), Some("up next"));
+        assert_eq!(section_chip("table"), None, "a live section is no alias");
+        for (_, chip) in SECTION_ALIASES {
+            assert!(<QueueRow as crate::table::Row>::STATES.contains(&chip));
+        }
+    }
+    #[test]
+    fn the_timeline_lists_each_stamp_with_minutes_since_the_one_before() {
+        let items = parse(concat!(
+            r#"{"slug":"a","state":"done","queued":"2026-11-06T09:00:00Z","ready":"2026-11-06T09:00:00Z","started":"2026-11-06T09:14:00Z","finished":"2026-11-06T10:00:00Z","merged":"abc123","task":"t"}"#,
+            "\n",
+            r#"{"slug":"b","state":"queued","task":"t"}"#,
+        ));
+        let t = items[0].timeline();
+        let got: Vec<(&str, Option<i64>)> = t.iter().map(|s| (s.step, s.gap_min)).collect();
+        assert_eq!(
+            got,
+            [
+                ("queued", None),
+                ("ready", Some(0)),
+                ("started", Some(14)),
+                ("finished", Some(46)),
+                ("merged", None)
+            ]
+        );
+        assert_eq!(t[4].sha.as_deref(), Some("abc123"));
+        assert!(items[1].timeline().is_empty(), "no stamp, no step");
     }
 }
