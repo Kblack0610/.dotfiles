@@ -8,8 +8,8 @@
 // over `fleet-dispatch suggest`), each with a Promote that is the board's Start.
 
 const Q_PRIORITIES = ["urgent", "high", "low"];
-// The pipeline line reads 10-minute fleet-bench gauges; a minute is plenty.
-const PIPELINE_REFRESH_MS = 60e3;
+// The strip's gauges are 10-minute fleet-bench series; a minute is plenty.
+const FLOW_REFRESH_MS = 60e3;
 // The queue form's modes in the human's words; the option values stay what agent-queue takes.
 const Q_MODE = { oneshot: "Run to PR", plan: "Plan first" };
 // Which folds are open, by data-k: a section (`sec:candidates`) or a task (`task:<slug>`).
@@ -37,25 +37,18 @@ const refreshCands = coalesce(async () => {
   if (st.tab === "queue") renderQueueList();
 });
 
-// The pipeline line above the tiles: /api/pipeline, hub-core's `pipeline` worded once for this page
-// and the hub TUI. Prometheus pushes nothing, so the open tab re-reads on Infra's cadence. With
-// the gauges absent the line says `pipeline -`; the page never invents a zero.
-const qpl = { data: null, err: null };
-const refreshPipeline = coalesce(async () => {
-  try { qpl.data = await api("/api/pipeline"); qpl.err = null; } catch (e) { qpl.err = e.message; }
+// The flow strip (flow.js) above the table: /api/flow is hub-core's `flow::Strip` over the live
+// queue and the cached gauges. A queue event re-reads it with the table; Prometheus pushes
+// nothing, so the open tab also re-reads on Infra's cadence.
+const qfl = { data: null, err: null };
+const refreshFlow = coalesce(async () => {
+  try { qfl.data = await api("/api/flow"); qfl.err = null; } catch (e) { qfl.err = e.message; }
   if (st.tab === "queue") renderQueueList();
 });
-const pollPipeline = poll("queue", refreshPipeline, PIPELINE_REFRESH_MS);
+const pollFlow = poll("queue", refreshFlow, FLOW_REFRESH_MS);
 
-function qPipeline() {
-  const d = qpl.data;
-  if (!d) return `<div class="qpipe muted">${qpl.err ? `pipeline - ${esc(qpl.err)}` : "pipeline  reading Prometheus"}</div>`;
-  const [first, ...rest] = d.lines;
-  const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "";
-  const why = d.error ? ` <span class="muted">${esc(d.error)}</span>` : "";
-  return `<div class="qpipe${d.pipeline ? "" : " muted"}">${esc(first)}${why}${g}` +
-    rest.map((l) => `<br><span class="qwarn">${esc(l.trim())}</span>`).join("") + `</div>`;
-}
+const qStrip = () => qfl.data ? flowHtml(qfl.data.flow, qfl.data.grafana)
+  : `<div class="flow muted">${qfl.err ? esc(qfl.err) : "reading"}</div>`;
 
 const refreshQueue = coalesce(async () => {
   try {
@@ -76,6 +69,7 @@ const refreshQueue = coalesce(async () => {
   try { qst.stats = await api("/api/queue/stats"); } catch (e) { qst.stats = { week: `stats: ${e.message}` }; }
   if (st.tab === "queue") renderQueue();
   renderQueueBadge();
+  refreshFlow();
 });
 
 function renderQueueBadge() {
@@ -271,7 +265,7 @@ function drawQueueList(el) {
   seekSection();
 }
 
-const qFlow = () => `<h2 class="sec" id="sec-flow">Flow</h2>${qPipeline()}${qFlowTail()}`;
+const qFlow = () => `<h2 class="sec" id="sec-flow">Flow</h2>${qStrip()}${qFlowTail()}`;
 const qTableHead = () => `<h2 class="sec" id="sec-table">Queue <span class="muted">${qst.table.shown} of ${qst.table.total}</span></h2>`;
 
 // The view changed: the URL follows it and the server applies it.
@@ -451,7 +445,7 @@ TABS.queue = {
     renderQueue();
     refreshQueue();
     refreshCands();
-    pollPipeline();
+    pollFlow();
     if (!qst.projects.length) {
       try { qst.projects = await api("/api/queue/projects"); } catch (e) { /* the select stays empty; add says why */ }
       if (st.tab === "queue") { qSaveDraft(); renderQueue(); }
@@ -459,7 +453,7 @@ TABS.queue = {
   },
   onEvent(ev) {
     if (ev.kind === "queue" || ev.kind === "resync") refreshQueue();
-    if (ev.kind === "resync") refreshPipeline();
+    if (ev.kind === "resync") refreshFlow();
   },
 };
 refreshQueue();

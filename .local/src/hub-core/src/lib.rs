@@ -11,6 +11,7 @@ pub mod capacity;
 pub mod costs;
 pub mod epics;
 pub mod fleet;
+pub mod flow;
 pub mod focus;
 pub mod home;
 pub mod infra;
