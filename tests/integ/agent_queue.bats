@@ -225,6 +225,59 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = any ]
 }
 
+@test "a hold: tag holds an item while agent-hold holds that resource, whoever asks (ar-613)" {
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  for t in "hold:" "hold:../x" "hold:a/b" "hold:.."; do
+    run "$AQ" add --project game --slug nope --tags "$t" "x"
+    assert_failure; assert_output --partial "hold:<resource>"
+  done
+  "$AQ" add --project game --slug forms --tags "hold:mac-desktop" "fill the store forms"
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = forms ]
+  # A claim by another session holds it, and so does one by the asker: the item's own session is not the claimer.
+  "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by unity-agent-6 "steam forms" >/dev/null
+  run "$AQ" next --json
+  assert_failure
+  run "$AQ" list --state queued
+  assert_output --partial "hold:mac-desktop (since"
+  assert_output --partial "by unity-agent-6: steam forms)"
+  run env TMUX=x "$AQ" next --json
+  assert_failure
+  (cd "$SANDBOX" && mkdir -p unity-agent-6 && cd unity-agent-6 && run "$AQ" next --json && [ "$status" -ne 0 ])
+  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = forms ]
+}
+
+@test "requeue --hold puts a started item back behind the resource, keeps its tags, and is not a model redo (ar-613)" {
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
+  chmod +x "$SANDBOX/bin/model-lane"
+  "$AQ" add --project game --running --slug forms --tags "night" "fill the store forms" >/dev/null
+  "$AQ" set forms "lane_run=r-forms" >/dev/null
+  run "$AQ" requeue forms --hold "../x"
+  assert_failure
+  run "$AQ" requeue forms
+  assert_failure
+  "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
+  run "$AQ" requeue forms --hold mac-desktop
+  assert_success; assert_output --partial "forms: running -> queued"
+  f="$(item queued forms)"
+  [ "$(field "$f" tags)" = "night hold:mac-desktop" ]
+  [ -z "$(field "$f" lane_run)" ]
+  [ -z "$(field "$f" started)" ]
+  # A second requeue adds the tag once.
+  "$AQ" requeue forms --hold mac-desktop >/dev/null
+  [ "$(field "$(item queued forms)" tags)" = "night hold:mac-desktop" ]
+  run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  run env AGENT_QUEUE_NOW=02:00 "$AQ" next --json
+  assert_failure
+  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
+  run env AGENT_QUEUE_NOW=02:00 "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = forms ]
+}
+
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   # gh stub: the state for PR N is the file $SANDBOX/pr-N; every call is logged.

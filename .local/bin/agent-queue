@@ -14,6 +14,7 @@
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--if <state>]
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
+#   requeue <slug> --hold <resource>   a started item back in the queue, held on that agent-hold
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
 # `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
@@ -21,7 +22,8 @@
 # Holds: `after <slug>`, and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
 # pr:<owner>/<repo>#<N> (until that PR merges) and nightly:<repo> (until today's scheduled runs of that repo
 # have finished; see nightly_pending) and ask:<id>[=<option>] (until the human answers that agent-ask,
-# with that option when named; see ask_pending). A start on a later day is the dated form, never a held session.
+# with that option when named; see ask_pending) and hold:<resource> (while agent-hold holds it; see
+# hold_pending). A start on a later day is the dated form, never a held session.
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
 set -uo pipefail
@@ -47,6 +49,8 @@ AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
 AQ_SCHEDULES="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/schedules-sync"
 # An `ask:<id>[=<option>]` item waits on that agent-ask's answer, read from its file here.
 AQ_ASKS="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
+# A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
+AQ_HOLD="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold"
 ACTIVE="queued running waiting"
 
 die() { echo "agent-queue: $*" >&2; exit 1; }
@@ -233,8 +237,27 @@ hold_for() {
       ask:?*)
         memo "$tag" ask_pending "${tag#ask:}"
         [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; } ;;
+      hold:?*)
+        memo "$tag" hold_pending "${tag#hold:}"
+        [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; } ;;
     esac
   done
+}
+
+# hold_resource <name> -- an agent-hold resource name: one path segment of letters, digits, . _ -.
+hold_resource() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$1" != . ] && [ "$1" != .. ]; }
+
+# hold_pending <resource> -> who holds that agent-hold resource and why, or nothing once it is free.
+# Asked as no session (no tmux, cwd /): the session the item will start does not exist yet, so the
+# asker's own claim or grant is not one it would have. A resource a session needs (the mac-mini
+# desktop, claimed by another) is waited on here instead of by a session polling or guessing an
+# at: time: on 2026-11-06 a store-forms item needed mac-desktop while a session with no queue item
+# held it, so there was nothing to put it after:. A failing agent-hold holds.
+hold_pending() {
+  local out
+  out="$(cd / && TMUX='' "$AQ_HOLD" check "$1" 2>/dev/null)" && return 0
+  out="${out#held: "$1" }"
+  printf '%s\n' "${out:-agent-hold check failed}"
 }
 
 # ask_pending <id>[=<option>] -> why that agent-ask still holds an item, or nothing once the human
@@ -528,6 +551,7 @@ cmd_add() {
       nightly:*) [[ "$tag" =~ ^nightly:[A-Za-z0-9_.-]+$ ]] || die "a nightly tag is nightly:<repo>, the repo's name, not $tag" ;;
       ask:*) [[ "$tag" =~ ^ask:[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "an ask tag is ask:<id>[=<option>], not $tag"
         aid="${tag#ask:}"; compgen -G "$AQ_ASKS/*/${aid%%=*}.md" >/dev/null || die "$tag: no agent-ask has that id; post the ask first" ;;
+      hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
     esac
   done
   # A hand-started session records itself and its window, on the agent world only.
@@ -927,6 +951,32 @@ cmd_move() {
   start_next "$slug"
 }
 
+# requeue <slug> --hold <resource> -- put an item back in the queue behind an agent-hold resource,
+# for a session that finds a resource it needs held by another (`agent-hold claim` said busy): it
+# requeues and winds down, and the item starts again once the resource is free. Not a redo: the
+# model did nothing wrong, so its lane run is dropped, not reported to model-lane.
+cmd_requeue() {
+  local slug="${1:?usage: agent-queue requeue <slug> --hold <resource>}" res="" f tags
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --hold) res="${2:?--hold needs a resource}"; shift 2 ;;
+      *) die "usage: agent-queue requeue <slug> --hold <resource>" ;;
+    esac
+  done
+  [ -n "$res" ] || die "usage: agent-queue requeue <slug> --hold <resource>"
+  hold_resource "$res" || die "not an agent-hold resource: $res (letters, digits, . _ -)"
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  tags="$(fm_get "$f" tags)"
+  case " $tags " in
+    *" hold:$res "*) ;;
+    *) header_set "$f" tags "${tags:+$tags }hold:$res"; item_event item-set "$f" --why "tags=${tags:+$tags }hold:$res" ;;
+  esac
+  header_del "$f" lane_run
+  cmd_move "$slug" queued
+}
+
 # lane_outcome <lane_run> <from> <to> <status> -- the model-lane run a dispatch start logged gets
 # what became of it: done ok is ok, done failed is failed, and a started item put back in the queue
 # is redo. Every close goes through move (agent-land, the reap, a hand close), so this is the one
@@ -1108,7 +1158,7 @@ cmd_stats() {
 
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | bump | set | attribute | move | stats) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | bump | set | attribute | move | requeue | stats) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
