@@ -4893,7 +4893,7 @@ cloud_ready() {
 
 @test "a cloud-ok item with no room on the plan stays queued, as a local one would" {
   cloud_ready
-  stub claude-acct '[ "$1" = room ] && { echo "no account has room"; exit 1; }; exit 0'
+  stub claude-acct '[ "$1" = room ] && { echo "{\"pick\":null,\"why\":\"no account has room\"}"; exit 0; }; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-fix
   assert_failure
   assert_output --partial 'claude-cloud has no room'

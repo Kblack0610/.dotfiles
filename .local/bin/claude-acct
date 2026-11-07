@@ -99,7 +99,7 @@ accounts() {
 # line that cannot be read says so on stderr and is skipped, so a typo never becomes a silent row.
 sources() {
     [[ -f "$SRC_CONF" ]] || return 0
-    local name kind ref opts opt reserve max_live parent
+    local name kind ref opts opt reserve max_live parent seen=''
     while read -r name kind ref opts; do
         [[ -z "$name" || "$name" == \#* ]] && continue
         if [[ ! "$name" =~ ^[A-Za-z0-9_-]+$ || -z "$kind" || -z "$ref" ]]; then
@@ -108,6 +108,10 @@ sources() {
         if accounts | cut -d$'\037' -f1 | grep -qxF -- "$name"; then
             echo "claude-acct: $SRC_CONF: $name is also an account; skipped" >&2; continue
         fi
+        if [[ " $seen " == *" $name "* ]]; then
+            echo "claude-acct: $SRC_CONF: $name is listed twice; the later line is skipped" >&2; continue
+        fi
+        seen+=" $name"
         reserve='' max_live='' parent=''
         for opt in $opts; do
             case "$opt" in
@@ -126,13 +130,22 @@ sources() {
 # rows_in -> "name US kind US ref US reserve US max_live US parent" for every row usage_json reads:
 # the Claude accounts (kind claude, ref their dir), then the sources when USAGE_SOURCES=1
 rows_in() {
-    local name dir
+    local name dir row
     while IFS=$'\037' read -r name dir; do
+        usage_wants "$name" || continue
         printf '%s\037claude\037%s\037\037\037\n' "$name" "$dir"
     done < <(accounts)
-    [[ "${USAGE_SOURCES:-0}" == 1 ]] && sources
+    if [[ "${USAGE_SOURCES:-0}" == 1 ]]; then
+        while IFS= read -r row; do
+            usage_wants "${row%%$'\037'*}" && printf '%s\n' "$row"
+        done < <(sources)
+    fi
     return 0
 }
+
+# usage_wants <name> -> 0 when USAGE_ONLY (space-separated names) is unset or names it, so a verdict
+# for one source reads that source and its parent, not every account's token and every key's gateway.
+usage_wants() { [[ -z "${USAGE_ONLY:-}" ]] || [[ " $USAGE_ONLY " == *" $1 "* ]]; }
 
 # fetch <name> <dir> -> usage JSON on stdout
 #   exit 0 = fresh data, 2 = token expired, 1 = never logged in or fetch failed
@@ -419,8 +432,11 @@ usage_json() {
     if [[ "${1:-}" == nospend ]]; then spend=null; else spend=$(spend_24h); fi
     lives=$(live_of)
     while IFS=$'\037' read -r name kind dir own_reserve max_live parent; do
-        if [[ "$kind" == claude ]]; then json=$(fetch "$name" "$dir"); rc=$?; rate=$(session_rate "${1:-}")
-        else json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$(session_rate "${1:-}" "$name"); fi
+        case "$kind" in
+            claude) json=$(fetch "$name" "$dir"); rc=$?; rate=$(session_rate "${1:-}") ;;
+            litellm-*) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$SESSION_RATE ;; # a dollar budget has no pace
+            *) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$(session_rate "${1:-}" "$name") ;;
+        esac
         case $rc in
             0) state=ok ;;
             2) state=expired; json='{}' ;;
@@ -544,7 +560,11 @@ all_json() {
         (INDEX(.[]; .name)) as $by
         | .[]
         | ($by[.parent // ""].room.reasons // []) as $p
-        | if ($p | any(. == "unread" or . == "capped" or . == "reserve")) then
+        | if (.parent // "") != "" and ($by[.parent] == null) then
+            .room.reasons = ["parent"] + [.room.reasons[] | select(. != "parent")]
+            | .room.ok = false | .room.reason = "parent"
+            | .room.why = "its parent \(.parent) is not a source in the sources file"
+          elif ($p | any(. == "unread" or . == "capped" or . == "reserve")) then
             def first_group: . == "unread" or . == "capped" or . == "reserve";
             .room.reasons |= ([.[] | select(first_group)] + ["parent"] + [.[] | select(first_group | not) | select(. != "parent")])
             | .room.ok = false | .room.reason = .room.reasons[0]
@@ -687,8 +707,9 @@ cmd_textfile() {
 # a sentence on stdout: "<name>: room, ..." and exit 0, or why not and exit 1 (2 when it cannot be
 # read, 3 when no such source). A refused `parent` says which pool.
 room_source() {
-    local row
-    row=$(all_json nospend | jq -c --arg n "$1" 'select(.name == $n)')
+    local row parent
+    parent=$(sources 2>/dev/null | awk -F'\037' -v n="$1" '$1 == n { print $6 }')
+    row=$(USAGE_ONLY="$1 $parent" all_json nospend | jq -c --arg n "$1" 'select(.name == $n)')
     if [[ -z "$row" ]]; then
         echo "claude-acct: no source '$1' in $CONF or $SRC_CONF" >&2
         return 3

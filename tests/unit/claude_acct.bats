@@ -1226,3 +1226,49 @@ budget() {
   run --separate-stderr "$ACCT" room --source res
   assert_failure 2
 }
+
+@test "sources: a name listed twice is rowed once and the repeat is named" {
+  src_setup
+  printf 'codex litellm-key %s/res.key\n' "$SRC" >> "$SANDBOX/sources"
+  week main 30 84
+  rollout 1 0 84
+  budget sk-lazer key 40 100
+  budget sk-res key 5 20
+  budget team team 40 100
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [[ "$stderr" == *"codex is listed twice"* ]] || fail "$stderr"
+  [ "$(jq '[.[] | select(.name == "codex")] | length' <<<"$output")" = 1 ]
+  [ "$(field codex .kind <<<"$output")" = codex ]
+}
+
+@test "sources: a parent that is not a source refuses the key, naming the parent" {
+  src_setup
+  printf 'orphan litellm-key %s/res.key parent=nosuch\n' "$SRC" >> "$SANDBOX/sources"
+  week main 30 84
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  run --separate-stderr "$ACCT" room --source orphan
+  assert_failure 1
+  [[ "$output" == *"parent nosuch is not a source"* ]] || fail "$output"
+  # negative control: a key whose parent exists is not refused on that account
+  run --separate-stderr "$ACCT" room --source res
+  assert_success
+}
+
+@test "sources: room --source reads that source and its parent, not another key or a Claude account" {
+  src_setup
+  echo sk-other > "$SRC/other.key"
+  printf 'other litellm-key %s/other.key parent=lazer\n' "$SRC" >> "$SANDBOX/sources"
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  run --separate-stderr "$ACCT" room --source res
+  assert_success
+  # the key, the parent's key and its team were asked: three calls, none for sk-other or the usage endpoint
+  [ "$(wc -l < "$SANDBOX/curl.argv")" = 3 ]
+  grep -q 'sk-res' "$SANDBOX/curl.stdin"
+  ! grep -q 'sk-other' "$SANDBOX/curl.stdin"
+  ! grep -q 'anthropic' "$SANDBOX/curl.argv"
+}

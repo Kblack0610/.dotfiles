@@ -1264,7 +1264,8 @@ gateway_launch() {
   # Room is claude-acct's verdict on the source the harness spends; a cloud session spends a Claude
   # account, picked at launch, so it asks for any account with room.
   if [ "$(harness_launcher "$harness")" = claude-cloud ]; then
-    left=$(claude-acct room 2>&1) || { say "start: $harness has no room: $left"; return 1; }
+    left=$(claude-acct room --json 2>&1)
+    jq -e '.pick != null' <<<"$left" >/dev/null 2>&1 || { say "start: $harness has no room: $(jq -r '.why // empty' <<<"$left" 2>/dev/null)"; return 1; }
   else
     src=$(harness_source "$harness")
     [ -n "$src" ] || { say "start: harness $harness has no source in $HARNESSES"; return 2; }
