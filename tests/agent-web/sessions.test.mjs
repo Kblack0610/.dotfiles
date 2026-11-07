@@ -15,8 +15,12 @@ const el = () => new Proxy({}, {
 const boxes = {};
 const box = (id) => (boxes[id] ||= Object.assign(el(), { innerHTML: "", scrollTop: 0, hidden: false, textContent: "", querySelectorAll: () => [] }));
 const doc = { getElementById: box, addEventListener() {}, createElement: el, body: el(), querySelector: el, querySelectorAll: () => [] };
+// The split pane's media query (sessions.js SPLIT): narrow unless a test widens it.
+const mq = { matches: false, addEventListener() {} };
 const ctx = vm.createContext({
   console,
+  matchMedia: () => mq,
+  URLSearchParams,
   document: doc,
   window: { addEventListener() {} },
   location: { hash: "", pathname: "/" },
@@ -46,6 +50,7 @@ const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 
   { text: "shepherd timer stopped", warn: true, start: "shepherd", confirm: "Start the shepherd timer?" }], live: 38, unlinked: 21, errors: ["fleet-dispatch headroom: exit 1"] };
 
 function setup() {
+  mq.matches = false;
   run(`st.tab = "sessions"; st.sel = null; st.view = "page"; st.views = {}; st.arg = ""; sst.confirm = null; api = __api; sst.all = false;
     st.agents = __d.agents; wst.data = __d.watch; shst.data = __d.shep; sst.data = __d.table; sst.cap = __d.cap;`, {
     table: { rows: ROWS, errors: [], table: TABLE },
@@ -117,6 +122,26 @@ test("an opened session starts on its conversation, not its Details page", () =>
   run(`__load = load; load = () => {}; select({ target: "hub/a:1", session: "hub/a:1-id", status: "idle", actions: [] })`);
   assert.equal(run("st.view"), "transcript");
   run(`load = __load`);
+});
+
+test("from 900px an open session lists the table's rows beside it, the open one marked; narrower, none", async () => {
+  setup();
+  mq.matches = true;
+  run(`__load = load; load = () => {}; __asked = []; api = async (u) => { __asked.push(u); return { rows: [], table: TABLE }; }`);
+  await run(`openSession("hub/b:1-id")`);
+  const html = boxes.side.innerHTML;
+  assert.equal((html.match(/class="srow/g) || []).length, 3, "every row the table shows");
+  assert.match(html, /<button class="srow on" data-key="hub\/b:1">/, "the open session is marked");
+  assert.match(html, /data-ts=/, "the state chips filter it");
+  assert.equal(run("__asked.length"), 0, "a read table is not read again to draw it");
+  run(`sst.data = null`);
+  run(`refreshSessions()`);
+  await new Promise(setImmediate);
+  assert.match(run("__asked.join()"), /^\/api\/sessions\/table/, "an open session keeps the list fresh");
+  mq.matches = false;
+  run(`sst.data = __d; renderSide()`, { rows: ROWS, errors: [], table: TABLE });
+  assert.equal(boxes.side.innerHTML, "", "under 900px nothing is drawn");
+  run(`load = __load; api = __api`);
 });
 
 test("every row is a link to its page, keeping the table's view for Back", () => {
