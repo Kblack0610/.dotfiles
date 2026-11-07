@@ -18,7 +18,7 @@ const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelec
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 let scrolled = 0;
-const parts = { "sec-candidates": { tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "qt-detail": part(), "q-flow": part(), "q-list": part() };
+const parts = { "sec-candidates": { tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
 const doc = { getElementById: (id) => (id === "queue" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let reply = {};
@@ -101,7 +101,7 @@ const load = (d = data, over = {}) => {
   run("st.tab = 'queue'; st.arg = ''; st.views.queue = ''");
   Object.assign(run("qst"), { items: d.items, table: d.table, aliases: d.section_aliases, needs: d.needs_you, openRows: d.open_rows, all: false, sel: "", err: null, stats: {}, ...over });
 };
-const draw = () => { ctx.listEl = parts["q-list"]; run("drawQueueList(listEl)"); return parts["q-list"].innerHTML; };
+const draw = () => { run("qst.render()"); return parts["q-list"].innerHTML; };
 const target = (attrs, row) => ({
   dataset: attrs,
   closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) ? { dataset: attrs }
@@ -166,11 +166,11 @@ test("the page caps at the server's open_rows with +N older, one click lifts it"
   load({ ...data, open_rows: 2 });
   let h = draw();
   assert.doesNotMatch(h, /title q1/);
-  assert.match(h, /<button class="btn sm" data-qall="1">\+1 older<\/button>/);
-  fire("click", { type: "click", target: target({ qall: "1" }) });
+  assert.match(h, /<button class="btn sm" data-all="1">\+1 older<\/button>/);
+  fire("click", { type: "click", target: target({ all: "1" }) });
   h = parts["q-list"].innerHTML;
   assert.match(h, /title q1/);
-  assert.doesNotMatch(h, /data-qall/);
+  assert.doesNotMatch(h, /data-all/);
 });
 
 test("a click on a chip or a header asks the server for that view, and the URL carries it", async () => {

@@ -54,7 +54,7 @@ const fresh = () => { Object.assign(ast, { data, err: null, read: null, all: fal
 
 test("the table draws the server's rows, chips and dropdowns with no day headings", () => {
   fresh();
-  run("renderActions()");
+  run("ast.render()");
   const h = box.innerHTML;
   assert.match(h, /2 of 3 in 24h/);
   assert.match(h, /data-tsort="when"/, "every column header sorts");
@@ -126,7 +126,7 @@ test("the rows stop at the fold cap until +N older is pressed", () => {
   fresh();
   const many = Array.from({ length: run("LOG_ROWS") + 3 }, (_, i) => act(i));
   ast.data = { ...data, actions: many };
-  run("renderActions()");
+  run("ast.render()");
   assert.match(box.innerHTML, /data-all="1">\+3 older/);
   click({ all: "1" });
   assert.doesNotMatch(box.innerHTML, /data-all/);
@@ -134,10 +134,10 @@ test("the rows stop at the fold cap until +N older is pressed", () => {
 
 test("a refresh keeps the search box the human is typing in", () => {
   fresh();
-  run("renderActions()");
+  run("ast.render()");
   const painted = box.innerHTML;
   doc.activeElement = { id: "actions-q", dataset: {} };
-  run("renderActions()");
+  run("ast.render()");
   doc.activeElement = null;
   assert.equal(box.innerHTML, painted, "the bar stays");
   assert.match(parts["actions-body"].innerHTML, /agent-1/, "the rows around it repaint");
@@ -147,24 +147,24 @@ test("a refresh keeps the search box the human is typing in", () => {
 test("an empty answer says which kind of empty it is", () => {
   fresh();
   ast.data = { ...data, actions: [], table: { ...table, shown: 0 } };
-  run("renderActions()");
+  run("ast.render()");
   assert.match(box.innerHTML, /No action matches/);
   ast.data = { ...data, actions: [], table: { ...table, shown: 0, total: 0 } };
-  run("renderActions()");
+  run("ast.render()");
   assert.match(box.innerHTML, /Nothing recorded in the window/);
 });
 
 test("a ledger that could not be read is named above the table", () => {
   fresh();
   ast.data = { ...data, errors: ["dispatch.log: denied"] };
-  run("renderActions()");
+  run("ast.render()");
   assert.match(box.innerHTML, /unread: dispatch\.log: denied/);
 });
 
 test("a failed read says so over the rows it could not replace", () => {
   fresh();
   ast.err = "502";
-  run("renderActions()");
+  run("ast.render()");
   assert.match(box.innerHTML, /card err">502/);
   assert.match(box.innerHTML, /agent-1/);
 });

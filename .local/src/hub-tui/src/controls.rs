@@ -17,7 +17,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::datatable::{DataTable, Took};
+use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fleet;
 use crate::fmt::{clock, dur, older, Palette};
@@ -73,7 +73,6 @@ pub enum Ask {
 #[derive(Default)]
 pub struct Controls {
     pub snap: Option<Snapshot>,
-    pub sel: usize,
     pub confirm: Option<Confirm>,
     /// The action now running, as "move lab/x:1".
     pub running: Option<String>,
@@ -153,10 +152,8 @@ impl Controls {
         change(self);
         self.all = session_table::rows(&self.state, &self.vocab, &self.feed, self.agents());
         let rows = self.rows();
-        self.sel = was
-            .and_then(|t| rows.iter().position(|r| r.target == t))
-            .unwrap_or(self.sel)
-            .min(rows.len().saturating_sub(1));
+        let at = was.and_then(|t| rows.iter().position(|r| r.target == t));
+        self.table.keep(at, rows.len());
     }
 
     /// A new snapshot.
@@ -207,7 +204,9 @@ impl Controls {
     }
 
     fn selected_key(&self) -> Option<String> {
-        self.rows().get(self.sel).map(|r| r.target.to_string())
+        self.rows()
+            .get(self.table.sel)
+            .map(|r| r.target.to_string())
     }
 
     /// The controls' own keys; with a confirm armed every key is the confirm's.
@@ -242,18 +241,14 @@ impl Controls {
         }
         // The shared table keys, but for `x`, which stays Stop here: Esc clears the view instead.
         if self.table.typing.is_some() || matches!(k.code, KeyCode::Char('/' | 'f' | 's' | 'S')) {
-            if self.table.key::<SessionRow>(k.code) == Took::View {
-                self.sel = 0;
-            }
+            self.table.key::<SessionRow>(k.code);
             return Ask::Done;
         }
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.sel = (self.sel + 1).min(self.len().saturating_sub(1));
-                Ask::Done
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.sel = self.sel.saturating_sub(1);
+            // PgUp/PgDn, space and g/G scroll the page, the detail under the table with it.
+            KeyCode::Char('j' | 'k') | KeyCode::Down | KeyCode::Up
+                if self.table.moves(k, self.len(), 1) =>
+            {
                 Ask::Done
             }
             KeyCode::Enter => {
@@ -266,7 +261,6 @@ impl Controls {
             }
             KeyCode::Esc if !self.table.is_default() => {
                 self.table.clear();
-                self.sel = 0;
                 Ask::Done
             }
             KeyCode::Char('T') => {
@@ -320,7 +314,7 @@ impl Controls {
     fn offer(&self, a: Action) -> Option<Result<Confirm, String>> {
         let snap = self.snap.as_ref()?;
         let rows = self.rows();
-        let row = rows.get(self.sel)?;
+        let row = rows.get(self.table.sel)?;
         let Some((_, s)) = row.live else {
             return Some(Err(format!(
                 "{} is not a live or parked session on this machine: nothing to act on",
@@ -449,15 +443,13 @@ impl Controls {
                 ],
             }
             .fit(w, p.head());
-            if let Some(l) = t.get_mut(self.sel + 1) {
-                l.style = p.sel();
-            }
+            self.table.style(&mut t, p);
             out.append(&mut t);
         }
         out.extend(older(self.table.view.apply(&self.all).len(), rows.len(), p));
         out.push(self.status_line(p, w));
         if self.open {
-            out.extend(self.detail(rows.get(self.sel), p, now, w));
+            out.extend(self.detail(rows.get(self.table.sel), p, now, w));
         }
         out
     }
@@ -846,7 +838,7 @@ pub mod tests {
         let mut f = fixture();
         f.agents.remove(0);
         c.set(f);
-        assert_eq!(c.sel, 0);
+        assert_eq!(c.table.sel, 0);
         assert_eq!(c.rows()[0].target, "lab/dotfiles-agent-9:1");
         assert_eq!(press(&mut c, KeyCode::Char('q')), Ask::Pass);
     }

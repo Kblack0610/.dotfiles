@@ -73,7 +73,7 @@ function board(u) {
   const kept = mine.filter((r) => r.text.includes(q));
   return { today: "2026-11-05", projects, rows: kept, focus, table: tableOf(q, mine.length, kept) };
 }
-const read = () => ({ cards: box("p-top").innerHTML + box("p-bar").innerHTML + box("p-list").innerHTML, head: box("p-head").innerHTML, rows: box("b-list").innerHTML });
+const read = () => ({ cards: box("p-cards").innerHTML, head: box("p-head").innerHTML, rows: box("b-tbl").innerHTML });
 function draw(data, open = null) {
   ctx.input = { data, feed: board("/api/board"), open };
   vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; pst.data = input.data; pst.err = null; pst.viewed = ""; bst.feed = input.feed; pst.open = null;
@@ -126,11 +126,11 @@ test("the list's view goes to the server, and a view that keeps nothing says so"
 
 test("a re-read keeps the search box the human is typing in", () => {
   draw(list());
-  box("p-bar").innerHTML = "the box in use";
+  box("p-cards").innerHTML = "the box in use";
   ctx.document.activeElement = { id: "projects-q", dataset: {} };
   vm.runInContext(`renderProjects()`, ctx);
   ctx.document.activeElement = undefined;
-  assert.equal(box("p-bar").innerHTML, "the box in use");
+  assert.equal(box("p-cards").innerHTML, "the box in use");
   assert.match(box("projects-chips").innerHTML, /in flight/);
   assert.match(box("projects-facets").innerHTML, /every stage/);
 });
@@ -197,7 +197,7 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   assert.match(shown, /<tr class="jr" data-row="0"><td><span class="qprio high">high<\/span><\/td><td>demo<\/td>.*fix the menu/s);
   assert.doesNotMatch(shown, /water the beds/, "another project's row is not sent");
   assert.doesNotMatch(shown, /href="#daily"/, "one project's rows have no Daily count");
-  assert.match(box("b-bar").innerHTML, /id="board-q".*id="board-chips"/s);
+  assert.match(read().rows, /id="board-q".*id="board-chips"/s);
 });
 
 test("a row opens under itself with its actions, and a second click shuts it", async () => {
@@ -263,11 +263,11 @@ test("All opens every project's rows, and a stats error is shown, not hidden", a
 test("rows past the cap wait behind a button, and a view with nothing says so", async () => {
   await drawn(list(), "all");
   ctx.input = Array.from({ length: 205 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + i, text: "r" + i }));
-  vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 205, total: 205 } }; drawBoardList();`, ctx);
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 205, total: 205 } }; bst.render();`, ctx);
   assert.match(read().rows, /data-all="1">\+5 more/);
   click("board", { all: "1" });
   assert.doesNotMatch(read().rows, /\+5 more/);
   assert.match(read().rows, />r204</);
-  vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; drawBoardList();`, ctx);
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
   assert.match(read().rows, /No row matches\./);
 });
