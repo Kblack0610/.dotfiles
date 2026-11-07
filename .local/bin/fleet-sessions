@@ -96,7 +96,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
-#                <open job: gate|test|agent|human|jobs|none|- (agent-panel's open_job, or a live gate/test process in the worktree: live_wait; - unknown)> \
+#                <open job: gate|test|agent|human|jobs|none|- (agent-panel's open_job, or a live gate/test process in the worktree or under its claude: live_wait; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
 #                 none open and every state known (a closed one was replaced or dropped), or -;
@@ -128,7 +128,7 @@ session_bucket() {
   # ask keeps one definition of working.
   if [ "$3" -gt 0 ]; then
     case "$(session_bucket "$1" "$2" 0 "${@:4}")" in
-      "WORKING busy"* | "WORKING shell"*) echo "NEEDS $3 pending ask(s), carrying on" ;;
+      "WORKING busy"* | "WORKING shell"* | "WORKING subagent"*) echo "NEEDS $3 pending ask(s), carrying on" ;;
       *) echo "NEEDS $3 pending ask(s)" ;;
     esac
     return
@@ -142,13 +142,23 @@ session_bucket() {
     esac
     cn=", conflicts with the default branch"
   fi
+  # A background subagent's work lands in its own worktree, so this tree's facts (clean, merged,
+  # all phases ticked) say nothing about it until it ends: 2026-11-03 agent-10 read DONE and
+  # agent-56 LANDED mid-phase. A gate or test left running past a finished plan is not its work.
+  local job="${17:--}"
   case "$st" in
     busy) echo "WORKING busy$cn"; return ;;
+    idle)
+      # Claude writes shell only for a background Bash; a background subagent leaves it idle.
+      if [ "$job" = agent ] && [ "$5" -ge "$FLEET_IDLE_MIN" ]; then
+        [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ] && { echo "WORKING subagent running$cn"; return; }
+        note=", subagent running over ${FLEET_SHELL_STALE_MIN}m"
+      fi ;;
     shell)
       # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
-      if [ "$5" -ge "$FLEET_IDLE_MIN" ] && session_finished "$@"; then
+      if [ "$5" -ge "$FLEET_IDLE_MIN" ] && [ "$job" != agent ] && session_finished "$@"; then
         note=", background shell still running"
-      elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && { [ "${17:--}" = jobs ] || [ "${17:--}" = none ]; }; then
+      elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && { [ "$job" = jobs ] || [ "$job" = none ]; }; then
         # Only a gate, a test or a subagent is work worth waiting 120m on. Anything else is a sleep
         # loop, a watch on a file or a job the transcript no longer shows; on 2026-11-03 13 of 24
         # "WORKING shell" sessions were one of those, idle up to 107m, and nothing looked at them.
@@ -163,24 +173,33 @@ session_bucket() {
   echo "$(bucket_facts "$@")$cn$note"
 }
 
-# live_wait <cwd>: gate or test when a process running in <cwd> (or below it) matches a `gate` or
-# `test` line of agent-panel's time-use.conf, else nothing. The transcript shows a gate detached
+# live_wait <cwd> [<claude pid>]: gate or test when a process running in <cwd> (or below it), or
+# descended from the session's claude whatever its cwd, matches a `gate` or `test` line of
+# agent-panel's time-use.conf, else nothing. A background subagent's commands run in its own
+# worktree and a gate script may cd elsewhere (2026-11-03 agent-49 read STALLED mid-gate on #1669),
+# but both stay children of the claude that started them. The transcript shows a gate detached
 # with & only as the until-loop watching its output file (2026-11-07 unity-core-playground-agent-30:
 # Tests run in progress, row STALLED), so agent-panel reads it as `jobs`; the process itself is the
-# fact. No event API names a gate's process, so this reads /proc, one `ls -l` of every cwd link per
+# fact. No event API names a gate's process, so this reads /proc, one `ls -l` of every cwd link and one `ps` per
 # session whose open job reads jobs or none. Not counted: a `-c` command line (a shell holding its
 # script's text, not the gate), the session's own `claude` (its argv carries the dispatch prompt,
-# which names agent-land), and this pass's own ancestors.
+# which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
+# without .pid) only the worktree is read.
 live_wait() {
-  local cwd="$1" conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text line pid cmd
+  local cwd="$1" root="${2:-0}" conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text line pid cmd
   [ -r "$conf" ] && cwd="$(realpath "$cwd" 2>/dev/null)" || return 0
-  local -A skip=()
+  local -A skip=() mine=()
   pid=$$; while [ "${pid:-0}" -gt 1 ]; do skip[$pid]=1; pid="$(awk '/^PPid:/ {print $2}' "/proc/$pid/status" 2>/dev/null)"; done
+  if [[ "$root" =~ ^[0-9]+$ ]] && [ "$root" -gt 1 ]; then
+    while read -r pid; do mine[$pid]=1; done < <(ps -e -o pid=,ppid= | awk -v r="$root" '
+      { up[$1] = $2 }
+      END { for (p in up) { x = up[p]; n = 0; while (x > 1 && x != r && (x in up) && n++ < 64) x = up[x]; if (x == r) print p } }')
+  fi
   local -a cmds=()
   while read -r line; do
     [[ "$line" =~ \ /proc/([0-9]+)/cwd\ -\>\ (.*)$ ]] || continue
     pid="${BASH_REMATCH[1]}"
-    [ "${BASH_REMATCH[2]}" = "$cwd" ] || [[ "${BASH_REMATCH[2]}" == "$cwd"/* ]] || continue
+    [ -n "${mine[$pid]:-}" ] || [ "${BASH_REMATCH[2]}" = "$cwd" ] || [[ "${BASH_REMATCH[2]}" == "$cwd"/* ]] || continue
     [ -z "${skip[$pid]:-}" ] || continue
     cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
     case "$cmd" in "" | *" -c "* | claude" "* | */claude" "*) continue ;; esac
@@ -922,10 +941,10 @@ collect() {
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live
-    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
+          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid
+    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started cpid < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
-      (.plan_file | if . == "" then "-" else . end), (.started_at // "-")] | @tsv' <<<"$line")
+      (.plan_file | if . == "" then "-" else . end), (.started_at // "-"), (.pid // 0)] | @tsv' <<<"$line")
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
     IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob acct < <(jq -r '
@@ -941,7 +960,7 @@ collect() {
     if [ "$plan" = 1 ] && { [ "$status" != waiting ] || [[ "$doing" != ExitPlanMode* ]]; }; then plan=0; fi
     # A gate or test running in the worktree is a wait whatever the transcript's open job says.
     if [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ]; }; then
-      live="$(live_wait "$cwd")"; ojob="${live:-$ojob}"
+      live="$(live_wait "$cwd" "$cpid")"; ojob="${live:-$ojob}"
     fi
     prs="$(session_prs "$transcript")"
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
