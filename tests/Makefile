@@ -119,7 +119,7 @@ test-ui-inner: $(BATS)
 # What the container's default CMD runs: everything, in one pass.
 test-container: test-fast test-ui-inner
 
-# One implementation, in lint.sh, shared with the Stop hook and CI. The severity ratchet and
+# One implementation, in lint.sh, shared with CI. The severity ratchet and
 # the file list both live there, so a local green cannot mean a CI red.
 lint:
 	@$(HERE)lint.sh
