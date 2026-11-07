@@ -45,6 +45,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
 
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
@@ -529,11 +531,6 @@ gate_ci() {
   elif [ "$fail" = 1 ]; then echo FAIL
   elif [ "$pass" = 1 ]; then echo PASS
   else echo "$ci"; fi
-}
-
-# origin_repo <dir> -> "owner/repo" of its origin remote, or nothing.
-origin_repo() {
-  git -C "$1" remote get-url origin 2>/dev/null | sed -E 's#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#'
 }
 
 # pr_made_here <dir> <N> <branch> <session_prs JSON> <transcript> <plan|-> -> true when this

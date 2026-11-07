@@ -13,6 +13,9 @@
 # Field meanings and the observation rule: .config/agentctl/DREAMING.md
 # ("Session outcomes") in the private overlay.
 
+# shellcheck source=origin-repo.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/origin-repo.sh"
+
 # SO_PR_JQ - the jq defs every harness's PR scan shares. pr_cmd: a command that opens or merges
 # a PR, `gh pr create|merge` in command position (at a line start, after a shell separator, `sh -c`
 # or `ssh host`, past assignments and wrappers like env, sudo, timeout, xargs), so a search or
@@ -460,11 +463,10 @@ so_rework_commits() {
 # so_rework_repos MAP - one `owner/repo<TAB>dir` line per project-map checkout whose origin is on
 # GitHub, so a PR's repo finds the clone blame runs in.
 so_rework_repos() {
-  local dir url
+  local dir repo
   jq -r '.paths // {} | keys[]' "$1" 2>/dev/null | while IFS= read -r dir; do
-    url=$(git -C "$dir" remote get-url origin 2>/dev/null) || continue
-    [[ "$url" =~ github\.com[:/]([^/]+)/([^/]+)$ ]] || continue
-    printf '%s/%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]%.git}" "$dir"
+    repo=$(origin_repo "$dir" github.com) || continue
+    printf '%s\t%s\n' "$repo" "$dir"
   done
 }
 
