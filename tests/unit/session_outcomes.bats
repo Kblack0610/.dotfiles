@@ -772,22 +772,26 @@ EOF
 
 @test "the harness is what the transcript ran on: a gateway session is claude-lazer with no item, an account session is claude on a spilled item" {
   queue_stub
+  export SO_HARNESSES="$SANDBOX/harnesses.json"
+  jq -n '{gateway: {url: "https://gateway.example"}}' > "$SO_HARNESSES"
   {
     jq -cn '{slug: "spilled", agent: "lazer-reserve", sessions: "sess-a sess-b sess-c"}'
   } > "$SANDBOX/items.jsonl"
   mkdir -p "$HOME/.claude-personal/projects/p"
   cp "$TR/c.jsonl" "$HOME/.claude-personal/projects/p/c.jsonl"
   # a: the reserve run (gateway); b: the item's first try on an account; c: a row from before
-  # base_url, under another account's config dir; d: a hand `cl --lazer` on no item.
+  # base_url, under another account's config dir; d: a hand `cl --lazer` on no item; e: another
+  # endpoint, which is not the gateway (negative control).
   jq -c --arg tc "$HOME/.claude-personal/projects/p/c.jsonl" '
     if .session_id == "sess-a" then . + {base_url: "https://gateway.example"}
     elif .session_id == "sess-b" then . + {base_url: null}
     elif .session_id == "sess-c" then .transcript = $tc
-    else . + {base_url: "https://gateway.example"} end' "$SO_SESSIONS/proj/sessions.jsonl" > "$SANDBOX/reg" &&
-    mv "$SANDBOX/reg" "$SO_SESSIONS/proj/sessions.jsonl"
+    else . + {base_url: "https://gateway.example"} end
+    | ., (select(.session_id == "sess-d") | .session_id = "sess-e" | .base_url = "https://other-proxy.example")' \
+    "$SO_SESSIONS/proj/sessions.jsonl" > "$SANDBOX/reg" && mv "$SANDBOX/reg" "$SO_SESSIONS/proj/sessions.jsonl"
   run "$SUBJECT" run
   assert_success
-  assert_equal "$(field a .harness) $(field b .harness) $(field c .harness) $(field d .harness)" 'lazer-reserve claude claude claude-lazer'
+  assert_equal "$(field a .harness) $(field b .harness) $(field c .harness) $(field d .harness) $(field e .harness)" 'lazer-reserve claude claude claude-lazer claude'
   # the same rule over old outcomes rows: under ~/.claude keeps the gateway agent, another account does not
   jq -cn '{slug: "spilled", agent: "lazer-reserve", sessions: "old-gw old-acct"}' > "$SANDBOX/items.jsonl"
   mkdir -p "$SO_OUT/old"
