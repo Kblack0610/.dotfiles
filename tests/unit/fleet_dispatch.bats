@@ -1353,6 +1353,7 @@ refuses() {
 # room_on_floor: the one account's verdict refuses it for its pace alone, so it has room only while
 # a floor lifts the pace reason.
 room_on_floor() {
+  export DISPATCH_PROJECT_FLOOR=0   # these tests are about the run floor; the project floor has its own
   acct alt:pace:/home/u/.claude-personal
   stub top 'printf "%%Cpu(s): 1.0 id\n%%Cpu(s): 60.0 us,  5.0 sy, 25.0 ni, 10.0 id,  0.0 wa\n"'
 }
@@ -1583,6 +1584,80 @@ red_held_machine() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
   assert_success
   assert_output ''
+}
+
+# 2026-11-07: Unity and fleet work held every slot while trader's requested plans waited 5h behind
+# real idle; no floor lifted it for a project nothing was working on.
+idle_held_machine() {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  room_on_floor
+  acct alt:ok:/home/u/.claude-personal
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  export DISPATCH_RUN_FLOOR=0 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
+}
+
+@test "project floor: an idle project's first item starts past real idle; a busy project's waits" {
+  idle_held_machine
+  agent-queue add --project game --slug busy "game work" >/dev/null
+  agent-queue move busy running >/dev/null
+  agent-queue add --project game --slug g2 "more game work" >/dev/null
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  agent-queue add --project app --slug a2 "more app work" >/dev/null
+  # Negative control first: no project floor, the same machine starts nothing.
+  export DISPATCH_PROJECT_FLOOR=0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'real idle'
+  assert_not_called 'wt new'
+  export DISPATCH_PROJECT_FLOOR=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item a1 on the project floor (DISPATCH_PROJECT_FLOOR=1)'
+  refute_output --partial 'started queue item g2'
+  refute_output --partial 'started queue item a2'
+}
+
+@test "project floor: an account past its pace, load and agent-hold still hold an idle project's item" {
+  idle_held_machine
+  export DISPATCH_PROJECT_FLOOR=1
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  acct alt:pace:/home/u/.claude-personal
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  acct alt:ok:/home/u/.claude-personal
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'is over the'
+  assert_not_called 'wt new'
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+}
+
+@test "project floor: one item per idle project, open only on a project pass under DISPATCH_PROJECT_FLOOR" {
+  local items
+  items=$(printf '%s\n' '{"slug":"g1","project":"game"}' '{"slug":"a1","project":"app"}' '{"slug":"a2","project":"app"}' '{"slug":"x1","project":"x"}')
+  BUSY_PROJECTS=game run idle_project_items "$items"
+  assert_output "$(printf '%s\n' '{"slug":"a1","project":"app"}' '{"slug":"x1","project":"x"}')"
+  export DISPATCH_PROJECT_FLOOR=1
+  PROJECT_PASS=1 run project_floor_open; assert_success
+  PROJECT_PASS=1 PROJECT_STARTED=1 run project_floor_open; assert_failure
+  PROJECT_PASS=0 run project_floor_open; assert_failure
+  DISPATCH_PROJECT_FLOOR=0 PROJECT_PASS=1 run project_floor_open; assert_failure
+}
+
+@test "starved names an item held on a cancelled ask, which no answer can release" {
+  mkdir -p "$HOME/.agent/asks/game"
+  printf 'id: dead1\nstatus: cancelled\nquestion: q?\n' > "$HOME/.agent/asks/game/dead1.md"
+  printf 'id: live1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/live1.md"
+  agent-queue add --project game --slug k8 --tags 'ask:dead1' "kalshi p8" >/dev/null
+  agent-queue add --project game --slug k9 --tags 'ask:live1' "waits on the human" >/dev/null
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'held on an ask that can never be answered:'
+  assert_output --partial 'k8 (game, ask:dead1 (cancelled))'
+  refute_output --partial 'k9'
 }
 
 @test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
