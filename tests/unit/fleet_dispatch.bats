@@ -4083,6 +4083,38 @@ hold_for() {
   assert_output --partial 'held by load (fleet-assess says HOLD)'
 }
 
+# 2026-11-07: stats reached real_idle through cmd_starved and slept out a 60s sample, so
+# agent-mqtt-publish --full hit its TimeoutStartSec=60 whenever no pass had sampled in the last minute.
+@test "starved and stats read the last pass's idle sample and never wait out a new one" {
+  queued_item stuck high "$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
+  cpu 85 5 0 10
+  rm -f "$FLEET_DISPATCH_DIR/idle" "$NOTES_FIXTURE/calls.log"
+  # No sample in the window: idle names no hold, so the queue reads starved.
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+  refute_output --partial 'real idle'
+  run cmd_stats
+  jq -e '.runnable == 1 and .starved' <<<"$output"
+  assert_not_called 'sleep'
+  # A pass's sample ten minutes old is still the verdict's: under the floor, it holds by load.
+  mkdir -p "$FLEET_DISPATCH_DIR"; echo "$(( $(date +%s) - 600 )) 10.0" > "$FLEET_DISPATCH_DIR/idle"
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by load (real idle 10.0% is under 30%)'
+  assert_not_called 'sleep'
+  # One older than the verdict's window is no sample: starved again, still without waiting.
+  echo "$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 )) 10.0" > "$FLEET_DISPATCH_DIR/idle"
+  run cmd_starved
+  assert_failure
+  refute_output --partial 'real idle'
+  assert_not_called 'sleep'
+  # Negative control: a pass's gate with the same ten-minute sample samples anew.
+  run gate
+  assert_output --partial 'real idle 10.0% is under 30%'
+  assert_called "sleep $DISPATCH_IDLE_WINDOW"
+}
+
 @test "stats: held_s is how long the hold has stood, 0 with none" {
   queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   run cmd_stats
