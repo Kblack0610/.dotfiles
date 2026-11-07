@@ -168,6 +168,19 @@
         "hide-empty-text": true,
         "tooltip": true
     },
+    // The input apps hear, and the switch between the rig's inputs (audio_input.sh, PIN.md "Input
+    // chip"). Workstation only: config.desktop lists it and drops the mic from pulseaudio. No
+    // interval: it runs on `pactl subscribe`; restart-interval brings it back after a PipeWire restart.
+    "custom/audio-input": {
+        "format": "{}",
+        "return-type": "json",
+        "exec": "$HOME/.config/waybar/audio_input.sh watch",
+        "restart-interval": 5,
+        "hide-empty-text": true,
+        "tooltip": true,
+        "on-click": "$HOME/.config/waybar/audio_input.sh next",
+        "on-click-right": "$HOME/.config/waybar/audio_input.sh prev"
+    },
     // Agents: the robot coloured by fleet health, then working, ready and need-you totals on the bar; the hover is the fleet-sessions stages, a section
     // per tmux world (hub, lab) with a line per session (ai_agents.sh). 15s because fleet-sessions
     // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.
