@@ -696,7 +696,7 @@ EOF
 @test "a task across two repos lands its second PR on its done item: one PR per repo, row closed once" {
   # NEGATIVE CONTROL: before ar-790 the second landing was refused as "done ok, not open".
   item split 'board:game:split it' human
-  run "$LAND" 42 --item split
+  CLAUDE_CODE_SESSION_ID=sid-first run "$LAND" 42 --item split
   assert_success
   : >"$LOG"
   echo https://github.com/o/p/pull/552 >"$NOTES_FIXTURE/url"
@@ -710,7 +710,7 @@ EOF
   run board_calls
   assert_output ''
   run agent-queue show split --json
-  assert_equal "$(jq -r .sessions <<<"$output")" 'sid-second'
+  assert_equal "$(jq -r .sessions <<<"$output")" 'sid-first sid-second'
   assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.merged)"' <<<"$output")" \
     'done ok o/r#42 o/p#552 fedcba9876543210fedcba9876543210fedcba98 abcdef0123456789abcdef0123456789abcdef01'
   # A re-run of either PR records nothing twice; a second PR in a repo the item carries is refused.
