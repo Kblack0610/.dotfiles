@@ -50,6 +50,7 @@ setup() {
   export DISPATCH_LOADAVG="$SANDBOX/loadavg"
   export DISPATCH_JUDGE_CMD=judge-stub   # on PATH: the command is a word list, and the sandbox path has a space
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  export DISPATCH_PROJECT_FLOOR=0   # off unless a test is about it ("project floor:"), so an idle-held machine stays held
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
   printf '%s\n' 'policy' '- (fits) dispatch' '- (tier3) tier 3' '- (unclear) not clear' > "$DISPATCH_POLICY"
   mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/app" "$SANDBOX/sheets"
@@ -1583,6 +1584,93 @@ red_held_machine() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
   assert_success
   assert_output ''
+}
+
+# 2026-11-07: Unity and fleet work held every slot while trader's requested plans waited 5h behind
+# real idle; no floor lifted it for a project nothing was working on.
+idle_held_machine() {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  room_on_floor
+  acct alt:ok:/home/u/.claude-personal
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  export DISPATCH_RUN_FLOOR=0 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
+}
+
+@test "project floor: an idle project's first item starts past real idle; a busy project's waits" {
+  idle_held_machine
+  agent-queue add --project game --slug busy "game work" >/dev/null
+  agent-queue move busy running >/dev/null
+  agent-queue add --project game --slug g2 "more game work" >/dev/null
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  agent-queue add --project app --slug a2 "more app work" >/dev/null
+  # Negative control first: no project floor, the same machine starts nothing.
+  export DISPATCH_PROJECT_FLOOR=0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'real idle'
+  assert_not_called 'wt new'
+  export DISPATCH_PROJECT_FLOOR=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item a1 on the project floor (DISPATCH_PROJECT_FLOOR=1)'
+  refute_output --partial 'started queue item g2'
+  refute_output --partial 'started queue item a2'
+}
+
+@test "project floor: one start a project even with room for more" {
+  idle_held_machine
+  export DISPATCH_PROJECT_FLOOR=2
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  agent-queue add --project app --slug a2 "more app work" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item a1 on the project floor'
+  refute_output --partial 'started queue item a2'
+}
+
+@test "project floor: an account past its pace, load and agent-hold still hold an idle project's item" {
+  idle_held_machine
+  export DISPATCH_PROJECT_FLOOR=1
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  acct alt:pace:/home/u/.claude-personal
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  acct alt:ok:/home/u/.claude-personal
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'is over the'
+  assert_not_called 'wt new'
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+}
+
+@test "project floor: light items of idle projects, open only on a project pass under DISPATCH_PROJECT_FLOOR" {
+  local items
+  items=$(printf '%s\n' '{"slug":"g1","project":"game"}' '{"slug":"a1","project":"app"}' '{"slug":"a2","project":"app"}' '{"slug":"x1","project":"x"}')
+  items+=$'\n''{"slug":"h1","project":"y","weight":"heavy"}'
+  BUSY_PROJECTS=game run idle_project_items "$items"
+  assert_output "$(printf '%s\n' '{"slug":"a1","project":"app"}' '{"slug":"a2","project":"app"}' '{"slug":"x1","project":"x"}')"
+  export DISPATCH_PROJECT_FLOOR=1
+  PROJECT_PASS=1 run project_floor_open; assert_success
+  PROJECT_PASS=1 PROJECT_STARTED=1 run project_floor_open; assert_failure
+  PROJECT_PASS=0 run project_floor_open; assert_failure
+  DISPATCH_PROJECT_FLOOR=0 PROJECT_PASS=1 run project_floor_open; assert_failure
+}
+
+@test "starved names an item held on a cancelled ask, which no answer can release" {
+  mkdir -p "$HOME/.agent/asks/game"
+  printf 'id: dead1\nstatus: cancelled\nquestion: q?\n' > "$HOME/.agent/asks/game/dead1.md"
+  printf 'id: live1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/live1.md"
+  agent-queue add --project game --slug k8 --tags 'ask:dead1' "kalshi p8" >/dev/null
+  agent-queue add --project game --slug k9 --tags 'ask:live1' "waits on the human" >/dev/null
+  # A machine held by load still names the dead hold and fails.
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'held on an ask that can never be answered:'
+  assert_output --partial 'k8 (game, ask:dead1 (cancelled))'
+  refute_output --partial 'k9'
 }
 
 @test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
@@ -4341,7 +4429,8 @@ harness_ready() {
       "claude-lazer": {timeout_min: 180, models: {sonnet: "sonnet"}},
       opencode: {config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
       glm: {launcher: "opencode", config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
-      codex: {account: "chatgpt", room: "agent-codex room", timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
+      codex: {account: "chatgpt", room: "agent-codex room", timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
+      "claude-cloud": {launcher: "claude-cloud", room: "claude-acct room", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
   stub curl "cat > \"\$NOTES_FIXTURE/curl.stdin\"; echo \"curl \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '{\"info\":{\"spend\":${1:-1},\"max_budget\":150}}'"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
@@ -4628,6 +4717,136 @@ codex_room() { stub agent-codex "echo \"agent-codex \$*\" >> \"\$NOTES_FIXTURE/c
   assert_not_called '/one-shot Fix'
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'codex sol chatgpt'
+}
+
+# --- claude-cloud: a #cloud-ok item runs as a Claude cloud session ---------------------------
+
+cloud_ready() {
+  harness_ready
+  git -C "$SANDBOX/repos/game" init -q
+  git -C "$SANDBOX/repos/game" remote add origin git@github.com:acme/game.git
+  agent-queue add --project game --slug cloud-fix --priority high --tags cloud-ok "Fix the menu text" >/dev/null
+}
+
+@test "a cloud-ok item starts as a cloud session with no --harness: claude-cloud-run on the claude account, a self-contained brief, no model-lane" {
+  cloud_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-fix
+  assert_success
+  assert_called 'AGENT_QUEUE_ITEM=cloud-fix env -u CLAUDE_CONFIG_DIR CLOUD_TIMEOUT_MIN=90 claude-cloud-run cloud-fix acme/game'
+  assert_called 'The PR body carries the line "Item: cloud-fix"'
+  assert_not_called '/one-shot'
+  assert_not_called 'model-lane'
+  assert_not_called 'curl'
+  f=$(qitem running cloud-fix)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'claude-cloud cloud main'
+}
+
+@test "a cloud-ok item with no room on the plan stays queued, as a local one would" {
+  cloud_ready
+  stub claude-acct '[ "$1" = room ] && { echo "no account has room"; exit 1; }; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-fix
+  assert_failure
+  assert_output --partial 'claude-cloud has no room'
+  [ -n "$(qitem queued cloud-fix)" ] || fail "the item left the queue"
+}
+
+@test "an item without cloud-ok never routes to a cloud session" {
+  cloud_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu
+  assert_success
+  assert_not_called 'claude-cloud-run'
+  assert_called 'claude --model'
+  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" claude
+}
+
+@test "a cloud session refuses a plan item, a tier 3 item and a repo off GitHub, and the item stays queued" {
+  cloud_ready
+  agent-queue add --project game --slug cloud-plan --mode plan --tags cloud-ok "Think" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-plan --harness claude-cloud
+  assert_failure
+  assert_output --partial 'cannot wait on a plan'
+  agent-queue add --project game --slug cloud-t3 --tags 'cloud-ok tier3' "Fix the gate" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-t3
+  assert_failure
+  assert_output --partial 'is tier 3'
+  git -C "$SANDBOX/repos/game" remote set-url origin git@forge.example:acme/game.git
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-fix
+  assert_failure
+  assert_output --partial 'no GitHub repo for a cloud session'
+  for k in cloud-plan cloud-t3 cloud-fix; do [ -n "$(qitem queued "$k")" ] || fail "$k left the queue"; done
+  assert_not_called 'claude-cloud-run'
+}
+
+@test "item_brief for claude-cloud names the Item and Task lines and leaves out local tooling" {
+  run item_brief '{"slug": "cloud-fix", "mode": "oneshot", "project": "game", "title": "fix(game): x", "task": "fix(game): x"}' claude-cloud
+  assert_success
+  assert_output --partial 'fix(game): x'
+  assert_output --partial 'The PR body carries the line "Item: cloud-fix"'
+  assert_output --partial 'Never merge it'
+  refute_output --partial '/one-shot'
+  refute_output --partial 'agent-land <N>'
+}
+
+# claude-cloud-run: claude, gh and script are stubs; the real agent-queue records the PR.
+cloud_run_ready() {
+  agent-queue add --project game --slug cloud-fix --priority high --tags cloud-ok "Fix the menu text" >/dev/null
+  agent-queue move cloud-fix running >/dev/null
+  stub claude 'echo "claude $*" >> "$NOTES_FIXTURE/calls.log"; echo "Session: https://claude.ai/code/session_01AbC"'
+  stub gh 'echo "gh $*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/prs.json"'
+  export CLOUD_POLL_SEC=0 CLAUDE_BIN=claude
+}
+
+@test "claude-cloud-run records the session URL, finds the PR by its exact Item line, and parks the item waiting on it" {
+  cloud_run_ready
+  printf '%s\n' '[{"number": 7, "createdAt": "2000-01-01T00:00:00Z", "body": "Item: cloud-fix"}, {"number": 8, "createdAt": "2099-01-01T00:00:00Z", "body": "Item: cloud-fix-extra"}, {"number": 9, "createdAt": "2099-01-01T00:00:00Z", "body": "text\r\nItem: cloud-fix\r\nmore"}]' > "$NOTES_FIXTURE/prs.json"
+  run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
+  assert_success
+  assert_called 'claude --cloud do the task'
+  assert_called 'gh pr list --repo acme/game --state all --search "Item: cloud-fix" in:body'
+  f=$(qitem waiting cloud-fix)
+  [ -n "$f" ] || fail "the item is not waiting"
+  assert_equal "$(qfield "$f" pr)" 'acme/game#9'
+  grep -q 'https://claude.ai/code/session_01AbC' "$f" || fail "the session URL is not on the item"
+}
+
+@test "claude-cloud-run exits 1 at once when the create fails, and polls nothing" {
+  cloud_run_ready
+  stub claude 'echo "claude $*" >> "$NOTES_FIXTURE/calls.log"; exit 3'
+  CLOUD_TIMEOUT_MIN=60 run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
+  assert_failure
+  assert_not_called 'gh pr list'
+  grep -q 'create failed (exit 3)' "$(qitem running cloud-fix)" || fail "the item is not flagged"
+}
+
+@test "claude-cloud-run names a gh failure instead of reading it as no PR yet, and never takes an older PR" {
+  cloud_run_ready
+  stub gh 'echo "gh auth: not logged in" >&2; exit 1'
+  CLOUD_TIMEOUT_MIN=0 run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
+  assert_failure
+  assert_output --partial 'gh pr list failed: gh auth: not logged in'
+  stub gh 'cat "$NOTES_FIXTURE/prs.json"'
+  echo '[{"number": 7, "createdAt": "2000-01-01T00:00:00Z", "body": "Item: cloud-fix"}]' > "$NOTES_FIXTURE/prs.json"
+  CLOUD_TIMEOUT_MIN=0 run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
+  assert_failure
+  [ -n "$(qitem running cloud-fix)" ] || fail "an older PR moved the item"
+}
+
+@test "a cloud-ok item that names a model, or a start with --model, stays on a local claude" {
+  cloud_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-fix --model opus
+  assert_success
+  assert_not_called 'claude-cloud-run'
+  assert_called 'claude --model opus'
+}
+
+@test "claude-cloud-run past its timeout with no PR exits 1 and flags the item, which stays running" {
+  cloud_run_ready
+  echo '[{"number": 8, "body": "Item: other"}]' > "$NOTES_FIXTURE/prs.json"
+  CLOUD_TIMEOUT_MIN=0 run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
+  assert_failure
+  f=$(qitem running cloud-fix)
+  [ -n "$f" ] || fail "the item left running"
+  grep -q 'opened no PR in 0 min' "$f" || fail "the item is not flagged"
 }
 
 @test "codex refuses a spent plan and a plan item, and the item stays queued" {
