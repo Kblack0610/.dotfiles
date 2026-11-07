@@ -1,7 +1,7 @@
 ---
 name: fleet-memory
 description: >-
-  Front door for memory consolidation: dream (03:00), nightly-sync (23:00), lab-sync, mem0 proposals. Use for "did dream run", "run a sweep now", "why no new lessons", "dream proposed a fact". Procedure: DREAMING.md.
+  Front door for memory consolidation: dream (03:00), nightly-sync (23:00), mem0 proposals. Use for "did dream run", "run a sweep now", "why no new lessons", "dream proposed a fact". Procedure: DREAMING.md.
 paths:
   - ".local/bin/agentctl-dream"
   - ".local/bin/agentctl-nightly-sync"
@@ -36,7 +36,7 @@ Not for a correction to file (that goes in `~/.agent/lessons/{project}.md`), for
 ## Verbs
 
 - Did it run: `agentctl status dream`, `systemctl --user list-timers | grep -E 'dream|nightly'`; the diary is `~/.agent/dreams/{project}/DREAMS.md`.
-- Sweep one project now: `agentctl-dream --project <name>`; add `--dry-run` to stage candidates and promote nothing. Interactive: `/dream --project <name>`.
+- Sweep one project now: `agentctl-dream --project <name>` in the background; it is a headless model call, and `--dry-run` only skips promotion, it still costs one. Interactive: `/dream --project <name>`.
 - Open mem0 proposals: `agent-propose list --stream dream`; decide with `agent-propose accept|reject <id>`.
 - A lesson that landed twice or a `memory/` file a lesson already covers: DREAMING.md "Safety" (the dedupe check moves it to `memory-refused/`).
 
@@ -44,4 +44,4 @@ Not for a correction to file (that goes in `~/.agent/lessons/{project}.md`), for
 
 - Do not edit `~/.agent/dreams/` or the checkpoint by hand; run the verb.
 - Do not accept a proposal on the human's behalf; mem0 stays human-gated.
-- Do not start a live sweep to test a change; use `--dry-run`.
+- Do not start a sweep, `--dry-run` included, to test a change; each is a model call. The stubbed tests are `tests/dream-*.sh` in `~/.config/agentctl/`.
