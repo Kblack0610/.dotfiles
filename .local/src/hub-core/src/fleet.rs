@@ -761,7 +761,7 @@ pub(crate) fn calls_of(
         .collect()
 }
 
-fn read_confs(dir: &Path, state: &Path) -> (Vec<Conf>, Vec<String>) {
+pub(crate) fn read_confs(dir: &Path, state: &Path) -> (Vec<Conf>, Vec<String>) {
     let home = std::env::var("HOME").unwrap_or_default();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,

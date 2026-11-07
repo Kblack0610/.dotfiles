@@ -652,7 +652,7 @@ pub mod tests {
                 .is_ascii_uppercase());
         }
         assert!(
-            t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions  spend: 9 Costs"),
+            t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions  spend: 0 Costs"),
             "{t}"
         );
         assert!(t.contains("fleet WORKING 27 NEEDS 8 unity runs 3"), "{t}");

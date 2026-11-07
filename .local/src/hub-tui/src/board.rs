@@ -1815,7 +1815,7 @@ pub(crate) mod tests {
             "nodes ",
             "heartbeats ",
             "ci local 3/7 cloud 0/0, waiting 4",
-            "spend: 9 Costs",
+            "spend: 0 Costs",
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");
         }

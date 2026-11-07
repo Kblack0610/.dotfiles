@@ -253,7 +253,7 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "queue", "projects", "sessions", "infra", "log", "fleet", "costs"];
+const TAB_NAMES = ["home", "daily", "queue", "projects", "sessions", "infra", "log", "fleet", "schedules", "costs"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily" };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls

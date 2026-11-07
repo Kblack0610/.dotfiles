@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# agent-web's Queue, answer, Home and Projects cards, the Daily tab, the Log's hour chart and project groups, the Sessions list, the Fleet runner rows, Infra's Red fixes and the shared table on Infra's Jobs and the Costs tab
-# are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,projects,focus,log,sessions,fleet,infra,jobs,costs}.test.mjs); skips where node is absent.
+# agent-web's Queue, answer, Home and Projects cards, the Daily tab, the Log's hour chart and project groups, the Sessions list, the Fleet runner rows, Infra's Red fixes and the shared table on Infra's Jobs, the Schedules tab and the Costs tab
+# are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,projects,focus,log,sessions,fleet,infra,jobs,schedules,costs}.test.mjs); skips where node is absent.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -60,6 +60,11 @@ setup() {
 
 @test "agent-web table.js on Infra's Jobs: node unit tests pass" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/jobs.test.mjs"
+  assert_success
+}
+
+@test "agent-web schedules.js the Schedules tab: node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/schedules.test.mjs"
   assert_success
 }
 

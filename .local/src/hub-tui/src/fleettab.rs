@@ -1146,7 +1146,7 @@ pub mod tests {
         let s = text(&fixture(), 160);
         for want in [
             "prometheus: timed out",
-            "FLEET  3 of 3 rows, spend: 9 Costs",
+            "FLEET  3 of 3 rows, spend: 0 Costs",
             "all 3",
             "TIER  WHO",
             "1 sessions",

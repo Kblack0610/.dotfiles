@@ -12,7 +12,7 @@ pub struct Tab {
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 9] = [
+pub const TABS: [Tab; 10] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -69,8 +69,15 @@ pub const TABS: [Tab; 9] = [
         question: "Who is working, on what, and can I afford it?",
         sections: &["workers", "accounts"],
     },
-    // Last, so no digit shifts. Every dollar figure the other tabs showed is here, cut seven
-    // ways; they keep a one-line badge that links in.
+    // After the older tabs, so they keep their digits.
+    Tab {
+        id: "schedules",
+        title: "Schedules",
+        question: "What runs on its own, and why?",
+        sections: &["table", "detail"],
+    },
+    // Last, the tenth (key 0), so no digit shifts. Every dollar figure the other tabs showed is
+    // here, cut seven ways; they keep a one-line badge that links in.
     Tab {
         id: "costs",
         title: "Costs",

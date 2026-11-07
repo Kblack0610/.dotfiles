@@ -21,6 +21,7 @@ mod outboxtab;
 mod projtab;
 mod proptab;
 mod queuetab;
+mod schedules;
 mod tabreq;
 mod tasktab;
 
@@ -41,7 +42,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub projects --json
        hub projects --page NAME
        hub tabs
-  TAB     home|daily|queue|infra|sessions|today|history|fleet|projects, or a retired name
+  TAB     home|daily|queue|infra|sessions|today|history|fleet|schedules|projects, or a retired name
           (overview, waiting, asks, focus, outbox, board, forecast, watch, shepherd, jobs, ci,
           machines) that lands on its new tab; jobs, ci and machines open that section of
           Infra, outbox the outbox under Daily
@@ -412,6 +413,18 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
+    if tab == Some(Tab::Schedules) {
+        let paths = hub_core::fleet::Paths::from_env();
+        let s = hub_core::schedules::read(&paths, &hub_core::session_actions::System);
+        for l in
+            a.sv.status(&s, a.p)
+                .iter()
+                .chain(&a.sv.table(&s, a.p, w, false))
+        {
+            let _ = writeln!(out, "{}", plain(l));
+        }
+        return i32::from(!s.errors.is_empty());
+    }
     let infra = hub_core::infra::gather();
     let failed = !infra.ok;
     a.infra = Some(infra);
@@ -534,6 +547,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     }
     if app.tab == Tab::Infra {
         app.read_reds();
+    }
+    if app.tab == Tab::Schedules {
+        app.read_schedules();
     }
     // `--tab outbox` read the outbox in open_query above.
     if app.tab == Tab::Daily && !app.daily_outbox {

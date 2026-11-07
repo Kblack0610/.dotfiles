@@ -37,6 +37,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("infra.js", JS, include_bytes!("../static/infra.js")),
     ("table.js", JS, include_bytes!("../static/table.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
+    ("schedules.js", JS, include_bytes!("../static/schedules.js")),
     ("costs.js", JS, include_bytes!("../static/costs.js")),
     ("sessions.js", JS, include_bytes!("../static/sessions.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
@@ -200,6 +201,24 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         assert_eq!(keys, hub_core::jobs::Job::COLUMNS);
+    }
+
+    #[test]
+    fn the_schedules_headers_are_hub_cores_columns() {
+        // Rule 8, less `repo` and `next`: the name says the one, a row's detail the other, and
+        // both still sort and filter.
+        use hub_core::table::Row;
+        let js = include_str!("../static/schedules.js");
+        let at = js.find("const SCHED_COLS = {").expect("no SCHED_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        let all = hub_core::schedules::Schedule::COLUMNS;
+        assert_eq!(keys, all[..all.len() - 2]);
+        assert_eq!(all[all.len() - 2..], ["repo", "next"]);
     }
 
     #[test]
