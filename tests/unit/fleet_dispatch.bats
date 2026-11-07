@@ -112,6 +112,12 @@ while [ $# -gt 0 ]; do
 done
 case "${args[0]}" in
   projects) cat "$F/projects" 2>/dev/null ;;
+  row)   # `row parse`: a stand-in for the grammar's home (notes-cli), enough for these fixtures: type(area): with a type in kinds.json
+    while IFS= read -r l; do
+      t=$(sed -nE 's/^(- \[.\] )?([a-z]+)\([a-z0-9-]+\):.*/\2/p' <<<"$l")
+      if [ -n "$t" ] && jq -e --arg t "$t" 'has($t)' "$DISPATCH_KINDS" >/dev/null 2>&1; then printf '%s\t-\t%s\t1\n' "$t" "$l"
+      else printf -- '-\t-\t%s\t0\n' "$l"; fi
+    done ;;
   board) if [ -f "$F/board.rows" ]; then jq -sc '{rows: .}' "$F/board.rows"; else echo '{"rows": []}'; fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
@@ -212,6 +218,18 @@ verdict() {
   assert_success
   assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
   assert_equal "$(jq -r '"\(.stage) \(.lane) \(.prio) \(.tier) \(.repo)"' <<<"$output")" "beta human 1 1 $SANDBOX/repos/game"
+}
+
+@test "candidates: a lane's row kinds come from one notes row parse, not one per row" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] fix(game): one $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] chore(game): two $T <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] feat(game): three $T <!-- id:gm-3 -->"
+  row game agent gm-4 "- [ ] bare row $T <!-- id:gm-4 -->"
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r '"\(.key):\(.kind)"' <<<"$output" | paste -sd,)" 'gm-1:fix,gm-2:chore,gm-3:feat,gm-4:'
+  assert_equal "$(grep -c '^notes row parse' "$NOTES_FIXTURE/calls.log")" 1
 }
 
 @test "candidates: a dev project is built by agents; a project with no stage is not" {
@@ -2802,7 +2820,7 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
 @test "night: only rows tier 3 alone holds back; a requested row goes, decisions, devices, the human's machine and lower tiers stay out" {
   night_ready
   row agent-runtime agent 'requested row' '- [ ] fix the requested row #requested #tier/3'
-  row agent-runtime agent 'decide: fold it' '- [ ] decide: fold it #tier/3'
+  row agent-runtime agent 'decide(app): fold it' '- [ ] decide(app): fold it #tier/3'
   row agent-runtime agent 'typed decide' '- [ ] decide(board): fold it #tier/3'
   row agent-runtime agent 'pad run' '- [ ] fix the pad controller switch #tier/3'
   row agent-runtime agent 'waybar row' '- [ ] waybar: fix pulse colours #tier/3'
@@ -2810,7 +2828,7 @@ fill() { run "$REPO_ROOT/.local/bin/fleet-dispatch" fill "$@"; }
   row agent-runtime agent 'unclear' '- [ ] fix something somewhere #tier/3'
   row agent-runtime agent 'started' '- [/] fix the started row #tier/3'
   row agent-runtime agent 'untagged' '- [ ] fix the untagged row'
-  for k in 'requested row' 'decide: fold it' 'typed decide' 'pad run' 'waybar row' 'tier two' 'started' 'untagged'; do night_verdict "$k"; done
+  for k in 'requested row' 'decide(app): fold it' 'typed decide' 'pad run' 'waybar row' 'tier two' 'started' 'untagged'; do night_verdict "$k"; done
   night_verdict unclear unclear false
 
   run night_rows ''
@@ -2941,9 +2959,9 @@ J
   for n in 1 2 3 4; do agent-queue add --project game --slug "work-$n" --priority high "work $n" >/dev/null; done
   acct
   row agent-runtime agent 'wt done never reaps' '- [ ] wt done never reaps (worktree.sh:213) #tier/3'
-  row agent-runtime agent 'decide: fold it' '- [ ] decide: fold it #tier/3'
+  row agent-runtime agent 'decide(app): fold it' '- [ ] decide(app): fold it #tier/3'
   night_verdict 'wt done never reaps' wt
-  night_verdict 'decide: fold it' fold
+  night_verdict 'decide(app): fold it' fold
 
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'queued 1 for the night; '
