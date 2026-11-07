@@ -160,3 +160,4 @@ Two surfaces, no overlap - that separation is what keeps the bridge from becomin
 | Symptom | Cause | Fix |
 |---|---|---|
 | An answer reached the session but sat unsent in its input box, and showed up the next time you typed there | `agent-ask` pasted and pressed Enter at once; Claude Code drops an Enter on the heels of a paste | `agent-panel send` waits for the paste to be drawn, retries a dropped Enter once, and reports a second drop (`tests/ui/session_send.bats`) |
+| An answer to a busy session (spinner running) sat unsent in its input box, though `answer` said nothing | `agent-panel send` judged the whole screen, and the spinner redrawing passed for the paste drawn and for the Enter taken | `agent-panel send` judges only the input box between Claude Code's two bottom rules (`tests/ui/session_send.bats` busy cases, `send.rs` unit tests) |

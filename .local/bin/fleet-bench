@@ -109,8 +109,9 @@
 #                                a frozen forecast against what the fleet did since, per session
 #   fleet-bench queue [--json]   the agent queue over BENCH_QUEUE_DAYS: done by outcome, PRs, per
 #                                day, wait and time to PR, from `agent-queue stats`
-#   fleet-bench models [--json] landed rate, redo rate, reverts and cost per PR by model over
-#                                BENCH_QUEUE_DAYS: queue model= joined to outcomes and model-lane runs
+#   fleet-bench models [--by class] [--json] landed rate, redo rate, reverts and cost per PR by model over
+#                                BENCH_QUEUE_DAYS: queue model= joined to outcomes and model-lane runs;
+#                                --by class splits each pairing by the task class on its outcome rows
 #   fleet-bench sizes [--json]  work minutes per row size over BENCH_SIZES_DAYS against the weight
 #                                the rollups use, and cycle and lead time per row kind
 #   fleet-bench requests [--json] [--since T]
@@ -120,7 +121,7 @@
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
-# BENCH_ITEMS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
+# BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR.
 
@@ -211,6 +212,7 @@ set -uo pipefail
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
+: "${BENCH_ADMISSION_CMD:=agent-queue admission --json}"   # the queue's admission: automated adds it held
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
 : "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile
@@ -758,7 +760,7 @@ outcomes_newest() {
 }
 
 outcomes_latest() {
-  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, cost_by_model, models, edits, activity, tool_errors: .hard_errors.tool_errors}}) | from_entries'
+  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, cost_by_model, models, edits, activity, class, tool_errors: .hard_errors.tool_errors}}) | from_entries'
 }
 
 # in_window <file> <epoch field> <now> [since] -> the file's rows whose field falls since
@@ -1485,11 +1487,12 @@ ledger_counts() {
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
 # routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves (triage_coverage).
 # reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json).
+# admission_held: automated adds the queue's admission held in the last 7 days (agent-queue admit).
 # cost_per_merged_item rides the same read but is not a link: the work ledger's spend per landed
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting"
 
 # chain_counts <now> -> one key=value line per KPI_CHAIN entry, ? when its source cannot be read
 chain_counts() {
@@ -1538,6 +1541,9 @@ chain_counts() {
   local orphans
   if orphans=$(plans_orphaned); then echo "plans_unqueued=$(grep -c . <<<"$orphans")"; else echo "plans_unqueued=?"; fi
   echo "routes_unresolved=$(triage_coverage | grep -c .)"
+  local held
+  held=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -er '.held_7d | numbers' 2>/dev/null) || held='?'
+  echo "admission_held=$held"
   reds_counts "$1"
   pipeline_json "$t" | jq -r 'def n: if . == null then "?" else . end;
     "chain_drift=\(.drift | n)",
@@ -2052,8 +2058,8 @@ queue_section() {
 # a row's cost is, and mixed means it holds both. cost_per_pr divides by priced, the landed items with a known cost: a landed item with none would pass as free and pull
 # the row under pairings that are fully priced. This is the evidence a lane graduates or demotes on.
 models_json() {
-  local since; since=$(( $1 - BENCH_QUEUE_DAYS * 86400 ))
-  jq -cn --argjson days "$BENCH_QUEUE_DAYS" --argjson since "$since" \
+  local since by="${2:-}"; since=$(( $1 - BENCH_QUEUE_DAYS * 86400 ))
+  jq -cn --arg by "$by" --argjson days "$BENCH_QUEUE_DAYS" --argjson since "$since" \
      --slurpfile items <($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
      --slurpfile outcomes <(outcomes_latest) \
      --slurpfile runs <(jq -c 'select(.id and .ts)' "$BENCH_LANE_LOG" 2>/dev/null) '
@@ -2063,20 +2069,23 @@ models_json() {
     def metered: (.gateway_cost_usd // "") != "";
     def alias: capture("^claude-(?<f>[a-z]+)-").f // .;
     ($outcomes[0] // {}) as $o
-    | def spent_most: [sids[] | $o[.] // empty] as $rows
+    | def cls: ([sids[] | $o[.].class // empty] | first) as $c
+        | if $c then "\($c.kind // "untyped")/\($c.size // "-")" else "unclassed" end;
+      def spent_most: [sids[] | $o[.] // empty] as $rows
         | ([$rows[] | .cost_by_model // {} | to_entries[] | select(.value > 0 and (.key | startswith("<") | not))]
             | group_by(.key) | map({key: .[0].key, usd: (map(.value) | add)}) | max_by(.usd) | .key)
           // ([$rows[] | .models // [] | .[] | select(startswith("<") | not)] | group_by(.) | max_by(length) | .[0]);
       ($items | map(select(.status != "cancelled")
-        | . + {m: (((.model // spent_most) | if . then alias else . end) // "unrecorded"), h: (.agent // "claude")})) as $done
+        | . + {m: (((.model // spent_most) | if . then alias else . end) // "unrecorded"), h: (.agent // "claude")}
+        + (if $by == "class" then {c: cls} else {} end))) as $done
     | ($runs | map(select((.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since) | . + {h: (.harness // "claude")})) as $rs
-    | ([$done[] | [.m, .h]] + [$rs[] | [.ran, .h]] | unique) as $pairs
-    | {days: $days, models: ($pairs | map(. as [$m, $h]
-        | ($done | map(select(.m == $m and .h == $h))) as $it
+    | (if $by == "class" then [$done[] | [.m, .h, .c]] else ([$done[] | [.m, .h]] + [$rs[] | [.ran, .h]]) end | unique) as $pairs
+    | {days: $days, models: ($pairs | map(. as [$m, $h, $c]
+        | ($done | map(select(.m == $m and .h == $h and ($by != "class" or .c == $c)))) as $it
         | ($it | map(select(landed)) | length) as $landed
         | ($it | map(sids[]) | unique | map($o[.] // empty)) as $sess
         | ($it | map({landed: landed, source: (if metered then "gateway" elif any(sids[]; $o[.] != null) then "list" else null end)})) as $priced_items
-        | ($rs | map(select(.ran == $m and .h == $h))) as $r
+        | ($rs | map(select($by != "class" and .ran == $m and .h == $h))) as $r
         | ($r | map(select(.outcome)) | length) as $rated
         | ($r | map(select(.outcome == "redo")) | length) as $redo
         | (($it | map(select(metered) | .gateway_cost_usd | tonumber) | add // 0)
@@ -2088,17 +2097,29 @@ models_json() {
            runs: ($r | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
            cost_usd: ($cost * 100 | round / 100), priced: $priced, cost_per_pr: (if $priced > 0 then ($cost / $priced * 100 | round / 100) else null end),
-           source: (if ($src | length) > 1 then "mixed" else ($src[0] // "-") end)}))}'
+           source: (if ($src | length) > 1 then "mixed" else ($src[0] // "-") end)}
+          + (if $by == "class" then {class: $c, runs: null, rated: null, redo: null, redo_rate: null} else {} end)))}'
 }
 
-# models_section <now>: the models table, in the scorecard
+# models_section <now> [class]: the models table, in the scorecard; "class" splits each pairing by
+# the task class stamped on its sessions' outcome rows (kind/size, from the item's roadmap row)
 models_section() {
-  local j
+  local j by="${2:-}"
   echo "## Models"
   echo
   echo "Queue items finished in the last ${BENCH_QUEUE_DAYS} days by the model and harness they started on, joined to their sessions' outcomes; redo is model-lane's runs on that pairing that were put back in the queue (\`model-lane report\`). Landed is done ok with a PR. Source says what a cost is: list is an estimate at list price, not money paid; gateway is dollars metered at the LiteLLM gateway; mixed holds both. Per PR counts only PRs with a known cost. Counts, not a winner: pairings ran different tasks."
   echo
-  j=$(models_json "$1") || { echo "- models: ? (queue or outcomes unreadable)"; return 0; }
+  j=$(models_json "$1" "$by") || { echo "- models: ? (queue or outcomes unreadable)"; return 0; }
+  if [ "$by" = class ]; then
+    echo "Class is kind/size of the item's roadmap row, stamped on its sessions' outcome rows by \`agentctl-session-outcomes\`; unclassed is an item none of whose sessions carries one (a row written before the stamp, or no row). Redo is model-lane's and has no class, so it is left out."
+    echo
+    echo "| Class | Model | Harness | Done | Landed | Rate | Failed | Reverts | Cost | Per PR | Source |"
+    echo "|---|---|---|---|---|---|---|---|---|---|---|"
+    jq -r 'def d: if . == null then "-" else tostring end;
+      .models | sort_by(.class, -.done)[]
+      | "| \(.class) | \(.model) | \(.harness) | \(.done) | \(.landed) | \(.landed_rate | d) | \(.failed) | \(.reverts) | $\(.cost_usd) | \(if .cost_per_pr == null then "-" else "$\(.cost_per_pr)" end) | \(.source) |"' <<<"$j"
+    return 0
+  fi
   echo "| Model | Harness | Done | Landed | Rate | Failed | Redo | Reverts | Cost | Per PR | Source |"
   echo "|---|---|---|---|---|---|---|---|---|---|---|"
   jq -r 'def d: if . == null then "-" else tostring end;
@@ -2107,10 +2128,16 @@ models_section() {
 }
 
 cmd_models() {
-  local j
-  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench models [--json]"; return 2 ;; esac
-  j=$(models_json "$(now)") || { say "the queue or the outcomes are unreadable"; return 1; }
-  if [ "${1:-}" = --json ]; then printf '%s\n' "$j"; else models_section "$(now)" | sed '1,4d'; fi
+  local j by="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --by) [ "${2:-}" = class ] || { say "models: --by takes class"; return 2; }; by=class; shift 2 ;;
+      *) say "usage: fleet-bench models [--by class] [--json]"; return 2 ;;
+    esac
+  done
+  j=$(models_json "$(now)" "$by") || { say "the queue or the outcomes are unreadable"; return 1; }
+  if [ "$json" = 1 ]; then printf '%s\n' "$j"; else models_section "$(now)" "$by" | sed '1,4d'; fi
 }
 
 # sizes_json <now> -> the size calibration and per-kind cycle time over BENCH_SIZES_DAYS: each

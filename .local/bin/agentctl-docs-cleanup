@@ -12,8 +12,8 @@
 # It replaced the weekly propose-only skill-refine runner: six reports (2026-09-28 to 11-02) while
 # skill DEADPATH rose from 25 to 31 showed that a report nobody applies fixes nothing.
 #
-# Verdict: WORKED when it queued a pass, NOOP when there was no drift or a pass is still open,
-# FAILED when a count could not be taken.
+# Verdict: WORKED when it queued a pass, NOOP when there was no drift, a pass is still open or the
+# queue's admission held it, FAILED when a count could not be taken.
 set -uo pipefail
 # The user manager's PATH has no ~/.local/bin, where skill-drift and agent-queue live.
 PATH="$HOME/.local/bin:$PATH"
@@ -73,6 +73,14 @@ if [ "$DRY" = 1 ]; then
     echo "docs-cleanup: would queue: $task"
     exit 0
 fi
-agent-queue add --project dotfiles --slug "$SLUG" --repeat --priority low --tags night "$task" \
-    || fail "could not queue the pass ($summary)"
+# An automated filer: a queue already a day of drain deep holds the pass (agent-queue exit 5), and
+# tomorrow's run counts again.
+agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority low --tags night "$task"
+rc=$?
+if [ "$rc" -eq 5 ]; then
+    report NOOP "pass held by queue admission ($summary)"
+    echo "docs-cleanup: the queue held the pass (admission), not queued ($summary)"
+    exit 0
+fi
+[ "$rc" -eq 0 ] || fail "could not queue the pass ($summary)"
 report WORKED "queued $SLUG ($summary)"
