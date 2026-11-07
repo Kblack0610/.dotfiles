@@ -3302,6 +3302,40 @@ OUT
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
 }
 
+# 2026-11-07: ar-255 sat waiting on its open PR, its lane got a new Claude, and reap read that one
+# as the item's: back to running, and fleet-sessions held the new session STALLED on it.
+@test "reap: a recycled lane is not the session of an item that records its own ids" {
+  pr_item OPEN
+  agent-queue move fix-crash waiting >/dev/null
+  sed -i 's/^agent: claude$/agent: claude\nsessions: old-1/' "$AGENT_QUEUE_DIR"/waiting/*-fix-crash.md
+  started_item mine lab:game-agent-2
+  sed -i 's/^agent: claude$/agent: claude\nsessions: s2/' "$AGENT_QUEUE_DIR"/running/*-mine.md
+  started_item lane lab:game-agent-3
+  started_item away lab:game-agent-4
+  sed -i 's/^agent: claude$/agent: claude\nsessions: s4/' "$AGENT_QUEUE_DIR"/running/*-away.md
+  printf 'game-agent-%s\n' 1 2 3 4 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'for x in 1:busy:new-1 2:idle:s2 3:busy:s3 4:busy:new-4; do IFS=: read -r n st id <<<"$x"; echo "{\"target\":\"lab/game-agent-$n:1\",\"status\":\"$st\",\"session_id\":\"$id\"}"; done
+    echo "{\"target\":\"hub/dotfiles:5\",\"status\":\"waiting\",\"session_id\":\"s4\"}"'
+  stub agent-ask 'printf "a1\tgame\t\tpending\tquestion\tq?\ta|b\t\t\t\tb\t2026-11-07\tgame-agent-2\t\t\ts2\n"'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem waiting fix-crash)" ] || fail "a new Claude in the lane flipped the item back to running"
+  # its own Claude, matched by id, stopped on an ask: waiting; no ids recorded: the lane decides
+  [ -n "$(qitem waiting mine)" ] || fail "the item's own Claude on a pending ask did not read waiting"
+  [ -n "$(qitem running lane)" ] || fail "an item with no ids lost its lane"
+  [ -n "$(qitem waiting away)" ] || fail "the flip read the lane's busy Claude, not the item's own waiting one"
+  # a running item whose lane went to another Claude settles on its open PR
+  agent-queue move fix-crash running >/dev/null
+  run cmd_reap
+  assert_output --partial 'waiting queue item fix-crash (PR o/game#12 open'
+  # its own Claude back on the panel: running is left alone
+  agent-queue move fix-crash running >/dev/null
+  stub agent-panel 'echo "{\"target\":\"hub/dotfiles:3\",\"status\":\"busy\",\"session_id\":\"old-1\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  [ -n "$(qitem running fix-crash)" ] || fail "reaped an item whose own Claude is live"
+}
+
 @test "reap: a --pr-only item its session left waiting closes ok with merged: once the PR merges" {
   pr_item OPEN
   agent-queue move fix-crash waiting >/dev/null

@@ -487,7 +487,9 @@ item_sessions() {
 # a harness launched by claude-lazer is), a
 # parked pane (its claude exited on purpose), an item started in the last DISPATCH_REAP_GRACE
 # seconds (its claude may still be booting), or a panel it cannot read or that lists nobody.
-# REAP_PANEL caches one read per pass.
+# An item that records its session ids is alive only while one of them is on the panel; the tmux
+# session counts only for one that records none: worktree lanes are recycled, and a new Claude in
+# an old item's lane is not its session (2026-11-07 ar-255, ar-487). REAP_PANEL caches one read per pass.
 claude_gone() {
   local server="$1" sess="$2" agent="$3" started="$4" sids="$5" t
   case "$agent" in claude) ;; *) [ "$(harness_launcher "$agent")" = claude-lazer ] || return 1 ;; esac
@@ -503,8 +505,8 @@ claude_gone() {
   [ -n "$REAP_PANEL" ] || return 1
   jq -e -s --arg t "$server/$sess" --arg ids "$sids" '
     ($ids | split(" ") | map(select(. != ""))) as $ids
-    | any(.[]; ($t != "/" and ((.target // "") | sub(":[^:/]*$"; "")) == $t)
-               or ((.session_id // "") as $s | $s != "" and ($ids | index($s))))
+    | any(.[]; if $ids != [] then (.session_id // "") as $s | $s != "" and ($ids | index($s)) != null
+               else $t != "/" and ((.target // "") | sub(":[^:/]*$"; "")) == $t end)
     | not' <<<"$REAP_PANEL" >/dev/null
 }
 
@@ -2327,7 +2329,10 @@ cmd_reap() {
     [ -n "$sess" ] || continue
     [ -n "$seen" ] || { waits=$(waiting_sessions) && seen=1 || seen=unreadable; }
     [ "$seen" = 1 ] || continue
-    want=running; grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting
+    # By the item's own Claude when it records one (claude_gone's rule), else by its tmux session.
+    want=running
+    if [ -n "$sids" ]; then grep -qxF -f <(printf 'sid:%s\n' $sids) <<<"$waits" && want=waiting
+    else grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting; fi
     [ "$state" = "$want" ] && continue
     agent-queue move "$slug" "$want" --if "$state" >/dev/null && logline "reaped $sess: queue item $slug $state -> $want"
   done < <(item_sessions)
@@ -2364,16 +2369,23 @@ reconcile_plans() {
 # a shell (agent-panel's own `~`): counting only busy would flip a session on a gate every pass. An
 # item names a session, not a window, so a session several Claudes share (a world session) says
 # nothing about any one item and is left out: one window waiting would otherwise flip every item on it.
+# The same two reads by Claude session id come out as "sid:<id>", for an item that records its own:
+# one id is one Claude, so no session is shared there.
 waiting_sessions() {
-  local panel asks shared working
+  local panel asks shared working wsids
   panel=$(agent-panel list --json 2>/dev/null) || return 1
   asks=$(agent-ask list --all --pending 2>/dev/null) || return 1
   shared=$(jq -r 'select(.status != "shell") | .target | sub(":[^:/]*$"; "")' <<<"$panel" 2>/dev/null | sort | uniq -d)
   working=$(jq -r 'select(.status == "busy" or .status == "shell") | .target | sub(":[^:/]*$"; "") | sub(".*/"; "")' <<<"$panel" 2>/dev/null)
+  wsids=$(jq -r 'select(.status == "busy" or .status == "shell") | .session_id // empty' <<<"$panel" 2>/dev/null)
   {
     jq -r 'select(.status == "waiting") | .target | sub(":[^:/]*$"; "")' <<<"$panel" 2>/dev/null
     cut -f13 <<<"$asks" | grep . | grep -vxF -f <(printf '%s\n' "$working")
   } | grep -vxF -f <(printf '%s\n' "$shared"; sed 's,.*/,,' <<<"$shared")
+  {
+    jq -r 'select(.status == "waiting") | .session_id // empty' <<<"$panel" 2>/dev/null
+    cut -f16 <<<"$asks" | grep . | grep -vxF -f <(printf '%s\n' "$wsids")
+  } | sed 's/^/sid:/'
   return 0
 }
 
