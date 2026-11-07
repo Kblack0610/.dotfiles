@@ -149,7 +149,12 @@ catch_up() {
     printf 'agent-land: behind origin/%s by %s and merging it conflicts: resolve the merge and re-run\n' "$base" "$behind" >&2
     exit 3
   fi
-  out=$(git push -q 2>&1) || fail push "$(lastline "$out")"
+  # Push HEAD to the ref the branch tracks: a bare `git push` under push.default=simple refuses
+  # when the local name differs from its upstream (agent-11 -> feat/x, PR #1252).
+  local remote ref
+  read -r remote ref < <(git for-each-ref --format='%(upstream:remotename) %(upstream:remoteref)' "$(git symbolic-ref -q HEAD)" 2>/dev/null)
+  [ -n "${remote:-}" ] && [ -n "${ref:-}" ] || fail push "the checked-out branch tracks no upstream: git push -u <remote> HEAD:$head_ref, then re-run"
+  out=$(git push -q "$remote" "HEAD:$ref" 2>&1) || fail push "$(lastline "$out")"
   echo "fetch: merged origin/$base ($behind behind) into the green head and pushed it"
   # GitHub works out whether a pushed head merges after the push and refuses the merge until then
   # ("not mergeable"). No event says when, so the PR is polled at the checks cadence until it
