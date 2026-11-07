@@ -18,7 +18,7 @@ Backticked labels in `Must answer` are required in that section. In `Applies`, `
 | `## Source of truth` | infra, app | Which store owns each fact, the one writer, what this removes | 09-18: a retired database stayed online 74 days |
 | `## Telemetry` | infra, app | The signal at each link of the chain, where it surfaces, what alerts. Reuse Sentinel, `fleet-bench` and the dashboards | 10-29: a gate starved 8 hours. 09-20: a gallery sat stale 24 days behind a 200 |
 | `## Target` | infra | Which environment, which owning layer, and rollback if exposed or irreversible | 10-31: a DNS record survived the revert |
-| `## Release` | app | Risk lane, regulated data, critical e2e paths, store impact | Skipped lanes reach users: `release-coordinator`, `compliance`, `bnb-quality-gates` |
+| `## Release` | app, game | Store impact, risk lane, regulated data, critical e2e paths. A plan that cuts or uploads a build is held to the bar in `~/.claude/skills/release/SKILL.md` | Skipped lanes reach users: `release-coordinator`, `compliance`, `bnb-quality-gates`, `release` |
 | `## Playtest` | game | Which game, gate class, multiplayer proof, what only human play can judge, perf or look evidence, rating impact | 11-02: physics feel is only found by playing |
 
 Scaling: a section that does not apply says `n/a: <reason>`, except Context and Verification, which always have content. A plan with `## Phases` may not use `n/a`.
@@ -39,4 +39,4 @@ Client work adds the rows in `~/.config/agentctl/PLANNING-CLIENT.md`, kept priva
 | Shell and provisioning | skills `shell-test-harness`, `provision-capture` |
 | Infrastructure | `~/dev/home/home-config/CLAUDE.md`, `~/dev/home/home-config/docs/gitops.md` |
 | Apps | `~/dev/bnb/platform/docs/testing/CRITICAL_PATHS.md`, `~/dev/bnb/platform/docs/compliance/`, skills `release-coordinator`, `bnb-quality-gates`, `compliance` |
-| Games | In the playground repo: `docs/development/standards.md`, `docs/development/multiplayer-testing.md`, `docs/operations/ci.md`, `docs/operations/game-eval.md`, `docs/authoring/`; skills `game-eval`, `content-rating` |
+| Games | In the playground repo: `docs/development/standards.md`, `docs/development/multiplayer-testing.md`, `docs/operations/ci.md`, `docs/operations/game-eval.md`, `docs/authoring/`, `docs/operations/steam.md`; skills `game-eval`, `content-rating`, `release` |
