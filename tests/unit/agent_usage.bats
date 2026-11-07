@@ -456,7 +456,7 @@ spend_curl() {
 }
 
 @test "spend check: an answer that is not a vector of numbers exits 2, never a silent zero" {
-  for body in '{}' '{"status":"error"}' '{"status":"success","data":{"result":"x"}}' 'not json' '{"data":{"result":[{"metric":{},"value":[0,"NaN"]}]}}'; do
+  for body in '{}' '{"status":"error"}' '{"status":"success","data":{"result":"x"}}' 'not json' '{"status":"success","data":{"result":[{"metric":{},"value":[0,"NaN"]}]}}'; do
     spend_curl "$body"
     run "$AU" spend check 1h 150
     assert_failure 2
