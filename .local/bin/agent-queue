@@ -759,11 +759,14 @@ cmd_add() {
   fi
   local state=queued now; now="$(now_utc)"
   [ -n "$running" ] && state=running
-  # `type(area): title`, the board's row grammar, on the task's first line or its --title.
-  local ctype='' carea='' sid=''
-  if [[ "$(head -1 <<<"${title:-$text}")" =~ ^([a-z]+)\(([A-Za-z0-9_./-]+)\)!?:\  ]]; then
-    ctype="${BASH_REMATCH[1]}" carea="${BASH_REMATCH[2]}"
+  # `type(area): title` on the task's first line or its --title, parsed by the grammar's one home.
+  local ctype='' carea='' sid='' parsed ok=''
+  if parsed="$(head -1 <<<"${title:-$text}" | notes row parse 2>/dev/null)" && [ -n "$parsed" ]; then
+    IFS=$'\t' read -r ctype carea _ ok <<<"$parsed"
+  else
+    echo "agent-queue: notes row parse failed, so $slug is untyped (an old notes? notes-bootstrap --build-only)" >&2
   fi
+  [ "$ok" = 1 ] || ctype='' carea=''
   # Only a session taking the item works it. One queueing it for later did not, and outcomes
   # would charge that session's cost and revert count to this item.
   [ -z "$running" ] || sid="$(claude_sid)" || sid=

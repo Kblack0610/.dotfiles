@@ -724,6 +724,8 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "add --running records the Claude session, a queued add does not; the row grammar's type and area; claim adds a session once" {
+  printf '%s\t%s\t%s\t%s\t1\n' "fix(agent-land): mine picks a waiting item" fix agent-land "mine picks a waiting item" \
+    "feat(queue): a ledger" feat queue "a ledger" > "$NOTES_FIXTURE/row.parse"
   CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug typed "fix(agent-land): mine picks a waiting item"
   f="$(item running typed)"
   [ "$(field "$f" sessions)" = sid-a ]
@@ -732,6 +734,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$f" type)" = fix ]
   [ "$(field "$f" area)" = agent-land ]
   "$AQ" add --project game --slug untyped "Menu: pick sides"
+  assert_called 'notes row parse'
   [ -z "$(field "$(item queued untyped)" sessions)" ]
   [ -z "$(field "$(item queued untyped)" type)" ]
   "$AQ" add --project game --slug titled --title "feat(queue): a ledger" "the long brief"
@@ -1310,7 +1313,7 @@ STUB
   run "$AQ" add --project game --epic lv-3 --priority low --slug menus "feat(menu): live main menus #night"
   assert_success
   assert_line "story lv-9 on the level agent board, under lv-3"
-  run grep '^notes' "$NOTES_FIXTURE/calls.log"
+  run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
   assert_line --index 0 'notes --profile bnb ptask level --agent propose -- feat(menu): live main menus'
   assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): live main menus #size/s #low #of/lv-3'
   assert_line --index 2 'notes --profile bnb ptask level --agent start lv-9'
@@ -1444,8 +1447,10 @@ OUT
 @test "an item write never fails on its event: a notes that cannot record leaves the write standing" {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/notes"
   chmod +x "$SANDBOX/bin/notes"
-  run "$AQ" add --project game --from board:level:lv-2 --slug sturdy "x"
+  run "$AQ" add --project game --from board:level:lv-2 --slug sturdy "fix(x): y"
   assert_success
+  assert_output --partial "notes row parse failed, so sturdy is untyped"
+  [ -z "$(field "$(item queued sturdy)" type)" ]
   run "$AQ" move sturdy running
   assert_success
   assert_output "sturdy: queued -> running"
