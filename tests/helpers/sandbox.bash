@@ -122,6 +122,11 @@ sandbox_init() {
   # and an item satisfies the focus gate.
   unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM
 
+  # A suite run from a dispatched session (agentctl-run) also inherits CLAUDE_HEADLESS=1, which
+  # switches the focus gate off, and AGENTCTL_MODEL, which outranks the conf MODEL and the
+  # route's model. Neither is in scrub.list's [scrub] section, so the unset below misses them.
+  unset CLAUDE_HEADLESS AGENTCTL_MODEL
+
   # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
   # that as "detach through systemd-run", which would start a real transient scope.
   unset INVOCATION_ID
