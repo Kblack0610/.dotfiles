@@ -1559,7 +1559,7 @@ coverage_setup() {
   printf 'name: standing\nexpiry: null\n' > "$TRIAGE_WATCHES/standing.yaml"
   printf 'name: bake\nexpiry: 2026-11-07T00:00:00Z\n' > "$TRIAGE_WATCHES/bake.yaml"
   : > "$LEDGER_CONF_DIR/alpha.conf"
-  printf '^check.watch.: standing tripped\talert\t-\tpages\t-\n^fix.runner.: ([a-z-]+) is\tagent\t-\tfix it\t-\n' > "$TRIAGE_ROUTES"
+  printf '^check.watch.: standing tripped\talert\t-\tpages\t-\n^fix.runner.: ([a-z-]+) is\tagent\t-\tfix it\t-\n^fix.hold.: ([a-z0-9-]+) went red\tagent\t-\tfix it\t-\n' > "$TRIAGE_ROUTES"
 }
 
 @test "triage --coverage: every standing watch and runner resolves; a one-off watch needs no line" {
@@ -1580,6 +1580,11 @@ coverage_setup() {
   run "$SUBJECT" triage --coverage
   assert_failure
   assert_output 'runner alpha'
+  coverage_setup
+  sed -i '/hold/d' "$TRIAGE_ROUTES"
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'hold'
 }
 
 @test "triage --route: each key gets the first line its row matches, and no line is a dash" {
@@ -1653,6 +1658,7 @@ hold_setup() {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"; printf '[]' > "$GHD/runs"
+  export FLEET_MAIN_TTL=0 # each test's runs decide
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
   cat >> "$SANDBOX/bin/gh" <<'GH'
 [ -e "$D/down" ] && exit 1
@@ -1671,7 +1677,7 @@ GH
 # ci <id> <conclusion> <sha> <offset>: one run of main, appended
 ci() {
   jq -c --argjson i "$1" --arg c "$2" --arg s "$3" --arg at "$(date -u -d "@$((T0 + $4))" +%FT%TZ)" \
-    '. + [{id: $i, name: "shell tests", status: "completed", conclusion: $c, head_sha: $s, created_at: $at}]' \
+    '. + [{id: $i, event: ($ENV.CI_EVENT // "push"), name: "shell tests", status: "completed", conclusion: $c, head_sha: $s, created_at: $at}]' \
     "$GHD/runs" > "$GHD/runs.new" && mv "$GHD/runs.new" "$GHD/runs"
 }
 
@@ -1747,6 +1753,22 @@ failed() {
   printf '[]' > "$GHD/runs"; ci 2 failure aaa11111 -3601
   run "$SUBJECT" triage --dry-run
   refute_output --partial 'fix(hold)'
+}
+
+@test "hold: a scheduled run going red is no merge's fault, and a run's failed files are read once" {
+  hold_setup
+  cleanup a -3600 5 aaa11111 .local/bin/tool
+  echo 'run tool' > "$GHD/tool.bats"
+  failed 2 unit/tool.bats
+  ci 1 success aaa11111 -3601; CI_EVENT=schedule ci 2 failure bbb22222 -1800
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'fix(hold)'
+  printf '[]' > "$GHD/runs"; ci 1 success zzz00000 -7200; ci 2 failure aaa11111 -3601
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'fix(hold): ci-aaa11111-shell-tests went red'
+  rm "$GHD/log.2"
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'unit/tool.bats'
 }
 
 @test "hold: a cancelled merge run still dates the merge, and an unreadable repo is said, not green" {
