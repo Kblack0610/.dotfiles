@@ -87,6 +87,7 @@ eval_json() {
     --slurpfile I "$tmp/ingest" --argjson src "$src" --argjson settle "$((SETTLE_H * 3600))" \
     --argjson shas "$shas" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" \
+    --arg hard "$JUDGE_HARD_STOPS" \
     --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
     '$A[0] as $asks | $C[0] as $calls | $V[0] as $verdicts | $Q[0] as $queue | $P[0] as $picks | '"$JQ_EVAL" || rc=$?
   rm -rf "$tmp"
@@ -136,7 +137,7 @@ JQ_EVAL="$JQ_EPOCH"'
          elif $a.status != "answered" or ($a.answered_by // "human") != "human" then "unscorable"
          elif $human == null then "unscorable"
          elif $kind == "answer" then (if ($human | ascii_downcase) == ($want | ascii_downcase) then "tp" else "fp" end)
-         elif ($a.judge_rule // "") == "unclear-ask" then "unscorable"
+         elif ($a.judge_rule // "") == "unclear-ask" or ($hard | split(" ") | index($a.judge_type // "")) then "unscorable"
          elif ($a.recommend // "") == "" then "unscorable"
          elif ($human | ascii_downcase) == ($a.recommend | ascii_downcase) then "fn" else "tn" end)}] as $askrows
    # Dispatch: an error line is one verdict each (the row is judged again); otherwise the newest
