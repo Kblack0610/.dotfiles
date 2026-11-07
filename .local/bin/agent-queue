@@ -288,7 +288,7 @@ cmd_admission() {
   [ -s "$AQ_ADMISSION_LOG" ] && held="$(jq -s --arg s "$since" '[.[] | select(.at >= $s) | [.project, .slug]] | unique | length' "$AQ_ADMISSION_LOG" 2>/dev/null)"
   if [ -n "$json" ]; then
     jq -nc --argjson r "$r" --argjson l "$l" --argjson d "$d" --argjson h "${held:-0}" --argjson on "$([ "$AQ_ADMIT_DAYS" != 0 ] && echo true || echo false)" \
-      '{on: $on, runnable: $r, limit: $l, drain_per_day: $d, held_7d: $h, admits: ($on | not) or $r < $l}'
+      '{on: $on, runnable: $r, limit: $l, drain_per_day: $d, held_7d: $h, admits: (($on | not) or $r < $l)}'
   else
     printf 'admission: %s, %s can start now against a limit of %s (%s day of drain at %s/day); %s automated adds held in %s days\n' \
       "$([ "$AQ_ADMIT_DAYS" != 0 ] && { [ "$r" -lt "$l" ] && echo admitting || echo holding; } || echo off)" "$r" "$l" "$AQ_ADMIT_DAYS" "$d" "${held:-0}" "$AQ_DRAIN_DAYS"
