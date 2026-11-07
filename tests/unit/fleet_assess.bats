@@ -542,3 +542,29 @@ rows_with() {
   assert_line --regexp '^30 +60\.0 .* 70\.0$'
   [ "${#lines[@]}" -eq 1 ]
 }
+
+@test "rows: load scattered under init, systemd and tmux does not put a row on the common ancestor" {
+  PS_TABLE='1 0 0 0.0 systemd systemd
+2 1 0 0.0 systemd systemd --user
+3 2 0 0.0 tmux: tmux: server
+40 3 0 20.0 bash bash
+41 3 0 20.0 bash bash
+42 3 0 20.0 bash bash'
+  run rows_with
+  refute_output --regexp '^(1|2|3) '
+  [ "${#lines[@]}" -eq 0 ]
+}
+
+@test "rows: a deep chain names only the lowest process that reaches the line, and Unity batchmode always shows" {
+  PS_TABLE='50 1 0 0.0 claude claude
+51 50 0 0.0 bash bash
+52 51 0 1.0 make make
+53 52 0 30.0 cc1 cc1 a
+54 52 0 30.0 cc1 cc1 b
+60 1 0 0.5 Unity Unity -batchmode -projectPath /p'
+  run rows_with
+  assert_line --regexp '^52 +1\.0 .* 61\.0$'
+  assert_line --regexp '^60 +0\.5 '
+  refute_output --regexp '^(50|51) '
+  [ "${#lines[@]}" -eq 2 ]
+}
