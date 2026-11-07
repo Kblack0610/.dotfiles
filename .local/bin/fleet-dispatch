@@ -59,7 +59,7 @@ unset _k _v
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
 : "${DISPATCH_MAX_LIVE:=6}"   # run units the runner's own sessions may hold: a heavy item 2, a light one 1
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
-: "${DISPATCH_START_LOAD:=2.5}"   # 1-min load one session started in the last DISPATCH_START_LOAD_MIN minutes will still add: load lags a start (2026-11-07: 21 hand starts passed the check on a load of 14.6, 73.6 five minutes on, 24 cores); 0 turns it off
+: "${DISPATCH_START_LOAD:=2.5}"   # 1-min load one session started in the last DISPATCH_START_LOAD_MIN minutes will still add; 0 is off. Provisional: 2.8 measured over 21 starts on 24 cores (2026-11-07), medium confidence; re-measure when the session mix changes
 : "${DISPATCH_START_LOAD_MIN:=5}"   # minutes a start counts as not yet in the load
 : "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine really idle: niced Unity runs fill it while load looks fine
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06)
@@ -2443,11 +2443,13 @@ firing_findings() {
 # (the `started` lines the log already holds, as present_left counts its own) and the load they have
 # not yet put on the 1-min average. A start's load arrives minutes late, so a loop of starts that
 # each read the load sees the same low number; counting the starts closes that. Hand starts and a
-# pass's own earlier starts are in the log the moment cmd_start returns.
+# pass's own earlier starts are in the log the moment cmd_start returns. A resume counts too: a
+# restored session boots and loads like a new one. An unreadable window refuses, like every gate.
 pending_load() {
   local n
+  [ "$DISPATCH_START_LOAD" != 0 ] || { echo "0 0.0"; return; }
   n=$(awk -v c="$(date -d "-$DISPATCH_START_LOAD_MIN min" '+%Y-%m-%d %H:%M')" '$4 == "started" && ($2 " " $3) >= c' "$LOG" 2>/dev/null | grep -c . || true)
-  awk -v n="${n:-0}" -v l="$DISPATCH_START_LOAD" 'BEGIN { printf "%d %.1f\n", n, n * l }'
+  LC_ALL=C awk -v n="${n:-0}" -v l="$DISPATCH_START_LOAD" 'BEGIN { printf "%d %.1f\n", n, n * l }'
 }
 
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
