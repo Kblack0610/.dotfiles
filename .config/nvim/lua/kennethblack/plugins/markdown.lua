@@ -114,23 +114,86 @@ return {
       --   Keymaps: <leader>tP raise / <leader>tp lower (cursor follows the task),
       --            stopping at either end of low -> high -> urgent
       local PRIORITIES = { "low", "high", "urgent" }
+      local PRIORITY_RANK = { low = 1, high = 2, urgent = 3 }
 
-      -- Return (base_without_tag, current_level_or_nil): strip the priority tag wherever it
-      -- sits and trim trailing whitespace.
+      -- Every inline hashtag on `line`, plus where the scan began. Mirrors md::for_each_tag and
+      -- md::tag_span, the one tag grammar, so this file and the `notes` CLI agree on where a tag
+      -- ends: the body runs over letters, digits and `_-/.`, and a trailing `-/.` is not part of
+      -- the name. So `#high-priority` is its own tag rather than `#high`, and a sentence-final
+      -- `#high.` still names `high`. A `#` glued to a word (`foo#high`, `[[a#high]]`), inside a
+      -- code span, or opening a heading starts no tag. Each tag is
+      -- `{ hash, from, to, scan }`: the `#`, the first and last byte of its name, and the byte
+      -- after the body the scan stopped at.
+      local function each_tag(line)
+        local start = 1
+        local indent = #line:match "^%s*"
+        local marker = line:match("^#+ ", indent + 1)
+        if marker then
+          start = indent + #marker + 1
+        end
+        local tags, i, in_code = {}, start, false
+        while i <= #line do
+          local c = line:sub(i, i)
+          if c == "`" then
+            in_code = not in_code
+          elseif
+            c == "#"
+            and not in_code
+            and not (i > 1 and line:sub(i - 1, i - 1):match "[%w_/.%[#]")
+            and line:sub(i + 1, i + 1):match "%a"
+          then
+            local k = i + 1
+            while k <= #line and line:sub(k, k):match "[%w_%-/.]" do
+              k = k + 1
+            end
+            local e = k - 1
+            while e > i + 1 and line:sub(e, e):match "[%-/.]" do
+              e = e - 1
+            end
+            tags[#tags + 1] = { hash = i, from = i + 1, to = e, scan = k }
+            i = k - 1
+          end
+          i = i + 1
+        end
+        return tags, start
+      end
+
+      -- Return (base_without_tag, current_level_or_nil): strip every priority tag wherever it
+      -- sits and trim trailing whitespace; the level is the most urgent one. Cuts as
+      -- md::split_priority cuts: each tag goes with one neighbouring space (the one before it,
+      -- else the one after), and a trailing `.` is given back to the prose. Unlike the CLI it
+      -- trims an untagged line too, which task_key and set_priority rely on.
       --
-      -- Deliberately NOT anchored to end-of-line. It used to be, which was fine while a
-      -- priority tag was always last; a release tag now follows it (`#high #v0.0.2`), and an
-      -- anchored match reads such a task as untagged, so `<leader>tP` would restart the ladder
-      -- from nothing every time. Mirrors md::split_priority, which never anchored.
+      -- Deliberately NOT anchored to end-of-line: a release tag follows the priority tag
+      -- (`#high #v0.0.2`), and an anchored match read such a task as untagged.
       local function strip_priority(line)
-        local level
-        for i = #PRIORITIES, 1, -1 do
-          local stripped, n = line:gsub("%s*#" .. PRIORITIES[i] .. "%f[%W]", "")
-          if n > 0 then
-            line, level = stripped, level or PRIORITIES[i]
+        local tags, start = each_tag(line)
+        local level, rank, out, cursor = nil, 0, {}, 1
+        for _, t in ipairs(tags) do
+          local name = line:sub(t.from, t.to):lower()
+          local r = PRIORITY_RANK[name]
+          if r then
+            if r > rank then
+              level, rank = name, r
+            end
+            local cs, ce = t.hash, t.scan - 1
+            while ce > t.to and line:sub(ce, ce) == "." do
+              ce = ce - 1
+            end
+            if cs > start and line:sub(cs - 1, cs - 1) == " " then
+              cs = cs - 1
+            elseif line:sub(ce + 1, ce + 1) == " " then
+              ce = ce + 1
+            end
+            out[#out + 1] = line:sub(cursor, cs - 1)
+            cursor = math.max(cursor, ce + 1) -- two tags can claim the space between them
           end
         end
-        return (line:gsub("%s+$", "")), level
+        if not level then
+          return (line:gsub("%s+$", "")), nil
+        end
+        out[#out + 1] = line:sub(cursor)
+        return (table.concat(out):gsub("%s+$", "")), level
       end
 
       -- Set the priority tag on a range to `level` ("urgent"/"high"/"low"), or clear it
@@ -153,6 +216,8 @@ return {
       -- The level a task has when nobody has said otherwise. Mirrors md::DEFAULT_PRIORITY.
       -- Every task carries a priority, so there is no "no tag" state to cycle through.
       local DEFAULT_PRIORITY = "high"
+      -- The level of a `## Focus` task nobody placed in a lane. Mirrors md::FOCUS_DEFAULT_PRIORITY.
+      local FOCUS_DEFAULT_PRIORITY = "low"
 
       -- Ladder of priority levels, least -> most urgent. `step_priority` walks one rung in
       -- `dir` (+1 toward urgent, -1 toward low) and CLAMPS at either end rather than
@@ -208,18 +273,6 @@ return {
         { "low", "### Low" },
       }
 
-      -- Lane index for an open task by its priority tag (space-preceded #tag, word-ended),
-      -- else #LANES + 1 (untagged). Most-urgent tag wins.
-      local function task_lane(line)
-        for i, lane in ipairs(LANES) do
-          local pat = "%f[%S]#" .. lane[1] .. "%f[%W]"
-          if line:match(pat) then
-            return i
-          end
-        end
-        return #LANES + 1
-      end
-
       -- Any `### `-heading / `---` rule this sweep owns (stripped, re-emitted only where a
       -- lane is non-empty). An unrelated authored heading is preserved as content.
       local function is_scaffold(l)
@@ -252,16 +305,29 @@ return {
         return (line:gsub("%s+$", "")) .. " " .. tag
       end
 
-      -- Index of the default lane within `lanes`, falling back to the most urgent offered.
-      -- `lanes` can be a sub-slice, so the default is located by name rather than by its index
-      -- in the full table. Mirrors sweep::default_lane.
-      local function default_lane(lanes)
-        for i, lane in ipairs(lanes) do
-          if lane[1] == DEFAULT_PRIORITY then
+      -- Index of the lane named `level`.
+      local function lane_index(level)
+        for i, lane in ipairs(LANES) do
+          if lane[1] == level then
             return i
           end
         end
-        return 1
+      end
+
+      -- The open task a line of text in `## Focus` stands for, nil for a blank, a task, a heading,
+      -- a rule or a comment. An empty bullet comes back as the `- [ ]` slot the sweep drops.
+      -- Mirrors md::loose_task.
+      local function loose_task(l)
+        local t = l:match "^%s*(.-)%s*$"
+        if t == "" or t:match "^%- %[.%]" or t:match "^#+ " or t:match "^%-%-%-" or t:match "^<!%-%-" then
+          return nil
+        end
+        if t:match "^[-*+]$" then
+          return "- [ ] "
+        end
+        local text = t:match "^[-*+]%s+(.*)$" or t
+        -- `* [x] done` is a checklist in another bullet: it keeps its box.
+        return (text:match "^%[.%]" and "- " or "- [ ] ") .. text
       end
 
       -- Which LANES index this scaffold line opens, or nil if it's a non-lane scaffold
@@ -275,21 +341,26 @@ return {
         return nil
       end
 
-      -- Pure rebuild of the `## Focus` body, grouped by priority + status: untagged todos
-      -- on top, then `### Urgent`/`### High`/`### Low` (open tasks), finished (`[x]`) under
-      -- `--- / ### Done`; an in-progress `[/]` keeps its mark inside its lane. Once the
-      -- section is active, ALL lane headers + Done are emitted even when empty, so the
-      -- columns stay put as stable drop targets. A task's #tag is the source of truth, but an
-      -- untagged task sitting under a lane header inherits that lane's tag (drop-to-tag) when
-      -- `inherit` is set. Inherit is ON for the on-save sweep (you dragged a task into a
-      -- column) and OFF for the interactive cursor-follow cycle (so clearing a tag actually
-      -- clears it instead of the task re-inheriting the lane it still sits under). The single
-      -- empty `- [ ]` placeholder is kept after the untagged block. `nil` means "nothing to
-      -- organize" (no priority-tagged open task, no done, no scaffold). Idempotent.
-      local function rebuild_focus_body(body, inherit, lanes, force)
-        lanes = lanes or LANES
+      -- Pure rebuild of the `## Focus` body, grouped by priority + status:
+      -- `### Urgent`/`### High`/`### Low` (open tasks), finished (`[x]`) under `--- / ### Done`;
+      -- an in-progress `[/]` keeps its mark inside its lane. ALL lane headers + Done are emitted
+      -- even when empty, so the columns stay put as stable drop targets, and the empty `- [ ]`
+      -- slot goes. A task's #tag is the source of truth, but an untagged task sitting under a
+      -- lane header inherits that lane's tag (drop-to-tag) when `inherit` is set. Inherit is ON
+      -- for the on-save sweep (you dragged a task into a column) and OFF for the interactive
+      -- cursor-follow cycle (so clearing a tag actually clears it instead of the task
+      -- re-inheriting the lane it still sits under). Idempotent.
+      --
+      -- `kind` says which list this is. "daily" is a daily note's Focus (sweep::Layout::Focus):
+      -- a line of text is a task, a task in no lane files under Low, and the lanes are always
+      -- there. "tasks" is a sheet's `## Tasks`, which always emits and defaults to High. nil is
+      -- any other markdown with a `## Focus` heading: its prose stays, and `nil` comes back when
+      -- there is nothing to organize (no priority-tagged open task, no done, no scaffold).
+      local function rebuild_focus_body(body, inherit, kind)
+        local daily = kind == "daily"
+        local default = lane_index(daily and FOCUS_DEFAULT_PRIORITY or DEFAULT_PRIORITY)
         local open, done, placeholder, had_scaffold = {}, {}, nil, false
-        for _ = 1, #lanes + 1 do
+        for _ = 1, #LANES + 1 do
           open[#open + 1] = {}
         end
         local cur_lane = nil -- LANES index of the header we're under, else nil
@@ -310,46 +381,49 @@ return {
             else
               table.insert(open[last], l)
             end
-          elseif l:match "^%s*%- %[[xX]%]" then
-            done[#done + 1] = l
-            last = 0
-          elseif l:match "^%s*%- %[ %]%s*$" then
-            placeholder = l
-            last = nil
-          elseif l:match "^%s*%- %[" then
-            local _, lvl = strip_priority(l)
-            if lvl then
-              local i = task_lane(l)
-              table.insert(open[i], l) -- tag is the source of truth
-              last = i
-            else
-              -- Untagged: inherit the lane it was dropped under, else take the default.
-              -- Either way it leaves here TAGGED - an open task with no stated priority used
-              -- to sort above `### Urgent`, outranking one explicitly marked urgent.
-              local i = (inherit and cur_lane) or default_lane(lanes)
-              table.insert(open[i], add_tag(l, "#" .. lanes[i][1]))
-              last = i
+          else
+            -- Past the indent check, so a note under a task stays a note.
+            l = daily and loose_task(l) or l
+            if l:match "^%s*%- %[[xX]%]" then
+              done[#done + 1] = l
+              last = 0
+            elseif l:match "^%s*%- %[ %]%s*$" then
+              placeholder = l
+              last = nil
+            elseif l:match "^%s*%- %[" then
+              local _, lvl = strip_priority(l)
+              if lvl then
+                local i = lane_index(lvl)
+                table.insert(open[i], l) -- tag is the source of truth
+                last = i
+              else
+                -- Untagged: inherit the lane it was dropped under, else take the default.
+                -- Either way it leaves here TAGGED - an open task with no stated priority used
+                -- to sort above `### Urgent`, outranking one explicitly marked urgent.
+                local i = (inherit and cur_lane) or default
+                table.insert(open[i], add_tag(l, "#" .. LANES[i][1]))
+                last = i
+              end
+            elseif l:match "%S" then
+              table.insert(open[#LANES + 1], l)
+              last = #LANES + 1
             end
-          elseif l:match "%S" then
-            table.insert(open[#lanes + 1], l)
-            last = #lanes + 1
           end
         end
         local tagged = false
-        for i = 1, #lanes do
+        for i = 1, #LANES do
           if #open[i] > 0 then
             tagged = true
           end
         end
-        if not force and not tagged and #done == 0 and not had_scaffold then
+        if not kind and not tagged and #done == 0 and not had_scaffold then
           return nil
         end
         local out = {}
-        for _, l in ipairs(open[#lanes + 1]) do -- untagged, on top
+        for _, l in ipairs(open[#LANES + 1]) do -- what is no task, above the lanes
           out[#out + 1] = l
         end
-        out[#out + 1] = placeholder or "- [ ] "
-        for i, lane in ipairs(lanes) do -- every lane header, even when empty (drop targets)
+        for i, lane in ipairs(LANES) do -- every lane header, even when empty (drop targets)
           out[#out + 1] = ""
           out[#out + 1] = lane[2]
           for _, l in ipairs(open[i]) do
@@ -362,7 +436,7 @@ return {
         for _, l in ipairs(done) do
           out[#out + 1] = l
         end
-        return out
+        return out, placeholder
       end
 
       -- Rebuild a `## Tasks` body as a single list SORTED by priority, with a trailing
@@ -373,19 +447,17 @@ return {
       -- rule were scaffolding two real groups. Always emits: Done is part of the section, not
       -- something that shows up once there is enough to organize.
       local function rebuild_task_body(body, inherit)
-        local grouped = rebuild_focus_body(body, inherit, LANES, true)
+        local grouped, placeholder = rebuild_focus_body(body, inherit, "tasks")
         -- Re-read the lane-grouped output back into one sorted list: drop the scaffold, keep
         -- the order the lanes already put things in. Reusing the bucketing this way is what
         -- keeps the two layouts from disagreeing about which lane a task is in.
-        local open, done, placeholder, in_done = {}, {}, nil, false
+        local open, done, in_done = {}, {}, false
         for _, l in ipairs(grouped) do
           if l:match "^###%s+Done%s*$" then
             in_done = true
           elseif not (is_scaffold(l) or l:match "^%s*$") then
             if in_done then
               done[#done + 1] = l
-            elseif l:match "^%s*%- %[ %]%s*$" then
-              placeholder = l
             else
               open[#open + 1] = l
             end
@@ -486,17 +558,9 @@ return {
         return nil
       end
 
-      -- First line past the section starting at `s`: the next H2, or the link footer (a `---`
-      -- whose next line has a wikilink), mirroring md::section_end. Without the footer arm a
-      -- sweep strips the footer's `---` and files its link line as a task.
+      -- First line past the section starting at `s` (notes.datetag owns the bounds).
       local function section_end(lines, s)
-        for i = s + 1, #lines do
-          local footer = lines[i]:match "^%-%-%-%s*$" and (lines[i + 1] or ""):find("[[", 1, true)
-          if lines[i]:match "^##%s" or footer then
-            return i
-          end
-        end
-        return #lines + 1
+        return require("notes.datetag").section_end(lines, s)
       end
 
       -- Line of the first heading `pat` matches, or nil.
@@ -561,8 +625,9 @@ return {
 
       -- Pure: given all buffer lines, return (new_lines, changed). Only the `## Focus`
       -- section is rewritten; everything else is passed through untouched. `inherit` gates
-      -- drop-to-tag (see rebuild_focus_body): ON for the save sweep, OFF for the live cycle.
-      local function sweep_focus(lines, inherit)
+      -- drop-to-tag and `kind` picks the list (see rebuild_focus_body): inherit is ON for the
+      -- save sweep, OFF for the live cycle.
+      local function sweep_focus(lines, inherit, kind)
         local s = find_heading(lines, "^##%s+Focus%s*$")
         if not s then
           return lines, false
@@ -575,7 +640,7 @@ return {
         while #body > 0 and body[#body]:match "^%s*$" do
           table.remove(body)
         end
-        local rebuilt = rebuild_focus_body(body, inherit)
+        local rebuilt = rebuild_focus_body(body, inherit, kind)
         if not rebuilt then
           return lines, false
         end
@@ -595,13 +660,15 @@ return {
 
       -- A buffer is a project SHEET when it holds both `## Inbox` and `## Tasks`, the pair every
       -- sheet carries; `## Tasks` alone is too common a heading for a sweep that runs on every
-      -- markdown save. Anything else with a `## Focus` is a daily note. One dispatcher so the
-      -- keymaps and the save hook cannot disagree about which sweep a buffer gets.
+      -- markdown save. Anything else with a `## Focus` gets the Focus sweep, and only a note named
+      -- as a day is a daily note: any other doc can have a `## Focus` heading over prose. One
+      -- dispatcher so the keymaps and the save hook cannot disagree about which sweep a buffer gets.
       local function sweep_buffer(lines, inherit)
         if find_heading(lines, TASKS_PAT) and find_heading(lines, "^##%s+Inbox%s*$") then
           return sweep_tasks(lines, inherit)
         end
-        return sweep_focus(lines, inherit)
+        local daily = require("notes.datetag").note_date(vim.api.nvim_buf_get_name(0))
+        return sweep_focus(lines, inherit, daily and "daily" or nil)
       end
 
       -- A task line with its priority and release tags removed, so a line and the copy the sweep
@@ -944,9 +1011,12 @@ return {
             return
           end
           vim.w.task_priority_matched = true
-          vim.fn.matchadd("TaskPriorityUrgent", [[#urgent\>]])
-          vim.fn.matchadd("TaskPriorityHigh", [[#high\>]])
-          vim.fn.matchadd("TaskPriorityLow", [[#low\>]])
+          -- each_tag's glue and run-on rules, any case: no `#` glued to a word, and no tag
+          -- that runs on (`#high-priority` is not `#high`, a sentence-final `#high.` is).
+          -- A regex cannot see code spans, so `` `#high` `` still colours.
+          for _, m in ipairs { { "TaskPriorityUrgent", "urgent" }, { "TaskPriorityHigh", "high" }, { "TaskPriorityLow", "low" } } do
+            vim.fn.matchadd(m[1], [[\c\%([[:alnum:]_/.[#]\)\@<!#]] .. m[2] .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
+          end
         end,
       })
     end,

@@ -21,9 +21,6 @@ NOTES_ROLL="$REPO_ROOT/.local/bin/notes-roll"
 # The REAL agentctl, by path. `agentctl` on PATH is a stub (fleet.sh's mutation verbs are
 # asserted through it), so a test of agentctl's own contract must not go through PATH.
 AGENTCTL_BIN="$REPO_ROOT/.local/bin/agentctl"
-# The shared board parser. Exported so a subject can find it even though sandbox_init
-# rewrites $HOME, which is where the deployed copy would otherwise live.
-AGENT_BOARD_LIB="$REPO_ROOT/.local/lib/agent-board.sh"
 # The shared lab-feed parser, same reason again. Its other consumer lives in the private
 # overlay (lab-sync's regen-project-index.sh), so this suite is where the grammar is pinned.
 LAB_FEED_LIB="$REPO_ROOT/.local/lib/lab-feed.sh"
@@ -43,7 +40,7 @@ MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
 CHAIN_EVENT_LIB="$REPO_ROOT/.local/lib/chain-event.sh"
 # The plan checklist and `epic:` reader agent-queue, credit-backfill and fleet-sessions share, same reason again.
 PLAN_PHASES_LIB="$REPO_ROOT/.local/lib/plan-phases.sh"
-export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB PLAN_PHASES_LIB
+export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB PLAN_PHASES_LIB
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -122,6 +119,11 @@ sandbox_init() {
   # and an item satisfies the focus gate.
   unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM
 
+  # A suite run from a dispatched session (agentctl-run) also inherits CLAUDE_HEADLESS=1, which
+  # switches the focus gate off, and AGENTCTL_MODEL, which outranks the conf MODEL and the
+  # route's model. Neither is a transport name, so the scrub.list unset below is not for them.
+  unset CLAUDE_HEADLESS AGENTCTL_MODEL
+
   # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
   # that as "detach through systemd-run", which would start a real transient scope.
   unset INVOCATION_ID
@@ -144,6 +146,9 @@ sandbox_init() {
   # the human's shell, say), so a subject sees the clean environment CI gives it.
   # shellcheck disable=SC2046
   unset $(awk '/^\[/ { s = ($0 == "[scrub]") } s && /^[A-Z_]+([[:space:]]|$)/ { print $1 }' "$REPO_ROOT/.local/src/agent-run/lib/scrub.list")
+  # Detach from a sandboxed runner's lane keys (lib/sandbox.sh): a suite run inside one would
+  # otherwise sandbox, or hand a real token to, every agentctl-run it tests.
+  unset SANDBOX_PROFILE GH_TOKEN_FILE AGENTCTL_SANDBOX_DIR GH_TOKEN GITHUB_TOKEN
 
   # Detach from node_exporter's textfile directory: fleet-sessions, fleet-bench and day-log
   # publish there as a side effect, and on the workstation it exists. A test that wants the
@@ -173,6 +178,11 @@ sandbox_init() {
     chmod +x "$SANDBOX/bin/$b"
   done
 
+  # The copies source ../lib/*.sh and the registry resolver relative to themselves, which
+  # in a copy is $SANDBOX/lib. Point both at the repo's own.
+  ln -sfn "$REPO_ROOT/.local/lib" "$SANDBOX/lib"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
+
   # The world resolver finds panel-lib beside itself, so it runs from the repo, not a copy.
   printf '#!/bin/sh\nexec "%s/.local/src/tmux/worlds.sh" "$@"\n' "$REPO_ROOT" > "$SANDBOX/bin/tmux-world"
   chmod +x "$SANDBOX/bin/tmux-world"
@@ -199,7 +209,6 @@ sandbox_init() {
   # test asserting on proof output sees an empty file rather than a failure.
   mkdir -p "$HOME/.local/lib"
   ln -sfn "$REPO_ROOT/.local/lib/agent-proof.sh" "$HOME/.local/lib/agent-proof.sh"
-  ln -sfn "$REPO_ROOT/.local/lib/agent-board.sh" "$HOME/.local/lib/agent-board.sh"
   ln -sfn "$REPO_ROOT/.local/lib/lab-feed.sh" "$HOME/.local/lib/lab-feed.sh"
   ln -sfn "$REPO_ROOT/.local/lib/md-render.sh" "$HOME/.local/lib/md-render.sh"
   ln -sfn "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$HOME/.local/lib/agent-merge-proof.sh"

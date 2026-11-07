@@ -18,6 +18,14 @@ if [ -r "$ANCHOR_LIB" ]; then
   # shellcheck source=/dev/null
   . "$ANCHOR_LIB"
 fi
+# Startup timing, guarded the same way; without it the marks are no-ops.
+STARTUP_LIB="$(dirname "$0")/startup-telemetry.sh"
+if [ -r "$STARTUP_LIB" ]; then
+  # shellcheck source=/dev/null
+  . "$STARTUP_LIB"
+else
+  startup_mark() { :; }; startup_record() { :; }
+fi
 PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 # AGENT_PLANS_DIR overrides where plans live.
 PLAN_DIR="${AGENT_PLANS_DIR:-$HOME/.agent/plans}/$PROJECT_NAME"
@@ -28,15 +36,13 @@ ANCHOR_FILE="$HOME/.agent/anchors/${PROJECT_NAME}.md"
 COMPACT_MARKER="$HOME/.agent/compact/${PROJECT_NAME}.pending"
 
 # An APP inside a repo (a tracker entry with `repo` + `path`) is part of that repo. Two
-# things follow: the repo's lessons/plans still apply to it, and its git/PR rows must be
+# things follow: the repo's lessons/plans still apply to it, and its git rows must be
 # scoped to the app's own subtree or they show all 12 apps. The parent is the `repo`.
-PROJECT_MAP="${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}"
-PARENT_NAME=""; PROJECT_PATHFILTER=""; PROJECT_PRFILTER=""
+PROJECT_MAP="$(project_map_file)"
+PARENT_NAME=""; PROJECT_PATHFILTER=""
 if [ -f "$PROJECT_MAP" ] && command -v jq >/dev/null 2>&1; then
   PARENT_NAME=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n] | objects | select(.path) | .repo // empty' "$PROJECT_MAP" 2>/dev/null || true)
   PROJECT_PATHFILTER=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n].path // empty' "$PROJECT_MAP" 2>/dev/null || true)
-  PROJECT_PRFILTER=$(jq -r --arg n "$PROJECT_NAME" '.trackers[$n].prFilter // empty' "$PROJECT_MAP" 2>/dev/null || true)
-  [ -n "$PROJECT_PATHFILTER" ] && [ -z "$PROJECT_PRFILTER" ] && PROJECT_PRFILTER="$PROJECT_NAME"
 fi
 
 # Read the hook payload's `source` from stdin (JSON) — only when piped, so manual
@@ -46,11 +52,7 @@ if [ ! -t 0 ] && command -v jq >/dev/null 2>&1; then
   read -r HOOK_SOURCE HOOK_SID < <(cat 2>/dev/null | jq -r '"\(.source // "-") \(.session_id // "")"' 2>/dev/null) || true
   [ "$HOOK_SOURCE" != - ] || HOOK_SOURCE=""
 fi
-# A session the dispatcher started works one queue item: record this Claude session on it, so
-# every reader keyed on session_id joins to the item. Quiet: a claim never blocks the preflight.
-if [ -n "${AGENT_QUEUE_ITEM:-}" ] && [ -n "$HOOK_SID" ] && command -v agent-queue >/dev/null 2>&1; then
-  agent-queue claim "$AGENT_QUEUE_ITEM" --sid "$HOOK_SID" >/dev/null 2>&1 || true
-fi
+startup_mark setup
 
 HEADER=$(
   echo "=== Session Preflight: $PROJECT_NAME ==="
@@ -93,25 +95,8 @@ HEADER=$(
     fi
     echo
   fi
-
-  # The dream PROSE is no longer injected. It is a model's re-narration of the lessons
-  # the anchor's digest already carries -- a third surface for one fact, and the longest
-  # of the three. The mem0 queue COUNT stays, because it is the one part that is
-  # actionable and is not said anywhere else, and it now prints the command to drain it
-  # rather than just the number.
-  MEM0_QUEUE="$HOME/.agent/dreams/${PROJECT_NAME}/mem0-queue.md"
-  if [ -f "$MEM0_QUEUE" ]; then
-    # `grep -c` PRINTS 0 and exits 1 on no match, so `|| echo 0` appended a second 0
-    # and the `-gt` below died with "integer expected" on every empty queue.
-    pending=$(grep -c '^curl ' "$MEM0_QUEUE" 2>/dev/null | head -1)
-    pending=${pending:-0}
-    if [ "${pending:-0}" -gt 0 ]; then
-      echo "💤 $pending mem0 proposal(s) awaiting review — drain with:"
-      echo "     bash <(grep '^curl ' ${MEM0_QUEUE/#$HOME/\~})"
-      echo
-    fi
-  fi
 )
+startup_mark header
 
 # Everything below HEADER is a SECTION, built into its own variable and then assembled
 # in priority order under one byte budget (see the end of the file). Each one keeps the
@@ -134,6 +119,7 @@ if [ -f "$ANCHOR_FILE" ]; then
     echo "=== end anchor ==="
   )
 fi
+startup_mark facts
 
 # The agent board - what a previous session left IN FLIGHT on this repo, at turn 1.
 #
@@ -198,6 +184,7 @@ if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2
     )
   fi
 fi
+startup_mark board
 
 # No Focus block: today's `## Focus` is the human's list, and every session paid about
 # 850 chars of turn 1 (629 of 630 sessions, 2026-11-05) to be told it was not theirs.
@@ -229,39 +216,24 @@ SEC_LESSONS="$PICK" PARENT_BODY="${PARENT_PICK#*$'\n'}"
 [ -z "$PARENT_PICK" ] ||
   SEC_LESSONS+="${PICK:+$'\n'}Parent (repo-wide) lessons from $PARENT_LESSONS:"$'\n'"  ${PARENT_BODY//$'\n'/$'\n'  }"
 SEC_PLANS=$(declare -F anchor_section >/dev/null 2>&1 && anchor_section "$ANCHOR_FILE" '^Active plans' || true)
+startup_mark lessons
 
 # Commits only for one app of a monorepo, scoped to its subtree. Claude Code's own
 # gitStatus already lists the repo's last 5 commits in every session that ran this
 # preflight (330 of 330, 2026-11-05), so an unscoped copy is the same text twice.
+# No PR list: `gh pr list` was 430 ms of a 500 ms hook on every start (2026-11-06), and five
+# rows of a repo merging a hundred PRs a day cannot say whether a task is already in flight.
 SEC_COMMITS=""
-SEC_PRS=""
-if git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-  if [ -n "$PROJECT_PATHFILTER" ]; then
-    SEC_COMMITS=$(
-      cd "$PROJECT_DIR"
-      echo "Recent commits (last 5, $PROJECT_PATHFILTER):"
-      # `:(top)` anchors the pathspec at the repo root. A bare path is resolved relative
-      # to the CWD, so running from inside the app dir matched nothing at all.
-      git log --oneline -5 -- ":(top)$PROJECT_PATHFILTER" 2>/dev/null | sed 's/^/  /' || true
-    )
-  fi
-  if command -v gh >/dev/null 2>&1; then
-    SEC_PRS=$(
-      cd "$PROJECT_DIR"
-      PR_OUT=$(timeout 5 gh pr list --state=all --limit=20 2>/dev/null || true)
-      # CONTRIBUTING mandates fix|feat/<app>/... branches and fix(<app>): commit scopes,
-      # so the app name in the PR title is a reliable filter inside the monorepo.
-      if [ -n "$PROJECT_PRFILTER" ] && [ -n "$PR_OUT" ]; then
-        PR_OUT=$(printf '%s\n' "$PR_OUT" | grep -F "$PROJECT_PRFILTER" || true)
-      fi
-      PR_OUT=$(printf '%s\n' "$PR_OUT" | head -5)
-      if [ -n "${PR_OUT// /}" ]; then
-        echo "Recent PRs (last 5, any state):"
-        echo "$PR_OUT" | sed 's/^/  /'
-      fi
-    )
-  fi
+if [ -n "$PROJECT_PATHFILTER" ] && git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  SEC_COMMITS=$(
+    cd "$PROJECT_DIR"
+    echo "Recent commits (last 5, $PROJECT_PATHFILTER):"
+    # `:(top)` anchors the pathspec at the repo root. A bare path is resolved relative
+    # to the CWD, so running from inside the app dir matched nothing at all.
+    git log --oneline -5 -- ":(top)$PROJECT_PATHFILTER" 2>/dev/null | sed 's/^/  /' || true
+  )
 fi
+startup_mark git
 
 # One size budget, here and nowhere else. Past Claude Code's ~10 KB hook-output cap the
 # whole preflight is saved to a file and the model gets a 2 KB preview, which on
@@ -295,8 +267,10 @@ if [ -n "$SEC_LESSONS" ] && [[ ", $OMITTED" != *", lessons digest ("* ]]; then
 fi
 add_section "plans" "$PLAN_DIR/" "$SEC_PLANS"
 add_section "commits" "git log" "$SEC_COMMITS"
-add_section "PRs" "gh pr list --state=all" "$SEC_PRS"
 [ -n "$OMITTED" ] && CONTEXT+=$'\n\n'"+ omitted to fit the ${PREFLIGHT_BUDGET} B turn-1 budget: $OMITTED"
 CONTEXT+=$'\n'"==="
+
+startup_mark render
+startup_record session-preflight "$HOOK_SID" "$HOOK_SOURCE" "$PROJECT_NAME"
 
 jq -n --arg ctx "$CONTEXT" '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}'

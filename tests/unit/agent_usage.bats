@@ -11,7 +11,7 @@
 #      A price table was tried and was 2.4x off ($164.66 against a true $68.49), so
 #      a wrong dollar figure must never reach a release changelog.
 #
-# PROM_URL points at a closed port throughout: these tests assert the local/offline
+# CC_PROM_URL points at a closed port throughout: these tests assert the local/offline
 # path and must give the same answer off-LAN as next to the cluster.
 
 setup() {
@@ -21,7 +21,7 @@ setup() {
   sandbox_init basic
 
   AU="$REPO_ROOT/.local/bin/agent-usage"
-  export AU PROM_URL='http://127.0.0.1:1' PROM_TIMEOUT=1
+  export AU CC_PROM_URL='http://127.0.0.1:1' PROM_TIMEOUT=1
 
   TX="$HOME/.claude/projects/-x/dedupe.jsonl"
   mkdir -p "$(dirname "$TX")"
@@ -93,10 +93,10 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
 #!/usr/bin/env bash
 q="$*"
 case "$q" in
-  *"by (type)"*) echo '{"data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
-  *"by (model) (claude_code_cost"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
-  *"by (model)"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
-  *) echo '{"data":{"result":[]}}' ;;
+  *"by (type)"*) echo '{"status":"success","data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
+  *"by (model) (claude_code_cost"*) echo '{"status":"success","data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
+  *"by (model)"*) echo '{"status":"success","data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
+  *) echo '{"status":"success","data":{"result":[]}}' ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/curl"
@@ -292,6 +292,30 @@ burn() {
   assert_equal "$(burn '.dream_runs_by_night')" '{"2026-01-01":1}'
 }
 
+# h2 is an unregistered headless session with the most turns and the most context but no cost, so
+# sorting by cost puts it last and sorting by turns or context puts it first.
+burn_sorted() {
+  burn_home
+  local d="$HOME/.claude/projects/-home-demo-cli" i
+  { echo '{"type":"user","timestamp":"2026-01-01T04:00:00.000Z","cwd":"/home/demo","entrypoint":"sdk-cli","message":{"content":"long sweep"}}'
+    for i in 1 2 3 4 5 6; do
+      echo "{\"type\":\"assistant\",\"timestamp\":\"2026-01-01T04:00:0$i.000Z\",\"message\":{\"id\":\"h2m$i\",\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":900000}}}"
+    done; } > "$d/h2.jsonl"
+  TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00 --json "$@" | jq -c '.by_session | keys_unsorted | map(.[0:2])'
+}
+
+@test "burn --sort: cost is the default order, turns and context put the long session first" {
+  assert_equal "$(burn_sorted)" '["s1","h1","h2"]'
+  assert_equal "$(burn_sorted --sort cost)" '["s1","h1","h2"]'
+  assert_equal "$(burn_sorted --sort turns | jq -r '.[0]')" 'h2'
+  assert_equal "$(burn_sorted --sort context | jq -r '.[0]')" 'h2'
+}
+
+@test "burn --sort: a value that is not cost, turns or context is a usage error" {
+  run "$AU" burn --sort bytes
+  assert_failure 2
+}
+
 @test "burn: the table form prints every section" {
   burn_home
   run env TZ=UTC "$AU" burn --days 2 --before 2026-01-02T00:00:00+00:00
@@ -384,4 +408,80 @@ burn() {
   # Negative control: only the worktree session recorded its request, so the headless one,
   # which still counts toward first_turn_context, adds no parts.
   assert_equal "$(burn '[.first_request_parts.sessions, .first_turn_context.sessions]')" '[1,2]'
+}
+
+# -- spend check: the one check behind claude-spend-hourly and claude-spend-daily --
+
+spend_curl() {
+  printf '#!/usr/bin/env bash\necho %q\n' "$1" > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+}
+
+@test "spend check: under the ceiling exits 0 and names the window and the ceiling" {
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}'
+  run "$AU" spend check 1h 150
+  assert_success
+  assert_output 'last 1h: $88.4 (alert at $150)'
+}
+
+@test "spend check: over the ceiling exits 1" {
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"1376.2"]}]}}'
+  run "$AU" spend check 24h 900
+  assert_failure 1
+  assert_output 'last 24h: $1376.2 (alert at $900)'
+}
+
+@test "spend check: the query carries the window it was given" {
+  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[]}}' > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  SANDBOX="$SANDBOX" run "$AU" spend check 24h 900
+  assert_success
+  assert_output 'last 24h: $0.0 (alert at $900)'
+  run grep -c 'increase(claude_code_cost_usage_USD_total\[24h\])' "$SANDBOX/q"
+  assert_output 1
+}
+
+@test "spend check: Prometheus unreadable exits 2, so the watch trips instead of going blind" {
+  printf '#!/usr/bin/env bash\nexit 7\n' > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  run "$AU" spend check 1h 150
+  assert_failure 2
+}
+
+@test "spend check: a bad window or ceiling is a usage error, not a silent pass" {
+  run "$AU" spend check hour 150
+  assert_failure 64
+  run "$AU" spend check 1h lots
+  assert_failure 64
+}
+
+@test "spend check: an answer that is not a vector of numbers exits 2, never a silent zero" {
+  for body in '{}' '{"status":"error"}' '{"status":"success","data":{"result":"x"}}' 'not json' '{"status":"success","data":{"result":[{"metric":{},"value":[0,"NaN"]}]}}'; do
+    spend_curl "$body"
+    run "$AU" spend check 1h 150
+    assert_failure 2
+  done
+}
+
+@test "spend check: no CC_PROM_URL exits 2" {
+  CC_PROM_URL='' run "$AU" spend check 1h 150
+  assert_failure 2
+}
+
+@test "spend check: the endpoint is CC_PROM_URL from the command-center env file, a stray PROM_URL is ignored" {
+  mkdir -p "$HOME/.config/command-center"
+  echo 'CC_PROM_URL=http://from-env.test' > "$HOME/.config/command-center/env"
+  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[]}}' > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  SANDBOX="$SANDBOX" CC_PROM_URL='' PROM_URL=http://stale.test run "$AU" spend check 1h 150
+  assert_success
+  run grep -c 'http://from-env.test/api/v1/query' "$SANDBOX/q"
+  assert_output 1
+}
+
+@test "spend check: just over the ceiling prints a figure that shows it" {
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"150.4"]}]}}'
+  run "$AU" spend check 1h 150
+  assert_failure 1
+  assert_output 'last 1h: $150.4 (alert at $150)'
 }

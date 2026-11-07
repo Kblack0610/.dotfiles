@@ -25,7 +25,7 @@ teardown() { ui_teardown; }
 @test "at a normal width a title reads whole on one row, with no preview pane" {
   TM_WIDTH=130 TM_HEIGHT=20 tmux_start "$REPO_ROOT/.local/bin/sessions" search
   wait_until 'screen_has "$TITLE"'
-  screen_has 'enter resume | ctrl-g full-text'
+  screen_has 'enter resume | ctrl-g full-text | --all shows dispatched'
   screen_lacks '? preview'
   screen_lacks '│'
 }

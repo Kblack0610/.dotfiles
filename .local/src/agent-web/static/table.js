@@ -29,6 +29,27 @@ const tblFacets = (t) => t.facets.map((f) => `<select data-tq title="${esc(f.key
 // The state chips with their counts; the first keeps every row.
 const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
 
+// A refresh must not take the search box or an open dropdown from under the human: with focus
+// in the bar only what is around the control repaints. False when focus is elsewhere.
+function tblRepaint(id, t, body) {
+  const f = document.activeElement;
+  if (f?.id !== id + "-q" && f?.dataset?.tq === undefined) return false;
+  if (f.id === id + "-q") paint($(id + "-facets"), tblFacets(t));
+  paint($(id + "-chips"), tblChips(t));
+  paint($(id + "-body"), body());
+  return true;
+}
+
+// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
+function tblListen(el, onView) {
+  for (const ev of ["input", "change"]) el.addEventListener(ev, (e) => {
+    const v = tblPatch(e);
+    if (!v) return;
+    if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
+    onView(v);
+  });
+}
+
 // The search box, the dropdowns and the chips. `id` names the parts a repaint while the search
 // box has focus replaces around it: `<id>-facets` and `<id>-chips`.
 function tblBar(id, t, hint) {
@@ -37,12 +58,14 @@ function tblBar(id, t, hint) {
 }
 
 // The header row. `labels` maps a column key to [text, class]; a column it leaves out is not drawn.
-function tblHead(t, labels) {
+// `pre` names the data attributes a click reads (`data-<pre>sort`, `data-<pre>dir`): a second table
+// on a tab sorts apart from the first by naming its own.
+function tblHead(t, labels, pre = "t") {
   return "<tr>" + t.columns.filter((c) => labels[c.key]).map((c) => {
     const [label, cls] = labels[c.key];
     const aria = c.sort ? ` aria-sort="${c.sort === "asc" ? "ascending" : "descending"}"` : "";
     const mark = c.sort ? (c.sort === "asc" ? " ^" : " v") : "";
-    return `<th${cls ? ` class="${cls}"` : ""}${aria}><button class="thsort" data-tsort="${esc(c.next_sort)}" data-tdir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
+    return `<th${cls ? ` class="${cls}"` : ""}${aria}><button class="thsort" data-${pre}sort="${esc(c.next_sort)}" data-${pre}dir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
   }).join("") + "</tr>";
 }
 

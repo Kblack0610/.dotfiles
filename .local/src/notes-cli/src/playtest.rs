@@ -236,10 +236,14 @@ where
         bail!("'{project}' has no playtest.md yet - add a check with `notes ptask {project} --playtest add \"...\"`");
     }
     let content = fs::read_to_string(&file)?;
-    let hit = open_rows(&content)
-        .into_iter()
+    // Words on two open checks act on neither (nc-47), as the sheet verbs do.
+    let open = open_rows(&content);
+    let hits: Vec<&str> = open.iter().map(|r| r.2).filter(|l| pick.hits(l)).collect();
+    let pick = &pick.sole_among(&hits, &file)?;
+    let hit = open
+        .iter()
         .find(|(_, _, l)| pick.hits(l))
-        .and_then(|(_, g, _)| md::edit_first_in_section(&content, &g, |l| pick.hits(l), f));
+        .and_then(|(_, g, _)| md::edit_first_in_section(&content, g, |l| pick.hits(l), f));
     match hit {
         Some((new, matched)) => {
             md::write_atomic(&file, &new)?;
@@ -314,6 +318,54 @@ mod tests {
 
     fn w(q: &str) -> Pick {
         Pick::new(q, false).unwrap()
+    }
+
+    // nc-47: words on two open checks write nothing; the whole check, or --exact, picks one.
+    #[test]
+    fn done_and_rm_refuse_words_on_two_checks() {
+        let (dir, log) = scratch("ambig");
+        let before = "# Playtest\n\n## G\n- [ ] menu: back exits\n- [ ] menu: back exits twice\n- [ ] lobby: join\n";
+        fs::write(path(&dir), before).unwrap();
+        let err = edit_in(&log, &dir, "p", &w("menu"), "done", |l| Some(l.into()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("2 open rows") && err.contains("--exact"),
+            "{err}"
+        );
+        let stamp = "<!-- dropped: x -->";
+        let err = edit_in(&log, &dir, "p", &w("back"), "dropped", |l| {
+            Some(format!("{l}{stamp}"))
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("2 open rows"), "{err}");
+        assert_eq!(
+            fs::read_to_string(path(&dir)).unwrap(),
+            before,
+            "nothing written"
+        );
+        // One hit, and the whole-words row over the longer one, still close.
+        assert_eq!(
+            edit_in(&log, &dir, "p", &w("lobby"), "done", |l| Some(
+                md::set_checkbox(l, 'x')
+            ))
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            edit_in(&log, &dir, "p", &w("menu: back exits"), "done", |l| Some(
+                md::set_checkbox(l, 'x')
+            ))
+            .unwrap(),
+            0
+        );
+        let got = fs::read_to_string(path(&dir)).unwrap();
+        assert!(
+            got.contains("- [x] menu: back exits\n- [ ] menu: back exits twice\n- [x] lobby"),
+            "{got}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

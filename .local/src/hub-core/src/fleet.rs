@@ -1,33 +1,32 @@
 //! The Fleet tab, read once for both surfaces (agent-web's Fleet tab and the hub TUI's): who
-//! pays, what each agentctl runner did, and how the two judges call it. Nothing here keeps a
+//! is working, what each agentctl runner did, and how the two judges call it. What it costs (the
+//! accounts, where the tokens go) is `crate::costs`. Nothing here keeps a
 //! copy; each part reads the file or series its writer owns:
 //!
 //! | part         | source                                                                   |
 //! |--------------|--------------------------------------------------------------------------|
-//! | accounts     | `claude_account_*`, claude-acct's textfile, in Prometheus                 |
-//! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` (agent-proof), the user timers (else the runner's own status `next=`), and `claude_code_cost_usage_USD_total` by `agentctl_runner` |
-//! | tonight      | the workers and the user timers again, in the order they run until 07:00 (`tonight`) |
+//! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` and standing hold `held_since`/`held_why` (agent-proof), and the user timers (else the runner's own status `next=`); what each runner spent is `crate::costs` |
+//! | who          | the workers and `state.json`'s live sessions, one row each, tiered (`who::build`)  |
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
 //! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
 //!
 //! One runner's page (`#fleet/<name>`, read only when opened) is `runner::read`.
 //!
-//! The file parts are read fresh (judge-eval takes about a second); the Prometheus part (`prom`) is the slow one, so a
-//! server can cache it apart and `apply` it to a fresh file read.
+//! Every part is a file read, fresh each time (judge-eval takes about a second).
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Local, NaiveTime, TimeZone};
+use chrono::{DateTime, Local, TimeZone};
 use serde::{Deserialize, Serialize};
 
 use crate::jobs::systemd::AGENTCTL_PREFIX;
 use crate::jobs::{self, Job, State};
-use crate::prom::{self, Series};
 
 pub mod runner;
+pub mod who;
 
 const DAY: i64 = 24 * 3600;
 const WEEK: i64 = 7 * DAY;
@@ -36,23 +35,13 @@ const RECENT_VERDICTS: usize = 30;
 /// How much of the end of each append-only log is read. verdicts.jsonl grows about 400 bytes a
 /// verdict, so 1 MiB is several weeks; a tail that still starts inside the week says so.
 const VERDICT_TAIL: u64 = 1 << 20;
-const LOG_TAIL: u64 = 256 << 10;
-const ACTIVITY_TAIL: u64 = 16 << 10;
+pub(crate) const LOG_TAIL: u64 = 256 << 10;
+pub(crate) const ACTIVITY_TAIL: u64 = 16 << 10;
 /// calls.jsonl holds up to 4 KB of raw reply a line; the busiest lane (dispatch-judge, about 100
 /// calls a day) writes well under 1 MiB a day.
 const CALLS_TAIL: u64 = 2 << 20;
 /// Calls listed under a runner's row, newest first; the rest are `agentctl-run` lines on disk.
 const RECENT_CALLS: usize = 5;
-/// The Tonight order runs from now to the next of this local hour.
-const MORNING_HOUR: u32 = 7;
-
-/// Each runner's dollars in the last day, by the OTel resource attribute agentctl sets.
-const COST_BY_RUNNER: &str = r#"sum by (agentctl_runner) (increase(claude_code_cost_usage_USD_total{service_name="claude-agentctl"}[24h]))"#;
-const COST_TOTAL: &str =
-    r#"sum(increase(claude_code_cost_usage_USD_total{service_name="claude-agentctl"}[24h]))"#;
-/// claude-acct's textfile, only while it is fresh; no `max without`, which would drop the
-/// metric names the table reads. An empty answer makes the table say no data.
-const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} and on (instance) (time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"} < 3600)"#;
 
 #[derive(Clone, Debug)]
 pub struct Paths {
@@ -68,6 +57,8 @@ pub struct Paths {
     pub judge_eval: String,
     /// The notes CLI's state dir, which holds the ingest record (`ingest.jsonl`).
     pub notes_state: PathBuf,
+    /// fleet-sessions' `state.json`: the live sessions, tier 3 of the table.
+    pub state: PathBuf,
 }
 
 impl Paths {
@@ -85,6 +76,7 @@ impl Paths {
             dispatch: crate::boards::dispatch_dir(),
             judge_eval: std::env::var("JUDGE_EVAL").unwrap_or_else(|_| "judge-eval".into()),
             notes_state: home.join(".local/state/notes"),
+            state: crate::boards::fleet_state(),
         }
     }
 }
@@ -95,13 +87,9 @@ pub struct Fleet {
     pub at: i64,
     /// `<part>: <why>` for each part that could not be read; the rest still show.
     pub errors: Vec<String>,
-    /// claude-acct's series as Prometheus gave them.
-    pub accounts: Vec<Series>,
     pub workers: Vec<Worker>,
-    /// The workers in the order they run tonight, the order the human can pick over the default.
-    pub tonight: Tonight,
-    /// Every agentctl run's dollars in the last day, labelled or not.
-    pub cost_24h: Option<f64>,
+    /// The Fleet tab's one table: runners by tier, then the live sessions (`who`).
+    pub who: Vec<who::Who>,
     pub dispatch: Dispatch,
     pub judge: Judge,
 }
@@ -129,11 +117,13 @@ pub struct Worker {
     pub failed_24h: u32,
     /// The newest activity.log line: the runner's own word on why.
     pub why: Option<Outcome>,
+    /// The standing hold `lib/agent-proof.sh` writes in its state dir: `held_since`, its first
+    /// BLOCKED pass of an unbroken run, and `held_why`, the latest one's reason. None when not held.
+    pub held_since: Option<i64>,
+    pub held_why: String,
     pub next: Option<i64>,
     /// A call's CALLER: the runner (or program) that makes it.
     pub called_by: Option<String>,
-    /// None until its cost series carries the runner label.
-    pub cost_24h: Option<f64>,
     /// What the row opens to: how the runner is defined and what its calls did.
     pub registry: Registry,
     /// Its lane's counted score from judge-eval; None when judge-eval lists no such lane.
@@ -141,6 +131,10 @@ pub struct Worker {
     /// The extras block its page draws, the conf's `DETAIL=` (`runner::DETAILS`); empty for none.
     /// The Fleet tab's judge tiles link to the runner whose block they summarise.
     pub detail: String,
+    /// 1 for a supervisor (the conf's `TIER=1`), else 2.
+    pub tier: u8,
+    /// What a tier 1 runner folds in the table: `sessions` or `dispatched` (the conf's `OVERSEES=`).
+    pub oversees: String,
 }
 
 /// The runner whose page draws the `detail` extras block (`DETAIL=` in its conf), for a link
@@ -152,139 +146,11 @@ pub fn page_for<'a>(workers: &'a [Worker], detail: &str) -> Option<&'a str> {
         .map(|w| w.name.as_str())
 }
 
-/// The Workers state chips, in order; `Worker::shown` says what each keeps. agent-web's
-/// `W_FILTERS` lists them too.
-pub const WORKER_FILTERS: [&str; 5] = ["all", "failed", "running", "idle", "off"];
-/// What the Workers table sorts by, biggest or newest first; a runner with no value sorts last.
-pub const WORKER_SORTS: [&str; 4] = ["runs", "failed", "cost", "last"];
 /// Fewer finished runs than this in the week say nothing about a usual length.
 const USUAL_RUNS: usize = 3;
 /// One run in ten passes `usual_s` by definition, so a run this short is never overdue: a
 /// three-second runner would otherwise jump the table for a moment at every slow start.
 const OVERDUE_FLOOR_S: i64 = 60;
-
-impl Worker {
-    /// Whether this runner is under one of `WORKER_FILTERS`.
-    fn shown(&self, filter: &str) -> bool {
-        match filter {
-            "all" => true,
-            "failed" => self.failed_24h > 0,
-            state => self.state == state,
-        }
-    }
-
-    /// Whether `q`, in lower case, is in its name, description or why.
-    fn hits(&self, q: &str) -> bool {
-        let why = self
-            .why
-            .as_ref()
-            .map_or(String::new(), |o| format!("{} {}", o.word, o.text));
-        [self.name.as_str(), &self.description, &why]
-            .iter()
-            .any(|t| t.to_lowercase().contains(q))
-    }
-
-    /// What `WORKER_SORTS`' key orders on; a time for "last", where a run in progress counts
-    /// from its start.
-    fn sort_value(&self, key: &str) -> Option<f64> {
-        match key {
-            "runs" => Some(f64::from(self.runs_24h)),
-            "failed" => Some(f64::from(self.failed_24h)),
-            "cost" => self.cost_24h,
-            "last" => self
-                .running_since
-                .or(self.last.as_ref().and_then(|o| o.at))
-                .map(|t| t as f64),
-            _ => None,
-        }
-    }
-}
-
-/// Every lane in `ws`, sorted, for the lane filter.
-pub fn lanes(ws: &[Worker]) -> Vec<String> {
-    let set: std::collections::BTreeSet<&String> = ws
-        .iter()
-        .map(|w| &w.lane)
-        .filter(|l| !l.is_empty())
-        .collect();
-    set.into_iter().cloned().collect()
-}
-
-/// A filtered and sorted view of the Workers table. The default keeps everything in hub-core's
-/// exceptions-first order; `state` is one of `WORKER_FILTERS`, `sort` one of `WORKER_SORTS`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkerView {
-    pub q: String,
-    pub lane: String,
-    pub state: String,
-    pub sort: String,
-}
-
-impl Default for WorkerView {
-    fn default() -> Self {
-        Self {
-            q: String::new(),
-            lane: String::new(),
-            state: WORKER_FILTERS[0].to_string(),
-            sort: String::new(),
-        }
-    }
-}
-
-impl WorkerView {
-    fn matches(&self, w: &Worker) -> bool {
-        let q = self.q.trim().to_lowercase();
-        (self.lane.is_empty() || w.lane == self.lane) && (q.is_empty() || w.hits(&q))
-    }
-
-    /// Whether the search, lane and state all keep `w`.
-    pub fn keeps(&self, w: &Worker) -> bool {
-        self.matches(w) && w.shown(&self.state)
-    }
-
-    /// The rows it keeps, in its sort or else in `ws`'s own order.
-    pub fn apply<'a>(&self, ws: &'a [Worker]) -> Vec<&'a Worker> {
-        let mut out: Vec<&Worker> = ws.iter().filter(|w| self.keeps(w)).collect();
-        out.sort_by(
-            |a, b| match (a.sort_value(&self.sort), b.sort_value(&self.sort)) {
-                (Some(x), Some(y)) => y.total_cmp(&x),
-                (x, y) => y.is_some().cmp(&x.is_some()),
-            },
-        );
-        out
-    }
-
-    /// How many runners each of `WORKER_FILTERS` would show under the search and lane.
-    pub fn counts(&self, ws: &[Worker]) -> [(&'static str, usize); 5] {
-        let kept: Vec<&Worker> = ws.iter().filter(|w| self.matches(w)).collect();
-        WORKER_FILTERS.map(|f| (f, kept.iter().filter(|w| w.shown(f)).count()))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-
-    pub fn cycle_state(&mut self) {
-        let at = WORKER_FILTERS.iter().position(|f| *f == self.state);
-        let next = at.map_or(0, |i| (i + 1) % WORKER_FILTERS.len());
-        self.state = WORKER_FILTERS[next].to_string();
-    }
-
-    pub fn cycle_sort(&mut self) {
-        self.sort = next_of(&WORKER_SORTS, &self.sort);
-    }
-
-    pub fn cycle_lane(&mut self, lanes: &[String]) {
-        let lanes: Vec<&str> = lanes.iter().map(String::as_str).collect();
-        self.lane = next_of(&lanes, &self.lane);
-    }
-}
-
-/// The value after `cur` in `list`, then back to blank, which keeps everything.
-fn next_of(list: &[&str], cur: &str) -> String {
-    let after = list.iter().position(|v| *v == cur).map_or(0, |i| i + 1);
-    list.get(after).map_or(String::new(), |v| v.to_string())
-}
 
 /// A lane's score over a window as judge-eval counts and words it (its `score_7d`), never
 /// model-written: the cell text and the title that says what it counted.
@@ -295,28 +161,6 @@ pub struct RunnerScore {
     pub text: String,
     /// "7d, 41 of 44 right, 3 pending, triage-untouched".
     pub title: String,
-}
-
-/// The workers from now to the next 07:00 local: always-on runners first, then each timer in
-/// time order, each call directly under the runner that makes it.
-#[derive(Serialize, Debug, Default, Clone, PartialEq)]
-pub struct Tonight {
-    /// The window's end, unix seconds; a start at or after it is the morning's, not tonight's.
-    pub until: i64,
-    pub slots: Vec<Slot>,
-    /// User timers outside agentctl that fire in the window. Their rows are Infra's Jobs
-    /// (dashboards.md rule 2), so here they are only this count.
-    pub other_timers: u32,
-}
-
-/// One worker's place in the Tonight order. `at` and `under` both None is an always-on runner.
-#[derive(Serialize, Debug, Default, Clone, PartialEq)]
-pub struct Slot {
-    pub name: String,
-    /// Its timer's next start.
-    pub at: Option<i64>,
-    /// The caller it is listed under, for a call.
-    pub under: Option<String>,
 }
 
 /// One runner as its conf defines it (`~/.config/agentctl/README.md`, "What an agent is"), and
@@ -521,23 +365,7 @@ impl AskVerdict {
     }
 }
 
-/// The Prometheus part, cached apart by a server.
-#[derive(Serialize, Debug, Default, Clone)]
-pub struct Prom {
-    pub accounts: Vec<Series>,
-    pub cost_by_runner: BTreeMap<String, f64>,
-    pub cost_total: Option<f64>,
-    pub errors: Vec<String>,
-}
-
-/// Both parts, for a caller with no cache (the TUI).
-pub fn collect() -> Fleet {
-    let mut f = files(&Paths::from_env());
-    f.apply(&prom());
-    f
-}
-
-/// The file-backed parts.
+/// Every part, read fresh.
 pub fn files(paths: &Paths) -> Fleet {
     let at = jobs::now();
     let mut errors = vec![];
@@ -555,6 +383,10 @@ pub fn files(paths: &Paths) -> Fleet {
             let (text, _) = tail(&c.inbox.join("activity.log"), ACTIVITY_TAIL).ok()?;
             Some((c.name.clone(), text.lines().rev().find_map(parse_activity)?))
         })
+        .collect();
+    let held: HashMap<String, (i64, String)> = confs
+        .iter()
+        .filter_map(|c| Some((c.name.clone(), read_held(&c.inbox)?)))
         .collect();
     let roles = read_roles(&paths.roles, &confs);
     let lf = langfuse_sessions(&paths.agents.join("session-outcomes.conf"));
@@ -584,18 +416,31 @@ pub fn files(paths: &Paths) -> Fleet {
             .or_else(|| runner::status_next(&paths.jobs.agentctl, &w.name));
         w.registry = regs.get(&w.name).cloned().unwrap_or_default();
         w.score = scores.get(&w.name).cloned();
+        if let Some((since, why)) = held.get(&w.name) {
+            w.held_since = Some(*since);
+            w.held_why = why.clone();
+        }
     }
-    let tonight = tonight(&workers, &timers, at);
 
+    let sessions = match std::fs::read_to_string(&paths.state) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            errors.push(format!("sessions: {e}"));
+            serde_json::Value::Null
+        }),
+        Err(e) => {
+            errors.push(format!("sessions: {}: {e}", paths.state.display()));
+            serde_json::Value::Null
+        }
+    };
+    let who = who::build(&workers, &sessions, at);
     let dispatch = read_dispatch(&paths.dispatch, at, &mut errors);
     Fleet {
         at,
         errors,
         workers,
-        tonight,
+        who,
         dispatch,
         judge,
-        ..Default::default()
     }
 }
 
@@ -615,66 +460,6 @@ fn read_dispatch(dir: &Path, at: i64, errors: &mut Vec<String>) -> Dispatch {
     dispatch
 }
 
-/// The Prometheus part: accounts, cost per runner and the total, asked at once.
-pub fn prom() -> Prom {
-    let mut out = Prom::default();
-    let base = match prom::base() {
-        Ok(b) => b,
-        Err(e) => {
-            out.errors.push(format!("prometheus: {e}"));
-            return out;
-        }
-    };
-    let qs = [
-        ("accounts", ACCOUNTS),
-        ("cost", COST_BY_RUNNER),
-        ("cost total", COST_TOTAL),
-    ];
-    let answers: Vec<_> = std::thread::scope(|s| {
-        let hs: Vec<_> = qs
-            .iter()
-            .map(|&(n, q)| {
-                let base = &base;
-                (n, s.spawn(move || prom::instant(base, q)))
-            })
-            .collect();
-        hs.into_iter()
-            .map(|(n, h)| (n, h.join().unwrap_or_else(|_| Err("panicked".into()))))
-            .collect()
-    });
-    for (name, res) in answers {
-        match (name, res) {
-            (_, Err(e)) => out.errors.push(format!("{name}: {e}")),
-            ("accounts", Ok(s)) => out.accounts = s,
-            ("cost", Ok(s)) => out.cost_by_runner = costs(&s),
-            (_, Ok(s)) => out.cost_total = s.first().and_then(|x| x.value),
-        }
-    }
-    out
-}
-
-impl Fleet {
-    /// Lay a Prometheus read over the file read: accounts, the total, each runner's dollars.
-    pub fn apply(&mut self, p: &Prom) {
-        self.accounts = p.accounts.clone();
-        self.cost_24h = p.cost_total;
-        for w in &mut self.workers {
-            w.cost_24h = p.cost_by_runner.get(&w.name).copied();
-        }
-        self.errors.extend(p.errors.iter().cloned());
-    }
-}
-
-/// Dollars by runner. A series with no `agentctl_runner` (runs from before the label) is in
-/// the total only.
-pub fn costs(series: &[Series]) -> BTreeMap<String, f64> {
-    series
-        .iter()
-        .filter(|s| !s.label("agentctl_runner").is_empty())
-        .filter_map(|s| Some((s.label("agentctl_runner").to_string(), s.value?)))
-        .collect()
-}
-
 /// One runner's config: only what the tab shows.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Conf {
@@ -692,6 +477,8 @@ pub struct Conf {
     /// A call's CALLER; empty on a runner.
     pub caller: String,
     pub detail: String,
+    pub tier: u8,
+    pub oversees: String,
 }
 
 /// A conf's (or a role's) `KEY=value` lines as agentctl sources them, in file order. Quotes are
@@ -747,6 +534,8 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
             "EFFECT",
             "CALLER",
             "DETAIL",
+            "TIER",
+            "OVERSEES",
         ],
         home,
     );
@@ -769,6 +558,8 @@ pub fn parse_conf(name: &str, text: &str, home: &str, state: &Path) -> Conf {
         effect: get("EFFECT"),
         caller: get("CALLER"),
         detail: get("DETAIL"),
+        tier: get("TIER").parse().unwrap_or(2),
+        oversees: get("OVERSEES"),
     }
 }
 
@@ -941,7 +732,7 @@ pub(crate) fn calls_of(
         .collect()
 }
 
-fn read_confs(dir: &Path, state: &Path) -> (Vec<Conf>, Vec<String>) {
+pub(crate) fn read_confs(dir: &Path, state: &Path) -> (Vec<Conf>, Vec<String>) {
     let home = std::env::var("HOME").unwrap_or_default();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -1011,6 +802,8 @@ pub fn workers(
                 why: activity.get(&c.name).cloned(),
                 called_by: Some(c.caller).filter(|v| !v.is_empty()),
                 detail: c.detail,
+                tier: c.tier,
+                oversees: c.oversees,
                 name: c.name,
                 lane: c.lane,
                 description: c.description,
@@ -1074,6 +867,13 @@ pub fn workers(
     out
 }
 
+/// A runner's standing hold from its state dir, None when it has no `held_since`.
+fn read_held(dir: &Path) -> Option<(i64, String)> {
+    let since = std::fs::read_to_string(dir.join("held_since")).ok()?;
+    let why = std::fs::read_to_string(dir.join("held_why")).unwrap_or_default();
+    Some((since.trim().parse().ok()?, why.trim().to_string()))
+}
+
 /// The 90th percentile of `lengths`, nearest rank; None under `USUAL_RUNS` of them.
 fn usual(mut lengths: Vec<i64>) -> Option<i64> {
     if lengths.len() < USUAL_RUNS {
@@ -1087,70 +887,6 @@ fn usual(mut lengths: Vec<i64>) -> Option<i64> {
 fn nearest_rank<T: Copy>(sorted: &[T], pct: usize) -> Option<T> {
     let rank = (sorted.len() * pct).div_ceil(100);
     sorted.get(rank.saturating_sub(1)).copied()
-}
-
-/// The workers (their registry read) in the order they run from `at` to the next 07:00 local:
-/// running always-on runners first, then every timer in the window by its next start, and each
-/// call straight after the runner its CALLER names. A call whose caller is not a runner in the
-/// window (agent-ask, a by-hand tool) has no slot. `timers` is the same `timer_starts` read the
-/// workers took their `next` from; the ones outside agentctl are only counted.
-pub fn tonight(ws: &[Worker], timers: &HashMap<String, i64>, at: i64) -> Tonight {
-    let until = morning(at);
-    let due = |n: i64| n > at && n < until;
-    let always = ws.iter().filter(|w| {
-        w.registry.kind == "persistent" && w.running_since.is_some() && w.next.is_none()
-    });
-    let mut timed: Vec<&Worker> = ws.iter().filter(|w| w.next.is_some_and(due)).collect();
-    timed.sort_by(|a, b| a.next.cmp(&b.next).then_with(|| a.name.cmp(&b.name)));
-    let mut calls: Vec<&Worker> = ws.iter().filter(|w| w.called_by.is_some()).collect();
-    calls.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut slots = vec![];
-    for w in always.chain(timed) {
-        slots.push(Slot {
-            name: w.name.clone(),
-            at: w.next,
-            under: None,
-        });
-        for c in calls
-            .iter()
-            .filter(|c| c.called_by.as_deref() == Some(&w.name))
-        {
-            slots.push(Slot {
-                name: c.name.clone(),
-                at: None,
-                under: Some(w.name.clone()),
-            });
-        }
-    }
-    let other_timers = timers
-        .iter()
-        .filter(|(unit, &n)| !unit.starts_with(AGENTCTL_PREFIX) && due(n))
-        .count() as u32;
-    Tonight {
-        until,
-        slots,
-        other_timers,
-    }
-}
-
-/// The first `MORNING_HOUR`:00 local after `at`.
-fn morning(at: i64) -> i64 {
-    let (Some(now), Some(hour)) = (
-        Local.timestamp_opt(at, 0).single(),
-        NaiveTime::from_hms_opt(MORNING_HOUR, 0, 0),
-    ) else {
-        return at + DAY;
-    };
-    let day = now.date_naive();
-    let day = if now.time() < hour {
-        day
-    } else {
-        day.succ_opt().unwrap_or(day)
-    };
-    Local
-        .from_local_datetime(&day.and_time(hour))
-        .earliest()
-        .map_or(at + DAY, |d| d.timestamp())
 }
 
 /// The verdicts tail: the newest first, and counts by verdict for the day and the week before
@@ -1201,7 +937,7 @@ pub fn log_counts(text: &str, since: &str) -> BTreeMap<String, u32> {
     out
 }
 
-fn local_minute(t: i64) -> String {
+pub(crate) fn local_minute(t: i64) -> String {
     Local
         .timestamp_opt(t, 0)
         .single()
@@ -1312,7 +1048,7 @@ pub fn ts(s: &str) -> Option<i64> {
 
 /// The last `max` bytes of a file, from the first whole line, and whether that cut anything.
 /// A missing file is empty: a fresh install has no log yet.
-fn tail(p: &Path, max: u64) -> Result<(String, bool), String> {
+pub(crate) fn tail(p: &Path, max: u64) -> Result<(String, bool), String> {
     let err = |e: std::io::Error| format!("{}: {e}", p.display());
     let mut f = match std::fs::File::open(p) {
         Ok(f) => f,
@@ -1349,6 +1085,20 @@ mod tests {
             enabled,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_standing_hold_is_read_from_the_runner_dir_and_none_without_held_since() {
+        let dir = std::env::temp_dir().join(format!("hub-fleet-held-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_held(&dir), None);
+        std::fs::write(dir.join("held_since"), "1793992126\n").unwrap();
+        std::fs::write(dir.join("held_why"), "at its budget cap").unwrap();
+        assert_eq!(
+            read_held(&dir),
+            Some((1_793_992_126, "at its budget cap".to_string()))
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1786,40 +1536,6 @@ mod tests {
     }
 
     #[test]
-    fn cost_needs_the_runner_label() {
-        let s = |runner: Option<&str>, v: f64| Series {
-            labels: runner
-                .map(|r| BTreeMap::from([("agentctl_runner".to_string(), r.to_string())]))
-                .unwrap_or_default(),
-            value: Some(v),
-            points: vec![],
-        };
-        let c = costs(&[s(None, 44.9), s(Some("dream"), 1.5)]);
-        assert_eq!(c, BTreeMap::from([("dream".into(), 1.5)]));
-        let mut f = Fleet {
-            workers: vec![
-                Worker {
-                    name: "dream".into(),
-                    ..Default::default()
-                },
-                Worker {
-                    name: "sentinel".into(),
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        };
-        f.apply(&Prom {
-            cost_by_runner: c,
-            cost_total: Some(46.4),
-            ..Default::default()
-        });
-        assert_eq!(f.workers[0].cost_24h, Some(1.5));
-        assert_eq!(f.workers[1].cost_24h, None, "no labelled cost shows as -");
-        assert_eq!(f.cost_24h, Some(46.4));
-    }
-
-    #[test]
     fn a_tail_starts_at_a_whole_line() {
         let dir = std::env::temp_dir().join(format!("hub-fleet-tail-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1829,22 +1545,6 @@ mod tests {
         assert!(!tail(&p, 1000).unwrap().1);
         assert_eq!(tail(&dir.join("none"), 10).unwrap(), (String::new(), false));
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// 2026-11-05 at `h:m` local, unix seconds; `d` days on.
-    fn local(d: u32, h: u32, m: u32) -> i64 {
-        Local
-            .with_ymd_and_hms(2026, 11, 5 + d, h, m, 0)
-            .unwrap()
-            .timestamp()
-    }
-
-    fn timed(name: &str, next: i64) -> Worker {
-        Worker {
-            name: name.into(),
-            next: Some(next),
-            ..Default::default()
-        }
     }
 
     fn run(name: &str, start: i64, secs: i64, ok: bool) -> Job {
@@ -1919,178 +1619,17 @@ mod tests {
         assert_eq!(usual((1..=20).collect()), Some(18));
     }
 
-    fn row(name: &str, lane: &str, state: &str) -> Worker {
-        Worker {
-            name: name.into(),
-            lane: lane.into(),
-            state: state.into(),
-            enabled: state != "off",
-            ..Default::default()
-        }
-    }
-
-    fn table() -> Vec<Worker> {
-        let at = |t| Outcome {
-            at: Some(t),
-            ..Default::default()
-        };
-        vec![
-            Worker {
-                failed_24h: 2,
-                runs_24h: 3,
-                cost_24h: Some(1.5),
-                last: Some(at(100)),
-                why: Some(Outcome {
-                    word: "FAILED".into(),
-                    text: "sweep hit a rate limit".into(),
-                    ..Default::default()
-                }),
-                ..row("triage", "maintain", "idle")
-            },
-            Worker {
-                failed_24h: 1,
-                runs_24h: 9,
-                running_since: Some(300),
-                description: "Reads the Inbox".into(),
-                ..row("dispatch", "deliver", "running")
-            },
-            Worker {
-                runs_24h: 1,
-                cost_24h: Some(4.0),
-                last: Some(at(200)),
-                ..row("dream", "deliver", "idle")
-            },
-            row("retired", "", "off"),
-        ]
-    }
-
-    fn shown(v: &WorkerView, ws: &[Worker]) -> Vec<String> {
-        v.apply(ws).iter().map(|w| w.name.clone()).collect()
-    }
-
     #[test]
-    fn the_filters_keep_by_state_lane_and_search() {
-        let ws = table();
-        let view = |q: &str, lane: &str, state: &str| WorkerView {
-            q: q.into(),
-            lane: lane.into(),
-            state: state.into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            shown(&view("", "", "all"), &ws).len(),
-            4,
-            "all keeps every runner"
+    fn a_conf_reads_its_tier_and_what_it_oversees() {
+        let c = parse_conf(
+            "shepherd",
+            "TIER=1\nOVERSEES=sessions\n",
+            "/h",
+            Path::new("/st"),
         );
-        assert_eq!(shown(&view("", "", "failed"), &ws), ["triage", "dispatch"]);
-        assert_eq!(shown(&view("", "", "running"), &ws), ["dispatch"]);
-        assert_eq!(shown(&view("", "", "idle"), &ws), ["triage", "dream"]);
-        assert_eq!(shown(&view("", "", "off"), &ws), ["retired"]);
-        assert_eq!(
-            shown(&view("", "deliver", "all"), &ws),
-            ["dispatch", "dream"]
-        );
-        assert_eq!(shown(&view("", "deliver", "failed"), &ws), ["dispatch"]);
-        assert_eq!(shown(&view("DREAM", "", "all"), &ws), ["dream"], "the name");
-        assert_eq!(
-            shown(&view("inbox", "", "all"), &ws),
-            ["dispatch"],
-            "the description"
-        );
-        assert_eq!(
-            shown(&view("rate limit", "", "all"), &ws),
-            ["triage"],
-            "the why"
-        );
-        assert!(shown(&view("nothing like it", "", "all"), &ws).is_empty());
-    }
-
-    #[test]
-    fn each_chips_count_follows_the_search_and_lane_but_not_the_chip() {
-        let ws = table();
-        let mut v = WorkerView {
-            state: "off".into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            v.counts(&ws),
-            [
-                ("all", 4),
-                ("failed", 2),
-                ("running", 1),
-                ("idle", 2),
-                ("off", 1)
-            ]
-        );
-        v.lane = "deliver".into();
-        assert_eq!(
-            v.counts(&ws),
-            [
-                ("all", 2),
-                ("failed", 1),
-                ("running", 1),
-                ("idle", 1),
-                ("off", 0)
-            ]
-        );
-    }
-
-    #[test]
-    fn a_sort_puts_the_biggest_first_and_a_runner_with_no_value_last() {
-        let ws = table();
-        let by = |k: &str| {
-            shown(
-                &WorkerView {
-                    sort: k.into(),
-                    ..Default::default()
-                },
-                &ws,
-            )
-        };
-        assert_eq!(by("runs"), ["dispatch", "triage", "dream", "retired"]);
-        assert_eq!(by("failed"), ["triage", "dispatch", "dream", "retired"]);
-        assert_eq!(by("cost"), ["dream", "triage", "dispatch", "retired"]);
-        assert_eq!(
-            by("last"),
-            ["dispatch", "dream", "triage", "retired"],
-            "a run in progress is newest"
-        );
-        assert_eq!(by("nonsense"), ["triage", "dispatch", "dream", "retired"]);
-    }
-
-    #[test]
-    fn each_filter_cycles_through_its_list_and_back_to_the_start() {
-        let mut v = WorkerView::default();
-        for f in WORKER_FILTERS
-            .iter()
-            .cycle()
-            .skip(1)
-            .take(WORKER_FILTERS.len())
-        {
-            v.cycle_state();
-            assert_eq!(v.state, *f);
-        }
-        assert!(v.is_empty());
-        for k in WORKER_SORTS {
-            v.cycle_sort();
-            assert_eq!(v.sort, k);
-        }
-        v.cycle_sort();
-        assert!(v.is_empty());
-        let ls = lanes(&table());
-        assert_eq!(ls, ["deliver", "maintain"]);
-        v.cycle_lane(&ls);
-        v.cycle_lane(&ls);
-        assert_eq!(v.lane, "maintain");
-        v.cycle_lane(&ls);
-        assert_eq!(v.lane, "");
-    }
-
-    fn names(t: &Tonight) -> Vec<(&str, Option<&str>)> {
-        t.slots
-            .iter()
-            .map(|s| (s.name.as_str(), s.under.as_deref()))
-            .collect()
+        assert_eq!((c.tier, c.oversees.as_str()), (1, "sessions"));
+        let c = parse_conf("dream", "KIND=oneshot\n", "/h", Path::new("/st"));
+        assert_eq!((c.tier, c.oversees.as_str()), (2, ""));
     }
 
     #[test]
@@ -2112,134 +1651,5 @@ mod tests {
         let by = |n: &str| w.iter().find(|w| w.name == n).unwrap().called_by.clone();
         assert_eq!(by("ask-sweep").as_deref(), Some("dream"));
         assert_eq!(by("dream"), None, "a runner has no caller");
-    }
-
-    #[test]
-    fn tonight_runs_from_now_to_the_next_seven_in_time_order() {
-        let now = local(0, 20, 25);
-        let ws = [
-            timed("dream", local(1, 3, 4)),
-            timed("nightly-sync", local(0, 23, 3)),
-            timed("briefing", local(1, 6, 45)),
-            timed("theme-day", local(1, 7, 0)),
-        ];
-        let t = tonight(&ws, &HashMap::new(), now);
-        assert_eq!(t.until, local(1, 7, 0));
-        assert_eq!(
-            names(&t),
-            [("nightly-sync", None), ("dream", None), ("briefing", None)]
-        );
-        assert_eq!(t.slots[0].at, Some(local(0, 23, 3)));
-        // Before 07:00 the window ends the same morning.
-        let early = tonight(&ws, &HashMap::new(), local(1, 4, 0));
-        assert_eq!(early.until, local(1, 7, 0));
-        assert_eq!(
-            names(&early),
-            [("briefing", None)],
-            "a start already gone is not tonight's"
-        );
-    }
-
-    #[test]
-    fn a_timer_after_seven_is_not_tonight() {
-        // The negative control: the same rows with only the times moved past 07:00.
-        let now = local(0, 20, 25);
-        let ws = [
-            timed("perf-round", local(2, 8, 0)),
-            timed("lab-sync", local(1, 7, 1)),
-        ];
-        let timers = HashMap::from([
-            ("theme-day.service".to_string(), local(1, 7, 0)),
-            ("storage-scan.service".to_string(), local(1, 15, 8)),
-        ]);
-        let t = tonight(&ws, &timers, now);
-        assert!(t.slots.is_empty(), "{:?}", t.slots);
-        assert_eq!(t.other_timers, 0);
-    }
-
-    #[test]
-    fn a_call_sits_under_its_caller() {
-        let now = local(0, 20, 25);
-        let call = |name: &str, caller: &str| Worker {
-            name: name.into(),
-            called_by: Some(caller.into()),
-            ..Default::default()
-        };
-        let ws = [
-            call("ask-sweep", "dream"),
-            call("ask-judge", "agent-ask"),
-            timed("token-usage", local(1, 3, 42)),
-            timed("dream", local(1, 3, 4)),
-            timed("fleet-dispatch", local(0, 20, 27)),
-            call("dispatch-judge", "fleet-dispatch"),
-        ];
-        let t = tonight(&ws, &HashMap::new(), now);
-        assert_eq!(
-            names(&t),
-            [
-                ("fleet-dispatch", None),
-                ("dispatch-judge", Some("fleet-dispatch")),
-                ("dream", None),
-                ("ask-sweep", Some("dream")),
-                ("token-usage", None),
-            ],
-            "a call whose caller is no runner tonight (agent-ask) has no slot"
-        );
-        assert_eq!(t.slots[1].at, None);
-    }
-
-    #[test]
-    fn always_on_runners_come_first() {
-        let now = local(0, 20, 25);
-        let persistent = |name: &str, running: bool| Worker {
-            name: name.into(),
-            running_since: running.then_some(now - 3600),
-            registry: Registry {
-                kind: "persistent".into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut oneshot = persistent("inbox-plan", true);
-        oneshot.registry.kind = "oneshot".into();
-        let ws = [
-            timed("nightly-sync", local(0, 23, 3)),
-            persistent("sentinel", true),
-            persistent("inbox-triage", true),
-            persistent("down", false),
-            oneshot,
-        ];
-        let t = tonight(&ws, &HashMap::new(), now);
-        assert_eq!(
-            names(&t),
-            [
-                ("sentinel", None),
-                ("inbox-triage", None),
-                ("nightly-sync", None)
-            ],
-            "a stopped persistent runner and a running oneshot with no timer are not always on"
-        );
-        assert_eq!(t.slots[0].at, None);
-    }
-
-    #[test]
-    fn other_timers_in_the_window_are_only_counted() {
-        let now = local(0, 20, 25);
-        let timers = HashMap::from([
-            (
-                "journal-daily-summarize.service".to_string(),
-                local(1, 1, 0),
-            ),
-            ("journal-index-rebuild.service".to_string(), local(1, 1, 15)),
-            ("theme-day.service".to_string(), local(1, 7, 0)),
-            ("agentctl@dream.service".to_string(), local(1, 3, 4)),
-            ("never.service".to_string(), 0),
-        ]);
-        let t = tonight(&[], &timers, now);
-        assert_eq!(t.other_timers, 2);
-        assert!(
-            t.slots.is_empty(),
-            "a timer is a slot only through its worker"
-        );
     }
 }

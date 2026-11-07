@@ -142,6 +142,25 @@ them — their independence comes from the `model:` frontmatter in
 needed. An allowlist alone still starts every user-scope server: that is how 11
 idle sessions each ended up holding a headed browser nobody asked for.
 
+## Lane sandbox
+
+A role says what an agent may do; a lane sandbox bounds what its shell can touch while doing it. A runner conf opts in with `SANDBOX_PROFILE=<name>`, which loads `~/.config/agentctl/sandbox/<name>.json` (override: `$AGENTCTL_SANDBOX_DIR`). The profile is Claude settings content: `sandbox.filesystem.denyRead` (credential paths), `sandbox.filesystem.allowWrite` (state dirs the lane writes), `sandbox.network.allowedDomains`. Unset means the lane runs unsandboxed. `lib/sandbox.sh` is the mechanism; `tests/integ/agent_run_sandbox.bats` checks it, and `tests/container/sandbox-proof.sh` proves the profile against the real sandbox runtime with a negative control.
+
+| | claude | codex |
+|---|---|---|
+| sandbox on | `--settings` with the profile, `sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands:false` and `network.strictAllowlist` forced on | `--sandbox workspace-write` in place of the bypass, for a writing role (a read-only role keeps `read-only`) |
+| writable | shell: cwd, the profile's `allowWrite`, the git common dir (so `git commit` works from a worktree) minus its `hooks` and `config`. Edit and Write: the same set (and the profile's `denyWrite` as `Edit()` denies), through `permissions.blockWritesOutsideWorkingDirectories` and `additionalDirectories` | `writable_roots`: the profile's `allowWrite` and the git common dir |
+| read denial | each `denyRead` path in the sandbox, and as `Read()` and `Edit()` deny rules for the in-process tools | none, so a profile with `denyRead` is refused |
+| egress | `allowedDomains` only, strict | off; a profile with `allowedDomains` is refused, since codex network is all or nothing |
+
+- A sandboxed lane does not start from `$HOME` or a directory above it (exit 78): the cwd is writable, and a user unit with no `WorkingDirectory` starts in `$HOME`, which would leave no write bound. A runner script `cd`s to its inbox or a worktree first. fleet-dispatch's `DISPATCH_SANDBOX_PROFILE` loads the profile from the session's directory, so the same rule holds for a dispatched start. The check compares physical paths, so a symlinked `$HOME` does not get past it.
+- Every refusal below of a named call (a runner's `AGENTCTL_NAME`, or `--agent`) appends a line to `~/.local/state/agentctl/sandbox-refusals.jsonl` (`AGENTCTL_SANDBOX_REFUSALS`): agent, role, harness, profile, time and the reason in `why`. It is not a `calls.jsonl` line, since every reader of that file counts a line as a call made. The `lane-sandbox-refusals` Sentinel watch reads it; fleet-bench's `sandboxed_lane_pct` (the share of claude and codex lanes whose newest call ran sandboxed) reads `calls.jsonl`.
+- Fail closed (exit 78): a named profile that is missing, not the shape `SANDBOX_SHAPE` in `lib/sandbox.sh` checks (lists of strings, paths absolute or `~/`), or one the harness cannot hold refuses the run. A harness enforces a profile only by defining `harness_sandbox`; opencode, raw and binks do not, so they refuse every profile. claude's `harness_sandbox` checks `SANDBOX_CLAUDE_NEEDS` (`bwrap socat`) on PATH first, so a missing one is a recorded refusal with its name; `failIfUnavailable` still makes one a refusal inside claude, never an unsandboxed run.
+- GitHub: the profile hides gh's login, so `GH_TOKEN_FILE=<path>` in the conf gives the lane its own repo-scoped token as `GH_TOKEN`. A sandboxed lane with no `GH_TOKEN_FILE` gets no `GH_TOKEN` or `GITHUB_TOKEN` from the environment.
+- Sessions `fleet-dispatch start` launches skip `agentctl-run`, so they take the profile from `DISPATCH_SANDBOX_PROFILE` (and `DISPATCH_SANDBOX_GH_TOKEN_FILE` for `GH_TOKEN_FILE`) in the dispatcher's conf instead, through the same `lib/sandbox.sh`: a claude start or resume gets `--settings`, a start on any other harness is refused, a profile it cannot load refuses the start and the item stays queued. Empty is off, and it is off.
+- An `--agent` call inherits its caller's `SANDBOX_PROFILE`. A sandboxed lane's model cannot start a sandboxed call from its own shell (bwrap does not nest), so roll out one runner at a time.
+- Claude's sandbox confines Bash only, and WebFetch is not held to `allowedDomains`. The in-process Edit and Write tools are bounded by `permissions.blockWritesOutsideWorkingDirectories: true` (Claude Code 2.1.314 and later; it refuses Write, Edit and NotebookEdit outside the working directories in every permission mode, including the `--dangerously-skip-permissions` a lane runs under, and no allow rule lifts it) with `permissions.additionalDirectories` set to the profile's `allowWrite` (`~/` expanded) plus the git common dir. An allow-only rule scheme cannot do this: allow rules have no effect under the bypass, and a deny cannot carve out an exception. Each `denyRead` and `denyWrite` path (the common dir's `hooks` and `config` included) is an `Edit()` deny inside that set. A profile's own `additionalDirectories` is replaced, not extended. A claude older than 2.1.314 ignores the key, so the harness refuses a sandboxed lane on one. Residuals: the Read tool is bounded only by the `denyRead` deny rules; files Claude Code keeps for the session (plan files, scratchpad) are outside the block; the block is proven by the key's documented semantics and the settings tests in `agent_run_sandbox.bats`, not by a live claude run, which `tests/container/sandbox-proof.sh` (srt, Bash only) cannot make.
+
 ## Known hole: `ROLE_BASH=yes` defeats `ROLE_WRITE=no`
 
 Measured, not theorised. A role with `ROLE_WRITE=no, ROLE_BASH=yes`, asked to use
@@ -155,7 +174,7 @@ This is not patched, deliberately:
 - A `Bash(...)` deny list is a blocklist on a shell, and shell blocklists leak:
   `tee`, `sed -i`, `python -c`, `dd`, any redirection you did not think of.
 
-The real fix is a sandbox with no writable mount. Until then, a role with
+The real fix is a sandbox with no writable mount (a lane sandbox, above, bounds writes to its roots but does not remove them). Until then, a role with
 `ROLE_WRITE=no, ROLE_BASH=yes` constrains the SHAPE of the work and must not be
 described as airtight. Say so in any doc that describes such a role. The codex
 harness is the exception: its read-only sandbox covers the shell.

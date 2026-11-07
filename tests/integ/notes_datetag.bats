@@ -56,6 +56,25 @@ io.stdout:write("changed=" .. table.concat(changed, ",") .. "\n")'
   assert_line "changed=3,4,9"
 }
 
+@test "stamp_focus stops at the rollup, whose rows are mirrored from other notes" {
+  run lua_run '
+local dt = require("notes.datetag")
+local lines = {
+  "## Focus",
+  "- [ ] mine",
+  "<!-- rollup:start -->",
+  "### bnb",
+  "- [ ] theirs",
+}
+local out, changed = dt.stamp_focus(lines, dt.note_date("/v/journal/daily/2026-10-26.md"))
+for _, l in ipairs(out) do io.stdout:write(l .. "\n") end
+io.stdout:write("changed=" .. table.concat(changed, ",") .. "\n")'
+  assert_success
+  assert_line --index 1 "- [ ] mine #c1026"
+  assert_line --index 4 "- [ ] theirs"
+  assert_line "changed=2"
+}
+
 @test "note_date reads only a daily note's own file name" {
   run lua_run '
 local dt = require("notes.datetag")

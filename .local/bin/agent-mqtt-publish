@@ -12,7 +12,7 @@
 # while one runs) and outcome_code (0 ok: WORKED, NOOP; 1 warn: BLOCKED, PENDING; 2 fail:
 # FAILED, STALLED; null when none is recorded), and watch since_epoch.
 # Triggers: agentctl after every status write, sentinel on a watch state change,
-# agent-mqtt-sessions.path on the fleet state document, and agent-mqtt-publish.timer (--full).
+# agent-mqtt-sessions.service after each fleet state pass, and agent-mqtt-publish.timer (--full).
 # Broker comes from ~/.config/agent-mqtt.env (private overlay); with none set this is a no-op.
 set -uo pipefail
 
@@ -292,9 +292,9 @@ main() {
     mkdir -p "$CACHE/sent"
 
     # One run at a time, so two hooks firing together cannot interleave cache writes. Each
-    # waiter re-reads the state after it gets the lock, so the last writer always wins. The
-    # wait stays under agent-mqtt-sessions.service's 30s TimeoutStartSec: a waiter behind a slow
-    # --full run exits 0 here instead of being killed, which failed the unit (2026-11-05).
+    # waiter re-reads the state after it gets the lock, so the last writer always wins. A
+    # waiter behind a slow --full run gives up after 20s and exits 0: the 5-minute --full run
+    # republishes everything, and the next fleet-state pass any change.
     exec 9>"$CACHE/lock"
     flock -w 20 9 || { say "lock busy"; return 0; }
     snap="$(snapshot)"

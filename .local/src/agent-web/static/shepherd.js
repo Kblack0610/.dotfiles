@@ -92,7 +92,7 @@ $("scroll").addEventListener("click", (e) => {
   if (e.target.dataset.skips !== undefined) showActions("shepherd", "skip");
   else if (e.target.dataset.chat !== undefined) {
     const a = shst.data && st.agents.find((x) => x.target === shst.data.target);
-    if (a) select(a);
+    if (a) openAgent(a);
   }
 });
 // Remember which rundowns are open, so a re-render after a new one keeps the reader's place.

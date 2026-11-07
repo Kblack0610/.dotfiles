@@ -14,7 +14,7 @@ fn join(parts: &[&str]) -> String {
         .join(" ")
 }
 
-fn conclusion_ok(c: &str) -> Option<bool> {
+pub(super) fn conclusion_ok(c: &str) -> Option<bool> {
     match c {
         "success" => Some(true),
         "failure" | "timed_out" | "startup_failure" => Some(false),

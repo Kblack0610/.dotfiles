@@ -19,8 +19,6 @@ Turns a folder of downloaded .unitypackage files into a per-pack verdict (Adopt 
 
 Audit downloaded Unity Asset Store packs (.unitypackage files in the local download cache) and decide, per pack, whether to bring it into the BNB Unity stack (unity-core URP, the catalog contract, asset-ingest, which converts to URP Lit) - with a why and a why-not for every pack, judged from the actual files (material shader GUIDs, scripts, prefabs, FBX import settings, serialization, nested URP sub-packages), never store blurbs. Publishes a filterable Artifact report plus a cross-pack synthesis (style families, what pipeline gaps block which packs, suggested ingest order). Use when the user says "analyze my downloaded assets", "which asset store packs should we use", "audit these packs", "is this pack worth bringing in", or after downloading a new batch from My Assets. Read-only: it never imports into a project. Not for actually ingesting a pack into a library package (that is the com.blacknbrown.asset-ingest editor tool) and not for browsing the owned-but-not-downloaded list on the store site.
 
-## When to Use
-
 - When the user has downloaded packs from Package Manager -> My Assets and asks which are worth using.
 - When one new pack lands and needs a bring-in decision (run the same steps on one pack).
 
@@ -32,7 +30,7 @@ For what the account owns but has not downloaded, read the asset library's `docs
 
 Scripts are in `~/.claude/skills/asset-store-audit/scripts/`. Work in `OUT=~/.cache/asset-store-audit/<date>` on disk, not the session scratchpad: `/tmp` is RAM on this machine and an unpack runs to many GB. When the report is published, delete `$OUT/pkgs`.
 
-1. **Unpack without importing.** Cache on Linux: `~/.local/share/unity3d/Asset Store-5.x/<publisher>/<category>/`. Skip `*.tmp` (partial downloads) and tell the user which ones are still in progress.
+1. **Unpack without importing.** Cache on Linux: `<publisher>/<category>/` under the `Asset Store-5.x` directory in `~/.local/share/unity3d/`. Skip `*.tmp` (partial downloads) and tell the user which ones are still in progress.
    `python3 scripts/unpack.py "<cache>" "$OUT" -j 12` - streams every package, writes `pkgs/<Pack>/manifest.json` and text assets, and unpacks nested URP / effect sub-packages into `pkgs/<Pack>/nested/`. About 3 minutes for 14 GB.
 2. **Fact sheets.** `python3 scripts/facts.py "$OUT"` -> `facts/<Pack>.json`: type counts and MB, material shaders by GUID with a remap summary, custom shaders, script namespaces and flags, asmdefs, prefab components, FBX scale and rig, serialization and authoring version.
 3. **Refresh the rubric's view of the stack.** Read `references/rubric.md`, then re-check unity-core's `packages/` and `third-party/` and `packages/com.blacknbrown.asset-ingest/Editor/ShaderRemap.cs` + `PackIngestor.cs`. Copy the rubric to `$OUT/RUBRIC.md` with anything that changed.
