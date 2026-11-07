@@ -1448,8 +1448,8 @@ item_row() {
     | [(.profile // ""), ($r | split(":")[0]), (.lane // "agent"), ($r | split(":")[1:] | join(":"))] | join("\u001f")' <<<"$1"
 }
 
-# close_row <slug> -- an item with a row, done ok, whose row is still started: the session merged and died
-# before agent-land closed it. Closed only on merge proof (agent-merge-proof.sh) of the item's
+# close_row <slug> -- an item with a row, done ok, whose row is still started: the session died before
+# agent-land closed it, or closed the item before its PR merged (land_orphan). Closed only on merge proof (agent-merge-proof.sh) of the item's
 # merged: commit in the project's checkout, with proof "pr:<N> commit:<sha12>"; with no proof the
 # row is left started and the reason logged, so a false close never happens.
 close_row() {
@@ -1492,16 +1492,53 @@ settle_row() {
   echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it"))"
 }
 
+# pr_state <owner/repo#N> -> "<state> <merge oid>" as gh reads it; fails when gh cannot.
+pr_state() { gh pr view "${1##*#}" -R "${1%#*}" --json state,mergeCommit -q '.state + " " + (.mergeCommit.oid // "")' 2>/dev/null; }
+
+# land_orphan <slug> -- a started row whose item ended ok, closed by its session before the PR merged
+# (a --pr-only run, a human's merge): the row goes by that PR, not by the orphan timer. A merged:
+# commit, or a PR gh reads as MERGED (then recorded), goes to close_row; OPEN leaves it started for the
+# merge. Returns 1 when no PR holds the row, so the timer decides: no PR, closed unmerged, or unreadable
+# (a Forgejo PR, which gh cannot see, needs merged: on the item). A bare pr: names no repo and one
+# project spans repos, so it reads from the project's checkout and counts only if a line of the PR's
+# body is exactly the item's `Item:` stamp.
+land_orphan() {
+  local it pr oid dir info state
+  it=$(agent-queue show "$1" --json 2>/dev/null) || return 1
+  IFS=$'\x1f' read -r pr oid < <(jq -r '[.pr // "", .merged // ""] | join("\u001f")' <<<"$it")
+  if [ -z "$oid" ]; then
+    if [[ "$pr" == */*#* ]]; then
+      info=$(pr_state "$pr") || return 1
+    else
+      dir=$(repo_dir "$(jq -r .project <<<"$it")")
+      [ -n "$pr" ] && [ -n "$dir" ] || return 1
+      info=$(cd "$dir" && gh pr view "$pr" --json state,mergeCommit,body -q \
+        "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | .state + \" \" + (.mergeCommit.oid // \"\")" 2>/dev/null) || return 1
+    fi
+    read -r state oid <<<"$info"
+    case "$state" in
+    OPEN) return 0 ;;
+    MERGED) [ -n "$oid" ] && agent-queue set "$1" "merged=$oid" >/dev/null || return 1 ;;
+    *) return 1 ;;
+    esac
+  fi
+  close_row "$1"
+}
+
 # unstart_orphans -- an agent-lane row started with no active queue item naming it (its `row`)
-# is an orphan: its session never filed an item, or died before reap could see one. A row seen
-# orphaned on every pass for DISPATCH_ORPHAN_HOURS is un-started and given a failed verdict, as
+# is an orphan: its session never filed an item, or died before reap could see one. If an item done ok
+# in the last DISPATCH_ORPHAN_HOURS plus a day names it, its PR decides first (land_orphan); a PR open
+# longer than that falls to the timer. A row seen orphaned on every pass for DISPATCH_ORPHAN_HOURS is un-started and given a failed verdict, as
 # settle_row does, so dispatch does not promote it again until its text changes; the grace keeps a
 # session that started a row a minute ago from losing it. First sightings live in $DIR/orphans.tsv;
 # a row that stops being one drops out. Human-lane rows are the human's own and never touched. A
 # queue it cannot read changes nothing. 2026-11-05: 40 started rows, 33 of them with no item.
 unstart_orphans() {
-  local items linked prof name _rest key text first now seen=''
+  local items landed linked prof name _rest key text first now slug seen=''
   items=$(agent-queue list --json 2>/dev/null) || return 0
+  landed=$(agent-queue list --json --state done --since "$(date -d "-$((DISPATCH_ORPHAN_HOURS / 24 + 1)) days" +%F)" 2>/dev/null) || return 0
+  landed=$(jq -rs 'map(select(.status == "ok" and (.row // "") != "" and (.lane // "agent") == "agent")) | sort_by(.finished)
+    | .[] | "\(.row | sub(":"; "\t"))\t\(.slug)"' <<<"$landed")
   mkdir -p "$DIR"
   linked=$(jq -r 'select(.state != "done" and (.row // "") != "" and (.lane // "agent") == "agent")
     | .row | sub(":"; "\t")' <<<"$items")
@@ -1513,6 +1550,8 @@ unstart_orphans() {
       while IFS=$'\t' read -r key text; do
         [[ "$text" == '- [/]'* ]] || continue
         grep -qxF "$name"$'\t'"$key" <<<"$linked" && continue
+        slug=$(K="$name"$'\t'"$key" awk -F'\t' '$1"\t"$2 == ENVIRON["K"] { s = $3 } END { print s }' <<<"$landed")
+        [ -n "$slug" ] && land_orphan "$slug" && continue
         first=$(K="${prof:--}"$'\t'"$name"$'\t'"$key" awk -F'\t' '$1"\t"$2"\t"$3 == ENVIRON["K"] { print $4; exit }' "$DIR/orphans.tsv" 2>/dev/null)
         first=${first:-$now}
         if [ $(( now - first )) -lt $(( DISPATCH_ORPHAN_HOURS * 3600 )) ]; then
@@ -1546,7 +1585,7 @@ settle_item() {
   dispatch_event reaped "$(agent-queue show "$1" --json 2>/dev/null | jq -r '.project // empty')" "session $2 gone" --item "$1" --why "item was $st"
   IFS=$'\x1f' read -r pr report < <(agent-queue show "$1" --json 2>/dev/null | jq -r '[.pr // "", .report // ""] | join("\u001f")')
   if [[ "$pr" == */*#* ]]; then
-    info=$(gh pr view "${pr##*#}" -R "${pr%#*}" --json state,mergeCommit -q '.state + " " + (.mergeCommit.oid // "")' 2>/dev/null) || info=''
+    info=$(pr_state "$pr") || info=''
     read -r state oid <<<"$info"
     case "$state" in
     MERGED)
