@@ -412,8 +412,8 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   export CC_PROM_URL=http://prom.test
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +30% +50% +under .*\$600 +0 +0\.83 +now +m@x$'
-  assert_line --regexp '^alt +- +80% +50% +over .*\$0 +0 +0\.24 +[A-Z][a-z]{2} [0-9:]{5} +a@x$'
+  assert_line --regexp '^main +- +30% +50% +under .*\$600 +0 +0\.83 +now +ok +m@x$'
+  assert_line --regexp '^alt +- +80% +50% +over .*\$0 +0 +0\.24 +[A-Z][a-z]{2} [0-9:]{5} +pace +a@x$'
 }
 
 @test "status: Prometheus down leaves the percents and blanks only the dollars" {
@@ -423,7 +423,7 @@ field() { jq -r --arg a "$1" ".[] | select(.name == \$a) | $2"; }
   export CC_PROM_URL=http://prom.test   # the curl stub fails
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +30% +50% +under .* - +0 +0\.83 +now +m@x$'
+  assert_line --regexp '^main +- +30% +50% +under .* - +0 +0\.83 +now +ok +m@x$'
 }
 
 @test "live sessions count per account, only claude processes" {
@@ -734,7 +734,7 @@ STUB
   run --separate-stderr "$ACCT" pick
   assert_success
   assert_output ''
-  [[ "$stderr" == *'main is over its weekly pace'* ]]
+  [[ "$stderr" == *'main would be refused an automatic start, 15 points over its weekly pace'* ]] || fail "$stderr"
 }
 
 @test "check usage: trips on a failed read, naming the account, clears when both read" {
@@ -858,4 +858,125 @@ seen_claude() {
   assert_success
   assert_line --partial 'after-reset'
   assert_line --regexp '^fleet: 20 live, burn 2/h vs 0\.5/h sustainable \(4\.2x, carries ~4\), back on pace: not at this burn; if idle (main|alt) '
+}
+
+# --- the room verdict is one field of each usage row -------------------------------------------
+# Every surface reads usage_json's `room` object; none re-derives "over pace". Each case below
+# failed against the old script, where room.reason did not exist and the pick hint, the PACE column
+# and the select in cmd_room each held their own rule.
+
+@test "room object: inside the slack is ok, one point past it is no room by one point" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week alt 18 141   # 27h of 168 gone = 16.07%, so 21.07 is the edge with 5 of slack
+  week main 22 141
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [[ "$(field alt .room.ok <<< "$output")" == true ]]
+  [[ "$(field alt .room.reason <<< "$output")" == ok ]]
+  [[ "$(field main .room.ok <<< "$output")" == false ]]
+  [[ "$(field main .room.reason <<< "$output")" == pace ]]
+  [[ "$(field main '.room.over_points | ceil' <<< "$output")" == 1 ]]
+  [[ "$(field alt '.room.headroom_points | floor' <<< "$output")" == 3 ]]
+}
+
+@test "room object: the reserve, the capped week and the live sessions each get their own reason" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 87 2
+  week alt 100 2
+  run --separate-stderr "$ACCT" room --json
+  assert_failure 1
+  [[ "$(field main .room.reason <<< "$output")" == reserve ]]
+  [[ "$(field main .room.capped <<< "$output")" == false ]]
+  [[ "$(field alt .room.reason <<< "$output")" == capped ]]
+  [[ "$(field alt .room.capped <<< "$output")" == true ]]
+  week main 50 84
+  week alt 50 84
+  live "" 12
+  run --separate-stderr "$ACCT" room --json
+  [[ "$(field main .room.reason <<< "$output")" == committed ]]
+  [[ "$(field alt .room.reason <<< "$output")" == ok ]]
+}
+
+@test "room --json: exit codes match room, an unread account is not a room verdict, and a window at the reserve refuses" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 10 84
+  creds "$ALT" 99999999999999
+  run --separate-stderr "$ACCT" room --json
+  assert_success
+  [[ "$(field alt .room.reason <<< "$output")" == unread ]]
+  [[ "$(field main .room.ok <<< "$output")" == true ]]
+  week main 70 84
+  run --separate-stderr "$ACCT" room --json
+  assert_failure 2
+  week main 10 84
+  week alt 20 84
+  printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
+  run --separate-stderr "$ACCT" room --json
+  assert_success
+  [[ "$(field main .room.reason <<< "$output")" == five_hour ]]
+  [[ "$(field alt .room.ok <<< "$output")" == true ]]
+}
+
+@test "room object: the machine-mode level scales what the published verdict says, and pick's rank does not" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 22 141   # 1 point past mid's 5 of slack
+  week alt 22 141
+  run "$ACCT" status --json
+  [[ "$(field main .room.slack <<< "$output")" == 5 ]]
+  [[ "$(field main .room.ok <<< "$output")" == false ]]
+  mkdir -p "$HOME/.agent"
+  echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"   # high: 10 of slack
+  run "$ACCT" status --json
+  [[ "$(field main .room.slack <<< "$output")" == 10 ]]
+  [[ "$(field main .room.ok <<< "$output")" == true ]]
+}
+
+@test "one verdict: room, status, the textfile and pick's hint all follow the same row" {
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC
+  week main 22 141
+  week alt 22 141
+  mkdir -p "$SANDBOX/prom"
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *'main is the closest, 1 point over its weekly pace'* ]] || fail "$stderr"
+  run "$ACCT" status
+  assert_line --regexp '^main .* pace *$'
+  run --separate-stderr "$ACCT" pick
+  [[ "$stderr" == *'main would be refused an automatic start, 1 point over its weekly pace'* ]] || fail "$stderr"
+  "$ACCT" textfile "$SANDBOX/prom"
+  grep -q '^claude_account_room{account="main"} 0$' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room_headroom_points{account="main"} -0\.9' "$SANDBOX/prom/claude_acct.prom"
+  # the one number lives in pace.conf: lift the slack there and every surface moves with it
+  sed 's/^PACE_SLACK_PCT=.*/PACE_SLACK_PCT=10/' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$SANDBOX/pace.conf"
+  export CLAUDE_ACCT_PACE_CONF="$SANDBOX/pace.conf"
+  run --separate-stderr "$ACCT" room
+  assert_success
+  run --separate-stderr "$ACCT" pick
+  [[ "$stderr" != *'no room'* ]] || fail "$stderr"
+  "$ACCT" textfile "$SANDBOX/prom"
+  grep -q '^claude_account_room{account="main"} 1$' "$SANDBOX/prom/claude_acct.prom"
+}
+
+@test "pace.conf: a number missing from it stops claude-acct and names the file" {
+  grep -v '^RESERVE_PCT=' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$SANDBOX/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$SANDBOX/pace.conf" run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *"RESERVE_PCT is not set to a number in $SANDBOX/pace.conf"* ]] || fail "$stderr"
+}
+
+@test "pace.conf: a value with a trailing comment is refused, and room takes no unknown argument" {
+  sed 's/^PACE_SLACK_PCT=.*/PACE_SLACK_PCT=5 # note/' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$SANDBOX/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$SANDBOX/pace.conf" run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *'PACE_SLACK_PCT is not set to a number'* ]] || fail "$stderr"
+  run --separate-stderr "$ACCT" room --jsn
+  assert_failure 3
+}
+
+@test "no second copy: the pace numbers and the room rule are written once, in pace.conf and usage_json" {
+  # a literal default beside the conf, or a second pace comparison in the verbs, is a second source
+  run grep -nE 'SLACK_PCT:-[0-9]|RESERVE_PCT:-[0-9]|SESSION_RATE:-[0-9]' "$ACCT"
+  assert_failure
+  [[ "$(grep -cE '\$u > \$g \+ \$slack' "$ACCT")" == 1 ]]
+  [[ "$(grep -c 'RESERVE_PCT=' "$REPO_ROOT/.config/claude-acct/pace.conf")" == 1 ]]
 }

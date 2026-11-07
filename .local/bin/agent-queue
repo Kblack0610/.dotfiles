@@ -1175,16 +1175,20 @@ cmd_attribute() {
 }
 
 # credit_of <project> < changed-paths -> "<winner>\t<touches>", or nothing when no path matches: the
-# attribution rule itself, shared by `attribute` (which records it) and `credit-of` (which only
-# prints it, for credit-backfill). The winner is empty on a tie.
+# attribution rule itself, shared by `attribute` (which records it), `credit-of` (which only prints
+# it, for credit-backfill) and session-outcomes. A path is an app's when it is under the app's tracker
+# `path`, else when one of its directories is named after the app (infra/flux/apps/prod/<app>/,
+# store/<app>/). The winner owns the most paths, and is empty on a tie.
 credit_of() {
   jq -nRr --slurpfile m "$AQ_MAP" --arg p "$1" '
     ($m[0].trackers // {}) as $t
     | (($t[$p] | objects | .repo) // $p) as $repo
     | [$t | to_entries[] | select((.value | objects | .repo) == $repo and (.value.path // "") != "")
        | {key, dir: (.value.path | rtrimstr("/") + "/")}] as $cands
-    | [inputs | select(. != "")] as $files
-    | [$cands[] | .dir as $d | {key, n: ([$files[] | select(startswith($d))] | length)} | select(.n > 0)]
+    | [inputs | select(. != "") | . as $f
+       | [$cands[] | .dir as $d | select($f | startswith($d)) | .key] as $in
+       | if $in != [] then $in[] else ($f | split("/") | .[0:-1]) as $ds | $cands[] | select(.key as $k | $ds | index($k)) | .key end]
+    | group_by(.) | map({key: .[0], n: length})
     | sort_by(-.n, .key)
     | select(length > 0)
     | (if length > 1 and .[0].n == .[1].n then "" else .[0].key end) + "\t" + (map(.key) | sort | join(" "))'
