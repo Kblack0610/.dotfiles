@@ -450,15 +450,11 @@ pub fn run_preview(map_file: &Path, row: &str) -> Result<()> {
         return Ok(());
     }
 
-    let (jsonl_path, project, summary, repo_full, ask) = lookup(map_file, &target);
-    render::preview(
-        &target,
-        jsonl_path.as_deref(),
-        &project,
-        &summary,
-        &repo_full,
-        &ask,
-    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    render::preview(&target, &lookup(map_file, &target), now);
     Ok(())
 }
 
@@ -480,25 +476,13 @@ fn extract_target(row: &str) -> Option<String> {
 
 /// Read the preview map file for a target row:
 /// `target \t jsonl \t project \t summary \t repo_full \t ask`.
-type MapRow = (Option<PathBuf>, String, String, String, String);
-fn lookup(map_file: &Path, target: &str) -> MapRow {
-    let Ok(text) = fs::read_to_string(map_file) else {
-        return MapRow::default();
-    };
-    for line in text.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.first() == Some(&target) {
-            let jsonl = f.get(1).filter(|s| !s.is_empty()).map(PathBuf::from);
-            return (
-                jsonl,
-                f.get(2).unwrap_or(&"").to_string(),
-                f.get(3).unwrap_or(&"").to_string(),
-                f.get(4).unwrap_or(&"").to_string(),
-                f.get(5).unwrap_or(&"").to_string(),
-            );
-        }
-    }
-    MapRow::default()
+/// The preview facts the map file holds for `target`; empty when it holds none.
+fn lookup(map_file: &Path, target: &str) -> render::Facts {
+    fs::read_to_string(map_file)
+        .ok()
+        .and_then(|text| text.lines().map(render::Facts::parse).find(|(t, _)| t == target))
+        .map(|(_, f)| f)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -583,9 +567,9 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let map = dir.join("map");
         fs::write(&map, "hub/a:1\t\tdotfiles\tsum\tdotfiles-x\tJSVBgC\nhub/b:1\t\tnotes\t\t\t\n").unwrap();
-        assert_eq!(lookup(&map, "hub/a:1").4, "JSVBgC");
-        assert_eq!(lookup(&map, "hub/b:1").4, "");
-        assert_eq!(lookup(&map, "hub/none:1").4, "");
+        assert_eq!(lookup(&map, "hub/a:1").ask, "JSVBgC");
+        assert_eq!(lookup(&map, "hub/b:1").ask, "");
+        assert_eq!(lookup(&map, "hub/none:1").ask, "");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -10,11 +10,12 @@ use anyhow::{bail, Context, Result};
 /// The prompt says which rows are listed; ctrl-y flips it, and every reload reads it back.
 const PROMPT_ALL: &str = "Select agent > ";
 const PROMPT_ASKING: &str = "Asking only > ";
-const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-y asking  C-o sort  A-o reverse  C-/ layout  C-d/C-u scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
+const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-y asking  C-o sort  A-o reverse  C-/ layout  C-d/C-u pgup/pgdn scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
 
 /// The preview layout every panel shares, from its one source: `panel-layout.sh args agent-panel`
 /// (`.local/src/tmux/`, beside panel-lib.sh) prints the `--preview-window` to open with, which is
-/// the layout ctrl-/ last left this panel in, and the ctrl-/ bind that cycles and saves it.
+/// the layout ctrl-/ last left this panel in, the ctrl-/ bind that cycles and saves it, and the
+/// preview scroll keys every panel shares.
 pub fn layout() -> Result<Vec<String>> {
     let home = std::env::var("HOME").context("HOME is not set")?;
     let helper = Path::new(&home).join(".local/src/tmux/panel-layout.sh");
@@ -99,8 +100,6 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, layout: &[String]) ->
     ];
     args.extend(layout.iter().cloned());
     args.extend([
-        "--bind".into(),
-        "ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up".into(),
         "--bind".into(),
         next_bind,
         "--bind".into(),

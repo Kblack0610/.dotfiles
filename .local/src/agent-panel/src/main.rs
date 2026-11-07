@@ -80,6 +80,13 @@ enum Cmd {
         #[arg(default_value = "")]
         text: String,
     },
+    /// Markdown on stdin as plain text: no heading, bold or backtick marks, no fences, a table as
+    /// `header: value` lines, folded at --width (default the fzf preview's or terminal's width,
+    /// at most 110; 0 folds nothing). The one cleaner the panels' previews and cards use.
+    Plain {
+        #[arg(long)]
+        width: Option<usize>,
+    },
     /// Internal fzf reload callback: print the chooser rows again (not meant to be run by hand).
     #[command(hide = true)]
     Rows {
@@ -131,6 +138,12 @@ fn main() -> anyhow::Result<()> {
         },
         Some(Cmd::Dialog { target, options }) => agent_panel::dialog::run_card(&target, options),
         Some(Cmd::Answer { target, key, expect, text }) => agent_panel::dialog::run_answer(&target, key, &expect, &text),
+        Some(Cmd::Plain { width }) => {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            println!("{}", agent_panel::md::plain(&text, width.unwrap_or_else(agent_panel::md::width)));
+            Ok(())
+        }
         Some(Cmd::Rows { map_file, asking, sort }) => chooser::run_rows(&map_file, asking, sort),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }

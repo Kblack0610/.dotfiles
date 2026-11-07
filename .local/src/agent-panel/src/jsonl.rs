@@ -826,11 +826,30 @@ fn summarize(v: &Value) -> String {
     }
 }
 
-/// What the preview shows of a session's transcript: its last message in full, line breaks kept,
-/// and its last tool call (`doing_said`'s `doing`). Both empty when the session wrote neither.
-pub fn preview_info(path: &Path) -> (String, String) {
+/// What the preview shows of a session's transcript, from one read of it.
+#[derive(Debug, Default, PartialEq)]
+pub struct Preview {
+    /// Its last message in full, line breaks kept; empty when it wrote none.
+    pub message: String,
+    /// Its last tool call (`doing_said`'s `doing`); empty when it made none.
+    pub tool: String,
+    /// The plan of the ExitPlanMode call its turn ended on, when that is still open.
+    pub plan: Option<String>,
+}
+
+pub fn preview_info(path: &Path) -> Preview {
     let text = read(path);
-    (last_message(&text), doing_said(&text).0)
+    Preview { message: last_message(&text), tool: doing_said(&text).0, plan: open_plan(&text) }
+}
+
+/// The plan text of the open ExitPlanMode call, when the turn ended on one.
+pub fn open_plan_at(path: &Path) -> Option<String> {
+    open_plan(&read(path))
+}
+
+fn open_plan(text: &str) -> Option<String> {
+    let (_, input) = open_dialog(text).filter(|(n, _)| n == "ExitPlanMode")?;
+    input.get("plan")?.as_str().map(str::to_string)
 }
 
 /// The newest main-thread assistant text, whole: the session's last word to the human.
@@ -1322,13 +1341,14 @@ mod tests {
             r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"subagent"}]}}"#,
             r#"{"type":"user","message":{"content":"ok"}}"#,
         ]);
-        let (msg, tool) = preview_info(&p);
-        assert_eq!(msg, "line one\n\nline two?");
-        assert_eq!(tool, "Bash: run it");
+        let got = preview_info(&p);
+        assert_eq!(got.message, "line one\n\nline two?");
+        assert_eq!(got.tool, "Bash: run it");
+        assert_eq!(got.plan, None);
         fs::remove_file(&p).ok();
         // Negative control: no assistant text at all -> nothing.
         let q = tmpfile("nomsg", &[r#"{"type":"user","message":{"content":"hi"}}"#]);
-        assert_eq!(preview_info(&q), (String::new(), String::new()));
+        assert_eq!(preview_info(&q), Preview::default());
         fs::remove_file(&q).ok();
     }
 
