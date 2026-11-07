@@ -1646,7 +1646,7 @@ not json
             updated_epoch: Some(NOW - 60),
             ..Spent::default()
         });
-        let b = board(&c, "harness", "7d", "", "", "");
+        let b = board(&c, "harness", "7d", "", "", "", ("", ""));
         assert_eq!((b.direct.usd, b.direct.unpriced), (2.5, 0));
         let j = serde_json::to_value(&b).unwrap();
         assert_eq!(j["direct"]["note"], DIRECT_NOTE);
