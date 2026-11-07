@@ -17,6 +17,8 @@ setup() {
 #!/bin/sh
 echo "\$CLAUDE_PROJECT_DIR" >> "$T/runs"
 echo "not ok 1 the picked test"
+echo "# (in test file unit/x.bats, line 3)"
+for i in \$(seq 2 40); do echo "ok \$i a later test"; done
 exit \${CHECK_RC:-0}
 STUB
 }
@@ -33,6 +35,15 @@ runs() { if [ -f "$T/runs" ]; then grep -c . "$T/runs"; else echo 0; fi; }
   run bash -c "jq -nc --arg d '$REPO' '{cwd:\$d, tool_input:{command:\"gh pr create --fill\"}}' | bash '$HOOK' | jq -r .hookSpecificOutput.permissionDecisionReason"
   assert_output --partial 'pre-pr-verify: '
   assert_output --partial 'not ok 1 the picked test'
+  assert_output --partial 'unit/x.bats, line 3'
+  refute_output --partial 'ok 40 a later test'
+}
+
+@test "a red with no failing test line still shows the output's tail" {
+  printf '#!/bin/sh\necho "make: *** [Makefile:91: test-files] Error 1"\nexit 2\n' > "$PRE_PR_CHECK"
+  run hook 'git push'
+  run jq -r .hookSpecificOutput.permissionDecisionReason <<<"$output"
+  assert_output --partial 'make: *** [Makefile:91'
 }
 
 @test "a green check allows, and the PR after the push reuses the pass" {
