@@ -52,6 +52,31 @@ spent() {
   assert_equal "$(cat "$HOME/.local/state/agentctl/judge/last-outcome")" BLOCKED
 }
 
+@test "a budget stop holds the name, and the next call let through ends the hold; another gate's hold stays" {
+  local st="$HOME/.local/state/agentctl/judge"
+  spent judge 11 "$(date -Iseconds -d 'today 00:00:01')"
+  run "$RUN" --agent judge -p x
+  assert_failure 75
+  assert [ -s "$st/held_since" ]
+  assert_equal "$(cat "$st/held_why")" "at its budget cap"
+  # A called runner writes no outcome line on success, so only the gate can end its hold.
+  printf '%s 5 5\n' "$(date +%F)" > "$st/budget-raise"
+  run "$RUN" --agent judge -p x
+  assert_success
+  assert [ ! -e "$st/held_since" ]
+  assert [ ! -e "$st/held_why" ]
+  # A budget stop that carried an earlier reason is still the budget's hold.
+  echo 1 > "$st/held_since"; printf 'no gateway route; at its budget cap' > "$st/held_why"
+  run "$RUN" --agent judge -p x
+  assert_success
+  assert [ ! -e "$st/held_since" ]
+  # The negative control: a hold for another reason is that gate's to end.
+  echo 1 > "$st/held_since"; printf 'pace' > "$st/held_why"
+  run "$RUN" --agent judge -p x
+  assert_success
+  assert_equal "$(cat "$st/held_why")" pace
+}
+
 @test "a call stopped at its per-call cap exits CALLS_RC_CAPPED and records the subtype; a clean one keeps 0" {
   sed -i 's/"result":"OK"/"subtype":"error_max_budget_usd","is_error":true,"result":""/' "$SANDBOX/bin/claude"
   run "$RUN" --agent judge -p x

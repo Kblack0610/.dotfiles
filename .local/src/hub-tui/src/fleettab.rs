@@ -219,7 +219,7 @@ fn who_table(
         .iter()
         .map(|r| {
             let state = match r.state.as_str() {
-                "failed" => p.bad(),
+                "failed" | "held" => p.bad(),
                 "needs you" | "stalled" => p.warn(),
                 "working" => p.good(),
                 _ => p.dim(),
@@ -1301,6 +1301,23 @@ pub mod tests {
             !rows.iter().any(|l| l.contains("dotfiles-agent-11")),
             "{rows:#?}"
         );
+    }
+
+    #[test]
+    fn a_held_runner_is_red_like_a_failed_one() {
+        let p = Palette::default();
+        let mut f = fixture();
+        f.who[1] = who_row(2, "ask-judge", "ask-judge", Opens::Runner, "held", 0, None);
+        let out = page(&f, &DataTable::default(), &HashSet::new(), 0, p, NOW, 160);
+        let span = |word: &str| {
+            out.iter()
+                .flat_map(|l| l.spans.iter())
+                .find(|s| s.content.trim() == word)
+                .map(|s| s.style)
+                .unwrap()
+        };
+        assert_eq!(span("held"), p.bad());
+        assert_eq!(span("failed"), span("held"));
     }
 
     #[test]

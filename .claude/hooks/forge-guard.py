@@ -191,7 +191,8 @@ def push_target(top, args):
     return "origin"
 
 
-def check_git(cwd, argv):
+def git_verb(cwd, argv):
+    """(directory, index of the subcommand) of a git argv, past -C and git's own options."""
     d, i = cwd, 1
     while i < len(argv):
         a = argv[i]
@@ -204,6 +205,11 @@ def check_git(cwd, argv):
             i += 1
         else:
             break
+    return d, i
+
+
+def check_git(cwd, argv):
+    d, i = git_verb(cwd, argv)
     if i >= len(argv) or argv[i] != "push":
         return None
     hit = canonical(d)
@@ -244,7 +250,19 @@ def check_land(cwd):
     return MSG.format(top=top, marker=marker, what="`agent-land` (it merges with gh)", forgejo=forgejo_remote(top))
 
 
-def reason(cmd, cwd):
+def check(head, argv, env, cwd):
+    if head == "git":
+        return check_git(cwd, argv)
+    if head == "gh":
+        return check_gh(cwd, argv, env)
+    if head == "agent-land":
+        return check_land(cwd)
+    return None
+
+
+def reason(cmd, cwd, check=check):
+    """The first refusal check(head, argv, env, cwd) gives a simple command of cmd, walked in
+    order with its directory tracked. checkout-guard.py walks with its own check."""
     subshells, dirs = [], []
     for seg in segments(_strip_heredocs()(cmd)):
         if isinstance(seg, str):
@@ -271,15 +289,11 @@ def reason(cmd, cwd):
         elif head in SHELLS:
             c = next((j for j, a in enumerate(argv[1:], 1) if re.fullmatch(r"-[a-z]*c[a-z]*", a)), None)
             if c is not None and c + 1 < len(argv):
-                r = reason(argv[c + 1], cwd)
+                r = reason(argv[c + 1], cwd, check)
         elif head == "eval":
-            r = reason(" ".join(argv[1:]), cwd)
-        elif head == "git":
-            r = check_git(cwd, argv)
-        elif head == "gh":
-            r = check_gh(cwd, argv, env)
-        elif head == "agent-land":
-            r = check_land(cwd)
+            r = reason(" ".join(argv[1:]), cwd, check)
+        else:
+            r = check(head, argv, env, cwd)
         if r:
             return r
     return None

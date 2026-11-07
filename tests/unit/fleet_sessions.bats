@@ -734,6 +734,65 @@ SH
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
 }
 
+@test "end to end: a deployed checkout off main is one CHECKOUT row naming its actor, not a STALLED row per session" {
+  # 2026-11-06: ~/.dotfiles sat detached on an unmerged branch and all 16 sessions there read
+  # "9 file(s) not on the default branch" while the fault itself was on no row at all.
+  export DOTFILES="$SANDBOX/dots"
+  local c="git -c user.name=t -c user.email=t@t"
+  git init -q --bare "$SANDBOX/o.git"
+  git clone -q "$SANDBOX/o.git" "$DOTFILES" 2>/dev/null
+  $c -C "$DOTFILES" commit -q --allow-empty -m init
+  git -C "$DOTFILES" branch -M main
+  git -C "$DOTFILES" push -q origin main 2>/dev/null
+  git -C "$DOTFILES" switch -q -c fix/x
+  echo x > "$DOTFILES/f"; git -C "$DOTFILES" add f; $c -C "$DOTFILES" commit -q -m 'x'
+  git -C "$DOTFILES" push -q origin fix/x 2>/dev/null
+  git -C "$DOTFILES" switch -q main
+  git -C "$DOTFILES" fetch -q origin
+  panel "$DOTFILES"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+
+  # negative control: on main there is no row
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ -z "$(jq -c 'select(.bucket == "CHECKOUT")' <<<"$output")" ]
+
+  git -C "$DOTFILES" checkout -q --detach origin/fix/x
+  # negative control: nothing recorded this HEAD
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  assert_output --partial 'moved by an unrecorded actor'
+
+  mkdir -p "$FLEET_SHEPHERD_DIR"
+  printf '1\t%s\t%s\tsession abcdef01 git<-claude\n' "$DOTFILES" "$(git -C "$DOTFILES" rev-parse HEAD)" > "$FLEET_SHEPHERD_DIR/checkout-moves.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  row="$(jq -c 'select(.bucket == "CHECKOUT")' <<<"$output")"
+  session="$(jq -c 'select(.session_id == "sid-9")' <<<"$output")"
+  [ "$(jq -r .target <<<"$row")" = dots ]
+  [ "$(jq -r .escalated <<<"$row")" = true ]
+  [ "$(jq -r .fact <<<"$row")" = "CHECKOUT dots @$(git -C "$DOTFILES" rev-parse --short=12 HEAD)" ]
+  jq -r .reason <<<"$row" | grep -q "dots checkout on origin/fix/x since .*, moved by session abcdef01 git<-claude: stowed scripts run it, git -C $DOTFILES switch main"
+  [ "$(jq -r .ahead <<<"$session")" = 0 ]
+  [[ "$(jq -r .reason <<<"$session")" != *"not on the default branch"* ]]
+
+  # the table and the state document carry it once, outside sessions
+  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  assert_success
+  assert_line CHECKOUT
+  export FLEET_STATE_FILE="$SANDBOX/state.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq '[.sessions[] | select(.bucket == "CHECKOUT")] | length' "$FLEET_STATE_FILE")" = 0 ]
+  [ "$(jq -r '.main[] | select(.id == "checkout-dots") | .escalated' "$FLEET_STATE_FILE")" = true ]
+
+  # a session's cwd is a real path, so $DOTFILES reaching the checkout by a symlink still matches it
+  ln -s "$DOTFILES" "$SANDBOX/dots-link"
+  DOTFILES="$SANDBOX/dots-link" run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.session_id == "sid-9") | .ahead' <<<"$output")" = 0 ]
+}
+
 @test "end to end: one test red on three branches in the window is one SHARED row, escalated once per episode" {
   # ar-185: one test red on several agents' gates at once is a shared cause, and each session chased it alone.
   landed_fixture
