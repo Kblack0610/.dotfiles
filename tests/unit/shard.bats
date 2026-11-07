@@ -45,7 +45,7 @@ fixture() {
   assert_output "$(printf '%s\n' unit/b.bats unit/c.bats unit/d.bats)"
 }
 
-@test "a file the table does not list weighs the tier's median, and no table still splits" {
+@test "a file the table does not list weighs the tier's median, and a missing table fails" {
   for f in a b c d; do fixture "unit/$f.bats" "t$f"; done
   printf '8\tunit/a.bats\n2\tunit/b.bats\n1\tunit/c.bats\n100\tinteg/x.bats\n' > "$SHARD_WEIGHTS"
   # d weighs 2, the median of 8, 2 and 1 (the integ row is another tier's): a | b+c+d
@@ -53,12 +53,16 @@ fixture() {
   assert_output "$(printf '%s\n' unit/b.bats unit/c.bats unit/d.bats)"
   rm "$SHARD_WEIGHTS"
   run "$SUBJECT" unit 1/2
-  assert_success
-  assert_output "$(printf '%s\n' unit/a.bats unit/c.bats)"
+  assert_failure 2
+  assert_output --partial 'no weights table'
 }
 
 @test "a bad spec, an unknown tier and an empty shard fail instead of running nothing" {
   fixture unit/a.bats ta
+  : > "$SHARD_WEIGHTS"
+  run "$SUBJECT" unit 01/08
+  assert_success
+  assert_output 'unit/a.bats'
   for spec in 0/2 3/2 2 x/2; do
     run "$SUBJECT" unit "$spec"
     assert_failure 2
@@ -73,19 +77,23 @@ fixture() {
   assert_output --partial 'has no .bats files'
 }
 
-@test "--weights sums a CI log's --timing lines per file by test name, skips included" {
+@test "--weights sums a CI log's --timing lines per file by test name, skips and shared names included" {
   fixture unit/a.bats 'first one' 'second, with a comma'
   fixture integ/b.bats 'third'
+  fixture unit/c.bats 'third'
   printf '%s\n' \
     'fast tier (unit)	UNKNOWN STEP	2026-11-07T13:55:33.5Z 1..3' \
     'fast tier (unit)	UNKNOWN STEP	2026-11-07T13:55:34.1Z ok 1 first one in 1500ms' \
     'fast tier (unit)	UNKNOWN STEP	2026-11-07T13:55:35.1Z not ok 2 second, with a comma in 700ms' \
     'fast tier (integ)	UNKNOWN STEP	2026-11-07T13:55:36.1Z ok 3 third in 300ms # skip no bun' \
-    'ok 4 a test no file has in 9000ms' > "$BATS_TEST_TMPDIR/log"
+    'ok 4 third in 500ms' \
+    'ok 5 a test no file has in 9000ms' > "$BATS_TEST_TMPDIR/log"
   run "$SUBJECT" --weights "$BATS_TEST_TMPDIR/log"
   assert_success
   assert_line --index 0 --partial '# seconds'
-  assert_line --index 1 "$(printf '0.3\tinteg/b.bats')"
+  # the two "third" lines (300 + 500ms) split evenly between the two files that name it
+  assert_line --index 1 "$(printf '0.4\tinteg/b.bats')"
   assert_line --index 2 "$(printf '2.2\tunit/a.bats')"
-  [ "${#lines[@]}" -eq 3 ]
+  assert_line --index 3 "$(printf '0.4\tunit/c.bats')"
+  [ "${#lines[@]}" -eq 4 ]
 }

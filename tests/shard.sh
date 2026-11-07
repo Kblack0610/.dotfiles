@@ -7,6 +7,7 @@
 # Each file goes whole to one shard: heaviest first, onto the lightest shard so far (LPT), by
 # the seconds in shard-weights.tsv. A file the table does not list weighs its tier's median, so
 # a new file still runs and a stale table only costs balance: every file is in exactly one shard.
+# A missing table is an error, not an even split, since that would put the heavy files together.
 # Why: on 2026-11-07 the unit tier took 8m45 of its 10-minute cap on one 4-core runner, all of
 # it CPU, so the lever is more runners, not a longer timeout.
 set -euo pipefail
@@ -20,14 +21,14 @@ die() {
 }
 
 # The table from CI logs: map each test name to its file by the @test lines, then sum the
-# "ok N <name> in <ms>ms" lines per file. A name built from a variable matches no file and is
-# left out; its file falls back to the median.
+# "ok N <name> in <ms>ms" lines per file. A name k files share credits each 1/k of its time; a
+# name built from a variable matches no file and is left out, so its file weighs the median.
 weights() {
   [ $# -gt 0 ] || die "--weights needs at least one job log"
   echo "# seconds<TAB>file: summed bats --timing per file; regenerate with tests/shard.sh --weights <job logs>"
   awk -F'\t' '
-    FILENAME == ARGV[1] { file[$1] = $2; next }
-    ($1 in file) { sum[file[$1]] += $2 }
+    FILENAME == ARGV[1] { k[$1]++; file[$1, k[$1]] = $2; next }
+    ($1 in k) { for (j = 1; j <= k[$1]; j++) sum[file[$1, j]] += $2 / k[$1] }
     END { for (f in sum) printf "%.1f\t%s\n", sum[f] / 1000, f }
   ' <(cd "$DIR" && for f in unit/*.bats integ/*.bats; do
     sed -nE "s/^@test[[:space:]]+\"(.*)\"[[:space:]]*\{.*/\1/p; s/^@test[[:space:]]+'(.*)'[[:space:]]*\{.*/\1/p" "$f" |
@@ -46,26 +47,22 @@ weights() {
 [ $# -eq 2 ] || die "usage: shard.sh <unit|integ> <i>/<n> | --weights <log>..."
 tier=$1 spec=$2
 [[ $spec =~ ^([0-9]+)/([0-9]+)$ ]] || die "shard '$spec' is not <i>/<n>"
-i=${BASH_REMATCH[1]} n=${BASH_REMATCH[2]}
+i=$((10#${BASH_REMATCH[1]})) n=$((10#${BASH_REMATCH[2]}))
 ((n >= 1 && i >= 1 && i <= n)) || die "shard $spec is out of range"
 [ -d "$DIR/$tier" ] || die "no tier directory $DIR/$tier"
+[ -r "$WEIGHTS" ] || die "no weights table $WEIGHTS (tests/shard.sh --weights <job logs> writes one)"
 
 files=$(cd "$DIR" && printf '%s\n' "$tier"/*.bats)
 [ "$files" != "$tier/*.bats" ] || die "tier $tier has no .bats files"
 
-out=$(awk -F'\t' -v tier="$tier/" -v i="$i" -v n="$n" '
-  FILENAME == ARGV[1] {
-    if ($0 !~ /^#/ && index($2, tier) == 1) { w[$2] = $1; ws[++k] = $1 + 0 }
-    next
-  }
-  { name[++m] = $0 }
-  END {
-    # The median of the weights listed for this tier, 1s when it lists none.
-    for (a = 1; a <= k; a++) for (b = a + 1; b <= k; b++) if (ws[b] < ws[a]) { t = ws[a]; ws[a] = ws[b]; ws[b] = t }
-    med = k ? (k % 2 ? ws[(k + 1) / 2] : (ws[k / 2] + ws[k / 2 + 1]) / 2) : 1
-    for (a = 1; a <= m; a++) printf "%s\t%s\n", (name[a] in w ? w[name[a]] : med), name[a]
-  }
-' <(cat "$WEIGHTS" 2>/dev/null || true) <(printf '%s\n' "$files") |
+# The median of the weights listed for this tier, 1s when it lists none.
+med=$(awk -F'\t' -v tier="$tier/" '!/^#/ && index($2, tier) == 1 { print $1 }' "$WEIGHTS" | sort -g |
+  awk '{ v[NR] = $1 } END { print NR ? (NR % 2 ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2) : 1 }')
+
+out=$(awk -F'\t' -v tier="$tier/" -v med="$med" '
+  FILENAME == ARGV[1] { if (!/^#/ && index($2, tier) == 1) w[$2] = $1; next }
+  { printf "%s\t%s\n", ($0 in w ? w[$0] : med), $0 }
+' "$WEIGHTS" <(printf '%s\n' "$files") |
   sort -t$'\t' -k1,1gr -k2,2 |
   awk -F'\t' -v i="$i" -v n="$n" '
     { best = 1; for (s = 2; s <= n; s++) if (load[s] < load[best]) best = s

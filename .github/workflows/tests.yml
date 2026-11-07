@@ -2,8 +2,8 @@ name: shell tests
 
 # Five jobs, by what they can catch:
 #
-#   fast   the tmux-free tiers (unit + contract). Runs directly on the runner because it
-#          never starts a tmux server. This is the same target the local stop-hook gates on.
+#   fast   the tmux-free tiers (unit + integ), in shards. Runs directly on the runner because
+#          it never starts a tmux server. The same files the local stop-hook gates on.
 #   ui     the tmux ui tier, inside the SAME container a developer uses locally
 #          (tests/docker.sh). Dev/CI parity is the point: if the image or the entry script
 #          breaks, this job goes red rather than only the developer's laptop.
