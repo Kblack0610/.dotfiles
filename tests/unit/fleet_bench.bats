@@ -1003,7 +1003,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"compactions_per_session":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null]}'
+  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
@@ -1145,7 +1145,7 @@ ask_row() {
   run jq -sc '[map(.sessions), (map(.date) | unique | length)]' <<<"$output"
   assert_output '[[0,1,1],3]'
   run "$SUBJECT" kpi --trend 3
-  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | compactions_per_session |'
+  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | compactions_per_session | rework_candidate_7d | rework_verified_30d |'
   run "$SUBJECT" kpi --trend 0
   assert_failure 2
   run "$SUBJECT" kpi --at 'not a time'
@@ -1160,13 +1160,43 @@ ask_row() {
   run "$SUBJECT" effect $((T0 - 1728000)) --days 10 --json
   assert_success
   run jq -c '.kpis | map([.kpi, .before, .after, .verdict])' <<<"$output"
-  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["first_pass_share",null,null,"-"],["plan_gate_deny_rate",null,null,"-"],["canary_runs",0,0,"-"],["canary_pass_rate",null,null,"-"],["canary_cost_per_task",null,null,"-"],["canary_min_per_task",null,null,"-"],["canary_turns_per_task",null,null,"-"],["responses_per_merged_pr",null,null,"-"],["context_per_merged_pr",null,null,"-"],["tool_chars_per_call",null,null,"-"],["locate_read_share",null,null,"-"],["reread_share",null,null,"-"],["cache_write_share",null,null,"-"],["start_share",null,null,"-"],["compactions_per_session",null,null,"-"]]'
+  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["first_pass_share",null,null,"-"],["plan_gate_deny_rate",null,null,"-"],["canary_runs",0,0,"-"],["canary_pass_rate",null,null,"-"],["canary_cost_per_task",null,null,"-"],["canary_min_per_task",null,null,"-"],["canary_turns_per_task",null,null,"-"],["responses_per_merged_pr",null,null,"-"],["context_per_merged_pr",null,null,"-"],["tool_chars_per_call",null,null,"-"],["locate_read_share",null,null,"-"],["reread_share",null,null,"-"],["cache_write_share",null,null,"-"],["start_share",null,null,"-"],["compactions_per_session",null,null,"-"],["rework_candidate_7d",null,null,"-"],["rework_verified_30d",null,null,"pending"]]'
   run "$SUBJECT" effect $((T0 - 432000)) --days 10 --json
   assert_success
   run jq -c '([.kpis[] | .verdict] | unique), ([.kpis[] | .after] | unique)' <<<"$output"
   assert_output $'["pending"]\n[null]'
   run "$SUBJECT" effect $((T0 - 1728000)) --days 10
-  assert_line '| cost_per_pr | 5 | 1 | improved |'
+  assert_line '| cost_per_pr | 5 | 1 | improved | - | improved |'
+}
+
+@test "effect --compare: a control split that moved the same way reads net as control; one that did not leaves the verdict" {
+  kpi_setup
+  out_row game '{session_id: "b1", project: "game", updated_epoch: ($t - 2160000), prs_merged: 2, reverted_7d: 0, cost_usd: 10, corrections: {interrupts: 2}}'
+  out_row game '{session_id: "a1", project: "game", updated_epoch: ($t - 1296000), prs_merged: 2, reverted_7d: 1, cost_usd: 2, corrections: {interrupts: 2}}'
+  # the control at T0 - 50d: cost fell the same way, reverts did not move
+  out_row game '{session_id: "b0", project: "game", updated_epoch: ($t - 4752000), prs_merged: 2, reverted_7d: 0, cost_usd: 10, corrections: {interrupts: 2}}'
+  out_row game '{session_id: "a0", project: "game", updated_epoch: ($t - 3888000), prs_merged: 2, reverted_7d: 0, cost_usd: 2, corrections: {interrupts: 2}}'
+  run "$SUBJECT" effect $((T0 - 1728000)) --days 10 --compare $((T0 - 4320000)) --json
+  assert_success
+  run jq -c '[.compare, (.kpis[] | select(.kpi | IN("cost_per_pr", "revert_rate")) | [.kpi, .verdict, .control, .net])]' <<<"$output"
+  assert_output "[\"$(date -u -d @$((T0 - 4320000)) +%FT%TZ)\",[\"revert_rate\",\"regressed\",\"flat\",\"regressed\"],[\"cost_per_pr\",\"improved\",\"improved\",\"as control\"]]"
+  run "$SUBJECT" effect $((T0 - 1728000)) --compare 'not a time'
+  assert_failure 2
+}
+
+@test "kpi: rework reads the lagged cohort, PRs observed a whole window after merge, humans only" {
+  kpi_setup
+  # candidate 7d window: sessions that ended in (T0-14d, T0-7d]; w1 counts, w2's PR was seen too early, w3 is too new
+  out_row game '{session_id: "w1", project: "game", updated_epoch: ($t - 691200), prs: [{rework: {seen_days: 8, candidate: true, verified: true}}, {rework: {seen_days: 8, candidate: false, verified: false}}]}'
+  out_row game '{session_id: "w2", project: "game", updated_epoch: ($t - 691200), prs: [{rework: {seen_days: 3, candidate: true, verified: false}}]}'
+  out_row game '{session_id: "w3", project: "game", updated_epoch: ($t - 172800), prs: [{rework: {seen_days: 7, candidate: true, verified: false}}]}'
+  out_row game '{session_id: "wr", project: "game", runner: true, updated_epoch: ($t - 691200), prs: [{rework: {seen_days: 8, candidate: true, verified: true}}]}'
+  # verified 7d window: (T0-37d, T0-30d]; v1's verified PR is no candidate (its fix came after 7 days)
+  out_row game '{session_id: "v1", project: "game", updated_epoch: ($t - 2678400), prs: [{rework: {seen_days: 31, candidate: false, verified: true}}, {rework: {seen_days: 31, candidate: true, verified: false}}, {number: 9}]}'
+  run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '[.rework_candidate_7d["7d"], .rework_candidate_7d["28d"], .rework_verified_30d["7d"], .rework_verified_30d["28d"]]' <<<"$output"
+  assert_output '[0.5,0.5,0.5,0.5]'
 }
 
 # tok_day <days before T0> <jq object>: one nightly token-usage snapshot for that local day
