@@ -418,21 +418,21 @@ spend_curl() {
 }
 
 @test "spend check: under the ceiling exits 0 and names the window and the ceiling" {
-  spend_curl '{"data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}'
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}'
   run "$AU" spend check 1h 150
   assert_success
   assert_output 'last 1h: $88.4 (alert at $150)'
 }
 
 @test "spend check: over the ceiling exits 1" {
-  spend_curl '{"data":{"result":[{"metric":{},"value":[0,"1376.2"]}]}}'
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"1376.2"]}]}}'
   run "$AU" spend check 24h 900
   assert_failure 1
   assert_output 'last 24h: $1376.2 (alert at $900)'
 }
 
 @test "spend check: the query carries the window it was given" {
-  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"data":{"result":[]}}' > "$SANDBOX/bin/curl"
+  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[]}}' > "$SANDBOX/bin/curl"
   chmod +x "$SANDBOX/bin/curl"
   SANDBOX="$SANDBOX" run "$AU" spend check 24h 900
   assert_success
@@ -456,7 +456,7 @@ spend_curl() {
 }
 
 @test "spend check: an answer that is not a vector of numbers exits 2, never a silent zero" {
-  for body in '{}' '{"status":"error"}' 'not json' '{"data":{"result":[{"metric":{},"value":[0,"NaN"]}]}}'; do
+  for body in '{}' '{"status":"error"}' '{"status":"success","data":{"result":"x"}}' 'not json' '{"data":{"result":[{"metric":{},"value":[0,"NaN"]}]}}'; do
     spend_curl "$body"
     run "$AU" spend check 1h 150
     assert_failure 2
@@ -469,7 +469,7 @@ spend_curl() {
 }
 
 @test "spend check: just over the ceiling prints a figure that shows it" {
-  spend_curl '{"data":{"result":[{"metric":{},"value":[0,"150.4"]}]}}'
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"150.4"]}]}}'
   run "$AU" spend check 1h 150
   assert_failure 1
   assert_output 'last 1h: $150.4 (alert at $150)'

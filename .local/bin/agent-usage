@@ -630,8 +630,12 @@ cmd_spend() {
     echo "usage: agent-usage spend check <window e.g. 1h> <max-usd>" >&2; return 64
   fi
   [ -n "$PROM_URL" ] || { echo "spend: no PROM_URL (set it or $AU_CONF)" >&2; return 2; }
-  v="$(curl -sf -m 20 --get "$PROM_URL/api/v1/query" \
-         --data-urlencode "query=sum(increase(claude_code_cost_usage_USD_total[$win]))" 2>/dev/null \
+  # prom.sh resets PROM_URL from the hub's env file; this command's own PROM_URL wins.
+  local url="$PROM_URL"
+  # shellcheck source=../lib/prom.sh
+  . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/prom.sh"
+  PROM_URL="$url"
+  v="$(PROM_TIMEOUT=20 prom_q "sum(increase(claude_code_cost_usage_USD_total[$win]))" \
        | jq -er '.data.result | if type != "array" then error("not a vector") elif length == 0 then "0" else .[0].value[1] end' 2>/dev/null)" \
     && [[ "$v" =~ ^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$ ]] \
     || { echo "spend: Prometheus unreadable or not a number" >&2; return 2; }
