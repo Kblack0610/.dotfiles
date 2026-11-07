@@ -3807,6 +3807,39 @@ epics_fixture() {
   assert_equal "$(jq -r '.admission_held["7d"]' <<<"$output")" null
 }
 
+@test "ledger: worktrees_held counts come from the newest worktree-gc row; ? with no row, a stale one or a bad one" {
+  kpi_setup
+  export WORKTREE_GC_LOG="$SANDBOX/worktree-gc.jsonl"
+  run "$SUBJECT" ledger
+  assert_line 'worktrees_held=?'
+  assert_line 'worktrees_held_over_7d=?'
+  export BENCH_NOW=$(date +%s); now=$BENCH_NOW
+  printf '%s\n' "{\"epoch\":$((now - 3 * 86400)),\"held\":50,\"held_over_7d\":40}" "{\"epoch\":$((now - 3600)),\"held\":36,\"held_over_7d\":17}" > "$WORKTREE_GC_LOG"
+  run "$SUBJECT" ledger
+  assert_line 'worktrees_held=36'
+  assert_line 'worktrees_held_over_7d=17'
+  printf '%s\n' "{\"epoch\":$((now - 3 * 86400)),\"held\":36,\"held_over_7d\":17}" > "$WORKTREE_GC_LOG"
+  run "$SUBJECT" ledger
+  assert_line 'worktrees_held=?'
+  printf 'not json\n' > "$WORKTREE_GC_LOG"
+  run "$SUBJECT" ledger
+  assert_line 'worktrees_held_over_7d=?'
+}
+
+@test "kpi: worktrees_held_over_7d trips past its --check bound" {
+  kpi_setup
+  export BENCH_NOW=$(date +%s)
+  export WORKTREE_GC_LOG="$SANDBOX/worktree-gc.jsonl"
+  printf '%s\n' worktrees_held_over_7d_max=10 >> "$KPI_THRESHOLDS"
+  printf '%s\n' "{\"epoch\":$BENCH_NOW,\"held\":36,\"held_over_7d\":17}" > "$WORKTREE_GC_LOG"
+  run "$SUBJECT" kpi --check worktrees_held
+  assert_failure
+  assert_output --partial 'worktrees_held_over_7d 17 (max 10)'
+  printf '%s\n' "{\"epoch\":$BENCH_NOW,\"held\":9,\"held_over_7d\":2}" > "$WORKTREE_GC_LOG"
+  run "$SUBJECT" kpi --check worktrees_held
+  assert_success
+}
+
 @test "ledger: lesson_held_share is held over held plus recurring; ? with no verdict yet or no cache" {
   kpi_setup
   BENCH_LESSONS_CMD='echo {"held":3,"recurring":1,"no_baseline":2,"early":5}' run "$SUBJECT" ledger
