@@ -212,12 +212,19 @@ memo() {
   MEMO_V="${LIST_MEMO[$k]}"
 }
 
+# after_status <slug> -> what an `after:` waits on: empty while the slug has a live item (queued,
+# running or waiting), else its latest done status. A re-queued slug is work again, whatever done/ holds.
+after_status() {
+  [ -z "$(find_item "$1")" ] || return 0
+  done_status "$1"
+}
+
 # hold_for <after> <tags> -> sets HOLD to hold_reason's answer for these header values.
 hold_for() {
   local after="$1" tags="$2" tag now stamp MEMO_V
   HOLD=""
   if [ -n "$after" ]; then
-    memo "done:$after" done_status "$after"
+    memo "done:$after" after_status "$after"
     [ "$MEMO_V" = ok ] || { HOLD="after $after"; return; }
   fi
   [ -n "$tags" ] || return 0
@@ -772,7 +779,7 @@ cmd_mine() {
 }
 
 # claim <slug> [--sid id] -- add a Claude session to the sessions that worked this item. Run by
-# the SessionStart hook for $AGENT_QUEUE_ITEM, and by agent-land; adding one already there is a no-op.
+# fleet-dispatch start for the id it launches with, and by agent-land; adding one already there is a no-op.
 cmd_claim() {
   local slug="${1:?usage: agent-queue claim <slug> [--sid id]}" sid f cur
   shift

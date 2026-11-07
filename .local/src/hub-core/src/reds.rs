@@ -1,7 +1,8 @@
 //! The "Red fixes" section on Infra, both surfaces: each red the triage queued as a `red` queue
-//! item in the last `DAYS`, and whether its fix held. `fleet-bench reds --json` owns the rows and
-//! the outcome words (fixed, came back, still red, ...), so this module only types them, splits
-//! them into open and settled, orders the open ones worst first and words the summary line.
+//! item in the last `DAYS` and whether its fix held, then each merged cleanup item and whether it
+//! held. `fleet-bench reds --json` owns the rows and the outcome words (fixed, came back, still
+//! red, ...), so this module only types them, splits them into open and settled, orders the open
+//! ones worst first and words the summary line.
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -10,19 +11,29 @@ use crate::session_actions::Runner;
 /// The window: fleet-bench's own default (`REDS_DAYS`), passed so the summary's "in 7d" is true.
 pub const DAYS: u32 = 7;
 
-/// The open outcomes, worst first: a merged fix whose red is back or never went, then no fix, an
-/// unmerged PR, and the ones still in hand. An outcome not listed here or in `SETTLED` sorts last
-/// among the open ones, so a new word from fleet-bench is never hidden as settled.
-pub const OPEN: [&str; 6] = [
+/// The open outcomes, worst first: a merged fix whose red is back or never went, a cleanup merge a
+/// red names now, then no fix, an unmerged PR, and the ones still in hand. An outcome not listed
+/// here or in `SETTLED` sorts last among the open ones, so a new word from fleet-bench is never
+/// hidden as settled.
+pub const OPEN: [&str; 7] = [
     "came back",
     "still red",
+    "went red",
     "no fix",
     "needs merge",
     "fixing",
     "queued",
 ];
-/// The outcomes that need nothing: the fix held, the red cleared itself, or the item was dropped.
-pub const SETTLED: [&str; 3] = ["fixed", "cleared", "cancelled"];
+/// The outcomes that need nothing: the fix held, the red cleared itself, the item was dropped, or
+/// a cleanup merge held, is inside its hold window, or broke and the red is over.
+pub const SETTLED: [&str; 6] = [
+    "fixed",
+    "cleared",
+    "cancelled",
+    "held",
+    "holding",
+    "recovered",
+];
 
 /// One red queue item, as `fleet-bench reds --json` prints it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -307,6 +318,28 @@ mod tests {
         assert!(
             e.contains("outcome"),
             "a row with no outcome is not a row: {e}"
+        );
+    }
+
+    #[test]
+    fn a_cleanup_merge_is_open_only_while_a_red_names_it() {
+        let rows = concat!(
+            r#"{"slug":"a","red":"x","outcome":"held"}"#,
+            "\n",
+            r#"{"slug":"b","red":"x","outcome":"holding"}"#,
+            "\n",
+            r#"{"slug":"c","red":"x","outcome":"recovered"}"#,
+            "\n",
+            r#"{"slug":"d","red":"x","outcome":"went red"}"#,
+            "\n",
+            r#"{"slug":"e","red":"x","outcome":"no fix"}"#,
+        );
+        let reds = read(&fixed(Ok(rows))).unwrap();
+        let open: Vec<&str> = reds.open.iter().map(|r| r.slug.as_str()).collect();
+        assert_eq!(open, ["d", "e"]);
+        assert_eq!(
+            reds.summary,
+            "2 open: 1 went red, 1 no fix | 1 held, 1 holding, 1 recovered in 7d"
         );
     }
 
