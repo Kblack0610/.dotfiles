@@ -34,6 +34,13 @@ n=$(cat "$NOTES_FIXTURE/room.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTE
 if [ -e "$NOTES_FIXTURE/acct.$n.json" ]; then cat "$NOTES_FIXTURE/acct.$n.json"; else cat "$NOTES_FIXTURE/acct.json"; fi'
 }
 
+# cpu <us> <sy> <ni> <id> -> each real idle sample window adds these jiffies to /proc/stat, and the
+# last sample is gone, so the next gate reads (ni + id) of the four as free. sleep is the window.
+cpu() {
+  echo "$1 $3 $2 $4" > "$DISPATCH_PROC_STAT.step"
+  rm -f "$FLEET_DISPATCH_DIR/idle"
+}
+
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
@@ -60,7 +67,12 @@ setup() {
   stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   stub fleet-presence 'echo "away 45 tmux"'
   stub fleet-bench 'exit 0'
-  stub top 'printf "%%Cpu(s):  1.0 us,  1.0 sy,  0.0 ni, 98.0 id,  0.0 wa\n%%Cpu(s):  5.0 us,  5.0 sy,  0.0 ni, 90.0 id,  0.0 wa\n"'
+  # Since boot the machine was 98% idle; the window is what the gate reads.
+  export DISPATCH_PROC_STAT="$SANDBOX/stat"
+  echo 'cpu  1000 0 1000 98000 0 0 0 0 0 0' > "$DISPATCH_PROC_STAT"
+  stub sleep 'echo "sleep $*" >> "$NOTES_FIXTURE/calls.log"; read -r a b c d < "$DISPATCH_PROC_STAT.step"; read -r _ u n s i _ < "$DISPATCH_PROC_STAT"
+echo "cpu  $((u + a)) $((n + b)) $((s + c)) $((i + d)) 0 0 0 0 0 0" > "$DISPATCH_PROC_STAT"'
+  cpu 5 5 0 90
   stub fleet-shepherd 'exit 1'
   acct main:ok   # main account with room; a test that wants the alt one restubs it
   stub model-lane 'echo "{\"dispatch_model\":\"opus\"}"'
@@ -1355,7 +1367,7 @@ refuses() {
 # a floor lifts the pace reason.
 room_on_floor() {
   acct alt:pace:/home/u/.claude-personal
-  stub top 'printf "%%Cpu(s): 1.0 id\n%%Cpu(s): 60.0 us,  5.0 sy, 25.0 ni, 10.0 id,  0.0 wa\n"'
+  cpu 60 30 0 10
 }
 
 @test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace and real idle, and says so" {
@@ -1458,7 +1470,7 @@ room_on_floor() {
 
 @test "the run floor lifts the pace reason alone: pace with the 5h window, committed burn or the reserve still refuses" {
   game_ready
-  stub top 'printf "%%Cpu(s): 1.0 id\n%%Cpu(s): 60.0 us,  5.0 sy, 25.0 ni, 10.0 id,  0.0 wa\n"'
+  cpu 60 30 0 10
   export DISPATCH_RUN_FLOOR=2
   for r in pace,five_hour pace,committed reserve,pace; do
     acct "alt:$r:/home/u/.claude-personal"
@@ -1574,7 +1586,7 @@ red_held_machine() {
   # Negative control: the machine gates open, and the next start ends the hold.
   stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  stub top 'printf "%%Cpu(s):  1.0 us,  1.0 sy,  0.0 ni, 98.0 id,  0.0 wa\n%%Cpu(s):  5.0 us,  5.0 sy,  0.0 ni, 90.0 id,  0.0 wa\n"'
+  cpu 5 5 0 90
   agent-queue add --project game --slug r2 --tags 'red cause:cd34' "fix r2" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item r2'
@@ -2221,15 +2233,61 @@ held_game_app_row() {
   refuses 'github budget unreadable'
 }
 
-@test "run reads real idle from the second top frame: the first is since boot" {
+# 2026-11-07 (ar-34, ar-5): one 2 s top frame swung 17-41%, and nice-19 Unity work counted as busy.
+@test "real idle is the window's /proc/stat delta with nice counted free, not the since-boot total" {
   game_ready
-  stub top 'printf "%%Cpu(s):  1.0 us,  1.0 sy,  0.0 ni, 98.0 id,  0.0 wa\n%%Cpu(s): 60.0 us,  5.0 sy, 25.0 ni, 10.0 id,  0.0 wa\n"'
-  refuses 'real idle 10.0% is under 30%'
+  cpu 60 5 25 10
+  export DISPATCH_MIN_IDLE=40
+  refuses 'real idle 35.0% is under 40%'
+  assert_called "sleep $DISPATCH_IDLE_WINDOW"
+}
+
+@test "headroom: a high-nice sample opens the idle gate; a forced 5% idle still holds" {
+  two_items
+  export DISPATCH_MIN_IDLE=20
+  cpu 30 5 55 10
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_success
+  assert_equal "$(jq -r '[.could_start, .idle, .min_idle, .held] | @tsv' <<<"$output")" $'2\t65.0\t20\t'
+  # Negative control: the same sample with the nice time busy is under the floor.
+  cpu 85 5 0 10
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r .held <<<"$output")" 'real idle 10.0% is under 20%'
+  cpu 90 5 0 5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.could_start, .held] | @tsv' <<<"$output")" $'0\treal idle 5.0% is under 20%'
+}
+
+@test "one real idle sample serves every gate for a window, then the next read samples again" {
+  game_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(grep -c '^sleep ' "$NOTES_FIXTURE/calls.log")" 1
+  echo "$(( $(date +%s) - DISPATCH_IDLE_WINDOW )) 90.0" > "$FLEET_DISPATCH_DIR/idle"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(grep -c '^sleep ' "$NOTES_FIXTURE/calls.log")" 2
+}
+
+@test "real idle: a sample from the future is no sample, and a floor start takes none" {
+  game_ready
+  echo "$(( $(date +%s) + 3600 )) 99.0" > "$FLEET_DISPATCH_DIR/idle"
+  cpu 85 5 0 10
+  run real_idle
+  assert_output '10.0'
+  # Negative control: the same gate off every floor waits out a sample.
+  rm -f "$FLEET_DISPATCH_DIR/idle" "$NOTES_FIXTURE/calls.log"
+  floor_open() { return 0; }
+  run gate
+  assert_not_called 'sleep'
+  floor_open() { return 1; }
+  run gate
+  assert_output --partial 'real idle 10.0% is under 30%'
+  assert_called "sleep $DISPATCH_IDLE_WINDOW"
 }
 
 @test "run starts nothing while real idle cannot be read" {
   game_ready
-  stub top 'exit 1'
+  rm -f "$DISPATCH_PROC_STAT"
   refuses 'real idle unreadable'
 }
 
