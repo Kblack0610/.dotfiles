@@ -712,13 +712,12 @@ fn last_usage(text: &str) -> (u64, String) {
         .unwrap_or_default()
 }
 
-/// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), else the
-/// plan the session last wrote (Write, Edit, MultiEdit), else, until its first reply, the
-/// `~/.claude/plans/*.md` its prompt named most, since a plan handed in is all a fresh session
-/// has; once it works one, it writes it. A plan the session only named (read, grepped, listed, quoted) is
-/// not its plan, and nor is one in a hook attachment (the preflight lists other sessions'
-/// plans) or a later prompt (a pasted screen, a shepherd nudge, 2026-10-28). dotfiles-c2 grepped
-/// another session's finished plan, took it, and was told to wind down mid-talk (2026-11-03).
+/// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), else the plan
+/// the session last wrote (`plans_written`), else, until its first reply, the plan its prompt
+/// named most: a plan handed in is all a fresh session has, and once it works one it writes it.
+/// A plan the session only named (read, grepped, listed, quoted), one a hook attachment lists
+/// and one a later prompt names (a pasted screen, a shepherd nudge) are not its plan. Why: a
+/// session that grepped another's finished plan took it and was told to wind down (2026-11-03).
 fn plan_file(text: &str) -> String {
     const KEY: &str = "\"planFilePath\":\"";
     if let Some(i) = text.rfind(KEY) {
@@ -779,8 +778,9 @@ fn plans_written(text: &str) -> Vec<String> {
     out
 }
 
-/// The plans a shell command writes: the target of a `>` or `>>` redirect, of `tee` or
-/// `sed -i`, or the `--plan` that agent-land ticks. Reading, grepping or listing one is not.
+/// The plans a shell command writes: the target of a `>` or `>>` redirect, of `tee` or of
+/// `sed -i`, or the `--plan` that agent-land ticks. Reading, grepping, listing or passing one
+/// to another command is not writing it.
 fn bash_plan_writes(cmd: &str) -> Vec<String> {
     const STOP: &[char] = &[' ', '\t', '\n', '\'', '"', '>', '=', '(', '<'];
     let mut out = Vec::new();
@@ -790,14 +790,19 @@ fn bash_plan_writes(cmd: &str) -> Vec<String> {
             .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '~' | '$' | '{' | '}')))
             .map_or(cmd.len(), |e| i + e);
         let Some(name) = plan_name(&cmd[start..end]) else { continue };
-        let before = cmd[..start].trim_end_matches(['\'', '"', ' ', '\t']);
-        let seg = before.rsplit(['|', ';', '&', '\n']).next().unwrap_or("").trim_start();
-        let words: Vec<&str> = seg.split_whitespace().collect();
+        // Only the path's own opening quote goes, so a quoted `'->'` pattern before it is no redirect.
+        let before = cmd[..start].strip_suffix(['\'', '"']).unwrap_or(&cmd[..start]).trim_end();
+        let words: Vec<&str> = before[segment_start(before)..]
+            .trim_start_matches([' ', '('])
+            .split_whitespace()
+            .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+            .collect();
+        let cmd_is = |name: &str| words.first().is_some_and(|w| w.rsplit('/').next() == Some(name));
+        let sed_in_place = |w: &&str| *w == "--in-place" || (w.starts_with('-') && !w.starts_with("--") && w.contains('i'));
         if before.ends_with('>')
-            || before.ends_with("--plan")
-            || before.ends_with("--plan=")
-            || words.first() == Some(&"tee")
-            || (words.first() == Some(&"sed") && words.iter().any(|w| w.starts_with("-i")))
+            || (cmd_is("agent-land") && (before.ends_with("--plan") || before.ends_with("--plan=")))
+            || cmd_is("tee")
+            || (cmd_is("sed") && words.iter().any(sed_in_place))
         {
             out.push(name.to_string());
         }
@@ -805,13 +810,29 @@ fn bash_plan_writes(cmd: &str) -> Vec<String> {
     out
 }
 
-/// The `<name>.md` of a path in a Claude plans dir (`~/.claude/plans`, or an account's
-/// `~/.claude-<acct>/plans`, a link to it), else None.
+/// Where the last shell command in `s` starts: just past its last `|`, `;`, `&` or newline
+/// outside quotes, so a sed script's `;` or `&` does not split it.
+fn segment_start(s: &str) -> usize {
+    let (mut quote, mut start) = (None, 0);
+    for (i, c) in s.char_indices() {
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, '|' | ';' | '&' | '\n') => start = i + 1,
+            _ => {}
+        }
+    }
+    start
+}
+
+/// The `<name>.md` of a path in a Claude plans dir in the home dir (`~/.claude/plans`, or an
+/// account's `~/.claude-<acct>/plans`, a link to it), else None; a repo's `.claude/plans` is not.
 fn plan_name(path: &str) -> Option<&str> {
     let (dir, name) = path.rsplit_once('/')?;
     let (config, plans) = dir.rsplit_once('/')?;
-    let config = config.rsplit('/').next()?;
-    (plans == "plans" && config.starts_with(".claude") && name.len() > 3 && name.ends_with(".md")).then_some(name)
+    let (home, config) = config.rsplit_once('/')?;
+    let in_home = matches!(home, "~" | "$HOME" | "${HOME}") || std::path::Path::new(home) == crate::session::home();
+    (in_home && plans == "plans" && config.starts_with(".claude") && name.len() > 3 && name.ends_with(".md")).then_some(name)
 }
 
 /// Count each `~/.claude/plans/<name>.md` that `text` names into `counts`.
@@ -1614,7 +1635,7 @@ mod tests {
         let p = tmpfile("preflight", &[
             preflight,
             r#"{"type":"user","isMeta":true,"message":{"content":"<system-reminder>~/.claude/plans/theirs.md</system-reminder>"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/h/.claude/plans/mine.md","content":"Phases"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude/plans/mine.md","content":"Phases"}}]}}"#,
             r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"see /h/.claude/plans/theirs.md"}]}}"#,
             r#"{"type":"api-request-blob","message":"~/.claude/plans/theirs.md ~/.claude/plans/theirs.md"}"#,
         ]);
@@ -1636,8 +1657,8 @@ mod tests {
         // dir (a link to ~/.claude/plans) is the same dir.
         let p = tmpfile("wrote", &[
             r#"{"type":"user","message":{"content":"finish ~/.claude/plans/handed.md"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/h/.claude/plans/handed.md","old_string":"","new_string":""}}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/h/.claude-bnb/plans/mine.md","content":""}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/handed.md","old_string":"","new_string":""}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude-bnb/plans/mine.md","content":""}}]}}"#,
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/h/notes/plans/other.md","content":""}}]}}"#,
         ]);
         assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
@@ -1677,7 +1698,16 @@ mod tests {
             ("echo x | tee -a ~/.claude-bnb/plans/a.md", vec!["a.md"]),
             ("sed -i 's/- \\[ \\]/- [x]/' ~/.claude/plans/a.md", vec!["a.md"]),
             ("agent-land 12 --item x --plan ~/.claude/plans/a.md --phase y", vec!["a.md"]),
-            ("agent-queue add --plan=/h/.claude/plans/a.md", vec!["a.md"]),
+            ("agent-land 12 --plan=~/.claude/plans/a.md", vec!["a.md"]),
+            ("cd ~/w && (A=1 ./.local/bin/agent-land 9 --plan ~/.claude/plans/a.md)", vec!["a.md"]),
+            ("sed -Ei 's/a/b/;s/c/&d/' ~/.claude/plans/a.md && echo ok", vec!["a.md"]),
+            ("sed --in-place -e 's/x|y/z/' ~/.claude/plans/a.md", vec!["a.md"]),
+            ("echo x | tee \"$HOME/.claude/plans/a.md\" >/dev/null", vec!["a.md"]),
+            ("agent-queue add --plan ~/.claude/plans/a.md", vec![]),
+            ("grep -n '->' ~/.claude/plans/a.md", vec![]),
+            ("rg \"x>\" ~/.claude/plans/a.md 2>&1", vec![]),
+            ("sed -n 's/;/x/p' ~/.claude/plans/a.md", vec![]),
+            ("cat > /repo/.claude/plans/a.md", vec![]),
             ("cat ~/.claude/plans/a.md > /tmp/b.md", vec![]),
             ("grep -n x ~/.claude/plans/a.md | sed -n 1p", vec![]),
             ("ls -la ~/.claude/plans/a.md ~/.agent/plans/dotfiles/a.md", vec![]),
@@ -1686,6 +1716,8 @@ mod tests {
         ] {
             assert_eq!(bash_plan_writes(cmd), want, "{cmd}");
         }
+        let abs = format!("cat > {}/.claude/plans/a.md", crate::session::home().display());
+        assert_eq!(bash_plan_writes(&abs), ["a.md"]);
     }
 
     #[test]
