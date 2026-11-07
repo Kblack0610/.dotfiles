@@ -25,8 +25,6 @@ metadata:
 
 Profiles Meta VR and Horizon OS application CPU performance using simpleperf - workload classification, CPU hotspot recording, kernel overhead measurement. Use when diagnosing whether an app is CPU-bound, memory-bound, or I/O-bound on Meta VR devices. Build paths: all Meta VR app stacks; use hz-quest-verify-first if the build path is unclear.
 
-## When to Use
-
 Use this skill when you need hardware-level CPU performance insights on Meta VR devices:
 
 - Classifying whether an app is CPU-bound, memory-bound, or I/O-bound

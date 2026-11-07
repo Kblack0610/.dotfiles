@@ -14,6 +14,12 @@ The intake role of `fleet-lead` (Binks). `fleet-dispatch` keeps the queue fed: t
 
 Away comes from `fleet-presence`: no keypress in any tmux client and no desktop input for `AWAY_AFTER_MIN` minutes (set in the conf). It takes no time of day, because a night is a long away. When the human comes back, board starts drop to the present trickle at the next pass and running sessions carry on; night items wait for away. If it prints `unread`, usually because `hypridle` is not running, dispatch treats the human as here: the trickle.
 
+## Scope and triggers
+
+Covers keeping the agent-queue topped up from the board, the away rate and present trickle, and starting a session by hand (`fleet-dispatch start`).
+
+Use for "what would dispatch pick", "why did it skip that row", "start a session for this row", "pause dispatch". Moving live sessions through their plans: `shepherd`. Load and holds: `fleet-pace`.
+
 Who may take a row is `~/.config/fleet-dispatch/workers.json`, walked in file order:
 
 - `requested`: `#requested` rows tagged `#worker/requested`, on `unity-core-playground`, up to tier 2.
@@ -32,12 +38,6 @@ What kind of work a row is comes from its type prefix (`fix(area):`), and `~/.co
 - `agent-hold set dispatch "<reason>"` pauses it; `agent-hold release dispatch` resumes it.
 - Level: the conf's `DISPATCH_PER_PASS`, `DISPATCH_NIGHT_MAX` and `DISPATCH_MAX_LOAD`, and `claude-acct room`'s slack and reserve, are the `mid` numbers. The `machine-mode` level (low, mid, high) multiplies them where they are read, by `.config/machine-mode/levels`; `headroom` prints the level in force. Raise a limit in the conf, change the level with `machine-mode`.
 - Night items: every run pass, and `fleet-dispatch fill`, judges the open agent-lane rows of `DISPATCH_NIGHT_PROJECTS` (agent-runtime, notes-cockpit, home-config, trader, audio, each at stage dev or later) of `DISPATCH_NIGHT_PROFILE` and promotes up to `DISPATCH_NIGHT_MAX` (6 active, one an area) whose verdict says tier 3 is the only reason to skip (`tier3_only`) as queue items tagged `night`, which agent-queue holds to its night window; each brief stops at an open PR. A `#requested` row is eligible, since the human asked for it and the brief stops at a PR. It skips `decide:`, device, the human's machine, secrets, prod and wishes; it ranks `#requested` rows first, then observer rows (an improvement row tagged `#kpi/<k>`, or a `check(kpi):`, `fix(lesson):` and the like from retro and triage), then most urgent and oldest. Each row is `start`ed; `done` waits for the human's merge. A run pass does this right after reap, ahead of run units, the queue's depth and the gates, since promoting is not starting; only a `dispatch` hold stops it, and the pass's line starts `queued N for the night`. A judge that fails there does not stop the queue: the pass goes on and ends FAILED. `fleet-dispatch fill --dry-run` lists them as `night`.
-
-## Scope and triggers
-
-Covers keeping the agent-queue topped up from the board, the away rate and present trickle, and starting a session by hand (`fleet-dispatch start`).
-
-Use for "what would dispatch pick", "why did it skip that row", "start a session for this row", "pause dispatch". Moving live sessions through their plans: `shepherd`. Load and holds: `fleet-pace`.
 
 ## A pass, in order
 

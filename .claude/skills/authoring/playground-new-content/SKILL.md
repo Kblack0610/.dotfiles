@@ -21,8 +21,6 @@ Gets a new map, character or game into the playground the way the repo's guides 
 
 Add a new map, character (player body family, enemy, boss, story person, townsfolk) or game to unity-core-playground by its authoring guide, ending on the guide's Done when list. Use when the user says "add a map", "new level", "build out a new area", "add an enemy / boss / NPC / talker", "new playable body", "add a new game or mode", or "level design for X". It is a thin driver: the procedure lives in the playground's docs/authoring/ guides (adding-a-map.md, adding-a-character.md, adding-a-game.md) and docs/development/standards.md, and this skill says which guide, what to read first, and the rules that most often get broken. Not for bringing new art into the library (that is playground-ingest) and not for running tests (that is playground-headless-test).
 
-## When to Use
-
 - When adding a map or level (greybox or HD, a venue, a dungeon or seeded level).
 - When adding a player body family, an enemy, a boss, a story person or townsfolk.
 - When adding a new game or a mode inside one.
