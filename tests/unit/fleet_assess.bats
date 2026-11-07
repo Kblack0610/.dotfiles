@@ -42,6 +42,31 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_output --partial 'HOLD memory 8%'
 }
 
+@test "the 2026-11-06 miss (48% free, kswapd swapping into zram) is HOLD on memory stall" {
+  run fleet_verdict 5 24 60 48 0 35
+  assert_output --partial 'HOLD memory stall 35.0%'
+}
+
+@test "memory stall: HOLD at the mark, OK just under; no stall argument means none" {
+  [ "$(fleet_verdict 5 24 60 48 0 20 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 5 24 60 48 0 19.9 | cut -d' ' -f1)" = OK ]
+  [ "$(fleet_verdict 5 24 60 48 0 | cut -d' ' -f1)" = OK ]
+}
+
+@test "CLEAR also needs the memory stall back under the low mark" {
+  [ "$(fleet_verdict 10 24 80 60 1 10 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 10 24 80 60 1 4.9 | cut -d' ' -f1)" = CLEAR ]
+}
+
+@test "swap sitting full of cold pages with no stall is not a hold" {
+  [ "$(fleet_verdict 5 24 60 48 0 0.1 | cut -d' ' -f1)" = OK ]
+}
+
+@test "read_mem_stall takes the some line's avg10; a missing PSI file reads 0" {
+  run read_mem_stall
+  [[ "$output" =~ ^[0-9.]+$ ]]
+}
+
 @test "between the marks: HOLD while held, OK when nothing is held" {
   [ "$(v 30 80 60 1)" = HOLD ]
   [ "$(v 30 80 60 0)" = OK ]
