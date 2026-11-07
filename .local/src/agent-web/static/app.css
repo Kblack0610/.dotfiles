@@ -76,6 +76,8 @@ main.open #back { display: inline-block; }
 #convo { max-width: 860px; margin: 0 auto; }
 /* Off-screen turns cost no layout; the browser keeps each one's real size once it has drawn. */
 #convo > * { content-visibility: auto; contain-intrinsic-size: auto 56px; }
+/* The newest turns always lay out, so a scroll to the bottom lands on the bottom, not on estimates. */
+#convo > :nth-last-child(-n+8) { content-visibility: visible; }
 .ev { margin: 0 0 12px; word-break: break-word; overflow-wrap: anywhere; }
 .ev.user { white-space: pre-wrap; background: var(--user); padding: 8px 12px; border-radius: 12px 12px 4px 12px; margin-left: min(15%, 80px); }
 .steps { margin: 0 0 12px; border-left: 2px solid var(--line); padding-left: 10px; }
