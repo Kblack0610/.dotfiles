@@ -24,7 +24,7 @@
 #
 # Lives in .local/lib rather than .local/src/tmux/panel-lib.sh because that is the
 # established shape for a library unrelated consumers share -- same three-step lookup as
-# agent-board.sh. panel-lib.sh wraps it as `panel_md` so panels keep the panel_* vocabulary.
+# lab-feed.sh. panel-lib.sh wraps it as `panel_md` so panels keep the panel_* vocabulary.
 #
 # Usage:
 #   . "$HOME/.local/lib/md-render.sh"
