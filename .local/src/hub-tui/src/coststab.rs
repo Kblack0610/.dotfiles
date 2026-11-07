@@ -2,9 +2,11 @@
 //! `w` the window, `/` types the query (the shared table's grammar), `s` sorts by the cut's next
 //! column, `S` flips it, `x` clears; `o` opens the Grafana trends.
 
+use hub_core::burn::{self, Burn};
 use hub_core::costs::{self, Board, Costs};
 use hub_core::table::Val;
 use ratatui::crossterm::event::KeyCode;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::fit::{cell, clip_line, Cell, Table};
@@ -144,7 +146,7 @@ impl CostsView {
 
     pub fn lines(&self, c: &Costs, p: Palette, w: usize) -> Vec<Line<'static>> {
         let b = self.board(c);
-        let mut out = vec![];
+        let mut out = burn(&b.burn, p, w);
         let bar = |name: &str, all: &[&'static str], on: &str, key: &str| {
             let mut s = vec![Span::styled(format!("{name}: "), p.dim())];
             for x in all {
@@ -213,6 +215,109 @@ impl CostsView {
         out.push(Line::styled("trends: o opens Grafana", p.dim()));
         out
     }
+}
+
+/// The Burn section, first on the tab: the headline coloured by `level`, the drip and its hold
+/// badge, when each account is back on pace, and one row per account.
+fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let dim = |s: &str| Span::styled(s.to_string(), p.dim());
+    if b.accounts.is_empty() {
+        return vec![clip_line(
+            Line::from(vec![dim("BURN  "), Span::raw("no data from claude-acct")]),
+            w,
+        )];
+    }
+    let style = match b.level {
+        "bad" => p.bad(),
+        "warn" => p.warn(),
+        _ => p.good(),
+    };
+    let time = |t: i64| crate::fmt::clock(t, b.at);
+    let mut drip = vec![dim("DRIP  "), Span::raw(b.drip_line.clone())];
+    if b.drip.held.is_some() {
+        drip.push(Span::styled(
+            format!("   dispatch held -> {}", burn::HOLD_BADGE),
+            p.warn(),
+        ));
+    }
+    let mut out = vec![
+        clip_line(
+            Line::from(vec![dim("BURN  "), Span::styled(b.head.clone(), style)]),
+            w,
+        ),
+        clip_line(Line::from(drip), w),
+        clip_line(
+            Line::from(vec![dim("BACK ON PACE  "), Span::raw(b.pace_text(&time))]),
+            w,
+        ),
+    ];
+    // An unreadable or idle account has no figures: a line of its own, so its words do not
+    // widen the table's columns.
+    let mut notes = vec![];
+    let rows = b
+        .accounts
+        .iter()
+        .filter_map(|a| {
+            let n = || cell(a.name.clone(), p.head());
+            let note = |text: &str, style| {
+                clip_line(
+                    Line::from(vec![
+                        Span::styled(a.name.clone(), p.head()),
+                        Span::raw("  "),
+                        Span::styled(text.to_string(), style),
+                    ]),
+                    w,
+                )
+            };
+            match a.state {
+                "unreadable" => notes.push(note("usage unreadable", p.bad())),
+                "idle" => notes.push(note("idle, token refreshes on launch", p.dim())),
+                _ => {
+                    let pc = |v: Option<f64>| v.map_or("-".into(), |v| format!("{}%", v.floor()));
+                    let rate = |v: Option<f64>| v.map_or("-".into(), |v| format!("{v:.2}"));
+                    return Some(vec![
+                        n(),
+                        a.live.to_string().into(),
+                        pc(a.used).into(),
+                        pc(a.gone).into(),
+                        cell(
+                            rate(Some(a.burn)),
+                            if a.is_over() { p.warn() } else { Style::new() },
+                        ),
+                        rate(a.sustain).into(),
+                        a.on_pace(a.burn_at, b.at, &time).into(),
+                        a.on_pace(a.idle_at, b.at, &time).into(),
+                        a.run_out.map_or("-".into(), time).into(),
+                        a.resets.map_or("-".into(), time).into(),
+                    ]);
+                }
+            }
+            None
+        })
+        .collect::<Vec<_>>();
+    out.extend(
+        Table {
+            header: vec![
+                "ACCOUNT", "LIVE", "USED", "GONE", "BURN/H", "KEEPS/H", "AT BURN", "IF IDLE",
+                "RUNS OUT", "RESETS",
+            ],
+            rows,
+            keep: vec![0, 4, 5, 1, 6, 7, 2, 3, 8, 9],
+            right: vec![1, 2, 3, 4, 5],
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    out.extend(notes);
+    out.push(clip_line(
+        Line::styled(
+            "BURN/H: last 6h rate per session. KEEPS/H: what the week can carry.",
+            p.dim(),
+        ),
+        w,
+    ));
+    out.push(Line::raw(""));
+    out
 }
 
 /// The window's spend from the outcomes rows, then what Prometheus says now.
@@ -390,6 +495,89 @@ mod tests {
             }],
             ..Costs::default()
         }
+    }
+
+    fn series(account: &str, name: &str, v: f64) -> hub_core::prom::Series {
+        hub_core::prom::Series {
+            labels: [
+                ("__name__".to_string(), format!("claude_account_{name}")),
+                ("account".to_string(), account.to_string()),
+            ]
+            .into(),
+            value: Some(v),
+            points: vec![],
+        }
+    }
+
+    /// 2026-11-06's numbers: three accounts, 39 live, 3.3x over what the weeks carry.
+    fn burning() -> Costs {
+        let mut all = vec![];
+        for (n, live, used, gone, burn, sustain) in [
+            ("main", 13.0, 33.0, 12.0, 1.51, 0.45),
+            ("alt", 9.0, 55.0, 25.0, 1.04, 0.36),
+            ("bnb", 17.0, 7.0, 1.0, 1.97, 0.56),
+        ] {
+            for (k, v) in [
+                ("live_sessions", live),
+                ("week_used_percent", used),
+                ("week_gone_percent", gone),
+                ("burn_points_per_hour", burn),
+                ("sustain_points_per_hour", sustain),
+                (
+                    "on_pace_idle_timestamp_seconds",
+                    1_000_000.0 + 36.0 * 3600.0,
+                ),
+                ("resets_timestamp_seconds", 1_000_000.0 + 80.0 * 3600.0),
+            ] {
+                all.push(series(n, k, v));
+            }
+        }
+        let drip = hub_core::burn::Drip {
+            hour: 15,
+            day: 349,
+            held: Some("fleet-assess says HOLD".into()),
+        };
+        Costs {
+            burn: burn::build(&all, Some(0.116), drip, 1_000_000),
+            ..costs()
+        }
+    }
+
+    #[test]
+    fn the_burn_section_leads_and_fits_80_columns() {
+        let s = CostsView::default()
+            .lines(&burning(), Palette::default(), 80)
+            .iter()
+            .map(crate::fit::plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
+        let first = s.lines().next().unwrap();
+        assert!(
+            first.starts_with("BURN  4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live"),
+            "{s}"
+        );
+        assert!(s.contains("DRIP  15 started in 1h, 349 in 24h"), "{s}");
+        assert!(s.contains("dispatch held -> 5 Sessions"), "{s}");
+        assert!(
+            s.contains("BACK ON PACE  at this burn: not before the reset; if idle: all by"),
+            "{s}"
+        );
+        assert!(
+            s.contains("bnb") && s.contains("1.97") && s.contains("after reset"),
+            "{s}"
+        );
+        assert!(
+            s.find("BURN").unwrap() < s.find("window:").unwrap(),
+            "burn is above the spend tiles"
+        );
+    }
+
+    #[test]
+    fn no_claude_acct_data_says_so_and_still_shows_the_spend() {
+        let s = screen(&CostsView::default(), 80);
+        assert!(s.starts_with("BURN  no data from claude-acct"), "{s}");
+        assert!(s.contains("window:"), "{s}");
     }
 
     fn screen(v: &CostsView, w: usize) -> String {
