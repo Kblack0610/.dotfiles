@@ -341,6 +341,20 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_equal "$(cat "$HOME/run.env")" "holder=runner account=$HOME/.claude-acct2"
 }
 
+@test "a run while another holds the run lock starts nothing and touches no tmux; with the lock free it starts a pass" {
+  doc "[$(row a DONE false false)]"
+  # flock holds the lock while the run inside it runs, so that run is the second one.
+  run flock -n "$FLEET_SHEPHERD_DIR/.run.lock" "$SH" run
+  assert_success
+  assert_output --partial 'another run is starting a pass now'
+  [ ! -e "$HOME/tmux.calls" ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
+  # Negative control: the lock free, the same run starts one.
+  run "$SH" run
+  assert_success
+  assert_output --partial 'started pass'
+}
+
 @test "no world declares the session: run stops and says so, and touches no tmux" {
   STUB_NO_WORLD=1 run "$REPO_ROOT/.local/bin/fleet-shepherd" run
   assert_failure
