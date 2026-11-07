@@ -1,9 +1,11 @@
 //! The Costs tab: `hub_core::costs::board`, the same view agent-web draws. `b`/`B` step the cut,
 //! `w` the window, `/` types the query (the shared table's grammar), `s` sorts by the cut's next
-//! column, `S` flips it, `x` clears; `o` opens the Grafana trends.
+//! column, `S` flips it, `x` clears; `o` opens the Grafana trends. The Sections block under Burn
+//! is folded to its headline: `e` opens it, `t` steps its sort column and `T` flips it.
 
 use hub_core::burn::{self, Burn};
 use hub_core::costs::{self, Board, Costs};
+use hub_core::sections::{self, Block};
 use hub_core::table::Val;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::style::Style;
@@ -20,6 +22,11 @@ pub struct CostsView {
     pub sort: String,
     pub asc: bool,
     pub typing: Option<String>,
+    /// The Sections block is open (it starts as its headline).
+    pub sections_open: bool,
+    /// One of the Sections columns, or empty for fleet-bench's order (the most gate hours first).
+    pub ssort: String,
+    pub sasc: bool,
 }
 
 impl Default for CostsView {
@@ -31,6 +38,9 @@ impl Default for CostsView {
             sort: String::new(),
             asc: false,
             typing: None,
+            sections_open: false,
+            ssort: String::new(),
+            sasc: false,
         }
     }
 }
@@ -69,7 +79,12 @@ pub fn header(col: &str) -> &'static str {
 
 impl CostsView {
     pub fn is_default(&self) -> bool {
-        self.typing.is_none() && self.q.is_empty() && self.sort.is_empty() && !self.asc
+        self.typing.is_none()
+            && self.q.is_empty()
+            && self.sort.is_empty()
+            && !self.asc
+            && self.ssort.is_empty()
+            && !self.sasc
     }
 
     /// `hub --tab costs --q '<words>'`: a cut or window name sets it, `key=value` sets `by`, `w`
@@ -82,6 +97,9 @@ impl CostsView {
                 "by" => self.by = costs::cut(v),
                 "w" => self.window = costs::window(v).0,
                 "q" => q.push(v.to_string()),
+                "ssort" => self.ssort = v.to_string(),
+                "sdir" => self.sasc = v == "asc",
+                _ if word == "sections" => self.sections_open = true,
                 _ if costs::CUTS.contains(&v) => self.by = costs::cut(v),
                 _ if costs::WINDOWS.iter().any(|w| w.0 == v) => self.window = costs::window(v).0,
                 _ => q.push(word.to_string()),
@@ -123,11 +141,21 @@ impl CostsView {
                 self.sort = step(&cols, self.sort.as_str(), false).to_string();
             }
             KeyCode::Char('S') => self.asc = !self.asc,
+            KeyCode::Char('e') => self.sections_open = !self.sections_open,
+            KeyCode::Char('t') => {
+                let mut cols = vec![""];
+                cols.extend(<sections::Section as hub_core::table::Row>::COLUMNS);
+                self.ssort = step(&cols, self.ssort.as_str(), false).to_string();
+                // A new column starts descending, as a header click does on the web.
+                self.sasc = false;
+            }
+            KeyCode::Char('T') => self.sasc = !self.sasc,
             KeyCode::Char('x') => {
-                let (by, window) = (self.by, self.window);
+                let (by, window, open) = (self.by, self.window, self.sections_open);
                 *self = CostsView {
                     by,
                     window,
+                    sections_open: open,
                     ..CostsView::default()
                 };
             }
@@ -141,12 +169,22 @@ impl CostsView {
 
     pub fn board(&self, c: &Costs) -> Board {
         let dir = if self.asc { "asc" } else { "desc" };
-        costs::board(c, self.by, self.window, &self.q, &self.sort, dir)
+        let sdir = if self.sasc { "asc" } else { "desc" };
+        costs::board(
+            c,
+            self.by,
+            self.window,
+            &self.q,
+            &self.sort,
+            dir,
+            (&self.ssort, sdir),
+        )
     }
 
     pub fn lines(&self, c: &Costs, p: Palette, w: usize) -> Vec<Line<'static>> {
         let b = self.board(c);
         let mut out = burn(&b.burn, p, w);
+        out.extend(sections(&b.sections, self.sections_open, p, w));
         let bar = |name: &str, all: &[&'static str], on: &str, key: &str| {
             let mut s = vec![Span::styled(format!("{name}: "), p.dim())];
             for x in all {
@@ -316,6 +354,85 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
         ),
         w,
     ));
+    out.push(Line::raw(""));
+    out
+}
+
+/// The Sections block: its headline always, and when open All PRs on top of one row per section
+/// under the sort, then the note on what the figures cannot say.
+fn sections(b: &Block, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let Some(t) = &b.table else {
+        return vec![];
+    };
+    let mark = if open { "-" } else { "+" };
+    let mut out = vec![clip_line(
+        Line::from(vec![
+            Span::styled(format!("{mark} SECTIONS  "), p.head()),
+            Span::raw(b.head.clone()),
+            Span::styled(if open { "" } else { "   e opens" }, p.dim()),
+        ]),
+        w,
+    )];
+    if !open {
+        out.push(Line::raw(""));
+        return out;
+    }
+    let shown = b.rows.len().min(hub_core::layout::FOLD_ROWS);
+    let row = |cells: &Vec<String>, style: Style| -> Vec<Cell> {
+        cells.iter().map(|c| cell(c.clone(), style)).collect()
+    };
+    let mut rows = vec![row(&b.all, p.head())];
+    rows.extend(b.rows[..shown].iter().map(|r| row(r, Style::new())));
+    let at = |k: &str| b.columns.iter().position(|c| *c == k);
+    // The section and the gate minutes never drop; the claimed-session figures go first.
+    let order = [
+        "section",
+        "gate_min_per_pr",
+        "first_try",
+        "prs",
+        "reds_per_pr",
+        "gate_h",
+        "green_lost",
+        "cost_per_pr",
+        "work_min_per_pr",
+        "tokens_per_pr",
+    ];
+    let marked = t.columns.iter().find(|c| c.sort.is_some());
+    // The sorted column is never the one a narrow screen drops, so the mark always shows.
+    let mut keep: Vec<usize> = order.iter().filter_map(|k| at(k)).collect();
+    if let Some(i) = marked.and_then(|c| at(c.key)).filter(|i| *i != 0) {
+        keep.retain(|k| *k != i);
+        keep.insert(1.min(keep.len()), i);
+    }
+    out.extend(
+        Table {
+            header: b.headers.clone(),
+            rows,
+            keep,
+            right: (1..b.columns.len()).collect(),
+            cap: vec![(0, 40)],
+            mark: marked.and_then(|c| {
+                at(c.key).map(|i| {
+                    (
+                        i,
+                        if c.sort == Some(hub_core::table::Dir::Asc) {
+                            " ^"
+                        } else {
+                            " v"
+                        },
+                    )
+                })
+            }),
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    if let Some(more) = crate::fmt::older(b.rows.len(), shown, p) {
+        out.push(more);
+    }
+    for n in &b.notes {
+        out.push(clip_line(Line::styled(n.clone(), p.dim()), w));
+    }
     out.push(Line::raw(""));
     out
 }
@@ -571,6 +688,103 @@ mod tests {
             s.find("BURN").unwrap() < s.find("window:").unwrap(),
             "burn is above the spend tiles"
         );
+    }
+
+    fn with_sections() -> Costs {
+        let out = r#"{"days":7,"all":{"prs":598,"gated":460,"with_session":339,"first_try":0.515,"reds_per_pr":0.976,"gate_min_per_pr":144.7,"gate_h":1109,"green_lost":116,"cost_per_pr":7.33,"tokens_per_pr":14030412,"work_min_per_pr":34.4},
+          "sections":[
+            {"section":"Assets/Playground/Tests","prs":417,"gated":399,"with_session":209,"first_try":0.484,"reds_per_pr":1.065,"gate_min_per_pr":155.6,"gate_h":1035,"green_lost":107,"cost_per_pr":6.96,"tokens_per_pr":13026570,"work_min_per_pr":36.2},
+            {"section":"docs","prs":472,"gated":369,"with_session":272,"first_try":0.45,"reds_per_pr":1.127,"gate_min_per_pr":162.9,"gate_h":1002,"green_lost":103,"cost_per_pr":7.69,"tokens_per_pr":14771869,"work_min_per_pr":35.7}]}"#;
+        Costs {
+            sections: hub_core::sections::parse(out).unwrap(),
+            ..costs()
+        }
+    }
+
+    fn sections_screen(v: &CostsView, w: usize) -> String {
+        v.lines(&with_sections(), Palette::default(), w)
+            .iter()
+            .map(crate::fit::plain)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn sections_are_a_headline_until_e_opens_them_then_all_prs_leads_both_caveats_show() {
+        let mut v = CostsView::default();
+        let s = sections_screen(&v, 80);
+        assert!(
+            s.contains("+ SECTIONS  598 PRs in 7d, 52% first try"),
+            "{s}"
+        );
+        assert!(!s.contains("All PRs"), "folded: no table\n{s}");
+        v.key(KeyCode::Char('e'));
+        let s = sections_screen(&v, 80);
+        assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
+        let at = |n: &str| s.find(n).unwrap_or_else(|| panic!("{n} missing\n{s}"));
+        assert!(at("All PRs") < at("Assets/Playground/Tests") && at("Tests") < at("docs"));
+        assert!(s.contains("counts in every section it touches"), "{s}");
+        assert!(
+            s.contains("only the PRs a session claims (339 of 598"),
+            "{s}"
+        );
+        assert!(
+            at("SECTIONS") < at("window:"),
+            "under Burn, above the spend"
+        );
+    }
+
+    #[test]
+    fn t_sorts_the_sections_by_each_column_and_t_flips_it() {
+        let mut v = CostsView::default();
+        v.key(KeyCode::Char('e'));
+        v.key(KeyCode::Char('t'));
+        assert_eq!(v.ssort, "section");
+        // Descending by name: docs before Assets, All PRs still first.
+        let s = sections_screen(&v, 80);
+        assert!(s.find("All PRs").unwrap() < s.find("docs").unwrap(), "{s}");
+        assert!(
+            s.find("docs").unwrap() < s.find("Assets/Playground/Tests").unwrap(),
+            "{s}"
+        );
+        v.key(KeyCode::Char('T'));
+        let s = sections_screen(&v, 80);
+        assert!(
+            s.find("Assets/Playground/Tests").unwrap() < s.find("docs").unwrap(),
+            "{s}"
+        );
+        assert!(
+            s.contains("section ^"),
+            "the header says its direction\n{s}"
+        );
+        assert!(!v.key(KeyCode::Char('r')), "r stays the page's refresh");
+        v.key(KeyCode::Char('x'));
+        assert!(
+            v.ssort.is_empty() && v.sections_open,
+            "x clears the sort, keeps the fold"
+        );
+    }
+
+    #[test]
+    fn esc_clears_a_sections_sort_t_starts_each_column_descending_and_a_link_opens_it() {
+        let mut v = CostsView::default();
+        v.key(KeyCode::Char('t'));
+        v.key(KeyCode::Char('T'));
+        assert!(!v.is_default());
+        v.key(KeyCode::Char('t'));
+        assert!(!v.sasc, "the next column starts descending");
+        assert!(v.key(KeyCode::Esc) && v.ssort.is_empty() && !v.sasc);
+        let mut v = CostsView::default();
+        v.open("sections&ssort=prs&sdir=asc");
+        assert!(v.sections_open && v.ssort == "prs" && v.sasc && v.q.is_empty());
+    }
+
+    #[test]
+    fn a_narrow_screen_never_drops_the_sorted_column() {
+        let mut v = CostsView::default();
+        v.open("sections&ssort=tokens_per_pr");
+        let s = sections_screen(&v, 60);
+        assert!(s.contains("tokens/PR v"), "{s}");
     }
 
     #[test]

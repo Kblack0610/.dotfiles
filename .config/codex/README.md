@@ -1,6 +1,6 @@
 # Codex and opencode config
 
-`sync-ai-global-config.sh` is the one writer of the Codex, opencode and Gemini homes. Run it after changing anything here, in the rulesync source, or in `~/.claude/skills` (`codex-sync` is an alias; the post-commit hook runs it when the rulesync source changes).
+`sync-ai-global-config.sh` is the one writer of the Codex, opencode and Gemini homes. Run it after changing anything here, in the rulesync source, or in `~/.claude/skills` (`codex-sync` is an alias; the post-commit hook runs it for a commit in the main checkout that changes this script, never in a worktree).
 
 ## What each tool gets
 

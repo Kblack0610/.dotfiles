@@ -66,7 +66,7 @@ const board = (o = {}) => ({
   grafana: "https://grafana.example/d/kb-agents-overview", burn: burn(), ...o,
 });
 const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("renderCosts()"); return box.innerHTML; };
-const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) ? { dataset: attrs } : null });
+const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) || (sel === "[data-ssort]" && "ssort" in attrs) ? { dataset: attrs } : null });
 
 test("the model cut draws the server's columns, order and sort, with its evaluation", () => {
   const h = show(board());
@@ -163,4 +163,60 @@ test("an account claude-acct could not read is named, and no data says so", () =
   assert.match(h, /<td>old<\/td><td colspan="9" class="bad">usage unreadable<\/td>/);
   assert.match(h, /<td>new<\/td><td colspan="9" class="muted">idle, token refreshes on launch<\/td>/);
   assert.match(show(board({ burn: burn({ accounts: [] }) })), /<div class="panel muted">no data from claude-acct<\/div>/);
+});
+
+// hub_core::sections::Block as serialized: All PRs, then the rows as printed cells.
+const SEC_KEYS = ["section", "prs", "first_try", "reds_per_pr", "gate_min_per_pr", "gate_h", "green_lost", "cost_per_pr", "tokens_per_pr", "work_min_per_pr"];
+const sections = (sort = null) => ({
+  days: 7, head: "598 PRs in 7d, 52% first try, 145 gate min per PR, 116 greens lost", columns: SEC_KEYS, headers: ["section", "PRs", "first try", "gate reds/PR", "gate min/PR", "gate h", "greens lost", "cost/PR", "tokens/PR", "work min/PR"],
+  all: ["All PRs", "598", "52%", "0.98", "145", "1109", "116", "$7.33", "14M", "34"],
+  rows: [["Assets/Playground/Tests", "417", "48%", "1.07", "156", "1035", "107", "$6.96", "13M", "36"], ["docs", "472", "45%", "1.13", "163", "1002", "103", "-", "-", "-"]],
+  notes: ["A PR counts in every section it touches, so the rows add up to more than All PRs.", "Cost, tokens and work min cover only the PRs a session claims (339 of 598 in All PRs)."],
+  table: { ...board().table, total: 2, shown: 2, columns: SEC_KEYS.map((k) => (k === sort ? col(k, "desc", [k, "asc"]) : col(k, null, [k, "desc"]))) },
+});
+
+test("the Sections block is folded to its headline, with All PRs on top and both caveats", () => {
+  const h = show(board({ sections: sections() }));
+  assert.match(h, /<details class="csec" data-k="sections" id="sec-sections"><summary><h2 class="sec">Sections <span class="muted">598 PRs in 7d, 52% first try/, "folded, headline in the summary");
+  for (const k of ["section", "PRs", "first try", "gate reds/PR", "gate min/PR", "gate h", "greens lost", "cost/PR", "tokens/PR", "work min/PR"]) assert.match(h, new RegExp(`title="sort by ${k.replace("/", "\\/")}"`), `header ${k}`);
+  assert.match(h, /data-ssort="prs" data-sdir="desc"/, "its headers sort apart from the main table's");
+  assert.ok(h.indexOf("All PRs</td>") < h.indexOf("Assets/Playground/Tests</td>"), "All PRs is first");
+  assert.ok(h.indexOf("Assets/Playground/Tests</td>") < h.indexOf("docs</td>"), "the server's order is kept");
+  assert.match(h, /tr class="allrow"/);
+  assert.match(h, /A PR counts in every section it touches[\s\S]*only the PRs a session claims \(339 of 598/);
+  assert.match(h, /<td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><\/tr>/, "no claimed session is a dash");
+});
+
+test("a header click sorts the Sections block both ways without touching the main table", async () => {
+  asked = [];
+  body = board({ sections: sections() });
+  run("st.tab = 'costs'; st.views.costs = 'q=harness%3Acodex&sort=cost'");
+  on.click({ type: "click", target: target({ ssort: "gate_h", sdir: "desc" }) });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&ssort=gate_h");
+  on.click({ type: "click", target: target({ ssort: "gate_h", sdir: "asc" }) });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&ssort=gate_h&sdir=asc");
+  on.click({ type: "click", target: target({ ssort: "", sdir: "desc" }) });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost", "the third click is the default order");
+});
+
+test("no Sections data draws no block", () => {
+  assert.doesNotMatch(show(board()), /sec-sections/);
+  assert.doesNotMatch(show(board({ sections: { days: 7, head: "", columns: SEC_KEYS, headers: [], all: [], rows: [], notes: [], table: null } })), /sec-sections/);
+});
+
+test("a Sections fold the reader opened stays open through the repaint a sort click causes", () => {
+  run("st.tab = 'costs'");
+  Object.assign(cost, { open: {} });
+  const d = board({ sections: sections() });
+  assert.doesNotMatch(show(d), /id="sec-sections" open/, "starts folded");
+  box.querySelectorAll = () => [{ dataset: { k: "sections" }, open: true }];
+  run("renderCosts()");
+  assert.match(box.innerHTML, /id="sec-sections" open/, "the reader's open survives the repaint");
+  box.querySelectorAll = () => [{ dataset: { k: "sections" }, open: false }];
+  run("renderCosts()");
+  assert.doesNotMatch(box.innerHTML, /id="sec-sections" open/, "and so does a fold they closed");
+  box.querySelectorAll = () => [];
 });
