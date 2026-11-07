@@ -1373,7 +1373,7 @@ headless_launches() {
     [ -d "$d" ] || continue
     (cd "$d" && git grep --no-index --exclude-standard -nIiE \
       '\b(claude|claude_bin)\b[^|#]* (-p|--print)( |$|")|\bopencode run\b|\b(codex|codex_bin)\b[^|#]* exec( |$|")|[A-Za-z0-9_}]/(v1/)?chat/completions|[A-Za-z0-9_}]/v1/messages\b' \
-      -- . ':!*.md' ':!tests/**' ':!**/tests/**') \
+      -- . ':!*.md' ':!*.yaml' ':!*.yml' ':!tests/**' ':!**/tests/**') \
       | sed "s|^|${d%/}/|"
   done | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|echo )' | grep -v '/agent-run/harnesses/'
 }
