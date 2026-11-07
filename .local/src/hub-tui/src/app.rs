@@ -66,11 +66,24 @@ pub enum Tab {
 }
 
 impl Tab {
-    /// hub-core's layout order; digit N opens `ALL[N - 1]` (`tabs_are_the_layout` checks).
+    /// hub-core's layout order, every page the TUI can show (`tabs_are_the_layout` checks).
     pub const ALL: [Tab; 10] = [
         Tab::Home,
         // The daily note; `o` shows the outbox under it (`hub --tab outbox` opens it there).
         Tab::Daily,
+        Tab::Queue,
+        Tab::Projects,
+        Tab::Sessions,
+        Tab::Infra,
+        Tab::Log,
+        Tab::Fleet,
+        Tab::Schedules,
+        Tab::Costs,
+    ];
+    /// The tabs on the bar, in `ALL`'s order; digit N opens `SHOWN[N - 1]`. Daily is left off
+    /// (asked 2026-11-06): agent-web keeps it, and `hub --tab daily` still opens it here.
+    pub const SHOWN: [Tab; 9] = [
+        Tab::Home,
         Tab::Queue,
         Tab::Projects,
         Tab::Sessions,
@@ -105,17 +118,20 @@ impl Tab {
         by_title(s).or_else(|| hub_core::layout::resolve(s).and_then(|t| by_title(t.title)))
     }
     fn index(self) -> usize {
-        Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
+        Tab::SHOWN.iter().position(|t| *t == self).unwrap_or(0)
     }
-    /// The digit that opens this tab, as the tab bar shows it.
-    /// The number row's order: 1 to 9, then 0 for the tenth.
+    /// The digit that opens this tab, as the tab bar shows it; a tab off the bar has none.
     fn digit(self) -> char {
-        char::from_digit((self.index() as u32 + 1) % 10, 10).unwrap_or(' ')
+        Tab::SHOWN
+            .iter()
+            .position(|t| *t == self)
+            .and_then(|i| char::from_digit(i as u32 + 1, 10))
+            .unwrap_or(' ')
     }
-    /// The tab a digit opens, 0 the tenth.
+    /// The tab a digit opens, 1 to 9 along the bar.
     fn by_digit(c: char) -> Option<Tab> {
         let n = c.to_digit(10)? as usize;
-        Tab::ALL.get((n + 9) % 10).copied()
+        Tab::SHOWN.get(n.checked_sub(1)?).copied()
     }
     /// The Grafana dashboard that keeps this page's trends; the file-fed pages have none.
     fn dashboard(self) -> Option<&'static str> {
@@ -1520,7 +1536,7 @@ impl App {
             return;
         }
         let n = self.page.max(1);
-        let tabs = Tab::ALL.len();
+        let tabs = Tab::SHOWN.len();
         match k.code {
             KeyCode::Char('q') => self.quit = true,
             // Every tab's own Esc (a pane, filter, prompt or table) ran above and kept the key.
@@ -1531,8 +1547,8 @@ impl App {
                     self.go(t);
                 }
             }
-            KeyCode::Tab => self.go(Tab::ALL[(self.tab.index() + 1) % tabs]),
-            KeyCode::BackTab => self.go(Tab::ALL[(self.tab.index() + tabs - 1) % tabs]),
+            KeyCode::Tab => self.go(Tab::SHOWN[(self.tab.index() + 1) % tabs]),
+            KeyCode::BackTab => self.go(Tab::SHOWN[(self.tab.index() + tabs - 1) % tabs]),
             KeyCode::Char('r') => {
                 self.read_infra();
                 self.read_jobs();
@@ -2464,10 +2480,10 @@ impl App {
     fn tab_bar(&self, w: usize) -> Line<'static> {
         let mut s = vec![Span::styled(" HUB ", self.p.head())];
         // Too narrow for every title, the tabs not shown keep their digit, so none is cut off.
-        let full: usize = Tab::ALL.iter().map(|t| t.title().len() + 4).sum();
+        let full: usize = Tab::SHOWN.iter().map(|t| t.title().len() + 4).sum();
         let tight = " HUB ".len() + full > w;
-        for t in Tab::ALL.iter() {
-            // A tab with no digit yet (Daily) shows its title alone.
+        for t in Tab::SHOWN.iter() {
+            // A tab with no digit shows its title alone.
             let label = match t.digit() {
                 ' ' => format!(" {} ", t.title()),
                 d if tight && *t != self.tab => format!(" {d} "),
@@ -3448,7 +3464,7 @@ mod tests {
         a.controls.set(crate::controls::tests::fixture());
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[0].contains("5 Sessions"), "{s}");
+        assert!(lines[0].contains("4 Sessions"), "{s}");
         assert!(lines[1].contains("Reading the board files..."), "{s}");
         assert!(lines[2].starts_with("all 2  running"), "{s}");
         assert!(
@@ -3839,7 +3855,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let lines: Vec<&str> = s.lines().collect();
         assert!(
-            lines[0].contains("1 Home  2 Daily  3 Queue  4 Projects  5 Sessions  6 Infra"),
+            lines[0].contains("1 Home  2 Queue  3 Projects  4 Sessions  5 Infra"),
             "{s}"
         );
         assert!(
@@ -3853,7 +3869,7 @@ mod tests {
         );
         assert!(s.contains("RUNNING (1)"), "{s}");
 
-        a.handle(key('3'));
+        a.handle(key('2'));
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
@@ -3908,7 +3924,7 @@ mod tests {
         a.runner = fake.clone();
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         a.handle(Msg::QueueFiles);
-        a.handle(key('3'));
+        a.handle(key('2'));
         // Both workers reply when their read ends: wait for the two messages, not a timer.
         let (mut queue, mut cands) = (false, false);
         while !(queue && cands) {
@@ -3997,7 +4013,7 @@ mod tests {
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
-        a.handle(key('4'));
+        a.handle(key('3'));
         settle(&mut a, &rx);
         a.handle(Msg::Tasks(Box::new(Ok(crate::tasktab::tests::fixture()))));
         let mut l = loaded();
@@ -4036,13 +4052,13 @@ mod tests {
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
         assert_eq!(Tab::parse("board"), Some(Tab::Projects), "board is retired");
-        // Projects is the fourth tab, so 4 opens it.
-        a.handle(key('4'));
+        // Projects is the third tab on the bar, so 3 opens it.
+        a.handle(key('3'));
         assert_eq!(a.tab, Tab::Projects);
         let s = screen(&mut a, 140, 30);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("4 Projects  5 Sessions") && bar.contains("8 Fleet"),
+            bar.contains("3 Projects  4 Sessions") && bar.contains("7 Fleet"),
             "{s}"
         );
         assert!(s.contains("Reading notes projects..."), "{s}");
@@ -4347,7 +4363,7 @@ mod tests {
         let s = screen(&mut a, 120, 40);
         let first = s.lines().next().unwrap();
         assert!(
-            first.contains("1 Home") && first.contains("6 Infra") && first.contains(" RED "),
+            first.contains("1 Home") && first.contains("5 Infra") && first.contains(" RED "),
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
@@ -4381,11 +4397,17 @@ mod tests {
         let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
         let layout: Vec<&str> = hub_core::layout::TABS.iter().map(|t| t.title).collect();
         assert_eq!(titles, layout);
-        for (i, t) in Tab::ALL.iter().enumerate() {
-            let d = char::from_digit((i as u32 + 1) % 10, 10).unwrap();
+        // The bar is the layout less Daily, which only agent-web shows; digits 1 to 9 follow it.
+        let shown: Vec<&str> = Tab::SHOWN.iter().map(|t| t.title()).collect();
+        let bar: Vec<&str> = layout.iter().copied().filter(|t| *t != "Daily").collect();
+        assert_eq!(shown, bar);
+        for (i, t) in Tab::SHOWN.iter().enumerate() {
+            let d = char::from_digit(i as u32 + 1, 10).unwrap();
             assert_eq!((t.digit(), Tab::by_digit(d)), (d, Some(*t)));
         }
-        assert_eq!(Tab::Costs.digit(), '0');
+        assert_eq!((Tab::Costs.digit(), Tab::by_digit('0')), ('9', None));
+        assert_eq!(Tab::Daily.digit(), ' ');
+        assert_eq!(Tab::by_digit('2'), Some(Tab::Queue));
     }
 
     #[test]
@@ -4553,7 +4575,7 @@ mod tests {
         assert!(screen(&mut a, 120, 10).contains("Reading the fleet..."));
         a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
         let s = screen(&mut a, 160, 40);
-        assert!(s.lines().next().unwrap().contains("8 Fleet"), "{s}");
+        assert!(s.lines().next().unwrap().contains("7 Fleet"), "{s}");
         for want in ["FLEET", "TIER", "dotfiles-agent-11", "CLAUDE ACCOUNTS"] {
             assert!(s.contains(want), "{want} missing from\n{s}");
         }
@@ -4751,9 +4773,9 @@ mod tests {
         a.forecast_read.busy = true;
         a.handle(Msg::Tab(Tab::Fleet, None));
         assert_eq!(a.tab, Tab::Fleet);
-        a.handle(key('5'));
+        a.handle(key('4'));
         assert_eq!(a.tab, Tab::Sessions);
-        a.handle(key('7'));
+        a.handle(key('6'));
         assert_eq!(a.tab, Tab::Log);
     }
 
@@ -4857,11 +4879,11 @@ mod tests {
     #[test]
     fn infra_reads_health_red_machines_ci_jobs_cloud_governor_in_order() {
         let mut a = infra_app();
-        a.handle(key('6'));
+        a.handle(key('5'));
         let s = screen(&mut a, 160, 200);
         let bar = s.lines().next().unwrap();
         assert!(
-            bar.contains("5 Sessions  6 Infra") && !bar.contains("Machines"),
+            bar.contains("4 Sessions  5 Infra") && !bar.contains("Machines"),
             "{s}"
         );
         assert!(top(&s).starts_with("HEALTH"), "{s}");
@@ -4884,7 +4906,7 @@ mod tests {
     #[test]
     fn enter_opens_the_jobs_table_and_esc_comes_back() {
         let mut a = infra_app();
-        a.handle(key('6'));
+        a.handle(key('5'));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         assert!(a.infra_jobs);
         let s = screen(&mut a, 120, 20);
@@ -4983,7 +5005,7 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(
-            bar.starts_with(" HUB  1  2  3  4  5  6  7  8  9 Schedules "),
+            bar.starts_with(" HUB  1  2  3  4  5  6  7  8 Schedules  9 "),
             "{bar:?}"
         );
         let wide: String = a
@@ -4999,14 +5021,14 @@ mod tests {
     fn number_keys_switch_pages_and_q_quits() {
         let mut a = app(Tab::Home);
         let key = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
-        a.handle(key('6'));
+        a.handle(key('5'));
         assert_eq!((a.tab, a.seek), (Tab::Infra, None));
-        a.handle(key('7'));
+        a.handle(key('6'));
         assert_eq!(a.tab, Tab::Log);
         a.costs_read.busy = true;
-        a.handle(key('0'));
-        assert_eq!(a.tab, Tab::Costs, "0 opens the tenth tab");
-        a.handle(key('7'));
+        a.handle(key('9'));
+        assert_eq!(a.tab, Tab::Costs, "9 opens the ninth tab");
+        a.handle(key('6'));
         a.fleet_read.busy = true;
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Tab))));
         assert_eq!(a.tab, Tab::Fleet);

@@ -954,8 +954,8 @@ const RETIRED_TAGS: &[&str] = &["oneshot", "ci", "ai", "high-priority"];
 /// THE list of row kinds: `--stats --json` counts by it and `fleet-dispatch`'s kinds.json is
 /// checked against it. A bug is a `fix` row; its severity is the row's priority tag.
 pub(crate) const ROW_TYPES: &[&str] = &[
-    "feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "research", "design",
-    "market", "legal", "run", "decide", "check", "epic",
+    "feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "release", "research",
+    "design", "market", "legal", "run", "decide", "check", "epic",
 ];
 
 /// The `by_kind` key of a row with no well-formed `type(area):` prefix.

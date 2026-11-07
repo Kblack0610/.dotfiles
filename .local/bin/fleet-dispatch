@@ -247,7 +247,7 @@ row_tier() {
 
 # The kind registry, kinds.json, is keyed by notes-cli's ROW_TYPES (a bats test pins the two): per
 # type its `rank` within a priority, the `label` why names, the `entry` skill a session starts on,
-# its autonomy `rung` (build, propose, human), its `exit` (pr, doc+ask), the `stages` it dispatches
+# its autonomy `rung` (build, propose, human), its `exit` (pr, doc+ask, proof), the `stages` it dispatches
 # at, `enabled`, an optional `off` list of projects, and `cleanup`: true when a row of that kind in a
 # DISPATCH_CLEANUP_PROJECTS project is cleanup, or an ERE its body must match too (cleanup_row). A
 # row with no type, or one the registry lacks, ranks 1, is not cleanup, dispatches and starts
@@ -1401,18 +1401,21 @@ item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty
 # item_brief <item json> [harness] -> the prompt a queue item's session starts on: plan mode gets
 # the task as typed, oneshot runs it through its kind's entry skill (kinds.json `entry`, by the
 # item's type or its title's prefix; /one-shot when the kind names none), --pr-only for a `night`
-# item. A headless harness (opencode, codex) has no slash commands, hooks or human at the pane, so
-# it reads the skill and closes differently.
+# item. A kind whose `exit` is doc+ask or proof opens no PR, so its brief ends on that close
+# instead of agent-land (doc_ask_brief, proof_brief). A headless harness (opencode, codex) has no
+# slash commands, hooks or human at the pane, so it reads the skill and closes differently.
 # A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief.
 item_brief() {
-  local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry=''
+  local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
   if [[ "$tags" == *" canary "* ]]; then jq -r .task <<<"$it"; return 0; fi
   [[ "$tags" == *" night "* ]] && pr_only=' --pr-only'
   load_kinds
   kind=$(jq -r '.type // empty' <<<"$it"); [ -n "$kind" ] || kind=$(row_kind "$(jq -r '.title // .task // ""' <<<"$it")")
-  [ -z "$kind" ] || entry=${KIND_ENTRY[$kind]:-}
+  [ -z "$kind" ] || { entry=${KIND_ENTRY[$kind]:-}; exit_=${KIND_EXIT[$kind]:-}; }
   entry=${entry:-/one-shot}
+  # A kind that opens no PR has no PR to stop at, and no tier-3 merge gate to name.
+  case "$exit_" in doc+ask | proof) nopr=1 pr_only='' ;; esac
   if headless "$harness"; then
     printf 'Read ~/.claude/skills/%s/SKILL.md and follow it%s for this task:\n' "${entry#/}" "${pr_only:+ with$pr_only}"
   elif [ "$mode" != plan ]; then
@@ -1421,11 +1424,15 @@ item_brief() {
   jq -r .task <<<"$it"
   echo
   [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
-  [[ "$tags" == *" red "* || -n "$pr_only" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Before agent-land, run the bats files the Stop hook picks for the files you changed and put the result in the PR body."
+  [[ "$tags" == *" red "* || -n "$pr_only" || -n "$nopr" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Before agent-land, run the bats files the Stop hook picks for the files you changed and put the result in the PR body."
   row=$(item_row "$it")
   key=$(cut -d$'\x1f' -f4 <<<"$row")
-  if [ -n "$kind" ] && [ "${KIND_EXIT[$kind]:-}" = doc+ask ]; then
+  if [ "$exit_" = doc+ask ]; then
     doc_ask_brief "$slug" "$kind" "$row" "$(jq -r .project <<<"$it")"
+    return
+  fi
+  if [ "$exit_" = proof ]; then
+    proof_brief "$slug" "$kind" "$row" "$(jq -r .project <<<"$it")" "$harness"
     return
   fi
   if [ -n "$row" ] && [ -n "$pr_only" ]; then
@@ -1443,12 +1450,35 @@ item_brief() {
     echo "Right after gh pr create, run: agent-queue set $slug pr=<owner/repo#N>. A run cut off with a PR open then waits for the human instead of reading failed."
     echo "Run agent-land in the foreground: a background command dies when this run exits."
     echo "Skip what this harness lacks (final-pass, wind-down) and say so in the PR body."
-    echo "If it needs a human, say why and stop: nobody watches this run, and it counts as failed."
+    no_human
     return
   fi
-  # A question blocks only the step that needs it. Reap moves the item to waiting/ once the session
-  # stops with its ask pending, so the session never moves it itself.
+  ask_rule
+}
+
+# ask_rule -- a question blocks only the step that needs it. Reap moves the item to waiting/ once the
+# session stops with its ask pending, so the session never moves it itself.
+# no_human -- the same for a headless harness, where nobody is at the pane to answer.
+no_human() { echo "If it needs a human, say why and stop: nobody watches this run, and it counts as failed."; }
+
+ask_rule() {
   echo "If a step needs a decision from the human, only that step is blocked, not the task: ask it here and file it with agent-ask post (your recommendation in --recommend), build the rest with that step switched off, and end your turn on the question only when nothing else is left, leaving this window open."
+}
+
+# proof_brief <slug> <kind> <item_row> <project> <harness> -- how a proof kind (kinds.json `exit`:
+# release) closes: the live proof its entry skill names, recorded on the item, its row closed on that
+# proof, never a PR or agent-land. fleet-sessions reads the session DONE once the item moves on; a
+# session gone before the close is settled failed and its row stays started, for a human to look.
+proof_brief() {
+  local slug="$1" kind="$2" prof project lane key flag='' pf='' wd=''
+  IFS=$'\x1f' read -r prof project lane key <<<"$3"
+  project=${project:-$4}
+  [ "${lane:-agent}" = agent ] && flag=' --agent'
+  [ -z "$prof" ] || pf=" --profile $prof"
+  echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, a $kind row: it ends on the live proof its skill names, never a PR or agent-land."
+  headless "$5" || wd='; then /wind-down auto'
+  echo "Close in one turn: agent-queue set $slug note=\"<proof>\"${key:+; notes$pf ptask $project$flag done \"$key\" --proof \"<proof>\"}; agent-queue move $slug done --status ok$wd."
+  if headless "$5"; then no_human; else ask_rule; fi
 }
 
 # doc_ask_brief <slug> <kind> <item_row> <project> -- how a doc+ask kind (kinds.json `exit`, the
