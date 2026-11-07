@@ -96,6 +96,7 @@ case "$verb" in
   capture-pane) cat "$FIX/screen" 2>/dev/null; exit 0 ;;
   display-message)
     if [ "$last" = '#{pane_in_mode}' ]; then [ -f "$FIX/mode" ] && echo 1 || echo 0; fi
+    if [ "$last" = '#{pane_dead}' ]; then [ -f "$FIX/pane_dead" ] && echo 1 || echo 0; fi
     if [ "$last" = '#{session_name}' ]; then
       for f in "$FIX/panes.$server".*; do
         [ -f "$f" ] && grep -q "^$target " "$f" && { echo "${f##*/panes.$server.}"; exit 0; }
@@ -715,6 +716,29 @@ trust_prompt() {
   run tmux_calls
   refute_output --partial '--resume'
   refute_output --partial 'respawn-pane'
+}
+
+@test "unpark drops a ledger whose worktree and tmux session are both gone, and --all goes on past it" {
+  mkdir -p "$HOME/.agent/parked"
+  printf '%s\n' session=ghost server=lab pane=%1 direct=0 pid=1 session_id=sid-9 "cwd=$HOME/nowhere" status=idle why=park 'resume=claude --resume sid-9' > "$(PARKED_LEDGER ghost)"
+  run "$ACCT" unpark --all
+  assert_success
+  assert_output --partial "its worktree $HOME/nowhere is gone, so session sid-9 cannot resume; dropped $(PARKED_LEDGER ghost) (it was: claude --resume sid-9)"
+  [ ! -e "$(PARKED_LEDGER ghost)" ]
+  assert_called 'agent-notify -p low -t park: ghost dropped: worktree '
+}
+
+@test "unpark of a worktree-gone direct pane kills the dead held-open pane" {
+  session lab agent-2 %7 200 200 idle ""
+  run "$ACCT" park agent-2 --server lab
+  assert_success
+  rmdir "$HOME/wt"
+  touch "$FIX/pane_dead"
+  run "$ACCT" unpark agent-2
+  assert_success
+  run tmux_calls
+  assert_line 'tmux -L lab kill-pane -t %7'
+  [ ! -e "$(PARKED_LEDGER agent-2)" ]
 }
 
 @test "unpark --all resumes every parked session, and says so when none is" {

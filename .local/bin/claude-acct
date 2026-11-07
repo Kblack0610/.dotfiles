@@ -1117,6 +1117,21 @@ unpark_ledger() {
     from=$(ledger_get "$file" from); status=$(ledger_get "$file" status); why=$(ledger_get "$file" why)
     base=$(ledger_get "$file" resume)
     [[ -n "$server" && -n "$pane" && -n "$sid" && -n "$cwd" && -n "$base" ]] || { refuse "$file is missing a field"; return; }
+    # claude finds a session by its folder, so with the worktree gone nothing can resume it; the
+    # ledger would only fail every later unpark (and unpark --all). Checked before tmux, since
+    # the worktree and its tmux session usually go together (wt done). The page and the
+    # message carry the session id and resume command, so an unmounted folder is not a loss.
+    if [[ ! -d "$cwd" ]]; then
+        if [[ "$direct" == 1 ]] && tmux -L "$server" has-session -t "=$session" 2>/dev/null &&
+            [[ "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" == 1 ]]; then
+            tmux -L "$server" kill-pane -t "$pane"
+        fi
+        rm -f "$file"
+        echo "claude-acct: $verb $what: its worktree $cwd is gone, so session $sid cannot resume; dropped $file (it was: $base)" >&2
+        record "$what" "dropped: worktree $cwd is gone; session $sid, $base"
+        [[ "$verb" == move ]] && return 1
+        return 0
+    fi
     if (($# > 2)); then
         to="$3" name="$4" note="$5"
     elif b=$(best) && [[ -n "$b" ]]; then
@@ -1131,14 +1146,6 @@ unpark_ledger() {
     scope=""; [[ "$what" == *:* ]] && scope="$pane"
     [[ -z "$(find_claude "$server" "$session" "" "$scope")" ]] ||
         { refuse "a claude is already live in ${scope:-its panes}; delete $file if it is this session"; return; }
-    # claude finds a session by its folder, so with the worktree gone nothing can resume it; the
-    # ledger would only fail every later unpark (and unpark --all) after a typed cd and a timeout.
-    if [[ ! -d "$cwd" ]]; then
-        rm -f "$file"
-        echo "claude-acct: $verb $what: its worktree $cwd is gone, so session $sid cannot resume; dropped $file" >&2
-        record "$what" "dropped: worktree $cwd is gone"
-        return 0
-    fi
     cmd=$(resume_cmd "$direct" "$cwd" "$to" "$base" "$(resume_prompt "${why:-park}" "$(name_of "$from")" "$name" "$status")")
 
     cmd_link
