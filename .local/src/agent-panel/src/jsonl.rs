@@ -713,12 +713,12 @@ fn last_usage(text: &str) -> (u64, String) {
 }
 
 /// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), else the
-/// `~/.claude/plans/*.md` name the session's own turns (its text and tool calls) name most.
-/// Nothing else in the transcript is the session's word: the SessionStart preflight (hook
-/// attachments) lists other sessions' plans, and a prompt can be a pasted screen or a
-/// shepherd nudge quoting another session's plan (2026-10-28, dotfiles-4c read as the
-/// day-log plan). Only before the session's first reply does its prompt decide, since a
-/// plan handed in by prompt is all a fresh session has; once it works the plan, it reads it.
+/// plan the session last wrote (Write, Edit, MultiEdit), else, until its first reply, the
+/// `~/.claude/plans/*.md` its prompt named most, since a plan handed in is all a fresh session
+/// has; once it works one, it writes it. A plan the session only named (read, grepped, listed, quoted) is
+/// not its plan, and nor is one in a hook attachment (the preflight lists other sessions'
+/// plans) or a later prompt (a pasted screen, a shepherd nudge, 2026-10-28). dotfiles-c2 grepped
+/// another session's finished plan, took it, and was told to wind down mid-talk (2026-11-03).
 fn plan_file(text: &str) -> String {
     const KEY: &str = "\"planFilePath\":\"";
     if let Some(i) = text.rfind(KEY) {
@@ -727,38 +727,91 @@ fn plan_file(text: &str) -> String {
             return rest[..end].to_string();
         }
     }
+    let plans = crate::session::home().join(".claude/plans");
+    if let Some(name) = plans_written(text).pop() {
+        return plans.join(name).to_string_lossy().into_owned();
+    }
     const DIR: &str = "/.claude/plans/";
     const ASSISTANT: &str = "\"type\":\"assistant\"";
-    let mut own: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut prompt = own.clone();
-    let mut replied = false;
+    let mut prompt = std::collections::HashMap::new();
     for line in text.lines() {
-        let named = line.contains(DIR);
-        if !named && (replied || !line.contains(ASSISTANT)) {
+        if !line.contains(DIR) && !line.contains(ASSISTANT) {
             continue;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         if own_turn(&v) {
-            replied = true;
-            if named {
-                count_plans(&v.pointer("/message/content").map(Value::to_string).unwrap_or_default(), &mut own);
-            }
-        } else if named
-            && v.get("type").and_then(Value::as_str) == Some("user")
-            && v.get("isMeta").and_then(Value::as_bool) != Some(true)
-        {
+            return String::new();
+        }
+        if v.get("type").and_then(Value::as_str) == Some("user") && v.get("isMeta").and_then(Value::as_bool) != Some(true) {
             // A typed prompt is a string; a tool result is an array, and is not the prompt.
             if let Some(s) = v.pointer("/message/content").and_then(Value::as_str) {
                 count_plans(s, &mut prompt);
             }
         }
     }
-    let counts = if replied { own } else { prompt };
-    counts
+    prompt
         .into_iter()
         .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
-        .map(|(name, _)| crate::session::home().join(".claude/plans").join(name).to_string_lossy().into_owned())
+        .map(|(name, _)| plans.join(name).to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// The plans the session's own tool calls wrote, oldest first: an Edit, Write or MultiEdit
+/// file_path, or a Bash command that writes one (see `bash_plan_writes`).
+fn plans_written(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for v in text
+        .lines()
+        .filter(|l| l.contains("\"tool_use\"") && l.contains("/plans/"))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(own_turn)
+    {
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { continue };
+        for c in blocks.iter().filter(|c| c.get("type").and_then(Value::as_str) == Some("tool_use")) {
+            let input = |k: &str| c.pointer(&format!("/input/{k}")).and_then(Value::as_str).unwrap_or("");
+            match c.get("name").and_then(Value::as_str).unwrap_or("") {
+                "Edit" | "Write" | "MultiEdit" => out.extend(plan_name(input("file_path")).map(str::to_string)),
+                "Bash" => out.extend(bash_plan_writes(input("command"))),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// The plans a shell command writes: the target of a `>` or `>>` redirect, of `tee` or
+/// `sed -i`, or the `--plan` that agent-land ticks. Reading, grepping or listing one is not.
+fn bash_plan_writes(cmd: &str) -> Vec<String> {
+    const STOP: &[char] = &[' ', '\t', '\n', '\'', '"', '>', '=', '(', '<'];
+    let mut out = Vec::new();
+    for (i, _) in cmd.match_indices("/plans/") {
+        let start = cmd[..i].rfind(STOP).map_or(0, |s| s + 1);
+        let end = cmd[i..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '~' | '$' | '{' | '}')))
+            .map_or(cmd.len(), |e| i + e);
+        let Some(name) = plan_name(&cmd[start..end]) else { continue };
+        let before = cmd[..start].trim_end_matches(['\'', '"', ' ', '\t']);
+        let seg = before.rsplit(['|', ';', '&', '\n']).next().unwrap_or("").trim_start();
+        let words: Vec<&str> = seg.split_whitespace().collect();
+        if before.ends_with('>')
+            || before.ends_with("--plan")
+            || before.ends_with("--plan=")
+            || words.first() == Some(&"tee")
+            || (words.first() == Some(&"sed") && words.iter().any(|w| w.starts_with("-i")))
+        {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// The `<name>.md` of a path in a Claude plans dir (`~/.claude/plans`, or an account's
+/// `~/.claude-<acct>/plans`, a link to it), else None.
+fn plan_name(path: &str) -> Option<&str> {
+    let (dir, name) = path.rsplit_once('/')?;
+    let (config, plans) = dir.rsplit_once('/')?;
+    let config = config.rsplit('/').next()?;
+    (plans == "plans" && config.starts_with(".claude") && name.len() > 3 && name.ends_with(".md")).then_some(name)
 }
 
 /// Count each `~/.claude/plans/<name>.md` that `text` names into `counts`.
@@ -1561,9 +1614,39 @@ mod tests {
         let p = tmpfile("preflight", &[
             preflight,
             r#"{"type":"user","isMeta":true,"message":{"content":"<system-reminder>~/.claude/plans/theirs.md</system-reminder>"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/h/.claude/plans/mine.md"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/h/.claude/plans/mine.md","content":"Phases"}}]}}"#,
             r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"see /h/.claude/plans/theirs.md"}]}}"#,
             r#"{"type":"api-request-blob","message":"~/.claude/plans/theirs.md ~/.claude/plans/theirs.md"}"#,
+        ]);
+        assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
+        fs::remove_file(&p).ok();
+
+        // 2026-11-03, dotfiles-c2: the human's session grepped, listed and read another
+        // session's finished plan; naming it in its own tool calls and text is not writing it.
+        let p = tmpfile("grepped", &[
+            r#"{"type":"user","message":{"content":"why did the probe stall?"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"grep -in probe ~/.claude/plans/theirs.md; ls ~/.claude/plans/theirs.md"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/h/.claude/plans/theirs.md"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"/h/.claude/plans/theirs.md has 12 phases"}]}}"#,
+        ]);
+        assert_eq!(fleet_info(&p).plan_file, "");
+        fs::remove_file(&p).ok();
+
+        // The plan it wrote last wins over one handed in by its prompt, and an account's plans
+        // dir (a link to ~/.claude/plans) is the same dir.
+        let p = tmpfile("wrote", &[
+            r#"{"type":"user","message":{"content":"finish ~/.claude/plans/handed.md"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/h/.claude/plans/handed.md","old_string":"","new_string":""}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/h/.claude-bnb/plans/mine.md","content":""}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/h/notes/plans/other.md","content":""}}]}}"#,
+        ]);
+        assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
+        fs::remove_file(&p).ok();
+
+        // A heredoc or redirect writes it, and agent-land --plan ticks it; cat and grep only read.
+        let p = tmpfile("bash-wrote", &[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat > ~/.claude/plans/mine.md <<'EOF'\nPhases\nEOF"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat ~/.claude/plans/theirs.md; grep -n x /h/.claude/plans/theirs.md"}}]}}"#,
         ]);
         assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
         fs::remove_file(&p).ok();
@@ -1584,6 +1667,25 @@ mod tests {
         ]);
         assert_eq!(fleet_info(&p).plan_file, "");
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn bash_plan_writes_are_redirects_tee_sed_and_agent_land() {
+        for (cmd, want) in [
+            ("cat > ~/.claude/plans/a.md <<'EOF'", vec!["a.md"]),
+            ("printf x >> \"$HOME/.claude/plans/a.md\"", vec!["a.md"]),
+            ("echo x | tee -a ~/.claude-bnb/plans/a.md", vec!["a.md"]),
+            ("sed -i 's/- \\[ \\]/- [x]/' ~/.claude/plans/a.md", vec!["a.md"]),
+            ("agent-land 12 --item x --plan ~/.claude/plans/a.md --phase y", vec!["a.md"]),
+            ("agent-queue add --plan=/h/.claude/plans/a.md", vec!["a.md"]),
+            ("cat ~/.claude/plans/a.md > /tmp/b.md", vec![]),
+            ("grep -n x ~/.claude/plans/a.md | sed -n 1p", vec![]),
+            ("ls -la ~/.claude/plans/a.md ~/.agent/plans/dotfiles/a.md", vec![]),
+            ("diff ~/.claude/plans/a.md ~/.claude/plans/b.md", vec![]),
+            ("cat > ~/notes/plans/a.md", vec![]),
+        ] {
+            assert_eq!(bash_plan_writes(cmd), want, "{cmd}");
+        }
     }
 
     #[test]
