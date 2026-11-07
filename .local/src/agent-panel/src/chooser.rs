@@ -439,7 +439,7 @@ pub fn run_list(json: bool, parked: bool) -> Result<()> {
     if gaps.is_empty() {
         return Ok(());
     }
-    std::io::Write::flush(&mut std::io::stdout())?;
+    let _ = std::io::Write::flush(&mut std::io::stdout()); // a reader gone (EPIPE) still gets the 3
     for g in &gaps {
         eprintln!("agent-panel: incomplete read: {g}");
     }

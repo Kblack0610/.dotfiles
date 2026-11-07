@@ -81,40 +81,56 @@ fn socket_dir() -> Option<PathBuf> {
     Some(PathBuf::from(base).join(format!("tmux-{uid}")))
 }
 
-/// Servers with a live process behind their socket, sorted. A socket file can outlive
-/// its server, so only ones that answer `has-session` count (same rule as
-/// panel-lib.sh `panel_live_servers`).
-pub fn servers() -> Vec<String> {
+/// Does this server answer `has-session`? Err when tmux could not even be run (a fork that
+/// failed under load), which says nothing about the server.
+fn answers(server: &str) -> Result<bool, String> {
+    tmux(Some(server))
+        .arg("has-session")
+        .output()
+        .map(|o| o.status.success())
+        .map_err(|e| format!("tmux -L {server} has-session: {e}"))
+}
+
+/// Servers with a live process behind their socket, sorted, and one line per thing that
+/// stopped it telling. A socket file can outlive its server, so only ones that answer
+/// `has-session` count (same rule as panel-lib.sh `panel_live_servers`); no socket dir is
+/// no tmux, not a gap.
+pub fn servers() -> (Vec<String>, Vec<String>) {
+    let (mut names, mut gaps) = (Vec::new(), Vec::new());
     let Some(dir) = socket_dir() else {
-        return Vec::new();
+        return (names, vec!["tmux socket dir: `id -u` failed".into()]);
     };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (names, gaps),
+        Err(e) => return (names, vec![format!("{}: {e}", dir.display())]),
     };
-    let mut names: Vec<String> = entries
+    for name in entries
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_socket()).unwrap_or(false))
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|name| {
-            tmux(Some(name))
-                .arg("has-session")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        })
-        .collect();
+    {
+        match answers(&name) {
+            Ok(true) => names.push(name),
+            Ok(false) => {}
+            Err(e) => gaps.push(e),
+        }
+    }
     names.sort();
-    names
+    (names, gaps)
 }
 
 /// All panes across every server, and one line per live server whose `list-panes` failed: its
 /// panes are missing, so a list built on this is not whole (ar-916). Empty, with no gap, when
 /// tmux isn't running.
 pub fn list_panes() -> (Vec<Pane>, Vec<String>) {
-    let (mut panes, mut gaps) = (Vec::new(), Vec::new());
-    for srv in servers() {
+    let (servers, mut gaps) = servers();
+    let mut panes = Vec::new();
+    for srv in servers {
         match list_server_panes(&srv) {
             Ok(p) => panes.extend(p),
+            // A server that exited since `servers` asked had no panes to miss.
+            Err(_) if answers(&srv) == Ok(false) => {}
             Err(e) => gaps.push(e),
         }
     }

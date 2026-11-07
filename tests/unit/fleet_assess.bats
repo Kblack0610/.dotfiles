@@ -527,6 +527,11 @@ fake_proc() {
   fake_proc 70 30 bash "$u/app.slice/agentctl@fleet-dispatch.service"
   run classify 70
   assert_output --regexp '^agentctl'
+  # a hybrid layout: only the v2 line names the unit
+  fake_proc 80 30 make
+  printf '1:name=systemd:%s\n0::%s\n' "$u/app.slice/other.service" "$u/session.slice/tmux-spawn-2.scope" > "$FLEET_PROC/80/cgroup"
+  run classify 80
+  assert_output --regexp '^orphan'
 }
 
 # rows reads ps and /proc; ps is stubbed with a table (pid ppid ni pcpu comm args) and

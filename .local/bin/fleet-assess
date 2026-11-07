@@ -118,7 +118,7 @@ classify() {
   local pid="$1" q="$1" i comm class="" pane="" cg unit="" proc="${FLEET_PROC:-/proc}"
   cg="$(cat "$proc/$pid/cgroup" 2>/dev/null)"
   case "$cg" in *agentctl@*) class=agentctl ;; esac
-  case "${cg##*/}" in *.service) unit="${cg##*/}" ;; esac
+  unit="$(sed -n 's|^0::.*/||p' <<<"$cg")"; case "$unit" in *.service) ;; *) unit="" ;; esac
   for i in $(seq 1 12); do
     # ppid counted after the last ")": comm itself may hold spaces or parens.
     q="$(sed 's/.*) //' "$proc/$q/stat" 2>/dev/null | cut -d' ' -f2)"
