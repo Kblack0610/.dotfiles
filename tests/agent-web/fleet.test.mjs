@@ -19,7 +19,7 @@ const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll:
 let logClick = null;
 const logBox = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") logClick = f; } });
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const parts = { "fleet-body": part(), "fleet-chips": part(), "fleet-facets": part(), "fleet-head": part(), "fleet-tail": part() };
+const parts = { "fleet-body": part(), "fleet-chips": part(), "fleet-facets": part(), "fleet-head": part() };
 const doc = { getElementById: (id) => (id === "fleet" ? box : id === "log-verdicts" ? logBox : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
 const ctx = vm.createContext({
   console,
@@ -32,7 +32,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) }),
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "board.js", "table.js", "jobs.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "board.js", "jobs.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
@@ -55,7 +55,7 @@ const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, 
     { id: "c", project: "ucp", question: "quarantine it?", type: "ci_capacity_ops", rule: "ci_capacity_ops", said: "would answer", judge: "a", reason: "rule says so", evidence: "", you: "b", score: "wrong", at: 1793942500 },
   ] };
 const data = {
-  at: 1793942659, errors: [], accounts: [], judge,
+  at: 1793942659, errors: [], judge,
   dispatch: { counts_24h: {}, counts_7d: {}, log_24h: {}, recent: [], partial: false },
   workers: [
     worker("ask-judge", {
@@ -93,22 +93,22 @@ test("Log lists every answer verdict with why and what you did, and a filter nar
 
 // The table: hub_core::fleet::who's rows, and the Summary hub_core::table sends beside them.
 const st = vm.runInContext("st", ctx);
-const wrow = (o) => ({ tier: 3, who: "dotfiles-agent-11", opens: "session", key: "lab/dotfiles-agent-11:1", state: "working", since: 1793942000, doing: "editing fleet.js", under: "dispatch dotfiles", project: "dotfiles", parent: "fleet-dispatch", kids: 0, ...o });
-const COLS = ["tier", "who", "state", "since", "doing", "under", "project"];
+const wrow = (o) => ({ tier: 3, kind: "session", who: "dotfiles-agent-11", opens: "session", key: "lab/dotfiles-agent-11:1", state: "working", since: 1793942000, for: "fleet tab plan", doing: "editing fleet.js", under: "dispatch dotfiles", project: "dotfiles", parent: "fleet-dispatch", kids: 0, ...o });
+const COLS = ["kind", "who", "state", "since", "for", "doing", "under", "project"];
 const table = (o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total: 4, shown: 4,
-  states: [{ name: "all", n: 4 }, { name: "failed", n: 1 }, { name: "working", n: 2 }],
+  states: [{ name: "all", n: 4 }, { name: "lead", n: 1 }, { name: "observe", n: 1 }, { name: "session", n: 2 }, { name: "failed", n: 1 }, { name: "working", n: 2 }],
   columns: COLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "tier", on: null, clear: "", values: [{ value: "1", n: 1, q: "tier:1" }] }],
+  facets: [{ key: "kind", on: null, clear: "", values: [{ value: "lead", n: 1, q: "kind:lead" }] }],
   ...o,
 });
 const people = [
-  wrow({ tier: 1, who: "fleet-dispatch", opens: "runner", key: "fleet-dispatch", state: "idle", doing: "next 14:00", under: "2 sessions", parent: null, kids: 2 }),
-  wrow({ tier: 2, who: "ask-judge", opens: "runner", key: "ask-judge", state: "failed", doing: "no gateway route", under: "called by dream", parent: null, project: "observe" }),
+  wrow({ tier: 1, kind: "lead", who: "fleet-dispatch", opens: "runner", key: "fleet-dispatch", state: "idle", for: "Starts a one-shot session per small agent row", doing: "next 14:00", under: "2 sessions", parent: null, kids: 2 }),
+  wrow({ tier: 2, kind: "observe", who: "ask-judge", opens: "runner", key: "ask-judge", state: "failed", for: "Answers asks it can", doing: "no gateway route (2 failed 24h)", under: "called by dream", parent: null, project: "" }),
   wrow({}),
   wrow({ who: "dotfiles-agent-12", key: "lab/dotfiles-agent-12:1", state: "needs you" }),
 ];
-const fleetData = { ...data, who: people, table: table(), hidden: 0 };
+const fleetData = { ...data, who: people, legend: ["lead runs or watches the sessions", "observe reports"], table: table(), hidden: 0 };
 
 test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Sessions record, a runner its page", () => {
   vm.runInContext("st", ctx).tab = "fleet";
@@ -116,7 +116,7 @@ test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Ses
   f.data = fleetData;
   ctx.renderFleet();
   const h = box.innerHTML;
-  assert.match(h, /<tr class="wr" data-href="#fleet\/fleet-dispatch"><td class="n"><button class="thsort" data-fold="fleet-dispatch" aria-expanded="true"[^>]*>v<\/button> 1<\/td>/);
+  assert.match(h, /<tr class="wr" data-href="#fleet\/fleet-dispatch"><td class="muted"><button class="thsort" data-fold="fleet-dispatch" aria-expanded="true"[^>]*>v<\/button> lead<\/td>/);
   assert.match(h, /<a href="#fleet\/ask-judge">ask-judge<\/a>/);
   assert.match(h, /<tr class="wr" data-href="#sessions\/lab%2Fdotfiles-agent-11%3A1">/);
   assert.match(h, /<td class="bad">failed<\/td>/);
@@ -143,7 +143,23 @@ test("the header draws every hub-core column and the bar is the shared one", () 
   assert.doesNotMatch(h, /\$ 24h/, "a runner's spend is on Costs");
   assert.match(h, /spend on <a href="#costs\?by=runner&w=24h">Costs<\/a>/);
   assert.match(h, /id="fleet-q" data-tsearch/);
-  assert.match(h, /<option value="tier:1">1 \(1\)<\/option>/);
+  assert.match(h, /<option value="kind:lead">lead \(1\)<\/option>/);
+});
+
+test("KIND and FOR say what each row is and why it is deployed, under the lanes.tsv legend", () => {
+  vm.runInContext("st", ctx).tab = "fleet";
+  vm.runInContext("fst", ctx).data = fleetData;
+  doc.activeElement = null;
+  ctx.renderFleet();
+  const h = box.innerHTML;
+  assert.match(h, /<div class="muted legend">lead runs or watches the sessions \| observe reports<\/div>/);
+  assert.match(h, /<td class="muted">observe<\/td><td><a href="#fleet\/ask-judge">ask-judge<\/a>/);
+  assert.match(h, /<td class="wrap">Starts a one-shot session per small agent row<\/td>/);
+  assert.match(h, /<td class="wrap">no gateway route \(2 failed 24h\)<\/td>/);
+  for (const k of ["lead", "observe", "session"]) assert.match(h, new RegExp(`data-ts="${k}">${k} <span class="n">`));
+  vm.runInContext("fst", ctx).data = { ...fleetData, legend: [] };
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<div class="muted legend">-<\/div>/, "no lanes.tsv reads as -");
 });
 
 test("a click on a row sets the hash, a click on a link or the fold button does not", () => {
@@ -181,8 +197,17 @@ test("typing repaints the rows and leaves the search box in place", () => {
   ctx.renderFleet();
   assert.equal(box.innerHTML, before, "the page around the box is not rebuilt");
   assert.match(parts["fleet-body"].innerHTML, /dotfiles-agent-12/);
-  assert.match(parts["fleet-tail"].innerHTML, /Claude accounts/);
   doc.activeElement = null;
+});
+
+test("the page is the one table: the accounts, tokens and Langfuse are Costs'", () => {
+  const f = vm.runInContext("fst", ctx);
+  f.data = { ...fleetData, tokens: { date: "2026-11-05" } };
+  doc.activeElement = null;
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /dotfiles-agent-12/, "the control: the table drew");
+  for (const id of ["sec-accounts", "sec-tokens", "sec-langfuse"]) assert.doesNotMatch(box.innerHTML, new RegExp(`id="${id}"`));
+  assert.doesNotMatch(box.innerHTML, /Claude accounts|Where the tokens go|What Langfuse sees/);
 });
 
 test("a search with no hit says so, and an unconfigured fleet says where runners are", () => {
@@ -291,74 +316,4 @@ test("a judge has no tile on the Fleet tab, and Log's verdict headers link to th
   ctx.renderLogVerdicts();
   assert.match(logBox.innerHTML, /<h3 class="sub">Dispatch judge <span/);
   st.tab = "fleet";
-});
-
-// Where the tokens go: hub_core::fleet::tokens's sums, folded while fresh.
-const tokenRow = (name, chars, share, other = false) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other });
-const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15, tools: [tokenRow("Bash", 331000000, 0.823), tokenRow("Other (22)", 10000000, 0.026, true)], commands: [tokenRow("sed", 89000000, 0.221)] });
-const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
-const tail = (t) => { const f = vm.runInContext("fst", ctx); f.open = {}; f.tokWin = "week"; return ctx.tokensSection({ tokens: t }); };
-
-test("the tokens section is folded while fresh, with the week on its head", () => {
-  const h = tail(tokens());
-  assert.match(h, /<details class="sec-d" data-k="tokens" id="sec-tokens"><summary>/);
-  assert.match(h, /Where the tokens go <span class="muted">7d 18\.0B, tool output 15%/);
-  assert.match(h, /by tool/);
-  assert.match(h, /by Bash command/);
-  assert.match(h, /82\.3%/);
-  assert.match(h, /href="#costs\?by=tool&w=7d"/);
-});
-
-test("a named row takes its chart slot and Other its grey", () => {
-  const h = tail(tokens());
-  assert.match(h, /background:var\(--c1\)/);
-  assert.match(h, /background:var\(--c-other\)/);
-  assert.doesNotMatch(h, /background:var\(--c2\)/);
-});
-
-test("a stale snapshot opens the section with an amber head, until the human shuts it", () => {
-  const h = tail(tokens({ stale: true }));
-  assert.match(h, /id="sec-tokens" open>/);
-  assert.match(h, /class="warn">7d 18\.0B, tool output 15%, stale: newest snapshot 2026-11-05/);
-  vm.runInContext("fst", ctx).open["tokens-stale"] = false;
-  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
-});
-
-test("no snapshot is an amber head with nothing to open", () => {
-  const h = tail(null);
-  assert.match(h, /class="warn">no snapshot/);
-  assert.doesNotMatch(h, /<details/);
-});
-
-test("the window switch picks yesterday, and a partial window says so", () => {
-  const f = vm.runInContext("fst", ctx);
-  tail(tokens());
-  f.data = { ...data, table: table(), who: people, hidden: 0, errors: [], tokens: tokens({ day: { ...tokenSplit(3900000000), days: 1, partial: 1 } }) };
-  click({ target: { closest: (sel) => (sel === "[data-tokwin]" ? { dataset: { tokwin: "day" } } : null) } });
-  assert.equal(f.tokWin, "day");
-  const h = ctx.tokensSection(f.data);
-  assert.match(h, /yesterday: 3\.9B context/);
-  assert.match(h, /class="warn">, 1 of 1 partial/);
-  f.tokWin = "week";
-});
-
-test("a stale day names its date, not yesterday", () => {
-  const f = vm.runInContext("fst", ctx);
-  f.open = {};
-  f.tokWin = "day";
-  const h = ctx.tokensSection({ tokens: tokens({ stale: true }) });
-  assert.match(h, /2026-11-05: 3\.9B context/);
-  assert.doesNotMatch(h, /yesterday: /);
-  f.tokWin = "week";
-});
-
-test("the fold keeps what paint remembered, and going stale still opens it", () => {
-  const f = vm.runInContext("fst", ctx);
-  f.open = { tokens: true };
-  assert.match(ctx.tokensSection({ tokens: tokens() }), /id="sec-tokens" open>/);
-  f.open = { tokens: false };
-  assert.match(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /data-k="tokens-stale" id="sec-tokens" open>/);
-  f.open = { tokens: false, "tokens-stale": false };
-  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
-  f.open = {};
 });

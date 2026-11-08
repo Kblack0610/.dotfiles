@@ -46,7 +46,8 @@ Not for a spend alert (`sentinel`), a day cap you want lifted for an account (`f
 
 - `agentctl stop|restart <name>`; `start` and `restart` refuse `KIND=call` (its caller starts it).
 - `agentctl disable <name>` and `enable <name>` write `ENABLED` into the tracked conf and reload, so they dirty the private repo.
-- `agentctl pause [reason]` stops every oneshot from starting until `agentctl resume`. The `PAUSED` file is under `~/.local/state/agentctl/`.
+- `agentctl pause [reason]` stops every oneshot from starting until `agentctl resume`, except `CRITICAL=yes` ones (the RAM and disk reapers). The `PAUSED` file is under `~/.local/state/agentctl/`.
+- `agentctl liveness` exits 1 with one line per runner that is not running at its times (timer not armed, a fire with no run after it, STALLED or FAILED) and for a pause over a day; it is the `fleet-liveness` probe.
 - Every named model call is one line in `~/.local/state/agentctl/calls.jsonl`; budgets are computed from it. Defaults: $2 a call, $10 a day, 20 calls an hour.
 
 ## Do NOT

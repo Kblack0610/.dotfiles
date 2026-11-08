@@ -1,35 +1,27 @@
 "use strict";
-// The Fleet tab: who is working, on what, and can I afford it. One table (the shared one,
-// table.js) of every runner and live session by tier; a row opens its record, and a tier 1 row
-// folds the rows under it. Below it, who pays (Claude accounts) and where the tokens go (the
-// nightly snapshots, folded while they are fresh). The judges' verdict lists are
-// Log's Judges' verdicts section. From /api/fleet (hub-core `fleet`, the same reader as the hub's
+// The Fleet tab: who is working, on what, and why it is deployed. One table (the shared one,
+// table.js) of every runner and live session, its KIND (lead, a lane, session) explained by the
+// legend above it (lanes.tsv, read by hub-core); a row opens its record, and a lead row folds the
+// rows under it. Who pays, where the tokens go and what Langfuse sees are Costs' (costs.js). The judges'
+// verdict lists are Log's Judges' verdicts section. From /api/fleet (hub-core `fleet`, the same reader as the hub's
 // Fleet tab). `#fleet/<runner>` is one runner's page, read from /api/fleet/runner only when it
 // opens (hub-core `fleet::runner`).
 
 // Newest verdict keys and ask questions are cut to this many characters; the full text is the hover.
 const FLEET_CLIP = 70;
-// fold: the tier 1 rows the human closed, kept across refreshes; said: the answer judge's filter on Log;
-// open: the folded sections' state; tokWin: the tokens section's window.
-const fst = { data: null, err: null, fold: new Set(), said: "all", open: {}, tokWin: "week" };
+// fold: the lead rows the human closed, kept across refreshes; said: the answer judge's filter on Log.
+// A read also answers Log's verdicts and the open runner page.
+const fst = tblTab({
+  tab: "fleet", id: "fleet", api: "/api/fleet", hint: "search, or kind:session state:failed project:dotfiles -who:shepherd",
+  state: { fold: new Set(), said: "all" }, shown: () => st.tab === "fleet" && !st.arg,
+  params: (p, t) => { if (t.fold.size) p.set("fold", [...t.fold].join(",")); },
+  head: (t) => fleetHead(t.data), body: (t) => fleetBody(t.data),
+  after: () => { if (st.tab === "log") renderLogVerdicts(); else if (st.tab === "fleet" && st.arg) renderFleet(); },
+});
 
 // The open runner page: whose, what it read, and the run whose log is shown.
 const rst = { name: "", data: null, err: null, log: null, sel: "" };
 const runnerHref = (name) => "#fleet/" + encodeURIComponent(name);
-
-// The view keys of the URL plus the closed rows, as the API's query.
-function fleetParams() {
-  const p = tblParams(st.views.fleet);
-  if (fst.fold.size) p.set("fold", [...fst.fold].join(","));
-  const q = p.toString();
-  return q ? "?" + q : "";
-}
-
-const refreshFleet = coalesce(async () => {
-  try { fst.data = await api("/api/fleet" + fleetParams()); fst.err = null; } catch (e) { fst.err = e.message; }
-  if (st.tab === "fleet") renderFleet();
-  if (st.tab === "log") renderLogVerdicts();
-});
 
 const refreshRunner = coalesce(async () => {
   const name = st.arg;
@@ -38,31 +30,11 @@ const refreshRunner = coalesce(async () => {
   if (st.tab === "fleet" && st.arg === name) renderFleet();
 });
 
-// The accounts and the dollars are Prometheus, which pushes nothing, so the open tab re-reads on
-// Infra's cadence; a runner page re-reads its status the same way. The file parts also re-read
-// on their own events (onEvent).
-const pollFleet = poll("fleet", () => (st.arg ? refreshRunner() : refreshFleet()), INFRA_REFRESH_MS);
+// The rows re-read on their own events (onEvent); the open tab also re-reads on Infra's cadence,
+// so the ages and a runner page's status move with no event.
+const pollFleet = poll("fleet", () => (st.arg ? refreshRunner() : fst.refresh()), INFRA_REFRESH_MS);
 
 const cut = (s, n = FLEET_CLIP) => (s.length > n ? `<span title="${esc(s)}">${esc(s.slice(0, n - 2))}..</span>` : esc(s));
-
-// One row per Claude account, from claude-acct's textfile. The weekly percent is what stops work,
-// the 5h window what stops it for the next few hours;
-// dollars are the OTel list-price estimate, for scale.
-function accountsTable(inst) {
-  const by = {};
-  for (const s of inst.accounts || []) {
-    (by[s.labels.account] = by[s.labels.account] || {})[s.labels.__name__.replace("claude_account_", "")] = +s.value;
-  }
-  const names = Object.keys(by).sort();
-  if (!names.length) return `<div class="empty">no data</div>`;
-  return `<table class="tbl"><tr><th>account</th><th>week used</th><th class="n">used</th><th class="n">week gone</th><th>pace</th><th>runs out</th><th>resets</th><th class="n">5h</th><th>5h resets</th><th class="n">live</th><th class="n">24h</th></tr>${names.map((n) => {
-    const a = by[n];
-    if (a.read_ok === 0) return `<tr><td>${esc(n)}</td><td colspan="10" class="bad">usage unreadable</td></tr>`;
-    if (a.week_used_percent == null) return `<tr><td>${esc(n)}</td><td colspan="10" class="muted">idle, token refreshes on launch</td></tr>`;
-    const over = a.over_pace === 1;
-    return `<tr><td>${esc(n)}</td><td class="m">${meter(a.week_used_percent / 100, over ? "var(--b-stalled)" : "var(--c1)")}</td><td class="n">${Math.floor(a.week_used_percent)}%</td><td class="n">${Math.floor(a.week_gone_percent)}%</td><td>${over ? "over" : "under"}</td><td>${when(a.run_out_timestamp_seconds)}</td><td>${when(a.resets_timestamp_seconds)}</td><td class="n">${a.five_hour_percent == null ? "-" : Math.floor(a.five_hour_percent) + "%"}</td><td>${when(a.five_hour_resets_timestamp_seconds)}</td><td class="n">${a.live_sessions ?? "-"}</td><td class="n">${usd(a.cost_24h_usd)}</td></tr>`;
-  }).join("")}</table>`;
-}
 
 const okClass = (ok) => (ok === false ? "bad" : ok == null ? "warn" : "");
 
@@ -92,7 +64,7 @@ const callsTable = (recent) => `<table class="tbl"><tr><th class="n">when</th><t
   `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
 
 // The table's headers: hub_core::fleet::who::Who::COLUMNS (checked by assets.rs).
-const FLEET_COLS = { tier: ["tier", "n"], who: ["who"], state: ["state"], since: ["since", "n"], doing: ["doing now"], under: ["under it"], project: ["project"] };
+const FLEET_COLS = { kind: ["kind"], who: ["who"], state: ["state"], since: ["since", "n"], for: ["for"], doing: ["doing now"], under: ["under it"], project: ["project"] };
 const STATE_CLASS = { failed: "bad", held: "bad", "needs you": "warn", stalled: "warn", idle: "muted", off: "muted", chat: "muted", parked: "muted", landed: "muted" };
 // A runner opens its page, a session its record on the Sessions tab.
 const whoHref = (r) => (r.opens === "runner" ? runnerHref(r.key) : "#sessions/" + encodeURIComponent(r.key));
@@ -100,14 +72,14 @@ const whoHref = (r) => (r.opens === "runner" ? runnerHref(r.key) : "#sessions/" 
 function whoRow(r) {
   const shut = fst.fold.has(r.key);
   const fold = r.kids ? `<button class="thsort" data-fold="${esc(r.key)}" aria-expanded="${!shut}" title="${shut ? "unfold" : "fold"} the ${r.kids} rows under it">${shut ? "&gt;" : "v"}</button> ` : "";
-  return `<tr class="wr" data-href="${esc(whoHref(r))}"><td class="n">${fold}${r.tier}</td><td><a href="${esc(whoHref(r))}">${esc(r.who)}</a></td>` +
+  return `<tr class="wr" data-href="${esc(whoHref(r))}"><td class="muted">${fold}${esc(r.kind)}</td><td><a href="${esc(whoHref(r))}">${esc(r.who)}</a></td>` +
     `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
-    `<td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${esc(r.project)}</td></tr>`;
+    `<td class="wrap">${esc(r.for)}</td><td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${esc(r.project)}</td></tr>`;
 }
 
 function fleetBody(d) {
   const t = d.table;
-  const more = d.hidden ? `<div class="muted more">+ ${d.hidden} folded under a tier 1 row</div>` : "";
+  const more = d.hidden ? `<div class="muted more">+ ${d.hidden} folded under a lead row</div>` : "";
   return d.who.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, FLEET_COLS)}${d.who.map(whoRow).join("")}</table>${more}</div>`
     : `<div class="panel">${t.total ? "No runner or session matches." : "No runner configured in ~/.config/agentctl/agents."}</div>`;
@@ -115,40 +87,10 @@ function fleetBody(d) {
 
 function fleetHead(d) {
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
-  return `<div class="bhead"><span>fleet <span class="muted">who is working, on what, and can I afford it; ${d.table.shown} of ${d.table.total} rows, spend on <a href="#costs?by=runner&w=24h">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
+  return `<div class="bhead"><span>fleet <span class="muted">who is working, and on what; ${d.table.shown} of ${d.table.total} rows, accounts and spend on <a href="#costs?by=runner&w=24h">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
+    `<div class="muted legend">${esc((d.legend || []).join(" | ") || "-")}</div>` +
     (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
 }
-
-// One table of a tokens window; a named row takes its chart slot, Other its grey (rule 5).
-function tokensTable(title, rows) {
-  const row = (r, i) => `<tr><td>${esc(r.name)}</td><td class="n">${r.calls.toLocaleString()}</td><td class="n">${kfmt(r.chars)} ch</td>` +
-    `<td class="m">${meter(r.share, SLOTS[i] && !r.other ? SLOTS[i] : OTHER)}</td><td class="n">${(r.share * 100).toFixed(1)}%</td><td class="n">${kfmt(r.carried_tokens)}</td></tr>`;
-  return `<table class="tbl"><tr><th>${title}</th><th class="n">calls</th><th class="n">output</th><th>share</th><th class="n">%</th><th class="n">re-read</th></tr>${rows.map(row).join("")}</table>`;
-}
-
-const TOK_WINDOWS = { day: "yesterday", week: "7d" };
-
-// Where the tokens go: hub-core's `fleet::tokens` sums the snapshots; shut while fresh, open and
-// amber once stale (rule 4), which is its own fold key because paint remembers every fold it saw.
-// The dollars per tool are Costs' tool cut, so this links there.
-function tokensSection(d) {
-  const t = d.tokens;
-  if (!t) return `<h2 class="sec" id="sec-tokens">Where the tokens go <span class="warn">no snapshot in ~/.agent/token-usage</span></h2>`;
-  const w = t[fst.tokWin], key = t.stale ? "tokens-stale" : "tokens";
-  const open = fst.open[key] ?? t.stale;
-  const week = `7d ${kfmt(t.week.context)}, tool output ${pct(t.week.carried_share)}`;
-  const head = t.stale ? `<span class="warn">${week}, stale: newest snapshot ${esc(t.date)}</span>` : `<span class="muted">${week}</span>`;
-  const seg = `<div class="seg fseg"><span class="muted">window</span>` + Object.entries(TOK_WINDOWS).map(([k, l]) =>
-    `<button class="${k === fst.tokWin ? "on" : ""}" data-tokwin="${k}">${l}</button>`).join("") + `</div>`;
-  const partial = w.partial ? `<span class="warn">, ${w.partial} of ${w.days} partial</span>` : "";
-  return `<details class="sec-d" data-k="${key}" id="sec-tokens"${open ? " open" : ""}><summary><h2 class="sec">Where the tokens go ${head}</h2></summary>` +
-    `<div class="panel scroll">${seg}<div class="muted">${fst.tokWin === "day" && t.stale ? esc(t.date) : TOK_WINDOWS[fst.tokWin]}: ${kfmt(w.context)} context, ${kfmt(w.per_response)}/response, tool output carried ${pct(w.carried_share)} ` +
-    `(snapshot ${esc(t.date.slice(5))}, ${t.generated_at ? clock(t.generated_at * 1e3) : "-"}${partial})</div>` +
-    tokensTable("by tool", w.tools) + tokensTable("by Bash command", w.commands) +
-    `<div class="muted more">counted by claude-recall tool-output, nightly; dollars per tool on <a href="#costs?by=tool&w=7d">Costs</a></div></div></details>`;
-}
-
-const fleetTail = (d) => `<h2 class="sec" id="sec-accounts">Claude accounts</h2><div class="panel scroll">${accountsTable(d)}</div>${tokensSection(d)}`;
 
 const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--c-other)", failed: "var(--b-needs)", error: "var(--b-needs)" };
 const verdictColor = (v) => VERDICT_COLOR[v] || "var(--c1)";
@@ -203,29 +145,7 @@ function judgeList(j) {
 }
 
 function renderFleet() {
-  const el = $("fleet");
-  if (st.arg) { renderRunner(el); return; }
-  const d = fst.data;
-  if (!d || !d.table) { el.innerHTML = `<div class="empty">${fst.err ? esc(fst.err) : "Loading..."}</div>`; return; }
-  // A refresh must not take the search box or an open dropdown from under the human, so
-  // everything around the control in use repaints and it stays.
-  const f = document.activeElement;
-  if (f?.id === "fleet-q" || f?.dataset?.tq !== undefined) {
-    paint($("fleet-head"), fleetHead(d));
-    if (f.id === "fleet-q") paint($("fleet-facets"), tblFacets(d.table));
-    paint($("fleet-chips"), tblChips(d.table));
-    paint($("fleet-body"), fleetBody(d));
-    paint($("fleet-tail"), fleetTail(d), fst.open);
-    return;
-  }
-  paint(el, `<div id="fleet-head">${fleetHead(d)}</div>${tblBar("fleet", d.table, "search, or tier:3 state:failed project:dotfiles -who:shepherd")}` +
-    `<div id="fleet-body">${fleetBody(d)}</div><div id="fleet-tail">${fleetTail(d)}</div>`, fst.open);
-}
-
-// The view changed: the URL follows it and the server applies it.
-function fleetView(patch) {
-  setQuery(tblSet(st.views.fleet, patch));
-  refreshFleet();
+  if (st.arg) renderRunner($("fleet")); else fst.render();
 }
 
 // One run's log on the runner page, through Infra's reader and the run's byte range.
@@ -341,22 +261,16 @@ $("fleet").addEventListener("click", (e) => {
   const t = e.target;
   const said = t.closest("[data-said]");
   if (said) { fst.said = said.dataset.said; renderFleet(); return; }
-  const win = t.closest("[data-tokwin]");
-  if (win) { fst.tokWin = win.dataset.tokwin; renderFleet(); return; }
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
   const fold = t.closest("[data-fold]");
-  if (fold) { const k = fold.dataset.fold; if (!fst.fold.delete(k)) fst.fold.add(k); refreshFleet(); return; }
-  const v = tblPatch(e);
-  if (v) { fleetView(v); return; }
+  if (fold) { const k = fold.dataset.fold; if (!fst.fold.delete(k)) fst.fold.add(k); fst.refresh(); return; }
   if (t.closest("a, button, select, input")) return;
   const row = t.closest("tr.wr");
   if (row) location.hash = row.dataset.href;
 });
-// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
-for (const ev of ["input", "change"]) $("fleet").addEventListener(ev, (e) => { const v = tblPatch(e); if (!v) return; if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.(); fleetView(v); });
 
-const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], refreshFleet);
+const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], fst.refresh);
 LOG_PARTS.push({ show() { renderLogVerdicts(); logFleetFeed.show(!fst.data); }, onEvent: logFleetFeed.onEvent });
 TABS.fleet = {
   show() {
@@ -365,6 +279,6 @@ TABS.fleet = {
     pollFleet();
   },
   onEvent(ev) {
-    if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "sessions" || ev.kind === "resync")) (st.arg ? refreshRunner() : refreshFleet());
+    if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "sessions" || ev.kind === "resync")) (st.arg ? refreshRunner() : fst.refresh());
   },
 };

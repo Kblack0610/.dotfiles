@@ -15,6 +15,7 @@
 set -uo pipefail
 
 NAME="${AGENTCTL_NAME:-inbox-plan}"
+TYPES=""   # the row types from `notes row types`, read once a pass
 : "${INBOX_PLAN_CMD:=agentctl-run --role distill}"
 : "${INBOX_PLAN_MAX:=3}"
 
@@ -39,7 +40,7 @@ clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 # shellcheck disable=SC2016 # jq source, not shell
 WAITING_JQ='[.rows[] | select(.state == "open" and .id != null and (.text | test("(^| )#plan( |$)"; "i")))
   | select($only == "" or .project == $only)
-  | select($seen[.project + "\t" + .text] | not)] | sort_by(.since // "") | .[]'
+  | select($seen[.project + "\t" + .text] | not)] | sort_by(.since // "") | .[:$max][]'
 
 # seen: the record's refused rows, by project and words.
 seen() {
@@ -74,7 +75,7 @@ The row: $text
 ${details:+Its detail lines:
 $details
 }
-Plan it as a staff engineer would hand it over: what done looks like, the approach in the order to do it, and the checks that prove it works. Keep the person's meaning and add no scope. size is s (an hour or two), m (a day) or l (more). split is empty unless the work is more than one PR; then 2 to 6 rows, each one PR, in order, each a row: type(area): title #size/s|m|l, type one of feat fix perf refactor docs test chore ci release research design market legal run decide check, title under 80 characters. Do not split into a row the open rows below already hold. epic is the id of the one epic below this row plainly belongs to, else empty.
+Plan it as a staff engineer would hand it over: what done looks like, the approach in the order to do it, and the checks that prove it works. Keep the person's meaning and add no scope. size is s (an hour or two), m (a day) or l (more). split is empty unless the work is more than one PR; then 2 to 6 rows, each one PR, in order, each a row: type(area): title #size/s|m|l, type one of $TYPES, title under 80 characters. Do not split into a row the open rows below already hold. epic is the id of the one epic below this row plainly belongs to, else empty.
 
 Answer with one JSON object between a line INBOX-PLAN-START and a line INBOX-PLAN-END, nothing else between them:
 {\"goal\": \"<one line>\", \"approach\": [\"<step>\"], \"checks\": [\"<check>\"], \"size\": \"m\", \"split\": [], \"epic\": \"\"}
@@ -101,7 +102,7 @@ $open"
     proof_why "$p $id: model call failed: ${first:-no output}"
     FAILED=$((FAILED + 1)); return 1
   fi
-  ans="$(sed -n '/^INBOX-PLAN-START$/,/^INBOX-PLAN-END$/p' <<<"$out" | sed '1d;$d' | jq -c 'select(type == "object")' 2>/dev/null | head -n 1)"
+  ans="$(sed -n '/^INBOX-PLAN-START$/,/^INBOX-PLAN-END$/p' <<<"$out" | sed '1d;$d' | jq -c -n '[inputs | select(type == "object")] | .[:1][]' 2>/dev/null)"
   [ -n "$ans" ] || { refused "$p" "the model returned no plan" "$text"; return 1; }
 
   local goal size new d r n=0 why
@@ -110,10 +111,10 @@ $open"
   [ -n "$goal" ] || { refused "$p" "the plan had no goal" "$text"; return 1; }
   dets=(--detail "goal: $goal")
   while IFS= read -r d; do d="$(clean 200 <<<"$d")"; [ -n "$d" ] && dets+=(--detail "approach: $d"); done \
-    < <(jq -r '.approach[]? | strings' <<<"$ans" | head -n 6)
+    < <(jq -r '[.approach[]? | strings] | .[:6][]' <<<"$ans")
   while IFS= read -r d; do d="$(clean 200 <<<"$d")"; [ -n "$d" ] && dets+=(--detail "check: $d"); done \
-    < <(jq -r '.checks[]? | strings' <<<"$ans" | head -n 6)
-  mapfile -t rows < <(jq -r '.split[]? | strings' <<<"$ans" | head -n 6)
+    < <(jq -r '[.checks[]? | strings] | .[:6][]' <<<"$ans")
+  mapfile -t rows < <(jq -r '[.split[]? | strings] | .[:6][]' <<<"$ans")
   why="$(( ${#dets[@]} / 2 )) plan lines"
   [ "${#rows[@]}" -gt 0 ] && dets+=(--detail "split: ${#rows[@]} rows under $id")
   size="$(jq -r '.size // "" | tostring' <<<"$ans")"
@@ -167,12 +168,17 @@ main() {
     [ "$KICK" = 1 ] || [ "$DRY" = 1 ] || { proof_why "notes board --json failed"; proof_report "$NAME" FAILED; }
     return 1
   fi
-  rows="$(jq -c --arg only "$ONLY" --argjson seen "$(seen)" "$WAITING_JQ" <<<"$board" | head -n "$INBOX_PLAN_MAX")"
+  rows="$(jq -c --arg only "$ONLY" --argjson seen "$(seen)" --argjson max "$INBOX_PLAN_MAX" "$WAITING_JQ" <<<"$board")"
   # The unit by name, not $NAME: a caller's AGENTCTL_NAME is its own.
   if [ "$KICK" = 1 ]; then
     [ -n "$rows" ] || return 0
     systemctl --user start --no-block agentctl@inbox-plan.service || { say "could not start inbox-plan"; return 1; }
     return 0
+  fi
+  # The grammar's one home names the types, once a pass; with none the model would file any word.
+  if [ -n "$rows" ] && ! { TYPES="$(notes row types 2>/dev/null)" && [ -n "$TYPES" ]; }; then
+    say "notes row types failed (an old notes? notes-bootstrap --build-only)"
+    proof_why "notes row types failed"; rows='' rc=1
   fi
   while IFS= read -r row; do
     [ -n "$row" ] || continue

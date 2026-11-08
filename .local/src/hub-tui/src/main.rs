@@ -25,6 +25,7 @@ mod queuetab;
 mod schedules;
 mod tabreq;
 mod tasktab;
+mod tokens;
 
 use std::io::Write;
 use std::sync::mpsc;
@@ -44,10 +45,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub projects --json
        hub projects --page NAME
        hub tabs
-  TAB     home|daily|queue|infra|sessions|today|history|fleet|schedules|projects, or a retired name
-          (overview, waiting, asks, focus, outbox, board, forecast, watch, shepherd, jobs, ci,
-          machines) that lands on its new tab; jobs, ci and machines open that section of
-          Infra, outbox the outbox under Daily
+  TAB     a tab id (`hub tabs` lists them), or a retired name (hub_core::layout::RETIRED)
+          that lands on its new tab, on the section it became when it became one
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
@@ -336,10 +335,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
                     ));
                 }
                 None => {
-                    a.fleet = Some(hub_core::fleet::collect());
-                    if section.as_deref().is_some_and(|s| s.trim() == "tokens") {
-                        a.fleet_tokens.open = Some(true);
-                    }
+                    a.fleet = Some(hub_core::fleet::files(&hub_core::fleet::Paths::from_env()));
                 }
             }
         }
@@ -526,11 +522,11 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         if !app::is_write(&e.kind) {
             return;
         }
-        if e.paths
-            .iter()
-            .any(|p| app::is_job_file(&probe, p) || boards.is_token_file(p))
-        {
+        if e.paths.iter().any(|p| app::is_job_file(&probe, p)) {
             let _ = files.send(Msg::Files);
+        }
+        if e.paths.iter().any(|p| boards.is_token_file(p)) {
+            let _ = files.send(Msg::TokenFiles);
         }
         if e.paths.iter().any(|p| boards.is_board_file(p)) {
             let _ = files.send(Msg::BoardFiles);

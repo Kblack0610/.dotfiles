@@ -14,6 +14,7 @@
         "group/status",
         "idle_inhibitor",
         "pulseaudio",
+        "custom/audio-input",
         "custom/bluetooth",
         "network",
         "group/cpu-temp",
@@ -24,6 +25,14 @@
         "clock#time",
         "tray"
     ],
+    // The input is custom/audio-input beside this, so the volume chip shows the output only.
+    // Waybar merges this over config.base's pulseaudio block key by key.
+    "pulseaudio": {
+        "format": "{volume}% {icon}",
+        "format-bluetooth": "{volume}% {icon}",
+        "format-bluetooth-muted": " {icon}",
+        "format-muted": ""
+    },
     // With no sensor set, waybar reads thermal_zone0, which on this box is the
     // WiFi card. Point at the CPU (k10temp Tctl) and dGPU junction instead, by
     // PCI path because hwmonN numbering changes between boots.

@@ -107,6 +107,8 @@ allowed() { assert_success; assert_output ""; }
 @test "other tools and bad input fail open" {
   run bash -c "echo '{\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"/x\"}}' | python3 '$GUARD'"
   allowed
+  run bash -c "echo '{\"tool_name\":\"Grep\",\"tool_input\":{\"pattern\":\"tasks/x.output\"}}' | python3 '$GUARD'"
+  allowed
   run bash -c "echo 'not json' | python3 '$GUARD'"
   allowed
 }
@@ -119,7 +121,7 @@ allowed() { assert_success; assert_output ""; }
   assert_success
 }
 
-# A live background run holds its tasks/<id>.output open; the guard scans /proc for that holder.
+# A live background run holds its tasks/<id>.output open; the guard scans /proc for that holder (lsof where there is no /proc).
 # The id is unique to the test, since the unit tier runs tests in parallel and every process is scanned.
 live_task() {
   TASK_ID="bp${$}x${BATS_TEST_NUMBER}x${RANDOM}"
@@ -146,5 +148,27 @@ live_task() {
   run fg "tail -n 20 $OUT"
   allowed
   run fg "cat $BATS_TEST_TMPDIR/sess/tasks/nobody${RANDOM}.output"
+  allowed
+}
+
+rd() { jq -nc --arg f "$1" '{tool_name:"Read", tool_input:{file_path:$f}}' | python3 "$GUARD"; }
+
+@test "the Read tool on a live task's output is denied; after the run exits it is allowed" {
+  live_task
+  run rd "$OUT"
+  denied
+  assert_output --partial "$TASK_ID is still running"
+  kill "$HOLDER"; wait "$HOLDER" 2>/dev/null || true
+  run rd "$OUT"
+  allowed
+}
+
+@test "settings.json runs block-poll on Read as well as Bash" {
+  run jq -r '.hooks.PreToolUse[] | select(.hooks[].command | test("block-poll")) | .matcher' "$BATS_TEST_DIRNAME/../../.claude/settings.json"
+  assert_output 'Bash|Read'
+}
+
+@test "negative control: a Monitor until-loop, the sanctioned wait, is allowed" {
+  run bash -c "jq -nc '{tool_name:\"Monitor\", tool_input:{command:\"until grep -q done out.log; do sleep 5; done\"}}' | python3 '$GUARD'"
   allowed
 }

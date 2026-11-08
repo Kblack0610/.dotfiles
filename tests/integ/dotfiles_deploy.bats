@@ -383,6 +383,36 @@ world_wt_private() {
   assert_equal "$(readlink -f "$HOME/.local/bin/brand-new")" "$(readlink -f "$PUB/.local/bin/brand-new")"
 }
 
+@test "--missing: --check sees only MISSING, --apply links it and leaves a physical copy alone" {
+  world
+  radd "$PUB"  .local/bin/new-tool 'v1'
+  radd "$PRIV" .local/bin/svc 'tracked'
+  mirror_into_public .local/bin/svc 'running'
+  run "$DEPLOY" --check --missing
+  assert_failure
+  assert_output --partial 'new-tool'
+  refute_output --partial '.local/bin/svc'
+  run "$DEPLOY" --apply --missing
+  assert_success
+  assert_output --partial '1 path(s) linked, none missing now (copies not checked'
+  assert_equal "$(readlink -f "$HOME/.local/bin/new-tool")" "$(readlink -f "$PUB/.local/bin/new-tool")"
+  [ ! -L "$PUB/.local/bin/svc" ] || fail '--missing converted a physical copy'
+  assert_equal "$(cat "$PUB/.local/bin/svc")" 'running'
+  run "$DEPLOY" --check --missing
+  assert_success
+  assert_output --partial 'none of'
+  run "$DEPLOY" --check
+  assert_failure
+  assert_output --regexp 'MIRROR +private +\.local/bin/svc'
+}
+
+@test "--missing --apply with nothing missing does nothing and says so" {
+  world
+  run "$DEPLOY" --apply --missing
+  assert_success
+  assert_output --partial 'nothing to attach'
+}
+
 # ── things that must never enter the manifest ────────────────────────────────
 
 @test "a TRACKED SYMLINK is skipped on both sides, not diffed" {

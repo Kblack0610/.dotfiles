@@ -51,10 +51,7 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
   stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
   cat > "$stub/recall" <<'EOS'
 #!/bin/sh
-case "$*" in
-  *session,tool*) echo '{"totals":{"turns":2,"calls":3},"rows":[{"key":["a","Bash"],"calls":2,"chars":8,"carried":300},{"key":["a","Read"],"calls":1,"chars":4,"carried":100},{"key":["b","Read"],"calls":1,"chars":4,"carried":0}]}' ;;
-  *) echo '{"totals":{"turns":2,"calls":3},"rows":[]}' ;;
-esac
+echo '{"totals":{"turns":2,"calls":3},"rows":{"project":[],"command":[],"session,tool":[{"key":["a","Bash"],"calls":2,"chars":8,"carried":300},{"key":["a","Read"],"calls":1,"chars":4,"carried":100},{"key":["b","Read"],"calls":1,"chars":4,"carried":0}]}}'
 EOS
   echo "#!/bin/sh
 echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":8,\"b\":2}}}'" > "$stub/burn"
@@ -64,14 +61,31 @@ echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":8
   assert_equal "$(snap '[.by_tool[] | [.tool, .allocated_cost_usd]], .by_tool_unallocated_usd')" $'[["Bash",6.0],["Read",2.0]]\n2.0'
 }
 
+@test "snapshot: the three recall cuts come from one tool-output scan" {
+  stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
+  printf '#!/bin/sh\necho "$*" >> "%s/calls"\necho "{\\"totals\\":{\\"turns\\":1},\\"rows\\":{}}"\n' "$stub" > "$stub/recall"
+  printf '#!/bin/sh\necho {}\n' > "$stub/burn"
+  chmod +x "$stub"/*
+  TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
+  assert_equal "$(grep -c -- '--by' "$stub/calls")" 1
+  assert_equal "$(grep -o -- '--by [a-z,]*' "$stub/calls" | tr '\n' ' ')" '--by project --by command --by session,tool '
+}
+
+@test "snapshot: the command cut is trimmed to the top 20 here, since recall is asked for every row" {
+  stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
+  rows="$(jq -nc '[range(25) | {key: "c\(.)", calls: 1, chars: (100 - .), carried: 0}]')"
+  printf '#!/bin/sh\necho %s\n' "'{\"totals\":{\"turns\":1},\"rows\":{\"command\":$rows}}'" > "$stub/recall"
+  printf '#!/bin/sh\necho {}\n' > "$stub/burn"
+  chmod +x "$stub"/*
+  TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[(.by_command | length), .by_command[0].head, .by_command[-1].head]')" '[20,"c0","c19"]'
+}
+
 @test "snapshot: no per-session cost from burn keeps every by_tool field, the allocations null" {
   stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
   cat > "$stub/recall" <<'EOS'
 #!/bin/sh
-case "$*" in
-  *session,tool*) echo '{"totals":{"turns":1,"calls":1},"rows":[{"key":["a","Bash"],"calls":1,"chars":8,"carried":40}]}' ;;
-  *) echo '{"totals":{"turns":1,"calls":1},"rows":[]}' ;;
-esac
+echo '{"totals":{"turns":1,"calls":1},"rows":{"project":[],"command":[],"session,tool":[{"key":["a","Bash"],"calls":1,"chars":8,"carried":40}]}}'
 EOS
   printf '#!/bin/sh\necho {}\n' > "$stub/burn"
   chmod +x "$stub"/*
@@ -118,7 +132,7 @@ EOS
 @test "snapshot: no recall totals is a failed run, and the row says unreadable" {
   TOKENS_RECALL_CMD=false run "$AU" tokens snapshot
   assert_failure 1
-  assert_line --index 1 --partial 'tokens 2026-01-01: unreadable (recall --by project'
+  assert_line --index 1 --partial 'tokens 2026-01-01: unreadable (recall'
 }
 
 @test "snapshot refuses a day that is not over" {
@@ -200,4 +214,56 @@ week() { for d in 25 26 27 28 29 30 31; do day "2025-12-$d" 100000 0.15 40000; d
   TOKENS_LANGFUSE_CMD=false run "$AU" tokens snapshot
   assert_success
   assert_equal "$(snap '[.langfuse, .totals.responses > 0, (.errors | map(select(startswith("langfuse: "))) | length)]')" '[null,true,1]'
+}
+
+# check --langfuse: the read-health watch trips on two nights of a null section in a row.
+lf_day() {
+  mkdir -p "$TOKENS_DIR"
+  jq -n --arg d "$1" --argjson l "$2" --argjson e "$3" '{date: $d, errors: $e, langfuse: $l}' > "$TOKENS_DIR/$1.json"
+}
+lf_nokey() { mkdir -p "$TOKENS_DIR"; echo "{\"date\":\"$1\",\"errors\":[]}" > "$TOKENS_DIR/$1.json"; }
+
+@test "check --langfuse: two null nights in a row trip, naming both days and the reader's reason" {
+  lf_day 2025-12-31 null '["langfuse: no key (rbw langfuse-api)"]'; lf_day 2026-01-01 null '["langfuse: no key (rbw langfuse-api)","recall: x"]'
+  run "$AU" tokens check --langfuse
+  assert_failure 1
+  assert_output 'langfuse unread on 2025-12-31 and 2026-01-01: no key (rbw langfuse-api)'
+}
+
+@test "check --langfuse: figures on either night are quiet, and the plain check is unchanged (negative control)" {
+  lf_day 2025-12-31 '{"gateway":{"calls":3}}' '[]'; lf_day 2026-01-01 null '["langfuse: curl exit 7"]'
+  run "$AU" tokens check --langfuse
+  assert_success
+  lf_day 2025-12-31 null '["langfuse: x"]'; lf_day 2026-01-01 '{"gateway":{"calls":3}}' '[]'
+  run "$AU" tokens check --langfuse
+  assert_success
+}
+
+@test "check --langfuse: a gap day or an empty object is not two null nights" {
+  lf_day 2025-12-30 null '["langfuse: x"]'; lf_day 2026-01-01 null '["langfuse: x"]'
+  run "$AU" tokens check --langfuse
+  assert_success
+  lf_day 2025-12-31 '{}' '[]'; rm "$TOKENS_DIR/2025-12-30.json"
+  run "$AU" tokens check --langfuse
+  assert_success
+}
+
+@test "check --langfuse: a snapshot from before the reader is not a null night" {
+  lf_nokey 2025-12-31; lf_day 2026-01-01 null '["langfuse: x"]'
+  run "$AU" tokens check --langfuse
+  assert_success
+  lf_nokey 2026-01-01
+  run "$AU" tokens check --langfuse
+  assert_success
+}
+
+@test "check --langfuse: one snapshot is not two nights, and no or a stale snapshot still exits 2" {
+  lf_day 2026-01-01 null '["langfuse: x"]'
+  run "$AU" tokens check --langfuse
+  assert_success
+  TOKENS_TODAY=2026-01-05 run "$AU" tokens check --langfuse
+  assert_failure 2
+  rm "$TOKENS_DIR"/*.json
+  run "$AU" tokens check --langfuse
+  assert_failure 2
 }

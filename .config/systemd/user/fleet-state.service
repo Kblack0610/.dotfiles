@@ -7,9 +7,17 @@ Type=oneshot
 # minute this keeps is what `fleet-dispatch restore` reopens from.
 ExecStartPre=-%h/.local/bin/fleet-dispatch record
 ExecStartPre=-%h/.local/bin/agent-ask assume-due
+# The runner pool's failing tests, for the tick's SHARED rows. Allowed to fail: a missed read is
+# retried next minute, and the local gate's ledger still counts.
+ExecStartPre=-%h/.local/bin/pool-test-failures sync
 ExecStart=%h/.local/bin/fleet-sessions tick
 # Then one page for what is new on hub Home's NEEDS YOU list, under the bar and cap in
 # channels.toml [pager.needs]. Allowed to fail: a missed page leaves the list on Home and in the journal.
 ExecStartPost=-%h/.local/bin/hub needs --page
+# Then Home Assistant gets what changed: agent-mqtt-sessions.service, started without waiting, so
+# a slow broker or the --full run's lock never holds this pass or the next. A start while one
+# runs folds into it. This replaces a .path unit on state.json, which this pass rewrites every
+# minute, so it fired every minute anyway (2026-11-07).
+ExecStartPost=-/usr/bin/systemctl --user start --no-block agent-mqtt-sessions.service
 StandardOutput=null
 TimeoutStartSec=120

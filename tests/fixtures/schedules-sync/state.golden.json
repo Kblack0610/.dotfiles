@@ -1,0 +1,108 @@
+{
+ "generated_at": "2025-11-06T12:00:00Z",
+ "repos": [
+  {
+   "repo": "o/game",
+   "base": "main",
+   "synced_at": "2025-11-06T12:00:00Z",
+   "error": null,
+   "workflows": [
+    {
+     "path": ".github/workflows/test.yml",
+     "sha": "s1",
+     "name": "Tests",
+     "crons": [
+      "0 10 * * *"
+     ],
+     "timeout_min": 490,
+     "purpose": "Nightly on main: every class. 10:00 UTC is 03:00 at the desk.",
+     "jobs": [
+      {
+       "id": "plan",
+       "name": "plan",
+       "needs": [],
+       "timeout_min": 10
+      },
+      {
+       "id": "play",
+       "name": "PlayMode ${{ matrix.n }}",
+       "needs": [
+        "plan"
+       ],
+       "timeout_min": 120
+      },
+      {
+       "id": "report",
+       "name": "report",
+       "needs": [
+        "play"
+       ],
+       "timeout_min": 360
+      },
+      {
+       "id": "lint",
+       "name": "lint",
+       "needs": [],
+       "timeout_min": 5
+      }
+     ],
+     "runs": [
+      {
+       "id": 31,
+       "attempt": 1,
+       "url": "https://gh/r/31",
+       "title": "T",
+       "sha": "abc",
+       "created_at": "2025-11-06T11:30:00Z",
+       "status": "in_progress",
+       "conclusion": null,
+       "started_at": "2025-11-06T11:30:00Z",
+       "ended_at": null,
+       "failed_jobs": []
+      },
+      {
+       "id": 30,
+       "attempt": 1,
+       "url": "https://gh/r/30",
+       "title": "T",
+       "sha": "abc",
+       "created_at": "2025-11-06T10:01:00Z",
+       "status": "completed",
+       "conclusion": "failure",
+       "started_at": "2025-11-06T10:01:00Z",
+       "ended_at": "2025-11-06T10:01:00Z",
+       "failed_jobs": [
+        "PlayMode 2",
+        "PlayMode 8"
+       ]
+      },
+      {
+       "id": 20,
+       "attempt": 1,
+       "url": "https://gh/r/20",
+       "title": "T",
+       "sha": "abc",
+       "created_at": "2025-11-05T10:01:00Z",
+       "status": "completed",
+       "conclusion": "success",
+       "started_at": "2025-11-05T10:01:00Z",
+       "ended_at": "2025-11-05T10:01:00Z",
+       "failed_jobs": []
+      }
+     ]
+    }
+   ],
+   "unscheduled": {
+    ".github/workflows/checks.yml": "s2"
+   }
+  },
+  {
+   "repo": "o/empty",
+   "base": "main",
+   "synced_at": "2025-11-06T12:00:00Z",
+   "error": null,
+   "workflows": [],
+   "unscheduled": {}
+  }
+ ]
+}

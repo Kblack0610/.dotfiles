@@ -627,7 +627,7 @@ impl<'a> Board<'a> {
         out
     }
 
-    /// RED NOW: the `cc:red_now` items, offline or missing runners, stuck runs, and GitHub or
+    /// RED NOW: the `cc:red_now` items, the down runners (`Infra::runners_down`), stuck runs, and GitHub or
     /// the exporter not answering, the likeliest cause first.
     pub fn down(&self, w: usize) -> Vec<Line<'static>> {
         let mut items: Vec<String> = self
@@ -638,10 +638,8 @@ impl<'a> Board<'a> {
             .filter(|i| !i.is_empty())
             .collect();
         items.sort();
-        for s in &self.runners {
-            if matches!(s.label("state"), "offline" | "missing") {
-                items.push(format!("{} {}", lab(s, "name"), s.label("state")));
-            }
+        for s in self.infra.runners_down() {
+            items.push(format!("{} {}", lab(s, "name"), s.label("state")));
         }
         for s in self.infra.get("waiting") {
             if s.label("stuck") == "true" {
@@ -678,7 +676,7 @@ impl<'a> Board<'a> {
         let line = if items.is_empty() {
             self.heading(
                 "RED NOW",
-                "  nothing: every rostered runner is registered and online".into(),
+                "  nothing: every rostered runner is online or powered off by the governor".into(),
             )
         } else {
             Line::from(vec![
@@ -1730,6 +1728,41 @@ pub(crate) mod tests {
             has(&out, "RED NOW watch mac_studio_mlx, mini-1 offline"),
             "red_now items lead, then an offline runner by name"
         );
+    }
+
+    #[test]
+    fn a_runner_the_governor_powered_off_is_not_red() {
+        let mut i = fixture();
+        i.instant
+            .get_mut("runners")
+            .unwrap()
+            .extend(series(vec![runner(
+                "aws-burst-1",
+                "aws-1",
+                "offline",
+                "0",
+                json!({"site": "cloud"}),
+            )]));
+        let red = |i: &Infra| {
+            text(i, 160)
+                .lines()
+                .find(|l| l.starts_with("RED NOW"))
+                .unwrap()
+                .to_string()
+        };
+        assert!(red(&i).contains("aws-1 offline"), "unmanaged: down");
+        let power = |state: &str| {
+            series(vec![(
+                json!({"__name__": "ci_governor_power_state", "host": "aws-burst-1", "state": state}),
+                "1",
+            )])
+        };
+        i.instant.insert("power", power("running"));
+        assert!(red(&i).contains("aws-1 offline"), "governor running: down");
+        i.instant.insert("power", power("stopped"));
+        let line = red(&i);
+        assert!(!line.contains("aws-1"), "{line}");
+        assert!(line.contains("mini-1 offline"), "{line}");
     }
 
     #[test]

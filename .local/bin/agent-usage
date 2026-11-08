@@ -7,8 +7,8 @@
 #   agent-usage changelog <project> --since E [--until E]   markdown for a version note
 #   agent-usage backfill <project|--all>     fill telemetry into existing registry lines
 #   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
-#   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--json]   where the window's tokens went, by session too (usage-cleanup)
-#   agent-usage tokens snapshot|line|json|check [--date D]        the nightly token-usage record per day
+#   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--sort cost|turns|context] [--json]   where the window's tokens went, by session too (usage-cleanup)
+#   agent-usage tokens snapshot|line|json|check [--langfuse] [--date D]  the nightly token-usage record per day
 #   agent-usage spend check <window> <max-usd>                    fleet spend over a window vs a ceiling (the claude-spend-* watches)
 #   agent-usage langfuse --since T --until T                      tool latency, tool and gateway errors from Langfuse
 #
@@ -48,21 +48,13 @@ set -uo pipefail
 SESS_ROOT="$HOME/.agent/sessions"
 PROJECTS_ROOT="$HOME/.claude/projects"
 
-# Where Claude Code's OTel metrics ended up. Machine-local, never hardcoded here:
-# this repo is public, and the endpoint is an internal host. Same convention as
-# notes-cockpit's ~/.config/notes-cockpit/llm.env.
-#
-#   $PROM_URL, else ~/.config/agent-usage/config  (a shell fragment: PROM_URL=...)
-#
-# With neither, the Prometheus path is simply skipped and everything falls back to
-# the transcript - which is the correct behaviour on a machine that has no metrics
-# stack anyway.
-AU_CONF="${AGENT_USAGE_CONF:-$HOME/.config/agent-usage/config}"
-if [ -z "${PROM_URL:-}" ] && [ -f "$AU_CONF" ]; then
-  # shellcheck disable=SC1090
-  . "$AU_CONF"
-fi
-PROM_URL="${PROM_URL:-}"
+# Where Claude Code's OTel metrics land: CC_PROM_URL, the one endpoint every Prometheus
+# reader shares. .local/lib/prom.sh (prom_q) reads it from ~/.config/command-center/env,
+# stowed from the private overlay: this repo is public and the endpoint is an internal host.
+# With it unset the Prometheus path is skipped and everything falls back to the
+# transcript, which is the correct behaviour on a machine that has no metrics stack.
+# shellcheck source=../lib/prom.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/prom.sh"
 # Kept short on purpose: every caller has a working fallback, and no one should wait on
 # a Prometheus that is unreachable because we are off-LAN.
 PROM_TIMEOUT="${PROM_TIMEOUT:-3}"
@@ -83,29 +75,17 @@ command -v jq >/dev/null 2>&1 || { echo "agent-usage: jq is required" >&2; exit 
 # without telemetry reports cost `null` and renders as `-`. Every session from here on
 # has real reported cost, which is what the changelog is for.
 
-# prom <promql> -> the scalar value of the first result, or nothing.
-prom() {
-  [ -n "$PROM_URL" ] || return 0
-  curl -s --get "$PROM_URL/api/v1/query" \
-    --connect-timeout 2 --max-time "$PROM_TIMEOUT" \
-    --data-urlencode "query=$1" 2>/dev/null \
-    | jq -r '.data.result[0].value[1] // empty' 2>/dev/null
-}
-
 # prom_by <label> <promql> -> "<label-value>\t<value>" per line.
 prom_by() {
-  [ -n "$PROM_URL" ] || return 0
-  curl -s --get "$PROM_URL/api/v1/query" \
-    --connect-timeout 2 --max-time "$PROM_TIMEOUT" \
-    --data-urlencode "query=$2" 2>/dev/null \
-    | jq -r --arg l "$1" '.data.result[]? | "\(.metric[$l] // "-")\t\(.value[1])"' 2>/dev/null
+  [ -n "${CC_PROM_URL:-}" ] || return 0
+  prom_q "$2" | jq -r --arg l "$1" '.data.result[]? | "\(.metric[$l] // "-")\t\(.value[1])"' 2>/dev/null
 }
 
 # transcript_of <id> -> path, or nothing. The registry knows it; otherwise search.
 transcript_of() {
   local id="$1" t
   t="$(grep -rhF "\"session_id\":\"$id\"" "$SESS_ROOT"/*/sessions.jsonl 2>/dev/null \
-       | jq -r '.transcript // empty' 2>/dev/null | head -1)"
+       | jq -rn '[inputs | .transcript // empty] | .[:1][]' 2>/dev/null)"
   [ -n "$t" ] && [ -f "$t" ] && { printf '%s\n' "$t"; return 0; }
   t="$(find "$PROJECTS_ROOT" -maxdepth 2 -name "$id.jsonl" 2>/dev/null | head -1)"
   [ -n "$t" ] && printf '%s\n' "$t"
@@ -161,13 +141,29 @@ _from_transcript() { # $1=transcript path
         printf "%d %d %d %d %d %d %s\n", I+0, O+0, CC+0, CR+0, n+0, d, (ms==""?"-":ms) }'
 }
 
+# A counter's peak over the range, not its instant value: an ended session's series (and a
+# finished skill's skill_name series) go stale after 5 minutes, so an instant sum reads 0,
+# and increase() drops each series' first sample. Prometheus keeps a week. A counter reset
+# (27 of 4,238 series in a week) loses its pre-reset part, about 0.35% of the week's cost.
+PROM_SESSION_RANGE="${PROM_SESSION_RANGE:-7d}"
+_session_peak() { # $1=metric $2=session id
+  printf 'max_over_time(%s{session_id="%s"}[%s])' "$1" "$2" "$PROM_SESSION_RANGE"
+}
+# A counter's growth over the last $2: its peak in the window minus its last value before it,
+# so a series born in the window counts in full. Same form as the cc:claude_code_cost_24h_usd
+# rule in home-config.
+_spent() { # $1=metric $2=window
+  printf 'sum(max_over_time(%s[%s])) - (sum(last_over_time(%s[1d] offset %s) and max_over_time(%s[%s])) or vector(0))' \
+    "$1" "$2" "$1" "$2" "$1" "$2"
+}
+
 # From Prometheus: tokens by type (all query_sources), models, real USD, and USD per model.
 # Emits "in out cw cr cost models_csv cost_by_model_csv" or nothing when Prometheus is
 # unreachable/empty; cost_by_model_csv is "model=usd,..." or "-".
 _from_prom() { # $1=session id
   local id="$1" toks cost models by_model i=0 o=0 cc=0 cr=0
 
-  toks="$(prom_by type "sum by (type) (claude_code_token_usage_tokens_total{session_id=\"$id\"})")"
+  toks="$(prom_by type "sum by (type) ($(_session_peak claude_code_token_usage_tokens_total "$id"))")"
   [ -n "$toks" ] || return 1
 
   while IFS="$TAB" read -r ty val; do
@@ -180,10 +176,10 @@ _from_prom() { # $1=session id
     esac
   done <<< "$toks"
 
-  models="$(prom_by model "sum by (model) (claude_code_token_usage_tokens_total{session_id=\"$id\"})" \
+  models="$(prom_by model "sum by (model) ($(_session_peak claude_code_token_usage_tokens_total "$id"))" \
             | cut -f1 | sort -u | paste -sd, -)"
   # The total is the sum of the per-model costs: one query for both.
-  read -r cost by_model < <(prom_by model "sum by (model) (claude_code_cost_usage_USD_total{session_id=\"$id\"})" \
+  read -r cost by_model < <(prom_by model "sum by (model) ($(_session_peak claude_code_cost_usage_USD_total "$id"))" \
     | awk -F'\t' '{ s += $2; m = m (NR > 1 ? "," : "") $1 "=" $2 } END { if (NR) printf "%.10g %s\n", s, m }')
 
   printf '%s %s %s %s %s %s %s\n' "$i" "$o" "$cc" "$cr" "${cost:-0}" "${models:--}" "${by_model:--}"
@@ -602,7 +598,7 @@ cmd_wakes() {
 # context, waits, cache writes by cause, idle wakes and dream runs. The usage-cleanup skill's
 # numbers; the logic lives in ../lib/agent-usage-burn.py.
 #
-#   burn [--days 7] [--before YYYY-MM-DD] [--json]
+#   burn [--days 7] [--before YYYY-MM-DD] [--top N] [--sort cost|turns|context] [--json]
 cmd_burn() {
   python3 "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-usage-burn.py" "$@"
 }
@@ -629,9 +625,9 @@ cmd_spend() {
   if [ "$verb" != check ] || ! [[ "$win" =~ ^[0-9]+[smhdw]$ ]] || ! [[ "$max" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
     echo "usage: agent-usage spend check <window e.g. 1h> <max-usd>" >&2; return 64
   fi
-  [ -n "$PROM_URL" ] || { echo "spend: no PROM_URL (set it or $AU_CONF)" >&2; return 2; }
-  v="$(curl -sf -m 20 --get "$PROM_URL/api/v1/query" \
-         --data-urlencode "query=sum(increase(claude_code_cost_usage_USD_total[$win]))" 2>/dev/null \
+  [ -n "${CC_PROM_URL:-}" ] || { echo "spend: no CC_PROM_URL (set it in ~/.config/command-center/env)" >&2; return 2; }
+  local PROM_TIMEOUT=20
+  v="$(prom_q "$(_spent claude_code_cost_usage_USD_total "$win")" \
        | jq -er '.data.result | if type != "array" then error("not a vector") elif length == 0 then "0" else .[0].value[1] end' 2>/dev/null)" \
     && [[ "$v" =~ ^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$ ]] \
     || { echo "spend: Prometheus unreadable or not a number" >&2; return 2; }

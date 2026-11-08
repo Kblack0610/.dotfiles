@@ -5,6 +5,7 @@
   agent-usage tokens line [--date D]                     the day's one-line row (default newest)
   agent-usage tokens json --date D                       the day's snapshot, for day-log
   agent-usage tokens check                               the newest day against the 7 before it
+  agent-usage tokens check --langfuse                    Langfuse unreadable for the last two nights
 
 No scanner of its own: every number comes from one of the counted tools, so this file only
 joins them. Who owns which number:
@@ -23,7 +24,12 @@ A day is the local calendar day, the window both tools are given exactly.
 check exits 0 unless a watched number moved the worse way by more than TOKENS_DRIFT_PCT of the
 median of the TOKENS_BASELINE_DAYS days before it, or the better way by more than TOKENS_SUSPECT_PCT
 (a broken counter looks like a cliff); 1 on either, 2 when there is no fresh snapshot. It only
-reports: nothing here stops, limits or slows a session (dotfiles CLAUDE.md "Agent runtime").
+reports: nothing here stops, limits or slows a session (dotfiles CLAUDE.md "Hard limits on budgets").
+
+check --langfuse is the read-health watch: 1 when the newest two snapshots both carry a null
+langfuse section (the reader failed two nights running, the reason is in their errors), 0 when
+either has figures or the reader has not run yet (a snapshot with no langfuse key at all), 2 as
+above. One null night is quiet: Langfuse restarts and the next night fills the gap.
 """
 import argparse
 import datetime as dt
@@ -82,18 +88,22 @@ def day_window(day):
 def snapshot(day):
     start, end = day_window(day)
     s, e = start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds")
-    recall = RECALL + ["--since", s, "--until", e, "--json", "--by"]
-    jobs = {"recall --by project": recall + ["project", "--top", "0"],
-            "recall --by command": recall + ["command", "--top", str(TOP_COMMANDS)],
-            "recall --by session,tool": recall + ["session,tool", "--top", "0"],
+    # Three cuts of one tool-output scan; the command cut is trimmed below, as --top is per scan.
+    cuts = ("project", "command", "session,tool")
+    recall = RECALL + ["--since", s, "--until", e, "--json", "--top", "0"]
+    for cut in cuts:
+        recall += ["--by", cut]
+    jobs = {"recall": recall,
             "tool-calls": CALLS + ["--since", s, "--until", e, "--json", "--top", str(TOP_TARGETS)],
             "burn": BURN + ["--before", e, "--days", f"{(end - start).total_seconds() / 86400:.6f}", "--json"],
             "langfuse": LANGFUSE + ["--since", s, "--until", e]}
     with ThreadPoolExecutor(len(jobs)) as pool:  # independent reads: the day costs the slowest one
         got = dict(zip(jobs, pool.map(run_json, jobs.values())))
     errors = [f"{name}: {err}" for name, (_, err) in got.items() if err]
-    proj, cmd, tool, calls, burn = (got[k][0] or {} for k in ("recall --by project", "recall --by command",
-                                                             "recall --by session,tool", "tool-calls", "burn"))
+    whole, calls, burn = (got[k][0] or {} for k in ("recall", "tool-calls", "burn"))
+    rows = whole.get("rows") or {}
+    proj, cmd, tool = ({**whole, "rows": rows.get(cut) or []} for cut in cuts)
+    cmd["rows"] = cmd["rows"][:TOP_COMMANDS]
 
     t = proj.get("totals") or {}
     tu = usage(t)
@@ -247,7 +257,20 @@ def load(p):
         return None
 
 
-def check():
+def langfuse_check(files, newest):
+    """check --langfuse: the snapshots of two consecutive days both carry an explicit null, the reader's failure."""
+    prev = load(files[-2]) if len(files) > 1 else None
+    nights = prev and dt.date.fromisoformat(newest["date"]) - dt.date.fromisoformat(prev["date"]) == dt.timedelta(days=1)
+    # a missing key is a snapshot from before the reader, not a failed read
+    if not nights or not all("langfuse" in x and x["langfuse"] is None for x in (newest, prev)):
+        print(f"{newest['date']}: langfuse read ok, or not null two nights running")
+        return 0
+    why = sorted({e[len("langfuse: "):] for x in (newest, prev) for e in x.get("errors") or [] if e.startswith("langfuse: ")})
+    print(f"langfuse unread on {prev['date']} and {newest['date']}: {'; '.join(why) or 'no reason recorded'}")
+    return 1
+
+
+def check(langfuse=False):
     files = snapshots()
     if not files:
         print(f"no token-usage snapshot in {DIR} (agent-usage tokens snapshot)")
@@ -260,6 +283,8 @@ def check():
     if age > STALE_DAYS:
         print(f"newest token-usage snapshot is {newest['date']}, {age} days old: the nightly agentctl token-usage run stopped")
         return 2
+    if langfuse:
+        return langfuse_check(files, newest)
     base = [x for x in (load(p) for p in files[-1 - BASELINE_DAYS:-1]) if x]
     drift, suspect, said = [], [], []
     for key, label, worse in WATCHED:
@@ -295,7 +320,8 @@ def main():
     lp.add_argument("--date", type=dt.date.fromisoformat)
     jp = sub.add_parser("json")
     jp.add_argument("--date", type=dt.date.fromisoformat, required=True)
-    sub.add_parser("check")
+    cp = sub.add_parser("check")
+    cp.add_argument("--langfuse", action="store_true", help="the read-health watch")
     a = ap.parse_args()
     if a.verb == "snapshot":
         day = a.date or today() - dt.timedelta(days=1)
@@ -320,7 +346,7 @@ def main():
             return 1
         print(s["line"])
         return 0
-    return check()
+    return check(a.langfuse)
 
 
 if __name__ == "__main__":

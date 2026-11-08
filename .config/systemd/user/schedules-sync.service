@@ -1,5 +1,5 @@
 [Unit]
-Description=Sync GitHub scheduled-run facts (schedules-sync)
+Description=Sync GitHub scheduled runs and the CI run ledger (schedules-sync)
 After=network-online.target
 Wants=network-online.target
 

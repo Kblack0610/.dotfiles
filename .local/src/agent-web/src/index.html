@@ -29,20 +29,23 @@
   </nav>
 </header>
 <main id="main">
+  <aside id="side" aria-label="Sessions"></aside>
   <section id="detail">
     <div class="bar">
       <button class="btn" id="back">Back</button>
       <span class="dot" id="d-dot"></span>
       <span class="name" id="d-name">Pick an agent</span>
       <div class="seg" id="v-seg">
-        <button id="v-page" class="on">Page</button>
-        <button id="v-transcript">Transcript</button>
+        <button id="v-transcript" class="on">Conversation</button>
+        <button id="v-page">Details</button>
         <button id="v-screen">Screen</button>
       </div>
     </div>
     <div class="acts" id="acts" hidden></div>
     <div id="facts" hidden></div>
     <div id="scroll"><div class="empty">Loading the overview.</div></div>
+    <button class="btn jump" id="jump" hidden>Jump to latest</button>
+    <div id="ask-pin" hidden></div>
     <div class="compose" id="compose" hidden>
       <div class="keys" id="keys"></div>
       <div class="send">
@@ -71,6 +74,7 @@
 <script src="/static/ui.js?v={{v}}"></script>
 <script src="/static/md.js?v={{v}}"></script>
 <script src="/static/charts.js?v={{v}}"></script>
+<script src="/static/convo.js?v={{v}}"></script>
 <script src="/static/app.js?v={{v}}"></script>
 <script src="/static/table.js?v={{v}}"></script>
 <script src="/static/flow.js?v={{v}}"></script>

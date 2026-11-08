@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse(Bash) guard: deny the poll shapes that spend turns on waiting.
+"""PreToolUse(Bash|Read) guard: deny the poll shapes that spend turns on waiting.
 
 2026-11-03/04 overnight: 738 of the heavy sessions' turns (14%) were polls, `timeout 590 bash -c
 "until grep ..."` loops and `gh run watch` on top of agent-land's own wait. Each pass blocks the
@@ -13,12 +13,15 @@ script file, a heredoc body, and text in quotes, except a `-c` payload, which is
 Also denied: a foreground read of a background task's `tasks/<id>.output` while a process still
 holds that file open, i.e. the run is live and its notice has not come. 2026-11-05: 243 such reads
 re-read 27.7M tokens of context. The liveness test is stop-checks.d/10-git-workflow.sh's. The same
-read in the background (an `until grep` wait) and any read after the run exits are allowed.
-Fail-open: any error allows the command.
+read in the background (an `until grep` wait) and any read after the run exits are allowed. The Read
+tool on that file is checked the same way: after the Bash form was denied, 6 of the 11 early reads
+left (2026-11-06/07, usage-cleanup pass 6) came through Read.
+Fail-open: any error allows the call.
 """
 import json
 import os
 import re
+import subprocess
 import sys
 
 SEP = r"(?:^|[;&|(){}\s])"
@@ -29,7 +32,7 @@ LOOP = re.compile(r"(until|while|for)\s+(.*?)" + SEP + r"do" + END + r"(.*)" + S
 SLEEP = re.compile(SEP + r"sleep" + END)
 BREAK = re.compile(SEP + r"(break|exit)" + END)
 SHELL_C = re.compile(SEP + r"(?:ba|z|da|k)?sh(?:\s+-\S+)*\s+-[a-z]*c\s*$")
-TASK_OUTPUT = re.compile(r"/tasks/([\w.-]+)\.output")
+TASK_OUTPUT = re.compile(r"""([^\s'"]*/tasks/([\w.-]+)\.output)""")
 HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 
 WATCH_MSG = (
@@ -48,7 +51,8 @@ LOOP_MSG = (
 )
 LIVE_MSG = (
     "Background task {id} is still running, so this read polls it, and every look re-reads the "
-    "whole context. Act on its completion notification, then read the output once (tail -n 40). "
+    "whole context. Act on its completion notification, then read the output once (tail -n 40, "
+    "or Read with offset and limit). "
     "To watch a long run as it goes use the Monitor tool; to end it, TaskStop."
 )
 
@@ -112,8 +116,11 @@ def polls(text):
     return False
 
 
-def live_outputs(ids):
+def live_outputs(found):
     """The ids whose tasks/<id>.output some process still holds open: the run is still going."""
+    if not os.path.isdir("/proc"):
+        return lsof_live(found)
+    ids = {i for _, i in found}
     ends = {"/tasks/%s.output" % i: i for i in ids}
     live = set()
     for pid in os.listdir("/proc"):
@@ -134,6 +141,29 @@ def live_outputs(ids):
     return live
 
 
+def lsof_live(found):
+    """No /proc (macOS): ask lsof whether anything holds each named output file open."""
+    live = set()
+    for path, i in found:
+        path = os.path.expanduser(os.path.expandvars(path))
+        if not os.path.isfile(path):
+            continue
+        try:
+            r = subprocess.run(["lsof", "-t", "--", path], capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.stdout.strip():
+            live.add(i)
+    return live
+
+
+def live_reason(text):
+    """The deny reason when text names a tasks/<id>.output that a live run still holds, else None."""
+    found = set(TASK_OUTPUT.findall(text))
+    live = live_outputs(found) if found else set()
+    return LIVE_MSG.format(id=sorted(live)[0]) if live else None
+
+
 def deny(reason):
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "block-poll: " + reason}}))
@@ -141,9 +171,13 @@ def deny(reason):
 
 def main():
     data = json.load(sys.stdin)
-    if data.get("tool_name", "Bash") != "Bash":
-        return
+    tool = data.get("tool_name", "Bash")
     tin = data.get("tool_input") or {}
+    if tool == "Read":
+        reason = live_reason(tin.get("file_path") or "")
+        return deny(reason) if reason else None
+    if tool != "Bash":
+        return
     texts = code_texts(strip_heredocs(tin.get("command") or ""))
     if any(GH_WATCH.search(t) for t in texts):
         return deny(WATCH_MSG)
@@ -151,10 +185,9 @@ def main():
         return
     if any(polls(t) for t in texts):
         return deny(LOOP_MSG)
-    ids = set(TASK_OUTPUT.findall(tin.get("command") or ""))
-    live = live_outputs(ids) if ids else set()
-    if live:
-        return deny(LIVE_MSG.format(id=sorted(live)[0]))
+    reason = live_reason(tin.get("command") or "")
+    if reason:
+        return deny(reason)
 
 
 if __name__ == "__main__":

@@ -205,80 +205,189 @@ pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) 
                 text: format!("{}\t{display}", a.target),
             });
 
-            let jsonl = a
-                .jsonl
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            map.push(format!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                a.target,
-                jsonl,
-                a.project,
-                a.summary,
-                a.repo_full,
-                a.ask.as_deref().unwrap_or("")
-            ));
+            map.push(Facts::of(a).line(&a.target));
         }
     }
 
     (rows, map)
 }
 
-/// Render the preview pane for one agent row.
-pub fn preview(
-    target: &str,
-    jsonl: Option<&std::path::Path>,
-    project: &str,
-    summary: &str,
-    repo_full: &str,
-    ask: &str,
-) {
-    let mut header = if repo_full.is_empty() {
-        if project.is_empty() {
-            target.to_string()
-        } else {
-            project.to_string()
-        }
-    } else {
-        repo_full.to_string()
-    };
-    if !summary.is_empty() {
-        header = format!("{header} - {summary}");
-    }
-    println!("{CYAN}{BOLD}── {header} ──{RESET}");
+/// What the preview needs of a row, written to the map file when the panel opens so the preview
+/// callback does not walk every pane again: one tab-separated line per row, the target first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Facts {
+    pub jsonl: Option<std::path::PathBuf>,
+    pub project: String,
+    pub summary: String,
+    pub repo_full: String,
+    pub ask: String,
+    pub status: String,
+    pub started_at: Option<u64>,
+    pub plan: bool,
+    pub account: String,
+}
 
-    // What it is asking comes first.
-    // `agent-ask card` owns the ask format, so the panel prints it rather than parse it.
-    if !ask.is_empty() {
-        println!("{BLUE}{BOLD}── question ──{RESET}");
-        print!("{}", crate::asks::card(ask));
-    }
-
-    // The session's last word, whole: the pane tail usually has it scrolled away under tool
-    // output. Then its last tool call, then a short pane tail for what only the pane shows
-    // (a permission dialog, a live prompt).
-    if let Some(path) = jsonl.filter(|p| p.exists()) {
-        let (message, tool) = crate::jsonl::preview_info(path);
-        if !message.is_empty() {
-            println!("{CYAN}{BOLD}── last message ──{RESET}");
-            println!("{message}");
-        }
-        if !tool.is_empty() {
-            println!("{DIM}last tool: {tool}{RESET}");
+impl Facts {
+    pub fn of(a: &Agent) -> Facts {
+        Facts {
+            jsonl: a.jsonl.clone(),
+            project: a.project.clone(),
+            summary: a.summary.clone(),
+            repo_full: a.repo_full.clone(),
+            ask: a.ask.clone().unwrap_or_default(),
+            status: a.status.clone(),
+            started_at: a.started_at,
+            plan: a.plan,
+            account: a.account.clone(),
         }
     }
 
-    println!("{CYAN}{BOLD}── pane ──{RESET}");
-    let pane = crate::tmux::capture_pane(target, true, -PANE_TAIL);
-    let lines: Vec<&str> = pane.lines().collect();
-    for line in &lines[lines.len().saturating_sub(PANE_TAIL as usize)..] {
-        println!("{line}");
+    /// The map file line: `target`, then the fields in declaration order. A tab or newline in
+    /// a field (a pane title) becomes a space, so the line keeps its columns.
+    pub fn line(&self, target: &str) -> String {
+        let jsonl = self.jsonl.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let started = self.started_at.map(|t| t.to_string()).unwrap_or_default();
+        [target, &jsonl, &self.project, &self.summary, &self.repo_full, &self.ask, &self.status, &started, if self.plan { "1" } else { "" }, &self.account]
+            .iter()
+            .map(|f| f.replace(['\t', '\n'], " "))
+            .collect::<Vec<_>>()
+            .join("\t")
+    }
+
+    /// A map file line back: `(target, facts)`. Missing trailing fields read as empty.
+    pub fn parse(line: &str) -> (String, Facts) {
+        let f: Vec<&str> = line.split('\t').collect();
+        let get = |i: usize| f.get(i).copied().unwrap_or("").to_string();
+        let facts = Facts {
+            jsonl: f.get(1).filter(|s| !s.is_empty()).map(std::path::PathBuf::from),
+            project: get(2),
+            summary: get(3),
+            repo_full: get(4),
+            ask: get(5),
+            status: get(6),
+            started_at: get(7).parse().ok(),
+            plan: get(8) == "1",
+            account: get(9),
+        };
+        (get(0), facts)
     }
 }
 
+/// Print the preview for one agent row, summary first (dashboards.md rules 3, 4): who and where
+/// it is in one line, then what it needs from you (the same ask card or dialog card the
+/// questions panel shows), its last tool, its last message in plain text, and last a few lines
+/// of its pane, which a dialog card replaces since it is that dialog. `now` is epoch seconds.
+pub fn preview(target: &str, f: &Facts, now: u64) {
+    let width = crate::md::width();
+    let pane = crate::tmux::capture_pane(target, false, 0);
+    // One read of the transcript serves the last message, the last tool and an open plan.
+    let info = match f.jsonl.as_deref().filter(|p| p.exists()) {
+        Some(path) => crate::jsonl::preview_info(path),
+        None => Default::default(),
+    };
+    let dialog = crate::dialog::parse(&pane).map(|d| {
+        let plan = crate::dialog::Plan::of(&d, info.plan.clone());
+        crate::dialog::card(&d, &format!("{target}  {}", f.project), plan, true, width)
+    });
+    let ask = if f.ask.is_empty() { String::new() } else { crate::asks::card(&f.ask) };
+    let read = Read { ask: &ask, dialog: dialog.as_deref(), tool: &info.tool, message: &info.message, pane: &pane };
+    print!("{}", page(target, f, now, width, &read));
+}
+
+/// What `preview` read for one agent: its ask card, its dialog's card, its transcript's last tool
+/// and message, and its pane capture.
+struct Read<'a> {
+    ask: &'a str,
+    dialog: Option<&'a str>,
+    tool: &'a str,
+    message: &'a str,
+    pane: &'a str,
+}
+
+/// The preview's text, from what `preview` read: pure, so the order and the sections are tested.
+fn page(target: &str, f: &Facts, now: u64, width: usize, r: &Read) -> String {
+    use std::fmt::Write;
+    let Read { ask, dialog, tool, message, pane } = *r;
+    let mut s = String::new();
+    let place = if !f.repo_full.is_empty() { &f.repo_full } else { &f.project };
+    let mut status = vec![target.to_string()];
+    status.extend([place.clone(), f.status.clone()].into_iter().filter(|x| !x.is_empty()));
+    if f.plan {
+        status.push("plan mode".into());
+    }
+    if f.started_at.is_some() {
+        status.push(format!("open {}", age(now, f.started_at).trim_start()));
+    }
+    if !f.account.is_empty() {
+        status.push(f.account.clone());
+    }
+    let _ = writeln!(s, "{BOLD}{}{RESET}", status.join("  "));
+    if !f.summary.is_empty() {
+        let _ = writeln!(s, "{DIM}{}{RESET}", f.summary);
+    }
+    if !ask.is_empty() || dialog.is_some() {
+        // The one coloured title: it asks for the human (dashboards.md rule 5).
+        section(&mut s, "needs you", YELLOW, width);
+        s.push_str(ask);
+        if let Some(card) = dialog {
+            if !ask.is_empty() {
+                s.push('\n');
+            }
+            s.push_str(card);
+        }
+    }
+    if !tool.is_empty() {
+        let line: String = tool.lines().next().unwrap_or("").chars().take(width.saturating_sub(11)).collect();
+        let _ = write!(s, "\n{BOLD}last tool{RESET}  {line}\n");
+    }
+    if !message.is_empty() {
+        section(&mut s, "last message", BOLD, width);
+        let _ = writeln!(s, "{}", crate::md::plain(message, width));
+    }
+    if dialog.is_none() {
+        let tail = pane_tail(pane, PANE_TAIL);
+        if !tail.is_empty() {
+            section(&mut s, "pane", BOLD, width);
+            let _ = writeln!(s, "{}", tail.join("\n"));
+        }
+    }
+    s
+}
+
+/// A section title after a blank line, in `colour`, with a dim rule to the width.
+fn section(s: &mut String, title: &str, colour: &str, width: usize) {
+    let rule = "-".repeat(width.saturating_sub(title.chars().count() + 1).min(80));
+    s.push_str(&format!("\n{colour}{title}{RESET} {DIM}{rule}{RESET}\n"));
+}
+
+/// The last `n` lines of a plain pane capture above Claude Code's own chrome: its input box (a
+/// rule, the prompt line, a rule) and the status bar under it. Blank lines at either end go.
+pub fn pane_tail(capture: &str, n: usize) -> Vec<String> {
+    let mut lines: Vec<&str> = capture.lines().map(str::trim_end).collect();
+    let rule = |l: &str| {
+        let t = l.trim();
+        t.chars().count() >= 10 && t.chars().all(|c| c == '\u{2500}')
+    };
+    // The input box is the last two rules, a few lines apart with the prompt between them; cut
+    // at the upper one. Two rules of the agent's own output have no prompt between them.
+    let rules: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| rule(l)).map(|(i, _)| i).collect();
+    if let [.., upper, lower] = rules[..] {
+        let prompt = lines[upper + 1..lower].iter().any(|l| l.trim_start().starts_with('\u{276f}'));
+        if lower - upper <= INPUT_BOX_LINES && prompt {
+            lines.truncate(upper);
+        }
+    }
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    let start = lines.len().saturating_sub(n);
+    lines[start..].iter().skip_while(|l| l.trim().is_empty()).map(|l| l.to_string()).collect()
+}
+
 /// Pane lines at the foot of the preview.
-const PANE_TAIL: i32 = 12;
+const PANE_TAIL: usize = 8;
+/// The most lines Claude Code's input box spans between its two rules (a long typed prompt).
+const INPUT_BOX_LINES: usize = 10;
 
 #[cfg(test)]
 mod tests {
@@ -429,6 +538,95 @@ mod tests {
         assert!(agent("s:1", '✓', false, true).needs_attention());
         assert!(agent("s:1", '!', false, false).needs_attention());
         assert!(!agent("s:1", '~', true, false).needs_attention());
+    }
+
+    #[test]
+    fn the_map_line_carries_every_preview_fact_and_reads_back() {
+        let f = Facts {
+            jsonl: Some("/t/s.jsonl".into()),
+            project: "dotfiles".into(),
+            summary: "a\ttitle".into(),
+            repo_full: "dotfiles-agent-5".into(),
+            ask: "a1".into(),
+            status: "waiting".into(),
+            started_at: Some(42),
+            plan: true,
+            account: "bnb".into(),
+        };
+        let (target, back) = Facts::parse(&f.line("hub/s:1"));
+        assert_eq!(target, "hub/s:1");
+        assert_eq!(back, Facts { summary: "a title".into(), ..f });
+        // Negative control: a short line from an older panel reads its missing fields as empty.
+        let (_, old) = Facts::parse("hub/s:1\t\tproj");
+        assert_eq!(old, Facts { project: "proj".into(), ..Facts::default() });
+    }
+
+    /// The input box and status bar as Claude Code draws them under its output.
+    const PANE: &str = "\
+earlier line
+  \u{23bf}  picked 27
+\u{b7} Flowing\u{2026} (11m 16s)
+
+\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}
+\u{276f}\u{a0}
+\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}
+  \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle)
+
+";
+
+    #[test]
+    fn the_pane_tail_stops_above_the_input_box_and_status_bar() {
+        assert_eq!(pane_tail(PANE, 8), ["earlier line", "  \u{23bf}  picked 27", "\u{b7} Flowing\u{2026} (11m 16s)"]);
+        assert_eq!(pane_tail(PANE, 1), ["\u{b7} Flowing\u{2026} (11m 16s)"]);
+        // Negative control: a pane with no input box (a shell) keeps its foot.
+        assert_eq!(pane_tail("$ ls\nfile\n\n", 8), ["$ ls", "file"]);
+        // Negative control: two rules of the agent's own output, no prompt between, cut nothing.
+        let rule = "\u{2500}".repeat(10);
+        assert_eq!(pane_tail(&format!("a\n{rule}\nb\n{rule}\nc"), 8).len(), 5);
+    }
+
+    fn facts() -> Facts {
+        Facts { project: "dotfiles".into(), status: "waiting".into(), started_at: Some(0), summary: "doing it".into(), ..Facts::default() }
+    }
+
+    fn plain(s: &str) -> String {
+        let mut out = String::new();
+        let mut esc = false;
+        for c in s.chars() {
+            match (esc, c) {
+                (_, '\x1b') => esc = true,
+                (true, 'm') => esc = false,
+                (true, _) => {}
+                (false, c) => out.push(c),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_preview_reads_summary_first_then_needs_tool_message_and_pane() {
+        let p = plain(&page("hub/s:1", &facts(), 3600, 40, &Read { ask: "ASK CARD\n", dialog: None, tool: "Bash: make", message: "## Done\n**all** green", pane: PANE }));
+        let at = |needle: &str| p.find(needle).unwrap_or_else(|| panic!("{needle} missing:\n{p}"));
+        assert!(p.starts_with("hub/s:1  dotfiles  waiting  open 1h\ndoing it\n"), "{p}");
+        assert!(at("needs you") < at("ASK CARD") && at("ASK CARD") < at("last tool  Bash: make"));
+        assert!(at("last tool") < at("last message") && at("last message") < at("Done\nall green"));
+        assert!(at("last message") < at("pane") && p.trim_end().ends_with("(11m 16s)"), "{p}");
+        assert!(!p.contains("bypass permissions"), "the status bar is chrome: {p}");
+        // Amber is the needs title's alone; nothing in the preview is cyan or blue.
+        let raw = page("hub/s:1", &facts(), 3600, 40, &Read { ask: "x\n", dialog: None, tool: "t", message: "m", pane: PANE });
+        assert!(raw.contains(&format!("{YELLOW}needs you{RESET}")));
+        assert_eq!(raw.matches(YELLOW).count(), 1, "{raw:?}");
+        assert!(!raw.contains(CYAN) && !raw.contains(BLUE), "{raw:?}");
+    }
+
+    #[test]
+    fn a_dialog_card_replaces_the_pane_tail_and_nothing_waiting_shows_no_needs() {
+        let p = plain(&page("hub/s:1", &facts(), 0, 40, &Read { ask: "", dialog: Some("DIALOG CARD\n"), tool: "", message: "", pane: PANE }));
+        assert!(p.contains("needs you") && p.contains("DIALOG CARD"), "{p}");
+        assert!(!p.contains("Flowing") && !p.contains("\npane "), "the dialog is the pane: {p}");
+        // Negative control: nothing asked, no needs section; the pane shows.
+        let p = plain(&page("hub/s:1", &facts(), 0, 40, &Read { ask: "", dialog: None, tool: "", message: "", pane: PANE }));
+        assert!(!p.contains("needs you") && p.contains("Flowing"), "{p}");
     }
 
     #[test]

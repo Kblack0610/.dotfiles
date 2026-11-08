@@ -52,6 +52,10 @@ if [ ! -t 0 ] && command -v jq >/dev/null 2>&1; then
   read -r HOOK_SOURCE HOOK_SID < <(cat 2>/dev/null | jq -r '"\(.source // "-") \(.session_id // "")"' 2>/dev/null) || true
   [ "$HOOK_SOURCE" != - ] || HOOK_SOURCE=""
 fi
+# Preserve the first snapshot across resume and compaction.
+if [ -n "$HOOK_SID" ]; then
+  python3 "$(dirname "$0")/stop-session-changes.py" start "$PROJECT_DIR" "$HOOK_SID" 2>/dev/null || true
+fi
 startup_mark setup
 
 HEADER=$(
@@ -94,24 +98,6 @@ HEADER=$(
       echo "   Durable-layer pointers re-injected below. Run /compact-prep check if unsure nothing was lost."
     fi
     echo
-  fi
-
-  # The dream PROSE is no longer injected. It is a model's re-narration of the lessons
-  # the anchor's digest already carries -- a third surface for one fact, and the longest
-  # of the three. The mem0 queue COUNT stays, because it is the one part that is
-  # actionable and is not said anywhere else, and it now prints the command to drain it
-  # rather than just the number.
-  MEM0_QUEUE="$HOME/.agent/dreams/${PROJECT_NAME}/mem0-queue.md"
-  if [ -f "$MEM0_QUEUE" ]; then
-    # `grep -c` PRINTS 0 and exits 1 on no match, so `|| echo 0` appended a second 0
-    # and the `-gt` below died with "integer expected" on every empty queue.
-    pending=$(grep -c '^curl ' "$MEM0_QUEUE" 2>/dev/null | head -1)
-    pending=${pending:-0}
-    if [ "${pending:-0}" -gt 0 ]; then
-      echo "💤 $pending mem0 proposal(s) awaiting review — drain with:"
-      echo "     bash <(grep '^curl ' ${MEM0_QUEUE/#$HOME/\~})"
-      echo
-    fi
   fi
 )
 startup_mark header
@@ -158,8 +144,10 @@ startup_mark facts
 # nonzero. `notes board --agent` is read-only and never rewrites board.md.
 #
 # 6 rows, asks first (at most 3, so asks never hide every in-flight row), then the
-# "+N more" line. At 15 rows the board alone was 2.6 KB of turn 1.
+# "+N more" line, each row cut to BOARD_WIDTH characters: the title is what a resuming session
+# needs, and `notes board` has the rest. At 15 rows the board alone was 2.6 KB of turn 1.
 BOARD_MAX=6
+BOARD_WIDTH=160
 BOARD_ASKS=3
 SEC_BOARD=""
 if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2>&1; then
@@ -187,7 +175,11 @@ if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2
           END {
             for (i = 1; i <= r && shown < max; i++) { print rest[i]; shown++ }
             for (i = 1; i <= e && shown < max; i++) { print extra[i]; shown++ }
-          }' | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }'
+          }' | while IFS=$'\t' read -r proj text; do
+          # Cut in bash: it counts characters in a UTF-8 locale, where mawk and BSD awk count bytes.
+          [ "${#text}" -le "$BOARD_WIDTH" ] || text="${text:0:BOARD_WIDTH-3}..."
+          printf '  [%s] %s\n' "$proj" "$text"
+        done
         # Say what was dropped. A silent truncation reads as "that is all of it", which is
         # the same failure as an empty channel reporting nothing to report.
         if [ "${agent_total:-0}" -gt "$BOARD_MAX" ]; then
