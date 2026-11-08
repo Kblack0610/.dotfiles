@@ -323,6 +323,20 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = tonight ]
 }
 
+@test "the night window is the clock hours' night part, and with none a night item holds and says why" {
+  "$AQ" add --project game --slug tonight --tags night "a"
+  export MACHINE_MODE_HOURS="$BATS_TEST_TMPDIR/hours"
+  printf 'day|02:00-22:00|open|x\nnight|22:00-02:00|full|y\n' > "$MACHINE_MODE_HOURS"
+  AGENT_QUEUE_NOW=22:30 run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = tonight ]
+  AGENT_QUEUE_NOW=03:00 run "$AQ" next --json
+  [ "$(jq -r '.slug // empty' <<<"$output")" != tonight ]
+  printf 'day|00:00-24:00|open|x\n' > "$MACHINE_MODE_HOURS"
+  AGENT_QUEUE_NOW=02:00 run "$AQ" next --json
+  [ "$(jq -r '.slug // empty' <<<"$output")" != tonight ]
+  [ "$(jq -r .hold <<<"$("$AQ" show tonight --json)")" = "night (the hours file has no night part)" ]
+}
+
 @test "a dated at: tag holds across days until its moment; at:HH:MM alone does not" {
   "$AQ" add --project game --slug tomorrow --tags "at:2026-11-05T09:00" "a"
   "$AQ" add --project game --slug clock --tags "at:09:00" "b"

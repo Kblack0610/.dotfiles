@@ -2675,8 +2675,6 @@ present_left() {
   echo $(( n > 0 ? n : 0 ))
 }
 
-# human_here -> rc 0 unless fleet-presence says away. Unreadable counts as here: the slower rate.
-human_here() { case "$(fleet-presence 2>/dev/null)" in away*) return 1 ;; esac; return 0; }
 
 # queue_depth -> the queued items no hold stops, those waiting on the trickle included: what the
 # low water mark measures.

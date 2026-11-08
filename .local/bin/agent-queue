@@ -46,8 +46,11 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # The one reader of a plan's `## Phases` checklist and `epic:` line, shared with fleet-sessions.
 # shellcheck source=../lib/plan-phases.sh
 . "${PLAN_PHASES_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh}"
-# The night window a `night` item may start in, local time; it may wrap midnight.
-AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
+# shellcheck source=../lib/machine-mode.sh
+. "${MACHINE_MODE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh}"
+# The night window a `night` item may start in, local time, which may wrap midnight: the `night`
+# part of the system's clock hours (.config/machine-mode/hours).
+AQ_NIGHT="${AGENT_QUEUE_NIGHT:-$(clock_window night)}"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
@@ -298,14 +301,6 @@ cmd_admission() {
   fi
 }
 
-# hhmm_in <HH:MM> <from-to> -> true when the time is inside the window, which may wrap midnight.
-hhmm_in() {
-  local t="${1/:/}" a="${2%-*}" b="${2#*-}"
-  a="${a/:/}"; b="${b/:/}"
-  if [ "$a" -le "$b" ]; then [ "$t" -ge "$a" ] && [ "$t" -lt "$b" ]
-  else [ "$t" -ge "$a" ] || [ "$t" -lt "$b" ]; fi
-}
-
 # hold_reason <file> -> why a queued item cannot start yet, or nothing when it can.
 hold_reason() {
   local HOLD=""
@@ -354,7 +349,9 @@ hold_for() {
   now="${stamp#*T}"
   for tag in $tags; do
     case "$tag" in
-      night) hhmm_in "$now" "$AQ_NIGHT" || { HOLD="night ($AQ_NIGHT)"; return; } ;;
+      night)
+        [ -n "$AQ_NIGHT" ] || { HOLD="night (the hours file has no night part)"; return; }
+        hhmm_in "$now" "$AQ_NIGHT" || { HOLD="night ($AQ_NIGHT)"; return; } ;;
       at:[0-9][0-9]:[0-9][0-9]) [ "${now/:/}" -ge "${tag//[!0-9]/}" ] || { HOLD="$tag"; return; } ;;
       at:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]) [[ ! "$stamp" < "${tag#at:}" ]] || { HOLD="$tag"; return; } ;;
       pr:?*/?*#[0-9]*)
