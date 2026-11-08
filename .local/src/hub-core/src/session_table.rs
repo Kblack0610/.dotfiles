@@ -72,6 +72,8 @@ pub struct SessionRow {
     /// What the selection follows: the target of a live row, else the item or session id.
     pub key: String,
     pub bucket: String,
+    /// What a live session is doing now, fleet-sessions' `activity_line`; blank for other rows.
+    pub activity: String,
     pub project: String,
     /// The queue item's title, else the session's topic.
     pub task: String,
@@ -112,8 +114,8 @@ pub fn spend<'a>(rows: impl IntoIterator<Item = &'a SessionRow>) -> f64 {
 
 impl Row for SessionRow {
     const COLUMNS: &'static [&'static str] = &[
-        "bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness", "item",
-        "source", "session",
+        "bucket", "activity", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness",
+        "item", "source", "session",
     ];
     /// `all` comes first because the first chip keeps every row.
     const STATES: &'static [&'static str] =
@@ -130,6 +132,7 @@ impl Row for SessionRow {
         };
         match col {
             "bucket" => text(&self.bucket),
+            "activity" => text(&self.activity),
             "project" => text(&self.project),
             "task" => text(&self.task),
             "pr" => text(&self.pr_state),
@@ -285,6 +288,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
     SessionRow {
         key: str_of(s, "target").to_string(),
         bucket: str_of(s, "bucket").to_string(),
+        activity: str_of(s, "activity_line").to_string(),
         project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
         task: item.map_or_else(|| headline(topic).0, |i| i.title()),
         item: slug.to_string(),
@@ -605,6 +609,18 @@ mod tests {
         assert_eq!(hand.project, "dotfiles");
         assert_eq!(hand.pr.as_deref(), Some("12"));
         assert_eq!(hand.pr_state, "open");
+    }
+
+    #[test]
+    fn a_live_row_carries_fleet_sessions_activity_line_and_sorts_by_it() {
+        let mut s = state();
+        s[0]["activity_line"] = json!("waiting on CI 4m");
+        let r = rows(&s, &vocab(), &feed(), &[]);
+        let own = r.iter().find(|x| x.target == "lab/d:1").unwrap();
+        assert_eq!(own.activity, "waiting on CI 4m");
+        assert_eq!(own.val("activity"), Val::Text("waiting on CI 4m".into()));
+        let hand = r.iter().find(|x| x.target == "lab/d:2").unwrap();
+        assert_eq!(hand.val("activity"), Val::None, "no activity_line reads as blank");
     }
 
     #[test]
