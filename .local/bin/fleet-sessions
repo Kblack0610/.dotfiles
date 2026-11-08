@@ -618,25 +618,36 @@ gate_line_only() {
   done
 }
 
-# pr_made_here <dir> <N> <branch> <session_prs JSON> <transcript> <plan|-> -> true when this
-# session made PR #N of <dir>'s repo: it opened or merged it (session_prs, a Forgejo repo's host
-# dropped, since the clone's origin names only owner/repo), its plan's Phases name
-# #N (bare, not <repo>#N), its transcript holds the PR's URL, or it pushed <branch> (the command,
-# or git's `-> <branch>` line for a bare `git push`). Worktrees are shared and recycled,
-# so a PR found by branch name alone may be another session's: trader-real-money-plan read LANDED
-# on #42 of another plan that had used the same branch (2026-11-06).
+# pr_made_here <dir> <N> <branch> <session_prs JSON> <transcript> <plan|-> [<other plans>] -> true
+# when this session made PR #N of <dir>'s repo: its plan's Phases name #N (bare, not <repo>#N), it
+# opened or merged it (session_prs, a Forgejo repo's host dropped, since the clone's origin names
+# only owner/repo), or, when no plan in <other plans> (newline-separated: the plans of the other
+# windows in this worktree) names #N, its transcript holds the PR's URL or it pushed <branch> (the
+# command, or git's `-> <branch>` line for a bare `git push`). A PR belongs to the plan it served:
+# worktrees and branch names are shared and recycled, and a session that reads another window's PR
+# (`gh pr view` prints its URL) holds it in its transcript. trader-real-money-plan read LANDED on
+# #42 and #50 of so-how-do-i-velvet-pine, run in another window of its worktree (ar-492).
 pr_made_here() {
-  local repo n="$2" br="$3" t="$5" plan="$6" re
+  local repo n="$2" br="$3" t="$5" plan="$6" other re
   repo="$(origin_repo "$1")"
+  phases_name "$plan" "$n" && return 0
   jq -e --arg r "${repo,,}" --argjson n "$n" 'any(.[]; (.repo | ascii_downcase | split("/")[-2:] | join("/")) == $r and .number == $n)' \
     <<<"$4" >/dev/null 2>&1 && return 0
-  [ "$plan" != - ] && [ -f "$plan" ] \
-    && sed -n '/^## Phases/,/^## /p' "$plan" | grep -qE "(^|[^A-Za-z0-9_./-])#$n([^0-9]|$)" && return 0
+  # The same plan under another account's plans dir is this plan, not another window's.
+  while IFS= read -r other; do
+    [ -n "$other" ] && [ "${other##*/}" != "${plan##*/}" ] && phases_name "$other" "$n" && return 1
+  done <<<"${7:-}"
   [ -f "$t" ] || return 1
   [ -n "$repo" ] && grep -qiE "github\.com/$(re_quote "$repo")/pull/$n([^0-9]|$)" "$t" && return 0
   [ "$br" != - ] || return 1
   re="$(re_quote "$br")"
   grep -qE "(git push[^\"]*( |:|refs/heads/)| -> )$re([^A-Za-z0-9._/-]|$)" "$t"
+}
+
+# phases_name <plan|-> <N> -> true when the plan's ## Phases section names #N (bare, not <repo>#N).
+phases_name() {
+  [ "$1" != - ] && [ -f "$1" ] \
+    && sed -n '/^## Phases/,/^## /p' "$1" | grep -qE "(^|[^A-Za-z0-9_./-])#$2([^0-9]|$)"
 }
 
 # re_quote <text> -> <text> with ERE metacharacters escaped.
@@ -1192,7 +1203,9 @@ collect() {
     # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
     # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
     if [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \
-       && ! pr_made_here "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf"; then
+       && ! pr_made_here "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf" \
+              "$(jq -r --arg c "$cwd" --arg s "$sid" 'select(.cwd == $c and .session_id != $s and (.host // "-") == "-")
+                  | .plan_file // empty' <<<"$panel" 2>/dev/null)"; then
       [ "$inpr" = 1 ] && ahead=0
       pr=- state=- ci=- oid=-
     fi
