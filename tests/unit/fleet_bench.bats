@@ -2245,6 +2245,11 @@ chain_fixture() {
   # a running item no session owns
   item lost running high human '{"pr":"o/r#7"}' >> "$SANDBOX/items.jsonl"
   check 'ownerless_running 1 (max 0)'
+  # one parked in waiting/ on its open PR counts too, and the table names it (#909, #910)
+  item parked waiting high human '{"pr":"o/r#8"}' >> "$SANDBOX/items.jsonl"
+  run "$SUBJECT" chain
+  assert_line 'ownerless_running: parked'
+  check 'ownerless_running 1 (max 0)'
   # an agent row in a project with an open epic, filed under no epic
   jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "g-6", type: "fix", tags: []},
                    {project: "game", lane: "agent", state: "open", id: "g-7", type: "fix", tags: []}]' "$BJSON.ok" > "$BJSON"
