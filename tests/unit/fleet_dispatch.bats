@@ -5416,13 +5416,17 @@ focus_on() {
   project app beta "$SANDBOX/repos/app"
   row app human 'asked one' '- [ ] asked one #requested <!-- id:gm-7 -->'
   row app human 'plain one' '- [ ] plain one <!-- id:gm-8 -->'
+  row app human 'asked two' '- [ ] asked two #requested <!-- id:gm-9 -->'
   focus_on game
   for k in 7 8; do
     run promote "$(jq -cn --arg k "gm-$k" '{profile: "bnb", project: "app", lane: "human", key: $k}')" "" task
     assert_success
   done
+  run promote "$(jq -cn '{profile: "bnb", project: "app", lane: "human", key: "gm-9"}')" requested task
+  assert_success
   assert_equal "$(qfield "$(qitem queued gm-7)" tags)" requested
   assert_equal "$(qfield "$(qitem queued gm-8)" tags)" ''
+  assert_equal "$(qfield "$(qitem queued gm-9)" tags)" requested
   run agent-queue list --json --state queued
   assert_equal "$(jq -r 'select(.slug == "gm-7") | .hold // "none"' <<<"$output")" none
   assert_equal "$(jq -r 'select(.slug == "gm-8") | .hold' <<<"$output")" 'focus: only game'

@@ -3264,7 +3264,8 @@ promote() {
     return 1
   fi
   # A #requested row's item carries the tag, so a focus on other projects does not hold it (focus_hold).
-  [[ "${line%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && tags="${tags:+$tags }requested"
+  [[ " $tags " == *" requested "* ]] || [[ ! "${line%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] ||
+    tags="${tags:+$tags }requested"
   # The row's words are the item's title: no checkbox, id comment or #tags.
   local title
   title=$(sed -E 's/^- \[.\] //; s/<!--[^>]*-->//g; s/(^| )#[A-Za-z0-9_/:.-]+//g; s/ +$//' <<<"$line")

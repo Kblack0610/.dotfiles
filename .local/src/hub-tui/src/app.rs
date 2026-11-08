@@ -4098,7 +4098,7 @@ mod tests {
         assert!(fake.0.lock().unwrap().is_empty(), "no row, no write");
         a.handle(key('x'));
         a.handle(key('P'));
-        assert_eq!(a.tv.running.as_deref(), Some("demo prio only"));
+        assert_eq!(a.tv.running.as_deref(), Some("demo prio high"));
         loop {
             if let Msg::TasksActed(r) = rx.recv().unwrap() {
                 a.handle(Msg::TasksActed(r));
@@ -4108,7 +4108,7 @@ mod tests {
         let ran = fake.0.lock().unwrap().clone();
         assert!(
             ran.iter()
-                .any(|c| c == "notes projects --prio demo --profile bnb --set only"),
+                .any(|c| c == "notes projects --prio demo --profile bnb --set high"),
             "{ran:?}"
         );
     }

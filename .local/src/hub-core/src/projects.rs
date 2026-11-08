@@ -50,14 +50,13 @@ pub struct Stats {
     pub status_date: String,
 }
 
-/// The priority after `cur` in the cycle a key steps through: normal, focus, only, high, low.
-/// `focus` comes before `only` so one press ranks a project first and a second press makes the
-/// fleet work on it alone.
+/// The priority after `cur` in the cycle a key steps through: normal, focus, high, low. `only`
+/// (the fleet works on nothing else) is never a step, so a key press cannot turn it on: it is set
+/// by `notes projects --prio <p> --set only`, and one press from it clears it.
 pub fn next_prio(cur: &str) -> &'static str {
     match cur {
         "" => "focus",
-        "focus" => "only",
-        "only" => "high",
+        "focus" => "high",
         "high" => "low",
         _ => "normal",
     }
@@ -216,7 +215,7 @@ impl crate::table::Row for Card {
     fn rank(&self, col: &str) -> Val {
         match col {
             // `next_prio`'s words, normal being blank, lowest first.
-            "prio" => ["low", "", "high", "focus"]
+            "prio" => ["low", "", "high", "focus", "only"]
                 .iter()
                 .position(|p| *p == self.prio)
                 .map_or(Val::None, |i| Val::Num(i as f64)),
@@ -535,10 +534,10 @@ mod tests {
     #[test]
     fn the_prio_key_cycles_and_writes_through_the_cli_only() {
         assert_eq!(next_prio(""), "focus");
-        assert_eq!(next_prio("focus"), "only");
-        assert_eq!(next_prio("only"), "high");
+        assert_eq!(next_prio("focus"), "high");
         assert_eq!(next_prio("high"), "low");
         assert_eq!(next_prio("low"), "normal");
+        assert_eq!(next_prio("only"), "normal");
         let r = Argv(Default::default());
         set_prio(&r, "bnb", "shape-city", "focus").unwrap();
         assert_eq!(

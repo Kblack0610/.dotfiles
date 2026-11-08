@@ -184,6 +184,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   run tip
   assert_output --partial "focus: <span color='$Y'>only 2 project(s)</span>, 7 queued held off it (reds, urgent and #requested still run)"
+  assert_output --partial "on a time tag, 7 off focus)"
   feed summary_dispatch.focus_projects=0
   run "$MODULE"
   run tip

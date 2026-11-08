@@ -74,7 +74,7 @@ A dispatched session is an ordinary session from then on: the `shepherd` buckets
 
 ## Steering the fleet onto projects: `#prio`
 
-One store sets project precedence: the `#prio/<word>` head tag on a project's lab front page, set by `notes projects --prio <p> --set <word>` or `P` on the hub Projects tab (`notes projects --prios` lists them).
+One store sets project precedence: the `#prio/<word>` head tag on a project's lab front page, set by `notes projects --prio <p> --set <word>` or `P` on the hub Projects tab, which steps normal, focus, high, low and never sets `only` (`notes projects --prios` lists them).
 
 - `focus`, `high`, `low`: rank keys only. Board picks (RANK_JQ `pprio`) and queue order (agent-queue `ORDER` `$rank`) put focus first, then high, normal, low. Nothing is filtered.
 - `only`: while any project carries it, automated starts take only those projects' work. agent-queue holds every other queued item `focus: only <projects>` (so the run pass, the project floor, `after:` chains and plan phases all wait), and board and night intake skip their rows (`row_off`, so `candidates --suggest` names it). Exempt: a `red` item, an `urgent` one, a `requested` one (`promote` tags a `#requested` row's item), and a `#requested` or `#urgent` row. Running sessions finish; a hand `start --item` and `cl` are never refused.
