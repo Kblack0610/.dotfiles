@@ -119,10 +119,10 @@ emit() {
 }
 
 # hand_fired <conf> -> 0 when nothing starts the runner on a clock: no SCHEDULE and no
-# AUTOSTART=yes. Same test as fleet-bench's scheduled_runner (fleet-liveness's roster). Its
-# last verdict is one old run's, so it is not a fault the Overview row can clear.
+# AUTOSTART=yes, the SCHEDULE/AUTOSTART test of fleet-bench's scheduled_runner. Its last
+# verdict is one old run's, so it is not a fault the Overview row can clear.
 hand_fired() {
-    ! grep -qE '^SCHEDULE=["'"'"']?[^"'"'"' ]' "$1" && ! grep -qE '^AUTOSTART=["'"'"']?yes' "$1"
+    ! grep -qE '^(SCHEDULE=["'"'"']?[^"'"'"' ]|AUTOSTART=["'"'"']?yes)' "$1"
 }
 
 snapshot() {
