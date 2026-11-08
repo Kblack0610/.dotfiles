@@ -28,12 +28,12 @@ Targets live in `project-map.json` under `trackers.<project>.targets`, one objec
 | `id` | Unique across the registry, lowercase and `-`. Also the GitHub Deployments environment its deploy workflow records under |
 | `channel` | `prod`, `beta`, `alpha`, `preview` or `internal` |
 | `where` | Free text for the UI: the cluster or store |
-| `pinned` | `{"tag": true}` (the project's newest release tag), or `repo` (a registry key) + `path` + one of `key` (first `<key>:` line, default `tag`) or `image` (a kustomize `images:` `newTag` for that name, else `image: <name>:<tag>`). `branch` defaults to the repo's registry `branch`, then `origin/HEAD` |
-| `live` | `{"k8s": {context, namespace, deployment, container?}}` (the running image tag), or `{"health": {url, field?}}` (a served commit SHA, default field `commit`), or absent |
+| `pinned` | `{"tag": true}` (the project's newest release tag), `{"deployed": true}` (a store channel: the newest successful GitHub Deployment under the target id, because no file pins a store), or `repo` (a registry key) + `path` + one of `key` (first `<key>:` line, default `tag`) or `image` (a kustomize `images:` `newTag` for that name, else `image: <name>:<tag>`). `branch` defaults to the repo's registry `branch`, then `origin/HEAD` |
+| `live` | `{"k8s": {context, namespace, deployment, container?}}` (the running image tag), `{"health": {url, field?}}` (a served commit SHA, default field `commit`), `{"steam": {app, branch}}` (the default branch is `public` here), `{"play": {package, track}}`, `{"testflight": {app}}` (the numeric Apple ID), or absent |
 | `telemetry` | Sentinel watch names that must exist and be OK |
 | `deps` | Registry projects this one depends on |
 
-A shipping app (`type: app`) with no targets gets one implicit `release` row: its newest release tag. Games get their rows from store channels in a later phase. `project-map-doctor` check 4c validates every target.
+A shipping app (`type: app`) with no targets gets one implicit `release` row: its newest release tag. Games get their rows from their store targets. `project-map-doctor` check 4c validates every target.
 
 ## Deploy history
 
@@ -48,6 +48,24 @@ The workflow that deploys a target records one GitHub Deployment: `environment` 
 
 A target nothing records under, or a project whose repo is not on GitHub, has an empty history and `-` in both columns. The target ids are stable before their row exists: a store target's workflow records under `<game>-steam-<branch>`, `<game>-play-<track>`, `<game>-testflight`, `pmp-android-<track>` (`prod` for production), `pmp-ios-testflight` or `pmp-ios-prod`, so a registry row added later reads its whole history. Recording is the `record-deployment` action in each repo; it uses `auto_inactive: false` because GitHub's default rewrites each earlier success to `inactive`, which would erase PREV.
 
+## Store channels
+
+| Store | Live value | Compared with the pin |
+|---|---|---|
+| Steam | The tag in the description of the build the branch is on (`<build> <tag> <sha>`, written by the upload), with the BuildID in `live.build`. A build with no tag shows its BuildID | Exactly |
+| Play | The name of the published release with the highest version code, from the edit-free `tracks.releases.list`, with the code in `live.build`. Never `edits.insert`: an open edit can invalidate an upload running at the same time | Exactly; a release named only `x.y.z` compares as TestFlight does |
+| TestFlight | `<marketing version> (<build>)` of the newest processed iOS build | The pin's first `x.y.z` against the marketing version, so two tags that share a version compare equal |
+
+### Store credentials
+
+Each store has its own read-only credential in rbw, read once per refresh and only when a target needs it. Never point these at the release keys the upload workflows use. A locked vault is not unlocked: every store row says `rbw is locked`.
+
+| rbw entry (password field, one line) | Contents | Scope |
+|---|---|---|
+| `release_state_steam` | The publisher Web API key | Key of a Steamworks group with no edit or publish rights |
+| `release_state_play` | The service-account JSON, minified | Play Console "View app information", no release rights |
+| `release_state_asc` | `{"key_id", "issuer_id", "p8"}`, with `p8` the `.p8` file in base64 | App Store Connect Developer role |
+
 ## Statuses
 
 | Status | Meaning |
@@ -56,7 +74,7 @@ A target nothing records under, or a project whose repo is not on GitHub, has an
 | `unknown` | A probe failed (fetch, kubectl, health); the row says which in `pinned.error` or `live.error` |
 | `floating` | Pinned or live is `latest`, so no version can be named |
 | `ok` | Live equals pinned, or the served SHA is the pinned tag's commit |
-| `released` | A tag-only row: the newest tag, with no live source |
+| `released` | Nothing to compare: a tag-only row (the newest tag, no live source), or a store channel with no recorded upload (the store's value, pin `-`) |
 | `unreleased` | An app with no release tag yet |
 
 ## Troubleshooting
@@ -67,5 +85,8 @@ A target nothing records under, or a project whose repo is not on GitHub, has an
 | A row is `unknown` with `kubectl get failed` | The context is missing from `kubectl config get-contexts`, or the deployment name is wrong |
 | PREV and LAST DEPLOY say `?` | `gh` is not logged in where the runner runs, or the API was down; the row's `deploys.error` says which call failed |
 | PREV and LAST DEPLOY say `-` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly |
+| A store row is `unknown` with `rbw is locked` | The vault locked; run `rbw unlock`. The collector never unlocks it or raises pinentry |
+| A store row is `unknown` with `no rbw entry <name>` | The read-only credential is not made yet: see Store credentials |
+| A Steam row is `unknown` with `no branch <name> on the app` | The branch does not exist on that app yet, or the registry says `default` where Steam says `public` |
 | A row is `unknown` with `no checkout for repo` | The repo key has no `paths` entry in the registry on this machine |
-| A game shows no row | Expected until store channels land. Playground tags (`v0.5.0-barrage5`) number playground builds; a game's own version lives on its sheet, so a playground tag glob on a game makes the doctor report its sheet as behind |
+| A game shows no row | It has no store target in the registry. Playground tags (`v0.5.0-barrage5`) number playground builds; a game's own version lives on its sheet, so a playground tag glob on a game makes the doctor report its sheet as behind |
