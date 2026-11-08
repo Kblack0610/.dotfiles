@@ -28,15 +28,23 @@ transcripts() {
   local P="$T/-home-u-proj"
   mkdir -p "$P/s1/subagents"
   export CLAUDE_TRANSCRIPTS="$T"
-  # alpha's body loads; beta's SKILL.md is read; gamma's script runs; delta runs as a CLI;
-  # a call naming eps only as an argument is not a mention; a grep over three skills is corpus
-  # work and counts for none of them.
+  # alpha's body loads; beta's SKILL.md is read; gamma's script runs; delta runs as a CLI.
+  # None of these is use of eps: naming it as an argument or inside a heredoc, reading its
+  # SKILL.md in the source tree (authoring), or a grep over three skills (corpus work). zeta
+  # has no CLI on PATH, so a command line that opens with its name is a word, not a run.
+  mkdir -p "$SANDBOX/bin"
+  printf '#!/bin/sh\n' > "$SANDBOX/bin/delta"; cp "$SANDBOX/bin/delta" "$SANDBOX/bin/eps"
+  chmod +x "$SANDBOX/bin/delta" "$SANDBOX/bin/eps"
+  export PATH="$SANDBOX/bin:$PATH"
   cat > "$P/s1.jsonl" <<EOF
 {"type":"user","isMeta":true,$cli,$cwd,$ts,"message":{"role":"user","content":"Base directory for this skill: /home/u/.claude/skills/alpha\n\n# alpha"}}
 {"type":"assistant",$cli,$cwd,$ts,"message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/home/u/.claude/skills/beta/SKILL.md"}}]}}
 {"type":"assistant",$cli,$cwd,$ts,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"~/.claude/skills/gamma/scripts/run.sh --x"}}]}}
 {"type":"assistant",$cli,$cwd,$ts,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"FOO=1 delta --list | head"}}]}}
 {"type":"assistant",$cli,$cwd,$ts,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo eps"}}]}}
+{"type":"assistant",$cli,$cwd,$ts,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit -F - <<'X'\neps is done\nX\nzeta and more"}}]}}
+{"type":"assistant",$cli,$cwd,$ts,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit -m \"title\neps in the body\" && ls"}}]}}
+{"type":"assistant",$cli,$cwd,$ts,"message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/home/u/.dotfiles/.claude/skills/ops/eps/SKILL.md"}}]}}
 {"type":"assistant",$cli,$cwd,$ts,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"grep -l x ~/.claude/skills/zeta/SKILL.md ~/.claude/skills/alpha/SKILL.md ~/.claude/skills/eps/SKILL.md"}}]}}
 EOF
   # A subagent's skill body counts; its dispatch prompt is not typed.
@@ -106,11 +114,12 @@ overrides() {
 }
 
 # agentctl-skill-toggle reads origin/main of a fixture repo; the stub recall stands in for use.
+# The settings file is written in jq's format unless $2 is raw.
 toggle_repo() {
   git init -q -b main "$SANDBOX/origin.git" --bare
   git init -q -b main "$DOTFILES"
   mkdir -p "$DOTFILES/.claude"
-  echo "$1" > "$DOTFILES/.claude/settings.json"
+  if [ "${2:-}" = raw ]; then echo "$1"; else jq . <<<"$1"; fi > "$DOTFILES/.claude/settings.json"
   git -C "$DOTFILES" add .claude/settings.json
   git -C "$DOTFILES" -c user.email=t@t -c user.name=t commit -qm init
   git -C "$DOTFILES" remote add origin "$SANDBOX/origin.git"
@@ -144,4 +153,22 @@ toggle_repo() {
   run "$TOGGLE" --dry-run
   assert_success
   assert_output --partial 'hide 0, restore 1 (beta)'
+}
+
+@test "a toggle PR from an earlier night still open is BLOCKED, not FAILED" {
+  toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
+  printf '#!/usr/bin/env bash\necho 77\n' > "$SANDBOX/bin-gh"; mkdir -p "$SANDBOX/ghbin"
+  mv "$SANDBOX/bin-gh" "$SANDBOX/ghbin/gh"; chmod +x "$SANDBOX/ghbin/gh"
+  printf 'proof_outcome() { echo "verdict $2"; }\n' > "$HOME/.local/lib/agent-proof.sh"
+  PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
+  assert_success
+  assert_output --partial 'verdict BLOCKED'
+  assert_output --partial 'PR #77 is still open'
+}
+
+@test "a settings file jq would reformat stops the toggle before it makes anything" {
+  toggle_repo '{"skillOverrides": {"beta": "name-only"}}' raw
+  run "$TOGGLE" --dry-run
+  assert_failure
+  assert_output --partial "not in jq's format"
 }

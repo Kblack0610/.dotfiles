@@ -449,13 +449,20 @@ def skill_names():
 
 def skill_of_path(path, names):
     """(kind, skill) for a path under a skills/ dir: read for its SKILL.md, script for any other
-    file. A source tree nests skills under a category (skills/ops/<name>/), so the skill is the
-    first segment that names a deployed skill, or with none known the first one."""
+    file. Only the deployed layout (skills/<name>/) counts: the source tree nests skills under a
+    category (skills/ops/<name>/), and a call there is authoring the skill, not using it."""
     segs = path.split("/")
-    hit = next((x for x in segs if x in names), None) if names else segs[0]
-    if not hit or hit == "SKILL.md":
+    hit = segs[0]
+    if (names and hit not in names) or hit == "SKILL.md":
         return None
     return ("read" if segs[-1] == "SKILL.md" else "script"), hit
+
+
+@functools.lru_cache(maxsize=None)
+def cli_names(names):
+    """The skills that ship a CLI of their name on PATH. A mention of any other name is a word
+    (scope, release, loop), never a command run."""
+    return frozenset(n for n in names if shutil.which(n))
 
 
 # A call that touches more skills than this is corpus work (an audit loop, a grep over the
@@ -477,7 +484,7 @@ def tool_use_events(name, inp, names):
             hit = skill_of_path(m.group(1), names)
             if hit:
                 out.add(hit)
-        out.update(("mention", x) for x in bash_heads(cmd) & names)
+        out.update(("mention", x) for x in bash_heads(cmd) & cli_names(names))
     return out if len({k for _, k in out}) <= CORPUS_CALL_SKILLS else set()
 
 # A typed command record opens with its tag; one quoted inside a summary or paste does not.
@@ -702,7 +709,7 @@ def cmd_stats(a):
     if "intent" in kinds and not intents:
         print(f"claude-recall stats: no intents in {intents_path()}", file=sys.stderr)
     covers = {name: skills for name, skills, _ in intents}
-    names = skill_names() if kinds & set(USE_KINDS) else set()
+    names = frozenset(skill_names()) if kinds & set(USE_KINDS) else frozenset()
     agg = {}
     used = {}  # session -> skills and slash commands it ran, for intent coverage
 
@@ -831,10 +838,21 @@ def seg_words(seg):
     return w
 
 
+HEREDOC_RE = re.compile(r"(?<!<)<<-?\s*['\"]?\w")
+DQUOTE_RE = re.compile(r'(?<!\\)"')
+
+
 def bash_heads(cmd):
-    """The basename of every command a Bash call runs, one per segment and line."""
-    return {os.path.basename(w[0]) for line in cmd.splitlines()
-            for w in map(seg_words, SEGMENTS.split(line.strip())) if w}
+    """The basename of every command a Bash call runs, one per segment and line. A heredoc body
+    and the inner lines of a multi-line double-quoted string are text, not commands."""
+    heads, quoted = set(), False
+    for line in cmd.splitlines():
+        if not quoted:
+            heads.update(os.path.basename(w[0]) for w in map(seg_words, SEGMENTS.split(line.strip())) if w)
+        if HEREDOC_RE.search(line):
+            break
+        quoted ^= len(DQUOTE_RE.findall(line)) % 2 == 1
+    return heads
 
 
 def bash_head(cmd):
