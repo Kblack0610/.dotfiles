@@ -115,8 +115,8 @@
 #                                file SKILL_SETTINGS (~/.claude/settings.json). A skill another
 #                                SKILL.md or a CLAUDE.md layer names (routes to) is never hidden
 #                                and never restored for that alone; a used one is restored. A
-#                                `paths:` or disable-model-invocation skill is not listed, so
-#                                it is left alone, and so is any value other than "name-only".
+#                                `paths:` or disable-model-invocation skill is never toggled,
+#                                nor is an override value other than "name-only".
 #                                Prints the hide and restore lists; --json adds the object. The
 #                                nightly skill-toggle runner lands it (agentctl-skill-toggle).
 #                                Exit 2 when no use is counted at all: no transcripts is not
@@ -160,7 +160,7 @@ TOGGLE_DAYS="${SKILL_TOGGLE_DAYS:-30}"
 SETTINGS="${SKILL_SETTINGS:-$HOME/.claude/settings.json}"
 # Every sign a skill was used: a Skill call, a typed command, its body loaded, its SKILL.md
 # read, a file under it run, its CLI run. Counting only the first two hid skills that
-# sessions reach by a route or a queue brief (2026-11, the 35 of dotfiles #1450).
+# sessions reach by a route or a queue brief.
 USE_KINDS=skill,slash,body,read,script,mention
 # The one usage counter, by path beside this script: a worktree run uses the worktree's copy.
 # It honours CLAUDE_TRANSCRIPTS itself.
