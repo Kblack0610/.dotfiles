@@ -1,0 +1,4 @@
+# Lanes `fleet-bench retro` canaries beside the claude lane each week: `harness model`, one a line.
+# A lane runs only when the source its harness spends from (harnesses.json `source`) has room.
+codex sol
+glm glm

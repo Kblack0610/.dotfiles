@@ -94,6 +94,23 @@ fake_claude() {
   assert_equal "$(jq -r '[.exit, .raw] | @tsv' "$CALLS")" "$(printf '3\tAPI Error: overloaded')"
 }
 
+@test "a call its caller kills still writes its line, with the signal's exit code" {
+  # The fake call says it is up on one fifo, then blocks on another nobody writes: no timing.
+  mkfifo "$SANDBOX/started" "$SANDBOX/never"
+  printf '#!/usr/bin/env bash\necho $$ > "%s"\nread -r _ < "%s"\n' "$SANDBOX/started" "$SANDBOX/never" > "$SANDBOX/bin/claude"
+  "$RUN" --agent judge -p x >/dev/null 2>&1 &
+  local pid=$! rc=0 child
+  # A guard, not a wait: a run that dies before the call opens the fifo fails here, never hangs.
+  child=$(timeout 20 cat "$SANDBOX/started") || fail "the call never started"
+  kill -TERM "$pid"
+  wait "$pid" || rc=$?
+  assert_equal "$rc" 143
+  assert_equal "$(jq -r '[.agent, .exit, (.duration_ms | type)] | @tsv' "$CALLS")" "$(printf 'judge\t143\tnumber')"
+  # The kill reached the call itself: no orphan keeps running after its record.
+  run kill -0 "$child"
+  assert_failure
+}
+
 # schema_conf: the fixture judge with a SCHEMA key, and a reply that fills it.
 schema_conf() {
   printf '{"type":"object","properties":{"call":{"type":"string"}}}\n' > "$SANDBOX/verdict.schema.json"

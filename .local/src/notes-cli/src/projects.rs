@@ -1075,7 +1075,7 @@ pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
 }
 
 /// The row grammar the board feed parses, per top-level row: a retired priority word, two
-/// priorities, a retired tag or `since:` stamp, a malformed tier, `#size/xl` on a row that
+/// priorities, two created stamps on an open row, a retired tag or `since:` stamp, a malformed tier, `#size/xl` on a row that
 /// is not an epic, an epic on the agent board, and on the agent board a
 /// done row with no proof marker (`ptask done` refuses one, so it was closed by hand).
 /// Human sheet rows are closed by hand by design. On the agent board the open rows are also
@@ -1112,6 +1112,18 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
             out.push(format!(
                 "line {n}: {} priorities, keep one",
                 named.join(" ")
+            ));
+        }
+        let created: Vec<String> = tags
+            .iter()
+            .filter(|t| md::is_created_tag(t))
+            .map(|t| format!("#{t}"))
+            .collect();
+        // Open rows only: `ptask tag --remove` reaches an open row, so the finding can be cleared.
+        if created.len() > 1 && md::is_open_task(line) {
+            out.push(format!(
+                "line {n}: {} created stamps, keep the first",
+                created.join(" ")
             ));
         }
         if marker.contains("since:") {
@@ -5219,16 +5231,17 @@ mod move_layout_tests {
             - [ ] plain words with no prefix #low\n\
             - [ ] Fix(Area): wrong case #low\n\
             - [ ] feat(ok): {long} #low\n\
-            - [ ] feat(two): both #urgent #low\n\
+            - [ ] feat(two): both #urgent #c1104 #low #c1105\n\
             - [ ] chore(old): dead tags #oneshot #ci #high\n\
             - [ ] chore(old): stamped the old way #high <!-- since:2026-10-01 -->\n\
-            - [x] fix(done): closed rows skip the grammar <!-- pr:3 -->\n"
+            - [x] fix(done): closed rows skip the grammar #c1101 #c1102 <!-- pr:3 -->\n"
         );
         let got = row_findings(&sheet, true);
         assert_eq!(
             got,
             [
                 "line 8: #urgent #low priorities, keep one",
+                "line 8: #c1104 #c1105 created stamps, keep the first",
                 "line 9: #oneshot is retired (nothing reads it)",
                 "line 9: #ci is retired (nothing reads it)",
                 "line 10: since: is retired, the created stamp is #cMMDD",
@@ -5239,7 +5252,7 @@ mod move_layout_tests {
         );
         assert_eq!(
             row_findings(&sheet, false).len(),
-            4,
+            5,
             "the human sheet takes free text: only the stamp checks apply"
         );
         let clean = "- [ ] fix(a-b2): fine #high <!-- id:xy-1 -->\n\

@@ -13,7 +13,7 @@ setup() {
   T="$SANDBOX/projects"
   P="$T/-home-u-proj"
   mkdir -p "$P/s1/subagents"
-  export CLAUDE_TRANSCRIPTS="$T" CLAUDE_RECALL_INTENTS="$SANDBOX/intents.tsv"
+  export CLAUDE_TRANSCRIPTS="$T" CLAUDE_RECALL_INTENTS="$SANDBOX/intents.tsv" TZ=UTC
   printf 'land\tfinal-pass\tland it | merge it\nperf\t-\tfps\n' > "$CLAUDE_RECALL_INTENTS"
 
   local ts='"timestamp":"2026-10-20T10:00:00Z"' cli='"entrypoint":"cli"'
@@ -102,10 +102,20 @@ row() { jq -c --arg k "$1" --arg key "$2" '.rows[] | select(.kind==$k and .key==
   assert_output "$(printf 'other one-shot\nproj fleet-lead\nproj one-shot')"
 }
 
+@test "--since takes what tool-output takes: a bare date is a local day, an ISO time is exact" {
+  # fixture records are at 10:00:00Z on 2026-10-20; UTC-12 puts local midnight of that date at 12:00Z
+  run env TZ=Etc/GMT+12 "$RECALL" stats --since 2026-10-20
+  assert_output 'nothing counted since 2026-10-20T12:00:00'
+  run "$RECALL" stats --since 2026-10-20T10:00:01Z
+  assert_output 'nothing counted since 2026-10-20T10:00:01'
+  run jq -r '.rows | length > 0' <<<"$("$RECALL" stats --since 2026-10-20T09:59:59Z --json)"
+  assert_output true
+}
+
 @test "negative control: a window after the fixture counts nothing, a bad kind is refused" {
   run "$RECALL" stats --since 2026-10-21
   assert_success
-  assert_output 'nothing counted since 2026-10-21'
+  assert_output 'nothing counted since 2026-10-21T00:00:00'
   run "$RECALL" stats --kind bogus
   assert_failure 2
   assert_output --partial 'unknown kind bogus'

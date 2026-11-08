@@ -413,8 +413,8 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   export CC_PROM_URL=http://prom.test
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +30% +50% +.*\$600 +0 +0\.83 +now +ok +m@x$'
-  assert_line --regexp '^alt +- +80% +50% +.*\$0 +0 +0\.24 +[A-Z][a-z]{2} [0-9:]{5} +pace +a@x$'
+  assert_line --regexp '^main +- +30% +50% +.*\$600 +0 +0\.83 +now +ok +claude +m@x$'
+  assert_line --regexp '^alt +- +80% +50% +.*\$0 +0 +0\.24 +[A-Z][a-z]{2} [0-9:]{5} +pace +claude +a@x$'
 }
 
 @test "status: Prometheus down leaves the percents and blanks only the dollars" {
@@ -424,7 +424,7 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   export CC_PROM_URL=http://prom.test   # the curl stub fails
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +30% +50% +.* - +0 +0\.83 +now +ok +m@x$'
+  assert_line --regexp '^main +- +30% +50% +.* - +0 +0\.83 +now +ok +claude +m@x$'
 }
 
 @test "live sessions count per account, only claude processes" {
@@ -456,17 +456,17 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   run "$ACCT" textfile "$SANDBOX/tf"
   assert_success
   run cat "$SANDBOX/tf/claude_acct.prom"
-  assert_line 'claude_account_read_ok{account="main"} 1'
-  assert_line 'claude_account_week_used_percent{account="main"} 30'
-  assert_line 'claude_account_week_gone_percent{account="main"} 50'
-  assert_line 'claude_account_room{account="main"} 1'
+  assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
+  assert_line 'claude_account_week_used_percent{account="main",kind="claude"} 30'
+  assert_line 'claude_account_week_gone_percent{account="main",kind="claude"} 50'
+  assert_line 'claude_account_room{account="main",kind="claude"} 1'
   refute_line --partial 'over_pace'
   refute_line --partial 'five_hour'
-  assert_line 'claude_account_read_ok{account="alt"} 0'
-  refute_line --partial 'week_used_percent{account="alt"}'
+  assert_line 'claude_account_read_ok{account="alt",kind="claude"} 0'
+  refute_line --partial 'week_used_percent{account="alt",kind="claude"}'
   # negative control: an unread account publishes no burn or pace figure
   refute_line --regexp '(burn|sustain|on_pace).*account="alt"'
-  assert_line --regexp '^claude_account_sustain_points_per_hour\{account="main"\} 0\.833'
+  assert_line --regexp '^claude_account_sustain_points_per_hour\{account="main",kind="claude"\} 0\.833'
   [ -z "$(find "$SANDBOX/tf" -name '.claude_acct*')" ]
 }
 
@@ -479,8 +479,8 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   run "$ACCT" textfile "$SANDBOX/tf"
   assert_success
   run cat "$SANDBOX/tf/claude_acct.prom"
-  assert_line 'claude_account_five_hour_percent{account="main"} 26'
-  assert_line 'claude_account_five_hour_resets_timestamp_seconds{account="main"} 1793763599'
+  assert_line 'claude_account_five_hour_percent{account="main",kind="claude"} 26'
+  assert_line 'claude_account_five_hour_resets_timestamp_seconds{account="main",kind="claude"} 1793763599'
 }
 
 @test "room: the emptier account under pace wins; main prints empty, alt its dir" {
@@ -911,8 +911,8 @@ seen_claude() {
   [[ "$(field alt .room.reason <<< "$output")" == pace ]]
   # the textfile carries every reason, so the chip can say what else holds alt
   mkdir -p "$SANDBOX/prom" && "$ACCT" textfile "$SANDBOX/prom"
-  grep -q '^claude_account_room_reason{account="alt",reason="pace"} 1$' "$SANDBOX/prom/claude_acct.prom"
-  grep -q '^claude_account_room_reason{account="alt",reason="five_hour"} 1$' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room_reason{account="alt",kind="claude",reason="pace"} 1$' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room_reason{account="alt",kind="claude",reason="five_hour"} 1$' "$SANDBOX/prom/claude_acct.prom"
   [[ "$(field main .room.why <<< "$output")" == '1 point over its weekly pace (22% used, 16% of its week gone, 5 points of slack)' ]]
   # the refusal sentence is claude-acct's own, in the answer, so no reader rebuilds or parses it
   assert_equal "$(jq -r .pick <<< "$output")" null
@@ -987,13 +987,13 @@ seen_claude() {
   assert_failure 1
   [[ "$stderr" == *'main is the closest, 1 point over its weekly pace'* ]] || fail "$stderr"
   run "$ACCT" status
-  assert_line --regexp '^main .* pace *$'
+  assert_line --regexp '^main .* pace +claude +[^ ]*$'
   run --separate-stderr "$ACCT" pick
   [[ "$stderr" == *'main would be refused an automatic start, 1 point over its weekly pace'* ]] || fail "$stderr"
   "$ACCT" textfile "$SANDBOX/prom"
-  grep -q '^claude_account_room{account="main"} 0$' "$SANDBOX/prom/claude_acct.prom"
-  grep -q '^claude_account_room_headroom_points{account="main"} -0\.9' "$SANDBOX/prom/claude_acct.prom"
-  grep -q '^claude_account_room_reason{account="main",reason="pace"} 1$' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room{account="main",kind="claude"} 0$' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room_headroom_points{account="main",kind="claude"} -0\.9' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room_reason{account="main",kind="claude",reason="pace"} 1$' "$SANDBOX/prom/claude_acct.prom"
   # the one number lives in pace.conf: lift the slack there and every surface moves with it
   sed 's/^PACE_SLACK_PCT=.*/PACE_SLACK_PCT=10/' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$SANDBOX/pace.conf"
   export CLAUDE_ACCT_PACE_CONF="$SANDBOX/pace.conf"
@@ -1002,9 +1002,9 @@ seen_claude() {
   run --separate-stderr "$ACCT" pick
   [[ "$stderr" != *'no room'* ]] || fail "$stderr"
   "$ACCT" textfile "$SANDBOX/prom"
-  grep -q '^claude_account_room{account="main"} 1$' "$SANDBOX/prom/claude_acct.prom"
-  grep -q '^claude_account_room_reason{account="main",reason="ok"} 1$' "$SANDBOX/prom/claude_acct.prom"
-  run grep -c '^claude_account_room_reason{account="main",' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room{account="main",kind="claude"} 1$' "$SANDBOX/prom/claude_acct.prom"
+  grep -q '^claude_account_room_reason{account="main",kind="claude",reason="ok"} 1$' "$SANDBOX/prom/claude_acct.prom"
+  run grep -c '^claude_account_room_reason{account="main",kind="claude",' "$SANDBOX/prom/claude_acct.prom"
   assert_output 1
 }
 
@@ -1033,4 +1033,301 @@ seen_claude() {
   run grep -n 'over_pace' "$ACCT"
   assert_failure
   [[ "$(grep -c 'RESERVE_PCT=' "$REPO_ROOT/.config/claude-acct/pace.conf")" == 1 ]]
+}
+
+# --- sources: codex, litellm keys and teams -------------------------------------------
+
+# src_setup -- the sources file, the gateway url, and a curl that answers from $SANDBOX/gw. The key
+# arrives on stdin (`-K -`), so the stub files the reply by it and records argv to prove the key is
+# never on the command line.
+src_setup() {
+  export CLAUDE_ACCT_NOW=$NOW
+  export CLAUDE_ACCT_SOURCES="$SANDBOX/sources"
+  export CLAUDE_ACCT_HARNESSES="$SANDBOX/harnesses.json"
+  # the sources file is whitespace-separated, and $SANDBOX has a space in it: refs live beside it
+  SRC="$BATS_TEST_TMPDIR"
+  mkdir -p "$SANDBOX/gw" "$SRC/codex/2026/11"
+  echo '{"gateway":{"url":"http://gw.test"},"harnesses":{}}' > "$CLAUDE_ACCT_HARNESSES"
+  echo sk-lazer > "$SRC/lazer.key"
+  echo sk-res > "$SRC/res.key"
+  cat > "$SANDBOX/sources" <<EOS
+# name kind ref [reserve=N] [max_live=N] [parent=name]
+codex   codex         $SRC/codex  reserve=5
+lazer   litellm-team  $SRC/lazer.key
+res     litellm-key   $SRC/res.key   parent=lazer max_live=2
+EOS
+  cat > "$SANDBOX/bin/curl" <<'EOS'
+#!/usr/bin/env bash
+echo "$*" >> "$SANDBOX/curl.argv"
+hdr=; [[ " $* " == *" -K - "* ]] && hdr=$(cat)
+echo "$hdr" >> "$SANDBOX/curl.stdin"
+url=${*: -1}
+key=${hdr##*Bearer }; key=${key%\"*}
+case "$url" in
+  */team/info*) cat "$SANDBOX/gw/team.json" ;;
+  */key/info) cat "$SANDBOX/gw/$key.json" ;;
+  *) exit 22 ;;
+esac
+EOS
+  chmod +x "$SANDBOX/bin/curl"
+  export SANDBOX
+}
+# rollout <week-used%> <5h-used%> <hours-until-week-reset>
+rollout() {
+  local reset=$((NOW + $3 * 3600)) short=$((NOW + 3600))
+  printf '{"payload":{"type":"token_count","rate_limits":{"plan_type":"plus","primary":{"used_percent":%s,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":%s,"window_minutes":10080,"resets_at":%s},"rate_limit_reached_type":null}}}\n' \
+    "$2" "$short" "$1" "$reset" > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+}
+# budget <file> <key|team> <spend> <max>
+budget() {
+  local obj='{"info":{"spend":%s,"max_budget":%s,"budget_reset_at":null,"team_id":"t1"}}'
+  [[ "$2" == team ]] && obj='{"team_info":{"spend":%s,"max_budget":%s,"budget_reset_at":null}}'
+  # shellcheck disable=SC2059
+  printf "$obj\n" "$3" "$4" > "$SANDBOX/gw/$1.json"
+}
+
+@test "sources: codex shows its plan and week, and the keys their dollars, in status --json" {
+  src_setup
+  week main 30 84
+  rollout 1 0 84
+  budget sk-lazer key 40 100
+  budget sk-res key 5 20
+  budget team team 40 100
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .kind <<<"$output")" = codex ]
+  [ "$(field codex .plan <<<"$output")" = plus ]
+  [ "$(field codex .week_used <<<"$output")" = 1 ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+  [ "$(field res .usd_used <<<"$output")" = 5 ]
+  [ "$(field res .usd_max <<<"$output")" = 20 ]
+  [ "$(field res .paced <<<"$output")" = false ]
+  [ "$(field res .parent <<<"$output")" = lazer ]
+  [ "$(field res .room.ok <<<"$output")" = true ]
+  [ "$(field lazer .usd_used <<<"$output")" = 40 ]
+  # the Claude row is untouched by the sources beside it
+  [ "$(field main .kind <<<"$output")" = claude ]
+}
+
+@test "sources: a rollout with the week spent gives no room, reason capped" {
+  src_setup
+  rollout 100 40 84
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .room.ok <<<"$output")" = false ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+  run --separate-stderr "$ACCT" room --source codex
+  assert_failure 1
+}
+
+@test "sources: a codex week inside its own reserve is refused for reserve, not capped" {
+  src_setup
+  rollout 96 0 84
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .room.ok <<<"$output")" = false ]
+  [ "$(field codex .room.reason <<<"$output")" = reserve ]
+}
+
+@test "sources: a week whose reset has passed reads as unused" {
+  src_setup
+  rollout 100 0 -2
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 0 ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+}
+
+@test "sources: a key at its cap has no room" {
+  src_setup
+  budget sk-lazer key 10 100
+  budget team team 10 100
+  budget sk-res key 20 20
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field res .room.ok <<<"$output")" = false ]
+  [ "$(field res .room.reason <<<"$output")" = capped ]
+  run --separate-stderr "$ACCT" room --source res
+  assert_failure 1
+}
+
+@test "sources: a key whose parent is spent has no room, reason parent after its own" {
+  src_setup
+  budget sk-lazer key 100 100
+  budget team team 100 100
+  budget sk-res key 1 20
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field lazer .room.ok <<<"$output")" = false ]
+  [ "$(field res .room.ok <<<"$output")" = false ]
+  [ "$(field res .room.reason <<<"$output")" = parent ]
+  [[ "$(field res .room.why <<<"$output")" == *lazer* ]]
+  # its own cap still names itself first
+  budget sk-res key 20 20
+  rm -f "$XDG_CACHE_HOME/claude-acct/res.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field res .room.reason <<<"$output")" = capped ]
+}
+
+@test "sources: dollar budgets carry no pace verdict, and the key never reaches argv" {
+  src_setup
+  budget sk-lazer key 90 100
+  budget team team 90 100
+  budget sk-res key 1 20
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field lazer '.room.reasons | index("pace")' <<<"$output")" = null ]
+  [ "$(field lazer .week_gone <<<"$output")" = null ]
+  run grep -c 'sk-' "$SANDBOX/curl.argv"
+  assert_output 0
+  grep -q 'Bearer sk-res' "$SANDBOX/curl.stdin" || fail "the key did not arrive on stdin"
+}
+
+@test "sources: the textfile covers every row, dollars included" {
+  src_setup
+  rollout 1 0 84
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  budget sk-res key 5 20
+  mkdir -p "$SANDBOX/prom"
+  "$ACCT" textfile "$SANDBOX/prom"
+  run cat "$SANDBOX/prom/claude_acct.prom"
+  assert_line 'claude_account_room{account="codex",kind="codex"} 1'
+  assert_line 'claude_account_usd_used{account="res",kind="litellm-key"} 5'
+  assert_line 'claude_account_usd_budget{account="res",kind="litellm-key"} 20'
+  assert_line 'claude_account_usd_used{account="lazer",kind="litellm-team"} 40'
+  refute_line --regexp 'claude_account_sustain_points_per_hour.*account="(lazer|res)"'
+  # what the Burn rows print beside the figures: the reserve, whether it is paced, its pool
+  assert_line 'claude_account_reserve_percent{account="codex",kind="codex"} 5'
+  assert_line 'claude_account_paced{account="codex",kind="codex"} 1'
+  assert_line 'claude_account_paced{account="res",kind="litellm-key"} 0'
+  assert_line 'claude_account_parent{account="res",kind="litellm-key",parent="lazer"} 1'
+  refute_line --regexp 'claude_account_parent\{account="(codex|lazer)"'
+}
+
+@test "check pace: every source on pace is quiet; one past its line or in its reserve trips, by name" {
+  src_setup
+  week main 30 84
+  rollout 1 0 84
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  budget sk-res key 5 20
+  run --separate-stderr "$ACCT" check pace
+  assert_success
+  assert_output 'every source on pace (5 sources)'
+  # the same sources with codex well past its weekly line and the key inside its reserve
+  rollout 90 0 84
+  budget sk-res key 18 20
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output 'over pace: codex pace, res reserve'
+}
+
+@test "check pace: no source at all is nothing read, never a quiet green" {
+  src_setup
+  : > "$CLAUDE_ACCT_CONFIG"
+  : > "$CLAUDE_ACCT_SOURCES"
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output 'no sources read'
+}
+
+@test "check pace: an unread source trips, but a Claude account's unread is check usage's" {
+  src_setup
+  week main 30 84
+  rollout 1 0 84
+  budget team team 40 100
+  budget sk-res key 5 20
+  # no reply for the pool's own key: the team read fails
+  creds "$ALT" 99999999999999
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output "unread: lazer"
+  [[ "$output" != *alt* ]] || fail "a Claude account named: $output"
+}
+
+@test "sources: room --json keeps pick and accounts Claude-only and lists every source beside them" {
+  src_setup
+  week main 30 84
+  week alt 80 84
+  rollout 96 0 84
+  budget sk-lazer key 40 100
+  budget sk-res key 5 20
+  budget team team 40 100
+  run --separate-stderr "$ACCT" room --json
+  assert_success
+  [ "$(jq -r '[.accounts[].name] | join(",")' <<<"$output")" = "main,alt" ]
+  [ "$(jq -r .pick <<<"$output")" = main ]
+  assert_equal "$(jq -c '[.sources[] | [.name, .kind, .room.ok, .room.reason, .max_live]]' <<<"$output")" \
+    '[["codex","codex",false,"reserve",null],["lazer","litellm-team",true,"ok",null],["res","litellm-key",true,"ok",2]]'
+  jq -e 'all(.sources[]; .rank | type == "number")' <<<"$output"
+  # the sentence form stays about the accounts
+  run --separate-stderr "$ACCT" room
+  assert_success
+  refute_output --partial codex
+}
+
+@test "sources: an unknown kind, a bad line, and a name that is also an account are named, not rowed" {
+  src_setup
+  printf 'bogus  nope  /x\nmain codex /y\nbad\n' >> "$SANDBOX/sources"
+  week main 30 84
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [[ "$stderr" == *"main is also an account"* ]] || fail "$stderr"
+  [[ "$stderr" == *"unknown kind 'nope'"* ]] || fail "$stderr"
+  [ "$(field bogus .state <<<"$output")" = unread ]
+  run --separate-stderr "$ACCT" room --source nosuch
+  assert_failure 3
+}
+
+@test "sources: a gateway that cannot be reached leaves the key unread, not zero" {
+  src_setup
+  printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field res .state <<<"$output")" = unread ]
+  [ "$(field res .room.reason <<<"$output")" = unread ]
+  run --separate-stderr "$ACCT" room --source res
+  assert_failure 2
+}
+
+@test "sources: a name listed twice is rowed once and the repeat is named" {
+  src_setup
+  printf 'codex litellm-key %s/res.key\n' "$SRC" >> "$SANDBOX/sources"
+  week main 30 84
+  rollout 1 0 84
+  budget sk-lazer key 40 100
+  budget sk-res key 5 20
+  budget team team 40 100
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [[ "$stderr" == *"codex is listed twice"* ]] || fail "$stderr"
+  [ "$(jq '[.[] | select(.name == "codex")] | length' <<<"$output")" = 1 ]
+  [ "$(field codex .kind <<<"$output")" = codex ]
+}
+
+@test "sources: a parent that is not a source refuses the key, naming the parent" {
+  src_setup
+  printf 'orphan litellm-key %s/res.key parent=nosuch\n' "$SRC" >> "$SANDBOX/sources"
+  week main 30 84
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  run --separate-stderr "$ACCT" room --source orphan
+  assert_failure 1
+  [[ "$output" == *"parent nosuch is not a source"* ]] || fail "$output"
+  # negative control: a key whose parent exists is not refused on that account
+  run --separate-stderr "$ACCT" room --source res
+  assert_success
+}
+
+@test "sources: room --source reads that source and its parent, not another key or a Claude account" {
+  src_setup
+  echo sk-other > "$SRC/other.key"
+  printf 'other litellm-key %s/other.key parent=lazer\n' "$SRC" >> "$SANDBOX/sources"
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  run --separate-stderr "$ACCT" room --source res
+  assert_success
+  # the key, the parent's key and its team were asked: three calls, none for sk-other or the usage endpoint
+  [ "$(wc -l < "$SANDBOX/curl.argv")" = 3 ]
+  grep -q 'sk-res' "$SANDBOX/curl.stdin"
+  ! grep -q 'sk-other' "$SANDBOX/curl.stdin"
+  ! grep -q 'anthropic' "$SANDBOX/curl.argv"
 }
