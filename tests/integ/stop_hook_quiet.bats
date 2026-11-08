@@ -28,7 +28,7 @@ setup() {
 
   # The subject sources this by absolute $HOME path, mirroring the stow layout.
   mkdir -p "$HOME/.config/shared-hooks"
-  cp "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
+  cp "$REPO_ROOT/.config/shared-hooks/"{project-name.sh,stop-session-changes.py} "$HOME/.config/shared-hooks/"
 
   # resolve_project_name falls back to the basename, so the project is "alpha".
   REPO="$SANDBOX/alpha"
@@ -40,6 +40,7 @@ setup() {
   git -C "$REPO" add -A
   git -C "$REPO" commit -qm one
   export CLAUDE_PROJECT_DIR="$REPO"
+  for sid in aaa bbb abc-123; do snapshot "$sid"; done
 
   LOG="$HOME/.cache/claude-stop-hook/last-stop-alpha.log"
   ERRF="$SANDBOX/hook.stderr"
@@ -195,20 +196,22 @@ stderr() { cat "$ERRF"; }
   assert_output --partial "note=all checks passed"
 }
 
-@test "a check that outlives CLAUDE_STOP_CHECK_TIMEOUT is killed and blocks as a timeout" {
+@test "a failure-free timeout is quiet, incomplete, and never cached as a pass" {
   dirty
   printf '#!/bin/bash\nsleep 30\n' > "$HOOK_DIR/stop-checks.d/hang.sh"
   chmod +x "$HOOK_DIR/stop-checks.d/hang.sh"
   check green 0
   local start=$SECONDS
   CLAUDE_STOP_CHECK_TIMEOUT=1 run_hook
-  assert_equal "$STATUS" 2
+  assert_equal "$STATUS" 0
   [ $((SECONDS - start)) -lt 15 ]
   run stderr
-  assert_output --partial "[FAIL] hang (timed out after 1s; result unknown)"
+  assert_output ""
   refute_output --partial "green"
   run cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"
   assert_output --partial "note=hang=timeout"
+  assert_output --partial "status=SKIPPED"
+  [ -z "$(find "$HOME/.cache/claude-stop-hook" -name 'pass-fp-*' -print)" ]
 }
 
 @test "ci-result files older than a week are pruned, recent ones kept" {
@@ -363,4 +366,84 @@ ci_result() { cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%
   bash "$HOOK" <<< '{"session_id":"abc-123","stop_hook_active":false}' >"$OUTF" 2>"$ERRF" || true
   run stderr
   assert_output --partial "sid=abc-123"
+}
+
+@test "a timeout after a TAP failure still blocks" {
+  dirty
+  printf '#!/bin/bash\necho "not ok 1 regression"\nread -r _ < "%s/hold"\n' "$SANDBOX" > "$HOOK_DIR/stop-checks.d/hang.sh"
+  mkfifo "$SANDBOX/hold"
+  chmod +x "$HOOK_DIR/stop-checks.d/hang.sh"
+  CLAUDE_STOP_CHECK_TIMEOUT=1 run_hook
+  assert_equal "$STATUS" 2
+  run stderr
+  assert_output --partial 'not ok 1 regression'
+}
+
+snapshot() {
+  python3 "$REPO_ROOT/.config/shared-hooks/stop-session-changes.py" start "$REPO" "$1"
+}
+
+@test "Q&A with pre-existing tracked and untracked dirt skips checks but runs post" {
+  dirty
+  snapshot qa
+  check red 2
+  post 50-seen
+  run_session qa
+  assert_equal "$STATUS" 0
+  assert_equal "$(stderr)" ""
+  run cat "$HOME/post.seen"
+  assert_output --partial 'status=SKIPPED'
+}
+
+@test "session path selection excludes old dirt and includes edits, deletes and committed files" {
+  dirty
+  echo untouched > "$REPO/old.txt"
+  snapshot work
+  echo new > "$REPO/b.txt"
+  git -C "$REPO" add b.txt
+  git -C "$REPO" commit -qm new
+  rm "$REPO/a.txt"
+  echo changed > "$REPO/untracked.txt"
+  printf '#!/bin/bash\nprintf "%%s\n" "$STOP_CHANGED_FILES" >&2\nexit 2\n' > "$HOOK_DIR/stop-checks.d/paths.sh"
+  chmod +x "$HOOK_DIR/stop-checks.d/paths.sh"
+  run_session work
+  assert_equal "$STATUS" 2
+  run stderr
+  assert_output --partial a.txt
+  assert_output --partial b.txt
+  assert_output --partial untracked.txt
+  refute_output --partial old.txt
+}
+
+@test "a second session starts with its own baseline and resume preserves the first" {
+  dirty
+  snapshot first
+  echo newer >> "$REPO/a.txt"
+  snapshot second
+  snapshot first
+  check red 2
+  run_session first
+  assert_equal "$STATUS" 2
+  run_session second
+  assert_equal "$STATUS" 0
+}
+
+@test "a session with no start snapshot does not claim existing dirt" {
+  dirty
+  check red 2
+  run_session missing
+  assert_equal "$STATUS" 0
+}
+
+@test "a Python tool failure blocks before a later tool can hang" {
+  dirty
+  touch "$REPO/pyproject.toml"
+  cp "$REPO_ROOT/.claude/hooks/stop-checks.d/40-python.sh" "$HOOK_DIR/stop-checks.d/"
+  printf '#!/bin/bash\necho "Found 1 error."\nexit 1\n' > "$SANDBOX/bin/ruff"
+  printf '#!/bin/bash\necho ran > "%s/mypy-ran"\nread -r _ < "%s/hold"\n' "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/mypy"
+  mkfifo "$SANDBOX/hold"
+  chmod +x "$SANDBOX/bin/ruff" "$SANDBOX/bin/mypy"
+  CLAUDE_STOP_CHECK_TIMEOUT=1 run_hook
+  assert_equal "$STATUS" 2
+  [ ! -e "$SANDBOX/mypy-ran" ]
 }
