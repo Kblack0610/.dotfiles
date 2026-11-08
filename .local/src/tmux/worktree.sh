@@ -109,13 +109,20 @@ WT_HOLD_REASON='held by wt: wt done or wt reap frees it and refuses a live sessi
 #
 # Via --git-common-dir, so it gives the same answer from inside a linked worktree as from
 # the main one. That matters: `wt new` run inside `dotfiles-agent-1` must cut
-# `dotfiles-agent-2`, not `dotfiles-agent-1-agent-1`.
+# `dotfiles-agent-2`, not `dotfiles-agent-1-agent-1`. A submodule's common dir is
+# <super>/.git/modules/<name>, whose core.worktree names its checkout; a bare repo has none.
+# The probe is needed: --git-dir with no core.worktree takes the cwd as the toplevel. A
+# deinitialised submodule keeps core.worktree, so the checkout must still exist.
 wt_main_repo() {
-  local common
+  local common top
   common=$(git -C "${1:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
   case "$common" in
   */.git) printf '%s\n' "${common%/.git}" ;;
-  *) return 1 ;; # bare repo: no working tree to name a worktree after
+  *)
+    git --git-dir="$common" config --get core.worktree >/dev/null 2>&1 || return 1
+    top=$(git --git-dir="$common" rev-parse --show-toplevel 2>/dev/null) && [ -d "$top" ] || return 1
+    printf '%s\n' "$top"
+    ;;
   esac
 }
 
@@ -576,14 +583,16 @@ wt_scan_repos() {
 }
 
 # wt_worktrees_of <main-repo> -- `path<TAB>branch` for every LINKED worktree, main excluded.
+# The main is the first record, skipped by position: in a submodule git names it by its
+# .git/modules dir, which matches no checkout path.
 wt_worktrees_of() {
   git -C "$1" worktree list --porcelain 2>/dev/null |
-    awk -v main="$1" '
-      /^worktree /  { path = substr($0, 10); branch = "" ; next }
+    awk '
+      /^worktree /  { n++; path = substr($0, 10); branch = "" ; next }
       /^branch /    { branch = substr($0, 8); sub(/^refs\/heads\//, "", branch) }
       /^detached$/  { branch = "(detached)" }
-      /^$/          { if (path != "" && path != main) print path "\t" branch; path = "" }
-      END           { if (path != "" && path != main) print path "\t" branch }
+      /^$/          { if (n > 1 && path != "") print path "\t" branch; path = "" }
+      END           { if (n > 1 && path != "") print path "\t" branch }
     '
 }
 

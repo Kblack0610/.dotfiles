@@ -45,11 +45,14 @@ TESTS_DIR="$PROJECT_ROOT/tests"
 # Seam: SHELL_TESTS_CHANGED (newline list of repo-relative paths) replaces the git read.
 if [ -n "${SHELL_TESTS_CHANGED+x}" ]; then
   CHANGED="$SHELL_TESTS_CHANGED"
+elif [ -n "${STOP_CHANGED_FILES+x}" ]; then
+  CHANGED="$STOP_CHANGED_FILES"
 else
   BASE="$(git -C "$PROJECT_ROOT" merge-base HEAD origin/main 2>/dev/null || echo HEAD)"
   CHANGED="$( { git -C "$PROJECT_ROOT" diff --name-only "$BASE"
                 git -C "$PROJECT_ROOT" ls-files --others --exclude-standard; } | sort -u)"
 fi
+[ -n "$CHANGED" ] || exit 0
 # shellcheck source=/dev/null
 . "${_self%/*}/../../../.local/lib/test-pick.sh"
 mapfile -t ALL < <(ls "$TESTS_DIR"/unit/*.bats "$TESTS_DIR"/integ/*.bats 2>/dev/null)
