@@ -47,7 +47,7 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
-# FLEET_MAIN_TTL: seconds a gh answer (a PR list, a PR view) is reused across passes: every caller
+# FLEET_MAIN_TTL: seconds a gh answer (pr_states' PR list, sibling_pr's PR view) is reused across passes: every caller
 # (the ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on 2026-10-29 the fleet
 # spent GitHub's 5,000/hr REST limit; a PR's state is no less true five minutes later.
 : "${FLEET_MAIN_TTL:=300}"
@@ -529,8 +529,10 @@ prs_for() {
 # and activity_line all read it, from one ledger read per repo per pass ($CACHE). A repo the ledger
 # does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1.
 branch_runs() {
-  local d="$1" b="$2" all rc=0
+  local d="$1" b="$2" all one rc=0
   all="$CACHE/runs_$(repo_slug "$d")" || return 1
+  one="${all}_${b//\//%2F}" # %2F: feat/x and feat_x are two branches
+  [ -f "$one" ] && { [ -s "$one" ] && cat "$one"; return; }
   if [ ! -f "$all" ]; then
     main_runs "$(origin_repo "$d")" > "$all" || rc=$?
     case $rc in
@@ -539,7 +541,8 @@ branch_runs() {
       *) : > "$all"; echo "run ledger ($(basename "$d"))" >> "$CACHE/unreadable" ;;
     esac
   fi
-  [ -s "$all" ] && jq -c --arg b "$b" 'map(select(.headBranch == $b))' "$all"
+  if [ -s "$all" ]; then jq -c --arg b "$b" 'map(select(.headBranch == $b))' "$all" > "$one"; else : > "$one"; fi
+  [ -s "$one" ] && cat "$one"
 }
 
 # gate_ci <dir> <branch> <head_oid> <ci> -> <ci> with the branch's dispatched gate runs folded in.

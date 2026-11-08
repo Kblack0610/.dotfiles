@@ -1229,7 +1229,7 @@ pr_ci() {
 }
 
 cmd_review() {
-  local t since cfg new repo num sid row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days=''
+  local t since cfg new repo num sid row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days='' off=' '
   case "${1:-}" in
     '') ;;
     --days) days=${2:-}; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench review [--days N]"; return 2; } ;;
@@ -1244,10 +1244,12 @@ cmd_review() {
   [ -z "$new" ] || { trap ci_keep_newest EXIT; trap 'exit 143' TERM INT HUP; }
   while IFS=$'\t' read -r repo num sid; do
     [ -n "$repo" ] || continue
+    # a repo the ledger does not sync is learnt once per review, not paid a gh call per PR
+    case "$off" in *" $repo "*) unsynced=$((unsynced + 1)); continue ;; esac
     rc=0; row=$(pr_ci "$repo" "$num" "$sid" "$cfg") || rc=$?
     case $rc in
       0) ;;
-      3) unsynced=$((unsynced + 1)); continue ;;
+      3) unsynced=$((unsynced + 1)); off+="$repo "; continue ;;
       4) later=$((later + 1)); continue ;;
       *) say "cannot count $repo#$num"; failed=$((failed + 1)); continue ;;
     esac

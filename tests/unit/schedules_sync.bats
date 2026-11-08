@@ -494,4 +494,25 @@ lrow() {
   assert_failure 2
   run "$SUBJECT" runs o/game --until yesterday
   assert_failure 2
+  run "$SUBJECT" runs o/game --branch main --branch feat/x
+  assert_failure 2
+  run "$SUBJECT" runs o/game --branch --until
+  assert_failure 2
+  run "$SUBJECT" runs o/game --since 2025-10-01T00:00:00Z
+  assert_failure 1
+  assert_output --partial 'keeps 30 days'
+}
+
+@test "runs: a window that closed before the last sync is complete even when that sync is stale" {
+  mkdir -p "$(dirname "$LEDGER")"
+  echo '{"repos":{"github:o/game":{"synced_at":"2025-11-06T11:00:00Z"}}}' > "$XDG_STATE_HOME/ci/sync.json"
+  lrow 1 1 main 2025-11-06T09:00:00Z success
+  run "$SUBJECT" runs o/game --until 2025-11-06T10:30:00Z
+  assert_success
+  run jq -c 'map(.id)' <<<"$output"
+  assert_output '[1]'
+  run "$SUBJECT" runs o/game --until 2025-11-06T11:30:00Z
+  assert_failure 4
+  run "$SUBJECT" runs o/game
+  assert_failure 1
 }

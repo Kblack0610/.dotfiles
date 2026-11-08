@@ -32,10 +32,12 @@ sent in curl's stdin config, never argv; with neither, a public repo still reads
                           attempt's last row; --branch keeps one branch, --since/--until (ISO,
                           UTC) bound created_at. The one reader of the ledger: fleet-sessions,
                           fleet-bench and ci-failures read runs here, never from actions/runs.
-                          Exit 1 when the repo's last sync is over 30 minutes old, 3 when the
-                          list does not sync the repo (a caller tells "unknown" from "no runs"),
-                          4 when a past --until is after the last sync: that window is not yet
-                          complete, and the next pass completes it
+                          Exit 1 when the repo's last sync is over 30 minutes old (a window
+                          that closed before that sync is still complete) or --since is older
+                          than the ledger's 30 days, 3 when the list does not sync the repo (a
+                          caller tells "unknown" from "no runs"), 4 when a past --until is
+                          after the last sync: that window is not yet complete, and the next
+                          pass completes it
 
 Deterministic, no model. schedules-sync.timer runs it every 10 minutes: GitHub sends this
 machine no event when a run ends, so it samples.
@@ -98,6 +100,7 @@ OVERLAP = timedelta(hours=1)  # re-read this far behind the last sync
 FAILED = ("failure", "timed_out")
 GH_CALL_TIMEOUT_S = 60  # a guard: one hung call must not eat the whole pass
 STALE = timedelta(minutes=30)  # three missed 10-minute passes
+RUN_OPTS = {"--branch", "--since", "--until"}
 CRON_NAMES = {n: i for i, n in enumerate(["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"])}
 CRON_NAMES.update({n: i + 1 for i, n in enumerate(
     ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])})
@@ -485,8 +488,10 @@ def runs(argv, t):
     if not argv or argv[0].startswith("-") or len(argv) % 2 != 1:
         return 2, "runs <repo> [--branch B] [--since T] [--until T]"
     opts = dict(zip(argv[1::2], argv[2::2]))
-    if set(opts) - {"--branch", "--since", "--until"}:
-        return 2, f"runs: unknown option {sorted(set(opts) - {'--branch', '--since', '--until'})[0]}"
+    if set(opts) - RUN_OPTS:
+        return 2, f"runs: unknown option {sorted(set(opts) - RUN_OPTS)[0]}"
+    if len(opts) * 2 != len(argv) - 1 or any(v.startswith("--") for v in opts.values()):
+        return 2, "runs: each option once, each with a value"
     forge, _, name = argv[0].rpartition(":")
     key = f"{forge or 'github'}:{name}".lower()
     try:
@@ -498,11 +503,14 @@ def runs(argv, t):
     if entry is None:
         return 3, f"{argv[0]} is not in the run ledger ({REPOS})"
     synced = when(entry.get("synced_at"))
-    if not synced or synced < t - STALE:
+    if since and since < t - KEEP - STALE:
+        return 1, f"runs: the ledger keeps {KEEP.days} days, --since {opts['--since']} is older"
+    complete = until and synced and synced >= until  # closed before the last sync, however old that is
+    if until and synced and until <= t and not complete:
+        return 4, f"{argv[0]} last synced {entry.get('synced_at')}, not yet past {opts['--until']}"
+    if not complete and (not synced or synced < t - STALE):
         why = f": {entry['error']}" if entry.get("error") else ""
         return 1, f"{argv[0]} last synced {entry.get('synced_at')}, older than {int(STALE.total_seconds() // 60)}m{why}"
-    if until and until <= t and synced < until:
-        return 4, f"{argv[0]} last synced {entry.get('synced_at')}, not yet past {opts['--until']}"
     last, _, _ = read_ledger(f'"repo":"{name.lower()}"')
     if last is None:
         return 1, f"no ledger at {LEDGER}"
