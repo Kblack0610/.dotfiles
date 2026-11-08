@@ -1991,6 +1991,40 @@ SH
   done
 }
 
+@test "pr_made_here: a PR another window's plan names served that plan, unless this plan names it too (ar-492)" {
+  git init -q "$SANDBOX/r"; git -C "$SANDBOX/r" remote add origin https://github.com/O/R.git
+  # calm-lagoon ran `gh pr view` on velvet-pine's #875 and once pushed the recycled branch name.
+  echo '{"content":"https://github.com/o/r/pull/875"}' > "$SANDBOX/t.jsonl"
+  echo '{"input":{"command":"git push -u origin feat/x"}}' >> "$SANDBOX/t.jsonl"
+  mkdir -p "$SANDBOX/a" "$SANDBOX/b"
+  printf '# v\n\n## Phases\n- [x] 5 FreqAI (#875)\n' > "$SANDBOX/b/velvet.md"
+  phases_plan '- [x] Phase 1: costs (#20)' '- [ ] Phase 2: walk-forward'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
+  assert_failure
+  # Opening or merging it is this session's own act: no other plan overrides that.
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/r","number":875}]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
+  assert_success
+  # Another plan naming #8750, or none at all, leaves the session's own evidence standing.
+  printf '# v\n\n## Phases\n- [x] 5 FreqAI (#8750)\n' > "$SANDBOX/b/velvet.md"
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
+  assert_success
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" ""
+  assert_success
+  # Its own plan naming #875 wins.
+  printf '# v\n\n## Phases\n- [x] 5 FreqAI (#875)\n' > "$SANDBOX/b/velvet.md"
+  phases_plan '- [x] Phase 1: costs (#875)'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
+  assert_success
+  # A plan with this plan's file name under another dir is its account copy: no veto, even when
+  # only the copy has #875 ticked; with no plan of its own the other window's plan vetoes.
+  cp "$SANDBOX/b/velvet.md" "$SANDBOX/a/plan.md"
+  phases_plan '- [ ] Phase 1: costs'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/a/plan.md"
+  assert_success
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" - "$SANDBOX/a/plan.md"
+  assert_failure
+}
+
 @test "end to end: a merged PR another session made on a shared worktree branch is not this session's (ar-455)" {
   landed_fixture
   # trader-real-money-plan: its plan and transcript never touched #875, which merged off feat/x.
@@ -2007,6 +2041,18 @@ SH
   echo '{"input":{"command":"git push -u origin feat/x"}}' >> "$SANDBOX/t.jsonl"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .pr <<<"$output")" = 875 ]
+
+  # A second window in the same worktree whose plan ticks #875 served it: the push of a recycled
+  # branch name no longer makes it this window's (ar-492).
+  printf '# v\n\n## Phases\n- [x] 5 FreqAI (#875)\n- [ ] 6 Switch-on\n' > "$SANDBOX/velvet.md"
+  printf 'echo %q\n' "{\"target\":\"lab/s1:3\",\"pane\":\"lab/%9\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"sid-3\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$(date +%s),\"context_tokens\":5,\"plan_file\":\"$SANDBOX/velvet.md\"}" \
+    >> "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r 'select(.session_id == "sid-9") | .pr' <<<"$output")" = - ]
+  [ "$(jq -r 'select(.session_id == "sid-9") | .bucket' <<<"$output")" = DONE ]
+  [ "$(jq -r 'select(.session_id == "sid-3") | .pr' <<<"$output")" = 875 ]
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
 
   # An open branch PR stays attributed whoever opened it: it is unlanded work in this tree.
   echo '{"type":"user","message":{"content":"walk-forward results"}}' > "$SANDBOX/t.jsonl"
