@@ -340,10 +340,11 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -c '[.tripped, .stale]' <<< "$d")" '[false,true]'
 }
 
-@test "a runner whose last run STALLED, or whose state is error, is failed" {
+@test "a scheduled runner whose last run STALLED, or any runner whose state is error, is failed" {
   seed_runner beta
   seed_status beta error dotfiles 'x' 1789700000
   seed_runner gamma
+  printf "SCHEDULE='*:7/30'\n" >> "$AGENTCTL_CONF_DIR/gamma.conf"
   seed_status gamma idle dotfiles 'x' 1789700000
   printf 'STALLED' > "$AGENTCTL_STATE_DIR/gamma/last-outcome"
   run "$PUB" --quiet
@@ -352,6 +353,23 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -r .failed <<< "$(payload agents/testhost/runner/beta)")" true
   assert_equal "$(jq -r .failed <<< "$(payload agents/testhost/runner/gamma)")" true
   assert_equal "$(jq -r '.running | type' <<< "$(payload agents/testhost/runner/alpha)")" boolean
+}
+
+# fleet-liveness's roster: a conf with no SCHEDULE and no AUTOSTART=yes is fired by hand, and its
+# one old STALLED run held the Overview agents/runners row yellow for months (ar-328).
+@test "a hand-fired runner's old STALLED or FAILED run is not failed; AUTOSTART=yes counts as fired" {
+  seed_runner hand
+  seed_status hand idle dotfiles 'x' 1789700000
+  printf 'STALLED' > "$AGENTCTL_STATE_DIR/hand/last-outcome"
+  seed_runner boot
+  printf 'AUTOSTART=yes\n' >> "$AGENTCTL_CONF_DIR/boot.conf"
+  seed_status boot idle dotfiles 'x' 1789700000
+  printf 'FAILED' > "$AGENTCTL_STATE_DIR/boot/last-outcome"
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -r .failed <<< "$(payload agents/testhost/runner/hand)")" false
+  assert_equal "$(jq -r .outcome_code <<< "$(payload agents/testhost/runner/hand)")" 2
+  assert_equal "$(jq -r .failed <<< "$(payload agents/testhost/runner/boot)")" true
 }
 
 @test "overview: the widget's rows ride as an attribute, past HA's 255-char state limit" {
