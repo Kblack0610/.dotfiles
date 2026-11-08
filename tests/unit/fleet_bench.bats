@@ -2814,6 +2814,63 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   assert_output labels
 }
 
+@test "findings: a starved pool reports the slots that match the waiting jobs, not the pool's total" {
+  use_fixture
+  # 2026-11-05: 8/10 unity slots busy, but the jobs wanted self-hosted,linux,unity-full, which only 2 matched.
+  { cat "$FX/prom.tsv"
+    printf 'cc:pool_match_slots\tunity\t%s\t2\ncc:pool_match_busy\tunity\t%s\t2\ncc:pool_match_runners\tunity\t%s\t2\n' "$(clock 09:30)" "$(clock 09:30)" "$(clock 09:30)"
+    printf 'cc:pool_match_labels\tunity/self-hosted,linux,unity-full\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output "capacity oldest job waited 1.1h with 2/2 slots busy among those matching its labels (self-hosted,linux,unity-full), 5/6 in the pool: demand is over the matching slots' capacity"
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # Matching slots sit idle: the labels or admission bind, whatever the pool total says.
+  { cat "$FX/prom.tsv"
+    printf 'cc:pool_match_slots\tunity\t%s\t4\ncc:pool_match_busy\tunity\t%s\t1\n' "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output labels
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # No runner has the labels at all.
+  { cat "$FX/prom.tsv"
+    printf 'cc:pool_match_slots\tunity\t%s\t0\ncc:pool_match_busy\tunity\t%s\t0\ncc:pool_match_runners\tunity\t%s\t0\n' "$(clock 09:30)" "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output labels
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # The runners that have them are all down: capacity, not labels.
+  { cat "$FX/prom.tsv"
+    printf 'cc:pool_match_slots\tunity\t%s\t0\ncc:pool_match_busy\tunity\t%s\t0\ncc:pool_match_runners\tunity\t%s\t2\n' "$(clock 09:30)" "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output capacity
+}
+
+@test "findings: the live reader matches waiting jobs to runners by labels, withheld and offline slots out" {
+  stub_prom 'cat <<JSON
+{"status":"success","data":{"result":[
+ {"metric":{"__name__":"github_actions_job_waiting","pool":"unity","stuck":"false","labels":"self-hosted,Linux,unity-full"},"value":[1,"7200"]},
+ {"metric":{"__name__":"github_actions_job_waiting","pool":"unity","stuck":"false","labels":"self-hosted,linux,unity-full"},"value":[1,"7000"]},
+ {"metric":{"__name__":"github_actions_job_waiting","pool":"unity","stuck":"false","labels":"self-hosted,macOS"},"value":[1,"60"]},
+ {"metric":{"__name__":"github_runner_state","name":"razer-1","state":"running","labels":"self-hosted,linux,unity-full"},"value":[1,"5"]},
+ {"metric":{"__name__":"github_runner_state","name":"razer-1","state":"running","labels":"self-hosted,linux,unity-full","pod":"b"},"value":[1,"5"]},
+ {"metric":{"__name__":"github_runner_state","name":"razer-2","state":"idle","labels":"self-hosted,linux,unity-full"},"value":[1,"0"]},
+ {"metric":{"__name__":"github_runner_state","name":"razer-3","state":"idle","labels":"self-hosted,linux,unity-full"},"value":[1,"0"]},
+ {"metric":{"__name__":"github_runner_state","name":"razer-4","state":"offline","labels":"self-hosted,linux,unity-full"},"value":[1,"0"]},
+ {"metric":{"__name__":"github_runner_state","name":"mac-1","state":"idle","labels":"macOS,unity-full"},"value":[1,"0"]},
+ {"metric":{"__name__":"github_runner_state","name":"cachy-1","state":"idle","labels":"self-hosted,linux"},"value":[1,"0"]},
+ {"metric":{"__name__":"github_runner_withheld","name":"razer-3"},"value":[1,"1"]}
+]}}
+JSON'
+  source "$SUBJECT"
+  run prom_match_rows "$T0"
+  assert_success
+  assert_line "cc:pool_match_slots	unity	2"
+  assert_line "cc:pool_match_busy	unity	1"
+  assert_line "cc:pool_match_runners	unity	4"
+  assert_line "cc:pool_match_labels	unity/linux,self-hosted,unity-full	1"
+}
+
 @test "findings: starved goes to the human once it has lasted the hour, and keeps its fact" {
   use_fixture
   eval_at 09:30; eval_at 10:30
@@ -2932,6 +2989,8 @@ EOF
   assert_success
   run grep -c "time=$((T0 - 1200))" "$SANDBOX/curl.log"
   assert_output 2   # the finding metrics, and the repos waiting in each pool
+  run grep -c "time=$T0\$" "$SANDBOX/curl.log"
+  assert_output 3   # and for the newest sample alone, the runners that fit the waiting jobs
   BENCH_NOW=$T0 run "$SUBJECT" findings --json
   assert_output --partial '"host-overload"'
   refute_output --partial '"scope":"prom"'
