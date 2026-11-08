@@ -72,6 +72,11 @@ set -uo pipefail
 # pool gate, `Tests (affected)` from ci-gate.sh; a dispatched Multi, Shots or tour is not a merge gate,
 # and counting one held ready PRs at CI red.
 : "${FLEET_GATE_WORKFLOWS:=^Tests( |$)}"
+# Job step names (ERE) that stay red until that gate finishes: unity-core-playground's Checks ends
+# with its Merge gate line step (gate-line.py), red while the Tests run is still going, and stays a
+# red check because it is the merge block. A PR whose red jobs failed only in such steps reads CI
+# running while a gate on its head runs (gate_ci, ar-82).
+: "${FLEET_GATE_LINE_STEPS=^Merge gate line$}" # empty: off
 # The gates' per-test failures, one line each: epoch, worktree, branch (- when detached), test. The
 # local gate writes the first; pool-test-failures sync writes the runner pool's from its artifacts.
 TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/test-failures.tsv}"
@@ -508,19 +513,25 @@ repo_slug() {
 }
 
 # A PR's statusCheckRollup -> NONE, PENDING, FAIL or PASS: red only once every check has finished.
-CI_JQ='def ci: .statusCheckRollup // [] | map(.conclusion // .state // "") as $c
+# red: the red checks' Actions job ids, comma-separated, - for one that is not a job (gate_ci reads
+# their steps for a gate-line-only red).
+CI_JQ='def red_re: "FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED";
+  def ci: .statusCheckRollup // [] | map(.conclusion // .state // "") as $c
   | if ($c | length) == 0 then "NONE"
     elif any($c[]; test("^$|PENDING|QUEUED|IN_PROGRESS|EXPECTED")) then "PENDING"
-    elif any($c[]; test("FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED")) then "FAIL"
-    else "PASS" end;'
+    elif any($c[]; test(red_re)) then "FAIL"
+    else "PASS" end;
+  def red: [.statusCheckRollup // [] | .[] | select((.conclusion // .state // "") | test(red_re))
+            | ((.detailsUrl // "") | capture("/job/(?<j>[0-9]+)") | .j) // "-"]
+          | if length == 0 then "-" else join(",") end;'
 
-# PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid".
+# PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids".
 prs_for() {
   local dir="$1" key
   key="$CACHE/$(repo_slug "$dir")" || return 0
   [ -f "$key" ] || (cd "$dir" && gh pr list --state all --limit 100 \
       --json number,state,headRefName,headRefOid,statusCheckRollup \
-      -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid] | @tsv' 2>/dev/null) > "$key" \
+      -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid, red] | @tsv' 2>/dev/null) > "$key" \
     || echo "gh pr list ($(basename "$dir"))" >> "$CACHE/unreadable"
   cat "$key"
 }
@@ -545,7 +556,7 @@ branch_runs() {
   [ -s "$one" ] && cat "$one"
 }
 
-# gate_ci <dir> <branch> <head_oid> <ci> -> <ci> with the branch's dispatched gate runs folded in.
+# gate_ci <dir> <PR head branch> <head_oid> <ci> [<red job ids>] -> <ci> with the branch's dispatched gate runs folded in.
 # A pool gate is a workflow_dispatch run, which never appears in a PR's statusCheckRollup, so a PR
 # whose Checks passed read green while its gate was queued or red (#1175, #1180). Each
 # FLEET_GATE_WORKFLOWS workflow's newest dispatched run on a commit the PR head holds (a reused
@@ -553,17 +564,23 @@ branch_runs() {
 # is PENDING, else a red is FAIL. A run decides by MAIN_STREAKS' conclusions, so a cancelled,
 # skipped or stale one decides nothing, as gate-line.py passes over a cancelled one. Whether an
 # older gate still covers the head is Checks' call (gate-line.py), so an older green adds nothing.
-# Only a PASS or NONE can change; the run list is branch_runs', and one the ledger cannot answer
-# keeps <ci> and is named unreadable.
+# Only a PASS or NONE can change, and a FAIL whose red jobs failed only in FLEET_GATE_LINE_STEPS, which
+# a gate running on the head itself makes PENDING: that red is the gate line waiting on it (ar-82, #1692
+# read CI red mid-gate). A gate still running on an older commit leaves it red: the head has none.
+# The run list is branch_runs', and one the ledger cannot answer keeps <ci> and is named unreadable.
 gate_ci() {
-  local d="$1" br="$2" oid="$3" ci="$4" runs wf st c sha seen="" pend=0 fail=0 pass=0
-  case "$ci" in PASS|NONE) ;; *) echo "$ci"; return ;; esac
+  local d="$1" br="$2" oid="$3" ci="$4" jobs="${5:--}" runs wf st c sha seen="" pend=0 fail=0 pass=0 pendhead=0
+  case "$ci" in
+    PASS|NONE) ;;
+    FAIL) [ "$jobs" != - ] && [ -n "$FLEET_GATE_LINE_STEPS" ] || { echo FAIL; return; } ;;
+    *) echo "$ci"; return ;;
+  esac
   if ! runs="$(branch_runs "$d" "$br")"; then echo "$ci"; return; fi
   while IFS=$'\t' read -r wf st c sha; do
     case $'\n'"$seen" in *$'\n'"$wf"$'\n'*) continue ;; esac
     [ "$sha" = "$oid" ] || git -C "$d" merge-base --is-ancestor "$sha" "$oid" 2>/dev/null || continue
     seen+="$wf"$'\n'
-    if [ "$st" != completed ]; then pend=1
+    if [ "$st" != completed ]; then pend=1; [ "$sha" = "$oid" ] && pendhead=1
     elif [ "$c" = success ]; then pass=1
     else fail=1; fi
   done < <(jq -r --arg gates "$FLEET_GATE_WORKFLOWS" \
@@ -573,10 +590,32 @@ gate_ci() {
                   | sort_by(.createdAt) | reverse | .[]
                   | [.workflowName, .status, ((.conclusion // "") | if . == "" then "-" else . end), .headSha]
                   | @tsv' <<<"$runs")  # "-": IFS tab would merge an empty field into the next
-  if [ "$pend" = 1 ]; then echo PENDING
+  if [ "$ci" = FAIL ]; then
+    if [ "$pendhead" = 1 ] && gate_line_only "$d" "$jobs"; then echo PENDING; else echo FAIL; fi
+  elif [ "$pend" = 1 ]; then echo PENDING
   elif [ "$fail" = 1 ]; then echo FAIL
   elif [ "$pass" = 1 ]; then echo PASS
   else echo "$ci"; fi
+}
+
+# gate_line_only <dir> <red job ids> -> true when each job failed only in FLEET_GATE_LINE_STEPS steps.
+# A finished job's steps never change, so each is one gh call kept in MAIN_CACHE; a cancelled job, a
+# check that is not a job (-) or one gh cannot read is a real red.
+gate_line_only() {
+  local d="$1" id file steps n
+  for id in ${2//,/ }; do
+    [ "$id" != - ] || return 1
+    file="$MAIN_CACHE/job_steps_$id"
+    if [ ! -s "$file" ]; then
+      steps="$(cd "$d" && gh api "repos/{owner}/{repo}/actions/jobs/$id" \
+        -q '[.steps[] | select((.conclusion // "skipped") | test("^(success|skipped)$") | not) | .name]
+            | if length == 0 then "-" else .[] end' 2>/dev/null)" && [ -n "$steps" ] \
+        || { echo "gh api actions/jobs/$id ($(basename "$d"))" >> "$CACHE/unreadable"; return 1; }
+      mkdir -p "$MAIN_CACHE"
+      printf '%s\n' "$steps" > "$file.$$" && mv "$file.$$" "$file"
+    fi
+    while IFS= read -r n; do [[ "$n" =~ $FLEET_GATE_LINE_STEPS ]] || return 1; done < "$file"
+  done
 }
 
 # pr_made_here <dir> <N> <branch> <session_prs JSON> <transcript> <plan|-> [<other plans>] -> true
@@ -889,22 +928,36 @@ pr_of_head() {
   head="$(git -C "$d" rev-parse HEAD 2>/dev/null)" || return 0
   up="$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; up="${up#*/}"
   while IFS= read -r row; do
-    IFS=$'\t' read -r _ _ _ _ o <<<"$row"
+    IFS=$'\t' read -r _ _ _ _ o _ <<<"$row"
     [ "$o" = "$head" ] && { printf '%s\n' "$row"; return; }
   done < <(prs_for "$d")
   while IFS= read -r row; do
-    IFS=$'\t' read -r b _ s _ o <<<"$row"
+    IFS=$'\t' read -r b _ s _ o _ <<<"$row"
     [ "$b" = "$branch" ] || { [ -n "$up" ] && [ "$b" = "$up" ]; } || continue
     if [ "$s" = CLOSED ] && ! git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null; then continue; fi
     printf '%s\n' "$row"; return
   done < <(prs_for "$d")
 }
 
+# pr_holding_head <dir> -> prs_for's row for the oldest OPEN PR whose head holds this clone's HEAD
+# (the nearest of a stack, which lands it first), or nothing. A stacked branch has no PR of its own when its commits went out inside the PR of the
+# branch built on it (ar-82: agent-51 feat/tourney-daily-cap inside #1674). git_facts asks only
+# when HEAD has files the base lacks, so a HEAD still on the base, held by every PR, never asks.
+pr_holding_head() {
+  local d="$1" head row s o hit=""
+  head="$(git -C "$d" rev-parse HEAD 2>/dev/null)" || return 0
+  while IFS= read -r row; do
+    IFS=$'\t' read -r _ _ s _ o _ <<<"$row"
+    [ "$s" = OPEN ] && git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null && hit="$row"
+  done < <(prs_for "$d")   # newest first, so the last hit is the oldest
+  [ -z "$hit" ] || printf '%s\n' "$hit"
+}
+
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
 # plus branch, sync, the PR head and the dirty names (last: they may hold spaces):
 # "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names".
 git_facts() {
-  local d="$1" edited="${2:-}" branch dirty=0 paths ahead base pr state ci oid inpr=1 head
+  local d="$1" edited="${2:-}" branch dirty=0 paths ahead base prb pr state ci oid red inpr=1 head
   [ -d "$d" ] || { echo "gone 0 0 - - - 1 - - - - - -"; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
   fetch_once "$d"
@@ -913,8 +966,10 @@ git_facts() {
   [ -n "$paths" ] && dirty="$(wc -l <<<"$paths")"
   base="$(default_base "$d")"
   ahead="$(ahead_files "$d" "$base")"
-  IFS=$'\t' read -r _ pr state ci oid < <(pr_of_head "$d" "$branch")
-  [ "${state:-}" = OPEN ] && ci="$(gate_ci "$d" "$branch" "$oid" "$ci")"
+  IFS=$'\t' read -r prb pr state ci oid red < <(pr_of_head "$d" "$branch")
+  [ -z "${pr:-}" ] && [ "$ahead" -gt 0 ] && IFS=$'\t' read -r prb pr state ci oid red < <(pr_holding_head "$d")
+  # The gate runs are on the PR's head branch, which a reused slot or a stacked branch does not share.
+  [ "${state:-}" = OPEN ] && ci="$(gate_ci "$d" "$prb" "$oid" "$ci" "$red")"
   if [ -n "${oid:-}" ]; then
     head="$(git -C "$d" rev-parse HEAD)"
     # HEAD is in the PR when it is the PR head or behind it; an unknown oid means the
