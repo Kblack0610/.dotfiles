@@ -1326,7 +1326,9 @@ pub fn reopen(
         crate::ingest::record(p, &ev);
         println!("reopened {}", row.trim());
     };
-    if let Some((new, _)) = md::edit_first_in_section(&content, sheet::TASKS, closed, unclose) {
+    if let Some((new, _)) =
+        md::edit_first_in_section(&content, sheet::TASKS, closed, |l| Some(unclose(l)))
+    {
         md::write_atomic(&sheet, &new)?;
         let row = new
             .lines()
@@ -1344,7 +1346,7 @@ pub fn reopen(
             else {
                 continue;
             };
-            let mut block = vec![unclose(&row).unwrap_or(row)];
+            let mut block = vec![unclose(&row)];
             block.extend(detail);
             // The board first: a failure between the two writes leaves the row in both, never neither.
             md::write_atomic(
@@ -1363,11 +1365,17 @@ pub fn reopen(
 /// `line` open again: `[ ]`, and the marker without what a close stamped. `done` puts its
 /// `done:<day>` token first and the proof after it, `drop` its `dropped:` or `dup:`; each only
 /// appends, so the close is that token and everything after it. The tokens before it (the id)
-/// stay, and a title that quotes one is never read, since only the trailing marker is.
-fn unclose(line: &str) -> Option<String> {
+/// stay, and so does any text after the marker; a title that quotes one is never read, since only
+/// the last marker is. Total: a row is never lost, since `edit_first_in_section` deletes on None.
+fn unclose(line: &str) -> String {
     let t = line.trim_end();
-    let at = t.strip_suffix("-->")?.rfind("<!--")?;
-    let inner: Vec<&str> = t[at + 4..t.len() - 3].split_whitespace().collect();
+    let marker = t
+        .rfind("<!--")
+        .and_then(|at| Some((at, at + t[at..].find("-->")?)));
+    let Some((at, end)) = marker else {
+        return md::set_checkbox(t, ' ');
+    };
+    let inner: Vec<&str> = t[at + 4..end].split_whitespace().collect();
     let cut = inner
         .iter()
         .position(|k| {
@@ -1377,10 +1385,11 @@ fn unclose(line: &str) -> Option<String> {
         })
         .unwrap_or(inner.len());
     let head = md::set_checkbox(t[..at].trim_end(), ' ');
-    Some(match &inner[..cut] {
-        [] => head,
-        keep => format!("{head} <!-- {} -->", keep.join(" ")),
-    })
+    let tail = &t[end + 3..];
+    match &inner[..cut] {
+        [] => format!("{head}{tail}"),
+        keep => format!("{head} <!-- {} -->{tail}", keep.join(" ")),
+    }
 }
 
 /// The marker token `done` stamps beside the proof: the day the row closed, what a project's
@@ -2804,9 +2813,11 @@ Version: v0.0.1
             note,
             "# demo v0.1.0\n\n## Done rows\n- [x] fix(c): kept #size/s <!-- id:dm-3 done:2026-11-06 pr:9 -->\n- [x] fix(e): dropped #size/s <!-- id:dm-5 dropped: stale -->\n"
         );
+        assert_eq!(unclose("- [x] t <!-- done:2026-11-07 pr:1 -->"), "- [ ] t");
         assert_eq!(
-            unclose("- [x] t <!-- done:2026-11-07 pr:1 -->").unwrap(),
-            "- [ ] t"
+            unclose("- [x] t <!-- id:a-1 done:2026-11-07 pr:1 --> #low"),
+            "- [ ] t <!-- id:a-1 --> #low",
+            "text after the marker stays, and the row is never dropped"
         );
         let _ = fs::remove_dir_all(&root);
     }

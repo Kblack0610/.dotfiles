@@ -1437,8 +1437,12 @@ cmd_reopen() {
     [ "$status" = ok ] || die "--unland undoes an ok close, and $slug closed ${status:-with no status}"
     read -ra refs <<<"$(fm_get "$f" pr)"
     read -ra oids <<<"$(fm_get "$f" merged)"
+    # The lists are kept in step (set clears merged: with pr:); one out of step names no commit by index.
+    [ "${#oids[@]}" -eq 0 ] || [ "${#oids[@]}" -eq "${#refs[@]}" ] ||
+      die "$slug records ${#refs[@]} pr: and ${#oids[@]} merged: entries, not in step: agent-queue set $slug pr=<refs> merged=<shas> first"
     for i in "${!refs[@]}"; do
-      [ "${refs[i],,}" = "${unland,,}" ] || kr+=("${refs[i]}") ko+=("${oids[i]:-}")
+      # A bare ref is the PR by its number, as once_done reads it.
+      [ "${refs[i],,}" = "${unland,,}" ] || [ "${refs[i]}" = "${unland##*#}" ] || kr+=("${refs[i]}") ko+=("${oids[i]:-}")
     done
     [ "${#kr[@]}" -lt "${#refs[@]}" ] || die "$slug records pr:${refs[*]:-nothing}, not $unland"
     header_set "$f" pr "${kr[*]}"
@@ -1460,10 +1464,11 @@ cmd_reopen() {
   [ -n "$row" ] || return 0
   case "$(fm_get "$dest" lane)" in '' | agent) flag=(--agent) ;; esac
   exec 8>&-
-  # An ok close closed the row too: it opens again, its proof off, before it is started.
+  # An ok close closed the row too: it opens again, its proof off, before it is started. A row
+  # that is not closed (the close never reached it) has nothing to reopen, so start still runs.
   if [ -n "$unland" ]; then
     notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" reopen "${row#*:}" --why "closed on $unland, not its work${why:+: $why}" >/dev/null 2>&1 ||
-      die "$slug is $to, but its board row ${row#*:} on ${row%%:*} could not be reopened: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} reopen ${row#*:} --why <why>"
+      echo "agent-queue: $slug: board row ${row#*:} on ${row%%:*} was not reopened; if it is closed: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} reopen ${row#*:} --why <why>" >&2
   fi
   notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1 ||
     die "$slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} start ${row#*:}"

@@ -629,6 +629,23 @@ notes --profile bnb ptask game --agent start gm-9"
   "$AQ" move store done --status failed >/dev/null
   run "$AQ" reopen store --unland o/game#5
   assert_failure; assert_output --partial "--unland undoes an ok close, and store closed failed"
+  # pr: and merged: out of step name no commit by index: refused, nothing changed.
+  "$AQ" add --project game --running --slug skew "skew" >/dev/null
+  "$AQ" set skew "pr=o/game#6 o/tools#653" "merged=ccc" >/dev/null
+  "$AQ" move skew done --status ok >/dev/null
+  run "$AQ" reopen skew --unland o/tools#653
+  assert_failure; assert_output --partial "skew records 2 pr: and 1 merged: entries, not in step"
+  # A bare ref is the PR by its number; a row reopen that fails (the row was never closed) still starts it.
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\n[[ " $* " != *" reopen "* ]]\n' > "$SANDBOX/bin/notes"
+  "$AQ" add --project game --running --slug bare "bare" >/dev/null
+  "$AQ" set bare "row=game:gm-10" "pr=654 o/game#7" "merged=ddd eee" >/dev/null
+  "$AQ" move bare done --status ok >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" reopen bare --unland o/tools#654
+  assert_success; assert_output --partial "board row gm-10 on game was not reopened"
+  assert_output --partial "bare: board row gm-10 started again"
+  f="$(item running bare)"
+  [ "$(field "$f" pr)" = "o/game#7" ] && [ "$(field "$f" merged)" = eee ] || fail "pr: $(field "$f" pr) merged: $(field "$f" merged)"
 }
 
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
