@@ -1219,6 +1219,18 @@ game_ready() {
   assert_not_called 'wt new'
 }
 
+@test "fill by hand with no DISPATCH_PER_PASS promotes up to DISPATCH_LOW_WATER picks, not every pick" {
+  game_ready
+  local a; for a in save menu audio; do
+    row game human "fix crash on $a" "- [ ] fix crash on $a $T"
+    verdict game human "fix crash on $a" dispatch S 1 "$a"
+  done
+  unset DISPATCH_PER_PASS
+  DISPATCH_LOW_WATER=2 run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
+  assert_success
+  assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 2
+}
+
 @test "a queued board item holds its area against another pick" {
   game_ready
   row game human 'fix crash on save' "- [ ] fix crash on save $T"

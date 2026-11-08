@@ -3276,7 +3276,7 @@ cmd_promote() {
 # all_open -- candidates without the judged filter: every open, eligible row
 all_open() { VERDICTS=/dev/null cmd_candidates; }
 
-# cmd_fill [--dry-run] [--json] -- by hand: promote up to DISPATCH_PER_PASS picks (every pick at 0) into the queue, no
+# cmd_fill [--dry-run] [--json] -- by hand: promote up to DISPATCH_PER_PASS picks (DISPATCH_LOW_WATER at 0) into the queue, no
 # gate. --dry-run is the order a pass would promote rows in, with no judge call and no write:
 # `ready` rows are day_picks (cached verdicts only, a live area skipped, tier-3 cleanup included), then
 # `night` rows (tier 3, promoted with the night tag), then `unjudged` rows, which no current verdict
@@ -3290,7 +3290,7 @@ cmd_fill() {
   if [ "$dry" = 0 ]; then
     DRY=0; mkdir -p "$DIR"; exec 9>"$DIR/.lock"
     flock -n 9 || { say "fill: another pass is running"; return 0; }
-    fill_now "$(( PER_PASS > 0 ? PER_PASS : 999 ))"; return
+    fill_now "$(( PER_PASS > 0 ? PER_PASS : DISPATCH_LOW_WATER ))"; return
   fi
   ready=$(day_picks 999)
   night=$(night_picks "$(night_rows '')")
