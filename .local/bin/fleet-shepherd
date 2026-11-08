@@ -141,7 +141,8 @@ REMINDED="$LEDGER/.remind"    # <date>\t<session id>\t<fact>: today's reminders,
 BUDGETS="$LEDGER/.budget"     # <item>\t<budgets reached>\t<extended|parked|pending|left>: each checkpoint, once
 SHARED_ITEMS="$LEDGER/.shared"  # <fact>\t<item slug>: the queue item that owns each shared red episode
 # The project a shared red's item is filed on: the test failures fleet-sessions reads are the
-# playground's local gate (UNITY_TEST_FAILURES), so that repo owns the quarantine and the fix.
+# playground's gates, local (UNITY_TEST_FAILURES) and on the runner pool (UNITY_POOL_FAILURES,
+# from pool-test-failures), so that repo owns the quarantine and the fix.
 : "${FLEET_SHARED_RED_PROJECT:=unity-core-playground}"
 LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
 

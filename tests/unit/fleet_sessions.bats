@@ -826,6 +826,25 @@ SH
   [ "$(jq -r .nudged <<<"$output")" = true ]
 }
 
+@test "end to end: a reused slot branch reads the PR that holds its HEAD, not an older closed PR of the same name (2026-11-07)" {
+  landed_fixture
+  local oid old="1111111111111111111111111111111111111111"
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  # gh lists newest first: #1500 went out on another head branch, #1490 is an older closed PR of this branch's name
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "all-sources-p5-scoring\\t1500\\tMERGED\\tPASS\\t%s\\nfeat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$oid" "$old" > "$SANDBOX/bin/gh"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .fact <<<"$output")" = 'LANDED PR #1500 merged, tree clean, next phase: Phase 2: rollout @feat/x' ]
+
+  # with no PR holding HEAD, the closed one of the same name is old: it is not the blocker
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$old" > "$SANDBOX/bin/gh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [[ "$(jq -r .fact <<<"$output")" != *'closed without merging'* ]]
+}
+
 @test "end to end: plan mode with no approval dialog open is not NEEDS plan awaiting approval" {
   landed_fixture
   PANEL_PLAN_MODE=true panel "$SANDBOX/wt" "$SANDBOX/plan.md"
@@ -1040,6 +1059,38 @@ SH
 
   # negative control: a higher bar makes no row
   FLEET_SHARED_RED_BRANCHES=4 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
+}
+
+@test "end to end: the pool's ledger counts toward SHARED, a branch red on both gates once (ar-171)" {
+  # Gates moved to the runner pool (playground #1256), so most reds never reached the local ledger.
+  landed_fixture
+  local now l p
+  now="$(date +%s)" l="$XDG_STATE_HOME/unity-test-runs/test-failures.tsv" p="$XDG_STATE_HOME/unity-test-runs/pool-failures.tsv"
+  mkdir -p "${l%/*}"
+  # feat/x red locally and on the pool, feat/b and feat/c only on the pool (feat/c has no worktree here)
+  printf '%s	wt	feat/x	T.Pool
+' $((now - 900)) > "$l"
+  printf '%s	%s	%s	%s
+' $((now - 800)) wt feat/x T.Pool $((now - 700)) uc-b feat/b T.Pool $((now - 600)) - feat/c T.Pool > "$p"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -r .reason <<<"$shared")" = 'T.Pool red on 3 branches in 2h: feat/x, feat/b, feat/c' ]
+  [ "$(jq -r .fact <<<"$shared")" = "SHARED T.Pool @$((now - 900))" ]
+  [ "$(jq -r '.owners | join(",")' <<<"$shared")" = sid-9 ]
+
+  # the pool ledger alone, with no local one, still makes the row
+  rm "$l"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket == "SHARED") | .target' <<<"$output")" = T.Pool ]
+
+  # negative control: feat/x on both gates is one branch, so without feat/c it is two
+  printf '%s	wt	feat/x	T.Pool
+' $((now - 900)) > "$l"
+  sed -i '/feat\/c/d' "$p"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
 }
 

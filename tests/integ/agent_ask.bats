@@ -162,6 +162,29 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_output 1
 }
 
+# 2026-11-07: "ok thanks, can you wind down" cancelled KZhaE0, and upwork-p2..p5 queued behind it
+# could never start.
+@test "settle-session: an ask a queue item waits on stays pending on a reply that names no option" {
+  local opts='go=run it now|later=run it later' a b
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'start the next phase?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug next-phase --tags "tier3 ask:$a" "the next phase" >/dev/null
+  "$AGENT_ASK" settle-session sid-1 answered "ok thanks, can you wind down"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'
+  # Naming an option still answers it.
+  "$AGENT_ASK" settle-session sid-1 answered "go"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'answer: go'
+  # Negative control: an item done with it no longer holds it, so the reply cancels as before.
+  b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'and the one after?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug old --tags "ask:$b" "an old phase" >/dev/null
+  "$AGENT_ASK_QUEUE_CMD" move old done --status cancelled >/dev/null
+  "$AGENT_ASK" settle-session sid-1 answered "ok thanks"
+  run "$AGENT_ASK" show "$b"
+  assert_line 'status: cancelled'
+}
+
 @test "settle-session: a free-text ask takes a statement as its answer, a question or slash command only closes it" {
   local a msg
   # 2026-11-03 "were you going to post which ones i could close out" became the answer to a runner-pool ask.
@@ -929,6 +952,23 @@ SH
   # an ask with no live session and no resume is filed as a row, saying the judge answered
   assert_called "notes ptask"
   assert_equal "$("$AGENT_ASK" count --all)" 2
+}
+
+# 2026-11-07: the judge answered itX9A3 under a queued phase, and agent-queue releases an ask only
+# on the human's answer, so the phase would have waited for good.
+@test "sweep never answers live an ask a queue item waits on; the human keeps it" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy=0 AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  local held free
+  held="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
+  free="$("$AGENT_ASK" post --project other --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake too?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug p3 --tags "ask:$held=fix tier3" "the live phase" >/dev/null
+  fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
+  run "$AGENT_ASK" sweep --all
+  assert_success
+  assert_line --regexp "^demo	$held	yours	ship_deploy	"
+  run "$AGENT_ASK" show "$held"; assert_line 'status: pending'
+  # Negative control: the same verdict on an ask no item waits on answers it.
+  run "$AGENT_ASK" show "$free"; assert_line 'answered_by: judge'
 }
 
 @test "a judge answer typed into a live session names the judge, its rule and its reason" {

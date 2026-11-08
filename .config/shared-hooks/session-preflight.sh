@@ -144,8 +144,10 @@ startup_mark facts
 # nonzero. `notes board --agent` is read-only and never rewrites board.md.
 #
 # 6 rows, asks first (at most 3, so asks never hide every in-flight row), then the
-# "+N more" line. At 15 rows the board alone was 2.6 KB of turn 1.
+# "+N more" line, each row cut to BOARD_WIDTH characters: the title is what a resuming session
+# needs, and `notes board` has the rest. At 15 rows the board alone was 2.6 KB of turn 1.
 BOARD_MAX=6
+BOARD_WIDTH=160
 BOARD_ASKS=3
 SEC_BOARD=""
 if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2>&1; then
@@ -173,7 +175,11 @@ if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2
           END {
             for (i = 1; i <= r && shown < max; i++) { print rest[i]; shown++ }
             for (i = 1; i <= e && shown < max; i++) { print extra[i]; shown++ }
-          }' | awk -F'\t' '{ printf "  [%s] %s\n", $1, $2 }'
+          }' | while IFS=$'\t' read -r proj text; do
+          # Cut in bash: it counts characters in a UTF-8 locale, where mawk and BSD awk count bytes.
+          [ "${#text}" -le "$BOARD_WIDTH" ] || text="${text:0:BOARD_WIDTH-3}..."
+          printf '  [%s] %s\n' "$proj" "$text"
+        done
         # Say what was dropped. A silent truncation reads as "that is all of it", which is
         # the same failure as an empty channel reporting nothing to report.
         if [ "${agent_total:-0}" -gt "$BOARD_MAX" ]; then
