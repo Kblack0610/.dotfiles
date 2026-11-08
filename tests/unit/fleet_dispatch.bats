@@ -5265,9 +5265,9 @@ cloud_run_ready() {
 # --- routing: a run pass over every source ------------------------------------------------
 
 # Every account past its pace, lazer-reserve on its own key, and model-lane putting every task on
-# Sonnet ($LANE when set; a bare-ID headline on Opus, as the router's LLM reads one), whose candidates
-# are claude and codex at one fit and lazer-reserve at the next. Opus's are lanes.yaml's: claude, then
-# codex at the next fit. No source has room until a test says which (srcs).
+# Sonnet ($LANE when set), whose candidates are claude and codex at one fit and lazer-reserve at the
+# next. Opus's are lanes.yaml's: claude, then codex and glm at the next fit. No source has room until
+# a test says which (srcs).
 route_ready() {
   harness_ready
   printf 'sk-reserve\n' > "$SANDBOX/reserve.key"
@@ -5279,8 +5279,7 @@ route_ready() {
 }
 sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; l=${LANE:-sonnet}
 case "$1" in log) echo run-9 ;; classify)
-  [[ "$2" =~ ^[a-z]+-[0-9]+$ ]] && l=opus
-  if [ "$l" = opus ]; then c="[{\"harness\":\"claude\",\"model\":\"opus\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]"
+  if [ "$l" = opus ]; then c="[{\"harness\":\"claude\",\"model\":\"opus\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1},{\"harness\":\"glm\",\"model\":\"glm\",\"fit\":1}]"
   elif [ "$l" = sonnet ]; then c="[{\"harness\":\"claude\",\"model\":\"sonnet\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0},{\"harness\":\"lazer-reserve\",\"model\":\"sonnet\",\"fit\":1}]"
   else c="[{\"harness\":\"claude\",\"model\":\"$l\",\"fit\":0}]"; fi
   echo "{\"lane\":\"$l\",\"by\":\"rule\",\"model\":\"$l\",\"dispatch_model\":\"$l\",\"candidates\":$c}" ;; esac'; }
@@ -5353,12 +5352,12 @@ case "$1" in log) echo run-9 ;; classify)
   export LANE=opus
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'no account has room; alt is the closest, 4 points over its weekly pace, and no queue item has a source with room it may run on: fix-menu (claude: no account has room; codex: codex: inside its reserve)'
+  assert_output --partial 'no account has room; alt is the closest, 4 points over its weekly pace, and no queue item has a source with room it may run on: fix-menu (claude: no account has room; codex: codex: inside its reserve; glm: no source glm in claude-acct room --json)'
   assert_equal "$(outcome)" BLOCKED
   assert_not_called 'wt new'
   rm -f "$NOTES_FIXTURE/calls.log"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'fix-menu (claude: no account has room; codex: codex: inside its reserve)'
+  assert_output --partial 'fix-menu (claude: no account has room; codex: codex: inside its reserve; glm: no source glm in claude-acct room --json)'
   assert_not_called 'model-lane classify'
   [ -n "$(qitem queued fix-menu)" ] || fail "an Opus item left the queue"
   # Once an account has room, the cached verdict no longer skips it: it is classified afresh and starts.
@@ -5368,13 +5367,17 @@ case "$1" in log) echo run-9 ;; classify)
   assert_called 'model-lane classify'
 }
 
-@test "a bare-ID row classifies Opus and, with no account room, routes to codex at the Opus lane's next fit" {
+# A bare-ID row (`ucp-212`, no words) is what the router's LLM sends to Opus (ar-1014); LANE stands in for it.
+@test "a bare-ID row on the Opus lane routes to codex at the next fit while no account has room" {
   route_ready
   srcs codex:ok:5 reserve:ok:20
+  export LANE=opus
   agent-queue add --project game --slug ucp-212 --priority urgent "ucp-212" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started queue item ucp-212 on codex (sol), routed by model-lane while no account has room'
+  assert_equal "$(outcome)" WORKED
+  assert_called 'agent-codex run -m gpt-6.1-sol'
   assert_called 'model-lane log --item ucp-212 --task ucp-212 --lane opus --by rule --picked opus --ran sol --harness codex'
   f=$(qitem running ucp-212)
   assert_equal "$(qfield "$f" agent) $(qfield "$f" routed) $(qfield "$f" model)" 'codex codex sol'
@@ -5403,15 +5406,24 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'started queue item fix-next on codex (sol)'
 }
 
-@test "a routed item past the tier ceiling stays on claude, and the Sonnet item behind it routes" {
+@test "a routed tier-3 item goes only to a headless harness, on a brief that stops at the PR; the Sonnet item behind it routes" {
   route_ready
-  srcs codex:ok:5 reserve:ok:20
+  srcs codex:reserve:1 reserve:ok:20
   agent-queue add --project game --slug ci-first --priority urgent "ci: the runner retries a dead batch" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'queue item ci-first has no source with room it may run on: codex: tier 3 is past the unattended ceiling; claude: no account has room; lazer-reserve: tier 3 is past the unattended ceiling'
-  [ -n "$(qitem queued ci-first)" ] || fail "a tier 3 item was routed"
+  assert_output --partial 'queue item ci-first has no source with room it may run on: codex: codex: inside its reserve; claude: no account has room; lazer-reserve: tier 3 is past the unattended ceiling'
+  [ -n "$(qitem queued ci-first)" ] || fail "a tier 3 item went to a harness that would land it"
   [ -n "$(qitem running fix-menu)" ] || fail "the Sonnet item behind it did not route"
+  # With codex back in room, it takes the item PR-only: the merge waits on a review codex cannot run.
+  srcs codex:ok:5
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item ci-first on codex (sol), routed by model-lane'
+  assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it with --pr-only'
+  assert_called 'agent-queue move ci-first waiting'
+  assert_not_called 'Run agent-land in the foreground'
+  assert_not_called 'merges only behind the red-fix gate'
 }
 
 @test "a red past the ceiling routes only to a harness that can hold the red-fix gate" {
