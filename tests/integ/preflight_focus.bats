@@ -177,6 +177,24 @@ EOF
   [ "$(grep -c 'follow-up ' <<<"$output")" -eq 2 ]
 }
 
+@test "a long agent board row is cut to its first 160 characters" {
+  cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
+     "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
+  seed_tracker_map
+  long="fix(x): $(printf 'a%.0s' $(seq 1 300)) TAILMARK"
+  printf '#!/usr/bin/env bash\n[ "$1 $2" = "board --agent" ] && printf "notes-cockpit\\t%%s\\nnotes-cockpit\\tshort row\\n" "%s"\nexit 0\n' "$long" > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+
+  run context
+  assert_success
+  row=$(grep -F '[notes-cockpit] fix(x):' <<<"$output")
+  [ "${#row}" -eq $((2 + 16 + 160)) ]
+  [[ "$row" == *... ]]
+  refute_output --partial 'TAILMARK'
+  # Negative control: a short row is printed whole.
+  assert_output --partial '[notes-cockpit] short row'
+}
+
 @test "the agent lane joins through trackers.repo, NOT the directory name" {
   # The whole point. The project resolves to `toolrepo`; its board projects are named
   # something else entirely. A directory-name join asks for the wrong thing and finds
