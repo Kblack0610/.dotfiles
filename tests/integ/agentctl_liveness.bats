@@ -29,8 +29,10 @@ runner() {
 
 # show <unit> <Property> <value>
 show() { printf '%s\n' "$3" > "$NOTES_FIXTURE/systemctl.show.$1.$2"; }
-# stamp <seconds ago> - a timestamp as systemctl prints one
-stamp() { date -d "@$((NOW - $1))" '+%a %Y-%m-%d %H:%M:%S %Z'; }
+# stamp <seconds ago> - a timestamp as `systemctl show --timestamp=unix` prints one
+stamp() { printf '@%s' "$((NOW - $1))"; }
+# pause_for <seconds ago> - the pause file, aged by its mtime
+pause_for() { printf 'x hot box\n' > "$AGENTCTL_STATE_DIR/PAUSED"; touch -d "@$((NOW - $1))" "$AGENTCTL_STATE_DIR/PAUSED"; }
 # outcome <name> <verdict> <seconds ago>
 outcome() {
   printf '%s' "$2" > "$AGENTCTL_STATE_DIR/$1/last-outcome"
@@ -74,16 +76,40 @@ outcome() {
   show agentctl-alpha.timer LastTriggerUSec "$(stamp 600)"
   show agentctl@alpha.service Result exec-condition
   outcome alpha WORKED 90000
-  printf '%s hot box\n' "$(date -Is -d "@$((NOW - 3600))")" > "$AGENTCTL_STATE_DIR/PAUSED"
+  pause_for 3600
   run "$AGENTCTL_BIN" liveness
   assert_success
 
-  printf '%s hot box\n' "$(date -Is -d "@$((NOW - 90000))")" > "$AGENTCTL_STATE_DIR/PAUSED"
+  pause_for 90000
   run "$AGENTCTL_BIN" liveness
   assert_failure
   assert_output --partial 'fleet: paused for'
   assert_output --partial 'hot box'
   refute_output --partial 'alpha:'
+}
+
+@test "after resume a skipped fire is forgiven for a day, then the missed run is a fault" {
+  runner weekly 'SCHEDULE=weekly'
+  show agentctl@weekly.service Result exec-condition
+  outcome weekly WORKED 700000
+  show agentctl-weekly.timer LastTriggerUSec "$(stamp 3600)"
+  run "$AGENTCTL_BIN" liveness
+  assert_success
+  show agentctl-weekly.timer LastTriggerUSec "$(stamp 90000)"
+  run "$AGENTCTL_BIN" liveness
+  assert_failure
+  assert_output --partial 'weekly: timer fired'
+  assert_output --partial 'result=exec-condition'
+}
+
+@test "a unit waiting to restart is not running" {
+  show agentctl-alpha.timer LastTriggerUSec "$(stamp 600)"
+  show agentctl@alpha.service ActiveState activating
+  show agentctl@alpha.service SubState auto-restart
+  outcome alpha WORKED 90000
+  run "$AGENTCTL_BIN" liveness
+  assert_failure
+  assert_output --partial 'alpha: timer fired'
 }
 
 @test "STALLED, FAILED and a PENDING with the unit down are faults" {
@@ -123,9 +149,11 @@ outcome() {
   assert_line 'alpha: never reported an outcome'
 }
 
-@test "a disabled runner and a called slot are off the roster; an empty roster fails closed" {
+@test "a disabled runner, even an invalid one, and a never-called slot are off the roster; an empty roster fails closed" {
   echo 'ENABLED=no' >> "$AGENTCTL_CONF_DIR/alpha.conf"
+  echo 'CRITICAL=maybe' >> "$AGENTCTL_CONF_DIR/alpha.conf"
   show agentctl-alpha.timer ActiveState inactive
+  printf 'NAME=judge\nKIND=call\nLANE=deliver\nROLE=distill\nDESCRIPTION=\047a judge\047\nEFFECT=shadow\n' > "$AGENTCTL_CONF_DIR/judge.conf"
   run "$AGENTCTL_BIN" liveness
   assert_failure
   assert_output --partial 'fleet: no enabled runner on the roster'

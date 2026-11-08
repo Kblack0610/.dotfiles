@@ -689,11 +689,14 @@ cmd_disable() {
     cmd_reload
 }
 
-# _epoch <systemd timestamp or ISO date> - epoch seconds; status 1 for an unset one, which
-# systemd prints as empty, "n/a" or 0 depending on version.
-_epoch() {
-    case "${1:-}" in ""|n/a|0) return 1 ;; esac
-    date -d "$1" +%s 2>/dev/null
+# unit_epoch <unit> <timestamp property> - epoch seconds, read as systemd's own @<seconds>
+# (never its local-time text, which date -d cannot read in every zone); status 1 when unset.
+unit_epoch() {
+    local v
+    v=$(systemctl --user show "$1" --property="$2" --value --timestamp=unix 2>/dev/null)
+    v="${v#@}"
+    [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" != 0 ] || return 1
+    printf '%s\n' "$v"
 }
 
 # liveness - the fleet-liveness watch's probe: exit 1 with one line per fault when scheduled
@@ -709,15 +712,17 @@ _epoch() {
 #   - a timer fire with no run recorded after it: the start was refused or died before
 #     ExecStartPost, so the verdict on file is an older run's and reads green
 #   - a pause older than LIVENESS_PAUSE_MAX_S
-# A start the pause skipped (Result=exec-condition) is the pause working, not a fault.
+# A start the pause skipped (Result=exec-condition) is the pause working, not a fault, while
+# the pause is on and for a day after the skipped fire; past that the missed run is a fault.
 # Fails closed: an empty roster, or nobody reporting, is exit 1, because "no runner reports"
 # looks exactly like "the reporting broke".
 cmd_liveness() {
     local now n conf f kind sched auto timer fired armed ran rc=0 roster=0 reported=0
-    local running skipped since
+    local running skipped since paused=0
     now=$(date +%s)
     if [ -e "$PAUSE_FILE" ]; then
-        since=$(_epoch "$(head -1 "$PAUSE_FILE" | cut -d' ' -f1)") || since=$now
+        paused=1
+        since=$(stat -c %Y "$PAUSE_FILE")
         if [ $((now - since)) -gt "$LIVENESS_PAUSE_MAX_S" ]; then
             printf 'fleet: paused for %s (%s), no scheduled runner starts: agentctl resume\n' \
                 "$(fmt_dur $((now - since)))" "$(head -1 "$PAUSE_FILE")"
@@ -725,24 +730,33 @@ cmd_liveness() {
         fi
     fi
     for n in $(list_agent_names); do
+        # Read raw first: a switched-off conf is out of scope even when it would not load.
+        [ "$(sed -n 's/^ENABLED=//p' "$CONFIG_DIR/$n.conf" | head -1 | tr -d "\"' ")" = no ] && continue
         if ! conf=$(load_agent "$n" 2>&1); then
             printf '%s: invalid conf (%s)\n' "$n" "$conf"; rc=1; continue
         fi
-        [ "$(kv_get ENABLED <<<"$conf")" = yes ] || continue
         kind=$(kv_get KIND <<<"$conf"); sched=$(kv_get SCHEDULE <<<"$conf")
         auto=$(kv_get AUTOSTART <<<"$conf")
         f=$(_outcome_file "$n")
         [ -n "$sched" ] || [ "$auto" = yes ] || [ -e "$f" ] || continue
         roster=$((roster + 1))
+        # activating also covers the wait between restarts (SubState auto-restart): not running.
         running=0
-        case "$(unit_state "$n")" in active|activating|reloading) running=1 ;; esac
-        skipped=0; [ "$(unit_result "$n")" = exec-condition ] && skipped=1
+        case "$(unit_state "$n")" in
+            active|reloading) running=1 ;;
+            activating) [ "$(unit_substate "$n")" = auto-restart ] || running=1 ;;
+        esac
         fired=""; timer="agentctl-$n.timer"
         if [ -n "$sched" ]; then
             if [ "$(systemd_show "$timer" ActiveState)" != active ]; then
                 printf '%s: timer not armed, it never fires (agentctl reload)\n' "$n"; rc=1; continue
             fi
-            fired=$(_epoch "$(systemd_show "$timer" LastTriggerUSec)") || fired=""
+            fired=$(unit_epoch "$timer" LastTriggerUSec) || fired=""
+        fi
+        skipped=0
+        if [ "$(unit_result "$n")" = exec-condition ] \
+           && { [ "$paused" = 1 ] || [ -z "$fired" ] || [ $((now - fired)) -lt "$LIVENESS_PAUSE_MAX_S" ]; }; then
+            skipped=1
         fi
         if [ "$kind" = persistent ] && [ "$auto" = yes ] && [ "$running" = 0 ]; then
             printf '%s: persistent runner not running (agentctl start %s)\n' "$n" "$n"; rc=1; continue
@@ -750,9 +764,9 @@ cmd_liveness() {
         if [ ! -r "$f" ]; then
             [ "$running" = 1 ] || [ "$skipped" = 1 ] && continue
             if [ -n "$sched" ] && [ -z "$fired" ] \
-               && armed=$(_epoch "$(systemd_show "$timer" ActiveEnterTimestamp)") \
+               && armed=$(unit_epoch "$timer" ActiveEnterTimestamp) \
                && [ $((now - armed)) -lt $((8 * 86400)) ] \
-               && ! _epoch "$(systemd_show "agentctl@$n.service" InactiveExitTimestamp)" >/dev/null; then
+               && ! unit_epoch "agentctl@$n.service" InactiveExitTimestamp >/dev/null; then
                 continue
             fi
             printf '%s: never reported an outcome\n' "$n"; rc=1; continue
