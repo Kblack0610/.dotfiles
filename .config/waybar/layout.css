@@ -56,3 +56,9 @@
 #custom-audio-input.other {
     opacity: 0.6;
 }
+
+/* The machine mode chip (machine_mode.sh), right of the disk chip: neutral in every mode, its
+ * amber letter is painted by the script when the runner pin never reached the cluster. */
+#custom-machine-mode {
+    padding: 0 10px;
+}

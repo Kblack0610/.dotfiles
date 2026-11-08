@@ -35,7 +35,9 @@ machine-mode hours      # the day's parts and which one is now
 machine-mode auto       # give the mode back to the clock
 ```
 
-The waybar chip appears in every mode except `open`, as the mode's initial (F, R or S) with the rest in its hover, and a click there runs `machine-mode next`. In `open` the bar shows nothing, because the bar has no width to spare on a 1920 monitor, so leave `open` with the command. The chip is neutral. Amber means the last switch never reached the cluster, so the runners are not where the letter says. It has no text on a machine with no pool runners.
+From the keyboard, `Super+A m` opens the mode menu and one more key switches: `r` reserved, `s` shared, `o` open, `f` full, `a` auto (back to the clock). The leaves are in `.config/hypr/conf.d/leader.conf`, and the Super+A Space menu lists them.
+
+The waybar chip sits right of the disk chip on the desktop bar and shows in every mode, as the mode's initial (R, S, O or F) with the rest in its hover; a click runs `machine-mode next`. The chip is neutral. Amber means the last switch never reached the cluster, so the runners are not where the letter says. It has no text on a machine with no pool runners.
 
 ## Clock hours
 
