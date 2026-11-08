@@ -182,29 +182,15 @@ pub fn list(p: &Profile, _log: &Logger) -> Result<()> {
     Ok(())
 }
 
-/// `notes inbox add <text>` — append a timestamped bullet to today's capture
+/// `notes inbox add <text>` - append a timestamped bullet to today's capture
 /// file (`inbox/<YYYY-MM-DD>.md`), creating it with a header if new.
 pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<()> {
     let text = text.trim();
     if text.is_empty() {
         bail!("nothing to add (provide capture text)");
     }
-    fs::create_dir_all(&p.inbox)
-        .with_context(|| format!("creating inbox dir {}", p.inbox.display()))?;
-    let now = Local::now();
-    let date = now.date_naive().format("%Y-%m-%d").to_string();
-    let file = p.inbox.join(format!("{date}.md"));
-
-    let mut body = if file.exists() {
-        fs::read_to_string(&file)?
-    } else {
-        format!("# Inbox - {date}\n")
-    };
-    if !body.ends_with('\n') {
-        body.push('\n');
-    }
     // When captured from inside a Claude Code session, tag the capture with the session
-    // id (mirrors the `<!-- since:… -->` marker convention) so it's traceable back to
+    // id (mirrors the `<!-- since:... -->` marker convention) so it's traceable back to
     // the conversation via `claude -r <id>`. Absent for plain terminal captures.
     let session = std::env::var("CLAUDE_CODE_SESSION_ID")
         .ok()
@@ -212,11 +198,38 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<()> {
     let marker = session
         .map(|id| format!(" <!-- session:{id} -->"))
         .unwrap_or_default();
-    body.push_str(&format!("\n- {} {}{}\n", now.format("%H:%M"), text, marker));
-    fs::write(&file, body)?;
+    let file = append(p, &format!("{text}{marker}"))?;
     log.info("inbox", &format!("captured to {}", file.display()));
     println!("{}", file.display());
     Ok(())
+}
+
+/// Append `- HH:MM <body>` to today's capture file and return its path. `body` may run over
+/// several lines; the caller indents the later ones.
+pub(crate) fn append(p: &Profile, body: &str) -> Result<PathBuf> {
+    fs::create_dir_all(&p.inbox)
+        .with_context(|| format!("creating inbox dir {}", p.inbox.display()))?;
+    // One writer at a time: the sweep's answers and `notes inbox add` both read and rewrite the file.
+    let _lock = crate::md::lock_file(
+        &p.inbox
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(".inbox.lock"),
+    )?;
+    let now = Local::now();
+    let date = now.date_naive().format("%Y-%m-%d").to_string();
+    let file = p.inbox.join(format!("{date}.md"));
+    let mut text = if file.exists() {
+        fs::read_to_string(&file)?
+    } else {
+        format!("# Inbox - {date}\n")
+    };
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!("\n- {} {}\n", now.format("%H:%M"), body));
+    fs::write(&file, text)?;
+    Ok(file)
 }
 
 /// `notes inbox archive [target] [--stale] [--before DATE]` — the drain.
