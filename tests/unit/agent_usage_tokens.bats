@@ -267,3 +267,44 @@ lf_nokey() { mkdir -p "$TOKENS_DIR"; echo "{\"date\":\"$1\",\"errors\":[]}" > "$
   run "$AU" tokens check --langfuse
   assert_failure 2
 }
+
+# check --gateway-errors: a trip-listed error class in the newest snapshot, auth probes quiet.
+gw_day() { lf_day "$1" "{\"gateway\":{\"calls\":100,\"errors\":$2,\"by_error\":$3}}" '[]'; }
+
+@test "check --gateway-errors: BadRequestError trips, naming the count and the unlisted rest" {
+  gw_day 2026-01-01 12 '{"BadRequestError":8,"HTTPException":4}'
+  run "$AU" tokens check --gateway-errors
+  assert_failure 1
+  assert_output '2026-01-01: gateway BadRequestError x8 (4 other errors, not listed)'
+}
+
+@test "check --gateway-errors: auth probes, budget and rate limits are quiet (negative control)" {
+  gw_day 2026-01-01 400 '{"HTTPException":300,"KeyNotFoundError":80,"BudgetExceededError":15,"ProxyRateLimitError":5}'
+  run "$AU" tokens check --gateway-errors
+  assert_success
+  assert_output '2026-01-01: no BadRequestError in the gateway errors (400 errors in 100 calls)'
+  TOKENS_GATEWAY_TRIP=KeyNotFoundError run "$AU" tokens check --gateway-errors
+  assert_failure 1
+}
+
+@test "check --gateway-errors: a null langfuse section or no by_error is quiet, only the newest night counts" {
+  lf_day 2025-12-31 '{"gateway":{"by_error":{"BadRequestError":5}}}' '[]'; lf_day 2026-01-01 null '["langfuse: x"]'
+  run "$AU" tokens check --gateway-errors
+  assert_success
+  lf_day 2026-01-01 '{"gateway":{"calls":3,"errors":0,"by_error":{}}}' '[]'
+  run "$AU" tokens check --gateway-errors
+  assert_success
+  TOKENS_GATEWAY_MIN=2 run "$AU" tokens check --gateway-errors
+  assert_success
+}
+
+@test "check --gateway-errors: no or a stale snapshot still exits 2, and it excludes --langfuse" {
+  gw_day 2026-01-01 1 '{"BadRequestError":1}'
+  TOKENS_TODAY=2026-01-05 run "$AU" tokens check --gateway-errors
+  assert_failure 2
+  run "$AU" tokens check --gateway-errors --langfuse
+  assert_failure 2
+  rm "$TOKENS_DIR"/*.json
+  run "$AU" tokens check --gateway-errors
+  assert_failure 2
+}
