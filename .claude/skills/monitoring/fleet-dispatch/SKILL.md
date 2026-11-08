@@ -71,6 +71,14 @@ Only the sessions the dispatch pass started count against `DISPATCH_MAX_LIVE` an
 
 A dispatched session is an ordinary session from then on: the `shepherd` buckets, nudges and escalations apply to it unchanged, and its `/one-shot` records done on its row with proof. If it needs the human, it asks in its own conversation, files the same question with `agent-ask post`, and stops; the human answers in the session or from a board, and either way the answer lands in the session and closes the ask. Every pass that starts or reaps something appends a line to `~/.agent/dispatch/log.md`. `fleet-dispatch stats` counts it for the feed (HA sensor "Dispatch queue", Prometheus): runnable items and the oldest one's age, the queue's started, done and failed by the hour (from `agent-queue stats`), reap moves, and the items reaped `DISPATCH_FLAP_MOVES` or more times in an hour. Read those numbers, not the log, to answer "is dispatch moving".
 
+## Steering the fleet onto projects: `#prio`
+
+One store sets project precedence: the `#prio/<word>` head tag on a project's lab front page, set by `notes projects --prio <p> --set <word>` or `P` on the hub Projects tab, which steps normal, focus, high, low and never sets `only` (`notes projects --prios` lists them).
+
+- `focus`, `high`, `low`: rank keys only. Board picks (RANK_JQ `pprio`) and queue order (agent-queue `ORDER` `$rank`) put focus first, then high, normal, low. Nothing is filtered.
+- `only`: while any project carries it, automated starts take only those projects' work. agent-queue holds every other queued item `focus: only <projects>` (so the run pass, the project floor, `after:` chains and plan phases all wait), and board and night intake skip their rows (`row_off`, so `candidates --suggest` names it). Exempt: a `red` item, an `urgent` one, a `requested` one (`promote` tags a `#requested` row's item), and a `#requested` or `#urgent` row. Running sessions finish; a hand `start --item` and `cl` are never refused.
+- An empty focus trips `starved` ("focus: only <p> has no work"). `headroom` names the focus and how many items it holds (`focus`, `focus_held`); stats publishes `focus_projects` and `held_focus` for the waybar hover. Clear it with `--set normal`.
+
 ## A world server died: `fleet-dispatch restore`
 
 `fleet-dispatch record` runs every minute from `fleet-state.service` and keeps `~/.agent/dispatch/panes/<server>.json` for each world in `.config/tmux-servers/`: every pane's session, window name, cwd and Claude session id. When the server it described is gone or restarted, it pages (`tmux <server> server died`) and renames the record to `<server>.lost.json`. A clean reboot pages the same way.
@@ -89,6 +97,7 @@ A dispatched session is an ordinary session from then on: the `shepherd` buckets
 
 The fleet-wide list is in `fleet-lead`; this is this role's own.
 
+- Set or clear a project's `#prio` (above all `only`) without the human asking: it is their lever for where the fleet works.
 - Widen dispatch beyond the profiles in `DISPATCH_PROFILES`, add a night project, relax the policy, raise a worker's `max_tier`, add a worker, or put `#worker/*` on a row, without the human asking. An agent filing a row may add its own `#tier/N` reading; assignment is the human's.
 
 ## Related
