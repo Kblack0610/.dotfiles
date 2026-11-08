@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fleet-dispatch - start one session per easy board row, for the shepherd to see through.
 #
-#   fleet-dispatch run [--dry-run]   one pass: start up to DISPATCH_PER_PASS queue items, else fill from the board and start those
+#   fleet-dispatch run [--dry-run]   one pass: start the queue items the gates allow, else fill from the board and start those
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch suggest [--json]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
@@ -54,7 +54,7 @@ done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:s
 unset _k _v
 
 : "${DISPATCH_PROFILES:=bnb}"
-: "${DISPATCH_PER_PASS:=1}"   # new sessions a pass; each start after the first reads the gate again
+: "${DISPATCH_PER_PASS:=0}"   # most new sessions a pass; 0 is no cap: each start after the first reads the gate again, and the load it charges recent starts (DISPATCH_START_LOAD) ends the pass. A fixed 3 held a pass to 3 while headroom showed 36 free (2026-11-07)
 : "${DISPATCH_LOW_WATER:=3}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
 : "${DISPATCH_PRESENT_PER_HOUR:=1}"   # board items started an hour while the human is here; 0: board items wait for away
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
@@ -1664,7 +1664,7 @@ item_brief() {
   fi
   [[ "$tags" == *" night "* ]] && pr_only=' --pr-only'
   load_kinds
-  kind=$(jq -r '.type // empty' <<<"$it"); [ -n "$kind" ] || kind=$(row_kind "$(jq -r '.title // .task // ""' <<<"$it")")
+  kind=$(item_kind "$it")
   [ -z "$kind" ] || { entry=${KIND_ENTRY[$kind]:-}; exit_=${KIND_EXIT[$kind]:-}; }
   entry=${entry:-/one-shot}
   # A kind that opens no PR has no PR to stop at, and no tier-3 merge gate to name.
@@ -2034,7 +2034,7 @@ start_items() {
   # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
   why=$(gate)
   [ -z "$why" ] || return 0
-  local limit=DISPATCH_PER_PASS; [ "$room" -lt "$PER_PASS" ] && limit=DISPATCH_MAX_LIVE
+  local limit=DISPATCH_MAX_LIVE; [ "$PER_PASS" -gt 0 ] && [ "$room" -ge "$PER_PASS" ] && limit=DISPATCH_PER_PASS
   settle WORKED "under-used: started $n, $limit is the limit while $(grep -c . <<<"$items") runnable wait and the gates are open (fleet-dispatch headroom)"
   [ "$DRY" = 1 ] || logline "under-used: started $n, $limit is the limit, $(grep -c . <<<"$items") runnable left"
   return 0
@@ -2310,31 +2310,42 @@ item_headline() {
 # take. The one read lane_pick and start's `size=` header share.
 item_size() { jq -r '[(.task // "") | match("#size/([sml])\\b"; "i").captures[0].string | ascii_downcase][0] // empty' <<<"$1"; }
 
+# item_kind <item json> -> the item's row type: its `type:` (promote copies it from the board row),
+# else its title or task parsed as a row (row_kind); nothing for a bare one. The kind the session
+# prompt's entry skill and the model-lane class (kind/size) share.
+item_kind() {
+  local k
+  k=$(jq -r '.type // empty' <<<"$1"); [ -n "$k" ] || k=$(row_kind "$(jq -r '.title // .task // ""' <<<"$1")")
+  [ -z "$k" ] || printf '%s\n' "$k"
+}
+
 # lane_pick <slug> <harness> -> model-lane's verdict for a queued Claude item started with no --model,
 # at DISPATCH_LANE_FLOOR; nothing when it is not queued, runs another harness, or model-lane fails.
-# It classifies the item's headline and its board #size/ tag, never the whole task: the body carries
+# It classifies the item's headline, its board #size/ tag and its kind (item_kind), which make the
+# task class a candidate is promoted for (model-lane score), never the whole task: the body carries
 # the same dispatch boilerplate on every item, and its words would pick the lane. Not the item's
 # weight either: agent-queue derives that from load (a Unity checkout or a plan is heavy), not size.
 # Every start of an item comes through cmd_start (a pass, a hand start, a plan phase, an after: chain),
 # so this is the one place an item's model is picked.
 lane_pick() {
-  local it size
+  local it size kind
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   [ "$(jq -r .state <<<"$it")" = queued ] && [ "${2:-$(jq -r '.agent // "claude"' <<<"$it")}" = claude ] || return 0
-  size=$(item_size "$it")
-  model-lane classify "$(item_headline "$it")" --floor "$DISPATCH_LANE_FLOOR" ${size:+--size "$size"} 2>/dev/null |
+  size=$(item_size "$it"); kind=$(item_kind "$it")
+  model-lane classify "$(item_headline "$it")" --floor "$DISPATCH_LANE_FLOOR" ${size:+--size "$size"} ${kind:+--kind "$kind"} 2>/dev/null |
     jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null || true
 }
 
 # lane_log <slug> <task> <verdict json> <model ran> [harness] -- the started item's pick goes in model-lane's
-# log and its run id on the item as lane_run, so the item's close reports the outcome (agent-queue
-# move) and the lane can graduate or demote on evidence. No verdict (model-lane failed) logs nothing:
+# log, with the verdict's task class, and its run id on the item as lane_run, so the item's close reports
+# the outcome (agent-queue move) and the lane, or a candidate promoted for the class, can demote on evidence. No verdict (model-lane failed) logs nothing:
 # the item ran on opus, and a broken router never blocks a start.
 lane_log() {
-  local id
+  local id cls
   [ -n "$3" ] || return 0
+  cls=$(jq -r '.class // empty' <<<"$3")
   id=$(model-lane log --item "$1" --task "$2" --lane "$(jq -r .lane <<<"$3")" --by "$(jq -r '.by // "rule"' <<<"$3")" \
-    --picked "$(jq -r '.model // .dispatch_model' <<<"$3")" --ran "$4" ${5:+--harness "$5"} 2>/dev/null) && [ -n "$id" ] ||
+    --picked "$(jq -r '.model // .dispatch_model' <<<"$3")" --ran "$4" ${5:+--harness "$5"} ${cls:+--class "$cls"} 2>/dev/null) && [ -n "$id" ] ||
     { logline "model-lane log failed for queue item $1; it runs unrated"; return 0; }
   agent-queue set "$1" "lane_run=$id" >/dev/null || logline "could not stamp lane_run=$id on queue item $1"
 }
@@ -2667,7 +2678,7 @@ cmd_headroom() {
     --argjson project_floor "${DISPATCH_PROJECT_FLOOR:-0}" --argjson idle_projects "$idle_projects" \
     --arg focus "$FOCUS_ONLY" --argjson focus_held "${focus_held:-0}" '
     def num: if . == "" then null else tonumber end;
-    {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($could > $per_pass),
+    {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($per_pass > 0 and $could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
      load: ($load | num), starting: $starts, load_pending: $pend, load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
@@ -2683,7 +2694,7 @@ cmd_headroom() {
         elif startswith("real idle") then "idle" elif test("account") then "account"
         elif startswith("fleet-assess") then "assess" else "other" end)' |
     if [ "${1:-}" = --json ]; then cat; else
-      jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts up to \(.per_pass), level \(.level))" +
+      jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts \(if .per_pass > 0 then "up to \(.per_pass)" else "what the gates allow" end), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
         "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
@@ -2764,7 +2775,7 @@ cmd_stats() {
     $4 == "reaped" && match($0, /queue item [^ ]+ [a-z]+ -> [a-z]+$/) { split(substr($0, RSTART), w, " "); print "move", w[3]; next }
     $4 == "reaped" { print "settle", "-"; next }
     $4 == "present" && $5 == "start:" { print "present", "-" }' "$LOG" 2>/dev/null |
-    jq -Rsc --argjson now "$now" --argjson q "$(jq -sc . <<<"$q")" --argjson starved "$starved" \
+    jq -Rsc --argjson now "$now" --slurpfile q <(printf '%s\n' "$q") --argjson starved "$starved" \
       --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" --argjson board "${board:-null}" \
       --argjson low "$DISPATCH_LOW_WATER" --argjson per "$DISPATCH_PRESENT_PER_HOUR" \
       --argjson held "${held_since:-null}" --argjson focus_n "$(wc -w <<<"$FOCUS_ONLY")" '
@@ -2955,11 +2966,13 @@ firing_findings() {
 # not yet put on the 1-min average. A start's load arrives minutes late, so a loop of starts that
 # each read the load sees the same low number; counting the starts closes that. Hand starts and a
 # pass's own earlier starts are in the log the moment cmd_start returns. A resume counts too: a
-# restored session boots and loads like a new one. An unreadable window refuses, like every gate.
+# restored session boots and loads like a new one. A dry run writes no log line, so its own would-starts
+# count instead, and it stops where the real pass would. An unreadable window refuses, like every gate.
 pending_load() {
   local n
   [ "$DISPATCH_START_LOAD" != 0 ] || { echo "0 0.0"; return; }
   n=$(awk -v c="$(date -d "-$DISPATCH_START_LOAD_MIN min" '+%Y-%m-%d %H:%M')" '$4 == "started" && ($2 " " $3) >= c' "$LOG" 2>/dev/null | grep -c . || true)
+  [ "${DRY:-0}" != 1 ] || n=$(( ${n:-0} + ${STARTED:-0} ))
   LC_ALL=C awk -v n="${n:-0}" -v l="$DISPATCH_START_LOAD" 'BEGIN { printf "%d %.1f\n", n, n * l }'
 }
 
@@ -3119,7 +3132,7 @@ cmd_run() {
   local h remote=0; for h in "${!HOST_FREE[@]}"; do [ -n "$(host_why "$h")" ] || remote=$(( remote + HOST_FREE[$h] )); done
   room=$UNITS_FREE; [ "$room" -ge 0 ] || room=0
   room=$(( room + remote ))
-  [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS
+  [ "$PER_PASS" -gt 0 ] && [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS
   # A full fleet is working, not blocked: NOOP.
   if [ "$room" -le 0 ]; then PROOF_HELD_KEEP=1 settle_board NOOP "at $live of $DISPATCH_MAX_LIVE run units${HOST_FREE[*]:+, every fleet worker full}, starting nothing"; return 0; fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
@@ -3325,7 +3338,7 @@ cmd_promote() {
 # all_open -- candidates without the judged filter: every open, eligible row
 all_open() { VERDICTS=/dev/null cmd_candidates; }
 
-# cmd_fill [--dry-run] [--json] -- by hand: promote up to DISPATCH_PER_PASS picks into the queue, no
+# cmd_fill [--dry-run] [--json] -- by hand: promote up to DISPATCH_PER_PASS picks (DISPATCH_LOW_WATER at 0) into the queue, no
 # gate. --dry-run is the order a pass would promote rows in, with no judge call and no write:
 # `ready` rows are day_picks (cached verdicts only, a live area skipped, tier-3 cleanup included), then
 # `night` rows (tier 3, promoted with the night tag), then `unjudged` rows, which no current verdict
@@ -3339,7 +3352,7 @@ cmd_fill() {
   if [ "$dry" = 0 ]; then
     DRY=0; mkdir -p "$DIR"; exec 9>"$DIR/.lock"
     flock -n 9 || { say "fill: another pass is running"; return 0; }
-    fill_now "$PER_PASS"; return
+    fill_now "$(( PER_PASS > 0 ? PER_PASS : DISPATCH_LOW_WATER ))"; return
   fi
   ready=$(day_picks 999)
   night=$(night_picks "$(night_rows '')")

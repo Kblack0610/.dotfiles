@@ -862,7 +862,7 @@ session_cwd() {
 # live_row <claude_session>: the agent-panel row of that session while it lives, else nothing.
 live_row() {
   [ -n "${1:-}" ] && command -v agent-panel >/dev/null 2>&1 || return 0
-  agent-panel list --json 2>/dev/null | jq -c --arg s "$1" 'select(.session_id == $s)' | head -1
+  agent-panel list --json 2>/dev/null | jq -cn --arg s "$1" '[inputs | select(.session_id == $s)] | .[:1][]'
 }
 
 # in_dialog <live row>: the session sits in a permission/question dialog, where a paste would
@@ -1438,7 +1438,7 @@ cmd_trace() {
   local cid="${ASK[judge_call]:-}" call="null" sid lf=""
   # Rotated files too (logrotate keeps calls.jsonl.N, the older ones gzipped).
   [ -n "$cid" ] && call="$(zcat -f -- "$AGENTCTL_CALLS"* 2>/dev/null | grep -F "\"id\":\"$cid\"" |
-    jq -c --arg id "$cid" 'select(.id == $id)' 2>/dev/null | head -1)"
+    jq -cn --arg id "$cid" '[inputs | select(.id == $id)] | .[:1][]' 2>/dev/null)"
   [ -n "$call" ] || call="null"
   sid="$(jq -r '.session_id // ""' <<<"$call")"
   [ -n "$sid" ] && lf="$(langfuse_sessions)" && [ -n "$lf" ] && lf+="$sid"

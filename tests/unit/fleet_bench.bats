@@ -3598,6 +3598,52 @@ qstats_fixture() {
   assert_failure 2
 }
 
+@test "models --by class,lane: an item takes the lane its lane_run logged under, even a run older than the window; none is unrouted; lane alone matches redo by lane, a run with no lane joining unrouted" {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  for s in s1 s2 s3 s4; do echo "{\"session_id\":\"$s\",\"cost_usd\":4,\"class\":{\"size\":\"s\",\"kind\":\"fix\"}}"; done > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  {
+    echo '{"slug":"a","model":"glm","agent":"glm","status":"ok","pr":"o/r#1","sessions":"s1","lane_run":"r1"}'
+    echo '{"slug":"b","model":"glm","agent":"glm","status":"failed","sessions":"s2","lane_run":"r2"}'
+    echo '{"slug":"c","model":"sonnet","status":"ok","pr":"o/r#3","sessions":"s3","lane":"agent"}'
+    echo '{"slug":"d","model":"glm","agent":"glm","status":"ok","pr":"o/r#4","sessions":"s4","lane_run":"r0"}'
+  } > "$ITEMS"
+  now_iso=$(date -u -d "@$T0" +%FT%T+00:00) old_iso=$(date -u -d "@$((T0 - 30 * 86400))" +%FT%T+00:00)
+  {
+    echo "{\"id\":\"r0\",\"ts\":\"$old_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"ok\"}"
+    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"failed\"}"
+    # a run with no lane and a full model id is the unrouted claude sonnet pairing, not a row of its own
+    echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"ran\":\"claude-sonnet-5-5\",\"outcome\":\"redo\"}"
+  } > "$BENCH_LANE_LOG"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --by class,lane --json
+  assert_success
+  # c's own lane=agent is the board lane, not model-lane's: with no lane_run it is unrouted
+  assert_equal "$(jq -c '[.models[] | [.class, .lane, .harness, .done, .landed]]' <<<"$output")" \
+    '[["fix/s","opus","glm",2,1],["fix/s","sonnet","glm",1,1],["fix/s","unrouted","claude",1,1]]'
+  by_cl=$output
+  run env BENCH_NOW=$T0 "$SUBJECT" models --by lane,class --json
+  assert_equal "$output" "$by_cl"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --by class,lane
+  assert_success
+  assert_line '| Class | Lane | Model | Harness | Done | Landed | Rate | Failed | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
+  assert_line '| fix/s | sonnet | glm | glm | 1 | 1 | 1 | 0 | 0 | $4 | $4 | list | - | - | - | - |'
+  # lane alone keeps redo, counted on the runs of that lane in the window
+  run env BENCH_NOW=$T0 "$SUBJECT" models --by lane --json
+  assert_success
+  assert_equal "$(jq -c '[.models[] | [.lane, .harness, .done, .rated, .redo, has("class")]]' <<<"$output")" \
+    '[["opus","glm",2,1,0,false],["sonnet","glm",1,1,1,false],["unrouted","claude",1,1,1,false]]'
+  run env BENCH_NOW=$T0 "$SUBJECT" models --by lane
+  assert_line '| Lane | Model | Harness | Done | Landed | Rate | Failed | Redo | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_equal "$(jq -c '[.models[] | has("lane")] | unique' <<<"$output")" '[false]'
+  run "$SUBJECT" models --by class,size
+  assert_failure 2
+}
+
 @test "models: an item with no model= takes the model its sessions spent most on, then the one their rows name; no row is unrecorded" {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
   export BENCH_DONE_ITEMS_CMD=done-stub

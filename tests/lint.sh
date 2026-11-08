@@ -101,6 +101,24 @@ elif [ "${#missing[@]}" -gt 0 ]; then
 else
   echo "house-rules: every tmux script has a source guard"
 fi
+
+# RULE 3: no jq piped into head in a pipefail script. head exits after its count, jq's next write
+# hits a closed pipe and dies with "jq: error: writing output failed: Broken pipe", and under
+# pipefail that is the pipeline's status. Cap inside jq instead (`.[:$max][]`, `limit(n; ...)`)
+# so jq never writes to a closed pipe. A script with no pipefail is not flagged.
+pipe_hits=()
+for f in "${FILES[@]}"; do
+  grep -qE '^\s*set -[a-zA-Z]*o pipefail|^\s*set -[a-zA-Z]*[[:space:]]+-o pipefail' "$f" 2>/dev/null || continue
+  while IFS= read -r hit; do pipe_hits+=("$f:$hit"); done < <(grep -nE 'jq[^|]*\|[[:space:]]*head\b' "$f")
+done
+if [ "${#pipe_hits[@]}" -gt 0 ]; then
+  echo "house-rules: FAILED - jq piped into head in a pipefail script (SIGPIPE kills jq):" >&2
+  printf '  %s\n' "${pipe_hits[@]}" >&2
+  echo '  Cap inside jq instead: jq --argjson max "$N" '"'"'... | .[:$max][]'"'"'. See tests/lint.sh.' >&2
+  rc=1
+else
+  echo "house-rules: no jq piped into head under pipefail"
+fi
 ran+=("house-rules")
 
 if command -v shellcheck >/dev/null 2>&1; then
