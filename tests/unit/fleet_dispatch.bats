@@ -4891,9 +4891,15 @@ harness_ready() {
   CLAUDE_AUTO_DROP_TOOLS='Bash(rm:*);x' run cmd_start --item bad
   assert_output --partial 'CLAUDE_AUTO_DROP_TOOLS is not a comma list of tool names'
   [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a bad list reached the command line"
+  # With the file that holds the list gone, a start says so and drops none.
+  rm "$HOME/.config/shared-hooks/claude-telemetry.sh"
+  agent-queue add --project game --slug gone "fix the sidebar" >/dev/null
+  run cmd_start --item gone
+  assert_output --partial 'claude-telemetry.sh is missing, so this start drops no tools'
+  [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a start with no list file dropped tools"
 }
 
-@test "a queue item's resume drops the same tools; a resume with no item (the human's) keeps every one" {
+@test "a queue item's resume drops the same tools; a resume of a conversation no item lists keeps every one" {
   project game beta "$SANDBOX/repos/game"
   transcript abc-123 '{"permissionMode":"plan"}'
   : > "$NOTES_FIXTURE/tmux.sessions.default"

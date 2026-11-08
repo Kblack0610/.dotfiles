@@ -41,7 +41,8 @@ harness_exec() {
   mcp_file="$(role_mcp_file)"
   denied="$(role_denied_tools)"
   # The tools every automated start drops (claude-telemetry.sh, which the agentctl unit and a
-  # shepherd pass source); claude names, so here and not in the harness-neutral role list.
+  # shepherd pass source, and which empties a value that is not a list of tool names); claude
+  # names, so here and not in the harness-neutral role list.
   [ -n "${CLAUDE_AUTO_DROP_TOOLS:-}" ] && denied="${denied:+$denied,}$CLAUDE_AUTO_DROP_TOOLS"
 
   local flags=()

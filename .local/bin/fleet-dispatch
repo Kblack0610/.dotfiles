@@ -1169,15 +1169,15 @@ launch_mode() {
 # dropped_tools <item json> -- " --disallowedTools <list>" for a queue item's claude start or resume,
 # or nothing. The list is CLAUDE_AUTO_DROP_TOOLS, read the way telemetry_env reads the launch env, so
 # an env value wins and the default lives once, in claude-telemetry.sh (which says why). A task that
-# names one of them, ultracode or /loop keeps every tool.
+# names one of them, ultracode or /loop keeps every tool. That file also refuses a value that is not a
+# list of tool names, on stderr, which is why only its stdout is discarded here.
 # It goes before --permission-mode: the flag takes a list, so the brief after it would join it.
 dropped_tools() {
-  local drop
+  local drop f="$HOME/.config/shared-hooks/claude-telemetry.sh"
+  [ -r "$f" ] || { say "$f is missing, so this start drops no tools"; return 0; }
   # shellcheck disable=SC2016
-  drop=$(bash -c '. "$HOME/.config/shared-hooks/claude-telemetry.sh" >/dev/null 2>&1; printf %s "${CLAUDE_AUTO_DROP_TOOLS-}"')
+  drop=$(bash -c '. "$1" >/dev/null; printf %s "${CLAUDE_AUTO_DROP_TOOLS-}"' _ "$f")
   [ -n "$drop" ] || return 0
-  [[ "$drop" =~ ^[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*$ ]] ||
-    { say "CLAUDE_AUTO_DROP_TOOLS is not a comma list of tool names: $drop; dropping none"; return 0; }
   jq -r .task <<<"$1" | grep -qiE "ultracode|/loop|${drop//,/|}" && return 0
   printf ' --disallowedTools %s' "$drop"
 }
