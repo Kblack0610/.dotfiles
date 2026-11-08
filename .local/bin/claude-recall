@@ -20,7 +20,7 @@ Usage:
                       [--origin interactive|auto|all] [--by week|project] [--top K]
                       [--min N] [--min-words N] [--project P] [--json]
   claude-recall tool-output [--days N | --since YYYY-MM-DD]
-                            [--by tool|command|filetype|kind|day|week|project]
+                            [--by tool|command|filetype|kind|day|week|project]...
                             [--top K] [--json]
 
 Examples:
@@ -580,10 +580,11 @@ def stats_events(path, since):
         rec = parse_line(line)
         if not rec:
             continue
-        ts = str(rec.get("timestamp") or "")[:10]
+        stamp = str(rec.get("timestamp") or "")
+        ts = stamp[:10]
         if session_auto is None and rec.get("entrypoint"):
             session_auto = rec["entrypoint"] == "sdk-cli"
-        if ts < since:
+        if stamp[:19] < since:
             continue
         rtype = rec.get("type")
         if rtype == "assistant":
@@ -624,11 +625,7 @@ def cmd_stats(a):
         print(f"claude-recall stats: unknown kind {','.join(sorted(bad))} "
               f"(one of {','.join(STATS_KINDS)})", file=sys.stderr)
         return 2
-    if a.since:
-        since = a.since
-    else:
-        since = (datetime.now(timezone.utc) - timedelta(days=a.days)).strftime("%Y-%m-%d")
-    since_epoch = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    since, since_epoch = window_bound(a.since or days_ago(a.days))
 
     intents = load_intents() if "intent" in kinds else []
     if "intent" in kinds and not intents:
@@ -941,12 +938,19 @@ def tool_output_file(path, since, until, emit):
 
 def window_bound(s):
     """A --since/--until value as (string compared with transcript timestamps, epoch). A bare
-    date is a UTC day, as transcript timestamps are UTC; an ISO time is converted to UTC."""
+    date is a local day, as in `agent-usage burn`; an ISO time is exact. Both are converted to
+    UTC, the zone of the transcript timestamps."""
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
-        return s, datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
-    t = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        t = datetime.strptime(s, "%Y-%m-%d")
+    else:
+        t = datetime.fromisoformat(s.replace("Z", "+00:00"))
     t = t.astimezone(timezone.utc) if t.tzinfo else t.astimezone().astimezone(timezone.utc)
     return t.strftime("%Y-%m-%dT%H:%M:%S"), t.timestamp()
+
+
+def days_ago(n):
+    """The local date n days back, a bare --since for window_bound."""
+    return (datetime.now() - timedelta(days=n)).strftime("%Y-%m-%d")
 
 
 RESULT_BY = {"tool": lambda r: r["tool"], "command": lambda r: r.get("command") or "?",
@@ -969,26 +973,29 @@ def tool_output_by(v):
 
 def cmd_tool_output(a):
     """Token use as a whole (API usage per response) and the tool output behind it."""
-    since, since_epoch = window_bound(
-        a.since or (datetime.now(timezone.utc) - timedelta(days=a.days)).strftime("%Y-%m-%d"))
+    since, since_epoch = window_bound(a.since or days_ago(a.days))
     until = window_bound(a.until)[0] if a.until else "9999"
-    keys = a.by.split(",")
-    fns = [{**RESULT_BY, **TURN_BY}[k] for k in keys]
+    # One scan fills every --by cut: a snapshot that wants three cuts reads the transcripts once.
+    cuts = []
+    for by in a.by or ["tool"]:
+        keys = by.split(",")
+        cuts.append({"by": by, "keys": keys, "rows": {},
+                     "fns": [{**RESULT_BY, **TURN_BY}[k] for k in keys]})
 
-    def bucket_of(r):
+    def bucket_of(cut, r):
         """Two keys (`session,tool`) make a row per pair, its key a list of both. A result with
         no value for a cut (filetype of a non-file tool) has no row, as with one key."""
-        k = tuple(f(r) for f in fns)
+        k = tuple(f(r) for f in cut["fns"])
         return None if None in k else k if len(k) > 1 else k[0]
     totals = {f: 0 for f in USAGE_FIELDS}
     totals.update(turns=0, calls=0, chars=0, carried=0, bash_calls=0, bash_chars=0)
     cw_by_cause = {k: 0 for k in CW_CAUSES}
     split = {"start": 0, "tool": 0, "conversation": 0}
     hooks = {"stop_feedback": 0, "tool_denied": 0}
-    rows, segments, session_turns = {}, [], []
+    segments, session_turns = [], []
 
-    def row(k):
-        return rows.setdefault(k, {"key": k, "turns": 0, **{f: 0 for f in USAGE_FIELDS},
+    def row(cut, k):
+        return cut["rows"].setdefault(k, {"key": k, "turns": 0, **{f: 0 for f in USAGE_FIELDS},
                                    "calls": 0, "chars": 0, "carried": 0,
                                    "bash_calls": 0, "bash_chars": 0})
 
@@ -1011,16 +1018,13 @@ def cmd_tool_output(a):
             cw_by_cause[r["cw_cause"]] += r["cache_creation_input_tokens"]
             for k, v in zip(split, r["split"]):
                 split[k] += v
-            if a.by in TURN_BY:
-                x = row(bucket_of(r))
-                x["turns"] += 1
-                for f in USAGE_FIELDS:
-                    x[f] += r[f]
+            for cut in cuts:
+                if cut["by"] in TURN_BY:
+                    x = row(cut, bucket_of(cut, r))
+                    x["turns"] += 1
+                    for f in USAGE_FIELDS:
+                        x[f] += r[f]
             return
-        if "command" in keys and r["tool"] != "Bash":
-            key = None
-        else:
-            key = bucket_of(r)
         carried = r["chars"] * max(r["carried_turns"], 0)
         totals["calls"] += 1
         totals["chars"] += r["chars"]
@@ -1028,15 +1032,17 @@ def cmd_tool_output(a):
         if r["tool"] == "Bash":
             totals["bash_calls"] += 1
             totals["bash_chars"] += r["chars"]
-        if key is None:
-            return
-        x = row(key)
-        x["calls"] += 1
-        x["chars"] += r["chars"]
-        x["carried"] += carried
-        if r["tool"] == "Bash":
-            x["bash_calls"] += 1
-            x["bash_chars"] += r["chars"]
+        for cut in cuts:
+            key = None if "command" in cut["keys"] and r["tool"] != "Bash" else bucket_of(cut, r)
+            if key is None:
+                continue
+            x = row(cut, key)
+            x["calls"] += 1
+            x["chars"] += r["chars"]
+            x["carried"] += carried
+            if r["tool"] == "Bash":
+                x["bash_calls"] += 1
+                x["bash_chars"] += r["chars"]
 
     seen, files = set(), 0
     for f in iter_files():
@@ -1050,10 +1056,12 @@ def cmd_tool_output(a):
         files += 1
         tool_output_file(real, since, until, emit)
 
-    order = sorted(rows.values(), key=lambda r: r["key"]) if a.by in ("day", "week") \
-        else sorted(rows.values(), key=lambda r: -r["chars"])
-    if a.top and a.by not in ("day", "week", "kind"):
-        order = order[:a.top]
+    def ordered(cut):
+        by = cut["by"]
+        order = sorted(cut["rows"].values(), key=lambda r: r["key"]) if by in ("day", "week") \
+            else sorted(cut["rows"].values(), key=lambda r: -r["chars"])
+        return order[:a.top] if a.top and by not in ("day", "week", "kind") else order
+    orders = {cut["by"]: ordered(cut) for cut in cuts}
     # Compaction cadence: the stretches that ran longest without one, by what they re-read.
     long = sorted((x for x in segments if x["turns"] >= a.long_turns), key=lambda x: -x["carried"])
     long_runs = {"turns_over": a.long_turns, "stretches": len(segments), "long": len(long),
@@ -1064,8 +1072,12 @@ def cmd_tool_output(a):
                 "p50": st[len(st) // 2] if st else None,
                 "p90": st[min(len(st) - 1, len(st) * 9 // 10)] if st else None}
     if a.json:
-        print(json.dumps({"since": since, "until": a.until and until, "by": a.by,
-                          "transcripts": files, "totals": totals, "rows": order,
+        # One cut keeps the flat shape; several make `by` a list and `rows` a map from each cut.
+        one = len(cuts) == 1
+        print(json.dumps({"since": since, "until": a.until and until,
+                          "by": cuts[0]["by"] if one else list(orders),
+                          "transcripts": files, "totals": totals,
+                          "rows": orders[cuts[0]["by"]] if one else orders,
                           "long_runs": long_runs, "cache_write_by_cause": cw_by_cause,
                           "context_split": split, "sessions": sessions, "hook_turns": hooks}, indent=1))
         return 0
@@ -1091,20 +1103,21 @@ def cmd_tool_output(a):
           + "".join(f"\n    {x['session'][:8]} {x['project']}: {x['turns']:,} responses, carried "
                     f"{x['carried'] // 4:,} tokens' worth ({x['carried'] // max(x['chars'], 1)}x)"
                     for x in long[:3]) + "\n")
-    if a.by not in TURN_BY:
-        print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13}  {a.by}"))
-        for r in order:
-            key = " ".join(r["key"]) if isinstance(r["key"], tuple) else r["key"]
-            print(f"  {r['calls']:>8,} {r['chars']:>13,} {r['chars'] // max(r['calls'], 1):>7,} "
-                  f"{100 * r['chars'] / max(t['chars'], 1):>5.1f}% {r['carried'] // 4:>13,}  {key}")
-    else:
-        print(c(DIM, f"  {'responses':>9} {'in+write':>13} {'cache read':>14} {'output':>11} "
-                     f"{'bash calls':>10} {'chars/call':>10} {'carried~tok':>13}  {a.by}"))
-        for r in order:
-            print(f"  {r['turns']:>9,} {r['input_tokens'] + r['cache_creation_input_tokens']:>13,} "
-                  f"{r['cache_read_input_tokens']:>14,} {r['output_tokens']:>11,} {r['bash_calls']:>10,} "
-                  f"{r['bash_chars'] // max(r['bash_calls'], 1):>10,} "
-                  f"{r['carried'] // 4:>13,}  {r['key']}")
+    for by, order in orders.items():
+        if by not in TURN_BY:
+            print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13}  {by}"))
+            for r in order:
+                key = " ".join(r["key"]) if isinstance(r["key"], tuple) else r["key"]
+                print(f"  {r['calls']:>8,} {r['chars']:>13,} {r['chars'] // max(r['calls'], 1):>7,} "
+                      f"{100 * r['chars'] / max(t['chars'], 1):>5.1f}% {r['carried'] // 4:>13,}  {key}")
+        else:
+            print(c(DIM, f"  {'responses':>9} {'in+write':>13} {'cache read':>14} {'output':>11} "
+                         f"{'bash calls':>10} {'chars/call':>10} {'carried~tok':>13}  {by}"))
+            for r in order:
+                print(f"  {r['turns']:>9,} {r['input_tokens'] + r['cache_creation_input_tokens']:>13,} "
+                      f"{r['cache_read_input_tokens']:>14,} {r['output_tokens']:>11,} {r['bash_calls']:>10,} "
+                      f"{r['bash_chars'] // max(r['bash_calls'], 1):>10,} "
+                      f"{r['carried'] // 4:>13,}  {r['key']}")
     return 0
 
 
@@ -1503,7 +1516,7 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
 
 
 def cmd_tool_calls(a):
-    since = window_bound(a.since or (datetime.now(timezone.utc) - timedelta(days=a.days)).strftime("%Y-%m-%d"))
+    since = window_bound(a.since or days_ago(a.days))
     until = window_bound(a.until)[0] if a.until else "9999"
     buckets, groups, tools, sessions = {}, {}, {}, {}
 
@@ -1631,7 +1644,7 @@ def main():
 
     st = sub.add_parser("stats", help="count slash commands, skills, subagents, repeated prompts")
     st.add_argument("--days", type=int, default=30, help="window in days (default 30)")
-    st.add_argument("--since", help="window start YYYY-MM-DD (overrides --days)")
+    st.add_argument("--since", help="window start, as tool-output (overrides --days)")
     st.add_argument("--kind", help="comma list of " + ",".join(STATS_KINDS) + " (default all)")
     st.add_argument("--origin", choices=["interactive", "auto", "all"], default="all",
                     help="interactive = a turn in a CLI session (typed, or a dispatched task); "
@@ -1647,17 +1660,18 @@ def main():
 
     to = sub.add_parser("tool-output", help="token use and the tool output behind it")
     to.add_argument("--days", type=int, default=7, help="window in days (default 7)")
-    to.add_argument("--since", help="window start: YYYY-MM-DD (a UTC day) or an ISO time "
+    to.add_argument("--since", help="window start: YYYY-MM-DD (a local day) or an ISO time "
                                      "(overrides --days)")
     to.add_argument("--until", help="window end, exclusive, in the same forms (default now)")
     to.add_argument("--long-turns", type=int, default=LONG_TURNS,
                     help=f"responses without a compaction that make a long run (default {LONG_TURNS})")
-    to.add_argument("--by", type=tool_output_by, default="tool",
+    to.add_argument("--by", type=tool_output_by, action="append",
                     help="tool, command, filetype, kind, session, day, week or project; command = Bash "
                          "calls by command head; filetype = Read and sed/cat/head/tail by the file's "
                          "class and extension; kind = main session or subagent; session = the session "
                          "that pays (a subagent's parent). Two of the first five, comma-joined "
-                         "(session,tool), give a row per pair")
+                         "(session,tool), give a row per pair. Repeat --by for several cuts from one "
+                         "scan (default tool); --json then maps each cut to its rows")
     to.add_argument("--top", type=int, default=25, help="rows for tool/command/project (0 = all)")
     to.add_argument("--project", "-p", help="substring match on repo")
     to.add_argument("--json", action="store_true")
