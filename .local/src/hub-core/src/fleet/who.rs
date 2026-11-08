@@ -217,7 +217,7 @@ fn s<'a>(v: &'a Value, k: &str) -> &'a str {
 
 /// A session's tmux target as the table names it: `lab/dotfiles-agent-3:1` is
 /// `dotfiles-agent-3`, `hub/dotfiles:2` stays as it is past the world.
-fn name_of(target: &str) -> String {
+pub(crate) fn name_of(target: &str) -> String {
     match target.split_once('/') {
         Some(("lab", rest)) => rest.strip_suffix(":1").unwrap_or(rest).to_string(),
         Some((_, rest)) => rest.to_string(),

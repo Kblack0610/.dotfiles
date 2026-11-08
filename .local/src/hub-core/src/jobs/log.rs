@@ -175,6 +175,7 @@ mod tests {
             agentctl: dir.to_path_buf(),
             unity_runs: dir.join("runs.tsv"),
             cache: dir.join("cache"),
+            builds: crate::builds::Paths::from_env(),
         }
     }
 

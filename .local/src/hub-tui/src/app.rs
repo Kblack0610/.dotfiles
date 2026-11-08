@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hub_core::boards::{self, DayRow, Watch};
+use hub_core::builds::{self, Builds};
 use hub_core::fleet::who::{Opens, Who};
 use hub_core::fleet::ASK_FILTERS;
 use hub_core::home::Need;
@@ -25,11 +26,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::builds as bv;
 use crate::controls::{Ask, Controls};
 use crate::datatable::{DataTable, Took};
 use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
-use crate::jobs::{clean, row_id, JobsView, LogPane};
+use crate::jobs::{log_lines, row_id, JobsView, LogPane};
 use crate::projtab::{self, ProjView};
 use crate::proptab::ProposalsView;
 use crate::queuetab::{self, QueueView};
@@ -186,6 +188,8 @@ pub struct BoardFiles {
     pub tokens: PathBuf,
     /// `release-state`'s directory: its snapshot is replaced by a rename when a refresh finishes.
     pub releases: PathBuf,
+    /// schedules-sync's run ledger behind Releases' Builds section.
+    pub builds: builds::Paths,
 }
 
 impl BoardFiles {
@@ -198,6 +202,7 @@ impl BoardFiles {
             daylog: boards::daylog_dir(),
             tokens: boards::token_usage_dir(),
             releases: boards::releases_dir(),
+            builds: builds::Paths::from_env(),
         }
     }
     fn watch_log(&self) -> PathBuf {
@@ -213,6 +218,10 @@ impl BoardFiles {
 
     pub fn is_token_file(&self, p: &Path) -> bool {
         p.parent() == Some(self.tokens.as_path()) && p.extension().is_some_and(|e| e == "json")
+    }
+
+    pub fn is_build_file(&self, p: &Path) -> bool {
+        self.builds.is_ledger_file(p)
     }
 
     pub fn is_release_file(&self, p: &Path) -> bool {
@@ -287,6 +296,9 @@ pub enum Msg {
     ReleaseFile,
     /// One project's changelog for the ask numbered first, or why it could not be read.
     Changelog(Result<Changelog, String>),
+    Builds(Box<Builds>),
+    /// schedules-sync appended to the run ledger.
+    BuildFile,
     /// The Sessions table's ended rows, then its header, which waits on headroom.
     SessionFeed(Box<hub_core::session_table::Feed>),
     Capacity(Box<hub_core::capacity::Capacity>),
@@ -371,6 +383,7 @@ pub struct App {
     pub schedules: Option<Schedules>,
     pub rv: ReleasesView,
     pub releases: Option<Releases>,
+    pub builds: Option<Builds>,
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
@@ -471,6 +484,7 @@ pub struct App {
     reds_read: Read,
     schedules_read: Read,
     releases_read: Read,
+    builds_read: Read,
     /// When the last Red fixes read finished, for `REDS_REFRESH`.
     reds_at: Option<std::time::Instant>,
     /// When the last Schedules read finished, for `SCHEDULES_REFRESH`.
@@ -517,6 +531,7 @@ impl App {
             schedules: None,
             rv: ReleasesView::default(),
             releases: None,
+            builds: None,
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
@@ -576,6 +591,7 @@ impl App {
             reds_read: Read::default(),
             schedules_read: Read::default(),
             releases_read: Read::default(),
+            builds_read: Read::default(),
             reds_at: None,
             schedules_at: None,
             costs_read: Read::default(),
@@ -616,6 +632,9 @@ impl App {
             (self.files.tokens.clone(), false),
             (self.files.releases.clone(), false),
         ];
+        if let Some(d) = self.files.builds.ledger.parent() {
+            v.push((d.to_path_buf(), false));
+        }
         for f in [&self.paths.unity_runs, &self.files.state] {
             if let Some(d) = f.parent() {
                 v.push((d.to_path_buf(), false));
@@ -737,6 +756,18 @@ impl App {
             .is_some_and(|r| r.project != self.rv.cl.project);
         if self.rv.open && other {
             self.read_changelog(None);
+        }
+    }
+
+    /// The ledger is appended to by schedules-sync every ten minutes: read on entering the tab,
+    /// on `r` and on that file's event.
+    pub fn read_builds(&mut self) {
+        if self.builds_read.want() {
+            let tx = self.tx.clone();
+            let paths = self.files.builds.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Builds(Box::new(builds::read(&paths, jobs::now()))));
+            });
         }
     }
 
@@ -1292,6 +1323,7 @@ impl App {
                     self.read_queue();
                     if self.tab == Tab::Releases {
                         self.read_releases();
+                        self.read_builds();
                     }
                 }
                 if self.tab == Tab::Sessions {
@@ -1332,6 +1364,8 @@ impl App {
             Msg::TokenFiles => {}
             Msg::ReleaseFile if self.tab == Tab::Releases => self.read_releases(),
             Msg::ReleaseFile => {}
+            Msg::BuildFile if self.tab == Tab::Releases => self.read_builds(),
+            Msg::BuildFile => {}
             Msg::BoardFiles => self.read_boards(),
             Msg::ProposalFiles => self.read_proposals(),
             Msg::Tab(t, q) => {
@@ -1398,6 +1432,16 @@ impl App {
                 self.rv.cl.busy = false;
                 self.rv.cl.read = Some(r);
                 self.sync_changelog();
+            }
+            Msg::Builds(b) => {
+                let id = self.selected_build().map(hub_core::builds::Run::key);
+                self.builds = Some(*b);
+                if let Some(b) = &self.builds {
+                    self.rv.builds.reselect(b, id);
+                }
+                if self.builds_read.done() && self.tab == Tab::Releases {
+                    self.read_builds();
+                }
             }
             Msg::Fleet(f) => {
                 self.fleet = Some(*f);
@@ -1472,7 +1516,8 @@ impl App {
                 }
             }
             Msg::Log(gen, text) => {
-                if let Some(l) = self.jv.log.as_mut().filter(|l| l.gen == gen) {
+                let logs = [self.jv.log.as_mut(), self.rv.builds.log.as_mut()];
+                if let Some(l) = logs.into_iter().flatten().find(|l| l.gen == gen) {
                     l.text = Some(text);
                 }
             }
@@ -1676,6 +1721,7 @@ impl App {
                 }
                 if self.tab == Tab::Releases {
                     self.read_releases();
+                    self.read_builds();
                 }
                 if self.tab == Tab::Costs {
                     self.read_costs();
@@ -1915,6 +1961,7 @@ impl App {
         }
         if t == Tab::Releases {
             self.read_releases();
+            self.read_builds();
         }
         if t == Tab::Costs {
             self.read_costs();
@@ -2440,16 +2487,8 @@ impl App {
         let n = self.page.max(1);
         let jv = &mut self.jv;
         match k.code {
-            KeyCode::PageDown | KeyCode::Char('J') if jv.log.is_some() => {
-                let l = jv.log.as_mut().unwrap();
-                l.back = l
-                    .back
-                    .saturating_sub(if k.code == KeyCode::Char('J') { 1 } else { n });
-            }
-            KeyCode::PageUp | KeyCode::Char('K') if jv.log.is_some() => {
-                let l = jv.log.as_mut().unwrap();
-                l.back += if k.code == KeyCode::Char('K') { 1 } else { n };
-            }
+            c @ (KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('J' | 'K'))
+                if jv.log.as_mut().is_some_and(|l| l.scroll(c, n)) => {}
             KeyCode::Enter => self.open_log(),
             KeyCode::Esc => {
                 if jv.log.is_some() {
@@ -2544,9 +2583,97 @@ impl App {
         self.go(Tab::Releases);
     }
 
-    /// The Releases table's keys: Enter opens the row's pane, `[` and `]` read an older or newer
-    /// tag's changelog in it.
+    fn selected_build(&self) -> Option<&hub_core::builds::Run> {
+        let b = self.builds.as_ref()?;
+        self.rv
+            .builds
+            .shown(b)
+            .get(self.rv.builds.table.sel)
+            .copied()
+    }
+
+    /// Enter on a run: its failed-job log, read now and never before.
+    fn open_build_log(&mut self) {
+        let Some(r) = self.selected_build() else {
+            return;
+        };
+        let (title, key, url) = (bv::log_title(r), r.key(), r.url.clone());
+        self.log_gen += 1;
+        let gen = self.log_gen;
+        self.rv.builds.log = Some(LogPane {
+            title,
+            text: None,
+            back: 0,
+            gen,
+        });
+        let (tx, paths, jobs_paths) = (
+            self.tx.clone(),
+            self.files.builds.clone(),
+            self.paths.clone(),
+        );
+        std::thread::spawn(move || {
+            let text = builds::log(&paths, &jobs_paths, &key, jobs::now()).map_err(|e| {
+                if url.is_empty() {
+                    e
+                } else {
+                    format!("{e}; o opens the run in the browser")
+                }
+            });
+            let _ = tx.send(Msg::Log(gen, text));
+        });
+    }
+
+    /// The Builds table's keys while it has them: Enter reads the run's log, `o` opens its page.
+    fn builds_key(&mut self, k: KeyEvent) -> bool {
+        if self.rv.builds.table.key::<hub_core::builds::Run>(k.code) != Took::No {
+            return true;
+        }
+        let rows = self
+            .builds
+            .as_ref()
+            .map_or(0, |b| self.rv.builds.shown(b).len());
+        let n = self.page.max(1);
+        let bv = &mut self.rv.builds;
+        match k.code {
+            c @ (KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('J' | 'K'))
+                if bv.log.as_mut().is_some_and(|l| l.scroll(c, n)) => {}
+            KeyCode::Enter => self.open_build_log(),
+            KeyCode::Esc => {
+                if bv.log.is_some() {
+                    bv.log = None;
+                } else {
+                    bv.table.clear();
+                }
+            }
+            KeyCode::Char('o') => {
+                if let Some(u) = self
+                    .selected_build()
+                    .map(|r| r.url.clone())
+                    .filter(|u| !u.is_empty())
+                {
+                    open(&u);
+                }
+            }
+            _ => return bv.table.moves(k, rows, n),
+        }
+        true
+    }
+
+    /// The Releases keys: `b` hands them to the Builds table and back, otherwise they drive the
+    /// channels. Enter opens the channel's pane, `[` and `]` read an older or newer tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
+        if self.rv.builds.table.typing.is_none()
+            && self.rv.table.typing.is_none()
+            && k.code == KeyCode::Char('b')
+        {
+            self.rv.builds.focus = !self.rv.builds.focus;
+            // The keys that close the channel pane are the channels': it must not outlive them.
+            self.rv.open = false;
+            return true;
+        }
+        if self.rv.builds.focus {
+            return self.builds_key(k);
+        }
         if self.rv.table.key::<Release>(k.code) != Took::No {
             self.sync_changelog();
             return true;
@@ -2760,12 +2887,18 @@ impl App {
             Tab::Infra => format!(
                 "Enter log  / query  f state  s sort  S asc/desc  x clear  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Releases if self.rv.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Releases if self.rv.table.typing.is_some() || self.rv.builds.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Releases if self.rv.builds.focus && self.rv.builds.log.is_some() => {
+                "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open run  b channels  q quit".into()
+            }
+            Tab::Releases if self.rv.builds.focus => format!(
+                "Enter log  / query  f state  s sort  S asc/desc  x clear  o open run  b channels  r refresh  {tabs} tabs  q quit"
+            ),
             Tab::Releases if self.rv.open => {
                 "Esc close  J/K scroll pane  [ ] older/newer tag  j/k move  q quit".into()
-            }
+            },
             Tab::Releases => format!(
-                "Enter open  / query  f state  s sort  S asc/desc  x clear  r refresh  {tabs} tabs  q quit"
+                "Enter open  / query  f state  s sort  S asc/desc  x clear  b builds  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Schedules if self.sv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
@@ -3194,7 +3327,9 @@ impl App {
             );
             return;
         };
-        let (list, pane) = if self.rv.open {
+        // Under the list, one pane: the focused section's own (the channel's, or the run's log).
+        let log = self.rv.builds.focus && self.rv.builds.log.is_some();
+        let (list, pane) = if self.rv.open || log {
             let [a, b] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(area);
             (a, Some(b))
@@ -3204,18 +3339,50 @@ impl App {
         let now = jobs::now();
         let w = list.width as usize;
         let status = self.rv.status(s, self.p, now);
-        let table = self.rv.table(s, self.p, w, true);
+        let table = self.rv.table(s, self.p, w, !self.rv.builds.focus);
         let foot = self.rv.foot(s, self.p, w);
-        let h = (list.height as usize)
-            .saturating_sub(status.len() + foot.len() + 1)
-            .max(1);
-        self.page = h;
+        let (bstatus, btable) = match &self.builds {
+            Some(b) => (
+                self.rv.builds.status(b, self.p, now),
+                self.rv
+                    .builds
+                    .table(b, self.p, w, self.rv.builds.focus, now),
+            ),
+            None => (
+                vec![Line::styled("Reading builds...", self.p.dim())],
+                vec![],
+            ),
+        };
+        // The focused section gets two thirds of what the heads leave, but a short list of
+        // channels never holds back rows the builds could use.
+        let rest = (list.height as usize).saturating_sub(status.len() + foot.len() + bstatus.len());
+        let share = if self.rv.builds.focus {
+            rest * 2 / 3
+        } else {
+            rest / 3
+        };
+        let ch = rest
+            .saturating_sub(share.max(3))
+            .clamp(2, table.len().max(2));
+        let bh = rest.saturating_sub(ch).max(1);
+        self.page = if self.rv.builds.focus {
+            bh.saturating_sub(1).max(1)
+        } else {
+            ch.saturating_sub(1).max(1)
+        };
         let mut lines = status;
-        lines.extend(self.rv.table.window(table, h));
+        lines.extend(self.rv.table.window(table, ch));
         lines.extend(foot);
+        lines.extend(bstatus);
+        lines.extend(self.rv.builds.table.window(btable, bh));
         f.render_widget(Paragraph::new(lines), list);
-        let row = self.rv.shown(s).get(self.rv.table.sel).copied();
-        if let (Some(area), Some(r)) = (pane, row) {
+        let Some(area) = pane else { return };
+        if log {
+            if let Some(l) = &mut self.rv.builds.log {
+                let lines = log_lines(l, area.width as usize, area.height as usize, self.p);
+                f.render_widget(Paragraph::new(lines), area);
+            }
+        } else if let Some(r) = self.rv.shown(s).get(self.rv.table.sel).copied() {
             let cl = self
                 .rv
                 .cl
@@ -3273,22 +3440,7 @@ impl App {
         lines.extend(self.jv.table.window(table, h));
         f.render_widget(Paragraph::new(lines), list);
         if let (Some(area), Some(l)) = (log, &mut self.jv.log) {
-            let h = (area.height as usize).saturating_sub(1);
-            let mut lines = vec![Line::styled(
-                format!("--- log: {} {}", l.title, "-".repeat(area.width as usize)),
-                self.p.dim(),
-            )];
-            match &l.text {
-                None => lines.push(Line::styled("reading...", self.p.dim())),
-                Some(Err(e)) => lines.push(Line::styled(e.clone(), self.p.warn())),
-                Some(Ok(t)) => {
-                    let all = clean(t);
-                    l.back = l.back.min(all.len().saturating_sub(h));
-                    let end = all.len() - l.back;
-                    let start = end.saturating_sub(h);
-                    lines.extend(all[start..end].iter().map(|s| Line::raw(s.clone())));
-                }
-            }
+            let lines = log_lines(l, area.width as usize, area.height as usize, self.p);
             f.render_widget(Paragraph::new(lines), area);
         }
     }
@@ -4927,6 +5079,99 @@ mod tests {
         assert!(!f.is_release_file(Path::new("/a/other/state.json")));
     }
 
+    fn builds_app() -> App {
+        let mut a = app(Tab::Releases);
+        a.files.builds.ledger = "/nonexistent/ci/runs.jsonl".into();
+        a.releases = Some(Releases::default());
+        a.builds = Some(bv::tests::fixture());
+        a
+    }
+
+    fn press(a: &mut App, c: KeyCode) {
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(c))));
+    }
+
+    #[test]
+    fn only_an_append_to_the_run_ledger_is_a_build_file() {
+        let f = BoardFiles {
+            builds: builds::Paths {
+                ledger: "/a/ci/runs.jsonl".into(),
+                ..builds::Paths::from_env()
+            },
+            ..BoardFiles::from_env()
+        };
+        assert!(f.is_build_file(Path::new("/a/ci/runs.jsonl")));
+        assert!(!f.is_build_file(Path::new("/a/ci/sync.json")));
+        assert!(!f.is_build_file(Path::new("/a/other/runs.jsonl")));
+    }
+
+    #[test]
+    fn the_builds_section_sits_under_the_channels_with_each_runs_owner() {
+        let mut a = builds_app();
+        let s = screen(&mut a, 110, 30);
+        assert!(
+            s.contains("Builds  3 runs in 30 days: 0 running, 1 queued, 1 red"),
+            "{s}"
+        );
+        let red = s
+            .lines()
+            .find(|l| l.contains("red") && l.contains("binks"))
+            .unwrap();
+        assert!(red.contains("agent-3"), "{red}");
+        let mut b = app(Tab::Releases);
+        b.releases = Some(Releases::default());
+        assert!(screen(&mut b, 110, 30).contains("Reading builds..."));
+    }
+
+    #[test]
+    fn b_hands_the_keys_to_builds_and_enter_reads_that_runs_log_then() {
+        let mut a = builds_app();
+        press(&mut a, KeyCode::Char('b'));
+        assert!(a.rv.builds.focus);
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(
+            a.rv.builds.table.sel, 1,
+            "j moves the builds, not the channels"
+        );
+        assert_eq!(a.rv.table.sel, 0);
+        press(&mut a, KeyCode::Char('k'));
+        assert!(a.rv.builds.log.is_none(), "selecting reads no log");
+        press(&mut a, KeyCode::Enter);
+        let gen = a.rv.builds.log.as_ref().unwrap().gen;
+        let s = screen(&mut a, 110, 30);
+        assert!(
+            s.contains("--- log: github.com binks Tests #3 agent-3/work owner agent-3"),
+            "{s}"
+        );
+        a.handle(Msg::Log(gen, Ok("step 3 failed\nexit 1\n".into())));
+        assert!(screen(&mut a, 110, 30).contains("step 3 failed"));
+        a.handle(Msg::Log(gen + 9, Ok("stale".into())));
+        assert!(!screen(&mut a, 110, 30).contains("stale"));
+        press(&mut a, KeyCode::Esc);
+        assert!(a.rv.builds.log.is_none() && a.rv.builds.focus);
+        press(&mut a, KeyCode::Char('b'));
+        assert!(!a.rv.builds.focus);
+    }
+
+    #[test]
+    fn a_ledger_append_rereads_builds_only_while_the_tab_is_shown() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = builds_app();
+        a.tx = tx;
+        a.handle(Msg::BuildFile);
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(Msg::Builds(_))
+        ));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut b = builds_app();
+        b.tab = Tab::Home;
+        b.tx = tx;
+        b.handle(Msg::BuildFile);
+        assert!(!b.builds_read.busy, "nothing to read off the tab");
+        assert!(rx.try_recv().is_err());
+    }
+
     #[test]
     fn a_new_snapshot_rereads_the_releases_tab_only_while_it_is_shown() {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -4977,10 +5222,6 @@ mod tests {
         a.releases = Some(hub_core::releases::read(rel.as_ref()));
         rel.0.lock().unwrap().clear();
         (a, rel, rx)
-    }
-
-    fn press(a: &mut App, c: KeyCode) {
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(c))));
     }
 
     fn answer(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) {
@@ -5077,7 +5318,10 @@ mod tests {
         assert_eq!(a.tab, Tab::Releases);
         assert_eq!(a.rv.table.view.q, "project:garden");
         assert!(a.rv.table.view.state.is_empty() && a.rv.table.view.sort.is_empty());
-        assert!(!a.rv.open, "the promise is this project's channels, unfiltered");
+        assert!(
+            !a.rv.open,
+            "the promise is this project's channels, unfiltered"
+        );
     }
 
     #[test]
@@ -5265,11 +5509,12 @@ mod tests {
             at: 0,
             window_secs: 86400,
             jobs: vec![hub_core::jobs::Job::new(
-                hub_core::jobs::Source::Ci,
+                hub_core::jobs::Source::Unity,
                 "gate",
                 hub_core::jobs::State::Done,
             )],
             errors: vec![],
+            ci: None,
         });
         a
     }
@@ -5573,7 +5818,7 @@ mod tests {
     fn a_log_with_no_reference_says_so_instead_of_reading() {
         let mut a = jobs_app();
         let mut j = hub_core::jobs::Job::new(
-            hub_core::jobs::Source::Ci,
+            hub_core::jobs::Source::Unity,
             "gate",
             hub_core::jobs::State::Done,
         );
@@ -5583,10 +5828,11 @@ mod tests {
             window_secs: 86400,
             jobs: vec![j],
             errors: vec![],
+            ci: None,
         });
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         let s = screen(&mut a, 100, 20);
-        assert!(s.contains("--- log: ci gate"), "{s}");
+        assert!(s.contains("--- log: unity gate"), "{s}");
         assert!(s.contains("o opens it in the browser"), "{s}");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         assert!(a.jv.log.is_none());
@@ -5608,6 +5854,7 @@ mod tests {
             window_secs: 86400,
             jobs: vec![j],
             errors: vec![],
+            ci: None,
         });
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         let gen = a.jv.log.as_ref().unwrap().gen;

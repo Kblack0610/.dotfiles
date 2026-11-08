@@ -5,7 +5,7 @@
 //! draws; the hub TUI applies it in place. Neither surface decides what a query means.
 //!
 //! The query: whitespace-separated terms, all of which must hold. `key:value` matches that
-//! column, and the same key repeated means any of them (`source:ci source:k8s`). `-key:value`
+//! column, and the same key repeated means any of them (`source:unity source:k8s`). `-key:value`
 //! excludes, `-word` excludes text. A bare word matches the row's text. Values match without
 //! case, `key:value` by prefix and a word anywhere in the text; `key:"two words"` quotes. A key
 //! that is not one of the table's columns is read as a bare word, so `http://x` still searches.

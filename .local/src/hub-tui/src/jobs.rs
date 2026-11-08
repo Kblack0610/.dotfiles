@@ -1,8 +1,9 @@
 //! The Jobs page: every job `hub_core::jobs::collect` finds (agentctl, timers, Unity gates,
-//! CI, k8s) on the shared data table (`datatable`: `/` query, `f` state, `s`/`S` sort, `x`
+//! k8s; CI runs are one count line, their rows are the Releases page's Builds section) on the shared data table (`datatable`: `/` query, `f` state, `s`/`S` sort, `x`
 //! clear), with a log pane under the list.
 
 use hub_core::jobs::{Job, Jobs, Source, State};
+use ratatui::crossterm::event::KeyCode;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
@@ -21,6 +22,25 @@ pub struct LogPane {
     pub back: usize,
     /// Which open this is, so a slow read for a row since closed is dropped.
     pub gen: u64,
+}
+
+impl LogPane {
+    /// `PageDown`/`PageUp` move a page, `J`/`K` a line; `back` counts lines up from the tail.
+    /// False when the key is not a scroll key.
+    pub fn scroll(&mut self, k: KeyCode, page: usize) -> bool {
+        match k {
+            KeyCode::PageDown | KeyCode::Char('J') => {
+                self.back =
+                    self.back
+                        .saturating_sub(if k == KeyCode::Char('J') { 1 } else { page });
+            }
+            KeyCode::PageUp | KeyCode::Char('K') => {
+                self.back += if k == KeyCode::Char('K') { 1 } else { page };
+            }
+            _ => return false,
+        }
+        true
+    }
 }
 
 #[derive(Default)]
@@ -156,6 +176,28 @@ fn job_row(j: &Job, p: Palette, now: i64) -> Vec<Cell> {
     ]
 }
 
+/// A log pane: a rule titled `title`, then the tail of the log that fits `h` lines, `back` lines
+/// up from the end. A read still going or failed says so in the one line it has.
+pub fn log_lines(l: &mut LogPane, w: usize, h: usize, p: Palette) -> Vec<Line<'static>> {
+    let h = h.saturating_sub(1);
+    let mut lines = vec![Line::styled(
+        format!("--- log: {} {}", l.title, "-".repeat(w)),
+        p.dim(),
+    )];
+    match &l.text {
+        None => lines.push(Line::styled("reading...", p.dim())),
+        Some(Err(e)) => lines.push(Line::styled(e.clone(), p.warn())),
+        Some(Ok(t)) => {
+            let all = clean(t);
+            l.back = l.back.min(all.len().saturating_sub(h));
+            let end = all.len() - l.back;
+            let start = end.saturating_sub(h);
+            lines.extend(all[start..end].iter().map(|s| Line::raw(s.clone())));
+        }
+    }
+    lines
+}
+
 /// Log text as plain lines: escape sequences and other control characters go, tabs become
 /// spaces, so a CI log cannot move the cursor or recolour the board.
 pub fn clean(text: &str) -> Vec<String> {
@@ -212,12 +254,13 @@ mod tests {
             at: 1300,
             window_secs: 86400,
             jobs: vec![
-                job(Source::Ci, "playground / gate", State::Running, None),
-                job(Source::Ci, "platform / e2e", State::Queued, None),
+                job(Source::Unity, "playground / gate", State::Running, None),
+                job(Source::Unity, "platform / e2e", State::Queued, None),
                 dream,
                 job(Source::Unity, "editmode", State::Done, Some(false)),
             ],
             errors: vec!["k8s: prometheus down".into()],
+            ci: None,
         }
     }
 
@@ -238,12 +281,12 @@ mod tests {
         // Running counts from its start to the collection time, not the collector's secs.
         assert!(
             rows.iter()
-                .any(|r| r.starts_with("run ci playground / gate") && r.contains(" 5m ")),
+                .any(|r| r.starts_with("run unity playground / gate") && r.contains(" 5m ")),
             "{rows:?}"
         );
         assert!(rows
             .iter()
-            .any(|r| r.contains("queue ci platform / e2e") && r.contains("wait 1m")));
+            .any(|r| r.contains("queue unity platform / e2e") && r.contains("wait 1m")));
         assert!(rows
             .iter()
             .any(|r| r.contains("agentctl dream x3") && r.contains("1m success")));

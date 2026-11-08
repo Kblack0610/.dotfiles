@@ -4,6 +4,7 @@
 
 mod app;
 mod board;
+mod builds;
 mod controls;
 mod coststab;
 mod datatable;
@@ -547,6 +548,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         }
         if e.paths.iter().any(|p| boards.is_release_file(p)) {
             let _ = files.send(Msg::ReleaseFile);
+        }
+        if e.paths.iter().any(|p| boards.is_build_file(p)) {
+            let _ = files.send(Msg::BuildFile);
         }
         if e.paths.iter().any(|p| boards.is_board_file(p)) {
             let _ = files.send(Msg::BoardFiles);
