@@ -919,14 +919,13 @@ judge() {
   # none, so an edit costs the board's new rows nothing; a stale dispatch, the verdict that
   # acts, before a stale skip.
   rules=$(policy_rules)
-  cands=$(jq -sc --argjson prules "$rules" --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
+  cands=$(jq -sc --argjson prules "$rules" --argjson max "$DISPATCH_JUDGE_MAX" --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
       ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
       | map(. as $c | . + {stale: (($by[[.project, .lane, .key] | tostring] // {}) as $d
           | if ($d | usable($prules)) and ($d | holds($c)) then (if $d.verdict == "dispatch" then 1 else 2 end) else 0 end)})
       | rank | to_entries | group_by(.value.project)
       | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
-      | sort_by(.row.stale, .round, (.row.cleanup // 1), .i) | .[].row | del(.stale)' <<<"$cands" |
-    head -n "$DISPATCH_JUDGE_MAX")
+      | sort_by(.row.stale, .round, (.row.cleanup // 1), .i) | .[:$max][].row | del(.stale)' <<<"$cands")
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
   # Rows are numbered and counted: on 2026-11-07 two 40-row passes came back with 39 verdicts,
   # each dropping one row whole (hc-122, ar-269), and a dropped row is an error verdict.
@@ -3189,7 +3188,7 @@ fill_night() {
   active=$(agent-queue list --json --state active 2>/dev/null |
     jq -s '[.[] | select((.from | startswith("board:")) and ((" " + (.tags // "") + " ") | contains(" night ")))] | length' 2>/dev/null)
   active=$(( NIGHT_MAX - ${active:-0} )); [ "$active" -gt 0 ] || active=0
-  night=$(night_picks "$(night_rows '')" | head -n "$active")
+  night=$(night_picks "$(night_rows '')" "$active")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     NIGHT_FILLED=$(( NIGHT_FILLED + 1 ))
@@ -3371,11 +3370,11 @@ t3_ready() {
     | . + {area: ($d.area | ascii_downcase)}' <<<"$1"
 }
 
-# night_picks <rows> -> up to DISPATCH_NIGHT_MAX t3_ready rows that are not cleanup: a cleanup row
+# night_picks <rows> [n] -> up to n (default DISPATCH_NIGHT_MAX) t3_ready rows that are not cleanup: a cleanup row
 # merges at any hour instead (t3_cleanup_picks). One row an area, so a night's PRs do not collide.
 # Human asks first (#requested), then observer rows, then most urgent, then oldest (night_rows' rank).
 night_picks() {
-  t3_ready "$1" | jq -sc --argjson max "$NIGHT_MAX" 'map(select(.cleanup != 0))
+  t3_ready "$1" | jq -sc --argjson max "${2:-$NIGHT_MAX}" 'map(select(.cleanup != 0))
     | sort_by(.rank, .prio, -.order) | unique_by([.project, .area]) | sort_by(.rank, .prio, -.order)
     | .[:$max] | .[]'
 }
