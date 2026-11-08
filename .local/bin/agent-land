@@ -201,8 +201,7 @@ catch_up() {
 }
 
 pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0
-implied=''
-[ -z "$item" ] || implied='$AGENT_QUEUE_ITEM'
+implied=${item:+'$AGENT_QUEUE_ITEM'}
 while [ $# -gt 0 ]; do
   case "$1" in
   --project | --title) die "$1 is gone: the queue item is the record; agent-queue add --running --project <p> \"<task>\", then --item <slug>" ;;

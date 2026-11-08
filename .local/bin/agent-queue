@@ -1414,7 +1414,7 @@ cmd_requeue() {
 # lists its Claude moves it back to running.
 cmd_reopen() {
   local usage="usage: agent-queue reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]"
-  local slug="${1:?$usage}" to=running why="" unland="" f dest status note row prof flag=() refs=() oids=() kr=() ko=() i hit=0
+  local slug="${1:?$usage}" to=running why="" unland="" f dest status note row prof flag=() refs=() oids=() kr=() ko=() i cp
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1438,13 +1438,13 @@ cmd_reopen() {
     read -ra refs <<<"$(fm_get "$f" pr)"
     read -ra oids <<<"$(fm_get "$f" merged)"
     for i in "${!refs[@]}"; do
-      if [ "${refs[i],,}" = "${unland,,}" ]; then hit=1; else kr+=("${refs[i]}") ko+=("${oids[i]:-}"); fi
+      [ "${refs[i],,}" = "${unland,,}" ] || kr+=("${refs[i]}") ko+=("${oids[i]:-}")
     done
-    [ "$hit" -eq 1 ] || die "$slug records pr:${refs[*]:-nothing}, not $unland"
+    [ "${#kr[@]}" -lt "${#refs[@]}" ] || die "$slug records pr:${refs[*]:-nothing}, not $unland"
     header_set "$f" pr "${kr[*]}"
     header_set "$f" merged "${ko[*]}"
-    i="$(fm_get "$f" closing_pr)"
-    [ "${i,,}" != "${unland,,}" ] || header_del "$f" closing_pr
+    cp="$(fm_get "$f" closing_pr)"
+    [ "${cp,,}" != "${unland,,}" ] || header_del "$f" closing_pr
   else
     [ "$status" = failed ] || die "$slug closed $status, not failed: that is new work under the slug (agent-queue add${status:+ --repeat})${status:+, or --unland <owner>/<repo>#<N> when it closed on a PR that was not its work}"
   fi

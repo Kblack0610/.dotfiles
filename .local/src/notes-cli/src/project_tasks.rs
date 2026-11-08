@@ -1337,40 +1337,21 @@ pub fn reopen(
     }
     if lane == Lane::Agent {
         let dir = projects::project_dir(p, name)?;
-        let notes = fs::read_dir(projects::agent_dir(&dir).join("versions"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|f| f.extension().is_some_and(|x| x == "md"));
-        for note in notes {
+        for (_, note) in projects::version_notes(&projects::agent_dir(&dir).join("versions")) {
             let text = fs::read_to_string(&note)?;
-            let lines: Vec<&str> = text.lines().collect();
-            let Some(span) = md::section_span(&lines, "Done rows") else {
-                continue;
-            };
-            let Some(r) = done_rows(&lines[span.clone()].join("\n"))
-                .into_iter()
-                .map(|r| span.start + r.start..span.start + r.end)
-                .find(|r| closed(lines[r.start]))
+            let Some((kept, row, detail)) =
+                md::cut_first_block_in_section(&text, "Done rows", closed)
             else {
                 continue;
             };
-            let mut block: Vec<String> =
-                lines[r.clone()].iter().map(|l| (*l).to_string()).collect();
-            block[0] = unclose(&block[0]).unwrap_or_else(|| block[0].clone());
+            let mut block = vec![unclose(&row).unwrap_or(row)];
+            block.extend(detail);
             // The board first: a failure between the two writes leaves the row in both, never neither.
             md::write_atomic(
                 &sheet,
                 &md::insert_under_heading(&content, sheet::TASKS, &block),
             )?;
-            let kept: Vec<&str> = lines
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !r.contains(i))
-                .map(|(_, l)| *l)
-                .collect();
-            md::write_atomic(&note, &format!("{}\n", kept.join("\n")))?;
+            md::write_atomic(&note, &kept)?;
             done("reopened from the archive", &block[0], &note);
             return Ok(0);
         }
