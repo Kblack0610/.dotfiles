@@ -184,10 +184,10 @@ prio_rank() {
   esac
 }
 
-# prio_of <listed path> -> focus|high|low from the `#prio/<word>` the human set in the front page's
+# prio_of <listed path> -> only|focus|high|low from the `#prio/<word>` the human set in the front page's
 # head (`notes projects --prio`), nothing for a normal project. The head is above the first `## `.
 prio_of() {
-  sed -n '/^## /q; p' "$(lab_front_page "$(dirname "$1")")" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(focus|high|low)\b' | head -1 | sed 's|.*#prio/||'
+  sed -n '/^## /q; p' "$(lab_front_page "$(dirname "$1")")" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(only|focus|high|low)\b' | head -1 | sed 's|.*#prio/||'
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): cleanup of an AI system
@@ -208,7 +208,7 @@ def rank_fields($today; $pprio):
   ((.text // "") | split("<!--")[0] // "") as $b
   | (offset(tagdate($b; "due"); $today) | if . != null and . < -180 then . + 365 else . end) as $dd
   | (offset(tagdate($b; "c"); $today) | if . != null and . > 0 then . - 365 else . end) as $cd
-  | . + {pprio: ({"focus": 0, "high": 1, "low": 3}[$pprio] // 2),
+  | . + {pprio: ({"only": 0, "focus": 0, "high": 1, "low": 3}[$pprio] // 2),
          due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
          due_in: $dd, age: (if $cd == null then 0 else -$cd end),
          req: (if $b | test("(^|\\s)#requested(\\s|$)") then 0 else 1 end)}
@@ -451,12 +451,30 @@ load_extras() {
   done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | .[3:]' <<<"$board")
 }
 
+# load_focus -- FOCUS_ONLY: the projects the human put on `#prio/only` (`notes projects --prio <p> --set only`),
+# space-separated, read once per process. While any is set, automated work is theirs alone; agent-queue
+# holds an off-focus item the same way (focus_hold), so this only spares the judge rows that would wait.
+load_focus() {
+  [ -n "${FOCUS_ONLY+x}" ] && return 0
+  FOCUS_ONLY=$(notes projects --prios 2>/dev/null | awk -F '\t' '$2 == "only" { printf "%s%s", (n++ ? " " : ""), $1 }')
+}
+
+# focus_off <project> <text> -> "focus: only <projects>" for a row a focus leaves out; a #requested or
+# #urgent row is exempt, as agent-queue exempts its item (reds come from the red pass, not the board).
+focus_off() {
+  [ -n "${FOCUS_ONLY:-}" ] || return 0
+  [[ " $FOCUS_ONLY " != *" $1 "* ]] || return 0
+  [[ "${2%%<!--*}" =~ (^|[[:space:]])#(requested|urgent)([[:space:]]|$) ]] && return 0
+  printf 'focus: only %s' "$FOCUS_ONLY"
+}
+
 # row_off <project> <stage> <key> <text> -> why the row may not dispatch whatever the judge says:
 # its kind (kind_off), or it is a parent, which closes when its children do. Nothing when it may.
 row_off() {
   local why
   why=$(kind_off "$(row_kind "$4")" "$1" "$2")
   [ -n "$why" ] || [ -z "${PAR[$3]:-}" ] || why="a parent: open rows name it in #of/"
+  [ -n "$why" ] || why=$(focus_off "$1" "$4")
   printf '%s' "$why"
 }
 
@@ -845,6 +863,7 @@ cmd_candidates() {
   [ -n "$table" ] || return 0
   load_extras
   load_kinds
+  load_focus
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -919,14 +938,13 @@ judge() {
   # none, so an edit costs the board's new rows nothing; a stale dispatch, the verdict that
   # acts, before a stale skip.
   rules=$(policy_rules)
-  cands=$(jq -sc --argjson prules "$rules" --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
+  cands=$(jq -sc --argjson prules "$rules" --argjson max "$DISPATCH_JUDGE_MAX" --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
       ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
       | map(. as $c | . + {stale: (($by[[.project, .lane, .key] | tostring] // {}) as $d
           | if ($d | usable($prules)) and ($d | holds($c)) then (if $d.verdict == "dispatch" then 1 else 2 end) else 0 end)})
       | rank | to_entries | group_by(.value.project)
       | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
-      | sort_by(.row.stale, .round, (.row.cleanup // 1), .i) | .[].row | del(.stale)' <<<"$cands" |
-    head -n "$DISPATCH_JUDGE_MAX")
+      | sort_by(.row.stale, .round, (.row.cleanup // 1), .i) | .[:$max][].row | del(.stale)' <<<"$cands")
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
   # Rows are numbered and counted: on 2026-11-07 two 40-row passes came back with 39 verdicts,
   # each dropping one row whole (hc-122, ar-269), and a dropped row is an error verdict.
@@ -1887,6 +1905,12 @@ settle_item() {
   local st it pr report info state oid; st=$(item_state "$1")
   case "$st" in running | waiting | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(agent-queue show "$1" --json 2>/dev/null)
+  # A partial merge proves only one repo landed. The next PR may not exist yet.
+  if [ "$(jq -r '.partial // ""' <<<"$it")" = yes ]; then
+    [ "$st" = waiting ] || agent-queue move "$1" waiting --if "$st" >/dev/null || return 0
+    logline "reaped $2: queue item $1 waits for its final landing (partial)"
+    return 0
+  fi
   dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
   if [ -n "$pr" ]; then
@@ -2533,6 +2557,9 @@ cmd_starved() {
     echo "held on an ask that can never be answered:"
     sed 's/^/  /' <<<"$dead"
   fi
+  # An empty focus counts like a dead hold: the pass did what it may, and nothing will change by itself.
+  local idle_focus; idle_focus=$(focus_idle)
+  [ -z "$idle_focus" ] || { echo "$idle_focus"; dead+=$'\n'"$idle_focus"; }
   if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ]; then [ -z "$dead" ]; return; fi
   items=$(runnable | jq -rs --argjson cut "$cut" '
     [.[] | select((.priority == "urgent" or .priority == "high") and (.waits | not) and .t != null and .t < $cut)]
@@ -2563,6 +2590,21 @@ cmd_starved() {
   [ -z "$low" ] || echo "$low"
   echo "last run start: ${started:-none in the log}; last pass: ${last:-none recorded}"
   return 1
+}
+
+# focus_idle -> a line when the human's focus (`#prio/only`) has nothing to work: no running, waiting
+# or unheld queued item of a focus project, and no open board row of one a pass could take. Off-focus
+# work is held on purpose, so an empty focus would idle the fleet with nothing else saying so.
+focus_idle() {
+  load_focus
+  [ -n "$FOCUS_ONLY" ] || return 0
+  local f=" $FOCUS_ONLY " n
+  n=$(agent-queue list --json 2>/dev/null | jq -s --arg f "$f" \
+    '[.[] | select(.state != "queued" or .hold == null) | select(.project as $p | $f | contains(" \($p) "))] | length')
+  [ "${n:-0}" = 0 ] || return 0
+  n=$(all_open | jq -s --arg f "$f" '[.[] | select(.project as $p | $f | contains(" \($p) "))] | length')
+  [ "${n:-0}" = 0 ] || return 0
+  echo "focus: only $FOCUS_ONLY has no work (no live or runnable item, no open board row); other projects wait (clear it: notes projects --prio <p> --set normal)"
 }
 
 # dead_holds -> one line per queued item held on an ask that was cancelled, no longer exists, or the
@@ -2624,11 +2666,15 @@ cmd_headroom() {
   local idle_projects; idle_projects=$(idle_project_items "$(next_items)" | jq -r .project | sort -u | grep -c . || true)
   why=$(IDLE_NOW=$idle gate)
   if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
+  local focus_held=0; load_focus
+  [ -z "$FOCUS_ONLY" ] || focus_held=$(agent-queue list --json --state queued 2>/dev/null |
+    jq -s '[.[] | select((.hold // "") | startswith("focus:"))] | length')
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$DISPATCH_MAX_LIVE" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" \
-    --argjson project_floor "${DISPATCH_PROJECT_FLOOR:-0}" --argjson idle_projects "$idle_projects" '
+    --argjson project_floor "${DISPATCH_PROJECT_FLOOR:-0}" --argjson idle_projects "$idle_projects" \
+    --arg focus "$FOCUS_ONLY" --argjson focus_held "${focus_held:-0}" '
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
@@ -2636,6 +2682,7 @@ cmd_headroom() {
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_live: $red_live,
      project_floor: $project_floor, idle_projects: $idle_projects,
+     focus: ($focus | split(" ") | map(select(. != ""))), focus_held: $focus_held,
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
      held: (if $held != "" then $held elif $live >= $max_live then "DISPATCH_MAX_LIVE: every run unit is used"
             elif $runnable == 0 then "nothing runnable" else null end)}
@@ -2652,7 +2699,8 @@ cmd_headroom() {
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace and idle do not hold a start",
         "  red floor: \(.red_live) of \(.red_floor) red sessions live; under it pace, idle, load and fleet-assess do not hold a red",
-        "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle"'
+        "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle",
+        (if (.focus | length) > 0 then "  focus:     only \(.focus | join(" ")); \(.focus_held) queued item(s) held off focus (reds, urgent and #requested still run)" else empty end)'
     fi
 }
 
@@ -2717,6 +2765,7 @@ cmd_stats() {
   board=$(notes board --json 2>/dev/null | jq -c '.rows | {board_agent: map(select(.lane == "agent")) | length,
     board_human: map(select(.lane == "human")) | length, board_playtest: map(select(.lane == "playtest")) | length}' 2>/dev/null)
   cmd_starved >/dev/null 2>&1 || starved=true
+  load_focus
   read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
   # shellcheck source=/dev/null
@@ -2730,7 +2779,7 @@ cmd_stats() {
     jq -Rsc --argjson now "$now" --argjson q "$(jq -sc . <<<"$q")" --argjson starved "$starved" \
       --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" --argjson board "${board:-null}" \
       --argjson low "$DISPATCH_LOW_WATER" --argjson per "$DISPATCH_PRESENT_PER_HOUR" \
-      --argjson held "${held_since:-null}" '
+      --argjson held "${held_since:-null}" --argjson focus_n "$(wc -w <<<"$FOCUS_ONLY")" '
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
       | ($q | map(select('"$TAKEN_JQ"'))) as $take
       | ($take | map(select(.priority == "urgent"))) as $u
@@ -2745,13 +2794,13 @@ cmd_stats() {
          could_start: ($hr.could_start // null),
          low_water: $low, under_low_water: (if ($q | length) < $low then 1 else 0 end),
          present_per_hour: $per, present_starts_1h: ($ev | map(select(.[0] == "present")) | length),
-         held_s: (if $held == null then 0 else $now - $held end)}
+         held_s: (if $held == null then 0 else $now - $held end), focus_projects: $focus_n}
       + ($board // {})
       # The whole queue, as agent-queue counts it: every state, holds by kind, flow by the hour.
       + (if $aq == null then {} else
           ($aq.sitting.held_by // {}) as $h
           | {queued: ($aq.active.queued // 0), running: ($aq.active.running // 0), waiting: ($aq.active.waiting // 0),
-             held: ($aq.sitting.held // 0), held_after: ($h.after // 0), held_pr: ($h.pr // 0),
+             held: ($aq.sitting.held // 0), held_after: ($h.after // 0), held_pr: ($h.pr // 0), held_focus: ($h.focus // 0),
              held_time: (($h.night // 0) + ($h.at // 0))} + ($aq.recent // {}) end)
       # The room the last pass had, with why it was held as a 0/1 per kind.
       + (if $hr == null then {} else
@@ -3200,7 +3249,7 @@ fill_night() {
   active=$(agent-queue list --json --state active 2>/dev/null |
     jq -s '[.[] | select((.from | startswith("board:")) and ((" " + (.tags // "") + " ") | contains(" night ")))] | length' 2>/dev/null)
   active=$(( NIGHT_MAX - ${active:-0} )); [ "$active" -gt 0 ] || active=0
-  night=$(night_picks "$(night_rows '')" | head -n "$active")
+  night=$(night_picks "$(night_rows '')" "$active")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     NIGHT_FILLED=$(( NIGHT_FILLED + 1 ))
@@ -3230,6 +3279,9 @@ promote() {
     say "skip $project: row has no id and start gave it none (no code in project-map.json?), un-started: $key"
     return 1
   fi
+  # A #requested row's item carries the tag, so a focus on other projects does not hold it (focus_hold).
+  [[ " $tags " == *" requested "* ]] || [[ ! "${line%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] ||
+    tags="${tags:+$tags }requested"
   # The row's words are the item's title: no checkbox, id comment or #tags.
   local title
   title=$(sed -E 's/^- \[.\] //; s/<!--[^>]*-->//g; s/(^| )#[A-Za-z0-9_/:.-]+//g; s/ +$//' <<<"$line")
@@ -3327,6 +3379,7 @@ night_rows() {
   local -A DET=() PLN=() PAR=()
   load_extras
   load_kinds
+  load_focus
   for name in $DISPATCH_NIGHT_PROJECTS; do
     sheet=$(np "$DISPATCH_NIGHT_PROFILE" projects 2>/dev/null | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
     stage=$(stage_of "$sheet")
@@ -3382,11 +3435,11 @@ t3_ready() {
     | . + {area: ($d.area | ascii_downcase)}' <<<"$1"
 }
 
-# night_picks <rows> -> up to DISPATCH_NIGHT_MAX t3_ready rows that are not cleanup: a cleanup row
+# night_picks <rows> [n] -> up to n (default DISPATCH_NIGHT_MAX) t3_ready rows that are not cleanup: a cleanup row
 # merges at any hour instead (t3_cleanup_picks). One row an area, so a night's PRs do not collide.
 # Human asks first (#requested), then observer rows, then most urgent, then oldest (night_rows' rank).
 night_picks() {
-  t3_ready "$1" | jq -sc --argjson max "$NIGHT_MAX" 'map(select(.cleanup != 0))
+  t3_ready "$1" | jq -sc --argjson max "${2:-$NIGHT_MAX}" 'map(select(.cleanup != 0))
     | sort_by(.rank, .prio, -.order) | unique_by([.project, .area]) | sort_by(.rank, .prio, -.order)
     | .[:$max] | .[]'
 }

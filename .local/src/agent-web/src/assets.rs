@@ -252,6 +252,21 @@ mod tests {
     }
 
     #[test]
+    fn the_project_headers_are_hub_cores_columns() {
+        // Rule 8, as above; `"7d"` is a quoted key, so quotes come off each key here.
+        use hub_core::table::Row;
+        let js = include_str!("../static/projects.js");
+        let at = js.find("const P_COLS = {").expect("no P_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim().trim_matches('"')))
+            .filter(|k| !k.is_empty())
+            .collect();
+        assert_eq!(keys, hub_core::projects::Card::COLUMNS);
+    }
+
+    #[test]
     fn the_session_headers_are_hub_cores_columns() {
         // Rule 8, as above; `item`, `source` and `session` are search keys with no column here.
         use hub_core::table::Row;

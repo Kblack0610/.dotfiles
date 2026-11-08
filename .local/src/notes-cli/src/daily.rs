@@ -1288,7 +1288,9 @@ const SHEET_ACTIONS_SHOWN: usize = 40;
 /// Intake has its own rows above, so a line added to the outbox, or added and then filed, or a
 /// session's new row on a human sheet, is not told twice here.
 fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
-    const INTAKE: [&str; 6] = ["moved", "filed", "dup", "planned", "left", "refused"];
+    const INTAKE: [&str; 7] = [
+        "moved", "filed", "dup", "planned", "left", "refused", "answered",
+    ];
     let told_above = |i: usize, e: &crate::ingest::Event| {
         INTAKE.contains(&e.action.as_str())
             || session_intake(e)
