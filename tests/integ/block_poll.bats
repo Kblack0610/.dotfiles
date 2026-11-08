@@ -172,3 +172,10 @@ rd() { jq -nc --arg f "$1" '{tool_name:"Read", tool_input:{file_path:$f}}' | pyt
   run bash -c "jq -nc '{tool_name:\"Monitor\", tool_input:{command:\"until grep -q done out.log; do sleep 5; done\"}}' | python3 '$GUARD'"
   allowed
 }
+
+@test "a heredoc marker inside quoted text hides nothing after it" {
+  run fg $'git commit -m "doc <<EOF syntax"\nuntil gh pr view 1; do sleep 5; done'
+  denied
+  run fg $'cat <<EOF\nuntil x; do sleep 5; done\nEOF'
+  allowed
+}
