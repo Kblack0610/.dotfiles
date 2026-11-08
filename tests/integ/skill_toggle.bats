@@ -138,3 +138,10 @@ toggle_repo() {
   run git -C "$DOTFILES" worktree list
   assert_equal "$(wc -l <<<"$output")" 1
 }
+
+@test "a restore-only change keeps the hide list empty" {
+  toggle_repo '{"skillOverrides":{"beta":"name-only","zeta":"name-only"}}'
+  run "$TOGGLE" --dry-run
+  assert_success
+  assert_output --partial 'hide 0, restore 1 (beta)'
+}

@@ -761,28 +761,27 @@ if [ "$MODE" = overrides ]; then
   load_usage "$TOGGLE_DAYS"
   [ ${#USED[@]} -gt 0 ] || { echo "skill-drift --overrides: no use counted in ${TOGGLE_DAYS}d of transcripts, which is not the same as nothing used" >&2; exit 2; }
   mapfile -t ROUTE_DOCS < <(for f in "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" "$SKILLS"/*/SKILL.md; do [ -f "$f" ] && printf '%s\n' "$f"; done)
+  declare -A STATE=()
+  while IFS=$'\t' read -r s v; do STATE[$s]=$v; done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"$cur")
+  # A paths-scoped or model-disabled skill has its own listing rule; the toggle leaves it alone.
+  pinned() { [ -f "$1" ] && fm "$1" | grep -qE '^paths:|^disable-model-invocation:[[:space:]]*true'; }
   hide=() restore=()
   while IFS= read -r s; do
-    f="$SKILLS/$s/SKILL.md"
-    [ -f "$f" ] && fm "$f" | grep -qE '^paths:|^disable-model-invocation:[[:space:]]*true' && continue
-    state=$(jq -r --arg s "$s" '.[$s] // "listed"' <<<"$cur")
+    f="$SKILLS/$s/SKILL.md" state=${STATE[$s]:-listed}
     if [ -n "${USED[$s]:-}" ]; then
-      [ "$state" = name-only ] && restore+=("$s")
-    elif [ "$state" = listed ] && [ -f "$f" ] && ! routed "$s"; then
+      [ "$state" = name-only ] && ! pinned "$f" && restore+=("$s")
+    elif [ "$state" = listed ] && [ -f "$f" ] && ! pinned "$f" && ! routed "$s"; then
       hide+=("$s")
     fi
   done < <({ for f in "$SKILLS"/*/SKILL.md; do [ -e "$f" ] && basename "$(dirname "$f")"; done
-             jq -r 'to_entries[] | select(.value == "name-only") | .key' <<<"$cur"; } | sort -u)
-  hj=$(printf '%s\n' ${hide[@]+"${hide[@]}"} | jq -Rnc '[inputs | select(length > 0)]')
-  rj=$(printf '%s\n' ${restore[@]+"${restore[@]}"} | jq -Rnc '[inputs | select(length > 0)]')
+             for s in "${!STATE[@]}"; do [ "${STATE[$s]}" = name-only ] && echo "$s"; done; } | sort -u)
   if [ "$DOCS_JSON" = 1 ]; then
-    jq -c --argjson d "$TOGGLE_DAYS" --argjson h "$hj" --argjson r "$rj" '
-      {days: $d, hide: $h, restore: $r,
-       skillOverrides: (with_entries(select(.key as $k | $r | index($k) | not))
-                        + ($h | map({(.): "name-only"}) | add // {})
-                        | to_entries | sort_by(.key) | from_entries)}' <<<"$cur"
+    # Skill names are directory names with no spaces, so each list travels as one string.
+    jq -cS --argjson d "$TOGGLE_DAYS" --arg h "${hide[*]}" --arg r "${restore[*]}" '
+      ($h | split(" ") - [""]) as $h | ($r | split(" ") - [""]) as $r
+      | {days: $d, hide: $h, restore: $r, skillOverrides: (reduce $h[] as $s (del(.[$r[]]); .[$s] = "name-only"))}' <<<"$cur"
   else
-    jq -r --argjson d "$TOGGLE_DAYS" --argjson r "$rj" '"skill-toggle over \($d)d: hide \(length) [\(join(" "))], restore \($r | length) [\($r | join(" "))]"' <<<"$hj"
+    echo "skill-toggle over ${TOGGLE_DAYS}d: hide ${#hide[@]} [${hide[*]}], restore ${#restore[@]} [${restore[*]}]"
   fi
   exit 0
 fi

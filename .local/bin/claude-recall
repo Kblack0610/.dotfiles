@@ -432,8 +432,8 @@ def cmd_show(a):
 # name or a worktree named after it is work on the skill, not use of it. skill-drift reads
 # all six; they are off by default, since the tool-call scan is the slow part of a stats run.
 USE_KINDS = ("body", "read", "script", "mention")
-STATS_KINDS = ("slash", "skill", "agent", "intent", "prompt") + USE_KINDS
-DEFAULT_KINDS = STATS_KINDS[:5]
+DEFAULT_KINDS = ("slash", "skill", "agent", "intent", "prompt")
+STATS_KINDS = DEFAULT_KINDS + USE_KINDS
 BODY_RE = re.compile(r"\ABase directory for this skill: (\S+)")
 SKILL_PATH_RE = re.compile(r"skills/([\w.@+-]+(?:/[\w.@+-]+)*)")
 
@@ -467,9 +467,10 @@ def tool_use_events(name, inp, names):
     """The read/script/mention signals of one Read or Bash call, one per skill and kind."""
     out = set()
     if name == "Read":
-        segs = str(inp.get("file_path") or "").split("/")
-        if len(segs) > 2 and segs[-1] == "SKILL.md" and "skills" in segs:
-            out.add(("read", segs[-2]))
+        m = SKILL_PATH_RE.search(str(inp.get("file_path") or ""))
+        hit = m and skill_of_path(m.group(1), names)
+        if hit and hit[0] == "read":
+            out.add(hit)
     elif name == "Bash":
         cmd = str(inp.get("command") or "")
         for m in SKILL_PATH_RE.finditer(cmd):
@@ -478,6 +479,7 @@ def tool_use_events(name, inp, names):
                 out.add(hit)
         out.update(("mention", x) for x in bash_heads(cmd) & names)
     return out if len({k for _, k in out}) <= CORPUS_CALL_SKILLS else set()
+
 # A typed command record opens with its tag; one quoted inside a summary or paste does not.
 CMD_RE = re.compile(r"\A\s*<command-(?:name|message)>(?:.*?<command-name>)?/?([^<\s]+)</command-name>", re.S)
 # Masks applied before a prompt becomes a counting key, so "fix PR #712" and "fix PR #713"
