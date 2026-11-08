@@ -28,7 +28,8 @@
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
-# is a unit of work on the work ledger, so add one first (`agent-queue add --running`).
+# is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
+# taken from the session, not named by --item, takes only a PR in its project's repo (own_project).
 # Exit 0 landed, 1 a step failed, 2 usage, 3 a catch-up merge of origin/<base> that conflicts
 # (before or after the checks): resolve it and re-run. A merge of <base> keeps a green gate green; gate again
 # only when the repo's CI doc says that merge needs one.
@@ -200,12 +201,13 @@ catch_up() {
 }
 
 pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0
+implied=${item:+'$AGENT_QUEUE_ITEM'}
 while [ $# -gt 0 ]; do
   case "$1" in
   --project | --title) die "$1 is gone: the queue item is the record; agent-queue add --running --project <p> \"<task>\", then --item <slug>" ;;
   --plan) plan="${2:?--plan needs a value}" && shift ;;
   --phase) phase="${2:?--phase needs a value}" && shift ;;
-  --item) item="${2:?--item needs a value}" && shift ;;
+  --item) item="${2:?--item needs a value}" implied='' && shift ;;
   --repo) repo="${2:?--repo needs a value}" repo_from=--repo && shift ;;
   --partial) partial=1 ;;
   --dry-run) dry=1 ;;
@@ -223,6 +225,7 @@ if [ -z "$item" ]; then
   mine=0
   item=$(agent-queue mine 2>/dev/null) || mine=$?
   [ "$mine" -ne 2 ] || die "more than one queue item records this session: pass --item <slug> (agent-queue mine)"
+  implied='agent-queue mine'
 fi
 [ -n "$item" ] || die "no queue item for this session: agent-queue add --running --project <p> \"<type(area): title>\" (or claim one), then re-run"
 # Checked before the merge, like the plan phase: a wrong slug cannot leave a merged PR unrecorded.
@@ -304,6 +307,27 @@ own_repo() {
   [ -n "$here" ] || { echo "repo: not checked, this checkout has no origin"; return 0; }
   [[ "$pr_ref" == */*#* && "${here,,}" != "${want,,}" ]] || return 0
   fail repo "#$pr is $pr_ref (${repo_from:-the repo gh picks here}), but this checkout's origin is $here: run from a checkout of ${pr_ref%#*}${repo_from:+, or pass --repo $here for $here#$pr}"
+}
+
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "$0")")/../../.config/shared-hooks/project-name.sh}"
+PROJECT_MAP_FILE="${AGENT_QUEUE_PROJECT_MAP:-$(project_map_file)}"
+
+# own_project: an item this run did not name is the session's own ($AGENT_QUEUE_ITEM, or agent-queue
+# mine), and a session also lands side PRs in other repos. A PR outside the item project's repo
+# (its tracker `repo`, else the project) is refused before anything is touched: it would close the
+# item and its row with a PR that is not their work (2026-11-07: dotfiles-private#652, a
+# store-console skill fix, closed shape-city-steam-console and row ucp-1207). --item claims it.
+own_project() {
+  [ -n "$implied" ] && [[ "$pr_ref" == */*#* ]] && [ -f "$PROJECT_MAP_FILE" ] || return 0
+  local project want got name=${pr_ref%#*}
+  name=${name#*/}
+  project=$(jq -r '.project // ""' <<<"$it")
+  [ -n "$project" ] || return 0
+  want=$(project_repo_name "$project")
+  got=$(project_of_repos_json "$name" | jq -r --arg n "$name" '.[$n] // ""')
+  [ "${got,,}" != "${want,,}" ] || return 0
+  die "#$pr is in ${pr_ref%#*} ($got), and $item, taken from $implied, is a $project item in $want: a PR outside the item's repo names its item. Pass --item $item if this PR is that item's work (with --partial while its own PR is still to land), or give it its own item (agent-queue add --running --project $got \"<type(area): title>\") and pass --item <that slug>"
 }
 
 # own_merged: a MERGED PR skips own_head, which is what ties an open PR to this checkout. So it must
@@ -392,7 +416,7 @@ fi
 
 if [ "$dry" -eq 1 ]; then
   echo "item-line: gh pr view $pr${repo:+ -R $repo} --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
-  echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item"
+  echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item; an item not named by --item takes only a PR in its project's repo"
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast  (must pass, or report none on a tier 1 or 2 item)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push)"
@@ -421,6 +445,7 @@ pr_ref=$(sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pulls?/([0-9]+).*#\1\#\2#' <<<"
 done_as=''
 it_pr=$(jq -r '.pr // ""' <<<"$it")
 own_repo
+own_project
 if [ "$(jq -r .state <<<"$it")" = done ]; then
   done_as=$(once_done) || exit $?
 elif [ -n "$it_pr" ]; then

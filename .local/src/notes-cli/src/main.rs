@@ -600,6 +600,15 @@ enum PtaskCmd {
         /// The row's id, as `ar-142`
         id: String,
     },
+    /// Undo a false close: the closed row with this id back to todo, its done or drop stamp
+    /// off the marker. An agent board row already archived moves back onto the board
+    Reopen {
+        /// What made the close false (the log keeps it)
+        #[arg(long, value_name = "WHY")]
+        why: String,
+        /// The row's id, as `ar-142`
+        id: String,
+    },
     /// Add or take hashtags off the first matching open task (before its marker). A release
     /// tag is refused: move, promote and demote own it
     Tag {
@@ -1198,6 +1207,9 @@ fn main() -> Result<()> {
                 )?,
                 Some(PtaskCmd::Redate { on, dry_run, id }) => {
                     project_tasks::redate(&prof, &log, &name, &id, &on, dry_run, lane)?
+                }
+                Some(PtaskCmd::Reopen { why, id }) => {
+                    project_tasks::reopen(&prof, &log, &name, &id, &why, lane)?
                 }
                 Some(PtaskCmd::Start { query }) => {
                     project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
