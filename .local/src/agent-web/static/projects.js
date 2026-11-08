@@ -46,16 +46,18 @@ const pTop = (c, chips) => cardHead(c.name, chips.filter(Boolean)) +
   `<div class="pprog">${meter((c.percent || 0) / 100)}<span class="ppct">${Math.round(c.percent || 0)}%</span></div>` +
   `<div class="psum">${esc(c.summary)}</div>`;
 
-const P_COLS = { project: ["project"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], done: ["done", "n"], pct: ["pct", "n"], pace: ["pace/wk", "n"], eta: ["eta", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"] };
+const P_COLS = { project: ["project"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], pct: ["pct", "n"], pace: ["pace/wk", "n"], eta: ["eta", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], held: ["held", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };
 const pDash = (v) => esc(v == null || v === "" ? "-" : v);
 
 // One line of the list; a click or Enter on it opens the project.
 const pLine = (c) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><td>${esc(c.name)}</td><td>${esc(c.profile)}</td>` +
   `<td>${pDash(c.stage)}</td><td>${pDash(c.version)}</td><td>${pDash(c.prio)}</td>` +
-  `<td class="n">${c.progress.open}</td><td class="n">${c.progress.done}</td>` +
+  `<td class="n">${c.progress.open}</td><td class="n">${c.doing}</td><td class="n${c.hot ? " warn" : ""}">${c.hot}</td>` +
+  `<td class="n">${c.progress.done}</td><td class="n">${c.progress.closed_7d}</td>` +
   `<td class="n">${c.percent == null ? "-" : c.percent + "%"}</td><td class="n">${c.pace.toFixed(1)}</td>` +
   `<td class="n">${c.eta_days == null ? "-" : c.eta_days + "d"}</td><td class="n">${c.running.length}</td>` +
-  `<td class="n">${c.waiting}</td><td class="n">${c.queued}</td></tr>`;
+  `<td class="n">${c.waiting}</td><td class="n">${c.queued}</td><td class="n">${c.held}</td>` +
+  `<td class="n">${c.done_today}</td><td class="n">${pDash(c.oldest)}</td></tr>`;
 
 // A fold of the opened card: its title and what it holds, kept open across redraws by pst.folds.
 const pFold = (k, title, says, inner) =>

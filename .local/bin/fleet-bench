@@ -3463,7 +3463,43 @@ finding_limits() {
   jq -cn --argjson d "$FINDING_DEFAULTS" --argjson f "$file" '$d + ($f | with_entries(select(.value != null)))'
 }
 
-# prom_rows <epoch> -> metric, label, value (tab-separated) at that moment; rc 1 when unreadable.
+# prom_match_rows <epoch> -> cc:pool_match_{slots,busy} per pool and cc:pool_match_labels "<pool>/<label sets>":
+# the slots that can take the jobs the pool has long waited on. A job runs only on a runner holding all
+# its labels (GitHub compares them without case), so a pool's total busy/slots says nothing about a
+# job that fits two of its ten runners (2026-11-05: razer-laptop-unity-pool-1/2 were the only ones that
+# matched while mac-studio slots sat idle). A slot is a runner running or idle and not withheld, as
+# cc:pool_slots counts it; cc:pool_match_runners counts the runners in any state, so no slot because they are
+# down reads differently from no runner with the labels. Empty when nothing waits long, or no runner is read:
+# the rule then falls back to the pool's own totals.
+prom_match_rows() {
+  local minwait
+  minwait=$(finding_limits | jq -r .finding_pool_wait_s)
+  prom_q "{__name__=~\"github_actions_job_waiting|github_runner_state|github_runner_withheld\"}" "$1" 2>/dev/null |
+    jq -r --argjson minwait "$minwait" '
+      def lbl: (.metric.labels // "") | ascii_downcase | split(",") | map(select(. != ""));
+      .data.result as $r
+      | ([$r[] | select(.metric.__name__ == "github_runner_withheld" and (.value[1] | tonumber) == 1) | .metric.name]) as $withheld
+      # One row per runner, a running one winning when two exporter pods disagree during a rollout.
+      | ([$r[] | select(.metric.__name__ == "github_runner_state") | {name: .metric.name, state: .metric.state, labels: lbl}]
+         | group_by(.name) | map(sort_by(.state != "running") | first)) as $runners
+      | select($runners | length > 0)
+      | ([$r[] | select(.metric.__name__ == "github_actions_job_waiting" and .metric.stuck != "true"
+                        and (.value[1] | tonumber) >= $minwait and .metric.pool != null)
+          | {pool: .metric.pool, labels: lbl} | select(.labels | length > 0)]
+         | group_by(.pool)[]) as $jobs
+      | ($jobs[0].pool) as $pool
+      | ($jobs | map(.labels | sort) | unique) as $sets
+      | [$runners[] | select(.labels as $have | any($sets[]; all(.[]; . as $x | $have | index($x))))] as $fit
+      | [$fit[] | select(.state == "running" or (.state == "idle" and (.name as $n | $withheld | index($n) | not)))] as $m
+      | ["cc:pool_match_slots", $pool, ($m | length)],
+        ["cc:pool_match_busy", $pool, ($m | map(select(.state == "running")) | length)],
+        ["cc:pool_match_runners", $pool, ($fit | length)],
+        ["cc:pool_match_labels", "\($pool)/\($sets | map(join(",")) | join(" | "))", 1]
+      | @tsv' 2>/dev/null
+}
+
+# prom_rows <epoch> [match] -> metric, label, value (tab-separated) at that moment; rc 1 when unreadable.
+# "match" adds the cc:pool_match_* rows, which only the newest sample of a finding reads.
 # BENCH_PROM_TSV is a recorded series (metric, label, epoch, value), so a replay needs no server.
 prom_rows() {
   local t="$1" out
@@ -3477,15 +3513,16 @@ prom_rows() {
     # that feeds it. Unread, a starved pool names no repos, and whoever reads it must assume all.
     out+=$'\n'$(prom_q "count by (pool, repo) ($W (github_actions_job_waiting{stuck!=\"true\"}))" "$t" |
       jq -r '.data.result[] | select(.metric.pool and .metric.repo) | ["cc:pool_waiting_repo", "\(.metric.pool)/\(.metric.repo)", (.value[1] | tonumber)] | @tsv' 2>/dev/null)
+    [ -n "${2:-}" ] && out+=$'\n'$(prom_match_rows "$t")
     out=$(grep . <<<"$out")
   fi
   [ -n "$out" ] && printf '%s\n' "$out"
 }
 
-# prom_snapshot <epoch> -> {metric: {label: value}}; rc 1 when unreadable
+# prom_snapshot <epoch> [match] -> {metric: {label: value}}; rc 1 when unreadable
 prom_snapshot() {
   local rows
-  rows=$(prom_rows "$1") || return 1
+  rows=$(prom_rows "$@") || return 1
   jq -Rn 'reduce (inputs | split("\t")) as $r ({}; .[$r[0]][$r[1]] = ($r[2] | tonumber))' <<<"$rows"
 }
 
@@ -3521,7 +3558,7 @@ merge_rows() {
 # null. Demand is the time average of live sessions, so a straggler on an empty project is not a full load.
 finding_facts() {
   local t="$1" s0 s1 s2 merges live='' src=/dev/null
-  s0=$(prom_snapshot "$t") && s1=$(prom_snapshot $((t - FINDING_SAMPLE_S))) && s2=$(prom_snapshot $((t - 2 * FINDING_SAMPLE_S))) \
+  s0=$(prom_snapshot "$t" match) && s1=$(prom_snapshot $((t - FINDING_SAMPLE_S))) && s2=$(prom_snapshot $((t - 2 * FINDING_SAMPLE_S))) \
     || s0='null' s1='null' s2='null'
   merges=$(merge_rows "$t")
   [ -s "$PROGRESS" ] && src=$PROGRESS
@@ -3563,13 +3600,21 @@ finding_rows() {
             | select($w >= $l.finding_pool_wait_s and $n > 0)
             | ([($a["cc:pool_waiting_repo"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")]
                | if length > 0 then . else null end) as $repos
-            # bind: capacity when the pool is full, labels when slots sit free or the jobs carry no
-            # pool label (pool "other": pinned to one host, say), so more sessions add no demand to it.
-            | (if $pool == "other" or ($u != null and $s != null and $s > 0 and ($u / $s) < $l.finding_pool_idle_share)
+            # The slots that can take the waiting jobs, when the reader could tell: the other slots of
+            # the pool may lack their labels, so its total busy/slots says nothing about those jobs.
+            | ($a["cc:pool_match_slots"][$pool]) as $ms | ($a["cc:pool_match_busy"][$pool]) as $mu | ($a["cc:pool_match_runners"][$pool]) as $mr
+            | ([($a["cc:pool_match_labels"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")] | first) as $want
+            | (if $ms != null and $mu != null then {u: $mu, s: $ms} else {u: $u, s: $s} end) as $k
+            # bind: capacity when the slots that fit are full, labels when slots sit free, none can
+            # take the job, or the jobs carry no pool label (pool "other": pinned to one host, say), so
+            # more sessions add no demand to it.
+            | (if $pool == "other" or ($ms != null and $k.s == 0 and $mr == 0) or ($k.u != null and $k.s != null and $k.s > 0 and ($k.u / $k.s) < $l.finding_pool_idle_share)
                then "labels" else "capacity" end) as $bind
-            | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $u, slots: $s, oldest_s: $w}; "now"; "cc:pool_*";
-                "oldest job waited \($w | dur) with \($u // "?")/\($s // "?") slots busy: "
-                + (if $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the pool'"'"'s capacity" end);
+            | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $k.u, slots: $k.s, oldest_s: $w}
+                + (if $ms != null then {pool_busy: $u, pool_slots: $s, labels: $want} else {} end); "now"; "cc:pool_*";
+                "oldest job waited \($w | dur) with \($k.u // "?")/\($k.s // "?") slots busy"
+                + (if $ms != null then " among those matching its labels (\($want // "?")), \($u // "?")/\($s // "?") in the pool" else "" end) + ": "
+                + (if $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
                 "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
             | select($n != null and $n > 0)
