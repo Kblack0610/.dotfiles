@@ -135,6 +135,12 @@ pub fn daylog_dir() -> PathBuf {
         .unwrap_or_else(|| home().join(".agent/daylog"))
 }
 
+/// Whether a changed path under `dir` is `release-state`'s snapshot, the one file there a
+/// surface re-reads for.
+pub fn is_release_snapshot(dir: &Path, p: &Path) -> bool {
+    p.parent() == Some(dir) && p.file_name().is_some_and(|n| n == "state.json")
+}
+
 /// `release-state`'s directory, holding the `state.json` it replaces by a rename.
 pub fn releases_dir() -> PathBuf {
     std::env::var_os("RELEASE_STATE_DIR")

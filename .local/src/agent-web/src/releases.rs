@@ -2,7 +2,7 @@
 //! `releases`. The list is filtered and sorted here by `hub_core::table`, so the page only draws.
 //! No read cache: the read is one small file, and a new snapshot pushes the `releases` event.
 
-use hub_core::releases::{self, fold, Fold, Release, Releases, STALE_SECS};
+use hub_core::releases::{self, fold, Release, Releases, STALE_SECS};
 use hub_core::session_actions::System;
 use hub_core::table::{Summary, View};
 use serde::Serialize;
@@ -17,7 +17,7 @@ struct Shown<'a> {
     summary: &'a str,
     stale_after: i64,
     rows: Vec<&'a Release>,
-    fold: Option<Fold>,
+    fold: Option<String>,
     errors: &'a [String],
     table: Summary,
 }
@@ -88,7 +88,7 @@ mod tests {
         let v = body(Query::default());
         assert_eq!(v["rows"].as_array().unwrap().len(), 1);
         assert_eq!(v["rows"][0]["id"], "app-prod");
-        assert_eq!(v["fold"]["n"], 1);
+        assert!(v["fold"].as_str().unwrap().starts_with("1 channel green"));
         assert_eq!(v["table"]["total"], 2);
         assert_eq!(v["question"], "What is live where?");
         assert_eq!(v["stale_after"], STALE_SECS);

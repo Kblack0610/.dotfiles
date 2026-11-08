@@ -30,8 +30,7 @@ function releaseSide(s, text) {
 }
 
 function releaseWatch(w) {
-  const cls = w.state === "TRIP" ? "bad" : w.state === "missing" ? "warn" : "";
-  return `<div>${esc(w.watch)} <span class="${cls}">${esc(w.state)}</span>${w.since ? ` <span class="muted">since ${when(w.since)}</span>` : ""}</div>`;
+  return `<div>${esc(w.watch)} <span class="${relClass(w.level)}">${esc(w.state)}</span>${w.since ? ` <span class="muted">since ${when(w.since)}</span>` : ""}</div>`;
 }
 
 function releaseDetail(r) {
@@ -45,7 +44,7 @@ function releaseDetail(r) {
 
 function releasesBody(d) {
   const t = d.table, rows = d.rows || [];
-  const fold = d.fold ? `<div class="panel"><button class="btn sm" data-ts="green" title="list the green channels">${esc(d.fold.says)}</button></div>` : "";
+  const fold = d.fold ? `<div class="panel"><button class="btn sm" data-ts="green" title="list the green channels">${esc(d.fold)}</button></div>` : "";
   if (rows.length) return `<div class="panel scroll"><table class="tbl">${tblHead(t, REL_COLS)}${rows.map(releaseRow).join("")}</table></div>` + fold;
   if (fold) return `<div class="panel">Nothing needs attention.</div>` + fold;
   return `<div class="panel">${t && t.total ? "No channels match." : "No channels."}</div>`;

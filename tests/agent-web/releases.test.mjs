@@ -50,11 +50,11 @@ const drift = {
   project: "binks", id: "binks-prod", label: "prod binks-prod", where: "home-k3s", tag: "v2", status: "drift", status_level: "bad", watch_level: "bad", level: "bad",
   pinned: { value: "v2", source: "manifest" }, live: { value: "v1", source: "k8s", image: "reg/binks:v1", error: null },
   pinned_text: "v2", live_text: "v1", telemetry_text: "0/1", deps_text: "unity-core v0.5.0", deps: ["unity-core"],
-  telemetry: [{ watch: "binks-probe", state: "TRIP", since: 1793942659 }], drift_since: 1793942659, probed_at: 1793942700,
+  telemetry: [{ watch: "binks-probe", state: "TRIP", level: "bad", since: 1793942659 }], drift_since: 1793942659, probed_at: 1793942700,
 };
 const data = (o = {}) => ({
   at: NOW() - 120, question: "What is building, and what is live where?", summary: "3 channels: 1 drift, 2 ok", stale_after: 3600, errors: [], table,
-  rows: [drift], fold: { n: 2, says: "2 channels green: 2 ok (a-prod, b-prod)" }, ...o,
+  rows: [drift], fold: "2 channels green: 2 ok (a-prod, b-prod)", ...o,
 });
 
 const target = (attrs, tr = null) => ({ dataset: attrs, closest: (sel) => (sel === "tr.jr" ? tr : sel === "[data-ts]" && "ts" in attrs ? { dataset: attrs } : null) });

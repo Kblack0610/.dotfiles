@@ -2,13 +2,14 @@
 //! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear), green rows folded to one line,
 //! the selected row's versions, watches and dependencies in a pane under the list.
 
-use hub_core::releases::{fold, Fold, Level, Release, Releases, STALE_SECS};
+use hub_core::releases::{fold, Level, Release, Releases, STALE_SECS};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::{clock, Palette};
+use crate::projtab::wrapped;
 
 /// `Release::COLUMNS` in capitals, in its order, the sort mark placed by that index. `id` and
 /// `where` filter without a column: the channel says the one, the pane the other.
@@ -55,7 +56,7 @@ fn level(l: Level, p: Palette) -> Style {
 }
 
 impl ReleasesView {
-    fn folded<'a>(&self, s: &'a Releases) -> (Vec<&'a Release>, Option<Fold>) {
+    fn folded<'a>(&self, s: &'a Releases) -> (Vec<&'a Release>, Option<String>) {
         fold(&self.table.view, self.table.view.apply(&s.rows))
     }
 
@@ -152,7 +153,7 @@ impl ReleasesView {
     pub fn foot(&self, s: &Releases, p: Palette, w: usize) -> Vec<Line<'static>> {
         let mut out = vec![];
         if let Some(f) = self.folded(s).1 {
-            let text = format!("> {}, f twice lists them", f.says);
+            let text = format!("> {f}, f twice lists them");
             let words: Vec<&str> = text.split_whitespace().collect();
             out.extend(
                 wrap(&words, " ", w.max(20))
@@ -217,16 +218,8 @@ pub fn detail(r: &Release, p: Palette, now: i64, w: usize) -> Vec<Line<'static>>
         Line::styled(format!("> {} {}", r.project, r.label), p.head()),
         Line::styled(format!("  {status}"), level(r.level, p)),
     ];
-    let width = w.saturating_sub(LABEL + 3).max(20);
     let mut part = |label: &str, text: &str, style: Style| {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        for (i, l) in wrap(&words, " ", width).into_iter().enumerate() {
-            let name = if i == 0 { label } else { "" };
-            out.push(Line::from(vec![
-                Span::styled(format!("  {name:<LABEL$} "), p.dim()),
-                Span::styled(l, style),
-            ]));
-        }
+        out.extend(wrapped(&format!("  {label:<LABEL$} "), text, style, p, w));
     };
     let plain = Style::default();
     part("Pinned", &side(&r.pinned, &r.pinned_text), plain);
@@ -241,10 +234,10 @@ pub fn detail(r: &Release, p: Palette, now: i64, w: usize) -> Vec<Line<'static>>
         let since = t
             .since
             .map_or(String::new(), |at| format!(" since {}", clock(at, now)));
-        let style = match t.state.as_str() {
-            "TRIP" => p.bad(),
-            "missing" => p.warn(),
-            _ => plain,
+        let style = if t.level == Level::Ok {
+            plain
+        } else {
+            level(t.level, p)
         };
         part("Watch", &format!("{} {}{since}", t.watch, t.state), style);
     }

@@ -384,8 +384,8 @@ fn classify(p: &Path) -> Option<String> {
             .is_some_and(|e| e == "json")
             .then(|| COSTS_EVENT.to_string());
     }
-    if p.parent()? == boards::releases_dir().as_path() {
-        return (p.file_name()? == "state.json").then(|| r#"{"kind":"releases"}"#.to_string());
+    if boards::is_release_snapshot(&boards::releases_dir(), p) {
+        return Some(r#"{"kind":"releases"}"#.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {

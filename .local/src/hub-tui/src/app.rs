@@ -216,8 +216,7 @@ impl BoardFiles {
     }
 
     pub fn is_release_file(&self, p: &Path) -> bool {
-        p.parent() == Some(self.releases.as_path())
-            && p.file_name().is_some_and(|n| n == "state.json")
+        hub_core::boards::is_release_snapshot(&self.releases, p)
     }
 
     /// Whether a changed path is one the board tabs read (the shepherd dir holds other files).

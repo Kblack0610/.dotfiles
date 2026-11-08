@@ -70,6 +70,28 @@ pub struct Watch {
     /// `OK`, `TRIP`, `pending` or `missing`.
     pub state: String,
     pub since: Option<i64>,
+    #[serde(skip_deserializing)]
+    pub level: Level,
+}
+
+impl Watch {
+    /// A watch tripped is broken and one that was never written is a gap; `pending` has simply
+    /// not run yet, which `release-state check` does not count either.
+    fn judged(&self) -> Level {
+        match self.state.as_str() {
+            "TRIP" => Level::Bad,
+            "missing" => Level::Warn,
+            _ => Level::Ok,
+        }
+    }
+}
+
+/// Where a status word sorts: worst first, one the reader does not know last.
+fn rank(status: &str) -> usize {
+    STATUSES
+        .iter()
+        .position(|s| *s == status)
+        .unwrap_or(STATUSES.len())
 }
 
 /// One project channel. The `Deserialize` fields are the collector's row as it wrote it; the
@@ -121,32 +143,12 @@ impl Release {
         self.level == Level::Ok
     }
 
-    /// A watch tripped is broken and one that was never written is a gap; `pending` has simply
-    /// not run yet, which `release-state check` does not count either.
-    fn watches(&self) -> Level {
-        let has = |s: &str| self.telemetry.iter().any(|w| w.state == s);
-        if has("TRIP") {
-            Level::Bad
-        } else if has("missing") {
-            Level::Warn
-        } else {
-            Level::Ok
-        }
-    }
-
     fn word(&self) -> Level {
         match self.status.as_str() {
             "drift" => Level::Bad,
             "ok" | "released" | "unreleased" => Level::Ok,
             _ => Level::Warn,
         }
-    }
-
-    fn order(&self) -> usize {
-        STATUSES
-            .iter()
-            .position(|s| *s == self.status)
-            .unwrap_or(STATUSES.len())
     }
 }
 
@@ -197,7 +199,7 @@ impl Row for Release {
     /// `status` sorts worst first on the first click, not by the word's spelling.
     fn rank(&self, col: &str) -> Val {
         match col {
-            "status" => Val::Num(-(self.order() as f64)),
+            "status" => Val::Num(-(rank(&self.status) as f64)),
             _ => self.val(col),
         }
     }
@@ -231,18 +233,24 @@ struct Snapshot {
 
 /// The rows this reader was handed, joined and ordered: exceptions first, the worst on top.
 fn settle(mut rows: Vec<Release>) -> Vec<Release> {
-    let mut pins: HashMap<String, (bool, String)> = HashMap::new();
-    for r in &rows {
-        let prod = r.channel == "prod";
-        let pin = r.pinned.value.clone().unwrap_or_default();
-        let e = pins.entry(r.project.clone()).or_insert((prod, pin.clone()));
-        if prod && !e.0 {
-            *e = (prod, pin);
+    let mut pins: HashMap<String, String> = HashMap::new();
+    for prod in [true, false] {
+        for r in rows.iter().filter(|r| (r.channel == "prod") == prod) {
+            pins.entry(r.project.clone())
+                .or_insert_with(|| r.pinned.value.clone().unwrap_or_default());
         }
     }
     for r in &mut rows {
+        for w in &mut r.telemetry {
+            w.level = w.judged();
+        }
         r.status_level = r.word();
-        r.watch_level = r.watches();
+        r.watch_level = r
+            .telemetry
+            .iter()
+            .map(|w| w.level)
+            .min()
+            .unwrap_or_default();
         r.level = r.status_level.min(r.watch_level);
         r.label = if r.implicit {
             r.channel.clone()
@@ -263,7 +271,7 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
             r.deps
                 .iter()
                 .map(|d| match pins.get(d) {
-                    Some((_, pin)) if !pin.is_empty() => format!("{d} {pin}"),
+                    Some(pin) if !pin.is_empty() => format!("{d} {pin}"),
                     _ => d.clone(),
                 })
                 .collect::<Vec<_>>()
@@ -271,7 +279,8 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
         };
     }
     rows.sort_by(|a, b| {
-        (a.level, a.order(), &a.project, &a.id).cmp(&(b.level, b.order(), &b.project, &b.id))
+        let key = |r: &Release| (r.level, rank(&r.status));
+        (key(a), &a.project, &a.id).cmp(&(key(b), &b.project, &b.id))
     });
     rows
 }
@@ -285,13 +294,7 @@ fn counts<'a>(rows: impl IntoIterator<Item = &'a Release>) -> String {
             None => n.push((&r.status, 1)),
         }
     }
-    let at = |s: &str| {
-        STATUSES
-            .iter()
-            .position(|x| *x == s)
-            .unwrap_or(STATUSES.len())
-    };
-    n.sort_by_key(|(s, _)| at(s));
+    n.sort_by_key(|(s, _)| rank(s));
     n.iter()
         .map(|(s, c)| format!("{c} {s}"))
         .collect::<Vec<_>>()
@@ -343,18 +346,11 @@ pub fn read(runner: &dyn Runner) -> Releases {
     }
 }
 
-/// The green rows a view folds to one line (docs/dashboards.md rule 4).
-#[derive(Serialize, Debug, Clone, PartialEq)]
-pub struct Fold {
-    pub n: usize,
-    /// `17 channels green: 8 ok, 5 released, 4 unreleased (binks-api-prod, ...)`.
-    pub says: String,
-}
-
-/// The rows to draw and the green ones folded out of them. Only the plain view folds: any query,
-/// chip or sort is the human asking for those rows, so they show. The fold's way open is the
-/// `green` chip.
-pub fn fold<'a>(view: &View, rows: Vec<&'a Release>) -> (Vec<&'a Release>, Option<Fold>) {
+/// The rows to draw and the one line the green ones fold to (docs/dashboards.md rule 4):
+/// `17 channels green: 8 ok, 5 released, 4 unreleased (binks-api-prod, ...)`. Only the plain view
+/// folds: any query, chip or sort is the human asking for those rows, so they show. The fold's way
+/// open is the `green` chip.
+pub fn fold<'a>(view: &View, rows: Vec<&'a Release>) -> (Vec<&'a Release>, Option<String>) {
     if !view.is_default() {
         return (rows, None);
     }
@@ -377,8 +373,7 @@ pub fn fold<'a>(view: &View, rows: Vec<&'a Release>) -> (Vec<&'a Release>, Optio
         counts(green.iter().copied()),
         names.join(", ")
     );
-    let n = green.len();
-    (open, Some(Fold { n, says }))
+    (open, Some(says))
 }
 
 /// One project's channels as the Projects card's badge, linking to this tab (rule 2).
@@ -522,9 +517,8 @@ mod tests {
         let (shown, f) = fold(&plain, plain.apply(&r.rows));
         assert_eq!(shown.len(), 1);
         let f = f.unwrap();
-        assert_eq!(f.n, 4);
         assert_eq!(
-            f.says,
+            f,
             "4 channels green: 3 ok, 1 released (a-prod, b-prod, e-prod, ...)"
         );
         // Negative controls: a chip, a query and a sort each show what they keep.
