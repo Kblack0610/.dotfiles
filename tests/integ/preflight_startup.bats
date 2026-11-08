@@ -21,7 +21,7 @@ setup() {
   DEPLOY="$SANDBOX/shared-hooks"
   mkdir -p "$DEPLOY"
   cp "$REPO_ROOT/.config/shared-hooks/session-preflight.sh" "$REPO_ROOT/.config/shared-hooks/project-name.sh" \
-     "$REPO_ROOT/.config/shared-hooks/startup-telemetry.sh" "$DEPLOY/"
+     "$REPO_ROOT/.config/shared-hooks/startup-telemetry.sh" "$REPO_ROOT/.config/shared-hooks/stop-session-changes.py" "$DEPLOY/"
   export CLAUDE_STARTUP_LOG="$HOME/.agent/telemetry/claude-startup.jsonl"
   unset CLAUDE_PID CLAUDE_CODE_EXECPATH CLAUDE_CODE_ENTRYPOINT
 }
@@ -92,4 +92,18 @@ EOF
   run --separate-stderr start
   assert_success
   assert_equal "$stderr" ''
+}
+
+@test "SessionStart snapshots old dirt and preserves it across resume" {
+  echo old > "$REPO/theme.conf"
+  run start
+  assert_success
+  run python3 "$DEPLOY/stop-session-changes.py" changed "$REPO" sid-1
+  assert_success
+  assert_output ''
+  echo new > "$REPO/theme.conf"
+  echo '{"source":"resume","session_id":"sid-1"}' | bash "$DEPLOY/session-preflight.sh" >/dev/null
+  run python3 "$DEPLOY/stop-session-changes.py" changed "$REPO" sid-1
+  assert_success
+  assert_output 'theme.conf'
 }
