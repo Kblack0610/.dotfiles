@@ -10,7 +10,7 @@ metadata:
 
 # Pipeline eval
 
-One pass over how work moves from intake to landed. It produces a measured baseline for every stage (queue and dispatch, plan approval, phases, gates and CI, review and merge, wind-down), a ranked list of where the time goes, one PR per lever that removes the wait, and the same numbers again afterwards, so the next pass adds a column instead of starting over.
+One pass over how work moves from intake to landed. It produces a measured baseline for every stage (queue and dispatch, plan approval, phases, gates and CI, review and merge, wind-down), a ranked list of where the time goes, one PR per lever that removes the wait, and the same numbers again afterwards, so the next pass adds a column instead of starting over. The method (finding shape, in flight, baseline, one lever per PR, re-measure, proposals, next pass) is `~/.local/src/docs/analysis-streams.md`; this file holds what is specific to the pipeline.
 
 Every number comes from a deterministic source, never a model's score of a transcript:
 
@@ -35,19 +35,17 @@ Siblings: token spend is `usage-cleanup`; CI pass rate and CI time are `ci-clean
 
 ## Steps
 
-1. **In flight first.** `agent-queue list`, `gh pr list` on both dotfiles repos, and the agent-runtime board rows for queue, dispatch, shepherd and wind-down. A lever another session owns is theirs; send what you found with `fleet-comms`.
+1. **In flight first.** `agent-queue list`, `gh pr list` on both dotfiles repos, and the agent-runtime board rows for queue, dispatch, shepherd and wind-down.
 2. **Baseline.** Pick a window of at least 7 days that ends at a local midnight. Save every source's JSON under `~/.cache/pipeline-eval/p<N>/`. Per stage record: time (p50, p90 and total minutes), how often it waits on the human (`NEEDS` by reason), rework (`STALLED:ci_red`, `ci.rerun_after_red`, `plans.phases_unticked`, conflicts), sessions with no PR, and the ETA basis rows. Split `agent-queue` wait into items held by an `after:` predecessor and free items, and split session stages into agent worktrees and the human's main sessions (`by_project`): the same wait means different things in each. Name every source you could not read cleanly and keep it out of the totals.
 3. **Find the waste.** For each stage, the largest minutes first: which reason, which project, and the file or behaviour behind it (a dispatch gate, a hook, a merge rule, a missing nudge). Write down what you ruled out, with its number.
-4. **Rank levers, deletion first.** A lever that removes a wait, a gate or a repeat run ranks above one that adds a check. Then rank by minutes saved per day. A stage another skill owns (CI reds, token spend) goes to that skill's next pass as a board row.
-5. **Fix, one lever per PR,** through `dotfiles-land`, with a test and a negative control for any script change. A pass with several PRs is one queue item: merge each earlier PR by hand once `gh pr checks <N>` is all green (`gh pr merge <N> --squash --match-head-commit <sha>`), and run `agent-land <N> --item <slug>` only on the last.
-6. **Re-measure the same way** once a lever's merge is in the main checkout (stow serves `~/.dotfiles`). Use the same window length, after the landing. If only the measuring waits on new data, queue it as an `at:` item naming the plan file, close this pass's item, and wind down.
-7. **Report.** Write `~/.notes/lab/projects/current/agent-runtime/docs/pipeline-eval-p<N>.md` with these sections: a table with one row per stage and one column per measured point (the baseline, then each pass); the top waits with their numbers; what was fixed, with the PR and what it moved; what is left, as board rows with owners. Publish it as an Artifact page and page the human with the link: `agent-notify -p normal -t pipeline-eval '<link>'`.
-8. **Queue the next pass,** in the session that writes the report, when its "left for the next pass" names at least one lever with a number: `agent-queue add --project agent-runtime --priority low --tags "at:$(date -d '+7 days' +%F 2>/dev/null || date -v+7d +%F)T09:00" --slug pipeline-eval-p<N+1> "pipeline-eval pass <N+1>: run the pipeline-eval skill; the baseline is ~/.notes/lab/projects/current/agent-runtime/docs/pipeline-eval-p<N>.md"`. First run `agent-queue show pipeline-eval-p<N+1>`: it finds a finished item too, and a hit means that pass is already queued or done. This is how passes recur without a runner (the `at:` rule: `~/.config/agentctl/QUEUE.md`); the human ends a series with `agent-queue cancel <slug>`. Queue it before `agent-land`.
+4. **Rank levers,** deletion first, by minutes saved per day. A stage another skill owns (CI reds, token spend) goes to that skill's next pass as a board row.
+5. **Fix, one lever per PR,** through `dotfiles-land`.
+6. **Re-measure** per the method, over the same window length.
+7. **Report.** Write `~/.notes/lab/projects/current/agent-runtime/docs/pipeline-eval-p<N>.md` with these sections: a table with one row per stage and one column per measured point (the baseline, then each pass); the top waits with their numbers; what was fixed, with the PR and what it moved; what is left, each lever as one proposal (stream `pipeline-eval`, project `agent-runtime`, evidence the report path). Publish it as an Artifact page and page the human with the link: `agent-notify -p normal -t pipeline-eval '<link>'`.
+8. **Queue the next pass** per the method (`--project agent-runtime`, slug `pipeline-eval-p<N+1>`, baseline `~/.notes/lab/projects/current/agent-runtime/docs/pipeline-eval-p<N>.md`). Queue it before `agent-land`.
 
 ## Do NOT
 
-- Do not quote a number a named source did not print this session.
 - Do not score transcripts with a model, and do not start a live claude probe to measure anything.
 - Do not read `agent-queue stats` wait as dispatch latency without the `after:` split: a held item waits by design.
-- Do not bundle levers in one PR: the before and after then measures nothing.
 - Do not restate fleet-bench, day-log, shepherd, usage-cleanup or ci-cleanup here; name them.

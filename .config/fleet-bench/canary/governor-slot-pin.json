@@ -1,0 +1,22 @@
+{
+  "id": "governor-slot-pin",
+  "project": "home-config",
+  "pr": "Kblack0610/home-config#582",
+  "base": "6c6a0cd261733103946890cc8c40f8c067526ea0",
+  "merge": "efc160aab7079eb7a0a58feff65a7189fab6d031",
+  "task": "feat(ci-runner-governor): a host can be pinned to N slots, live even in a dry run",
+  "accept": [
+    "unittest: test_pin_"
+  ],
+  "oracle": {
+    "paths": [
+      "apps/ci-runner-governor/test_governor.py"
+    ],
+    "cmd": [
+      "python3",
+      "apps/ci-runner-governor/test_governor.py",
+      "-k",
+      "test_pin_"
+    ]
+  }
+}

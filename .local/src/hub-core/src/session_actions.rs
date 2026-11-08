@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 
 /// The agent row a `Snapshot` carries, so a caller needs no agent-panel dependency of its own.
 pub use agent_panel::chooser::Agent;
-use agent_panel::{account, chooser, tmux};
+use agent_panel::{account, chooser, dialog, tmux};
 use serde::Serialize;
 
 use crate::queue;
@@ -124,39 +124,15 @@ impl From<&chooser::Agent> for Session {
     }
 }
 
-/// The line that heads Claude Code's plan dialog; a permission prompt also offers "1. Yes", so
-/// the digit is only read below this line.
-const PLAN_PROMPT: &str = "Would you like to proceed?";
-/// The dialog sits at the pane's foot: its header is within this many lines of the last one.
-const PLAN_PROMPT_FOOT: usize = 12;
-
 /// The digit of "Yes, auto-accept edits" (else the first "Yes" option) in the plan dialog at the
 /// foot of a `capture-pane -p` capture, or None when the pane shows no plan dialog.
 pub fn plan_approve_key(pane: &str) -> Option<char> {
-    let lines: Vec<&str> = pane.lines().filter(|l| !l.trim().is_empty()).collect();
-    let head = lines
+    let d = dialog::parse(pane).filter(|d| d.kind == dialog::Kind::Plan)?;
+    d.options
         .iter()
-        .rposition(|l| l.contains("plan") && l.contains(PLAN_PROMPT))?;
-    if lines.len() - head > PLAN_PROMPT_FOOT {
-        return None;
-    }
-    let options: Vec<(char, &str)> = lines[head + 1..]
-        .iter()
-        .filter_map(|l| {
-            let l = l.trim_start().trim_start_matches('\u{276f}').trim_start();
-            let (n, rest) = l.split_once(". ")?;
-            let mut d = n.chars();
-            match (d.next(), d.next()) {
-                (Some(c), None) if c.is_ascii_digit() => Some((c, rest.trim())),
-                _ => None,
-            }
-        })
-        .collect();
-    options
-        .iter()
-        .find(|(_, t)| t.starts_with("Yes, auto-accept edits"))
-        .or_else(|| options.iter().find(|(_, t)| t.starts_with("Yes")))
-        .map(|(c, _)| *c)
+        .find(|o| o.text.starts_with("Yes, auto-accept edits"))
+        .or_else(|| d.options.iter().find(|o| o.text.starts_with("Yes")))
+        .map(|o| o.key)
 }
 
 /// The actions a row offers: a parked one can only be unparked, cancel needs a queue item.
@@ -762,7 +738,7 @@ mod tests {
             );
         assert_eq!(plan_approve_key(&reordered), Some('2'));
         // A dialog scrolled far above the foot is an old one the pane no longer shows open.
-        let scrolled = format!("{PLAN_PANE}{}", "output\n".repeat(PLAN_PROMPT_FOOT));
+        let scrolled = format!("{PLAN_PANE}{}", "output\n".repeat(dialog::PLAN_PROMPT_FOOT));
         assert_eq!(plan_approve_key(&scrolled), None);
     }
 

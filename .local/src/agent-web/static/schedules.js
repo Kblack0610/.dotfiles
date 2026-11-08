@@ -8,15 +8,12 @@
 const SCHEDULES_REFRESH_MS = 60e3;
 // Runs a detail shows before folding the rest behind "+N older".
 const SCHEDULE_RUNS_OPEN = 2;
-const schst = { data: null, err: null, sel: null };
+const schst = tblTab({
+  tab: "schedules", id: "sched", el: "schedules", api: "/api/schedules", hint: "search, or kind:ci result:failure -name:dream",
+  head: (t) => schedulesHead(t.data), body: (t) => schedulesBody(t.data),
+});
 
 const schedKey = (r) => `${r.kind}|${r.name}`;
-
-const refreshSchedules = coalesce(async () => {
-  const q = tblParams(st.views.schedules).toString();
-  try { schst.data = await api("/api/schedules" + (q ? "?" + q : "")); schst.err = null; } catch (e) { schst.err = e.message; }
-  if (st.tab === "schedules") renderSchedules();
-});
 
 const SCHED_COLS = { kind: ["kind", "opt"], name: ["name"], schedule: ["schedule", "opt"], last: ["last", "n"], result: ["result"], streak: ["streak"], triage: ["triage"] };
 
@@ -66,51 +63,20 @@ function schedulesHead(d) {
   return html;
 }
 
-function renderSchedules() {
-  const el = $("schedules");
-  const d = schst.data;
-  if (!d || !d.table) {
-    const why = schst.err || (d?.errors || [])[0];
-    el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading..."}</div>`;
-    return;
-  }
-  // A refresh must not take the search box or an open dropdown from under the human.
-  const f = document.activeElement;
-  if (f?.id === "sched-q" || f?.dataset?.tq !== undefined) {
-    paint($("sched-head"), schedulesHead(d));
-    if (f.id === "sched-q") paint($("sched-facets"), tblFacets(d.table));
-    paint($("sched-chips"), tblChips(d.table));
-    paint($("sched-body"), schedulesBody(d));
-    return;
-  }
-  paint(el, `<div id="sched-head">${schedulesHead(d)}</div>${tblBar("sched", d.table, "search, or kind:ci result:failure -name:dream")}` +
-    `<div id="sched-body">${schedulesBody(d)}</div>`);
-}
-
-// The view changed: the URL follows it and the server applies it.
-function schedulesView(patch) {
-  setQuery(tblSet(st.views.schedules, patch));
-  refreshSchedules();
-}
-
 $("schedules").addEventListener("click", (e) => {
   const t = e.target;
   if (t.closest("a") || t.closest("details")) return;
-  const v = tblPatch(e);
-  if (v) { schedulesView(v); return; }
   const tr = t.closest("tr.jr");
   if (!tr) return;
   const r = (schst.data.rows || []).find((x) => schedKey(x) === tr.dataset.key);
   if (!r) return;
   if (r.page) { location.hash = "fleet/" + encodeURIComponent(r.page); return; }
   schst.sel = schst.sel === schedKey(r) ? null : schedKey(r);
-  renderSchedules();
+  schst.render();
 });
-// A picked dropdown lets go of focus, so the answer redraws it with the new counts.
-for (const ev of ["input", "change"]) $("schedules").addEventListener(ev, (e) => { const v = tblPatch(e); if (!v) return; if (e.type === "change" && e.target.blur) e.target.blur(); schedulesView(v); });
 
-const pollSchedules = poll("schedules", refreshSchedules, SCHEDULES_REFRESH_MS);
+const pollSchedules = poll("schedules", schst.refresh, SCHEDULES_REFRESH_MS);
 TABS.schedules = {
-  show() { renderSchedules(); pollSchedules(); },
-  onEvent(ev) { if (ev.kind === "resync" && st.tab === "schedules") refreshSchedules(); },
+  show() { schst.render(); pollSchedules(); },
+  onEvent(ev) { if (ev.kind === "resync" && st.tab === "schedules") schst.refresh(); },
 };

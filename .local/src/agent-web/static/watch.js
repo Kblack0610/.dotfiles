@@ -18,7 +18,7 @@ const logTime = (ts) => new Date(ts.replace(" ", "T")).getTime();
 const refreshWatch = coalesce(async () => {
   wst.data = await api("/api/watch");
   setBuckets(wst.data.state && wst.data.state.vocab && wst.data.state.vocab.buckets);
-  if (st.tab === "sessions") { renderFacts(); renderOverview(); }
+  if (st.tab === "sessions") { renderFacts(); sst.render(); }
   if (st.tab === "log") renderLogChanges();
 });
 
@@ -206,7 +206,7 @@ const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${wst.open
 $("scroll").addEventListener("change", (e) => {
   if (st.sel) return;
   if (e.target.matches("[data-ended]")) wst.ended = e.target.checked;
-  renderOverview();
+  sst.render();
 });
 // A fold the reader opens stays open through the next push (paint reads it before a repaint;
 // this catches the ones toggled between repaints).

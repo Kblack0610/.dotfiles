@@ -3,10 +3,10 @@
 // answer cards are waiting.js, Home is home.js, and each board tab is its own static/*.js and
 // registers in TABS. Sessions' table and header are sessions.js, its fleet-state facts and the
 // last day are watch.js, the shepherd's pass, due lines and rundowns are shepherd.js. An open
-// session starts on its page (sessions.js); its transcript is read only when asked for.
+// session starts on its conversation; its Details page (sessions.js) is read only when asked for.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "page", start: null, end: null, tab: "home", asks: [], views: {} };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
 const TABS = {};
 // Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
@@ -18,10 +18,10 @@ const refreshAgents = coalesce(async () => {
   const waiting = st.agents.filter((a) => a.status === "waiting").length;
   $("wait-badge").innerHTML = waiting ? `<span class="badge">${waiting}</span>` : "";
   renderBadge();
-  renderOverview();
+  sst.render();
   if (st.tab === "home") renderHome();
   // A session coming or going changes which queue rows have an Open button.
-  if (st.tab === "queue") renderQueueList();
+  if (st.tab === "queue") qst.render();
   if (st.sel) {
     const a = st.agents.find((x) => x.target === st.sel.target);
     if (a) { st.sel = a; renderHead(); }
@@ -47,7 +47,7 @@ function approveButtons(a) {
 }
 function rerenderApprove() {
   if (st.tab === "home") renderHome();
-  if (st.tab === "queue") renderQueueList();
+  if (st.tab === "queue") qst.render();
 }
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-approve],[data-approve-go],[data-approve-no]");
@@ -129,12 +129,29 @@ function renderHead() {
   $("compose").hidden = noPane;
   $("v-screen").disabled = noPane;
   renderActs();
+  renderPin();
 }
+
+// A waiting session's open question, pinned under its conversation and answered in place: the
+// same card Home draws (waiting.js sessionCard), less its Open button.
+function renderPin() {
+  const el = $("ask-pin"), a = st.sel;
+  const on = !!(a && a.question && st.view === "transcript");
+  el.hidden = !on;
+  if (!on) { el.innerHTML = ""; return; }
+  const key = a.target + "|" + a.question.kind + "|" + a.question.text;
+  if (el.dataset.key === key) return; // a refresh must not take a half-typed reply
+  el.dataset.key = key;
+  // The row kind hub-core's home::NeedKind::of_dialog gives the same dialog.
+  el.innerHTML = sessionCard(a, { choice: "ask", tool: "perm", plan: "plan" }[a.question.kind] || "turn", true);
+}
+$("ask-pin").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c) answerCard(c, e); });
+$("ask-pin").addEventListener("keydown", (e) => answerOnEnter(e));
 
 function select(a) {
   if (!st.sel || st.sel.target !== a.target) st.act = { confirm: null, busy: st.act.busy, msg: "", err: false };
   st.sel = a; st.start = null; st.end = null;
-  showView("page");
+  showView("transcript");
   $("main").classList.add("open");
   $("err").textContent = "";
   renderHead(); renderFacts();
@@ -149,24 +166,15 @@ function overview() {
   $("d-name").textContent = "Sessions";
   $("acts").hidden = true;
   $("compose").hidden = true;
+  renderPin();
   $("main").classList.remove("open");
   $("scroll").innerHTML = "";
-  renderFacts(); renderOverview(); refreshSessions();
+  renderFacts(); sst.render(); renderSide(); refreshSessions();
 }
 
 $("back").onclick = () => setTab("sessions", "");
 
-function evHtml(e) {
-  const ts = e.ts ? `<div class="ts">${esc(e.ts.replace("T", " ").slice(0, 19))}</div>` : "";
-  if (e.kind === "tool_use") return `<div class="ev tool"><b>${esc(e.name || "tool")}</b> ${esc(e.text)}</div>`;
-  if (e.kind === "tool_result") {
-    const first = e.text.split("\n")[0].slice(0, 120);
-    return `<div class="ev"><details><summary>result: ${esc(first)}</summary><pre>${esc(e.text)}</pre></details></div>`;
-  }
-  // What the human typed is shown as typed; what an agent wrote is markdown.
-  return e.role === "user" ? `<div class="ev user">${ts}${esc(e.text)}</div>` : `<div class="ev md">${ts}${md(e.text)}</div>`;
-}
-
+// The conversation: #scroll holds the older sentinel and #convo (convo.js draws into it).
 async function load() {
   if (st.view === "page") return loadPage();
   if (st.view === "screen") return loadScreen();
@@ -176,38 +184,73 @@ async function load() {
   catch (e) { if (still()) $("scroll").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   if (!still()) return;
   st.start = page.start; st.end = page.end;
-  $("scroll").innerHTML = olderBtn() + page.events.map(evHtml).join("");
+  convoReset();
+  $("scroll").innerHTML = olderHtml() + `<div id="convo">${convoHtml(page.events)}</div>`;
+  // The newest step group is what the agent is doing now, so it starts open.
+  const groups = $("convo").querySelectorAll("details.steps"), last = groups[groups.length - 1];
+  if (last && last === $("convo").lastElementChild) last.open = true;
+  watchOlder();
   toBottom($("scroll"));
+  jumpShow(false);
 }
 
-const olderBtn = () => st.start > 0 ? '<button class="btn older" id="older">Load older</button>' : "";
+// The top of the conversation: a sentinel that reads the page before when it scrolls into
+// view, and is a button too, for a retry after a failed read.
+const olderHtml = () => st.start > 0 ? '<button class="btn older" id="older">Older</button>' : "";
 
-$("scroll").addEventListener("click", async (e) => {
-  if (e.target.id !== "older") return;
-  const a = st.sel, s = $("scroll"), btn = e.target;
+const olderSeen = typeof IntersectionObserver === "undefined" ? null
+  : new IntersectionObserver((es) => { if (es.some((x) => x.isIntersecting)) loadOlder(); }, { root: $("scroll"), rootMargin: "600px 0px 0px 0px" });
+function watchOlder() {
+  if (!olderSeen) return;
+  olderSeen.disconnect();
+  const b = $("older");
+  if (b) olderSeen.observe(b);
+}
+
+const loadOlder = coalesce(async () => {
+  const a = st.sel, s = $("scroll"), btn = $("older");
+  if (!a || !btn || st.view !== "transcript" || btn.disabled) return;
   let page;
-  btn.disabled = true;
+  btn.disabled = true; btn.textContent = "Reading older";
   try { page = await api(`/api/transcript?t=${encodeURIComponent(a.target)}&before=${st.start}`); }
-  catch (err) { btn.disabled = false; btn.textContent = `Load older (${err.message})`; return; }
-  if (st.sel !== a) return;
+  catch (err) { btn.disabled = false; btn.textContent = `Older (${err.message}), tap to retry`; return; }
+  if (st.sel !== a || st.view !== "transcript") return;
   const prevH = s.scrollHeight;
-  btn.remove();
   st.start = page.start;
-  s.insertAdjacentHTML("afterbegin", olderBtn() + page.events.map(evHtml).join(""));
+  $("convo").insertAdjacentHTML("afterbegin", convoHtml(page.events));
+  if (st.start > 0) { btn.disabled = false; btn.textContent = "Older"; } else btn.remove();
   s.scrollTop += s.scrollHeight - prevH; // keep the reader where they were
+  watchOlder();
 });
+
+$("scroll").addEventListener("click", (e) => {
+  if (!st.sel || st.view !== "transcript") return;
+  if (e.target.id === "older") { loadOlder(); return; }
+  const step = e.target.closest("[data-step]");
+  if (step) convoStep(step);
+});
+
+// "Jump to latest": shown while the reader is above the bottom and something new arrived.
+// It floats just above the bottom of the conversation, whatever the pin and composer take.
+function jumpShow(on) {
+  const j = $("jump");
+  j.hidden = !on;
+  if (on) j.style.bottom = `${$("detail").getBoundingClientRect().bottom - $("scroll").getBoundingClientRect().bottom + 12}px`;
+}
+$("jump").onclick = () => { toBottom($("scroll")); jumpShow(false); };
+$("scroll").addEventListener("scroll", () => { if (!$("jump").hidden && atBottom($("scroll"))) jumpShow(false); }, { passive: true });
 
 const loadNewer = coalesce(async () => {
   const a = st.sel;
-  if (!a || st.view !== "transcript" || st.end === null) return;
+  if (!a || st.view !== "transcript" || st.end === null || !$("convo")) return;
   const stick = atBottom($("scroll"));
   const page = await api(`/api/transcript?t=${encodeURIComponent(a.target)}&after=${st.end}`);
   if (st.sel !== a) return;
   if (page.start !== st.end) { load(); return; } // fell too far behind: server sent the newest page
   st.end = page.end;
   if (page.events.length) {
-    $("scroll").insertAdjacentHTML("beforeend", page.events.map(evHtml).join(""));
-    if (stick) toBottom($("scroll"));
+    convoAppend($("convo"), page.events);
+    if (stick) toBottom($("scroll")); else jumpShow(true);
   }
 });
 
@@ -222,11 +265,12 @@ const loadScreen = coalesce(async () => {
 
 function showView(v) {
   st.view = v;
+  jumpShow(false);
   for (const n of ["page", "transcript", "screen"]) $("v-" + n).classList.toggle("on", v === n);
 }
 function setView(v) {
   showView(v);
-  if (st.sel) { renderFacts(); load(); }
+  if (st.sel) { renderFacts(); renderPin(); load(); }
 }
 $("v-page").onclick = () => setView("page");
 $("v-transcript").onclick = () => setView("transcript");
@@ -255,6 +299,8 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
 const TAB_NAMES = ["home", "daily", "queue", "projects", "sessions", "infra", "log", "fleet", "schedules", "costs"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily" };
+// layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
+const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"] };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
@@ -277,6 +323,8 @@ function route(hash) {
   let arg = at < 0 ? "" : h.slice(at + 1);
   try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
   if (name === "outbox" && !arg) arg = "outbox";
+  const moved = MOVED[name + "/" + arg.toLowerCase()];
+  if (moved) return { name, tab: moved[0], arg: "", query, section: moved[1] };
   return { name, tab: tabOf(name), arg, query };
 }
 // Show tab t; arg is what it opens (blank for its front), query its view state, which a tab
@@ -361,6 +409,7 @@ function connect() {
 // Back and Forward, and every in-app link, change the fragment; show what it names.
 window.addEventListener("hashchange", () => {
   const r = route(location.hash);
+  if (r.section) st.section = r.section;
   if (r.tab !== st.tab || r.arg !== st.arg || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query);
 });
 
@@ -368,6 +417,7 @@ window.addEventListener("hashchange", () => {
 document.addEventListener("DOMContentLoaded", () => {
   const r = route(location.hash);
   if (RETIRED_TABS[r.name]) st.section = r.name;
+  if (r.section) st.section = r.section;
   setTab(r.tab, r.arg, r.query);
   connect();
 });

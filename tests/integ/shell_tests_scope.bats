@@ -23,12 +23,7 @@ setup() {
 #!/usr/bin/env bash
 echo "DISPATCHED: make $*"
 EOF
-  # Keep the advisory lint arm fast and quiet; it is not what is under test.
-  cat > "$SANDBOX/bin/shellcheck" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-  chmod +x "$SANDBOX/bin/make" "$SANDBOX/bin/shellcheck"
+  chmod +x "$SANDBOX/bin/make"
 }
 
 # a throwaway git repo that is NOT this one
@@ -66,6 +61,33 @@ fast_files() { ls "$REPO_ROOT"/tests/unit/*.bats "$REPO_ROOT"/tests/integ/*.bats
   SHELL_TESTS_CHANGED=.local/bin/fleet-bench CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
   assert_output --partial "tests/unit/fleet_bench.bats"
   refute_output --partial "tests/unit/theme_generated.bats"
+}
+
+# A test that globs a directory names no file in it: stop_hook_quiet.bats greps
+# .claude/hooks/stop-post.d/*.sh and never names 80-session-register.sh. test-pick.sh reads
+# `<dir>/` and `<dir>/*` as a reference to every file under <dir>.
+@test "picker: a change under a directory picks the test that globs that directory" {
+  SHELL_TESTS_CHANGED=.claude/hooks/stop-post.d/80-session-register.sh CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
+  assert_output --partial "tests/integ/stop_hook_quiet.bats"
+}
+
+@test "picker: a path through a directory is not a reference to the whole directory" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .claude/hooks/stop-post.d/other.sh tests/x.bats <<<'cp "$R/.claude/hooks/stop-post.d/95-wind-down.sh" .'
+  assert_failure
+  run test_picked .claude/hooks/stop-post.d/other.sh tests/x.bats <<<'cp "$R/.claude/hooks/stop-post.d/" .'
+  assert_success
+  run test_picked docs/x.md tests/x.bats <<<'globs: ["*/.local/src/docs/*"]'
+  assert_failure
+  run test_picked .claude/hooks/stop-post.d/other.sh tests/x.bats <<<'ls .claude/hooks/stop-postXd/*'
+  assert_failure
+  local root
+  for root in '${R}/' '~/' '$BATS_TEST_DIRNAME/../../' '$(git rev-parse --show-toplevel)/' './'; do
+    run test_picked .claude/hooks/stop-post.d/other.sh tests/x.bats <<<"for f in $root.claude/hooks/stop-post.d/*; do"
+    assert_success
+  done
+  run test_picked README.md tests/x.bats <<<'ls "$R"/ ./'
+  assert_failure
 }
 
 @test "picker: a changed test file picks itself" {

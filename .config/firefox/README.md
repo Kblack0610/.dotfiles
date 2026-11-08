@@ -5,25 +5,27 @@ Simple Tab Groups (STG) vs WebExtension new-tab race condition.
 
 ## Layout
 
+`<install dir>` is `/usr/lib/firefox` on Linux and `/Applications/Firefox.app/Contents/Resources` on macOS. `FIREFOX_DIR` overrides it.
+
 | File | Lives at runtime | Purpose |
 |---|---|---|
 | `user.js` | `<profile>/user.js` | Per-profile prefs |
 | `chrome/userChrome.css` | `<profile>/chrome/userChrome.css` | Catppuccin Mocha theme |
 | `containers.json` | `<profile>/containers.json` | Multi-account containers |
-| `policies.json` | `/usr/lib/firefox/distribution/policies.json` | Enterprise policies, extension auto-install |
-| `~/.dotfiles-private/.config/firefox/policies.local.json` | merged into the above by `install.sh` | Personal overlay (Karakeep `@k` search engine + extension). Private because it names LAN hosts; Linux only |
-| `mozilla.cfg` | `/usr/lib/firefox/mozilla.cfg` | Sets new-tab URL natively (bypasses WebExt API) |
-| `autoconfig.js` | `/usr/lib/firefox/defaults/pref/autoconfig.js` | Bootstraps Firefox to read `mozilla.cfg` |
+| `policies.json` | `<install dir>/distribution/policies.json` | Enterprise policies, extension auto-install |
+| `~/.dotfiles-private/.config/firefox/policies.local.json` | merged into the above by `install.sh` | Personal overlay (Karakeep `@k` search engine + extension). Private because it names LAN hosts; merged on Linux and macOS, skipped on the Windows work machines |
+| `mozilla.cfg` | `<install dir>/mozilla.cfg` | Sets new-tab URL natively (bypasses WebExt API) |
+| `autoconfig.js` | `<install dir>/defaults/pref/autoconfig.js` | Bootstraps Firefox to read `mozilla.cfg` |
 | `firefox-autoconfig.hook` | `/etc/pacman.d/hooks/firefox-autoconfig.hook` | Restores `mozilla.cfg` + `autoconfig.js` after `pacman -Syu firefox` |
 | `tab-keeper/` | signed xpi, installed by policy | Extension: one tab per chosen site, idle tabs unloaded, old tabs saved to Karakeep then closed |
-| `install.sh` | — | One-shot installer |
+| `install.sh` | - | One-shot installer, Linux and macOS |
 
 The new-tab URL is hardcoded in `mozilla.cfg` (`AboutNewTab.newTabURL = ...`).
-Edit that one line to swap targets — local file (`file://...`),
+Edit that one line to swap targets: local file (`file://...`),
 hosted Bonjourr (`https://online.bonjourr.fr/`), `about:home`, or a real site.
 
 If using a `file://` URL, the HTML lives at
-`~/.local/share/firefox-newtab/index.html` (not in this repo — user content).
+`~/.local/share/firefox-newtab/index.html` (user content, not in this repo).
 
 ## Install / re-install
 
@@ -39,6 +41,12 @@ After install, `pacman -Syu firefox` upgrades will trigger the hook to restore
 `mozilla.cfg` + `autoconfig.js` automatically. The hook reads from this dotfiles
 path, so a `git pull` of an updated `mozilla.cfg` is picked up on the next
 Firefox upgrade (or by re-running `install.sh`).
+
+### macOS
+
+`install_mac.sh` runs `install.sh` in its `setup_firefox` step. On a new Mac, Firefox has no profile until its first launch, so that step warns; open Firefox once, quit it, then run `bash ~/.dotfiles/.config/firefox/install.sh`. Profiles are found under `~/Library/Application Support/Firefox/Profiles`, and the policies and autoconfig go inside the app bundle. Both need `~/.dotfiles-private` cloned first, since it holds the Tab Keeper policy and xpi.
+
+If the script stops with "macOS refused the write", give the terminal App Management (System Settings, Privacy & Security, App Management) and rerun it. Reinstalling Firefox, or a `brew reinstall --cask firefox`, replaces the bundle and drops the policies, so rerun `install.sh` after one. `about:policies` shows whether they loaded.
 
 ## Why autoconfig
 
@@ -74,6 +82,14 @@ cp ~/.cache/tab-keeper/*.xpi ~/.dotfiles-private/.config/firefox/tab-keeper.xpi
 ```
 
 The private `policies.local.json` installs it from `file://@HOME@/.dotfiles-private/.config/firefox/tab-keeper.xpi`; `install.sh` fills in `@HOME@`.
+
+`dryRun` holds back everything: dedupe, discard and the sweep only write to the log. Turning it off does not close tabs that are already duplicates, because only newly opened tabs are deduped, so close the existing extras by hand once.
+
+| Problem | Fix |
+|---|---|
+| Save says the settings are invalid JSON | A comma is missing or extra between keys, often after `"dryRun": false` when a line was edited |
+| Duplicates still open after turning `dryRun` off | They were open before; only new tabs are deduped. Close them by hand |
+| `!` on the badge | A Karakeep save failed and the tab stayed open. The log in the options page says why; check the key and that Karakeep is reachable |
 
 Tests: `tests/unit/tab_keeper.bats` runs the rule tests in `tests/tab-keeper/`, and `tests/unit/firefox_install.bats` covers `install.sh`.
 

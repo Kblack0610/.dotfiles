@@ -1,15 +1,14 @@
-//! Fleet's "Where the tokens go": tool output by tool and by Bash command, over the newest week
+//! The Costs tab's "Where the tokens go" and "What Langfuse sees": tool output by tool and by Bash command, over the newest week
 //! of snapshots and the newest day. It sums `~/.agent/token-usage/<day>.json`, the nightly record
 //! `agent-usage tokens snapshot` writes from `claude-recall tool-output`; running that from a view
-//! takes minutes. The dollars per tool are the Costs tab's tool cut, over the same files.
-
-use std::collections::BTreeMap;
-use std::path::Path;
+//! takes minutes. `costs::read` parses the files once; this sums the parsed days, and the dollars
+//! per tool are the tool cut over the same days.
 
 use chrono::{Days, NaiveDate};
 use serde::Serialize;
+use std::collections::BTreeMap;
 
-use crate::costs::{snapshots, Snapshot, ToolDay, STALE_SECS};
+use crate::costs::{Snapshot, ToolDay, STALE_SECS};
 
 /// Calendar days the week view sums, the newest snapshot's day the last.
 const WEEK_DAYS: usize = 7;
@@ -29,6 +28,132 @@ pub struct Tokens {
     pub week: Split,
     /// The newest snapshot alone: yesterday, unless the nightly run stopped.
     pub day: Split,
+    /// What only Langfuse can say about the newest snapshot's day.
+    pub langfuse: LangfuseView,
+}
+
+/// The newest snapshot's Langfuse section, or why it has none: the reader failed that night
+/// (`why` is its stderr line), or the snapshot predates the reader.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct LangfuseView {
+    pub figures: Option<Langfuse>,
+    pub why: Option<String>,
+}
+
+/// `agent-usage langfuse`'s answer for one day, as the snapshot keeps it under `.langfuse`.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Langfuse {
+    /// Slowest in total first, the reader's own cut.
+    pub tools: Vec<LfTool>,
+    pub tool_executions: u64,
+    pub tool_errors: u64,
+    pub tool_error_share: Option<f64>,
+    pub tool_error_classes: Vec<Count>,
+    pub gateway_calls: u64,
+    pub gateway_errors: u64,
+    pub gateway_error_share: Option<f64>,
+    pub gateway_error_classes: Vec<Count>,
+    pub gateway_cost_usd: f64,
+    pub gateway_tokens: u64,
+    /// The three dearest upstream models; the rest is `gateway_other_models`.
+    pub gateway_models: Vec<LfModel>,
+    pub gateway_other_models: usize,
+    /// More errors than the reader paged through: the classes are partial.
+    pub truncated: bool,
+}
+
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct LfTool {
+    pub tool: String,
+    pub calls: u64,
+    pub p50_ms: u64,
+    pub p95_ms: u64,
+    pub total_s: u64,
+}
+
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct LfModel {
+    pub model: String,
+    pub calls: u64,
+    pub errors: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Count {
+    pub name: String,
+    pub n: u64,
+}
+
+/// Models named in the gateway cut before the rest fold into a count.
+const GATEWAY_MODELS: usize = 3;
+
+/// A snapshot's `.langfuse` value; None for null or absent, which is the reader failing.
+pub fn langfuse(v: &serde_json::Value) -> Option<Langfuse> {
+    if !v.is_object() {
+        return None;
+    }
+    let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0);
+    let counts = |v: &serde_json::Value| {
+        let mut out: Vec<Count> = v
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, c)| Count {
+                name: name.clone(),
+                n: n(c),
+            })
+            .collect();
+        out.sort_by(|a, b| b.n.cmp(&a.n).then_with(|| a.name.cmp(&b.name)));
+        out
+    };
+    let (te, gw) = (&v["tool_errors"], &v["gateway"]);
+    let mut models: Vec<LfModel> = gw["by_model"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(model, m)| LfModel {
+            model: model.clone(),
+            calls: n(&m["calls"]),
+            errors: n(&m["errors"]),
+            cost_usd: m["cost_usd"].as_f64().unwrap_or(0.0),
+        })
+        .collect();
+    models.sort_by(|a, b| {
+        b.cost_usd
+            .total_cmp(&a.cost_usd)
+            .then_with(|| b.calls.cmp(&a.calls))
+    });
+    let other = models.len().saturating_sub(GATEWAY_MODELS);
+    models.truncate(GATEWAY_MODELS);
+    Some(Langfuse {
+        tools: v["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|t| LfTool {
+                tool: t["tool"].as_str().unwrap_or("?").to_string(),
+                calls: n(&t["calls"]),
+                p50_ms: n(&t["p50_ms"]),
+                p95_ms: n(&t["p95_ms"]),
+                total_s: n(&t["total_s"]),
+            })
+            .collect(),
+        tool_executions: n(&te["executions"]),
+        tool_errors: n(&te["errors"]),
+        tool_error_share: te["share"].as_f64(),
+        tool_error_classes: counts(&te["by_class"]),
+        gateway_calls: n(&gw["calls"]),
+        gateway_errors: n(&gw["errors"]),
+        gateway_error_share: gw["error_share"].as_f64(),
+        gateway_error_classes: counts(&gw["by_error"]),
+        gateway_cost_usd: gw["cost_usd"].as_f64().unwrap_or(0.0),
+        gateway_tokens: n(&gw["tokens"]),
+        gateway_models: models,
+        gateway_other_models: other,
+        truncated: te["truncated"].as_bool().unwrap_or(false)
+            || gw["truncated"].as_bool().unwrap_or(false),
+    })
 }
 
 /// One window's totals and its two tables.
@@ -57,23 +182,32 @@ pub struct Share {
     pub other: bool,
 }
 
-/// The newest week of snapshots in `dir`. None with no snapshot at all, which is no error: the
-/// head says so. A file that does not parse is named in `errors` and the others still count.
-pub fn read(dir: &Path, now: i64, errors: &mut Vec<String>) -> Option<Tokens> {
-    let mut found = snapshots(dir, WEEK_DAYS, errors);
-    let newest = found.first()?;
+/// The newest week of `days` (newest first, as `costs::snapshots` gives them). None with no
+/// snapshot at all, which is no error: the head says so.
+pub fn from_snapshots(days: &[Snapshot], now: i64) -> Option<Tokens> {
+    let newest = days.first()?;
     let (date, generated_at) = (newest.date.clone(), newest.generated_at);
     // A night the run missed leaves no file, and "7d" must not reach back past it.
     let first =
         NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok()? - Days::new(WEEK_DAYS as u64 - 1);
     let first = first.format("%Y-%m-%d").to_string();
-    found.retain(|d| d.date >= first);
+    // Newest first, so the week is a prefix.
+    let n = days
+        .iter()
+        .take(WEEK_DAYS)
+        .take_while(|d| d.date >= first)
+        .count();
+    let found = &days[..n];
     Some(Tokens {
         date,
         generated_at,
         stale: generated_at.is_none_or(|t| now - t > STALE_SECS),
-        week: split(&found),
+        week: split(found),
         day: split(&found[..1]),
+        langfuse: LangfuseView {
+            figures: found[0].langfuse.clone(),
+            why: found[0].langfuse_error.clone(),
+        },
     })
 }
 
@@ -175,6 +309,11 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_800_000_000;
+
+    /// The way `costs::read` gets there: parse the directory, then sum.
+    fn read(dir: &std::path::Path, now: i64, errors: &mut Vec<String>) -> Option<Tokens> {
+        from_snapshots(&crate::costs::snapshots(dir, 30, errors), now)
+    }
 
     struct Dir(std::path::PathBuf);
     impl Drop for Dir {
@@ -350,5 +489,69 @@ mod tests {
         let s = split(&[Snapshot::default()]);
         assert_eq!((s.per_response, s.carried_share), (0, 0.0));
         assert!(s.tools.is_empty() && s.commands.is_empty());
+    }
+
+    fn lf_doc() -> serde_json::Value {
+        serde_json::json!({
+            "tools": [{"tool": "Bash", "calls": 9, "p50_ms": 99, "p95_ms": 17_487, "total_s": 224_341}],
+            "tool_errors": {"executions": 100, "errors": 4, "share": 0.04, "truncated": false,
+                            "by_class": {"RipgrepTimeoutError": 1, "ShellError": 3}},
+            "gateway": {"calls": 20, "errors": 5, "error_share": 0.25, "cost_usd": 3.5, "tokens": 900,
+                        "truncated": true, "by_error": {"invalid_key": 5},
+                        "by_model": {"a": {"calls": 1, "errors": 0, "cost_usd": 0.1},
+                                     "b": {"calls": 2, "errors": 0, "cost_usd": 3.0},
+                                     "c": {"calls": 3, "errors": 5, "cost_usd": 0.0},
+                                     "d": {"calls": 4, "errors": 0, "cost_usd": 0.4}}}
+        })
+    }
+
+    #[test]
+    fn the_langfuse_section_is_read_with_classes_by_count_and_the_dearest_models() {
+        let l = langfuse(&lf_doc()).unwrap();
+        assert_eq!(
+            (l.tool_executions, l.tool_errors, l.tool_error_share),
+            (100, 4, Some(0.04))
+        );
+        let classes: Vec<&str> = l
+            .tool_error_classes
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(classes, ["ShellError", "RipgrepTimeoutError"]);
+        assert_eq!(
+            (l.gateway_calls, l.gateway_errors, l.gateway_cost_usd),
+            (20, 5, 3.5)
+        );
+        let models: Vec<&str> = l.gateway_models.iter().map(|m| m.model.as_str()).collect();
+        assert_eq!((models, l.gateway_other_models), (vec!["b", "d", "a"], 1));
+        assert!(l.truncated);
+        assert_eq!(l.tools[0].total_s, 224_341);
+    }
+
+    #[test]
+    fn a_null_langfuse_is_no_figures_and_the_reader_s_reason_comes_through() {
+        assert_eq!(langfuse(&serde_json::Value::Null), None);
+        let d = dir("lf-null");
+        day(&d, "2027-01-14", 3_600, 100, 10);
+        let doc = serde_json::json!({
+            "generated_at": stamp(3_600), "errors": ["recall: x", "langfuse: no key (rbw langfuse-api)"],
+            "langfuse": null, "by_tool": [],
+        });
+        std::fs::write(d.0.join("2027-01-15.json"), doc.to_string()).unwrap();
+        let t = read(&d.0, NOW, &mut vec![]).unwrap();
+        assert_eq!(t.langfuse.figures, None);
+        assert_eq!(t.langfuse.why.as_deref(), Some("no key (rbw langfuse-api)"));
+    }
+
+    #[test]
+    fn the_newest_snapshot_s_langfuse_is_the_one_shown() {
+        let d = dir("lf-new");
+        let doc =
+            serde_json::json!({"generated_at": stamp(3_600), "errors": [], "langfuse": lf_doc()});
+        std::fs::write(d.0.join("2027-01-15.json"), doc.to_string()).unwrap();
+        day(&d, "2027-01-14", 90_000, 100, 10);
+        let t = read(&d.0, NOW, &mut vec![]).unwrap();
+        assert_eq!(t.langfuse.figures.unwrap().gateway_calls, 20);
+        assert_eq!(t.langfuse.why, None);
     }
 }

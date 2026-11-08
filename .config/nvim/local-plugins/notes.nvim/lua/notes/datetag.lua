@@ -7,6 +7,7 @@
 --                             (markdown.lua runs it on save in a daily note)
 --   age(text, today)          days since a line's created tag, for the cockpit
 --   note_date(path)           the date a daily note's file name carries
+--   section_end(lines, s)     where the section headed at `s` ends (md::section_end)
 --
 -- Month-day only: the year is the occurrence nearest `today`, as md::tag_date reads it.
 -- The long `#cYYMMDD` form (older lines, dates far from today) is read too.
@@ -85,20 +86,33 @@ function M.note_date(path)
   return { year = tonumber(y), month = tonumber(m), day = tonumber(d) }
 end
 
+-- First line past the section whose heading is at `s`: the next H2, the rollup sentinel, or
+-- the link footer (a `---` whose next line has a wikilink), mirroring md::section_end. The one
+-- Lua copy: markdown.lua's sweeps and stamp_focus both bound a section with it. Without the
+-- footer arm a sweep strips the footer's `---` and files its link line as a task; without
+-- the rollup arm the rows mirrored from other notes are treated as this note's.
+function M.section_end(lines, s)
+  for i = s + 1, #lines do
+    local footer = lines[i]:match "^%-%-%-%s*$" and (lines[i + 1] or ""):find("[[", 1, true)
+    if lines[i]:match "^##%s" or lines[i]:match "^%s*<!%-%- rollup:start %-%->%s*$" or footer then
+      return i
+    end
+  end
+  return #lines + 1
+end
+
 -- Pure: stamp `#cMMDD` (of `date`, a {year,month,day} table) onto every open task in the
--- `## Focus` section that has no origin yet. Returns (lines, changed_row_numbers).
--- Done `[x]` tasks and the empty `- [ ] ` placeholder are left alone.
+-- `## Focus` section (bounded by M.section_end) that has no origin yet. Returns
+-- (lines, changed_row_numbers). Done `[x]` tasks and the empty `- [ ] ` placeholder are
+-- left alone.
 function M.stamp_focus(lines, date)
   local tag = string.format("#c%02d%02d", date.month, date.day)
   local out, changed = {}, {}
-  local in_focus = false
+  local stop = 0
   for i, l in ipairs(lines) do
-    if l:match "^##%s" then
-      in_focus = l:match "^##%s+Focus%s*$" ~= nil
-    elseif in_focus and l:match "^%-%-%-%s*$" and (lines[i + 1] or ""):find("[[", 1, true) then
-      in_focus = false -- the link footer, as sweep_focus bounds the section
-    end
-    if in_focus and l:match "^%s*%- %[[ /]%]%s+%S" and not has_origin(l) then
+    if l:match "^##%s+Focus%s*$" then
+      stop = M.section_end(lines, i)
+    elseif i < stop and l:match "^%s*%- %[[ /]%]%s+%S" and not has_origin(l) then
       l = insert_tag(l, tag)
       changed[#changed + 1] = i
     end

@@ -1,0 +1,22 @@
+{
+  "id": "governor-stuck-run-demand",
+  "project": "home-config",
+  "pr": "Kblack0610/home-config#482",
+  "base": "eb593a087bf9dd7ed2442b832a96d2d80fab1019",
+  "merge": "be0bbe254cb89c59b8d545494f766155bdd95f4d",
+  "task": "fix(ci-runner-governor): a stuck run is not queue demand",
+  "accept": [
+    "unittest: test_a_stuck_run_is_not_queue_demand"
+  ],
+  "oracle": {
+    "paths": [
+      "apps/ci-runner-governor/test_governor.py"
+    ],
+    "cmd": [
+      "python3",
+      "apps/ci-runner-governor/test_governor.py",
+      "-k",
+      "test_a_stuck_run_is_not_queue_demand"
+    ]
+  }
+}

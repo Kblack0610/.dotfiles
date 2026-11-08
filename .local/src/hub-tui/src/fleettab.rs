@@ -1,21 +1,20 @@
-//! The Fleet tab's machinery, below the sessions: one table of who is working (runners by tier,
-//! then the live sessions), the Claude accounts and where the tokens go, from hub-core's `fleet`
-//! (the same reader as agent-web's Fleet tab). Named apart from `fleet.rs`, which is the sessions' watch page. One runner's page
-//! (`runner_page`) is hub-core's `fleet::runner`, as agent-web's `#fleet/<runner>`.
+//! The Fleet tab's machinery, below the sessions: one table of who is working and why each one
+//! is deployed (runners by kind, then the live sessions), under the legend of what each kind
+//! means, from hub-core's `fleet` (the same reader as agent-web's Fleet tab).
+//! The Claude accounts and the token folds are the Costs tab's (coststab.rs, tokens.rs). Named
+//! apart from `fleet.rs`, which is the sessions' watch page. One runner's page (`runner_page`) is
+//! hub-core's `fleet::runner`, as agent-web's `#fleet/<runner>`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
-use hub_core::costs::tokens as count;
 use hub_core::fleet::runner::{Extras, Runner, Totals};
-use hub_core::fleet::tokens::{Share, Tokens};
 use hub_core::fleet::who::{self, Who};
 use hub_core::fleet::{AskVerdict, Dispatch, Eval, Fleet, Judge, Registry, ASK_FILTERS};
-use hub_core::prom::Series;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
-use crate::fit::{cell, clip_line, Table};
-use crate::fmt::{clock, dur, older, pct, Palette};
+use crate::fit::{cell, clip_line, len, wrap, Table};
+use crate::fmt::{clock, dur, kilo, older, pct, Palette};
 use hub_core::layout::FOLD_ROWS;
 
 fn usd(v: Option<f64>) -> String {
@@ -36,13 +35,12 @@ pub fn shown<'a>(f: &'a Fleet, t: &DataTable, folded: &HashSet<String>) -> Vec<&
     who::unfolded(t.view.apply(&f.who), folded, &t.view)
 }
 
-/// The Fleet page: the table of who is working, then the Claude accounts; `tokens` goes under it.
-/// `sel` is the row j/k picked, drawn reversed: Enter opens it.
+/// The Fleet page: the table of who is working, the row j/k picked (`t.sel`) drawn reversed:
+/// Enter opens it.
 pub fn page(
     f: &Fleet,
     t: &DataTable,
     folded: &HashSet<String>,
-    sel: usize,
     p: Palette,
     now: i64,
     w: usize,
@@ -65,141 +63,48 @@ pub fn page(
         ),
         w,
     ));
-    out.push(clip_line(Line::from(t.status(&f.who, p)), w));
-    out.extend(who_table(
-        &rows,
-        t,
-        folded,
-        sel,
-        p,
-        now,
-        w,
-        f.who.is_empty(),
-    ));
-    out.push(Line::raw(""));
-    out.push(heading("CLAUDE ACCOUNTS", String::new(), p));
-    out.extend(accounts(&f.accounts, p, now, w));
+    for l in wrap(&f.legend, " | ", w) {
+        out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
+    out.extend(wrap_spans(t.status(&f.who, p), w));
+    out.extend(who_table(&rows, t, folded, p, now, w, f.who.is_empty()));
     out
 }
 
-/// The Fleet page's tokens fold: `t` opens it, `w` switches its window. None leaves it to the
-/// section's state: shut while green, open while amber (dashboards rule 4).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TokensView {
-    pub open: Option<bool>,
-    pub day: bool,
-}
-
-impl TokensView {
-    pub fn is_open(self, t: Option<&Tokens>) -> bool {
-        t.is_some_and(|t| self.open.unwrap_or(t.stale))
+/// The chip line broken between chips so every chip shows in a narrow pane; a chip's own
+/// leading gap is dropped where a line starts.
+fn wrap_spans(spans: Vec<Span<'static>>, w: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Vec<Span<'static>>> = vec![vec![]];
+    let mut used = 0;
+    for sp in spans {
+        let n = len(&sp.content);
+        if used > 0 && used + n > w {
+            lines.push(vec![]);
+            used = 0;
+        }
+        let sp = if used == 0 {
+            Span::styled(sp.content.trim_start().to_string(), sp.style)
+        } else {
+            sp
+        };
+        used += len(&sp.content);
+        lines.last_mut().unwrap().push(sp);
     }
-}
-
-/// Where the tokens go: a head line with the week's total, and open, one window's two tables.
-pub fn tokens(
-    t: Option<&Tokens>,
-    v: TokensView,
-    p: Palette,
-    now: i64,
-    w: usize,
-) -> Vec<Line<'static>> {
-    const TITLE: &str = "WHERE THE TOKENS GO";
-    let Some(t) = t else {
-        return vec![clip_line(
-            Line::from(vec![
-                Span::styled(format!("  {TITLE}"), p.head()),
-                Span::styled("  no snapshot in ~/.agent/token-usage", p.warn()),
-            ]),
-            w,
-        )];
-    };
-    let open = v.is_open(Some(t));
-    let (mark, verb) = if open { ("-", "folds") } else { ("+", "opens") };
-    let week = format!(
-        "  7d {}, tool output {}",
-        count(Some(t.week.context as f64)),
-        pct(Some(t.week.carried_share))
-    );
-    let mut head = vec![
-        Span::styled(format!("{mark} {TITLE}"), p.head()),
-        Span::styled(week, if t.stale { p.warn() } else { p.dim() }),
-    ];
-    if t.stale {
-        head.push(Span::styled(format!("  stale, {}", t.date), p.warn()));
-    }
-    head.push(Span::styled(format!("  t {verb} it"), p.dim()));
-    let mut out = vec![clip_line(Line::from(head), w)];
-    if !open {
-        return out;
-    }
-    let (s, label) = match (v.day, t.stale) {
-        (true, false) => (&t.day, "yesterday"),
-        (true, true) => (&t.day, t.date.as_str()),
-        (false, _) => (&t.week, "7d"),
-    };
-    let partial = match s.partial {
-        0 => String::new(),
-        n => format!(", {n} of {} partial", s.days),
-    };
-    let read = t.generated_at.map_or("-".into(), |g| clock(g, now));
-    out.push(clip_line(
-        Line::styled(
-            format!(
-                "  {label}: {} context, {}/response, tool output {}  ({}, {read}{partial})",
-                count(Some(s.context as f64)),
-                count(Some(s.per_response as f64)),
-                pct(Some(s.carried_share)),
-                t.date.get(5..).unwrap_or(&t.date),
-            ),
-            if s.partial > 0 { p.warn() } else { p.dim() },
-        ),
-        w,
-    ));
-    out.extend(token_table("BY TOOL", &s.tools, p, w));
-    out.extend(token_table("BY BASH COMMAND", &s.commands, p, w));
-    out.push(clip_line(
-        Line::styled(
-            "  nightly, claude-recall tool-output; w yesterday | 7d; dollars: 0 Costs",
-            p.dim(),
-        ),
-        w,
-    ));
-    out
-}
-
-fn token_table(title: &'static str, rows: &[Share], p: Palette, w: usize) -> Vec<Line<'static>> {
-    let rows = rows
-        .iter()
-        .map(|r| {
-            vec![
-                r.name.clone().into(),
-                r.calls.to_string().into(),
-                format!("{} ch", count(Some(r.chars as f64))).into(),
-                format!("{:.1}%", r.share * 100.0).into(),
-                count(Some(r.carried_tokens as f64)).into(),
-            ]
-        })
-        .collect();
-    Table {
-        header: vec![title, "CALLS", "OUTPUT", "SHARE", "RE-READ"],
-        rows,
-        keep: vec![0, 3, 2, 4, 1],
-        right: vec![1, 2, 3, 4],
-        ..Default::default()
-    }
-    .fit(w, p.head())
+    lines
+        .into_iter()
+        .map(|l| clip_line(Line::from(l), w))
+        .collect()
 }
 
 /// `Who::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
-const WHO_HEADER: [&str; 7] = ["TIER", "WHO", "STATE", "SINCE", "DOING", "UNDER", "PROJECT"];
+const WHO_HEADER: [&str; 8] = [
+    "KIND", "WHO", "STATE", "SINCE", "FOR", "DOING", "UNDER", "PROJECT",
+];
 
-#[allow(clippy::too_many_arguments)]
 fn who_table(
     rows: &[&Who],
     t: &DataTable,
     folded: &HashSet<String>,
-    sel: usize,
     p: Palette,
     now: i64,
     w: usize,
@@ -230,7 +135,7 @@ fn who_table(
                 (_, false) => "v ",
             };
             vec![
-                format!("{fold}{}", r.tier).into(),
+                cell(format!("{fold}{}", r.kind), p.dim()),
                 cell(
                     r.who.clone(),
                     if r.tier == 3 {
@@ -241,6 +146,7 @@ fn who_table(
                 ),
                 cell(r.state.clone(), state),
                 r.since.map_or("-".into(), |s| dur((now - s) as f64)).into(),
+                r.purpose.clone().into(),
                 r.doing.clone().into(),
                 cell(r.under.clone(), p.dim()),
                 cell(r.project.clone(), p.dim()),
@@ -250,17 +156,18 @@ fn who_table(
     let mut out = Table {
         header: WHO_HEADER.to_vec(),
         rows: cells,
-        // DOING is the flex column and stays where the rest can drop around it.
-        keep: vec![1, 2, 4, 3, 0, 6, 5],
-        flex: Some(4),
-        flexmin: 16,
+        // FOR, capped, keeps its place beside WHO; DOING is the flex column and takes the rest.
+        keep: vec![1, 0, 2, 4, 5, 3, 7, 6],
+        flex: Some(5),
+        flexmin: 12,
         right: vec![3],
-        cap: vec![(1, 28), (5, 22), (6, 16)],
+        cap: vec![(1, 18), (4, 40), (6, 22), (7, 16)],
         mark: t.mark::<Who>(),
         ..Default::default()
     }
     .fit(w, p.head());
-    if let Some(l) = out.get_mut(sel.min(rows.len() - 1) + 1) {
+    // A re-read or a fold can leave fewer rows than the selection until the next key.
+    if let Some(l) = out.get_mut(t.sel.min(rows.len() - 1) + 1) {
         l.style = p.sel();
     }
     out
@@ -275,81 +182,6 @@ pub fn verdicts(f: &Fleet, filter: &str, p: Palette, now: i64, w: usize) -> Vec<
     out.push(judge_head(&f.judge, p, w));
     out.extend(judge_list(&f.judge, filter, p, now, w));
     out
-}
-
-/// One row per account from claude-acct's textfile, as agent-web's table.
-fn accounts(series: &[Series], p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-    let mut by: BTreeMap<&str, BTreeMap<&str, f64>> = BTreeMap::new();
-    for s in series {
-        let key = s.label("__name__").trim_start_matches("claude_account_");
-        if let Some(v) = s.value {
-            by.entry(s.label("account")).or_default().insert(key, v);
-        }
-    }
-    if by.is_empty() {
-        return vec![Line::styled("no data", p.dim())];
-    }
-    let when = |v: Option<&f64>| v.map_or("-".into(), |t| clock(*t as i64, now));
-    let pc = |v: Option<&f64>| v.map_or("-".into(), |v| format!("{}%", v.floor()));
-    let rows = by
-        .iter()
-        .map(|(name, a)| {
-            if a.get("read_ok") == Some(&0.0) {
-                return vec![cell(*name, p.head()), cell("usage unreadable", p.bad())];
-            }
-            if !a.contains_key("week_used_percent") {
-                return vec![
-                    cell(*name, p.head()),
-                    cell("idle, token refreshes on launch", p.dim()),
-                ];
-            }
-            let over = a.get("over_pace") == Some(&1.0);
-            vec![
-                cell(*name, p.head()),
-                pc(a.get("week_used_percent")).into(),
-                pc(a.get("week_gone_percent")).into(),
-                cell(
-                    if over { "over" } else { "under" },
-                    if over { p.bad() } else { p.good() },
-                ),
-                when(a.get("run_out_timestamp_seconds")).into(),
-                when(a.get("resets_timestamp_seconds")).into(),
-                pc(a.get("five_hour_percent")).into(),
-                when(a.get("five_hour_resets_timestamp_seconds")).into(),
-                a.get("live_sessions")
-                    .map_or("-".into(), |v| format!("{v:.0}"))
-                    .into(),
-                usd(a.get("cost_24h_usd").copied()).into(),
-            ]
-        })
-        .collect();
-    Table {
-        header: vec![
-            "ACCOUNT",
-            "WEEK",
-            "GONE",
-            "PACE",
-            "RUNS OUT",
-            "RESETS",
-            "5H",
-            "5H RESETS",
-            "LIVE",
-            "$24H",
-        ],
-        rows,
-        keep: vec![0, 1, 3, 2, 6, 5, 4, 9, 8, 7],
-        right: vec![1, 2, 6, 8, 9],
-        ..Default::default()
-    }
-    .fit(w, p.head())
-}
-
-fn kilo(n: u64) -> String {
-    match n {
-        n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1e6),
-        n if n >= 1_000 => format!("{}k", (n + 500) / 1_000),
-        n => n.to_string(),
-    }
 }
 
 fn secs(ms: Option<u64>) -> String {
@@ -656,12 +488,16 @@ fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Li
 }
 
 /// The runner a `fleet <word>` query names: any word but one of Fleet's own section names
-/// (`accounts`), which scroll there instead. One rule for `hub tab fleet` and `--once --tab`.
+/// (`workers`), which scroll there instead, or one that moved off it (`accounts`, which
+/// tabreq::parse sends to its new tab). One rule for `hub tab fleet` and `--once --tab`.
 pub fn runner_arg(q: &str) -> Option<&str> {
     let q = q.trim();
-    let secs =
-        hub_core::layout::resolve(crate::app::Tab::Fleet.title()).map_or(&[][..], |t| t.sections);
-    (!q.is_empty() && !secs.iter().any(|s| s.eq_ignore_ascii_case(q))).then_some(q)
+    let fleet = crate::app::Tab::Fleet.title();
+    let secs = hub_core::layout::resolve(fleet).map_or(&[][..], |t| t.sections);
+    (!q.is_empty()
+        && !secs.iter().any(|s| s.eq_ignore_ascii_case(q))
+        && hub_core::layout::moved(fleet, q).is_none())
+    .then_some(q)
 }
 
 /// `[ ]` and Esc on a runner's page, for its first line.
@@ -1011,25 +847,12 @@ fn why(x: &AskVerdict) -> String {
 pub mod tests {
     use super::*;
     use crate::fit::plain;
-    use hub_core::fleet::tokens::Split;
     use hub_core::fleet::who::Opens;
     use hub_core::fleet::{
         Bar, Call, Calls, JudgeWeek, Outcome, RunnerScore, Score, Verdict, Worker,
     };
 
     pub const NOW: i64 = 1_793_661_428;
-
-    fn series(name: &str, account: &str, v: f64) -> Series {
-        Series {
-            labels: [
-                ("__name__".to_string(), format!("claude_account_{name}")),
-                ("account".to_string(), account.to_string()),
-            ]
-            .into(),
-            value: Some(v),
-            points: vec![],
-        }
-    }
 
     fn who_row(
         tier: u8,
@@ -1042,11 +865,18 @@ pub mod tests {
     ) -> Who {
         Who {
             tier,
+            kind: match tier {
+                1 => "lead",
+                2 => "observe",
+                _ => "session",
+            }
+            .into(),
             who: name.into(),
             opens,
             key: key.into(),
             state: state.into(),
             since: Some(NOW - 600),
+            purpose: format!("{name} for"),
             doing: format!("{name} doing"),
             under: if kids > 0 {
                 format!("{kids} sessions")
@@ -1061,16 +891,9 @@ pub mod tests {
 
     pub fn fixture() -> Fleet {
         Fleet {
-            tokens: None,
             at: NOW,
-            errors: vec!["prometheus: timed out".into()],
-            accounts: vec![
-                series("week_used_percent", "main", 42.7),
-                series("week_gone_percent", "main", 50.0),
-                series("over_pace", "main", 0.0),
-                series("cost_24h_usd", "main", 12.5),
-                series("read_ok", "alt", 0.0),
-            ],
+            errors: vec!["dispatch: unreadable".into()],
+            legend: vec!["lead runs the sessions".into(), "observe reports".into()],
             workers: vec![
                 Worker {
                     name: "dream".into(),
@@ -1231,14 +1054,8 @@ pub mod tests {
         }
     }
 
-    fn lines(
-        f: &Fleet,
-        t: &DataTable,
-        folded: &HashSet<String>,
-        sel: usize,
-        w: usize,
-    ) -> Vec<String> {
-        page(f, t, folded, sel, Palette { no_color: true }, NOW, w)
+    fn lines(f: &Fleet, t: &DataTable, folded: &HashSet<String>, w: usize) -> Vec<String> {
+        page(f, t, folded, Palette { no_color: true }, NOW, w)
             .iter()
             .map(plain)
             .collect()
@@ -1247,7 +1064,7 @@ pub mod tests {
     /// The Fleet page, then Log's verdicts section drawn from the same read.
     fn text(f: &Fleet, w: usize) -> String {
         let p = Palette { no_color: true };
-        lines(f, &DataTable::default(), &HashSet::new(), usize::MAX, w)
+        lines(f, &DataTable::default(), &HashSet::new(), w)
             .into_iter()
             .chain(verdicts(f, "all", p, NOW, w).iter().map(plain))
             .collect::<Vec<_>>()
@@ -1255,24 +1072,31 @@ pub mod tests {
     }
 
     #[test]
-    fn the_page_shows_the_one_table_then_the_accounts() {
+    fn the_page_shows_the_one_table_and_no_accounts() {
         let s = text(&fixture(), 160);
         for want in [
-            "prometheus: timed out",
+            "dispatch: unreadable",
             "FLEET  3 of 3 rows, spend: 0 Costs",
-            "all 3",
-            "TIER  WHO",
+            "all 3  lead 1  deliver 0  observe 1  learn 0  maintain 0  session 1",
+            "KIND",
+            "FOR",
+            "dream for",
+            "lead runs the sessions | observe reports",
             "1 sessions",
             "dotfiles-agent-11",
-            "CLAUDE ACCOUNTS",
-            "usage unreadable",
-            "42%",
-            "$12.50",
             "dispatch 2 (9+ in 7d)  skip 0 (4+ in 7d)  started 2  reaped 1",
             "prompt 60c840b  agree 3 (75% precision)",
             "land the fleet tab now?",
         ] {
             assert!(s.contains(want), "{want:?} missing from\n{s}");
+        }
+        // The accounts and the token folds are Costs' now (coststab.rs, tokens.rs).
+        for gone in [
+            "CLAUDE ACCOUNTS",
+            "WHERE THE TOKENS GO",
+            "WHAT LANGFUSE SEES",
+        ] {
+            assert!(!s.contains(gone), "{gone:?} is still on Fleet\n{s}");
         }
     }
 
@@ -1291,10 +1115,10 @@ pub mod tests {
         let mut q = DataTable::default();
         q.view.q = "agent".into();
         assert_eq!(names(&q), ["dotfiles-agent-11"], "a hit is never hidden");
-        let rows = lines(&f, &t, &folded, 0, 160);
+        let rows = lines(&f, &t, &folded, 160);
         assert!(
             rows.iter()
-                .any(|l| l.contains("> 1") && l.contains("dream")),
+                .any(|l| l.contains("> lead") && l.contains("dream")),
             "{rows:#?}"
         );
         assert!(
@@ -1308,7 +1132,7 @@ pub mod tests {
         let p = Palette::default();
         let mut f = fixture();
         f.who[1] = who_row(2, "ask-judge", "ask-judge", Opens::Runner, "held", 0, None);
-        let out = page(&f, &DataTable::default(), &HashSet::new(), 0, p, NOW, 160);
+        let out = page(&f, &DataTable::default(), &HashSet::new(), p, NOW, 160);
         let span = |word: &str| {
             out.iter()
                 .flat_map(|l| l.spans.iter())
@@ -1324,7 +1148,11 @@ pub mod tests {
     fn the_selected_row_is_the_reversed_one() {
         let p = Palette { no_color: true };
         let f = fixture();
-        let out = page(&f, &DataTable::default(), &HashSet::new(), 1, p, NOW, 160);
+        let t = DataTable {
+            sel: 1,
+            ..Default::default()
+        };
+        let out = page(&f, &t, &HashSet::new(), p, NOW, 160);
         let at = out
             .iter()
             .position(|l| plain(l).contains("idle-one"))
@@ -1335,7 +1163,7 @@ pub mod tests {
 
     #[test]
     fn a_narrow_fleet_page_fits() {
-        for l in lines(&fixture(), &DataTable::default(), &HashSet::new(), 0, 40) {
+        for l in lines(&fixture(), &DataTable::default(), &HashSet::new(), 40) {
             assert!(l.chars().count() <= 40, "{l:?}");
         }
     }
@@ -1344,7 +1172,7 @@ pub mod tests {
     fn a_search_that_keeps_nothing_says_so() {
         let mut t = DataTable::default();
         t.view.q = "nothing-matches".into();
-        let l = lines(&fixture(), &t, &HashSet::new(), 0, 160);
+        let l = lines(&fixture(), &t, &HashSet::new(), 160);
         assert!(
             l.iter().any(|l| l.contains("No runner or session matches")),
             "{l:#?}"
@@ -1355,7 +1183,6 @@ pub mod tests {
     fn an_empty_fleet_says_so() {
         let s = text(&Fleet::default(), 100);
         for want in [
-            "no data",
             "No runners configured",
             "No verdicts yet.",
             "No verdicts here.",
@@ -1575,7 +1402,13 @@ pub mod tests {
     #[test]
     fn a_fleet_word_is_a_runner_unless_it_names_a_section() {
         assert_eq!(runner_arg(" inbox-triage "), Some("inbox-triage"));
-        assert_eq!(runner_arg("Accounts"), None);
+        assert_eq!(
+            runner_arg("Accounts"),
+            None,
+            "moved to Costs, never a runner"
+        );
+        assert_eq!(runner_arg("tokens"), None);
+        assert_eq!(runner_arg("workers"), None);
         assert_eq!(runner_arg("  "), None);
     }
 
@@ -1623,107 +1456,5 @@ pub mod tests {
                 assert!(l.chars().count() <= 40, "{l:?}");
             }
         }
-    }
-
-    fn token_fixture(stale: bool) -> Tokens {
-        let row = |name: &str, chars: u64, share| Share {
-            name: name.into(),
-            calls: 141_812,
-            chars,
-            share,
-            carried_tokens: 2_550_000_000,
-            other: name.starts_with("Other"),
-        };
-        let split = |context| Split {
-            days: 7,
-            partial: 0,
-            context,
-            per_response: 120_000,
-            carried_share: 0.15,
-            tools: vec![
-                row("Bash", 331_000_000, 0.823),
-                row("Other (22)", 10_000_000, 0.026),
-            ],
-            commands: vec![row("sed", 89_000_000, 0.221), row("Other", 40_000_000, 0.1)],
-        };
-        Tokens {
-            date: "2026-11-05".into(),
-            generated_at: Some(NOW - 3600),
-            stale,
-            week: split(18_000_000_000),
-            day: split(3_900_000_000),
-        }
-    }
-
-    fn token_text(t: Option<&Tokens>, v: TokensView, w: usize) -> Vec<String> {
-        tokens(t, v, Palette::default(), NOW, w)
-            .iter()
-            .map(crate::fit::plain)
-            .collect()
-    }
-
-    #[test]
-    fn the_tokens_fold_is_one_line_while_fresh() {
-        let t = token_fixture(false);
-        let l = token_text(Some(&t), TokensView::default(), 80);
-        assert_eq!(
-            l,
-            ["+ WHERE THE TOKENS GO  7d 18.0B, tool output 15%  t opens it"]
-        );
-    }
-
-    #[test]
-    fn a_stale_snapshot_opens_the_fold_and_says_so_until_it_is_folded() {
-        let t = token_fixture(true);
-        let l = token_text(Some(&t), TokensView::default(), 80);
-        assert!(l[0].starts_with("- WHERE THE TOKENS GO"), "{l:?}");
-        assert!(l[0].contains("stale, 2026-11-05"), "{l:?}");
-        assert!(l.len() > 1);
-        let shut = TokensView {
-            open: Some(false),
-            day: false,
-        };
-        assert_eq!(token_text(Some(&t), shut, 80).len(), 1);
-    }
-
-    #[test]
-    fn no_snapshot_is_a_head_with_nothing_to_open() {
-        let l = token_text(None, TokensView::default(), 80);
-        assert_eq!(l.len(), 1);
-        assert!(l[0].contains("no snapshot"), "{l:?}");
-        let open = TokensView {
-            open: Some(true),
-            day: false,
-        };
-        assert!(!open.is_open(None));
-    }
-
-    #[test]
-    fn open_it_draws_the_window_and_both_tables_in_80_columns() {
-        let t = token_fixture(false);
-        let mut v = TokensView {
-            open: Some(true),
-            day: false,
-        };
-        let l = token_text(Some(&t), v, 80);
-        let all = l.join("\n");
-        assert!(all.contains("7d: 18.0B context, 120k/response"), "{all}");
-        assert!(
-            all.contains("BY TOOL") && all.contains("BY BASH COMMAND"),
-            "{all}"
-        );
-        assert!(all.contains("Bash") && all.contains("82.3%"), "{all}");
-        assert!(all.contains("Other (22)") && all.contains("sed"), "{all}");
-        assert!(l.iter().all(|x| x.chars().count() <= 80), "{all}");
-        v.day = true;
-        let all = token_text(Some(&t), v, 80).join("\n");
-        assert!(all.contains("yesterday: 3.9B context"), "{all}");
-        let stale = Tokens {
-            stale: true,
-            date: "2026-11-02".into(),
-            ..t.clone()
-        };
-        let all = token_text(Some(&stale), v, 80).join("\n");
-        assert!(all.contains("2026-11-02: 3.9B context"), "{all}");
     }
 }

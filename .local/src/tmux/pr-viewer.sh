@@ -158,13 +158,14 @@ cmd_pick() {
   panel_fzf_layout
 
   local picked repo number url
+  # ctrl-d (details) is bound after the layout, so it wins over the shared half-page scroll.
   picked="$(cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" \
     --with-nth=4.. \
     --prompt='pr > ' \
-    --header=$'enter=open in browser | ctrl-d=details | ctrl-r=reload\n' \
+    --header=$'enter=open in browser | ctrl-d=details | ctrl-r=reload | ctrl-u pgup/pgdn scroll\n' \
     --bind="ctrl-r:reload($(printf '%q' "$SELF") --list)" \
-    --bind="ctrl-d:execute($(printf '%q' "$SELF") --show {1} {2} | less -R)" \
     "${PANEL_FZF_LAYOUT[@]}" \
+    --bind="ctrl-d:execute($(printf '%q' "$SELF") --show {1} {2} | less -R)" \
     --preview="$(printf '%q' "$SELF") --show {1} {2}")"
 
   [ -n "$picked" ] || return 0
