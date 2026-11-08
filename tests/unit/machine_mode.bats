@@ -3,7 +3,9 @@
 # these pin: each mode writes its numbers to all three parts; the ConfigMap keeps other hosts'
 # keys and a power override on this host; a dispatch hold is only ever machine-mode's own to
 # change; an unreachable cluster applies the local parts, exits 1 and says so; a machine with no
-# pool runners refuses; the status reads what the runners actually do, not what was asked.
+# pool runners refuses; the status reads what the runners actually do, not what was asked. The
+# clock: the real hours file covers the day once and names real modes; a new part's mode applies
+# once; a hand mode holds inside its part, and past a boundary while the human is here.
 # agent-hold is the real one against a sandbox hold dir, so its list format is pinned too.
 
 setup() {
@@ -35,7 +37,8 @@ STUB
 [ -n "${CURL_FAIL:-}" ] && exit 7
 cat "$FX/prom.json"
 STUB
-  chmod +x "$SANDBOX/bin/pkill" "$SANDBOX/bin/kubectl" "$SANDBOX/bin/curl"
+  printf '#!/usr/bin/env bash\necho "${PRESENCE:-here 0 tmux}"\n' > "$SANDBOX/bin/fleet-presence"
+  chmod +x "$SANDBOX/bin/pkill" "$SANDBOX/bin/kubectl" "$SANDBOX/bin/curl" "$SANDBOX/bin/fleet-presence"
   prom 2 2
 }
 
@@ -219,4 +222,101 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   [ ! -e "$STATE" ]
   [ ! -e "$AGENT_HOLD_DIR/dispatch" ]
   [ ! -e "$FX/kubectl.log" ]
+}
+
+# hours_fixture: a day of two parts, so the clock tests do not move with the shipped hours.
+hours_fixture() {
+  export MACHINE_MODE_HOURS="$FX/hours"
+  printf '# test\nday|07:00-23:00|shared|you\nnight|23:00-07:00|full|builds\n' > "$MACHINE_MODE_HOURS"
+}
+
+@test "the shipped hours cover every minute of the day exactly once, each with a listed mode" {
+  run bash -c '. "$1"
+    for h in $(seq 0 23); do for m in $(seq 0 59); do
+      t=$(printf "%02d:%02d" "$h" "$m") n=0
+      while IFS="|" read -r _ w mode _; do
+        mode_row "$mode" >/dev/null || { echo "unknown mode $mode"; exit 1; }
+        hhmm_in "$t" "$w" && n=$((n + 1))
+      done < <(hour_rows)
+      [ "$n" = 1 ] || { echo "$t is in $n parts"; exit 1; }
+    done; done
+    clock_window night' _ "$REPO_ROOT/.local/lib/machine-mode.sh"
+  assert_success
+  assert_output --regexp '^[0-9]{2}:[0-9]{2}-[0-9]{2}:[0-9]{2}$'
+}
+
+@test "hours lists each part and marks the one now, on a machine with no runners too" {
+  hours_fixture
+  export MACHINE_MODE_RUNNER_UNITS="$FX/none-*.service"
+  MACHINE_MODE_NOW=02:00 run "$MM" hours
+  assert_success
+  assert_line --regexp '^day +07:00-23:00 +shared +you$'
+  assert_line --regexp '^night +23:00-07:00 +full +builds  <- now$'
+  run "$MM" clock
+  assert_success
+  assert_output ""
+}
+
+@test "the clock applies a new part's mode once, and the status says who set it" {
+  hours_fixture
+  MACHINE_MODE_NOW=12:00 run "$MM" clock
+  assert_success
+  assert_line "mode: shared"
+  assert_equal "$(state MODE_BY) $(state CLOCK_PART)" "clock day"
+  : > "$FX/kubectl.log"
+  MACHINE_MODE_NOW=12:15 run "$MM" clock
+  assert_success
+  assert_output ""
+  [ ! -s "$FX/kubectl.log" ]
+  MACHINE_MODE_NOW=23:00 run "$MM" clock
+  assert_line "mode: full"
+  assert_line "clock: night (23:00-07:00) runs full; this mode was set by the clock"
+}
+
+@test "a hand mode stands inside its part, holds past a boundary while the human is here, and yields once away" {
+  hours_fixture
+  MACHINE_MODE_NOW=12:00 "$MM" clock >/dev/null
+  MACHINE_MODE_NOW=22:30 run "$MM" reserved
+  assert_line "clock: day (07:00-23:00) runs shared; this mode was set by hand"
+  MACHINE_MODE_NOW=22:45 run "$MM" clock
+  assert_output ""
+  MACHINE_MODE_NOW=23:00 run "$MM" clock
+  assert_success
+  assert_output --partial "reserved was set by hand and you are here"
+  assert_equal "$(state MACHINE_MODE)" reserved
+  PRESENCE="away 40 tmux" MACHINE_MODE_NOW=23:30 run "$MM" clock
+  assert_line "mode: full"
+  assert_equal "$(state MODE_BY)" clock
+}
+
+@test "auto hands the mode back to the clock now, whoever is here" {
+  hours_fixture
+  MACHINE_MODE_NOW=12:00 "$MM" reserved >/dev/null
+  MACHINE_MODE_NOW=12:00 run "$MM" auto
+  assert_success
+  assert_line "mode: shared"
+  assert_equal "$(state MODE_BY) $(state CLOCK_PART)" "clock day"
+}
+
+@test "an hours row naming a mode the modes file lacks stops the clock and changes nothing" {
+  export MACHINE_MODE_HOURS="$FX/hours"
+  printf 'all|00:00-24:00|turbo|x\n' > "$MACHINE_MODE_HOURS"
+  MACHINE_MODE_NOW=12:00 run "$MM" clock
+  assert_failure
+  assert_output --partial "names mode 'turbo'"
+  [ ! -e "$STATE" ]
+}
+
+@test "a pin that failed at a part's start is retried on the next tick, and an old state file counts as by hand" {
+  hours_fixture
+  KUBE_FAIL=1 MACHINE_MODE_NOW=23:00 run "$MM" clock
+  assert_failure
+  assert_equal "$(state RUNNERS_PINNED) $(state CLOCK_PART)" "no night"
+  MACHINE_MODE_NOW=23:15 run "$MM" clock
+  assert_success
+  assert_equal "$(state RUNNERS_PINNED)" yes
+  printf 'MACHINE_MODE=reserved\nUNITY_SLOTS=1\nUNITY_BURST_SLOTS=0\nRUNNERS_PINNED=yes\n' > "$STATE"
+  MACHINE_MODE_NOW=12:00 run "$MM" clock
+  assert_output --partial "reserved was set by hand and you are here"
+  assert_equal "$(state MACHINE_MODE)" reserved
 }

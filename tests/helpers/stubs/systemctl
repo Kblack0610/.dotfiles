@@ -22,6 +22,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --user|--value) shift ;;
     -p) prop="${2:-}"; shift 2 ;;
+    --property=*) prop="${1#--property=}"; shift ;;
     *)  args+=("$1"); shift ;;
   esac
 done
