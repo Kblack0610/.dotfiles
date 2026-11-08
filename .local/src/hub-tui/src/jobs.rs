@@ -27,8 +27,6 @@ pub struct LogPane {
 pub struct JobsView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,
-    pub sel: usize,
-    pub top: usize,
     pub log: Option<LogPane>,
     /// Every run of this one job (h), none folded.
     pub history: Option<String>,
@@ -50,10 +48,8 @@ impl JobsView {
     /// Move the selection to the row with this id after a refresh, or keep the index in range.
     pub fn reselect(&mut self, jobs: &Jobs, id: Option<RowId>) {
         let rows = self.shown(jobs);
-        if let Some(i) = id.and_then(|id| rows.iter().position(|j| row_id(j) == id)) {
-            self.sel = i;
-        }
-        self.sel = self.sel.min(rows.len().saturating_sub(1));
+        let at = id.and_then(|id| rows.iter().position(|j| row_id(j) == id));
+        self.table.keep(at, rows.len());
     }
 
     /// One status line: the view on the left, how many it keeps of the window on the right.
@@ -112,9 +108,7 @@ impl JobsView {
         }
         .fit(w, p.head());
         if sel {
-            if let Some(l) = out.get_mut(self.sel + 1) {
-                l.style = p.sel();
-            }
+            self.table.style(&mut out, p);
         }
         out
     }
@@ -286,10 +280,8 @@ mod tests {
     fn a_failed_run_is_red_and_the_selection_is_reversed() {
         let j = fixture();
         let p = Palette::default();
-        let v = JobsView {
-            sel: 1,
-            ..Default::default()
-        };
+        let mut v = JobsView::default();
+        v.table.sel = 1;
         let out = v.table(&j, p, 120, true);
         assert_eq!(out[2].style, p.sel());
         let fail = out
@@ -303,15 +295,13 @@ mod tests {
     #[test]
     fn a_refresh_keeps_the_same_job_selected() {
         let mut j = fixture();
-        let mut v = JobsView {
-            sel: 2,
-            ..Default::default()
-        };
-        let id = Some(row_id(v.shown(&j)[v.sel]));
+        let mut v = JobsView::default();
+        v.table.sel = 2;
+        let id = Some(row_id(v.shown(&j)[v.table.sel]));
         j.jobs
             .insert(0, job(Source::Timer, "new-task", State::Running, None));
         v.reselect(&j, id);
-        assert_eq!(v.shown(&j)[v.sel].name, "dream");
+        assert_eq!(v.shown(&j)[v.table.sel].name, "dream");
     }
 
     #[test]

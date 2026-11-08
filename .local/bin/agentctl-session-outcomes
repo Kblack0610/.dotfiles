@@ -32,7 +32,11 @@
 # (so_opencode_rows) or Codex's rollout files (so_codex_rows).
 # `harness` on a line is what its launcher recorded (HARNESS_DEF). A gateway item's real spend
 # goes on the item as gateway_cost_usd (gateway_push).
-# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR
+# A Forgejo PR (repo `host/owner/repo`, session-outcomes.sh SO_PR_JQ) is looked up through that host's
+# API (so_forgejo_pr_list), only on a host SO_FORGEJO_HOSTS lists (the private runner conf sets
+# it). A failed read holds back the sessions naming that repo until a later run reads it; a host
+# not listed leaves its PRs UNKNOWN. The report says which.
+# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_FORGEJO_ENTRY SO_BENCH SO_QUEUE SO_LESSONS_DIR
 # SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES SO_PROJECT_MAP SO_ROADMAP SO_TRANSCRIPT_ROOTS.
 # `class` on a line is {size, kind} of the queue item the session worked: the size and kind of the
 # item's `row:` on its project's roadmap, the item's own `type:` when the row is not there. The first
@@ -124,11 +128,16 @@ roadmap_index() {
 # A row from before that record keeps the harness an earlier `run` gave the session, else takes the
 # item's agent, except a gateway agent (one the harness map launches by claude-lazer) on a transcript
 # under another account's config dir: a gateway run unsets CLAUDE_CONFIG_DIR, so it is always under
-# ~/.claude.
+# ~/.claude. Only a Claude session reaches that fallback (opencode and codex rows carry their own
+# harness), so neither the prior harness nor the item's agent can make it an opencode or codex one:
+# a session that worked an `agent: codex` item reads claude.
 HARNESS_DEF='def harness_of($i):
+  def launcher: $hm.harnesses[.].launcher // .;
+  def claude_run: launcher | . != "opencode" and . != "codex";
   ($i.agent // "claude") as $a
-  | .harness // .prior_harness // (
-      if ($hm.harnesses[$a].launcher // $a) == "claude-lazer"
+  | .harness // (.prior_harness // empty | select(claude_run)) // (
+      if ($a | claude_run | not) then "claude"
+      elif ($a | launcher) == "claude-lazer"
          and ((.account // (.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a)) // "claude") != "claude" then "claude"
       else $a end);'
 
@@ -238,19 +247,31 @@ cmd_run() {
 
   # One `gh pr list` per repo per run, never per PR: under fleet load per-PR calls are
   # what tripped the 403 rate limit. The due sessions' repos, plus every repo with a clone in the
-  # project map, where a PR that names a session link may sit.
-  local repo
+  # project map, where a PR that names a session link may sit. A Forgejo repo is one paged API read
+  # instead; it is the home cluster, so a failed one holds back only its own sessions.
+  local repo forge_note=""
   so_rework_repos "$PROJECT_MAP" > "$work/clones.tsv"
   # A due session's repo that cannot be listed stalls the run; a clone's alone is skipped and reported.
+  # A repo gh cannot resolve while `gh auth status` passes is no repo (a test fixture's o/r in a
+  # pr-link or printed URL): it is skipped, its claims are dropped from every line, and the report
+  # names it. With auth failing the same error is the token's fault, so it stalls like any other.
   { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo' |
     sort -u > "$work/repos.due"
   sort -u "$work/repos.due" <(cut -f1 "$work/clones.tsv") > "$work/repos"
-  : > "$work/index.jsonl"
-  local unlisted=0 list_note=""
+  : > "$work/index.jsonl"; : > "$work/repos.gone"
+  local unlisted=0 list_note="" gh_auth=""
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
-    if ! "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
+    if [[ "$repo" == */*/* ]]; then
+      so_forgejo_pr_list "$repo" "$work" "$PR_LIMIT" > "$work/prs.json" || {
+        [ $? = 1 ] && printf '%s\n' "$repo" >> "$work/fj.held"
+        forge_note="$forge_note; forgejo: $SO_FORGEJO_ERR"; continue; }
+    elif ! "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
         --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err"; then
+      if grep -q 'Could not resolve to a Repository' "$work/gh.err"; then
+        [ -n "$gh_auth" ] || { "$GH" auth status >/dev/null 2>&1 && gh_auth=ok || gh_auth=fail; }
+        [ "$gh_auth" = ok ] && { printf '%s\n' "$repo" >> "$work/repos.gone"; continue; }
+      fi
       grep -qixF -- "$repo" "$work/repos.due" && die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
       unlisted=$((unlisted + 1)) list_note="; $((unlisted)) clone repo(s) unlisted, last $repo"
       continue
@@ -259,6 +280,9 @@ cmd_run() {
       || die_stalled "could not index PRs for $repo"
   done < "$work/repos"
   jq -cs 'add // {}' "$work/index.jsonl" > "$work/index.json" || die_stalled "could not merge the PR indexes"
+  if [ -s "$work/repos.gone" ]; then
+    list_note="$list_note; claims dropped, gh cannot resolve: $(paste -sd, "$work/repos.gone")"
+  fi
 
   # Session links. A PR whose body names a due session's link joins its prs. A link no local
   # transcript recorded, with a PR merged in the band (every one with --all), is a session that ran
@@ -381,11 +405,12 @@ cmd_run() {
     jq -c --argjson row "$row" --slurpfile idx "$work/index.due.json" --slurpfile time_use "$work/t.$sid.json" \
        --slurpfile bench "$work/bench.json" --slurpfile agents "$work/agents.json" --arg observed "$observed" \
        --slurpfile rw "$work/rework.json" --argjson now "$NOW" --argjson rdays "$SO_REWORK_DAYS" \
-       --slurpfile attr "$work/attr.json" --slurpfile rp "$work/repoproj.json" '
+       --slurpfile attr "$work/attr.json" --slurpfile rp "$work/repoproj.json" --rawfile gone "$work/repos.gone" '
       . as $m | $idx[0] as $ix
+      | ($gone | split("\n") | map(select(. != "") | {key: ., value: true}) | from_entries) as $gn
       | ($m // {}) as $mm
       | ($mm.entrypoint == "sdk-cli") as $runner
-      | [ (($mm.prs // []) + ($row.prs // []) | unique)[] | . as $p
+      | [ (($mm.prs // []) + ($row.prs // []) | unique)[] | select($gn[.repo] | not) | . as $p
           | ($ix[$p.repo][($p.number | tostring)] // {state: "UNKNOWN", merged_at: null, reverted: false})
           | {repo: $p.repo, number: $p.number, state, merged_at, reverted,
              project: ($attr[0]["\($p.repo)#\($p.number)"] // null)}
@@ -451,6 +476,15 @@ cmd_run() {
     ' "$work/m.$sid.json" >> "$work/lines.jsonl" || die_stalled "could not build the line for $sid"
   done < "$work/due.jsonl"
 
+  # A session naming a repo whose read failed gets no line this run, so the next run sees it
+  # due again and records its PR's state instead of a lasting UNKNOWN.
+  if [ -s "$work/fj.held" ]; then
+    jq -c --rawfile h "$work/fj.held" '($h | split("\n")) as $held | select(all(.prs[]?.repo; IN($held[]) | not))' \
+      "$work/lines.jsonl" > "$work/lines.keep" || die_stalled "could not hold back the unread Forgejo sessions"
+    forge_note="$forge_note; $(( $(wc -l < "$work/lines.jsonl") - $(wc -l < "$work/lines.keep") )) session(s) held for the next run"
+    mv "$work/lines.keep" "$work/lines.jsonl"
+  fi
+
   # Append last, all at once: a run that fails above leaves the output untouched.
   local line proj month written=0
   while IFS= read -r line; do
@@ -461,8 +495,8 @@ cmd_run() {
     written=$((written + 1))
   done < "$work/lines.jsonl"
 
-  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note$rework_note$attr_note$cloud_note$list_note"
-  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$rework_note$attr_note$cloud_note$list_note; $(lessons_note); $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
+  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note$forge_note$rework_note$attr_note$cloud_note$list_note"
+  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$forge_note$rework_note$attr_note$cloud_note$list_note; $(lessons_note); $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
 }
 
 # ledger_push - the work ledger's cost and time (~/.config/agentctl/QUEUE.md): every queue item

@@ -80,6 +80,32 @@ pub fn asks_human_at(path: &Path) -> bool {
 /// its last call is a dialog tool left open (AskUserQuestion, ExitPlanMode), or its closing text
 /// asks a question (`text_asks`) or asks the human to do something (`text_requests_action`).
 fn asks_human(text: &str) -> bool {
+    let Some(block) = last_turn_block(text) else { return false };
+    match block.get("type").and_then(Value::as_str) {
+        Some("tool_use") => block.get("name").and_then(Value::as_str).is_some_and(|n| HUMAN_TOOLS.contains(&n)),
+        Some("text") => {
+            let msg = block.get("text").and_then(Value::as_str).unwrap_or("");
+            text_asks(msg) || text_requests_action(msg)
+        }
+        _ => false,
+    }
+}
+
+/// The dialog the session's turn ended on and still waits in: the open AskUserQuestion or
+/// ExitPlanMode call's name and input (the questions with their options, or the plan text).
+pub fn open_dialog_at(path: &Path) -> Option<(String, Value)> {
+    open_dialog(&read(path))
+}
+
+fn open_dialog(text: &str) -> Option<(String, Value)> {
+    let block = last_turn_block(text)?;
+    let name = block.get("name").and_then(Value::as_str).filter(|n| HUMAN_TOOLS.contains(n))?;
+    Some((name.to_string(), block.get("input").cloned().unwrap_or(Value::Null)))
+}
+
+/// The last content block of the last main-thread entry, when that entry is the assistant's
+/// own turn (no prompt or tool result after it).
+fn last_turn_block(text: &str) -> Option<Value> {
     // The human's side: a typed prompt or a tool result, not a reminder or a subagent's.
     let answer = |v: &Value| {
         v.get("type").and_then(Value::as_str) == Some("user")
@@ -92,18 +118,8 @@ fn asks_human(text: &str) -> bool {
         .filter(|l| l.contains("\"type\":\"assistant\"") || l.contains("\"type\":\"user\""))
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .find(|v| own_turn(v) || answer(v))
-        .filter(own_turn);
-    let Some(block) = last.as_ref().and_then(|v| v.pointer("/message/content")?.as_array()?.last()) else {
-        return false;
-    };
-    match block.get("type").and_then(Value::as_str) {
-        Some("tool_use") => matches!(block.get("name").and_then(Value::as_str), Some("AskUserQuestion" | "ExitPlanMode")),
-        Some("text") => {
-            let msg = block.get("text").and_then(Value::as_str).unwrap_or("");
-            text_asks(msg) || text_requests_action(msg)
-        }
-        _ => false,
-    }
+        .filter(own_turn)?;
+    last.pointer("/message/content")?.as_array()?.last().cloned()
 }
 
 /// An entry the session wrote itself: a main-thread assistant turn, not a subagent's.
@@ -696,13 +712,12 @@ fn last_usage(text: &str) -> (u64, String) {
         .unwrap_or_default()
 }
 
-/// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), else the
-/// `~/.claude/plans/*.md` name the session's own turns (its text and tool calls) name most.
-/// Nothing else in the transcript is the session's word: the SessionStart preflight (hook
-/// attachments) lists other sessions' plans, and a prompt can be a pasted screen or a
-/// shepherd nudge quoting another session's plan (2026-10-28, dotfiles-4c read as the
-/// day-log plan). Only before the session's first reply does its prompt decide, since a
-/// plan handed in by prompt is all a fresh session has; once it works the plan, it reads it.
+/// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), else the plan
+/// the session last wrote (`plans_written`), else, until its first reply, the plan its prompt
+/// named most: a plan handed in is all a fresh session has, and once it works one it writes it.
+/// A plan the session only named (read, grepped, listed, quoted), one a hook attachment lists
+/// and one a later prompt names (a pasted screen, a shepherd nudge) are not its plan. Why: a
+/// session that grepped another's finished plan took it and was told to wind down (2026-11-03).
 fn plan_file(text: &str) -> String {
     const KEY: &str = "\"planFilePath\":\"";
     if let Some(i) = text.rfind(KEY) {
@@ -711,38 +726,113 @@ fn plan_file(text: &str) -> String {
             return rest[..end].to_string();
         }
     }
+    let plans = crate::session::home().join(".claude/plans");
+    if let Some(name) = plans_written(text).pop() {
+        return plans.join(name).to_string_lossy().into_owned();
+    }
     const DIR: &str = "/.claude/plans/";
     const ASSISTANT: &str = "\"type\":\"assistant\"";
-    let mut own: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut prompt = own.clone();
-    let mut replied = false;
+    let mut prompt = std::collections::HashMap::new();
     for line in text.lines() {
-        let named = line.contains(DIR);
-        if !named && (replied || !line.contains(ASSISTANT)) {
+        if !line.contains(DIR) && !line.contains(ASSISTANT) {
             continue;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         if own_turn(&v) {
-            replied = true;
-            if named {
-                count_plans(&v.pointer("/message/content").map(Value::to_string).unwrap_or_default(), &mut own);
-            }
-        } else if named
-            && v.get("type").and_then(Value::as_str) == Some("user")
-            && v.get("isMeta").and_then(Value::as_bool) != Some(true)
-        {
+            return String::new();
+        }
+        if v.get("type").and_then(Value::as_str) == Some("user") && v.get("isMeta").and_then(Value::as_bool) != Some(true) {
             // A typed prompt is a string; a tool result is an array, and is not the prompt.
             if let Some(s) = v.pointer("/message/content").and_then(Value::as_str) {
                 count_plans(s, &mut prompt);
             }
         }
     }
-    let counts = if replied { own } else { prompt };
-    counts
+    prompt
         .into_iter()
         .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
-        .map(|(name, _)| crate::session::home().join(".claude/plans").join(name).to_string_lossy().into_owned())
+        .map(|(name, _)| plans.join(name).to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// The plans the session's own tool calls wrote, oldest first: an Edit, Write or MultiEdit
+/// file_path, or a Bash command that writes one (see `bash_plan_writes`).
+fn plans_written(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for v in text
+        .lines()
+        .filter(|l| l.contains("\"tool_use\"") && l.contains("/plans/"))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(own_turn)
+    {
+        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { continue };
+        for c in blocks.iter().filter(|c| c.get("type").and_then(Value::as_str) == Some("tool_use")) {
+            let input = |k: &str| c.pointer(&format!("/input/{k}")).and_then(Value::as_str).unwrap_or("");
+            match c.get("name").and_then(Value::as_str).unwrap_or("") {
+                "Edit" | "Write" | "MultiEdit" => out.extend(plan_name(input("file_path")).map(str::to_string)),
+                "Bash" => out.extend(bash_plan_writes(input("command"))),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// The plans a shell command writes: the target of a `>` or `>>` redirect, of `tee` or of
+/// `sed -i`, or the `--plan` that agent-land ticks. Reading, grepping, listing or passing one
+/// to another command is not writing it.
+fn bash_plan_writes(cmd: &str) -> Vec<String> {
+    const STOP: &[char] = &[' ', '\t', '\n', '\'', '"', '>', '=', '(', '<'];
+    let mut out = Vec::new();
+    for (i, _) in cmd.match_indices("/plans/") {
+        let start = cmd[..i].rfind(STOP).map_or(0, |s| s + 1);
+        let end = cmd[i..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '~' | '$' | '{' | '}')))
+            .map_or(cmd.len(), |e| i + e);
+        let Some(name) = plan_name(&cmd[start..end]) else { continue };
+        // Only the path's own opening quote goes, so a quoted `'->'` pattern before it is no redirect.
+        let before = cmd[..start].strip_suffix(['\'', '"']).unwrap_or(&cmd[..start]).trim_end();
+        let words: Vec<&str> = before[segment_start(before)..]
+            .trim_start_matches([' ', '('])
+            .split_whitespace()
+            .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+            .collect();
+        let cmd_is = |name: &str| words.first().is_some_and(|w| w.rsplit('/').next() == Some(name));
+        let sed_in_place = |w: &&str| *w == "--in-place" || (w.starts_with('-') && !w.starts_with("--") && w.contains('i'));
+        if before.ends_with('>')
+            || (cmd_is("agent-land") && (before.ends_with("--plan") || before.ends_with("--plan=")))
+            || cmd_is("tee")
+            || (cmd_is("sed") && words.iter().any(sed_in_place))
+        {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// Where the last shell command in `s` starts: just past its last `|`, `;`, `&` or newline
+/// outside quotes, so a sed script's `;` or `&` does not split it.
+fn segment_start(s: &str) -> usize {
+    let (mut quote, mut start) = (None, 0);
+    for (i, c) in s.char_indices() {
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, '|' | ';' | '&' | '\n') => start = i + 1,
+            _ => {}
+        }
+    }
+    start
+}
+
+/// The `<name>.md` of a path in a Claude plans dir in the home dir (`~/.claude/plans`, or an
+/// account's `~/.claude-<acct>/plans`, a link to it), else None; a repo's `.claude/plans` is not.
+fn plan_name(path: &str) -> Option<&str> {
+    let (dir, name) = path.rsplit_once('/')?;
+    let (config, plans) = dir.rsplit_once('/')?;
+    let (home, config) = config.rsplit_once('/')?;
+    let in_home = matches!(home, "~" | "$HOME" | "${HOME}") || std::path::Path::new(home) == crate::session::home();
+    (in_home && plans == "plans" && config.starts_with(".claude") && name.len() > 3 && name.ends_with(".md")).then_some(name)
 }
 
 /// Count each `~/.claude/plans/<name>.md` that `text` names into `counts`.
@@ -810,11 +900,30 @@ fn summarize(v: &Value) -> String {
     }
 }
 
-/// What the preview shows of a session's transcript: its last message in full, line breaks kept,
-/// and its last tool call (`doing_said`'s `doing`). Both empty when the session wrote neither.
-pub fn preview_info(path: &Path) -> (String, String) {
+/// What the preview shows of a session's transcript, from one read of it.
+#[derive(Debug, Default, PartialEq)]
+pub struct Preview {
+    /// Its last message in full, line breaks kept; empty when it wrote none.
+    pub message: String,
+    /// Its last tool call (`doing_said`'s `doing`); empty when it made none.
+    pub tool: String,
+    /// The plan of the ExitPlanMode call its turn ended on, when that is still open.
+    pub plan: Option<String>,
+}
+
+pub fn preview_info(path: &Path) -> Preview {
     let text = read(path);
-    (last_message(&text), doing_said(&text).0)
+    Preview { message: last_message(&text), tool: doing_said(&text).0, plan: open_plan(&text) }
+}
+
+/// The plan text of the open ExitPlanMode call, when the turn ended on one.
+pub fn open_plan_at(path: &Path) -> Option<String> {
+    open_plan(&read(path))
+}
+
+fn open_plan(text: &str) -> Option<String> {
+    let (_, input) = open_dialog(text).filter(|(n, _)| n == "ExitPlanMode")?;
+    input.get("plan")?.as_str().map(str::to_string)
 }
 
 /// The newest main-thread assistant text, whole: the session's last word to the human.
@@ -1306,13 +1415,14 @@ mod tests {
             r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"subagent"}]}}"#,
             r#"{"type":"user","message":{"content":"ok"}}"#,
         ]);
-        let (msg, tool) = preview_info(&p);
-        assert_eq!(msg, "line one\n\nline two?");
-        assert_eq!(tool, "Bash: run it");
+        let got = preview_info(&p);
+        assert_eq!(got.message, "line one\n\nline two?");
+        assert_eq!(got.tool, "Bash: run it");
+        assert_eq!(got.plan, None);
         fs::remove_file(&p).ok();
         // Negative control: no assistant text at all -> nothing.
         let q = tmpfile("nomsg", &[r#"{"type":"user","message":{"content":"hi"}}"#]);
-        assert_eq!(preview_info(&q), (String::new(), String::new()));
+        assert_eq!(preview_info(&q), Preview::default());
         fs::remove_file(&q).ok();
     }
 
@@ -1470,6 +1580,18 @@ mod tests {
     }
 
     #[test]
+    fn the_open_dialog_carries_its_input_until_answered() {
+        let plan = r##"{"type":"assistant","message":{"content":[{"type":"text","text":"Plan below."},{"type":"tool_use","name":"ExitPlanMode","input":{"plan":"# Do it\nstep one"}}]}}"##;
+        let (name, input) = open_dialog(&format!("{plan}\n")).unwrap();
+        assert_eq!(name, "ExitPlanMode");
+        assert_eq!(input["plan"], "# Do it\nstep one");
+        // Answered, or another tool: no dialog.
+        let answered = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#;
+        assert_eq!(open_dialog(&format!("{plan}\n{answered}\n")), None);
+        assert_eq!(open_dialog(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}"#), None);
+    }
+
+    #[test]
     fn only_the_last_main_thread_entry_decides() {
         let asked = said("Want me to land it?");
         // A dialog tool left open asks; any other last call is mid-turn.
@@ -1513,9 +1635,39 @@ mod tests {
         let p = tmpfile("preflight", &[
             preflight,
             r#"{"type":"user","isMeta":true,"message":{"content":"<system-reminder>~/.claude/plans/theirs.md</system-reminder>"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/h/.claude/plans/mine.md"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude/plans/mine.md","content":"Phases"}}]}}"#,
             r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"see /h/.claude/plans/theirs.md"}]}}"#,
             r#"{"type":"api-request-blob","message":"~/.claude/plans/theirs.md ~/.claude/plans/theirs.md"}"#,
+        ]);
+        assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
+        fs::remove_file(&p).ok();
+
+        // 2026-11-03, dotfiles-c2: the human's session grepped, listed and read another
+        // session's finished plan; naming it in its own tool calls and text is not writing it.
+        let p = tmpfile("grepped", &[
+            r#"{"type":"user","message":{"content":"why did the probe stall?"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"grep -in probe ~/.claude/plans/theirs.md; ls ~/.claude/plans/theirs.md"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/h/.claude/plans/theirs.md"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"/h/.claude/plans/theirs.md has 12 phases"}]}}"#,
+        ]);
+        assert_eq!(fleet_info(&p).plan_file, "");
+        fs::remove_file(&p).ok();
+
+        // The plan it wrote last wins over one handed in by its prompt, and an account's plans
+        // dir (a link to ~/.claude/plans) is the same dir.
+        let p = tmpfile("wrote", &[
+            r#"{"type":"user","message":{"content":"finish ~/.claude/plans/handed.md"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/handed.md","old_string":"","new_string":""}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude-bnb/plans/mine.md","content":""}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/h/notes/plans/other.md","content":""}}]}}"#,
+        ]);
+        assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
+        fs::remove_file(&p).ok();
+
+        // A heredoc or redirect writes it, and agent-land --plan ticks it; cat and grep only read.
+        let p = tmpfile("bash-wrote", &[
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat > ~/.claude/plans/mine.md <<'EOF'\nPhases\nEOF"}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat ~/.claude/plans/theirs.md; grep -n x /h/.claude/plans/theirs.md"}}]}}"#,
         ]);
         assert!(fleet_info(&p).plan_file.ends_with("/.claude/plans/mine.md"));
         fs::remove_file(&p).ok();
@@ -1536,6 +1688,36 @@ mod tests {
         ]);
         assert_eq!(fleet_info(&p).plan_file, "");
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn bash_plan_writes_are_redirects_tee_sed_and_agent_land() {
+        for (cmd, want) in [
+            ("cat > ~/.claude/plans/a.md <<'EOF'", vec!["a.md"]),
+            ("printf x >> \"$HOME/.claude/plans/a.md\"", vec!["a.md"]),
+            ("echo x | tee -a ~/.claude-bnb/plans/a.md", vec!["a.md"]),
+            ("sed -i 's/- \\[ \\]/- [x]/' ~/.claude/plans/a.md", vec!["a.md"]),
+            ("agent-land 12 --item x --plan ~/.claude/plans/a.md --phase y", vec!["a.md"]),
+            ("agent-land 12 --plan=~/.claude/plans/a.md", vec!["a.md"]),
+            ("cd ~/w && (A=1 ./.local/bin/agent-land 9 --plan ~/.claude/plans/a.md)", vec!["a.md"]),
+            ("sed -Ei 's/a/b/;s/c/&d/' ~/.claude/plans/a.md && echo ok", vec!["a.md"]),
+            ("sed --in-place -e 's/x|y/z/' ~/.claude/plans/a.md", vec!["a.md"]),
+            ("echo x | tee \"$HOME/.claude/plans/a.md\" >/dev/null", vec!["a.md"]),
+            ("agent-queue add --plan ~/.claude/plans/a.md", vec![]),
+            ("grep -n '->' ~/.claude/plans/a.md", vec![]),
+            ("rg \"x>\" ~/.claude/plans/a.md 2>&1", vec![]),
+            ("sed -n 's/;/x/p' ~/.claude/plans/a.md", vec![]),
+            ("cat > /repo/.claude/plans/a.md", vec![]),
+            ("cat ~/.claude/plans/a.md > /tmp/b.md", vec![]),
+            ("grep -n x ~/.claude/plans/a.md | sed -n 1p", vec![]),
+            ("ls -la ~/.claude/plans/a.md ~/.agent/plans/dotfiles/a.md", vec![]),
+            ("diff ~/.claude/plans/a.md ~/.claude/plans/b.md", vec![]),
+            ("cat > ~/notes/plans/a.md", vec![]),
+        ] {
+            assert_eq!(bash_plan_writes(cmd), want, "{cmd}");
+        }
+        let abs = format!("cat > {}/.claude/plans/a.md", crate::session::home().display());
+        assert_eq!(bash_plan_writes(&abs), ["a.md"]);
     }
 
     #[test]

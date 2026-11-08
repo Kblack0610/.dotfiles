@@ -176,7 +176,7 @@ fi
 # The lane sandbox is a contract too, checked in the same place: a harness enforces a profile
 # only by defining harness_sandbox, and one that does not, or cannot hold this profile, refuses.
 if [ -n "$SANDBOX_FILE" ] && ! { declare -F harness_sandbox >/dev/null && harness_sandbox; }; then
-  role_die "harness '$harness' cannot enforce lane sandbox '$SANDBOX_PROFILE'. Refusing to run unsandboxed."
+  sandbox_refuse "harness '$harness' cannot enforce lane sandbox '$SANDBOX_PROFILE'${SANDBOX_WHY:+: $SANDBOX_WHY}. Refusing to run unsandboxed."
 fi
 
 # Contract rule 4. Same shape as rule 3 above and deliberately in the same place:

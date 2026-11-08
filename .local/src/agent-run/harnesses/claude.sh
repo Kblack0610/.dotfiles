@@ -14,7 +14,11 @@
 # harness_sandbox - build the lane sandbox settings once, before the run. A profile the jq cannot
 # turn into settings refuses here, because an empty --settings would run the shell open.
 harness_sandbox() {
-  sandbox_claude_version_ok || { echo "claude is older than $SANDBOX_CLAUDE_MIN (or has no readable version), which ignores the key that bounds Edit and Write" >&2; return 1; }
+  sandbox_claude_version_ok || { SANDBOX_WHY="claude is older than $SANDBOX_CLAUDE_MIN (or has no readable version), which ignores the key that bounds Edit and Write"; return 1; }
+  local b
+  for b in $SANDBOX_CLAUDE_NEEDS; do
+    command -v "$b" >/dev/null || { SANDBOX_WHY="$b is not installed, and claude's sandbox needs it"; return 1; }
+  done
   CLAUDE_SANDBOX_SETTINGS="$(sandbox_claude_settings)" && [ -n "$CLAUDE_SANDBOX_SETTINGS" ]
 }
 

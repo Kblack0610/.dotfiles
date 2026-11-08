@@ -503,6 +503,37 @@ gh_stub() {
   assert_output "github: 2964/5000 REST calls left, resets $(date -d "@$(( now + 3000 ))" +%H:%M)"
 }
 
+# fake_proc <pid> <ppid> <comm> [cgroup] -- one process in a fake /proc under $FLEET_PROC.
+fake_proc() {
+  mkdir -p "$FLEET_PROC/$1"
+  echo "$1 ($3) S $2 1 1" > "$FLEET_PROC/$1/stat"
+  echo "$3" > "$FLEET_PROC/$1/comm"
+  [ -z "${4:-}" ] || echo "0::$4" > "$FLEET_PROC/$1/cgroup"
+}
+
+@test "classify: a process in a systemd service is a unit, by name, not an orphan (ar-916)" {
+  export FLEET_PROC="$BATS_TEST_TMPDIR/proc"
+  local u=/user.slice/user-1000.slice/user@1000.service
+  fake_proc 30 1 systemd
+  fake_proc 40 30 fleet-sessions "$u/app.slice/fleet-state.service"
+  fake_proc 50 40 agent-panel "$u/app.slice/fleet-state.service"
+  run classify 50
+  assert_output "$(printf 'unit\tfleet-state.service\t-')"
+  # reparented to the user manager from a tmux scope: still an orphan
+  fake_proc 60 30 make "$u/session.slice/tmux-spawn-1.scope"
+  run classify 60
+  assert_output --regexp '^orphan'
+  # an agentctl unit keeps its own class
+  fake_proc 70 30 bash "$u/app.slice/agentctl@fleet-dispatch.service"
+  run classify 70
+  assert_output --regexp '^agentctl'
+  # a hybrid layout: only the v2 line names the unit
+  fake_proc 80 30 make
+  printf '1:name=systemd:%s\n0::%s\n' "$u/app.slice/other.service" "$u/session.slice/tmux-spawn-2.scope" > "$FLEET_PROC/80/cgroup"
+  run classify 80
+  assert_output --regexp '^orphan'
+}
+
 # rows reads ps and /proc; ps is stubbed with a table (pid ppid ni pcpu comm args) and
 # classify with a fixed answer, so the selection is pinned without a hot machine.
 rows_with() {

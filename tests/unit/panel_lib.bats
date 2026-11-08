@@ -241,13 +241,18 @@ load_lib() {
 # The ctrl-/ bind runs panel-layout.sh's transform for this panel.
 layout_bind() { printf -- '--bind=ctrl-/:transform(%q next %s)' "$REPO_ROOT/.local/src/tmux/panel-layout.sh" "$1"; }
 
-@test "panel_fzf_layout opens stacked by default, and ctrl-/ is the saving transform" {
+# The preview scroll keys every panel shares.
+scroll_bind='--bind=ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up,page-down:preview-page-down,page-up:preview-page-up'
+
+@test "panel_fzf_layout opens stacked by default, ctrl-/ is the saving transform, and the scroll keys come with it" {
   load_lib
   unset PANEL_LAYOUT
   panel_fzf_layout
   [[ "$(declare -p PANEL_FZF_LAYOUT)" == "declare -a"* ]]
+  assert_equal "${#PANEL_FZF_LAYOUT[@]}" 3
   assert_equal "${PANEL_FZF_LAYOUT[0]}" '--preview-window=down,60%,border-top,wrap'
   assert_equal "${PANEL_FZF_LAYOUT[1]}" "$(layout_bind _skeleton)"
+  assert_equal "${PANEL_FZF_LAYOUT[2]}" "$scroll_bind"
 }
 
 @test "panel_fzf_layout opens in the saved layout, then PANEL_LAYOUT, then the caller's default" {
@@ -310,13 +315,14 @@ layout_bind() { printf -- '--bind=ctrl-/:transform(%q next %s)' "$REPO_ROOT/.loc
   assert_equal "${PANEL_FZF_LAYOUT[0]}" '--preview-window=right,65%,border-left,wrap'
 }
 
-@test "panel-layout.sh args prints the two arguments panel_fzf_layout sets, for the named panel" {
+@test "panel-layout.sh args prints the arguments panel_fzf_layout sets, for the named panel" {
   mkdir -p "$XDG_STATE_HOME/panels"
   echo side > "$XDG_STATE_HOME/panels/agent-panel.layout"
   run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" args agent-panel
   assert_success
   assert_line --index 0 '--preview-window=right,65%,border-left,wrap'
   assert_line --index 1 "$(layout_bind agent-panel)"
+  assert_line --index 2 "$scroll_bind"
   run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" args
   assert_failure
 }

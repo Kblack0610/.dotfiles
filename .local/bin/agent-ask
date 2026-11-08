@@ -1006,23 +1006,21 @@ story_line() {
 }
 
 # story_words <question> < said-json: the newest text block of the asking turn that still says
-# something once the card's own parts are gone: the question and the option list under it,
-# markdown tables (they wrap into noise), code fences and bold marks. The newest block is
-# where the session stands now; an older one only when the newest just repeats the ask.
+# something once the card's own parts are gone: the question and the option list under it. Each
+# block reads as plain text first (`agent-panel plain`, the panels' one markdown cleaner). The
+# newest block is where the session stands now; an older one only when the newest just repeats
+# the ask.
 story_words() {
   local q="$1" said n i words
   said="$(cat)"
   n="$(jq -r '.said | if type == "array" then length else 0 end' <<<"$said" 2>/dev/null)" || return 0
   for (( i = n - 1; i >= 0; i-- )); do
-    words="$(jq -r --argjson i "$i" '.said[$i]' <<<"$said" | awk -v q="$q" '
+    words="$(jq -r --argjson i "$i" '.said[$i]' <<<"$said" | agent-panel plain --width 0 | awk -v q="$q" '
       function norm(s) { gsub(/[*_`#>]/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return tolower(s) }
       BEGIN { nq = norm(q) }
-      /^[ \t]*```/ { fence = !fence; next }
-      fence || /^[ \t]*\|/ { next }
-      { line = $0; sub(/^#+[ \t]*/, "", line) }
-      nq != "" && norm(line) == nq { inq = 1; next }
-      inq && (line ~ /^[ \t]*$/ || line ~ /^[ \t]*([0-9]+[.)]|[-*])[ \t]/) { next }
-      { inq = 0; gsub(/\*\*/, "", line); print line }')"
+      nq != "" && norm($0) == nq { inq = 1; next }
+      inq && ($0 ~ /^[ \t]*$/ || $0 ~ /^[ \t]*([0-9]+[.)]|[-*])[ \t]/) { next }
+      { inq = 0; print }')"
     [ -n "${words//[[:space:]]/}" ] && { printf '%s\n' "$words"; return 0; }
   done
 }
@@ -1055,14 +1053,29 @@ story_telemetry() {
     ] | join(" . ")' <<<"$row"
 }
 
-# named_option <options> <text>: the one option of `a|b|c` that <text> names as a whole word, case
-# insensitive; nothing when it names none or more than one. An option seen only inside a longer
-# named one does not count: approve-with-edits names one option, not approve as well.
+# named_option <options> <text>: the one option of `a|b|c` that <text> names, case insensitive;
+# nothing when it names none or more than one. The text that is exactly an option names it. Else an
+# option counts as a whole word, and one seen only inside a longer named one does not count:
+# approve-with-edits names one option, not approve as well. A one-letter option counts only as a
+# token of its own, followed by punctuation, the end, or a list word ("a", "b: ...", "a (note)",
+# "go with b", "a or b"), never by a word: "a new problem" is the article, which read
+# "in session: New problem found: a ..." as option a (2026-11-07, ar-65).
 named_option() {
-  local opt other hits=() kept=()
+  local opt other hits=() kept=() t="${2,,}" o
+  local list='(or|and|vs|nor)' tail
+  t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
   local IFS='|'
   for opt in $1; do
-    [ -n "$opt" ] && grep -qiwF -- "$opt" <<< "$2" && hits+=("$opt")
+    [ -n "$opt" ] && [ "${opt,,}" = "$t" ] && { printf '%s' "$opt"; return 0; }
+  done
+  for opt in $1; do
+    o="${opt,,}"
+    if [[ "$o" =~ ^[[:alnum:]]$ ]]; then
+      tail="($|[^[:alnum:][:space:]]|[[:space:]]+([^[:alnum:][:space:]]|$list([^[:alnum:]]|$)))"
+      [[ "$t" =~ (^|[^[:alnum:]])$o$tail || "$t" =~ (^|[^[:alnum:]])${list}[[:space:]]+${o}([^[:alnum:]]|$) ]] && hits+=("$opt")
+    else
+      [ -n "$opt" ] && grep -qiwF -- "$opt" <<< "$2" && hits+=("$opt")
+    fi
   done
   for opt in "${hits[@]}"; do
     for other in "${hits[@]}"; do
@@ -1073,15 +1086,17 @@ named_option() {
   [ "${#kept[@]}" -eq 1 ] && printf '%s' "${kept[0]}"
 }
 
-# in_session_picks <ask json lines>: {ask id: option} for each answer typed in a session as free
-# text that names exactly one of the ask's options (named_option); the rest carry no label.
-in_session_picks() {
+# answer_picks <ask json lines>: {ask id: option} for each answer to an ask with options that names
+# exactly one of them (named_option): the option itself, one with a note ("a (human: ...)", "b: go
+# with the recs") or free text typed in a session (its "in session: " stamp dropped). The rest
+# carry no label, and a reader treats such an ask as unscorable rather than comparing its text.
+answer_picks() {
   local id opts ans pick
   while IFS=$'\t' read -r id opts ans; do
-    pick="$(named_option "$opts" "$ans")"
+    pick="$(named_option "$opts" "${ans#in session: }")"
     [ -n "$pick" ] && jq -cn --arg i "$id" --arg p "$pick" '{($i): $p}'
-  done < <(jq -r 'select((.answer // "") | startswith("in session:")) | select((.options // "") != "")
-                  | [.id, .options, .answer] | @tsv' <<<"$1") | jq -sc 'add // {}'
+  done < <(jq -r 'select((.answer // "") != "" and (.options // "") != "")
+                  | [.id, .options, (.answer | gsub("[\t\n]"; " "))] | @tsv' <<<"$1") | jq -sc 'add // {}'
 }
 
 # not_an_answer <message>: true when a message to the session cannot answer a free-text ask: a
@@ -1268,7 +1283,7 @@ cmd_precedents() {
   asks="$(judge_ask_docs "${AGENT_ASK_PRECEDENTS_ROOT:-$ASKS_ROOT}" | jq -c 'select(.status == "answered"
     and (.options // "") != "" and (.recommend // "") != "" and ((.kind // "") == "gate" or (.kind // "") == "approval" | not))')"
   [ -n "$asks" ] || return 0
-  jq -sr --argjson picks "$(in_session_picks "$asks")" --arg before "$before" --argjson cap "$(judge_conf PRECEDENTS 30)" "$JQ_EPOCH"'
+  jq -sr --argjson picks "$(answer_picks "$asks")" --arg before "$before" --argjson cap "$(judge_conf PRECEDENTS 30)" "$JQ_EPOCH"'
     def note($o): . as $a | ($a.options | split("|") | index($o)) as $i
       | (($a.option_notes // "") | split("|")[$i // 99] // "") as $n | if $n == "" then $o else "\($o) (\($n))" end;
     map((.judge_override // "") as $over
@@ -1459,6 +1474,12 @@ usage() {
 # Sourced (by the test suite) rather than run: every function is defined, no subcommand runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
+# A session on a fleet worker asks on the workstation (AGENT_STATE_HOST, fleet-hosts.sh).
+if [ -n "${AGENT_STATE_HOST:-}" ]; then
+  # shellcheck source=../lib/fleet-hosts.sh
+  . "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+  state_forward agent-ask "" "$@"
+fi
 sub="${1:-list}"; shift 2>/dev/null || true
 case "$sub" in
   post)   cmd_post "$@" ;;

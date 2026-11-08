@@ -1,15 +1,14 @@
-//! Fleet's "Where the tokens go": tool output by tool and by Bash command, over the newest week
+//! The Costs tab's "Where the tokens go" and "What Langfuse sees": tool output by tool and by Bash command, over the newest week
 //! of snapshots and the newest day. It sums `~/.agent/token-usage/<day>.json`, the nightly record
 //! `agent-usage tokens snapshot` writes from `claude-recall tool-output`; running that from a view
-//! takes minutes. The dollars per tool are the Costs tab's tool cut, over the same files.
-
-use std::collections::BTreeMap;
-use std::path::Path;
+//! takes minutes. `costs::read` parses the files once; this sums the parsed days, and the dollars
+//! per tool are the tool cut over the same days.
 
 use chrono::{Days, NaiveDate};
 use serde::Serialize;
+use std::collections::BTreeMap;
 
-use crate::costs::{snapshots, Snapshot, ToolDay, STALE_SECS};
+use crate::costs::{Snapshot, ToolDay, STALE_SECS};
 
 /// Calendar days the week view sums, the newest snapshot's day the last.
 const WEEK_DAYS: usize = 7;
@@ -183,22 +182,27 @@ pub struct Share {
     pub other: bool,
 }
 
-/// The newest week of snapshots in `dir`. None with no snapshot at all, which is no error: the
-/// head says so. A file that does not parse is named in `errors` and the others still count.
-pub fn read(dir: &Path, now: i64, errors: &mut Vec<String>) -> Option<Tokens> {
-    let mut found = snapshots(dir, WEEK_DAYS, errors);
-    let newest = found.first()?;
+/// The newest week of `days` (newest first, as `costs::snapshots` gives them). None with no
+/// snapshot at all, which is no error: the head says so.
+pub fn from_snapshots(days: &[Snapshot], now: i64) -> Option<Tokens> {
+    let newest = days.first()?;
     let (date, generated_at) = (newest.date.clone(), newest.generated_at);
     // A night the run missed leaves no file, and "7d" must not reach back past it.
     let first =
         NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok()? - Days::new(WEEK_DAYS as u64 - 1);
     let first = first.format("%Y-%m-%d").to_string();
-    found.retain(|d| d.date >= first);
+    // Newest first, so the week is a prefix.
+    let n = days
+        .iter()
+        .take(WEEK_DAYS)
+        .take_while(|d| d.date >= first)
+        .count();
+    let found = &days[..n];
     Some(Tokens {
         date,
         generated_at,
         stale: generated_at.is_none_or(|t| now - t > STALE_SECS),
-        week: split(&found),
+        week: split(found),
         day: split(&found[..1]),
         langfuse: LangfuseView {
             figures: found[0].langfuse.clone(),
@@ -305,6 +309,11 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_800_000_000;
+
+    /// The way `costs::read` gets there: parse the directory, then sum.
+    fn read(dir: &std::path::Path, now: i64, errors: &mut Vec<String>) -> Option<Tokens> {
+        from_snapshots(&crate::costs::snapshots(dir, 30, errors), now)
+    }
 
     struct Dir(std::path::PathBuf);
     impl Drop for Dir {

@@ -148,7 +148,7 @@ ign() {
   ign '^/\.git$' '^/\.gitignore$' '^/\.github$' '^/AGENTS\.md$' '^/README\.md$' \
       '^/\.local/src/installation_scripts$' '^/etc$' '^/\.config/hypr$' '^/\.config/waybar$'
   local p
-  for p in .local/bin/dotfiles-deploy .local/bin/dotfiles-drift .local/lib/agent-board.sh \
+  for p in .local/bin/dotfiles-deploy .local/bin/dotfiles-drift .local/lib/lab-feed.sh \
            .config/shared-hooks/lab-roots.sh .local/src/tmux/fleet.sh; do
     ! stow_ignored "$p" || fail "the public list wrongly excludes $p"
   done

@@ -238,6 +238,39 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
 }
 
+@test "the map's queue_rank puts a ranked project first within a priority, under red and urgent, over cleanup" {
+  "$AQ" add --project app --slug a-app "a"
+  "$AQ" add --project app --slug b-app-cleanup --tags cleanup "b"
+  "$AQ" add --project game --slug c-game "c"
+  "$AQ" add --project app --slug d-app-urgent --priority urgent "d"
+  "$AQ" add --project tools --slug e-tools "e"
+  # Without queue_rank the order is as before: cleanup first, then queued time.
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  assert_output $'d-app-urgent\nb-app-cleanup\na-app\nc-game\ne-tools'
+  jq '.queue_rank = ["game"]' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  # urgent still heads; game, ranked, beats the older app items and the app cleanup.
+  assert_output $'d-app-urgent\nc-game\nb-app-cleanup\na-app\ne-tools'
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
+}
+
+@test "a multi-project queue_rank orders by list position; a rank that is not a list ranks nothing" {
+  "$AQ" add --project tools --slug a-tools "a"
+  "$AQ" add --project app --slug b-app "b"
+  "$AQ" add --project game --slug c-game "c"
+  jq '.queue_rank = ["game", "app"]' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  assert_output $'c-game\nb-app\na-tools'
+  # A string or an object where the list belongs falls back to queued time, never an error.
+  for bad in '"game"' '{"game": 1}'; do
+    jq --argjson r "$bad" '.queue_rank = $r' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+    run bash -c "'$AQ' list --json | jq -r .slug"
+    assert_success
+    assert_output $'a-tools\nb-app\nc-game'
+  done
+}
+
 @test "an after: on a re-queued slug holds while the slug is live, whatever an old done record says" {
   "$AQ" add --project game --slug first "a"
   "$AQ" move first running
@@ -407,6 +440,58 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   # must not hold it behind that claim.
   "$AQ" move forms running >/dev/null
   [ "$(field "$(item running forms)" tags)" = night ]
+}
+
+# ar-900: reap failed a live item on one agent-panel read, and the shepherd had to mv its file back by hand.
+@test "reopen puts a failed item back with its session and note and starts its row again; an active, ok or cancelled one is refused" {
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  "$AQ" add --project game --running --slug cut "cut the beta" >/dev/null
+  "$AQ" set cut "session=lab:game-agent-1" "row=game:gm-7" "profile=bnb" "lane=human" >/dev/null
+  "$AQ" claim cut --sid e4347d61 >/dev/null
+  run "$AQ" reopen cut
+  assert_failure; assert_output --partial "still active"
+  "$AQ" move cut done --status failed >/dev/null
+  "$AQ" set cut "note=session lab:game-agent-1 ended before it closed the item" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" reopen cut --to sideways
+  assert_failure
+  run "$AQ" reopen cut --why "reap read live e4347d61 as gone"
+  assert_success; assert_output --partial "cut: done -> running (reopened, was failed)"
+  f="$(item running cut)"
+  [ -z "$(field "$f" status)" ] || fail "status: survived the reopen"
+  [ -z "$(field "$f" finished)" ] || fail "finished: survived the reopen"
+  [ "$(field "$f" session)" = "lab:game-agent-1" ] || fail "session: was lost"
+  [ "$(field "$f" sessions)" = e4347d61 ] || fail "sessions: was lost"
+  [ "$(field "$f" note)" = "reopened from done (failed: session lab:game-agent-1 ended before it closed the item): reap read live e4347d61 as gone" ] || fail "note: $(field "$f" note)"
+  # A human-lane row, so no --agent: started again on its own board.
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game start gm-7"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cut.md 2>/dev/null)" ] || fail "a done copy was left behind"
+  # --to waiting stamps waiting:; no lane is the agent lane, and no profile is notes' default.
+  "$AQ" move cut done --status failed >/dev/null
+  sed -i '/^lane: /d; /^profile: /d' "$AGENT_QUEUE_DIR"/done/*/*-cut.md
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" reopen cut --to waiting >/dev/null
+  [ -n "$(field "$(item waiting cut)" waiting)" ] || fail "--to waiting did not stamp waiting:"
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes ptask game --agent start gm-7"
+  # A row that will not start again fails the reopen, after the item is back.
+  "$AQ" move cut done --status failed >/dev/null
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/notes"
+  run "$AQ" reopen cut
+  assert_failure; assert_output --partial "could not be started again"
+  [ -n "$(item running cut)" ] || fail "a failed row restart left the item done"
+  # A cancel was a decision and an ok close may have started the items after it: neither is a reopen.
+  "$AQ" cancel cut >/dev/null
+  run "$AQ" reopen cut
+  assert_failure; assert_output --partial "closed cancelled, not failed"
+  "$AQ" add --project game --running --slug cut "cut the beta again" >/dev/null
+  "$AQ" move cut done --status ok >/dev/null
+  run "$AQ" reopen cut
+  assert_failure; assert_output --partial "closed ok, not failed"
+  run "$AQ" reopen nosuch
+  assert_failure; assert_output --partial "no finished item"
 }
 
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
@@ -766,6 +851,8 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "add --running records the Claude session, a queued add does not; the row grammar's type and area; claim adds a session once" {
+  printf '%s\t%s\t%s\t%s\t1\n' "fix(agent-land): mine picks a waiting item" fix agent-land "mine picks a waiting item" \
+    "feat(queue): a ledger" feat queue "a ledger" > "$NOTES_FIXTURE/row.parse"
   CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug typed "fix(agent-land): mine picks a waiting item"
   f="$(item running typed)"
   [ "$(field "$f" sessions)" = sid-a ]
@@ -774,6 +861,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$f" type)" = fix ]
   [ "$(field "$f" area)" = agent-land ]
   "$AQ" add --project game --slug untyped "Menu: pick sides"
+  assert_called 'notes row parse'
   [ -z "$(field "$(item queued untyped)" sessions)" ]
   [ -z "$(field "$(item queued untyped)" type)" ]
   "$AQ" add --project game --slug titled --title "feat(queue): a ledger" "the long brief"
@@ -789,8 +877,13 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure
   assert_output --partial "no Claude session"
   "$AQ" move typed done --status ok
+  # sessions is the history of who worked the item, so a done item takes a later session (agent-land's second-repo PR).
   run "$AQ" claim typed --sid sid-c
+  assert_success
+  [ "$("$AQ" show typed --json | jq -r .sessions)" = "sid-a sid-b sid-c" ]
+  run "$AQ" claim nosuch --sid sid-c
   assert_failure
+  assert_output --partial "no item: nosuch"
 }
 
 @test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
@@ -1355,7 +1448,7 @@ STUB
   run "$AQ" add --project game --epic lv-3 --priority low --slug menus "feat(menu): live main menus #night"
   assert_success
   assert_line "story lv-9 on the level agent board, under lv-3"
-  run grep '^notes' "$NOTES_FIXTURE/calls.log"
+  run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
   assert_line --index 0 'notes --profile bnb ptask level --agent propose -- feat(menu): live main menus'
   assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): live main menus #size/s #low #of/lv-3'
   assert_line --index 2 'notes --profile bnb ptask level --agent start lv-9'
@@ -1365,6 +1458,24 @@ STUB
   [ "$(field "$f" lane)" = agent ]
   [ "$(field "$f" profile)" = bnb ]
   [ "$(jq -r .row <<<"$("$AQ" show menus --json)")" = level:lv-9 ]
+}
+
+@test "a want's channel reaches the story row's writer only when --want names it" {
+  story_notes
+  run "$AQ" add --project game --epic lv-3 --slug voiced --want voice "feat(menu): a"
+  assert_success
+  run "$AQ" add --project game --epic lv-3 --slug own --from human "feat(menu): c"
+  assert_success
+  run grep 'ptask level --agent add' "$NOTES_FIXTURE/calls.log"
+  assert_line --index 0 --partial 'add --want voice -- feat(menu): a #size/s #high #of/lv-3'
+  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): c #size/s #high #of/lv-3'
+}
+
+@test "--want is refused with --plan: plan items are agent-made and carry no channel" {
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/w.md"
+  run "$AQ" add --plan "$SANDBOX/w.md" --project game --slug wp --want voice
+  assert_failure
+  assert_output --partial '--want names a human'
 }
 
 @test "a plan item's story takes the plan's epic and a heavy item is sized m" {
@@ -1489,8 +1600,10 @@ OUT
 @test "an item write never fails on its event: a notes that cannot record leaves the write standing" {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/notes"
   chmod +x "$SANDBOX/bin/notes"
-  run "$AQ" add --project game --from board:level:lv-2 --slug sturdy "x"
+  run "$AQ" add --project game --from board:level:lv-2 --slug sturdy "fix(x): y"
   assert_success
+  assert_output --partial "notes row parse failed, so sturdy is untyped"
+  [ -z "$(field "$(item queued sturdy)" type)" ]
   run "$AQ" move sturdy running
   assert_success
   assert_output "sturdy: queued -> running"

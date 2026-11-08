@@ -113,6 +113,66 @@ done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "obj
   | group_by(.c)[] | select(length > 1) | "\"\(.[0].c)\" is shared by \(map(.k) | join(", "))"' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n row-id codes checked" || skip "no row-id codes to check"
 
+# --- 4b2. queue_rank is a list of distinct project names (agent-queue's order reads it) ---
+# A misspelt name, an alias or a rank that is not a list ranks nothing and says nothing: its items
+# just queue behind the ranked ones. agent-queue compares the item's canonical name exactly.
+rank_type="$(jq -r '.queue_rank | type' "$MAP_FILE")"
+case "$rank_type" in
+  null) skip "no queue_rank to check" ;;
+  array)
+    n=0 bad=0
+    while IFS= read -r r; do
+      n=$((n + 1))
+      is_known "$r" || { bad=1; fail "queue_rank names \"$r\", which is not a registered project"; }
+    done < <(jq -r '.queue_rank[] | if type == "string" then . else tojson end' "$MAP_FILE")
+    dup="$(jq -r '.queue_rank | group_by(.) | map(select(length > 1) | .[0] | tostring) | join(", ")' "$MAP_FILE")"
+    [ -z "$dup" ] || { bad=1; fail "queue_rank lists $dup more than once"; }
+    if [ "$n" -eq 0 ]; then skip "queue_rank is empty"; elif [ "$bad" = 0 ]; then pass "all $n queue_rank projects resolve"; fi
+    ;;
+  *) fail "queue_rank is a $rank_type; it must be a list of project names" ;;
+esac
+
+# --- 4c. every deploy target is well formed (release-state reads them) ----------------
+# A malformed target does not error in release-state; it shows `unknown` forever, which reads
+# like a flaky probe. Schema: docs/operations/release-state.md.
+n=0
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '
+  def chans: ["prod","beta","alpha","preview","internal"];
+  (.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.targets != null)
+  | .key as $p
+  | if (.value.targets | type) != "array" then "trackers.\($p).targets is not a list"
+    else .value.targets[] | (.id // "?") as $id
+    | (if type != "object" then "trackers.\($p).targets has a non-object entry" else empty end),
+      (select(type == "object")
+       | (if ((.id // "") | test("^[a-z0-9][a-z0-9-]*$") | not) then "trackers.\($p) target \"\($id)\": id must be lowercase letters, digits and -" else empty end),
+         (if ((.channel // "") as $c | chans | index($c) | not) then "trackers.\($p) target \"\($id)\": channel \"\(.channel // "")\" is not one of \(chans | join("|"))" else empty end),
+         (if (.pinned.tag == true) or ((.pinned.repo // "") != "" and (.pinned.path // "") != "") then empty
+          else "trackers.\($p) target \"\($id)\": pinned needs {tag: true} or repo and path" end),
+         (if .live == null or (.live.k8s.context and .live.k8s.namespace and .live.k8s.deployment) or .live.health.url then empty
+          else "trackers.\($p) target \"\($id)\": live needs k8s {context, namespace, deployment} or health {url}" end))
+    end' "$MAP_FILE" 2>/dev/null)
+while IFS= read -r dup; do
+  [ -n "$dup" ] && fail "deploy target id $dup"
+done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object") | (.value.targets // []) | arrays | .[] | objects | .id]
+  | group_by(.)[] | select(length > 1) | "\"\(.[0])\" is used \(length) times"' "$MAP_FILE" 2>/dev/null)
+while IFS=$'\t' read -r name id rel ref; do
+  [ -n "$name" ] || continue
+  n=$((n + 1))
+  case "$rel" in
+    repo|dep) is_known "$ref" || fail "trackers.$name target \"$id\": $rel \"$ref\" is not a registered project" ;;
+    watch) [ -f "$AGENT_DIR/watches/$ref.yaml" ] || warn "trackers.$name target \"$id\": telemetry watch \"$ref\" has no $AGENT_DIR/watches/$ref.yaml" ;;
+  esac
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | .key as $p
+  | (.value.targets // []) | arrays | .[] | objects | .id as $id
+  | (select(.pinned.repo) | [$p, $id, "repo", .pinned.repo]),
+    ((.deps // [])[] | [$p, $id, "dep", .]),
+    ((.telemetry // [])[] | [$p, $id, "watch", .])
+  | @tsv' "$MAP_FILE" 2>/dev/null)
+targets_n="$(jq '[(.trackers // {})[] | objects | (.targets // []) | arrays | length] | add // 0' "$MAP_FILE" 2>/dev/null)"
+[ "${targets_n:-0}" -gt 0 ] && pass "all $targets_n deploy targets checked ($n references)" || skip "no deploy targets to check"
+
 # --- 5. every key under ~/.agent is a registered project ---------------------------
 # Plans, lessons, sessions, asks, outcomes, dreams and evals are filed per project. A key
 # the registry does not know is runtime state no project reads: a lesson no preflight

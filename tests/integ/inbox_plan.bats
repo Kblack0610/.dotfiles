@@ -36,6 +36,7 @@ record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
   run "$PLAN"
   assert_success
   assert_output --partial 'planned 1, split into 2 rows, refused 0'
+  grep -qF "type one of $("$NOTES_BIN" row types)," "$NOTES_FIXTURE/args.txt" || fail "the row types never reached the model"
   run cat "$SHEET"
   assert_output --regexp '- \[ \] feat\(brand\): a brand kit #size/l .*id:sc-1'
   refute_output --partial '#plan'
@@ -76,6 +77,19 @@ record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
   run cat "$SHEET"
   refute_output --partial '#of/'
   assert_output --partial '  goal: the gun plays on time'
+}
+
+@test "a notes with no row types asks no model and leaves the row as it was" {
+  sheet '- [ ] feat(brand): a brand kit #size/s #plan #high <!-- id:sc-1 -->\n'
+  answer '{"goal": "one kit", "approach": ["collect"], "checks": ["renders"], "size": "s", "split": []}'
+  # Replace the link, never write through it: it points at the built binary.
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$1" = row ] && exit 2\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$PLAN"
+  assert_output --partial 'notes row types failed'
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the model was asked with no type list"
+  grep -q '#plan' "$SHEET" || fail "the row lost its #plan"
 }
 
 @test "a plan with no goal is refused, recorded, and not asked for again" {

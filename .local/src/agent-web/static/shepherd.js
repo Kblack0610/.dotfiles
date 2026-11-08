@@ -14,7 +14,7 @@ const shst = { data: null, err: null, open: new Set() };
 const refreshShepherd = coalesce(async () => {
   try { shst.data = await api("/api/shepherd"); shst.err = null; } catch (e) { shst.err = e.message; }
   if (shst.data && shst.data.rundowns.length && !shst.open.size) shst.open.add(shst.data.rundowns[0].file);
-  renderOverview();
+  sst.render();
   if (st.tab === "log") renderLogRundowns();
 });
 

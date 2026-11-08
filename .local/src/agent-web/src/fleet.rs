@@ -1,18 +1,14 @@
-//! The Fleet tab: hub-core's `fleet`, shared with the TUI. The file parts are read on every
-//! request, so a file event shows at once; the Prometheus part is cached here as Infra's is.
-//! A runner's page (`/api/fleet/runner?name=`) is read only when it is opened, never cached.
+//! The Fleet tab: hub-core's `fleet`, shared with the TUI. It is all files, read on every
+//! request, so a file event shows at once. A runner's page (`/api/fleet/runner?name=`) is read
+//! only when it is opened. The accounts, tokens and Langfuse are the Costs tab's (costs.rs).
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
-use hub_core::fleet::{self, who, who::Who, Fleet, Paths, Prom};
+use hub_core::fleet::{self, who, who::Who, Fleet, Paths};
 use hub_core::table::View;
 use serde::Deserialize;
 
-use crate::cache::{off, ReadCache};
-
-/// As Infra's cache: a second tab or a reload inside this window reuses the last answer.
-const CACHE_SECS: u64 = 30;
+use crate::cache::off;
 
 /// The table view the page keeps in its URL (`q`, `s`, `sort`, `dir`, as every table's) and the
 /// tier 1 rows it has folded (`fold`, comma-separated runner names).
@@ -26,30 +22,15 @@ pub struct FleetQuery {
     pub fold: String,
 }
 
-#[derive(Default)]
-pub struct Cache(ReadCache<Prom, CACHE_SECS>);
-
-impl Cache {
-    /// A panic in the read is shown, not kept: the next request asks again.
-    async fn prom(&self) -> Arc<Prom> {
-        self.0.get((), off(fleet::prom)).await.unwrap_or_else(|e| {
-            Arc::new(Prom {
-                errors: vec![e],
-                ..Default::default()
-            })
-        })
-    }
-
-    pub async fn get(&self, q: FleetQuery) -> String {
-        let files = off(|| fleet::files(&Paths::from_env()));
-        let p = self.prom().await;
-        let mut f = files.await.unwrap_or_else(|e| Fleet {
+/// A Fleet read. The files are read afresh each time, so there is nothing to keep.
+pub async fn get(q: FleetQuery) -> String {
+    let f = off(|| fleet::files(&Paths::from_env()))
+        .await
+        .unwrap_or_else(|e| Fleet {
             errors: vec![e],
             ..Default::default()
         });
-        f.apply(&p);
-        render(f, &q)
-    }
+    render(f, &q)
 }
 
 /// The Fleet with its `who` rows cut to the view and folds, and the controls that drew them
@@ -93,6 +74,7 @@ mod tests {
     fn row(tier: u8, key: &str, parent: Option<&str>, kids: usize) -> Who {
         Who {
             tier,
+            kind: if tier == 3 { "session" } else { "lead" }.into(),
             who: key.into(),
             opens: if tier == 3 {
                 Opens::Session
@@ -102,6 +84,7 @@ mod tests {
             key: key.into(),
             state: "working".into(),
             since: None,
+            purpose: String::new(),
             doing: String::new(),
             under: String::new(),
             project: "dotfiles".into(),

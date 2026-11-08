@@ -216,7 +216,10 @@ panel_fzf_preview() {
 # no preview. A panel reopens in the layout ctrl-/ last left it in: the opening layout is the
 # panel's state file (panel_layout_file), else ${PANEL_LAYOUT} (`set-environment -g PANEL_LAYOUT
 # side` in .tmux.conf flips every panel that has none), else [default], else stacked.
-# agent-panel (Rust) gets the same two arguments from `panel-layout.sh args agent-panel`.
+# The third argument is the preview's scroll keys, the same in every panel: ctrl-d/ctrl-u half a
+# page, page-down/page-up a page (fzf's own shift-up/shift-down and the wheel stay). A panel that
+# needs one of those keys for itself binds it after these, and says so in its footer.
+# agent-panel (Rust) gets the same arguments from `panel-layout.sh args agent-panel`.
 panel_fzf_layout() {
   local file first='' helper
   file="$(panel_layout_file "$PANEL_NAME")"
@@ -227,8 +230,12 @@ panel_fzf_layout() {
   helper="$(realpath "${BASH_SOURCE[0]}")"
   helper="$(printf '%q' "${helper%/*}/panel-layout.sh")"
   PANEL_FZF_LAYOUT=(--preview-window="$(_panel_layout_spec "$first")"
-    "--bind=ctrl-/:transform($helper next $(printf '%q' "$PANEL_NAME"))")
+    "--bind=ctrl-/:transform($helper next $(printf '%q' "$PANEL_NAME"))"
+    "--bind=$PANEL_SCROLL_BINDS")
 }
+
+# The preview scroll keys panel_fzf_layout gives every panel.
+PANEL_SCROLL_BINDS='ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up,page-down:preview-page-down,page-up:preview-page-up'
 
 # panel_layout_file <panel> -- where a panel keeps the layout it was last left in, one word.
 panel_layout_file() {
