@@ -33,6 +33,7 @@ SLEEP = re.compile(SEP + r"sleep" + END)
 BREAK = re.compile(SEP + r"(break|exit)" + END)
 SHELL_C = re.compile(SEP + r"(?:ba|z|da|k)?sh(?:\s+-\S+)*\s+-[a-z]*c\s*$")
 TASK_OUTPUT = re.compile(r"""([^\s'"]*/tasks/([\w.-]+)\.output)""")
+WRAPPER = re.compile(SEP + r"(?:eval|ssh|watch|xargs|su|parallel|pkexec)(?:\s[^;&|(\n]*)?$")
 HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 
 WATCH_MSG = (
@@ -57,22 +58,54 @@ LIVE_MSG = (
 )
 
 
+def quote_flags(line, q):
+    """Per index of line: is it inside quotes. Also the quote still open at the line's end."""
+    flags, i, n = [False] * len(line), 0, len(line)
+    while i < n:
+        c = line[i]
+        if q is None:
+            if c == "\\":
+                i += 2
+                continue
+            if c in "'\"":
+                q, flags[i] = c, True
+        else:
+            flags[i] = True
+            if q == '"' and c == "\\":
+                if i + 1 < n:
+                    flags[i + 1] = True
+                i += 2
+                continue
+            if c == q:
+                q = None
+        i += 1
+    return flags, q
+
+
 def strip_heredocs(cmd):
-    out, end = [], None
+    """Drop heredoc bodies. A `<<WORD` inside quoted text opens no heredoc."""
+    out, end, q = [], None, None
     for line in cmd.split("\n"):
         if end is not None:
             if line.strip() == end:
                 end = None
             continue
-        m = HEREDOC.search(line)
-        if m:
-            end = m.group(2)
+        flags, q = quote_flags(line, q)
+        for m in HEREDOC.finditer(line):
+            if not flags[m.start()]:
+                end = m.group(2)
+                break
         out.append(line)
     return "\n".join(out)
 
 
-def code_texts(cmd):
-    """The command with quoted text blanked, plus each `-c '<payload>'`, recursively."""
+def code_texts(cmd, guard=False):
+    """The command with quoted text blanked, plus each `-c '<payload>'`, recursively.
+
+    guard=True is for a guard that must not miss a search: the quoted string after eval, ssh,
+    watch, xargs or su is code too, and an unterminated quote stays visible instead of
+    swallowing the rest of the command.
+    """
     texts, out, i, n = [], [], 0, len(cmd)
     while i < n:
         c = cmd[i]
@@ -89,8 +122,13 @@ def code_texts(cmd):
                     continue
                 body.append(cmd[j])
                 j += 1
-            if SHELL_C.search("".join(out)):
-                texts.extend(code_texts("".join(body)))
+            if guard and j >= n:
+                out.append(c + "".join(body))
+                i = j + 1
+                continue
+            prefix = "".join(out)
+            if SHELL_C.search(prefix) or (guard and WRAPPER.search(prefix)):
+                texts.extend(code_texts("".join(body), guard))
             out.append(" Q ")
             i = j + 1
             continue
