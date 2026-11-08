@@ -360,7 +360,7 @@ __pycache__/
 # ~/.local/src is a FOLDED stow symlink into this repo, so when the overlay
 # deploys ~/.local/src/meeting-status/<script>, the link is physically created
 # at .dotfiles/.local/src/meeting-status/<script> -- inside this checkout. That
-# nesting is the documented design (see dotfiles-overlay-link's header), and it
+# nesting is the documented design (see dotfiles-deploy's fold_point), and it
 # only works when the public repo cannot see the result.
 #
 # These two must deploy: com.kblack.meeting-ingest-{watch,mqtt}.plist invoke
