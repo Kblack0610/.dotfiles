@@ -34,6 +34,7 @@ Examples:
   claude-recall tool-output --by filetype         # which kinds of file reads fill it
 """
 import argparse
+import functools
 import json
 import math
 import os
@@ -1132,20 +1133,24 @@ TASK_ID = re.compile(r"<task-id>([\w.-]+)</task-id>")
 BG_OUTPUT = re.compile(r"/tasks/([\w.-]+)\.output")
 WORD = re.compile(r"[\w./~@:-]{5,}")
 RUNNER_COMMANDS = ("fleet-lead", "fleet-overseer")
-GUARD_DENY = re.compile(r"^PreToolUse:\w+ hook error: ([\w.-]+): ")
-_POLLS = []
+# A guard names itself first in its deny reason; same capture as session-outcomes.sh's guards count.
+GUARD_DENY = re.compile(r"^PreToolUse:\w+ hook error: (?:([a-z][a-z0-9-]+): )?")
+
+
+@functools.lru_cache(maxsize=None)
+def block_poll():
+    """block-poll.py from this checkout, so the loop count and the guard agree on what a wait loop is."""
+    import importlib.util
+    hook = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".claude", "hooks", "block-poll.py")
+    spec = importlib.util.spec_from_file_location("block_poll", hook)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def wait_loop(cmd):
-    """block-poll.py's own test for a sleeping wait loop, so this count and the guard agree."""
-    if not _POLLS:
-        import importlib.util
-        hook = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".claude", "hooks", "block-poll.py")
-        spec = importlib.util.spec_from_file_location("block_poll", hook)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _POLLS.append(lambda c: any(mod.polls(t) for t in mod.code_texts(mod.strip_heredocs(c))))
-    return _POLLS[0](cmd)
+    mod = block_poll()
+    return any(mod.polls(t) for t in mod.code_texts(mod.strip_heredocs(cmd)))
 
 
 def readonly_call(name, inp):
@@ -1443,7 +1448,9 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
             if name == "Agent":
                 emit("group", "agent", inp.get("subagent_type") or "general-purpose", 1,
                      len(text) * later, nctx)
-            if name == "Bash" and inp.get("run_in_background"):
+            # A call a guard denied never ran: it started nothing, polled nothing and read nothing.
+            denied = GUARD_DENY.match(text) if err else None
+            if name == "Bash" and inp.get("run_in_background") and not denied:
                 emit("group", "background", "started", 1, 0, nctx)
                 done = notified.get(tid)
                 if done:
@@ -1462,11 +1469,10 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
                 emit("group", "background", "timed out into background", 1, 0, nctx)
             cmd = str(inp.get("command") or inp.get("file_path") or "")
             out = BG_OUTPUT.search(cmd)
-            denied = GUARD_DENY.match(text)
             if denied:
-                # The call never ran, so it neither polled nor read anything.
-                if out or denied.group(1) == "block-poll":
-                    emit("group", "background", f"denied by {denied.group(1)}", 1, 0, nctx)
+                guard = denied.group(1) or "an unnamed guard"
+                if out or guard == "block-poll":
+                    emit("group", "background", f"denied by {guard}", 1, 0, nctx)
             elif out:
                 # Before its notice a read is polling a run still going; after it, the read is how
                 # the session sees the output, which the notice does not carry.
