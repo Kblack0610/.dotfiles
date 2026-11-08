@@ -21,9 +21,8 @@
 # and git's own `--sort=-v:refname` BOTH rank `v1.10.0-rc1` above `v1.10.0`
 # (verified on git 2.55; git applies semver precedence only when
 # `versionsort.suffix` is configured, which none of these callers did). So every
-# copy would have named a release candidate as the shipped release. No live repo
-# carries a prerelease tag today, so this never fired — it was armed, not broken.
-# See _gr_highest for the rule.
+# copy would have named a release candidate as the shipped release. See _gr_highest
+# for the rule.
 #
 # None of these fail loudly. A wrong tag renders as a plausible tag; an empty
 # shipping-next list renders exactly like a genuinely empty one. That is the same
@@ -62,7 +61,10 @@ _gr_highest() {
   local repo="$1" glob="$2" all="" stable=""
   all=$(git -C "$repo" tag --list "$glob" --sort=-v:refname 2>/dev/null) || return 0
   [ -n "$all" ] || return 0
-  stable=$(printf '%s\n' "$all" | grep -vE -- '-(rc|beta|alpha|pre|dev|snapshot)' || true)
+  # Any suffix after a dotted version is a prerelease, as semver has it: an rc, or a
+  # per-build tag such as the playground's `v0.5.0-dodginballs3`, which are builds of 0.5.0.
+  # Anchored on the `v` of the version, so a dotted number in a product prefix is not one.
+  stable=$(printf '%s\n' "$all" | grep -vE -- '(^|-)v[0-9]+(\.[0-9]+)+-|-(rc|beta|alpha|pre|dev|snapshot)' || true)
   if [ -n "$stable" ]; then
     printf '%s' "$(printf '%s\n' "$stable" | head -1)"
   else
