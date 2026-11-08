@@ -171,9 +171,11 @@ pub fn stages() {
 }
 
 /// A project's priority, the human's call on which projects agents should work first.
-/// Unset is normal. `fleet-dispatch` ranks a project's board rows by it before anything
-/// else. The `prio/` prefix keeps it apart from a row's `#high` / `#low` priority words.
-pub(crate) const PRIOS: [&str; 3] = ["prio/focus", "prio/high", "prio/low"];
+/// Unset is normal. `fleet-dispatch` and `agent-queue` rank a project's work by it, and
+/// while any project is `only` they start automated work for those projects alone (reds,
+/// urgent and requested work excepted). The `prio/` prefix keeps it apart from a row's
+/// `#high` / `#low` priority words.
+pub(crate) const PRIOS: [&str; 4] = ["prio/only", "prio/focus", "prio/high", "prio/low"];
 
 // -- stage and group: hashtags on the project's front page --------------------
 //
@@ -384,7 +386,7 @@ pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resu
     tag_verb(p, log, name, &refs, value)
 }
 
-/// `notes projects --prio <name> [--set focus|high|low|normal]`: read or set a project's
+/// `notes projects --prio <name> [--set only|focus|high|low|normal]`: read or set a project's
 /// priority. `normal` clears the tag. Reading prints the bare word, empty for normal.
 pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
     let dir = project_dir(p, name)?;
@@ -396,9 +398,9 @@ pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resul
         return Ok(());
     };
     let tag = match v {
-        "focus" | "high" | "low" => Some(format!("prio/{v}")),
+        "only" | "focus" | "high" | "low" => Some(format!("prio/{v}")),
         "normal" => None,
-        _ => bail!("unknown priority '{v}' (want: focus, high, low, normal)"),
+        _ => bail!("unknown priority '{v}' (want: only, focus, high, low, normal)"),
     };
     let updated = replace_head_tag(&content, &PRIOS, tag.as_deref())?;
     if updated != content {
@@ -409,7 +411,26 @@ pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resul
     Ok(())
 }
 
-/// The priority word a head declares (`focus`, `high`, `low`), empty for normal.
+/// `notes projects --prios`: every profile's indexed projects that declare a priority, as
+/// `name<TAB>prio`, one a line. The cheap read `agent-queue` takes on every listing: it reads
+/// only each front page's head, where `--stats` counts every sheet.
+pub fn prios() -> Result<()> {
+    for profile in config::all_profile_names()? {
+        let Ok(p) = config::resolve(Some(&profile)) else {
+            continue;
+        };
+        for (name, summary) in indexed(&p) {
+            let Some(dir) = summary.parent() else { continue };
+            let v = prio_of(dir);
+            if !v.is_empty() {
+                println!("{name}\t{v}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The priority word a head declares (`only`, `focus`, `high`, `low`), empty for normal.
 fn prio_of_str(content: &str) -> String {
     head_tag(content, &PRIOS)
         .and_then(|t| t.strip_prefix("prio/").map(str::to_string))
@@ -3947,6 +3968,9 @@ mod stage_tag_tests {
         let two = replace_head_tag(&one, &PRIOS, Some("prio/low")).unwrap();
         assert_eq!(two.matches("#prio/").count(), 1, "{two}");
         assert_eq!(prio_of_str(&two), "low");
+        let only = replace_head_tag(&two, &PRIOS, Some("prio/only")).unwrap();
+        assert_eq!(prio_of_str(&only), "only");
+        assert!(!only.contains("#prio/low"), "only replaces the old word: {only}");
         let cleared = replace_head_tag(&two, &PRIOS, None).unwrap();
         assert_eq!(cleared, s, "clearing must restore the sheet byte for byte");
         assert_eq!(prio_of_str(&cleared), "");
@@ -5986,13 +6010,29 @@ mod shape_tests {
         fs::write(
             &gate,
             format!(
-                "#!/bin/sh\necho \"$*\" >> '{}'\necho 'FAIL  draft  A brief'\nexit {code}\n",
+                "#!/bin/sh\n[ -n \"$GATE_PROBE\" ] && exit 0\necho \"$*\" >> '{}'\necho 'FAIL  draft  A brief'\nexit {code}\n",
                 calls.display()
             ),
         )
         .unwrap();
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&gate, fs::Permissions::from_mode(0o755)).unwrap();
+        // Another test's fork can hold our write fd until its child execs, and exec then fails
+        // with ETXTBSY (26). Run the stub once, retrying on that error alone, so the runs the
+        // test cares about start after the last writer is gone.
+        const ETXTBSY: i32 = 26;
+        loop {
+            match std::process::Command::new(&gate)
+                .env("GATE_PROBE", "1")
+                .status()
+            {
+                Err(e) if e.raw_os_error() == Some(ETXTBSY) => std::thread::yield_now(),
+                r => {
+                    r.unwrap();
+                    break;
+                }
+            };
+        }
         let gate = gate.display().to_string();
         (s, sheet, gate)
     }
