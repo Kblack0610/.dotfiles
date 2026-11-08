@@ -27,9 +27,15 @@ mkdir -p "$STATE_DIR"
 
 # The fleet-wide stop switch. agentctl@.service's ExecCondition skips every oneshot start
 # while this file exists, so a timer fire, `agentctl start` and a Restart= all honour it;
-# persistent runners (sentinel) keep running so the fleet is still watched while paused.
+# persistent runners (sentinel) and CRITICAL=yes ones (the RAM and disk reapers) keep
+# running, so a paused fleet is still watched and its tmpfs and disks still reaped.
 # It is runtime state, not config: pausing must not dirty a tracked conf.
 PAUSE_FILE="$STATE_DIR/PAUSED"
+
+# A pause is a lever for a hot hour, not a way to switch the fleet off: `agentctl liveness`
+# reports one older than this, because a forgotten pause stops every scheduled runner
+# without a single red.
+LIVENESS_PAUSE_MAX_S=86400
 
 die() { printf 'agentctl: %s\n' "$*" >&2; exit 1; }
 
@@ -115,6 +121,13 @@ load_agent() {
             yes|no) ;;
             *) printf 'invalid ENABLED=%s (yes|no)\n' "$ENABLED" >&2; exit 1 ;;
         esac
+        # CRITICAL=yes starts even while `agentctl pause` is on (agentctl@.service's
+        # ExecCondition): infra the machine needs whatever the fleet is doing.
+        : "${CRITICAL:=no}"
+        case "$CRITICAL" in
+            yes|no) ;;
+            *) printf 'invalid CRITICAL=%s (yes|no)\n' "$CRITICAL" >&2; exit 1 ;;
+        esac
         # A systemd time span, or 0 for a runner whose start time is a promise (see
         # write_timer_file). Checked here so a typo is an invalid conf, not a timer that
         # systemd quietly runs with no delay.
@@ -140,6 +153,7 @@ load_agent() {
         printf 'SCHEDULE=%s\n' "$SCHEDULE"
         printf 'AUTOSTART=%s\n' "$AUTOSTART"
         printf 'ENABLED=%s\n' "$ENABLED"
+        printf 'CRITICAL=%s\n' "$CRITICAL"
         printf 'RANDOM_DELAY=%s\n' "$RANDOM_DELAY"
         printf 'INBOX=%s\n' "$INBOX"
         printf 'EFFECT=%s\n' "$EFFECT"
@@ -675,10 +689,108 @@ cmd_disable() {
     cmd_reload
 }
 
+# _epoch <systemd timestamp or ISO date> - epoch seconds; status 1 for an unset one, which
+# systemd prints as empty, "n/a" or 0 depending on version.
+_epoch() {
+    case "${1:-}" in ""|n/a|0) return 1 ;; esac
+    date -d "$1" +%s 2>/dev/null
+}
+
+# liveness - the fleet-liveness watch's probe: exit 1 with one line per fault when scheduled
+# work is not running at its times. The roster is every enabled runner the clock fires (a
+# SCHEDULE, or AUTOSTART), plus one another runner starts once it has reported; a conf with
+# neither is a called slot nobody expects to report. A fault is:
+#   - an invalid conf: reload writes it no timer, so it never runs
+#   - a SCHEDULE whose timer is not armed: it will never fire again
+#   - a persistent AUTOSTART runner that is not running
+#   - no last-outcome, unless it is mid-first-run, or its timer was armed in the last 8 days
+#     (the longest cadence is weekly) and nothing has fired or started it
+#   - last-outcome STALLED or FAILED, or PENDING with the unit not running
+#   - a timer fire with no run recorded after it: the start was refused or died before
+#     ExecStartPost, so the verdict on file is an older run's and reads green
+#   - a pause older than LIVENESS_PAUSE_MAX_S
+# A start the pause skipped (Result=exec-condition) is the pause working, not a fault.
+# Fails closed: an empty roster, or nobody reporting, is exit 1, because "no runner reports"
+# looks exactly like "the reporting broke".
+cmd_liveness() {
+    local now n conf f kind sched auto timer fired armed ran rc=0 roster=0 reported=0
+    local running skipped since
+    now=$(date +%s)
+    if [ -e "$PAUSE_FILE" ]; then
+        since=$(_epoch "$(head -1 "$PAUSE_FILE" | cut -d' ' -f1)") || since=$now
+        if [ $((now - since)) -gt "$LIVENESS_PAUSE_MAX_S" ]; then
+            printf 'fleet: paused for %s (%s), no scheduled runner starts: agentctl resume\n' \
+                "$(fmt_dur $((now - since)))" "$(head -1 "$PAUSE_FILE")"
+            rc=1
+        fi
+    fi
+    for n in $(list_agent_names); do
+        if ! conf=$(load_agent "$n" 2>&1); then
+            printf '%s: invalid conf (%s)\n' "$n" "$conf"; rc=1; continue
+        fi
+        [ "$(kv_get ENABLED <<<"$conf")" = yes ] || continue
+        kind=$(kv_get KIND <<<"$conf"); sched=$(kv_get SCHEDULE <<<"$conf")
+        auto=$(kv_get AUTOSTART <<<"$conf")
+        f=$(_outcome_file "$n")
+        [ -n "$sched" ] || [ "$auto" = yes ] || [ -e "$f" ] || continue
+        roster=$((roster + 1))
+        running=0
+        case "$(unit_state "$n")" in active|activating|reloading) running=1 ;; esac
+        skipped=0; [ "$(unit_result "$n")" = exec-condition ] && skipped=1
+        fired=""; timer="agentctl-$n.timer"
+        if [ -n "$sched" ]; then
+            if [ "$(systemd_show "$timer" ActiveState)" != active ]; then
+                printf '%s: timer not armed, it never fires (agentctl reload)\n' "$n"; rc=1; continue
+            fi
+            fired=$(_epoch "$(systemd_show "$timer" LastTriggerUSec)") || fired=""
+        fi
+        if [ "$kind" = persistent ] && [ "$auto" = yes ] && [ "$running" = 0 ]; then
+            printf '%s: persistent runner not running (agentctl start %s)\n' "$n" "$n"; rc=1; continue
+        fi
+        if [ ! -r "$f" ]; then
+            [ "$running" = 1 ] || [ "$skipped" = 1 ] && continue
+            if [ -n "$sched" ] && [ -z "$fired" ] \
+               && armed=$(_epoch "$(systemd_show "$timer" ActiveEnterTimestamp)") \
+               && [ $((now - armed)) -lt $((8 * 86400)) ] \
+               && ! _epoch "$(systemd_show "agentctl@$n.service" InactiveExitTimestamp)" >/dev/null; then
+                continue
+            fi
+            printf '%s: never reported an outcome\n' "$n"; rc=1; continue
+        fi
+        reported=$((reported + 1))
+        case "$(cat "$f")" in
+            # FAILED is delivery-loop's word for a pass that ran and failed.
+            STALLED|FAILED) printf '%s: %s\n' "$n" "$(cat "$f")"; rc=1; continue ;;
+            # PENDING is seeded in ExecStartPost and promoted to STALLED by a stop, so one
+            # seen with the unit down means the stop hook never ran.
+            PENDING) [ "$running" = 1 ] || { printf '%s: PENDING but not running\n' "$n"; rc=1; }; continue ;;
+        esac
+        # Every start rewrites last-outcome (PENDING in ExecStartPost, the verdict at the
+        # end), so an outcome older than the last fire means that fire never became a run.
+        # 60s covers the second-granular mtime against systemd's microsecond trigger stamp.
+        if [ -n "$fired" ] && [ "$running" = 0 ] && [ "$skipped" = 0 ]; then
+            ran=$(stat -c %Y "$f")
+            if [ $((fired - ran)) -gt 60 ]; then
+                printf '%s: timer fired %s but no run since (last run %s ago, result=%s)\n' \
+                    "$n" "$(date -d "@$fired" '+%a %H:%M')" "$(fmt_dur $((now - ran)))" "$(unit_result "$n")"
+                rc=1
+            fi
+        fi
+    done
+    [ "$roster" -gt 0 ] || { printf 'fleet: no enabled runner on the roster: the config is broken\n'; return 1; }
+    [ "$reported" -gt 0 ] || { printf 'fleet: no runner has reported an outcome\n'; return 1; }
+    return "$rc"
+}
+
 # pause [reason] / resume - the one switch for the whole fleet. See PAUSE_FILE.
 cmd_pause() {
     printf '%s%s\n' "$(date -Is)" "${1:+ $*}" > "$PAUSE_FILE"
     printf 'agentctl: paused - no oneshot runner starts until: agentctl resume\n'
+    local n crit=()
+    for n in $(list_agent_names); do
+        [ "$(agent_field "$n" CRITICAL)" = yes ] && crit+=("$n")
+    done
+    [ "${#crit[@]}" -eq 0 ] || printf 'agentctl: still running (CRITICAL=yes): %s\n' "${crit[*]}"
 }
 
 cmd_resume() {
@@ -887,7 +999,8 @@ Usage:
   agentctl restart <name>        Restart agent
   agentctl enable <name>         Set ENABLED=yes in its conf and reload (arms its timer)
   agentctl disable <name>        Set ENABLED=no in its conf and reload (survives reload)
-  agentctl pause [reason]        Stop every oneshot runner from starting (sentinel keeps running)
+  agentctl pause [reason]        Stop every oneshot runner from starting (sentinel and CRITICAL=yes keep running)
+  agentctl liveness              Exit 1 naming each runner not running at its times (the fleet-liveness probe)
   agentctl resume                Undo pause
   agentctl logs <name> [-f]      Tail merged stdout+stderr+inbox (use -f to follow)
   agentctl reload                Rescan agents/, regenerate timers, daemon-reload
@@ -968,6 +1081,7 @@ case "${1:-}" in
     disable)           shift; cmd_disable "$@" ;;
     pause)             shift; cmd_pause "$@" ;;
     resume)            cmd_resume ;;
+    liveness)          cmd_liveness ;;
     logs)              shift; cmd_logs "$@" ;;
     reload)            cmd_reload ;;
     watch)             cmd_watch ;;
