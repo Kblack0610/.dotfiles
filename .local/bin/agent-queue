@@ -795,8 +795,8 @@ file_story() {
 # not open there, or a live item already names it (two items cannot both close one row). `from:` stays
 # the item's origin: a board origin also means dispatch's presence gate and the judge's picks.
 link_row() {
-  local id="$1" project="$2" lab="" code="" taken out
-  [ -f "$AQ_MAP" ] && IFS=$'\t' read -r lab code < <(project_board "$project")
+  local id="$1" project="$2" lab code taken out
+  IFS=$'\t' read -r lab code < <(project_board "$project")
   [ -n "$lab" ] && [ -n "$code" ] || die "--row $id: $project has no agent board (no lab or code in $AQ_MAP)"
   taken="$(collect $ACTIVE | jq -r --arg r "$project:$id" 'first(.[] | select(.row == $r) | .slug) // empty')"
   [ -z "$taken" ] || die "--row $id: $taken already works that row; to take it over: agent-queue claim $taken"
@@ -868,9 +868,10 @@ cmd_add() {
   case "$weight" in '' | heavy | light) ;; *) die "--weight is heavy or light, not $weight" ;; esac
   case "$from" in human | shepherd | canary | research:?* | auto:?* | board:?*:?*) ;; *) die "--from is human, shepherd, canary, research:<facet>, auto:<filer> or board:<project>:<key>, not $from" ;; esac
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
-  [ -z "$epic" ] || [[ "$epic" =~ ^[a-z0-9]+-[0-9]+$ ]] || die "--epic is a row id, <code>-<N>, not $epic"
+  local row_id='^[a-z0-9]+-[0-9]+$'
+  [ -z "$epic" ] || [[ "$epic" =~ $row_id ]] || die "--epic is a row id, <code>-<N>, not $epic"
   if [ -n "$row" ]; then
-    [[ "$row" =~ ^[a-z0-9]+-[0-9]+$ ]] || die "--row is a row id, <code>-<N>, not $row"
+    [[ "$row" =~ $row_id ]] || die "--row is a row id, <code>-<N>, not $row"
     [ -z "$epic$want" ] || die "--epic and --want shape a new story; --row links a row already filed"
     case "$from" in board:* | canary) die "--row is for an item not promoted from the board and not a canary, not --from $from" ;; esac
   fi
@@ -931,9 +932,12 @@ cmd_add() {
   # A canary item is an eval of the fleet, not work on the project: fleet-bench canary is its record.
   case "$from" in
     board:* | canary) ;;
-    *) [ -z "$row" ] || { story="$(link_row "$row" "$project")" || exit 1; }
-       [ -n "$story" ] || story="$(prior_story "$slug" "$project")"
-       [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic" "$want")" ;;
+    *) if [ -n "$row" ]; then
+         story="$(link_row "$row" "$project")" || exit 1
+       else
+         story="$(prior_story "$slug" "$project")"
+         [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic" "$want")"
+       fi ;;
   esac
   mkdir -p "$AQ_DIR/$state"
   local f tmp

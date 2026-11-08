@@ -1646,8 +1646,8 @@ STUB
   [ "$(field "$f" lane)" = agent ]
   [ "$(field "$f" profile)" = bnb ]
   [ "$(field "$f" from)" = human ]
-  [ "$(grep -c '^notes --profile' "$NOTES_FIXTURE/calls.log")" = 1 ]
-  grep -qx 'notes --profile bnb ptask level --agent start lv-2' "$NOTES_FIXTURE/calls.log"
+  run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes --profile bnb ptask level --agent start lv-2'
 }
 
 @test "--row refuses an id that is not an open row, a row a live item names and a project with no board, writing nothing" {
@@ -1670,6 +1670,7 @@ STUB
 
 @test "--row takes one row id, on one item, with no story options" {
   story_notes
+  : > "$NOTES_FIXTURE/calls.log"
   printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/p.md"
   run "$AQ" add --plan "$SANDBOX/p.md" --project game --row lv-2
   assert_failure; assert_output --partial "--row links one item"
@@ -1680,7 +1681,7 @@ STUB
   run "$AQ" add --project game --row lv-2 --from board:level:lv-2 --slug c "x"
   assert_failure; assert_output --partial "not --from board:level:lv-2"
   run grep -c ' start ' "$NOTES_FIXTURE/calls.log"
-  assert_failure
+  assert_output 0
 }
 
 @test "a board item and a project with no lab sheet file no story; a board item's row is its origin" {
