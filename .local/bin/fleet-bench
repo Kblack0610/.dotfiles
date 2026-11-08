@@ -29,10 +29,11 @@
 #   fleet-bench ledger [--json|--check|--launches DIR...]
 #                                runners, timers, direct headless launches, verdict words,
 #                                asks, open board rows; --check fails when one may only shrink grew
-#   fleet-bench rules [--json|--check]
+#   fleet-bench rules [--json|--check|--scenarios]
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
-#                                recorded confidence, its measure died, or a rule's text left its source
+#                                recorded confidence, its measure died, or a rule's text left its source;
+#                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale
 #   fleet-bench kpi [--json] [--at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
 #                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS),
@@ -1763,7 +1764,8 @@ cmd_ledger() {
 # `min` re-measures itself here: `measure` prints a number, `holds` says it is inside the bound.
 # confidence low records a number known not to hold, so `moved` is a change from what the register
 # says, never a number merely being past its line. `anchored` is the rule's text still being in its
-# source; null when the source is not on this machine.
+# source; null when the source is not on this machine. A row's optional `scenario` is the hard
+# situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 
 # rules_states -> each register row, one JSON object a line, with anchored, value, holds, moved, dead.
 rules_states() {
@@ -1805,7 +1807,19 @@ rules_summary() {
     ["rules=\(length)", "invariant=\(n("kind"; "invariant"))", "provisional=\(n("kind"; "provisional"))",
      "confidence_high=\(n("confidence"; "high"))", "confidence_med=\(n("confidence"; "med"))", "confidence_low=\(n("confidence"; "low"))",
      "keep=\(n("action"; "keep"))", "rewrite=\(n("action"; "rewrite"))", "drop=\(n("action"; "drop"))",
-     "measured=\(map(select(.holds != null)) | length)", "holds=\(n("holds"; true))", "past=\(n("holds"; false))"] | .[]' <<<"$1"
+     "measured=\(map(select(.holds != null)) | length)", "holds=\(n("holds"; true))", "past=\(n("holds"; false))",
+     "scenarios=\(map(select((.scenario // "") != "")) | length)"] | .[]' <<<"$1"
+}
+
+# rules_scenarios <states array> -> one line per hard scenario: ok, stale or absent (source not here),
+# the source file, the scenario, and the anchor that must stay.
+# One line per scenario, with its full source (three files here are called CLAUDE.md); 1 when any is stale.
+rules_scenarios() {
+  local out
+  out=$(jq -r '.[] | select((.scenario // "") != "")
+    | "\(if .anchored == true then "ok" elif .anchored == false then "stale" else "absent" end)\t\(.source)\t\(.scenario)\t\(.anchor)"' <<<"$1")
+  [ -z "$out" ] || printf '%s\n' "$out"
+  ! grep -q '^stale' <<<"$out"
 }
 
 cmd_rules() {
@@ -1815,6 +1829,7 @@ cmd_rules() {
   case "${1:-}" in
     --json) echo "$states" ;;
     --check) [ -z "$problems" ] || { echo "$problems"; return 1; } ;;
+    --scenarios) rules_scenarios "$states" ;;
     "") rules_summary "$states"; [ -z "$problems" ] || echo "$problems" ;;
     *) say "rules: unknown option $1"; return 2 ;;
   esac
