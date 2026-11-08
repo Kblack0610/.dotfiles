@@ -5592,3 +5592,18 @@ demand_of() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 1'
 }
+
+@test "reap: a partial merge waits for the final landing and keeps its row and after items open" {
+  pr_item MERGED
+  agent-queue set fix-crash "merged=$OID" partial=yes >/dev/null
+  agent-queue add --project game --slug next --after fix-crash 'next phase' >/dev/null
+  run cmd_reap
+  assert_success
+  run agent-queue show fix-crash --json
+  assert_equal "$(jq -r '.state + " " + .partial' <<<"$output")" 'waiting yes'
+  run cmd_reap
+  assert_success
+  run agent-queue show next --json
+  assert_equal "$(jq -r .hold <<<"$output")" 'after fix-crash'
+  grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail 'partial row closed'
+}

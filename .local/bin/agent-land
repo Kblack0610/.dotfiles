@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-land - land a gated PR and record it in one call, so a green gate costs no model call.
 #
-#   agent-land <pr> [--repo <owner>/<repo>] [--item <slug>] [--plan <file> --phase "<text>"] [--dry-run]
+#   agent-land <pr> [--repo <owner>/<repo>] [--item <slug>] [--plan <file> --phase "<text>"] [--partial] [--dry-run]
 #
 # Which repo <pr> is in: --repo, else the repo of the item's own pr:<owner>/<repo>#<pr>, else gh's
 # default for this checkout. Either way the PR must be in this checkout's origin repo (git, the merge
@@ -20,10 +20,10 @@
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private; a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
-# files (agent-queue attribute), and moves to done, status ok; a done ok item with no PR in this
+# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open; a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo), board (the
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
-# promoted from, done with proof "pr:<pr> commit:<sha>"), plan (--plan: the one "- [ ] <phase>"
+# promoted from, done with proof "pr:<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
@@ -33,6 +33,8 @@
 # merge that conflicts: merge it and re-run. A merge of <base> keeps a green gate green; gate again
 # only when the repo's CI doc says that merge needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
+# --partial records a merged PR with partial: yes and leaves the item and row open. Reap waits
+# for a final agent-land without --partial, which clears the marker and closes the item.
 # --dry-run prints the commands and runs none. No reap: `wt done` from inside the worktree
 # ends the caller's own tmux session, so wind-down releases the worktree.
 
@@ -207,7 +209,7 @@ catch_up() {
   return 0
 }
 
-pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0
+pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0
 while [ $# -gt 0 ]; do
   case "$1" in
   --project | --title) die "$1 is gone: the queue item is the record; agent-queue add --running --project <p> \"<task>\", then --item <slug>" ;;
@@ -215,6 +217,7 @@ while [ $# -gt 0 ]; do
   --phase) phase="${2:?--phase needs a value}" && shift ;;
   --item) item="${2:?--item needs a value}" && shift ;;
   --repo) repo="${2:?--repo needs a value}" repo_from=--repo && shift ;;
+  --partial) partial=1 ;;
   --dry-run) dry=1 ;;
   -h | --help) usage ;;
   -*) die "unknown flag: $1" ;;
@@ -224,6 +227,7 @@ while [ $# -gt 0 ]; do
 done
 [[ "$pr" =~ ^[0-9]+$ ]] || die "a PR number is required (try --help)"
 [ -z "$repo" ] || [[ "$repo" =~ ^[^/[:space:]]+/[^/#[:space:]]+$ ]] || die "--repo takes <owner>/<repo>, not $repo"
+[ "$partial" -eq 0 ] || [ -z "$plan$phase" ] || die "--partial cannot finish a plan phase; pass --plan and --phase on the final landing"
 row=''
 if [ -z "$item" ]; then
   mine=0
@@ -252,17 +256,22 @@ if [ -z "$repo" ]; then
 fi
 R=()
 [ -z "$repo" ] || R=(-R "$repo")
-# once_done -> how a done item takes this PR: "rerun" when it is the item's first PR (a re-run after
-# a failed board step), "again" when it is a later one, "more" when the item carries none in this
+# once_done -> how a done item takes this PR: "rerun" when it owns row closure (the first PR
+# on older items without closing_pr, a re-run after a failed board step), "again" when it is a later one, "more" when the item carries none in this
 # repo yet. A second PR in one repo is refused: that is a second task, so it gets its own item.
 once_done() {
-  local refs ref i
+  local refs ref i closing_pr
   read -ra refs <<<"$(jq -r '.pr // ""' <<<"$it")"
   # A bare ref (a PR whose URL did not parse, or an old item) matches on its number alone.
   for i in "${!refs[@]}"; do
     [ "${refs[i]}" = "$pr_ref" ] || { [[ "${refs[i]}" != */*#* || "$pr_ref" != */*#* ]] && [ "${refs[i]##*#}" = "$pr" ]; } ||
       continue
-    [ "$i" -eq 0 ] && echo rerun || echo again
+    closing_pr=$(jq -r '.closing_pr // ""' <<<"$it")
+    if [ "$closing_pr" = "$pr_ref" ] || { [ -z "$closing_pr" ] && [ "$i" -eq 0 ]; }; then
+      echo rerun
+    else
+      echo again
+    fi
     return 0
   done
   [[ "$pr_ref" == */*#* ]] || die "queue item $item is done, and #$pr names no repo to add it under"
@@ -387,6 +396,10 @@ if [ -n "$plan$phase" ]; then
   [ "$n" -eq 1 ] || die "plan: $n unchecked lines start with \"- [ ] $phase\", need exactly 1"
 fi
 
+if [ "$partial" -eq 1 ] && [ "$(jq -r .state <<<"$it")" = done ]; then
+  die "--partial needs an open item; $item is already done"
+fi
+
 if [ "$dry" -eq 1 ]; then
   echo "item-line: gh pr view $pr${repo:+ -R $repo} --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
   echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item"
@@ -397,9 +410,14 @@ if [ "$dry" -eq 1 ]; then
   echo "body: gh pr view $pr${repo:+ -R $repo} --json body | comms-lint --channel pr-body -  (a score, never a gate)"
   echo "proof: gh pr view $pr${repo:+ -R $repo} --json mergeCommit, then merge_proof: an ancestor of origin/<base>"
   echo "live: dotfiles-autopull --now .  (fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo; never fails the landing)"
-  echo "item: agent-queue set $item pr=$pr merged=<sha> && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
+  if [ "$partial" -eq 1 ]; then
+    echo "item: agent-queue set $item partial=yes before merging; record pr=$pr merged=<sha> beside earlier PRs, leave the item open"
+    echo "board: left open until the final landing"
+  else
+    echo "item: agent-queue set $item pr=$pr merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
+  fi
   mapfile -t b < <(board_cmd)
-  [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
+  [ "$partial" -eq 1 ] || [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
   [ -z "$plan" ] || echo "plan: tick \"- [ ] $phase\" -> \"- [x] ... (#$pr)\" in $plan"
   exit 0
 fi
@@ -413,10 +431,19 @@ pr_ref=$(sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pulls?/([0-9]+).*#\1\#\2#' <<<"
 done_as=''
 it_pr=$(jq -r '.pr // ""' <<<"$it")
 own_repo
-if [ "$(jq -r .state <<<"$it")" = done ]; then done_as=$(once_done) || exit $?; fi
+if [ "$(jq -r .state <<<"$it")" = done ]; then
+  done_as=$(once_done) || exit $?
+elif [ -n "$it_pr" ]; then
+  # Apply the same one-PR-per-repo rule while the item is still open.
+  once_done >/dev/null || exit $?
+fi
 # Before stamp_item, so a refused run leaves the PR untouched.
 if [ "$state" = MERGED ]; then own_merged; else own_head; fi
 stamp_item
+# Persist intent even on an already-merged re-run, before any later record step can fail.
+if [ "$partial" -eq 1 ]; then
+  out=$(agent-queue set "$item" partial=yes 2>&1) || fail item "$(lastline "$out")"
+fi
 
 if [ "$state" = MERGED ]; then
   echo "merge: #$pr already MERGED, recording it"
@@ -456,9 +483,29 @@ chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task
 case "$done_as" in
 '')
   [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || agent-queue claim "$item" >/dev/null 2>&1 || echo "item: could not record this session on $item (agent-queue claim)" >&2
-  out=$(agent-queue set "$item" "pr=$pr_ref" "merged=$merged" 2>&1) || fail item "$(lastline "$out")"
+  # Re-read so earlier partial landings survive, including a re-run of this PR.
+  # closing_pr owns a failed board step even when it is the second PR in the list.
+  it=$(agent-queue show "$item" --json 2>&1) || fail item "agent-queue show: $(lastline "$it")"
+  read -ra refs <<<"$(jq -r '.pr // ""' <<<"$it")"
+  read -ra oids <<<"$(jq -r '.merged // ""' <<<"$it")"
+  found=0
+  for i in "${!refs[@]}"; do
+    if [ "${refs[i]}" = "$pr_ref" ] || [ "${refs[i]}" = "$pr" ]; then
+      refs[i]=$pr_ref oids[i]=$merged found=1
+    else
+      [ -n "${oids[i]:-}" ] || fail item "no merge recorded for ${refs[i]}; land it before finishing $item"
+    fi
+  done
+  if [ "$found" -eq 0 ]; then refs+=("$pr_ref"); oids+=("$merged"); fi
+  marker=''
+  [ "$partial" -eq 0 ] || marker=yes
+  closing=()
+  [ "$partial" -eq 1 ] || closing=("closing_pr=$pr_ref")
+  out=$(agent-queue set "$item" "pr=${refs[*]}" "merged=${oids[*]}" "partial=$marker" "${closing[@]}" 2>&1) || fail item "$(lastline "$out")"
   credited=$(credit)
-  out=$(agent-queue move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
+  if [ "$partial" -eq 0 ]; then
+    out=$(agent-queue move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
+  fi
   ;;
 more)
   # Its first PR credited the item and closed its row; this one joins the lists, in step. Read
@@ -472,11 +519,17 @@ more)
   credited=", beside $(jq -r .pr <<<"$it")"
   ;;
 esac
-echo "item: $item done with pr:$pr_ref${credited:-}"
+if [ "$partial" -eq 1 ]; then
+  echo "item: $item partial with pr:$pr_ref${credited:-}, left open for the final landing"
+else
+  echo "item: $item done with pr:$pr_ref${credited:-}"
+fi
 
 mapfile -t b < <(board_cmd)
-if [ "$done_as" = more ] || [ "$done_as" = again ]; then
-  [ "${#b[@]}" -eq 0 ] || echo "board: left to its first PR, $(jq -r '.pr | split(" ")[0]' <<<"$it") (agent-land on that one closes the row if its board step failed)"
+if [ "$partial" -eq 1 ]; then
+  echo "board: left open until the final landing"
+elif [ "$done_as" = more ] || [ "$done_as" = again ]; then
+  [ "${#b[@]}" -eq 0 ] || echo "board: left to its closing PR, $(jq -r '.closing_pr // (.pr | split(" ")[0])' <<<"$it") (agent-land on that one closes the row if its board step failed)"
 elif [ "${#b[@]}" -gt 0 ]; then
   out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
   echo "board: closed \"${b[-3]}\" with ${b[-1]}"

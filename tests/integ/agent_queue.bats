@@ -1733,3 +1733,19 @@ started_item() {
   assert_output --partial "already in the queue: one"
   [ ! -e "$AGENT_QUEUE_DIR/admission.jsonl" ]
 }
+
+@test "a partial merge cannot close ok or release after items" {
+  "$AQ" add --project game --running --slug partial 'two repos' >/dev/null
+  "$AQ" add --project game --slug next --after partial 'next phase' >/dev/null
+  "$AQ" set partial pr=o/game#1 merged=aaa111 partial=yes >/dev/null
+  run "$AQ" move partial done --status ok
+  assert_failure
+  assert_output --partial 'has a partial landing'
+  run "$AQ" show next --json
+  assert_equal "$(jq -r .hold <<<"$output")" 'after partial'
+  "$AQ" set partial partial= >/dev/null
+  run "$AQ" move partial done --status ok
+  assert_success
+  run "$AQ" show next --json
+  assert_equal "$(jq -r '.hold // ""' <<<"$output")" ''
+}
