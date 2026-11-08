@@ -47,7 +47,7 @@ const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = {
   q: "", state: "", sort: "", dir: "", total: 3, shown: 2,
   states: [{ name: "all", n: 3 }, { name: "attention", n: 1 }, { name: "green", n: 2 }],
-  columns: ["project", "channel", "pinned", "live", "status", "telemetry", "deps", "id", "where"].map(col),
+  columns: ["project", "channel", "pinned", "live", "status", "prev", "last_deploy", "telemetry", "deps", "id", "where"].map(col),
   facets: [],
 };
 const NOW = () => Math.round(Date.now() / 1e3);
@@ -56,6 +56,11 @@ const drift = {
   pinned: { value: "v2", source: "manifest" }, live: { value: "v1", source: "k8s", image: "reg/binks:v1", error: null },
   pinned_text: "v2", live_text: "v1", telemetry_text: "0/1", deps_text: "unity-core v0.5.0", deps: ["unity-core"],
   telemetry: [{ watch: "binks-probe", state: "TRIP", level: "bad", since: 1793942659 }], drift_since: 1793942659, probed_at: 1793942700,
+  prev_text: "v0", last_deploy_text: "11-06 15:00 fail", deploy_level: "warn",
+  deploys: { source: "o/r", error: null, prev: "v0", history: [
+    { version: "v2", state: "fail", at: 1793942659, url: "https://github.test/run/9" },
+    { version: "v1", state: "ok", at: 1793942000, url: "javascript:alert(1)" },
+  ] },
 };
 const data = (o = {}) => ({
   at: NOW() - 120, question: "What is building, and what is live where?", summary: "3 channels: 1 drift, 2 ok", stale_after: 3600, errors: [], table,
@@ -286,4 +291,17 @@ test("showing the tab reads the view in the URL, which a Projects badge links to
   await settled();
   assert.equal(asked[0], "/api/releases?q=project%3Abinks");
   run("st.views.releases = ''");
+});
+
+test("a row says what came before and how the last deploy ended, and opens on its runs", () => {
+  show();
+  const closed = box.innerHTML;
+  assert.match(closed, />v0<\/td>/);
+  assert.match(closed, /class="opt warn">11-06 15:00 fail</);
+  relst.sel = "binks|binks-prod";
+  run("relst.render()");
+  const open = box.innerHTML;
+  assert.match(open, /<a href="https:\/\/github\.test\/run\/9"[^>]*>run<\/a>/);
+  assert.doesNotMatch(open, /javascript:/, "only an https run is a link");
+  assert.match(open, /<td colspan="9">/);
 });

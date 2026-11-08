@@ -2,7 +2,7 @@
 //! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear), green rows folded to one line,
 //! the selected row's versions, watches and dependencies in a pane under the list.
 
-use hub_core::releases::{fold, Changelog, Level, Release, Releases, STALE_SECS};
+use hub_core::releases::{fold, Changelog, Deploy, Level, Release, Releases, STALE_SECS};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -22,12 +22,14 @@ pub(crate) fn alert(l: Level, p: Palette) -> Style {
 
 /// `Release::COLUMNS` in capitals, in its order, the sort mark placed by that index. `id` and
 /// `where` filter without a column: the channel says the one, the pane the other.
-const HEADER: [&str; 7] = [
+const HEADER: [&str; 9] = [
     "PROJECT",
     "CHANNEL",
     "PINNED",
     "LIVE",
     "STATUS",
+    "PREV",
+    "LAST DEPLOY",
     "TELEMETRY",
     "DEPS",
 ];
@@ -39,6 +41,8 @@ const PROJECT_FIT: (usize, usize) = (13, 26);
 const CHANNEL_FIT: (usize, usize) = (15, 36);
 const VERSION_CAP: usize = 11;
 const STATUS_CAP: usize = 10;
+/// `10-26 15:02 fail`.
+const LAST_DEPLOY_CAP: usize = 16;
 
 /// The changelog read for the opened channel: whose it is, whether a worker is still on it (one at
 /// a time, so holding a key over many projects asks for the last one only), and what came back,
@@ -168,8 +172,9 @@ impl ReleasesView {
         let mut out = Table {
             header: HEADER.to_vec(),
             rows: rows.iter().map(|r| row(r, p)).collect(),
-            keep: vec![0, 1, 3, 4, 2, 5],
-            flex: Some(6),
+            // PREV and LAST DEPLOY go first when it is narrow: a wide terminal has the room.
+            keep: vec![0, 1, 3, 4, 2, 7, 6, 5],
+            flex: Some(8),
             flexmin: 12,
             flexkeep: false,
             right: vec![],
@@ -179,6 +184,8 @@ impl ReleasesView {
                 (2, VERSION_CAP),
                 (3, VERSION_CAP),
                 (4, STATUS_CAP),
+                (5, VERSION_CAP),
+                (6, LAST_DEPLOY_CAP),
             ],
             mark,
         }
@@ -211,9 +218,9 @@ fn row(r: &Release, p: Palette) -> Vec<Cell> {
     } else {
         r.live_text.clone().into()
     };
-    let watches = match r.watch_level {
-        Level::Ok => r.telemetry_text.clone().into(),
-        l => cell(r.telemetry_text.clone(), level(l, p)),
+    let tinted = |text: &str, l: Level| match l {
+        Level::Ok => text.to_string().into(),
+        l => cell(text.to_string(), level(l, p)),
     };
     vec![
         r.project.clone().into(),
@@ -221,7 +228,9 @@ fn row(r: &Release, p: Palette) -> Vec<Cell> {
         r.pinned_text.clone().into(),
         live,
         cell(r.status.clone(), level(r.status_level, p)),
-        watches,
+        r.prev_text.clone().into(),
+        tinted(&r.last_deploy_text, r.deploy_level),
+        tinted(&r.telemetry_text, r.watch_level),
         r.deps_text.clone().into(),
     ]
 }
@@ -234,6 +243,15 @@ fn side(s: &hub_core::releases::Side, text: &str) -> String {
     }
     if let Some(e) = &s.error {
         out += &format!(": {e}");
+    }
+    out
+}
+
+/// One deployment on one pane line: when, what, how it ended, the run that proves it.
+fn deploy_line(d: &Deploy, now: i64) -> String {
+    let mut out = format!("{} {} {}", clock(d.at, now), d.version, d.state);
+    if let Some(u) = &d.url {
+        out += &format!(" {u}");
     }
     out
 }
@@ -266,6 +284,16 @@ pub fn detail(
     part("Live", &side(&r.live, &r.live_text), plain);
     if let Some(t) = &r.tag {
         part("Tag", t, plain);
+    }
+    if let Some(e) = &r.deploys.error {
+        part("Deploys", &format!("{e} ({})", r.deploys.source), p.warn());
+    }
+    if let Some(v) = &r.deploys.prev {
+        part("Prev", v, plain);
+    }
+    for d in &r.deploys.history {
+        let style = if d.failed() { p.warn() } else { plain };
+        part("Deploy", &deploy_line(d, now), style);
     }
     if let Some(t) = &r.place {
         part("Where", t, plain);
@@ -362,7 +390,10 @@ mod tests {
     #[test]
     fn the_header_is_hub_cores_columns() {
         use hub_core::table::Row;
-        let lower: Vec<String> = HEADER.iter().map(|h| h.to_lowercase()).collect();
+        let lower: Vec<String> = HEADER
+            .iter()
+            .map(|h| h.to_lowercase().replace(' ', "_"))
+            .collect();
         let all = Release::COLUMNS;
         assert_eq!(lower, all[..HEADER.len()]);
         assert_eq!(all[HEADER.len()..], ["id", "where"]);
@@ -477,9 +508,9 @@ mod tests {
         let s = sample();
         let p = Palette::default();
         let cells = row(&s.rows[0], p);
-        assert_eq!(cells[5].style, p.bad());
+        assert_eq!(cells[7].style, p.bad());
         assert_eq!(cells[3].style, p.bad());
-        assert_eq!(row(&s.rows[1], p)[5].style, Style::default());
+        assert_eq!(row(&s.rows[1], p)[7].style, Style::default());
     }
 
     #[test]
@@ -545,6 +576,27 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_table_shows_prev_and_last_deploy_and_the_narrow_one_drops_them_first() {
+        let mut s = sample();
+        s.rows[0].prev_text = "v1.2.1".into();
+        s.rows[0].last_deploy_text = "11-06 15:00 ok".into();
+        let mut v = ReleasesView::default();
+        v.table.view.state = "all".into();
+        let wide = v.table(&s, Palette::default(), 160, false);
+        assert!(text(&wide[0]).contains("LAST DEPLOY"), "{}", text(&wide[0]));
+        assert!(
+            text(&wide[1]).contains("11-06 15:00 ok"),
+            "{}",
+            text(&wide[1])
+        );
+        let narrow = text(&v.table(&s, Palette::default(), 80, false)[0]);
+        assert!(
+            !narrow.contains("PREV") && narrow.contains("LIVE"),
+            "{narrow}"
+        );
+    }
+
+    #[test]
     fn a_changelog_still_being_read_or_refused_or_empty_says_so() {
         assert!(pane(None, 80)
             .iter()
@@ -570,5 +622,47 @@ mod tests {
         assert_eq!(v.pick(1), None);
         v.cl.read = Some(Err("gone".into()));
         assert_eq!(v.pick(1), None);
+    }
+
+    #[test]
+    fn the_pane_lists_the_history_and_its_runs_and_says_a_failed_read() {
+        use hub_core::releases::{Deploy, Deploys};
+        let mut s = sample();
+        let d = |version: &str, state: &str| Deploy {
+            version: version.into(),
+            state: state.into(),
+            at: AT,
+            url: Some("https://github.test/run/7".into()),
+        };
+        s.rows[0].deploys = Deploys {
+            source: "o/r".into(),
+            prev: Some("v1".into()),
+            history: vec![d("v3", "fail"), d("v2", "ok")],
+            ..Default::default()
+        };
+        let p = Palette::default();
+        let pane = detail(&s.rows[0], p, AT, 200, None);
+        let lines: Vec<String> = pane.iter().map(text).collect();
+        assert!(
+            lines.iter().any(|l| l.contains("Prev") && l.contains("v1")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|l| l.contains("v2 ok")), "{lines:?}");
+        let failed = pane.iter().find(|l| text(l).contains("v3 fail")).unwrap();
+        assert!(
+            text(failed).contains("https://github.test/run/7"),
+            "{}",
+            text(failed)
+        );
+        s.rows[0].deploys = Deploys {
+            source: "o/r".into(),
+            error: Some("gh api failed".into()),
+            ..Default::default()
+        };
+        let lines: Vec<String> = detail(&s.rows[0], p, AT, 200, None).iter().map(text).collect();
+        assert!(
+            lines.iter().any(|l| l.contains("gh api failed (o/r)")),
+            "{lines:?}"
+        );
     }
 }

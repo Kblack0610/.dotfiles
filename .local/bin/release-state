@@ -13,8 +13,9 @@
 #                                         release before it; --list names every tag to pick from
 #
 # Declared targets live in project-map.json `trackers.<p>.targets`; pinned is read from the
-# fetched remote branch, live from the cluster or health endpoint, and a failed probe says
-# `unknown`, never the last good value. Schema and statuses: docs/operations/release-state.md.
+# fetched remote branch, live from the cluster or health endpoint, deploy history from the
+# GitHub Deployments named after the target id, and a failed probe says `unknown`, never the
+# last good value. Schema and statuses: docs/operations/release-state.md.
 set -uo pipefail
 
 PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
@@ -22,6 +23,8 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")
 . "$PROJECT_NAME_LIB"
 # shellcheck source=../lib/agent-proof.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
+# shellcheck source=../lib/origin-repo.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
 NAME=release-state   # the runner refresh publishes under, never an inherited AGENTCTL_NAME
 
 STATE_DIR="${RELEASE_STATE_DIR:-$HOME/.agent/releases}"
@@ -33,6 +36,16 @@ KUBECTL="${KUBECTL:-kubectl}"
 PROBE_TIMEOUT="${RELEASE_PROBE_TIMEOUT:-20}"
 # Most merged-PR lines a tag's changelog lists when it has no CHANGELOG.md section.
 CHANGELOG_LINES=100
+# How many deployments a row keeps: what the opened row lists, and how far back PREV can look.
+DEPLOY_HISTORY=10
+# One call per target. The REST list has no status on it, which would be one more call per row.
+DEPLOY_QUERY='query($owner: String!, $name: String!, $env: String!, $n: Int!) {
+  repository(owner: $owner, name: $name) {
+    deployments(environments: [$env], first: $n, orderBy: {field: CREATED_AT, direction: DESC}) {
+      nodes { createdAt description commitOid ref { name } latestStatus { state logUrl createdAt } }
+    }
+  }
+}'
 
 # REFRESH_WHY (set by cmd_refresh) is where a dying pass leaves its reason for the outcome line;
 # the first die keeps it, so a caller's die does not hide the inner one that caused it.
@@ -187,6 +200,52 @@ sha_is_tag() {
   [[ "$tsha" == "$3"* ]] || [[ "$3" == "$tsha"* ]]
 }
 
+# deploys_none <source> [error] -> a channel with no history to show.
+deploys_none() {
+  jq -nc --arg s "$1" --arg e "${2:-}" '{source: $s, error: ($e | if . == "" then null else . end), history: [], prev: null, last: null}'
+}
+
+# deploys <project> <target-json> -> {source, error, history, prev, last}.
+# The workflow that deploys a target records a GitHub Deployment whose environment is the target
+# id and whose description is the version. last is the newest finished one, whatever its result;
+# prev is the newest version that succeeded before the one now succeeded.
+deploys() {
+  local proj="$1" t="$2" id slug out read_ok
+  if [ "$(jq -r '.implicit // false' <<<"$t")" = true ]; then
+    deploys_none none
+    return
+  fi
+  slug="$(origin_repo "$(repo_dir "$proj")" github.com)" || slug=""
+  if [ -z "$slug" ]; then
+    deploys_none none
+    return
+  fi
+  id="$(jq -r '.id' <<<"$t")"
+  if ! out="$(timeout "$PROBE_TIMEOUT" gh api graphql -f query="$DEPLOY_QUERY" -f owner="${slug%%/*}" -f name="${slug##*/}" \
+      -f env="$id" -F n="$DEPLOY_HISTORY" </dev/null 2>/dev/null)"; then
+    deploys_none "$slug" "gh api failed"
+    return
+  fi
+  # Captured, so a jq that dies part way never leaves a half answer beside the error row.
+  if ! read_ok="$(jq -c --arg s "$slug" '
+    def blank: if . == "" then null else . end;
+    def word: ascii_downcase | if . == "success" then "ok" elif . == "failure" or . == "error" then "fail" else . end;
+    [.data.repository.deployments.nodes[] | {
+      version: ((.description | blank) // .ref.name // .commitOid[0:8]),
+      state: ((.latestStatus.state // "pending") | word),
+      at: ((.latestStatus.createdAt // .createdAt) | fromdate),
+      url: (.latestStatus.logUrl | blank)
+    }] as $h
+    | [$h[] | select(.state == "ok")] as $ok
+    | {source: $s, error: null, history: $h,
+       prev: ([$ok[] | select(.version != $ok[0].version)][0].version),
+       last: ([$h[] | select(.state == "ok" or .state == "fail")][0])}' <<<"$out" 2>/dev/null)" || [ -z "$read_ok" ]; then
+    deploys_none "$slug" "unreadable answer"
+    return
+  fi
+  printf '%s' "$read_ok"
+}
+
 # telemetry <target-json> -> [{watch, state, since}]; state OK|TRIP|pending|missing.
 telemetry() {
   local t="$1" w st since out="[]"
@@ -207,10 +266,11 @@ telemetry() {
 
 # row <project> <target-json> <previous-state-json> -> one snapshot row
 row() {
-  local proj="$1" t="$2" prev="$3" p l status tel id tag drift_since="" now
+  local proj="$1" t="$2" prev="$3" p l d status tel id tag drift_since="" now
   id="$(jq -r '.id' <<<"$t")"
   p="$(pinned "$proj" "$t")"
   l="$(live "$t")"
+  d="$(deploys "$proj" "$t")"
   tel="$(telemetry "$t")"
   tag="$(project_release_tag "$proj" 2>/dev/null || true)"
   now="$(now_epoch)"
@@ -238,11 +298,11 @@ row() {
       '.rows // [] | map(select(.id == $id and .status == "drift" and .pinned.value == $pv and .live.value == $lv)) | .[0].drift_since // empty' <<<"$prev")"
     drift_since="${drift_since:-$now}"
   fi
-  jq -nc --arg proj "$proj" --argjson t "$t" --argjson p "$p" --argjson l "$l" --argjson tel "$tel" \
+  jq -nc --arg proj "$proj" --argjson t "$t" --argjson p "$p" --argjson l "$l" --argjson d "$d" --argjson tel "$tel" \
     --arg status "$status" --arg tag "$tag" --arg ds "$drift_since" --argjson now "$now" '{
       project: $proj, id: $t.id, channel: ($t.channel // "release"), where: ($t.where // null),
       implicit: ($t.implicit // false), tag: (if $tag == "" then null else $tag end),
-      pinned: $p, live: $l, status: $status,
+      pinned: $p, live: $l, deploys: $d, status: $status,
       drift_since: (if $ds == "" then null else ($ds | tonumber) end),
       telemetry: $tel, deps: ($t.deps // []), probed_at: $now }'
 }
@@ -323,10 +383,13 @@ cmd_show() {
   jq -r --arg p "$proj" --argjson rank "$RANK" '
     def v(x): (x.value // (if x.source == "none" or x.error == "no release tag" then "-" else "?" end));
     def tel: (.telemetry | if length == 0 then "-" else "\(map(select(.state == "OK")) | length)/\(length)" end);
-    (["PROJECT","CHANNEL","PINNED","LIVE","STATUS","TELEMETRY"] | @tsv),
+    def prev: (.deploys // {}) | if .error then "?" else (.prev // "-") end;
+    def last: (.deploys // {}) | if .error then "?" elif .last == null then "-"
+      else "\(.last.at | strflocaltime("%m-%d %H:%M")) \(.last.state)" end;
+    (["PROJECT","CHANNEL","PINNED","LIVE","STATUS","PREV","LAST DEPLOY","TELEMETRY"] | @tsv),
     (.rows | map(select($p == "" or .project == $p))
       | sort_by(($rank[.status] // 9), .project, .id)[]
-      | [.project, (.channel + (if .implicit then "" else " " + .id end)), v(.pinned), v(.live), .status, tel] | @tsv)
+      | [.project, (.channel + (if .implicit then "" else " " + .id end)), v(.pinned), v(.live), .status, prev, last, tel] | @tsv)
   ' "$STATE" | column -t -s $'\t'
 }
 

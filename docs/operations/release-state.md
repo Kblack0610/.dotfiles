@@ -1,6 +1,6 @@
 # release-state
 
-`release-state` answers "what is pinned and what is live on each project's deploy channels". It reads the declared targets from the registry, probes each one, and writes a snapshot that the hub's Releases tab reads. Plan: `~/.claude/plans/we-need-reaseleases-twinkling-frog.md`.
+`release-state` answers "what is pinned and what is live on each project's deploy channels, and what was deployed there before". It reads the declared targets from the registry, probes each one, and writes a snapshot that the hub's Releases tab reads. Plan: `~/.claude/plans/we-need-reaseleases-twinkling-frog.md`.
 
 ## Commands
 
@@ -26,7 +26,7 @@ Targets live in `project-map.json` under `trackers.<project>.targets`, one objec
 
 | Field | Meaning |
 |---|---|
-| `id` | Unique across the registry, lowercase and `-`. Later phases use it as the GitHub Deployments environment name |
+| `id` | Unique across the registry, lowercase and `-`. Also the GitHub Deployments environment its deploy workflow records under |
 | `channel` | `prod`, `beta`, `alpha`, `preview` or `internal` |
 | `where` | Free text for the UI: the cluster or store |
 | `pinned` | `{"tag": true}` (the project's newest release tag), or `repo` (a registry key) + `path` + one of `key` (first `<key>:` line, default `tag`) or `image` (a kustomize `images:` `newTag` for that name, else `image: <name>:<tag>`). `branch` defaults to the repo's registry `branch`, then `origin/HEAD` |
@@ -35,6 +35,19 @@ Targets live in `project-map.json` under `trackers.<project>.targets`, one objec
 | `deps` | Registry projects this one depends on |
 
 A shipping app (`type: app`) with no targets gets one implicit `release` row: its newest release tag. Games get their rows from store channels in a later phase. `project-map-doctor` check 4c validates every target.
+
+## Deploy history
+
+The workflow that deploys a target records one GitHub Deployment: `environment` is the target id, `description` the version, and its status carries the run as `log_url`. `release-state` reads the newest 10 per target from the project's repo (`trackers.<p>.repo`, its checkout's `origin` on github.com), into the row's `deploys`:
+
+| Field | Meaning |
+|---|---|
+| `history` | The newest deployments, each `{version, state, at, url}`; `state` is `ok`, `fail` or GitHub's word for one not finished |
+| `last` | The newest that finished, success or not: the LAST DEPLOY column. A failure makes the row amber |
+| `prev` | The version that succeeded before the newest success: the PREV column |
+| `error` | Why the read failed; PREV and LAST DEPLOY then say `?` |
+
+A target nothing records under, or a project whose repo is not on GitHub, has an empty history and `-` in both columns. The target ids are stable before their row exists: a store target's workflow records under `<game>-steam-<branch>`, `<game>-play-<track>`, `<game>-testflight`, `pmp-android-<track>` (`prod` for production), `pmp-ios-testflight` or `pmp-ios-prod`, so a registry row added later reads its whole history. Recording is the `record-deployment` action in each repo; it uses `auto_inactive: false` because GitHub's default rewrites each earlier success to `inactive`, which would erase PREV.
 
 ## Statuses
 
@@ -57,6 +70,8 @@ A shipping app (`type: app`) with no targets gets one implicit `release` row: it
 |---|---|
 | A row is `unknown` with `fetch failed` | The checkout's `origin` is unreachable (VPN, ssh agent). Fix the remote; the snapshot never reuses an older ref |
 | A row is `unknown` with `kubectl get failed` | The context is missing from `kubectl config get-contexts`, or the deployment name is wrong |
+| PREV and LAST DEPLOY say `?` | `gh` is not logged in where the runner runs, or the API was down; the row's `deploys.error` says which call failed |
+| PREV and LAST DEPLOY say `-` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly |
 | A row is `unknown` with `no checkout for repo` | The repo key has no `paths` entry in the registry on this machine |
 | A game shows no row | Expected until store channels land. Playground tags (`v0.5.0-barrage5`) number playground builds; a game's own version lives on its sheet, so a playground tag glob on a game makes the doctor report its sheet as behind |
 | `changelog` says `<tag> is not a release tag of <project>` | The tag is not on the project's line (a candidate of another product, or not fetched). `release-state changelog --list <project>` shows the ones it offers; fetch the checkout if a new tag is missing |
