@@ -22,6 +22,7 @@ mod outboxtab;
 mod projtab;
 mod proptab;
 mod queuetab;
+mod releases;
 mod schedules;
 mod tabreq;
 mod tasktab;
@@ -430,6 +431,21 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
+    if tab == Some(Tab::Releases) {
+        let s = hub_core::releases::read(&hub_core::session_actions::System);
+        let now = hub_core::jobs::now();
+        a.tab = Tab::Releases;
+        a.open_query(section);
+        for l in
+            a.rv.status(&s, a.p, now)
+                .iter()
+                .chain(&a.rv.table(&s, a.p, w, false))
+                .chain(&a.rv.foot(&s, a.p, w))
+        {
+            let _ = writeln!(out, "{}", plain(l));
+        }
+        return i32::from(!s.errors.is_empty());
+    }
     if tab == Some(Tab::Schedules) {
         let paths = hub_core::fleet::Paths::from_env();
         let s = hub_core::schedules::read(&paths, &hub_core::session_actions::System);
@@ -513,6 +529,7 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     // agent-propose makes its store on the first write, and a watch needs it to exist now.
     std::fs::create_dir_all(hub_core::boards::proposals_dir()).ok();
     std::fs::create_dir_all(&app.files.tokens).ok();
+    std::fs::create_dir_all(&app.files.releases).ok();
     let paths = app.watched();
     let probe = app.paths.clone();
     let boards = app.files.clone();
@@ -527,6 +544,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         }
         if e.paths.iter().any(|p| boards.is_token_file(p)) {
             let _ = files.send(Msg::TokenFiles);
+        }
+        if e.paths.iter().any(|p| boards.is_release_file(p)) {
+            let _ = files.send(Msg::ReleaseFile);
         }
         if e.paths.iter().any(|p| boards.is_board_file(p)) {
             let _ = files.send(Msg::BoardFiles);
@@ -572,6 +592,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     }
     if app.tab == Tab::Schedules {
         app.read_schedules();
+    }
+    if app.tab == Tab::Releases {
+        app.read_releases();
     }
     // `--tab outbox` read the outbox in open_query above.
     if app.tab == Tab::Daily && !app.daily_outbox {

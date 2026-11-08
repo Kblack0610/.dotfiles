@@ -12,7 +12,7 @@ pub struct Tab {
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 10] = [
+pub const TABS: [Tab; 11] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -76,7 +76,7 @@ pub const TABS: [Tab; 10] = [
         question: "What runs on its own, and why?",
         sections: &["table", "detail"],
     },
-    // Last, the tenth (key 0), so no digit shifts. Every dollar figure the other tabs showed is
+    // After Schedules, so no digit shifts. Every dollar figure the other tabs showed is
     // here, cut seven ways; they keep a one-line badge that links in.
     Tab {
         id: "costs",
@@ -84,6 +84,14 @@ pub const TABS: [Tab; 10] = [
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
         sections: &["burn", "tokens", "langfuse", "sections", "totals", "table"],
+    },
+    // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the
+    // Builds section (CI runs, its own reader; release-state has no CI collector).
+    Tab {
+        id: "releases",
+        title: "Releases",
+        question: "What is building, and what is live where?",
+        sections: &["table", "detail", "builds"],
     },
 ];
 

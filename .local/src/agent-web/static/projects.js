@@ -75,6 +75,7 @@ function pOpened(c) {
   if (got.err) return html + `<div class="panel down">${esc(got.err)}</div></div>`;
   const pg = got.data;
   if (pg.flow_line) html += `<div class="cline">flow: ${esc(pg.flow_line)}</div>`;
+  if (pg.releases) html += `<div class="cline">releases: <a class="${pg.releases.level === "ok" ? "" : pg.releases.level}" href="#releases?q=${encodeURIComponent("project:" + c.name)}">${esc(pg.releases.says)}</a></div>`;
   html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("") + `</div>`;
   html += `<h2 class="sec">Needs you <span class="muted">${pg.needs.length || "nothing"}</span></h2>`;
   if (pg.needs.length) html += `<div class="card">${pLines(pg.needs, "qlate")}</div>`;
