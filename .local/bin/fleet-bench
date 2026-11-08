@@ -2821,22 +2821,24 @@ log_norm() {
 }
 
 # triage_log_rows -> one row per runner stderr error signature seen in BENCH_GUARD_RECUR or more
-# runs of the last TRIAGE_LOG_HOURS and still logged by the runner's newest readable run: a cause
-# fixed earlier in the window is not red now, and cause_tries would count its merged fix as one that
-# did not hold. Each run's bytes come from its runs.jsonl err range; a range past the end of the log
-# was rotated away and is skipped. #high at twice the recurrence.
+# runs of the last TRIAGE_LOG_HOURS, one of them among the runner's newest BENCH_GUARD_RECUR readable
+# runs: a cause fixed earlier in the window is not red now, and cause_tries would count its merged
+# fix as one that did not hold. That many runs outlast a dispatch pass for the fastest runner, so an
+# intermittent error is still seen. Each run's bytes come from its runs.jsonl err range; a range past
+# the end of the log was rotated away and is skipped. #high at twice the recurrence.
 triage_log_rows() {
   local sd t ledger name a b f sig
   proof_lib && sd=$(proof_state_dir)
   [ -n "$sd" ] && [ -r "$sd/runs.jsonl" ] || return 0
   t=$(now)
-  ledger=$(jq -r --argjson s $((t - TRIAGE_LOG_HOURS * 3600)) \
-    'select((.finished // 0) >= $s and (.err | type) == "array") | [.name, .err[0], .err[1]] | @tsv' "$sd/runs.jsonl" 2>/dev/null)
+  ledger=$(jq -rs --argjson s $((t - TRIAGE_LOG_HOURS * 3600)) \
+    'map(select((.finished // 0) >= $s and (.err[0] | type) == "number" and (.err[1] | type) == "number"
+      and .err[1] >= .err[0])) | sort_by(.finished)[] | [.name, .err[0], .err[1]] | @tsv' "$sd/runs.jsonl" 2>/dev/null)
   while IFS=$'\t' read -r name a b; do
     [ -n "$name" ] || continue
     f="$sd/$name.stderr.log"
     [ -r "$f" ] && [ "$(stat -c %s "$f")" -ge "$b" ] || continue
-    # a readable run, quiet or not, in ledger order: the last one per runner is its newest
+    # a readable run, quiet or not, oldest first
     printf '%s\t%s\n' "$name" "$a"
     [ "$b" -gt "$a" ] || continue
     # one dd reads the range: `tail | head -c` cut the pipe early, and under systemd (SIGPIPE
@@ -2846,9 +2848,10 @@ triage_log_rows() {
       while IFS= read -r line; do printf '%s\t%s\t%s\t%s\n' "$name" "$a" "$(log_norm <<<"$line")" "$line"; done
   done <<<"$ledger" |
   awk -F'\t' -v min="$BENCH_GUARD_RECUR" '
-    NF == 2 { last[$1] = $2; next }
+    NF == 2 { run[$1, ++runs[$1]] = $2; next }
     { k = $1 FS $3; r[k] = $1; if (!((k, $2) in seen)) { seen[k, $2] = 1; n[k]++ } if (!(k in s)) s[k] = $4 }
-    END { for (k in n) if (n[k] >= min && (k, last[r[k]]) in seen) print k FS n[k] FS s[k] }' |
+    END { for (k in n) if (n[k] >= min) for (j = runs[r[k]]; j > 0 && j > runs[r[k]] - min; j--)
+            if ((k, run[r[k], j]) in seen) { print k FS n[k] FS s[k]; break } }' |
   while IFS=$'\t' read -r name norm n sample; do
     sig=$(printf '%s\t%s' "$name" "$norm" | sha1sum | cut -c1-8)
     # a # would read as a tag on the board
