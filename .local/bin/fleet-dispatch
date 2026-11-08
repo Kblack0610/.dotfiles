@@ -947,7 +947,7 @@ cmd_candidates() {
 # call (`judge_call`, its calls.jsonl line). A row the call could not judge gets an `error` verdict
 # saying why: the call failed, the reply named no rule of the policy, or it left the row out.
 judge() {
-  local cands="$1" prompt out verdicts wd rc cid err rules missing
+  local cands="$1" prompt out verdicts wd rc cid err rules missing n rows
   [ -n "$cands" ] || return 0
   # Over the cap, each project's best-ranked row (RANK_JQ) in turn, then each one's second, and so
   # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
@@ -966,14 +966,19 @@ judge() {
       | sort_by(.row.stale, .round, (.row.cleanup // 1), .i) | .[].row | del(.stale)' <<<"$cands" |
     head -n "$DISPATCH_JUDGE_MAX")
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
+  # Rows are numbered and counted: on 2026-11-07 two 40-row passes came back with 39 verdicts,
+  # each dropping one row whole (hc-122, ar-269), and a dropped row is an error verdict.
+  # The count is of the numbered lines themselves, so the two never disagree.
+  rows=$(jq -c '{project, stage, lane, key, text, tier} + (if (.row_size // "") != "" then {size: .row_size} else {} end)
+    + (if (.details // "") != "" then {details} else {} end)' <<<"$cands" | awk '{ print NR ". " $0 }')
+  n=$(grep -c . <<<"$rows")
   prompt="## Rows to judge
 
-$(jq -c '{project, stage, lane, key, text, tier} + (if (.row_size // "") != "" then {size: .row_size} else {} end)
-  + (if (.details // "") != "" then {details} else {} end)' <<<"$cands")
+$rows
 
 ## Answer
 
-For every row above, return one verdict in the structured output. Copy project, lane and key exactly as given."
+There are $n rows above. Return exactly $n verdicts in the structured output, one per numbered row, in the same order. Copy project, lane and key exactly as given."
   # The call runs in an empty directory: from inside a repo, that repo's Stop hook runs its
   # tests after the answer, and the model's last message becomes a reply to the hook instead
   # of the verdicts (2026-10-27, run from ~/.dotfiles: every pass failed on one row).
