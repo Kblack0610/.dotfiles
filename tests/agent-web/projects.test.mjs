@@ -157,6 +157,10 @@ const page = {
   systems: [{ id: "ui", head: "ui  criteria 5 of 7", epics: [{ line: "Menus  [rows]  behind", behind: true }], closed: "+1 closed, 1 verified" }],
   systems_says: "1 systems, 1 open epics (2 rows with no epic)", next_says: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet",
   next_rows: [{ stage: "beta", result: "FAIL", requirement: "a soak test" }], shipped_says: "none yet", shipped: [], errors: [],
+  timeline: { says: "7d: 1 commit (1 red on CI), 1 PR", older: 3, notes: ["PRs: the origin is not GitHub"], lines: [
+    { line: "2h  commit  fix the menu  CI red", level: "bad", url: "https://ci.example/run/1" },
+    { line: "3h  PR      #7 opened: <menu>", level: "ok", url: "javascript:alert(1)" },
+  ] },
 };
 
 test("an opened card reads its page once and shows Needs you, then folds with their counts", async () => {
@@ -173,6 +177,9 @@ test("an opened card reads its page once and shows Needs you, then folds with th
   assert.match(head, /<div class="pep qlate">Menus  \[rows\]  behind<\/div><div class="pep muted">\+1 closed, 1 verified/);
   assert.match(head, /Next stage<\/b> <span class="muted">beta  4 of 12 met.*<b>FAIL<\/b> a soak test/s);
   assert.match(head, /Shipped<\/b> <span class="muted">none yet/);
+  assert.match(head, /Timeline<\/b> <span class="muted">7d: 1 commit \(1 red on CI\), 1 PR<\/span>.*<div class="muted">PRs: the origin is not GitHub<\/div>/s);
+  assert.match(head, /<div class="ptl bad"><a href="https:\/\/ci\.example\/run\/1" target="_blank" rel="noopener">2h  commit  fix the menu  CI red<\/a><\/div>/);
+  assert.match(head, /<div class="ptl">3h  PR      #7 opened: &lt;menu&gt;<\/div><div class="muted more">\+3 older<\/div>/, "a non-http url is not a link");
   assert.match(head, /In flight<\/b> <span class="muted">1 running, 0 waiting, 0 queued; 1 rows #requested.*wire the bar/s);
   assert.match(head, /Agent note<\/b> <span class="muted">model-written, 2026-11-05.*landed it/s);
   assert.doesNotMatch(head, /<details[^>]* open/, "every fold starts shut");
