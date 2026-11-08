@@ -40,8 +40,16 @@ Gather, in parallel where possible, then write the dated file + inbox pointer:
 DATE=$(date +%F)                      # the skill is allowed real dates; agents pass one if sandboxed
 OUT="$(notes path inbox)/${DATE}-reboot-restore.md"
 
-# 1. tmux sessions/windows (cwd + live branch + foreground cmd)
-tmux list-windows -a -F '#{session_name}:#{window_index} [#{pane_current_command}] #{pane_current_path}' 2>/dev/null
+# 1. tmux sessions/windows (cwd + live branch + foreground cmd), on EVERY live named server.
+#    The worlds (hub, lab, ...) are named sockets and a bare `tmux` reaches only one of them, so
+#    walk the socket dir like panel_live_servers (.local/src/tmux/panel-lib.sh). list-windows
+#    fails on a socket file whose server is gone, which skips it. Tab-separated, the server
+#    first and the path last: the path is the field step 6 takes, and it may hold spaces.
+for sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/*; do
+  [ -S "$sock" ] || continue
+  srv=${sock##*/}
+  tmux -L "$srv" list-windows -a -F "$srv"$'\t''#{session_name}:#{window_index}'$'\t''[#{pane_current_command}]'$'\t''#{pane_current_path}' 2>/dev/null
+done
 
 # 2. Claude sessions
 ps -eo pid,etime,cmd | grep -E '[c]laude ' | grep -v claude-1000
@@ -60,7 +68,7 @@ docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}'
 for c in $(docker ps -q); do printf '%s\t%s\n' "$(docker inspect -f '{{.Name}}' $c)" "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' $c)"; done
 
 # 6. dirty/unpushed git across the repos the sessions live in (THE at-risk list)
-for d in <dirs from steps 1-2>; do
+for d in <dirs from steps 1-2: the last tab field of a step 1 row>; do
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || continue
   printf '%-45s [%s] dirty=%s unpushed=%s\n' "$d" "$(git -C "$d" branch --show-current)" \
     "$(git -C "$d" status --porcelain | wc -l)" "$(git -C "$d" log --oneline @{u}.. 2>/dev/null | wc -l)"
@@ -109,7 +117,7 @@ ls -t "$(notes path inbox)"/*-reboot-restore.md | head -1      # newest checklis
 
 Read it, then **with confirmation** offer to:
 - bring back the Claude sessions with `fleet-dispatch restore --dry-run`, then `fleet-dispatch restore`. It reads the pane record `fleet-state` keeps each minute, not this checklist, and reopens each conversation as a window of its old session (`fleet-dispatch` skill, "A world server died"). A conversation it could not reopen, or one the record never held, goes through `fleet-dispatch start --project <project> --server <server> --session <name> --window <name> --cwd <dir> --resume <session id> [--item <slug>]`, the one way an agent starts a session. Never `tmux new-session` + `claude --resume` by hand, and never tag a session with `set-option` afterwards.
-- recreate other tmux sessions (no Claude in them): `tmux new-session -d -s <name> -c <dir>`
+- recreate other tmux sessions (no Claude in them) on the server their row names: `tmux -L <server> new-session -d -s <name> -c <dir>`
 - start the manual services: `systemctl --user start <unit>`
 - relaunch dev servers with the captured command line
 - `docker start <name>` for DBs that lacked a restart policy
