@@ -9,6 +9,10 @@
 //! exactly the sweep moves the line with no model, and when it matches none (a typo, a shortened
 //! name) `notes outbox move` exits 3 and the sweep hands the line to the model with the word as a hint.
 //!
+//! A `#ask` word marks a question: the sweep answers it with one read-only model call and
+//! `notes outbox answer` takes the line out of the outbox and writes the question and answer to
+//! today's `inbox/<date>.md`, so it never reaches a project's inbox or becomes a row.
+//!
 //! The section is also a doc the human edits from agent-web's Daily outbox view: `notes outbox show`
 //! gives its path, its items and their hash, and `notes outbox put --base <hash>` replaces them only when
 //! nothing wrote the file since (compare-and-swap), so a page never clobbers a sweep's move.
@@ -28,7 +32,7 @@ pub(crate) const EXIT_NO_PROJECT: i32 = 3;
 
 fn skeleton() -> String {
     format!(
-        "# Outbox\n\nOne item per line, for any project. The inbox sweep routes each to its project's inbox and files it there; what went where is on the inbox status page. `#p:<name>` names a project (a name that matches none is left to the sweep's model), `#agent` the agent board, `#plan` a planning pass.\n\n## {HEADING}\n"
+        "# Outbox\n\nOne item per line, for any project. The inbox sweep routes each to its project's inbox and files it there; what went where is on the inbox status page. `#p:<name>` names a project (a name that matches none is left to the sweep's model), `#agent` the agent board, `#plan` a planning pass, `#ask` a quick read-only answer in the inbox.\n\n## {HEADING}\n"
     )
 }
 
@@ -215,7 +219,8 @@ pub(crate) fn append(p: &Profile, log: &Logger, block: &[String]) -> Result<bool
 }
 
 /// `notes outbox list [--json]`: TSV `line<TAB>text`, or one JSON array of
-/// `{line, raw, text, details, project}`, `project` the `#p:` name when the line forces one.
+/// `{line, raw, text, details, project, ask}`, `project` the `#p:` name when the line forces one
+/// and `ask` whether it carries `#ask`.
 pub fn list(p: &Profile, json: bool) -> Result<i32> {
     let lines = lines(p)?;
     if json {
@@ -224,7 +229,7 @@ pub fn list(p: &Profile, json: bool) -> Result<i32> {
             .map(|l| {
                 serde_json::json!({
                     "line": l.line, "raw": l.raw, "text": l.text, "details": l.details,
-                    "project": md::project_tag(&l.raw),
+                    "project": md::project_tag(&l.raw), "ask": md::ask_tag(&l.raw),
                 })
             })
             .collect();
@@ -269,6 +274,44 @@ pub fn move_line(p: &Profile, log: &Logger, project: &str, raw: &str) -> Result<
     // The last line is the line as the inbox now holds it (its `#p:` word is gone), which the
     // sweep needs to file it from there.
     println!("moved {text}\n  -> {project} inbox\n  line: {}", block[0]);
+    Ok(0)
+}
+
+/// `notes outbox answer -- <raw>`, the answer on stdin: take the outbox line that is `raw` byte
+/// for byte out of the outbox and write it, with the answer, to today's `inbox/<date>.md` as
+/// `- HH:MM ask: <question> - <answer's first line>`, the answer's other lines indented under it.
+/// The capture is written first, so a failed second write leaves the question in both places
+/// (answered twice, never lost). The line is not moved to a project and files no row.
+pub fn answer(p: &Profile, log: &Logger, raw: &str, answer: &str) -> Result<i32> {
+    let answer = answer.trim();
+    if answer.is_empty() {
+        bail!("nothing to answer with (give the answer on stdin)");
+    }
+    let _lock = lock(p)?;
+    let content = read(p)?;
+    let Some((rest, line)) = sheet::take_in(&content, HEADING, |l| l.raw == raw) else {
+        eprintln!("no outbox line is '{raw}'");
+        return Ok(1);
+    };
+    let question = md::without_ask_tag(&md::without_project_tag(&line.text));
+    let mut rows = answer.lines();
+    let mut body = format!(
+        "ask: {question} - {}",
+        rows.next().unwrap_or_default().trim()
+    );
+    for r in rows {
+        // A continuation that begins `- ` would read as a capture of its own.
+        let r = r.trim();
+        let r = r
+            .strip_prefix("- ")
+            .map_or(r.to_string(), |t| format!("* {t}"));
+        body.push_str(&format!("\n  {r}"));
+    }
+    let file = crate::inbox::append(p, &body)?;
+    md::write_atomic(&p.outbox, &rest)?;
+    ingest::record(p, &Event::new("answered", "outbox", "inbox", &question));
+    log.info("outbox", &format!("answered in {}", file.display()));
+    println!("answered {question}\n  -> {}", file.display());
     Ok(0)
 }
 
@@ -331,6 +374,54 @@ mod tests {
         let got = lines(&p).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].text, "typed by hand");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_answer_takes_the_question_out_and_writes_both_to_todays_inbox() {
+        let (root, p, log) = vault("answer");
+        fs::write(
+            &p.outbox,
+            format!(
+                "{}- [ ] #ask is my mac ok? #p:demo\n- [ ] stays\n",
+                skeleton()
+            ),
+        )
+        .unwrap();
+        assert!(md::ask_tag("- [ ] #ask is my mac ok? #p:demo"));
+        assert!(md::ask_tag("- [ ] is the nas up? #ask #p:demo"));
+        assert!(!md::ask_tag("- [ ] document the #ask flow in the README"));
+        assert_eq!(
+            answer(
+                &p,
+                &log,
+                "- [ ] #ask is my mac ok? #p:demo",
+                "Yes, up 3 days.\n- load 0.2\n"
+            )
+            .unwrap(),
+            0
+        );
+        let left: Vec<String> = lines(&p).unwrap().into_iter().map(|l| l.text).collect();
+        assert_eq!(left, ["stays"]);
+        let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let note = fs::read_to_string(p.inbox.join(format!("{day}.md"))).unwrap();
+        assert!(
+            note.contains("ask: is my mac ok? - Yes, up 3 days.\n  * load 0.2\n"),
+            "{note}"
+        );
+        let sheet = fs::read_to_string(root.join("lab/projects/current/demo/README.md")).unwrap();
+        assert!(!sheet.contains("mac"), "an ask files nothing: {sheet}");
+        let ev = ingest::on_day(&p, &day);
+        assert_eq!(
+            (
+                ev[0].action.as_str(),
+                ev[0].from.as_str(),
+                ev[0].text.as_str()
+            ),
+            ("answered", "outbox", "is my mac ok?")
+        );
+        // A line that is no longer there is refused and nothing is written.
+        assert_eq!(answer(&p, &log, "- [ ] gone", "x").unwrap(), 1);
         let _ = fs::remove_dir_all(&root);
     }
 

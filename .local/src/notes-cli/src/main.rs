@@ -347,10 +347,15 @@ enum Cmd {
         /// project's own profile (bnb, personal); `tooling` is the tooling lane.
         #[arg(long, value_name = "NAME")]
         group: Option<String>,
-        /// Print a project's priority; with --set, declare it. One of: focus, high, low,
-        /// normal (clears it). fleet-dispatch ranks the project's board rows by it first.
+        /// Print a project's priority; with --set, declare it. One of: only, focus, high,
+        /// low, normal (clears it). fleet-dispatch and agent-queue rank the project's work by
+        /// it; while any project is `only`, automated starts take only those projects' work
+        /// (reds, urgent and requested work excepted)
         #[arg(long, value_name = "NAME")]
         prio: Option<String>,
+        /// Every profile's projects that declare a priority, as `name<TAB>prio`
+        #[arg(long)]
+        prios: bool,
         /// The value to write, for --stage / --group / --prio. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
@@ -750,6 +755,12 @@ enum OutboxCmd {
     Move {
         #[arg(long, value_name = "PROJECT")]
         project: String,
+        #[arg(required = true, num_args = 1..)]
+        raw: Vec<String>,
+    },
+    /// Take the `#ask` line that is RAW byte for byte out of the outbox and write it, with the
+    /// answer on stdin, to today's `inbox/<date>.md` (the sweep's write path for a question)
+    Answer {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
     },
@@ -1307,6 +1318,11 @@ fn main() -> Result<()> {
             Some(OutboxCmd::Move { project, raw }) => {
                 outbox::move_line(&prof, &log, &project, &raw.join(" "))?
             }
+            Some(OutboxCmd::Answer { raw }) => {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                outbox::answer(&prof, &log, &raw.join(" "), &text)?
+            }
         },
         Cmd::Log {
             steps: true, json, ..
@@ -1455,6 +1471,7 @@ fn main() -> Result<()> {
             stages,
             group,
             prio,
+            prios,
             set,
         } => {
             let level = if major {
@@ -1496,6 +1513,10 @@ fn main() -> Result<()> {
                 if set.is_some() {
                     lab_refresh::kick();
                 }
+                std::process::exit(0);
+            }
+            if prios {
+                projects::prios()?;
                 std::process::exit(0);
             }
             if let Some(n) = prio {
