@@ -250,15 +250,14 @@ add_repo() {
       done
       continue
     fi
-    # A tracked symlink has no second copy to disagree with: classify_all can only call it
-    # MISSING, so neither does it claim its path for the dual-ownership check.
-    if [ "$mode" != "120000" ]; then
-      if [ -n "${OWNER_OF[$path]:-}" ]; then
-        CONFLICTS+=("$path${SEP}${OWNER_OF[$path]}${SEP}$name")
-        continue
-      fi
-      OWNER_OF["$path"]="$name"
+    # A tracked symlink that dangles in its own repo (a submodule not checked out) has nothing
+    # to attach, so it is no deploy path.
+    [ "$mode" = 120000 ] && [ ! -e "$dir/$path" ] && continue
+    if [ -n "${OWNER_OF[$path]:-}" ]; then
+      CONFLICTS+=("$path${SEP}${OWNER_OF[$path]}${SEP}$name")
+      continue
     fi
+    OWNER_OF["$path"]="$name"
     MANIFEST+=("$path${SEP}$name${SEP}$dir${SEP}$mode")
   done < <(git -C "$dir" ls-files -sz 2>/dev/null)
 
@@ -376,9 +375,6 @@ classify_all() {
     real_src="$(readlink -f -- "$src" 2>/dev/null)"
 
     if [ ! -e "$tgt" ]; then
-      # A tracked symlink that dangles in its own repo (a submodule not checked out) has
-      # nothing to attach.
-      [ "$mode" = 120000 ] && [ ! -e "$src" ] && continue
       fold="$(fold_point "$path" "$dir")"
       if [ -n "$fold" ]; then
         [ -n "${SEEN_FOLD[$fold]:-}" ] \

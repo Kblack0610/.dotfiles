@@ -480,6 +480,18 @@ world_wt_private() {
   assert_equal "$(cat "$HOME/.config/moved/b")" 'b'
 }
 
+@test "a dangling directory link over a directory holding a stow-ignored path fails loudly, no dir link" {
+  world
+  printf '%s\n' '^/\.config/moved/secret$' >> "$PRIV/.stow-local-ignore"
+  mkdir -p "$HOME/.config"; ln -s ../.dotfiles/.config/moved "$HOME/.config/moved"
+  radd "$PRIV" .config/moved/a 'a'
+  radd "$PRIV" .config/moved/secret 's'
+  run "$DEPLOY" --apply --missing
+  assert_failure
+  assert_output --partial 'DID NOT CONVERGE'
+  assert_equal "$(readlink "$HOME/.config/moved")" '../.dotfiles/.config/moved'
+}
+
 @test "a directory holding a stow-ignored path keeps per-file links: a dir link would deploy that path" {
   world
   printf '%s\n' '^/\.local/src/newtool/secret$' >> "$PRIV/.stow-local-ignore"
@@ -529,6 +541,11 @@ world_wt_private() {
   track_symlink "$PRIV" .local/bin/skipped privtool
   run "$DEPLOY" --check
   assert_success
+  n_with="${output##*all }"
+  git -C "$PRIV" rm -q --cached .local/bin/dead
+  run "$DEPLOY" --check
+  assert_success
+  assert_equal "${output##*all }" "$n_with"
 }
 
 # ── refusals ─────────────────────────────────────────────────────────────────
@@ -543,6 +560,17 @@ world_wt_private() {
   assert_output --partial '.local/bin/contested'
   assert_output --partial 'public'
   assert_output --partial 'private'
+}
+
+@test "a TRACKED SYMLINK in one repo and a file in the other is the same hard error" {
+  world
+  radd "$PUB" .local/bin/real 'real'
+  track_symlink "$PUB" .local/bin/contested real
+  radd "$PRIV" .local/bin/contested 'private version'
+  run "$DEPLOY" --check
+  assert_equal "$status" 2
+  assert_output --partial 'CONFLICT'
+  assert_output --partial '.local/bin/contested'
 }
 
 @test "a dual-ownership refusal happens BEFORE anything is written" {
