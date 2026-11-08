@@ -26,8 +26,8 @@ Not for how dispatch picks and starts sessions (`fleet-dispatch`), or an account
 
 ## File an item
 
-1. Your own task, unless `$AGENT_QUEUE_ITEM` is set: `agent-queue add --running --project <p> "<task>"`.
-2. Work for later: `agent-queue add --project <p> [--priority urgent|high|low] [--tags "t1 t2"] [--weight heavy|light] [--after <slug>] "<task>"`. A bare add is high priority. An item not from the board files its own story row.
+1. Your own task, unless `$AGENT_QUEUE_ITEM` is set: `agent-queue add --running --project <p> [--row <id>] "<task>"`. `--row` names the open agent board row you are working, starts it and refuses an id that is not open or that a live item already names.
+2. Work for later: `agent-queue add --project <p> [--priority urgent|high|low] [--tags "t1 t2"] [--weight heavy|light] [--after <slug>] "<task>"`. A bare add is high priority. An item with no `--row` that is not from the board files its own story row.
 3. A plan: `agent-queue add --plan <plan.md> --dry-run` first, then without `--dry-run`. It makes one oneshot item per unchecked `## Phases` line, each `after` the one before. The first starts at once and so does each next one when its predecessor closes ok. `AGENT_QUEUE_START=0` only queues.
 4. `agent-queue list [--state queued|running|waiting|done|active|all]` prints TSV: state, priority, slug, project, mode, then session, hold or status, tags, from. `show <slug>` prints one item; `next` prints the head.
 

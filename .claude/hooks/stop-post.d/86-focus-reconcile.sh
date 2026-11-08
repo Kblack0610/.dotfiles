@@ -243,7 +243,7 @@ OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | head -5 | sed 's/^- 
 
 if [ "$PR_WORK" -eq 1 ]; then
   REASON="focus-gate: this session opened or merged a PR, and no queue item records it. Every PR is a unit of work on the work ledger (the queue item), whatever else tracks it:
-  agent-queue add --running --project <project> \"<type(area): title>\"   the work this PR is part of
+  agent-queue add --running --project <project> [--row <id>] \"<type(area): title>\"   the work this PR is part of; --row when it is a row already on the board
   agent-queue claim <slug>                                                   when an item for it already exists (done or not)
   agent-land <N> --item <slug>                                               merges and closes it
 
@@ -257,7 +257,7 @@ fi
 REASON="focus-gate: this session edited files or committed, but the work was not tracked anywhere and nothing is marked in progress.
 
 The task you are on is an agent-queue item, NOT a board row and NOT the daily note:
-  agent-queue add --running --project <project> \"<task>\"   you are on it
+  agent-queue add --running --project <project> [--row <id>] \"<task>\"   you are on it; --row when it is a row already on the board
   agent-land <N>, or agent-queue move <slug> done            it landed
 
 A cleanup or agent-runtime fix you will not do now goes into the queue at high priority: agent-queue add --priority high --project <project> \"<task>\".

@@ -1635,6 +1635,54 @@ STUB
   [ -z "$(field "$(item queued no-sheet)" row)" ]
 }
 
+@test "--row links an open board row and starts it: no second row, and from: stays the origin" {
+  story_notes
+  run "$AQ" add --running --project game --row lv-2 --slug by-hand "feat(menu): the row's work"
+  assert_success
+  assert_line "story lv-2 on the level agent board"
+  f="$(item running by-hand)"
+  [ "$(field "$f" project)" = level ]
+  [ "$(field "$f" row)" = level:lv-2 ]
+  [ "$(field "$f" lane)" = agent ]
+  [ "$(field "$f" profile)" = bnb ]
+  [ "$(field "$f" from)" = human ]
+  [ "$(grep -c '^notes --profile' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  grep -qx 'notes --profile bnb ptask level --agent start lv-2' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "--row refuses an id that is not an open row, a row a live item names and a project with no board, writing nothing" {
+  story_notes
+  touch "$NOTES_FIXTURE/closed.lv-7"
+  run "$AQ" add --project game --row lv-7 --slug shut "x"
+  assert_failure; assert_output --partial "--row lv-7: not an open row on the level agent board: no open task matches"
+  [ -z "$(item queued shut)" ]
+  "$AQ" add --project game --row lv-2 --slug first "x"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project game --row lv-2 --slug second "y"
+  assert_failure; assert_output --partial "--row lv-2: first already works that row; to take it over: agent-queue claim first"
+  [ -z "$(item queued second)" ]
+  run grep -c ' start ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  run "$AQ" add --project elsewhere --row el-1 --slug no-board "z"
+  assert_failure; assert_output --partial "--row el-1: elsewhere has no agent board"
+  [ -z "$(item queued no-board)" ]
+}
+
+@test "--row takes one row id, on one item, with no story options" {
+  story_notes
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/p.md"
+  run "$AQ" add --plan "$SANDBOX/p.md" --project game --row lv-2
+  assert_failure; assert_output --partial "--row links one item"
+  run "$AQ" add --project game --row menus --slug a "x"
+  assert_failure; assert_output --partial "--row is a row id"
+  run "$AQ" add --project game --row lv-2 --epic lv-3 --slug b "x"
+  assert_failure; assert_output --partial "--row links a row already filed"
+  run "$AQ" add --project game --row lv-2 --from board:level:lv-2 --slug c "x"
+  assert_failure; assert_output --partial "not --from board:level:lv-2"
+  run grep -c ' start ' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}
+
 @test "a board item and a project with no lab sheet file no story; a board item's row is its origin" {
   story_notes
   "$AQ" add --project game --from board:level:lv-2 --slug promoted "x"
