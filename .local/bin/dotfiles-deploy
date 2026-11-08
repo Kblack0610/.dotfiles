@@ -51,6 +51,9 @@
 #   3. Symlinks only, never copies. Copying a file to "fix" it creates a second source of
 #      truth, which is the original bug. Where the deployed content is a physical file, it
 #      shows the diff against the tracked source and replaces the file with a link to it.
+#   4. Every link it writes is the RELATIVE link stow writes (lib/stow-link.sh). An absolute
+#      link resolves the same but stow does not own it, and one aborts the whole `stow .`
+#      run, so a new file never deploys. Such a link reads ABSLINK and --apply rewrites it.
 #
 # The tracked source always wins. When the physical copy differs it is backed up first,
 # under $XDG_STATE_HOME/dotfiles-deploy/backup/<stamp>/, because its content exists in no
@@ -302,6 +305,9 @@ EOF
 #   MISSING  $HOME/<path> does not resolve at all - stow has not run, or its link dangles.
 #   MIRROR   $HOME/<path> resolves to a real file somewhere ELSE. That other file is the
 #            deployed copy, and it is the thing that has to become a link.
+#   ABSLINK  the first link on $HOME/<path> (its own, or a folded directory's) is ABSOLUTE
+#            and resolves to the same path in the owning repo. It serves the right file, but
+#            stow does not own it, so `stow .` aborts and no new file in that repo deploys.
 #
 # The comparison is on the RESOLVED path, not on whether $HOME/<path> is itself a symlink.
 # The public repo is stowed folded - ~/.config/systemd is a single directory link - so most
@@ -310,9 +316,22 @@ EOF
 
 FINDINGS=()
 
+# first_link <path> - the shortest prefix of <path> that is a symlink under $HOME, or nothing.
+first_link() {
+  local rest="$1" prefix="" comp
+  while [ -n "$rest" ]; do
+    comp="${rest%%/*}"
+    prefix="${prefix:+$prefix/}$comp"
+    [ -L "$HOME/$prefix" ] && { printf '%s\n' "$prefix"; return 0; }
+    if [ "$rest" = "$comp" ]; then rest=""; else rest="${rest#*/}"; fi
+  done
+  return 0
+}
+
 classify_all() {
   FINDINGS=()
-  local rec path owner dir src tgt real_src real_tgt
+  local rec path owner dir src tgt real_src real_tgt lp
+  declare -A SEEN_ABS=()
   for rec in "${MANIFEST[@]}"; do
     IFS="$SEP" read -r path owner dir <<< "$rec"
     src="$dir/$path"
@@ -330,6 +349,14 @@ classify_all() {
 
     real_tgt="$(readlink -f -- "$tgt" 2>/dev/null)"
     if [ -n "$real_src" ] && [ "$real_tgt" = "$real_src" ]; then
+      # The first link on the path is the one stow meets: the file's own, or a folded
+      # directory's. Absolute and pointing at this repo's copy of that same path: ABSLINK.
+      lp="$(first_link "$path")"
+      if [ -n "$lp" ] && [ -z "${SEEN_ABS[$lp]:-}" ] && [[ "$(readlink -- "$HOME/$lp")" == /* ]] \
+         && [ "$(readlink -f -- "$HOME/$lp")" = "$(readlink -f -- "$dir/$lp")" ]; then
+        SEEN_ABS["$lp"]=1
+        FINDINGS+=("ABSLINK${SEP}$owner${SEP}$lp${SEP}$HOME/$lp${SEP}absolute link, stow does not own it, so \`stow .\` aborts")
+      fi
       continue
     fi
 
@@ -397,9 +424,7 @@ convert() {
     printf '  backed up %s -> %s\n' "$path" "$backup"
   fi
 
-  # Absolute link target, matching dotfiles-overlay-link, so the link still reads correctly
-  # when something follows it from another directory.
-  if ln -sfn -- "$src" "$phys"; then
+  if stow_link "$phys" "$src"; then
     printf '  linked    %s -> %s\n' "${phys/#$HOME/\~}" "${src/#$HOME/\~}"
     APPLIED=$((APPLIED + 1)); return 0
   fi
@@ -418,8 +443,19 @@ attach() {
     printf '  SKIP  %s - would overwrite a TRACKED path\n' "$path" >&2
     FAILED=$((FAILED + 1)); return 1
   fi
-  if ln -sfn -- "$src" "$tgt"; then
+  if stow_link "$tgt" "$src"; then
     printf '  linked    %s -> %s\n' "${tgt/#$HOME/\~}" "${src/#$HOME/\~}"
+    APPLIED=$((APPLIED + 1)); return 0
+  fi
+  FAILED=$((FAILED + 1)); return 1
+}
+
+# relink <link> <tracked-source> <path> - the ABSLINK case: same file, stow's relative form.
+# Nothing to back up, the link text is all that changes.
+relink() {
+  local tgt="$1" src="$2" path="$3"
+  if stow_link "$tgt" "$src"; then
+    printf '  relinked  ~/%s -> %s\n' "$path" "$(readlink -- "$tgt")"
     APPLIED=$((APPLIED + 1)); return 0
   fi
   FAILED=$((FAILED + 1)); return 1
@@ -433,6 +469,7 @@ apply_all() {
     case "$status" in
       MIRROR)  convert "$phys" "$dir/$path" "$path" ;;
       MISSING) attach  "$phys" "$dir/$path" "$path" ;;
+      ABSLINK) relink  "$phys" "$dir/$path" "$path" ;;
     esac
   done
   return 0
@@ -490,6 +527,8 @@ report_text() {
   MIRROR  -> a physical copy is serving this path. `dotfiles-deploy --apply` replaces the
              copy with a link to the tracked source (backing it up first if it differs).
   MISSING -> stow has not attached it. --apply links it; `stow --no-folding .` also works.
+  ABSLINK -> --apply rewrites the absolute link as the relative one stow writes, so
+             `stow --no-folding .` stops aborting on it.
 
   A path listed here that SHOULD NOT deploy at all belongs in the owning repo's
   .stow-local-ignore. Do not add a skip list to this script - a second place that decides
@@ -500,6 +539,8 @@ EOF
 
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# shellcheck source=../lib/stow-link.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stow-link.sh"
 
 report_json() {
   local status owner path phys detail i
