@@ -173,6 +173,20 @@ connectors_env() {
   assert_output 'connectors=false artifact=0'
 }
 
+@test "the tools an automated start drops default to Workflow, ScheduleWakeup and Artifact; a launch-time value, empty too, wins" {
+  drops() {
+    env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" "$@" bash -c \
+      ". '$SNIP' >/dev/null 2>&1; echo \"drop=\${CLAUDE_AUTO_DROP_TOOLS-unset}\""
+  }
+  printf '#!/bin/sh\nexit 2\n' > "$FAKEBIN/getent"; chmod +x "$FAKEBIN/getent"
+  run drops
+  assert_output 'drop=Workflow,ScheduleWakeup,Artifact'
+  run drops CLAUDE_AUTO_DROP_TOOLS=
+  assert_output 'drop='
+  run drops CLAUDE_AUTO_DROP_TOOLS=Workflow
+  assert_output 'drop=Workflow'
+}
+
 @test "a launch-time ENABLE_CLAUDEAI_MCP_SERVERS or CLAUDE_CODE_ARTIFACT wins over the default" {
   run connectors_env 1 ENABLE_CLAUDEAI_MCP_SERVERS=true
   assert_output 'connectors=true artifact=0'

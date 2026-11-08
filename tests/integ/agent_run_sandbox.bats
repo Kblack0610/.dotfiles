@@ -61,6 +61,18 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_output --partial 'sandbox:     (none - this lane runs unsandboxed)'
 }
 
+@test "a runner drops the tools every automated start drops (CLAUDE_AUTO_DROP_TOOLS) beside the role's own denials; unset, it drops none (control)" {
+  denied() { awk 'f { print; exit } $0 == "--disallowedTools" { f = 1 }' "$SANDBOX/claude-argv.txt"; }
+  CLAUDE_AUTO_DROP_TOOLS=Workflow,ScheduleWakeup lane -p x
+  assert_success
+  run denied
+  assert_output --regexp '(^|,)Workflow,ScheduleWakeup$'
+  unset CLAUDE_AUTO_DROP_TOOLS
+  lane -p x
+  run grep -c Workflow "$SANDBOX/claude-argv.txt"
+  assert_output 0
+}
+
 @test "a sandboxed claude lane gets the profile with every hard gate forced on, whatever the profile says" {
   SANDBOX_PROFILE=lane lane -p x
   assert_success

@@ -93,7 +93,6 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, stages, enabled, off (load_kinds)
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
 : "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
-: "${DISPATCH_DROP_TOOLS=Workflow,ScheduleWakeup,Artifact}"   # tools a new queue session starts without (see dropped_tools); empty keeps every tool
 : "${DISPATCH_SANDBOX_PROFILE:=}"   # a lane sandbox profile (agent-run docs/contract.md "Lane sandbox") every claude start runs under; empty is off, and a start that cannot hold the profile is refused (lane_sandbox)
 : "${DISPATCH_SANDBOX_GH_TOKEN_FILE:=}"   # the sandboxed session's own repo-scoped GitHub token file, as GH_TOKEN_FILE is for a runner; empty gives it no token
 : "${DISPATCH_REAP_GRACE:=600}"   # seconds after a start before reap may read a missing Claude as gone: a claude still booting has no registry entry yet
@@ -1167,19 +1166,20 @@ launch_mode() {
   esac
 }
 
-# dropped_tools <item json> -- " --disallowedTools <DISPATCH_DROP_TOOLS>" for a new claude start, or
-# nothing. Those tools' schemas ride on every turn of a session that never calls them: in the 7 days
-# to 2026-11-06, Workflow had 1 call and ScheduleWakeup 43 (all /loop) across about 2,900 sessions,
-# for about 10K chars a turn. Artifact (2026-11-07, ask OaAlhA): 11 calls a week, all from queue
-# sessions the human rarely reads, for 35K chars on the turns that carry it; the human's own
-# sessions keep it. A task that names one of them, ultracode or /loop keeps every tool.
+# dropped_tools <item json> -- " --disallowedTools <list>" for a queue item's claude start or resume,
+# or nothing. The list is CLAUDE_AUTO_DROP_TOOLS, read the way telemetry_env reads the launch env, so
+# an env value wins and the default lives once, in claude-telemetry.sh (which says why). A task that
+# names one of them, ultracode or /loop keeps every tool.
 # It goes before --permission-mode: the flag takes a list, so the brief after it would join it.
 dropped_tools() {
-  [ -n "$DISPATCH_DROP_TOOLS" ] || return 0
-  [[ "$DISPATCH_DROP_TOOLS" =~ ^[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*$ ]] ||
-    { say "DISPATCH_DROP_TOOLS is not a comma list of tool names: $DISPATCH_DROP_TOOLS; dropping none"; return 0; }
-  jq -r .task <<<"$1" | grep -qiE "ultracode|/loop|${DISPATCH_DROP_TOOLS//,/|}" && return 0
-  printf ' --disallowedTools %s' "$DISPATCH_DROP_TOOLS"
+  local drop
+  # shellcheck disable=SC2016
+  drop=$(bash -c '. "$HOME/.config/shared-hooks/claude-telemetry.sh" >/dev/null 2>&1; printf %s "${CLAUDE_AUTO_DROP_TOOLS-}"')
+  [ -n "$drop" ] || return 0
+  [[ "$drop" =~ ^[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*$ ]] ||
+    { say "CLAUDE_AUTO_DROP_TOOLS is not a comma list of tool names: $drop; dropping none"; return 0; }
+  jq -r .task <<<"$1" | grep -qiE "ultracode|/loop|${drop//,/|}" && return 0
+  printf ' --disallowedTools %s' "$drop"
 }
 
 # lane_sandbox <cwd> -- set the caller's sbx_env and sbx_flags for a claude start under
@@ -1454,7 +1454,7 @@ cmd_start() {
     origin=${START_ORIGIN:-resume}
     launch_mode "$(resume_mode "$resume" "$(jq -r '.mode // empty' <<<"${it:-null}")")"
     lane_sandbox "$cwd" || return 1
-    cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
+    cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
     if [ -n "$joined" ]; then
       target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
         { say "could not open window $window in $session on $server"; return 1; }
