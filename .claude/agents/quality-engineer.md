@@ -1,7 +1,7 @@
 ---
 name: quality-engineer
 description: >-
-  Writes the missing tests for a known behaviour or fix: regression specs, edge cases, a test plan for a feature. Dispatched by bug-bash and bug-bash-wrapup for test gaps. Hunting new bugs: bug-bash. Reviewing a diff for defects: code-review. Running an existing suite: playground-headless-test or shell-test-harness.
+  Writes the missing tests for a known behaviour or fix: regression specs, edge cases, a test plan for a feature. Hunting new bugs: bug-bash. Reviewing a diff for defects: code-review. Running an existing suite: playground-headless-test or shell-test-harness.
 tools: Read, Grep, Glob, Bash, Write, Edit
 model: sonnet
 ---

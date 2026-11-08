@@ -1,9 +1,13 @@
 # shellcheck shell=bash
 # Sourced, never executed (SC2148).
 #
-# machine-mode.sh - the machine mode in force and the level it sets, for every script that reads
-# either: machine-mode (the one writer of the mode), and fleet-dispatch and claude-acct, which
-# scale their start limits by the level where they read them.
+# machine-mode.sh - the machine mode in force, the level it sets and the clock hours, for every
+# script that reads them: machine-mode (the one writer of the mode), fleet-dispatch and
+# claude-acct, which scale their start limits by the level where they read them, and agent-queue,
+# whose `night` window is the clock's night part.
+#
+# The clock: the hours file names the day's parts, each a window and the mode it runs in; agent-queue
+# reads its `night` row as the `night` tag's window.
 #
 # The mode is the state file's MACHINE_MODE, or the modes file's last row when none is set or the
 # one set is no longer listed. Its level is that row's level column. What a level multiplies is
@@ -13,6 +17,7 @@
 _mm_conf="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/machine-mode"
 : "${MACHINE_MODE_MODES:=$_mm_conf/modes}"
 : "${MACHINE_MODE_LEVELS:=$_mm_conf/levels}"
+: "${MACHINE_MODE_HOURS:=$_mm_conf/hours}"
 : "${MACHINE_MODE_STATE:=$HOME/.agent/machine-mode.env}"
 unset _mm_conf
 
@@ -20,6 +25,34 @@ mode_rows() { grep -Ev '^[[:space:]]*(#|$)' "$MACHINE_MODE_MODES"; }
 mode_names() { mode_rows | cut -d'|' -f1; }
 mode_row() { mode_rows | awk -F'|' -v m="$1" '$1 == m { print; found = 1 } END { exit !found }'; }
 state_value() { sed -n "s/^$1=//p" "$MACHINE_MODE_STATE" 2>/dev/null | head -1; }
+
+hour_rows() { grep -Ev '^[[:space:]]*(#|$)' "$MACHINE_MODE_HOURS" 2>/dev/null; }
+
+# hhmm_in <HH:MM> <from-to> -> true when the time is inside the window, which may wrap midnight.
+hhmm_in() {
+  local t="${1/:/}" a="${2%-*}" b="${2#*-}"
+  a="${a/:/}"; b="${b/:/}"
+  t=$((10#$t)) a=$((10#$a)) b=$((10#$b))
+  if [ "$a" -le "$b" ]; then [ "$t" -ge "$a" ] && [ "$t" -lt "$b" ]
+  else [ "$t" -ge "$a" ] || [ "$t" -lt "$b" ]; fi
+}
+
+# clock_part [HH:MM] -> the hours row whose window holds that time (MACHINE_MODE_NOW, else now, by
+# default); exit 1 when none does.
+clock_part() {
+  local now="${1:-${MACHINE_MODE_NOW:-$(date +%H:%M)}}" row
+  while IFS= read -r row; do
+    IFS='|' read -r _ w _ <<< "$row"
+    hhmm_in "$now" "$w" && { printf '%s\n' "$row"; return 0; }
+  done < <(hour_rows)
+  return 1
+}
+
+# clock_window <part> -> that part's HH:MM-HH:MM window, nothing and exit 1 when the file has none.
+clock_window() { hour_rows | awk -F'|' -v p="$1" '$1 == p { print $2; found = 1; exit } END { exit !found }'; }
+
+# human_here -> rc 0 unless fleet-presence says away. Unreadable counts as here: the slower rate.
+human_here() { case "$(fleet-presence 2>/dev/null)" in away*) return 1 ;; esac; return 0; }
 
 current_mode() {
   local m
