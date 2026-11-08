@@ -5,7 +5,8 @@
 # change; an unreachable cluster applies the local parts, exits 1 and says so; a machine with no
 # pool runners refuses; the status reads what the runners actually do, not what was asked. The
 # clock: the real hours file covers the day once and names real modes; a new part's mode applies
-# once; a hand mode holds inside its part, and past a boundary while the human is here.
+# once; a hand mode holds inside its part, and past a boundary while the human is here; each
+# tick reports its agentctl outcome, so a quiet tick is NOOP and never STALLED.
 # agent-hold is the real one against a sandbox hold dir, so its list format is pinned too.
 
 setup() {
@@ -319,4 +320,20 @@ hours_fixture() {
   MACHINE_MODE_NOW=12:00 run "$MM" clock
   assert_output --partial "reserved was set by hand and you are here"
   assert_equal "$(state MACHINE_MODE)" reserved
+}
+
+@test "each tick reports its outcome to the machine-clock runner: WORKED, NOOP, FAILED" {
+  hours_fixture
+  out() { cat "$HOME/.local/state/agentctl/machine-clock/last-outcome"; }
+  MACHINE_MODE_NOW=12:00 "$MM" clock >/dev/null
+  assert_equal "$(out)" WORKED
+  MACHINE_MODE_NOW=12:15 "$MM" clock >/dev/null
+  assert_equal "$(out)" NOOP
+  MACHINE_MODE_NOW=12:30 "$MM" reserved >/dev/null
+  MACHINE_MODE_NOW=23:00 "$MM" clock >/dev/null
+  assert_equal "$(out)" NOOP
+  MACHINE_MODE_NOW=12:00 "$MM" auto >/dev/null
+  KUBE_FAIL=1 MACHINE_MODE_NOW=23:00 run "$MM" clock
+  assert_failure
+  assert_equal "$(out)" FAILED
 }

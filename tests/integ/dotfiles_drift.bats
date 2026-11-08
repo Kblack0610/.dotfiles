@@ -325,6 +325,6 @@ link_into_home() {
   link_into_home .local/bin/runner
 
   run "$DRIFT"
-  assert_output --partial 'ln -sfn'
+  assert_output --partial 'dotfiles-deploy --apply'
   refute_output --partial 'show origin/main:<path> > '
 }

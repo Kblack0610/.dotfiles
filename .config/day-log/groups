@@ -1,5 +1,5 @@
 # day-log groups: where a merged PR sits on the day-log board, read from its title's
-# conventional-commit scope (feat(barrage): ...), or its type when it has none.
+# conventional-commit scope (feat(shapecity): ...), or its type when it has none.
 #   <scope>[,<scope>...]  <group>   a scope not listed is a group of its own
 #   @<repo>  <area>                 a repo not listed is an area of its own
 
@@ -8,7 +8,7 @@
 @.dotfiles              Fleet tooling
 @.dotfiles-private      Fleet tooling
 
-barrage,shape-city                          Barrage
+barrage,shape-city,shapecity                Shape City
 raiders,story                               Raiders
 dodginballs,hometown,townsfolk              DodginBalls and Hometown
 animation,movement,combat,loadout,holds,camera,view,dodgeball,vehicles,ai,ai3d,levelgen,levels,venues,net,diagnostics,anim,melee,weapons,throwables,online,server,burst  Engine

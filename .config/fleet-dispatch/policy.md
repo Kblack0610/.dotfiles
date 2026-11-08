@@ -60,7 +60,7 @@ Each row comes with its project's stage, its lane and its tagged tier:
 ## Fields
 
 - `tier`: your own reading of the row's tier, 1, 2 or 3, from what the change touches.
-- `area`: the one game or system the change stays in, as one lowercase word, so two sessions never work on the same one. Use the row's own prefix when it names one (`wilds`, `dodginballs`, `skyline`, `fx`, `perf`), otherwise the game or system it names, spelled as the directory under `Assets/Games` (`barrage`, `apociseum`). Empty when it spans several.
+- `area`: the one game or system the change stays in, as one lowercase word, so two sessions never work on the same one. Use the row's own prefix when it names one (`wilds`, `dodginballs`, `skyline`, `fx`, `perf`), otherwise the game or system it names, spelled as the directory under `Assets/Games` (`shapecity`, `apociseum`). Empty when it spans several.
 - `clear`: true only if the row says what done looks like, so the session would not need to ask anything.
 - `agent_only`: true only if no step needs the human (see Always skip).
 - `tier3_only`: true only when tier 3 is the one reason for `skip`: the row would be `dispatch` if tier 3 could run, and `rule` is then `tier3`. False for every row below tier 3.
