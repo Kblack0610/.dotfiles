@@ -28,8 +28,8 @@
 # A partial: yes item stays open until agent-land without --partial finishes it; reap also waits.
 # Holds: `after <slug>`, and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
 # pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until today's scheduled runs of that repo
-# have finished; see nightly_pending) and ask:<id>[=<option>] (until the human answers that agent-ask,
-# with that option when named; see ask_pending) and hold:<resource> (while agent-hold holds it; see
+# have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until the human answers that agent-ask,
+# with one of those options when named; see ask_pending) and hold:<resource> (while agent-hold holds it; see
 # hold_pending). A start on a later day is the dated form, never a held session.
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
@@ -419,8 +419,8 @@ hold_pending() {
   printf '%s\n' "${out#held: "$1" }"
 }
 
-# ask_pending <id>[=<option>] -> why that agent-ask still holds an item, or nothing once the human
-# answered it (with <option> as the answer's first word, when one is named). A phase gated on the
+# ask_pending <id>[=<option>[+<option>]] -> why that agent-ask still holds an item, or nothing once
+# the human answered it (with one of those options as the answer's first word, when named). A phase gated on the
 # human's decision (live money, a vendor) is queued behind its ask instead of held by an open
 # session: on 2026-11-06 trader-real-money-plan sat 6h+ refusing to queue phases that would have
 # started on their own. Pending, cancelled, another answer or no such ask all hold.
@@ -437,7 +437,14 @@ ask_pending() {
   [ -z "$by" ] || [ "$by" = human ] || { echo "answered by $by, not the human"; return; }
   [ -n "$want" ] || return 0
   ans="$(sed -n 's/^answer: //p' "$f" | head -1)"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"
-  [ "${ans,,}" = "${want,,}" ] || echo "answered ${ans:-nothing}, not $want"
+  case "+${want,,}+" in *"+${ans,,}+"*) ;; *) echo "answered ${ans:-nothing}, not $want" ;; esac
+}
+
+# ask_options <id> -> the ask's answer vocabulary, comma separated; nothing when it has none.
+ask_options() {
+  local f; f="$(compgen -G "$AQ_ASKS/*/${1%%=*}.md" | head -1)"
+  [ -n "$f" ] || return 0
+  sed -n 's/^options: *//p' "$f" | head -1 | tr '|' ','
 }
 
 # nightly_pending <repo> <local stamp> -> what today's scheduled runs of that repo still wait for, or
@@ -1334,7 +1341,7 @@ check_tags() {
         die "a time tag is at:HH:MM or at:YYYY-MM-DDTHH:MM, not $tag" ;;
       pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
       nightly:*) [[ "$tag" =~ ^nightly:[A-Za-z0-9_.-]+$ ]] || die "a nightly tag is nightly:<repo>, the repo's name, not $tag" ;;
-      ask:*) [[ "$tag" =~ ^ask:[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "an ask tag is ask:<id>[=<option>], not $tag"
+      ask:*) [[ "$tag" =~ ^ask:[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "an ask tag is ask:<id>[=<option>[+<option>]], not $tag"
         # An ask already cancelled, or answered by the judge or another option, can never release
         # the item: on 2026-11-07 can-we-get-cloud-vast-clarke-p3-live was queued behind an ask the
         # judge had answered at post, and upwork-p2..p5 behind one cancelled later.
@@ -1343,7 +1350,12 @@ check_tags() {
           "" | pending) ;;
           "no such ask") die "$tag: no agent-ask has that id; post the ask first" ;;
           *) die "$tag: that ask can never release it ($why); post a new one with agent-ask post --kind gate, which the judge never answers" ;;
-        esac ;;
+        esac
+        # With no option named, every answer releases the item, a "stop" among them.
+        if [[ "$tag" != *=* ]]; then
+          why="$(ask_options "${tag#ask:}")"
+          [ -z "$why" ] || die "$tag: that ask offers $why; name the answers that release the item: $tag=<option>[+<option>]"
+        fi ;;
       hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
     esac
   done

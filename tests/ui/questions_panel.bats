@@ -268,7 +268,7 @@ plan_row() {
   wait_until 'screen_has "list on top, card below"'
   tmux_keys Down
   tmux_keys g
-  wait_until 'screen_has "no Claude session owns"'
+  wait_until 'screen_has "no session is waiting"'
   tmux_keys Up
   tmux_keys g
   wait_until 'grep -qx "agent-panel jump hub/alpha:3" "$NOTES_FIXTURE/calls.log"'

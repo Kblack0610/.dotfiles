@@ -905,6 +905,21 @@ kinds_match() {
   assert_output ''
 }
 
+@test "item_brief: an item held on an ask is told the human's answer, in the cloud brief too" {
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  printf 'id: d1\nquestion: which label?\nstatus: answered\nanswer: a\nanswered_by: human\noptions: a|b\noption_notes: accept it|write by hand\n' > "$AGENT_ASK_ROOT/game/d1.md"
+  agent-ask() { "$REPO_ROOT/.local/bin/agent-ask" "$@"; }
+  it() { jq -cn --arg t "$1" '{slug: "s", mode: "oneshot", title: "plain task", task: "plain task", tags: $t}'; }
+  local line='The human already decided this in ask d1, so follow it: which label? Answer: a (accept it)'
+  run item_brief "$(it 'ask:d1=a+b')"
+  assert_line "$line"
+  run item_brief "$(it 'ask:d1=a+b')" claude-cloud
+  assert_line "$line"
+  # Negative control: no ask tag, no such line.
+  run item_brief "$(it '')"
+  refute_output --partial 'already decided'
+}
+
 @test "item_brief: a session starts on its kind's entry, by the item's type or its title's prefix; /one-shot otherwise" {
   jq '.fix.entry = "/fix-skill" | .design.entry = "/one-pager"' "$REPO_ROOT/.config/fleet-dispatch/kinds.json" > "$SANDBOX/kinds.json"
   export DISPATCH_KINDS="$SANDBOX/kinds.json"

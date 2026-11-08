@@ -1647,6 +1647,22 @@ cmd_restore() {
 
 item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 
+# ask_decisions <tags> -> one line per ask: tag naming what the human decided. The ask that released
+# an item has no session left to hear its answer, so the brief is where the answer reaches the work.
+ask_decisions() {
+  local tag id line
+  for tag in $1; do
+    case "$tag" in
+      ask:?*)
+        id="${tag#ask:}"; id="${id%%=*}"
+        line="$(agent-ask decision "$id" 2>/dev/null)" || continue
+        [ -z "$line" ] || echo "The human already decided this in ask $id, so follow it: $line"
+        ;;
+    esac
+  done
+  return 0
+}
+
 # item_brief <item json> [harness] -> the prompt a queue item's session starts on: plan mode gets
 # the task as typed, oneshot runs it through its kind's entry skill (kinds.json `entry`, by the
 # item's type or its title's prefix; /one-shot when the kind names none), --pr-only for a `night`
@@ -1662,6 +1678,7 @@ item_brief() {
     key=$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")
     jq -r .task <<<"$it"
     echo
+    ask_decisions "$tags"
     echo "This runs in a Claude Code cloud session on a fresh clone of the repo: no local skills, hooks, agent-queue or agent-land. Follow the repo's own CLAUDE.md and tooling."
     echo "Work on a new branch, run the repo's own tests for what you changed, push, and open a pull request. Never merge it."
     echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}: fleet-dispatch finds the PR by that line, and the human's merge closes the item."
@@ -1682,6 +1699,7 @@ item_brief() {
   fi
   jq -r .task <<<"$it"
   echo
+  ask_decisions "$tags"
   [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
   [[ "$tags" == *" red "* || -n "$pr_only" || -n "$nopr" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Before agent-land, run the bats files the Stop hook picks for the files you changed and put the result in the PR body."
   row=$(item_row "$it")

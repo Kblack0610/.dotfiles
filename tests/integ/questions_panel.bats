@@ -337,7 +337,7 @@ plan_dialog() {
   run "$Q" key g "$gone"
   assert_output 'change-footer~session ended and its directory is gone; resume with claude --resume sid-gone~'
   run "$Q" key g "$loose"
-  assert_output 'change-footer~no Claude session owns this ask~'
+  assert_output 'change-footer~no session is waiting on this ask; answer it here~'
   # Going nowhere answers nothing.
   assert_equal "$(status_of "$live")$(status_of "$gone")" pendingpending
 }
