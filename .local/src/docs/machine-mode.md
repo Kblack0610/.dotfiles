@@ -79,4 +79,5 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 | A Unity run ignores the mode | That worktree's `slots.sh` predates the mode | Merge main into it |
 | The mode did not change at a part's start | You set the mode by hand and are still here, or the tick is up to 15 minutes late | `machine-mode` shows `set by hand`; run `machine-mode auto` to hand it back |
 | `no part of .../hours holds the time now` | A hand edit left a gap in the hours file | Fix the windows so they cover the day; `machine_mode.bats` checks the shipped file |
+| The `machine-clock` row in `agentctl list` reads FAILED | The tick's switch failed, almost always a runner pin that did not reach the cluster; the outcome line's `why:` names it. A quiet tick reads NOOP and a switch WORKED | Fix cluster access; the next tick retries the pin |
 | A `night` item holds with `the hours file has no night part` | The hours file has no `night` row | Add it back; agent-queue reads that row as the night window |

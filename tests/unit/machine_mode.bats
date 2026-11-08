@@ -329,6 +329,10 @@ hours_fixture() {
   assert_equal "$(out)" WORKED
   MACHINE_MODE_NOW=12:15 "$MM" clock >/dev/null
   assert_equal "$(out)" NOOP
+  MACHINE_MODE_NOW=12:30 "$MM" reserved >/dev/null
+  MACHINE_MODE_NOW=23:00 "$MM" clock >/dev/null
+  assert_equal "$(out)" NOOP
+  MACHINE_MODE_NOW=12:00 "$MM" auto >/dev/null
   KUBE_FAIL=1 MACHINE_MODE_NOW=23:00 run "$MM" clock
   assert_failure
   assert_equal "$(out)" FAILED
