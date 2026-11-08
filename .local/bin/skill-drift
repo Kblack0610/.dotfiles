@@ -60,7 +60,8 @@
 #              advertised, so the agent tries to invoke it).
 #   STALE      metadata.reviewed is older than STALE_DAYS. Not "last edited",
 #              which git already answers - last VERIFIED against reality.
-#   UNUSED     never invoked in USAGE_DAYS of transcripts. A skill nothing calls
+#   UNUSED     no use in USAGE_DAYS of transcripts, by any of the six signals
+#              `claude-recall stats` counts (USE_KINDS below). A skill nothing calls
 #              still spends its description tokens in every session. This is a
 #              SIGNAL, not a verdict: a release runbook fires per release and is
 #              supposed to look idle.
@@ -107,6 +108,19 @@
 #                                since the merge base with BASE (default origin/main).
 #                                A commit trailer `Skill-Baseline-Raise: <why>` in
 #                                that range allows it: a new check has debt to freeze.
+#   skill-drift --overrides [--json]
+#                                the skill-usage toggle: the skillOverrides object that keeps
+#                                "name-only" on exactly the skills with no use in
+#                                SKILL_TOGGLE_DAYS (30) and lists the rest, from the settings
+#                                file SKILL_SETTINGS (~/.claude/settings.json). A skill another
+#                                SKILL.md or a CLAUDE.md layer names (routes to) is never hidden
+#                                and never restored for that alone; a used one is restored. A
+#                                `paths:` or disable-model-invocation skill is not listed, so
+#                                it is left alone, and so is any value other than "name-only".
+#                                Prints the hide and restore lists; --json adds the object. The
+#                                nightly skill-toggle runner lands it (agentctl-skill-toggle).
+#                                Exit 2 when no use is counted at all: no transcripts is not
+#                                "nothing used".
 #   skill-drift --docs [--json]  DEADPATH and NOCMD over the GLOBAL docs instead of
 #                                the skills: both CLAUDE.md layers, AGENTS.md,
 #                                ~/.local/src/docs, the agentctl runbooks, every
@@ -142,6 +156,12 @@ CLAUDE_MD="${CLAUDE_MD:-$HOME/.claude/CLAUDE.md}"
 BASELINE="${SKILL_DRIFT_BASELINE:-$HOME/.agent/skill-drift.baseline}"
 STALE_DAYS="${SKILL_STALE_DAYS:-180}"
 USAGE_DAYS="${SKILL_USAGE_DAYS:-90}"
+TOGGLE_DAYS="${SKILL_TOGGLE_DAYS:-30}"
+SETTINGS="${SKILL_SETTINGS:-$HOME/.claude/settings.json}"
+# Every sign a skill was used: a Skill call, a typed command, its body loaded, its SKILL.md
+# read, a file under it run, its CLI run. Counting only the first two hid skills that
+# sessions reach by a route or a queue brief (2026-11, the 35 of dotfiles #1450).
+USE_KINDS=skill,slash,body,read,script,mention
 # The one usage counter, by path beside this script: a worktree run uses the worktree's copy.
 # It honours CLAUDE_TRANSCRIPTS itself.
 RECALL="${CLAUDE_RECALL:-$(dirname "$(readlink -f "$0")")/claude-recall}"
@@ -177,6 +197,7 @@ case "${1:-}" in
   --ratchet)             MODE=ratchet ;;
   --docs)           MODE=docs; [ "${2:-}" = --json ] && DOCS_JSON=1 ;;
   --dups)           MODE=dups ;;
+  --overrides)      MODE=overrides; [ "${2:-}" = --json ] && DOCS_JSON=1 ;;
   -h|--help) sed -n '2,/^set -uo pipefail/{/^#/p}' "$0" | sed 's/^# \?//'; exit 0 ;;
 esac
 
@@ -538,18 +559,19 @@ check_stale() {
 
 # Every skill's description sits in the context window of every session whether
 # it fires or not, so a skill nothing calls is a standing cost. Counted by
-# `claude-recall stats`: Skill-tool calls AND typed /commands, so a skill the human
-# reaches only by its slash command (captain, one-shot) is not reported unused.
+# `claude-recall stats` over USE_KINDS, so a skill the human reaches only by its slash
+# command (captain, one-shot) or a session only by reading it is not reported unused.
 #
 # A SIGNAL, not a verdict. A release runbook is supposed to look idle between
 # releases; what this is for is finding the ones that are idle because the router
 # never picks them, which is the overlap problem skill-refine has had no data for.
 declare -A USED=()
+# load_usage [days]: every skill with a use in the window (default USAGE_DAYS) into USED.
 load_usage() {
   local s
   while IFS= read -r s; do
     [ -n "$s" ] && USED[$s]=1
-  done < <("$RECALL" stats --days "$USAGE_DAYS" --kind skill,slash --top 0 --json 2>/dev/null \
+  done < <("$RECALL" stats --days "${1:-$USAGE_DAYS}" --kind "$USE_KINDS" --top 0 --json 2>/dev/null \
              | jq -r '.rows[].key' 2>/dev/null)
   return 0
 }
@@ -558,7 +580,7 @@ check_unused() {
   local skill="$1"
   # No transcripts at all means we cannot tell, which is not the same as unused.
   [ ${#USED[@]} -gt 0 ] || return 0
-  [ -n "${USED[$skill]:-}" ] || add UNUSED "$skill" "${USAGE_DAYS}d" "never invoked in the last ${USAGE_DAYS}d of transcripts"
+  [ -n "${USED[$skill]:-}" ] || add UNUSED "$skill" "${USAGE_DAYS}d" "no use in the last ${USAGE_DAYS}d of transcripts"
   return 0
 }
 
@@ -721,6 +743,49 @@ doc_set() {
     "$HOME"/.claude*/projects/*/memory/*.md
   fi | xargs -d '\n' -r readlink -e -- | sort -u | while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done
 }
+
+# --- --overrides: the skill-usage toggle --------------------------------------
+#
+# A route (another skill or a CLAUDE.md layer naming the skill) is how a reader gets to it, so
+# whether a routed skill is listed stays the human's call: the count never hides one. The name
+# matches whole (no letter, digit, - or _ beside it). A one-word name like scope matches prose
+# too, which errs on the side that leaves a skill alone.
+routed() {
+  grep -lE "(^|[^[:alnum:]_-])$1([^[:alnum:]_-]|$)" "${ROUTE_DOCS[@]}" 2>/dev/null |
+    grep -qvxF "$SKILLS/$1/SKILL.md"
+}
+
+if [ "$MODE" = overrides ]; then
+  [ -f "$SETTINGS" ] || { echo "skill-drift --overrides: no settings file $SETTINGS" >&2; exit 2; }
+  cur=$(jq -c '.skillOverrides // {}' "$SETTINGS") || { echo "skill-drift --overrides: $SETTINGS does not parse" >&2; exit 2; }
+  load_usage "$TOGGLE_DAYS"
+  [ ${#USED[@]} -gt 0 ] || { echo "skill-drift --overrides: no use counted in ${TOGGLE_DAYS}d of transcripts, which is not the same as nothing used" >&2; exit 2; }
+  mapfile -t ROUTE_DOCS < <(for f in "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" "$SKILLS"/*/SKILL.md; do [ -f "$f" ] && printf '%s\n' "$f"; done)
+  hide=() restore=()
+  while IFS= read -r s; do
+    f="$SKILLS/$s/SKILL.md"
+    [ -f "$f" ] && fm "$f" | grep -qE '^paths:|^disable-model-invocation:[[:space:]]*true' && continue
+    state=$(jq -r --arg s "$s" '.[$s] // "listed"' <<<"$cur")
+    if [ -n "${USED[$s]:-}" ]; then
+      [ "$state" = name-only ] && restore+=("$s")
+    elif [ "$state" = listed ] && [ -f "$f" ] && ! routed "$s"; then
+      hide+=("$s")
+    fi
+  done < <({ for f in "$SKILLS"/*/SKILL.md; do [ -e "$f" ] && basename "$(dirname "$f")"; done
+             jq -r 'to_entries[] | select(.value == "name-only") | .key' <<<"$cur"; } | sort -u)
+  hj=$(printf '%s\n' ${hide[@]+"${hide[@]}"} | jq -Rnc '[inputs | select(length > 0)]')
+  rj=$(printf '%s\n' ${restore[@]+"${restore[@]}"} | jq -Rnc '[inputs | select(length > 0)]')
+  if [ "$DOCS_JSON" = 1 ]; then
+    jq -c --argjson d "$TOGGLE_DAYS" --argjson h "$hj" --argjson r "$rj" '
+      {days: $d, hide: $h, restore: $r,
+       skillOverrides: (with_entries(select(.key as $k | $r | index($k) | not))
+                        + ($h | map({(.): "name-only"}) | add // {})
+                        | to_entries | sort_by(.key) | from_entries)}' <<<"$cur"
+  else
+    jq -r --argjson d "$TOGGLE_DAYS" --argjson r "$rj" '"skill-toggle over \($d)d: hide \(length) [\(join(" "))], restore \($r | length) [\($r | join(" "))]"' <<<"$hj"
+  fi
+  exit 0
+fi
 
 if [ "$MODE" = docs ]; then
   ndocs=0
