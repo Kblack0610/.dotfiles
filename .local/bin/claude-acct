@@ -826,7 +826,7 @@ REGISTRY="$MAIN_DIR/sessions"
 MOVE_POLL="${CLAUDE_ACCT_POLL:-0.5}"
 MOVE_TIMEOUT="${CLAUDE_ACCT_MOVE_TIMEOUT:-60}"
 # Flags a resumed claude keeps from the one it replaces; the rest (a brief, --resume) are spent.
-CARRY_VALUE=(--model --permission-mode)
+CARRY_VALUE=(--model --permission-mode --disallowedTools)
 CARRY_BARE=(--dangerously-skip-permissions --allow-dangerously-skip-permissions)
 
 # norm_dir <dir> -> the account dir as accounts() spells it: empty for the main account
