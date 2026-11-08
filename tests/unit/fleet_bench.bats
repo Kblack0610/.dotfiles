@@ -2878,6 +2878,33 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
   run jq -r 'select(.scope == "pool:other") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
   assert_output labels
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # Every slot the pin can use is busy: the conclusion names the pin, and the row stays for sweep-cancel.
+  { cat "$SANDBOX/prom.tsv"
+    printf 'cc:pool_match_slots\tother\t%s\t2\ncc:pool_match_busy\tother\t%s\t2\ncc:pool_match_runners\tother\t%s\t2\n' "$(clock 09:30)" "$(clock 09:30)" "$(clock 09:30)"
+    printf 'cc:pool_match_labels\tother/host-razer-laptop\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/pinned.tsv"
+  BENCH_PROM_TSV="$SANDBOX/pinned.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:other") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output "labels oldest job waited 2h with 2/2 slots busy among those matching its labels (host-razer-laptop), 2/2 in the pool: the jobs are pinned to a host, so the slots of the pin bind, not the pool"
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # A pin that also asks for runner labels is still a pin.
+  sed 's|other/host-razer-laptop|other/host-razer-laptop,linux,self-hosted|' "$SANDBOX/pinned.tsv" > "$SANDBOX/pinned-more.tsv"
+  BENCH_PROM_TSV="$SANDBOX/pinned-more.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:other") | .conclusion' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output --partial "the jobs are pinned to a host"
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # A free slot the pin can use is a fault again.
+  { grep -v '^cc:pool_match_busy' "$SANDBOX/pinned.tsv"
+    printf 'cc:pool_match_busy\tother\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/free.tsv"
+  BENCH_PROM_TSV="$SANDBOX/free.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:other") | .conclusion' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output --partial "admission or labels bind, not capacity"
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # A pool:other row with no host label keeps the general sentence.
+  sed 's|other/host-razer-laptop|other/self-hosted,custom|' "$SANDBOX/pinned.tsv" > "$SANDBOX/unmapped.tsv"
+  BENCH_PROM_TSV="$SANDBOX/unmapped.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:other") | .conclusion' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output --partial "admission or labels bind, not capacity"
 }
 
 @test "findings: a starved pool reports the slots that match the waiting jobs, not the pool's total" {
