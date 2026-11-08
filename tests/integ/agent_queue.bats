@@ -358,6 +358,20 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = tonight ]
 }
 
+@test "the night window is the clock hours' night part, and with none a night item holds and says why" {
+  "$AQ" add --project game --slug tonight --tags night "a"
+  export MACHINE_MODE_HOURS="$BATS_TEST_TMPDIR/hours"
+  printf 'day|02:00-22:00|open|x\nnight|22:00-02:00|full|y\n' > "$MACHINE_MODE_HOURS"
+  AGENT_QUEUE_NOW=22:30 run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = tonight ]
+  AGENT_QUEUE_NOW=03:00 run "$AQ" next --json
+  [ "$(jq -r '.slug // empty' <<<"$output")" != tonight ]
+  printf 'day|00:00-24:00|open|x\n' > "$MACHINE_MODE_HOURS"
+  AGENT_QUEUE_NOW=02:00 run "$AQ" next --json
+  [ "$(jq -r '.slug // empty' <<<"$output")" != tonight ]
+  [ "$(jq -r .hold <<<"$("$AQ" show tonight --json)")" = "night (the hours file has no night part)" ]
+}
+
 @test "a dated at: tag holds across days until its moment; at:HH:MM alone does not" {
   "$AQ" add --project game --slug tomorrow --tags "at:2026-11-05T09:00" "a"
   "$AQ" add --project game --slug clock --tags "at:09:00" "b"
@@ -1767,4 +1781,20 @@ started_item() {
   assert_failure 1
   assert_output --partial "already in the queue: one"
   [ ! -e "$AGENT_QUEUE_DIR/admission.jsonl" ]
+}
+
+@test "a partial merge cannot close ok or release after items" {
+  "$AQ" add --project game --running --slug partial 'two repos' >/dev/null
+  "$AQ" add --project game --slug next --after partial 'next phase' >/dev/null
+  "$AQ" set partial pr=o/game#1 merged=aaa111 partial=yes >/dev/null
+  run "$AQ" move partial done --status ok
+  assert_failure
+  assert_output --partial 'has a partial landing'
+  run "$AQ" show next --json
+  assert_equal "$(jq -r .hold <<<"$output")" 'after partial'
+  "$AQ" set partial partial= >/dev/null
+  run "$AQ" move partial done --status ok
+  assert_success
+  run "$AQ" show next --json
+  assert_equal "$(jq -r '.hold // ""' <<<"$output")" ''
 }

@@ -25,6 +25,7 @@
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
 # `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
+# A partial: yes item stays open until agent-land without --partial finishes it; reap also waits.
 # Holds: `after <slug>`, and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
 # pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until today's scheduled runs of that repo
 # have finished; see nightly_pending) and ask:<id>[=<option>] (until the human answers that agent-ask,
@@ -46,8 +47,11 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # The one reader of a plan's `## Phases` checklist and `epic:` line, shared with fleet-sessions.
 # shellcheck source=../lib/plan-phases.sh
 . "${PLAN_PHASES_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh}"
-# The night window a `night` item may start in, local time; it may wrap midnight.
-AQ_NIGHT="${AGENT_QUEUE_NIGHT:-01:00-06:00}"
+# shellcheck source=../lib/machine-mode.sh
+. "${MACHINE_MODE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh}"
+# The night window a `night` item may start in, local time, which may wrap midnight: the `night`
+# part of the system's clock hours (.config/machine-mode/hours), read when a night hold is checked.
+AQ_NIGHT="${AGENT_QUEUE_NIGHT:-}"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
@@ -298,14 +302,6 @@ cmd_admission() {
   fi
 }
 
-# hhmm_in <HH:MM> <from-to> -> true when the time is inside the window, which may wrap midnight.
-hhmm_in() {
-  local t="${1/:/}" a="${2%-*}" b="${2#*-}"
-  a="${a/:/}"; b="${b/:/}"
-  if [ "$a" -le "$b" ]; then [ "$t" -ge "$a" ] && [ "$t" -lt "$b" ]
-  else [ "$t" -ge "$a" ] || [ "$t" -lt "$b" ]; fi
-}
-
 # prios_read -> `name<TAB>prio` for every project whose front page declares a `#prio/<word>` (`notes
 # projects --prios`, the one reader of the tag the human sets with `notes projects --prio` or the hub's
 # P key). Nothing when notes cannot answer: no prio is the safe default, it ranks and holds nothing.
@@ -378,7 +374,10 @@ hold_for() {
   now="${stamp#*T}"
   for tag in $tags; do
     case "$tag" in
-      night) hhmm_in "$now" "$AQ_NIGHT" || { HOLD="night ($AQ_NIGHT)"; return; } ;;
+      night)
+        [ -n "$AQ_NIGHT" ] || AQ_NIGHT="$(clock_window night)"
+        [ -n "$AQ_NIGHT" ] || { HOLD="night (the hours file has no night part)"; return; }
+        hhmm_in "$now" "$AQ_NIGHT" || { HOLD="night ($AQ_NIGHT)"; return; } ;;
       at:[0-9][0-9]:[0-9][0-9]) [ "${now/:/}" -ge "${tag//[!0-9]/}" ] || { HOLD="$tag"; return; } ;;
       at:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]) [[ ! "$stamp" < "${tag#at:}" ]] || { HOLD="$tag"; return; } ;;
       pr:?*/?*#[0-9]*)
@@ -1179,7 +1178,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting finished session window account model size lane_run plan pr merged cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed "
+SETTABLE=" project mode priority tags type after agent started waiting finished session window account model size lane_run plan pr merged partial closing_pr cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -1285,6 +1284,9 @@ cmd_move() {
   from="$(state_of "$f")"
   [ -z "$expect" ] || [ "$from" = "$expect" ] || { echo "agent-queue: $slug is $from, not $expect: left as it is" >&2; return 3; }
   [ "$from" != "$to" ] || { echo "$slug already $to"; return 0; }
+  if [ "$to" = done ] && [ "$status" = ok ] && [ "$(fm_get "$f" partial)" = yes ]; then
+    die "$slug has a partial landing; finish with agent-land <N> without --partial before closing it ok"
+  fi
   # Done ok with a PR means merged: an ok close with the PR still open strands it, since nothing
   # reads that item again and its after: items start on work that never landed (#1145, #1146).
   if [ "$to" = done ] && [ "$status" = ok ] && [ -n "$(fm_get "$f" pr)" ] && [ -z "$(fm_get "$f" merged)" ]; then
