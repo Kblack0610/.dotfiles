@@ -136,15 +136,23 @@ setup() {
   [ ! -f "$TIMERS/agentctl-alpha.timer" ]
 }
 
-@test "a oneshot restarts only on an abnormal end; a persistent runner keeps the template's policy" {
+@test "a oneshot never restarts, its timer is the retry; a persistent runner keeps the template's policy" {
   printf 'NAME=gamma\nKIND=persistent\nLANE=observe\nDESCRIPTION=\047test daemon\047\nEFFECT=none\nCOMMAND=/bin/true\n' > "$AGENTCTL_CONF_DIR/gamma.conf"
   mkdir -p "$TIMERS/agentctl@gamma.service.d"
   echo stale > "$TIMERS/agentctl@gamma.service.d/agentctl-oneshot.conf"   # it was a oneshot once
   run "$AGENTCTL_BIN" reload
   assert_success
-  grep -qx 'Restart=on-abnormal' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
+  grep -qx 'Restart=no' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
   grep -qx 'SuccessExitStatus=75' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
   [ ! -e "$TIMERS/agentctl@gamma.service.d/agentctl-oneshot.conf" ]
+}
+
+@test "a oneshot with RESTART=on-abnormal retries a signal death; any other RESTART is an invalid conf" {
+  echo 'RESTART=on-abnormal' >> "$AGENTCTL_CONF_DIR/alpha.conf"
+  echo 'RESTART=always' >> "$AGENTCTL_CONF_DIR/beta.conf"
+  run "$AGENTCTL_BIN" reload
+  assert_output --partial 'skipping invalid config beta: invalid RESTART=always'
+  grep -qx 'Restart=on-abnormal' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
 }
 
 @test "reload removes the generated drop-in of a runner whose conf is gone, and keeps a hand-written one" {

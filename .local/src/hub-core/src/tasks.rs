@@ -65,6 +65,16 @@ pub struct Row {
 }
 
 impl Row {
+    /// Started (`[/]`).
+    pub fn doing(&self) -> bool {
+        self.state == "doing"
+    }
+
+    /// Tagged `#urgent` or `#high`.
+    pub fn hot(&self) -> bool {
+        matches!(self.priority.as_str(), "urgent" | "high")
+    }
+
     /// What it ships in: a playtest check's game, any other row's version.
     pub fn release(&self) -> Option<&str> {
         if self.lane == "playtest" {
@@ -109,7 +119,7 @@ impl crate::table::Row for Row {
 
     fn in_state(&self, s: &str) -> bool {
         match s {
-            "in progress" => self.state == "doing",
+            "in progress" => self.doing(),
             "filed today" => self.filed_today,
             "urgent" => self.priority == "urgent",
             "requested" => self.requested,
