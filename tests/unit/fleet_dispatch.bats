@@ -143,7 +143,7 @@ while [ $# -gt 0 ]; do
   case "$1" in --profile) shift 2 ;; --agent) lane=agent; shift ;; --exact) exact=1; shift ;; --) shift ;; *) args+=("$1"); shift ;; esac
 done
 case "${args[0]}" in
-  projects) cat "$F/projects" 2>/dev/null ;;
+  projects) if [[ " ${args[*]} " == *" --prios "* ]]; then cat "$F/prios" 2>/dev/null; else cat "$F/projects" 2>/dev/null; fi ;;
   row)   # `row parse`: a stand-in for the grammar's home (notes-cli), enough for these fixtures: type(area): with a type in kinds.json
     while IFS= read -r l; do
       t=$(sed -nE 's/^(- \[.\] )?([a-z]+)\([a-z0-9-]+\):.*/\2/p' <<<"$l")
@@ -5477,6 +5477,115 @@ remote_item() {
   assert_not_called 'wt new'
 }
 
+# --- focus: #prio/only ------------------------------------------------------------------
+
+# focus_on <project>... -- the human put each on `#prio/only`: the `notes projects --prios` line agent-queue
+# and fleet-dispatch read, and the front-page head tag prio_of reads (the one store both come from).
+focus_on() {
+  local p
+  for p; do
+    printf '%s\tonly\n' "$p" >> "$NOTES_FIXTURE/prios"
+    sed -i '1s/$/ #prio\/only/' "$SANDBOX/sheets/$p/README.md"
+  done
+}
+
+@test "focus: candidates drop an off-focus project's rows but keep #requested and #urgent ones; suggest names the focus" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  row game agent 'game row' "- [ ] game row $T"
+  row app agent 'app row' "- [ ] app row $T"
+  row app agent 'app asked' "- [ ] app asked #requested $T"
+  row app agent 'app urgent' "- [ ] app urgent #urgent $T"
+  # Negative control: with no focus, every row is a candidate.
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'app asked,app row,app urgent,game row'
+  focus_on game
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'app asked,app urgent,game row'
+  SUGGEST=1 run cmd_candidates
+  assert_equal "$(jq -r 'select(.key == "app row") | .off' <<<"$output")" 'focus: only game'
+}
+
+@test "focus: an only project ranks with focus, first, and why names it" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  focus_on game
+  row app agent 'app asked' "- [ ] app asked #requested #urgent $T"
+  row game agent 'game row' "- [ ] game row #low $T"
+  run cmd_candidates
+  assert_success
+  run jq -sr "$RANK_JQ"'rank[] | "\(.key): \(.pprio) \(.why)"' <<<"$output"
+  assert_line --index 0 --partial 'game row: 0 only project'
+  assert_line --index 1 --partial 'app asked: 2'
+}
+
+@test "focus: promote tags a #requested row's item requested, so a focus elsewhere does not hold it" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  row app human 'asked one' '- [ ] asked one #requested <!-- id:gm-7 -->'
+  row app human 'plain one' '- [ ] plain one <!-- id:gm-8 -->'
+  row app human 'asked two' '- [ ] asked two #requested <!-- id:gm-9 -->'
+  focus_on game
+  for k in 7 8; do
+    run promote "$(jq -cn --arg k "gm-$k" '{profile: "bnb", project: "app", lane: "human", key: $k}')" "" task
+    assert_success
+  done
+  run promote "$(jq -cn '{profile: "bnb", project: "app", lane: "human", key: "gm-9"}')" requested task
+  assert_success
+  assert_equal "$(qfield "$(qitem queued gm-7)" tags)" requested
+  assert_equal "$(qfield "$(qitem queued gm-8)" tags)" ''
+  assert_equal "$(qfield "$(qitem queued gm-9)" tags)" requested
+  run agent-queue list --json --state queued
+  assert_equal "$(jq -r 'select(.slug == "gm-7") | .hold // "none"' <<<"$output")" none
+  assert_equal "$(jq -r 'select(.slug == "gm-8") | .hold' <<<"$output")" 'focus: only game'
+}
+
+@test "focus: the project floor starts a focus project's item, never an off-focus one" {
+  idle_held_machine
+  export DISPATCH_PROJECT_FLOOR=2
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  agent-queue add --project game --slug g1 "game work" >/dev/null
+  focus_on game
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item g1 on the project floor'
+  refute_output --partial 'started queue item a1'
+}
+
+@test "focus: starved fires on a focus with no work, and not once it has some or with no focus" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  agent-queue add --project app --slug a1 --priority low "app work" >/dev/null
+  # Negative control: no focus, nothing starved.
+  run cmd_starved
+  assert_success
+  focus_on game
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'focus: only game has no work'
+  row game agent 'game row' "- [ ] game row $T"
+  run cmd_starved
+  assert_success
+  refute_output --partial 'focus:'
+}
+
+@test "focus: headroom names the focus and counts the items it holds; stats publishes both as numbers" {
+  two_items
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -c '[.focus, .focus_held, .runnable]' <<<"$output")" '[[],0,2]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  refute_output --partial 'focus:'
+  focus_on game
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -c '[.focus, .focus_held, .runnable]' <<<"$output")" '[["game"],1,1]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'focus:     only game; 1 queued item(s) held off focus (reds, urgent and #requested still run)'
+  run cmd_stats
+  assert_equal "$(jq -c '[.focus_projects, .held_focus]' <<<"$output")" '[1,1]'
+}
+
 # --- cloud workers: demand for the ci-runner-governor ---------------------------------------------
 
 # cloud_worker [home|two] -- fleet-worker-1, a box the ci-runner-governor powers (fleet_power:
@@ -5618,4 +5727,19 @@ demand_of() {
   agent-queue add --project game --slug fix-menu3 --priority high "Fix the menu foot" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 1'
+}
+
+@test "reap: a partial merge waits for the final landing and keeps its row and after items open" {
+  pr_item MERGED
+  agent-queue set fix-crash "merged=$OID" partial=yes >/dev/null
+  agent-queue add --project game --slug next --after fix-crash 'next phase' >/dev/null
+  run cmd_reap
+  assert_success
+  run agent-queue show fix-crash --json
+  assert_equal "$(jq -r '.state + " " + .partial' <<<"$output")" 'waiting yes'
+  run cmd_reap
+  assert_success
+  run agent-queue show next --json
+  assert_equal "$(jq -r .hold <<<"$output")" 'after fix-crash'
+  grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail 'partial row closed'
 }

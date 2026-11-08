@@ -136,7 +136,8 @@ else
   ready_line="$ready ready ($(d runnable_urgent) urgent, $(d runnable_high) high)"
   low="$(get dispatch.low_water)"
   [ -z "$low" ] || ready_line+=" of low water $low"
-  queue="queued: $ready_line, $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag)"
+  hf="$(get dispatch.held_focus)"
+  queue="queued: $ready_line, $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag$( ((${hf:-0} > 0)) && printf ', %s off focus' "$hf"))"
   queue+=$'\n'"oldest: ready $(prom_dur "$oldest"), urgent $uw"
   [ -z "$high_s" ] || queue+=", high $(prom_dur "$high_s")"
   [ -z "$(get dispatch.present_per_hour)" ] ||
@@ -162,6 +163,9 @@ else
     cl="capacity: no headroom from a pass in the last 45 minutes"
   fi
   [ -n "$paused" ] && cl+=$'\n'"paused by: $(paint "$C_YEL" "$paused")"
+  # The human's #prio/only focus: names are on the hub Projects tab and in `fleet-dispatch headroom`.
+  fn="$(get dispatch.focus_projects)"
+  ((${fn:-0} > 0)) && cl+=$'\n'"focus: $(paint "$C_YEL" "only $fn project(s)"), $(d held_focus) queued held off it (reds, urgent and #requested still run)"
   disp+=$'\n'"$cl"
   cs="${could:--}"; ((${could:-0} > 0)) && cs="$(paint "$C_YEL" "$could")"
   disp+=$'\n'"can start now: $cs more; last pass $(prom_dur "$pass_age") ago, last start $start_age ago"

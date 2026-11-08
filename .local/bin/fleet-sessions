@@ -741,6 +741,41 @@ dirty_paths() {
     | cut -c"$(( ${#top} + 2 ))"-
 }
 
+# edited_work_blockers <cwd> <edited paths>: unlanded work in other repositories this
+# session edited. Never scan unrelated sibling worktrees or count their work as ours.
+edited_work_blockers() {
+  local cwd="$1" edited="$2" top path dir g dirty ahead pr state ci inpr branch behind conflicts fork oid names why bucket red health workflows suspects kind=WORKING out=""
+  [ -n "$edited" ] || return 0
+  top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"
+  while IFS= read -r dir; do
+    [ -n "$dir" ] && [ "$dir" != "$top" ] || continue
+    read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$dir" "$edited")
+    red=-
+    if [ "$state" = MERGED ]; then
+      IFS=$'\t' read -r health workflows _ suspects < <(main_health "$dir")
+      if [ "$health" = RED ] && grep -qxF "$pr" <<<"$(tr ' ' '\n' <<<"$suspects")"; then
+        red="$workflows"
+        [ -z "${3:-}" ] || printf '%s\t%s\n' "$(repo_slug "$dir")" "$3" >> "$CACHE/owners"
+      fi
+    fi
+    # A completed checklist suppresses plan blockers: only this tree's git facts matter.
+    why="$(work_blockers '' idle 0 0 0 30 "$g" "$dirty" "$ahead" "$pr" "$state" "$ci" "$inpr" "$red" 1/1 - "$conflicts" - "$names")"
+    if [ -n "$why" ]; then
+      bucket="$(session_bucket idle 0 0 0 "$FLEET_IDLE_MIN" "$g" "$dirty" "$ahead" "$pr" "$state" "$ci" "$inpr" "$red" 1/1 - "$conflicts" - "$names")"
+      [ "${bucket%% *}" != STALLED ] || kind=STALLED
+      out="${out:+$out; }$dir: $why"
+    fi
+  done < <(
+    while IFS= read -r path; do
+      [[ "$path" = /* ]] || continue
+      dir="$(dirname -- "$path")"
+      while [ ! -d "$dir" ] && [ "$dir" != / ]; do dir="$(dirname -- "$dir")"; done
+      git -C "$dir" rev-parse --show-toplevel 2>/dev/null
+    done <<<"$edited" | sort -u
+  )
+  [ -z "$out" ] || printf '%s unlanded work in %s' "$kind" "$out"
+}
+
 # dirty_names <paths, one per line>: the first FLEET_DIRTY_NAMES of them for a reason, "+N more"
 # past that; - when there are none. "1 dirty file(s)" alone sent agent-18 (2026-11-04) and the
 # human guessing: the one file was a submodule Unity had re-imported.
@@ -1068,6 +1103,15 @@ collect() {
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item")"
+    local elsewhere=""
+    [ "$host" != - ] || elsewhere="$(edited_work_blockers "$cwd" "$edited" "$sid")"
+    if [ -n "$elsewhere" ]; then
+      fin=0
+      blk="${blk:+$blk; }${elsewhere#* }"
+      case "${bucket%% *}" in
+        DONE | LANDED | CHAT) bucket="$elsewhere" ;;
+      esac
+    fi
     # A sibling repo's PR is named the way GitHub cross-references it, so the nudge says where it is.
     [ "$xr" = - ] || { bucket="${bucket//PR #$pr/PR $xr#$pr}"; blk="${blk//PR #$pr/PR $xr#$pr}"; }
     # An open PR's fact carries its head commit, so a push that is still red is a new fact
