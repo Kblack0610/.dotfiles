@@ -363,6 +363,8 @@ span.warn { color: var(--b-stalled); }
 /* Schedules: an open row reads at the box's width, however far the table is scrolled. */
 .sched { container-type: inline-size; }
 .sdet { position: sticky; left: 10px; max-width: calc(100cqw - 20px); overflow-wrap: anywhere; }
+/* Releases: a long changelog scrolls inside the opened row. */
+.rel-cl { max-height: 320px; overflow: auto; margin-top: 4px; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
 @media (max-width: 760px) {
   /* The Queue table keeps state, in, project and title; the detail has the rest. */

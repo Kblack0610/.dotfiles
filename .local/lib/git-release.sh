@@ -38,6 +38,9 @@
 #   git_latest_tag    <repo> <name> [glob]                          -> one tag, or ""
 #   git_product_tag   <repo> <product> [glob]                       -> one tag, or ""
 #   git_shipping_next <repo> <tag> <branch> [pathfilter] [limit]     -> N subject lines
+#   git_tags          <repo> <name> <scoped> [glob]                  -> every tag, newest first
+#   git_prev_tag      <repo> <name> <scoped> <glob> <tag>            -> the release before <tag>
+#   git_tag_changes   <repo> <prev> <tag> [pathfilter] [limit]       -> N subject lines
 #   git_open_prs      <repo> [title-regex] [limit]                   -> N "#num title" lines
 #
 # EVERY function is best-effort and degrades to EMPTY + SUCCESS. A missing repo,
@@ -57,19 +60,58 @@
 # prerelease rather than nothing. A repo that has only ever cut rcs has a real
 # answer to "what is the newest tag", and an empty string would read as "no tags"
 # — the same plausible-nothing this file exists to stop.
+#
+# Any suffix after a dotted version is a prerelease, as semver has it: an rc, or a per-build
+# tag such as the playground's `v0.5.0-dodginballs3`, which are builds of 0.5.0. Anchored on
+# the `v` of the version, so a dotted number in a product prefix is not one.
+_GR_PRERELEASE='(^|-)v[0-9]+(\.[0-9]+)+-|-(rc|beta|alpha|pre|dev|snapshot)'
+
+# git_tag_version <tag> -> the bare version. `##*-v` strips a product prefix (`shipper-v1.11.0`
+# -> `1.11.0`) but leaves an unprefixed tag as it is (`v2.3.4`), so the `#v` takes that `v` too
+# instead of leaving `vv2.3.4` behind.
+git_tag_version() {
+  local ver="${1##*-v}"
+  printf '%s' "${ver#v}"
+}
+
 _gr_highest() {
   local repo="$1" glob="$2" all="" stable=""
   all=$(git -C "$repo" tag --list "$glob" --sort=-v:refname 2>/dev/null) || return 0
   [ -n "$all" ] || return 0
-  # Any suffix after a dotted version is a prerelease, as semver has it: an rc, or a
-  # per-build tag such as the playground's `v0.5.0-dodginballs3`, which are builds of 0.5.0.
-  # Anchored on the `v` of the version, so a dotted number in a product prefix is not one.
-  stable=$(printf '%s\n' "$all" | grep -vE -- '(^|-)v[0-9]+(\.[0-9]+)+-|-(rc|beta|alpha|pre|dev|snapshot)' || true)
+  stable=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
   if [ -n "$stable" ]; then
     printf '%s' "$(printf '%s\n' "$stable" | head -1)"
   else
     printf '%s' "$(printf '%s\n' "$all" | head -1)"
   fi
+}
+
+# _gr_glob <repo> <name> <scoped> [glob] - the glob that selects this project's tags.
+#
+# The one ladder behind git_latest_tag, git_product_tag and git_tags, so the newest tag and
+# the list it heads can never name different lines. An explicit <glob> (the registry's
+# `tagGlob`) is returned as is, matched or not: it is authoritative. Otherwise the first rung
+# with a tag wins, and "" says none has one. <scoped> 0 is a project that IS its repo
+# (`<name>-v*`, then a bare `v*`); 1 is a product in a monorepo (`<product>-v*`,
+# `<product>-web-v*`, `<product>-*-v*`) with NO bare fallback, which would hand back a sibling
+# product's tag.
+_gr_glob() {
+  local repo="$1" name="$2" scoped="$3" glob="${4:-}" g
+  if [ -n "$glob" ]; then
+    printf '%s' "$glob"
+    return 0
+  fi
+  if [ "$scoped" = 1 ]; then
+    set -- "${name}-v*" "${name}-web-v*" "${name}-*-v*"
+  else
+    set -- "${name}-v*" "v*"
+  fi
+  for g in "$@"; do
+    if [ -n "$(git -C "$repo" tag --list "$g" 2>/dev/null | head -1)" ]; then
+      printf '%s' "$g"
+      return 0
+    fi
+  done
 }
 
 # git_latest_tag <repo> <name> [glob] - the CURRENT RELEASE tag, highest
@@ -91,18 +133,15 @@ _gr_highest() {
 # Falling through would hand a monorepo caller some other product's tag, which is
 # worse than the empty string it asked for.
 git_latest_tag() {
-  local repo="$1" name="$2" glob="${3:-}" t=""
+  local repo="$1" name="$2" glob="${3:-}" g=""
   [ -n "$repo" ] && [ -d "$repo/.git" ] && command -v git >/dev/null 2>&1 || return 0
 
-  if [ -n "$glob" ]; then
-    _gr_highest "$repo" "$glob"
+  g=$(_gr_glob "$repo" "$name" 0 "$glob")
+  if [ -n "$g" ]; then
+    _gr_highest "$repo" "$g"
     return 0
   fi
-
-  [ -z "$t" ] && t=$(_gr_highest "$repo" "${name}-v*")
-  [ -z "$t" ] && t=$(_gr_highest "$repo" "v*")
-  [ -z "$t" ] && t=$(git -C "$repo" describe --tags --abbrev=0 2>/dev/null || true)
-  printf '%s' "$t"
+  printf '%s' "$(git -C "$repo" describe --tags --abbrev=0 2>/dev/null || true)"
 }
 
 # git_product_tag <repo> <product> [glob] - one PRODUCT's release tag inside a monorepo.
@@ -132,18 +171,12 @@ git_latest_tag() {
 # declared glob is product-scoped by construction; it is the bare `v*` FALLBACK that is
 # dangerous.
 git_product_tag() {
-  local repo="$1" product="$2" glob="${3:-}" t=""
+  local repo="$1" product="$2" glob="${3:-}" g=""
   [ -n "$repo" ] && [ -n "$product" ] && [ -d "$repo/.git" ] \
     && command -v git >/dev/null 2>&1 || return 0
-  if [ -n "$glob" ]; then
-    _gr_highest "$repo" "$glob"
-    return 0
-  fi
-  for glob in "${product}-v*" "${product}-web-v*" "${product}-*-v*"; do
-    t=$(_gr_highest "$repo" "$glob")
-    [ -n "$t" ] && break
-  done
-  printf '%s' "$t"
+  g=$(_gr_glob "$repo" "$product" 1 "$glob")
+  [ -n "$g" ] && _gr_highest "$repo" "$g"
+  return 0
 }
 
 # git_tag_for_version <repo> <product> <version> -> the tag that SHIPPED this exact
@@ -190,9 +223,53 @@ git_shipping_next() {
   git -C "$repo" rev-parse --verify -q "$ref" >/dev/null 2>&1 || ref="$branch"
   git -C "$repo" rev-parse --verify -q "$ref" >/dev/null 2>&1 || return 0
 
+  _gr_subjects "$repo" "${tag}..${ref}" "$pf" "$limit"
+}
+
+# _gr_subjects <repo> <range> <pathfilter> <limit> - the PR-numbered subjects in a range.
+# One filter for "what changed", shared by what is waiting to ship and what a tag shipped.
+_gr_subjects() {
+  local repo="$1" range="$2" pf="${3:-}" limit="${4:-6}"
   # shellcheck disable=SC2086  # $pf is a deliberate multi-path filter, not one word
-  git -C "$repo" log "${tag}..${ref}" --pretty='%s' -- ${pf:-.} 2>/dev/null \
+  git -C "$repo" log "$range" --pretty='%s' -- ${pf:-.} 2>/dev/null \
     | grep -E '\(#[0-9]+\)' | grep -vE '^Merge |release/|deploy/' | head -"$limit" || true
+}
+
+# git_tags <repo> <name> <scoped> [glob] - every tag of the project's line, newest first.
+#
+# Version-sorted, prereleases included: this is the list a human picks a version from, so an
+# rc or a per-build tag is a choice there, where git_latest_tag only answers "what shipped".
+# <scoped> is _gr_glob's: 0 for a project that is its repo, 1 for a product in a monorepo.
+git_tags() {
+  local repo="$1" name="$2" scoped="$3" glob="${4:-}" g
+  [ -n "$repo" ] && [ -d "$repo/.git" ] && command -v git >/dev/null 2>&1 || return 0
+  g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
+  [ -n "$g" ] || return 0
+  git -C "$repo" tag --list "$g" --sort=-v:refname 2>/dev/null || true
+}
+
+# git_prev_tag <repo> <name> <scoped> <glob> <tag> - the release before <tag> on its own
+# history: the highest tag of the line that is an ancestor of <tag>'s parent. A release skips
+# its own release candidates and builds, so v1.10.0 compares against v1.9.0, not v1.10.0-rc1;
+# a prerelease compares against whatever came before it. Empty for the first tag.
+git_prev_tag() {
+  local repo="$1" name="$2" scoped="$3" glob="${4:-}" tag="$5" g all
+  [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -n "$tag" ] && command -v git >/dev/null 2>&1 || return 0
+  g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
+  [ -n "$g" ] || return 0
+  all=$(git -C "$repo" tag --list "$g" --merged "${tag}^" --sort=-v:refname 2>/dev/null) || return 0
+  if ! printf '%s\n' "$tag" | grep -qE -- "$_GR_PRERELEASE"; then
+    all=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
+  fi
+  printf '%s' "$(printf '%s\n' "$all" | head -1)"
+}
+
+# git_tag_changes <repo> <prev> <tag> [pathfilter] [limit] - what <tag> shipped: the merged
+# PRs between <prev> and it (everything before it when <prev> is empty), as subject lines.
+git_tag_changes() {
+  local repo="$1" prev="$2" tag="$3" pf="${4:-}" limit="${5:-100}"
+  [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -n "$tag" ] && command -v git >/dev/null 2>&1 || return 0
+  _gr_subjects "$repo" "${prev:+$prev..}$tag" "$pf" "$limit"
 }
 
 # git_open_prs <repo> [title-regex] [limit] — open, non-draft PRs as "#N title".

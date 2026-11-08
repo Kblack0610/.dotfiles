@@ -7,6 +7,10 @@
 #                                         exit 1 naming each drift past grace (default 30), a
 #                                         missing or tripped telemetry watch, a floating prod
 #                                         target, or a snapshot older than max-age (default 60)
+#   release-state changelog [--json|--list] <project> [tag]
+#                                         what a tag shipped (default: the newest release): its
+#                                         CHANGELOG.md section, else the merged PRs since the
+#                                         release before it; --list names every tag to pick from
 #
 # Declared targets live in project-map.json `trackers.<p>.targets`; pinned is read from the
 # fetched remote branch, live from the cluster or health endpoint, and a failed probe says
@@ -27,6 +31,8 @@ WATCH_STATE_DIR="${WATCH_STATE_DIR:-$HOME/.local/state/watch-companion}"
 KUBECTL="${KUBECTL:-kubectl}"
 # Timeout guard on every external call (git fetch, kubectl, curl), in seconds.
 PROBE_TIMEOUT="${RELEASE_PROBE_TIMEOUT:-20}"
+# Most merged-PR lines a tag's changelog lists when it has no CHANGELOG.md section.
+CHANGELOG_LINES=100
 
 # REFRESH_WHY (set by cmd_refresh) is where a dying pass leaves its reason for the outcome line;
 # the first die keeps it, so a caller's die does not hide the inner one that caused it.
@@ -35,7 +41,7 @@ die() {
   [ -n "${REFRESH_WHY:-}" ] && [ ! -s "$REFRESH_WHY" ] && printf '%s' "$*" > "$REFRESH_WHY"
   exit 2
 }
-usage() { sed -n '4,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '4,14p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 now_epoch() { date +%s; }
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
@@ -352,7 +358,81 @@ cmd_check() {
   return 1
 }
 
+# changelog_section <repo> <ref> <file> <version> -> the body of <version>'s section of <file> as
+# it stands at <ref>, or nothing. A section is a heading (any level, `[1.2.3]`, `v1.2.3` or bare,
+# then a space, bracket, paren, colon or the end) up to the next heading of its level or higher,
+# so its `### Added` parts stay in. Headings inside a code fence are not headings.
+changelog_section() {
+  git -C "$1" show "$2:$3" 2>/dev/null | awk -v ver="$4" '
+    /^(```|~~~)/ { fence = !fence }
+    !fence && /^#+[ \t]/ {
+      match($0, /^#+/); lvl = RLENGTH
+      h = substr($0, lvl + 1); sub(/^[ \t]+/, "", h); sub(/^\[/, "", h); sub(/^[vV]/, "", h)
+      if (on && lvl <= top) exit
+      if (!on && index(h, ver) == 1) {
+        c = substr(h, length(ver) + 1, 1)
+        if (c == "" || index("] ),:(\t", c) > 0) { on = 1; top = lvl; next }
+      }
+    }
+    on {
+      if (!seen && $0 ~ /^[ \t]*$/) next
+      seen = 1; buf[++n] = $0
+      if ($0 !~ /^[ \t]*$/) last = n
+    }
+    END { for (i = 1; i <= last; i++) print buf[i] }'
+}
+
+cmd_changelog() {
+  local json=0 list=0 proj="" tag="" repo path branch all prev ver text="" source="" range ref file
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --list) list=1; shift ;;
+      -h|--help) usage 0 ;;
+      -*) die "unknown option: $1" ;;
+      *) if [ -z "$proj" ]; then proj="$1"; elif [ -z "$tag" ]; then tag="$1"; else die "too many arguments"; fi; shift ;;
+    esac
+  done
+  [ -n "$proj" ] || usage
+  project_tag_scope "$proj" || die "$proj has no checkout, so no tags to read"
+  repo="$_PTS_REPO"
+  all="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB")"
+  [ -n "$all" ] || die "$proj has no release tags"
+  if [ "$list" = 1 ]; then printf '%s\n' "$all"; return; fi
+  # The newest release: the first tag that is not a prerelease, else the newest of all.
+  [ -n "$tag" ] || tag="$(grep -vE -- "$_GR_PRERELEASE" <<<"$all" | head -1 || true)"
+  [ -n "$tag" ] || tag="$(head -1 <<<"$all")"
+  # Only a tag of this project's line: the argument reaches git, so it is never taken as typed.
+  grep -Fxq -- "$tag" <<<"$all" || die "$tag is not a release tag of $proj"
+  prev="$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB" "$tag")"
+  path="$(project_field "$proj" path)"
+  branch="$(project_field "$proj" branch)"
+  [ -n "$branch" ] || branch="$(default_branch "$repo")"
+  ver="$(git_tag_version "$tag")"
+  # The tag's own file first; a project that writes its entry after tagging has it on the branch.
+  for ref in "$tag" ${branch:+"origin/$branch"}; do
+    for file in ${path:+"$path/CHANGELOG.md"} CHANGELOG.md; do
+      text="$(changelog_section "$repo" "$ref" "$file" "$ver")"
+      [ -n "$text" ] && { source="CHANGELOG.md"; break 2; }
+    done
+  done
+  if [ -z "$source" ]; then
+    source="merged PRs"
+    text="$(git_tag_changes "$repo" "$prev" "$tag" "$path" "$CHANGELOG_LINES" | sed 's/^/- /')"
+  fi
+  range="${prev:+$prev..}$tag"
+  if [ "$json" = 1 ]; then
+    jq -n --arg project "$proj" --arg tag "$tag" --arg prev "$prev" --arg source "$source" \
+      --arg range "$range" --arg text "$text" --arg all "$all" '{
+        project: $project, tag: $tag, prev: (if $prev == "" then null else $prev end),
+        source: $source, range: $range, text: $text, tags: ($all | split("\n"))}'
+  else
+    printf '%s %s (%s, from %s)\n\n%s\n' "$proj" "$tag" "$range" "$source" "${text:-no merged PRs in $range}"
+  fi
+}
+
 case "${1:-}" in
+  changelog) shift; cmd_changelog "$@" ;;
   refresh) shift; cmd_refresh "$@" ;;
   show) shift; cmd_show "$@" ;;
   check) shift; cmd_check "$@" ;;

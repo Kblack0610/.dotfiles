@@ -15,7 +15,7 @@ use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
 use hub_core::proposals::{self, Proposal};
 use hub_core::queue::{Candidate, Candidates, Queue};
-use hub_core::releases::{Release, Releases};
+use hub_core::releases::{Changelog, Release, Releases};
 use hub_core::schedules::{Schedule, Schedules};
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use hub_core::tasks::Feed;
@@ -285,6 +285,8 @@ pub enum Msg {
     Releases(Box<Releases>),
     /// `release-state` wrote a new snapshot.
     ReleaseFile,
+    /// One project's changelog for the ask numbered first, or why it could not be read.
+    Changelog(u64, Result<Changelog, String>),
     /// The Sessions table's ended rows, then its header, which waits on headroom.
     SessionFeed(Box<hub_core::session_table::Feed>),
     Capacity(Box<hub_core::capacity::Capacity>),
@@ -704,6 +706,22 @@ impl App {
                 let _ = tx.send(Msg::Releases(Box::new(s)));
             });
         }
+    }
+
+    /// Read the changelog of the selected channel's project, at `tag` or its newest release, in a
+    /// worker; an answer to an earlier ask is dropped when it lands.
+    fn read_changelog(&mut self, tag: Option<String>) {
+        let Some(project) = self.selected_release().map(|r| r.project.clone()) else {
+            return;
+        };
+        self.rv.cl.gen += 1;
+        self.rv.cl.project = project.clone();
+        self.rv.cl.read = None;
+        let (gen, tx, runner) = (self.rv.cl.gen, self.tx.clone(), self.runner.clone());
+        std::thread::spawn(move || {
+            let r = hub_core::releases::changelog(runner.as_ref(), &project, tag.as_deref());
+            let _ = tx.send(Msg::Changelog(gen, r));
+        });
     }
 
     /// A read still going is not due: asking now would queue a second one behind it.
@@ -1357,6 +1375,11 @@ impl App {
                 }
                 if self.releases_read.done() && self.tab == Tab::Releases {
                     self.read_releases();
+                }
+            }
+            Msg::Changelog(gen, r) => {
+                if self.rv.cl.gen == gen {
+                    self.rv.cl.read = Some(r);
                 }
             }
             Msg::Fleet(f) => {
@@ -2504,9 +2527,22 @@ impl App {
         self.go(Tab::Releases);
     }
 
-    /// The Releases table's keys: Enter opens the row's pane.
+    /// The Releases table's keys: Enter opens the row's pane, `[` and `]` read an older or newer
+    /// tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
         if self.rv.table.key::<Release>(k.code) != Took::No {
+            return true;
+        }
+        let by = match k.code {
+            KeyCode::Char('[') => 1,
+            KeyCode::Char(']') => -1,
+            _ => 0,
+        };
+        if by != 0 && self.rv.open {
+            if let Some(tag) = self.rv.pick(by) {
+                self.rv.down = 0;
+                self.read_changelog(Some(tag));
+            }
             return true;
         }
         let rows = self.releases.as_ref().map_or(0, |s| self.rv.shown(s).len());
@@ -2528,6 +2564,14 @@ impl App {
         }
         if self.rv.table.sel != before {
             self.rv.down = 0;
+        }
+        if self.rv.open {
+            let moved_to_another = self
+                .selected_release()
+                .is_some_and(|r| k.code == KeyCode::Enter || r.project != self.rv.cl.project);
+            if moved_to_another {
+                self.read_changelog(None);
+            }
         }
         true
     }
@@ -2702,7 +2746,9 @@ impl App {
                 "Enter log  / query  f state  s sort  S asc/desc  x clear  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Releases if self.rv.table.typing.is_some() => QUERY_HINT.into(),
-            Tab::Releases if self.rv.open => "Esc close  J/K scroll pane  j/k move  q quit".into(),
+            Tab::Releases if self.rv.open => {
+                "Esc close  J/K scroll pane  [ ] older/newer tag  j/k move  q quit".into()
+            }
             Tab::Releases => format!(
                 "Enter open  / query  f state  s sort  S asc/desc  x clear  r refresh  {tabs} tabs  q quit"
             ),
@@ -3155,7 +3201,8 @@ impl App {
         f.render_widget(Paragraph::new(lines), list);
         let row = self.rv.shown(s).get(self.rv.table.sel).copied();
         if let (Some(area), Some(r)) = (pane, row) {
-            let lines = releases::detail(r, self.p, now, area.width as usize);
+            let cl = self.rv.cl.read.as_ref();
+            let lines = releases::detail(r, self.p, now, area.width as usize, cl);
             let max = lines.len().saturating_sub(area.height as usize);
             self.rv.down = self.rv.down.min(max);
             let shown: Vec<Line> = lines.into_iter().skip(self.rv.down).collect();
@@ -4875,6 +4922,100 @@ mod tests {
         b.handle(Msg::ReleaseFile);
         assert!(!b.releases_read.busy, "nothing to read off the tab");
         assert!(rx.try_recv().is_err());
+    }
+
+    /// `release-state`: two projects' channels, and for `changelog` the tags v3 v2 v1 with the one
+    /// asked for (the newest when none), every argv recorded.
+    #[derive(Default)]
+    struct Rel(std::sync::Mutex<Vec<String>>);
+
+    impl Runner for Rel {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            self.0.lock().unwrap().push(argv.join(" "));
+            let row = |p: &str| {
+                serde_json::json!({"project": p, "id": format!("{p}-prod"), "channel": "prod",
+                    "pinned": {"value": "v2", "source": "manifest"}, "status": "drift"})
+            };
+            Ok(match argv.get(1).map(String::as_str) {
+                Some("changelog") => {
+                    let tag = argv.get(4).map_or("v3", String::as_str);
+                    serde_json::json!({"project": argv[3], "tag": tag, "source": "merged PRs",
+                        "range": format!("prev..{tag}"), "text": "- a fix (#1)",
+                        "tags": ["v3", "v2", "v1"]})
+                }
+                _ => serde_json::json!({"generated_epoch": 1, "rows": [row("alpha"), row("beta")]}),
+            }
+            .to_string())
+        }
+    }
+
+    fn with_releases() -> (App, Arc<Rel>, std::sync::mpsc::Receiver<Msg>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Releases, tx);
+        let rel = Arc::new(Rel::default());
+        a.runner = rel.clone();
+        a.releases = Some(hub_core::releases::read(rel.as_ref()));
+        rel.0.lock().unwrap().clear();
+        (a, rel, rx)
+    }
+
+    fn press(a: &mut App, c: KeyCode) {
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(c))));
+    }
+
+    fn answer(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) {
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(m @ Msg::Changelog(..)) => a.handle(m),
+            _ => panic!("no changelog answer"),
+        }
+    }
+
+    #[test]
+    fn enter_reads_the_changelog_of_the_selected_channels_project_and_brackets_walk_its_tags() {
+        let (mut a, rel, rx) = with_releases();
+        press(&mut a, KeyCode::Char(']'));
+        assert!(rx.try_recv().is_err(), "a closed pane reads nothing");
+        press(&mut a, KeyCode::Enter);
+        assert!(
+            a.rv.open && a.rv.cl.read.is_none(),
+            "reading until it answers"
+        );
+        answer(&mut a, &rx);
+        assert_eq!(a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().tag, "v3");
+        press(&mut a, KeyCode::Char('['));
+        answer(&mut a, &rx);
+        assert_eq!(a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().tag, "v2");
+        press(&mut a, KeyCode::Char(']'));
+        answer(&mut a, &rx);
+        assert_eq!(a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().tag, "v3");
+        press(&mut a, KeyCode::Char(']'));
+        assert!(rx.try_recv().is_err(), "nothing newer than the newest tag");
+        let log = rel.0.lock().unwrap().clone();
+        let cl = [
+            "release-state changelog --json alpha",
+            "release-state changelog --json alpha v2",
+            "release-state changelog --json alpha v3",
+        ];
+        assert_eq!(log, cl, "one read each, for the project the row is on");
+    }
+
+    #[test]
+    fn moving_to_another_project_rereads_and_a_late_answer_for_the_old_one_is_dropped() {
+        let (mut a, _rel, rx) = with_releases();
+        press(&mut a, KeyCode::Enter);
+        let old = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(a.rv.cl.project, "beta");
+        a.handle(old);
+        assert!(
+            a.rv.cl.read.is_none(),
+            "alpha's answer must not show on beta"
+        );
+        answer(&mut a, &rx);
+        assert_eq!(
+            a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().project,
+            "beta"
+        );
     }
 
     #[test]

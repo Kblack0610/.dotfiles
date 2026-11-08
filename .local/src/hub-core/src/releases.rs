@@ -397,6 +397,59 @@ pub fn badge(runner: &dyn Runner, project: &str) -> Result<Option<Badge>, String
     }))
 }
 
+/// What one tag of a project shipped, from `release-state changelog --json`: the tag's
+/// CHANGELOG.md section, else the merged PRs since the release before it.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Changelog {
+    pub project: String,
+    pub tag: String,
+    /// The release this one is compared with; None for the first tag.
+    pub prev: Option<String>,
+    /// `CHANGELOG.md` or `merged PRs`.
+    pub source: String,
+    /// `v1.0.0..v1.1.0`, the tag alone when it is the first.
+    pub range: String,
+    /// Markdown; empty when the range holds no merged PR.
+    pub text: String,
+    /// Every tag of the project's line, newest first: what the picker offers.
+    pub tags: Vec<String>,
+}
+
+impl Changelog {
+    /// Where the tag on show sits in the picker, from the newest, 0-based.
+    pub fn position(&self) -> Option<usize> {
+        self.tags.iter().position(|t| *t == self.tag)
+    }
+
+    /// The tag `by` places away in the picker: positive is older. None past either end.
+    pub fn neighbour(&self, by: isize) -> Option<&str> {
+        let at = self.position()? as isize + by;
+        usize::try_from(at)
+            .ok()
+            .and_then(|i| self.tags.get(i))
+            .map(String::as_str)
+    }
+}
+
+/// One tag's changelog, or the newest release's when `tag` is None. The collector checks `tag`
+/// against the project's own tags; a name that would read as an option never reaches it.
+pub fn changelog(
+    runner: &dyn Runner,
+    project: &str,
+    tag: Option<&str>,
+) -> Result<Changelog, String> {
+    if !crate::projects::safe_name(project) || tag.is_some_and(|t| t.starts_with('-')) {
+        return Err("release-state changelog: not a project or tag".into());
+    }
+    let mut argv: Vec<String> = ["release-state", "changelog", "--json", project]
+        .map(String::from)
+        .to_vec();
+    argv.extend(tag.map(String::from));
+    let raw = runner.run(&argv)?;
+    serde_json::from_str(&raw).map_err(|e| format!("release-state changelog: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +460,51 @@ mod tests {
             assert_eq!(argv[..3], ["release-state", "show", "--json"]);
             self.0.clone()
         }
+    }
+
+    struct Asked(std::cell::RefCell<Vec<String>>);
+    impl Runner for Asked {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            *self.0.borrow_mut() = argv.to_vec();
+            Ok(r#"{"project":"p","tag":"p-v2","prev":"p-v1","source":"merged PRs",
+                "range":"p-v1..p-v2","text":"- a (#1)","tags":["p-v3","p-v2","p-v1"]}"#
+                .into())
+        }
+    }
+
+    #[test]
+    fn a_changelog_asks_the_collector_for_the_tag_and_walks_the_picker() {
+        let a = Asked(Default::default());
+        let c = changelog(&a, "p", Some("p-v2")).unwrap();
+        assert_eq!(
+            *a.0.borrow(),
+            ["release-state", "changelog", "--json", "p", "p-v2"]
+        );
+        assert_eq!((c.source.as_str(), c.prev.as_deref()), ("merged PRs", Some("p-v1")));
+        assert_eq!(c.neighbour(-1), Some("p-v3"));
+        assert_eq!(c.neighbour(1), Some("p-v1"));
+        assert_eq!(c.neighbour(2), None);
+        assert_eq!(c.neighbour(-2), None);
+        changelog(&a, "p", None).unwrap();
+        assert_eq!(a.0.borrow().len(), 4, "no tag asks for the newest release");
+    }
+
+    #[test]
+    fn a_name_that_reads_as_an_option_never_reaches_the_collector() {
+        let a = Asked(Default::default());
+        assert!(changelog(&a, "-h", None).is_err());
+        assert!(changelog(&a, "p", Some("--list")).is_err());
+        assert!(a.0.borrow().is_empty());
+        struct Down;
+        impl Runner for Down {
+            fn run(&self, _: &[String]) -> Result<String, String> {
+                Err("release-state: p has no release tags".into())
+            }
+        }
+        assert_eq!(
+            changelog(&Down, "p", None).unwrap_err(),
+            "release-state: p has no release tags"
+        );
     }
 
     #[test]

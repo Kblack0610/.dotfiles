@@ -2,10 +2,13 @@
 //! `releases`. The list is filtered and sorted here by `hub_core::table`, so the page only draws.
 //! No read cache: the read is one small file, and a new snapshot pushes the `releases` event.
 
+use axum::extract::Query as UrlQuery;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use hub_core::releases::{self, fold, Release, Releases, STALE_SECS};
-use hub_core::session_actions::System;
+use hub_core::session_actions::{Runner, System};
 use hub_core::table::{Summary, View};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::schedules::Query;
 
@@ -52,9 +55,62 @@ pub async fn get(q: Query) -> String {
     }
 }
 
+/// Which tag of which project; no tag is the project's newest release.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct ChangelogQuery {
+    pub project: String,
+    pub tag: String,
+}
+
+/// The body for one tag's changelog, or the collector's own words on why there is none.
+fn changelog_body(runner: &dyn Runner, q: &ChangelogQuery) -> Result<String, String> {
+    if q.project.is_empty() {
+        return Err("a project is required".into());
+    }
+    let tag = Some(q.tag.as_str()).filter(|t| !t.is_empty());
+    let c = releases::changelog(runner, &q.project, tag)?;
+    serde_json::to_string(&c).map_err(|e| e.to_string())
+}
+
+/// What `tag` of `project` shipped, with the tags to pick from (docs/operations/release-state.md).
+pub async fn changelog(UrlQuery(q): UrlQuery<ChangelogQuery>) -> Response {
+    match tokio::task::spawn_blocking(move || changelog_body(&System, &q)).await {
+        Ok(Ok(body)) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Says(Result<String, String>);
+    impl Runner for Says {
+        fn run(&self, _: &[String]) -> Result<String, String> {
+            self.0.clone()
+        }
+    }
+
+    fn ask(project: &str, tag: &str) -> ChangelogQuery {
+        ChangelogQuery {
+            project: project.into(),
+            tag: tag.into(),
+        }
+    }
+
+    #[test]
+    fn a_changelog_body_is_the_collectors_answer_and_its_failure_is_said() {
+        let ok = Says(Ok(r#"{"project":"p","tag":"p-v1","tags":["p-v1"],"text":"- a"}"#.into()));
+        let v: serde_json::Value =
+            serde_json::from_str(&changelog_body(&ok, &ask("p", "")).unwrap()).unwrap();
+        assert_eq!((v["tag"].as_str(), v["tags"][0].as_str()), (Some("p-v1"), Some("p-v1")));
+        let no = Says(Err("release-state: x is not a release tag of p".into()));
+        assert!(changelog_body(&no, &ask("p", "x")).unwrap_err().contains("not a release tag"));
+        assert!(changelog_body(&ok, &ask("", "")).is_err());
+        assert!(changelog_body(&ok, &ask("-h", "")).is_err());
+    }
 
     fn rel(id: &str, level: releases::Level) -> Release {
         Release {
