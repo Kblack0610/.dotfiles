@@ -354,13 +354,6 @@ pub struct Chip {
     pub level: Level,
 }
 
-/// One headline number, worded once for both surfaces.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Number {
-    pub label: &'static str,
-    pub value: String,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Home {
     pub needs: Vec<Need>,
@@ -373,7 +366,12 @@ pub struct Home {
     pub running: Vec<Running>,
     /// Where work sits from inbox to done; `set_pipeline` adds the gauges' half.
     pub flow: crate::flow::Strip,
-    pub numbers: Vec<Number>,
+    /// The session counts that head Running (`12 working, 2 need you, 2 stalled`); empty when
+    /// fleet-sessions' state has no counts.
+    pub sessions: String,
+    /// What the fleet spent on Claude in 24h (`claude $573 in 24h`), the line that links to
+    /// Costs; None when Prometheus did not answer (its error is in `errors`).
+    pub spend: Option<String>,
     pub health: Vec<Chip>,
     /// What could not be read, so a short list never reads as an all-clear.
     pub errors: Vec<String>,
@@ -891,15 +889,12 @@ pub fn build(
     }
     if let Some(c) = state["counts"].as_object() {
         let n = |k: &str| c.get(k).and_then(Value::as_u64).unwrap_or(0);
-        h.numbers.push(Number {
-            label: "sessions",
-            value: format!(
-                "{} working, {} need you, {} stalled",
-                n("WORKING"),
-                n("NEEDS"),
-                n("STALLED")
-            ),
-        });
+        h.sessions = format!(
+            "{} working, {} need you, {} stalled",
+            n("WORKING"),
+            n("NEEDS"),
+            n("STALLED")
+        );
     }
 
     match infra {
@@ -911,10 +906,7 @@ pub fn build(
         Some(i) => {
             let v = i.cc_values();
             if let Some(x) = v.get("cc:claude_code_cost_24h_usd") {
-                h.numbers.push(Number {
-                    label: "claude 24h",
-                    value: format!("${x:.0}"),
-                });
+                h.spend = Some(format!("claude ${x:.0} in 24h"));
             }
             h.health = i.health();
         }
@@ -1100,11 +1092,9 @@ mod tests {
         assert_eq!(h.running.len(), 1);
         let p = h.running[0].phases.as_ref().unwrap();
         assert_eq!((p.done, p.total), (2, 4));
-        // The queue's counts are the flow strip's, not Numbers.
-        assert!(h
-            .numbers
-            .iter()
-            .all(|n| n.label != "queue" && n.label != "done today"));
+        // The queue's counts are the flow strip's; the session counts head Running.
+        assert_eq!(h.sessions, "2 working, 2 need you, 0 stalled");
+        assert_eq!(h.spend, None, "no Prometheus read, no spend");
         assert_eq!(h.flow.chips[3].text(), "running 1");
         assert_eq!(h.flow.chips[2].text(), "queued 0");
         assert_eq!(h.errors, ["Prometheus: reading"]);
@@ -1331,6 +1321,17 @@ mod tests {
             .iter()
             .any(|e| e.starts_with("notes board --json: boom")));
         assert!(h.needs.iter().all(|n| n.kind != Kind::Sheet));
+    }
+
+    #[test]
+    fn spend_is_one_worded_line_and_a_missing_series_or_counts_read_as_nothing() {
+        let cost =
+            json!({"metric": {"__name__": "cc:claude_code_cost_24h_usd"}, "value": [0, "573.4"]});
+        let h = build(&state(), None, None, Some(&infra(vec![cost], &[])));
+        assert_eq!(h.spend.as_deref(), Some("claude $573 in 24h"));
+        let none = build(&Value::Null, None, None, Some(&infra(vec![], &[])));
+        assert_eq!(none.spend, None, "a series Prometheus lacks is not $0");
+        assert_eq!(none.sessions, "", "no state, no counts");
     }
 
     #[test]

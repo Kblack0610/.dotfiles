@@ -10,7 +10,7 @@ use hub_core::home::{Chip, Home, Level, Need};
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
-use crate::fit::{cell, clip_line, wrap, Table};
+use crate::fit::{cell, clip_line, Table};
 use crate::fmt::{clock, dur, Palette};
 
 pub(crate) fn age(since: Option<i64>, now: i64) -> String {
@@ -225,24 +225,20 @@ pub fn page(
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
 
-    // The flow strip leads, then the other numbers (dashboards rule 3).
+    // The flow strip leads, then health and spend (dashboards rule 3).
     out.extend(crate::flowstrip::lines(&h.flow, flow.0, flow.1, p, w));
 
-    // The summary leads (dashboards rule 3): two lines, so a long list never buries them.
-    let nums: Vec<String> = h
-        .numbers
-        .iter()
-        .map(|n| format!("{} {}", n.label, n.value))
-        .collect();
-    for (i, l) in wrap(&nums, " | ", w.saturating_sub(9))
-        .into_iter()
-        .enumerate()
-    {
-        let head = if i == 0 { "NUMBERS  " } else { "         " };
-        out.push(Line::from(vec![Span::styled(head, p.head()), Span::raw(l)]));
-    }
-
     out.push(health_line(&h.health, p, w));
+    if let Some(spend) = &h.spend {
+        // One line that points at Costs, where the spend is broken down (dashboards rule 2).
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled("SPEND     ", p.head()),
+                Span::raw(format!("{spend}  -> Costs")),
+            ]),
+            w,
+        ));
+    }
     out.push(Line::raw(""));
 
     out.extend(needs(h, view, p, now, w));
@@ -298,15 +294,28 @@ pub fn page(
     }
 
     out.push(Line::raw(""));
-    if h.running.is_empty() {
-        out.push(Line::from(vec![
-            Span::styled("RUNNING  ", p.head()),
-            Span::styled("nothing running from the queue", p.dim()),
-        ]));
+    // The session counts head the list they count.
+    let sessions = if h.sessions.is_empty() {
+        String::new()
     } else {
-        out.push(Line::styled(
-            format!("RUNNING ({})", h.running.len()),
-            p.head(),
+        format!("   sessions: {}", h.sessions)
+    };
+    if h.running.is_empty() {
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled("RUNNING  ", p.head()),
+                Span::styled("nothing running from the queue", p.dim()),
+                Span::styled(sessions, p.dim()),
+            ]),
+            w,
+        ));
+    } else {
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled(format!("RUNNING ({})", h.running.len()), p.head()),
+                Span::styled(sessions, p.dim()),
+            ]),
+            w,
         ));
         let t = Table {
             mark: None,
@@ -393,7 +402,7 @@ mod tests {
     use crate::fit::plain;
     use hub_core::briefing::NightRow;
     use hub_core::flow::Strip;
-    use hub_core::home::{Chip, Kind, Need, NeedKind, Number, Score};
+    use hub_core::home::{Chip, Kind, Need, NeedKind, Score};
     use ratatui::crossterm::event::KeyCode;
 
     fn home() -> Home {
@@ -411,10 +420,8 @@ mod tests {
                 score: Some(Score::new(true, true, 3, 0, 2)),
             }],
             flow: Strip::build(Some(&crate::queuetab::tests::fixture())),
-            numbers: vec![Number {
-                label: "sessions",
-                value: "3 working, 1 need you, 0 stalled".into(),
-            }],
+            sessions: "3 working, 1 need you, 0 stalled".into(),
+            spend: Some("claude $573 in 24h".into()),
             health: vec![
                 Chip {
                     name: "k3s".into(),
@@ -552,12 +559,19 @@ mod tests {
     #[test]
     fn the_summary_leads_and_only_the_chips_that_are_not_green_are_drawn() {
         let out = text(&home());
-        // The flow strip leads, then the other numbers; the queue's counts are the strip's.
+        // The flow strip leads, then health and spend; the queue's counts are the strip's.
         assert!(
             out.starts_with("FLOW  inbox - | board - | queued 2 | running 1 | needs you 1"),
             "{out}"
         );
-        assert!(out.contains("\nNUMBERS  sessions 3 working"), "{out}");
+        assert!(!out.contains("NUMBERS"), "{out}");
+        assert!(
+            out.contains("\nSPEND     claude $573 in 24h  -> Costs"),
+            "{out}"
+        );
+        let head =
+            "RUNNING  nothing running from the queue   sessions: 3 working, 1 need you, 0 stalled";
+        assert!(out.contains(head), "the session counts head Running: {out}");
         assert!(
             !out.contains("queue 1 running") && !out.contains("done today"),
             "{out}"
@@ -568,7 +582,6 @@ mod tests {
         );
         assert!(num < need, "health sits above the lists: {out}");
         assert!(out.contains("Question") && out.contains("dodginballs") && out.contains("2m"));
-        assert!(out.contains("RUNNING  nothing running from the queue"));
         assert!(
             out.contains(" ci WARN ") && out.contains("1 green"),
             "{out}"

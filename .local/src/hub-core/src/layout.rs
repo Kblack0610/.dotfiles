@@ -18,7 +18,7 @@ pub const TABS: [Tab; 10] = [
         id: "home",
         title: "Home",
         question: "What needs me, and is everything OK?",
-        sections: &["needs", "proposals", "running", "numbers", "health"],
+        sections: &["needs", "proposals", "running", "spend", "health"],
     },
     // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
     // (the doc and Handled today) opens from that nav, so it is a section here, not a tab of its own.
@@ -98,6 +98,8 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("waiting", "home"),
     ("asks", "home"),
     ("overview", "home"),
+    // Home's Numbers heading: the session counts head Running and the spend is its own SPEND line.
+    ("numbers", "home"),
     // Both surfaces' Board tab: its rows are the Projects tab's, one project at a time or All.
     ("board", "projects"),
     // agent-web's Watch and Shepherd: one row per session on Sessions, the shepherd pinned first.
@@ -187,6 +189,7 @@ mod tests {
     fn a_retired_name_or_a_title_resolves_to_its_tab() {
         assert_eq!(resolve("waiting").map(|t| t.id), Some("home"));
         assert_eq!(resolve("Overview").map(|t| t.id), Some("home"));
+        assert_eq!(resolve("numbers").map(|t| t.id), Some("home"));
         assert_eq!(resolve("QUEUE").map(|t| t.id), Some("queue"));
         assert_eq!(resolve("focus").map(|t| t.id), Some("daily"));
         assert_eq!(resolve("Outbox").map(|t| t.id), Some("daily"));

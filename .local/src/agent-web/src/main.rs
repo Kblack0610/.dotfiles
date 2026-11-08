@@ -1293,7 +1293,7 @@ mod tests {
         });
         let home = hub_core::home::build(&state, None, None, None);
         assert_eq!(home.needs.len(), 2);
-        let (numbers, shown) = (home.numbers.clone(), home.shown);
+        let (sessions, shown) = (home.sessions.clone(), home.shown);
         let q = HomeQuery {
             q: "project:b".into(),
             ..Default::default()
@@ -1309,7 +1309,7 @@ mod tests {
         assert_eq!(out["table"]["total"], 2, "the count is of the whole list");
         assert_eq!(out["table"]["q"], "project:b");
         assert_eq!(out["shown"], shown, "flattened beside the rows");
-        assert_eq!(out["numbers"], serde_json::to_value(numbers).unwrap());
+        assert_eq!(out["sessions"], serde_json::to_value(sessions).unwrap());
         assert!(
             out["proposals_table"].is_object(),
             "Proposals' view rides beside it"
