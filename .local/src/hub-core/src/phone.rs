@@ -271,17 +271,17 @@ fn queue(i: &Inputs) -> Vec<Row> {
     out
 }
 
-/// One card as the widget says it: "agent-runtime 35%, ETA 69d, 4 running". The counts are never
-/// cut: past `LINE_MAX` they shorten to "11 run, 1 wait", and only the name and ETA are capped.
+/// One card as the widget says it: "agent-runtime 35%, ETA 69d, 4 running". Past `LINE_MAX` the
+/// counts shorten to "11 run, 1 wait", and then only the name is capped, so the percent, ETA and
+/// counts always show.
 fn project(c: &Card) -> String {
-    let mut head = format!("{} {}%", c.name, c.percent.unwrap_or(0));
-    head += &match c.eta_days {
+    let eta = match c.eta_days {
         Some(0) => ", nothing open".to_string(),
         Some(d) => format!(", ETA {d}d"),
         None => ", no ETA".to_string(),
     };
-    let counts = |run: &str, wait: &str| {
-        let mut s = String::new();
+    let rest = |run: &str, wait: &str| {
+        let mut s = format!(" {}%{eta}", c.percent.unwrap_or(0));
         if !c.running.is_empty() {
             s += &format!(", {} {run}", c.running.len());
         }
@@ -290,11 +290,12 @@ fn project(c: &Card) -> String {
         }
         s
     };
-    let mut tail = counts("running", "waiting");
-    if head.chars().count() + tail.chars().count() > LINE_MAX {
-        tail = counts("run", "wait");
+    let mut tail = rest("running", "waiting");
+    if c.name.chars().count() + tail.chars().count() > LINE_MAX {
+        tail = rest("run", "wait");
     }
-    format!("{}{tail}", cap(&head, LINE_MAX - tail.chars().count()))
+    let room = LINE_MAX.saturating_sub(tail.chars().count());
+    format!("{}{tail}", cap(&c.name, room))
 }
 
 /// "Projects: 4 in flight of 25", then the first `CARDS` in flight, one line each, in the
@@ -798,10 +799,23 @@ mod tests {
     fn a_busy_project_shortens_its_counts_so_waiting_still_shows() {
         let busy = project(&card("unity-core-playground", 52, Some(54), 11, 1));
         assert_eq!(busy, "unity-core-playground 52%, ETA 54d, 11 run, 1 wait");
-        let long = project(&card(&"x".repeat(60), 52, Some(54), 11, 1));
-        assert!(long.ends_with("..., 11 run, 1 wait"), "{long}");
-        assert!(long.chars().count() <= LINE_MAX, "{long}");
-        assert!(lint(&[busy, long]));
+        // Only the name is cut, so the percent and ETA survive a long one too.
+        let long = project(&card("unity-core-playground-extras-x", 52, Some(54), 11, 1));
+        assert_eq!(
+            long,
+            "unity-core-playground-ex... 52%, ETA 54d, 11 run, 1 wait"
+        );
+        let spaced = project(&card(&"word ".repeat(12), 52, Some(54), 11, 1));
+        assert!(
+            spaced.ends_with("... 52%, ETA 54d, 11 run, 1 wait"),
+            "{spaced}"
+        );
+        let waiting = project(&card("unity-core-playground", 52, None, 0, 3));
+        assert_eq!(waiting, "unity-core-playground 52%, no ETA, 3 waiting");
+        for r in [&busy, &long, &spaced, &waiting] {
+            assert!(r.chars().count() <= LINE_MAX, "{r}");
+        }
+        assert!(lint(&[busy, long, spaced, waiting]));
     }
 
     #[test]
