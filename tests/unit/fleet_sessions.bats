@@ -700,6 +700,28 @@ MD
   assert_failure
 }
 
+@test "three passes marking a DONE fact whose tail shrank send one nudge, and the escalation survives (2026-11-07)" {
+  # dotfiles-agent-6 was told to wind down by three passes: its queued phases started between them
+  mark sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p3 p4 p5'
+  escalate sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p3 p4 p5'
+  run mark sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p4 p5'
+  assert_failure 1
+  assert_output --partial 'already nudged'
+  run mark sid-3 'DONE clean, nothing on the branch, its PRs #658,#1479 merged, no plan file, its PR landed'
+  assert_failure 1
+  run nudged sid-3 'DONE clean, no plan file'
+  assert_success
+  run escalated sid-3 'DONE clean, no plan file'
+  assert_success
+  # another bucket is a new fact: it is nudged, and clears the escalation
+  mark sid-3 'LANDED PR #9 merged, tree clean @feat/x'
+  run escalated sid-3 'LANDED PR #9 merged, tree clean @feat/x'
+  assert_failure
+  # a non-DONE fact stays exact
+  run mark sid-3 'LANDED PR #9 merged, tree clean @feat/x'
+  assert_failure 1
+}
+
 @test "escalate pages once per fact, keeps the nudge, and a new nudge clears it" {
   mark sid-2 'STALLED PR #9 CI red @feat/x'
   run escalated sid-2 'STALLED PR #9 CI red @feat/x'
@@ -1313,6 +1335,8 @@ research_item() {
   mv "$HOME/.agent/queue/queued/20261103-100000-rollout.md" "$HOME/.agent/queue/running/"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .finished <<<"$output")" = true ]
+  # the ask is still the session's own, so the shepherd leaves the window alone (2026-11-07)
+  [ "$(jq -r .own_asks <<<"$output")" = 1 ]
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
 }
 
