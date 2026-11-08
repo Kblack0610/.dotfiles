@@ -1404,6 +1404,13 @@ errlog() {
     '{name: $n, finished: $f, outcome: "WORKED", err: [$a, $b]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
 }
 
+# quietrun <runner> <finished offset>: a run that wrote no stderr, its empty range at the log's end
+quietrun() {
+  local b; b=$(stat -c %s "$AGENTCTL_STATE_DIR/$1.stderr.log")
+  jq -cn --arg n "$1" --argjson f $((T0 + $2)) --argjson b "$b" \
+    '{name: $n, finished: $f, outcome: "NOOP", err: [$b, $b]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
+}
+
 # log_triage_setup: triage_setup, a promote stub logging to $PLOG and an empty route table
 log_triage_setup() {
   triage_setup
@@ -1454,10 +1461,27 @@ log_triage_setup() {
   [ ! -s "$PLOG" ]
 }
 
+@test "triage: a stderr error the runner's newest readable run no longer logs is no row" {
+  log_triage_setup
+  # the fix went live: the next run is clean, quiet runs count, and the rotated range is not the newest
+  errlog alpha -60 'all good'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output ''
+  quietrun alpha -40
+  errlog alpha -30 'error: lock /run/e/5.lock held by pid 6'
+  run "$SUBJECT" triage --dry-run
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
+  quietrun alpha -20
+  run "$SUBJECT" triage --dry-run
+  assert_output ''
+}
+
 @test "triage: reading a run's stderr range writes no Broken pipe when SIGPIPE is ignored, as under systemd" {
   log_triage_setup
   # a later run big enough that a reader stopping at the range end would cut a pipe mid-write
   errlog alpha -100 $(seq 1 60000)
+  errlog alpha -50 'error: lock /run/d/4.lock held by pid 5'
   run bash -c 'trap "" PIPE; exec "$1" triage --dry-run' _ "$SUBJECT"
   assert_success
   refute_output --partial 'Broken pipe'
