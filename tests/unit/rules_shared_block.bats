@@ -91,17 +91,29 @@ headings() { grep -E '^##+ ' "$1" | sed -E 's/^#+ //; s/ \(.*//'; }
 # matched like a marker.
 LEFT_OUT=()
 
-# Headings of $2 (CLAUDE.md) that no marker of $1 (overview.md) names and LEFT_OUT does not list.
-# A marker matches a heading as the splice does: the whole heading, or its leading words.
-uncovered() {
-  local h m left
-  local -a markers
-  mapfile -t markers < <(sed -nE 's/^<!-- shared: (.+) -->$/\1/p' "$1")
+# The heading of $2 (CLAUDE.md) that name $1 selects, as the splice picks it: the first whose text is
+# the name or starts with "<name> ". Prints the full heading, nothing when none matches.
+first_heading() {
+  local h
   while IFS= read -r h; do
-    for m in "${markers[@]}" "${LEFT_OUT[@]}"; do
-      [ "$h" = "$m" ] || [[ "$h" == "$m "* ]] && continue 2
+    if [ "$h" = "$1" ] || [[ "$h" == "$1 "* ]]; then printf '%s\n' "$h"; return 0; fi
+  done < <(sed -nE 's/^## //p' "$2")
+}
+
+# Headings of $2 that no marker of $1 (overview.md) selects and LEFT_OUT does not list. A heading a
+# marker only prefix-matches after an earlier one is not selected, so the splice drops it: reported.
+uncovered() {
+  local h m left kept
+  local -a taken=()
+  while IFS= read -r m; do taken+=("$(first_heading "$m" "$2")"); done \
+    < <(sed -nE 's/^<!-- shared: (.+) -->$/\1/p' "$1")
+  while IFS= read -r h; do
+    kept=
+    for m in "${taken[@]}"; do if [ "$h" = "$m" ]; then kept=1; fi; done
+    for left in "${LEFT_OUT[@]}"; do
+      if [ "$h" = "$left" ] || [[ "$h" == "$left "* ]]; then kept=1; fi
     done
-    printf '%s\n' "$h"
+    if [ -z "$kept" ]; then printf '%s\n' "$h"; fi
   done < <(sed -nE 's/^## //p' "$2")
 }
 
@@ -109,6 +121,13 @@ uncovered() {
   printf '<!-- shared: Core Principles -->\n' >"$T/o.md"
   run uncovered "$T/o.md" "$T/CLAUDE.md"
   assert_output "$(printf 'Writing Style (all artifacts)\nLast')"
+}
+
+@test "coverage: a heading a marker only prefix-matches after an earlier one is reported" {
+  printf '## Last Words\n\n- More.\n' >>"$T/CLAUDE.md"
+  printf '<!-- shared: Core Principles -->\n<!-- shared: Writing Style -->\n<!-- shared: Last -->\n' >"$T/o.md"
+  run uncovered "$T/o.md" "$T/CLAUDE.md"
+  assert_output 'Last Words'
 }
 
 @test "coverage: a left-out heading is not reported" {
@@ -125,12 +144,14 @@ uncovered() {
   assert_output ''
 }
 
-@test "real files: every left-out name is still a heading of CLAUDE.md" {
-  local c="$PRIV/.claude/CLAUDE.md" left
-  [ -f "$c" ] || skip "no private overlay at $PRIV"
+@test "real files: every left-out name is a heading of CLAUDE.md that no marker selects" {
+  local o="$PRIV/.config/rulesync-global/.rulesync/rules/overview.md" c="$PRIV/.claude/CLAUDE.md" left m
+  [ -f "$o" ] || skip "no private overlay at $PRIV"
   for left in "${LEFT_OUT[@]}"; do
-    run grep -qE "^## ${left}( |\$)" "$c"
-    assert_success
+    [ -n "$(first_heading "$left" "$c")" ] || fail "left out but not a heading: $left"
+    while IFS= read -r m; do
+      [ "$(first_heading "$m" "$c")" != "$(first_heading "$left" "$c")" ] || fail "left out and marked: $left"
+    done < <(sed -nE 's/^<!-- shared: (.+) -->$/\1/p' "$o")
   done
 }
 
