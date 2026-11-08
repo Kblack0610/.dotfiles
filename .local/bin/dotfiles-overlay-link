@@ -15,6 +15,8 @@
 #   overwrites a real file or a link that already resolves. See
 #   ~/.agent/lessons/dotfiles.md ("folded WSL box + private overlay").
 set -u
+# shellcheck source=../lib/stow-link.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stow-link.sh"
 
 OVL="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
 if [ ! -d "$OVL" ]; then
@@ -36,6 +38,7 @@ ROOTS=(.config .local/bin .local/src .local/share .ssh .bin)
 SKIP_RE='(^|/)(fleet-pulse|launchd|\.claude)(/|$)|\.log$|/env$'
 
 changed=0
+failed=0
 heal() { # $1 = path relative to $HOME
   local rel="$1" dst="$HOME/$1" src="$OVL/$1"
   printf '%s\n' "$rel" | grep -qE "$SKIP_RE" && return 0
@@ -43,7 +46,9 @@ heal() { # $1 = path relative to $HOME
   [ -e "$dst" ] && [ ! -L "$dst" ] && return 0   # real file/dir present: leave it
   [ -e "$dst" ] && return 0                       # symlink already resolves: leave it
   mkdir -p "$(dirname "$dst")"
-  ln -sfn "$src" "$dst"                            # missing or dangling: attach
+  if ! stow_link "$dst" "$src"; then                # missing or dangling: attach, as stow would
+    echo "  FAILED $rel" >&2; failed=$((failed + 1)); return 0
+  fi
   echo "  linked $rel -> overlay"
   changed=$((changed + 1))
 }
@@ -59,7 +64,10 @@ done
 # Root-level single files the overlay provides.
 for f in .k8s-rc; do heal "$f"; done
 
-if [ "$changed" -eq 0 ]; then
+if [ "$failed" -gt 0 ]; then
+  echo "dotfiles-overlay-link: $failed link(s) FAILED, attached $changed" >&2
+  exit 1
+elif [ "$changed" -eq 0 ]; then
   echo "dotfiles-overlay-link: already in sync"
 else
   echo "dotfiles-overlay-link: attached $changed link(s)"
