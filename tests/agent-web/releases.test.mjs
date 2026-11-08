@@ -17,10 +17,11 @@ const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
-const parts = { "rel-head": part(), "rel-facets": part(), "rel-chips": part(), "rel-body": part(), "rel-tail": part() };
+const parts = { "rel-head": part(), "rel-facets": part(), "rel-chips": part(), "rel-body": part(), "rel-tail": part(), "bld-head": part(), "bld-facets": part(), "bld-chips": part(), "bld-body": part() };
 const doc = { body: el(), getElementById: (id) => (id === "releases" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, activeElement: null, hidden: false };
 const asked = [];
 let body = {};
+let builds = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -31,7 +32,11 @@ const ctx = vm.createContext({
   clearInterval() {},
   location: loc,
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
-  fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body, text: async () => "" }; },
+  fetch: async (url) => {
+    asked.push(url);
+    const text = url.startsWith("/api/builds/log");
+    return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => (url.startsWith("/api/builds") ? builds : body), text: async () => "FAIL: step 3 exited 1" };
+  },
 });
 for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "jobs.js", "schedules.js", "releases.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx);
 const run = (src) => vm.runInContext(src, ctx);
@@ -120,10 +125,78 @@ test("clicking a row opens its versions, every watch and its deps, and clicking 
   assert.doesNotMatch(box.innerHTML, /<b>Pinned/);
 });
 
-test("the Builds slot sits under the channels and draws nothing yet", () => {
-  show();
-  assert.match(box.innerHTML, /<div id="rel-tail"><\/div>$/);
-  assert.equal(run("releaseBuilds()"), "");
+const bcol = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
+const red = {
+  forge: "github.com", repo: "binks", id: 77, attempt: 2, workflow: "Tests", title: "fix the gate", branch: "agent-3/gate", event: "pull_request", sha: "abc", status: "completed",
+  conclusion: "failure", prs: [12], url: "https://github.com/o/binks/actions/runs/77", owner: "agent-3", state: "red", level: "bad", started: NOW() - 300, took: 125,
+};
+const bdata = (o = {}) => ({
+  at: NOW() - 60, summary: "2 runs in 30 days: 0 running, 0 queued, 1 red", stale_after: 1800, rows: [red], more: 0, errors: [],
+  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 1, states: [{ name: "all", n: 2 }, { name: "red", n: 1 }], columns: ["started", "state", "repo", "workflow", "branch", "took", "owner", "forge", "event", "title"].map(bcol), facets: [] },
+  ...o,
+});
+const showBuilds = (d = bdata()) => { show(); Object.assign(run("bld"), { data: d, err: null, sel: null, log: null }); run("relst.render()"); };
+const brow = (key) => ({ dataset: { bkey: key }, closest: (sel) => (sel === "tr.br" ? { dataset: { bkey: key } } : null) });
+const BKEY = "github.com|binks|77|2";
+
+test("the Builds section sits under the channels with each run's owner and state", () => {
+  showBuilds();
+  const b = box.innerHTML;
+  assert.match(b, /<div data-tbl="b"><div id="bld-head"><h2 class="sec" id="sec-builds">Builds <span class="muted">2 runs in 30 days: 0 running, 0 queued, 1 red/);
+  assert.match(b, /<td class="bad">red<\/td><td>binks<\/td><td class="wrap">Tests<\/td>/);
+  assert.match(b, /<td class="muted">agent-3<\/td>/);
+  assert.ok(b.indexOf("Builds") > b.indexOf("prod binks-prod"), "after the channels");
+});
+
+test("a run with no owning session draws a dash, and an empty ledger says so", () => {
+  showBuilds(bdata({ rows: [{ ...red, owner: "" }] }));
+  assert.match(box.innerHTML, /<td class="muted">-<\/td>/);
+  showBuilds(bdata({ rows: [], table: { ...bdata().table, total: 0, shown: 0 } }));
+  assert.match(box.innerHTML, /No runs in the ledger\./);
+});
+
+test("a ledger that is not being refreshed is amber", () => {
+  showBuilds(bdata({ at: NOW() - 7200 }));
+  assert.match(box.innerHTML, /class="warn">ledger older than 30m/);
+});
+
+test("opening a run reads its log then, and only then; clicking again closes it", async () => {
+  showBuilds();
+  asked.length = 0;
+  fire("click", { type: "click", target: brow(BKEY) });
+  await settled();
+  assert.deepEqual(asked, ["/api/builds/log?forge=github.com&repo=binks&id=77&attempt=2"]);
+  const b = box.innerHTML;
+  assert.match(b, /<pre class="joblog">FAIL: step 3 exited 1<\/pre>/);
+  assert.match(b, /<b>Run<\/b> github.com binks #77 attempt 2/);
+  assert.match(b, /<b>PRs<\/b> #12/);
+  fire("click", { type: "click", target: brow(BKEY) });
+  assert.doesNotMatch(box.innerHTML, /joblog/);
+});
+
+test("the Builds table sorts and filters under its own view keys", async () => {
+  showBuilds();
+  const patch = run("tblPatch")({ type: "input", target: { dataset: { tsearch: "" }, value: "repo:binks" } });
+  assert.deepEqual({ ...patch }, { q: "repo:binks" });
+  run("st.tab = 'releases'; st.views.releases = 'q=project%3Abinks&bq=repo%3Abinks&bsort=took'");
+  assert.equal(run("tblParams(st.views.releases, BUILDS_PRE).toString()"), "bq=repo%3Abinks&bsort=took");
+  assert.equal(run("tblParams(st.views.releases).toString()"), "q=project%3Abinks");
+  run("st.views.releases = ''");
+});
+
+test("a builds event re-reads the builds alone, and only while the tab is open", async () => {
+  builds = bdata();
+  body = data();
+  run("st.tab = 'releases'");
+  asked.length = 0;
+  run("TABS.releases").onEvent({ kind: "builds" });
+  await settled();
+  assert.deepEqual(asked, ["/api/builds"]);
+  run("st.tab = 'home'");
+  asked.length = 0;
+  run("TABS.releases").onEvent({ kind: "builds" });
+  await settled();
+  assert.equal(asked.length, 0);
 });
 
 test("a new snapshot re-reads only while the tab is open", async () => {
