@@ -30,13 +30,17 @@ splice_members() {
   python3 - "$@" <<'PY'
 import json, re, sys
 orig_path, want_path, name, path_dir = sys.argv[1:5]
-text = open(orig_path, encoding="utf-8").read()
+# newline="": untouched lines keep their bytes, CRLF included.
+text = open(orig_path, encoding="utf-8", newline="").read()
 want = json.load(open(want_path, encoding="utf-8"))
 dec = json.JSONDecoder()
 ws = re.compile(r"\s*")
+nl = "\r\n" if "\r\n" in text else "\n"
 
 def members(start):
     """(key, key_pos, val_start, val_end) per member of the object at start, and its end."""
+    if text[start] != "{":
+        sys.exit("project-map: the registry holds a non-object where an object was expected")
     i, out = ws.match(text, start + 1).end(), []
     if text[i] == "}":
         return out, i + 1
@@ -50,8 +54,10 @@ def members(start):
             return out, i + 1
         i = ws.match(text, i + 1).end()
 
-def col(pos):
-    return pos - (text.rfind("\n", 0, pos) + 1)
+def lead(pos):
+    """The whitespace that starts the line holding pos, tabs kept as tabs."""
+    line = text[text.rfind("\n", 0, pos) + 1:pos]
+    return line[:len(line) - len(line.lstrip(" \t"))]
 
 def insert(obj_start, key, value):
     global text
@@ -59,30 +65,39 @@ def insert(obj_start, key, value):
     if any(m[0] == key for m in mem):
         sys.exit("project-map: %s is already a member; refusing a duplicate key" % key)
     k = json.dumps(key, ensure_ascii=False)
-    if mem and "\n" not in text[mem[-1][3]:end - 1]:
-        piece, at = ", %s: %s" % (k, json.dumps(value, ensure_ascii=False, separators=(", ", ": "))), mem[-1][3]
+    if mem and "\n" not in text[obj_start:end]:
+        body = json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
+        last = text[mem[-1][2]:mem[-1][2] + 2]
+        if isinstance(value, dict) and value and last == "{ ":
+            body = "{ " + body[1:-1] + " }"
+        text = text[:mem[-1][3]] + ", %s: %s" % (k, body) + text[mem[-1][3]:]
+        return
+    outer = lead(obj_start)
+    ind = lead(mem[-1][1]) if mem else outer + ("\t" if outer.startswith("\t") else "  ")
+    step = "\t" if ind.startswith("\t") else "  "
+    body = json.dumps(value, ensure_ascii=False, indent=step).replace("\n", nl + ind)
+    if mem:
+        at = mem[-1][3]
+        text = text[:at] + ",%s%s%s: %s" % (nl, ind, k, body) + text[at:]
     else:
-        ind = " " * (col(mem[-1][1]) if mem else col(obj_start) + 2)
-        body = json.dumps(value, ensure_ascii=False, indent=2).replace("\n", "\n" + ind)
-        piece = "%s\n%s%s: %s" % ("," if mem else "", ind, k, body)
-        at = mem[-1][3] if mem else obj_start + 1
-        if not mem:
-            piece += "\n" + " " * col(obj_start)
-    text = text[:at] + piece + text[at:]
+        text = text[:obj_start + 1] + "%s%s%s: %s%s%s" % (nl, ind, k, body, nl, outer) + text[end - 1:]
 
 def top(key):
     return next((m[2] for m in members(ws.match(text).end())[0] if m[0] == key), None)
 
-for outer, inner in ([("paths", path_dir)] if path_dir else []) + [("trackers", name)]:
-    at = top(outer)
-    if at is None:
-        insert(ws.match(text).end(), outer, {inner: want[outer][inner]})
-    else:
-        insert(at, inner, want[outer][inner])
+try:
+    for outer, inner in ([("paths", path_dir)] if path_dir else []) + [("trackers", name)]:
+        at = top(outer)
+        if at is None:
+            insert(ws.match(text).end(), outer, {inner: want[outer][inner]})
+        else:
+            insert(at, inner, want[outer][inner])
+except (ValueError, IndexError) as err:
+    sys.exit("project-map: cannot read the registry layout (%s)" % err)
 
 if json.loads(text) != want:
     sys.exit("project-map: the spliced registry does not match the jq result")
-sys.stdout.write(text)
+sys.stdout.buffer.write(text.encode("utf-8"))
 PY
 }
 
