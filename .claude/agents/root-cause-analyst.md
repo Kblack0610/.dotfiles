@@ -1,7 +1,7 @@
 ---
 name: root-cause-analyst
 description: >-
-  Read-only investigator: finds WHY something fails from logs, git history and reproduction, and returns the cause with evidence and a proposed fix, never an edit. Use before fixing a bug whose cause is unclear. Dispatched by bug-bash for M-sized findings. Fixing: the caller or kb-developer. Many live systems at once: deep-research-code.
+  Read-only investigator: finds WHY something fails from logs, git history and reproduction, and returns the cause with evidence and a proposed fix, never an edit. Use before fixing a bug whose cause is unclear. Fixing: the caller or kb-developer. Many live systems at once: deep-research-code.
 tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
 ---
 

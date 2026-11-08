@@ -85,7 +85,7 @@ prom_by() {
 transcript_of() {
   local id="$1" t
   t="$(grep -rhF "\"session_id\":\"$id\"" "$SESS_ROOT"/*/sessions.jsonl 2>/dev/null \
-       | jq -r '.transcript // empty' 2>/dev/null | head -1)"
+       | jq -rn '[inputs | .transcript // empty] | .[:1][]' 2>/dev/null)"
   [ -n "$t" ] && [ -f "$t" ] && { printf '%s\n' "$t"; return 0; }
   t="$(find "$PROJECTS_ROOT" -maxdepth 2 -name "$id.jsonl" 2>/dev/null | head -1)"
   [ -n "$t" ] && printf '%s\n' "$t"
