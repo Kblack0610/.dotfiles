@@ -40,7 +40,10 @@ fn step(name: &str) -> Option<&'static str> {
 /// An intake line's subject: its words without the project tag, case and spacing folded, so
 /// the outbox line, the inbox line it moved to and the line the sweep filed are one subject.
 fn line_key(text: &str) -> Key {
-    let t = crate::md::without_agent_tag(&crate::md::without_project_tag(text)).to_lowercase();
+    let t = crate::md::without_ask_tag(&crate::md::without_agent_tag(
+        &crate::md::without_project_tag(text),
+    ))
+    .to_lowercase();
     Key::Line(t.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
@@ -60,6 +63,7 @@ fn moves(e: &Event) -> Vec<Move> {
             v
         }
         "dup" => vec![mv(line_key(&e.text), None, Some("inbox"))],
+        "answered" if e.from == "outbox" => vec![mv(line_key(&e.text), None, Some("inbox"))],
         "added" => id
             .map(|i| vec![mv(Key::Row(i), Some("backlog"), None)])
             .unwrap_or_default(),

@@ -162,3 +162,16 @@ teardown() {
     git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
   fi
 }
+
+@test "session paths take precedence over branch and worktree dirt" {
+  STOP_CHANGED_FILES=tests/integ/shell_tests_scope.bats CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
+  assert_success
+  assert_output --partial 'tests/integ/shell_tests_scope.bats'
+  refute_output --partial 'tests/integ/stop_hook_quiet.bats'
+}
+
+@test "an empty session change list dispatches nothing" {
+  STOP_CHANGED_FILES='' CLAUDE_PROJECT_DIR="$REPO_ROOT" run bash "$HOOK"
+  assert_success
+  refute_output --partial 'DISPATCHED'
+}
