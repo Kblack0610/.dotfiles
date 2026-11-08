@@ -11,7 +11,7 @@ One Stop entry, one entrypoint:
 The coordinator runs two phases:
 
 ```
-phase 1  stop-checks.d/ parallel, exit-code aggregated, may BLOCK (exit 2); skipped on a clean tree
+phase 1  stop-checks.d/ parallel, exit-code aggregated, may BLOCK (exit 2); skipped when no files changed since SessionStart
 phase 2  stop-post.d/  sequential, stdout/stderr passed through, may BLOCK (JSON or exit 2); runs ALWAYS
 ```
 
@@ -26,9 +26,13 @@ Each `*.sh` is one independent check. The coordinator fans them out in parallel 
 | Exit code | Meaning | Coordinator behavior |
 |-----------|---------|----------------------|
 | `0` | pass (or check not applicable) | silent |
-| `1` | warn / advisory | stderr printed; coordinator still passes |
+| `1` | warn / advisory | logged; coordinator still passes |
 | `2` | block | coordinator exits 2; Claude is gated |
 | other | block (defensive) | same as `2` |
+
+SessionStart snapshots tracked and untracked file state with `stop-session-changes.py`, preserving the snapshot on resume and compaction. Stop exports the paths changed since that snapshot as `STOP_CHANGED_FILES`; `60-shell-tests.sh` uses that list instead of branch or pre-existing worktree dirt. A session without a snapshot skips content checks. Payloads without a session id retain the legacy worktree check.
+
+A timed-out check with no reported failures is logged and recorded as SKIPPED, does not block, and is never cached as a passing run. TAP failures printed before timeout still block.
 
 Project-type detection lives **inside each check** (e.g. `[ -f package.json ] || exit 0`), so the coordinator stays project-agnostic. To add a check, drop `<NN>-<name>.sh` into `stop-checks.d/` and `chmod +x`. Checks run in parallel — order is informational only.
 
@@ -64,9 +68,13 @@ There is no Stop-time judge. The session eval is `agentctl-session-outcomes` (ni
 | Matcher | File | Job |
 |---------|------|-----|
 | Bash | `~/.claude/hooks/block-pip.sh` | Block `pip install`, suggest `uv` |
-| Bash | `~/.claude/hooks/block-poll.py` | Deny `gh run watch`, a foreground `until`/`while`/`for` loop that sleeps (a wait), and a foreground read of a background task's `tasks/<id>.output` while a process still holds it open (the run is live): it points at `run_in_background`, Monitor and the completion notice. A background loop, a script file, quoted text and a read after the run exits are allowed |
+| Bash | `~/.claude/hooks/block-pkill-f.sh` | Deny `pkill -f` and a `pgrep -f` whose matches get killed: the pattern is on the shell's own command line, so it kills that shell and other sessions' processes. Replaced the most recurrent lesson (291 session-days). `tests/unit/block_pkill_f.bats` |
+| Bash | `~/.claude/hooks/pre-pr-verify.sh` | Before a `git push` or `gh pr create`, run the Stop hook's picked fast-tier check (`stop-checks.d/60-shell-tests.sh`, dotfiles only) and deny on red. The Stop hook skips a clean tree, so committed work used to reach CI unchecked. A pass is remembered per tree state; `PRE_PR_VERIFY=main-red` in front of the command lets a test that is red on main too through, logged to `~/.cache/claude-stop-hook/pre-pr.log`. `tests/unit/pre_pr_verify.bats` |
+| Bash, Read | `~/.claude/hooks/block-poll.py` | Deny `gh run watch`, a foreground `until`/`while`/`for` loop that sleeps (a wait), and a foreground Bash or Read tool read of a background task's `tasks/<id>.output` while a process still holds it open (the run is live): it points at `run_in_background`, Monitor, the completion notice and the shared CI-run waiter `gh-run-wait`. A background loop, a script file, quoted text and a read after the run exits are allowed |
+| Bash | `~/.claude/hooks/forge-guard.py` | In a checkout that commits `.forgejo/workflows/mirror-to-github.yaml` (Forgejo canonical, GitHub a passive mirror: home-config), deny `gh pr create`, `gh pr merge`, `agent-land` and a `git push` to a github.com remote, pointing at the Forgejo remote and `forgejo-ops`. It follows `cd`/`pushd` (subshell-scoped), `git -C`, `bash -c`/`eval`, and `gh -R`, GH_REPO or a PR URL (via project-map `paths`). Why: home-config GitHub PR 62 was opened and merged from a dotfiles session on 2026-11-06, and the mirror's reject-pull-requests workflow closes a PR too late. Fail-open; `tests/integ/forge_guard.bats` |
+| Bash | `~/.claude/hooks/checkout-guard.py` | In a checkout stow deploys (`~/.dotfiles`, `~/.dotfiles-private`), deny `git checkout`/`git switch` to anything but the default branch and `gh pr checkout`, naming `git show` and a worktree instead. Reuses forge-guard's walker. Fail-open. Tests: `tests/integ/checkout_guard.bats` |
 | Grep, Glob, Bash | `~/.claude/hooks/block-root-search.sh` | Deny a recursive search whose root holds a network mount (`/`, `/mnt`), unless it stays on one filesystem |
-| Read | `~/.claude/hooks/large-file-warning.sh` | Warn on large file reads |
+| Read, Bash | `~/.claude/hooks/large-read-guard.py` | Deny a Read with no `limit`, or a `cat` whose output reaches the context, of a text file over 2,000 lines, naming `rg -n -C 8` and offset/limit; a Read with a limit passes. It replaced an additionalContext hint that fired 362 times in 7 days and changed nothing. Fail-open; `tests/unit/large_read_guard.bats` |
 | Edit\|Write\|MultiEdit\|NotebookEdit\|EnterPlanMode | `~/.claude/hooks/manual-mode-investigate.sh` | In manual (default) permission mode, deny: that mode is investigate-only. Also on UserPromptSubmit, where it injects the investigate posture |
 | ExitPlanMode | `~/.claude/hooks/plan-standard.sh` | Deny a plan that misses the sections `~/.local/src/docs/planning.md` requires for this project's type, naming each gap. The same hook on UserPromptSubmit injects those sections in plan mode. Fails open when the doc is missing |
 | Agent\|Task\|Workflow | `~/.claude/hooks/spawn-watch.sh` | Ping the human when one session passes 40/80/160 spawns. Alert only: always exits 0, never denies |
@@ -88,15 +96,20 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 | Number | Owner |
 |--------|-------|
 | Responses, input, cache write, cache read, output; context per response; tool output and its carried cost by project, tool and command head; `long_runs` | `claude-recall tool-output` |
+| Tool latency (slowest tools by total time), tool errors by class, gateway calls, errors by class, cost and tokens per upstream model: `langfuse`, null when Langfuse could not answer | `agent-usage langfuse` |
 | Cost (registry), sessions, merged PRs and cost per merged PR, start context (first-turn median), compactions, tokens by model, sessions by kind and account | `agent-usage burn` |
 
 - `carried_share` is carried tool output (about 4 chars a token) over all context read; `carried_x` is how many times its own size a tool result is re-read before a compaction drops it.
+- `by_tool[].allocated_cost_usd` is an allocation, never a metered figure: each registry session's cost of the day is split over its tools by their share of its carried output (`claude-recall tool-output --by session,tool`, a subagent's output counted for its parent). A session that carried no tool output allocates nothing, and its cost is `by_tool_unallocated_usd`, so the two sum to `totals.cost_usd`.
 - `long_runs` lists the stretches between compactions that ran 150 or more responses (`claude-recall tool-output --long-turns N` to change it), top 10 by carried cost.
 - `agent-usage tokens line` prints the one-line row that `day-log` and the `fleet-bench` scorecard show; `tokens json --date D` is the day's snapshot, which `day-log` copies into `.agents`.
 - `agent-usage tokens check` compares context per response, carried share and the start-context median with the median of the 7 days before. It exits 1 on a rise past 25% (worse) or a drop past 50% (measurement suspect; a drop inside that is an improvement and stays quiet), and 2 when the newest snapshot is more than 2 days old. The Sentinel watch `token-usage-drift` runs it every 6 hours. It only alerts; nothing caps or slows a session.
+- The `langfuse` section is the gateway's figures alone (LiteLLM calls, not Claude sessions): session cost stays `agent-usage burn`, so the two are never summed. The Costs tab shows it as "What Langfuse sees" (hub `l`), from the newest snapshot.
+- `agent-usage tokens check --langfuse` is the read-health watch (`langfuse-read`): exit 1 when the newest two snapshots both carry a null `langfuse` section, naming the reader's reason from `.errors`. One null night is quiet; a snapshot with no `langfuse` key at all (written before the reader) is not a null night.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
+| The `langfuse-read` watch trips | The reader failed two nights running: no rbw key, Langfuse down or a changed API | `jq '.errors' ~/.agent/token-usage/<date>.json` for the reason; run `agent-usage langfuse --since T --until T` by hand; re-run `agent-usage tokens snapshot --date D` once it reads |
 | The watch says the nightly run stopped | No snapshot in 2 days | `agentctl status token-usage`; run `agent-usage tokens snapshot` by hand for each missing day (`--date D`) |
 | A row ends in "N source errors" | burn or one recall query failed; the rest of the day is still written | `jq .errors ~/.agent/token-usage/<date>.json` names the source |
 | The row reads "unreadable" | `claude-recall tool-output` gave no totals, so the day has no numbers | Run the recall command from `.errors` by hand; re-run the snapshot for that day |

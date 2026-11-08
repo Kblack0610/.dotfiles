@@ -40,6 +40,20 @@ outbox() { printf '# Outbox\n\n## Outbox\n%b' "$1" >"$HOME/.notes/outbox.md"; }
 inbox() { sed -n '/^## Inbox/,/^## Tasks/p' "$SHEET"; }
 tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
 
+@test "a notes with no row types asks no model, keeps the line and says why" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"]}'
+  # Replace the link, never write through it: it points at the built binary.
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$1" = row ] && exit 2\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$TRIAGE"
+  assert_output --partial 'notes row types failed'
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the model was asked with no type list"
+  run inbox
+  assert_output --partial 'gun sound'
+}
+
 @test "end to end: a raw line is filed as one typed row with an id, its words as the detail" {
   sheet '- the gun sound is off since the top-down patch\n' ''
   answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays off since the top-down patch #high #size/s"]}'
@@ -53,6 +67,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial '  was: the gun sound is off since the top-down patch'
   [ "$(grep -c 'fix(audio)' "$SHEET")" = 1 ] || fail "filed more than once: $(cat "$SHEET")"
   grep -qx '1. \[scratch\] the gun sound is off since the top-down patch' "$NOTES_FIXTURE/prompt.txt" || fail "the line never reached the model"
+  grep -qF "type is one of $("$NOTES_BIN" row types); a bug is fix." "$NOTES_FIXTURE/prompt.txt" || fail "the row types never reached the model"
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
@@ -69,6 +84,38 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx FAILED "$st/last-outcome"
   grep -q 'outcome=FAILED .*model call failed: You have hit your weekly limit - resets 7pm' "$st/activity.log"
   inbox | grep -q 'the gun sound is off'
+}
+
+@test "a budget stop ends the sweep BLOCKED with exit 75: one call, no refusal, the lines wait" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nexit 75\n' >"$SANDBOX/bin/model-stub"
+  INBOX_TRIAGE_PASSES=3 run "$TRIAGE"
+  assert_failure 75
+  assert_output --partial 'route: stopped at its budget'
+  assert_output --partial 'left 1, refused 0'
+  refute_output --partial 'model call failed'
+  [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
+  st="$HOME/.local/state/agentctl/inbox-triage"
+  grep -qx BLOCKED "$st/last-outcome"
+  grep -q 'outcome=BLOCKED budget: .*why: stopped at its budget' "$st/activity.log" || fail "$(cat "$st/activity.log")"
+  inbox | grep -q 'the gun sound is off'
+}
+
+@test "--backlog: a budget stop ends the pass BLOCKED with exit 75 after one call, and any other exit stays FAILED" {
+  sheet '' '- [ ] fix(ui): the menu <!-- id:sc-1 -->\n'
+  printf '%s\n' '- [ ] fix(ui): the other menu <!-- id:ot-1 -->' >>"$PROJ/other/README.md"
+  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nexit 75\n' >"$SANDBOX/bin/model-stub"
+  run "$TRIAGE" --backlog
+  assert_failure 75
+  [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
+  st="$HOME/.local/state/agentctl/inbox-triage"
+  grep -qx BLOCKED "$st/last-outcome"
+  grep -q 'outcome=BLOCKED budget: backlog: ' "$st/activity.log" || fail "$(cat "$st/activity.log")"
+  # negative control: an exit that is not the budget's is still a failed pass
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/model-stub"
+  run "$TRIAGE" --backlog
+  assert_failure 1
+  grep -qx FAILED "$st/last-outcome"
 }
 
 @test "a reply with no answer block names that reason in the outcome" {
@@ -143,6 +190,18 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_line 'left maybe the boss is too easy?'
   assert_line 'refused the save button'
   assert_line 'refused the jump is floaty'
+}
+
+@test "a filed want is stamped #requested by the writer on the agent board, and its channel is recorded" {
+  sheet '- the gun sound is off\n- the menu is slow\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"], "lane": "agent"}' \
+    '{"n": 2, "action": "file", "rows": ["fix(ui): the menu is slow #high #size/s"]}'
+  run "$TRIAGE"
+  assert_success
+  grep -qE 'fix\(audio\): the gun sound plays late .*#requested' "$PROJ/scratch/agent/README.md" || fail "$(cat "$PROJ/scratch/agent/README.md")"
+  run tasks
+  refute_output --partial '#requested'
+  [ "$(grep -c '"want":"human"' "$HOME/.local/state/notes/ingest.jsonl")" = 2 ] || fail "$(cat "$HOME/.local/state/notes/ingest.jsonl")"
 }
 
 @test "a duplicate joins its open row, and a line about another project moves there" {
@@ -298,11 +357,38 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q '"row":"chore(build): drop the old cache"' "$HOME/.local/state/notes/ingest.jsonl" || fail "the filed row's words were not recorded"
 }
 
+@test "outbox: a #p: word that names no project goes to the model with the word as a hint, and is routed, not refused" {
+  sheet '' ''
+  outbox '- [ ] chore(build): drop the old cache #p:scrach\n- [ ] fix(ui): a gap in the hud #p:scratch\n- [ ] still unknown #p:nowhere\n'
+  answer '{"n": 1, "action": "file", "rows": ["chore(build): drop the old cache #low #size/s"], "project": "scratch"}' \
+    '{"n": 2, "action": "skip", "why": "no such project"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 2 from the outbox, filed 2, left 1, refused 0'
+  assert_output --partial '#p:scrach names no project, left for the model'
+  # the exact tag moved with no model; the two misses were the model's batch, with the word as a hint
+  grep -qx '1. \[outbox\] chore(build): drop the old cache #p:scrach (tagged #p:scrach, which is no project; it may name one of the projects above)' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  grep -q '^2. \[outbox\] still unknown #p:nowhere (tagged #p:nowhere' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  ! grep -q "a gap in the hud" "$NOTES_FIXTURE/prompt.txt" || fail "an exact #p: line reached the model"
+  run tasks
+  assert_output --regexp 'chore\(build\): drop the old cache .*id:sc-[12]'
+  assert_output --regexp 'fix\(ui\): a gap in the hud'
+  refute_output --partial '#p:'
+  run cat "$HOME/.notes/outbox.md"
+  assert_output --partial 'still unknown #p:nowhere'
+  refute_output --partial 'old cache'
+  # the one the model passed over is recorded as left, so the next sweep does not ask again
+  rm -f "$NOTES_FIXTURE/model.log"
+  run "$TRIAGE"
+  assert_success
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "a recorded line was asked again"
+}
+
 @test "outbox: an <id>: line answers its open row with no model, closing a decide row; an id with no open row is left" {
   sheet '' '- [ ] decide(squad): followers that fight with you #low <!-- id:sc-1 -->\n- [ ] feat(ui): a colour for the squad <!-- id:sc-2 -->\n'
   mkdir -p "$PROJ/scratch/agent"
   printf '# scratch agent\n\n## Tasks\n- [ ] decide(lanes): which lane a game takes <!-- id:sc-3 -->\n' >"$PROJ/scratch/agent/README.md"
-  outbox '- [ ] sc-1: yes, build it after the bully fix\n- [ ] sc-2: the blue one\n- [ ] sc-3: the agent lane\n- [ ] zz-9: yes\n- [ ] stays for the model\n'
+  outbox '- [ ] sc-1: yes, build it after the bully fix\n- [ ] sc-2: the blue one #p:scrach\n- [ ] sc-3: the agent lane\n- [ ] zz-9: yes\n- [ ] stays for the model\n'
   answer '{"n": 1, "action": "skip", "why": "no project named"}'
   run "$TRIAGE"
   assert_success
@@ -385,6 +471,23 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "an empty sweep called the model"
 }
 
+@test "--watch: a budget stop is not a failed sweep; it runs again on the backoff, which notices a raise" {
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  outbox ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays off #high #size/s"]}'
+  mkfifo "$NOTES_FIXTURE/events"
+  printf '#!/usr/bin/env bash\ncat "$NOTES_FIXTURE/events"\n' >"$SANDBOX/bin/inotifywait"
+  chmod +x "$SANDBOX/bin/inotifywait"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo called >> "$NOTES_FIXTURE/model.log"' 'cat > "$NOTES_FIXTURE/prompt.txt"' \
+    'if [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ]; then exit 75; fi' \
+    'cat "$NOTES_FIXTURE/model.out"' ': > "$NOTES_FIXTURE/events"' >"$SANDBOX/bin/model-stub"
+  INBOX_SWEEP_QUIET=1 INBOX_RETRY_S=1 run "$TRIAGE" --watch
+  assert_failure 1
+  assert_output --partial 'the sweep stopped at its budget; it runs again in 1s'
+  refute_output --partial 'the sweep failed'
+  assert_output --partial 'filed 1, left 0, refused 0'
+}
+
 @test "--watch: a failed sweep runs again on the backoff with no save, and a clean one waits for a save" {
   sheet '- the gun sound is off since the top-down patch\n' ''
   outbox ''
@@ -441,4 +544,70 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run cat "$page"
   refute_output --partial '- +1 reviewed'
   assert_output --regexp '- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
+}
+
+# ask-stub: the read-only answer call. It records the prompt and what it was run with, and replies
+# with $NOTES_FIXTURE/ask.out.
+ask_stub() {
+  printf '#!/usr/bin/env bash\necho "$*" >> "$NOTES_FIXTURE/ask.log"\ncat > "$NOTES_FIXTURE/ask-prompt.txt"\ncat "$NOTES_FIXTURE/ask.out" 2>/dev/null\n' >"$SANDBOX/bin/ask-stub"
+  chmod +x "$SANDBOX/bin/ask-stub"
+  export INBOX_ASK_CMD=ask-stub
+}
+
+@test "outbox: a #ask line is answered into today's notes inbox, leaves the outbox, files no row and starts no routing call" {
+  sheet '' ''
+  ask_stub
+  printf '%s\n' 'INBOX-ANSWER-START' 'Yes, the mac is fine.' 'up 3 days, load 0.2' 'INBOX-ANSWER-END' >"$NOTES_FIXTURE/ask.out"
+  outbox '- [ ] #ask is my mac ok? #p:scratch\n'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 0 from the outbox, filed 0, left 0, refused 0, answered 1'
+  run cat "$HOME/.notes/outbox.md"
+  refute_output --partial 'mac'
+  run cat "$HOME/.notes/lab/inbox/$(date +%F).md"
+  assert_output --regexp '- [0-9]{2}:[0-9]{2} ask: is my mac ok\? - Yes, the mac is fine\.'
+  assert_output --partial '  up 3 days, load 0.2'
+  refute_output --partial '#ask'
+  run tasks
+  refute_output --partial 'mac'
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the routing model was called for a lone question"
+  grep -q 'Question: is my mac ok?' "$NOTES_FIXTURE/ask-prompt.txt" || fail "$(cat "$NOTES_FIXTURE/ask-prompt.txt")"
+  grep -q 'Change nothing' "$NOTES_FIXTURE/ask-prompt.txt" || fail "the prompt never said read-only"
+  grep -qx -- '-p' "$NOTES_FIXTURE/ask.log" || fail "$(cat "$NOTES_FIXTURE/ask.log")"
+  grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
+}
+
+@test "outbox: a #ask line beside other lines never reaches the routing call, and --dry-run answers nothing" {
+  sheet '' ''
+  ask_stub
+  printf '%s\n' 'INBOX-ANSWER-START' 'Fine.' 'INBOX-ANSWER-END' >"$NOTES_FIXTURE/ask.out"
+  outbox '- [ ] is the nas up? #ask\n- [ ] stays for the model\n'
+  answer '{"n": 1, "action": "skip", "why": "no project named"}'
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_line 'would answer [outbox] - [ ] is the nas up? #ask'
+  [ ! -e "$NOTES_FIXTURE/ask.log" ] || fail "a dry run called the model"
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'answered 1'
+  grep -qx '1. \[outbox\] stays for the model' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  ! grep -q 'nas up' "$NOTES_FIXTURE/prompt.txt" || fail "the question was routed"
+  run cat "$HOME/.notes/outbox.md"
+  refute_output --partial 'nas up'
+  assert_output --partial 'stays for the model'
+}
+
+@test "outbox: a #ask answer with no block leaves the line, recorded refused so the next sweep does not ask again" {
+  sheet '' ''
+  ask_stub
+  printf 'no markers here\n' >"$NOTES_FIXTURE/ask.out"
+  outbox '- [ ] #ask is my mac ok?\n'
+  run "$TRIAGE"
+  assert_failure
+  run cat "$HOME/.notes/outbox.md"
+  assert_output --partial '#ask is my mac ok?'
+  [ ! -e "$HOME/.notes/lab/inbox/$(date +%F).md" ] || fail "an answer was written with no block"
+  [ "$(wc -l <"$NOTES_FIXTURE/ask.log")" = 1 ] || fail "asked more than once in a sweep"
+  run "$TRIAGE"
+  [ "$(wc -l <"$NOTES_FIXTURE/ask.log")" = 1 ] || fail "the refused question was asked again"
 }

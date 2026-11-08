@@ -70,7 +70,7 @@ ask() {
 
 ask_fixture() {
   ask tp1 judge=take-recommend answer=Yes
-  ask fp1 judge=answer:left answer=right
+  ask fp1 judge=answer:left options= answer=right
   ask fn1 judge=human answer=yes
   ask tn1 judge=human answer=no
   ask tn2 judge=human 'answer=in session: ok, no then'
@@ -94,6 +94,41 @@ ask_fixture() {
   # pending: live_wait, pend; unscorable: unsc (free text), unclear (the asker's fault); gate and
   # old1 (another prompt) are out
   assert_output '[12,1,2,2,1,2,2,2,54.5,50,33.3,0.16]'
+  run "$JUDGE_EVAL" ask-judge --json
+  run jq -c '.agents[0].total | [.unscorable_pct, .unscorable_by]' <<<"$output"
+  assert_output '[18.2,{"answer naming no option":1,"unclear ask":1}]'
+  run "$JUDGE_EVAL" ask-judge
+  assert_line '  unscorable 2 of 11 (18.2%): 1 answer naming no option, 1 unclear ask'
+}
+
+@test "ask-judge: an answer with a note is scored by the option it leads with, free text by none" {
+  ask n_fn judge=human options='a|b' recommend=a 'answer=a (human 2026-11-06: keep moving)'
+  ask n_tn judge=human options='a|b' recommend=a 'answer=b: go with the other one'
+  ask n_tp judge=take-recommend options='a|b' recommend=a 'answer=in session: go with a'
+  ask n_ex judge=take-recommend options='ship it!|wait' 'recommend=ship it!' 'answer=Ship it!'
+  # negative controls: the article "a" names no option, two options name none, and free text to
+  # an ask with options is never compared as text (main read each as a disagreement)
+  ask n_art judge=human options='a|b' recommend=a 'answer=A new problem first: a broken thing'
+  ask n_two judge=human options='a|b' recommend=a 'answer=a or b, whichever'
+  ask n_txt judge=human options='a|b' recommend=a 'answer=whatever you recommend'
+  ask n_cxl judge=human options='a|b' recommend=a status=cancelled answer=
+  run "$JUDGE_EVAL" ask-judge --json
+  assert_success
+  run jq -c '.agents[0].total | [.tp, .fn, .tn, .unscorable, .unscorable_by]' <<<"$output"
+  assert_output '[2,1,1,4,{"answer naming no option":3,"cancelled unanswered":1}]'
+}
+
+@test "ask-judge: a deferral of a hard-stop type is no false-defer, one of a type that can go live is" {
+  ask hs_fn judge=human judge_type=product_taste answer=yes
+  ask hs_tn judge=human judge_type=human_physical_action answer=no
+  ask hs_ans judge=take-recommend judge_type=product_taste answer=yes
+  ask live_fn judge=human judge_type=ci_capacity_ops answer=yes
+  ask live_tn judge=human judge_type=agent_policy answer=no
+  run "$JUDGE_EVAL" ask-judge --json
+  assert_success
+  # hs_fn and hs_tn are unscorable; hs_ans still scores the judge's own answer
+  run jq -c '.agents[0].total | [.tp, .fn, .tn, .unscorable, .false_defer_pct]' <<<"$output"
+  assert_output '[1,1,1,2,50]'
 }
 
 @test "ask-judge: an answer assumed after its wait is counted, and an override on it is an fp" {
@@ -173,7 +208,7 @@ ask_fixture() {
   ask live1 judge=take-recommend answered_by=judge judge_override=none judge_rule=ship_deploy judge_type=ship_deploy judge_evidence=merged judge_reason=merged
   ask live2 judge=take-recommend answered_by=judge judge_override=no 'answer=yes'
   ask would judge=take-recommend answer=no
-  ask pass judge=human judge_rule=knowledge judge_type=human_fact judge_reason=only-you answer=yes
+  ask pass judge=human judge_rule=knowledge judge_type=agent_policy judge_reason=only-you answer=yes
   ask wait judge=human status=pending answer=
   ask old judge=human judge_call=c0 answer=no
   ask err1 judge=error judge_rule= answer=yes

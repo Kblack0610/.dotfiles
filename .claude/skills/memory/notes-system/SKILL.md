@@ -10,6 +10,12 @@ metadata:
 
 # notes-system
 
+## Scope and triggers
+
+Covers the `~/.notes` toolchain and the profile-aware `notes` Rust CLI: journal, backlogs, zettels, sync, doctor.
+
+Use for any notes read, write or layout question. Never hand-write into `~/.notes/journal/`. Meetings: `meeting-ingest`. Long-term cross-project memory: `mem0-ops`.
+
 ## Persona
 
 - **Name:** Scribe
@@ -20,7 +26,7 @@ metadata:
 - **Style:** Faithful, concise, structured; records rather than embellishes
 - **Autonomy rung:** draft / author (never edits auth/runtime state; uses the `notes` CLI, never
   hand-writes the journal)
-- **Carrying primitive:** skill voice - home here; also voices `daily:summary`, `wind-down`,
+- **Carrying primitive:** skill voice - home here; also voices `wind-down`,
   `one-pager`, `lab-sync`
 - **Notify channel:** the notes vault + generated summaries
 - **Registry:** `~/.dotfiles-private/.claude/PERSONAS.md`
@@ -58,7 +64,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | Linux | `notes-watch.service` (inotifywait + 3s debounce) | `notes-mqtt.service` (mosquitto_sub) | `git-sync-notes.timer` 5min |
 | macOS | `com.kblack.notes-watch.plist` (launchd `WatchPaths`) | `com.kblack.notes-mqtt.plist` | `com.kblack.git-sync-notes.plist` 5min |
 | Windows | `notes-watch` Scheduled Task (FileSystemWatcher) | `notes-mqtt` Scheduled Task (mosquitto_sub.exe) | `notes-sync-fallback` Scheduled Task 5min |
-| Termux | `~/.termux/boot/notes-watch.sh` (inotifywait) | ntfy Android app (FCM-backed) | crond 5min |
+| Termux | `.termux/boot/notes-watch.sh` in the Termux home (inotifywait) | ntfy Android app (FCM-backed) | crond 5min |
 
 ## Profiles
 
@@ -105,19 +111,20 @@ Ad-hoc task lines (in any markdown: daily notes, plans, backlogs) carry priority
 
 - **Vocabulary (three levels):** `#low`, `#high`, `#urgent`. No `#medium`.
 - **Placement:** end of the task line, one space before the tag, e.g. `- [ ] fix token refresh race #urgent`. End-of-line keeps it clear of markdown `# headings` (which are line-start only) so the CLI never mistakes it for a heading.
-- **nvim keymap:** `<leader>tp` in a markdown buffer cycles the current line (or a visual selection, converging to one level): `(none) -> #low -> #high -> #urgent -> (none)`. Sibling of `<leader>t` (checkbox toggle); defined in `~/.dotfiles/.config/nvim/lua/kennethblack/plugins/markdown.lua`.
+- **nvim keymap:** in a markdown buffer `<leader>tP` raises and `<leader>tp` lowers the current line (or a visual selection, converging to one level) along `#low -> #high -> #urgent`, stopping at either end; a task always has a priority, so there is no untagged step. Sibling of `<leader>t` (checkbox toggle); defined in `~/.dotfiles/.config/nvim/lua/kennethblack/plugins/markdown.lua`.
 - **Discovery:** because they are `#tags`, `notes tags` counts them and `<leader>nt` (the tag finder) drills into them; `notes tags urgent` lists every tagged line. Greppable via `rg '#urgent'`.
+- **Two kinds of tag:** task tags (row state, end of the row) and topic tags (what a note is about, in frontmatter or prose); `notes tags --kind task|topic` splits them and typing `#` in nvim offers them. Rule: `.local/src/notes-cli/README.md`, "The task row".
 
 ## Project board
 
 The rules every agent follows on a project's two lanes. The verbs are in the CLI README, Projects cheatsheet. Every lane goes through the `notes` CLI (never hand-edit a sheet), in plain ASCII.
 
-- A row's format is the CLI README, "The task row": `type(area): title`, one priority, the stamps `ptask add` writes, detail on indented lines under it. Agent-board rows are filed in that form, with a `#size/s|m|l`: `ptask --agent add` refuses a row without both, and exits 3 naming the open row when it is a near-duplicate (treat that as filed). Free text for the human sheet waits in its `## Inbox` (`ptask add`, agent-web's Add), and work for any project in the outbox (`notes outbox add`, or `notes focus ingest <words>` for a Focus row the human points at; nothing ingests Focus on its own), until the `agentctl-inbox-triage --watch` sweep files it about 30s after the save, and `agentctl-inbox-plan` plans each row it flags `#plan` (goal, approach, checks, split); an inbox line leaves only through `ptask file` (README, Intake). `notes doctor --projects` lints it.
+- A row's format is the CLI README, "The task row": `type(area): title`, one priority, the stamps `ptask add` writes, detail on indented lines under it. Agent-board rows are filed in that form, with a `#size/s|m|l`: `ptask --agent add` refuses a row without both, and exits 3 naming the open row when it is a near-duplicate (treat that as filed). Free text for the human sheet waits in its `## Inbox` (`ptask add`, agent-web's Add), and work for any project in the outbox (`notes outbox add`, or `notes focus ingest <words>` for a Focus row the human points at; nothing ingests Focus on its own), until the `agentctl-inbox-triage --watch` sweep files it about 30s after the save, and `agentctl-inbox-plan` plans each row it flags `#plan` (goal, approach, checks, split); an inbox line leaves only through `ptask file` (README, Intake). `notes doctor --projects` lints it. To check text against the grammar, pipe it to `notes row parse` (TSV `type area title ok`: `ok` is 1 when it parses, 0 when not, `-` an empty field) and read the types from `notes row types`; keep no regex or type list of your own.
 - The task a session is on is a queue item, not a row: `agent-queue add --running --project <p> "<task>"` (the dispatcher already made one when `$AGENT_QUEUE_ITEM` is set), closed by `agent-land <N>` or `agent-queue move <slug> done`. Its session, PR and state are what lets another session resume it (`~/.config/agentctl/QUEUE.md`). The agent board is the backlog: follow-ups and subtasks no session is on yet, `notes ptask <project> --agent add "<title>"`. Project names come from `~/.dotfiles-private/.config/shared-hooks/project-map.json`.
 - The project sheet (no `--agent`) is the human's queue. Every open row on its open version is the work, whoever does it; `start`/`done` the rows you take. Add to it only (1) asks the human wrote, (2) human-only actions (prod writes, releasing, money, legal, product decisions, device runs), (3) findings with prod user, PHI, security or money impact, each with a `file:line` and a one-line impact, or (4) an `epic(` row, filed by the human, by the session whose plan the human just approved, or by an answered ask, never by an unattended session. Anything else: fix it in the PR that found it, put it on the agent board and finish it before the wave rolls, or drop it. Check the other lane before adding: `ptask add` refuses (exit 3, nothing written) an open twin on its own sheet only.
 - `done` needs `--proof <ref>` checkable later (`pr:1142`, `run:<id>`, a URL) or `--unverified "<why>"` when that is the truth; an epic closes only on proof of its outcome, never a PR alone, by the human or any session holding that proof (`~/.local/src/docs/lifecycle.md`); a row that will not be delivered is `drop --why "<why>"` or `drop --dup <id>`, which keeps it ticked with the reason. Name a row by its id (`ar-142`) when it has one; words that hit two open rows are refused. Why: a version cannot roll while its wave has open tasks, and that gate is only worth anything if a ticked box means done.
 - Agents never aim a row at a later release (`add --to`, `move --to`). A bare add is tagged `#high`, meaning "nobody decided"; pass `#urgent` or `#low` when that is your judgment. Why: otherwise agent-filed `#high` rows, most of them agent-board work, fill the human's planned wave.
-- What the human asked for goes in a plan; the board gets one `#requested` row per unfinished plan. A phase is a story, which `agent-queue add` files under the plan's epic when a session takes it, never a second `#requested` row. An ask with no plan, unlanded at session end, gets one row in their words. Closing a `#requested` row needs proof of every clause, with what is left on a new `#requested` row; only the human drops an undelivered one. `agent-ask` is a different thing: a question for the human. Why: an ask with no row is lost when the session ends.
+- What the human asked for goes in a plan; the board gets one `#requested` row per unfinished plan. A phase is a story, which `agent-queue add` files under the plan's epic when a session takes it, never a second `#requested` row. An ask with no plan, unlanded at session end, gets one row in their words. Closing a `#requested` row needs proof of every clause, with what is left on a new `#requested` row; only the human drops an undelivered one. `agent-ask` is a different thing: a question for the human. A want from the human enters with `--want <channel>` on `ptask add|file` or `agent-queue add` (the channels are in `notes ptask add --help`), whoever writes the row, a runner or an unlanded ask included: the writer stamps `#requested` and records the channel, so never type the tag yourself. A follow-up that is not a human's want passes no `--want`. Why: an ask with no row is lost when the session ends.
 - Unattended dispatch (`fleet-dispatch`) picks rows by tag; what is eligible is the `fleet-dispatch` skill. When you file a row you may tag your own `#tier/N`, never `#worker/*`, except `#worker/requested` on a `#requested` row that is tier 2 or lower, size S and says what done looks like. Untagged `unity-core-playground` agent-board rows are eligible as they stand: file them clear and in one area, or tag them `#tier/3`.
 - A `design(` row is filed on the agent board only once the human has said yes to its idea, by closing its `decide(` row or answering an ask, and a detail line names that row or ask. Dispatch runs it through `one-pager` to a brief and one review ask, and only while `design` is on in `kinds.json`. Why: each design run adds an ask, and the human's ask queue is the limit.
 - Where a row goes: project is the product, type is the kind of work, area is the part. A game with its own `store/` listing has its own board; shared systems, the CI gate, store tooling, the registry and games with no store listing (game name as area) go on `unity-core-playground`; hosts and the cluster on `home-config`; API work on the `bnb-platform` app. There is no `deploy` type and no `unity-core` board. `agentctl-inbox-triage` applies the same rule. Why: one game platform project, chosen 2026-11-05, so shared work never splits across boards.
@@ -147,11 +154,11 @@ Thin wrapper that `exec`s `~/.local/src/git/git-sync-notes.sh`. Pulls from origi
 
 ### `notes-termux-bootstrap`
 
-Android-specific variant of `notes-bootstrap`. Use on Termux when the auto-detection needs an override. Also installs `neovim`/`tmux`/`rust` and writes the `~/.shortcuts/notes` Termux:Widget shortcut.
+Android-specific variant of `notes-bootstrap`. Use on Termux when the auto-detection needs an override. Also installs `neovim`/`tmux`/`rust` and writes the `.shortcuts/notes` Termux:Widget shortcut.
 
 ### `notes-mobile`
 
-One-tap entry into today's daily note: pull, open `notes path daily` in neovim inside a persistent `notes` tmux session (reattaches on reopen), push on exit. On Termux it is wired to a home-screen icon via the `~/.shortcuts/notes` Termux:Widget shortcut (install the Termux:Widget add-on APK, then place the widget). Runs on desktop/macOS too for testing.
+One-tap entry into today's daily note: pull, open `notes path daily` in neovim inside a persistent `notes` tmux session (reattaches on reopen), push on exit. On Termux it is wired to a home-screen icon via the `.shortcuts/notes` Termux:Widget shortcut (install the Termux:Widget add-on APK, then place the widget). Runs on desktop/macOS too for testing.
 
 ### `journal-create` (deprecated)
 

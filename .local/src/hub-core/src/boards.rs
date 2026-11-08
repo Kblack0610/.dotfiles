@@ -25,11 +25,7 @@ fn env(k: &str) -> Option<PathBuf> {
 
 /// `fleet-sessions`' state document, by the same variables it resolves.
 pub fn fleet_state() -> PathBuf {
-    env("FLEET_STATE_FILE").unwrap_or_else(|| {
-        env("XDG_STATE_HOME")
-            .unwrap_or_else(|| home().join(".local/state"))
-            .join("fleet/state.json")
-    })
+    agent_panel::vocab::fleet_state_file()
 }
 
 /// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
@@ -37,11 +33,32 @@ pub fn asks_dir() -> PathBuf {
     env("AGENT_ASK_DIR").unwrap_or_else(|| home().join(".agent/asks"))
 }
 
+/// agent-propose's store.
+pub fn proposals_dir() -> PathBuf {
+    env("AGENT_PROPOSE_DIR").unwrap_or_else(|| home().join(".agent/proposals"))
+}
+
+/// Whether a changed path is a proposal record in `dir`, not its lock or a half-written temp.
+pub fn is_proposal_file(dir: &Path, p: &Path) -> bool {
+    p.parent() == Some(dir) && p.extension().is_some_and(|e| e == "json")
+}
+
 /// `state.json` (null when missing or unreadable) with its `asks` read live from agent-ask. The
 /// file is a pass behind (fleet-state.timer: a minute after the last ~30s run), and an ask's one
 /// home is agent-ask's store, so a board shows what the questions panel shows. A failed read
-/// leaves no asks and names agent-ask in `unreadable`, as fleet-sessions does.
+/// leaves no asks and names agent-ask in `unreadable`, as fleet-sessions does. The sources only
+/// NEEDS YOU reads (critical mail, janitor lines, budget stops) join here too (`signals::join`).
 pub fn state(path: &Path, r: &dyn Runner) -> Value {
+    state_with(
+        path,
+        r,
+        &crate::signals::Paths::from_env(),
+        chrono::Utc::now().timestamp(),
+    )
+}
+
+/// `state` with the signal sources and clock given, for a test.
+pub fn state_with(path: &Path, r: &dyn Runner, signals: &crate::signals::Paths, now: i64) -> Value {
     let mut state = std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -49,6 +66,7 @@ pub fn state(path: &Path, r: &dyn Runner) -> Value {
     if !state.is_object() {
         return state;
     }
+    dialogs(&mut state, agent_panel::session::jsonl_path);
     let argv = ["agent-ask", "list", "--all", "--pending"].map(String::from);
     match r.run(&argv) {
         Ok(tsv) => state["asks"] = Value::Array(asks(&tsv)),
@@ -60,11 +78,31 @@ pub fn state(path: &Path, r: &dyn Runner) -> Value {
             }
         }
     }
+    crate::signals::join(&mut state, signals, r, now);
     state
 }
 
+/// Each NEEDS session's open dialog, read live from the end of its transcript (`path`, by session
+/// id and cwd) into the row's `dialog`, so `home::needs` stays pure over this document. A row
+/// whose transcript has nothing pending or cannot be read gets none.
+fn dialogs(state: &mut Value, path: impl Fn(&str, &str) -> PathBuf) {
+    let sessions = state.get_mut("sessions").and_then(Value::as_array_mut);
+    for s in sessions.into_iter().flatten() {
+        if s["bucket"] != "NEEDS" {
+            continue;
+        }
+        let at = path(
+            s["session_id"].as_str().unwrap_or(""),
+            s["cwd"].as_str().unwrap_or(""),
+        );
+        if let Ok(Some(q)) = crate::transcript::pending_question(&at) {
+            s["dialog"] = q.kind.into();
+        }
+    }
+}
+
 /// `agent-ask list` TSV as the state document's `asks` rows (fleet-sessions' `write_state`).
-fn asks(tsv: &str) -> Vec<Value> {
+pub fn asks(tsv: &str) -> Vec<Value> {
     let some = |v: &str| (!v.is_empty()).then(|| v.to_string());
     tsv.lines()
         .filter(|l| !l.is_empty())
@@ -72,9 +110,9 @@ fn asks(tsv: &str) -> Vec<Value> {
             let f: Vec<&str> = l.split('\t').collect();
             let col = |i: usize| f.get(i).copied().unwrap_or("");
             json!({
-                "id": col(0), "project": col(1), "kind": col(4), "question": col(5),
+                "id": col(0), "project": col(1), "status": col(3), "kind": col(4), "question": col(5),
                 "task": some(col(7)), "created": col(11), "session": some(col(12)),
-                "recommend": some(col(10)), "judge": some(col(16)),
+                "recommend": some(col(10)), "claude_session": some(col(15)), "judge": some(col(16)),
             })
         })
         .collect()
@@ -95,6 +133,14 @@ pub fn daylog_dir() -> PathBuf {
     std::env::var_os("DAYLOG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".agent/daylog"))
+}
+
+/// `agent-usage tokens snapshot`'s records, one `<YYYY-MM-DD>.json` per day (its `TOKENS_DIR`).
+pub fn token_usage_dir() -> PathBuf {
+    std::env::var_os("TOKENS_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".agent/token-usage"))
 }
 
 /// A day name the API accepts: exactly `YYYY-MM-DD`, so it can never name another file.
@@ -139,8 +185,6 @@ pub struct DayRow {
     pub repos: usize,
     /// The `TOTAL` row of `usage`, when the day has one.
     pub sessions: Option<u64>,
-    pub cost_usd: Option<f64>,
-    pub tokens: Option<u64>,
 }
 
 pub fn day_row(date: &str, rec: &Value) -> DayRow {
@@ -165,8 +209,6 @@ pub fn day_row(date: &str, rec: &Value) -> DayRow {
         areas,
         repos: repos.len(),
         sessions: total.and_then(|t| t["sessions"].as_u64()),
-        cost_usd: total.and_then(|t| t["cost_usd"].as_f64()),
-        tokens: total.and_then(|t| t["tokens"].as_u64()),
     }
 }
 
@@ -840,17 +882,14 @@ mod tests {
         assert_eq!(r.repos, 2);
         assert_eq!(r.areas["Games"], 2);
         assert_eq!(r.areas["other"], 1);
-        assert_eq!(
-            (r.sessions, r.cost_usd, r.tokens),
-            (Some(5), Some(2.25), Some(20))
-        );
+        assert_eq!(r.sessions, Some(5));
         assert!(r.live);
     }
 
     #[test]
     fn day_row_tolerates_an_old_or_partial_record() {
         let r = day_row("2026-10-14", &serde_json::json!({"schema": 1}));
-        assert_eq!((r.merged, r.repos, r.cost_usd, r.live), (0, 0, None, false));
+        assert_eq!((r.merged, r.repos, r.sessions, r.live), (0, 0, None, false));
     }
 
     #[test]
@@ -881,9 +920,30 @@ mod tests {
     struct Fixed(Result<String, String>);
     impl Runner for Fixed {
         fn run(&self, argv: &[String]) -> Result<String, String> {
+            if argv[0] == "notes" {
+                return Ok("/nonexistent".into());
+            }
             assert_eq!(argv.join(" "), "agent-ask list --all --pending");
             self.0.clone()
         }
+    }
+
+    #[test]
+    fn a_needs_session_takes_its_transcripts_open_dialog() {
+        let dir = std::env::temp_dir().join(format!("hub-core-dialogs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"ExitPlanMode","input":{"plan":"do it"}}]}}"#;
+        std::fs::write(dir.join("p.jsonl"), format!("{plan}\n")).unwrap();
+        let mut s = json!({"sessions": [
+            {"bucket": "NEEDS", "session_id": "p", "cwd": "/w"},
+            {"bucket": "WORKING", "session_id": "p", "cwd": "/w"},
+            {"bucket": "NEEDS", "session_id": "gone", "cwd": "/w"},
+        ]});
+        dialogs(&mut s, |id, _| dir.join(format!("{id}.jsonl")));
+        assert_eq!(s["sessions"][0]["dialog"], "plan");
+        assert_eq!(s["sessions"][1]["dialog"], Value::Null, "only NEEDS rows");
+        assert_eq!(s["sessions"][2]["dialog"], Value::Null, "no transcript");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -899,6 +959,13 @@ mod tests {
         .unwrap();
         let tsv = "new\tdotfiles\t\tpending\tquestion\tWhich one?\ta|b\t\t\t\ta\t\
                    2026-11-05T14:00:00-0800\tdotfiles-agent-1\t\t\t\ttake-recommend\n";
+        std::fs::create_dir_all(dir.join("surface")).unwrap();
+        let signals = crate::signals::Paths {
+            comms: dir.clone(),
+            confs: dir.clone(),
+            agentctl: dir.clone(),
+        };
+        let state = |f: &Path, r: &Fixed| state_with(f, r, &signals, 0);
         let s = state(&f, &Fixed(Ok(tsv.into())));
         assert_eq!(s["asks"].as_array().unwrap().len(), 1);
         assert_eq!(s["asks"][0]["id"], "new");

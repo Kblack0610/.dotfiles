@@ -14,6 +14,7 @@
 #   ptask.<profile>.<project>   path  line  key  text
 #   path.<profile>.<kind>       the root `notes --profile P path <kind>` prints
 #   stages                      the ladder `notes projects --stages` prints
+#   prios                       name  prio, what `notes projects --prios` prints
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -60,6 +61,8 @@ case "${1:-}" in
         ;;
       # `notes projects --stages` -> the ladder, from the `stages` fixture
       --stages) emit stages ;;
+      # `notes projects --prios` -> name TAB prio, every project that declares one
+      --prios) emit prios ;;
       --version-of) emit "version-of.${3:-}" ;;
       # `notes projects --stage <name>` -> the bare stage tag, or nothing if undeclared
       --stage) emit "stage.${3:-}" ;;
@@ -85,6 +88,19 @@ case "${1:-}" in
     case "${3:-}" in
       list|"") emit "ptask.${profile:-personal}.${proj}" ;;
       *) : ;;                      # add/done/rm: recorded only
+    esac
+    ;;
+  # `notes row parse`: each stdin line looked up in row.parse (text TAB type TAB area TAB title
+  # TAB ok), else untyped. A lookup table, never the grammar: that lives in notes-cli alone.
+  # `notes row types`: the row.types fixture, else a short made-up list.
+  row)
+    case "${2:-}" in
+      parse)
+        while IFS= read -r l; do
+          hit="$(awk -F'\t' -v l="$l" '$1 == l { print $2 "\t" $3 "\t" $4 "\t" $5; exit }' "$FIX/row.parse" 2>/dev/null)"
+          if [ -n "$hit" ]; then printf '%s\n' "$hit"; else printf -- '-\t-\t%s\t0\n' "${l:--}"; fi
+        done ;;
+      types) if [ -f "$FIX/row.types" ]; then cat "$FIX/row.types"; else echo "feat fix chore"; fi ;;
     esac
     ;;
   today)

@@ -52,6 +52,18 @@ add_wt() {
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/$1" -b "${2:-$1}" origin/main
 }
 
+# push_lands <wt> <branch> -- after make_repo: commit in <wt>, `git push -u origin <branch>`,
+# and assert the commit landed on refs/heads/<branch> while main did not move.
+push_lands() {
+  local wt="$1" branch="$2" main_before
+  main_before=$(git -C "$ORIGIN" rev-parse main)
+  printf '%s\n' "$branch" >> "$wt/file.txt"
+  git -C "$wt" commit --quiet -am "$branch"
+  git -C "$wt" push --quiet -u origin "$branch"
+  assert_equal "$(git -C "$ORIGIN" rev-parse "refs/heads/$branch")" "$(git -C "$wt" rev-parse HEAD)"
+  assert_equal "$(git -C "$ORIGIN" rev-parse main)" "$main_before"
+}
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 
 @test "an unknown verb is rejected, not quietly turned into a picker" {
@@ -121,6 +133,34 @@ add_wt() {
   # agent-panel both parse.
   assert_called 'new-session -ds repo-agent-1'
   assert_called "-c $WT_ROOT/repo-agent-1"
+}
+
+@test "a fresh worktree branch pushes to its own name, never to main (ar-746)" {
+  # Both ways a branch is cut here track origin/main: `wt new` (-B agent-N origin/main) and
+  # the CLAUDE.md recipe (-b <branch> origin/main). Under git's default push.default=simple,
+  # `git push -u origin <branch>` goes to <branch>. Under push.default=upstream it goes to
+  # main, so a repo config carrying that value breaks the recipe.
+  make_repo
+  run "$WT" new -c "$MAIN"
+  assert_success
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" rev-parse --abbrev-ref '@{upstream}')" origin/main
+  push_lands "$WT_ROOT/repo-agent-1" agent-1
+
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-recipe" -b fix/recipe origin/main
+  assert_equal "$(git -C "$WT_ROOT/repo-recipe" rev-parse --abbrev-ref '@{upstream}')" origin/main
+  push_lands "$WT_ROOT/repo-recipe" fix/recipe
+  assert_equal "$(git -C "$WT_ROOT/repo-recipe" rev-parse --abbrev-ref '@{upstream}')" origin/fix/recipe
+
+  # Negative control: the same push under push.default=upstream lands on main and creates no
+  # fix/control, which is what push_lands' two assertions reject.
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-control" -b fix/control origin/main
+  git -C "$MAIN" config push.default upstream
+  printf 'control\n' >> "$WT_ROOT/repo-control/file.txt"
+  git -C "$WT_ROOT/repo-control" commit --quiet -am control
+  git -C "$WT_ROOT/repo-control" push --quiet -u origin fix/control
+  assert_equal "$(git -C "$ORIGIN" rev-parse main)" "$(git -C "$WT_ROOT/repo-control" rev-parse HEAD)"
+  run git -C "$ORIGIN" rev-parse --verify --quiet refs/heads/fix/control
+  assert_failure
 }
 
 @test "new --server --detach opens the session on that server and focuses nothing" {
@@ -310,6 +350,19 @@ declare_in_lab() {
   [ -e "$WT_ROOT/repo-agent-1/ran-here" ] || fail "the pane did not run the command in the worktree"
 }
 
+@test "new --claude starts Claude in the pane through claude-acct run, the launcher cl uses" {
+  make_repo
+  export TMUX=/tmp/tmux-stub/default,1,0
+  run "$WT" new --claude --detach -c "$MAIN"
+  assert_success
+  assert_called 'fresh claude-acct\ run'
+  # Negative control: without --claude the pane is a plain shell.
+  : >"$NOTES_FIXTURE/calls.log"
+  run "$WT" new --detach -c "$MAIN"
+  assert_success
+  assert_not_called 'claude-acct'
+}
+
 @test "a second press while the first is still preparing takes the NEXT slot" {
   # The first press's session exists but its worktree does not yet: the session alone
   # must pin the slot, or both presses would cut agent-1.
@@ -477,7 +530,7 @@ declare_in_lab() {
   [ -d "$WT_ROOT/repo-agent-2" ] || fail "gc deleted a dirty worktree"
 }
 
-@test "gc names a kept tree nobody is in as stranded, and counts it" {
+@test "gc names a kept tree nobody is in as held, and counts it" {
   # A dirty tree whose owner is gone is held every night forever; the kept line is the only
   # place anyone will notice it, so it has to say so.
   make_repo
@@ -485,12 +538,12 @@ declare_in_lab() {
   printf 'edit\n' > "$WT_ROOT/repo-agent-2/file.txt"
   run "$WT" gc --dry-run
   assert_success
-  assert_output --partial 'stranded, nobody in it'
-  assert_output --partial '1 kept, 1 stranded'
-  [ -d "$WT_ROOT/repo-agent-2" ] || fail "gc deleted a stranded worktree"
+  assert_line --regexp '^kept +repo-agent-2 +held +dirty'
+  assert_output --partial '1 kept, 0 skipped; landed 0, husk 0, claimed 0, held 1,'
+  [ -d "$WT_ROOT/repo-agent-2" ] || fail "gc deleted a held worktree"
 }
 
-@test "gc does not call a dirty tree with a live session stranded" {
+@test "gc calls a dirty tree with a live session claimed, not held" {
   make_repo
   add_wt repo-agent-2
   printf 'edit\n' > "$WT_ROOT/repo-agent-2/file.txt"
@@ -498,9 +551,53 @@ declare_in_lab() {
   printf 'repo-agent-2\n' > "$NOTES_FIXTURE/tmux.sessions"
   run "$WT" gc --dry-run
   assert_success
-  assert_output --partial 'dirty'
-  refute_output --partial 'stranded, nobody in it'
-  assert_output --partial '1 kept, 0 stranded'
+  assert_line --regexp '^kept +repo-agent-2 +claimed +dirty'
+  assert_output --partial 'claimed 1, held 0,'
+}
+
+@test "gc: merged slot branches are deleted, an unmerged or checked-out one is not" {
+  make_repo
+  add_wt repo-keep agent-3                              # checked out, dirty: tree and branch stay
+  printf 'edit\n' > "$WT_ROOT/repo-keep/file.txt"
+  git -C "$MAIN" branch agent-7 origin/main              # merged, checked out nowhere
+  git -C "$MAIN" branch worktree-agent-ab12 origin/main  # same, the harness's name
+  git -C "$MAIN" branch feature origin/main              # merged, but not a slot branch
+  git -C "$MAIN" branch agent-8 origin/main
+  git -C "$MAIN" worktree add --quiet "$SANDBOX/side" agent-8
+  git -C "$SANDBOX/side" commit --quiet --allow-empty -m unmerged
+  git -C "$MAIN" worktree remove --force "$SANDBOX/side"  # agent-8 now has a commit and no tree
+
+  run "$WT" gc --dry-run
+  assert_success
+  assert_output --partial 'would delete agent-7'
+  git -C "$MAIN" rev-parse --verify --quiet agent-7 >/dev/null || fail "a dry run deleted a branch"
+
+  run "$WT" gc
+  assert_success
+  assert_output --partial 'deleted agent-7'
+  assert_output --partial 'deleted worktree-agent-ab12'
+  refute_output --partial 'agent-3'
+  git -C "$MAIN" rev-parse --verify --quiet agent-7 >/dev/null && fail "merged slot branch survived gc"
+  git -C "$MAIN" rev-parse --verify --quiet worktree-agent-ab12 >/dev/null && fail "merged harness branch survived gc"
+  git -C "$MAIN" rev-parse --verify --quiet feature >/dev/null || fail "gc deleted a branch that is not a slot"
+  git -C "$MAIN" rev-parse --verify --quiet agent-8 >/dev/null || fail "gc deleted an unmerged branch"
+  git -C "$MAIN" rev-parse --verify --quiet agent-3 >/dev/null || fail "gc deleted a checked-out branch"
+  [ -d "$WT_ROOT/repo-keep" ] || fail "gc deleted a dirty worktree"
+}
+
+@test "gc: a repo with no trees left is pruned when named; a symlink to a repo is never pruned" {
+  make_repo
+  git -C "$MAIN" branch agent-7 origin/main
+  run "$WT" gc "$MAIN"
+  assert_success
+  assert_output --partial 'no worktrees to consider'
+  git -C "$MAIN" rev-parse --verify --quiet agent-7 >/dev/null && fail "merged slot branch survived gc of a treeless repo"
+
+  git -C "$MAIN" branch agent-9 origin/main
+  ln -s "$MAIN" "$WT_ROOT/linked"
+  run "$WT" gc
+  assert_success
+  git -C "$MAIN" rev-parse --verify --quiet agent-9 >/dev/null || fail "gc pruned a repo it reached through a symlink"
 }
 
 @test "gc --dry-run removes NOTHING" {

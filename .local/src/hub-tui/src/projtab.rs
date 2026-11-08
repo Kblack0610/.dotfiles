@@ -1,9 +1,10 @@
-//! The Projects tab: one card per lab project with its open version's progress, built by
-//! `hub_core::projects` (the same cards and words as agent-web's Projects tab), in flight
-//! first, under an All entry. j/k pick a card, Enter opens its rows (tasktab.rs, every row key
-//! works there), `/` opens All with a search; in the rows Esc clears a filter first and then
-//! comes back here, as Backspace does at once. `P` steps the selected project's priority
-//! (normal, focus, high, low); app.rs runs the write. This file reads and writes nothing.
+//! The Projects tab: one table row per lab project with its open version's progress, built by
+//! `hub_core::projects` (the same rows and words as agent-web's Projects tab), in flight first,
+//! on the shared `DataTable`. j/k pick a project, Enter opens its card over its rows (tasktab.rs,
+//! every row key works there), `a` opens every project's rows; in the rows Esc clears the view
+//! first and then comes back here, as Backspace does at once. `P` steps the selected project's
+//! priority (normal, focus, high, low; from `only` it clears it); app.rs runs the write. This file reads and writes
+//! nothing.
 
 use hub_core::page::Page;
 use hub_core::projects::{self, Card, Projects, Stats};
@@ -12,9 +13,10 @@ use hub_core::tasks::Feed;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 
-use crate::fit::{clip_line, wrap};
+use crate::datatable::{DataTable, Took};
+use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::Palette;
-use crate::tasktab::{Kind, Prompt, TaskView};
+use crate::tasktab::TaskView;
 
 /// One read of the cards' input that is not the board feed: `notes projects --stats --json`.
 #[derive(Debug)]
@@ -28,83 +30,92 @@ pub fn load(runner: &dyn Runner) -> Loaded {
     }
 }
 
+/// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
+const HEADER: [&str; 19] = [
+    "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE", "7D", "PCT",
+    "PACE/WK", "ETA", "RUN", "WAIT", "QUEUED", "HELD", "TODAY", "OLDEST",
+];
+
 #[derive(Debug, Default)]
 pub struct ProjView {
-    /// 0 is All, then the cards in their order.
-    pub card: usize,
-    /// The rows are open (tasktab), for one card or for All.
+    /// The list's search, chip and sort, and its selected row.
+    pub table: DataTable,
+    /// The rows are open (tasktab), for one project or for every project.
     pub open: bool,
     /// A `hub tab projects <name>` that came before the cards: opened when they arrive.
     pub want: Option<String>,
-    /// The opened card's folded sections are open (`f`).
+    /// The opened card's folded sections are open (`F`).
     pub folds: bool,
 }
 
 impl ProjView {
-    /// Open the selected entry's rows: All, or one card's project.
-    pub fn open(&mut self, tv: &mut TaskView, cards: &[Card]) {
-        tv.project = self
-            .card
-            .checked_sub(1)
-            .and_then(|i| cards.get(i))
-            .map(|c| (c.profile.clone(), c.name.clone()));
-        if tv.project.is_none() {
-            self.card = 0;
-        }
-        tv.search.clear();
+    /// The cards the view keeps, in its order.
+    pub fn shown<'a>(&self, cards: &'a [Card]) -> Vec<&'a Card> {
+        self.table.view.apply(cards)
+    }
+
+    /// The selected row of `n`: a re-read can leave the selection past what the view now keeps.
+    fn at(&self, n: usize) -> usize {
+        self.table.sel.min(n.saturating_sub(1))
+    }
+
+    /// The selected project, when the view keeps one.
+    pub fn selected<'a>(&self, cards: &'a [Card]) -> Option<&'a Card> {
+        let shown = self.shown(cards);
+        shown.get(self.at(shown.len())).copied()
+    }
+
+    /// Open one project's rows, or with None every project's.
+    pub fn open(&mut self, tv: &mut TaskView, c: Option<&Card>) {
+        tv.project = c.map(|c| (c.profile.clone(), c.name.clone()));
+        tv.table.clear();
         tv.said = None;
-        tv.sel = 0;
         self.open = true;
     }
 
-    /// Back to the cards, with the open project's card selected.
+    /// Back to the list, the selection on the row it was on.
     pub fn close(&mut self, tv: &mut TaskView) {
         self.open = false;
         tv.prompt = None;
         tv.said = None;
     }
 
-    /// `hub tab projects <name>`: the card of that name, else All searched for it.
+    /// `hub tab projects <name>`: the project of that name, whatever the list's view keeps, else
+    /// every project's rows searched for it.
     pub fn go(&mut self, tv: &mut TaskView, cards: &[Card], name: &str) {
         let named = |c: &Card| {
             c.name.eq_ignore_ascii_case(name)
                 || format!("{}/{}", c.profile, c.name).eq_ignore_ascii_case(name)
         };
-        match cards.iter().position(named) {
-            Some(i) => {
-                self.card = i + 1;
-                self.open(tv, cards);
+        match cards.iter().find(|c| named(c)) {
+            Some(c) => {
+                if let Some(i) = self.shown(cards).iter().position(|s| named(s)) {
+                    self.table.sel = i;
+                }
+                self.open(tv, Some(c));
             }
             None => {
-                self.card = 0;
-                self.open(tv, cards);
-                tv.search = name.to_string();
+                self.open(tv, None);
+                tv.table.view.q = name.to_string();
             }
         }
     }
 
-    /// The card list's keys; false for one it does not take.
+    /// The list's keys; false for one it does not take.
     pub fn key(&mut self, tv: &mut TaskView, k: KeyEvent, cards: &[Card], page: usize) -> bool {
-        let last = cards.len();
+        if self.table.key::<Card>(k.code) != Took::No
+            || self.table.moves(k, self.shown(cards).len(), page)
+        {
+            return true;
+        }
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => self.card = (self.card + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => self.card = self.card.saturating_sub(1),
-            KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.card = (self.card + page.max(1)).min(last)
+            KeyCode::Enter => {
+                if let Some(c) = self.selected(cards) {
+                    self.open(tv, Some(c));
+                }
             }
-            KeyCode::PageUp => self.card = self.card.saturating_sub(page.max(1)),
-            KeyCode::Char('g') | KeyCode::Home => self.card = 0,
-            KeyCode::Char('G') | KeyCode::End => self.card = last,
-            KeyCode::Enter => self.open(tv, cards),
-            KeyCode::Char('/') => {
-                self.card = 0;
-                self.open(tv, cards);
-                tv.prompt = Some(Prompt {
-                    kind: Kind::Search,
-                    text: String::new(),
-                    row: None,
-                });
-            }
+            KeyCode::Char('a') => self.open(tv, None),
+            KeyCode::Esc if !self.table.is_default() => self.table.clear(),
             _ => return false,
         }
         true
@@ -125,7 +136,7 @@ fn bar(percent: Option<u32>, p: Palette) -> Vec<Span<'static>> {
 }
 
 /// `text` word-wrapped to `w` under a `lead` label, continuation lines indented to match.
-fn wrapped(
+pub(crate) fn wrapped(
     lead: &str,
     text: &str,
     style: ratatui::style::Style,
@@ -153,9 +164,9 @@ fn wrapped(
         .collect()
 }
 
-/// The card's first line: name, profile, stage, priority, then its queue (`queue` adds it).
-fn head(c: &Card, p: Palette, w: usize, queue: bool) -> Line<'static> {
-    let mut spans = vec![
+/// The opened card's first line: name, profile, stage, priority.
+fn head(c: &Card, p: Palette, w: usize) -> Line<'static> {
+    let spans = vec![
         Span::styled(c.name.to_uppercase(), p.head()),
         Span::styled(format!("  {}, {}", c.profile, c.stage), p.dim()),
         Span::styled(
@@ -164,12 +175,13 @@ fn head(c: &Card, p: Palette, w: usize, queue: bool) -> Line<'static> {
             } else {
                 format!(", prio {}", c.prio)
             },
-            if c.prio == "focus" { p.head() } else { p.dim() },
+            if matches!(c.prio.as_str(), "focus" | "only") {
+                p.head()
+            } else {
+                p.dim()
+            },
         ),
     ];
-    if queue {
-        spans.push(Span::styled(format!("  {}", projects::queue(c)), p.dim()));
-    }
     clip_line(Line::from(spans), w)
 }
 
@@ -188,14 +200,6 @@ fn bar_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
     }
 }
 
-/// One card in the list: what it is, its stage and queue, then the bar and its numbers. The rest
-/// is the opened card's (open_lines).
-pub fn card_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let mut out = vec![head(c, p, w, true)];
-    out.extend(bar_lines(c, p, w));
-    out
-}
-
 /// A folded section's head: `TITLE  what it holds`, then the key when it is folded.
 fn fold_head(title: &str, says: &str, folds: bool, p: Palette, w: usize) -> Line<'static> {
     let mut spans = vec![
@@ -203,14 +207,14 @@ fn fold_head(title: &str, says: &str, folds: bool, p: Palette, w: usize) -> Line
         Span::styled(format!("  {says}"), p.dim()),
     ];
     if !folds {
-        spans.push(Span::styled("  f opens it", p.dim()));
+        spans.push(Span::styled("  F opens it", p.dim()));
     }
     clip_line(Line::from(spans), w)
 }
 
 /// The opened card, over its rows: the card, its goal and Flow, what needs the human (always
 /// open), then Build by system, Next stage, Shipped, In flight and the Agent note as folded
-/// heads with their counts, which `f` opens together. `page` is None while it is read.
+/// heads with their counts, which `F` opens together. `page` is None while it is read.
 pub fn open_lines(
     c: &Card,
     page: Option<&Page>,
@@ -218,7 +222,7 @@ pub fn open_lines(
     p: Palette,
     w: usize,
 ) -> Vec<Line<'static>> {
-    let mut out = vec![head(c, p, w, false)];
+    let mut out = vec![head(c, p, w)];
     out.extend(bar_lines(c, p, w));
     let warn_if = |b: bool| if b { p.warn() } else { Default::default() };
     let (goal, style) = if c.goal.is_empty() {
@@ -312,7 +316,45 @@ pub fn open_lines(
     out
 }
 
-/// The card list, and the line the selected entry starts on (the app keeps it in view).
+/// One line of the list: `Card`'s columns, a blank word as `-`.
+fn row(c: &Card, p: Palette) -> Vec<Cell> {
+    let dash = |s: &str| if s.is_empty() { "-" } else { s }.to_string();
+    let or_dash = |n: Option<u32>, unit: &str| n.map_or("-".to_string(), |n| format!("{n}{unit}"));
+    let lit = |n: usize, on| {
+        let style = if n > 0 { on } else { p.dim() };
+        cell(n.to_string(), style)
+    };
+    vec![
+        c.name.clone().into(),
+        c.profile.clone().into(),
+        dash(&c.stage).into(),
+        dash(c.version.as_deref().unwrap_or_default()).into(),
+        cell(
+            dash(&c.prio),
+            if matches!(c.prio.as_str(), "focus" | "only") {
+                p.head()
+            } else {
+                p.dim()
+            },
+        ),
+        c.progress.open.to_string().into(),
+        c.doing.to_string().into(),
+        lit(c.hot, p.warn()),
+        c.progress.done.to_string().into(),
+        c.progress.closed_7d.to_string().into(),
+        or_dash(c.percent, "%").into(),
+        format!("{:.1}", c.pace()).into(),
+        or_dash(c.eta_days, "d").into(),
+        lit(c.running.len(), p.good()),
+        lit(c.waiting, p.warn()),
+        c.queued.to_string().into(),
+        c.held.to_string().into(),
+        lit(c.done_today, p.good()),
+        projects::wait_word(c.oldest_ready_min).into(),
+    ]
+}
+
+/// The list, and the line the selected row is on (the app keeps it in view).
 pub fn page(
     pr: &Projects,
     feed: Option<&Feed>,
@@ -320,14 +362,26 @@ pub fn page(
     p: Palette,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let flying = pr.cards.iter().filter(|c| c.in_flight()).count();
+    let shown = pv.shown(&pr.cards);
+    let total = pr.cards.len();
+    let count = if shown.len() == total {
+        total.to_string()
+    } else {
+        format!("{} of {total}", shown.len())
+    };
+    let flying = pv
+        .table
+        .view
+        .states(&pr.cards)
+        .iter()
+        .find(|c| c.name == "in flight")
+        .map_or(0, |c| c.n);
     let mut out = vec![clip_line(
         Line::from(vec![
             Span::styled("PROJECTS", p.head()),
             Span::styled(
                 format!(
-                    "  {} projects, {flying} in flight; progress is the open version's rows by size (#size/s 1, m 3, l 8)",
-                    pr.cards.len()
+                    "  {count} projects, {flying} in flight; progress is the open version's rows by size (#size/s 1, m 3, l 8)"
                 ),
                 p.dim(),
             ),
@@ -337,34 +391,43 @@ pub fn page(
     for e in &pr.errors {
         out.extend(wrapped("", e, p.warn(), p, w));
     }
-    out.push(Line::raw(""));
+    out.push(clip_line(Line::from(pv.table.status(&pr.cards, p)), w));
     let rows = feed.map_or("reading notes board".to_string(), |f| {
-        format!("{} open rows", f.rows.len())
+        format!("{} open rows", f.open_rows(None).len())
     });
-    let mut all = clip_line(
+    out.push(clip_line(
         Line::from(vec![
-            Span::styled("ALL PROJECTS", p.head()),
-            Span::styled(
-                format!("  {rows}; / searches them, l steps the lane"),
-                p.dim(),
-            ),
+            Span::styled("ALL ROWS", p.head()),
+            Span::styled(format!("  {rows}; a opens them"), p.dim()),
         ]),
         w,
-    );
+    ));
+    out.push(Line::raw(""));
     let mut at = None;
-    if pv.card == 0 {
-        all.style = p.sel();
-        at = Some(out.len());
-    }
-    out.push(all);
-    for (i, c) in pr.cards.iter().enumerate() {
-        out.push(Line::raw(""));
-        let mut l = card_lines(c, p, w);
-        if pv.card == i + 1 {
-            l[0].style = p.sel();
-            at = Some(out.len());
+    if shown.is_empty() {
+        let none = if total > 0 {
+            "No project matches."
+        } else {
+            "No projects."
+        };
+        out.push(Line::styled(none, p.dim()));
+    } else {
+        let (mut t, starts) = Table {
+            header: HEADER.to_vec(),
+            rows: shown.iter().map(|c| row(c, p)).collect(),
+            keep: vec![
+                0, 10, 13, 14, 15, 7, 18, 5, 2, 12, 16, 17, 6, 8, 9, 11, 3, 4, 1,
+            ],
+            right: (5..HEADER.len()).collect(),
+            mark: pv.table.mark::<Card>(),
+            ..Default::default()
         }
-        out.extend(l);
+        .fit_wrapped(w, p.head());
+        if let Some(&start) = starts.get(pv.at(shown.len())) {
+            t[start].style = p.sel();
+            at = Some(out.len() + start);
+        }
+        out.append(&mut t);
     }
     if !pr.unlinked.is_empty() {
         out.push(Line::raw(""));
@@ -428,29 +491,6 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn a_list_card_is_its_head_with_the_queue_and_its_bar_and_wraps_to_the_width() {
-        let pr = fixture();
-        let l: Vec<String> = card_lines(&pr.cards[0], Palette { no_color: true }, 120)
-            .iter()
-            .map(plain)
-            .collect();
-        assert_eq!(
-            l,
-            [
-                "GARDEN  personal, alpha  0 running, 0 waiting, 0 queued",
-                "  [###############.....]  v0.0.1 75% (3 of 4 by size), 7d 2, 28d 4, ETA 7d",
-            ],
-            "the goal, running list and status are the opened card's"
-        );
-        let narrow: Vec<String> = card_lines(&pr.cards[0], Palette { no_color: true }, 40)
-            .iter()
-            .map(plain)
-            .collect();
-        assert!(narrow.iter().all(|s| s.len() <= 40), "{narrow:?}");
-        assert!(narrow.join(" ").contains("ETA 7d"), "{narrow:?}");
-    }
-
     fn a_page() -> Page {
         Page {
             project: "garden".into(),
@@ -501,11 +541,11 @@ pub(crate) mod tests {
             [
                 "NEEDS YOU  1",
                 "  verify: Saves (4 of 4 rows landed, no live proof)",
-                "BUILD BY SYSTEM  1 systems, 1 open epics (2 rows with no epic)  f opens it",
-                "NEXT STAGE  beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet  f opens it",
-                "SHIPPED  none yet  f opens it",
-                "IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox  f opens it",
-                "AGENT NOTE  model-written, 2026-11-05  f opens it",
+                "BUILD BY SYSTEM  1 systems, 1 open epics (2 rows with no epic)  F opens it",
+                "NEXT STAGE  beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet  F opens it",
+                "SHIPPED  none yet  F opens it",
+                "IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox  F opens it",
+                "AGENT NOTE  model-written, 2026-11-05  F opens it",
             ]
         );
         let open = draw(Some(&pg), true).join("\n");
@@ -517,7 +557,7 @@ pub(crate) mod tests {
         ] {
             assert!(open.contains(s), "{s} in {open}");
         }
-        assert!(!open.contains("f opens it"));
+        assert!(!open.contains("F opens it"));
         let reading = draw(None, true);
         assert_eq!(reading.last().unwrap(), "  reading the page...");
         let mut c = pr.cards[0].clone();
@@ -529,58 +569,154 @@ pub(crate) mod tests {
         assert_eq!(l[2], "  goal     no goal set");
     }
 
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::from(KeyCode::Char(c))
+    }
+
+    fn enter() -> KeyEvent {
+        KeyEvent::from(KeyCode::Enter)
+    }
+
     #[test]
-    fn enter_opens_a_card_slash_searches_all_and_a_name_opens_its_card() {
+    fn enter_opens_the_selected_project_a_opens_every_row_and_a_name_opens_its_project() {
         let pr = fixture();
         let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
-        let k = |c| KeyEvent::from(KeyCode::Char(c));
         for _ in 0..3 {
-            assert!(pv.key(&mut tv, k('j'), &pr.cards, 10));
+            assert!(pv.key(&mut tv, key('j'), &pr.cards, 10));
         }
-        assert_eq!(pv.card, 2, "j stops at the last card");
-        pv.key(&mut tv, KeyEvent::from(KeyCode::Enter), &pr.cards, 10);
+        assert_eq!(pv.table.sel, 1, "j stops at the last row");
+        pv.key(&mut tv, enter(), &pr.cards, 10);
         assert!(pv.open);
         assert_eq!(tv.project, Some(("personal".into(), "demo".into())));
         pv.close(&mut tv);
         assert!(!pv.open);
-        assert_eq!(pv.card, 2, "back on the card it opened");
-        pv.key(&mut tv, k('/'), &pr.cards, 10);
+        assert_eq!(pv.table.sel, 1, "back on the row it opened");
+        pv.key(&mut tv, key('a'), &pr.cards, 10);
         assert!(pv.open && tv.project.is_none());
-        assert_eq!(tv.prompt.as_ref().map(|p| p.kind), Some(Kind::Search));
-        assert!(!pv.key(&mut tv, k('x'), &pr.cards, 10));
+        assert_eq!(pv.table.sel, 1, "All leaves the selection where it was");
+        assert!(!pv.key(&mut tv, key('z'), &pr.cards, 10));
 
         pv.go(&mut tv, &pr.cards, "personal/Garden");
         assert_eq!(
-            (pv.card, tv.project.clone()),
-            (1, Some(("personal".into(), "garden".into())))
+            (pv.table.sel, tv.project.clone()),
+            (0, Some(("personal".into(), "garden".into())))
         );
         pv.go(&mut tv, &pr.cards, "menu");
         assert_eq!(
-            (pv.card, tv.project.clone(), tv.search.as_str()),
-            (0, None, "menu")
+            (tv.project.clone(), tv.table.view.q.as_str()),
+            (None, "menu")
         );
     }
 
     #[test]
-    fn the_list_puts_all_first_and_names_what_no_card_claims() {
+    fn the_header_is_cards_columns_in_order() {
+        use hub_core::table::Row as _;
+        assert_eq!(HEADER.len(), Card::COLUMNS.len());
+        for (h, c) in HEADER.iter().zip(Card::COLUMNS) {
+            assert!(h.to_lowercase().starts_with(c), "{h} is not {c}");
+        }
+    }
+
+    #[test]
+    fn a_re_read_that_shrinks_the_view_leaves_the_last_row_selected() {
         let pr = fixture();
+        let (mut pv, mut tv) = (
+            ProjView {
+                table: DataTable {
+                    sel: 5,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            TaskView::default(),
+        );
+        assert_eq!(pv.selected(&pr.cards).unwrap().name, "demo");
+        let (l, at) = page(&pr, None, &pv, Palette { no_color: true }, 200);
+        assert!(plain(&l[at.unwrap()]).starts_with("demo"));
+        pv.key(&mut tv, key('k'), &pr.cards, 10);
+        assert_eq!(pv.table.sel, 0, "k moves from the row on screen");
+    }
+
+    #[test]
+    fn the_shared_keys_narrow_the_list_and_enter_opens_the_row_on_screen() {
+        let pr = fixture();
+        let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
+        pv.key(&mut tv, key('j'), &pr.cards, 10);
+        for c in "/demo".chars() {
+            assert!(pv.key(&mut tv, key(c), &pr.cards, 10), "{c} is typed");
+        }
+        assert!(pv.table.typing.is_some());
+        assert_eq!(pv.shown(&pr.cards).len(), 2, "nothing applies until Enter");
+        pv.key(&mut tv, enter(), &pr.cards, 10);
+        assert!(!pv.open, "Enter ends the search, it opens nothing");
+        assert_eq!(
+            pv.table.sel, 0,
+            "the view changed, so the selection is back on top"
+        );
+        assert_eq!(pv.shown(&pr.cards).len(), 1);
+        pv.key(&mut tv, enter(), &pr.cards, 10);
+        assert_eq!(tv.project, Some(("personal".into(), "demo".into())));
+        pv.close(&mut tv);
+
+        // A project the view hides still opens by name, and Back keeps the selection.
+        pv.go(&mut tv, &pr.cards, "garden");
+        assert_eq!(pv.table.sel, 0);
+        pv.close(&mut tv);
+
+        assert!(pv.key(&mut tv, KeyEvent::from(KeyCode::Esc), &pr.cards, 10));
+        assert!(pv.table.is_default(), "Esc clears the view");
+        assert!(!pv.key(&mut tv, KeyEvent::from(KeyCode::Esc), &pr.cards, 10));
+
+        pv.key(&mut tv, key('s'), &pr.cards, 10);
+        assert_eq!(pv.table.view.sort, "project");
+        let (l, _) = page(&pr, None, &pv, Palette { no_color: true }, 200);
+        let s: Vec<String> = l.iter().map(plain).collect();
+        assert!(s.iter().any(|l| l.starts_with("PROJECT v")), "{s:?}");
+        pv.key(&mut tv, key('f'), &pr.cards, 10);
+        assert_eq!(pv.shown(&pr.cards).len(), 0, "none is in flight");
+        let (l, at) = page(&pr, None, &pv, Palette { no_color: true }, 200);
+        let s = l.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(s.contains("0 of 2 projects"), "{s}");
+        assert!(s.contains("No project matches."), "{s}");
+        assert_eq!(at, None);
+    }
+
+    #[test]
+    fn the_list_is_one_row_a_project_and_names_what_no_card_claims() {
+        let mut pr = fixture();
+        pr.cards[0].prio = "focus".into();
+        pr.cards[0].waiting = 1;
+        pr.cards[1].version = None;
+        pr.cards[1].eta_days = None;
         let pv = ProjView {
-            card: 1,
+            table: DataTable {
+                sel: 1,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let (l, at) = page(&pr, None, &pv, Palette { no_color: true }, 200);
         let s: Vec<String> = l.iter().map(plain).collect();
         assert!(
-            s[0].starts_with("PROJECTS  2 projects, 0 in flight"),
+            s[0].starts_with("PROJECTS  2 projects, 1 in flight"),
             "{s:?}"
         );
-        assert!(
-            s[2].starts_with("ALL PROJECTS  reading notes board"),
-            "{s:?}"
+        assert_eq!(s[1], "all 2  in flight 1  waiting 1");
+        assert!(s[2].starts_with("ALL ROWS  reading notes board"), "{s:?}");
+        assert_eq!(s[4].split_whitespace().collect::<Vec<_>>(), HEADER.to_vec());
+        assert_eq!(
+            s[5].split_whitespace().collect::<Vec<_>>(),
+            [
+                "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "75%",
+                "1.0", "7d", "0", "1", "0", "0", "0", "-"
+            ]
         );
         assert_eq!(
-            s[at.unwrap()],
-            "GARDEN  personal, alpha  0 running, 0 waiting, 0 queued"
+            s[at.unwrap()].split_whitespace().collect::<Vec<_>>(),
+            [
+                "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "0%", "1.0", "-",
+                "0", "0", "0", "0", "0", "-"
+            ]
         );
         let tail = s.join("\n");
         assert!(
@@ -588,5 +724,11 @@ pub(crate) mod tests {
             "{tail}"
         );
         assert!(tail.ends_with("  dotfiles: fix the hook"), "{tail}");
+
+        let narrow = page(&pr, None, &pv, Palette { no_color: true }, 40).0;
+        assert!(narrow.iter().all(|l| plain(l).len() <= 40));
+        let head = narrow.iter().map(plain).find(|l| l.starts_with("PROJECT "));
+        let head = head.expect("the header stays");
+        assert!(head.contains("PCT"), "{head}");
     }
 }

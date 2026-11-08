@@ -28,11 +28,16 @@ return {
         preset = "luasnip",
       },
       sources = {
-        default = { "lsp", "path", "snippets", "buffer"},
+        default = { "lsp", "path", "snippets", "buffer", "notes_tags" },
         providers = {
           -- Below customizes the order/priority of recommendations
           -- https://cmp.saghen.dev/configuration/reference.html#providers
           lsp = {
+            -- marksman indexes all of ~/.notes and can sit on a request for seconds. blink waits
+            -- for every sync provider, so that froze the tag menu on an older token's items.
+            async = function()
+              return require("notes.tag_source").enabled()
+            end,
             min_keyword_length = 0, -- Number of characters to trigger provider
             -- score_offset = 90, -- Boost/penalize the score of the items
           },
@@ -47,6 +52,13 @@ return {
           buffer = {
             min_keyword_length = 4,
             max_items = 3,
+          },
+          -- Known tags on `#` in a note. Off outside ~/.notes (see notes.tag_source).
+          notes_tags = {
+            name = "Tags",
+            module = "notes.tag_source",
+            min_keyword_length = 0,
+            score_offset = 100,
           },
         },
       },

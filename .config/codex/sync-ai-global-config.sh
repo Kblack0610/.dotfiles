@@ -10,6 +10,8 @@ CLAUDE_HOME="${CLAUDE_HOME:-$HOME/.claude}"
 GEMINI_HOME="${GEMINI_HOME:-$HOME/.gemini}"
 OPENCODE_HOME="${OPENCODE_HOME:-$HOME/.config/opencode}"
 RULESYNC_BIN="${RULESYNC_BIN:-}"
+RULES_CLAUDE_MD="${RULES_CLAUDE_MD:-$CLAUDE_HOME/CLAUDE.md}"
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
 START_MARKER="# >>> dotfiles codex managed start >>>"
 END_MARKER="# <<< dotfiles codex managed end <<<"
@@ -67,6 +69,9 @@ if [ ! -s "$stage_dir/.rulesync/rules/overview.md" ]; then
     exit 1
 fi
 
+# The shared sections live only in the global CLAUDE.md: overview.md names them with markers.
+python3 "$SCRIPT_DIR/splice-shared-rules.py" "$stage_dir/.rulesync/rules/overview.md" "$RULES_CLAUDE_MD"
+
 (
     cd "$stage_dir"
     "$RULESYNC" generate --targets codexcli,geminicli,opencode --features rules,mcp >/dev/null
@@ -123,36 +128,13 @@ else
     : > "$codex_tmp"
 fi
 
+# Keys Codex no longer knows, which earlier syncs wrote: rmcp_client (now built in) and
+# codex_hooks (now the stable `hooks` feature). Dropped from [features] so the file holds no
+# dead key; the rest of [features] is the human's and stays.
 awk '
-    BEGIN { in_features=0; saw_features=0; saw_rmcp=0 }
-    /^\[/ {
-        if (in_features && !saw_rmcp) {
-            print "rmcp_client = true"
-            saw_rmcp = 1
-        }
-        in_features = ($0 == "[features]")
-        if (in_features) {
-            saw_features = 1
-        }
-        print
-        next
-    }
-    {
-        if (in_features && $0 ~ /^rmcp_client[[:space:]]*=/) {
-            saw_rmcp = 1
-        }
-        print
-    }
-    END {
-        if (in_features && !saw_rmcp) {
-            print "rmcp_client = true"
-        }
-        if (!saw_features) {
-            print ""
-            print "[features]"
-            print "rmcp_client = true"
-        }
-    }
+    /^\[/ { in_features = ($0 == "[features]") }
+    in_features && /^(rmcp_client|codex_hooks)[[:space:]]*=/ { next }
+    { print }
 ' "$codex_tmp" > "$features_tmp"
 mv "$features_tmp" "$codex_tmp"
 
@@ -177,6 +159,9 @@ if [ -s "$codex_tmp" ]; then
 fi
 cat "$managed_tmp" >> "$codex_tmp"
 mv "$codex_tmp" "$CODEX_HOME/config.toml"
+
+# Codex's skills and hooks.json, from the Claude skill corpus and .config/codex/hooks.json.
+"$SCRIPT_DIR/sync-codex-home.sh"
 
 export GEMINI_SETTINGS_PATH="$GEMINI_HOME/settings.json"
 export GEMINI_STAGE_PATH="$stage_dir/.gemini/settings.json"

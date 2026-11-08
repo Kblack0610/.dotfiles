@@ -2,8 +2,8 @@ name: shell tests
 
 # Five jobs, by what they can catch:
 #
-#   fast   the tmux-free tiers (unit + contract). Runs directly on the runner because it
-#          never starts a tmux server. This is the same target the local stop-hook gates on.
+#   fast   the tmux-free tiers (unit + integ), in shards. Runs directly on the runner because
+#          it never starts a tmux server. The same files the local stop-hook gates on.
 #   ui     the tmux ui tier, inside the SAME container a developer uses locally
 #          (tests/docker.sh). Dev/CI parity is the point: if the image or the entry script
 #          breaks, this job goes red rather than only the developer's laptop.
@@ -32,19 +32,26 @@ on:
 
 concurrency:
   group: shell-tests-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # The unit and integ tiers run as two jobs at once: back to back they took 4m47s and
-  # 5m10s on 2026-11-05 and the shared 10-minute cap cut the job off on its last test.
+  # Each tier is split across runners by tests/shard.sh, balanced by the seconds in
+  # tests/shard-weights.tsv. Whole, unit took 8m45 and integ 6m48 of the 10-minute cap on
+  # 2026-11-07, all CPU: more runners is the lever, never a longer timeout. A shard is
+  # bounded below by its heaviest file (unit/fleet_dispatch.bats, about 40% of unit).
   fast:
-    name: fast tier (${{ matrix.tier }})
+    name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        tier: [unit, integ]
+        include:
+          - {tier: unit, shard: 1/3}
+          - {tier: unit, shard: 2/3}
+          - {tier: unit, shard: 3/3}
+          - {tier: integ, shard: 1/2}
+          - {tier: integ, shard: 2/2}
     steps:
       - uses: actions/checkout@v4
       - name: Bootstrap bats
@@ -59,8 +66,13 @@ jobs:
       # No tmux or fzf installed on purpose. These tiers must not need either: the contract
       # tier drives the subjects through the fake tmux stub, and if a test ever starts
       # reaching for a real binary, this job is where that shows up.
-      - name: Fast tier
-        run: make -C tests test-${{ matrix.tier }}
+      # The list is taken first so a failed split stops the step (bash -e) instead of handing
+      # test-files an empty FILES, which would pass with nothing run.
+      - name: Fast tier shard
+        run: |
+          files=$(tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }})
+          echo "$(wc -l <<<"$files") files in ${{ matrix.tier }} ${{ matrix.shard }}"
+          make -C tests test-files FILES="$(tr '\n' ' ' <<<"$files")"
 
   ui:
     name: ui tier (tmux ${{ matrix.tmux }}, container)

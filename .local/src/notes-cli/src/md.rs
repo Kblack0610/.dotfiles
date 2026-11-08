@@ -241,6 +241,33 @@ pub fn is_open_task(line: &str) -> bool {
     is_task(line) && !is_checked(line) && !is_empty_unchecked(line)
 }
 
+/// The open task a line of text in `## Focus` stands for: a bare bullet loses its marker, a
+/// plain line is taken whole. `None` for what is not text to act on: a blank, a task, a
+/// heading, a rule or a comment. Mirrored by `loose_task` in markdown.lua.
+///
+/// A bullet with no text comes back as the empty `- [ ]` slot, which the sweep drops.
+pub fn loose_task(line: &str) -> Option<String> {
+    let t = line.trim();
+    let heading = t.starts_with('#') && t.trim_start_matches('#').starts_with(' ');
+    // `- [[a link]]` passes is_task, and only a one-character box is a task here.
+    let boxed = is_task(t) && t.as_bytes().get(4) == Some(&b']');
+    if t.is_empty() || boxed || heading || t.starts_with("---") || t.starts_with("<!--") {
+        return None;
+    }
+    let text = t
+        .strip_prefix(['-', '*', '+'])
+        .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        .unwrap_or(t)
+        .trim();
+    // `* [x] done` is a checklist in another bullet: it keeps its box.
+    let has_box = text.starts_with('[') && text.as_bytes().get(2) == Some(&b']');
+    Some(if has_box {
+        format!("- {text}")
+    } else {
+        format!("- [ ] {text}")
+    })
+}
+
 /// `- [ ]` with no text after it.
 pub fn is_empty_unchecked(line: &str) -> bool {
     match line.trim().strip_prefix("- [ ]") {
@@ -795,6 +822,32 @@ pub fn version_tag(line: &str) -> Option<String> {
     split_version(line).1
 }
 
+/// What a tag is for: `Task` tags are row state the system reads (the row grammar in the README,
+/// "The task row"), `Topic` tags say what something is about. One `#` syntax, so the kind comes
+/// from the name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+pub enum TagKind {
+    Topic,
+    Task,
+}
+
+/// The kind of `tag` (bare, lower-case, no `#`). `p` is `#p:<project>`: the tag charset stops at `:`.
+pub fn tag_kind(tag: &str) -> TagKind {
+    let task = PRIORITIES.iter().any(|(t, _, _)| *t == tag)
+        || matches!(tag, "requested" | "agent" | "p")
+        || ["size/", "worker/"].iter().any(|p| tag.starts_with(p))
+        || looks_like_tier(tag)
+        || is_parent_tag(tag)
+        || is_version_tag(tag)
+        || is_created_tag(tag)
+        || is_due_tag(tag);
+    if task {
+        TagKind::Task
+    } else {
+        TagKind::Topic
+    }
+}
+
 /// The tier a `#tier/N` hashtag (without its `#`) names, 1 to 3 as `fleet-dispatch` reads it
 /// (`row_tier`); None for any other tag, a malformed tier included.
 pub fn tier_tag(tag: &str) -> Option<u8> {
@@ -864,6 +917,32 @@ fn is_agent_word(w: &str) -> bool {
 /// `line` without its `#agent` tag, the rest as it was.
 pub fn without_agent_tag(line: &str) -> String {
     without_words(line, is_agent_word)
+}
+
+/// Whether `line` is marked `#ask`, an outbox question for a quick read-only answer: the word
+/// is first (after any bullet or checkbox) or last. Only the text before the marker comment counts.
+pub fn ask_tag(line: &str) -> bool {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    let mut words = head.split_whitespace().skip_while(|w| {
+        matches!(*w, "-" | "*" | "[" | "]") || (w.starts_with('[') && w.ends_with(']'))
+    });
+    let first = words.next();
+    // The tag leads the question or ends it (ignoring `#p:` words), so "document the #ask flow"
+    // stays a task.
+    let last = head
+        .split_whitespace()
+        .rev()
+        .find(|w| project_tag_word(w).is_none());
+    first.is_some_and(is_ask_word) || last.is_some_and(is_ask_word)
+}
+
+fn is_ask_word(w: &str) -> bool {
+    w.eq_ignore_ascii_case("#ask")
+}
+
+/// `line` without its `#ask` tag, the rest as it was.
+pub fn without_ask_tag(line: &str) -> String {
+    without_words(line, is_ask_word)
 }
 
 fn without_words(line: &str, drop: impl Fn(&str) -> bool) -> String {
@@ -1096,6 +1175,11 @@ pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
 /// leaves room to move in both directions: pump to `#urgent`, push down to `#low`.
 pub(crate) const DEFAULT_PRIORITY: usize = 1; // #high
 
+/// The level of a task in `## Focus` that nobody placed in a lane: a line typed or pasted
+/// above the lanes, a row added without a tag. Low, not [`DEFAULT_PRIORITY`], because a line
+/// turned into a task was never ranked, so it must not sit among the ones that were.
+pub(crate) const FOCUS_DEFAULT_PRIORITY: usize = 2; // #low
+
 /// The default priority hashtag (`"#high"`).
 pub fn default_priority() -> &'static str {
     PRIORITIES[DEFAULT_PRIORITY].1
@@ -1106,13 +1190,44 @@ pub fn default_priority() -> &'static str {
 ///
 /// The placeholder is the load-bearing exclusion: the sweep re-emits one every run, so
 /// tagging it would make each sweep differ from the one before it and the file would churn
-/// forever. Prose is excluded for a simpler reason - it is not a task and cannot have a
-/// priority - which is what keeps the untagged bucket alive for the lines that belong there.
+/// forever. Prose is excluded for a simpler reason: it is not a task and cannot have a
+/// priority.
 pub fn with_default_priority(line: &str) -> String {
-    if !is_task(line) || is_empty_unchecked(line) || task_priority(line).is_some() {
+    with_priority(line, default_priority())
+}
+
+/// [`with_default_priority`] for a row headed to `## Focus`.
+pub fn with_focus_priority(line: &str) -> String {
+    with_priority(line, PRIORITIES[FOCUS_DEFAULT_PRIORITY].1)
+}
+
+fn with_priority(line: &str, default: &str) -> String {
+    if !is_task(line) || is_empty_unchecked(line) {
         return line.to_string();
     }
-    normalize_tags(&add_tag(line, default_priority()))
+    if task_priority(line).is_some() {
+        return one_priority(line);
+    }
+    normalize_tags(&add_tag(line, default))
+}
+
+/// A task line with several priority tags (`#urgent #high`, `#low #low`) rewritten to carry
+/// only its most urgent one, in canonical place; a line with one or none is returned as is,
+/// so a write that runs this never moves a tag nobody doubled. Why: every reader here takes
+/// the most urgent, but a reader that takes the first tag would sort the row differently.
+pub fn one_priority(line: &str) -> String {
+    let mut n = 0;
+    for_each_tag(line, |_, tag_start, _, end| {
+        let tag = line[tag_start..end].to_lowercase();
+        if PRIORITIES.iter().any(|(t, _, _)| *t == tag) {
+            n += 1;
+        }
+    });
+    if n > 1 {
+        normalize_tags(line)
+    } else {
+        line.to_string()
+    }
 }
 
 /// Strip every priority hashtag (`#urgent`/`#high`/`#low`, case-insensitive)
@@ -1320,6 +1435,14 @@ pub fn task_text(line: &str) -> String {
 /// moved the row to the top of its list, dropped an in-progress mark, and lost any tag the
 /// caller forgot to retype.
 pub fn retext_task(line: &str, text: &str) -> String {
+    // The row keeps its one created stamp: a stamp typed in the new words would ride in front
+    // of the old one and leave two (nc-83). A row with none takes the typed one.
+    let typed = text.trim();
+    let text = if split_created(line).1.is_some() {
+        cut_tags(typed, |t| is_created_tag(&t.to_lowercase())).0
+    } else {
+        typed.to_string()
+    };
     let text = text.trim();
     if !is_task(line) || text.is_empty() {
         return line.to_string();
@@ -1520,6 +1643,45 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loose_task_takes_text_and_leaves_the_rest() {
+        let task = |l: &str| loose_task(l);
+        assert_eq!(task("plain line").as_deref(), Some("- [ ] plain line"));
+        assert_eq!(task("- a bullet").as_deref(), Some("- [ ] a bullet"));
+        assert_eq!(task("* a star").as_deref(), Some("- [ ] a star"));
+        assert_eq!(task("+ a plus").as_deref(), Some("- [ ] a plus"));
+        assert_eq!(task("1. a number").as_deref(), Some("- [ ] 1. a number"));
+        assert_eq!(
+            task("**bold** words").as_deref(),
+            Some("- [ ] **bold** words")
+        );
+        assert_eq!(
+            task("#idea a tag first").as_deref(),
+            Some("- [ ] #idea a tag first")
+        );
+        assert_eq!(
+            task("- [[a link]] words").as_deref(),
+            Some("- [ ] [[a link]] words")
+        );
+        assert_eq!(task("- [docs](url)").as_deref(), Some("- [ ] [docs](url)"));
+        assert_eq!(task("* [ ] a list").as_deref(), Some("- [ ] a list"));
+        assert_eq!(task("+ [x] a done").as_deref(), Some("- [x] a done"));
+        assert_eq!(task("[ ] no bullet").as_deref(), Some("- [ ] no bullet"));
+        assert_eq!(task("-").as_deref(), Some("- [ ] "), "the empty slot");
+        for not_text in [
+            "",
+            "   ",
+            "- [ ] a task",
+            "- [x] done",
+            "- [/] doing",
+            "### Parked",
+            "---",
+            "<!-- c -->",
+        ] {
+            assert_eq!(task(not_text), None, "{not_text:?}");
+        }
+    }
 
     #[test]
     fn a_project_tag_names_its_project_and_leaves_the_rest_of_the_line() {
@@ -1833,6 +1995,21 @@ after
             retext_task("- [ ] old #high words (3d) #c260531 #due0601", "new words"),
             "- [ ] new words (3d) #c260531 #due0601 #high"
         );
+        // nc-83: a stamp typed in the new words never makes a second one, on either path
+        let row = "- [ ] old words #c1104 #high <!-- id:nc-71 -->";
+        assert_eq!(
+            retext_task(row, "new words #c1105"),
+            "- [ ] new words #c1104 #high <!-- id:nc-71 -->"
+        );
+        assert_eq!(
+            retext_task("- [ ] old #high words #c1104", "new #C1105 words"),
+            "- [ ] new words #c1104 #high"
+        );
+        assert_eq!(
+            retext_task("- [ ] old words #high", "new words #c1105"),
+            "- [ ] new words #c1105 #high",
+            "a row with no stamp takes the typed one"
+        );
     }
 
     #[test]
@@ -1967,6 +2144,31 @@ after
     }
 
     #[test]
+    fn tag_kind_tells_row_state_from_topics() {
+        for t in [
+            "urgent",
+            "high",
+            "low",
+            "size/s",
+            "tier/2",
+            "tier3",
+            "of/tr-37",
+            "worker/fleet",
+            "requested",
+            "agent",
+            "p",
+            "v0.5.0",
+            "c1026",
+            "due1031",
+        ] {
+            assert_eq!(tag_kind(t), TagKind::Task, "{t}");
+        }
+        for t in ["software", "troubleshooting", "sizes", "v0", "interview"] {
+            assert_eq!(tag_kind(t), TagKind::Topic, "{t}");
+        }
+    }
+
+    #[test]
     fn split_priority_extracts_and_dedupes() {
         // The reported bug shape: tag buried before the stamp AND a stale dup after it.
         let (core, prio) =
@@ -2081,6 +2283,30 @@ after
         // prose is not a task and cannot carry a priority
         assert_eq!(with_default_priority("just a line"), "just a line");
         assert_eq!(with_default_priority("## Tasks"), "## Tasks");
+    }
+
+    // A row with two priority tags is written with one: the most urgent, which is what every
+    // reader already sorts it by. A row with one tag keeps its bytes.
+    #[test]
+    fn one_priority_keeps_the_most_urgent_of_several() {
+        assert_eq!(
+            one_priority("- [ ] perf(ci): trims #tier/3 #urgent #high #c1029 <!-- id:ucp-467 -->"),
+            "- [ ] perf(ci): trims #tier/3 #c1029 #urgent <!-- id:ucp-467 -->"
+        );
+        assert_eq!(
+            one_priority("- [ ] fix(x): y #size/m #low #low #c1102 <!-- id:nc-38 -->"),
+            "- [ ] fix(x): y #size/m #c1102 #low <!-- id:nc-38 -->"
+        );
+        let one = "- [ ] fix(x): y #high #c1102 <!-- id:nc-1 -->";
+        assert_eq!(one_priority(one), one);
+        assert_eq!(
+            one_priority("- [ ] a #high-priority #c1 #high"),
+            "- [ ] a #high-priority #c1 #high"
+        );
+        assert_eq!(
+            with_default_priority("- [ ] new #urgent #low"),
+            "- [ ] new #urgent"
+        );
     }
 
     // The tag lands in canonical position, before the marker and before the release tag, so a

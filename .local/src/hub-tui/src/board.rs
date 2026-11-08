@@ -143,9 +143,6 @@ impl<'a> Board<'a> {
     fn int(&self, k: &str) -> String {
         self.get(k).map_or("-".into(), |x| format!("{x:.0}"))
     }
-    fn usd(&self, k: &str) -> String {
-        self.get(k).map_or("?".into(), |x| format!("${x:.0}"))
-    }
     /// The sum of the per-pool or per-host values of these rules, or ? when none has any.
     fn sum(&self, rules: &[&str]) -> String {
         let mut t = None;
@@ -347,12 +344,7 @@ impl<'a> Board<'a> {
                 self.num("cc:watches_tripped"),
                 self.num("cc:watches_total")
             ),
-            format!(
-                "lazer {}/{}",
-                self.usd("cc:lazer_spend_usd"),
-                self.usd("cc:lazer_budget_usd")
-            ),
-            format!("claude 24h {}", self.usd("cc:claude_code_cost_24h_usd")),
+            hub_core::costs::SPEND_BADGE.into(),
         ];
         if self.get("cc:agent_sessions_running").is_some() {
             items.push(format!(
@@ -635,7 +627,7 @@ impl<'a> Board<'a> {
         out
     }
 
-    /// RED NOW: the `cc:red_now` items, offline or missing runners, stuck runs, and GitHub or
+    /// RED NOW: the `cc:red_now` items, the down runners (`Infra::runners_down`), stuck runs, and GitHub or
     /// the exporter not answering, the likeliest cause first.
     pub fn down(&self, w: usize) -> Vec<Line<'static>> {
         let mut items: Vec<String> = self
@@ -646,10 +638,8 @@ impl<'a> Board<'a> {
             .filter(|i| !i.is_empty())
             .collect();
         items.sort();
-        for s in &self.runners {
-            if matches!(s.label("state"), "offline" | "missing") {
-                items.push(format!("{} {}", lab(s, "name"), s.label("state")));
-            }
+        for s in self.infra.runners_down() {
+            items.push(format!("{} {}", lab(s, "name"), s.label("state")));
         }
         for s in self.infra.get("waiting") {
             if s.label("stuck") == "true" {
@@ -686,7 +676,7 @@ impl<'a> Board<'a> {
         let line = if items.is_empty() {
             self.heading(
                 "RED NOW",
-                "  nothing: every rostered runner is registered and online".into(),
+                "  nothing: every rostered runner is online or powered off by the governor".into(),
             )
         } else {
             Line::from(vec![
@@ -765,6 +755,7 @@ impl<'a> Board<'a> {
                 .collect();
             out.extend(
                 Table {
+                    mark: None,
                     header: vec!["PASS", "RUNS", "FAIL", "CANCEL", "REPO", "WORKFLOW"],
                     rows,
                     keep: vec![0, 2, 5, 3, 1, 4],
@@ -1740,6 +1731,41 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_runner_the_governor_powered_off_is_not_red() {
+        let mut i = fixture();
+        i.instant
+            .get_mut("runners")
+            .unwrap()
+            .extend(series(vec![runner(
+                "aws-burst-1",
+                "aws-1",
+                "offline",
+                "0",
+                json!({"site": "cloud"}),
+            )]));
+        let red = |i: &Infra| {
+            text(i, 160)
+                .lines()
+                .find(|l| l.starts_with("RED NOW"))
+                .unwrap()
+                .to_string()
+        };
+        assert!(red(&i).contains("aws-1 offline"), "unmanaged: down");
+        let power = |state: &str| {
+            series(vec![(
+                json!({"__name__": "ci_governor_power_state", "host": "aws-burst-1", "state": state}),
+                "1",
+            )])
+        };
+        i.instant.insert("power", power("running"));
+        assert!(red(&i).contains("aws-1 offline"), "governor running: down");
+        i.instant.insert("power", power("stopped"));
+        let line = red(&i);
+        assert!(!line.contains("aws-1"), "{line}");
+        assert!(line.contains("mini-1 offline"), "{line}");
+    }
+
+    #[test]
     fn the_queue_groups_by_pool_repo_pr_and_branch_with_count_and_oldest_wait() {
         let out = text(&fixture(), 160);
         assert_line(
@@ -1822,7 +1848,7 @@ pub(crate) mod tests {
             "nodes ",
             "heartbeats ",
             "ci local 3/7 cloud 0/0, waiting 4",
-            "claude 24h ",
+            "spend: 0 Costs",
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");
         }

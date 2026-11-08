@@ -104,12 +104,13 @@ prompt() { # prompt <project> <mode>
   refute_output --partial 'Target'
 }
 
-@test "game adds Playtest only" {
+@test "game adds Playtest and Release, and not Source of truth or Telemetry" {
   run gate agame "$(base)"
   assert_output --partial 'Missing ## Playtest'
+  assert_output --partial 'Missing ## Release'
   refute_output --partial 'Source of truth'
   refute_output --partial 'Telemetry'
-  run gate agame "$(base; printf '\n## Playtest\n\nWhich game, and how.\n')"
+  run gate agame "$(base; printf '\n## Playtest\n\nWhich game, and how.\n\n## Release\n\nSteam beta, rollback to the previous BuildID.\n')"
   assert_output ''
 }
 
@@ -173,6 +174,17 @@ prompt() { # prompt <project> <mode>
   assert_output --partial '## Target'
   assert_output --partial 'Depth:'
   refute_output --partial '## Playtest'
+}
+
+@test "plan mode injects once per session" {
+  tp="$BATS_TEST_TMPDIR/t.jsonl"
+  : > "$tp"
+  run bash -c "jq -nc --arg c '$HOME/work/aninfra' --arg t '$tp' '{hook_event_name: \"UserPromptSubmit\", permission_mode: \"plan\", cwd: \$c, transcript_path: \$t}' | bash '$HOOK'"
+  assert_output --partial 'additionalContext'
+  printf '%s\n' "$output" >> "$tp"
+  run bash -c "jq -nc --arg c '$HOME/work/aninfra' --arg t '$tp' '{hook_event_name: \"UserPromptSubmit\", permission_mode: \"plan\", cwd: \$c, transcript_path: \$t}' | bash '$HOOK'"
+  assert_success
+  assert_output ''
 }
 
 @test "other modes get nothing" {

@@ -136,6 +136,19 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
     assert_line "closed_reason: replied in session: $msg"
     assert_line 'answer: '
   done
+  # A one-letter option is named only as a token of its own: "a" before a word is the article.
+  for msg in "found a new problem first" "A different plan, then" "a or b, whichever"; do
+    c="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options 'a=yes|b=no' 'three?')"
+    "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    run "$AGENT_ASK" show "$c"
+    assert_line 'status: cancelled'
+  done
+  for msg in "B, it is a better fit" "go with b" "b (a is out of date)"; do
+    c="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options 'a=yes|b=no' 'four?')"
+    "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    run "$AGENT_ASK" show "$c"
+    assert_line 'answer: b'
+  done
   # A board's typed-in answer settles nothing: `answer` already closed its ask (2026-11-05 it
   # stamped "a" on every other ask of the session).
   c="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options 'a=yes|b=no' 'one?')"
@@ -147,6 +160,27 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'status: pending'
   run "$AGENT_ASK" count demo
   assert_output 1
+}
+
+@test "settle-session: a free-text ask takes a statement as its answer, a question or slash command only closes it" {
+  local a msg
+  # 2026-11-03 "were you going to post which ones i could close out" became the answer to a runner-pool ask.
+  for msg in "were you going to post which ones i could close out" "whats going on here" "ok, but is it safe?" "/one-shot do the next row" "why"; do
+    a="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'which runner pool?')"
+    "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    run "$AGENT_ASK" show "$a"
+    assert_line 'status: cancelled'
+    assert_line "closed_reason: replied in session: $msg"
+    assert_line 'answer: '
+  done
+  # Negative controls: a statement, a path and a question-word prefix of a longer word still answer.
+  for msg in "the big pool, ci-x" "/mnt/nas/builds" "whichever is free" "however you like"; do
+    a="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'which runner pool?')"
+    "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    run "$AGENT_ASK" show "$a"
+    assert_line 'status: answered'
+    assert_line "answer: in session: $msg"
+  done
 }
 
 @test "settle-session closes only that session's pending asks" {
@@ -391,28 +425,30 @@ outcomes_cli() {
 }
 
 # The panel's card reads on one screen (human, 2026-11-05): the newest words with the ask itself
-# and tables taken out, each story block capped, long meanings hung under themselves.
-@test "card fits a page: it said drops the repeated ask and tables, blocks are capped, notes hang" {
+# taken out, each story block capped, long meanings hung under themselves. The markdown goes in
+# `agent-panel plain` (md.rs, tested there; the stub passes text through), which every block reads
+# through.
+@test "card fits a page: it said drops the repeated ask, reads through plain, blocks are capped, notes hang" {
   mkdir -p "$HOME/.claude/projects/p" "$HOME/.agent/sessions/demo"
   : > "$HOME/.claude/projects/p/sid-p.jsonl"
   local long; long="$(printf 'word%.0s ' $(seq 1 120))"
   jq -cn --arg long "$long" '{first: $long, prompt: "go on", said: [
     "Older status that still says something.",
-    "Merged #1 and **rebuilt** the hub.\n\n| col | col |\n|---|---|\n| a | b |\n```\ncode here\n```\nShip it now?\n\n1. yes: ship\n2. no: wait\n\nIt stays open until you answer.",
+    "Merged #1 and rebuilt the hub.\nCheck: unit; Result: ok\nShip it now?\n\n1. yes: ship\n2. no: wait\n\nIt stays open until you answer.",
     "## Ship it now?\n\n1. yes: ship\n2. no: wait"]}' > "$NOTES_FIXTURE/agent-panel.said"
   local id; id="$(CLAUDE_CODE_SESSION_ID=sid-p "$AGENT_ASK" post --project demo \
     --options "yes=ship it to every store today, after the last check is green and the notes are in|no=wait" \
     --recommend no 'Ship it now?')"
   run env COLUMNS=60 "$AGENT_ASK" card "$id"
   assert_success
-  # The newest block only repeats the ask, so the one before it speaks; its tables, code, bold
-  # marks, the question and its option list are gone.
+  # The newest block only repeats the ask, so the one before it speaks; the question and its
+  # option list are gone, the rest stays.
   assert_line 'it said   Merged #1 and rebuilt the hub.'
+  assert_line '          Check: unit; Result: ok'
   assert_line '          It stays open until you answer.'
-  refute_output --partial 'col'
-  refute_output --partial 'code here'
   refute_output --partial '1. yes'
   refute_output --partial 'Older status'
+  assert_equal "$(grep -c '^agent-panel plain --width 0$' "$NOTES_FIXTURE/calls.log")" 2
   # A request of 120 words keeps three lines, the last cut with "...".
   assert_equal "$(grep -c 'word' <<<"$output")" 3
   assert_line --regexp '^          (word )+\.\.\.$'
@@ -778,6 +814,27 @@ printf '%s\n' '$1'
 SH
   chmod +x "$BATS_TEST_TMPDIR/judge"
   export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
+}
+
+@test "a judge budget stop leaves the ask not judged, with no stale verdict; any other exit is an error" {
+  fake_judge "$(score ship_deploy "" "landing is standing authorization")"
+  local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
+  run "$AGENT_ASK" judge "$id"
+  assert_success
+  printf '#!/usr/bin/env bash\nexit 75\n' > "$BATS_TEST_TMPDIR/judge"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure 75
+  run "$AGENT_ASK" show "$id"
+  refute_line --regexp '^judge(_reason|_rule|_call|d_at)?: '
+  assert_line 'status: pending'
+  run env COLUMNS=200 "$AGENT_ASK" card "$id"
+  assert_equal "${lines[-1]}" 'Judge: not judged'
+  # negative control: a call that failed is still an error verdict
+  printf '#!/usr/bin/env bash\nexit 7\n' > "$BATS_TEST_TMPDIR/judge"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure 1
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: error'
 }
 
 @test "judge records its call and reason, and leaves the ask pending" {
@@ -1256,7 +1313,8 @@ live_answer_file() {
   old() { printf 'id: %s\nproject: demo\nkind: question\nstatus: answered\nquestion: %s\noptions: fix|wait\noption_notes: fix it now|leave it\nrecommend: fix\nanswer: %s\nanswered_at: %s\nanswered_by: %s\n%s' "$1" "$2" "$3" "$4" "${5:-human}" "${6:-}" > "$d/$1.md"; }
   old P1 'quarantine the flake?' wait 2026-11-01T10:00:00-0800
   old P2 'same but agreed?' fix 2026-11-01T11:00:00-0800
-  old P3 'same but free text?' 'wait, and tell me why' 2026-11-01T12:00:00-0800
+  old P3 'same but with a note?' 'wait, and tell me why' 2026-11-01T12:00:00-0800
+  old P7 'free text naming none?' 'tell me more first' 2026-11-01T12:30:00-0800
   old P4 'overridden live?' fix 2026-11-01T13:00:00-0800 judge $'judge_override: wait\njudge_override_at: 2026-11-02T09:00:00-0800\n'
   old P5 'reviewed live?' fix 2026-11-01T14:00:00-0800 judge $'judge_override: none\n'
   old P6 'typed in the session?' 'in session: no, wait for it' 2026-11-01T15:00:00-0800
@@ -1265,8 +1323,9 @@ live_answer_file() {
   assert_success
   assert_equal "${lines[0]}" 'P4 (demo): overridden live? | recommended: fix (fix it now) | the human chose: wait (leave it)'
   assert_equal "${lines[1]}" 'P6 (demo): typed in the session? | recommended: fix (fix it now) | the human chose: wait (leave it)'
-  assert_equal "${lines[2]}" 'P1 (demo): quarantine the flake? | recommended: fix (fix it now) | the human chose: wait (leave it)'
-  assert_equal "${#lines[@]}" 3
+  assert_equal "${lines[2]}" 'P3 (demo): same but with a note? | recommended: fix (fix it now) | the human chose: wait (leave it)'
+  assert_equal "${lines[3]}" 'P1 (demo): quarantine the flake? | recommended: fix (fix it now) | the human chose: wait (leave it)'
+  assert_equal "${#lines[@]}" 4
   # an offset is read, not compared as text: 16:59 UTC is before P4's override at 17:00 UTC
   run "$AGENT_ASK" precedents 2026-11-02T16:59:00+0000
   refute_output --partial 'P4'

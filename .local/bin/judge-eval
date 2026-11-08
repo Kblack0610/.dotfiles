@@ -76,7 +76,7 @@ eval_json() {
     | {ts, action, id, by, from, to, text, why}]' > "$tmp/ingest" 2>/dev/null
   for a in asks calls verdicts queue ingest; do [ -s "$tmp/$a" ] || echo '[]' > "$tmp/$a"; done
   jq -c '.[]' "$tmp/asks" > "$tmp/asklines"
-  in_session_picks "$(cat "$tmp/asklines")" > "$tmp/picks"
+  answer_picks "$(cat "$tmp/asklines")" > "$tmp/picks"
   src="$(jq -c --arg a "$AGENTS" '. as $m | $a | split(" ") | map({(.): ($m[.] // "")}) | add // {}' <<<"$SCORES")"
   for a in $AGENTS; do
     sha="$(prompt_sha "$a")"
@@ -87,6 +87,7 @@ eval_json() {
     --slurpfile I "$tmp/ingest" --argjson src "$src" --argjson settle "$((SETTLE_H * 3600))" \
     --argjson shas "$shas" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" \
+    --arg hard "$JUDGE_HARD_STOPS" \
     --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
     '$A[0] as $asks | $C[0] as $calls | $V[0] as $verdicts | $Q[0] as $queue | $P[0] as $picks | '"$JQ_EVAL" || rc=$?
   rm -rf "$tmp"
@@ -118,11 +119,21 @@ JQ_EVAL="$JQ_EPOCH"'
         and ($any == 1 or (($call[.judge_call // ""] // {}).prompt_sha // "") == ($shas[$agent] // "-"));
 
   # One verdict row each: {agent, id, project, question, rule, type, kind (answer|defer|error),
-  # live, want, outcome (tp|fp|fn|tn|pending|unscorable), human, reason, evidence, at, call}.
+  # live, want, outcome (tp|fp|fn|tn|pending|unscorable), unscorable (why, on an unscorable one),
+  # human, reason, evidence, at, call}. The human label of an ask with options is the option its
+  # answer names (answer_picks); a free-text ask keeps its answer unless a session typed it.
   [$asks[] | select(.judge_rule != "gate" or (.judge_call // "") != "")
     | . as $a | ($a.judge | if . == "human" then "defer" elif . == "error" then "error" else "answer" end) as $kind
     | (if $a.judge == "take-recommend" then $a.recommend // "" else ($a.judge | ltrimstr("answer:")) end) as $want
-    | ($picks[$a.id] // (if ($a.answer // "") | startswith("in session:") then null else $a.answer end)) as $human
+    | ($picks[$a.id] // (if ($a.options // "") != "" or (($a.answer // "") | startswith("in session:")) then null else $a.answer end)) as $human
+    # Why the human answer cannot label this verdict, or null; the outcome below is unscorable on it.
+    | (if $a.status != "answered" then "\($a.status // "closed") unanswered"
+       elif ($a.answered_by // "human") != "human" then "answered by the \($a.answered_by)"
+       elif $human == null then (if ($a.options // "") == "" then "free text in session" else "answer naming no option" end)
+       elif $kind == "answer" then null
+       elif ($a.judge_rule // "") == "unclear-ask" then "unclear ask"
+       elif ($hard | split(" ") | index($a.judge_type // "")) then "hard-stop type"
+       elif ($a.recommend // "") == "" then "no recommendation" else null end) as $why
     | {agent: $by["ask-answers"], id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
        type: ($a.judge_type // ""), kind: $kind, live: ($a.answered_by == "judge"),
        assumed: ($a.answered_by == "judge" and ($a.assume_at // "") != ""), want: $want,
@@ -133,12 +144,10 @@ JQ_EVAL="$JQ_EPOCH"'
          elif $a.answered_by == "judge" then
            (if ($a.judge_override // "") == "" then "pending" elif $a.judge_override == "none" then "tp" else "fp" end)
          elif $a.status == "pending" then "pending"
-         elif $a.status != "answered" or ($a.answered_by // "human") != "human" then "unscorable"
-         elif $human == null then "unscorable"
+         elif $why != null then "unscorable"
          elif $kind == "answer" then (if ($human | ascii_downcase) == ($want | ascii_downcase) then "tp" else "fp" end)
-         elif ($a.judge_rule // "") == "unclear-ask" then "unscorable"
-         elif ($a.recommend // "") == "" then "unscorable"
-         elif ($human | ascii_downcase) == ($a.recommend | ascii_downcase) then "fn" else "tn" end)}] as $askrows
+         elif ($human | ascii_downcase) == ($a.recommend | ascii_downcase) then "fn" else "tn" end)}
+    | . + {unscorable: (if .outcome == "unscorable" then $why else null end)}] as $askrows
    # Dispatch: an error line is one verdict each (the row is judged again); otherwise the newest
    # verdict per row, labelled by its queue item: done ok landed, done otherwise or a later
    # `failed` line did not.
@@ -211,9 +220,12 @@ JQ_EVAL="$JQ_EPOCH"'
          deferred: ($r | map(select(.kind == "defer")) | length),
          pending: ($r | map(select(.outcome == "pending")) | length),
          unscorable: ($r | map(select(.outcome == "unscorable")) | length),
+         unscorable_by: ($r | map(select(.outcome == "unscorable") | .unscorable) | group_by(.)
+           | map({(.[0]): length}) | add // {}),
          tp: ($r | map(select(.outcome == "tp")) | length), fp: ($r | map(select(.outcome == "fp")) | length),
          fn: ($r | map(select(.outcome == "fn")) | length), tn: ($r | map(select(.outcome == "tn")) | length)}
       | . + {scored: (.tp + .fp + .fn + .tn), coverage: pct(.answered; .verdicts - .errors),
+             unscorable_pct: pct(.unscorable; .verdicts - .errors),
              live_pct: pct(.live_answered; .verdicts - .errors), precision: pct(.tp; .tp + .fp), false_defer_pct: pct(.fn; .fn + .tn), kappa: kappa}
       | . + (wilson(.tp; .tp + .fp) | {precision_lo: .[0], precision_hi: .[1]})
       # Each verdict carries its share of its call: one dispatch call judges many rows.
@@ -304,7 +316,10 @@ report() {
           + ("precision [95%]" | lpad(18)) + ("f-defer" | lpad(8)) + ("kappa" | lpad(7)) + ("p95" | lpad(7)) + ("$/v" | lpad(7)) + "  bar",
         (.rules[] | row(if .rule == "" then "(no rule)" else .rule end)
            + "  " + (if .live then "live" elif .bar.met then "past bar" else "\(.bar.labels)/\(.bar.need)" end)),
-        (.total | row("all")) end),
+        (.total | row("all")),
+        # The share no human answer can label, and why: a lane mostly unscorable never earns its bar.
+        (.total | select(.unscorable > 0) | "  unscorable \(.unscorable) of \(.verdicts - .errors) (\(.unscorable_pct)%): "
+           + (.unscorable_by | to_entries | sort_by(-.value, .key) | map("\(.value) \(.key)") | join(", "))) end),
       (if (.misses | length) > 0 then "  wrong answers, newest first:",
         (.misses[] | "    \(.id | .[0:24])  \(.project)  judge \(.judge | .[0:24])  truth \(.answer | .[0:24])  \(.question | .[0:60])") else empty end))' <<<"$1"
 }
@@ -360,7 +375,7 @@ replay_labelled() {
   local asks
   asks="$(judge_ask_docs "$ASKS_ROOT" | jq -c 'select(.status == "answered" and (.answered_by // "human") == "human"
     and (.options // "") != "" and ((.kind // "") == "gate" or (.kind // "") == "approval" | not))')"
-  jq -sr --argjson picks "$(in_session_picks "$asks")" '
+  jq -sr --argjson picks "$(answer_picks "$asks")" '
     map(select(.answer as $a | $picks[.id] or (.options | split("|") | index($a))))
     | sort_by(.created // "") | reverse | .[] | [.id, .project] | @tsv' <<<"$asks"
 }

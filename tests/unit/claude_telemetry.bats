@@ -141,6 +141,23 @@ attrs_in() {
   assert_line --index 2 "service.name=claude-code,host.name=$(hostname)"
 }
 
+@test "claude-acct run labels the session with its project and queue item" {
+  # Every `cl` and runner start goes through here, so a stale function name behind its off-LAN
+  # guard unlabelled the whole fleet without a word: this runs the real launcher.
+  local home="$BATS_TEST_TMPDIR/home" dir="$BATS_TEST_TMPDIR/.my-app"
+  mkdir -p "$home/.config/shared-hooks" "$dir"
+  ln -s "$SNIP" "$home/.config/shared-hooks/claude-telemetry.sh"
+  ln -s "$(dirname "$SNIP")/project-name.sh" "$home/.config/shared-hooks/project-name.sh"
+  printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/getent"
+  printf '#!/bin/sh\necho "$OTEL_RESOURCE_ATTRIBUTES"\n' > "$FAKEBIN/claude"
+  chmod +x "$FAKEBIN/getent" "$FAKEBIN/claude"
+  cd "$dir"
+  HOME="$home" PATH="$FAKEBIN:$PATH" AGENT_QUEUE_ITEM=fix-menu OTEL_RESOURCE_ATTRIBUTES= \
+    run "$BATS_TEST_DIRNAME/../../.local/bin/claude-acct" run
+  assert_success
+  assert_output --regexp 'project=[^,]+,queue\.item=fix-menu'
+}
+
 # The launch defaults sit outside the LAN guard: every launch gets them, on or off the LAN.
 connectors_env() {
   printf '#!/bin/sh\nexit %s\n' "$1" > "$FAKEBIN/getent"

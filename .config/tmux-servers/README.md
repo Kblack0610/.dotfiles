@@ -8,7 +8,7 @@ A world is a tmux server on its own socket. The `.conf` files here are the only 
 |---|---|---|
 | The human's home and config repos on their base checkout: notes, dotfiles, home-config | hub | named in `hub.conf` |
 | Any other repo nothing claims | hub | `@repos` in `hub.conf` |
-| The shepherd's pass | hub | window `hub:shepherd`, owned by `fleet-shepherd run`, not declared in `hub.conf`: each pass replaces the last in that pane, so no run makes or closes a window there |
+| The shepherd's pass | hub | window `hub:shepherd`, owned by `fleet-shepherd run`, not declared in `hub.conf`: each pass replaces the last in that pane, so a run makes no window there; it closes any other pane a pass ran in and renames any other `shepherd` window, so there is never a second one |
 | Every agent worktree of every project, `<repo>-agent-N`, whoever started it | lab | `@agents` in `lab.conf` |
 | Game checkouts, unity-core-playground first | lab | named in `lab.conf`, or `@repos ~/dev/bnb/games` |
 

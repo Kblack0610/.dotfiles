@@ -34,7 +34,12 @@ C_DIM="#7f7f7f"
 
 now="${DISPATCH_NOW:-$(date +%s)}"
 title="<b>Queue</b>"
+# claude-acct-usage.timer writes the accounts' textfile every 15 minutes; three missed is stale.
+ROOM_LATE_SECS=2700
+# The accounts' room verdicts (claude-acct textfile) ride the same query, only from a textfile
+# written lately: they name which account refuses and why when the account gate holds dispatch.
 q='({__name__=~"mqtt_.+", topic=~"agents_.+_(summary_dispatch|runner_fleet_dispatch|watch_queue_starved|summary_shepherd)"} and on (topic) cc:agents_topic_live)'
+q+=" or (claude_account_room_reason and on (instance) (time() - node_textfile_mtime_seconds{file=~\".*/claude_acct.prom\"} < $ROOM_LATE_SECS))"
 
 if ! raw="$(prom_q "$q")"; then
   emit "$(paint "$C_YEL" 'Q?')" "$title"$'\n'"cannot read $PROM_URL" warn
@@ -63,7 +68,7 @@ if [ -z "$ready" ]; then
 else
   pass="$(get dispatch.last_pass_epoch)" start="$(get dispatch.last_run_start_epoch)"
   reaped="$(get dispatch.reaped_1h)" flapping="$(get dispatch.flapping_items)" could="$(get dispatch.could_start)"
-  oldest="$(get dispatch.oldest_runnable_s)" urgent_s="$(get dispatch.oldest_urgent_s)"
+  oldest="$(get dispatch.oldest_runnable_s)" urgent_s="$(get dispatch.oldest_urgent_s)" high_s="$(get dispatch.oldest_high_s)"
   pass_age=$((now - ${pass:-0})) start_age=-
   [ -n "$start" ] && start_age="$(prom_dur $((now - start)))"
   # paused by: the one gate that stopped the last pass, if any, by name.
@@ -75,7 +80,11 @@ else
       load) paused="load is over the cap (DISPATCH_MAX_LOAD)" ;;
       idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
       assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
-      account) paused="no account has room under its weekly pace" ;;
+      account)
+        # Each account's published reasons, one entry per account: "alt reserve, main pace+five_hour".
+        reasons="$(jq -r '[.data.result[] | select(.metric.__name__ == "claude_account_room_reason" and (.metric.kind // "claude") == "claude") | .metric]
+            | group_by(.account) | map("\(.[0].account) \(map(.reason) | unique | join("+"))") | join(", ")' <<< "$raw")"
+        paused="no account has room${reasons:+: $reasons}" ;;
       other) paused="a gate (fleet-dispatch headroom says which)" ;;
     esac
   done
@@ -124,11 +133,13 @@ else
   total=-
   [ -n "$queued" ] && total=$((queued + $(n0 running) + $(n0 waiting)))
   qhead="$title  $total items: $(d queued) queued, $(d running) running, $(d waiting) waiting on you"
-  ready_line="$ready ready ($(d runnable_urgent) urgent or high)"
+  ready_line="$ready ready ($(d runnable_urgent) urgent, $(d runnable_high) high)"
   low="$(get dispatch.low_water)"
   [ -z "$low" ] || ready_line+=" of low water $low"
-  queue="queued: $ready_line, $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag)"
+  hf="$(get dispatch.held_focus)"
+  queue="queued: $ready_line, $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag$( ((${hf:-0} > 0)) && printf ', %s off focus' "$hf"))"
   queue+=$'\n'"oldest: ready $(prom_dur "$oldest"), urgent $uw"
+  [ -z "$high_s" ] || queue+=", high $(prom_dur "$high_s")"
   [ -z "$(get dispatch.present_per_hour)" ] ||
     queue+=$'\n'"present trickle: $(d present_starts_1h) of $(d present_per_hour) board starts this hour"
   queue+=$'\n'"last hour: $(flow 1)"
@@ -152,6 +163,9 @@ else
     cl="capacity: no headroom from a pass in the last 45 minutes"
   fi
   [ -n "$paused" ] && cl+=$'\n'"paused by: $(paint "$C_YEL" "$paused")"
+  # The human's #prio/only focus: names are on the hub Projects tab and in `fleet-dispatch headroom`.
+  fn="$(get dispatch.focus_projects)"
+  ((${fn:-0} > 0)) && cl+=$'\n'"focus: $(paint "$C_YEL" "only $fn project(s)"), $(d held_focus) queued held off it (reds, urgent and #requested still run)"
   disp+=$'\n'"$cl"
   cs="${could:--}"; ((${could:-0} > 0)) && cs="$(paint "$C_YEL" "$could")"
   disp+=$'\n'"can start now: $cs more; last pass $(prom_dur "$pass_age") ago, last start $start_age ago"

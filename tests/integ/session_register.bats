@@ -84,8 +84,28 @@ run_hook() {
 
 @test "a read-only session is not registered" {
   : > "$TRANSCRIPT"
-  run_hook
+  AGENTCTL_NAME= run_hook
   [ ! -e "$REG" ]
+}
+
+@test "a read-only agentctl runner is registered, with its runner name" {
+  : > "$TRANSCRIPT"
+  AGENTCTL_NAME=shepherd run_hook
+  run jq -c '[.session_id, .edits, .agentctl]' "$REG"
+  assert_output '["self",0,"shepherd"]'
+}
+
+@test "a runner's second Stop replaces its row and keeps the runner name" {
+  AGENTCTL_NAME=shepherd run_hook
+  AGENTCTL_NAME=shepherd run_hook
+  run jq -sc 'map([.session_id, .agentctl])' "$REG"
+  assert_output '[["self","shepherd"]]'
+}
+
+@test "a session by hand carries no runner name" {
+  AGENTCTL_NAME= run_hook
+  run jq -c 'has("agentctl")' "$REG"
+  assert_output false
 }
 
 @test "first_prompt comes from the running account's history, not ~/.claude's" {
@@ -95,4 +115,13 @@ run_hook() {
   CLAUDE_CONFIG_DIR="$SANDBOX/acct" run_hook
   run jq -r .first_prompt "$REG"
   assert_output "from the bnb account"
+}
+
+@test "a Stop records the harness its launcher set: AGENT_HARNESS for a claude-lazer session, claude on an account" {
+  AGENT_HARNESS=lazer-reserve run_hook
+  assert_equal "$(jq -r .harness "$REG")" lazer-reserve
+  # negative control: no AGENT_HARNESS is an account session, and the row still says so
+  env -u AGENT_HARNESS bash -c "$(declare -f run_hook); TRANSCRIPT='$TRANSCRIPT' HOOK='$HOOK' run_hook"
+  assert_equal "$(jq -r .harness "$REG")" claude
+  [ "$(jq -c 'has("base_url")' "$REG")" = false ]
 }

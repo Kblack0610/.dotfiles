@@ -1,14 +1,14 @@
 //! The Home tab for both surfaces: what needs the human, what is running, the headline numbers
 //! and the health chips. It joins what the other readers already read (fleet-sessions'
-//! `state.json`, `queue::Queue`, `infra::Infra`) and reads nothing itself, so it is pure and
-//! both surfaces get the same rows in the same order.
+//! `state.json`, `queue::Queue`, `infra::Infra`, read by `gather`), and `build` reads nothing
+//! itself, so it is pure and both surfaces get the same rows in the same order.
 //!
 //! One row per thing that waits: a session with a pending ask shows the ask, not the session as
 //! well, and a queue item waiting on a session already shown adds nothing. Sessions are matched
 //! by their tmux session name, the one name an ask, a queue item and a state row all carry.
 //!
-//! `needs` is the one ranking of that list: every surface, `hub needs --json`, fleet-bench's asks
-//! digest and the needs pager read its order, and none re-sorts it. A row's `Score` is counted
+//! `needs` is the one ranking of that list: every surface, `hub needs --json`, the briefing's
+//! Needs you, fleet-bench's asks digest and the needs pager read its order, and none re-sorts it. A row's `Score` is counted
 //! from facts (who can act, what it holds, how long it waited, the row's own priority), never a
 //! model's number.
 
@@ -20,6 +20,7 @@ use serde_json::Value;
 use crate::boards;
 use crate::fleet::ts;
 use crate::infra::Infra;
+use crate::proposals::Proposal;
 use crate::queue::{Item, Queue, State};
 use crate::tasks::{Feed, Row};
 
@@ -40,8 +41,8 @@ pub const TEXT_MAX: usize = 160;
 /// long list is capped, never unbounded at top level).
 pub const SHOWN: usize = 8;
 
-/// What a row is. A Stopped row leads the list; conditions (Nightly, Red) list after every
-/// scored row, in this order.
+/// What a row is. A Stopped row leads the list; conditions (Budget to Red) list after every
+/// scored row, in this order. A condition has no score, so the needs pager never pages it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -58,16 +59,104 @@ pub enum Kind {
     /// An open `#urgent` or `#high` row of a project's human sheet that only the human can do
     /// (`HUMAN_TYPES`), with no ask, session or queue item shown for it.
     Sheet,
+    /// A runner stopped at its budget today (`signals::budget_stop`): it waits for a raise.
+    Budget,
+    /// A `night` queue item that finished failed.
+    Night,
+    /// A NEEDS YOU line of the home-k3s janitor (`signals::janitor`).
+    Janitor,
+    /// Critical mail, one row per sender and subject (`signals::mail`).
+    Mail,
     /// A repo whose nightly on main is red.
     Nightly,
     /// An item of `cc:red_now`.
     Red,
 }
 
+/// What a row asks of the human, the one naming both surfaces filter and draw it by: the
+/// serialized slug is what `kind:` matches and the label is its chip and KIND cell. A session
+/// takes its open dialog's, read by `boards::state`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NeedKind {
+    Plan,
+    Ask,
+    Perm,
+    Turn,
+    Blocked,
+    Todo,
+    Red,
+    Stopped,
+}
+
+impl NeedKind {
+    /// In chip order.
+    pub const ALL: [NeedKind; 8] = [
+        NeedKind::Plan,
+        NeedKind::Ask,
+        NeedKind::Perm,
+        NeedKind::Turn,
+        NeedKind::Blocked,
+        NeedKind::Todo,
+        NeedKind::Red,
+        NeedKind::Stopped,
+    ];
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            NeedKind::Plan => "plan",
+            NeedKind::Ask => "ask",
+            NeedKind::Perm => "perm",
+            NeedKind::Turn => "turn",
+            NeedKind::Blocked => "blocked",
+            NeedKind::Todo => "todo",
+            NeedKind::Red => "red",
+            NeedKind::Stopped => "stopped",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NeedKind::Plan => "Plan to approve",
+            NeedKind::Ask => "Question",
+            NeedKind::Perm => "Permission",
+            NeedKind::Turn => "Your turn",
+            NeedKind::Blocked => "Blocked",
+            NeedKind::Todo => "To do",
+            NeedKind::Red => "Failing",
+            NeedKind::Stopped => "Stopped",
+        }
+    }
+
+    /// A condition row's: a budget stop waits on a raise, as a blocked item does; every other
+    /// condition is a failure.
+    fn of_condition(kind: Kind) -> NeedKind {
+        match kind {
+            Kind::Budget => NeedKind::Blocked,
+            _ => NeedKind::Red,
+        }
+    }
+
+    /// A session row's, from its open dialog (`transcript::Question::kind`); a session with
+    /// no dialog, or only its last message, waits for its turn.
+    fn of_dialog(dialog: &str) -> NeedKind {
+        match dialog {
+            "choice" => NeedKind::Ask,
+            "tool" => NeedKind::Perm,
+            "plan" => NeedKind::Plan,
+            _ => NeedKind::Turn,
+        }
+    }
+}
+
 /// One row of NEEDS YOU.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Need {
     pub kind: Kind,
+    /// What it asks of the human.
+    pub need: NeedKind,
+    /// Its place in `needs`' order, from 1, whatever a view does to the rows.
+    pub rank: usize,
     pub project: String,
     pub text: String,
     /// What the row acts on: the ask id, the session's tmux target, the queue slug, the sheet
@@ -82,10 +171,79 @@ pub struct Need {
     /// An ask's recommended option, when it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recommend: Option<String>,
-    /// What the row counted, for an ask, a session or a queue item; a nightly or red-now row is
-    /// a condition, not a wait, and has none.
+    /// What the row counted, for an ask, a session, a queue item or a sheet row; a condition
+    /// (Stopped, Budget to Red) is not a wait, and has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<Score>,
+}
+
+impl Need {
+    /// Why it sits where it does: what it holds, or a sheet row's `#priority`.
+    pub fn holds(&self) -> String {
+        match &self.score {
+            Some(s) if !s.holds.is_empty() => s.holds.clone(),
+            Some(Score {
+                priority: Some(p), ..
+            }) => format!("#{p}"),
+            _ => String::new(),
+        }
+    }
+}
+
+impl crate::table::Row for Need {
+    const COLUMNS: &'static [&'static str] =
+        &["rank", "kind", "project", "waited", "holds", "what"];
+    const STATES: &'static [&'static str] = &[
+        "all",
+        "Plan to approve",
+        "Question",
+        "Permission",
+        "Your turn",
+        "Blocked",
+        "To do",
+        "Failing",
+        "Stopped",
+    ];
+    const FACETS: &'static [&'static str] = &["project"];
+    const HIDE_EMPTY: bool = true;
+
+    fn val(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        let text = |s: &str| {
+            if s.is_empty() {
+                Val::None
+            } else {
+                Val::Text(s.to_string())
+            }
+        };
+        match col {
+            "rank" => Val::Num(self.rank as f64),
+            "kind" => text(self.need.slug()),
+            "project" => text(&self.project),
+            // Earlier is bigger, so a header's first click puts the longest wait on top.
+            "waited" => self.since.map_or(Val::None, |s| Val::Num(-(s as f64))),
+            "holds" => text(&self.holds()),
+            "what" => text(&self.text),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        self.need.label() == s
+    }
+
+    /// A bare word searches what the row says, its kind as drawn and the id it acts on.
+    fn text(&self) -> String {
+        [
+            self.need.label(),
+            &self.project,
+            &self.holds(),
+            &self.text,
+            &self.id,
+        ]
+        .join("\n")
+        .to_lowercase()
+    }
 }
 
 /// What a row of NEEDS YOU counted, so it says why it sits where it does (dashboards rule 6).
@@ -206,7 +364,15 @@ pub struct Number {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Home {
     pub needs: Vec<Need>,
+    /// What analysis streams propose, newest first, and their count worded once.
+    pub proposals: Vec<Proposal>,
+    pub proposals_head: String,
+    pub proposals_failed: bool,
+    /// No read has answered yet, so nothing can be said about what is open.
+    pub proposals_unread: bool,
     pub running: Vec<Running>,
+    /// Where work sits from inbox to done; `set_pipeline` adds the gauges' half.
+    pub flow: crate::flow::Strip,
     pub numbers: Vec<Number>,
     pub health: Vec<Chip>,
     /// What could not be read, so a short list never reads as an all-clear.
@@ -225,7 +391,7 @@ impl Home {
 
 /// The tmux session name in a target (`server/session:window`), a queue item's session
 /// (`server:session` or bare) or an ask's (bare).
-fn tmux_name(s: &str) -> &str {
+pub(crate) fn tmux_name(s: &str) -> &str {
     if let Some((_, rest)) = s.split_once('/') {
         return rest.rsplit_once(':').map_or(rest, |(n, _)| n);
     }
@@ -250,6 +416,16 @@ fn day_start(day: &str) -> Option<i64> {
         .map(|t| t.timestamp())
 }
 
+/// A `night` queue item that finished failed: it ran unwatched, so its failure is the human's.
+/// A failed night task needs the human for a day after it ends; after that the queue holds it.
+pub const NIGHT_WINDOW_SECS: i64 = 86_400;
+
+fn night_failed(i: &Item) -> bool {
+    i.state == State::Done
+        && i.status.as_deref() == Some("failed")
+        && i.tag_list().any(|t| t == "night")
+}
+
 /// A human-sheet row that needs the human: open, `#urgent` or `#high`, of a `HUMAN_TYPES` type.
 fn needs_the_human(r: &Row) -> bool {
     r.lane == "human"
@@ -260,7 +436,7 @@ fn needs_the_human(r: &Row) -> bool {
             .is_some_and(|t| HUMAN_TYPES.contains(&t))
 }
 
-fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
+pub(crate) fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
 }
 
@@ -273,15 +449,6 @@ fn short(s: &str) -> String {
     }
     let cut: String = t.chars().take(TEXT_MAX - 3).collect();
     format!("{}...", cut.trim_end())
-}
-
-/// The last path segment of a session's cwd, the project a session row shows without a queue item.
-fn dir_name(cwd: &str) -> String {
-    cwd.rsplit('/')
-        .find(|s| !s.is_empty())
-        .unwrap_or("")
-        .trim_start_matches('.')
-        .to_string()
 }
 
 /// The tmux target of session `name` in `sessions`, when exactly one window carries it.
@@ -324,8 +491,8 @@ pub fn running(state: &Value, q: &Queue) -> Vec<Running> {
 /// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
 /// infra (None until read), ranked: the asks, sessions, queue items and `#urgent` sheet rows only
 /// the human can act on by what their wait costs (`Score::value`), then the `#high` sheet rows
-/// by the same value, then those the judge said a machine could answer, then nightly reds and
-/// red-now items. A Stopped row, when dispatch is stopped, comes before all of them: while it
+/// by the same value, then those the judge said a machine could answer, then the conditions:
+/// budget stops, failed night items, janitor lines, critical mail, nightly reds and red-now items. A Stopped row, when dispatch is stopped, comes before all of them: while it
 /// stands nothing else starts. Ages are by the state's own clock, so the order is pure.
 pub fn needs(
     state: &Value,
@@ -373,6 +540,8 @@ pub fn needs(
     for st in state["stopped"].as_array().into_iter().flatten() {
         out.push(Need {
             kind: Kind::Stopped,
+            need: NeedKind::Stopped,
+            rank: 0,
             project: String::new(),
             text: short(str_of(st, "line")),
             id: format!("stopped:{}", str_of(st, "runner")),
@@ -407,6 +576,8 @@ pub fn needs(
         work(&mut worked, item_of(session));
         out.push(Need {
             kind: Kind::Ask,
+            need: NeedKind::Ask,
+            rank: 0,
             project: str_of(a, "project").into(),
             text: short(str_of(a, "question")),
             id: str_of(a, "id").into(),
@@ -434,7 +605,9 @@ pub fn needs(
         let since = now.zip(s["idle_min"].as_i64()).map(|(g, m)| g - m * 60);
         out.push(Need {
             kind: Kind::Session,
-            project: item.map_or_else(|| dir_name(str_of(s, "cwd")), |i| i.project.clone()),
+            need: NeedKind::of_dialog(str_of(s, "dialog")),
+            rank: 0,
+            project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
             text: short(&item.map_or_else(|| str_of(s, "reason").to_string(), |i| i.title())),
             id: target.into(),
             target: Some(target.into()),
@@ -457,11 +630,13 @@ pub fn needs(
             continue;
         }
         work(&mut worked, Some(i));
-        let waited = i.extra.get("waiting").and_then(Value::as_str);
+        let waited = i.waiting.as_deref();
         let target = i.session.as_deref().and_then(|s| target_of(tmux_name(s)));
         let since = waited.or(i.started.as_deref()).and_then(ts);
         out.push(Need {
             kind: Kind::Queue,
+            need: NeedKind::Blocked,
+            rank: 0,
             project: i.project.clone(),
             text: short(&i.title()),
             id: i.slug.clone(),
@@ -491,6 +666,8 @@ pub fn needs(
         score.priority = Some(r.priority.clone());
         out.push(Need {
             kind: Kind::Sheet,
+            need: NeedKind::Todo,
+            rank: 0,
             project,
             text: short(&r.text),
             id: r.id.clone().unwrap_or_else(|| short(&r.text)),
@@ -500,9 +677,88 @@ pub fn needs(
             score: Some(score),
         });
     }
+    let condition = |kind, id: String, text: String, since| Need {
+        kind,
+        need: NeedKind::of_condition(kind),
+        rank: 0,
+        project: String::new(),
+        text: short(&text),
+        id,
+        target: None,
+        since,
+        recommend: None,
+        score: None,
+    };
+    for b in state["budget"].as_array().into_iter().flatten() {
+        let runner = str_of(b, "runner");
+        out.push(condition(
+            Kind::Budget,
+            format!("budget:{runner}"),
+            format!(
+                "{runner} stopped at its daily budget: {}. To go on today: agentctl budget {runner} raise <usd>.",
+                str_of(b, "detail").trim_end_matches('.')
+            ),
+            b["at"].as_i64(),
+        ));
+    }
+    let recent = |i: &Item| {
+        let done = i.finished.as_deref().and_then(ts);
+        now.zip(done)
+            .is_none_or(|(n, d)| n - d <= NIGHT_WINDOW_SECS)
+    };
+    for i in items.iter().filter(|i| night_failed(i) && recent(i)) {
+        out.push(Need {
+            project: i.project.clone(),
+            ..condition(
+                Kind::Night,
+                i.slug.clone(),
+                format!(
+                    "Night task {} failed: {}. Run agent-queue show {}.",
+                    i.slug,
+                    i.title(),
+                    i.slug
+                ),
+                i.finished.as_deref().and_then(ts),
+            )
+        });
+    }
+    for j in state["janitor"].as_array().into_iter().flatten() {
+        let what = str_of(j, "what");
+        out.push(condition(
+            Kind::Janitor,
+            format!("janitor:{what}"),
+            format!(
+                "Home cluster needs you: {} ({}, {}).",
+                what.trim_end_matches('.'),
+                str_of(j, "who"),
+                str_of(j, "when")
+            ),
+            None,
+        ));
+    }
+    for m in state["mail"].as_array().into_iter().flatten() {
+        let (from, subject) = (str_of(m, "from"), str_of(m, "subject"));
+        let copies = m["copies"].as_u64().unwrap_or(1);
+        let more = if copies > 1 {
+            format!(", {copies} copies")
+        } else {
+            String::new()
+        };
+        out.push(condition(
+            Kind::Mail,
+            format!("mail:{from}:{subject}"),
+            format!(
+                "Critical mail from {from}: {subject} ({}){more}.",
+                str_of(m, "acct")
+            ),
+            None,
+        ));
+    }
     for m in state["main"].as_array().into_iter().flatten() {
         out.push(Need {
             kind: Kind::Nightly,
+            need: NeedKind::Red,
+            rank: 0,
             project: str_of(m, "repo").into(),
             text: short(str_of(m, "reason")),
             id: str_of(m, "repo").into(),
@@ -524,6 +780,8 @@ pub fn needs(
         for r in red {
             out.push(Need {
                 kind: Kind::Red,
+                need: NeedKind::Red,
+                rank: 0,
                 project: String::new(),
                 text: r.into(),
                 id: r.into(),
@@ -545,12 +803,53 @@ pub fn needs(
                 .map(|s| (!s.human, s.later(), std::cmp::Reverse(s.value))),
         )
     });
+    for (i, n) in out.iter_mut().enumerate() {
+        n.rank = i + 1;
+    }
     out
 }
 
-/// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
-/// infra (None until read): NEEDS YOU in `needs` order, the running items, the headline numbers
-/// and the chips.
+impl Home {
+    /// The gauges' half of the flow strip (inbox, board, the amber step).
+    pub fn set_pipeline(&mut self, read: &Result<Option<crate::pipeline::Pipeline>, String>) {
+        self.flow.set_pipeline(read);
+    }
+
+    /// The proposals agent-propose holds open; a failed read says so among the errors.
+    pub fn set_proposals(&mut self, open: &Result<Vec<Proposal>, String>) {
+        match open {
+            Ok(p) => {
+                self.proposals_head = crate::proposals::heading(p);
+                self.proposals = p.clone();
+            }
+            Err(e) => {
+                self.proposals_failed = true;
+                self.errors.push(format!("{e}, so no proposals are shown"));
+            }
+        }
+    }
+}
+
+/// What Home is built from: fleet-sessions' state with its joins (`boards::state`), the queue,
+/// the board feed and, when asked, infra, the slow one, read beside the others.
+pub fn gather(with_infra: bool) -> (Value, Queue, Result<Feed, String>, Option<Infra>) {
+    use crate::session_actions::System;
+    let state = boards::state(&boards::fleet_state(), &System);
+    std::thread::scope(|s| {
+        let infra = with_infra.then(|| s.spawn(crate::infra::gather));
+        let queue = Queue::read(&System);
+        let board = crate::tasks::feed(&System);
+        (
+            state,
+            queue,
+            board,
+            infra.map(|i| i.join().unwrap_or_default()),
+        )
+    })
+}
+
+/// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed,
+/// and infra: NEEDS YOU in `needs` order, the running items, the headline numbers and the chips.
 pub fn build(
     state: &Value,
     queue: Option<&Queue>,
@@ -559,42 +858,36 @@ pub fn build(
 ) -> Home {
     let mut h = Home {
         shown: SHOWN,
+        flow: crate::flow::Strip::build(queue),
         ..Home::default()
     };
     if state.is_null() {
         h.errors
             .push("no fleet state yet (fleet-state.timer writes it every minute)".into());
     }
-    let unread = state["unreadable"].as_array().into_iter().flatten();
-    if unread.filter_map(Value::as_str).any(|u| u == "agent-ask") {
-        h.errors
-            .push("agent-ask could not be read, so no asks are shown".into());
+    for u in state["unreadable"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let what = match u {
+            "agent-ask" => "no asks are shown",
+            "comms" => "no critical mail is shown",
+            "notes" => "no janitor lines are shown",
+            "agentctl" => "no budget stops are shown",
+            _ => continue,
+        };
+        h.errors.push(format!("{u} could not be read, so {what}"));
     }
     if let Some(Err(e)) = board {
         h.errors
             .push(format!("{e}, so no human-sheet rows are shown"));
     }
     h.needs = needs(state, queue, board.and_then(|b| b.as_ref().ok()), infra);
-
     if let Some(q) = queue {
         h.errors.extend(q.errors.iter().cloned());
         h.running = running(state, q);
-        let held = q
-            .in_state(State::Queued)
-            .filter(|i| i.hold.is_some())
-            .count();
-        let mut next = format!("{} up next", q.count(State::Queued));
-        if held > 0 {
-            next += &format!(" ({held} held)");
-        }
-        h.numbers.push(Number {
-            label: "queue",
-            value: format!("{} running, {next}", q.count(State::Running)),
-        });
-        h.numbers.push(Number {
-            label: "done today",
-            value: q.count(State::Done).to_string(),
-        });
     }
     if let Some(c) = state["counts"].as_object() {
         let n = |k: &str| c.get(k).and_then(Value::as_u64).unwrap_or(0);
@@ -676,9 +969,9 @@ mod tests {
             "generated_epoch": NOW,
             "counts": {"WORKING": 2, "NEEDS": 2, "STALLED": 0},
             "sessions": [
-                {"target": "lab/repo-agent-1:1", "bucket": "NEEDS", "asks": 1, "idle_min": 5, "cwd": "/w/repo"},
+                {"target": "lab/repo-agent-1:1", "bucket": "NEEDS", "asks": 1, "idle_min": 5, "cwd": "/w/repo", "project": "repo"},
                 {"target": "hub/dotfiles:2", "bucket": "NEEDS", "asks": 0, "idle_min": 3,
-                 "cwd": "/home/k/.dotfiles", "reason": "waiting on a prompt or permission"},
+                 "cwd": "/home/k/.dotfiles", "project": "dotfiles", "reason": "waiting on a prompt or permission"},
                 {"target": "lab/repo-agent-2:1", "bucket": "WORKING", "phases_done": 2,
                  "phases_total": 4, "next_phase": "three"},
             ],
@@ -688,6 +981,92 @@ mod tests {
             ],
             "main": [{"repo": "repo", "reason": "repo red: Tests"}],
         })
+    }
+
+    #[test]
+    fn the_briefing_only_inputs_are_conditions_after_every_wait() {
+        let mut st = state();
+        st["budget"] =
+            json!([{"runner": "dream", "detail": "day $10.20 of $10.", "at": NOW - 600}]);
+        st["janitor"] = json!([{"when": "Fri 06:30", "who": "janitor", "what": "pvc stuck"}]);
+        st["mail"] = json!([{"from": "alarm@aws", "subject": "ALARM: 5xx", "acct": "gigantic", "copies": 5}]);
+        let mut failed = item("night-1", State::Done, None);
+        failed.tags = "night tier3".into();
+        failed.status = Some("failed".into());
+        failed.finished = Some("2026-11-05T03:00:00-0800".into());
+        // Negative controls: a night item that ended ok, and a failed item that was no night task.
+        let mut ok = failed.clone();
+        ok.slug = "night-ok".into();
+        ok.status = Some("ok".into());
+        let mut day = failed.clone();
+        day.slug = "day-failed".into();
+        day.tags = String::new();
+        // And one that failed more than a day before the state was written.
+        let mut old = failed.clone();
+        old.slug = "night-old".into();
+        old.finished = Some("2026-11-03T03:00:00-0800".into());
+        let q = Queue {
+            items: vec![failed, ok, day, old],
+            ..Default::default()
+        };
+        let h = build(&st, Some(&q), None, None);
+        let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
+        assert_eq!(
+            rows,
+            [
+                (Kind::Ask, "a1"),
+                (Kind::Session, "hub/dotfiles:2"),
+                (Kind::Budget, "budget:dream"),
+                (Kind::Night, "night-1"),
+                (Kind::Janitor, "janitor:pvc stuck"),
+                (Kind::Mail, "mail:alarm@aws:ALARM: 5xx"),
+                (Kind::Nightly, "repo"),
+            ]
+        );
+        let text = |k: Kind| h.needs.iter().find(|n| n.kind == k).unwrap().text.clone();
+        assert_eq!(
+            text(Kind::Budget),
+            "dream stopped at its daily budget: day $10.20 of $10. To go on today: agentctl budget dream raise <usd>."
+        );
+        assert_eq!(
+            text(Kind::Night),
+            "Night task night-1 failed: Do night-1. Run agent-queue show night-1."
+        );
+        assert_eq!(
+            text(Kind::Janitor),
+            "Home cluster needs you: pvc stuck (janitor, Fri 06:30)."
+        );
+        assert_eq!(
+            text(Kind::Mail),
+            "Critical mail from alarm@aws: ALARM: 5xx (gigantic), 5 copies."
+        );
+        assert!(h
+            .needs
+            .iter()
+            .filter(|n| n.kind >= Kind::Budget)
+            .all(|n| n.score.is_none()));
+        // A budget stop waits on a raise, so it filters as Blocked; the rest as Failing.
+        let need = |k: Kind| h.needs.iter().find(|n| n.kind == k).unwrap().need;
+        assert_eq!(need(Kind::Budget), NeedKind::Blocked);
+        for k in [Kind::Night, Kind::Janitor, Kind::Mail] {
+            assert_eq!(need(k), NeedKind::Red, "{k:?}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_signal_source_is_said_not_shown_as_nothing() {
+        let mut st = state();
+        st["unreadable"] = json!(["comms", "notes", "agentctl", "something-else"]);
+        let h = build(&st, None, None, None);
+        assert_eq!(
+            h.errors[..3],
+            [
+                "comms could not be read, so no critical mail is shown",
+                "notes could not be read, so no janitor lines are shown",
+                "agentctl could not be read, so no budget stops are shown",
+            ]
+        );
+        assert!(!h.errors.iter().any(|e| e.contains("something-else")));
     }
 
     #[test]
@@ -721,7 +1100,13 @@ mod tests {
         assert_eq!(h.running.len(), 1);
         let p = h.running[0].phases.as_ref().unwrap();
         assert_eq!((p.done, p.total), (2, 4));
-        assert_eq!(h.numbers[0].value, "1 running, 0 up next");
+        // The queue's counts are the flow strip's, not Numbers.
+        assert!(h
+            .numbers
+            .iter()
+            .all(|n| n.label != "queue" && n.label != "done today"));
+        assert_eq!(h.flow.chips[3].text(), "running 1");
+        assert_eq!(h.flow.chips[2].text(), "queued 0");
         assert_eq!(h.errors, ["Prometheus: reading"]);
     }
 
@@ -753,7 +1138,8 @@ mod tests {
         let mut st = state();
         st["sessions"] = json!([
             {"target": "lab/big-agent-1:1", "bucket": "NEEDS", "idle_min": 30,
-             "phases_done": 1, "phases_total": 4, "cwd": "/w/big"},
+             "phases_done": 1, "phases_total": 4, "cwd": "/w/freqtrade_trading_attempt-agent-1",
+             "project": "trader"},
         ]);
         st["asks"] = json!([
             // Ten days old, but the judge said a machine can answer it: below every human row.
@@ -790,6 +1176,8 @@ mod tests {
                 "auto"
             ]
         );
+        // The project is the one the row carries: a freqtrade_trading_attempt worktree is trader.
+        assert_eq!(h.needs[0].project, "trader");
         // (1 + session + 3 phases left) * 30 min.
         assert_eq!(score(&h.needs[0]), (true, true, 3, 0, 30, 150));
         assert_eq!(
@@ -984,10 +1372,113 @@ mod tests {
     }
 
     #[test]
+    fn a_rows_rank_and_kind_are_counted_here_and_the_chips_are_the_kinds() {
+        use crate::table::Row;
+        let labels = NeedKind::ALL.map(NeedKind::label);
+        assert_eq!(Need::STATES[1..], labels);
+        let q = Queue {
+            items: vec![item("lone", State::Waiting, None)],
+            ..Default::default()
+        };
+        let mut s = state();
+        s["sessions"][1]["dialog"] = "tool".into();
+        s["stopped"] = json!([{"runner": "d", "line": "held", "since": NOW - 60}]);
+        let rows = needs(&s, Some(&q), None, None);
+        let got: Vec<(usize, NeedKind)> = rows.iter().map(|n| (n.rank, n.need)).collect();
+        assert_eq!(
+            got,
+            [
+                (1, NeedKind::Stopped),
+                (2, NeedKind::Ask),
+                (3, NeedKind::Perm),
+                (4, NeedKind::Blocked),
+                (5, NeedKind::Red),
+            ]
+        );
+        for (dialog, need) in [
+            ("choice", NeedKind::Ask),
+            ("plan", NeedKind::Plan),
+            ("text", NeedKind::Turn),
+            ("", NeedKind::Turn),
+        ] {
+            assert_eq!(NeedKind::of_dialog(dialog), need);
+        }
+    }
+
+    #[test]
+    fn a_view_of_needs_filters_by_kind_and_project_and_sorts_by_the_wait() {
+        use crate::table::View;
+        let rows = needs(&state(), None, None, None);
+        let ids =
+            |v: View| -> Vec<String> { v.apply(&rows).iter().map(|n| n.id.clone()).collect() };
+        let q = |q: &str| View::new::<Need>(q, "", "", "");
+        assert_eq!(ids(q("kind:ask")), ["a1"]);
+        assert_eq!(ids(q("kind:turn project:dotfiles")), ["hub/dotfiles:2"]);
+        assert_eq!(ids(q("-kind:red -kind:turn")), ["a1"]);
+        assert_eq!(ids(q("failing")), ["repo"], "a bare word reads the label");
+        assert_eq!(ids(q("a1")), ["a1"], "and the id the row acts on");
+        let chip = View::new::<Need>("", "your turn", "", "");
+        assert_eq!(ids(chip), ["hub/dotfiles:2"]);
+        // The first click: longest wait on top, a condition with no start time last.
+        let longest = View::new::<Need>("", "", "waited", "");
+        assert_eq!(ids(longest), ["a1", "hub/dotfiles:2", "repo"]);
+    }
+
+    #[test]
+    fn only_the_chips_with_rows_or_in_force_are_offered() {
+        use crate::table::View;
+        let rows = needs(&state(), None, None, None);
+        let names = |v: &View| -> Vec<&str> { v.states(&rows).iter().map(|c| c.name).collect() };
+        let v = View::default();
+        assert_eq!(names(&v), ["all", "Question", "Your turn", "Failing"]);
+        let v = View::new::<Need>("kind:ask", "Blocked", "", "");
+        assert_eq!(names(&v), ["all", "Question", "Blocked"]);
+        // The TUI's `f` steps over the same chips, never onto a hidden one.
+        let mut v = View::default();
+        let mut seen = vec![];
+        for _ in 0..4 {
+            v.cycle_shown(&rows);
+            seen.push(v.state.clone());
+        }
+        assert_eq!(seen, ["Question", "Your turn", "Failing", ""]);
+    }
+
+    #[test]
+    fn holds_is_what_the_row_holds_or_a_sheet_rows_priority() {
+        let mut n = needs(&state(), None, None, None).remove(0);
+        n.score = Some(Score::new(true, true, 2, 0, 5));
+        assert_eq!(n.holds(), "session, 2 phases");
+        let mut s = Score::new(true, false, 0, 0, 5);
+        s.priority = Some("high".into());
+        n.score = Some(s);
+        assert_eq!(n.holds(), "#high");
+        n.score = None;
+        assert_eq!(n.holds(), "");
+    }
+
+    #[test]
     fn a_session_name_is_read_from_every_shape() {
         assert_eq!(tmux_name("lab/repo-agent-1:1"), "repo-agent-1");
         assert_eq!(tmux_name("lab:repo-agent-1"), "repo-agent-1");
         assert_eq!(tmux_name("repo-agent-1"), "repo-agent-1");
-        assert_eq!(dir_name("/home/k/.dotfiles"), "dotfiles");
+    }
+
+    #[test]
+    fn proposals_join_home_and_a_failed_read_says_so() {
+        let p = Proposal {
+            stream: "dream".into(),
+            ..Proposal::default()
+        };
+        let mut h = build(&state(), None, None, None);
+        h.set_proposals(&Ok(vec![p.clone()]));
+        assert_eq!(h.proposals, [p]);
+        assert_eq!(h.proposals_head, "1 from 1 stream");
+        let mut h = build(&state(), None, None, None);
+        h.set_proposals(&Err("no jq".into()));
+        assert!(h.proposals_failed);
+        assert!(h
+            .errors
+            .iter()
+            .any(|e| e == "no jq, so no proposals are shown"));
     }
 }

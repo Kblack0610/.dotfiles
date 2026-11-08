@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-CONFIG_DIR="${HOME}/.config/agentctl/agents"
+CONFIG_DIR="${AGENTCTL_CONF_DIR:-${HOME}/.config/agentctl/agents}"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 # ONE state dir, reachable under EITHER name.
 #
@@ -54,6 +54,18 @@ list_agent_names() {
     done
 }
 
+# The two places a runner's SKILL can live: a skill directory (<name>/SKILL.md) or a slash
+# command (<name>.md, with "ns:name" at <ns>/<name>.md). Env-overridable so a test points
+# them at a fixture tree instead of the host's.
+AGENTCTL_SKILLS_DIR="${AGENTCTL_SKILLS_DIR:-$HOME/.claude/skills}"
+AGENTCTL_COMMANDS_DIR="${AGENTCTL_COMMANDS_DIR:-$HOME/.claude/commands}"
+
+# skill_resolves <name> - status 0 when the name is an existing skill or command.
+skill_resolves() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*(:[A-Za-z0-9][A-Za-z0-9_-]*)?$ ]] || return 1
+    [ -f "$AGENTCTL_SKILLS_DIR/$1/SKILL.md" ] || [ -f "$AGENTCTL_COMMANDS_DIR/${1//://}.md" ]
+}
+
 # Source a config in a subshell, validate, emit normalized KEY=VALUE lines.
 load_agent() {
     local name="$1"
@@ -61,6 +73,7 @@ load_agent() {
     [ -f "$conf" ] || { printf 'no such agent: %s\n' "$name" >&2; return 1; }
     (
         set -e
+        unset SKILL   # a conf without one must not inherit the caller's
         # shellcheck disable=SC1090
         source "$conf"
         : "${NAME:?missing NAME}"
@@ -108,6 +121,23 @@ load_agent() {
         : "${RANDOM_DELAY:=$AGENTCTL_RANDOM_DELAY}"
         [[ "$RANDOM_DELAY" =~ ^[0-9]+(s|min|h)?$ ]] \
             || { printf 'invalid RANDOM_DELAY=%s (a span like 5min, or 0)\n' "$RANDOM_DELAY" >&2; exit 1; }
+        # A oneshot's restart policy (write_oneshot_dropin): no, or on-abnormal for a runner
+        # that needs a run killed by a signal retried before its next timer fire.
+        : "${RESTART:=no}"
+        case "$RESTART" in
+            no|on-abnormal) ;;
+            *) printf 'invalid RESTART=%s (no|on-abnormal)\n' "$RESTART" >&2; exit 1 ;;
+        esac
+        # SKILL is optional: the skill or command that owns the runner's job (its procedure,
+        # or the docs describing it). Blank on purpose for a runner with no owner. It is an
+        # owner link, not a prompt: a runner script reads it (`agentctl skill`) to name the skill
+        # it starts, but a name that resolves to nothing must not make the conf invalid (install
+        # would drop the runner's timer for a doc field). It is reported as SKILL_FOUND=no instead, which `list` and
+        # `list --md` show and `fleet-bench triage --coverage` counts.
+        SKILL_FOUND=-
+        if [ -n "${SKILL:-}" ]; then
+            if skill_resolves "$SKILL"; then SKILL_FOUND=yes; else SKILL_FOUND=no; fi
+        fi
         : "${INBOX:=$STATE_DIR/$NAME}"
         printf 'NAME=%s\n' "$NAME"
         printf 'KIND=%s\n' "$KIND"
@@ -118,11 +148,14 @@ load_agent() {
         printf 'AUTOSTART=%s\n' "$AUTOSTART"
         printf 'ENABLED=%s\n' "$ENABLED"
         printf 'RANDOM_DELAY=%s\n' "$RANDOM_DELAY"
+        printf 'RESTART=%s\n' "$RESTART"
         printf 'INBOX=%s\n' "$INBOX"
         printf 'EFFECT=%s\n' "$EFFECT"
         printf 'ROLE=%s\n' "${ROLE:-}"
         printf 'MODEL=%s\n' "${MODEL:-}"
         printf 'ROUTE=%s\n' "${ROUTE:-}"
+        printf 'SKILL=%s\n' "${SKILL:-}"
+        printf 'SKILL_FOUND=%s\n' "$SKILL_FOUND"
     )
 }
 
@@ -408,9 +441,9 @@ kv_get() { awk -v k="$1" 'substr($0,1,length(k)+1) == k"=" {print substr($0, len
 # cmd_list_md - the runner catalog as one markdown table, from the confs alone (no systemd),
 # so it prints the same on any machine. PIPELINES.md points here instead of copying it.
 cmd_list_md() {
-    local name conf lane kind sched trigger model effect role route
-    printf '| Runner | Lane | Trigger | Role | Model | Effect | Purpose |\n'
-    printf '|---|---|---|---|---|---|---|\n'
+    local name conf lane kind sched trigger model effect role route skill
+    printf '| Runner | Lane | Trigger | Role | Skill | Model | Effect | Purpose |\n'
+    printf '|---|---|---|---|---|---|---|---|\n'
     local -a names=() invalid=()
     mapfile -t names < <(list_agent_names)
     declare -A confs=()
@@ -423,6 +456,8 @@ cmd_list_md() {
             [ -n "$conf" ] && [ "$(kv_get LANE <<<"$conf")" = "$lane" ] || continue
             kind=$(kv_get KIND <<<"$conf"); sched=$(kv_get SCHEDULE <<<"$conf")
             effect=$(kv_get EFFECT <<<"$conf"); role=$(kv_get ROLE <<<"$conf")
+            skill=$(kv_get SKILL <<<"$conf")
+            [ "$(kv_get SKILL_FOUND <<<"$conf")" = no ] && skill="$skill (not found)"
             model=$(kv_get MODEL <<<"$conf"); route=$(kv_get ROUTE <<<"$conf")
             if [ "$kind" = call ]; then trigger='called by its caller'
             elif [ "$kind" = persistent ]; then trigger='always on'
@@ -432,12 +467,33 @@ cmd_list_md() {
             if [ "$effect" = none ]; then model=-
             elif [ -z "$model" ]; then model='not in conf'; fi
             [ -n "$route" ] && model="$model via $route"
-            printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
-                "${role:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
+            printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
+                "${role:--}" "${skill:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
         done
     done
     [ "${#invalid[@]}" -eq 0 ] || printf '\nInvalid (see `agentctl list`): %s\n' "${invalid[*]}"
     return 0
+}
+
+# skill <name>: the skill or command the runner's conf names (empty when it names none), so a
+# script that starts that skill reads the name from the conf instead of holding a copy.
+# skill --dangling: each runner whose SKILL resolves to nothing, as "<runner> SKILL=<name>", exit 1
+# when there is one (fleet-bench triage --coverage counts these).
+cmd_skill() {
+    local name conf bad=0
+    case "${1:-}" in
+        "") die "usage: agentctl skill <name> | --dangling" ;;
+        --dangling)
+            while read -r name; do
+                conf=$(load_agent "$name" 2>/dev/null) || continue
+                [ "$(kv_get SKILL_FOUND <<<"$conf")" = no ] || continue
+                printf '%s SKILL=%s\n' "$name" "$(kv_get SKILL <<<"$conf")"; bad=1
+            done < <(list_agent_names)
+            return "$bad" ;;
+        *)
+            conf=$(load_agent "$1") || die "cannot read agent: $1"
+            kv_get SKILL <<<"$conf" ;;
+    esac
 }
 
 cmd_list() {
@@ -490,6 +546,15 @@ cmd_list() {
             printf "$fmt" "$name" "$state" "$last" "$next" "$desc"
         done
     done
+    local lost=()
+    for name in "${names[@]}"; do
+        [ "$(kv_get SKILL_FOUND <<<"${confs[$name]:-}")" = no ] \
+            && lost+=("$(printf "  %-${w}s  SKILL=%s" "$name" "$(kv_get SKILL <<<"${confs[$name]}")")")
+    done
+    if [ "${#lost[@]}" -gt 0 ]; then
+        printf 'skill not found (the runner still runs)\n'
+        printf '%s\n' "${lost[@]}"
+    fi
     if [ "${#bad[@]}" -gt 0 ]; then
         printf 'invalid (reload skips these)\n'
         for name in "${names[@]}"; do
@@ -683,22 +748,20 @@ WantedBy=timers.target
 EOF
 }
 
-# A oneshot restarts only on an abnormal end (a timeout or a signal), never on its own
-# exit 1. agentctl@.service says Restart=on-failure for every runner because a persistent
-# one must come back, and its crash-loop cap (5 starts in 5 minutes) only catches a fast
-# loop: fleet-review failed in about 3 minutes, so it restarted 90 to 115 times a night
-# without ever reaching 5 in 5 minutes. A oneshot's exit 1 is its verdict, and its timer
-# is the retry. A start that timed out under load is still retried 5s later.
+# A oneshot does not restart: its failure is final, the unit reads failed, and its timer is
+# the retry. The template's Restart=on-failure is for the persistent runners, and its
+# 5-in-5-minutes cap misses a oneshot that fails slower than a minute, which then restarts
+# all night. A conf's RESTART=on-abnormal retries a run a signal killed, and only that.
 # 75 is a budget stop (lib/budget.sh): the runner reported BLOCKED, and a cap holding is not a
 # failed unit.
 write_oneshot_dropin() {
     local dir="$SYSTEMD_USER_DIR/agentctl@${1}.service.d"
     mkdir -p "$dir"
     rm -f "$dir/agentctl-oneshot.conf"
-    cat > "$dir/agentctl-oneshot.conf" <<'EOF'
+    cat > "$dir/agentctl-oneshot.conf" <<EOF
 # Generated by 'agentctl reload' for every oneshot runner. Why: write_oneshot_dropin in agentctl.
 [Service]
-Restart=on-abnormal
+Restart=${2:-no}
 SuccessExitStatus=75
 EOF
 }
@@ -729,7 +792,7 @@ cmd_reload() {
         local kind sched autostart enabled
         kind=$(agent_field "$name" KIND)
         if [ "$kind" = oneshot ]; then
-            write_oneshot_dropin "$name"
+            write_oneshot_dropin "$name" "$(agent_field "$name" RESTART)"
         else
             rm -f "$SYSTEMD_USER_DIR/agentctl@${name}.service.d/agentctl-oneshot.conf"
         fi
@@ -821,6 +884,7 @@ Usage:
   agentctl list                  Runners grouped by lane: state, last verdict and age, next run, purpose
   agentctl list --md             The runner catalog: trigger, role, model, effect, purpose (from the confs)
   agentctl status <name>         Detailed status for one agent
+  agentctl skill <name>          The skill its conf names (SKILL=); --dangling lists those that name nothing
   agentctl budget                Spend against each runner's caps today (lib/budget.sh)
   agentctl budget <n> raise <usd> [calls]  Lift <n>'s day cap (and hour cap) for the rest of today
   agentctl report [k=v ...]      Publish this runner's status (runner-side; see below)
@@ -902,6 +966,7 @@ case "${1:-}" in
     status)            shift; cmd_status "$@" ;;
     budget)            shift; cmd_budget "$@" ;;
     report)            shift; cmd_report "$@" ;;
+    skill)             shift; cmd_skill "$@" ;;
     start)             shift; cmd_start "$@" ;;
     stop)              shift; cmd_stop "$@" ;;
     restart)           shift; cmd_restart "$@" ;;

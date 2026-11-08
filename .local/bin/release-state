@@ -1,0 +1,361 @@
+#!/usr/bin/env bash
+# release-state - what is pinned and what is live on every project's deploy channels.
+#
+#   release-state refresh [project...]   probe the targets, write the snapshot (a subset merges)
+#   release-state show [--json] [project] the snapshot, exceptions first
+#   release-state check [--grace MIN] [--max-age MIN]
+#                                         exit 1 naming each drift past grace (default 30), a
+#                                         missing or tripped telemetry watch, a floating prod
+#                                         target, or a snapshot older than max-age (default 60)
+#
+# Declared targets live in project-map.json `trackers.<p>.targets`; pinned is read from the
+# fetched remote branch, live from the cluster or health endpoint, and a failed probe says
+# `unknown`, never the last good value. Schema and statuses: docs/operations/release-state.md.
+set -uo pipefail
+
+PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "$PROJECT_NAME_LIB"
+# shellcheck source=../lib/agent-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
+NAME=release-state   # the runner refresh publishes under, never an inherited AGENTCTL_NAME
+
+STATE_DIR="${RELEASE_STATE_DIR:-$HOME/.agent/releases}"
+STATE="$STATE_DIR/state.json"
+WATCH_DIR="${WATCH_DIR:-$HOME/.agent/watches}"
+WATCH_STATE_DIR="${WATCH_STATE_DIR:-$HOME/.local/state/watch-companion}"
+KUBECTL="${KUBECTL:-kubectl}"
+# Timeout guard on every external call (git fetch, kubectl, curl), in seconds.
+PROBE_TIMEOUT="${RELEASE_PROBE_TIMEOUT:-20}"
+
+# REFRESH_WHY (set by cmd_refresh) is where a dying pass leaves its reason for the outcome line;
+# the first die keeps it, so a caller's die does not hide the inner one that caused it.
+die() {
+  echo "release-state: $*" >&2
+  [ -n "${REFRESH_WHY:-}" ] && [ ! -s "$REFRESH_WHY" ] && printf '%s' "$*" > "$REFRESH_WHY"
+  exit 2
+}
+usage() { sed -n '4,10p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+now_epoch() { date +%s; }
+
+command -v jq >/dev/null 2>&1 || die "jq is not installed"
+
+MAP="$(project_map_file)"
+
+# targets_json -> one JSON object per line: {project, target}, implicit release rows included.
+targets_json() {
+  local only="${1:-}"
+  [ -f "$MAP" ] || die "no registry at $MAP"
+  jq -c --arg only "$only" '
+    (.trackers // {}) | to_entries[]
+    | select(.value | type == "object")
+    | .key as $p
+    | select($only == "" or ($only | split(" ") | index($p)))
+    | if (.value.targets | type) == "array" and (.value.targets | length) > 0
+      then .value.targets[] | {project: $p, target: .}
+      elif .value.type == "app"
+      then {project: $p, target: {id: $p, channel: "release", implicit: true, pinned: {tag: true}}}
+      else empty end' "$MAP"
+}
+
+# repo_dir <repo-key> -> the checkout path for a registry repo key, or "".
+repo_dir() { project_repo_path "$1"; }
+
+# Fetch each repo's branch once per refresh. A failed fetch is remembered so every target on
+# that repo reports unknown instead of reading a remote-tracking ref of unknown age.
+declare -A FETCHED=()
+fetch_branch() {
+  local dir="$1" branch="$2" k="$1@$2"
+  if [ -z "${FETCHED[$k]:-}" ]; then
+    if timeout "$PROBE_TIMEOUT" git -C "$dir" fetch -q origin "$branch" </dev/null >/dev/null 2>&1; then
+      FETCHED[$k]=ok
+    else
+      FETCHED[$k]=fail
+    fi
+  fi
+  [ "${FETCHED[$k]}" = ok ]
+}
+
+default_branch() {
+  local dir="$1" b
+  b="$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"
+  printf '%s' "${b#origin/}"
+}
+
+# pinned <project> <target-json> -> {value, source, error}
+pinned() {
+  local proj="$1" t="$2" repo path key image branch dir blob v=""
+  if [ "$(jq -r '.pinned.tag // false' <<<"$t")" = true ]; then
+    v="$(project_release_tag "$proj" 2>/dev/null || true)"
+    if [ -n "$v" ]; then
+      jq -nc --arg v "$v" '{value: $v, source: "newest release tag"}'
+    else
+      jq -nc '{value: null, source: "newest release tag", error: "no release tag"}'
+    fi
+    return
+  fi
+  repo="$(jq -r '.pinned.repo // empty' <<<"$t")"
+  path="$(jq -r '.pinned.path // empty' <<<"$t")"
+  key="$(jq -r '.pinned.key // empty' <<<"$t")"
+  image="$(jq -r '.pinned.image // empty' <<<"$t")"
+  [ -n "$repo" ] && [ -n "$path" ] || { jq -nc '{value: null, error: "pinned needs repo and path, or tag"}'; return; }
+  dir="$(repo_dir "$repo")"
+  [ -n "$dir" ] && [ -d "$dir/.git" ] || { jq -nc --arg r "$repo" '{value: null, error: "no checkout for repo \($r)"}'; return; }
+  branch="$(jq -r '.pinned.branch // empty' <<<"$t")"
+  [ -n "$branch" ] || branch="$(project_field "$repo" branch)"
+  [ -n "$branch" ] || branch="$(default_branch "$dir")"
+  [ -n "$branch" ] || branch=main
+  local src="$repo:origin/$branch:$path"
+  fetch_branch "$dir" "$branch" || { jq -nc --arg s "$src" '{value: null, source: $s, error: "fetch failed"}'; return; }
+  blob="$(git -C "$dir" show "origin/$branch:$path" 2>/dev/null)" \
+    || { jq -nc --arg s "$src" '{value: null, source: $s, error: "file not on branch"}'; return; }
+  if [ -n "$image" ]; then
+    # A kustomize `images:` override (`- name: <image>` then `newTag:`) wins over the
+    # `image: <image>:<tag>` it rewrites, as it does when kustomize builds the manifest.
+    v="$(awk -v img="$image" '
+      /^[[:space:]]*-[[:space:]]*name:/ { n = $0; sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", n); gsub(/"/, "", n); on = (n == img); next }
+      on && /^[[:space:]]*newTag:/ { t = $0; sub(/^[[:space:]]*newTag:[[:space:]]*/, "", t); gsub(/"/, "", t); sub(/[[:space:]].*/, "", t); print t; exit }
+      /^[^[:space:]-]/ { on = 0 }' <<<"$blob")"
+    [ -n "$v" ] || v="$(grep -Eo "image:[[:space:]]*\"?${image//./\\.}:[^\"[:space:]]+" <<<"$blob" | head -1 | sed -E 's/.*:([^:]+)$/\1/')"
+  else
+    key="${key:-tag}"
+    v="$(grep -E "^[[:space:]-]*${key}:[[:space:]]*" <<<"$blob" | head -1 \
+      | sed -E "s/^[[:space:]-]*${key}:[[:space:]]*\"?([^\"[:space:]#]+).*/\1/")"
+  fi
+  if [ -n "$v" ]; then
+    jq -nc --arg v "$v" --arg s "$src" '{value: $v, source: $s}'
+  else
+    jq -nc --arg s "$src" --arg k "${image:-$key}" '{value: null, source: $s, error: "no \($k) in file"}'
+  fi
+}
+
+# live <target-json> -> {value, sha, source, error}
+live() {
+  local t="$1" ctx ns dep ctr img url field body v
+  if jq -e '.live.k8s' <<<"$t" >/dev/null 2>&1; then
+    ctx="$(jq -r '.live.k8s.context' <<<"$t")"
+    ns="$(jq -r '.live.k8s.namespace' <<<"$t")"
+    dep="$(jq -r '.live.k8s.deployment' <<<"$t")"
+    ctr="$(jq -r '.live.k8s.container // empty' <<<"$t")"
+    local src="k8s $ctx $ns/$dep"
+    local jp='{.spec.template.spec.containers[0].image}'
+    [ -n "$ctr" ] && jp="{.spec.template.spec.containers[?(@.name==\"$ctr\")].image}"
+    if ! img="$(timeout "$PROBE_TIMEOUT" "$KUBECTL" --context "$ctx" -n "$ns" get deploy "$dep" -o jsonpath="$jp" </dev/null 2>/dev/null)" || [ -z "$img" ]; then
+      jq -nc --arg s "$src" '{value: null, source: $s, error: "kubectl get failed"}'
+      return
+    fi
+    if [[ "$img" == *@sha256:* ]]; then
+      v="sha256:${img##*@sha256:}"; v="${v:0:19}"
+    elif [[ "${img##*/}" == *:* ]]; then
+      v="${img##*:}"
+    else
+      v=latest
+    fi
+    jq -nc --arg v "$v" --arg s "$src" --arg i "$img" '{value: $v, source: $s, image: $i}'
+  elif jq -e '.live.health' <<<"$t" >/dev/null 2>&1; then
+    url="$(jq -r '.live.health.url' <<<"$t")"
+    field="$(jq -r '.live.health.field // "commit"' <<<"$t")"
+    if ! body="$(curl -fsS --max-time "$PROBE_TIMEOUT" "$url" 2>/dev/null)"; then
+      jq -nc --arg s "$url" '{value: null, source: $s, error: "health request failed"}'
+      return
+    fi
+    v="$(jq -r --arg f "$field" '.[$f] // empty' <<<"$body" 2>/dev/null)"
+    if [ -n "$v" ]; then
+      jq -nc --arg v "$v" --arg s "$url" '{value: $v, sha: $v, source: $s}'
+    else
+      jq -nc --arg s "$url" --arg f "$field" '{value: null, source: $s, error: "health has no \($f) field"}'
+    fi
+  else
+    jq -nc '{value: null, source: "none"}'
+  fi
+}
+
+# sha_is_tag <project> <target-json> <sha> <tag> -> 0 when the served commit IS the pinned tag.
+sha_is_tag() {
+  local repo dir tsha
+  repo="$(jq -r '.pinned.repo // empty' <<<"$2")"
+  [ -n "$repo" ] || repo="$(project_repo_name "$1")"
+  dir="$(repo_dir "$repo")"
+  [ -n "$dir" ] || return 1
+  tsha="$(git -C "$dir" rev-parse -q --verify "$4^{commit}" 2>/dev/null)" || return 1
+  [[ "$tsha" == "$3"* ]] || [[ "$3" == "$tsha"* ]]
+}
+
+# telemetry <target-json> -> [{watch, state, since}]; state OK|TRIP|pending|missing.
+telemetry() {
+  local t="$1" w st since out="[]"
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    if [ ! -f "$WATCH_DIR/$w.yaml" ]; then
+      st=missing; since=""
+    else
+      st="$(cat "$WATCH_STATE_DIR/$w.state" 2>/dev/null || true)"
+      st="${st:-pending}"
+      since="$(cat "$WATCH_STATE_DIR/$w.since" 2>/dev/null || true)"
+    fi
+    out="$(jq -c --arg w "$w" --arg s "$st" --arg since "$since" \
+      '. + [{watch: $w, state: $s, since: (if $since == "" then null else ($since | tonumber? // null) end)}]' <<<"$out")"
+  done < <(jq -r '.telemetry // [] | .[]' <<<"$t")
+  printf '%s' "$out"
+}
+
+# row <project> <target-json> <previous-state-json> -> one snapshot row
+row() {
+  local proj="$1" t="$2" prev="$3" p l status tel id tag drift_since="" now
+  id="$(jq -r '.id' <<<"$t")"
+  p="$(pinned "$proj" "$t")"
+  l="$(live "$t")"
+  tel="$(telemetry "$t")"
+  tag="$(project_release_tag "$proj" 2>/dev/null || true)"
+  now="$(now_epoch)"
+  local pv lv lsrc
+  pv="$(jq -r '.value // empty' <<<"$p")"
+  lv="$(jq -r '.value // empty' <<<"$l")"
+  lsrc="$(jq -r '.source // empty' <<<"$l")"
+  if [ -z "$pv" ] && [ "$(jq -r '.implicit // false' <<<"$t")" = true ]; then
+    status=unreleased
+  elif [ -z "$pv" ] || { [ "$lsrc" != none ] && [ -z "$lv" ]; }; then
+    status=unknown
+  elif [ "$pv" = latest ] || [ "$lv" = latest ]; then
+    status=floating
+  elif [ "$lsrc" = none ]; then
+    status=released
+  elif [ "$pv" = "$lv" ]; then
+    status=ok
+  elif [ -n "$(jq -r '.sha // empty' <<<"$l")" ] && sha_is_tag "$proj" "$t" "$lv" "$pv"; then
+    status=ok
+  else
+    status=drift
+    # Carry the start of a drift across refreshes, so check can tell a rollout in progress
+    # from one that stalled.
+    drift_since="$(jq -r --arg id "$id" --arg pv "$pv" --arg lv "$lv" \
+      '.rows // [] | map(select(.id == $id and .status == "drift" and .pinned.value == $pv and .live.value == $lv)) | .[0].drift_since // empty' <<<"$prev")"
+    drift_since="${drift_since:-$now}"
+  fi
+  jq -nc --arg proj "$proj" --argjson t "$t" --argjson p "$p" --argjson l "$l" --argjson tel "$tel" \
+    --arg status "$status" --arg tag "$tag" --arg ds "$drift_since" --argjson now "$now" '{
+      project: $proj, id: $t.id, channel: ($t.channel // "release"), where: ($t.where // null),
+      implicit: ($t.implicit // false), tag: (if $tag == "" then null else $tag end),
+      pinned: $p, live: $l, status: $status,
+      drift_since: (if $ds == "" then null else ($ds | tonumber) end),
+      telemetry: $tel, deps: ($t.deps // []), probed_at: $now }'
+}
+
+# refresh_snapshot [project...] -> probe, write the snapshot, print its one-line summary.
+refresh_snapshot() {
+  local only="$*" prev="{}" rows tmp line proj t targets summary
+  mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
+  exec 9>"$STATE_DIR/.lock" || die "cannot open $STATE_DIR/.lock"
+  flock -w 120 9 || die "another refresh holds $STATE_DIR/.lock"
+  [ -f "$STATE" ] && prev="$(cat "$STATE")"
+  jq -e . >/dev/null 2>&1 <<<"$prev" || prev="{}"
+  # Read before the loop: a die inside a process substitution would only end that subshell,
+  # and a full refresh would then overwrite the snapshot with zero rows.
+  targets="$(targets_json "$only")" || die "cannot read the targets in $MAP"
+  tmp="$(mktemp "$STATE_DIR/.rows.XXXXXX")" || die "cannot write in $STATE_DIR"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    proj="$(jq -r '.project' <<<"$line")"
+    t="$(jq -c '.target' <<<"$line")"
+    # A target with no id cannot be joined across refreshes or named by check.
+    [ -n "$(jq -r '.id // empty' <<<"$t")" ] || { echo "release-state: $proj has a target with no id; skipped" >&2; continue; }
+    row "$proj" "$t" "$prev" >>"$tmp"
+  done <<<"$targets"
+  rows="$(jq -sc . "$tmp")" || { rm -f "$tmp"; die "cannot read the probed rows"; }
+  rm -f "$tmp"
+  local out="$STATE_DIR/.state.$$"
+  jq -n --argjson rows "$rows" --argjson prev "$prev" --arg only "$only" --argjson now "$(now_epoch)" '
+    ($only | split(" ") | map(select(. != ""))) as $o
+    | { generated_at: ($now | todate), generated_epoch: $now,
+        rows: ((if ($o | length) > 0
+                then ($prev.rows // []) | map(select(.project as $p | $o | index($p) | not))
+                else [] end) + $rows) }' >"$out" || { rm -f "$out"; die "cannot write $out"; }
+  summary="$(jq -r '.rows | "\(length) rows, \(map(select(.status == "drift")) | length) drift, \(map(select(.status == "unknown")) | length) unknown"' "$out")" \
+    || { rm -f "$out"; die "cannot summarize $out"; }
+  mv -f "$out" "$STATE" || { rm -f "$out"; die "cannot replace $STATE"; }
+  printf '%s\n' "$summary"
+}
+
+# One pass, one outcome, published here and nowhere else: a pass that fails at any step is
+# FAILED with that step's reason, so agentctl never promotes a silent PENDING to STALLED.
+cmd_refresh() {
+  local summary rc why
+  REFRESH_WHY="$(mktemp)" || die "mktemp failed"
+  if summary="$(refresh_snapshot "$@")"; then
+    rm -f "$REFRESH_WHY"
+    echo "$summary"
+    # Every pass rewrites the snapshot, so a written one is the artifact; drift is check's verdict.
+    proof_outcome "$NAME" WORKED "$summary"
+  else
+    rc=$?
+    why="$(cat "$REFRESH_WHY" 2>/dev/null)"
+    rm -f "$REFRESH_WHY"
+    proof_outcome "$NAME" FAILED "${why:-refresh exited $rc}"
+    exit "$rc"
+  fi
+}
+
+# severity order for show: broken first, then attention, then green.
+RANK='{"drift":0,"unknown":1,"floating":2,"ok":3,"released":4,"unreleased":5}'
+
+cmd_show() {
+  local json=0 proj=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help) usage 0 ;;
+      -*) die "unknown option: $1" ;;
+      *) proj="$1"; shift ;;
+    esac
+  done
+  [ -f "$STATE" ] || die "no snapshot yet; run: release-state refresh"
+  if [ "$json" = 1 ]; then
+    jq --arg p "$proj" 'if $p == "" then . else .rows |= map(select(.project == $p)) end' "$STATE"
+    return
+  fi
+  jq -r --argjson now "$(now_epoch)" '"refreshed \(.generated_at) (\((($now - .generated_epoch) / 60) | floor)m ago)"' "$STATE"
+  jq -r --arg p "$proj" --argjson rank "$RANK" '
+    def v(x): (x.value // (if x.source == "none" or x.error == "no release tag" then "-" else "?" end));
+    def tel: (.telemetry | if length == 0 then "-" else "\(map(select(.state == "OK")) | length)/\(length)" end);
+    (["PROJECT","CHANNEL","PINNED","LIVE","STATUS","TELEMETRY"] | @tsv),
+    (.rows | map(select($p == "" or .project == $p))
+      | sort_by(($rank[.status] // 9), .project, .id)[]
+      | [.project, (.channel + (if .implicit then "" else " " + .id end)), v(.pinned), v(.live), .status, tel] | @tsv)
+  ' "$STATE" | column -t -s $'\t'
+}
+
+cmd_check() {
+  local grace=30 max_age=60
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --grace) grace="${2:?}"; shift 2 ;;
+      --max-age) max_age="${2:?}"; shift 2 ;;
+      -h|--help) usage 0 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  [ -f "$STATE" ] || { echo "STALE no snapshot at $STATE"; return 1; }
+  local out
+  out="$(jq -r --argjson now "$(now_epoch)" --argjson grace "$grace" --argjson max "$max_age" '
+    (if ($now - .generated_epoch) > ($max * 60)
+     then "STALE snapshot is \((($now - .generated_epoch) / 60) | floor)m old (max \($max)m)" else empty end),
+    (.rows[]
+     | (select(.status == "drift" and (.drift_since != null) and ($now - .drift_since) > ($grace * 60))
+        | "DRIFT \(.project) \(.id): pinned \(.pinned.value) live \(.live.value) for \((($now - .drift_since) / 60) | floor)m"),
+       (select(.status == "floating" and .channel == "prod")
+        | "FLOATING \(.project) \(.id): prod runs an unpinned image"),
+       (.project as $p | .id as $i | .telemetry[] | select(.state == "missing" or .state == "TRIP")
+        | "TELEMETRY \($p) \($i): watch \(.watch) is \(.state)"))
+  ' "$STATE")"
+  [ -z "$out" ] && { echo "ok"; return 0; }
+  printf '%s\n' "$out"
+  return 1
+}
+
+case "${1:-}" in
+  refresh) shift; cmd_refresh "$@" ;;
+  show) shift; cmd_show "$@" ;;
+  check) shift; cmd_check "$@" ;;
+  -h|--help|help) usage 0 ;;
+  *) usage ;;
+esac

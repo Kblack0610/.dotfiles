@@ -3,7 +3,7 @@
 //! `apps/monitoring/prometheus-rules-command-center.yaml`) and the runner-exporter series, as
 //! Grafana's kb-command-center does, so none of them judges anything itself.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Serialize;
 
@@ -89,6 +89,8 @@ pub struct Infra {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grafana: Option<String>,
     pub instant: BTreeMap<&'static str, Vec<Series>>,
+    /// `runners_down()` as `gather` found it, for the browser, which only draws it.
+    pub down: Vec<Series>,
 }
 
 /// Grafana's base URL from `CC_GRAFANA_URL`, for any board's dashboard link.
@@ -141,6 +143,7 @@ pub fn gather() -> Infra {
         }
     }
     judge(&mut out, errors);
+    out.down = out.runners_down().into_iter().cloned().collect();
     out
 }
 
@@ -165,6 +168,32 @@ impl Infra {
     /// One query's series, or none.
     pub fn get(&self, name: &str) -> &[Series] {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// The runners that are down: offline or missing, unless the governor has powered their host
+    /// off, or is starting or stopping it (`ci_governor_power_state` at 1 in a state other than
+    /// `running`), when offline is what it should be. A host the governor does not manage has no
+    /// such series, so its runners are judged as any other. RED NOW on both surfaces and the
+    /// phone's CI line read this, so none of them judges a runner itself. By host, then name.
+    pub fn runners_down(&self) -> Vec<&Series> {
+        let powered_off: HashSet<&str> = self
+            .get("power")
+            .iter()
+            .filter(|s| {
+                s.label("__name__") == "ci_governor_power_state"
+                    && s.value == Some(1.0)
+                    && s.label("state") != "running"
+            })
+            .map(|s| s.label("host"))
+            .collect();
+        let mut down: Vec<&Series> = self
+            .get("runners")
+            .iter()
+            .filter(|s| matches!(s.label("state"), "offline" | "missing"))
+            .filter(|s| !powered_off.contains(s.label("host")))
+            .collect();
+        down.sort_by_key(|s| (s.label("host"), s.label("name")));
+        down
     }
 
     /// The `cc` series keyed as the boards key them: `name` or `name/<domain|host|pool|site>`.
@@ -241,6 +270,64 @@ mod tests {
         assert_eq!(h[0].level, Level::Nodata);
         assert_eq!(h[1].level, Level::Red);
         assert_eq!(i.cc_values().get("cc:pool_status/unity"), Some(&1.0));
+    }
+
+    fn runner(name: &str, host: &str, state: &str) -> Series {
+        let mut s = cc("github_runner_state", ("name", name), 0.0);
+        s.labels.insert("host".into(), host.into());
+        s.labels.insert("state".into(), state.into());
+        s
+    }
+
+    fn power(host: &str, state: &str, v: f64) -> Series {
+        let mut s = cc("ci_governor_power_state", ("host", host), v);
+        s.labels.insert("state".into(), state.into());
+        s
+    }
+
+    #[test]
+    fn a_runner_on_a_host_the_governor_powered_off_is_not_down() {
+        let mut i = Infra::default();
+        i.instant.insert(
+            "runners",
+            vec![
+                runner("aws-burst-1-unity-pool-1", "aws-burst-1", "offline"),
+                runner("aws-burst-2-unity-pool-1", "aws-burst-2", "missing"),
+                runner("mini-1", "mac-mini", "offline"),
+                runner("razer-1", "razer-laptop", "idle"),
+            ],
+        );
+        i.instant.insert(
+            "power",
+            vec![
+                power("aws-burst-1", "stopped", 1.0),
+                // A state at 0 is not the host's state: aws-burst-2 is running.
+                power("aws-burst-2", "stopped", 0.0),
+                power("aws-burst-2", "running", 1.0),
+            ],
+        );
+        let names = |i: &Infra| -> Vec<String> {
+            i.runners_down()
+                .iter()
+                .map(|s| s.label("name").to_string())
+                .collect()
+        };
+        // Down while the governor says its host runs, and on mac-mini, which it does not manage.
+        assert_eq!(names(&i), ["aws-burst-2-unity-pool-1", "mini-1"]);
+        // Starting is not running either: its runners are not up yet, by design.
+        i.instant
+            .insert("power", vec![power("aws-burst-1", "starting", 1.0)]);
+        assert_eq!(names(&i), ["aws-burst-2-unity-pool-1", "mini-1"]);
+        // With no governor answer every offline runner is down.
+        i.instant.remove("power");
+        assert_eq!(
+            names(&i),
+            [
+                "aws-burst-1-unity-pool-1",
+                "aws-burst-2-unity-pool-1",
+                "mini-1"
+            ]
+        );
     }
 
     #[test]

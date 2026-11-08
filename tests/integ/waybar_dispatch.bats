@@ -28,12 +28,13 @@ STUB
 # running, 10 waiting; 5 started and 4 done in 1h, 50 started and 40 done (2 failed) in 24h;
 # 30 done and 18 added in 6h; 1522 agent, 451 human and 357 playtest board rows; 16 of 24 run units, 5 by hand), with the overrides applied. A
 # series is topic.key (a feed number, summary_shepherd.* for the shepherd); h2: prefixes another
-# host, dup: a second scrape of h1; a value of - drops the series.
+# host, dup: a second scrape of h1; a value of - drops the series. acct:<name>.<reason> is that
+# account's claude_account_room_reason series (claude-acct textfile, no topic).
 feed() {
   python3 - "$FX/prom.json" "$@" <<'PY'
 import json, sys
 s = {
-    "summary_dispatch.runnable": 39, "summary_dispatch.runnable_urgent": 32,
+    "summary_dispatch.runnable": 39, "summary_dispatch.runnable_urgent": 32, "summary_dispatch.runnable_high": 7,
     "summary_dispatch.oldest_runnable_s": 46758, "summary_dispatch.oldest_urgent_s": 46758,
     "summary_dispatch.last_pass_epoch": 100000 - 180, "summary_dispatch.last_run_start_epoch": 100000 - 720,
     "summary_dispatch.started_1h": 5, "summary_dispatch.failed_1h": 0,
@@ -61,6 +62,11 @@ for k, v in s.items():
     host, inst = "h1", "i1"
     if k.startswith("h2:"): host, inst, k = "h2", "i2", k[3:]
     if k.startswith("dup:"): inst, k = "i9", k[4:]
+    if k.startswith("acct:"):
+        name, reason = k[5:].split(".")
+        res.append({"metric": {"__name__": "claude_account_room_reason", "account": name, "reason": reason,
+                               "instance": inst}, "value": [0, str(v)]})
+        continue
     topic, name = k.split(".")
     m = {"__name__": "mqtt_" + name, "topic": f"agents_{host}_main_{topic}"}
     m.update(host=host, instance=inst)
@@ -86,7 +92,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   run tip
   assert_line --index 1 "<b>Queue</b>  84 items: 60 queued, 14 running, 10 waiting on you"
-  assert_line --index 2 "queued: 39 ready (32 urgent or high), 21 blocked (19 on a phase, 2 on a PR, 0 on a time tag)"
+  assert_line --index 2 "queued: 39 ready (32 urgent, 7 high), 21 blocked (19 on a phase, 2 on a PR, 0 on a time tag)"
   assert_line --index 3 "oldest: ready 12h59m, urgent <span color='$Y'>12h59m</span>"
   assert_line --index 4 "last hour: 5 started, 4 done, 0 failed"
   assert_line --index 5 "last 24h: 50 started, 38 done, <span color='$Y'>2</span> failed"
@@ -109,6 +115,13 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   run tip
   assert_output --partial "urgent <span color='$R'>12h59m</span>"
+}
+
+@test "the oldest high item's wait rides after the urgent one; a feed without it reads as before" {
+  feed summary_dispatch.oldest_urgent_s=1800 summary_dispatch.oldest_high_s=7200
+  run "$MODULE"
+  run tip
+  assert_line --index 3 "oldest: ready 12h59m, urgent 30m, high 2h00m"
 }
 
 @test "each capacity number takes its own colour: green with room, amber near its limit, red past it" {
@@ -149,7 +162,13 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   feed summary_dispatch.room_held_account=1
   run "$MODULE"
   run tip
-  assert_output --partial "no account has room under its weekly pace"
+  assert_output --partial "paused by: <span color='$Y'>no account has room</span>"
+  # The accounts' published verdicts name each one's reason; the gate reads them, never its own guess.
+  feed summary_dispatch.room_held_account=1 acct:main.pace=1 acct:main.five_hour=1 acct:alt.reserve=1
+  run "$MODULE"
+  run tip
+  assert_output --partial "paused by: <span color='$Y'>no account has room: alt reserve, main five_hour+pace</span>"
+  refute_output --partial "under its weekly pace"
   feed summary_dispatch.room_held_assess=1
   run "$MODULE"
   run tip
@@ -158,6 +177,22 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   run tip
   refute_output --partial "paused by:"
+}
+
+@test "a #prio/only focus reads in amber with how many items it holds; no focus, or an old feed, no line" {
+  feed summary_dispatch.focus_projects=2 summary_dispatch.held_focus=7
+  run "$MODULE"
+  run tip
+  assert_output --partial "focus: <span color='$Y'>only 2 project(s)</span>, 7 queued held off it (reds, urgent and #requested still run)"
+  assert_output --partial "on a time tag, 7 off focus)"
+  feed summary_dispatch.focus_projects=0
+  run "$MODULE"
+  run tip
+  refute_output --partial "focus:"
+  feed
+  run "$MODULE"
+  run tip
+  refute_output --partial "focus:"
 }
 
 @test "a feed without the queue or room numbers reads - and says no headroom, never 0" {
@@ -184,7 +219,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   assert_equal "$(class)" warn
   run tip
-  assert_line --index 2 "<span color='$Y'>dispatch stopped 2h03m: no account has room under its weekly pace</span>"
+  assert_line --index 2 "<span color='$Y'>dispatch stopped 2h03m: no account has room</span>"
   refute_output --partial "(BLOCKED)"
   feed runner_fleet_dispatch.blocked=1 summary_dispatch.held_s=600
   run "$MODULE"
@@ -317,7 +352,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   assert_success
   assert_equal "$(text)" "$(bar 39 1522 12)"
-  assert_output --partial "39 ready (32 urgent or high) of low water 3"
+  assert_output --partial "39 ready (32 urgent, 7 high) of low water 3"
   assert_output --partial "present trickle: 1 of 1 board starts this hour"
   feed
   run "$MODULE"

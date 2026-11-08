@@ -259,15 +259,22 @@ impl Pick {
         let Some(span) = md::section_span(&lines, sheet::TASKS) else {
             return Ok(self);
         };
-        let hits: Vec<&str> = lines[span]
+        let rows: Vec<&str> = lines[span]
             .iter()
             .copied()
             .filter(|l| self.hits(l))
             .collect();
+        self.sole_among(&rows, sheet)
+    }
+
+    /// The pick for the open rows `hits` it hits, all on `sheet`: unchanged for one or none,
+    /// the whole-words row when exactly one is those words whole, else refused naming each
+    /// row's id. The one rule behind [`Pick::resolve_in`] and the playtest verbs.
+    pub(crate) fn sole_among(&self, hits: &[&str], sheet: &Path) -> Result<Pick> {
         if hits.len() < 2 {
-            return Ok(self);
+            return Ok(self.clone());
         }
-        if let Pick::Words(q) = &self {
+        if let Pick::Words(q) = self {
             let whole: Vec<&&str> = hits.iter().filter(|l| md::task_key(l) == *q).collect();
             if let [one] = whole[..] {
                 return Ok(Pick::Exact(one.trim_end().to_string()));
@@ -284,7 +291,7 @@ impl Pick {
             })
             .collect();
         bail!(
-            "'{self}' matches {} open rows in {}, so nothing was written; name one by its id:\n{}",
+            "'{self}' matches {} open rows in {}, so nothing was written; name one by its id or pass --exact with its whole line (twin lines: edit one by hand):\n{}",
             hits.len(),
             sheet.display(),
             named.join("\n")
@@ -347,6 +354,10 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 /// the task sheet if the project has none. `--to` tags it for that release, which is the whole
 /// roadmap-forward loop: plan into `v1.14.0` while `v1.13.0` is still running.
 ///
+/// `want` is the channel a human's want came in by ([`projects::WANT_CHANNELS`]): an agent-lane
+/// row then gets `#requested` from this writer, so no caller composes the tag, and the ingest
+/// event names the channel. A human-lane row is the human's by its sheet, so it takes no tag.
+///
 /// The row is stamped as README "The task row" says: its created tag (`#cMMDD`), the default
 /// priority when it has none, and its id (`<!-- id:<code>-<n> -->`, [`next_id`]) when the
 /// registry gives the project a `code`. Each of `details` becomes an indented line under it.
@@ -354,6 +365,7 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 /// On the human sheet, text with no `type(area): ` prefix is the human's own words, so it goes
 /// to `## Inbox` as typed (plus the `--to` tag), unstamped, for the triager to file
 /// ([`file`]). Nothing raw lands on the board. Agent-lane adds are typed by their writers.
+#[allow(clippy::too_many_arguments)]
 pub fn add(
     p: &Profile,
     log: &Logger,
@@ -361,12 +373,14 @@ pub fn add(
     text: &str,
     details: &[String],
     to: Option<&str>,
+    want: Option<&str>,
     lane: Lane,
 ) -> Result<i32> {
     let text = text.trim();
     if text.is_empty() {
         bail!("nothing to add (provide task text)");
     }
+    let want = want.map(projects::want_channel).transpose()?;
     let proj_dir = projects::project_dir(p, name)?;
     let to = to.map(parse_to).transpose()?;
     let cur = open_version_for(&lane.dir(&proj_dir));
@@ -393,10 +407,9 @@ pub fn add(
         block.extend(md::detail_lines("", details));
         let path = inbox_put(p, &proj_dir, name, &block)?;
         log.info("ptask", &format!("inboxed in {} ({name})", path.display()));
-        crate::ingest::record(
-            p,
-            &crate::ingest::Event::row("added", name, "", lane.name(), &block[0]),
-        );
+        let mut ev = crate::ingest::Event::row("added", name, "", lane.name(), &block[0]);
+        ev.want = want.map(str::to_string);
+        crate::ingest::record(p, &ev);
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
@@ -412,7 +425,10 @@ pub fn add(
         );
         return Ok(3);
     }
-    let block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
+    let mut block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
+    if want.is_some() && lane == Lane::Agent {
+        block[0] = md::add_tag(&block[0], WANT_TAG);
+    }
     if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
         bail!("{why}, so nothing was added");
     }
@@ -420,10 +436,9 @@ pub fn add(
     md::write_atomic(&path, &new)?;
     note_ids(&proj_dir, &block)?;
     log.info("ptask", &format!("added to {} ({name})", path.display()));
-    crate::ingest::record(
-        p,
-        &crate::ingest::Event::row("added", name, "", lane.name(), &block[0]),
-    );
+    let mut ev = crate::ingest::Event::row("added", name, "", lane.name(), &block[0]);
+    ev.want = want.map(str::to_string);
+    crate::ingest::record(p, &ev);
     for l in &block {
         println!("{l}");
     }
@@ -519,6 +534,9 @@ pub(crate) fn inbox_changed(p: &Profile) {
     let _ = fs::write(&flag, format!("{}\n", chrono::Local::now().to_rfc3339()));
 }
 
+/// The tag a human's want carries on the agent board, put there by the writer.
+const WANT_TAG: &str = "#requested";
+
 /// Does `text` open with a well-formed `type(area): ` (README "The task row")?
 fn is_typed(text: &str) -> bool {
     projects::row_type_area(&format!("- [ ] {text}")).is_some()
@@ -526,9 +544,15 @@ fn is_typed(text: &str) -> bool {
 
 /// `new` plus each tag of `old` (`#requested`, `#tier/3`) whose name, the part before `/`, `new`
 /// does not set: the row's own tags outlive a rewrite of its words. Issue and PR refs
-/// (`#1469`) are words, not tags, so they stay in the `was:` line only.
+/// (`#1469`) are words, not tags, so they stay in the `was:` line only. The priority levels
+/// share one name, so a new `#low` replaces the old `#high` rather than joining it.
 fn carry_tags(old: &str, new: &str) -> String {
-    let name = |t: &str| t.split('/').next().unwrap_or(t).to_string();
+    let name = |t: &str| {
+        if is_priority(t) {
+            return "priority".to_string();
+        }
+        t.split('/').next().unwrap_or(t).to_string()
+    };
     let set: Vec<String> = md::find_hashtags(new).iter().map(|t| name(t)).collect();
     md::find_hashtags(old)
         .into_iter()
@@ -632,6 +656,8 @@ pub fn inbox(p: &Profile, name: &str, json: bool, lane: Lane) -> Result<i32> {
 pub(crate) struct Filing {
     pub project: Option<String>,
     pub lane: Lane,
+    /// The channel the line came in by: its agent-lane rows get `#requested`.
+    pub want: Option<&'static str>,
     pub how: How,
 }
 
@@ -734,7 +760,7 @@ pub(crate) fn file(
                 &texts.iter().map(String::as_str).collect::<Vec<_>>(),
             )?;
             let today = chrono::Local::now().date_naive();
-            let block = new_rows(
+            let mut block = new_rows(
                 dest_name,
                 &dest_proj,
                 &texts,
@@ -743,6 +769,11 @@ pub(crate) fn file(
                 &[filed_token(today)],
                 &details,
             )?;
+            if how.want.is_some() && dest_lane == Lane::Agent {
+                for l in block.iter_mut().filter(|l| md::is_open_task(l)) {
+                    *l = md::add_tag(l, WANT_TAG);
+                }
+            }
             if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
                 bail!("{why}, so nothing was filed");
             }
@@ -793,6 +824,7 @@ pub(crate) fn file(
         &line.text,
     );
     ev.lane = dest_lane.name().into();
+    ev.want = how.want.map(str::to_string);
     ev.id = match &how.how {
         How::Dup(id) => Some(id.clone()),
         How::Rows { .. } => written
@@ -1172,6 +1204,7 @@ pub fn step(
 ///
 /// Either way the stamp stays on the row, which is what turns a pile of ticked boxes into an
 /// evidence trail somebody can audit.
+#[allow(clippy::too_many_arguments)]
 pub fn done(
     p: &Profile,
     log: &Logger,
@@ -1179,19 +1212,84 @@ pub fn done(
     pick: &Pick,
     proof: Option<&str>,
     unverified: Option<&str>,
+    on: Option<&str>,
     lane: Lane,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
+    let day = close_day(on)?;
     refuse_open_children(p, name, pick, lane, "finish")?;
     if proof.is_some() {
         refuse_landed_as_proof(p, name, pick, lane, &stamp)?;
     }
-    let on = done_token(chrono::Local::now().date_naive());
+    let on = done_token(day);
     Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
         let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
         Some(md::add_marker(&ticked, &stamp))
     })?
     .0)
+}
+
+/// The day a close is stamped with: `--on <day>`, else today. A future day is refused: a close
+/// is something that happened, and the pace counts read a later day as not yet closed.
+fn close_day(on: Option<&str>) -> Result<chrono::NaiveDate> {
+    let today = chrono::Local::now().date_naive();
+    let Some(raw) = on else { return Ok(today) };
+    let day = chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
+        .map_err(|_| anyhow::anyhow!("--on takes a day as YYYY-MM-DD, not '{raw}'"))?;
+    if day > today {
+        bail!("--on {raw} is in the future");
+    }
+    Ok(day)
+}
+
+/// `notes ptask <name> redate --on <day> <id>` - move a closed row's `done:` day. `done` takes
+/// the day itself now; this is for a row an earlier writer stamped with the wrong one (the
+/// credit backfill stamped its apply day). Only a closed row that already carries a `done:`
+/// day is touched, and only that day changes.
+pub fn redate(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    id: &str,
+    on: &str,
+    dry_run: bool,
+    lane: Lane,
+) -> Result<i32> {
+    let day = close_day(Some(on))?;
+    if !md::is_row_id(id) {
+        bail!("redate takes a row id such as ar-142, not '{id}'");
+    }
+    let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
+        bail!("'{name}' has no task sheet yet");
+    };
+    let hit = |l: &str| {
+        l.trim_start().starts_with("- [x]")
+            && md::row_id(l).as_deref() == Some(id)
+            && done_on(l).is_some()
+    };
+    let Some((new, matched)) = md::edit_first_in_section(&content, sheet::TASKS, hit, |l| {
+        // Only inside the trailing marker: a title that quotes `done:<day>` stays as written.
+        let old = md::marker_token(l, "done:")?;
+        let at = l.rfind("<!--")?;
+        let marker = l[at..].replacen(&format!("done:{old}"), &done_token(day), 1);
+        Some(format!("{}{marker}", &l[..at]))
+    }) else {
+        eprintln!("no closed task with id {id} and a done day in {name}");
+        return Ok(1);
+    };
+    if dry_run {
+        let old = done_on(&matched).map(|d| d.to_string()).unwrap_or_default();
+        println!("{id}\t{old}\t{day}");
+        return Ok(0);
+    }
+    if new == content {
+        println!("unchanged {}", matched.trim());
+        return Ok(0);
+    }
+    md::write_atomic(&sheet, &new)?;
+    log.info("ptask", &format!("redated in {} ({name})", sheet.display()));
+    println!("redated {id} to {day}");
+    Ok(0)
 }
 
 /// The marker token `done` stamps beside the proof: the day the row closed, what a project's
@@ -1250,16 +1348,32 @@ pub(crate) fn tag_token(t: &str) -> Result<String> {
     Ok(format!("#{t}"))
 }
 
-/// `line` with `remove` dropped and `add` added. A row has one size, so adding a
-/// `#size/<s>` replaces the size it had.
+/// `line` with `remove` dropped and `add` added. A row has one size and one priority, so
+/// adding a `#size/<s>` or a `#urgent`/`#high`/`#low` replaces the one it had. It has one
+/// created stamp too, its origin day, so an added `#cMMDD` lands only on a row with none:
+/// `--add c1105` on a `#c1104` row gave nc-71 both (nc-83).
 pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
+    let stamped = md::split_created(line).1.is_some();
+    let add: Vec<&String> = add
+        .iter()
+        .filter(|t| !(stamped && md::is_created_tag(&t[1..].to_lowercase())))
+        .collect();
     let sized = add.iter().any(|t| t.starts_with("#size/"));
-    let old = size_tag(line).filter(|t| sized && !add.iter().any(|a| a == t));
-    let l = old
+    let old = size_tag(line).filter(|t| sized && !add.iter().any(|a| *a == t));
+    let mut l = old
         .into_iter()
         .chain(remove.iter().map(String::as_str))
         .fold(line.to_string(), |l, t| md::drop_tag(&l, t));
+    if add.iter().any(|a| is_priority(a)) {
+        l = md::strip_priority_tag(&l);
+    }
     add.iter().fold(l, |l, t| md::add_tag(&l, t))
+}
+
+/// Is `tag` (`#high`, or bare `high`) one of the priority levels?
+fn is_priority(tag: &str) -> bool {
+    let t = tag.trim_start_matches('#').to_lowercase();
+    md::PRIORITIES.iter().any(|(w, _, _)| *w == t)
 }
 
 /// The row's `#size/<s>` tag, read from its text before the marker comment.
@@ -1764,7 +1878,8 @@ where
     };
     let after = std::cell::RefCell::new(None);
     let write = |l: &str| {
-        let new = f(l);
+        // A row is written with one priority tag, whatever the edit added (nc-70).
+        let new = f(l).map(|n| md::one_priority(&n));
         after.borrow_mut().clone_from(&new);
         Some(new.unwrap_or_else(|| l.to_string()))
     };
@@ -2104,12 +2219,54 @@ Version: v1.13.0
             "a new size replaces the old one"
         );
         assert_eq!(retag(row, &t(&["ai"]), &[]), row, "a tag it has is a no-op");
+        let high = "- [ ] row #high #c1105 <!-- id:ar-1 -->";
+        assert_eq!(
+            retag(high, &t(&["low"]), &[]),
+            "- [ ] row #c1105 #low <!-- id:ar-1 -->",
+            "a new priority replaces the old one, even a less urgent one"
+        );
+        assert_eq!(
+            retag(high, &t(&["c1107", "C1108", "ai"]), &[]),
+            "- [ ] row #high #c1105 #ai <!-- id:ar-1 -->",
+            "a stamped row keeps its one created stamp, whatever the case of the new one"
+        );
+        assert_eq!(
+            retag("- [ ] row #high <!-- id:ar-1 -->", &t(&["c1107"]), &[]),
+            "- [ ] row #high #c1107 <!-- id:ar-1 -->",
+            "a row with no stamp takes one"
+        );
+        assert_eq!(
+            retag("- [ ] row #c1104 #urgent #c1105", &[], &t(&["c1105"])),
+            "- [ ] row #c1104 #urgent",
+            "--remove clears a stray stamp"
+        );
+        assert_eq!(
+            carry_tags(high, "fix(x): reworded #urgent"),
+            "fix(x): reworded #urgent #c1105",
+            "a rewrite's priority replaces the row's"
+        );
         assert!(tag_token("v0.2.0")
             .unwrap_err()
             .to_string()
             .contains("move"));
         assert!(tag_token("two words").is_err());
         assert!(tag_token("#").is_err());
+    }
+
+    #[test]
+    fn close_day_takes_a_past_day_and_refuses_a_future_or_malformed_one() {
+        let today = chrono::Local::now().date_naive();
+        assert_eq!(close_day(None).unwrap(), today);
+        let past = chrono::NaiveDate::from_ymd_opt(2026, 10, 3).unwrap();
+        assert_eq!(close_day(Some("2026-10-03")).unwrap(), past);
+        let next = (today + chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        assert!(close_day(Some(&next))
+            .unwrap_err()
+            .to_string()
+            .contains("future"));
+        assert!(close_day(Some("last week")).is_err());
     }
 
     #[test]
@@ -2630,6 +2787,7 @@ mod inbox_tests {
             &one,
             Some("pr:7"),
             None,
+            None,
             Lane::Human,
         )
         .unwrap();
@@ -2673,6 +2831,86 @@ mod inbox_tests {
         assert_eq!(ev[3].why.as_deref(), Some("dropped: stale"));
     }
 
+    // NEGATIVE CONTROL: without `--on` the close carries today, which is what stamped the apply
+    // day on every backfilled row; redate moves only a closed row's `done:` day.
+    #[test]
+    fn done_takes_the_close_day_and_redate_moves_a_closed_rows_day() {
+        let v = vault(
+            "redate",
+            "",
+            "- [ ] feat(ui): one #high <!-- id:sc-1 -->\n\
+             - [ ] feat(ui): two, not done:2026-10-05 yet #high <!-- id:sc-2 -->\n",
+        );
+        let sheet = v.root.join("projects/scratch/README.md");
+        let (one, two) = (Pick::Id("sc-1".into()), Pick::Id("sc-2".into()));
+        let today = done_token(chrono::Local::now().date_naive());
+        done(
+            &v.p,
+            &v.log,
+            "scratch",
+            &one,
+            Some("pr:7"),
+            None,
+            Some("2026-10-03"),
+            Lane::Human,
+        )
+        .unwrap();
+        done(
+            &v.p,
+            &v.log,
+            "scratch",
+            &two,
+            Some("pr:8"),
+            None,
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        let text = fs::read_to_string(&sheet).unwrap();
+        assert!(text.contains("id:sc-1 done:2026-10-03 pr:7"), "{text}");
+        assert!(text.contains(&format!("id:sc-2 {today} pr:8")), "{text}");
+        assert_eq!(
+            redate(
+                &v.p,
+                &v.log,
+                "scratch",
+                "sc-2",
+                "2026-10-05",
+                false,
+                Lane::Human
+            )
+            .unwrap(),
+            0
+        );
+        let text = fs::read_to_string(&sheet).unwrap();
+        assert!(text.contains("id:sc-2 done:2026-10-05 pr:8"), "{text}");
+        assert!(text.contains("two, not done:2026-10-05 yet"), "{text}");
+        assert!(text.contains("id:sc-1 done:2026-10-03 pr:7"), "{text}");
+        assert_eq!(
+            redate(
+                &v.p,
+                &v.log,
+                "scratch",
+                "sc-9",
+                "2026-10-05",
+                false,
+                Lane::Human
+            )
+            .unwrap(),
+            1
+        );
+        assert!(redate(
+            &v.p,
+            &v.log,
+            "scratch",
+            "sc-2",
+            "2999-01-01",
+            false,
+            Lane::Human
+        )
+        .is_err());
+    }
+
     fn vault(tag: &str, inbox: &str, tasks: &str) -> Vault {
         let root = std::env::temp_dir().join(format!("notes-inbox-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -2694,6 +2932,7 @@ mod inbox_tests {
         Filing {
             project: None,
             lane: Lane::Human,
+            want: None,
             how: How::Rows {
                 texts: texts.iter().map(|t| t.to_string()).collect(),
                 to: None,
@@ -2712,6 +2951,7 @@ mod inbox_tests {
             "the gun sound is off",
             &[],
             None,
+            None,
             Lane::Human,
         )
         .unwrap();
@@ -2721,6 +2961,7 @@ mod inbox_tests {
             "scratch",
             "fix(audio): gun sound",
             &[],
+            None,
             None,
             Lane::Human,
         )
@@ -2827,6 +3068,7 @@ mod inbox_tests {
         let dup = |id: &str| Filing {
             project: None,
             lane: Lane::Human,
+            want: None,
             how: How::Dup(id.into()),
         };
         assert!(file(&v.p, &v.log, "scratch", &pick, &dup("sc-9"), Lane::Human).is_err());
@@ -2839,6 +3081,42 @@ mod inbox_tests {
             "{s}"
         );
         assert!(!s.split("## Tasks").next().unwrap().contains("gun"), "{s}");
+    }
+
+    #[test]
+    fn a_want_is_stamped_by_the_writer_and_its_channel_recorded() {
+        let v = vault("want", "- the gun sound is off #agent\n", "");
+        let agent = || {
+            fs::read_to_string(task_sheet(&v.root.join("projects/scratch/agent")).unwrap()).unwrap()
+        };
+        let ingest = || fs::read_to_string(crate::ingest::path(&v.p)).unwrap_or_default();
+        let add_as = |text: &str, want: Option<&str>| {
+            add(&v.p, &v.log, "scratch", text, &[], None, want, Lane::Agent)
+        };
+        // A bad channel writes nothing; no channel is no stamp.
+        assert!(add_as("fix(audio): a #size/s", Some("shout")).is_err());
+        add_as("fix(audio): b #size/s", None).unwrap();
+        add_as("fix(audio): c #size/s", Some("voice")).unwrap();
+        let s = agent();
+        assert!(!s.contains("a #size"), "{s}");
+        let row = |w: &str| s.lines().find(|l| l.contains(w)).unwrap().to_string();
+        assert!(!row("audio): b").contains("#requested"), "{s}");
+        assert!(row("audio): c").contains("#requested"), "{s}");
+        assert!(ingest().contains(r#""want":"voice""#), "{}", ingest());
+        // File: the line's words stay as `was:`, each row is stamped, the channel is recorded.
+        let pick = Pick::new("gun sound", false).unwrap();
+        let mut how = rows(&["fix(audio): d #size/s", "fix(audio): e #size/s"]);
+        how.want = Some("outbox");
+        file(&v.p, &v.log, "scratch", &pick, &how, Lane::Human).unwrap();
+        let s = agent();
+        for w in ["audio): d", "audio): e"] {
+            assert!(
+                s.lines().any(|l| l.contains(w) && l.contains("#requested")),
+                "{s}"
+            );
+        }
+        assert!(s.contains("was: the gun sound is off"), "{s}");
+        assert!(ingest().contains(r#""want":"outbox""#), "{}", ingest());
     }
 
     #[test]

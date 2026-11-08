@@ -155,10 +155,12 @@ pub(crate) fn ledger_lines(text: &str) -> (Vec<LedgerLine>, usize) {
     (runs, bad)
 }
 
-/// Passed when systemd says success and the runner did not say FAILED or go silent.
+/// Passed when systemd says success and the runner did not say FAILED or go silent. BLOCKED is
+/// neither: the run waits on a gate or a budget, as `word_ok` in fleet.rs reads it.
 fn ledger_ok(result: &str, outcome: &str) -> Option<bool> {
     match (result, outcome) {
         (_, "FAILED" | "STALLED") => Some(false),
+        ("success" | "", "BLOCKED") => None,
         ("success" | "", _) => Some(true),
         _ => Some(false),
     }
@@ -416,6 +418,13 @@ not json at all
         assert_eq!(ledger_ok("success", "STALLED"), Some(false));
         assert_eq!(ledger_ok("success", "NOOP"), Some(true));
         assert_eq!(ledger_ok("timeout", "WORKED"), Some(false));
+    }
+
+    #[test]
+    fn a_blocked_run_is_neither_passed_nor_failed_unless_systemd_failed_it() {
+        assert_eq!(ledger_ok("success", "BLOCKED"), None);
+        assert_eq!(ledger_ok("", "BLOCKED"), None);
+        assert_eq!(ledger_ok("timeout", "BLOCKED"), Some(false));
     }
 
     #[test]

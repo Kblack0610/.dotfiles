@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Tab Keeper",
+  "version": "0.1.0",
+  "description": "One tab per chosen site, no exact duplicates, idle tabs unloaded, old tabs saved to Karakeep then closed.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tab-keeper@dotfiles.local",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": { "required": ["browsingActivity"] }
+    }
+  },
+  "background": { "scripts": ["rules.js", "background.js"] },
+  "permissions": ["tabs", "alarms", "storage", "contextualIdentities", "cookies"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "action": { "default_title": "Tab Keeper: click to pause or resume dedupe" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "commands": {
+    "toggle-paused": {
+      "suggested_key": { "default": "Ctrl+Alt+D" },
+      "description": "Pause or resume dedupe"
+    }
+  }
+}

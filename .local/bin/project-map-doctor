@@ -21,7 +21,16 @@
 
 set -uo pipefail
 
-MAP_FILE="${1:-${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}}"
+# Overridable because the deployed copy is a stow symlink into ~/.dotfiles, so a worktree editing
+# the library cannot verify its own change without pointing at it.
+PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
+if [ ! -r "$PROJECT_NAME_LIB" ]; then
+  printf 'FAIL  %s not found; is the dotfiles stow current?\n' "$PROJECT_NAME_LIB"
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$PROJECT_NAME_LIB"
+MAP_FILE="${1:-$(project_map_file)}"
 AGENT_DIR="${AGENT_DIR:-$HOME/.agent}"
 
 fails=0
@@ -42,15 +51,7 @@ pass "map is valid JSON ($MAP_FILE)"
 
 # The set of names the registry considers real comes from `project_keys`, the one
 # definition (`default` is a tracker fallback, not a project, so every typo'd name does not
-# "resolve"). Overridable because the deployed copy is a stow symlink into ~/.dotfiles, so
-# a worktree editing the library cannot verify its own change without pointing at it.
-PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
-if [ ! -r "$PROJECT_NAME_LIB" ]; then
-  fail "$PROJECT_NAME_LIB not found; is the dotfiles stow current?"
-  exit 1
-fi
-# shellcheck source=/dev/null
-. "$PROJECT_NAME_LIB"
+# "resolve").
 export PROJECT_MAP_FILE="$MAP_FILE"
 KNOWN="$(project_keys)"
 is_known() { grep -qxF -- "$1" <<<"$KNOWN"; }
@@ -111,6 +112,47 @@ while IFS= read -r dup; do
 done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.code != null) | {k: .key, c: .value.code}]
   | group_by(.c)[] | select(length > 1) | "\"\(.[0].c)\" is shared by \(map(.k) | join(", "))"' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n row-id codes checked" || skip "no row-id codes to check"
+
+# --- 4c. every deploy target is well formed (release-state reads them) ----------------
+# A malformed target does not error in release-state; it shows `unknown` forever, which reads
+# like a flaky probe. Schema: docs/operations/release-state.md.
+n=0
+while IFS= read -r msg; do
+  [ -n "$msg" ] && fail "$msg"
+done < <(jq -r '
+  def chans: ["prod","beta","alpha","preview","internal"];
+  (.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.targets != null)
+  | .key as $p
+  | if (.value.targets | type) != "array" then "trackers.\($p).targets is not a list"
+    else .value.targets[] | (.id // "?") as $id
+    | (if type != "object" then "trackers.\($p).targets has a non-object entry" else empty end),
+      (select(type == "object")
+       | (if ((.id // "") | test("^[a-z0-9][a-z0-9-]*$") | not) then "trackers.\($p) target \"\($id)\": id must be lowercase letters, digits and -" else empty end),
+         (if ((.channel // "") as $c | chans | index($c) | not) then "trackers.\($p) target \"\($id)\": channel \"\(.channel // "")\" is not one of \(chans | join("|"))" else empty end),
+         (if (.pinned.tag == true) or ((.pinned.repo // "") != "" and (.pinned.path // "") != "") then empty
+          else "trackers.\($p) target \"\($id)\": pinned needs {tag: true} or repo and path" end),
+         (if .live == null or (.live.k8s.context and .live.k8s.namespace and .live.k8s.deployment) or .live.health.url then empty
+          else "trackers.\($p) target \"\($id)\": live needs k8s {context, namespace, deployment} or health {url}" end))
+    end' "$MAP_FILE" 2>/dev/null)
+while IFS= read -r dup; do
+  [ -n "$dup" ] && fail "deploy target id $dup"
+done < <(jq -r '[(.trackers // {}) | to_entries[] | select(.value | type == "object") | (.value.targets // []) | arrays | .[] | objects | .id]
+  | group_by(.)[] | select(length > 1) | "\"\(.[0])\" is used \(length) times"' "$MAP_FILE" 2>/dev/null)
+while IFS=$'\t' read -r name id rel ref; do
+  [ -n "$name" ] || continue
+  n=$((n + 1))
+  case "$rel" in
+    repo|dep) is_known "$ref" || fail "trackers.$name target \"$id\": $rel \"$ref\" is not a registered project" ;;
+    watch) [ -f "$AGENT_DIR/watches/$ref.yaml" ] || warn "trackers.$name target \"$id\": telemetry watch \"$ref\" has no $AGENT_DIR/watches/$ref.yaml" ;;
+  esac
+done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | .key as $p
+  | (.value.targets // []) | arrays | .[] | objects | .id as $id
+  | (select(.pinned.repo) | [$p, $id, "repo", .pinned.repo]),
+    ((.deps // [])[] | [$p, $id, "dep", .]),
+    ((.telemetry // [])[] | [$p, $id, "watch", .])
+  | @tsv' "$MAP_FILE" 2>/dev/null)
+targets_n="$(jq '[(.trackers // {})[] | objects | (.targets // []) | arrays | length] | add // 0' "$MAP_FILE" 2>/dev/null)"
+[ "${targets_n:-0}" -gt 0 ] && pass "all $targets_n deploy targets checked ($n references)" || skip "no deploy targets to check"
 
 # --- 5. every key under ~/.agent is a registered project ---------------------------
 # Plans, lessons, sessions, asks, outcomes, dreams and evals are filed per project. A key

@@ -4,7 +4,7 @@
 # Usage: worktree.sh [verb]
 #
 # Verbs:
-#   new [-c <dir>] [--server <name>] [--detach]
+#   new [-c <dir>] [--server <name>] [--detach] [--claude] [--host <worker>]
 #                     cut a fresh worktree off the repo containing <dir> (default $PWD),
 #                     open a tmux session rooted in it, and land there. Reuses the lowest
 #                     IDLE agent-N (reapable, see `reap`) before cutting a new one: an idle
@@ -16,7 +16,11 @@
 #                     whichever world you pressed the key in. --server opens it on that
 #                     tmux server instead; --detach opens it without going there. Together
 #                     they let a caller with no tmux of its own (fleet-dispatch, from a
-#                     timer) start a session.
+#                     timer) start a session. --claude starts Claude in it (`claude-acct
+#                     run`, the launcher `cl` uses): the one "new agent for this repo"
+#                     that Prefix+p c, Prefix+f ctrl-n and Prefix+g ctrl-n all call.
+#                     --host runs the same `new` on a fleet worker over ssh (fleet-hosts.sh),
+#                     detached; <dir> is then a path on the worker.
 #                                                                               [Prefix+F]
 #   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
 #                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
@@ -27,8 +31,12 @@
 #   reap [<path>]     remove one worktree, but ONLY when it is clean, landed (merged or
 #                     pushed) and has no live tmux session. Refuses with the reason
 #                     otherwise. There is no --force.
-#   gc [<repo>] [-n]  reap every eligible worktree and NAME the ones it kept. With no repo,
-#                     everything under $WT_ROOT; with one, that repo's linked worktrees.
+#   gc [<repo>] [-n] [--tsv]
+#                     reap every eligible worktree and NAME the ones it kept, one state word
+#                     per tree (README: "Worktree states"). With no repo, everything under
+#                     $WT_ROOT; with one, that repo's linked worktrees. --tsv prints
+#                     state, action, name, path, reason per tree and no total.
+#                     An orphan daemon in Library/ does not hold a tree: gc ends it and names its pid.
 #   --list            the rows, TSV. The data behind the picker, split out so it is
 #                     assertable without a terminal.
 #   preview <path>    the picker's preview pane for one worktree.
@@ -61,6 +69,10 @@
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 . "${SELF%/*}/worlds.sh" || exit 1
+# shellcheck source=../../lib/origin-repo.sh
+. "${SELF%/*}/../../lib/origin-repo.sh" || exit 1
+# shellcheck source=../../../.config/shared-hooks/project-name.sh
+. "${PROJECT_NAME_LIB:-${SELF%/*}/../../../.config/shared-hooks/project-name.sh}" || exit 1
 
 WT_ROOT="${WT_ROOT:-$HOME/.worktrees}"
 # The command a new session's first window runs. Empty = a plain shell, which is the honest
@@ -80,7 +92,7 @@ tmux() {
 }
 # Repo discovery for --list, so the picker sees worktrees of repos that have none under
 # $WT_ROOT yet (platform's siblings, for one). Same file the hooks resolve projects through.
-WT_PROJECT_MAP="${WT_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
+WT_PROJECT_MAP="${WT_PROJECT_MAP:-$(project_map_file)}"
 # Where the DEFERRED reap reports to. `done` kills the terminal that asked for it, so the
 # outcome has nowhere to be printed; a refusal that nobody can read is the same as a silent
 # one. Mirrors wind-down's fire.log, for the same reason.
@@ -88,6 +100,8 @@ WT_LOG="${WT_LOG:-$HOME/.agent/wt/done.log}"
 # Where `new` takes its per-repo lock. Prefix+F runs in the background now, so nothing
 # serializes two presses any more; without the lock both pick the same slot.
 WT_LOCK_DIR="${WT_LOCK_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/wt}"
+# Git prints this beside its own hint to unlock, so it is what the reader of a refusal acts on.
+WT_HOLD_REASON='held by wt: wt done or wt reap frees it and refuses a live session; do not unlock it or use -f -f'
 
 # ── Repo plumbing ────────────────────────────────────────────────────────────
 
@@ -95,13 +109,20 @@ WT_LOCK_DIR="${WT_LOCK_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/wt}"
 #
 # Via --git-common-dir, so it gives the same answer from inside a linked worktree as from
 # the main one. That matters: `wt new` run inside `dotfiles-agent-1` must cut
-# `dotfiles-agent-2`, not `dotfiles-agent-1-agent-1`.
+# `dotfiles-agent-2`, not `dotfiles-agent-1-agent-1`. A submodule's common dir is
+# <super>/.git/modules/<name>, whose core.worktree names its checkout; a bare repo has none.
+# The probe is needed: --git-dir with no core.worktree takes the cwd as the toplevel. A
+# deinitialised submodule keeps core.worktree, so the checkout must still exist.
 wt_main_repo() {
-  local common
+  local common top
   common=$(git -C "${1:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
   case "$common" in
   */.git) printf '%s\n' "${common%/.git}" ;;
-  *) return 1 ;; # bare repo: no working tree to name a worktree after
+  *)
+    git --git-dir="$common" config --get core.worktree >/dev/null 2>&1 || return 1
+    top=$(git --git-dir="$common" rev-parse --show-toplevel 2>/dev/null) && [ -d "$top" ] || return 1
+    printf '%s\n' "$top"
+    ;;
   esac
 }
 
@@ -159,18 +180,25 @@ wt_is_linked() {
   [ "$gd" != "$common" ]
 }
 
-# wt_is_husk <path> -- true when <path> has no .git and holds nothing but caches a Unity
-# editor or its MCP server rewrote after the worktree was removed. Such a dir is no worktree,
-# so nothing git-based ever reaped it, and it pinned its agent-N slot for good: 2026-11-03,
-# 15 of them, eight holding a slot number. Anything else in a git-less dir may be someone's
-# only copy of their work, so it stays out.
-WT_HUSK_ENTRIES=' Library Logs Temp obj UserSettings '
+# wt_is_husk <path> -- true when <path> has no .git and holds nothing but what a tool rewrote
+# after the worktree was removed: whole cache dirs (WT_HUSK_CACHES), and a few named files
+# (WT_HUSK_FILES) a Unity editor, Claude Code or pnpm writes into a project it still has open.
+# Such a dir is no worktree, so nothing git-based ever reaped it, and it pinned its agent-N
+# slot for good: 2026-11-03, 15 of them, eight holding a slot number. Anything else in a
+# git-less dir may be someone's only copy of their work, so it stays out.
+WT_HUSK_CACHES=' Library Logs Temp obj UserSettings node_modules '
+WT_HUSK_FILES=' .claude/settings.local.json Packages/manifest.json Packages/packages-lock.json pnpm-lock.yaml '
 wt_is_husk() {
-  local e
+  local e f
   [ -d "$1" ] && [ ! -e "$1/.git" ] || return 1
   for e in "$1"/* "$1"/.[!.]*; do
-    [ -e "$e" ] || continue
-    case "$WT_HUSK_ENTRIES" in *" ${e##*/} "*) ;; *) return 1 ;; esac
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    case "$WT_HUSK_CACHES" in *" ${e##*/} "*) continue ;; esac
+    # Only a named file or its parent dir is walked; any other entry, even an empty dir, is kept.
+    case "$WT_HUSK_FILES" in *" ${e##*/} "* | *" ${e##*/}/"*) ;; *) return 1 ;; esac
+    while IFS= read -r -d '' f; do
+      case "$WT_HUSK_FILES" in *" ${f#"$1"/} "*) ;; *) return 1 ;; esac
+    done < <(find "$e" ! -type d -print0 2>/dev/null)
   done
 }
 
@@ -193,9 +221,10 @@ wt_dirty_count() {
   printf '%s\n' "$n"
 }
 
-# wt_submodule_pushed <dir> -- true when the submodule's checked-out commit is on a remote ref.
+# wt_submodule_pushed <dir> [<rev>] -- true when <rev> (default: the submodule's checked-out
+# commit) is on a remote ref.
 wt_submodule_pushed() {
-  [ -n "$(git -C "$1" for-each-ref --count=1 --contains HEAD refs/remotes 2>/dev/null)" ]
+  [ -n "$(git -C "$1" for-each-ref --count=1 --contains "${2:-HEAD}" refs/remotes 2>/dev/null)" ]
 }
 
 # wt_landed <path> <base-ref> -- has this worktree's work gone somewhere durable?
@@ -222,14 +251,10 @@ wt_landed() {
 # Fails closed: no gh, no jq, a non-GitHub origin, a detached HEAD or a network error all
 # answer "not landed", which only ever keeps a worktree.
 wt_pr_merged_at_head() {
-  local branch head url slug
+  local branch head slug
   branch=$(git -C "$1" symbolic-ref --short -q HEAD) || return 1
   head=$(git -C "$1" rev-parse HEAD 2>/dev/null) || return 1
-  url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
-  case "$url" in
-  *github.com[:/]*) slug="${url#*github.com[:/]}" slug="${slug%.git}" ;;
-  *) return 1 ;;
-  esac
+  slug=$(origin_repo "$1" github.com) || return 1
   panel_have gh && panel_have jq || return 1
   timeout 20 gh pr list -R "$slug" --head "$branch" --state merged --json headRefName,headRefOid,state 2>/dev/null |
     jq -e --arg b "$branch" --arg h "$head" \
@@ -240,13 +265,35 @@ wt_pr_merged_at_head() {
 # submodule of <path>; nothing, and rc 1, when there are none. A worktree cut from a
 # submodule (`git -C External/unity-core worktree add ~/.worktrees/unity-core-x`) keeps its
 # git dir INSIDE this worktree's .git/modules, so removing this one orphans that one.
+#
+# One whose dir is gone (git marks it prunable) holds nothing but its HEAD, so it counts only
+# while that commit is on no remote ref. Counting every one kept a tree for good over a scratch
+# worktree deleted with its /tmp dir (2026-11-07: unity-core-playground-unity63b, two pushed).
+# The main worktree is the first record, skipped by position: git names a submodule's by its
+# .git/modules dir.
 wt_submodule_worktrees() {
-  local sub
+  local sub path head prunable
   while read -r _ sub _; do
     [ -e "$1/$sub/.git" ] || continue
-    git -C "$1/$sub" worktree list --porcelain 2>/dev/null |
-      awk 'NR > 1 && /^worktree / { print substr($0, 10); found = 1; exit } END { exit !found }' &&
+    while IFS=$'\t' read -r path head prunable; do
+      if [ "$prunable" != prunable ]; then
+        printf '%s\n' "$path"
+        return 0
+      fi
+      wt_submodule_pushed "$1/$sub" "$head" && continue
+      printf '%s (its dir is gone and %s is on no remote)\n' "$path" "${head:0:12}"
       return 0
+    done < <(git -C "$1/$sub" worktree list --porcelain 2>/dev/null |
+      awk 'BEGIN { RS = ""; FS = "\n" }
+        NR > 1 {
+          p = ""; h = pr = "-" # a placeholder, as read collapses an empty tab-split field
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^worktree /) p = substr($i, 10)
+            else if ($i ~ /^HEAD /) h = substr($i, 6)
+            else if ($i ~ /^prunable/) pr = "prunable"
+          }
+          print p "\t" h "\t" pr
+        }')
   done < <(git -C "$1" submodule status 2>/dev/null)
   return 1
 }
@@ -320,18 +367,69 @@ wt_pane_inside() {
     awk -v p="$1" '$0 == p || index($0, p "/") == 1 { found = 1 } END { exit !found }'
 }
 
-# wt_process_inside <path> -- true when any process has its working directory in <path> or below.
-# A build, a test run or a subagent's shell holds no tmux pane, and a tree deleted under one fails
-# it halfway. A process of another user cannot be read, and is not ours to keep the tree for.
+# wt_pids_inside <path> [exe] -- pids whose working directory (or, with `exe`, whose
+# executable) is <path> or below. A process of another user cannot be read, and is not ours
+# to keep the tree for.
+wt_pids_inside() {
+  local path
+  path=$(printf '%s' "$1" | sed 's/[][*?\\]/\\&/g') # -lname takes a glob; the path is literal
+  find "${WT_PROC_ROOT:-/proc}"/[0-9]*/"${2:-cwd}" -maxdepth 0 \( -lname "$path" -o -lname "$path/*" \) -print 2>/dev/null |
+    awk -F/ '{ print $(NF - 1) }'
+}
+
+# wt_orphans_inside <path> -- daemons nobody owns: the binary is under <path>/Library, and the
+# parent is init or the user manager. Unity's gamedev-mcp-server is the case: it outlives its
+# editor, and from #652 to 2026-11-02 its cwd pinned merged clean trees until 11 were killed by
+# hand. Its parent is systemd from the start, so this does not prove the editor is gone:
+# wt_occupied_reason asks wt_editor_open first. Library/ is Unity's regenerable cache, so a
+# server someone left running from a build directory is never matched.
+wt_orphans_inside() {
+  local proc="${WT_PROC_ROOT:-/proc}" pid ppid
+  for pid in $(wt_pids_inside "$1/Library" exe); do
+    ppid=$(awk '$1 == "PPid:" { print $2 }' "$proc/$pid/status" 2>/dev/null)
+    if [ "$ppid" = 1 ] || [ "$(cat "$proc/$ppid/comm" 2>/dev/null)" = systemd ]; then
+      printf '%s\n' "$pid"
+    fi
+  done
+}
+
+# wt_await_exit <pid>... -- wait for pids to exit. The timeout is a guard: the caller looks
+# at what is still there afterwards.
+WT_SETTLE_SECS="${WT_SETTLE_SECS:-30}"
+wt_await_exit() {
+  waitpid --exited --timeout "$WT_SETTLE_SECS" "$@" >/dev/null 2>&1 || :
+}
+
+# wt_end_orphans <path> -- ask the orphans in <path> to exit, once wt_reap_reason has passed.
+# rc 1 when one is still there afterwards, so the tree is kept and says why.
+wt_end_orphans() {
+  local pids
+  pids=$(wt_orphans_inside "$1")
+  [ -n "$pids" ] || return 0
+  # shellcheck disable=SC2086 # one pid per word
+  kill -TERM $pids 2>/dev/null
+  # shellcheck disable=SC2086
+  wt_await_exit $pids
+  [ -z "$(wt_orphans_inside "$1")" ] || panel_fail "kept $(basename "$1"): an orphan daemon outlived SIGTERM"
+}
+
+# wt_process_inside <path> -- true when any process but an orphan has its working directory
+# in <path> or below. A build, a test run or a subagent's shell holds no tmux pane, and a tree
+# deleted under one fails it halfway.
 wt_process_inside() {
-  [ -n "$(find "${WT_PROC_ROOT:-/proc}"/[0-9]*/cwd -maxdepth 0 \( -lname "$1" -o -lname "$1/*" \) -print -quit 2>/dev/null)" ]
+  local pids
+  pids=$(wt_pids_inside "$1")
+  [ -n "$pids" ] || return 1
+  [ -n "$(grep -vxFf <(wt_orphans_inside "$1") <<<"$pids")" ]
 }
 
 # ── Eligibility ──────────────────────────────────────────────────────────────
 
 # wt_work_reason <path> -- print why <path> still holds WORK; nothing, and rc 0, when the
-# work is safely elsewhere. Split out of wt_reap_reason for exactly one caller: `done` kills
-# its own session, so the live-session rule below would refuse it every single time. `done`
+# work is safely elsewhere; rc 2 when <path> is no worktree at all (gone, git-less and not a
+# husk, a main checkout, or a .git git cannot resolve), so wt_state need not probe it again.
+#
+# Split out of wt_reap_reason for exactly one caller: `done` kills its own session, so the live-session rule below would refuse it every single time. `done`
 # has to ask "is the work safe?" while the session is still up, which is this question, and
 # leave "is anything running there?" to the deferred reap that runs after the kill.
 #
@@ -342,16 +440,16 @@ wt_work_reason() {
 
   [ -d "$path" ] || {
     printf 'no such directory\n'
-    return 1
+    return 2
   }
   if [ ! -e "$path/.git" ]; then
     wt_is_husk "$path" && return 0
-    printf 'no git, and it holds more than Unity caches\n'
-    return 1
+    printf 'no git, and it holds more than tool caches\n'
+    return 2
   fi
   wt_is_linked "$path" || {
     printf 'a main checkout, not a worktree\n'
-    return 1
+    return 2
   }
 
   dirty=$(wt_dirty_count "$path")
@@ -417,7 +515,7 @@ wt_occupied_reason() {
   # under it mid-turn. Being unattached says nothing about whether anything is running there.
   # This is why wind-down -- and now `done` -- reap only AFTER the kill: by then there is no
   # session, and the check passes honestly rather than being waived.
-  if wt_session_exists "$(basename "$1")"; then
+  if wt_session_exists "$(panel_session_name "$1")"; then
     printf 'its tmux session is live\n'
     return 1
   fi
@@ -435,6 +533,35 @@ wt_occupied_reason() {
   fi
 
   return 0
+}
+
+# The one state word gc prints per tree, derived each pass and never stored. The states table
+# in .local/src/tmux/README.md names the same words; tests/unit/worktree.bats pins the two.
+WT_GC_STATES='landed husk claimed held not-a-worktree'
+
+# wt_state <path> -- print `<state><TAB><reason>`, the state one of WT_GC_STATES. Built on the
+# same two checks as wt_reap_reason, each run once: landed and husk are exactly the trees
+# wt_reap_reason passes. The reason is the work one first, as wt_reap_reason gives it.
+wt_state() {
+  local work rc occ
+  # Never judged through the link: it may point at a main checkout or anyone's tree.
+  if [ -L "$1" ]; then
+    printf 'not-a-worktree\ta symlink to %s\n' "$(readlink "$1")"
+    return 0
+  fi
+  work=$(wt_work_reason "$1")
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    printf 'not-a-worktree\t%s\n' "$work"
+  elif ! occ=$(wt_occupied_reason "$1"); then
+    printf 'claimed\t%s\n' "${work:-$occ}"
+  elif [ "$rc" -ne 0 ]; then
+    printf 'held\t%s\n' "$work"
+  elif wt_is_husk "$1"; then
+    printf 'husk\t\n'
+  else
+    printf 'landed\t\n'
+  fi
 }
 
 # ── Rows ─────────────────────────────────────────────────────────────────────
@@ -456,14 +583,16 @@ wt_scan_repos() {
 }
 
 # wt_worktrees_of <main-repo> -- `path<TAB>branch` for every LINKED worktree, main excluded.
+# The main is the first record, skipped by position: in a submodule git names it by its
+# .git/modules dir, which matches no checkout path.
 wt_worktrees_of() {
   git -C "$1" worktree list --porcelain 2>/dev/null |
-    awk -v main="$1" '
-      /^worktree /  { path = substr($0, 10); branch = "" ; next }
+    awk '
+      /^worktree /  { n++; path = substr($0, 10); branch = "" ; next }
       /^branch /    { branch = substr($0, 8); sub(/^refs\/heads\//, "", branch) }
       /^detached$/  { branch = "(detached)" }
-      /^$/          { if (path != "" && path != main) print path "\t" branch; path = "" }
-      END           { if (path != "" && path != main) print path "\t" branch }
+      /^$/          { if (n > 1 && path != "") print path "\t" branch; path = "" }
+      END           { if (n > 1 && path != "") print path "\t" branch }
     '
 }
 
@@ -553,7 +682,7 @@ cmd_preview() {
 #
 # fresh: the directory is gone and so is the branch -- or the branch is a leftover that is
 # already merged into <base-ref> and checked out nowhere, which `new` then resets with -B.
-# A refused reap or a hand-run `git worktree remove` leaves `agent-N` behind; an UNMERGED
+# A refused reap or a removal by hand leaves `agent-N` behind; an UNMERGED
 # leftover may be the only copy of a commit, so it still pins its slot.
 #
 # recycle: the directory is a worktree of THIS repo and wt_reap_reason passes -- clean,
@@ -584,10 +713,14 @@ wt_next_slot() {
       fi
     elif [ -z "$fresh" ] && ! wt_session_exists "$repo-agent-$n"; then
       # A live session pins its slot even with the directory gone. Its worktree can be
-      # removed out from under it (an agent running `git worktree remove --force` on
-      # itself), and handing the slot out again landed the new worktree in the OLD session:
+      # removed out from under it (an agent running `rm -rf` or `remove -f -f` past
+      # wt_hold), and handing the slot out again landed the new worktree in the OLD session:
       # wt_ensure_session found the name taken and reused it, so you arrived among panes
       # still sitting in the deleted directory.
+      #
+      # With no session, a hold that outlived its directory is dropped here: `rm -rf` or a husk
+      # reap leaves the entry, and `prune` skips a locked one, so it would pin the slot for good.
+      { git -C "$main" worktree unlock "$path" && git -C "$main" worktree remove "$path"; } 2>/dev/null || :
       if ! git -C "$main" show-ref --verify --quiet "refs/heads/agent-$n" 2>/dev/null ||
         { git -C "$main" merge-base --is-ancestor "refs/heads/agent-$n" "$base" 2>/dev/null &&
           ! git -C "$main" worktree list --porcelain | grep -qxF "branch refs/heads/agent-$n"; }; then
@@ -610,6 +743,7 @@ wt_next_slot() {
 # per agent. The branch it was on goes the way `reap` sends it -- `-d`, never `-D`.
 wt_recycle() {
   local path="$1" branch="agent-$2" base="$3" old main
+  wt_end_orphans "$path" || return 1
   old="$(wt_branch_of "$path")"
   main=$(wt_main_repo "$path") || return 1
   git -C "$path" switch --quiet -C "$branch" "$base" >&2 || return 1
@@ -718,9 +852,14 @@ wt_ensure_session() {
 }
 
 cmd_new() {
-  local dir="$PWD" detach=0
+  local dir="$PWD" detach=0 host=''
   while [ $# -gt 0 ]; do
     case "$1" in
+    --host)
+      host="${2:-}"
+      [ -n "$host" ] || panel_die "--host needs a fleet worker name"
+      shift 2
+      ;;
     -c | --cwd)
       dir="${2:-}"
       shift 2 || panel_die "-c needs a directory"
@@ -737,9 +876,14 @@ cmd_new() {
       detach=1
       shift
       ;;
+    --claude)
+      WT_NEW_CMD='claude-acct run'
+      shift
+      ;;
     *) panel_die "new: unknown arg: $1" ;;
     esac
   done
+  [ -z "$host" ] || { wt_new_remote "$host" "$dir"; return; }
   # tmux reports a pane whose directory was deleted as `<path> (deleted)`, which is how Linux
   # reads /proc/<pid>/cwd. `new` only needs the REPO, so the same path re-created is as good
   # as the original; if nothing is there now, say so rather than "not a directory".
@@ -808,6 +952,37 @@ cmd_new() {
   [ "$detach" = 1 ] || panel_focus_session "$name"
 }
 
+# wt_new_remote <host> <dir> -- `new` on a fleet worker (fleet-hosts.sh): the same verb runs
+# there over ssh, detached (a remote session has no client here to focus), on the same tmux
+# server, with WT_NEW_CMD passed as its environment. <dir> is a path on the worker. Prints the
+# session name the worker printed.
+wt_new_remote() {
+  local host="$1" dir="$2" out args=(new --detach -c "$dir")
+  # shellcheck source=../../lib/fleet-hosts.sh
+  . "${FLEET_HOSTS_LIB:-${SELF%/*}/../../lib/fleet-hosts.sh}" || exit 1
+  [ -z "${WT_SERVER:-}" ] || args+=(--server "$WT_SERVER")
+  out=$(fleet_host_run "$host" WT_NEW_CMD="${WT_NEW_CMD:-}" wt "${args[@]}") ||
+    panel_die "could not open a session on $host"
+  printf '%s\n' "${out##*$'\n'}"
+}
+
+# wt_hold <path> -- git-lock a worktree, so that only `reap` can remove it.
+#
+# wt_reap_reason binds only the callers that ask it. On 2026-11-06 a session cleaning up after
+# its finished run typed `git worktree remove` on dotfiles-agent-4, 57 s after dispatch had
+# re-cut that slot for another session; the tree was clean, so git let it go. A lock is the one
+# check git makes itself, so it binds every harness, the WorktreeRemove hook and any script:
+# `remove`, `remove --force` and `move` refuse, and `prune` skips it. Only `rm -rf` and
+# `remove -f -f` get past, and wt_next_slot clears what those leave.
+wt_hold() {
+  local out
+  out=$(git -C "$1" worktree lock --reason "$WT_HOLD_REASON" "$1" 2>&1) && return 0
+  case "$out" in
+  *'already locked'*) ;;
+  *) panel_warn "could not lock $(basename "$1"): $out" ;;
+  esac
+}
+
 # wt_prepare <main> <path> <n> <recycle|fresh> -- the slow half of `new`: fetch, then put
 # agent-<n> at the trunk, by resetting the idle worktree in place or cutting a fresh one.
 wt_prepare() {
@@ -826,6 +1001,7 @@ wt_prepare() {
     git -C "$main" worktree add "$path" -B "agent-$n" "$base" >&2 ||
       panel_fail "git worktree add failed: $path" || return 1
   fi
+  wt_hold "$path"
 }
 
 # cmd_prepare <main> <path> <n> <kind> [<cmd>] -- `_prepare`, the first pane of a session
@@ -858,16 +1034,6 @@ wt_land() {
   wt_focus "$name"
 }
 
-# wt_pids_inside <path> [exe] -- pids whose working directory (or, with `exe`, whose
-# executable) is <path> or below. Same /proc seam as wt_process_inside.
-wt_pids_inside() {
-  local link="${2:-cwd}" d t
-  for d in "${WT_PROC_ROOT:-/proc}"/[0-9]*; do
-    t=$(readlink "$d/$link" 2>/dev/null) || continue
-    case "$t" in "$1" | "$1"/*) printf '%s\n' "${d##*/}" ;; esac
-  done
-}
-
 # wt_settle <path> -- after the kill and before the reap: let the killed session's processes
 # finish exiting, so the reap does not count them. `kill-session` only SIGHUPs the panes and
 # returns, and the reap ran in that same instant: from #681 to 2026-11-03, 57 of the last 60
@@ -876,17 +1042,16 @@ wt_pids_inside() {
 # reparented to systemd and never exits, so it is told to. Nothing is waited on or killed
 # while a session or pane is still in the tree (a window-scope wind-down): reap refuses that
 # anyway. waitpid's timeout is a guard; whatever is still there afterwards is what reap reports.
-WT_SETTLE_SECS="${WT_SETTLE_SECS:-30}"
 wt_settle() {
   local path="$1" pids
-  wt_session_exists "$(basename "$path")" && return 0
+  wt_session_exists "$(panel_session_name "$path")" && return 0
   wt_pane_inside "$path" && return 0
   pids=$(wt_pids_inside "$path" exe)
   # shellcheck disable=SC2086 # one pid per word
   [ -z "$pids" ] || kill -TERM $pids 2>/dev/null
   pids=$( { wt_pids_inside "$path"; wt_pids_inside "$path" exe; } | sort -u)
   # shellcheck disable=SC2086
-  [ -z "$pids" ] || waitpid --exited --timeout "$WT_SETTLE_SECS" $pids >/dev/null 2>&1 || :
+  [ -z "$pids" ] || wt_await_exit $pids
 }
 
 cmd_reap() {
@@ -900,13 +1065,14 @@ cmd_reap() {
   else
     panel_fail "kept $(basename "$path"): $reason" || return 1
   fi
+  wt_end_orphans "$path" || return 1
 
   name="$(basename "$path")"
   # A husk has no worktree for git to remove, and wt_reap_reason has just proved it holds
-  # nothing but Unity caches and nobody is in it.
+  # nothing but tool caches and nobody is in it.
   if wt_is_husk "$path"; then
     rm -rf -- "$path" || panel_fail "could not remove $path" || return 1
-    printf 'reaped %s (no git, Unity caches only)\n' "$name"
+    printf 'reaped %s (no git, tool caches only)\n' "$name"
     return 0
   fi
 
@@ -923,16 +1089,22 @@ cmd_reap() {
   # removed a unity-core-playground worktree and they piled up at 15-20 GB each. wt_dirty_count
   # already counts edits, untracked files and unpushed commits inside submodules, so a tree it
   # calls clean is safe to remove with --force; the count is taken again right before.
+  #
+  # The policy passed above, so wt_hold's lock comes off here, and a refusal puts it back: the
+  # tree is staying. A tree that never had one fails the unlock harmlessly.
   local out
+  git -C "$main" worktree unlock "$path" 2>/dev/null || :
   if ! out=$(git -C "$main" worktree remove "$path" 2>&1); then
     case "$out" in
     *'containing submodules'*)
       [ "$(wt_dirty_count "$path")" -eq 0 ] &&
-        git -C "$main" worktree remove --force "$path" ||
-        panel_fail "git worktree remove refused $path" || return 1
+        out=$(git -C "$main" worktree remove --force "$path" 2>&1) && out=''
       ;;
-    *) panel_fail "git worktree remove refused $path: $out" || return 1 ;;
     esac
+    if [ -n "$out" ]; then
+      wt_hold "$path"
+      panel_fail "git worktree remove refused $path: $out" || return 1
+    fi
   fi
 
   # Take the branch with it, or the slot numbers ratchet forever: wt_next_slot treats an existing
@@ -1011,11 +1183,36 @@ cmd_done() {
   printf 'done: killing %s, then reaping its worktree unless something still holds it (log: %s)\n' "$name" "$logf"
 }
 
+# wt_prune_branches <main> <dry> -- delete the slot branches (agent-N, worktree-agent-*) that
+# are merged into the trunk and checked out in no worktree, which `reap` leaves when `-d`
+# refused at the time (2026-11-06: 11 in dotfiles, 5 in private). `-d`, never `-D`, so git
+# re-checks every one. Prints one line per branch: "deleted <b>" or "kept <b>".
+wt_prune_branches() {
+  local main="$1" dry="$2" def base b wtpath
+  def=$(wt_default_branch "$main") || return 0
+  base=$(wt_base_ref "$main" "$def") || return 0
+  while IFS=' ' read -r b wtpath; do
+    [ -z "$wtpath" ] || continue
+    case "$b" in
+    agent-[0-9]* | worktree-agent-*) ;;
+    *) continue ;;
+    esac
+    if [ "$dry" -eq 1 ]; then
+      printf 'would delete %s\n' "$b"
+    elif git -C "$main" branch -d "$b" >/dev/null 2>&1; then
+      printf 'deleted %s\n' "$b"
+    else
+      printf 'kept %s\n' "$b"
+    fi
+  done < <(git -C "$main" branch --merged "$base" --format='%(refname:short) %(worktreepath)' 2>/dev/null)
+}
+
 cmd_gc() {
-  local dry=0 repo='' arg
+  local dry=0 tsv=0 repo='' arg
   for arg in "$@"; do
     case "$arg" in
     -n | --dry-run) dry=1 ;;
+    --tsv) tsv=1 ;;
     -*) panel_die "gc: unknown flag: $arg" ;;
     *) repo="$arg" ;;
     esac
@@ -1030,41 +1227,101 @@ cmd_gc() {
       candidates+=("${line%%$PANEL_TAB*}")
     done < <(wt_worktrees_of "$repo")
   else
-    for d in "$WT_ROOT"/*; do
-      [ -d "$d" ] && candidates+=("$d")
+    # A submodule's worktree goes first: it pins the superproject tree its git dir lives in,
+    # so reaping it first frees that tree in this pass rather than the next night's.
+    local -a later=()
+    for d in "$WT_ROOT"/* "$WT_ROOT"/.[!.]*; do
+      [ -d "$d" ] || continue
+      # A dot dir is a tool's (.preview, .xdg-agent18) unless it is a linked worktree (.git
+      # FILE): judged by wt_work_reason alone, a git-less one with only caches would read as a
+      # reapable husk, and one holding a clone would be listed as kept every night.
+      case "${d##*/}" in .*) [ -f "$d/.git" ] || continue ;; esac
+      if [ -f "$d/.git" ] && [[ "$(<"$d/.git")" == 'gitdir: '*/modules/*/worktrees/* ]]; then
+        candidates+=("$d")
+      else
+        later+=("$d")
+      fi
     done
+    candidates+=(${later[@]+"${later[@]}"})
   fi
 
   # An empty candidate list is a RESULT, not a success. Every silent-success bug in this
   # tree has looked exactly like a sweep that ran over nothing and said "done".
   if [ "${#candidates[@]}" -eq 0 ]; then
-    panel_hint "no worktrees to consider${repo:+ in $repo}"
+    # A repo whose every tree is gone can still hold merged slot branches `-d` refused earlier.
+    if [ -n "$repo" ]; then
+      wt_prune_branches "$repo" "$dry" | sed "s|^|${repo##*/}: |" >&2
+    fi
+    if [ "$tsv" -eq 1 ]; then
+      panel_hint "no worktrees to consider${repo:+ in $repo}" >&2
+    else
+      panel_hint "no worktrees to consider${repo:+ in $repo}"
+    fi
     return 0
   fi
 
-  # STRANDED: kept, and nobody is in it, so it is held for its work (dirty, unlanded) by an
-  # owner that is gone. Nothing comes back for such a tree on its own, so gc names it every
+  # Each tree gets one state (wt_state) and one action. HELD is the tree nobody will come back
+  # for: kept for its work (dirty, unlanded) by an owner that is gone, so gc names it every
   # night rather than keeping it silently (2026-11-02: 30 of 70 playground trees, some for weeks).
-  local reaped=0 kept=0 stranded=0 reason
+  # A symlink, a main checkout or a dir git cannot resolve is NOT-A-WORKTREE and is skipped, so
+  # it no longer inflates that count (2026-11-06: 12 of 44 "stranded" were such entries).
+  local reaped=0 skipped=0 line state action hue reason ends out states='' w by='' main
+  local -a mains=()
   for path in "${candidates[@]}"; do
-    if reason=$(wt_reap_reason "$path"); then
+    line=$(wt_state "$path")
+    state=${line%%$'\t'*} reason=${line#*$'\t'}
+    # The repos whose branches get pruned, taken before the reap (afterwards the tree is gone).
+    # Never through a not-a-worktree entry: a symlink or a plain dir with its own clone is not
+    # a repo gc manages.
+    if [ "$state" != not-a-worktree ] && main=$(wt_main_repo "$path" 2>/dev/null); then
+      [[ " ${mains[*]-} " == *" $main "* ]] || mains+=("$main")
+    fi
+    action=kept hue=$C_INP
+    case "$state" in
+    landed | husk)
+      # gc runs unattended, so a daemon it ends goes in the log by pid.
+      ends=$(wt_orphans_inside "$path" | paste -sd, -)
       if [ "$dry" -eq 1 ]; then
-        printf '%swould reap%s  %s\n' "$C_SEL" "$C_OFF" "$(basename "$path")"
+        action='would reap' hue=$C_SEL reaped=$((reaped + 1))
+      elif out=$(cmd_reap "$path" 2>&1 >/dev/null); then
+        action=reaped hue=$C_SEL reaped=$((reaped + 1))
       else
-        cmd_reap "$path" >/dev/null && printf '%sreaped%s      %s\n' "$C_SEL" "$C_OFF" "$(basename "$path")"
+        # Still the state it was judged in; the reason says why the reap refused.
+        reason=$out
       fi
-      reaped=$((reaped + 1))
+      [ -z "$ends" ] || reason+="${reason:+ }(orphan daemon $ends)"
+      ;;
+    not-a-worktree)
+      action=skipped
+      skipped=$((skipped + 1))
+      ;;
+    esac
+    states+="$state"$'\n'
+
+    if [ "$tsv" -eq 1 ]; then
+      printf '%s\t%s\t%s\t%s\t%s\n' "$state" "$action" "${path##*/}" "$path" "$reason"
     else
-      if wt_occupied_reason "$path" >/dev/null; then
-        reason="$reason; stranded, nobody in it"
-        stranded=$((stranded + 1))
-      fi
-      printf '%skept%s        %-28s %s%s%s\n' "$C_INP" "$C_OFF" "$(basename "$path")" "$C_DIM" "$reason" "$C_OFF"
-      kept=$((kept + 1))
+      printf '%s%-10s%s  %-28s %-14s %s%s%s\n' "$hue" "$action" "$C_OFF" "${path##*/}" "$state" "$C_DIM" "$reason" "$C_OFF"
     fi
   done
 
-  printf '\n%s of %s reapable, %s kept, %s stranded%s\n' "$reaped" "${#candidates[@]}" "$kept" "$stranded" \
+  # After the loop, so a branch whose tree was reaped just now (and kept by `-d`) is seen too.
+  local pruned='' got
+  for main in ${mains[@]+"${mains[@]}"}; do
+    got=$(wt_prune_branches "$main" "$dry" | sed "s|^|${main##*/}: |")
+    [ -z "$got" ] || pruned+="${pruned:+$'\n'}$got"
+  done
+
+  if [ "$tsv" -eq 1 ]; then
+    [ -z "$pruned" ] || printf '%s\n' "$pruned" >&2
+    return 0
+  fi
+  [ -z "$pruned" ] || printf '\nbranches:\n%s\n' "$pruned"
+  for w in $WT_GC_STATES; do
+    by+="${by:+, }$w $(grep -cx -- "$w" <<<"$states")"
+  done
+  printf '\n%s of %s reapable, %s kept, %s skipped; %s%s\n' "$reaped" "${#candidates[@]}" \
+    "$((${#candidates[@]} - reaped - skipped))" "$skipped" "$by" \
     "$([ "$dry" -eq 1 ] && printf ' (dry run, nothing removed)')"
 }
 

@@ -16,8 +16,6 @@ Docs grow by addition: every session adds the paragraph its change needed, with 
 
 Add or change a repo's documentation the right way, so it does not bloat: find the repo's own doc rules and the one home for the subject, edit that home (a new doc only when nothing covers it), write what is true now with no history, link instead of copying, keep the doc inside its budget, put it in the index, then run the prose check and the repo's doc check. Use whenever a change needs docs: "document this", "write docs for X", "add this to the docs", "update the README", "where should this go in the docs", "write up how X works", or after a feature, fix or harness change whose behaviour a doc describes. Works in any repo; uses the repo's own standard when it has one, and the BNB standard (unity-core docs/writing-docs.md) as the default. Not for checking existing docs against the code (docs-audit), prose voice alone (de-ai-writing, which this skill runs as a step), colleague messages (work-comms), problem briefs (one-pager), or agent rules in CLAUDE.md and AGENTS.md (update-rules).
 
-## When to Use
-
 - A change adds or alters behaviour a doc describes, or a feature, system or fix needs documenting.
 - Someone asks where something should be documented, or to update a README or guide.
 - A doc grew past its budget in your change and needs trimming or splitting.

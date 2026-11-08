@@ -1,9 +1,9 @@
 "use strict";
-// The Sessions tab, the tab switch and the live-update stream. Shared helpers are in ui.js; the
+// The open session, the tab switch and the live-update stream. Shared helpers are in ui.js; the
 // answer cards are waiting.js, Home is home.js, and each board tab is its own static/*.js and
-// registers in TABS. Sessions is one row per session: its fleet-state facts and the overview
-// (bucket tiles, the last day, changes) are watch.js, the shepherd's pass, due lines and
-// rundowns are shepherd.js; a transcript is read only when its session is opened.
+// registers in TABS. Sessions' table and header are sessions.js, its fleet-state facts and the
+// last day are watch.js, the shepherd's pass, due lines and rundowns are shepherd.js. An open
+// session starts on its conversation; its Details page (sessions.js) is read only when asked for.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
 const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [], views: {} };
@@ -15,63 +15,19 @@ const LOG_PARTS = [];
 
 const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
-  renderList();
-  renderBadge();
-  if (st.tab === "home") renderHome();
-  // A session coming or going changes which queue rows have an Open button.
-  if (st.tab === "queue") renderQueueList();
-  if (st.sel) {
-    const a = st.agents.find((x) => x.target === st.sel.target);
-    if (a) { st.sel = a; renderHead(); } else { $("d-dot").className = "dot"; $("d-name").textContent = st.sel.target + " (gone)"; }
-  }
-});
-
-// The list: the shepherd's pass as one line (it opens the overview), then one row per session
-// grouped by bucket, the shepherd's own session pinned first (sessionRows, watch.js). A
-// fleet-state row with no session on this machine folds open to its card instead of opening.
-function renderList() {
   const waiting = st.agents.filter((a) => a.status === "waiting").length;
   $("wait-badge").innerHTML = waiting ? `<span class="badge">${waiting}</span>` : "";
-  const rows = sessionRows().filter((r) => !wst.filter || r.group === wst.filter);
-  const ov = `<div class="row ov${st.sel ? "" : " sel"}" data-ov><div style="min-width:0"><div class="t">overview</div><div class="s">${passLine()}</div></div></div>`;
-  if (!rows.length) { $("list").innerHTML = ov + `<div class="empty">${wst.filter ? `No ${esc(wst.filter)} sessions.` : "No agents running."}</div>`; return; }
-  const n = new Map();
-  for (const r of rows) n.set(r.group, (n.get(r.group) || 0) + 1);
-  const now = Date.now(), maxCtx = maxContext();
-  let html = ov, group = null;
-  for (const r of rows) {
-    if (r.group !== group) { group = r.group; html += `<div class="group">${esc(group)} <span class="muted">${n.get(group)}</span></div>`; }
-    html += listRow(r, now, maxCtx);
+  renderBadge();
+  sst.render();
+  if (st.tab === "home") renderHome();
+  // A session coming or going changes which queue rows have an Open button.
+  if (st.tab === "queue") qst.render();
+  if (st.sel) {
+    const a = st.agents.find((x) => x.target === st.sel.target);
+    if (a) { st.sel = a; renderHead(); }
+    else if (!st.sel.paneless) { $("d-dot").className = "dot"; $("d-name").textContent = st.sel.target + " (gone)"; }
   }
-  paint($("list"), html, wst.open);
-}
-
-function listRow(r, now, maxCtx) {
-  const { a, s } = r, t = a ? a.target : s.target;
-  const task = (s && s.topic) || (a && a.summary) || "";
-  const body = `<span class="dot ${esc(a ? a.status : "parked")}"></span><div style="min-width:0"><div class="t">${esc(t)}</div><div class="s">${esc(task)}</div>${pills(a, s)}</div>`;
-  if (a) return `<div class="row${st.sel && st.sel.target === t ? " sel" : ""}" data-t="${esc(t)}">${body}</div>`;
-  const k = "ghost:" + t;
-  return `<details class="ghost" data-k="${esc(k)}"${wst.open[k] ? " open" : ""}><summary class="row" title="no session on this machine: its fleet-state card">${body}</summary>${card(s, maxCtx, now)}</details>`;
-}
-
-// What the row is beyond its status: the human's own session, parked, its PR and CI, plan
-// phases, ETA, idle time, account and ask. `a` is the live session, `s` its fleet-state row;
-// either can be missing.
-function pills(a, s) {
-  const p = [];
-  if (a && a.attached) p.push('<span class="pill here">you are here</span>');
-  if (a && a.parked) p.push('<span class="pill parked">parked</span>');
-  if (s && s.pr && s.pr !== "-") p.push(`<span class="pill" title="PR">PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}</span>`);
-  const ph = a && a.phases ? phasesText(a) : s && s.phases_total ? `${s.phases_done}/${s.phases_total} phases` : "";
-  if (ph) p.push(`<span class="pill phases" title="plan phases">${esc(ph)}</span>`);
-  if (s && s.eta) p.push(`<span class="pill" title="estimated finish">eta ${esc(s.eta)}</span>`);
-  if (s && s.idle_min != null) p.push(`<span class="pill" title="idle">idle ${dur(s.idle_min)}</span>`);
-  if (a && a.account) p.push(`<span class="pill" title="account">${esc(a.account)}</span>`);
-  if (a && a.plan && !(s && s.topic)) p.push(`<span class="pill" title="plan">${esc(a.plan)}</span>`);
-  if (a && a.ask) p.push(`<span class="pill ask" title="pending ask">ask ${esc(a.ask)}</span>`);
-  return p.length ? `<div class="pills">${p.join("")}</div>` : "";
-}
+});
 
 // "3/6 phases, next: <name>", from fleet-sessions' read of the plan's ## Phases checklist.
 function phasesText(a) {
@@ -91,7 +47,7 @@ function approveButtons(a) {
 }
 function rerenderApprove() {
   if (st.tab === "home") renderHome();
-  if (st.tab === "queue") renderQueueList();
+  if (st.tab === "queue") qst.render();
 }
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("[data-approve],[data-approve-go],[data-approve-no]");
@@ -164,104 +120,137 @@ $("acts").addEventListener("click", async (e) => {
   renderActs();
 });
 
-$("list").addEventListener("click", (e) => {
-  const row = e.target.closest(".row");
-  if (!row || row.closest(".ghost")) return; // a ghost row folds; there is nothing to open
-  if (row.dataset.ov !== undefined) { overview(true); return; }
-  const a = st.agents.find((x) => x.target === row.dataset.t);
-  if (a) select(a);
-});
-
 function renderHead() {
   $("v-seg").hidden = $("d-dot").hidden = false;
   $("d-dot").className = "dot " + st.sel.status;
-  $("d-name").textContent = `${st.sel.target}  ${st.sel.summary || ""}`;
+  $("d-name").textContent = `${st.sel.name || st.sel.target}  ${st.sel.summary || ""}`;
   // A parked session has no claude to type into or screen to show: only its transcript.
-  $("compose").hidden = !!st.sel.parked;
-  $("v-screen").disabled = !!st.sel.parked;
+  const noPane = !!(st.sel.parked || st.sel.paneless);
+  $("compose").hidden = noPane;
+  $("v-screen").disabled = noPane;
   renderActs();
+  renderPin();
 }
+
+// A waiting session's open question, pinned under its conversation and answered in place: the
+// same card Home draws (waiting.js sessionCard), less its Open button.
+function renderPin() {
+  const el = $("ask-pin"), a = st.sel;
+  const on = !!(a && a.question && st.view === "transcript");
+  el.hidden = !on;
+  if (!on) { el.innerHTML = ""; return; }
+  const key = a.target + "|" + a.question.kind + "|" + a.question.text;
+  if (el.dataset.key === key) return; // a refresh must not take a half-typed reply
+  el.dataset.key = key;
+  // The row kind hub-core's home::NeedKind::of_dialog gives the same dialog.
+  el.innerHTML = sessionCard(a, { choice: "ask", tool: "perm", plan: "plan" }[a.question.kind] || "turn", true);
+}
+$("ask-pin").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c) answerCard(c, e); });
+$("ask-pin").addEventListener("keydown", (e) => answerOnEnter(e));
 
 function select(a) {
   if (!st.sel || st.sel.target !== a.target) st.act = { confirm: null, busy: st.act.busy, msg: "", err: false };
   st.sel = a; st.start = null; st.end = null;
-  if (a.parked && st.view === "screen") {
-    st.view = "transcript";
-    $("v-transcript").classList.add("on");
-    $("v-screen").classList.remove("on");
-  }
+  showView("transcript");
   $("main").classList.add("open");
   $("err").textContent = "";
-  renderHead(); renderList(); renderFacts();
+  renderHead(); renderFacts();
   $("scroll").innerHTML = "";
   load();
 }
 
-// No session open: the detail pane is the overview (watch.js and shepherd.js fill it). On a
-// phone it is a page of its own, reached from the list's first row.
-function overview(open) {
+// No session open: the page is the table (sessions.js) and the folds under it.
+function overview() {
   st.sel = null; st.start = null; st.end = null;
   $("d-dot").hidden = $("v-seg").hidden = true;
-  $("d-name").textContent = "Overview";
+  $("d-name").textContent = "Sessions";
   $("acts").hidden = true;
   $("compose").hidden = true;
-  if (open) $("main").classList.add("open");
-  renderList(); renderFacts(); renderOverview();
+  renderPin();
+  $("main").classList.remove("open");
+  $("scroll").innerHTML = "";
+  renderFacts(); sst.render(); renderSide(); refreshSessions();
 }
 
-$("back").onclick = () => { $("main").classList.remove("open"); };
+$("back").onclick = () => setTab("sessions", "");
 
-function evHtml(e) {
-  const ts = e.ts ? `<div class="ts">${esc(e.ts.replace("T", " ").slice(0, 19))}</div>` : "";
-  if (e.kind === "tool_use") return `<div class="ev tool"><b>${esc(e.name || "tool")}</b> ${esc(e.text)}</div>`;
-  if (e.kind === "tool_result") {
-    const first = e.text.split("\n")[0].slice(0, 120);
-    return `<div class="ev"><details><summary>result: ${esc(first)}</summary><pre>${esc(e.text)}</pre></details></div>`;
-  }
-  // What the human typed is shown as typed; what an agent wrote is markdown.
-  return e.role === "user" ? `<div class="ev user">${ts}${esc(e.text)}</div>` : `<div class="ev md">${ts}${md(e.text)}</div>`;
-}
-
+// The conversation: #scroll holds the older sentinel and #convo (convo.js draws into it).
 async function load() {
+  if (st.view === "page") return loadPage();
   if (st.view === "screen") return loadScreen();
-  const a = st.sel;
+  const a = st.sel, still = () => st.sel === a && st.view === "transcript";
   let page;
   try { page = await api(`/api/transcript?t=${encodeURIComponent(a.target)}`); }
-  catch (e) { $("scroll").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
-  if (st.sel !== a) return;
+  catch (e) { if (still()) $("scroll").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (!still()) return;
   st.start = page.start; st.end = page.end;
-  $("scroll").innerHTML = olderBtn() + page.events.map(evHtml).join("");
+  convoReset();
+  $("scroll").innerHTML = olderHtml() + `<div id="convo">${convoHtml(page.events)}</div>`;
+  // The newest step group is what the agent is doing now, so it starts open.
+  const groups = $("convo").querySelectorAll("details.steps"), last = groups[groups.length - 1];
+  if (last && last === $("convo").lastElementChild) last.open = true;
+  watchOlder();
   toBottom($("scroll"));
+  jumpShow(false);
 }
 
-const olderBtn = () => st.start > 0 ? '<button class="btn older" id="older">Load older</button>' : "";
+// The top of the conversation: a sentinel that reads the page before when it scrolls into
+// view, and is a button too, for a retry after a failed read.
+const olderHtml = () => st.start > 0 ? '<button class="btn older" id="older">Older</button>' : "";
 
-$("scroll").addEventListener("click", async (e) => {
-  if (e.target.id !== "older") return;
-  const a = st.sel, s = $("scroll"), btn = e.target;
+const olderSeen = typeof IntersectionObserver === "undefined" ? null
+  : new IntersectionObserver((es) => { if (es.some((x) => x.isIntersecting)) loadOlder(); }, { root: $("scroll"), rootMargin: "600px 0px 0px 0px" });
+function watchOlder() {
+  if (!olderSeen) return;
+  olderSeen.disconnect();
+  const b = $("older");
+  if (b) olderSeen.observe(b);
+}
+
+const loadOlder = coalesce(async () => {
+  const a = st.sel, s = $("scroll"), btn = $("older");
+  if (!a || !btn || st.view !== "transcript" || btn.disabled) return;
   let page;
-  btn.disabled = true;
+  btn.disabled = true; btn.textContent = "Reading older";
   try { page = await api(`/api/transcript?t=${encodeURIComponent(a.target)}&before=${st.start}`); }
-  catch (err) { btn.disabled = false; btn.textContent = `Load older (${err.message})`; return; }
-  if (st.sel !== a) return;
+  catch (err) { btn.disabled = false; btn.textContent = `Older (${err.message}), tap to retry`; return; }
+  if (st.sel !== a || st.view !== "transcript") return;
   const prevH = s.scrollHeight;
-  btn.remove();
   st.start = page.start;
-  s.insertAdjacentHTML("afterbegin", olderBtn() + page.events.map(evHtml).join(""));
+  $("convo").insertAdjacentHTML("afterbegin", convoHtml(page.events));
+  if (st.start > 0) { btn.disabled = false; btn.textContent = "Older"; } else btn.remove();
   s.scrollTop += s.scrollHeight - prevH; // keep the reader where they were
+  watchOlder();
 });
+
+$("scroll").addEventListener("click", (e) => {
+  if (!st.sel || st.view !== "transcript") return;
+  if (e.target.id === "older") { loadOlder(); return; }
+  const step = e.target.closest("[data-step]");
+  if (step) convoStep(step);
+});
+
+// "Jump to latest": shown while the reader is above the bottom and something new arrived.
+// It floats just above the bottom of the conversation, whatever the pin and composer take.
+function jumpShow(on) {
+  const j = $("jump");
+  j.hidden = !on;
+  if (on) j.style.bottom = `${$("detail").getBoundingClientRect().bottom - $("scroll").getBoundingClientRect().bottom + 12}px`;
+}
+$("jump").onclick = () => { toBottom($("scroll")); jumpShow(false); };
+$("scroll").addEventListener("scroll", () => { if (!$("jump").hidden && atBottom($("scroll"))) jumpShow(false); }, { passive: true });
 
 const loadNewer = coalesce(async () => {
   const a = st.sel;
-  if (!a || st.view !== "transcript" || st.end === null) return;
+  if (!a || st.view !== "transcript" || st.end === null || !$("convo")) return;
   const stick = atBottom($("scroll"));
   const page = await api(`/api/transcript?t=${encodeURIComponent(a.target)}&after=${st.end}`);
   if (st.sel !== a) return;
   if (page.start !== st.end) { load(); return; } // fell too far behind: server sent the newest page
   st.end = page.end;
   if (page.events.length) {
-    $("scroll").insertAdjacentHTML("beforeend", page.events.map(evHtml).join(""));
-    if (stick) toBottom($("scroll"));
+    convoAppend($("convo"), page.events);
+    if (stick) toBottom($("scroll")); else jumpShow(true);
   }
 });
 
@@ -274,12 +263,16 @@ const loadScreen = coalesce(async () => {
   toBottom($("scroll"));
 });
 
-function setView(v) {
+function showView(v) {
   st.view = v;
-  $("v-transcript").classList.toggle("on", v === "transcript");
-  $("v-screen").classList.toggle("on", v === "screen");
-  if (st.sel) load();
+  jumpShow(false);
+  for (const n of ["page", "transcript", "screen"]) $("v-" + n).classList.toggle("on", v === n);
 }
+function setView(v) {
+  showView(v);
+  if (st.sel) { renderFacts(); renderPin(); load(); }
+}
+$("v-page").onclick = () => setView("page");
 $("v-transcript").onclick = () => setView("transcript");
 $("v-screen").onclick = () => setView("screen");
 
@@ -304,8 +297,10 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "queue", "projects", "sessions", "infra", "log", "fleet"];
+const TAB_NAMES = ["home", "daily", "queue", "projects", "sessions", "infra", "log", "fleet", "schedules", "costs"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily" };
+// layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
+const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"] };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
@@ -328,6 +323,8 @@ function route(hash) {
   let arg = at < 0 ? "" : h.slice(at + 1);
   try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
   if (name === "outbox" && !arg) arg = "outbox";
+  const moved = MOVED[name + "/" + arg.toLowerCase()];
+  if (moved) return { name, tab: moved[0], arg: "", query, section: moved[1] };
   return { name, tab: tabOf(name), arg, query };
 }
 // Show tab t; arg is what it opens (blank for its front), query its view state, which a tab
@@ -343,7 +340,6 @@ function setTab(t, arg, query) {
   }
   $("cur-tab").textContent = $("tab-" + t).firstChild.textContent;
   menuOpen(false);
-  $("list").hidden = t !== "sessions";
   $("detail").hidden = t !== "sessions";
   if (TABS[t]) TABS[t].show();
   showUrl();
@@ -413,6 +409,7 @@ function connect() {
 // Back and Forward, and every in-app link, change the fragment; show what it names.
 window.addEventListener("hashchange", () => {
   const r = route(location.hash);
+  if (r.section) st.section = r.section;
   if (r.tab !== st.tab || r.arg !== st.arg || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query);
 });
 
@@ -420,6 +417,7 @@ window.addEventListener("hashchange", () => {
 document.addEventListener("DOMContentLoaded", () => {
   const r = route(location.hash);
   if (RETIRED_TABS[r.name]) st.section = r.name;
+  if (r.section) st.section = r.section;
   setTab(r.tab, r.arg, r.query);
   connect();
 });

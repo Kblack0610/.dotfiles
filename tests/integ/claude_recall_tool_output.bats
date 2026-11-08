@@ -97,3 +97,53 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
   run jq -c '[.rows[] | [.key,.calls,.chars]]' <<<"$(out --by kind)"
   assert_output '[["subagent",3,150]]'
 }
+
+@test "by session,tool: a row per pair, and a subagent's output counts for the parent session that pays for it" {
+  mkdir -p "$D/projects/p/s2/subagents"
+  cp "$D/projects/p/s1.jsonl" "$D/projects/p/s2/subagents/agent-a1.jsonl"
+  run jq -c '[.rows[] | [.key,.calls,.carried]]' <<<"$(out --by session,tool)"
+  assert_output '[[["s1","Bash"],2,200],[["s2","Bash"],2,200],[["s1","Read"],1,80],[["s2","Read"],1,80]]'
+}
+
+@test "by session,filetype: a result with no filetype has no row, and the text report prints the pairs" {
+  run jq -c '[.rows[] | [.key,.calls]]' <<<"$(out --by session,filetype)"
+  assert_output '[[["s1","other (none)"],1]]'
+  run "$RECALL" tool-output --since 2026-10-01 --by session,filetype
+  assert_success
+  assert_output --partial "s1 other (none)"
+}
+
+@test "repeated --by fills every cut from one scan, each equal to its own run" {
+  run jq -c '[.by, (.rows | keys)]' <<<"$(out --by tool --by session,tool --by day)"
+  assert_output '[["tool","session,tool","day"],["day","session,tool","tool"]]'
+  for by in tool session,tool day; do
+    one="$(jq -c '.rows' <<<"$(out --by "$by")")"
+    all="$(jq -c --arg by "$by" '.rows[$by]' <<<"$(out --by tool --by session,tool --by day)")"
+    assert_equal "$all" "$one"
+  done
+  run "$RECALL" tool-output --since 2026-10-01 --by tool --by day,tool
+  assert_failure 2
+}
+
+@test "a repeated cut counts once and keeps the flat shape; a bad --since is refused" {
+  run jq -c '[.by, (.rows | type)]' <<<"$(out --by tool --by tool)"
+  assert_output '["tool","array"]'
+  run "$RECALL" tool-output --since 10/20
+  assert_failure 2
+  assert_output --partial "use YYYY-MM-DD"
+}
+
+@test "a bare --since is a local day, as in burn; an ISO time stays exact" {
+  # UTC-12: local midnight of 2026-10-20 is 12:00Z, after every fixture record (10:00Z)
+  run jq -c '[.since, .totals.turns]' <<<"$(TZ=Etc/GMT+12 "$RECALL" tool-output --since 2026-10-20 --json)"
+  assert_output '["2026-10-20T12:00:00",0]'
+  run jq -c '.totals.turns' <<<"$(TZ=Etc/GMT+12 "$RECALL" tool-output --since 2026-10-20T00:00:00Z --json)"
+  assert_output '4'
+}
+
+@test "by: one cut, or two different result cuts; a response cut in a pair is refused" {
+  run "$RECALL" tool-output --by day,tool
+  assert_failure 2
+  run "$RECALL" tool-output --by tool,tool
+  assert_failure 2
+}

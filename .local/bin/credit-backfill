@@ -4,19 +4,22 @@
 #
 #   propose <project>   write $CREDIT_BACKFILL_DIR/<project>.tsv and print its counts
 #   apply <project>     write every line of that file not yet applied; a rerun skips applied lines
+#   redate propose <project>             write $CREDIT_BACKFILL_DIR/<project>.redate.tsv: the `done:` day each
+#                                        applied closed row should carry (its PR's merge day, an epic's last story's)
+#   redate apply <project> <registry>    write the reviewed lines of one registry project; a rerun skips applied ones
 #
 # <project> is a repo (unity-core-playground, dotfiles); the proposal covers every registry project
 # sharing its checkout. Lines are TSV `kind key project system size state proof item text id`:
 # attr (an item its PR credits elsewhere), epic (a plan of 2+ phases, or a system's FAIL criteria)
 # and story (a phase, a criterion, a done item with no row). The human edits or deletes lines; apply
-# writes each id it gets into the last column. Plan: why-is-so-litel-stateless-puppy.md, P4.
+# writes each id it gets into the last column. A closed story with a PR carries its merge day (`ptask done --on`), an epic
+# its last story's, so the pace counts date the work when it landed, not the day apply ran. Plan: why-is-so-litel-stateless-puppy.md, P4.
 set -uo pipefail
 
 CB_DIR="${CREDIT_BACKFILL_DIR:-$HOME/.agent/backfill}"
 CB_CACHE="${CREDIT_BACKFILL_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/credit-backfill}"
 CB_PLANS="${CREDIT_BACKFILL_PLANS:-$HOME/.agent/plans}"
 CB_LIVE_PLANS="${CREDIT_BACKFILL_LIVE_PLANS:-$HOME/.claude/plans}"
-AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 SYSTEMS_MD="${CREDIT_BACKFILL_SYSTEMS:-$HERE/../src/docs/systems.md}"
 SYSTEM_CHECK="${CREDIT_BACKFILL_SYSTEM_CHECK:-$HERE/project-system-check}"
@@ -43,22 +46,20 @@ telemetry	telemetry|crash|crashes|sentry|logs
 security	secret|secrets|security|auth'
 
 die() { echo "credit-backfill: $*" >&2; exit 1; }
-PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
+AQ_MAP="${AGENT_QUEUE_PROJECT_MAP:-$(project_map_file)}"
+PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../lib/plan-phases.sh
 . "${PLAN_PHASES_LIB:-$HERE/../lib/plan-phases.sh}"
 
 # family <project> -> every registry project sharing its checkout, and the repo's owner.
 family() { local r; r="$(project_repo_name "$1")"; { project_field "$r" owner; project_lab_names "$r"; } | sort -u; }
 
-# gh_slug <project> -> owner/repo of the project's checkout's origin, or nothing.
-gh_slug() {
-  local dir url
-  dir="$(project_repo_path "$1")"; [ -n "$dir" ] || return 0
-  url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || return 0
-  sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##' <<<"$url"
-}
+# shellcheck source=../lib/origin-repo.sh
+. "$HERE/../lib/origin-repo.sh"
+# gh_slug <project> -> owner/repo of the project's checkout's origin (origin_repo), or nothing.
+gh_slug() { origin_repo "$(project_repo_path "$1")"; }
 
 # pr_facts <owner/repo> <N> -> one JSON line {files, size}, cached; nothing when gh cannot read it.
 # The file list is the REST one, paged as agent-land's credit reads it (`gh pr view` stops at 100
@@ -116,8 +117,12 @@ applies() {
 }
 
 # typed <text> <area> <type> -> the text as a board row's `type(area): title`; one that already has
-# a type keeps it (notes refuses a type it does not know).
-typed() { if grep -qE '^[a-z]+\([a-z0-9][a-z0-9-]*\): .' <<<"$1"; then echo "$1"; else echo "$3($2): $1"; fi; }
+# a type notes knows keeps it (`notes row parse` says whether the text parses); any other gets the prefix.
+typed() {
+  local ok
+  ok="$(printf '%s\n' "$1" | notes row parse | cut -f4)" && [ -n "$ok" ] || die "notes row parse failed (an old notes? notes-bootstrap --build-only)"
+  if [ "$ok" = 1 ]; then echo "$1"; else echo "$3($2): $1"; fi
+}
 
 row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n' "$@"; }
 
@@ -170,6 +175,7 @@ propose_items() {
     fi
     row story "${epic:--}" "$to" - "$size" done "pr:$n${merged:+ commit:${merged:0:12}}" "$s" "$(words "$title")"
   done < <(jq -r '.[] | select(.state == "done" and .status == "ok" and (.pr // "") != "" and (.row // "") == "")
+      | .pr |= (tostring | split(" ")[0]) | .merged |= (. // "" | tostring | split(" ")[0])
       | [.slug, .project, .pr, .plan, .merged, (.title // .task // .slug | split("\n")[0])] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$2")
 }
 
@@ -193,7 +199,7 @@ propose_plans() {
       its="$(jq -c --arg b "$base.md" '[.[] | select(((.plan // "") | split("/") | last) == $b)]' <<<"$items")"
       mapfile -t prs < <(
         jq -r '.[].name' <<<"$phases" | while IFS= read -r name; do phase_prs "$name"; done
-        jq -r '.[].pr // empty' <<<"$its" | while IFS= read -r i; do pr_num "$i" "$slug"; done)
+        jq -r '.[].pr // empty | tostring | split(" ")[]' <<<"$its" | while IFS= read -r i; do pr_num "$i" "$slug"; done)
       prj="$( ((${#prs[@]})) && credit "$m" "$slug" "${prs[@]}")"
       prj="${prj:-$( [ "$m" = "$top" ] && echo "$dflt" || echo "$m")}"
       type="$(project_field "$prj" type)"
@@ -205,7 +211,7 @@ propose_plans() {
         i=$((i + 1))
         it="$(jq -r --arg n "$i" '[.[] | select((.phases // "" | split(" ")) | index($n))]
           | (map(select(.state == "done" and .status == "ok")) + map(select(.state != "done"))) | first
-          | select(.) | [.slug, .state, .pr, .merged] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$its")"
+          | select(.) | [.slug, .state, (.pr // "" | tostring | split(" ")[0]), (.merged // "" | tostring | split(" ")[0])] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$its")"
         [ -n "$it" ] || it=$'-\t-\t-\t-'
         IFS=$'\t' read -r i_slug i_state i_pr i_merged <<<"$it"
         [ "$i_slug" = - ] && i_slug=""; [ "$i_merged" = - ] && i_merged=""
@@ -262,22 +268,56 @@ add_row() {
   echo "$id"
 }
 
-# close_row <project> <id> <state> <proof> -- close a story on the project's agent board.
+# merged_on <owner/repo> <N> -> the day PR N merged (local date), cached; nothing when gh cannot say
+# or the PR is not merged. A day is only ever cached once known, so a rerun asks again after a failure.
+merged_on() {
+  local f="$CB_CACHE/${1//\//_}-$2.merged" ts
+  if [ ! -s "$f" ]; then
+    ts="$(gh api "repos/$1/pulls/$2" --jq '.merged_at // empty' 2>/dev/null)" && [ -n "$ts" ] || return 0
+    mkdir -p "$CB_CACHE" && date -d "$ts" +%F >"$f" 2>/dev/null || { rm -f "$f"; return 0; }
+  fi
+  cat "$f"
+}
+
+# proof_day <slug> <proof> -> the merge day of the PR a `pr:N ...` proof names, or nothing.
+proof_day() {
+  local n; n="$(sed -nE 's/^pr:([0-9]+)( .*)?$/\1/p' <<<"$2")"
+  [ -z "$n" ] || merged_on "$1" "$n"
+}
+
+# epic_day <slug> <file> <epic key> -> the latest merge day among the epic's done stories.
+epic_day() {
+  local kind key st proof best="" day
+  while IFS=$'\t' read -r kind key _ _ _ st proof _; do
+    [ "$kind" = story ] && [ "$key" = "$3" ] && [ "$st" = done ] || continue
+    day="$(proof_day "$1" "$proof")"
+    [[ "$day" > "$best" ]] && best="$day"
+  done <"$2"
+  echo "$best"
+}
+
+# close_row <slug> <project> <id> <state> <proof> -- close a story on the project's agent board,
+# dated by its PR's merge day when it has one. A PR whose day gh cannot give (rate limit, network,
+# not merged) is closed today with a warning; `redate propose` finds it again once gh answers.
 close_row() {
-  local p="$1" id="$2"
-  case "$3:$4" in
+  local slug="$1" p="$2" id="$3" on
+  on="$(proof_day "$slug" "$5")"
+  if [ -z "$on" ] && [[ "$4:$5" == *:pr:* ]]; then echo "credit-backfill: $id (${5%% *}): no merge day from gh, closed today" >&2; fi
+  case "$4:$5" in
     open:*) return 0 ;;
-    deferred:why:*) ptask "$p" --agent drop "$id" --why "${4#why:}" ;;
-    *:unverified:*) ptask "$p" --agent done "$id" --unverified "${4#unverified:}" ;;
-    *:pr:*) ptask "$p" --agent done "$id" --proof "$4" ;;
+    deferred:why:*) ptask "$p" --agent drop "$id" --why "${5#why:}" ;;
+    *:unverified:*) ptask "$p" --agent done "$id" --unverified "${5#unverified:}" ;;
+    *:pr:*) ptask "$p" --agent done "$id" --proof "$5" ${on:+--on "$on"} ;;
     *) ptask "$p" --agent done "$id" --unverified "backfilled by credit-backfill with no proof" ;;
   esac >/dev/null
 }
 
 cmd_apply() {
   [ $# -eq 1 ] || die "usage: credit-backfill apply <project>"
-  local f="$CB_DIR/$1.tsv" tmp n=0 bad
+  local f="$CB_DIR/$1.tsv" tmp n=0 bad slug day
+  slug="$(gh_slug "$1")"
   [ -f "$f" ] || die "no proposal at $f: run credit-backfill propose $1 first"
+  [ -n "$slug" ] || die "$1: its checkout has no origin remote, so no PR can be dated"
   bad="$(awk -F'\t' '$1 == "epic" && $4 == "?" && $10 == "" { print $2 }' "$f")"
   [ -z "$bad" ] || die "name a system for these epics first (column 4 is ?): $(paste -sd' ' <<<"$bad")"
   declare -A ids=() epic_sys=()
@@ -302,12 +342,12 @@ cmd_apply() {
           echo "credit-backfill: story under $key skipped: that epic is not applied" >&2
         else
           area="$sys"; [ "$area" != - ] || area="${epic_sys[$key]:-$prj}"
-          text="$(typed "$text" "$area" "$( [[ "$key" == std:* ]] && echo chore || echo feat)")"
+          text="$(typed "$text" "$area" "$( [[ "$key" == std:* ]] && echo chore || echo feat)")" || exit 1
           id="$(add_row "$prj" --agent "$text" "#size/$size${eid:+ #of/$eid}")" || id=""
         fi
         if [ -n "$id" ]; then
           # An open story an item works on is started, so dispatch does not start it a second time.
-          if [ "$st" != open ]; then close_row "$prj" "$id" "$st" "$proof"
+          if [ "$st" != open ]; then close_row "$slug" "$prj" "$id" "$st" "$proof"
           elif [ "$item" != - ]; then ptask "$prj" --agent start "$id" >/dev/null 2>&1; fi
           [ "$item" = - ] || agent-queue set "$item" row="$prj:$id" project="$prj" >/dev/null
         fi ;;
@@ -319,8 +359,10 @@ cmd_apply() {
   # The epics: close a done plan's epic once its stories are, and give the plan its `epic:` line.
   while IFS=$'\t' read -r kind key prj sys size st proof item text id; do
     [ "$kind" = epic ] && [ -n "$id" ] && [[ "$proof" == plan:* ]] || continue
-    [ "$st" != done ] ||
-      ptask "$prj" done "$id" --unverified "backfilled: every phase of plan ${proof#plan:} is ticked" >/dev/null 2>&1
+    if [ "$st" = done ]; then
+      day="$(epic_day "$slug" "$f" "$key")"
+      ptask "$prj" done "$id" --unverified "backfilled: every phase of plan ${proof#plan:} is ticked" ${day:+--on "$day"} >/dev/null 2>&1
+    fi
     file_plan "${proof#plan:}" "$id" "$prj"
   done <"$f"
   echo "$f: $n lines applied"
@@ -339,8 +381,72 @@ file_plan() {
   if [ -n "$c" ] && [ "$(dirname "$c")" != "$CB_PLANS/$3" ]; then mkdir -p "$CB_PLANS/$3" && mv "$c" "$CB_PLANS/$3/"; fi
 }
 
+# --- redate ---
+
+# redate_day <slug> <file> <kind> <key> <state> <proof> -> the day an applied closed line should carry.
+redate_day() {
+  case "$3:$5" in
+    story:done) proof_day "$1" "$6" ;;
+    epic:done) [[ "$6" == plan:* ]] && epic_day "$1" "$2" "$4" ;;
+  esac
+}
+
+# redate_ptask <project> <proof> <args>... -- the writer on the board a line lives on: a story is on the
+# agent board, an epic (its proof is plan:<name>) on the project's own sheet.
+redate_ptask() { local p="$1" lane=--agent; [[ "$2" != plan:* ]] || lane=""; shift 2; ptask "$p" $lane "$@"; }
+
+# redate propose: one line per applied closed row whose `done:` day is not its PR's merge day.
+# The old day is read through the writer's own --dry-run, so a row that is not on the sheet
+# (archived, retexted away) is counted and left out, not guessed at.
+redate_propose() {
+  [ $# -eq 1 ] || die "usage: credit-backfill redate propose <project>"
+  local f="$CB_DIR/$1.tsv" out="$CB_DIR/$1.redate.tsv" slug kind key prj st proof id new got old _day gone=0 same=0
+  [ -f "$f" ] || die "no applied proposal at $f"
+  [ ! -e "$out" ] || die "$out exists: apply it, or delete it to propose again (a rerun would bring back lines you removed)"
+  slug="$(gh_slug "$1")"; [ -n "$slug" ] || die "$1: its checkout has no origin remote"
+  {
+    printf '# credit-backfill redate for %s, %s. Delete lines you do not want, then: credit-backfill redate apply %s <project>\n' "$1" "$(date +%F)" "$1"
+    printf '# project\tid\told\tnew\tproof\tapplied\n'
+    while IFS=$'\t' read -r kind key prj _ _ st proof _ _ id; do
+      [[ "$kind" != '#'* ]] && [ -n "$id" ] && [ "$id" != set ] || continue
+      new="$(redate_day "$slug" "$f" "$kind" "$key" "$st" "$proof")"; [ -n "$new" ] || continue
+      got="$(redate_ptask "$prj" "$proof" redate "$id" --on "$new" --dry-run 2>/dev/null)" || { gone=$((gone + 1)); continue; }
+      IFS=$'\t' read -r _ old _day <<<"$got"
+      if [ "$old" = "$new" ]; then same=$((same + 1)); continue; fi
+      printf '%s\t%s\t%s\t%s\t%s\t\n' "$prj" "$id" "$old" "$new" "${proof%% *}"
+    done <"$f"
+  } >"$out.new" && mv "$out.new" "$out"
+  echo "$out: $(grep -vc '^#' "$out") to re-date ($same already right, $gone not on a sheet)"
+  awk -F'\t' '!/^#/ { n[$1]++ } END { for (p in n) printf "  %s: %d\n", p, n[p] }' "$out" | sort
+}
+
+# redate apply: write the lines of one registry project, the one review the human gave.
+redate_apply() {
+  [ $# -eq 2 ] || die "usage: credit-backfill redate apply <project> <registry project>"
+  local f="$CB_DIR/$1.redate.tsv" tmp line prj id old new proof applied n=0
+  [ -f "$f" ] || die "no proposal at $f: run credit-backfill redate propose $1 first"
+  tmp="$f.new"; : >"$tmp"
+  while IFS= read -r line; do
+    IFS=$'\t' read -r prj id old new proof applied <<<"$line"
+    if [[ "$line" != '#'* ]] && [ "$prj" = "$2" ] && [ -z "$applied" ] &&
+      redate_ptask "$prj" "$proof" redate "$id" --on "$new" >/dev/null; then
+      line="${line%$'\t'}"$'\t'applied; n=$((n + 1))
+    elif [[ "$line" != '#'* ]] && [ "$prj" = "$2" ] && [ -z "$applied" ]; then
+      echo "credit-backfill: $id not re-dated (not on the sheet, or not closed with a done day)" >&2
+    fi
+    printf '%s\n' "$line" >>"$tmp"
+  done <"$f"
+  mv "$tmp" "$f"
+  echo "$f: $n rows re-dated in $2"
+}
+
+cmd_redate() {
+  local v="${1:-}"; [ $# -eq 0 ] || shift
+  case "$v" in propose | apply) "redate_$v" "$@" ;; *) die "usage: credit-backfill redate propose <project> | redate apply <project> <registry project>" ;; esac
+}
+
 case "${1:-}" in
-  propose | apply) v="$1"; shift; "cmd_$v" "$@" ;;
+  propose | apply | redate) v="$1"; shift; "cmd_$v" "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac

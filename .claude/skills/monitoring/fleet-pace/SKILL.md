@@ -5,19 +5,25 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold]
-  reviewed: 2026-11-05
+  reviewed: 2026-11-07
 ---
 
 # fleet-pace
 
 The machine-room role of `fleet-lead` (Binks). It was written down after 2026-10-23: about 15 sessions each started headless Unity runs, load reached 96 on 24 cores, Tctl reached 95.8 C, and the timing-sensitive test classes went red. Stopping them took an improvised process-tree trace, a hand-built kill, a dozen one-off messages, and a second kill when shell loops respawned the editors. This skill makes that a three-verb routine, and a fleet left idle is the same failure in the other direction.
 
+## Scope and triggers
+
+Covers keeping the machine busy but responsive (about 70% CPU): assess load, hold a resource, park sessions, GO in batches, the pace check.
+
+Use for "the machine is melting", "stop all the agents", "is there room for more", "lift the hold". Session progress and nudges: `shepherd`.
+
 ## Tools
 
-- `fleet-assess` prints headroom (load against cores, Tctl, memory, threads blocked on I/O), the GitHub REST calls left this hour in the emptier of its two per-user buckets (a `github:` line; `(actions/workflows)` names the bucket `gh run list`, `gh run view` and `gh workflow run` spend, which `gh api rate_limit` does not show; LOW under `FLEET_GH_LOW` with over 20 minutes to the reset, naming the scripts whose gh calls are running), active holds, a verdict, one row per heavy process (pid, CPU, nice, class, tmux session, worktree, command, and the pane as `<server>/<pane id>`, which `fleet-sessions` reads to mark only that pane's agent WORKING heavy), and a `blocked on I/O` table for any process over 5 minutes old with a thread in D state (thread count, age, wchan, the file it holds open). `--watch-probe` prints one line and exits 1 on HOLD; `--blocked` prints only the blocked rows, tab-separated.
-- `agent-hold set | grant | release | check | list` is the durable pause, and `grant` is GO for named sessions while the hold stays. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh` and `two-process.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
+- `fleet-assess` prints headroom (load against cores, Tctl, memory with its stall and swap used, threads blocked on I/O), the GitHub REST calls left this hour in the emptier of its two per-user buckets (a `github:` line; `(actions/workflows)` names the bucket `gh run list`, `gh run view` and `gh workflow run` spend, which `gh api rate_limit` does not show; LOW under `FLEET_GH_LOW` with over 20 minutes to the reset, naming the scripts whose gh calls are running), active holds, a verdict, one row per heavy process (pid, CPU, nice, class, tmux session, worktree, command, and the pane as `<server>/<pane id>`, which `fleet-sessions` reads to mark only that pane's agent WORKING heavy; a last TREE column sums the process and all its descendants, and a runner whose children are each under the line gets a row showing its own low CPU and that sum), and a `blocked on I/O` table for any process over 5 minutes old with a thread in D state (thread count, age, wchan, the file it holds open). `--watch-probe` prints one line and exits 1 on HOLD; `--blocked` prints only the blocked rows, tab-separated.
+- `agent-hold set | grant | release | check | list` is the durable pause, and `grant` is GO for named sessions while the hold stays. The session preflight prints every active hold. unity-core-playground's `scripts/test/run.sh`, `two-process.sh` and `scripts/authoring/unity-method.sh` wait while `unity` is held (#825) and take one of a few run slots, so a `unity` hold stops new runs even from sessions and `shell`-class loops that never read your message. Other resources are held only by message.
 - `claude-acct park <target>` exits a session's claude and keeps its pane, writing the resume to `~/.agent/parked/<key>`; `claude-acct unpark <target>` resumes it there on the account with room. A target is `[server/]session`, `[server/]session:window` or a pane id `%N`; name the window or pane when the tmux session holds more than one claude (the hub `dotfiles` session does), and the ledger key is then `session:window`. A parked session costs no tokens: no background task finishing and no message can wake it to re-read its context. A pause sent as a message costs one full-context turn, and the session keeps waking on its own waits: on 2026-11-02 those wakes were 48% of the fleet's tokens.
-- The `fleet-thermal` sentinel watch runs `fleet-assess --watch-probe` every minute and pages on a state change. A trip means "run `assess`", and a clear means "run `go`".
+- The `fleet-thermal` sentinel watch runs `fleet-assess --thermal-probe` every minute and pages on a state change. A trip means "run `assess`", and a clear means "run `go`". A trip holds until load is under 1x cores, so one overload is one page, with Sentinel's 24h reminder if it lasts.
 
 The class column tells you how each consumer can be stopped:
 
@@ -32,8 +38,8 @@ The class column tells you how each consumer can be stopped:
 
 | Verdict | Meaning |
 |---|---|
-| HOLD | Over the high mark (load at 1.75x cores, or memory under 10% free, or Tctl at 95 with load at 1.5x), or between the marks while a machine hold is set (any hold but those in `FLEET_NOT_LOAD_HOLDS`, default `dispatch mac-desktop`, which pause work or the mac-mini desktop and say nothing about load) |
-| CLEAR | A hold is set and the machine is under the low mark (load under 1x cores, memory at 25% free or more). Safe to send GO |
+| HOLD | Over the high mark (load at 1.75x cores, or memory under 10% free, or memory stall (PSI some avg10) at 20% or more, which is swapping while MemAvailable still reads fine, or Tctl at 95 with load at 1.5x), or between the marks while a machine hold is set (any hold but those in `FLEET_NOT_LOAD_HOLDS`, default `dispatch mac-desktop`, which pause work or the mac-mini desktop and say nothing about load) |
+| CLEAR | A hold is set and the machine is under the low mark (load under 1x cores, memory at 25% free or more, stall under 5%). Safe to send GO |
 | OK | Nothing held, nothing over the line |
 
 The gap between the marks is deliberate. A hold set at 1.75x and lifted at 1.7x would flap and page on every sample. The high mark is where the CPU runs out of idle time: on 2026-10-26 load 46 on 24 cores (1.9x) read OK against the old 3x mark while `top` showed 0% idle, and the human had to point at it. When you report a pass, check what the human sees (`top`'s idle), not only the verdict. Load is the main signal; temperature alone is not. This box is a Zen 4 part, which boosts until it reaches 95 C, so readings in the 90s with one busy thread are normal. The thresholds are the `FLEET_*` variables at the top of `fleet-assess`, and that block is the one place to change them.
@@ -44,7 +50,7 @@ Under-use is a fault too, but never fix it by moving gates. A playground gate al
 
 1. Run `fleet-assess`. Quote the headroom line and the verdict to the user as given, and the `github:` line when it says LOW: the limit is per user, so when it runs out every gh call in the fleet fails until the reset. Name the scripts it lists, and tell sessions not to retry gh in a loop.
 2. Group the rows by worktree and class. Run `ListAgents` and match its names to the SESSION column.
-3. Say who is consuming what, and how each can be stopped (the class table). Name anything at nice 0 or below that is a batch job: it is competing with the human's desktop.
+3. Say who is consuming what, and how each can be stopped (the class table). Name any batch job whose pane is not yet lowered (hold step 3; `agent-hold show <resource>` lists the lowered units): it is competing with the human's desktop. The NI column does not say: ananicy-cpp runs every shell at nice -4.
    A thread blocked on I/O adds 1 to load and 0 to CPU, so when load is well above what `top` shows busy, the blocked table explains the gap. Read it before blaming Unity.
 4. On HOLD, recommend `hold` and the resource name. On CLEAR, recommend `go`. On OK, stop there and send nothing.
 
@@ -55,10 +61,10 @@ Go down the ladder only as far as you need to:
 1. **Set the hold.** `agent-hold set <resource> --roster <the claude sessions> "<reason with the numbers>"`. This pages low (Binks acts on it, the human does not) and makes every new session and every gate see it.
 2. **Park the Claude sessions on the roster that are not mid-turn**, by `activity` in `fleet-sessions --json`, skipping `manual`:
    - `idle`: `claude-acct park <session>`. No message: it is told why when it is unparked.
-   - `shell`: `claude-acct park <session> --stop-shells`. It parks only when every background shell is a wait on GitHub (`gh run watch`, `gh pr checks --watch`, an `until ... gh ...; do sleep` loop), and refuses a local gate, suite or Unity run, which the hold's gate already holds; leave that one running.
+   - `shell`: `claude-acct park <session> --stop-shells`. It parks only when every background shell is a wait on GitHub (`gh-run-wait`, `gh run watch`, `gh pr checks --watch`, an `until ... gh ...; do sleep` loop), and refuses a local gate, suite or Unity run, which the hold's gate already holds; leave that one running.
    - `busy`: one `fleet-comms` PAUSE message naming the hold, and park it on a later pass once it reads idle.
    - `waiting`: the human's; leave it.
-3. **Lower the priority** of batch consumers that are still running: `renice -n 19 -p $(ls /proc/<pid>/task)` and `ionice -c3 -p $(ls /proc/<pid>/task)`. On Linux both act on one thread, so `-p <pid>` alone moves only the main thread: on 2026-10-27 a Unity compiler server (`VBCSCompiler`) kept 60 of its 61 threads at nice -4 after `renice -p`. Check with `ps -L -o ni= -p <pid> | sort | uniq -c`. This is reversible and needs no ask.
+3. **Lower the priority** of batch consumers that are still running: `agent-hold lower <resource> <pid>...` with the PID column of `fleet-assess`. It sets `CPUWeight=1` (default 100) on each pid's tmux pane scope or agentctl unit, so everything in that pane, including children started later, gets about 1% of a contended CPU, and it records the unit on the hold; `agent-hold release` restores it. The weight covers the whole pane, the session's claude too, which is what a hold asks of it. It refuses a desktop terminal's or app's scope, which is the human's, and the caller's own pane. A release that cannot restore a live unit keeps the hold and says so; run it again. Check with `systemctl --user show <unit> -p CPUWeight`. Not renice: ananicy-cpp types bash and zsh nice -4 and resets every new child to it, so on 2026-11-07 583 threads reniced to 19 under 20 sessions left the nice share at 0.4%. Not ionice either: these NVMe disks run kyber, which ignores I/O priority. This is reversible and needs no ask.
 4. **Kill only when the human asks.** Then kill only batch process trees (the driving `run.sh`, its `timeout`, the editor), and never an interactive editor, meaning a Unity without `-batchmode`. The CPU throttles itself at 95 C, so the hardware is safe while the human decides, and a killed run is lost work.
 
 Shell loops will respawn whatever you kill until their gate honors the hold. If a loop keeps coming back, kill its driving loop (the `shell`-class ancestor) with the human's OK, and do not re-kill its children over and over.
@@ -69,7 +75,7 @@ Report the before and after numbers from `fleet-assess`.
 
 1. Run `fleet-assess`. Continue only on CLEAR. On HOLD, say what is still over the line and stop.
 2. Stage the restart, because nothing paces it for you. Keep the hold set and `agent-hold grant <resource> <s1> <s2> <s3>`, at most 3 sessions per pass: first the owners of a nightly red (the NIGHTLY rows' `owners` in `fleet-sessions --json`), then per `~/.agent/shepherd/orders.md`, then whose work unblocks others (a red PR). The grant is the GO: `agent-hold check` passes for those sessions, so a run already queued on the hold starts by itself. A granted session that is PARKED gets `claude-acct unpark <session>` and no message: the resume tells it it was parked and to re-check what it waited on. Message each other one: "you are granted `<resource>`; a queued run starts by itself, start any new run one at a time, and set no override". On each later pass that still reads CLEAR, grant the next 3. A standing exemption from the human (a session that may run under a hold) is a grant too, made right after the `set`.
-3. After the last batch has had GO and a pass still reads CLEAR, `agent-hold release <resource>`. It prints the roster; unpark any of it still parked.
+3. After the last batch has had GO and a pass still reads CLEAR, `agent-hold release <resource>`. It restores every unit `lower` slowed and prints the roster; unpark any of it still parked.
 4. If a pass reads HOLD again, the batch was too wide: `agent-hold set <resource>` again, which drops every grant, tell the sessions that had one to start nothing new, and tell the human. 2026-10-26: GO to all 7 sessions at once took load from 28.8 back to 69 on 24 cores within 15 minutes.
 
 ## Pace check

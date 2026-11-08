@@ -2,6 +2,9 @@
 # Tier 3: `agent-panel send`, the one way anything types into a Claude pane, against a real tmux
 # pane running a reader that behaves like Claude Code's input box: bracketed paste on, and an
 # Enter that lands within READER_DEAF_MS of a paste is dropped, leaving the text in the box.
+# READER_BUSY=1 draws it as a busy Claude pane does: a spinner whose timer redraws every 100ms
+# above a ruled box. 2026-10-30: a board answer sat unsent in a busy pane, because send judged
+# the whole screen and the spinner passed for both the paste drawn and the Enter taken.
 # 2026-11-05: answers from the questions panel sat unsent in the session because agent-ask
 # pasted and pressed Enter at once. Container only; needs the agent-panel binary (CI builds it).
 
@@ -23,14 +26,24 @@ setup() {
   # The reader draws its input box as `> <text>` and appends each submitted line to $LOG.
   cat > "$READER" <<'SH'
 #!/usr/bin/env bash
-log="$1" deaf_us=$(( ${READER_DEAF_MS:-300} * 1000 ))
+log="$1" deaf_us=$(( ${READER_DEAF_MS:-300} * 1000 )) busy="${READER_BUSY:-}" tick=0 wait=()
 stty -icanon -echo
 printf '\e[?2004h'
 buf="" pasting=0 pasted_at=0 seq=""
-draw() { printf '\r\e[K> %s' "$buf"; }
+draw() {
+  if [ -n "$busy" ]; then
+    printf '\e[H* Working... (%s)\e[K\n\e[K\n────────\e[K\n> %s\e[K\n────────\e[K\n  esc to interrupt\e[K' "$tick" "$buf"
+  else
+    printf '\r\e[K> %s' "$buf"
+  fi
+}
 now_us() { local t="${EPOCHREALTIME/./}"; printf '%s' "$t"; }
+[ -n "$busy" ] && wait=(-t 0.1)
 draw
-while IFS= read -r -s -n1 -d '' c; do
+while :; do
+  IFS= read -r -s -n1 -d '' "${wait[@]}" c; rc=$?
+  if [ "$rc" -gt 128 ]; then tick=$((tick + 1)); draw; continue; fi
+  [ "$rc" = 0 ] || break
   if [ -n "$seq" ] || [ "$c" = $'\e' ]; then
     seq+="$c"
     case "$seq" in
@@ -80,6 +93,29 @@ teardown() { ui_teardown; }
   READER_DEAF_MS=600000 tmux_start env READER_DEAF_MS=600000 "$READER" "$LOG"
   PANE="x/$TM_TARGET"
   wait_until 'screen_has ">"'
+  run "$BIN" send --pane "$PANE" 'never'
+  assert_failure 3
+  assert_output --partial 'did not take the Enter'
+  [ ! -s "$LOG" ]
+}
+
+@test "a busy pane: the answer is submitted, not left in its box while the spinner moves" {
+  tmux_stop
+  tmux_start env READER_BUSY=1 "$READER" "$LOG"
+  PANE="x/$TM_TARGET"
+  wait_until 'screen_has "esc to interrupt"'
+  run "$BIN" send --pane "$PANE" 'Answer to ask AbC123: yes'
+  assert_success
+  wait_until '[ -s "$LOG" ]'
+  run cat "$LOG"
+  assert_output 'Answer to ask AbC123: yes'
+}
+
+@test "a busy pane that never takes the Enter is reported, though its spinner keeps moving" {
+  tmux_stop
+  tmux_start env READER_BUSY=1 READER_DEAF_MS=600000 "$READER" "$LOG"
+  PANE="x/$TM_TARGET"
+  wait_until 'screen_has "esc to interrupt"'
   run "$BIN" send --pane "$PANE" 'never'
   assert_failure 3
   assert_output --partial 'did not take the Enter'

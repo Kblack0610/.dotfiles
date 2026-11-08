@@ -14,8 +14,10 @@ AGENTCTL_CALLS="${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl
 CALLS_RAW_MAX=4096
 # A call that stopped at its per-call cap (--max-budget-usd; the result's subtype
 # error_max_budget_usd) exits this, so a caller can shrink its batch on the code, never on text.
-# 75 is budget_stop's: the call was not made at all.
 CALLS_RC_CAPPED=76
+# A call budget_stop refused exits this: it was not made at all.
+# shellcheck disable=SC2034 # read by budget.sh and each caller of a named call
+EX_BUDGET=75
 
 # calls_name -> the name a call is recorded (and budgeted) under, empty for a hand run
 calls_name() { printf '%s' "${AGENTCTL_AGENT:-${AGENTCTL_NAME:-}}"; }
@@ -30,11 +32,24 @@ calls_new_id() { od -An -tx1 -N6 /dev/urandom | tr -d ' \n'; }
 # output has no such field, so its prose goes out and the caller's parse fails visibly. A capped
 # call returns CALLS_RC_CAPPED.
 calls_record() {
-  local harness="$1" id t0 t1 out rc=0 text
+  local harness="$1" id t0 t1 out rc=0 text tmp pid="" killed=""
   shift
   id="${AGENTCTL_CALL_ID:-$(calls_new_id)}"
   t0="$(date +%s%3N)"
-  out="$("$@")" || rc=$?
+  # A call its caller kills (agent-ask's timeout guard) still leaves its line, with the signal's
+  # exit code: killed inside a command substitution it left none, so three hung ask-judge calls on
+  # 2026-11-07 read as "0 failed" with no account or duration to tell why (ar-782).
+  tmp="$(mktemp)"
+  trap 'killed=1; [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null' TERM INT HUP
+  "$@" <&0 >"$tmp" &
+  pid=$!
+  [ -z "$killed" ] || kill -TERM "$pid" 2>/dev/null
+  wait "$pid" || rc=$?
+  # A trapped signal ends the first wait early; the second is the call's own exit.
+  # A killed call never reads as a success, even from a harness that exits 0 on TERM.
+  if [ -n "$killed" ]; then rc=0; wait "$pid" || rc=$?; [ "$rc" -gt 128 ] || rc=143; fi
+  trap - TERM INT HUP
+  out="$(cat "$tmp")"; rm -f -- "$tmp"
   t1="$(date +%s%3N)"
   # A non-JSON reply (a crash before the result object) is still the call's output.
   if text="$(jq -cer 'if type != "object" then error
@@ -49,10 +64,10 @@ calls_record() {
   mkdir -p "$(dirname "$AGENTCTL_CALLS")"
   jq -cn --argjson r "$out" --arg id "$id" --arg agent "$(calls_name)" \
     --arg role "${ROLE_NAME:-}" --arg model "$([ "$harness" = raw ] && printf '%s' "${LLM_MODEL:-}" || printf '%s' "${ANTHROPIC_MODEL:-}")" --arg harness "$harness" \
-    --arg account "${ROUTE_ACCOUNT:-}" --arg at "$(date -Iseconds)" --argjson ms "$((t1 - t0))" --argjson exit "$rc" \
+    --arg account "${ROUTE_ACCOUNT:-}" --arg sandbox "${SANDBOX_FILE:+${SANDBOX_PROFILE:-}}" --arg at "$(date -Iseconds)" --argjson ms "$((t1 - t0))" --argjson exit "$rc" \
     --arg prompt "${AGENT_PROMPT:-}" --arg sha "${AGENT_PROMPT_SHA:-}" --arg text "$text" \
     --argjson max "$CALLS_RAW_MAX" '
-    {id: $id, agent: $agent, role: $role, harness: $harness, account: $account, at: $at, duration_ms: $ms, exit: $exit,
+    {id: $id, agent: $agent, role: $role, harness: $harness, account: $account, sandbox: $sandbox, at: $at, duration_ms: $ms, exit: $exit,
      "gen_ai.request.model": $model,
      "gen_ai.response.model": ((($r.modelUsage // {}) | keys | first) // $r.model),
      prompt: $prompt, prompt_sha: $sha,

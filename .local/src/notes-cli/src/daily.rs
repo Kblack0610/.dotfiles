@@ -144,12 +144,10 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
 
         // Focus = "now": carry unfinished items forward; a task dated beyond the lead
         // window is pushed out to the scheduled backlog instead of cluttering today.
-        if let Some(lines) = md::section_lines(&content, "Focus") {
-            let carried: Vec<String> = lines
-                .iter()
-                .filter(|l| md::is_open_task(l))
-                .map(|l| md::stamp_line(l, today, prev_date))
-                .collect();
+        // Swept first, so a line the day's last sweep never saw is a task like the rest.
+        let swept = crate::focus_sweep::sweep_content(&content);
+        if let Some(lines) = md::section_lines(swept.as_ref().unwrap_or(&content), "Focus") {
+            let carried = carry_focus(&lines, today, prev_date);
             (focus_keep, focus_defer) = route_by_due(&carried, today);
         }
 
@@ -174,17 +172,16 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     // the lead window (consumed) and an `(every:…)` firing today (master line kept).
     let sched_before = fs::read_to_string(&p.schedule).unwrap_or_default();
     let (promoted, sched_pruned) = promote_schedule(&sched_before, today);
-    let n_promoted = promoted.len();
+    let n_promoted = promoted.iter().filter(|l| !is_note(l)).count();
 
-    let mut focus_keys: std::collections::HashSet<String> =
-        focus_keep.iter().map(|l| md::task_key(l)).collect();
-    for pr in promoted {
-        // Dedup against what already carried forward: a habit whose surfaced copy is still
-        // open from yesterday must not land twice.
-        if focus_keys.insert(md::task_key(&pr)) {
-            focus_keep.push(pr);
-        }
-    }
+    let mut focus_keys: std::collections::HashSet<String> = focus_keep
+        .iter()
+        .filter(|l| md::is_task(l))
+        .map(|l| md::task_key(l))
+        .collect();
+    // Dedup against what already carried forward: a habit whose surfaced copy is still
+    // open from yesterday must not land twice.
+    focus_keep.extend(unseen(promoted, &mut focus_keys));
 
     let mut s = String::new();
     s.push_str("---\n");
@@ -201,7 +198,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         s.push_str(l);
         s.push('\n');
     }
-    s.push_str("- [ ] \n");
 
     md::write_atomic(note, &s).with_context(|| format!("writing {}", note.display()))?;
     if n_promoted > 0 {
@@ -218,11 +214,8 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
         .filter(|l| md::is_task(l))
         .map(md::task_key)
         .collect();
-    let fresh: Vec<String> = defers
-        .into_iter()
-        .filter(|l| seen.insert(md::task_key(l)))
-        .collect();
-    let n_deferred = fresh.len();
+    let fresh = unseen(defers, &mut seen);
+    let n_deferred = fresh.iter().filter(|l| !is_note(l)).count();
     let sched_after = if fresh.is_empty() {
         sched_pruned
     } else {
@@ -292,16 +285,57 @@ fn carry(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> Vec<String
         .collect()
 }
 
+/// A line indented under a task that is no task itself: a note, which goes where its task goes.
+fn is_note(line: &str) -> bool {
+    line.starts_with(char::is_whitespace) && !line.trim().is_empty() && !md::is_task(line)
+}
+
+/// `lines` less the tasks `seen` already holds, each note going the way of its task.
+fn unseen(lines: Vec<String>, seen: &mut std::collections::HashSet<String>) -> Vec<String> {
+    let mut keep = true;
+    lines
+        .into_iter()
+        .filter(|l| {
+            if !is_note(l) {
+                keep = seen.insert(md::task_key(l));
+            }
+            keep
+        })
+        .collect()
+}
+
+/// A swept `## Focus` as it carries: each open task day-stamped, with the notes under it.
+fn carry_focus(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut under_open = false;
+    for l in lines {
+        if md::is_open_task(l) {
+            out.push(md::stamp_line(l, today, prev_date));
+            under_open = true;
+        } else if under_open && is_note(l) {
+            out.push(l.clone());
+        } else {
+            under_open = false;
+        }
+    }
+    out
+}
+
 /// Partition carried lines into `(keep, defer)`: a task dated more than `LEAD_DAYS`
 /// ahead is deferred to the scheduled backlog; undated, due-soon, and overdue stay.
 fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>) {
     let horizon = today + chrono::Duration::days(LEAD_DAYS);
     let mut keep = Vec::new();
     let mut defer = Vec::new();
+    let mut deferring = false;
     for l in lines {
-        match md::find_due(l, today) {
-            Some(due) if due > horizon => defer.push(l.clone()),
-            _ => keep.push(l.clone()),
+        if !is_note(l) {
+            deferring = md::find_due(l, today).is_some_and(|due| due > horizon);
+        }
+        if deferring {
+            defer.push(l.clone());
+        } else {
+            keep.push(l.clone());
         }
     }
     (keep, defer)
@@ -326,7 +360,13 @@ fn promote_schedule(content: &str, today: NaiveDate) -> (Vec<String>, String) {
     let mut promoted = Vec::new();
     let mut out: Vec<String> = Vec::new();
     let mut in_active = false;
+    let mut consumed = false; // the line above left the schedule, so its notes go too
     for line in content.lines() {
+        if consumed && is_note(line) {
+            promoted.push(line.to_string());
+            continue;
+        }
+        consumed = false;
         if let Some(rest) = line.strip_prefix("## ") {
             in_active = rest.trim().eq_ignore_ascii_case("Active");
             out.push(line.to_string());
@@ -337,7 +377,8 @@ fn promote_schedule(content: &str, today: NaiveDate) -> (Vec<String>, String) {
             if let Some(due) = md::find_due(line, today) {
                 if due <= horizon {
                     promoted.push(md::stamp_line(line, today, today));
-                    continue; // consumed
+                    consumed = true;
+                    continue;
                 }
             }
             // An `(every:…)` fires EVERY matching day: emit a copy, keep the master line.
@@ -387,8 +428,21 @@ fn file_date(path: &Path) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()
 }
 
-/// The morning briefing's file stem under today's refs dir. Written by `agentctl-briefing`.
+/// The morning briefing's file stem under a day's refs dir. Written by `agentctl-briefing`.
 const BRIEFING: &str = "briefing";
+
+/// A day's refs note `stem` (BRIEFING, SHIPPED): its file and the wikilink target that names it.
+fn refs_note(p: &Profile, day: &str, stem: &str) -> (std::path::PathBuf, String) {
+    (
+        p.refs.join(day).join(format!("{stem}.md")),
+        format!("{}/{day}/{stem}", p.refs_rel),
+    )
+}
+
+/// The day's briefing: its file and the wikilink target that names it.
+pub(crate) fn briefing(p: &Profile, day: &str) -> (std::path::PathBuf, String) {
+    refs_note(p, day, BRIEFING)
+}
 /// The day log's file stem under today's refs dir. Written by `day-log`.
 const SHIPPED: &str = "shipped";
 
@@ -398,7 +452,7 @@ const SHIPPED: &str = "shipped";
 /// headline, then what the knowledge engine compiled since the last note listed it.
 fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
     let today_s = today.format("%Y-%m-%d").to_string();
-    let briefing = p.refs.join(&today_s).join(format!("{BRIEFING}.md"));
+    let (briefing, link) = briefing(p, &today_s);
     let mut s = String::from("## Morning\n");
     // The outbox is cross-org like the board, so linked against the vault, and made when
     // missing so the link opens a file the sweep reads. The inbox page is this org's own.
@@ -418,7 +472,6 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
                 .find(|l| l.starts_with("As of "))
                 .unwrap_or("")
                 .trim();
-            let link = format!("{}/{today_s}/{BRIEFING}", p.refs_rel);
             if headline.is_empty() {
                 s.push_str(&format!("- Briefing: [[{link}]]\n"));
             } else {
@@ -437,8 +490,8 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
         Err(_) => s.push_str("- Briefing: not written yet\n"),
     }
     // The day log, as one line: its first sentence is the count of what merged.
-    if let Ok(text) = fs::read_to_string(p.refs.join(&today_s).join(format!("{SHIPPED}.md"))) {
-        let link = format!("{}/{today_s}/{SHIPPED}", p.refs_rel);
+    let (shipped, link) = refs_note(p, &today_s, SHIPPED);
+    if let Ok(text) = fs::read_to_string(shipped) {
         let first = text
             .lines()
             .map(str::trim)
@@ -889,7 +942,7 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
 
 /// Every profile's project dirs, by name: the ingest record is the machine's, so a filing can
 /// land in any profile's project.
-fn all_project_dirs() -> Vec<(String, PathBuf)> {
+pub(crate) fn all_project_dirs() -> Vec<(String, PathBuf)> {
     crate::config::all_profile_names()
         .unwrap_or_default()
         .iter()
@@ -1235,7 +1288,9 @@ const SHEET_ACTIONS_SHOWN: usize = 40;
 /// Intake has its own rows above, so a line added to the outbox, or added and then filed, or a
 /// session's new row on a human sheet, is not told twice here.
 fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
-    const INTAKE: [&str; 6] = ["moved", "filed", "dup", "planned", "left", "refused"];
+    const INTAKE: [&str; 7] = [
+        "moved", "filed", "dup", "planned", "left", "refused", "answered",
+    ];
     let told_above = |i: usize, e: &crate::ingest::Event| {
         INTAKE.contains(&e.action.as_str())
             || session_intake(e)
@@ -2164,6 +2219,86 @@ mod tests {
             "legacy Due item stranded:\n{out}"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A line the last sweep never saw is carried as a task with the note under it, and a
+    /// task dated past the lead window takes its note with it to the schedule.
+    #[test]
+    fn a_loose_line_carries_as_a_task_and_a_note_follows_its_task() {
+        let dir = std::env::temp_dir().join(format!("notes-loose-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        std::fs::write(
+            dir.join("journal/daily/2026-08-04.md"),
+            "# 2026-08-04\n\n## Focus\npasted line\n- bare bullet\n    its note\n\
+             - [ ] later [2026-09-01] #high\n    later's note\n- [x] finished\n    gone with it\n\n## Notes\n",
+        )
+        .unwrap();
+        let log = Logger::new(dir.join("log"), false);
+        let note = dir.join("journal/daily/2026-08-05.md");
+        create_note(&p, &log, d("2026-08-05"), &note).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+
+        assert!(out.contains("- [ ] pasted line #c0804 #low\n"), "{out}");
+        assert!(
+            out.contains("- [ ] bare bullet #c0804 #low\n    its note\n"),
+            "{out}"
+        );
+        assert!(!out.contains("later"), "deferred with its note:\n{out}");
+        assert!(!out.contains("gone with it"), "{out}");
+        let sched = std::fs::read_to_string(&p.schedule).unwrap();
+        assert!(sched.contains("\n    later's note\n"), "{sched}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dated task surfaces with its note, so the schedule keeps no stray line.
+    #[test]
+    fn a_note_leaves_the_schedule_with_its_task() {
+        let content =
+            "## Active\n- [ ] soon [2026-06-30]\n    its note\n- [ ] far [2026-09-01]\n    stays\n";
+        let (promoted, remaining) = promote_schedule(content, d("2026-06-30"));
+        assert_eq!(promoted.len(), 2, "{promoted:?}");
+        assert_eq!(promoted[1], "    its note");
+        assert!(!remaining.contains("its note"), "{remaining}");
+        assert!(
+            remaining.contains("far [2026-09-01]\n    stays\n"),
+            "{remaining}"
+        );
+    }
+
+    /// A task already held drops with its note, and two tasks can share a note's words.
+    #[test]
+    fn a_note_goes_the_way_of_its_task() {
+        let mut seen = std::collections::HashSet::from([md::task_key("- [ ] held")]);
+        let lines = [
+            "- [ ] held",
+            "    see link",
+            "- [ ] new",
+            "    see link",
+            "- [ ] more",
+            "    see link",
+        ];
+        let out = unseen(lines.map(String::from).to_vec(), &mut seen);
+        assert_eq!(out, lines[2..]);
+    }
+
+    /// A day's Focus opens on the three lanes and Done, nothing above them.
+    #[test]
+    fn a_new_note_opens_on_the_lanes() {
+        let dir = std::env::temp_dir().join(format!("notes-lanes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let p = profile(dir.to_str().unwrap());
+        let log = Logger::new(dir.join("log"), false);
+        std::fs::create_dir_all(&p.daily).unwrap();
+        run(&p, &log).unwrap();
+        let out = std::fs::read_to_string(today_path(&p)).unwrap();
+        assert!(
+            out.contains("## Focus\n\n### Urgent\n\n### High\n\n### Low\n\n---\n### Done\n"),
+            "{out}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

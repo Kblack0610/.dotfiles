@@ -1,10 +1,17 @@
 #!/bin/bash
-# Install Firefox/Floorp customizations (user.js and userChrome.css)
+# Install Firefox/Floorp customizations: per-profile files, then policies and
+# autoconfig in the Firefox install dir. Linux and macOS.
 # Run: ~/.dotfiles/.config/firefox/install.sh
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+install_file() {
+    local src="$1" dest="$2"
+    [[ "$src" -ef "$dest" ]] || cp "$src" "$dest"
+    echo "  - Installed ${dest##*/}"
+}
 
 install_to_profile() {
     local profile="$1"
@@ -12,18 +19,18 @@ install_to_profile() {
 
     echo "Installing to $browser profile: $profile"
 
-    # Install user.js
-    cp "$SCRIPT_DIR/user.js" "$profile/user.js"
-    echo "  - Installed user.js"
-
-    # Install userChrome.css
+    # A stowed profile already links these to the repo, and cp refuses "same file".
+    install_file "$SCRIPT_DIR/user.js" "$profile/user.js"
     mkdir -p "$profile/chrome"
-    cp "$SCRIPT_DIR/chrome/userChrome.css" "$profile/chrome/userChrome.css"
-    echo "  - Installed chrome/userChrome.css"
+    install_file "$SCRIPT_DIR/chrome/userChrome.css" "$profile/chrome/userChrome.css"
 
-    # Install containers.json
-    cp "$SCRIPT_DIR/containers.json" "$profile/containers.json"
-    echo "  - Installed containers.json"
+    # Seed only: Firefox owns this file once it has run, and a copy over it would
+    # drop any container added since.
+    if [[ -e "$profile/containers.json" ]]; then
+        echo "  - Kept existing containers.json"
+    else
+        install_file "$SCRIPT_DIR/containers.json" "$profile/containers.json"
+    fi
 }
 
 find_and_install() {
@@ -45,15 +52,13 @@ find_and_install() {
 
 installed=0
 
-# Try Firefox
-if find_and_install "$HOME/.mozilla/firefox" "Firefox"; then
-    ((installed++))
-fi
-
-# Try Floorp
-if find_and_install "$HOME/.floorp" "Floorp"; then
-    ((installed++))
-fi
+MAC_SUPPORT="$HOME/Library/Application Support"
+for root in "$HOME/.mozilla/firefox:Firefox" "$MAC_SUPPORT/Firefox/Profiles:Firefox" \
+            "$HOME/.floorp:Floorp" "$MAC_SUPPORT/Floorp/Profiles:Floorp"; do
+    if find_and_install "${root%:*}" "${root##*:}"; then
+        installed=$((installed + 1))
+    fi
+done
 
 if [[ $installed -eq 0 ]]; then
     echo "Error: No Firefox or Floorp profile found."
@@ -61,21 +66,45 @@ if [[ $installed -eq 0 ]]; then
     exit 1
 fi
 
-# Install policies.json to Firefox distribution directory
-install_policies() {
-    local firefox_dir=""
-    for candidate in /usr/lib/firefox /usr/lib64/firefox /opt/firefox /snap/firefox/current/usr/lib/firefox; do
-        if [[ -d "$candidate" ]]; then
-            firefox_dir="$candidate"
-            break
+# The dir holding Firefox's omni.ja. On macOS that is inside the app bundle;
+# extra candidates (read-only snap) are tried last.
+find_firefox_dir() {
+    local candidate
+    for candidate in "${FIREFOX_DIR:-}" /usr/lib/firefox /usr/lib64/firefox /opt/firefox \
+                     /Applications/Firefox.app/Contents/Resources "$@"; do
+        if [[ -n "$candidate" && -d "$candidate" ]]; then
+            echo "$candidate"
+            return
         fi
     done
+}
+
+# macOS blocks writes into another app's bundle unless the terminal has App
+# Management, and says only "Operation not permitted". One probe up front covers
+# every write below.
+check_bundle_writable() {
+    [[ "$(uname -s)" == Darwin ]] || return 0
+    local probe="$1/.dotfiles-write-probe"
+    if sudo touch "$probe" 2>/dev/null; then
+        sudo rm -f "$probe"
+        return 0
+    fi
+    echo "Error: macOS refused a write into $1."
+    echo "  System Settings > Privacy & Security > App Management: allow your terminal, then rerun."
+    exit 1
+}
+
+# Install policies.json to Firefox distribution directory
+install_policies() {
+    local firefox_dir
+    firefox_dir=$(find_firefox_dir /snap/firefox/current/usr/lib/firefox)
 
     if [[ -z "$firefox_dir" ]]; then
         echo "Warning: Could not find Firefox install directory for policies.json"
         echo "  You can manually copy policies.json to <firefox-dir>/distribution/policies.json"
         return
     fi
+    check_bundle_writable "$firefox_dir"
 
     local dist_dir="$firefox_dir/distribution"
     if [[ ! -d "$dist_dir" ]]; then
@@ -86,7 +115,9 @@ install_policies() {
     # etc.): deep-merged over the public base, which cannot name LAN hosts.
     local overlay="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}/.config/firefox/policies.local.json"
     if [[ -f "$overlay" ]]; then
+        # @HOME@ lets the overlay name a file:/// install_url on any machine.
         jq -s '.[0] * (.[1] | del(._comment))' "$SCRIPT_DIR/policies.json" "$overlay" \
+            | sed "s|@HOME@|$HOME|g" \
             | sudo tee "$dist_dir/policies.json" >/dev/null
         echo "  - Installed policies.json (+ $overlay) to $dist_dir"
     else
@@ -100,13 +131,8 @@ install_policies() {
 # a WebExtension new-tab handler. Wiped on every Firefox upgrade -- a pacman
 # hook (installed below) restores it post-transaction.
 install_autoconfig() {
-    local firefox_dir=""
-    for candidate in /usr/lib/firefox /usr/lib64/firefox /opt/firefox; do
-        if [[ -d "$candidate" ]]; then
-            firefox_dir="$candidate"
-            break
-        fi
-    done
+    local firefox_dir
+    firefox_dir=$(find_firefox_dir)
 
     if [[ -z "$firefox_dir" ]]; then
         echo "Warning: Could not find Firefox install directory for autoconfig"
@@ -115,6 +141,8 @@ install_autoconfig() {
 
     sudo install -m 0644 "$SCRIPT_DIR/mozilla.cfg" "$firefox_dir/mozilla.cfg"
     echo "  - Installed mozilla.cfg to $firefox_dir"
+    # Linux packages ship defaults/pref; the macOS bundle does not.
+    sudo install -d -m 0755 "$firefox_dir/defaults/pref"
     sudo install -m 0644 "$SCRIPT_DIR/autoconfig.js" "$firefox_dir/defaults/pref/autoconfig.js"
     echo "  - Installed autoconfig.js to $firefox_dir/defaults/pref"
 }
@@ -136,5 +164,5 @@ echo ""
 echo "Done! Restart browser(s) to apply changes."
 echo "  - Session restore enabled (tabs persist across restarts)"
 echo "  - Tab groups enabled"
-echo "  - Containers synced"
+echo "  - Containers seeded on a new profile"
 echo "  - Catppuccin Mocha theme applied"

@@ -35,6 +35,8 @@ setup() {
   # how the live-session refusal gets covered.
   : > "$NOTES_FIXTURE/tmux.no-session"
 
+  # Read at source time; lets a test match a gc line's shape.
+  export PANEL_NO_COLOR=1
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/src/tmux/worktree.sh"
 }
@@ -539,6 +541,46 @@ EOF
   assert_output "$MAIN"
 }
 
+@test "inside a submodule the main repo is the submodule's checkout" {
+  # Its --git-common-dir is <super>/.git/modules/sub, not */.git: this read as a bare repo
+  # and `wt new` died with "not inside a git repository" (ar-255).
+  make_drifted_submodule
+  run wt_main_repo "$MAIN/sub"
+  assert_success
+  assert_output "$MAIN/sub"
+  git -C "$MAIN/sub" worktree add --quiet "$WT_ROOT/sub-agent-1" -b agent-1
+  run wt_main_repo "$WT_ROOT/sub-agent-1"
+  assert_success
+  assert_output "$MAIN/sub"
+  # A superproject worktree's submodule keeps its store under .git/worktrees/<n>/modules.
+  run wt_main_repo "$WT/sub"
+  assert_success
+  assert_output "$WT/sub"
+}
+
+@test "a deinitialised submodule resolves to nothing, not a missing checkout" {
+  make_drifted_submodule
+  git -C "$MAIN/sub" worktree add --quiet "$WT_ROOT/sub-agent-1" -b agent-1
+  rm -rf "$MAIN/sub"
+  run wt_main_repo "$WT_ROOT/sub-agent-1"
+  assert_failure
+}
+
+@test "a submodule's main checkout is never listed as one of its worktrees" {
+  # git names a submodule's main worktree by its .git/modules dir, which matched no path.
+  make_drifted_submodule
+  git -C "$MAIN/sub" worktree add --quiet "$WT_ROOT/sub-agent-1" -b agent-1
+  run wt_worktrees_of "$MAIN/sub"
+  assert_success
+  assert_output "$WT_ROOT/sub-agent-1	agent-1"
+}
+
+@test "a bare repo still resolves to nothing" {
+  git init --quiet --bare "$SANDBOX/bare.git"
+  run wt_main_repo "$SANDBOX/bare.git"
+  assert_failure
+}
+
 @test "a directory outside any repo resolves to nothing" {
   mkdir -p "$SANDBOX/not-a-repo"
   run wt_main_repo "$SANDBOX/not-a-repo"
@@ -627,6 +669,147 @@ make_squash_candidate() {
   assert_output 'a running process is inside it'
 }
 
+# -- an orphan daemon does not hold a tree --
+
+# fake_proc <pid> <cwd> <exe> <ppid> -- one process in a fake /proc. The parent gets a comm of
+# systemd when <ppid> is 1030, the user manager's shape, and bash otherwise.
+fake_proc() {
+  export WT_PROC_ROOT="$SANDBOX/proc"
+  mkdir -p "$WT_PROC_ROOT/$1" "$WT_PROC_ROOT/$4"
+  ln -s "$2" "$WT_PROC_ROOT/$1/cwd"
+  ln -s "$3" "$WT_PROC_ROOT/$1/exe"
+  printf 'Name:\tx\nPPid:\t%s\n' "$4" > "$WT_PROC_ROOT/$1/status"
+  if [ "$4" = 1030 ]; then echo systemd; else echo bash; fi > "$WT_PROC_ROOT/$4/comm"
+}
+
+# orphan_tree -- repo-agent-1, landed and clean, with a daemon in Library/ under the user manager
+orphan_tree() {
+  make_unity_tree
+  T="$WT_ROOT/repo-agent-1"
+  mkdir -p "$T/Library/mcp-server"
+  fake_proc 500 "$T/Library/mcp-server" "$T/Library/mcp-server/server" 1030
+  # Stubbed, so no test here signals a real pid. The fake process exits on TERM unless told not to.
+  kill() {
+    printf '%s\n' "$*" >> "$SANDBOX/kill.log"
+    [ -e "$SANDBOX/kill.ignored" ] || rm -rf "$WT_PROC_ROOT/500"
+  }
+  waitpid() { :; }
+}
+
+@test "gc ends an orphan daemon and reaps the tree it pinned" {
+  orphan_tree
+  run cmd_gc
+  assert_success
+  assert_line --regexp '^reaped +repo-agent-1 +landed +\(orphan daemon 500\)$'
+  assert_output --partial '1 of 1 reapable'
+  [ ! -d "$T" ]
+  assert_equal "$(cat "$SANDBOX/kill.log")" '-TERM 500'
+}
+
+@test "gc -n names the orphan daemon and signals nothing" {
+  orphan_tree
+  run cmd_gc -n
+  assert_success
+  assert_line --regexp '^would reap +repo-agent-1 +landed +\(orphan daemon 500\)$'
+  [ -d "$T" ]
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "an orphan whose parent is init does not pin the tree" {
+  orphan_tree
+  printf 'PPid:\t1\n' > "$WT_PROC_ROOT/500/status"
+  run wt_reap_reason "$T"
+  assert_success
+}
+
+@test "a daemon that outlives SIGTERM keeps its tree" {
+  orphan_tree
+  touch "$SANDBOX/kill.ignored"
+  run cmd_reap "$T"
+  assert_failure
+  assert_output --partial 'an orphan daemon outlived SIGTERM'
+  [ -d "$T" ]
+}
+
+@test "gc counts a tree whose daemon will not exit as kept, naming the pid" {
+  orphan_tree
+  touch "$SANDBOX/kill.ignored"
+  run cmd_gc
+  assert_success
+  assert_output --partial '0 of 1 reapable, 1 kept'
+  # Still the state it was judged in; the reason says why the reap refused.
+  assert_line --regexp '^kept +repo-agent-1 +landed +.*an orphan daemon outlived SIGTERM \(orphan daemon 500\)$'
+  [ -d "$T" ]
+}
+
+@test "a path with glob characters matches itself and no other tree" {
+  fake_proc 600 "$SANDBOX/a[1]/x" /bin/true 2000
+  fake_proc 601 "$SANDBOX/a1/x" /bin/true 2000
+  run wt_pids_inside "$SANDBOX/a[1]"
+  assert_output 600
+}
+
+@test "an idle slot is not recycled over a daemon that will not exit" {
+  orphan_tree
+  touch "$SANDBOX/kill.ignored"
+  run wt_recycle "$T" 1 origin/main
+  assert_failure
+}
+
+@test "recycling a slot ends its orphan daemon" {
+  orphan_tree
+  wt_recycle "$T" 1 origin/main
+  assert_equal "$(cat "$SANDBOX/kill.log")" '-TERM 500'
+}
+
+@test "a daemon with an open editor is left alone" {
+  # The daemon's parent is systemd even while its editor runs, so the editor check is what
+  # protects it.
+  orphan_tree
+  wt_editor_open() { [ "$1" = "$T" ]; }
+  run cmd_gc
+  assert_output --partial 'a Unity editor has it open'
+  [ -d "$T" ]
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "a Library binary with a live parent still pins the tree" {
+  make_unity_tree
+  T="$WT_ROOT/repo-agent-1"
+  fake_proc 500 "$T/Library" "$T/Library/server" 400
+  run wt_reap_reason "$T"
+  assert_failure
+  assert_output 'a running process is inside it'
+}
+
+@test "a detached server outside Library/ still pins the tree" {
+  # Left running from a build directory: someone's, so unattended gc does not signal it.
+  make_unity_tree
+  T="$WT_ROOT/repo-agent-1"
+  fake_proc 500 "$T" "$T/target/server" 1030
+  run wt_reap_reason "$T"
+  assert_failure
+  assert_output 'a running process is inside it'
+}
+
+@test "an orphan beside a real process does not free the tree" {
+  orphan_tree
+  fake_proc 600 "$T" /usr/bin/make 400
+  run cmd_gc
+  assert_output --partial 'a running process is inside it'
+  [ -d "$T" ]
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "a dirty tree held only by an orphan reads held and the orphan lives" {
+  orphan_tree
+  echo edit > "$T/wip"
+  run cmd_gc
+  assert_line --regexp '^kept +repo-agent-1 +held +dirty'
+  [ -d "$T" ]
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
 # -- done: kill, then reap, on the server --
 
 # done_from_inside <tree> -- `wt done` the way an agent runs it: from a shell in its own tree,
@@ -683,6 +866,139 @@ done_from_inside() {
   assert_output --partial 'a submodule worktree lives off it'
 }
 
+@test "a pushed submodule worktree whose dir is gone does not pin the worktree" {
+  # git marks it prunable; nothing is left but its HEAD, and that is on origin (ar-232).
+  make_drifted_submodule
+  git -C "$WT/sub" worktree add --quiet "$SANDBOX/sub-wt" -b side
+  rm -rf "$SANDBOX/sub-wt"
+  run wt_submodule_worktrees "$WT"
+  assert_failure
+  run wt_reap_reason "$WT"
+  assert_success
+}
+
+@test "an unpushed submodule worktree whose dir is gone still pins the worktree" {
+  # Its commit lives only in this tree's .git/modules, so removing the tree loses it.
+  make_drifted_submodule
+  git -C "$WT/sub" worktree add --quiet "$SANDBOX/sub-wt" -b side
+  git -C "$SANDBOX/sub-wt" commit --quiet --allow-empty -m local
+  rm -rf "$SANDBOX/sub-wt"
+  run wt_reap_reason "$WT"
+  assert_failure
+  assert_output --partial "a submodule worktree lives off it: $SANDBOX/sub-wt (its dir is gone"
+}
+
+@test "gc judges a submodule's worktree before the tree its git dir lives in" {
+  # Reaping it first frees the superproject tree in the same pass.
+  mkdir -p "$WT_ROOT/aa-super" "$WT_ROOT/zz-sub"
+  printf 'gitdir: %s/.git/worktrees/x/modules/sub/worktrees/zz-sub\n' "$SANDBOX" > "$WT_ROOT/zz-sub/.git"
+  printf 'apps\n' > "$WT_ROOT/aa-super/keep.txt"
+  run cmd_gc -n
+  assert_line --index 0 --partial 'zz-sub'
+  assert_line --index 1 --partial 'aa-super'
+}
+
+@test "gc judges a dot-prefixed worktree" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/.repo-agent-1" -b dotted
+  run cmd_gc -n
+  assert_success
+  assert_output --partial '.repo-agent-1'
+  assert_output --partial '1 of 1 reapable'
+}
+
+@test "gc keeps a dot-prefixed worktree whose session is live under the dotless name" {
+  # panel_session_name strips the leading dot, so the session is repo-agent-1, not .repo-agent-1.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/.repo-agent-1" -b dotted
+  wt_session_exists() { [ "$1" = repo-agent-1 ]; }
+  run cmd_gc
+  assert_output --partial 'its tmux session is live'
+  [ -d "$WT_ROOT/.repo-agent-1" ]
+}
+
+@test "gc leaves a dot dir that is no worktree alone, even one holding only caches" {
+  # .preview and .xdg-agent18 are tools' dirs; a cache-only one would read as a reapable husk.
+  mkdir -p "$WT_ROOT/.preview/Library" "$WT_ROOT/.xdg-agent18/Logs"
+  run cmd_gc
+  assert_output --partial 'no worktrees to consider'
+  [ -d "$WT_ROOT/.preview/Library" ]
+  [ -d "$WT_ROOT/.xdg-agent18/Logs" ]
+  # Nor one holding a clone: its .git is a directory, a main checkout, not a worktree.
+  mkdir -p "$WT_ROOT/.clone/.git"
+  run cmd_gc
+  assert_output --partial 'no worktrees to consider'
+}
+
+# ── gc state words: README "Worktree states" ─────────────────────────────────
+
+@test "gc classifies dirty and unpushed trees as held, a symlink as not-a-worktree, and ignores a loose file" {
+  # The negative control: nothing here is reapable, so a real (not dry) pass must remove none.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b dirty
+  printf 'edit\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-2" -b unpushed
+  git -C "$WT_ROOT/repo-agent-2" commit --quiet --allow-empty -m local
+  ln -s "$MAIN" "$WT_ROOT/repo"
+  printf 'notes\n' > "$WT_ROOT/loose.txt"
+  run cmd_gc --tsv
+  assert_success
+  assert_line --regexp $'^held\tkept\trepo-agent-1\t[^\t]+\tdirty'
+  assert_line --regexp $'^held\tkept\trepo-agent-2\t[^\t]+\tnot merged'
+  assert_line --regexp $'^not-a-worktree\tskipped\trepo\t[^\t]+\ta symlink to '
+  refute_output --partial 'loose.txt'
+  assert_equal "${#lines[@]}" 3
+  [ -d "$WT_ROOT/repo-agent-1" ] && [ -d "$WT_ROOT/repo-agent-2" ] && [ -L "$WT_ROOT/repo" ] && [ -f "$WT_ROOT/loose.txt" ]
+  [ -f "$MAIN/file.txt" ]
+}
+
+@test "gc never judges a tree through a symlink, even one pointing at a reapable worktree" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$SANDBOX/elsewhere" -b landed
+  ln -s "$SANDBOX/elsewhere" "$WT_ROOT/repo-agent-3"
+  run cmd_gc
+  assert_line --regexp '^skipped +repo-agent-3 +not-a-worktree'
+  assert_output --partial '0 of 1 reapable, 0 kept, 1 skipped;'
+  [ -d "$SANDBOX/elsewhere" ]
+}
+
+@test "gc calls a tree someone is in claimed, and a cache-only husk husk" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b live
+  mkdir -p "$WT_ROOT/repo-agent-2/Library"
+  wt_session_exists() { [ "$1" = repo-agent-1 ]; }
+  run cmd_gc -n --tsv
+  assert_success
+  assert_line --regexp $'^claimed\tkept\trepo-agent-1\t[^\t]+\tits tmux session is live$'
+  assert_line --regexp $'^husk\twould reap\trepo-agent-2\t[^\t]+\t$'
+}
+
+@test "gc a main checkout and an unresolvable .git are not-a-worktree, not held" {
+  mkdir -p "$WT_ROOT/clone/.git" "$WT_ROOT/broken"
+  git init --quiet "$WT_ROOT/clone"
+  printf 'gitdir: %s/no/such/dir\n' "$SANDBOX" > "$WT_ROOT/broken/.git"
+  run cmd_gc -n
+  assert_success
+  assert_line --regexp '^skipped +broken +not-a-worktree'
+  assert_line --regexp '^skipped +clone +not-a-worktree +a main checkout'
+  assert_output --partial 'held 0, not-a-worktree 2'
+}
+
+@test "gc --tsv over nothing keeps stdout empty" {
+  run --separate-stderr cmd_gc --tsv
+  assert_success
+  assert_output ''
+}
+
+@test "the README states table names exactly the words gc prints" {
+  local readme="$REPO_ROOT/.local/src/tmux/README.md" doc code
+  doc=$(awk '/^\*\*Worktree states\.\*\*/ {on = 1; next} on && /^\| `/ {print} on && /^$/ && seen {exit} on && /^\|/ {seen = 1}' "$readme" |
+    sed -E 's/^\| `([^`]+)`.*/\1/' | sort)
+  code=$(printf '%s\n' $WT_GC_STATES | sort)
+  [ -n "$doc" ] || fail "no states table under **Worktree states.** in the README"
+  assert_equal "$doc" "$code"
+}
+
 @test "reap removes a clean worktree that has an initialised submodule" {
   # Plain `git worktree remove` refuses every such tree, clean or not.
   make_drifted_submodule
@@ -699,6 +1015,98 @@ done_from_inside() {
   [ -f "$WT/sub/wip.txt" ]
 }
 
+# -- the hold: a slot cut by `new` is git-locked until `reap` frees it --
+
+held_slot() {
+  make_repo
+  SLOT="$WT_ROOT/repo-agent-1"
+  wt_prepare "$MAIN" "$SLOT" 1 fresh 2>/dev/null
+}
+
+@test "a raw git worktree remove cannot take a slot, forced or not" {
+  held_slot
+  run git -C "$MAIN" worktree remove "$SLOT"
+  assert_failure
+  assert_output --partial 'wt reap'
+  run git -C "$MAIN" worktree remove --force "$SLOT"
+  assert_failure
+  run git -C "$MAIN" worktree move "$SLOT" "$SANDBOX/moved"
+  assert_failure
+  [ -f "$SLOT/file.txt" ]
+}
+
+@test "a recycled slot is held, whether or not it was before" {
+  held_slot
+  run wt_prepare "$MAIN" "$SLOT" 1 recycle
+  assert_success
+  refute_output --partial 'could not lock'
+  git -C "$MAIN" worktree unlock "$SLOT"
+  wt_prepare "$MAIN" "$SLOT" 1 recycle 2>/dev/null
+  run git -C "$MAIN" worktree remove "$SLOT"
+  assert_failure
+  assert_output --partial 'wt reap'
+}
+
+@test "reap frees a held slot, and takes its branch" {
+  held_slot
+  run cmd_reap "$SLOT"
+  assert_success
+  assert_output --partial 'reaped repo-agent-1 (branch agent-1 deleted)'
+  [ ! -d "$SLOT" ]
+}
+
+@test "reap frees a held slot with a submodule through the forced path" {
+  make_drifted_submodule
+  wt_hold "$WT"
+  run cmd_reap "$WT"
+  assert_success
+  [ ! -d "$WT" ]
+}
+
+@test "a reap refused for a live session leaves the hold on" {
+  held_slot
+  rm "$NOTES_FIXTURE/tmux.no-session"
+  run cmd_reap "$SLOT"
+  assert_failure
+  assert_output --partial 'its tmux session is live'
+  run git -C "$MAIN" worktree remove "$SLOT"
+  assert_failure
+  assert_output --partial 'wt reap'
+}
+
+@test "a reap git refuses after the policy passed puts the hold back" {
+  # git's own dirty check is the second door, for a tree that changed since the policy looked.
+  held_slot
+  printf 'late\n' > "$SLOT/late.txt"
+  wt_reap_reason() { return 0; }
+  run cmd_reap "$SLOT"
+  assert_failure
+  assert_output --partial 'git worktree remove refused'
+  [ -f "$SLOT/late.txt" ]
+  run git -C "$MAIN" worktree remove --force "$SLOT"
+  assert_failure
+  assert_output --partial 'wt reap'
+}
+
+@test "a hold that outlived its directory frees the slot for the next new" {
+  held_slot
+  rm -rf "$SLOT"
+  run wt_next_slot repo "$MAIN" origin/main
+  assert_success
+  assert_output "1${PANEL_TAB}fresh"
+  run wt_prepare "$MAIN" "$SLOT" 1 fresh
+  assert_success
+  [ -f "$SLOT/file.txt" ]
+}
+
+@test "a live session keeps the hold on a slot whose directory is gone" {
+  held_slot
+  rm -rf "$SLOT"
+  rm "$NOTES_FIXTURE/tmux.no-session"
+  run wt_next_slot repo "$MAIN" origin/main
+  git -C "$MAIN" worktree list --porcelain | grep -q '^locked'
+}
+
 # -- husks: a dir with no .git left behind after its worktree went --
 
 @test "a husk holding only Unity caches is reaped" {
@@ -711,14 +1119,37 @@ done_from_inside() {
   [ ! -e "$WT_ROOT/repo-agent-4" ]
 }
 
-@test "a git-less dir holding anything but Unity caches is kept" {
+@test "a husk holding only files tools rewrote is reaped" {
+  # Seen live 2026-11-07: Claude Code's local settings, Unity's package manifest and lock,
+  # and a pnpm install, each alone in a dir whose worktree had gone.
+  local h="$WT_ROOT/repo-agent-4"
+  mkdir -p "$h/.claude" "$h/Packages" "$h/node_modules/.pnpm/x" "$h/Library"
+  touch "$h/.claude/settings.local.json" "$h/Packages/manifest.json" "$h/Packages/packages-lock.json" \
+    "$h/pnpm-lock.yaml" "$h/node_modules/.pnpm/x/index.js"
+  run wt_reap_reason "$h"
+  assert_success
+}
+
+@test "a git-less dir holding anything but tool caches is kept" {
   # A source tree whose .git went missing may be the only copy of its work.
   mkdir -p "$WT_ROOT/repo-agent-4/Library" "$WT_ROOT/repo-agent-4/apps"
+  touch "$WT_ROOT/repo-agent-4/apps/main.ts"
   run wt_reap_reason "$WT_ROOT/repo-agent-4"
   assert_failure
-  assert_output 'no git, and it holds more than Unity caches'
-  mkdir -p "$WT_ROOT/repo-agent-5/.claude"
+  assert_output 'no git, and it holds more than tool caches'
+  # The named files pass only at their own path: an embedded package or a skill is work.
+  mkdir -p "$WT_ROOT/repo-agent-5/.claude/skills" "$WT_ROOT/repo-agent-6/Packages/com.x"
+  touch "$WT_ROOT/repo-agent-5/.claude/skills/SKILL.md" "$WT_ROOT/repo-agent-6/Packages/com.x/manifest.json"
   run wt_reap_reason "$WT_ROOT/repo-agent-5"
+  assert_failure
+  run wt_reap_reason "$WT_ROOT/repo-agent-6"
+  assert_failure
+  mkdir -p "$WT_ROOT/repo-agent-8" && ln -s /nowhere "$WT_ROOT/repo-agent-8/link"
+  run wt_reap_reason "$WT_ROOT/repo-agent-8"
+  assert_failure
+  # An empty skeleton is kept too: only the named files' own dirs are walked.
+  mkdir -p "$WT_ROOT/repo-agent-9/Library" "$WT_ROOT/repo-agent-9/Assets/Scenes"
+  run wt_reap_reason "$WT_ROOT/repo-agent-9"
   assert_failure
 }
 

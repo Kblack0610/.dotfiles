@@ -75,7 +75,7 @@ agent-ask sweep [project|--all]              judge every pending ask again and a
 agent-ask assume-due                         answer every armed ask whose wait has passed, after reading its verdict again; `fleet-state.service` runs it each pass
 agent-ask cancel <id>                        status->cancelled
 agent-ask recommend <id> <option> [why...]   set the recommendation; its why is replaced, or cleared when none is given
-agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); the text answers an ask when it names exactly one of its options (recorded as the answer) or the ask has none; any other reply cancels it as `replied in session`, and the session files a new ask if it still needs one. A board's typed-in `Answer to ask <id>:` settles nothing
+agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); the text answers an ask when it names exactly one of its options (recorded as the answer) or the ask has none and the text is not a question or a slash command; any other reply cancels it as `replied in session`, and the session files a new ask if it still needs one. A board's typed-in `Answer to ask <id>:` settles nothing
 ```
 
 ## Ask file schema
@@ -160,3 +160,4 @@ Two surfaces, no overlap - that separation is what keeps the bridge from becomin
 | Symptom | Cause | Fix |
 |---|---|---|
 | An answer reached the session but sat unsent in its input box, and showed up the next time you typed there | `agent-ask` pasted and pressed Enter at once; Claude Code drops an Enter on the heels of a paste | `agent-panel send` waits for the paste to be drawn, retries a dropped Enter once, and reports a second drop (`tests/ui/session_send.bats`) |
+| An answer to a busy session (spinner running) sat unsent in its input box, though `answer` said nothing | `agent-panel send` judged the whole screen, and the spinner redrawing passed for the paste drawn and for the Enter taken | `agent-panel send` judges only the input box between Claude Code's two bottom rules (`tests/ui/session_send.bats` busy cases, `send.rs` unit tests) |
