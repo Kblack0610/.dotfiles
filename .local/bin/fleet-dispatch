@@ -2334,9 +2334,10 @@ item_pinned() {
 # hold (a headless one takes no plan item) and, when routed rather than pinned, a tier within the
 # unattended ceiling: a red goes past it, only to a harness that can run the red-fix gate.
 route() {
-  local it="$1" verdict="$2" cands h m src tier why=()
+  local it="$1" verdict="$2" cands h m src tier pinned=0 why=()
   ROUTE_HARNESS='' ROUTE_MODEL='' ROUTE_WHY=''
-  if item_pinned "$it"; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
+  item_pinned "$it" && pinned=1
+  if [ "$pinned" = 1 ]; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
   else cands=$(jq -c '.candidates // empty | select(length > 0)' <<<"${verdict:-null}" 2>/dev/null); fi
   [ -n "$cands" ] || cands='[{"harness": "claude", "model": "", "fit": 0}]'
   tier=$(item_tier "$it")
@@ -2350,16 +2351,17 @@ route() {
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
     elif headless "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless, and this is a plan item")
-    elif ! item_pinned "$it" && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it"; then why+=("$h: tier $tier is past the unattended ceiling")
-    elif ! item_pinned "$it" && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
+    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it"; then why+=("$h: tier $tier is past the unattended ceiling")
+    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
-      why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room"' <<<"$ACCT_ROWS")")
+      why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room --json"' <<<"$ACCT_ROWS")")
     else ROUTE_HARNESS=$h ROUTE_MODEL=$m; return 0
     fi
   done < <(jq -r --argjson c "$cands" --arg d "${ACCT_DIR:-}" --slurpfile map "$HARNESSES" '. as $r | ($map[0].harnesses // {}) as $hs
       | $c | map(.rank = (if .harness == "claude" then ([$r.accounts[]? | select(.dir == $d) | .rank] | first)
           else ($hs[.harness].source // "") as $s | ([$r.sources[]? | select(.name == $s) | .rank] | first) end // 1e9))
       | sort_by(.fit, .rank)[] | "\(.harness) \(.model)"' <<<"$ACCT_ROWS" 2>/dev/null ||
+    # No readable map: claude is the one harness a start could launch.
     jq -r '.[] | select(.harness == "claude") | "claude "' <<<"$cands")
   ROUTE_WHY=$(printf '%s; ' "${why[@]}"); ROUTE_WHY=${ROUTE_WHY%; }
   return 1

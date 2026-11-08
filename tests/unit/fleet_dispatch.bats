@@ -918,6 +918,7 @@ kinds_match() {
   assert_line --index 0 '/one-shot decide(game): which'
   run item_brief "$(it 'plain task' '')"
   assert_line --index 0 '/one-shot plain task'
+  echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
   run item_brief "$(it 'fix(game): the score' '')" opencode
   assert_line --index 0 'Read ~/.claude/skills/fix-skill/SKILL.md and follow it for this task:'
 }
@@ -959,6 +960,7 @@ kinds_match() {
   assert_line --index 0 '/release release(steam): x'
   refute_output --partial 'red-fix gate'
   # a headless harness gets no wind-down and no window to leave open
+  echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
   run item_brief '{"slug": "rel", "mode": "oneshot", "project": "game", "title": "release(steam): x", "task": "release(steam): x"}' opencode
   assert_line --index 0 'Read ~/.claude/skills/release/SKILL.md and follow it for this task:'
   assert_output --partial 'agent-queue move rel done --status ok.'
@@ -1408,7 +1410,7 @@ room_on_floor() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started queue item fix-game on the run floor'
-  assert_output --partial 'over its weekly pace; real idle 10.0% is under 30%, the pass stops after 1 started'
+  assert_output --partial 'over its weekly pace, and no other source has room; real idle 10.0% is under 30%, the pass stops after 1 started'
   refute_output --partial 'started queue item fix-app'
   # the negative control: no floor, the same room and idle start nothing
   export DISPATCH_RUN_FLOOR=0
@@ -1713,7 +1715,7 @@ idle_held_machine() {
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'queue item gm-1 waits: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack)'
+  assert_output --partial 'no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), and no queue item has a source with room'
   assert_equal "$(outcome)" BLOCKED
   assert_not_called 'wt new'
 }
@@ -3329,7 +3331,7 @@ $(jq -nc '{project:"game",stage:"beta",lane:"agent",key:"fresh",text:"- [ ] fres
   acct
   echo '99.00 99.00 99.00 1/1 1' > "$DISPATCH_LOADAVG"
   run gate
-  assert_output --regexp '^no account has room under its weekly pace and after its live sessions; load 99.00 on [0-9]+ cores is over the [0-9.]+ pace$'
+  assert_output --regexp '^no account has room under its weekly pace and after its live sessions, and no other source has room; load 99.00 on [0-9]+ cores is over the [0-9.]+ pace$'
   stub claude-acct 'exit 2'
   run gate
   assert_output --partial 'account usage unreadable (claude-acct room --json gave no answer); load 99.00'
@@ -5093,6 +5095,7 @@ case "$1" in log) echo run-9 ;; classify)
   agent-queue add --project game --slug fix-next --priority high "Fix the next menu" >/dev/null
   srcs codex:ok:5
   : > "$NOTES_FIXTURE/calls.log"
+  export DISPATCH_PER_PASS=3   # gm-1 waits ahead of it
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-next'
   assert_equal "$(qfield "$(qitem running fix-next)" agent)" claude
