@@ -2313,7 +2313,7 @@ source_attr() {
   [ -z "${SOURCE_ATTR_JSON:-}" ] || { printf '%s\n' "$SOURCE_ATTR_JSON"; return 0; }   # the scorecard reads it once
   since=$(( t - days * 86400 ))
   rows=$($BENCH_SOURCES_CMD 2>/dev/null | jq -ce 'arrays' 2>/dev/null) || rows=null
-  pts=$(prom_map account "sum by (account) (sum_over_time((clamp_min(claude_account_week_used_percent - claude_account_week_used_percent offset 15m, 0))[${days}d:15m]))" "$t" 2>/dev/null) || pts=null
+  pts=$(prom_map account "sum by (account) (sum_over_time((clamp_min(max by (account) (claude_account_week_used_percent) - max by (account) (claude_account_week_used_percent offset 15m), 0))[${days}d:15m]))" "$t" 2>/dev/null) || pts=null
   usd=$(prom_map user_email "sum by (user_email) (increase(claude_code_cost_usage_USD_total[${days}d]))" "$t" 2>/dev/null) || usd=null
   hs=$(jq -ce '.harnesses // {} | map_values(.source)' "$BENCH_HARNESSES" 2>/dev/null) || hs='{}'
   jq -cn --argjson rows "${rows:-null}" --argjson pts "${pts:-null}" --argjson usd "${usd:-null}" --argjson hs "$hs" \
