@@ -458,18 +458,22 @@ pub struct Badge {
     pub level: Level,
 }
 
-/// The badge for `project`; None when it has no channels, or when no refresh has run on this host
-/// yet, which the tab says and a project's page has no reason to. `project` is already a safe name.
-pub fn badge(runner: &dyn Runner, project: &str) -> Result<Option<Badge>, String> {
-    let rows = match show(runner, Some(project)) {
-        Ok(s) => settle(s.rows),
-        Err(e) if e.contains("no snapshot yet") => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    Ok(rows.first().map(|worst| Badge {
-        says: says(&rows),
+/// `project`'s channels, worst first; none when no refresh has run on this host yet, which the
+/// tab says and a project's page has no reason to. `project` is already a safe name.
+pub fn channels(runner: &dyn Runner, project: &str) -> Result<Vec<Release>, String> {
+    match show(runner, Some(project)) {
+        Ok(s) => Ok(settle(s.rows)),
+        Err(e) if e.contains("no snapshot yet") => Ok(vec![]),
+        Err(e) => Err(e),
+    }
+}
+
+/// The badge for a project's [`channels`]; None when it has none.
+pub fn badge(rows: &[Release]) -> Option<Badge> {
+    rows.first().map(|worst| Badge {
+        says: says(rows),
         level: worst.level,
-    }))
+    })
 }
 
 /// What one tag of a project shipped, from `release-state changelog --json`: the tag's
@@ -593,9 +597,9 @@ mod tests {
         let none = Fake(Err(
             "release-state: no snapshot yet; run: release-state refresh".into(),
         ));
-        assert_eq!(badge(&none, "game"), Ok(None));
+        assert_eq!(channels(&none, "game"), Ok(vec![]));
         let broken = Fake(Err("jq: not found".into()));
-        assert!(badge(&broken, "game").unwrap_err().contains("jq"));
+        assert!(channels(&broken, "game").unwrap_err().contains("jq"));
     }
 
     fn row(project: &str, id: &str, status: &str) -> serde_json::Value {
@@ -807,15 +811,15 @@ mod tests {
 
     #[test]
     fn a_badge_counts_the_projects_channels_at_its_worst_level() {
-        let b = badge(
+        let rows = channels(
             &snapshot(vec![row("a", "x", "ok"), row("a", "y", "drift")]),
             "a",
         )
-        .unwrap()
         .unwrap();
+        let b = badge(&rows).unwrap();
         assert_eq!(b.says, "2 channels: 1 drift, 1 ok");
         assert_eq!(b.level, Level::Bad);
-        assert_eq!(badge(&snapshot(vec![]), "a").unwrap(), None);
+        assert_eq!(badge(&channels(&snapshot(vec![]), "a").unwrap()), None);
     }
 
     #[test]

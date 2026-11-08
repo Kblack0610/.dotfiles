@@ -213,8 +213,8 @@ fn fold_head(title: &str, says: &str, folds: bool, p: Palette, w: usize) -> Line
 }
 
 /// The opened card, over its rows: the card, its goal and Flow, what needs the human (always
-/// open), then Build by system, Next stage, Shipped, In flight and the Agent note as folded
-/// heads with their counts, which `F` opens together. `page` is None while it is read.
+/// open), then Build by system, Next stage, Shipped, Timeline, In flight and the Agent note as
+/// folded heads with their counts, which `F` opens together. `page` is None while it is read.
 pub fn open_lines(
     c: &Card,
     page: Option<&Page>,
@@ -296,6 +296,22 @@ pub fn open_lines(
     if folds {
         for s in &pg.shipped {
             out.extend(wrapped("  ", s, Default::default(), p, w));
+        }
+    }
+    if let Some(t) = &pg.timeline {
+        out.push(fold_head("TIMELINE", &t.says, folds, p, w));
+        if folds {
+            for n in &t.notes {
+                out.extend(wrapped("  ", n, p.dim(), p, w));
+            }
+            for l in &t.lines {
+                out.push(clip_line(
+                    Line::styled(format!("  {}", l.line), crate::releases::alert(l.level, p)),
+                    w,
+                ));
+            }
+            let shown = t.lines.len();
+            out.extend(crate::fmt::older(shown + t.older, shown, p));
         }
     }
     out.push(fold_head("IN FLIGHT", &projects::counts(c), folds, p, w));
@@ -526,6 +542,16 @@ pub(crate) mod tests {
             }],
             shipped_says: "none yet".into(),
             shipped: vec![],
+            timeline: Some(hub_core::timeline::Timeline {
+                says: "7d: 1 commit (1 red on CI)".into(),
+                lines: vec![hub_core::timeline::Line {
+                    line: "14:02  commit  fix(web): keep the cart (#12)  CI red".into(),
+                    level: hub_core::releases::Level::Bad,
+                    url: String::new(),
+                }],
+                older: 3,
+                notes: vec!["PRs: the origin is not GitHub".into()],
+            }),
             errors: vec!["project-stage-check --systems: exited 2".into()],
         }
     }
@@ -554,6 +580,7 @@ pub(crate) mod tests {
                 "BUILD BY SYSTEM  1 systems, 1 open epics (2 rows with no epic)  F opens it",
                 "NEXT STAGE  beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet  F opens it",
                 "SHIPPED  none yet  F opens it",
+                "TIMELINE  7d: 1 commit (1 red on CI)  F opens it",
                 "IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox  F opens it",
                 "AGENT NOTE  model-written, 2026-11-05  F opens it",
             ]
@@ -563,6 +590,7 @@ pub(crate) mod tests {
             "  ui  criteria 5 of 7\n    Menus  [rows]",
             "    +1 closed, 1 verified",
             "  FAIL   a soak test (beta)",
+            "TIMELINE  7d: 1 commit (1 red on CI)\n  PRs: the origin is not GitHub\n  14:02  commit  fix(web): keep the cart (#12)  CI red\n  +3 older",
             "AGENT NOTE  model-written, 2026-11-05\n  landed the cards",
         ] {
             assert!(open.contains(s), "{s} in {open}");
