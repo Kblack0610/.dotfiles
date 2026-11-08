@@ -110,7 +110,7 @@ pub fn read() -> Result<Option<Pipeline>, String> {
 
 /// The stamp: a clock time for today, with the date when the gauges were last written on an
 /// earlier day, so a collector that stopped writing cannot pass for a fresh reading.
-fn stamp(epoch: i64, now: i64) -> String {
+pub(crate) fn stamp(epoch: i64, now: i64) -> String {
     let day = |e| Local.timestamp_opt(e, 0).single().map(|t| t.date_naive());
     match Local.timestamp_opt(epoch, 0).single() {
         Some(t) if day(epoch) != day(now) => t.format("%m-%d %H:%M").to_string(),

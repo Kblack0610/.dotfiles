@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod boards;
 pub mod briefing;
+pub mod builds;
 pub mod burn;
 pub mod capacity;
 pub mod costs;
@@ -28,6 +29,7 @@ pub mod prom;
 pub mod proposals;
 pub mod queue;
 pub mod reds;
+pub mod releases;
 pub mod schedules;
 pub mod sections;
 pub mod session_actions;

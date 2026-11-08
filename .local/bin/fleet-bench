@@ -3664,11 +3664,15 @@ finding_rows() {
             # more sessions add no demand to it.
             | (if $pool == "other" or ($ms != null and $k.s == 0 and $mr == 0) or ($k.u != null and $k.s != null and $k.s > 0 and ($k.u / $k.s) < $l.finding_pool_idle_share)
                then "labels" else "capacity" end) as $bind
+            # Jobs pinned to a host (a host-<name> label) wait on the slots of that host by choice:
+            # with those all busy, no label or admission is wrong.
+            | ($pool == "other" and $ms != null and $ms > 0 and $mu >= $ms
+               and (($want // "") | split(" | ") | length > 0 and all(.[]; test("(^|,)host-")))) as $pinned
             | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $k.u, slots: $k.s, oldest_s: $w}
                 + (if $ms != null then {pool_busy: $u, pool_slots: $s, labels: $want} else {} end); "now"; "cc:pool_*";
                 "oldest job waited \($w | dur) with \($k.u // "?")/\($k.s // "?") slots busy"
                 + (if $ms != null then " among those matching its labels (\($want // "?")), \($u // "?")/\($s // "?") in the pool" else "" end) + ": "
-                + (if $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
+                + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
                 "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
             | select($n != null and $n > 0)

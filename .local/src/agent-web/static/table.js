@@ -5,7 +5,7 @@
 // picks one). This file only draws that and turns a click or a keystroke into the view keys
 // the server reads; what a query means is decided in hub-core alone.
 
-// The view keys, in the tab's URL query (`#infra?q=source:ci&s=failed&sort=started&dir=asc`)
+// The view keys, in the tab's URL query (`#infra?q=source:unity&s=failed&sort=started&dir=asc`)
 // and in the API's, so a filtered view is a link. A tab's second table names its keys with a
 // prefix (`pre`, Home's Needs you: nq, ns, nsort, ndir), the same in the URL and the API.
 const TBL_KEYS = ["q", "s", "sort", "dir"];

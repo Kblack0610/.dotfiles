@@ -63,6 +63,8 @@ pub struct Page {
     pub shipped_says: String,
     /// `v0.0.0: 20 rows closed; feat 9, fix 7, docs 4`, newest first.
     pub shipped: Vec<String>,
+    /// The channels' one-line badge, linking to the Releases tab; None with no channels.
+    pub releases: Option<crate::releases::Badge>,
     pub errors: Vec<String>,
 }
 
@@ -366,6 +368,10 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
         },
         Err(e) => p.errors.push(format!("notes projects --roadmap: {e}")),
     }
+    match crate::releases::badge(runner, name) {
+        Ok(b) => p.releases = b,
+        Err(e) => p.errors.push(e),
+    }
     p.shipped_says = match p.shipped.len() {
         0 => "none yet".into(),
         1 => "1 version".into(),
@@ -464,6 +470,11 @@ mod tests {
                     stage.into(),
                 ),
                 ("notes projects --roadmap game", 0, roadmap.into()),
+                (
+                    "release-state show --json game",
+                    0,
+                    r#"{"rows":[{"project":"game","id":"game-prod","status":"drift"}]}"#.into(),
+                ),
             ],
             seen: RefCell::new(vec![]),
         }
@@ -539,6 +550,7 @@ mod tests {
             vec!["v0.1.0: 20 rows closed; feat 9, fix 7, docs 4"]
         );
         assert_eq!(p.shipped_says, "1 version");
+        assert_eq!(p.releases.unwrap().says, "1 channel: 1 drift");
     }
 
     #[test]

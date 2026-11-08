@@ -49,7 +49,7 @@ const ntable = (needs, o) => ({ q: "", state: "", sort: "", dir: "desc", total: 
 const ranked = (needs) => needs.map((n, i) => ({ rank: i + 1, ...n }));
 const home = (o = {}) => {
   const needs = ranked(o.needs || []);
-  return { proposals: [], proposals_head: "", proposals_table: table(0), running: [], flow: { chips: [{ key: "running", label: "running", value: "1", hot: false, to: { tab: "queue", state: "running" } }, { key: "inbox", label: "inbox", value: null, hot: false, to: null }], bottleneck: null, as_of: null, error: null }, numbers: [], health: [], errors: [], shown: 8, ...o, needs, table: ntable(needs, o.table) };
+  return { proposals: [], proposals_head: "", proposals_table: table(0), running: [], flow: { chips: [{ key: "running", label: "running", value: "1", hot: false, to: { tab: "queue", state: "running" } }, { key: "inbox", label: "inbox", value: null, hot: false, to: null }], bottleneck: null, as_of: null, error: null }, sessions: "", spend: null, health: [], errors: [], shown: 8, ...o, needs, table: ntable(needs, o.table) };
 };
 const live = (target, kind) => ({ target, short: target, session: target, project: "p", summary: target, items: [], actions: [], question: { kind, text: "Run it?" } });
 const shipIt = { id: "a1", project: "p", kind: "question", question: "Ship it?", title: "Ship it?", body: "", options: ["yes", "no"], recommend: "yes", session: "", agent: "x", judge: "", created: now() - 120 };
@@ -257,15 +257,24 @@ test("health shows only what is not green, and all green as one chip", () => {
   assert.match(draw(home({ health: [chips[0]] })), /cchip ok">all green \(1\)<\/span>/);
 });
 
-test("the numbers and what could not be read are drawn as hub-core worded them", () => {
-  const html = draw(home({ numbers: [{ label: "queue", value: "1 running, 2 up next" }], errors: ["Prometheus: down"] }));
+test("what could not be read is drawn as hub-core worded it", () => {
+  const html = draw(home({ errors: ["Prometheus: down"] }));
   assert.match(html, /^<div class="cline warn">Prometheus: down<\/div>/);
-  assert.match(html, /<span><b>queue<\/b> 1 running, 2 up next<\/span>/);
 });
 
-test("the flow strip leads Home, ahead of Numbers, and the queue and done-today numbers are gone", () => {
-  const html = draw(home({ numbers: [{ label: "sessions", value: "3 working" }] }));
-  assert.ok(html.indexOf("Flow") < html.indexOf("Numbers"), html);
+test("Home has no Numbers heading: the session counts head Running and the spend is one line linking Costs", () => {
+  const html = draw(home({ sessions: "3 working, 1 need you, 0 stalled", spend: "claude $573 in 24h" }));
+  assert.doesNotMatch(html, /Numbers/);
+  assert.match(html, />Running <span class="muted">0<\/span> <span class="muted"><a href="#sessions">sessions<\/a>: 3 working, 1 need you, 0 stalled<\/span><\/h2>/);
+  assert.match(html, /Spend<\/h2><div class="cline">claude \$573 in 24h <a href="#costs">Costs<\/a><\/div>/);
+  assert.ok(html.indexOf("Health") < html.indexOf("Spend") && html.indexOf("Spend") < html.indexOf("Needs you"), html);
+  const none = draw(home());
+  assert.doesNotMatch(none, /Spend|sessions<\/a>/, "the control: no spend and no counts, no lines for them");
+});
+
+test("the flow strip leads Home, and the queue and done-today numbers are gone", () => {
+  const html = draw(home());
+  assert.ok(html.indexOf("Flow") < html.indexOf("Health"), html);
   assert.match(html, /href="#queue\?s=running" data-flow="running">running 1</);
   assert.match(html, />inbox -</);
   assert.doesNotMatch(html, /<b>queue<\/b>|done today/);
@@ -273,8 +282,8 @@ test("the flow strip leads Home, ahead of Numbers, and the queue and done-today 
 
 test("the summary leads, and a long list shows the cap with a button for the rest", () => {
   const needs = Array.from({ length: 11 }, (_, i) => ({ kind: "nightly", need: "red", project: "p", text: `red ${i}`, id: `r${i}` }));
-  const html = draw(home({ needs, numbers: [{ label: "queue", value: "1 running" }], health: [{ name: "ci", level: "red" }] }));
-  assert.ok(html.indexOf("Flow") < html.indexOf("Numbers") && html.indexOf("Numbers") < html.indexOf("Health") && html.indexOf("Health") < html.indexOf("Needs you"), html);
+  const html = draw(home({ needs, health: [{ name: "ci", level: "red" }] }));
+  assert.ok(html.indexOf("Flow") < html.indexOf("Health") && html.indexOf("Health") < html.indexOf("Needs you"), html);
   assert.match(html, /red 7/);
   assert.doesNotMatch(html, /red 8/);
   assert.match(html, /<button class="btn sm" data-all="1">\+3 more<\/button>/);

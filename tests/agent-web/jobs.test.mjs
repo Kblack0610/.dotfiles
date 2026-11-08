@@ -69,6 +69,16 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   assert.ok(h.indexOf("playground / Tests") < h.indexOf("platform / e2e"), "the server's order is kept");
 });
 
+test("CI runs are one count line that links to the Releases Builds section", () => {
+  run("st.tab = 'infra'");
+  Object.assign(jst, { data: { ...data, ci: { says: "9 runs in 30 days: 1 running, 0 queued, 2 red", level: "bad" } }, err: null, hist: null, log: null, all: false });
+  run("jst.render()");
+  assert.match(box.innerHTML, /CI: <a class="bad" href="#releases">9 runs in 30 days: 1 running, 0 queued, 2 red<\/a>/);
+  Object.assign(jst, { data });
+  run("jst.render()");
+  assert.doesNotMatch(box.innerHTML, /CI: <a/, "a list with no ledger read draws no line");
+});
+
 test("a click or a keystroke becomes the view keys the server reads", () => {
   const patch = (type, attrs, value) => JSON.parse(JSON.stringify(run("tblPatch")({ type, target: { ...target(attrs), value } })));
   assert.deepEqual(patch("click", { tsort: "started", tdir: "asc" }), { sort: "started", dir: "asc" });

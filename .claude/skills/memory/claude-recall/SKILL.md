@@ -58,7 +58,8 @@ claude-recall list --project brightsign --limit 20
 claude-recall show 15eeee34
 
 # Counts: typed /commands, Skill calls, subagent spawns, intents, repeated prompts
-claude-recall stats --days 30                                  # every kind, top 20 each
+claude-recall stats --days 30                                  # the default kinds, top 20 each
+claude-recall stats --kind skill,slash,body,read,script,mention --top 0  # every sign a skill was used (skill-drift)
 claude-recall stats --kind intent --origin interactive         # asks a skill should have caught
 claude-recall stats --kind prompt --origin interactive --min 3 # skill candidates (3+ sessions)
 claude-recall stats --kind agent --by week --json              # agent use per ISO week
