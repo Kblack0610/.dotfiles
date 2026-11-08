@@ -33,7 +33,7 @@
 # A board item starts while the human is away, or within DISPATCH_PRESENT_PER_HOUR while they are here.
 # Facts are code; the judgment (is this row clear, agent-only, in one area and really that tier?)
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
-# row's text changes or its rule leaves the policy (a policy edit only dates it: judged again, last). A picked row is started on its sheet and added
+# row's text changes or its rule leaves the policy (a policy edit only dates it; a changed rule gets a new id). A picked row is started on its sheet and added
 # to agent-queue under its id, at its own priority (`from: board:<project>:<id>`); its item gets a detached `wt new` session on the agent world
 # running its kind's entry skill (kinds.json; /one-shot for code), tagged @dispatch; the item records that session. Pause: `agent-hold set dispatch`.
 # `start` is that same launch for a session an agent starts by hand or restores after a reboot.
@@ -408,10 +408,12 @@ nobody_why() {
 sig() { sha256sum | cut -c1-12; }
 
 # policy_sig -> changes whenever the policy does. It dates a verdict (fresh or stale), it does not void
-# one: an old verdict stays usable while the rule it names is in the policy (usable) and is judged
-# again after the never-judged rows, so one edit never leaves the board with no verdict to pick
-# from (#1222 left 0 of 1,414 for 9 hours of passes). The worker registry is not in it: picks
-# re-reads workers.json and the tier ceiling on every pass.
+# one: an old verdict stays in force while the rule it names is in the policy (usable) and the row's
+# line and details are unchanged, so it is not judged again. Re-judging every row after an edit spent
+# the judge's whole day budget on 1,076 unchanged rows by 06:20 (2026-11-07), and new rows waited for
+# the next day; a rule whose meaning changes gets a new id, which re-judges exactly its rows. Before
+# that, voiding verdicts left 0 of 1,414 to pick from for 9 hours (#1222). The worker registry is not
+# in it: picks re-reads workers.json and the tier ceiling on every pass.
 policy_sig() { cat "$DISPATCH_POLICY" 2>/dev/null | sig; }
 
 # policy_rules -> the policy's rule ids as a JSON array, for ROW_JQ's usable
@@ -836,16 +838,17 @@ row_priority() {
   esac
 }
 
-# judged_keys -> "<project>\t<lane>\t<key>\t<line sig>\t<details sig>" for each verdict made under
-# the current policy, checked against the row by held. A `failed` record holds for the key whatever
+# judged_keys -> "<project>\t<lane>\t<key>\t<line sig>\t<details sig>" for each verdict in force: made
+# under the current policy, or a dispatch or skip whose rule the policy still has (policy_sig),
+# checked against the row by held. A `failed` record holds for the key whatever
 # changed ("*"), so a row whose session died is not picked again on its own; a verdict with no dsig
 # holds whatever the details (ROW_JQ holds). An `error` holds nothing: the row is judged again.
 judged_keys() {
   [ -f "$VERDICTS" ] || return 0
-  jq -r --arg sig "$(policy_sig)" '
+  jq -r --arg sig "$(policy_sig)" --argjson rules "$(policy_rules)" "$ROW_JQ"'
     if .verdict == "failed" then [.project, .lane, .key, "*", "*"]
     elif .verdict == "error" then empty
-    elif .policy == $sig then [.project, .lane, .key, (.line // ""), (.dsig // "*")]
+    elif .policy == $sig or usable($rules) then [.project, .lane, .key, (.line // ""), (.dsig // "*")]
     else empty end | @tsv' "$VERDICTS" 2>/dev/null
 }
 
@@ -934,17 +937,11 @@ judge() {
   # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
   # Within a round a cleanup row goes first, and rank already puts it first in its project; ahead of
   # the rounds it took every slot from a project with no cleanup (review of #1222).
-  # A row whose old verdict still holds (a policy edit made it stale) goes after every row with
-  # none, so an edit costs the board's new rows nothing; a stale dispatch, the verdict that
-  # acts, before a stale skip.
   rules=$(policy_rules)
-  cands=$(jq -sc --argjson prules "$rules" --argjson max "$DISPATCH_JUDGE_MAX" --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
-      ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
-      | map(. as $c | . + {stale: (($by[[.project, .lane, .key] | tostring] // {}) as $d
-          | if ($d | usable($prules)) and ($d | holds($c)) then (if $d.verdict == "dispatch" then 1 else 2 end) else 0 end)})
-      | rank | to_entries | group_by(.value.project)
+  cands=$(jq -sc --argjson max "$DISPATCH_JUDGE_MAX" "$RANK_JQ"'
+      rank | to_entries | group_by(.value.project)
       | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
-      | sort_by(.row.stale, .round, (.row.cleanup // 1), .i) | .[:$max][].row | del(.stale)' <<<"$cands")
+      | sort_by(.round, (.row.cleanup // 1), .i) | .[:$max][].row' <<<"$cands")
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
   # Rows are numbered and counted: on 2026-11-07 two 40-row passes came back with 39 verdicts,
   # each dropping one row whole (hc-122, ar-269), and a dropped row is an error verdict.
@@ -1965,16 +1962,16 @@ run_queue() {
     # Its start goes past those gates without proving them open, so the hold stands (start_item).
     if is_red "$head" && RED_PASS=1 red_floor_open && [ -z "$(RED_PASS=1 gate)" ]; then
       say "$why; red items start on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"
-      RED_PASS=1; start_items "$(jq -c 'select((" " + (.tags // "") + " ") | contains(" red "))' <<<"$items")" "$2"
-      local rc=$?; RED_PASS=0; return "$rc"
+      RED_PASS=1 FLOOR_GATE=$why; start_items "$(jq -c 'select((" " + (.tags // "") + " ") | contains(" red "))' <<<"$items")" "$2"
+      local rc=$?; RED_PASS=0 FLOOR_GATE=''; return "$rc"
     fi
     # A project nothing is working on may start one item past real idle: one busy
     # project cannot hold every other project's work behind the idle floor.
     local idle_items; idle_items=$(idle_project_items "$items")
     if [ -n "$idle_items" ] && PROJECT_PASS=1 project_floor_open && [ -z "$(PROJECT_PASS=1 gate)" ]; then
       say "$why; a project nothing is working on starts on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"
-      PROJECT_PASS=1; start_items "$idle_items" "$2"
-      local prc=$?; PROJECT_PASS=0; return "$prc"
+      PROJECT_PASS=1 FLOOR_GATE=$why; start_items "$idle_items" "$2"
+      local prc=$?; PROJECT_PASS=0 FLOOR_GATE=''; return "$prc"
     fi
     settle "$(held_outcome "$why")" "$why, queue item $(jq -r .slug <<<"$head") waits"
     [ "$DRY" = 1 ] || return 0
@@ -2070,9 +2067,14 @@ load_findings() {
 # holds; rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
 # The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
 # go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
-# PLACE_HOST. PICK_FULL is 1 when units alone held them all.
+# PLACE_HOST. PICK_FULL is 1 when units alone held them all. On a floor pass the items are only the
+# floor's, so PICK_WHY says so and names the gate (FLOOR_GATE) the rest of the queue waits on: on
+# 2026-11-07 "starved pool:unity ... every queue item waits" stood for 2 unity items of an idle
+# project while the other 40 waited on account pace, which the message never named.
 pick_item() {
-  local items="$1" it why need free host mwhy='' mread=0 fhit=0 held=()
+  local items="$1" it why need free host mwhy='' mread=0 fhit=0 held=() waits="every queue item waits"
+  if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
+  elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"; fi
   PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST=''
   load_findings || { PICK_WHY="fleet-bench findings unreadable"; PICK_FULL=0; return 1; }
   free=${UNITS_FREE:-$DISPATCH_MAX_LIVE}
@@ -2090,9 +2092,9 @@ pick_item() {
     [ "$DRY" = 0 ] || say "queue item $(jq -r .slug <<<"$it") waits: $why"
     held+=("$(jq -r .slug <<<"$it") ($why)")
   done <<<"$items"
-  if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"
-  elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"
-  else PICK_WHY="machine pace: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"; fi
+  if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+  elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+  else PICK_WHY="machine pace: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"; fi
   return 1
 }
 
@@ -3107,7 +3109,7 @@ cmd_run() {
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
-  QUEUE_HELD='' STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 RUN_GATED=0 FLOOR_HELD=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
+  QUEUE_HELD='' STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=()
   [ "$DRY" = 1 ] || triage_pass
   # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and

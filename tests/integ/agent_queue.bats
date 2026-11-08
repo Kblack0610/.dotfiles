@@ -423,6 +423,29 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = any ]
 }
 
+# 2026-11-07: can-we-get-cloud-vast-clarke-p3-live queued behind an ask the judge had answered, and
+# upwork-p2..p5 behind one later cancelled; neither ask could ever release them.
+@test "add and set tags= refuse an ask that can never release the item: cancelled, the judge's answer, another option" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  ask dead cancelled
+  ask judged answered a judge
+  ask other answered 'b, stay' human
+  for t in ask:dead ask:judged=a ask:other=a; do
+    run "$AQ" add --project game --slug nope --tags "$t" "x"
+    assert_failure; assert_output --partial 'can never release it'
+  done
+  # Negative control: a pending ask, and the human's answer naming that option, are accepted.
+  ask live pending
+  "$AQ" add --project game --slug p3 --tags "tier3 ask:live=a" "go live"
+  ask yes answered 'a' human
+  "$AQ" add --project game --slug p4 --tags "ask:yes=a" "the next"
+  # Re-pointing an item off a dead ask goes through set, which checks the same way.
+  run "$AQ" set p3 tags="tier3 ask:dead"
+  assert_failure; assert_output --partial 'can never release it (cancelled)'
+  "$AQ" set p3 tags="tier3 ask:yes=a"
+}
+
 @test "a hold: tag holds an item while agent-hold holds that resource, whoever asks (ar-613)" {
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   for t in "hold:" "hold:../x" "hold:a/b" "hold:.."; do

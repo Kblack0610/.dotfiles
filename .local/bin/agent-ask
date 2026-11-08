@@ -110,6 +110,7 @@
 set -uo pipefail
 
 ASKS_ROOT="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
+: "${AGENT_ASK_QUEUE_CMD:=agent-queue}"
 # jq: a dollar amount to the cent ("$0.08"), for the card's telemetry line and trace's call line.
 JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";'
 : "${AGENT_ASK_QUESTION_MAX:=150}"
@@ -132,6 +133,21 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
 # --- helpers ---------------------------------------------------------------
+
+# queue_waits <id>: whether an active agent-queue item is held behind this ask (an `ask:<id>` tag).
+# Such an ask gates queued work, and agent-queue releases it only on the human's answer, so the
+# judge never answers it live and a session reply never cancels it: on 2026-11-07 a reply cancelled
+# KZhaE0 under upwork-p2..p5, and the judge answered itX9A3 under a vast-clarke phase, and each item
+# would have waited for good. The ids come from `agent-queue list`, read once per run (load_queue_asks).
+queue_waits() {
+  load_queue_asks
+  [[ "$QUEUE_ASKS" == *" $1 "* ]]
+}
+load_queue_asks() {
+  [ -z "${QUEUE_ASKS+set}" ] || return 0
+  QUEUE_ASKS=" $($AGENT_ASK_QUEUE_CMD list --json 2>/dev/null |
+    jq -r '(.tags // "") | split(" ")[] | select(startswith("ask:")) | .[4:] | split("=")[0]' 2>/dev/null | tr '\n' ' ') "
+}
 
 # collapse a value to a single physical line (files are one key:value per line)
 oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
@@ -670,6 +686,7 @@ live_answer() {
   local f="$1" judge rule ans
   case "$(field "$f" kind)" in gate|approval) return 1 ;; esac
   [ -z "$(field "$f" assume_disarmed)" ] || return 1
+  ! queue_waits "$(field "$f" id)" || return 1
   judge="$(field "$f" judge)"; rule="$(field "$f" judge_rule)"
   case "$judge" in
     take-recommend) ans="$(field "$f" recommend)" ;;
@@ -717,6 +734,7 @@ answer_live() {
 # judge, through cmd_answer's delivery (typed into a live session, else a board row, then resume).
 cmd_sweep() {
   local scope="${1:---all}" f id ans said
+  load_queue_asks
   while IFS= read -r f; do
     [ "$(field "$f" status)" = pending ] || continue
     id="$(field "$f" id)"; said=yours
@@ -735,6 +753,7 @@ cmd_sweep() {
 # dialog stays armed for the next pass, because deliver_to_session would drop the answer unseen.
 cmd_assume_due() {
   local f ans due now; now="$(date +%s)"
+  load_queue_asks
   while IFS= read -r f; do
     load_ask "$f"
     due="$(date -d "${ASK[assume_at]}" +%s 2>/dev/null)" && [ "$due" -le "$now" ] || continue
@@ -1121,7 +1140,8 @@ not_an_answer() {
 # 2026-11-04 any message answered every ask, so "whats going on here?" closed three go|later
 # cleanup asks as answered; then from #876 such a message left the ask pending, so a reply like
 # "I already clicked that" kept a session on every board after the human had answered it
-# (2026-11-06). An answer a board typed in ("Answer to ask <id>: ...") is not the human typing:
+# (2026-11-06). An ask a queue item waits on (queue_waits) is not cancelled: it stays pending
+# for the human. An answer a board typed in ("Answer to ask <id>: ...") is not the human typing:
 # `answer` already settled that ask and the session's other asks stay pending.
 cmd_settle_session() {
   local owner="${1:-}" to="${2:-}"; shift 2 2>/dev/null || shift $#
@@ -1140,6 +1160,8 @@ cmd_settle_session() {
     elif [ -n "$opts" ] && pick="$(named_option "$opts" "$text")" && [ -n "$pick" ]; then
       set_field "$f" answer_note "in session: $text"
       record_answer "$f" human "$pick"
+    elif queue_waits "$(field "$f" id)"; then
+      continue
     else
       close_ask cancelled "$(field "$f" id)" "replied in session: ${text:-(no text)}" 2>/dev/null
     fi

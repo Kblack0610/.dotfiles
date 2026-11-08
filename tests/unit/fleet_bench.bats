@@ -1539,6 +1539,29 @@ fix_item() {
       pr: (if $pr == "" then null else $pr end), merged: (if $m == "" then null else $m end)}' >> "$ITEMS"
 }
 
+# 2026-11-07: every edit to the watch line's list gave each watch a new cause, so tries counted 0
+# again and a red two fixes did not hold never reached the human.
+@test "triage: a capture group's cause is the row kind and its value, so an edit to the line's ERE keeps it" {
+  log_triage_setup
+  local want; want=$(printf '%s' 'fix(logs):lock' | sha256sum | cut -c1-8)
+  route 'error: (lock) .* held by pid' agent fix-red 'clear it'
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$want "
+  : > "$BOARD"; : > "$PLOG"; : > "$TRIAGE_ROUTES"
+  route 'error: (lock|mutex) [^ ]+ held by pid [0-9]+' agent fix-red 'clear it'
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$want "
+  # Negative control: a line with no capture group is still its ERE's one cause.
+  : > "$BOARD"; : > "$PLOG"; : > "$TRIAGE_ROUTES"; lock_route
+  run "$SUBJECT" triage
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) "
+}
+
 @test "triage: a cause in hand is not queued again: running, or closed with its PR waiting on a merge" {
   log_triage_setup
   lock_route
