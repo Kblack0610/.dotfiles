@@ -618,11 +618,11 @@ STUB
   export CC_PROM_URL=http://prom.test SANDBOX
   run bash -c "source '$ACCT'; session_rate; session_rate '' codex"
   assert_success
-  run grep -c 'max by (account) (claude_account_week_used_percent{kind=~"claude|"} offset 6h)' "$SANDBOX/prom.args"
+  run grep -cF 'max by (account) (claude_account_week_used_percent{kind=~"claude|"} offset 6h)' "$SANDBOX/prom.args"
   assert_output 1
-  run grep -c 'max by (account) (claude_account_week_used_percent{account="codex"} offset 6h)' "$SANDBOX/prom.args"
+  run grep -cF 'max by (account) (claude_account_week_used_percent{account="codex"} offset 6h)' "$SANDBOX/prom.args"
   assert_output 1
-  run grep -c 'avg_over_time((max by (account) (claude_account_live_sessions{account="codex"}))\[6h:5m\])' "$SANDBOX/prom.args"
+  run grep -cF 'avg_over_time((max by (account) (claude_account_live_sessions{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
   assert_output 1
 }
 
