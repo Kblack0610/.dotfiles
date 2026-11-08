@@ -19,8 +19,8 @@ Find, resume, or compact important past Claude sessions from the agent-facing se
 Every meaningful Claude session in a project auto-registers itself into an agent-facing index so it can be revisited later. Capture is automatic (a Stop hook); this skill is the read/act side.
 
 - **Registry:** `~/.agent/sessions/{project}/sessions.jsonl` - one JSON line per session:
-  `{session_id, project, transcript, resume, first_prompt, edits, head_commit, updated}`.
-- **Captured automatically** by `~/.claude/hooks/stop-post.d/80-session-register.sh` when a session made >=1 file edit (Edit/Write/MultiEdit/NotebookEdit) or left a dirty git tree. Pure Q&A / read-only sessions are NOT captured (low noise, on purpose). Upserted by `session_id`, so exactly one entry per session. Dead-transcript lines self-prune.
+  `{session_id, project, transcript, resume, first_prompt, edits, head_commit, updated}`, plus `agentctl` (the runner name) on a runner's row and the cost fields when telemetry answered.
+- **Captured automatically** by `~/.claude/hooks/stop-post.d/80-session-register.sh` when a session made >=1 file edit (Edit/Write/MultiEdit/NotebookEdit) or left a dirty git tree, and for every agentctl runner session (`AGENTCTL_NAME` set), read-only or not, because a runner still spends. Pure Q&A / read-only sessions by hand are NOT captured (low noise, on purpose). Upserted by `session_id`, so exactly one entry per session. Dead-transcript lines self-prune.
 - **Never** written to `~/.notes/inbox` - this is the agent axis, not the user's triage queue.
 
 ## The `sessions` CLI (on PATH)
