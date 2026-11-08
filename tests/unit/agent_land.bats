@@ -127,9 +127,10 @@ EOF
   PLAN="$SANDBOX/plan.md"
   printf '%s\n' '## Phases' '' '- [x] 1. done already (#1)' '- [ ] 6. agent-land' '- [ ] 7. gate-then-land' '- [ ] 6b. not this one' >"$PLAN"
 }
-
-# board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
-board_calls() { grep '^notes' "$LOG" | grep -v '^notes ingest record ' || true; }
+# board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines and
+# agent-queue's read of the project prios (notes projects --prios)
+# notes calls that close or write a row: an ingest record is the ledger, and agent-queue's prios read is a read
+board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios$' || true; }
 
 # item <slug> [from] [lane] [profile] -> a running queue item, on project $ITEM_PROJECT (dotfiles)
 item() {
