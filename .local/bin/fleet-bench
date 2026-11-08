@@ -890,12 +890,13 @@ cmd_stats() {
 }
 
 cmd_scorecard() {
-  local t day out counts
+  local t day out counts SOURCE_ATTR_JSON=""
   t=$(now); day=$(date -d "@$t" +%F)
   [ -s "$PROGRESS" ] || { say "no samples yet"; return 1; }
   mkdir -p "$BENCH_SCORECARD_DIR" || return 1
   out="$BENCH_SCORECARD_DIR/$day.md"
   counts=$(ledger_counts)
+  SOURCE_ATTR_JSON=$(source_attr "$t")   # models and sources both read it: one status probe, one Prometheus read
   {
     echo "# Fleet bench, $day"
     echo
@@ -2209,7 +2210,7 @@ models_json() {
         | ($priced_items | map(.source // empty) | unique) as $src
         | ($priced_items | map(select(.landed and .source)) | length) as $priced
         | ($it | map(select(landed))) as $li
-        | [$li[] | prkeys[] | $cix[.] // empty] as $cr
+        | [$li | map(prkeys[]) | unique[] | $cix[.] // empty] as $cr
         | ($li | map(sids[]) | unique | map($sp[.].points // empty)) as $pt
         | ($li | map(select(any(sids[]; $sp[.].points != null))) | length) as $pointed
         | {model: $m, harness: $h, done: ($it | length), landed: $landed, landed_rate: ratio($landed; $it | length),
@@ -2266,15 +2267,19 @@ cmd_models() {
 
 # source_attr <now> -> every claude-acct source over the last BENCH_QUEUE_DAYS, and which source each
 # session and landed item spent from. Points are percent points of a source's own window: the sum of
-# every 15-minute rise in its published used percent (a reset is a fall, so it adds nothing). A session
+# every 15-minute rise in its published used percent (a reset is a fall, so it adds nothing, and the
+# step it falls in loses what was spent after it). A pool's points hold its keys' spend, so its landed
+# counts its keys' items too. A session
 # is on its harness's harnesses.json `source`, or for claude on its account (the outcome row's config
 # dir); an item on its agent's source, its `account:`, else its sessions'. A session's share of its
 # source's points is its share of the tokens all of that source's sessions in the window used: an
-# estimate, and the only per-session measure every harness records. Dollars: a Claude account's are
-# Claude Code's list-price cost counter by login email, a dollar-capped source's are its points of
+# estimate, and the only per-session measure every harness records; tokens_total is the session's
+# whole life, so one that began before the window is over-weighted. Dollars: a Claude account's are
+# Claude Code's list-price cost counter by login email (null with no email), a dollar-capped source's are its points of
 # its budget (metered at the gateway), and Codex has none. Each part that cannot be read is null.
 source_attr() {
   local t="$1" days="$BENCH_QUEUE_DAYS" since rows pts usd hs
+  [ -z "${SOURCE_ATTR_JSON:-}" ] || { printf '%s\n' "$SOURCE_ATTR_JSON"; return 0; }   # the scorecard reads it once
   since=$(( t - days * 86400 ))
   rows=$($BENCH_SOURCES_CMD 2>/dev/null | jq -ce 'arrays' 2>/dev/null) || rows=null
   pts=$(prom_map account "sum by (account) (sum_over_time((clamp_min(claude_account_week_used_percent - claude_account_week_used_percent offset 15m, 0))[${days}d:15m]))" "$t" 2>/dev/null) || pts=null
@@ -2299,13 +2304,14 @@ source_attr() {
         | if $h != "claude" then $hs[$h]
           else (.account | acct) // ([(.sessions // "") | split(" ")[] | select(. != "") | $os[.] // empty | on // empty] | first) end;
       [$items[] | select(.status == "ok" and (.pr // "") != "") | item_src] as $landed
+    | ($R | map({key: .name, value: .parent}) | from_entries) as $parent
     | {days: $days, read: {sources: ($rows != null), points: ($pts != null), usd: ($usd != null)}, sessions: $sess,
        unattributed: ($landed | map(select(. == null)) | length),
        sources: [$R[] | .name as $n | ($pts[$n] | if . == null then . else round2 end) as $p
          | (if .usd_max != null then (if $p == null then null else $p * .usd_max / 100 end)
-            elif .kind == "claude" then (if $usd == null then null else $usd[.email // ""] // 0 end)
+            elif .kind == "claude" then (if $usd == null or (.email // "") == "" then null else $usd[.email] // 0 end)
             else null end) as $d
-         | ([$landed[] | select(. == $n)] | length) as $l
+         | ([$landed[] | select(. == $n or $parent[. // ""] == $n)] | length) as $l
          | {name: $n, kind, parent, used: .week_used, points: $p,
             usd: ($d | if . == null then . else round2 end),
             usd_src: (if .usd_max != null then "gateway" elif .kind == "claude" then "list" else null end),
@@ -4104,7 +4110,7 @@ canary_queue() {
 canary_queue_lanes() {
   local h m src why rc=0
   [ -r "$BENCH_CANARY_LANES" ] || return 0
-  while read -r h m _ <&3; do
+  while read -r h m _ <&3 || [ -n "$h" ]; do
     [ -n "$h" ] && [ "${h:0:1}" != "#" ] || continue
     src=$(jq -r --arg h "$h" '.harnesses[$h].source // empty' "$BENCH_HARNESSES" 2>/dev/null)
     if [ -z "$src" ]; then say "canary: $h${m:+/$m} not queued, $h has no source in $BENCH_HARNESSES"; continue; fi
@@ -4213,12 +4219,13 @@ canary_list() {
 
 # canary_lanes [json] -> one row per harness and model over every score, joined to outcome rows.
 # same_tasks are the tasks a lane shares with the claude lane (harness claude, as the canary_ KPIs
-# read it): its pass rate and claude's over just those, the like-for-like comparison; null on a
-# claude row itself.
+# read it): its pass rate and claude's over just those, each the mean of per-task pass rates so a
+# task claude re-ran every week weighs one, the like-for-like comparison; null on a claude row.
 canary_lanes() {
   jq -nc --slurpfile k "$(kpi_canary)" --slurpfile o <(outcomes_newest) "$JQ_LIB"'
     def mean(f): map(f | numbers) | if length == 0 then null else add / length end;
     def passed: map(select(.pass == true)) | length;
+    def per_task($i): map(select(.id == $i)) | passed / length;   # a task weighs one, however many weeks ran it
     def baseline: (.harness // "claude") == "claude";
     ($o | INDEX(.session_id)) as $os
     | [$k[] | select(baseline)] as $base
@@ -4230,8 +4237,8 @@ canary_lanes() {
         | {harness: (.[0].harness // "claude"), model: (.[0].model // null), runs: length,
            tasks: (map(.id) | unique | length), pass_rate: ratio(($rs | passed); length),
            same_tasks: (if $isbase then null else ($st | length) end),
-           pass_rate_same: (if $isbase then null else ([.[] | select(.id | IN($st[]))] | ratio(passed; length)) end),
-           claude_pass_rate_same: (if $isbase then null else ([$base[] | select(.id | IN($st[]))] | ratio(passed; length)) end),
+           pass_rate_same: (if $isbase then null else (. as $l | $st | map(. as $i | $l | per_task($i)) | mean(.) | if . then round2 else . end) end),
+           claude_pass_rate_same: (if $isbase then null else ($st | map(. as $i | $base | per_task($i)) | mean(.) | if . then round2 else . end) end),
            joined: ($rs | map(select(.o)) | length),
            min_per_run: ($rs | mean(.o.duration_s) | if . then . / 60 | round1 else . end),
            turns_per_run: ($rs | mean(.o.activity.api_messages) | if . then round1 else . end),
