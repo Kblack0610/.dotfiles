@@ -2719,6 +2719,61 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   [ -n "$(qitem running hubblind)" ] || fail "reaped on an empty panel"
 }
 
+# PRs #909 and #910: their items recorded no session, so reap never read them. NEGATIVE CONTROL: with
+# item_sessions dropping such an item, the merged one stays waiting and nothing is flagged.
+@test "reap: an item with no session settles by its PR, and is flagged once when it cannot" {
+  pr_item MERGED
+  agent-queue move fix-crash waiting >/dev/null
+  sed -i '/^session: /d' "$AGENT_QUEUE_DIR"/waiting/*-fix-crash.md
+  started_item nopr '' '' '' human waiting
+  sed -i '/^session: *$/d' "$AGENT_QUEUE_DIR"/waiting/*-nopr.md
+  run cmd_reap
+  assert_success
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  # No PR: no witness says it ended, so it is never failed, and the flag says what to do.
+  [ -n "$(qitem waiting nopr)" ] || fail "moved an item nothing says has ended"
+  assert_output --partial 'flagged queue item nopr (no session recorded: nothing watches this item'
+  assert_equal "$(qfield "$(qitem waiting nopr)" note)" 'no session recorded: nothing watches this item; agent-queue claim it from a session, or close it'
+  run cmd_reap
+  refute_output --partial 'flagged queue item nopr'
+  run grep -c 'queue item nopr: no session recorded' "$FLEET_DISPATCH_DIR/log.md"
+  assert_output 1
+  run live_runs
+  assert_output ''
+  # A claim gives it a witness: from then on it is an ordinary item, flagged no more.
+  agent-queue claim nopr --sid live-1 >/dev/null
+  stub agent-panel 'echo "{\"target\":\"hub/d:1\",\"status\":\"busy\",\"session_id\":\"live-1\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  [ -n "$(qitem running nopr)$(qitem waiting nopr)" ] || fail "a claimed live item closed"
+}
+
+@test "reap: an item with no session and an open or closed PR parks or fails on it, flagged while it is open" {
+  pr_item OPEN
+  sed -i '/^session: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem waiting fix-crash)" ] || fail "an open PR did not park it in waiting"
+  assert_output --partial 'flagged queue item fix-crash (no session recorded, PR o/game#12 not merged'
+  printf 'CLOSED \n' > "$NOTES_FIXTURE/pr.state"
+  run cmd_reap
+  assert_success
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
+  grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "the row was not handed back"
+  refute_output --partial 'flagged queue item fix-crash'
+}
+
+@test "reap leaves an item with no session alone inside its start grace" {
+  started_item fresh '' '' '' human
+  sed -i "/^session: *\$/d; s/^started: .*/started: $(date -u +%FT%TZ)/" "$AGENT_QUEUE_DIR"/running/*-fresh.md
+  run cmd_reap
+  assert_success
+  refute_output --partial 'flagged'
+  [ -n "$(qitem running fresh)" ] || fail "moved a fresh item"
+}
+
 # 2026-11-07 ar-900: one agent-panel read under load 33 left a live session out, and reap failed an
 # urgent item whose re-read a minute later listed it. A miss is one witness; the gone verdict needs a
 # second reap, DISPATCH_REAP_CONFIRM seconds or more later, that misses it too.

@@ -535,17 +535,17 @@ telemetry_env() {
   printf 'OTEL_RESOURCE_ATTRIBUTES=%q ' "$attrs"
 }
 
-# item_sessions -> one line per running or waiting queue item with a session, its fields split by
+# item_sessions -> one line per running or waiting queue item, its fields split by
 # US (0x1f, so an empty field survives `read`): slug, server, tmux session, origin, project, area,
 # state, weight, agent, started, Claude session ids, host. The item's `session:` is the one record of
 # where it runs, `<server>:<tmux session>` (tmux turns a ':' in a session name into '_', so one ':'
 # splits), and `host:` the fleet worker that server is on, empty for this machine.
 # An item started in a hub window records no `session:`, only the Claude sessions that worked it
-# (`sessions:`); it comes out with an empty server and session, and only reap reads it.
+# (`sessions:`), and one started from a plain shell may record neither; both come out with an empty
+# server and session, and only reap reads them (settle_sessionless for the second).
 item_sessions() {
   agent-queue list --json --state active 2>/dev/null | jq -r '
     select(.state != "queued")
-    | select(((.session // "") | contains(":")) or (.sessions // "") != "")
     | ((.session // "") | index(":")) as $i
     | [.slug, (if $i then .session[:$i] else "" end), (if $i then .session[$i + 1:] else "" end),
        (.origin // ""), .project, (.area // ""), .state, (.weight // "light"),
@@ -556,6 +556,13 @@ item_sessions() {
 # panel_lists <agent> -- agent-panel lists this agent's sessions, by Claude session id: Claude, and
 # a harness claude-lazer launches. Another agent's `sessions:` ids (a codex thread) are never there.
 panel_lists() { [ "$1" = claude ] || [ "$(harness_launcher "$1")" = claude-lazer ]; }
+
+# past_reap_grace <started> -- exit 0 once an item started at least DISPATCH_REAP_GRACE seconds ago.
+past_reap_grace() {
+  local t
+  t=$(date -d "$1" +%s 2>/dev/null) || return 1
+  [ $(( $(date +%s) - t )) -ge "$DISPATCH_REAP_GRACE" ]
+}
 
 # claude_gone <server> <tmux session> <agent> <started> <session ids> -- exit 0 when agent-panel
 # says the item's Claude has exited while its tmux session lives on (or, for a hub item, when none
@@ -571,7 +578,7 @@ panel_lists() { [ "$1" = claude ] || [ "$(harness_launcher "$1")" = claude-lazer
 # still runs (claude_pid_live) is alive whatever the panel lists. REAP_PANEL caches one read per pass,
 # so its verdict is one witness: reap settles on it only when the reap before also missed (reap_confirm).
 claude_gone() {
-  local server="$1" sess="$2" agent="$3" started="$4" sids="$5" t
+  local server="$1" sess="$2" agent="$3" started="$4" sids="$5"
   panel_lists "$agent" || return 1
   if [ -n "$sess" ]; then
     [ -e "$PARKED_DIR/$sess" ] && return 1
@@ -579,8 +586,7 @@ claude_gone() {
   else
     [ -n "$sids" ] || return 1
   fi
-  t=$(date -d "$started" +%s 2>/dev/null) || return 1
-  [ $(( $(date +%s) - t )) -ge "$DISPATCH_REAP_GRACE" ] || return 1
+  past_reap_grace "$started" || return 1
   [ -n "${REAP_PANEL+set}" ] || REAP_PANEL=$(agent-panel list --json 2>/dev/null) || REAP_PANEL=''
   [ -n "$REAP_PANEL" ] || return 1
   jq -e -s --arg t "$server/$sess" --arg ids "$sids" '
@@ -638,7 +644,7 @@ reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 live_runs() {
   local slug server sess origin project area state weight _agent _started _sids host
   while IFS=$'\x1f' read -r slug server sess origin project area state weight _agent _started _sids host; do
-    [ -n "$slug" ] || continue
+    [ -n "$sess" ] || continue
     case "$origin" in '' | run) ;; *) continue ;; esac
     session_live "$sess" "$server" "$host" && printf '%s/%s %s%s\n' "$project" "$area" "$weight" "${host:+ $host}"
   done < <(item_sessions)
@@ -795,7 +801,7 @@ lane_cache() {
 live_hand() {
   local slug server sess origin project area state _weight _agent _started _sids host
   while IFS=$'\x1f' read -r slug server sess origin project area state _weight _agent _started _sids host; do
-    [ -n "$slug" ] || continue
+    [ -n "$sess" ] || continue
     case "$origin" in '' | run) continue ;; esac
     session_live "$sess" "$server" "$host" && printf '%s/%s\n' "$project" "$area"
   done < <(item_sessions)
@@ -1945,6 +1951,28 @@ settle_item() {
   fi
 }
 
+# settle_sessionless <slug> <started> -- a started item recording no session, tmux or Claude: nothing
+# witnesses it ending and nothing can nudge it, so PRs #909 and #910 sat open with nobody on them. Its
+# PR still decides what it can (settle_item): merged or closed settles it, open parks it in waiting/.
+# Anything else stays put, never failed, since no-witness is not gone, and is flagged once on the item
+# and in the log. fleet-bench's ownerless_running counts it, so the board-chain watch pages it.
+settle_sessionless() {
+  local it pr flag
+  past_reap_grace "$2" || return 0
+  it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
+  pr=$(jq -r '.pr // ""' <<<"$it")
+  if [ -n "$pr" ]; then
+    settle_item "$1" unrecorded
+    settle_row "$1"
+    [ "$(item_state "$1")" != "done" ] || return 0
+  fi
+  flag="no session recorded${pr:+, PR $pr not merged}: nothing watches this item; agent-queue claim it from a session, or close it"
+  [ "$(jq -r '.note // ""' <<<"$it")" != "$flag" ] || return 0
+  agent-queue set "$1" "note=$flag" >/dev/null || return 0
+  logline "queue item $1: $flag"
+  echo "flagged queue item $1 ($flag)"
+}
+
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide
 # gates are asked once: presence is none of them. The human's and the shepherd's items run while they
 # are here because they asked for them; a board-filled one is runnable only while they are away or the
@@ -2811,7 +2839,8 @@ cmd_stats() {
 }
 
 # reap -- settle the queue items whose session is gone (settle_item, then settle_row for an
-# item with a row), and keep each live one's state true to its session: waiting/ while it waits on the human
+# item with a row), go by its PR for one that records no session (settle_sessionless), and keep each
+# live one's state true to its session: waiting/ while it waits on the human
 # (Claude's own `waiting` status, which an open plan or dialog is, or a pending agent-ask it filed and
 # stopped on), running/ again once it does not. It is the one writer of that move for a live session.
 # A session neither read can see is left where it is.
@@ -2829,6 +2858,7 @@ cmd_reap() {
   while IFS=$'\x1f' read -r slug server sess origin project area state _weight agent started sids host; do
     [ -n "$slug" ] || continue
     active+=("$slug")
+    if [ -z "$sess$sids" ]; then settle_sessionless "$slug" "$started"; continue; fi
     # A tmux session gone is its own witness; a Claude missing from agent-panel needs a second reap
     # (reap_confirm), and until then the item is left as it is: its Claude is not read as live either.
     # A fleet worker that does not answer says nothing, so its item stays as it is (fleet-liveness
