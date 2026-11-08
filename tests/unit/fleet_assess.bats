@@ -599,3 +599,54 @@ rows_with() {
   refute_output --regexp '^(50|51) '
   [ "${#lines[@]}" -eq 2 ]
 }
+
+# --- gate_line: the gate's throughput on one line, from the slots and the run ledger -----
+# gate_ledger: a worktree "wt-a" on branch feat/a (unmerged) with 5 runs in the last 2h, "wt-b"
+# on branch feat/b (merged into origin/main) with 5, "wt-c" with 4, a 3h-old pass, and a fail.
+gate_ledger() {
+  local now i; now="$(date +%s)"
+  WORKTREE_ROOT="$BATS_TEST_TMPDIR/worktrees"
+  local up="$BATS_TEST_TMPDIR/up"
+  git init -q -b main "$up"; git -C "$up" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+  git clone -q "$up" "$WORKTREE_ROOT/wt-a"; git -C "$WORKTREE_ROOT/wt-a" checkout -q -b feat/a
+  git -C "$WORKTREE_ROOT/wt-a" -c user.name=t -c user.email=t@t commit -q --allow-empty -m wip
+  git clone -q "$up" "$WORKTREE_ROOT/wt-b"; git -C "$WORKTREE_ROOT/wt-b" checkout -q -b feat/b
+  RUN_LEDGER="$BATS_TEST_TMPDIR/runs.tsv"; : > "$RUN_LEDGER"
+  for i in 1 2 3 4 5; do
+    printf '%s\t%s\t%s\tPlayMode\twt-a\tfeat/a\tr\n' $((now - 100 * i)) $((now - 100 * i - 60)) fail >> "$RUN_LEDGER"
+    printf '%s\t%s\t%s\tPlayMode\twt-b\tfeat/b\tr\n' $((now - 100 * i)) $((now - 100 * i - 60)) pass >> "$RUN_LEDGER"
+  done
+  for i in 1 2 3 4; do
+    printf '%s\t%s\t%s\tPlayMode\twt-c\tfeat/c\tr\n' $((now - 50 * i)) $((now - 50 * i - 60)) pass >> "$RUN_LEDGER"
+  done
+  printf '%s\t%s\t%s\tPlayMode\twt-c\tfeat/c\tr\n' $((now - 10800)) $((now - 10860)) pass >> "$RUN_LEDGER"
+}
+
+@test "gate_line: slots busy and queued, the last 2h by result, and branches with 5+ runs and no merge" {
+  slot_fixture
+  editor_parents
+  gate_rows() { :; }
+  gate_ledger
+  run gate_line
+  assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 5 fail, 9 pass; 5+ runs, not merged: feat/a x5"
+}
+
+@test "gate_line: a reaped worktree reads merged, and a ledger with no run names no branch" {
+  slot_fixture
+  editor_parents
+  gate_rows() { :; }
+  gate_ledger
+  rm -rf "$WORKTREE_ROOT/wt-a"
+  run gate_line
+  refute_output --partial 'not merged'
+  RUN_LEDGER="$BATS_TEST_TMPDIR/none.tsv"
+  run gate_line
+  assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 0 fail, 0 pass"
+}
+
+@test "gate_line: no capacity file prints no gate line, and --gate says so by printing nothing" {
+  slot_fixture
+  rm "$SLOT_DIR/capacity"
+  run gate_line
+  assert_output ""
+}
