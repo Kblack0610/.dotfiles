@@ -1192,6 +1192,54 @@ budget() {
   assert_line 'claude_account_usd_budget{account="res",kind="litellm-key"} 20'
   assert_line 'claude_account_usd_used{account="lazer",kind="litellm-team"} 40'
   refute_line --regexp 'claude_account_sustain_points_per_hour.*account="(lazer|res)"'
+  # what the Burn rows print beside the figures: the reserve, whether it is paced, its pool
+  assert_line 'claude_account_reserve_percent{account="codex",kind="codex"} 5'
+  assert_line 'claude_account_paced{account="codex",kind="codex"} 1'
+  assert_line 'claude_account_paced{account="res",kind="litellm-key"} 0'
+  assert_line 'claude_account_parent{account="res",kind="litellm-key",parent="lazer"} 1'
+  refute_line --regexp 'claude_account_parent\{account="(codex|lazer)"'
+}
+
+@test "check pace: every source on pace is quiet; one past its line or in its reserve trips, by name" {
+  src_setup
+  week main 30 84
+  rollout 1 0 84
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  budget sk-res key 5 20
+  run --separate-stderr "$ACCT" check pace
+  assert_success
+  assert_output 'every source on pace (5 sources)'
+  # the same sources with codex well past its weekly line and the key inside its reserve
+  rollout 90 0 84
+  budget sk-res key 18 20
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output 'over pace: codex pace, res reserve'
+}
+
+@test "check pace: no source at all is nothing read, never a quiet green" {
+  src_setup
+  : > "$CLAUDE_ACCT_CONFIG"
+  : > "$CLAUDE_ACCT_SOURCES"
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output 'no sources read'
+}
+
+@test "check pace: an unread source trips, but a Claude account's unread is check usage's" {
+  src_setup
+  week main 30 84
+  rollout 1 0 84
+  budget team team 40 100
+  budget sk-res key 5 20
+  # no reply for the pool's own key: the team read fails
+  creds "$ALT" 99999999999999
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output "unread: lazer"
+  [[ "$output" != *alt* ]] || fail "a Claude account named: $output"
 }
 
 @test "sources: room --json and pick stay Claude-only" {
