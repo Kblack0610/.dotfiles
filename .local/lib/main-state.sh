@@ -15,26 +15,19 @@ MAIN_STREAKS='map(select(.status == "completed"
     | {workflow: .[0].workflowName, red: (if $g == null then .[-1] else .[$g - 1] end),
        green: (if $g == null then null else .[$g] end)}'
 
-: "${FLEET_MAIN_TTL:=300}" # seconds a repo's main run list is reused across passes: every caller (the
-                           # ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on
-                           # 2026-10-29 the fleet spent GitHub's 5,000/hr REST limit; a nightly's red
-                           # is no less true five minutes later
 : "${MAIN_CACHE:=${XDG_CACHE_HOME:-$HOME/.cache}/fleet}"
+# The run ledger's one reader (schedules-sync runs); the sibling in this tree, so a worktree's
+# scripts read through its own copy.
+: "${SCHEDULES_SYNC:=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../bin/schedules-sync}"
 
-# main_runs <cache key> <owner/repo> <branch> -> the branch's runs in gh run list field names, reused
-# for FLEET_MAIN_TTL seconds across passes. A failed call is not cached, so the next pass asks again.
-# actions/runs, not `gh run list`: that looks workflows up under actions/workflows, a separate
-# bucket that `gh api rate_limit` does not show, and on 2026-10-29 it was the one used up.
+# main_runs <owner/repo> [branch] -> the branch's runs (every branch's without one) in gh run list field names, from the run
+# ledger (~/.local/state/ci/runs.jsonl), never actions/runs: schedules-sync is its one writer and
+# keeps it within 10 minutes. rc 1 when the ledger cannot answer for the repo (not synced in 30
+# minutes, or unreadable), so the caller reads unknown, never green; rc 3, and nothing, for a repo
+# the ledger does not sync (day-log-ci is the one list of watched repos), which the caller decides.
 main_runs() {
-  local b="$3" file runs
-  file="$MAIN_CACHE/runs_$1_${b//\//%2F}.json" # %2F: feat/x and feat_x are two branches
-  if [ -s "$file" ] && [ $(( $(date +%s) - $(date -r "$file" +%s) )) -lt "$FLEET_MAIN_TTL" ]; then
-    cat "$file"; return
-  fi
-  runs="$(gh api -X GET "repos/$2/actions/runs" -f branch="$b" -f per_page=100 \
-            --jq '[.workflow_runs[] | {id, event, workflowName: .name, status, conclusion, headSha: .head_sha, createdAt: .created_at}]' \
-            2>/dev/null)" || return 1
-  mkdir -p "$MAIN_CACHE"
-  printf '%s\n' "$runs" > "$file.$$" && mv "$file.$$" "$file"
-  printf '%s\n' "$runs"
+  local runs rc=0
+  runs="$("$SCHEDULES_SYNC" runs "$1" ${2:+--branch "$2"} 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || { [ "$rc" -eq 3 ] && return 3; return 1; }
+  jq -ce 'map({id, event, workflowName: .workflow, headBranch: .branch, status, conclusion, headSha: .sha, createdAt: .created_at})' <<<"$runs"
 }

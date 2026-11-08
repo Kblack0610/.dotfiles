@@ -60,6 +60,26 @@ tag() { git -C "$REPO" tag "$1"; }
   assert_output 'v1.10.0'
 }
 
+@test "git_latest_tag: a per-build suffix tag is a prerelease of its version" {
+  # 2026-11-07: the playground tags each game build v0.5.0-<game><n>, and the old filter knew
+  # only rc/beta/alpha/pre/dev/snapshot, so v0.5.0-dodginballs3 read as the shipped release.
+  commit one; tag v0.5.0
+  commit two; tag v0.5.0-barrage4
+  commit three; tag v0.5.0-dodginballs3
+  run git_latest_tag "$REPO" proj 'v*'
+  assert_success
+  assert_output 'v0.5.0'
+}
+
+@test "git_product_tag: a number in the product's prefix is not a prerelease" {
+  commit one; tag app2.0-v1.0.0
+  commit two; tag app2.0-v1.1.0
+  commit three; tag app2.0-v1.2.0-rc1
+  run git_product_tag "$REPO" app2.0
+  assert_success
+  assert_output 'app2.0-v1.1.0'
+}
+
 @test "git_latest_tag: when EVERY tag is a prerelease, the highest one is still returned" {
   # The demotion must not turn "only rcs so far" into "no tags at all" — an empty
   # string here renders identically to an unreleased project.

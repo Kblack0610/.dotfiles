@@ -19,7 +19,8 @@ them, and a source it cannot read keeps the previous value and is named in .unre
   ci-failures --json         pass rate per workflow, reds on main, failure buckets
   scripts/ci-cost.py --json  gates, runner-hours, re-gates, quarantine (a repo that has one)
 
-ci reads GitHub, a few hundred calls and minutes for a busy repo, so only `day-log nightly` runs
+ci lists runs from the schedules-sync run ledger, but reads each red run's jobs, annotations and
+logs from GitHub, a few hundred calls and minutes for a busy repo, so only `day-log nightly` runs
 it, outside the record's lock; enrich keeps what it found.
 
 week: a sum adds the days, a ratio is taken from those sums, a p50 or p90 is the median of the
@@ -300,8 +301,8 @@ def enrich(a):
 
 def ci_repos():
     """[(owner/name, base branch, clone or None)] of the GitHub repos in DAYLOG_CI. A
-    `forgejo:` repo is left out: ci-failures and ci-cost read GitHub; its runs are in the
-    schedules-sync ledger."""
+    `forgejo:` repo is left out: ci-failures reads a red run's jobs and logs from GitHub, and
+    ci-cost reads GitHub; its runs are in the schedules-sync ledger all the same."""
     out = []
     with open(ENV["DAYLOG_CI"]) as f:
         for line in f:

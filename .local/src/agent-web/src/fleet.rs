@@ -84,6 +84,7 @@ mod tests {
             key: key.into(),
             state: "working".into(),
             since: None,
+            activity: String::new(),
             purpose: String::new(),
             doing: String::new(),
             under: String::new(),
