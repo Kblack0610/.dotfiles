@@ -425,6 +425,42 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 
 # 2026-11-07: can-we-get-cloud-vast-clarke-p3-live queued behind an ask the judge had answered, and
 # upwork-p2..p5 behind one later cancelled; neither ask could ever release them.
+# 2026-11-08: upwork-p2 sat behind a bare tag on an ask whose option c meant stop, so c would have started it.
+@test "an ask: tag may list several releasing options, and must name them when the ask offers options" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\noptions: a|b|c\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  ask o1 pending
+  run "$AQ" add --project game --slug bare --tags "ask:o1" "x"
+  assert_failure
+  assert_output --partial 'that ask offers a,b,c'
+  "$AQ" add --project game --slug go --tags "ask:o1=a+b" "go"
+  # Negative control: an option the tag does not list holds, and says so for dead_holds to read.
+  ask o1 answered 'c' human
+  run "$AQ" next --json
+  assert_failure
+  run "$AQ" list --state queued
+  assert_output --partial 'answered c, not a+b'
+  ask o1 answered 'B, the other' human
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = go ]
+}
+
+@test "an ask: tag refuses an option the ask does not offer, which could never match an answer" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  printf 'id: o2\nstatus: pending\noptions: go|stop-burst+do-bridge|steps done, verify it\n' > "$AGENT_ASK_DIR/game/o2.md"
+  for t in ask:o2=goo ask:o2=go+ ask:o2=go++steps ask:o2=do-bridge; do
+    run "$AQ" add --project game --slug nope --tags "$t" "x"
+    assert_failure; assert_output --partial 'that ask offers go,stop-burst+do-bridge,steps done, verify it'
+  done
+  # Negative controls: a real option in any case, a slug holding a +, and a multi-word option by its first word.
+  "$AQ" add --project game --slug one --tags "ask:o2=GO" "x"
+  "$AQ" add --project game --slug two --tags "ask:o2=stop-burst+do-bridge+go" "x"
+  "$AQ" add --project game --slug three --tags "ask:o2=steps" "x"
+  # An ask with no options has nothing to check a name against.
+  printf 'id: o3\nstatus: pending\n' > "$AGENT_ASK_DIR/game/o3.md"
+  "$AQ" add --project game --slug four --tags "ask:o3=anything" "x"
+}
+
 @test "add and set tags= refuse an ask that can never release the item: cancelled, the judge's answer, another option" {
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
