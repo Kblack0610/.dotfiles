@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # release-state: pinned is read from the fetched remote branch, live from the cluster, and a
 # failed probe says unknown. kubectl is a stub that prints $KUBE_IMAGE (or fails on
-# KUBE_FAIL=1); the "remote" is a bare repo in the sandbox, so fetch is real git.
+# KUBE_FAIL=1); gh is a stub that prints $GH_REPLY (or fails on GH_FAIL=1); the "remote" is a bare
+# repo in the sandbox, so fetch is real git.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -39,6 +40,21 @@ printf '%s' "${KUBE_IMAGE:-reg/web:v1.0.0}"
 EOF
   chmod +x "$SANDBOX/bin/kubectl"
 
+  cat > "$SANDBOX/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SANDBOX/gh.calls"
+[ "${GH_FAIL:-0}" = 1 ] && exit 1
+empty='{"data":{"repository":{"deployments":{"nodes":[]}}}}'
+printf '%s' "${GH_REPLY:-$empty}"
+EOF
+  chmod +x "$SANDBOX/bin/gh"
+  export SANDBOX
+
+  # Never fetched: only its origin URL is read, to name the repo the history lives in.
+  CODE="$SANDBOX/repos/code"
+  git init -q -b main "$CODE"
+  git -C "$CODE" remote add origin git@github.com:acme/code.git
+
   export PROJECT_MAP_FILE="$HOME/project-map.json"
   write_map '"telemetry": []'
 }
@@ -58,7 +74,7 @@ push_pin() {
 write_map() {
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
-  "paths": { "$CLONE": "infra" },
+  "paths": { "$CLONE": "infra", "$CODE": "code" },
   "trackers": {
     "_comment": "a string value",
     "infra": { "system": "none" },
@@ -66,7 +82,10 @@ write_map() {
       {"id": "web-prod", "channel": "prod", "pinned": {"repo": "infra", "branch": "main", "path": "apps/web/helmrelease.yaml"}, "live": {"k8s": {"context": "c", "namespace": "n", "deployment": "web"}}, $1},
       {"id": "web-preview", "channel": "preview", "pinned": {"repo": "infra", "path": "apps/web/kustomization.yaml", "image": "reg/web"}, "live": {"k8s": {"context": "c", "namespace": "n", "deployment": "webp"}}, "telemetry": []}
     ]},
-    "lonely": { "type": "app" }
+    "lonely": { "type": "app" },
+    "shop": { "repo": "code", "targets": [
+      {"id": "shop-prod", "channel": "prod", "pinned": {"repo": "infra", "branch": "main", "path": "apps/web/helmrelease.yaml"}}
+    ]}
   }
 }
 EOF
@@ -177,7 +196,7 @@ field() { row "$1" | jq -r "$2"; }
   "$RS" refresh >/dev/null
   KUBE_FAIL=1 "$RS" refresh lonely >/dev/null
   [ "$(field web-prod .status)" = ok ]
-  [ "$(jq '.rows | length' "$RELEASE_STATE_DIR/state.json")" = 3 ]
+  [ "$(jq '.rows | length' "$RELEASE_STATE_DIR/state.json")" = 4 ]
 }
 
 @test "refresh publishes its runner outcome, so agentctl never promotes PENDING to STALLED" {
@@ -187,9 +206,9 @@ field() { row "$1" | jq -r "$2"; }
   printf PENDING > "$AGENTCTL_STATE_DIR/release-state/last-outcome"
   run "$RS" refresh
   assert_success
-  assert_output --partial '3 rows, '
+  assert_output --partial '4 rows, '
   [ "$(cat "$AGENTCTL_STATE_DIR/release-state/last-outcome")" = WORKED ]
-  run grep -c 'outcome=WORKED 3 rows' "$AGENTCTL_STATE_DIR/release-state/activity.log"
+  run grep -c 'outcome=WORKED 4 rows' "$AGENTCTL_STATE_DIR/release-state/activity.log"
   assert_output 1
   [ ! -e "$AGENTCTL_STATE_DIR/other-runner" ]
   # Negative control: show and check are not passes and leave the outcome alone.
@@ -208,7 +227,7 @@ field() { row "$1" | jq -r "$2"; }
   [ "$(cat "$AGENTCTL_STATE_DIR/release-state/last-outcome")" = FAILED ]
   run tail -1 "$AGENTCTL_STATE_DIR/release-state/activity.log"
   assert_output --partial "outcome=FAILED why: no registry at $PROJECT_MAP_FILE"
-  [ "$(jq '.rows | length' "$RELEASE_STATE_DIR/state.json")" = 3 ]
+  [ "$(jq '.rows | length' "$RELEASE_STATE_DIR/state.json")" = 4 ]
 }
 
 @test "an old snapshot fails check as stale" {
@@ -224,13 +243,13 @@ field() { row "$1" | jq -r "$2"; }
   "$RS" refresh >/dev/null
   run "$RS" show
   assert_success
-  [ "$(sed -n 3p <<<"$output" | awk '{print $NF, $(NF-1)}')" = "- drift" ]
+  [ "$(sed -n 3p <<<"$output" | awk '{print $NF, $(NF-3)}')" = "- drift" ]
 }
 
 @test "doctor 4c names a malformed target and a duplicate id" {
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
-  "paths": { "$CLONE": "infra" },
+  "paths": { "$CLONE": "infra", "$CODE": "code" },
   "trackers": {
     "infra": { "system": "none" },
     "web": { "repo": "infra", "type": "app", "targets": [
@@ -249,4 +268,77 @@ EOF
   assert_output --partial 'target "dup": live needs k8s'
   assert_output --partial 'dep "ghost" is not a registered project'
   assert_output --partial 'deploy target id "dup" is used 2 times'
+}
+
+# node <version> <state> <at> - one Deployment as the GraphQL answer carries it.
+node() {
+  printf '{"createdAt":"%s","description":"%s","commitOid":"abcdef1234","ref":{"name":"main"},"latestStatus":{"state":"%s","logUrl":"https://example.test/run/%s","createdAt":"%s"}}' "$3" "$1" "$2" "$1" "$3"
+}
+reply() { local IFS=,; GH_REPLY="{\"data\":{\"repository\":{\"deployments\":{\"nodes\":[$*]}}}}"; export GH_REPLY; }
+
+@test "deploys: the target id names the environment in the project's github repo" {
+  run "$RS" refresh shop
+  assert_success
+  run grep -c '^api graphql' "$SANDBOX/gh.calls"
+  assert_output 1
+  run cat "$SANDBOX/gh.calls"
+  assert_output --partial "-f owner=acme -f name=code -f env=shop-prod -F n=10"
+  assert_equal "$(row shop-prod | jq -c '.deploys | [.source, .history, .prev, .last, .error]')" '["acme/code",[],null,null,null]'
+}
+
+@test "deploys: last is the newest finished, prev the version before the newest success" {
+  reply "$(node v4 PENDING 2026-11-05T10:00:00Z)" "$(node v3 FAILURE 2026-11-04T10:00:00Z)" \
+    "$(node v2 SUCCESS 2026-11-03T10:00:00Z)" "$(node v2 SUCCESS 2026-11-02T10:00:00Z)" "$(node v1 SUCCESS 2026-11-01T10:00:00Z)"
+  "$RS" refresh shop
+  local d; d="$(row shop-prod | jq -c .deploys)"
+  assert_equal "$(jq -r '.last.version + " " + .last.state' <<<"$d")" "v3 fail"
+  assert_equal "$(jq -r '.prev' <<<"$d")" "v1"
+  assert_equal "$(jq -r '.history | length' <<<"$d")" 5
+  assert_equal "$(jq -r '.history[0].state' <<<"$d")" "pending"
+  assert_equal "$(jq -r '.last.url' <<<"$d")" "https://example.test/run/v3"
+}
+
+@test "deploys: a rollback's prev is the version it replaced" {
+  reply "$(node v1 SUCCESS 2026-11-03T10:00:00Z)" "$(node v2 SUCCESS 2026-11-02T10:00:00Z)" "$(node v1 SUCCESS 2026-11-01T10:00:00Z)"
+  "$RS" refresh shop
+  assert_equal "$(row shop-prod | jq -r .deploys.prev)" "v2"
+}
+
+@test "deploys: a deployment with no description falls back to its ref" {
+  reply '{"createdAt":"2026-11-01T10:00:00Z","description":"","commitOid":"abcdef1234","ref":{"name":"release-1"},"latestStatus":{"state":"SUCCESS","logUrl":"","createdAt":"2026-11-01T10:00:00Z"}}'
+  "$RS" refresh shop
+  assert_equal "$(row shop-prod | jq -c '.deploys.last | [.version, .url]')" '["release-1",null]'
+}
+
+@test "deploys: a failed call says so and keeps no earlier history" {
+  reply "$(node v2 SUCCESS 2026-11-02T10:00:00Z)"
+  "$RS" refresh shop
+  GH_FAIL=1 run "$RS" refresh shop
+  assert_success
+  assert_equal "$(row shop-prod | jq -c '.deploys | [.error, .history, .prev, .last]')" '["gh api failed",[],null,null]'
+  run "$RS" show shop
+  assert_line --regexp '^shop .*\?'
+}
+
+@test "deploys: an unreadable answer is an error, not an empty history" {
+  GH_REPLY='{"errors":"no data"}' "$RS" refresh shop
+  assert_equal "$(row shop-prod | jq -r .deploys.error)" "unreadable answer"
+}
+
+@test "deploys: a repo not on github and an implicit row make no call" {
+  run "$RS" refresh web lonely
+  assert_success
+  [ ! -e "$SANDBOX/gh.calls" ]
+  assert_equal "$(row web-prod | jq -r .deploys.source)" "none"
+  assert_equal "$(row lonely | jq -r .deploys.source)" "none"
+}
+
+@test "deploys: show prints PREV and LAST DEPLOY" {
+  reply "$(node v2 FAILURE 2026-11-03T10:00:00Z)" "$(node v2 SUCCESS 2026-11-02T10:00:00Z)" "$(node v1 SUCCESS 2026-11-01T10:00:00Z)"
+  "$RS" refresh shop
+  run env TZ=UTC "$RS" show shop
+  assert_success
+  assert_line --index 1 --partial "PREV"
+  assert_line --index 1 --partial "LAST DEPLOY"
+  assert_line --regexp '^shop .* v1 +11-03 10:00 fail'
 }

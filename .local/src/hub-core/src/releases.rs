@@ -1,12 +1,13 @@
 //! The Releases tab, both surfaces: one row per project channel, what is pinned there and what
 //! is actually live, from `release-state show --json`. The collector owns the probes and the
 //! status words; this reader adds only what a row needs to draw: its level, its column text and
-//! the exceptions-first order. Previous version and last deploy arrive with the collector's
-//! deployment history, and the Builds section under the channels is its own reader's.
+//! the exceptions-first order. The Builds section under the channels is its own reader's.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+
+use crate::pipeline::stamp;
 
 use crate::layout;
 use crate::session_actions::Runner;
@@ -62,6 +63,64 @@ impl Side {
     }
 }
 
+/// One GitHub Deployment of a channel: a version, how it ended, and the run that proves it.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Deploy {
+    pub version: String,
+    /// `ok`, `fail`, or GitHub's word for one not finished.
+    pub state: String,
+    pub at: i64,
+    pub url: Option<String>,
+}
+
+impl Deploy {
+    pub fn failed(&self) -> bool {
+        self.state == "fail"
+    }
+}
+
+/// A channel's deployment history, from the collector.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Deploys {
+    /// The GitHub repo read, `none` when the channel has none to read.
+    pub source: String,
+    pub error: Option<String>,
+    pub history: Vec<Deploy>,
+    /// The version that succeeded before the newest success.
+    pub prev: Option<String>,
+    /// The newest finished deployment, however it ended.
+    pub last: Option<Deploy>,
+}
+
+impl Deploys {
+    /// The PREV cell: `?` when the read failed, as [`Side::text`] says it.
+    fn prev_text(&self) -> String {
+        match (&self.error, &self.prev) {
+            (Some(_), _) => "?".into(),
+            (None, Some(v)) => v.clone(),
+            (None, None) => "-".into(),
+        }
+    }
+
+    /// The LAST DEPLOY cell: `11-06 15:00 ok`, the date dropped for one today.
+    fn last_text(&self, now: i64) -> String {
+        match (&self.error, &self.last) {
+            (Some(_), _) => "?".into(),
+            (None, Some(d)) => format!("{} {}", stamp(d.at, now), d.state),
+            (None, None) => "-".into(),
+        }
+    }
+
+    fn level(&self) -> Level {
+        match &self.last {
+            Some(d) if self.error.is_none() && d.failed() => Level::Warn,
+            _ => Level::Ok,
+        }
+    }
+}
+
 /// One telemetry watch a channel declares.
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 #[serde(default)]
@@ -109,19 +168,23 @@ pub struct Release {
     pub tag: Option<String>,
     pub pinned: Side,
     pub live: Side,
+    pub deploys: Deploys,
     pub status: String,
     pub drift_since: Option<i64>,
     pub telemetry: Vec<Watch>,
     pub deps: Vec<String>,
     pub probed_at: Option<i64>,
-    /// The worse of the status word and the watches: what orders and folds the row.
+    /// The worst of the status word, the watches and a failed last deploy: what orders and
+    /// folds the row.
     #[serde(skip_deserializing)]
     pub level: Level,
-    /// The STATUS and TELEMETRY cells' own levels, for their colour.
+    /// The STATUS, TELEMETRY and LAST DEPLOY cells' own levels, for their colour.
     #[serde(skip_deserializing)]
     pub status_level: Level,
     #[serde(skip_deserializing)]
     pub watch_level: Level,
+    #[serde(skip_deserializing)]
+    pub deploy_level: Level,
     /// The CHANNEL cell: `prod pmp-web-prod`, or `release` on an implicit row.
     #[serde(skip_deserializing)]
     pub label: String,
@@ -129,6 +192,10 @@ pub struct Release {
     pub pinned_text: String,
     #[serde(skip_deserializing)]
     pub live_text: String,
+    #[serde(skip_deserializing)]
+    pub prev_text: String,
+    #[serde(skip_deserializing)]
+    pub last_deploy_text: String,
     /// `2/3` watches OK, `-` with none declared.
     #[serde(skip_deserializing)]
     pub telemetry_text: String,
@@ -160,6 +227,8 @@ impl Row for Release {
         "pinned",
         "live",
         "status",
+        "prev",
+        "last_deploy",
         "telemetry",
         "deps",
         "id",
@@ -179,6 +248,8 @@ impl Row for Release {
             "pinned" => text(&self.pinned_text),
             "live" => text(&self.live_text),
             "status" => text(&self.status),
+            "prev" => text(&self.prev_text),
+            "last_deploy" => text(&self.last_deploy_text),
             "telemetry" => text(&self.telemetry_text),
             "deps" => text(&self.deps_text),
             "id" => text(&self.id),
@@ -232,6 +303,7 @@ struct Snapshot {
 
 /// The rows this reader was handed, joined and ordered: exceptions first, the worst on top.
 fn settle(mut rows: Vec<Release>) -> Vec<Release> {
+    let now = chrono::Local::now().timestamp();
     let mut pins: HashMap<String, String> = HashMap::new();
     for prod in [true, false] {
         for r in rows.iter().filter(|r| (r.channel == "prod") == prod) {
@@ -250,7 +322,8 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
             .map(|w| w.level)
             .min()
             .unwrap_or_default();
-        r.level = r.status_level.min(r.watch_level);
+        r.deploy_level = r.deploys.level();
+        r.level = r.status_level.min(r.watch_level).min(r.deploy_level);
         r.label = if r.implicit {
             r.channel.clone()
         } else {
@@ -258,6 +331,8 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
         };
         r.pinned_text = r.pinned.text();
         r.live_text = r.live.text();
+        r.prev_text = r.deploys.prev_text();
+        r.last_deploy_text = r.deploys.last_text(now);
         r.telemetry_text = if r.telemetry.is_empty() {
             "-".into()
         } else {
@@ -494,6 +569,55 @@ mod tests {
             side(serde_json::json!({"source": "k8s", "error": "timeout"})),
             "?"
         );
+    }
+
+    #[test]
+    fn a_channel_with_no_history_is_a_dash_and_a_failed_read_a_question_mark() {
+        let with = |d: serde_json::Value| {
+            let mut v = row("a", "a", "ok");
+            v["deploys"] = d;
+            read(&snapshot(vec![v])).rows.remove(0)
+        };
+        let none = with(serde_json::json!({"source": "none", "history": []}));
+        assert_eq!(
+            (none.prev_text.as_str(), none.last_deploy_text.as_str()),
+            ("-", "-")
+        );
+        assert!(none.green());
+        let broken = with(serde_json::json!({"source": "o/r", "error": "gh api failed"}));
+        assert_eq!(
+            (broken.prev_text.as_str(), broken.last_deploy_text.as_str()),
+            ("?", "?")
+        );
+        assert!(
+            broken.green(),
+            "an unread history says nothing about the channel"
+        );
+    }
+
+    #[test]
+    fn a_failed_last_deploy_is_amber_and_stops_the_row_folding() {
+        let with = |state: &str| {
+            let mut v = row("a", "a", "ok");
+            v["deploys"] = serde_json::json!({
+                "source": "o/r", "prev": "v1",
+                "last": {"version": "v2", "state": state, "at": 1_794_002_400, "url": "https://x/1"},
+            });
+            read(&snapshot(vec![v])).rows.remove(0)
+        };
+        let at = 1_794_002_400;
+        let now = chrono::Local::now().timestamp();
+        let ok = with("ok");
+        assert_eq!(ok.prev_text, "v1");
+        assert_eq!(ok.last_deploy_text, format!("{} ok", stamp(at, now)));
+        assert!(ok.green());
+        let failed = with("fail");
+        assert_eq!(failed.last_deploy_text, format!("{} fail", stamp(at, now)));
+        assert_eq!(
+            (failed.deploy_level, failed.level),
+            (Level::Warn, Level::Warn)
+        );
+        assert!(!failed.green());
     }
 
     #[test]
