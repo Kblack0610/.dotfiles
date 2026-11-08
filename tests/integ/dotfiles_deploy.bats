@@ -11,9 +11,8 @@
 #                            they found it. A repair tool that acts by default is one nobody
 #                            can safely run to look.
 #   CONVERGENCE              --apply then --check must be clean. This is the entire reason
-#                            the tool exists: dotfiles-overlay-link reports success and then
-#                            reports "already in sync" forever while the mirror it skipped
-#                            keeps serving the wrong file.
+#                            the tool exists: a repair that only reports what it attached can
+#                            say "in sync" forever while a mirror keeps serving the wrong file.
 #   REFUSES RATHER THAN GUESSES  dual ownership, an empty manifest, a repo that enumerated
 #                            nothing, and a deployed copy that turns out to be tracked
 #                            source, all exit 2 or skip loudly. Every failure mode in this
@@ -114,6 +113,19 @@ world() {
   link .local/bin/privtool "$PRIV"
 }
 
+# fold_local_src - ~/.local/src is one folded link into the public tree.
+fold_local_src() {
+  radd "$PUB" .local/src/pubthing/a 'a'
+  mkdir -p "$HOME/.local"
+  stow_link "$HOME/.local/src" "$PUB/.local/src"
+}
+
+# track_symlink <repo> <path> <target> - a mode-120000 entry in that repo's index.
+track_symlink() {
+  ln -sfn "$3" "$1/$2"
+  git -C "$1" add -- "$2"
+}
+
 # world_wt_private — the same world, but the PRIVATE repo is a git worktree.
 world_wt_private() {
   mkrepo          "$PUB"  '^/\.git$' '^/\.gitignore$' '^/README\.md$'
@@ -167,7 +179,7 @@ world_wt_private() {
   assert_output --partial '.local/bin/README.md'
 }
 
-# ── MIRROR: the failure dotfiles-overlay-link structurally cannot fix ────────
+# -- MIRROR: a physical copy serving a tracked path --
 
 @test "a physical copy in the public tree serving a private path is reported MIRROR" {
   world
@@ -294,7 +306,7 @@ world_wt_private() {
   [ ! -d "$HOME/.local/state/dotfiles-deploy/backup" ] || fail 'backed up a file with nothing to lose'
 }
 
-# ── MISSING: what dotfiles-overlay-link already did ──────────────────────────
+# -- MISSING: nothing resolves at the path --
 
 @test "a tracked path with no counterpart in \$HOME is MISSING, and --apply links it" {
   world
@@ -413,20 +425,110 @@ world_wt_private() {
   assert_output --partial 'nothing to attach'
 }
 
+# -- --missing: one directory link where a link per file would land in the other repo's tree --
+
+@test "a new private directory under a folded public dir gets one dir link, not links inside the public tree" {
+  world
+  fold_local_src
+  radd "$PRIV" .local/src/newtool/run 'run'
+  radd "$PRIV" .local/src/newtool/lib/util 'util'
+  track_symlink "$PRIV" .local/src/newtool/run-link run
+  run "$DEPLOY" --check --missing
+  assert_failure
+  assert_output --partial '1 of 6 deploy path(s)'
+  assert_output --regexp 'MISSING +private +\.local/src/newtool +directory'
+  run "$DEPLOY" --apply --missing
+  assert_success
+  assert_output --partial '1 path(s) linked'
+  [ -L "$PUB/.local/src/newtool" ] || fail 'the public tree got a physical directory'
+  assert_equal "$(readlink "$PUB/.local/src/newtool")" '../../../.dotfiles-private/.local/src/newtool'
+  assert_equal "$(cat "$HOME/.local/src/newtool/lib/util")" 'util'
+  run "$DEPLOY" --check
+  assert_success
+}
+
+@test "a new private file in a directory the public tree already has is one file link" {
+  world
+  fold_local_src
+  radd "$PRIV" .local/src/pubthing/b 'b'
+  run "$DEPLOY" --apply --missing
+  assert_success
+  [ ! -L "$PUB/.local/src/pubthing" ] || fail 'the public directory was replaced'
+  assert_equal "$(readlink "$PUB/.local/src/pubthing/b")" '../../../../.dotfiles-private/.local/src/pubthing/b'
+}
+
+@test "a new directory under a real \$HOME directory stays per file, as stow --no-folding writes it" {
+  world
+  radd "$PRIV" .config/newapp/a 'a'
+  radd "$PRIV" .config/newapp/sub/b 'b'
+  run "$DEPLOY" --apply --missing
+  assert_success
+  assert_output --partial '2 path(s) linked'
+  [ -d "$HOME/.config/newapp" ] && [ ! -L "$HOME/.config/newapp" ] || fail 'a real parent got a directory link'
+  assert_equal "$(readlink "$HOME/.config/newapp/sub/b")" '../../../.dotfiles-private/.config/newapp/sub/b'
+}
+
+@test "a dangling directory link left by a move to the overlay is repointed at the overlay" {
+  world
+  mkdir -p "$HOME/.config"; ln -s ../.dotfiles/.config/moved "$HOME/.config/moved"
+  radd "$PRIV" .config/moved/a 'a'
+  radd "$PRIV" .config/moved/b 'b'
+  run "$DEPLOY" --apply --missing
+  assert_success
+  assert_output --partial '1 path(s) linked'
+  assert_equal "$(readlink "$HOME/.config/moved")" '../.dotfiles-private/.config/moved'
+  assert_equal "$(cat "$HOME/.config/moved/b")" 'b'
+}
+
+@test "a directory holding a stow-ignored path keeps per-file links: a dir link would deploy that path" {
+  world
+  printf '%s\n' '^/\.local/src/newtool/secret$' >> "$PRIV/.stow-local-ignore"
+  fold_local_src
+  radd "$PRIV" .local/src/newtool/run 'run'
+  radd "$PRIV" .local/src/newtool/secret 'not deployed'
+  run "$DEPLOY" --apply --missing
+  assert_success
+  [ ! -L "$PUB/.local/src/newtool" ] || fail 'the dir link deploys a path stow ignores'
+  [ ! -e "$HOME/.local/src/newtool/secret" ] || fail 'the ignored path deployed'
+  assert_equal "$(cat "$HOME/.local/src/newtool/run")" 'run'
+}
+
 # ── things that must never enter the manifest ────────────────────────────────
 
-@test "a TRACKED SYMLINK is skipped on both sides, not diffed" {
+@test "a deployed TRACKED SYMLINK is not diffed" {
   # git stores a symlink as a mode-120000 blob holding the link target, so comparing one to
   # the resolved file on disk always reports a difference. 15 false positives came from
   # systemd .wants/ entries alone the last time someone tried; dotfiles-drift skips them
   # for the same reason.
   world
-  ln -sfn "$PRIV/.local/bin/privtool" "$PUB/.local/bin/linky"
-  git -C "$PUB" add -- .local/bin/linky
-  assert_equal "$(git -C "$PUB" ls-files -s -- .local/bin/linky | cut -d' ' -f1)" '120000'
+  track_symlink "$PRIV" .local/bin/linky privtool
+  assert_equal "$(git -C "$PRIV" ls-files -s -- .local/bin/linky | cut -d' ' -f1)" '120000'
+  link .local/bin/linky "$PRIV"
   run "$DEPLOY" --check
   assert_success
   refute_output --partial 'linky'
+  assert_output --partial 'all 3 deploy path(s)'
+}
+
+@test "a TRACKED SYMLINK with nothing in \$HOME is MISSING, and --missing links it" {
+  world
+  track_symlink "$PRIV" .local/bin/linky privtool
+  run "$DEPLOY" --check
+  assert_failure
+  assert_output --regexp 'MISSING +private +\.local/bin/linky'
+  run "$DEPLOY" --apply --missing
+  assert_success
+  assert_equal "$(readlink "$HOME/.local/bin/linky")" '../../.dotfiles-private/.local/bin/linky'
+  assert_equal "$(cat "$HOME/.local/bin/linky")" 'private tool v2'
+}
+
+@test "a TRACKED SYMLINK that dangles in its repo, or stow ignores, is not a finding" {
+  world
+  track_symlink "$PRIV" .local/bin/dead not-checked-out
+  printf '%s\n' '^/\.local/bin/skipped$' >> "$PRIV/.stow-local-ignore"
+  track_symlink "$PRIV" .local/bin/skipped privtool
+  run "$DEPLOY" --check
+  assert_success
 }
 
 # ── refusals ─────────────────────────────────────────────────────────────────
