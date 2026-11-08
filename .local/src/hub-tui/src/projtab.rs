@@ -31,9 +31,9 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 }
 
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
-const HEADER: [&str; 13] = [
-    "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DONE", "PCT", "PACE/WK", "ETA",
-    "RUN", "WAIT", "QUEUED",
+const HEADER: [&str; 19] = [
+    "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE", "7D", "PCT",
+    "PACE/WK", "ETA", "RUN", "WAIT", "QUEUED", "HELD", "TODAY", "OLDEST",
 ];
 
 #[derive(Debug, Default)]
@@ -330,13 +330,19 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
             if c.prio == "focus" { p.head() } else { p.dim() },
         ),
         c.progress.open.to_string().into(),
+        c.doing.to_string().into(),
+        lit(c.hot, p.warn()),
         c.progress.done.to_string().into(),
+        c.progress.closed_7d.to_string().into(),
         or_dash(c.percent, "%").into(),
         format!("{:.1}", c.pace()).into(),
         or_dash(c.eta_days, "d").into(),
         lit(c.running.len(), p.good()),
         lit(c.waiting, p.warn()),
         c.queued.to_string().into(),
+        c.held.to_string().into(),
+        lit(c.done_today, p.good()),
+        projects::wait_word(c.oldest_ready_min).into(),
     ]
 }
 
@@ -401,7 +407,9 @@ pub fn page(
         let (mut t, starts) = Table {
             header: HEADER.to_vec(),
             rows: shown.iter().map(|c| row(c, p)).collect(),
-            keep: vec![0, 7, 10, 11, 2, 9, 5, 6, 8, 12, 3, 4, 1],
+            keep: vec![
+                0, 10, 13, 14, 15, 7, 18, 5, 2, 12, 16, 17, 6, 8, 9, 11, 3, 4, 1,
+            ],
             right: (5..HEADER.len()).collect(),
             mark: pv.table.mark::<Card>(),
             ..Default::default()
@@ -691,13 +699,16 @@ pub(crate) mod tests {
         assert_eq!(
             s[5].split_whitespace().collect::<Vec<_>>(),
             [
-                "garden", "personal", "alpha", "v0.0.1", "focus", "1", "3", "75%", "1.0", "7d",
-                "0", "1", "0"
+                "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "75%",
+                "1.0", "7d", "0", "1", "0", "0", "0", "-"
             ]
         );
         assert_eq!(
             s[at.unwrap()].split_whitespace().collect::<Vec<_>>(),
-            ["demo", "personal", "alpha", "-", "-", "2", "0", "0%", "1.0", "-", "0", "0", "0"]
+            [
+                "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "0%", "1.0", "-",
+                "0", "0", "0", "0", "0", "-"
+            ]
         );
         let tail = s.join("\n");
         assert!(
