@@ -402,7 +402,7 @@ gate_line() {
       *) [ "$n" = 0 ] || rest="$rest $n $res," ;;
     esac
   done <<< "$stats"
-  line="${line%,}${rest%,}"
+  line="${line%,}${rest:+,}${rest%,}"
   while read -r runs wt br; do
     [ -n "$runs" ] || continue
     branch_merged "$wt" "$br" || branches="$branches${branches:+, }$br x$runs"

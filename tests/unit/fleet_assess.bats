@@ -602,7 +602,7 @@ rows_with() {
 
 # --- gate_line: the gate's throughput on one line, from the slots and the run ledger -----
 # gate_ledger: a worktree "wt-a" on branch feat/a (unmerged) with 5 runs in the last 2h, "wt-b"
-# on branch feat/b (merged into origin/main) with 5, "wt-c" with 4, a 3h-old pass, and a fail.
+# on branch feat/b (merged into origin/main) with 5, "wt-c" with 4, a 3h-old pass, and a killed run.
 gate_ledger() {
   local now i; now="$(date +%s)"
   WORKTREE_ROOT="$BATS_TEST_TMPDIR/worktrees"
@@ -620,6 +620,7 @@ gate_ledger() {
     printf '%s\t%s\t%s\tPlayMode\twt-c\tfeat/c\tr\n' $((now - 50 * i)) $((now - 50 * i - 60)) pass >> "$RUN_LEDGER"
   done
   printf '%s\t%s\t%s\tPlayMode\twt-c\tfeat/c\tr\n' $((now - 10800)) $((now - 10860)) pass >> "$RUN_LEDGER"
+  printf '%s\t%s\t%s\tPlayMode\twt-c\tfeat/c\tr\n' $((now - 20)) $((now - 80)) killed >> "$RUN_LEDGER"
 }
 
 @test "gate_line: slots busy and queued, the last 2h by result, and branches with 5+ runs and no merge" {
@@ -628,7 +629,7 @@ gate_ledger() {
   gate_rows() { :; }
   gate_ledger
   run gate_line
-  assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 5 fail, 9 pass; 5+ runs, not merged: feat/a x5"
+  assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
 }
 
 @test "gate_line: a reaped worktree reads merged, and a ledger with no run names no branch" {
