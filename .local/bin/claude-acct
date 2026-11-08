@@ -367,10 +367,13 @@ email_of() {
 # live_of -> one line per running claude, "@" and the account dir it runs under. The "@" keeps the
 # main account's line non-empty: a trailing empty line is lost to $(...), and none at all reads as
 # one main session to grep. A claude on the Lazer gateway spends no account, so it is not one.
+# Builtins only per /proc entry: every agentctl-run call pays for this loop through pick.
 live_of() {
-    local c
+    local c comm
     for c in "$PROC"/[0-9]*/comm; do
-        [[ "$(cat "$c" 2>/dev/null)" == claude ]] || continue
+        comm=""
+        read -r comm 2>/dev/null < "$c"
+        [[ "$comm" == claude ]] || continue
         c="${c%/comm}"
         [[ -z "$(gateway_of "${c##*/}")" ]] || continue
         printf '@%s\n' "$(config_dir_of "${c##*/}")"
@@ -835,12 +838,22 @@ norm_dir() {
 
 # config_dir_of <pid> -> the CLAUDE_CONFIG_DIR that process runs under, empty = main
 config_dir_of() {
-    norm_dir "$(tr '\0' '\n' < "$PROC/$1/environ" 2>/dev/null | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -n1)"
+    norm_dir "$(env_of "$1" CLAUDE_CONFIG_DIR)"
 }
 
 # gateway_of <pid> -> the ANTHROPIC_BASE_URL that process runs on (claude-lazer), empty = an account
 gateway_of() {
-    tr '\0' '\n' < "$PROC/$1/environ" 2>/dev/null | sed -n 's/^ANTHROPIC_BASE_URL=//p' | head -n1
+    env_of "$1" ANTHROPIC_BASE_URL
+}
+
+# env_of <pid> <name> -> the first value of that variable in the process environment, read with
+# builtins (live_of calls it for every running claude)
+env_of() {
+    local kv
+    while IFS= read -r -d '' kv || [[ -n "$kv" ]]; do
+        [[ "$kv" == "$2="* ]] && { printf '%s' "${kv#"$2="}"; return 0; }
+    done 2>/dev/null < "$PROC/$1/environ"
+    return 0
 }
 
 # ppid_of <pid> -- the fourth field of stat, read after the comm, which may hold spaces
