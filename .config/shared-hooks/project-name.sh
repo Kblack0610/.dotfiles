@@ -403,7 +403,12 @@ resolve_project_name() {
     # /tmp, a session scratchpad or ~/.cache are no project, and naming them by basename
     # minted ~/.agent keys (kblack0610, scratchpad, tmp) that the dream swept nightly.
     # They share the one reserved key; a leading `_` marks a key that is no project.
-    if [ -z "${top:-}" ] && ! project_known "$base"; then echo "_unscoped"; return 0; fi
+    # A repo under the temp dir is outside any project too: a lane that `git init`s a
+    # `mktemp -d` and runs codex there minted tmp.XXXXXXXXXX outcome keys.
+    local tmp_root="${TMPDIR:-/tmp}" in_tmp=0 where="$abs_path"
+    [ -n "${top:-}" ] && where="${repo:-$abs_path}"
+    case "$where" in "${tmp_root%/}"/?*) in_tmp=1 ;; esac
+    if { [ -z "${top:-}" ] || [ "$in_tmp" = 1 ]; } && ! project_known "$base"; then echo "_unscoped"; return 0; fi
   fi
 
   echo "$base"
