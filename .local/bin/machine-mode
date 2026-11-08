@@ -170,21 +170,34 @@ clock_target() {
   printf '%s %s\n' "$part" "$want"
 }
 
+# clock_proof <verdict> [detail] -- the tick's outcome for its agentctl runner (agent-proof.sh), so a
+# run that changed nothing reads NOOP, not STALLED.
+clock_proof() {
+  # shellcheck source=../lib/agent-proof.sh
+  . "$here/../lib/agent-proof.sh" || die "agent-proof.sh not found, so the tick cannot report an outcome"
+  [ -z "${3:-}" ] || proof_why "$3"
+  proof_report machine-clock "$1" "${2:-}"
+}
+
 clock() {
-  local part want by
+  local part want by rc=0
   read -r part want <<< "$(clock_target)"
-  [ -n "$part" ] || exit 1
+  [ -n "$part" ] || { clock_proof FAILED "" "the hours file does not name a part for the time now, or names an unknown mode"; exit 1; }
   by="$(state_value MODE_BY)"
   # A state file from before the clock names no setter: its mode was set by hand.
   [ -z "$by" ] && [ -n "$(state_value MACHINE_MODE)" ] && by=hand
   if [ "$(state_value CLOCK_PART)" = "$part" ]; then
     # Applied this part already; retry only a runner pin that never reached the cluster.
-    [ "$(state_value RUNNERS_PINNED)" = no ] && [ "$by" = clock ] || return 0
+    [ "$(state_value RUNNERS_PINNED)" = no ] && [ "$by" = clock ] || { clock_proof NOOP "$part: $(current_mode), applied already"; return 0; }
   elif [ "$by" = hand ] && [ "$(current_mode)" != "$want" ] && human_here; then
     echo "machine-mode: $part began; $(current_mode) was set by hand and you are here, so it holds until you are away"
+    clock_proof NOOP "$part: $(current_mode) held by hand while the human is here"
     return 0
   fi
-  switch "$want" clock "$part"
+  switch "$want" clock "$part" || rc=$?
+  if [ "$rc" = 0 ]; then clock_proof WORKED "$part: switched to $want"
+  else clock_proof FAILED "$part: $want" "the runner pin did not reach the cluster"; fi
+  return "$rc"
 }
 
 # switch <mode> [hand|clock] [part] -- apply a mode. A hand switch records the part it was made in,
@@ -210,7 +223,7 @@ esac
 
 if ! compgen -G "$RUNNER_UNITS" >/dev/null; then
   # The timer runs on every machine with the runner confs; with no pool runners its tick has nothing to do.
-  [ "${1:-}" = clock ] && exit 0
+  [ "${1:-}" = clock ] && { clock_proof NOOP "no pool runners on this machine"; exit 0; }
   die "no pool runners on this machine, so there is nothing to set"
 fi
 
