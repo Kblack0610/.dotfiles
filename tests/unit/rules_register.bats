@@ -107,6 +107,25 @@ row() {
   assert_equal "$(jq -c '[.[] | [.anchored, .value]]' <<<"$output")" '[[false,null],[true,3]]'
 }
 
+@test "rules --scenarios: each hard scenario is listed with whether its rule text is still in its source" {
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "Never force push.", kind: "invariant", scenario: "a pushed branch has the wrong history"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "Always force push.", kind: "invariant", scenario: "a trim reworded the rule away"}' >> "$RULES_REGISTER"
+  jq -nc '{source: "/nonexistent/x.md", anchor: "elsewhere rule", kind: "invariant", scenario: "a source on another machine"}' >> "$RULES_REGISTER"
+  row 'under ten' high 'echo 3' 10
+  run "$SUBJECT" rules --scenarios
+  assert_success
+  assert_equal "${#lines[@]}" 3
+  assert_line "$(printf 'ok\trules.md\ta pushed branch has the wrong history\tNever force push.')"
+  assert_line "$(printf 'stale\trules.md\ta trim reworded the rule away\tAlways force push.')"
+  assert_line "$(printf 'absent\tx.md\ta source on another machine\telsewhere rule')"
+  run "$SUBJECT" rules
+  assert_line 'scenarios=3'
+  # The stale scenario fails --check like any rule whose text left its source.
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'stale: rules.md: Always force push.'
+}
+
 @test "rules: no register is an empty count, not an error" {
   run "$SUBJECT" rules
   assert_success
@@ -127,7 +146,8 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
       or ((.anchor // "") | length < 12)
       or (((.anchor // "") + (.measure // "")) | test("\n"))
       or (.measure != null and .max == null and .min == null)
-      or (.kind == "invariant" and (.measure != null or .max != null or .min != null))) | .anchor' "$REAL"
+      or (.kind == "invariant" and (.measure != null or .max != null or .min != null))
+      or (.kind == "invariant" and (.scenario // "") == "")) | .anchor' "$REAL"
   assert_output ''
 }
 
