@@ -61,8 +61,8 @@ DRIFT_PCT = float(ENV.get("TOKENS_DRIFT_PCT", "25"))
 SUSPECT_PCT = float(ENV.get("TOKENS_SUSPECT_PCT", "50"))
 BASELINE_DAYS = int(ENV.get("TOKENS_BASELINE_DAYS", "7"))
 MIN_BASELINE = 3      # fewer earlier days than this and there is no median to compare with
-GATEWAY_TRIP = [c.strip() for c in ENV.get("TOKENS_GATEWAY_TRIP", "BadRequestError").split(",") if c.strip()]
-GATEWAY_MIN = int(ENV.get("TOKENS_GATEWAY_MIN", "1"))
+GATEWAY_TRIP = [c.strip() for c in (ENV.get("TOKENS_GATEWAY_TRIP") or "BadRequestError").split(",") if c.strip()]
+GATEWAY_MIN = max(1, int(ENV.get("TOKENS_GATEWAY_MIN", "1")))   # 0 would trip every night
 STALE_DAYS = 2        # the newest snapshot older than this means the nightly stopped
 TOP_COMMANDS = 20
 TOP_TARGETS = 20      # the files whose reads cost the most responses that day
@@ -282,13 +282,16 @@ def langfuse_check(files, newest):
 
 def gateway_errors_check(newest):
     """check --gateway-errors: a trip-listed error class in the newest snapshot's gateway errors."""
-    gw = (newest.get("langfuse") or {}).get("gateway") or {}
+    gw = (newest.get("langfuse") or {}).get("gateway")
+    if not gw:
+        print(f"{newest['date']}: no gateway figures in the snapshot (langfuse unread; check --langfuse watches that)")
+        return 0
     by_error = gw.get("by_error") or {}
     hit = {c: by_error[c] for c in GATEWAY_TRIP if by_error.get(c, 0) >= GATEWAY_MIN}
     if not hit:
         print(f"{newest['date']}: no {'/'.join(GATEWAY_TRIP)} in the gateway errors ({gw.get('errors', '?')} errors in {gw.get('calls', '?')} calls)")
         return 0
-    others = sum(v for c, v in by_error.items() if c not in hit)
+    others = gw.get("errors", 0) - sum(hit.values())
     print(f"{newest['date']}: gateway " + ", ".join(f"{c} x{n}" for c, n in hit.items()) + f" ({others} other errors, not listed)")
     return 1
 

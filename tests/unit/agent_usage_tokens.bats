@@ -291,11 +291,21 @@ gw_day() { lf_day "$1" "{\"gateway\":{\"calls\":100,\"errors\":$2,\"by_error\":$
   lf_day 2025-12-31 '{"gateway":{"by_error":{"BadRequestError":5}}}' '[]'; lf_day 2026-01-01 null '["langfuse: x"]'
   run "$AU" tokens check --gateway-errors
   assert_success
+  assert_output --partial 'no gateway figures'
   lf_day 2026-01-01 '{"gateway":{"calls":3,"errors":0,"by_error":{}}}' '[]'
   run "$AU" tokens check --gateway-errors
   assert_success
   TOKENS_GATEWAY_MIN=2 run "$AU" tokens check --gateway-errors
   assert_success
+}
+
+@test "check --gateway-errors: a zero minimum or an empty class list falls back instead of tripping or crashing" {
+  gw_day 2026-01-01 3 '{"HTTPException":3}'
+  TOKENS_GATEWAY_MIN=0 run "$AU" tokens check --gateway-errors
+  assert_success
+  TOKENS_GATEWAY_TRIP= run "$AU" tokens check --gateway-errors
+  assert_success
+  assert_output --partial 'no BadRequestError'
 }
 
 @test "check --gateway-errors: no or a stale snapshot still exits 2, and it excludes --langfuse" {
