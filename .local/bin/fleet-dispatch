@@ -2348,6 +2348,7 @@ route() {
     fi
     src=$(harness_source "$h")
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
+    elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
     elif headless "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless, and this is a plan item")

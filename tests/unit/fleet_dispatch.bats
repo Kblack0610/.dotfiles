@@ -5196,6 +5196,12 @@ case "$1" in log) echo run-9 ;; classify)
   assert_called 'model-lane log --item canary-codex --task canary: fix the menu --lane eval --by human --harness codex --picked sol --ran sol'
   f=$(qitem running canary-codex)
   assert_equal "$(qfield "$f" agent) $(qfield "$f" routed)" 'codex '
+  # A pinned item with no model is skipped with the reason, never a failed start on every pass.
+  agent-queue add --project game --slug canary-bare --agent codex --priority urgent "canary: fix the map" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'queue item canary-bare has no source with room it may run on: codex: the item names no model: for it'
+  refute_output --partial 'could not start queue item canary-bare'
+  assert_equal "$(item_state canary-bare)" queued
 }
 
 @test "a pinned item whose source has no room is skipped, and the claude item behind it starts" {
