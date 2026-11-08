@@ -722,6 +722,19 @@ MD
   assert_failure 1
 }
 
+@test "a session that left DONE is nudged again when it is next DONE; one still DONE keeps its nudge" {
+  mark sid-4 'DONE clean, no plan file'
+  mark sid-5 'DONE clean, no plan file'
+  mark sid-6 'STALLED PR #9 CI red @feat/x'
+  release_done "$(printf 'DONE\tt1\tsid-4\nWORKING\tt2\tsid-5\nWORKING\tt3\tsid-6\n')"
+  run nudged sid-4 'DONE clean, no plan file'
+  assert_success
+  run nudged sid-5 'DONE clean, no plan file'
+  assert_failure
+  run nudged sid-6 'STALLED PR #9 CI red @feat/x'
+  assert_success
+}
+
 @test "escalate pages once per fact, keeps the nudge, and a new nudge clears it" {
   mark sid-2 'STALLED PR #9 CI red @feat/x'
   run escalated sid-2 'STALLED PR #9 CI red @feat/x'

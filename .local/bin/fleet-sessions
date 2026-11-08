@@ -383,8 +383,23 @@ ledger_write() {
 # is already nudged, whichever pass nudged it, and the ledger is left as it is (a second mark would
 # clear the escalation the first one earned).
 mark() {
-  nudged "$1" "$2" && { echo "fleet-sessions: $1 already nudged for this fact" >&2; return 1; }
-  ledger_write "$1" fact "$2"
+  case "$1" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
+  mkdir -p "$LEDGER"
+  (
+    flock 8
+    nudged "$1" "$2" && { echo "fleet-sessions: $1 already nudged for this fact" >&2; exit 1; }
+    ledger_write "$1" fact "$2"
+  ) 8>"$LEDGER/mark.lock"
+}
+
+# release_done <rows>: a session that left DONE is no longer holding the DONE nudge, so its next
+# DONE is a new fact and is nudged (fact_key makes every DONE one fact while it lasts).
+release_done() {
+  local b sid _
+  while IFS=$'\t' read -r b _ sid _; do
+    [ -n "$sid" ] && [ "$b" != DONE ] || continue
+    [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$sid" 2>/dev/null)")" = DONE ] && rm -f "$LEDGER/$sid"
+  done <<<"$1"
 }
 escalate() { ledger_write "$1" escalated "$2" && finding_paged "$1" "$2"; }
 
@@ -1185,12 +1200,13 @@ collect() {
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 ))
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
-    askids="$(asks_for "$sid" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"
+    # Every ask this session filed and nobody answered (ownask), the ones a queue item carries on
+    # included: the session may close (bucket), but a nudge to close it is wrong while its window
+    # is the place the question was asked. askids are the ones still its own to wait on.
+    local ownids; ownids="$(asks_for "$sid")"
+    ownask=0; [ -n "$ownids" ] && ownask="$(wc -l <<<"$ownids")"; ownask=$((ownask + 0))
+    askids="$(grep . <<<"$ownids" | { if [ -n "$qheld" ]; then grep -vxF "$qheld"; else cat; fi; } | paste -sd, -)"
     asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
-    # Every ask this session filed and nobody answered, the ones a queue item carries on included:
-    # the session may close (bucket), but a nudge to close it is wrong while its window is the
-    # place the question was asked.
-    ownask="$(asks_for "$sid" | wc -l)"
     hv=0; [ "$host" = - ] && [ -n "$pane" ] && grep -qxF "${target%%/*}/$pane" <<<"$heavy" && hv=1
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
@@ -1493,6 +1509,7 @@ tick() {
     fi
     cp "$cur" "$LEDGER/watch.state"
   ) 9>"$LEDGER/watch.lock"
+  release_done "$rows"
   write_state "$t0" "$rows" > /dev/null
 }
 
