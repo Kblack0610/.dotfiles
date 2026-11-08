@@ -60,9 +60,86 @@ function releasesHead(d) {
   return html;
 }
 
-// The Builds section's slot under the channels: it reads ~/.local/state/ci/runs.jsonl with its
-// own reader (ar-956), and until then it draws nothing, so the tab claims no build state.
-function releaseBuilds() { return ""; }
+// The Builds section under the channels: CI runs of the last 30 days from /api/builds
+// (hub_core::builds), its own table with its own view keys (bq, bs, bsort, bdir). It draws inside
+// this tab's page, so its render is the tab's and its refresh reads only its own rows.
+const BUILDS_PRE = "b";
+const BUILDS_HINT = "search, or repo:binks state:red owner:agent-3 workflow:Tests";
+const bld = tblTab({
+  tab: "releases", id: "bld", pre: BUILDS_PRE, el: "releases", api: "/api/builds", hint: BUILDS_HINT, state: { log: null },
+  head: (t) => buildsHead(t.data), body: (t) => buildsBody(t.data),
+  render: () => relst.render(),
+});
+// A refresh must not take the focus from either search box: the section repaints when it holds it.
+const relRepaint = relst.repaint;
+relst.repaint = () => relRepaint() || bld.repaint();
+
+const BLD_COLS = { started: ["started", "n"], state: ["state"], repo: ["repo"], workflow: ["workflow"], branch: ["branch"], took: ["took", "n"], owner: ["owner"] };
+const bldKey = (r) => `${r.forge}|${r.repo}|${r.id}|${r.attempt}`;
+
+function buildRow(r) {
+  const open = bldKey(r) === bld.sel;
+  const wait = r.state === "queued" ? `wait ${secs(r.took)}` : secs(r.took);
+  const row = `<tr class="br${open ? " sel" : ""}" data-bkey="${esc(bldKey(r))}">` +
+    `<td class="n">${when(r.started)}</td><td class="${relClass(r.level)}">${esc(r.state)}</td><td>${esc(r.repo)}</td>` +
+    `<td class="wrap">${esc(r.workflow)}</td><td class="wrap muted">${esc(r.branch)}</td><td class="n">${wait}</td>` +
+    `<td class="muted">${esc(r.owner || "-")}</td></tr>`;
+  return open ? row + buildDetail(r) : row;
+}
+
+function buildDetail(r) {
+  const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${v}</div>` : "");
+  const prs = (r.prs || []).map((n) => `#${n}`).join(" ");
+  const log = bld.log && bld.log.key === bldKey(r) ? `<pre class="joblog">${esc(bld.log.text)}</pre>` : "";
+  const link = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Open run</a>` : "";
+  return `<tr class="wdet"><td colspan="7"><div class="sdet"><div class="muted">${esc(r.title || r.workflow)}</div>` +
+    line("Run", `${esc(r.forge)} ${esc(r.repo)} #${r.id}${r.attempt > 1 ? " attempt " + r.attempt : ""} ${link}`) +
+    line("Event", esc(r.event)) + line("Branch", esc(r.branch)) + line("Owner", esc(r.owner || "")) + line("PRs", esc(prs)) + log + `</div></td></tr>`;
+}
+
+function buildsBody(d) {
+  const t = d.table, rows = d.rows || [];
+  if (!rows.length) return `<div class="panel">${t && t.total ? "No runs match." : "No runs in the ledger."}</div>`;
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, BLD_COLS)}${rows.map(buildRow).join("")}</table>` +
+    (d.more > 0 ? `<div class="muted">${d.more} older not shown; narrow the search to list them.</div>` : "") + `</div>`;
+}
+
+function buildsHead(d) {
+  const stale = d.at && Date.now() / 1e3 - d.at > d.stale_after;
+  let html = `<h2 class="sec" id="sec-builds">Builds <span class="muted">${esc(d.summary || "")}</span>` +
+    (stale ? ` <span class="warn">ledger older than ${dur(d.stale_after / 60)}</span>` : "") + `</h2>`;
+  if (bld.err) html += `<div class="panel down">${esc(bld.err)}</div>`;
+  if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  return html;
+}
+
+// The channels' tail: the Builds block, once it has been read.
+function releaseBuilds() {
+  if (!bld.data || !bld.data.table) return bld.err ? `<div class="panel down">${esc(bld.err)}</div>` : "";
+  return `<div data-tbl="${BUILDS_PRE}"><div id="bld-head">${buildsHead(bld.data)}</div>${tblBar("bld", bld.data.table, BUILDS_HINT)}` +
+    `<div id="bld-body">${buildsBody(bld.data)}</div></div>`;
+}
+
+// A run's failed-job log, read when its row opens and never before.
+async function openBuild(key, r) {
+  bld.sel = key;
+  bld.log = { key, text: "Loading..." };
+  relst.render();
+  const q = new URLSearchParams({ forge: r.forge, repo: r.repo, id: r.id, attempt: r.attempt });
+  try { bld.log.text = (await api("/api/builds/log?" + q)) || "(empty)"; } catch (e) { bld.log.text = e.message; }
+  if (st.tab === "releases" && bld.sel === key) relst.render();
+}
+
+$("releases").addEventListener("click", (e) => {
+  const t = e.target;
+  if (t.closest("a") || t.closest(".wdet") || t.closest("button")) return;
+  const tr = t.closest("tr.br");
+  if (!tr) return;
+  const key = tr.dataset.bkey;
+  if (bld.sel === key) { bld.sel = null; bld.log = null; relst.render(); return; }
+  const r = (bld.data.rows || []).find((x) => bldKey(x) === key);
+  if (r) openBuild(key, r);
+});
 
 $("releases").addEventListener("click", (e) => {
   const t = e.target;
@@ -74,9 +151,10 @@ $("releases").addEventListener("click", (e) => {
 });
 
 const relFeed = pushed("releases", ["releases"], relst.refresh);
+const bldFeed = pushed("releases", ["builds"], bld.refresh);
 const ageReleases = poll("releases", () => relst.render(), RELEASES_AGE_MS);
 TABS.releases = {
   // Always read: a link from a Projects card arrives here with a new view in the URL.
-  show() { relFeed.show(true); ageReleases(); },
-  onEvent: relFeed.onEvent,
+  show() { relFeed.show(true); bldFeed.show(true); ageReleases(); },
+  onEvent(ev) { relFeed.onEvent(ev); bldFeed.onEvent(ev); },
 };

@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths, Source};
+use hub_core::releases::Level;
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 
@@ -37,7 +38,15 @@ struct Shown<'a> {
     window_secs: i64,
     jobs: Vec<&'a Job>,
     errors: &'a [String],
+    /// The CI runs as one line that links to the Releases tab's Builds section, which owns them.
+    ci: Option<CiLine>,
     table: Summary,
+}
+
+#[derive(Serialize)]
+struct CiLine {
+    says: String,
+    level: Level,
 }
 
 #[derive(Default)]
@@ -66,6 +75,10 @@ fn render(js: &Jobs, q: &JobsQuery) -> String {
         window_secs: js.window_secs,
         jobs: rows,
         errors: &js.errors,
+        ci: js.ci.as_ref().map(|c| CiLine {
+            says: c.says(),
+            level: c.level(),
+        }),
         table,
     };
     serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
@@ -104,7 +117,7 @@ mod tests {
 
     #[test]
     fn the_body_is_the_rows_the_view_keeps_with_its_controls() {
-        let mut a = Job::new(Source::Ci, "playground / Tests", State::Done);
+        let mut a = Job::new(Source::Unity, "playground / Tests", State::Done);
         a.ok = Some(false);
         a.started = Some(100);
         let mut b = Job::new(Source::Agentctl, "dream", State::Done);
@@ -112,11 +125,16 @@ mod tests {
         let js = Jobs {
             at: 300,
             window_secs: 86400,
-            jobs: vec![a, b, Job::new(Source::Ci, "platform / e2e", State::Running)],
+            jobs: vec![
+                a,
+                b,
+                Job::new(Source::Unity, "platform / e2e", State::Running),
+            ],
             errors: vec![],
+            ci: None,
         };
         let q = JobsQuery {
-            q: "source:ci".into(),
+            q: "source:unity".into(),
             sort: "started".into(),
             dir: "asc".into(),
             ..Default::default()
@@ -137,6 +155,33 @@ mod tests {
         assert_eq!(v["table"]["dir"], "asc");
         assert_eq!(v["table"]["states"][4]["name"], "failed");
         assert_eq!(v["table"]["states"][4]["n"], 1);
-        assert_eq!(v["table"]["facets"][0]["on"], "ci");
+        assert_eq!(v["table"]["facets"][0]["on"], "unity");
+    }
+
+    #[test]
+    fn the_ci_runs_are_one_line_and_never_rows() {
+        let js = Jobs {
+            ci: Some(hub_core::builds::Counts {
+                total: 9,
+                running: 1,
+                queued: 0,
+                red: 2,
+            }),
+            ..Default::default()
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&js, &JobsQuery::default())).unwrap();
+        assert_eq!(
+            v["ci"]["says"],
+            "9 runs in 30 days: 1 running, 0 queued, 2 red"
+        );
+        assert_eq!(v["ci"]["level"], "bad");
+        assert!(v["jobs"].as_array().unwrap().is_empty());
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&Jobs::default(), &JobsQuery::default())).unwrap();
+        assert!(
+            v["ci"].is_null(),
+            "a list with no ledger read draws no line"
+        );
     }
 }

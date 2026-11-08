@@ -14,6 +14,7 @@ mod assets;
 mod auth;
 mod board;
 mod briefing;
+mod builds;
 mod cache;
 mod cli;
 mod cloud;
@@ -148,6 +149,8 @@ async fn main() -> Result<()> {
         .route("/api/jobs/log", get(job_log))
         .route("/api/schedules", get(schedules_list))
         .route("/api/releases", get(releases_list))
+        .route("/api/builds", get(builds_list))
+        .route("/api/builds/log", get(build_log))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
@@ -302,6 +305,11 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let snapshots = boards::releases_dir();
     std::fs::create_dir_all(&snapshots)?;
     targets.push((snapshots, flat));
+    // schedules-sync's run ledger and its sync record: the Releases tab's Builds section.
+    if let Some(dir) = hub_core::builds::Paths::from_env().ledger.parent() {
+        std::fs::create_dir_all(dir)?;
+        targets.push((dir.to_path_buf(), flat));
+    }
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
         boards::fleet_state().parent().map(Path::to_path_buf),
@@ -386,6 +394,9 @@ fn classify(p: &Path) -> Option<String> {
     }
     if boards::is_release_snapshot(&boards::releases_dir(), p) {
         return Some(r#"{"kind":"releases"}"#.to_string());
+    }
+    if hub_core::builds::Paths::from_env().is_ledger_file(p) {
+        return Some(r#"{"kind":"builds"}"#.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -1203,6 +1214,22 @@ async fn releases_list(Query(q): Query<schedules::Query>) -> Response {
         .into_response()
 }
 
+async fn builds_list(Query(q): Query<builds::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        builds::get(q).await,
+    )
+        .into_response()
+}
+
+/// The run is named by its ledger key, never by a URL or a path.
+async fn build_log(Query(key): Query<hub_core::builds::RunKey>) -> ApiResult<Response> {
+    let text = builds::log(key)
+        .await
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
+    Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
+}
+
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
@@ -1470,6 +1497,14 @@ mod tests {
             Some(r#"{"kind":"releases"}"#)
         );
         assert_eq!(classify(&boards::releases_dir().join(".state.123")), None);
+        // schedules-sync's ledger and sync record are the Builds section's; its other files are not.
+        let ci = hub_core::builds::Paths::from_env();
+        assert_eq!(
+            classify(&ci.ledger).as_deref(),
+            Some(r#"{"kind":"builds"}"#)
+        );
+        assert_eq!(classify(&ci.sync).as_deref(), Some(r#"{"kind":"builds"}"#));
+        assert_eq!(classify(&ci.sync.with_file_name("other.json")), None);
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),
             None

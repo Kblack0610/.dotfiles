@@ -1,6 +1,6 @@
 "use strict";
 // Infra's Jobs section (agent-web's Jobs tab until phase 4): every job that runs on its own (agentctl runners, user timers, Unity gates,
-// CI, k8s CronJobs), from /api/jobs, and one run's log from /api/jobs/log. The table is the
+// k8s CronJobs; CI runs are one count line linking to the Releases tab's Builds section), from /api/jobs, and one run's log from /api/jobs/log. The table is the
 // shared one (table.js): the server filters and sorts by the view in Infra's URL query.
 
 // Most sources are files and journald, which push nothing to a browser, so the open tab
@@ -10,7 +10,7 @@ const JOBS_REFRESH_MS = 60e3;
 const JOBS_OPEN = 200;
 // `hist` is the one job whose every run is listed instead of the folded list.
 const jst = tblTab({
-  tab: "infra", id: "jobs", api: "/api/jobs", hint: "search, or source:ci result:fail -name:dream",
+  tab: "infra", id: "jobs", api: "/api/jobs", hint: "search, or source:unity result:fail -name:dream",
   state: { hist: null, log: null, all: false },
   params: (p) => { if (jst.hist) p.set("name", jst.hist); },
   head: (t) => jobsHead(t.data), body: (t) => jobsBody(t.data), tail: () => jobsTail(),
@@ -54,6 +54,7 @@ function jobsHead(d) {
   const hours = Math.round((d.window_secs || 86400) / 3600);
   let html = `<h2 class="sec" id="sec-jobs">Jobs ${jst.hist ? `<span>every run of <b>${esc(jst.hist)}</b> <a href="#" data-hist="">back to all</a></span>` : ""}` +
     ` <span class="muted">${d.table.shown} of ${d.table.total} in ${hours}h, read ${d.at ? clock(d.at * 1e3) : "-"}</span></h2>`;
+  if (d.ci) html += `<div class="cline">CI: <a class="${d.ci.level === "ok" ? "" : d.ci.level}" href="#releases">${esc(d.ci.says)}</a></div>`;
   if (jst.err) html += `<div class="panel down">${esc(jst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;

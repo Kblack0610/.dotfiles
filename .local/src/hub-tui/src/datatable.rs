@@ -221,7 +221,7 @@ mod tests {
     use hub_core::jobs::{Job, Source, State};
 
     fn jobs() -> Vec<Job> {
-        let mut a = Job::new(Source::Ci, "gate", State::Done);
+        let mut a = Job::new(Source::Unity, "gate", State::Done);
         a.ok = Some(false);
         vec![a, Job::new(Source::Agentctl, "dream", State::Running)]
     }
@@ -233,16 +233,16 @@ mod tests {
     #[test]
     fn the_keys_drive_the_one_view() {
         let mut t = DataTable::default();
-        for c in "/source:ci".chars() {
+        for c in "/source:unity".chars() {
             assert_eq!(t.key::<Job>(KeyCode::Char(c)), Took::Typing);
         }
         assert!(t.view.q.is_empty(), "typing applies on Enter");
         assert_eq!(
             status(&t),
-            "all 2  running 1  queued 0  done 1  failed 1 | /source:ci_"
+            "all 2  running 1  queued 0  done 1  failed 1 | /source:unity_"
         );
         assert_eq!(t.key::<Job>(KeyCode::Enter), Took::View);
-        assert_eq!(t.view.q, "source:ci");
+        assert_eq!(t.view.q, "source:unity");
         assert_eq!(t.view.apply(&jobs()).len(), 1);
         t.key::<Job>(KeyCode::Char('f'));
         assert_eq!(t.view.state, "running");
@@ -250,7 +250,7 @@ mod tests {
         t.key::<Job>(KeyCode::Char('S'));
         assert_eq!((t.view.sort.as_str(), t.view.dir), ("state", Dir::Asc));
         assert_eq!(t.mark::<Job>(), Some((0, " ^")));
-        assert!(status(&t).ends_with("| /source:ci | sort state ^"));
+        assert!(status(&t).ends_with("| /source:unity | sort state ^"));
         assert_eq!(t.key::<Job>(KeyCode::Char('j')), Took::No);
         assert!(DataTable::owns(KeyCode::Char('S')) && !DataTable::owns(KeyCode::Char('j')));
         t.key::<Job>(KeyCode::Char('x'));
