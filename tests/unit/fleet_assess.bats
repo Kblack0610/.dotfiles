@@ -602,15 +602,20 @@ rows_with() {
 
 # --- gate_line: the gate's throughput on one line, from the slots and the run ledger -----
 # gate_ledger: a worktree "wt-a" on branch feat/a (unmerged) with 5 runs in the last 2h, "wt-b"
-# on branch feat/b (merged into origin/main) with 5, "wt-c" with 4, a 3h-old pass, and a killed run.
+# on branch feat/b (squash-merged into origin/main) with 5, "wt-c" with 4, a 3h-old pass, and a killed run.
 gate_ledger() {
   local now i; now="$(date +%s)"
   WORKTREE_ROOT="$BATS_TEST_TMPDIR/worktrees"
   local up="$BATS_TEST_TMPDIR/up"
   git init -q -b main "$up"; git -C "$up" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
   git clone -q "$up" "$WORKTREE_ROOT/wt-a"; git -C "$WORKTREE_ROOT/wt-a" checkout -q -b feat/a
-  git -C "$WORKTREE_ROOT/wt-a" -c user.name=t -c user.email=t@t commit -q --allow-empty -m wip
+  echo wip > "$WORKTREE_ROOT/wt-a/g"; git -C "$WORKTREE_ROOT/wt-a" add g
+  git -C "$WORKTREE_ROOT/wt-a" -c user.name=t -c user.email=t@t commit -q -m wip
   git clone -q "$up" "$WORKTREE_ROOT/wt-b"; git -C "$WORKTREE_ROOT/wt-b" checkout -q -b feat/b
+  echo work > "$WORKTREE_ROOT/wt-b/f"; git -C "$WORKTREE_ROOT/wt-b" add f
+  git -C "$WORKTREE_ROOT/wt-b" -c user.name=t -c user.email=t@t commit -q -m "wip b"
+  echo work > "$up/f"; git -C "$up" add f; git -C "$up" -c user.name=t -c user.email=t@t commit -q -m "squash b (#1)"
+  git -C "$WORKTREE_ROOT/wt-b" fetch -q origin
   RUN_LEDGER="$BATS_TEST_TMPDIR/runs.tsv"; : > "$RUN_LEDGER"
   for i in 1 2 3 4 5; do
     printf '%s\t%s\t%s\tPlayMode\twt-a\tfeat/a\tr\n' $((now - 100 * i)) $((now - 100 * i - 60)) fail >> "$RUN_LEDGER"
@@ -645,9 +650,32 @@ gate_ledger() {
   assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 0 fail, 0 pass"
 }
 
-@test "gate_line: no capacity file prints no gate line, and --gate says so by printing nothing" {
+@test "gate_line: a branch the worktree no longer has is not named, a conflicting one is" {
   slot_fixture
-  rm "$SLOT_DIR/capacity"
+  editor_parents
+  gate_rows() { :; }
+  gate_ledger
+  git -C "$WORKTREE_ROOT/wt-a" checkout -q -b other
+  git -C "$WORKTREE_ROOT/wt-a" branch -q -D feat/a
   run gate_line
+  refute_output --partial 'not merged'
+  git -C "$WORKTREE_ROOT/wt-a" checkout -q -b feat/a
+  echo mine > "$WORKTREE_ROOT/wt-a/f"; git -C "$WORKTREE_ROOT/wt-a" add f
+  git -C "$WORKTREE_ROOT/wt-a" -c user.name=t -c user.email=t@t commit -q -m clash
+  git -C "$WORKTREE_ROOT/wt-a" fetch -q origin
+  git -C "$WORKTREE_ROOT/wt-a" update-ref refs/remotes/origin/main FETCH_HEAD
+  run gate_line
+  assert_output --partial 'not merged: feat/a x5'
+}
+
+@test "gate_line: no capacity file prints no gate line, and --gate runs it from main" {
+  slot_fixture
+  editor_parents
+  gate_rows() { :; }
+  gate_ledger
+  run main --gate
+  assert_output --partial "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
+  rm "$SLOT_DIR/capacity"
+  run main --gate
   assert_output ""
 }
