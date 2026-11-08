@@ -110,6 +110,68 @@ doctor"
   assert_equal "$(entry delta)" '{"type":"infra"}'
 }
 
+@test "an add splices the entry in: compact rows survive, nothing else reflows" {
+  cp "$REAL_MAP" "$SANDBOX/before.json"
+  run "$PM" add solo --type infra --repo-dir "$SANDBOX/repos/solo"
+  assert_success
+  [ -L "$MAP" ]
+  run diff "$SANDBOX/before.json" "$REAL_MAP"
+  assert_output "2c2
+<   \"paths\": { \"$REPO\": \"mono\", \"/elsewhere/tools\": \"tools\" },
+---
+>   \"paths\": { \"$REPO\": \"mono\", \"/elsewhere/tools\": \"tools\", \"$SANDBOX/repos/solo\": \"solo\" },
+7c7,10
+<     \"taken\": { \"repo\": \"mono\", \"lab\": \"alpha\", \"type\": \"app\" }
+---
+>     \"taken\": { \"repo\": \"mono\", \"lab\": \"alpha\", \"type\": \"app\" },
+>     \"solo\": {
+>       \"type\": \"infra\"
+>     }"
+}
+
+@test "a registry with no trackers object gains one, in the file's indent" {
+  printf '{\n  "paths": {}\n}\n' > "$REAL_MAP"
+  run "$PM" add epsilon --type app
+  assert_success
+  assert_equal "$(cat "$REAL_MAP")" '{
+  "paths": {},
+  "trackers": {
+    "epsilon": {
+      "type": "app"
+    }
+  }
+}'
+}
+
+@test "empty paths and trackers objects open up in the file's indent" {
+  printf '{\n  "paths": {},\n  "trackers": {   }\n}\n' > "$REAL_MAP"
+  run "$PM" add solo --type app --repo-dir "$SANDBOX/repos/solo"
+  assert_success
+  assert_equal "$(cat "$REAL_MAP")" "{
+  \"paths\": {
+    \"$SANDBOX/repos/solo\": \"solo\"
+  },
+  \"trackers\": {
+    \"solo\": {
+      \"type\": \"app\"
+    }
+  }
+}"
+}
+
+@test "CRLF line endings survive an add" {
+  printf '{\r\n  "trackers": {\r\n    "m": { "x": 1 }\r\n  }\r\n}\r\n' > "$REAL_MAP"
+  run "$PM" add epsilon --type app
+  assert_success
+  assert_equal "$(grep -c $'\r$' "$REAL_MAP")" "$(wc -l < "$REAL_MAP")"
+  assert_equal "$(wc -l < "$REAL_MAP")" 8
+}
+
+@test "a layout the splice cannot read leaves the registry unchanged" {
+  printf '{"paths": null, "trackers": {}}\n' > "$REAL_MAP"
+  refused solo --type app --repo-dir "$SANDBOX/repos/solo"
+}
+
 @test "refused: a name already in trackers" { refused taken --type app; }
 @test "refused: a repo key that already has a tracker entry" { refused mono --type app; }
 @test "refused: an alias" { refused monorepo --type app; }
