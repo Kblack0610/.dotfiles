@@ -103,8 +103,21 @@ run_post() {
 }
 
 
-# --- no-changes early-exit (still run the post phase: the register and wind-down run on every Stop) ---
-if git rev-parse --git-dir >/dev/null 2>&1 \
+# SessionStart owns the baseline. A session without one cannot attribute old dirt.
+# Export the same path list to content checks so their selectors cannot widen it again.
+if [ -n "$SID" ]; then
+  export STOP_CHANGED_FILES
+  if ! STOP_CHANGED_FILES=$(python3 "$HOME/.config/shared-hooks/stop-session-changes.py" changed "$PWD" "$SID" 2>/dev/null); then
+    write_result "SKIPPED" "session baseline unavailable"
+    run_post "$POST_DIR"
+    exit $?
+  fi
+  if [ -z "$STOP_CHANGED_FILES" ]; then
+    write_result "SKIPPED" "no session changes"
+    run_post "$POST_DIR"
+    exit $?
+  fi
+elif git rev-parse --git-dir >/dev/null 2>&1 \
    && git diff --quiet HEAD 2>/dev/null \
    && git diff --cached --quiet 2>/dev/null; then
   write_result "SKIPPED" "no local changes"
@@ -124,6 +137,7 @@ dirty_fingerprint() {
   head=$(git rev-parse HEAD 2>/dev/null) || return 0
   {
     echo "$head"
+    printf '%s\n' "${STOP_CHANGED_FILES:-}"
     git diff HEAD --name-status 2>/dev/null
     { git diff HEAD --name-only -z; git ls-files --others --exclude-standard -z; } 2>/dev/null \
       | xargs -0 -r stat -c '%n %s %y' 2>/dev/null
@@ -135,7 +149,7 @@ FP=""
 FP_FILE=""
 if git rev-parse --git-dir >/dev/null 2>&1; then
   FP=$(dirty_fingerprint)
-  FP_FILE="$CACHE_DIR/pass-fp-$(git rev-parse --show-toplevel 2>/dev/null | sha256sum 2>/dev/null | cut -c1-16).txt"
+  FP_FILE="$CACHE_DIR/pass-fp-${SID:-legacy}-$(git rev-parse --show-toplevel 2>/dev/null | sha256sum 2>/dev/null | cut -c1-16).txt"
   find "$CACHE_DIR" -maxdepth 1 -name 'pass-fp-*.txt' -mtime +7 -delete 2>/dev/null || true
   if [ -n "$FP" ] && [ "$(cat "$FP_FILE" 2>/dev/null)" = "$FP" ]; then
     note "worktree: dirty but unchanged since the last passing run"
@@ -176,6 +190,7 @@ fi
 
 CONTENT_BLOCKED=0
 WARNED=0
+TIMED_OUT=0
 declare -a notes=()
 
 # replay <name> <sink>
@@ -215,9 +230,17 @@ else
         notes+=("$name=warn")
         ;;
       124)
-        CONTENT_BLOCKED=1
-        emit "[FAIL] $name (timed out after ${CHECK_TIMEOUT}s; result unknown)"
-        replay "$name" emit
+        TIMED_OUT=1
+        # A timeout is incomplete, not a failure. Preserve failures already printed
+        # by test runners before they were killed (including TAP's "not ok").
+        if grep -qE '^(not ok [0-9]+|FAIL(ED)?([ :]|$)|error:)' "$OUT_DIR/$name.out" "$OUT_DIR/$name.err"; then
+          CONTENT_BLOCKED=1
+          emit "[FAIL] $name (failures before timeout after ${CHECK_TIMEOUT}s)"
+          replay "$name" emit
+        else
+          note "[WARN] $name (timed out after ${CHECK_TIMEOUT}s; result unknown)"
+          replay "$name" note
+        fi
         notes+=("$name=timeout")
         ;;
       *)
@@ -234,6 +257,8 @@ else
   if [ $CONTENT_BLOCKED -eq 1 ]; then
     note "=== Stop-hook checks FAILED ==="
     write_result "FAIL" "$(IFS=,; echo "${notes[*]}")"
+  elif [ $TIMED_OUT -eq 1 ]; then
+    write_result "SKIPPED" "$(IFS=,; echo "${notes[*]}")"
   elif [ $WARNED -eq 1 ]; then
     write_result "PASS" "advisory: $(IFS=,; echo "${notes[*]}")"
     note "=== All stop-hook checks passed (with warnings) ==="
@@ -242,7 +267,7 @@ else
     note "=== All stop-hook checks passed ==="
   fi
   # Only a pass is remembered, so a FAIL or timeout always runs again next Stop.
-  if [ $CONTENT_BLOCKED -eq 0 ] && [ -n "$FP" ]; then
+  if [ $CONTENT_BLOCKED -eq 0 ] && [ $TIMED_OUT -eq 0 ] && [ -n "$FP" ]; then
     printf '%s\n' "$FP" > "$FP_FILE" 2>/dev/null || true
   fi
 fi

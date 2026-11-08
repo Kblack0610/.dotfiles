@@ -1368,6 +1368,82 @@ research_item() {
   [ "$(jq -c '[.dirty, .blockers]' <<<"$output")" = '[1,["1 dirty file(s) (look-and-feel.conf)"]]' ]
 }
 
+@test "end to end: edits in other worktrees block a clean cwd from reading LANDED or finished" {
+  landed_fixture
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && echo "[]"\nexit 0\n' > "$SANDBOX/bin/gh"
+  mkdir -p "$HOME/.worktrees"
+  local other="$HOME/.worktrees/other work" unrelated="$HOME/.worktrees/unrelated"
+  git -C "$SANDBOX/wt" worktree add -q -b other "$other" origin/main
+  git -C "$SANDBOX/wt" worktree add -q -b unrelated "$unrelated" origin/main
+  echo unfinished > "$other/new.txt"
+  echo someone-else > "$unrelated/theirs.txt"
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md" "[\"$other/new.txt\"]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  assert_output --partial 'new.txt'
+  assert_output --partial 'other work'
+  refute_output --partial 'clean, nothing on the branch'
+
+  # Committing the edit still leaves work to land, even with all plan phases ticked.
+  git -C "$other" add new.txt
+  git -C "$other" -c user.email=t@t -c user.name=t commit -qm unfinished
+  phases_plan '- [x] Phase 1: done'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  assert_output --partial 'not on the default branch'
+
+  # Once the content lands, the unrelated sibling's dirt must not hold this session.
+  git -C "$SANDBOX/wt" update-ref refs/remotes/origin/main "$(git -C "$other" rev-parse HEAD)"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+}
+
+@test "a merged edited worktree suspected of turning main red blocks completion" {
+  git init -q "$SANDBOX/other"
+  git_facts() { echo '1 0 0 9 MERGED PASS 1 branch 0 no - - -'; }
+  main_health() { printf 'RED\tTests (#9)\tdeadbeef\t9\n'; }
+  run edited_work_blockers "$SANDBOX" "$SANDBOX/other/file"
+  assert_success
+  assert_output --partial 'STALLED unlanded work in'
+  assert_output --partial 'nightly red after PR #9'
+}
+
+@test "edited work waiting for CI stays WORKING, but a stalled sibling takes priority" {
+  local a="$SANDBOX/a" b="$SANDBOX/b"
+  git init -q "$a"; git init -q "$b"
+  git_facts() {
+    if [ "$1" = "$SANDBOX/a" ]; then echo '1 0 1 9 OPEN PENDING 1 branch 0 no - - -'
+    else echo '1 1 0 - - - 1 branch 0 no - - changed.txt'; fi
+  }
+  run edited_work_blockers "$SANDBOX" "$a/file"
+  assert_success
+  assert_output "WORKING unlanded work in $a: PR #9 open, CI PENDING"
+  run edited_work_blockers "$SANDBOX" "$(printf '%s\n' "$a/file" "$b/file")"
+  assert_success
+  assert_output --partial 'STALLED unlanded work in'
+}
+
+@test "edited work blockers inspect every edited repository once and skip the cwd and missing trees" {
+  local a="$SANDBOX/a" b="$SANDBOX/b" cwd="$SANDBOX/cwd"
+  git init -q "$a"; git init -q "$b"; git init -q "$cwd"
+  mkdir -p "$a/sub"
+  git_facts() {
+    printf '%s\n' "$1" >> "$SANDBOX/visited"
+    echo '1 1 0 - - - 1 branch 0 no - - changed.txt'
+  }
+  run edited_work_blockers "$cwd" "$(printf '%s\n' "$a/sub/one" "$a/sub/two" "$b/deleted/sub/file" "$cwd/ours" "$SANDBOX/gone/file")"
+  assert_success
+  assert_output --partial "$a: 1 dirty file(s) (changed.txt), no PR"
+  assert_output --partial "$b: 1 dirty file(s) (changed.txt), no PR"
+  [ "$(wc -l < "$SANDBOX/visited")" = 2 ]
+}
+
 @test "end to end: a busy session checking its own row reads finished while its bucket is WORKING" {
   landed_fixture
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [x] Phase 2: rollout (#876)'
