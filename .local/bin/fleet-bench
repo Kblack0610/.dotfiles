@@ -4086,7 +4086,8 @@ canary_lanes() {
 }
 
 # canary_shepherd [--days N] [--json] -> one row per model the shepherd's passes ran on over the
-# last N days (default 7), from the lane columns fleet-shepherd appends to passes.tsv: passes,
+# last N days (default 7), from the lane columns fleet-shepherd's lane_cols appends to passes.tsv
+# (model, nudges, survived, missed, wrong parks, parks; read by position here): passes,
 # NOOP share, the nudges they made and the share that moved their session (no escalation due by
 # the next run), lines left unhandled per pass, and parks made on a clear machine of all parks.
 # Rows from before the lane columns are left out. Promote the canary model only on equal scores.
@@ -4102,9 +4103,9 @@ canary_shepherd() {
   [ -r "$SHEPHERD_PASSES" ] || { say "canary shepherd: no $SHEPHERD_PASSES"; return 1; }
   since="$(date -u -d "@$(( $(now) - days * 86400 ))" '+%F %H:%M')"
   jq -Rnc --arg since "$since" "$JQ_LIB"'
-    [inputs | split("\t") | select(length >= 9 and .[0] >= $since and .[4] != "")
+    [inputs | split("\t") | select(length >= 10 and .[0] >= $since and .[4] != "")
      | {verdict: .[2], model: .[4], nudges: (.[5] | tonumber), survived: (.[6] | tonumber),
-        missed: (.[7] | tonumber), wrong: (.[8] | split("/")[0] | tonumber), parks: (.[8] | split("/")[1] | tonumber)}]
+        missed: (.[7] | tonumber), wrong: (.[8] | tonumber), parks: (.[9] | tonumber)}]
     | group_by(.model) | map(
         (map(.nudges) | add) as $n | (map(.parks) | add) as $p
         | {model: .[0].model, passes: length, noop_share: ratio(map(select(.verdict == "NOOP")) | length; length),

@@ -76,9 +76,8 @@
 # last in the same pane (respawn-pane). On 2026-11-05 a replaced pass kept a window of its own and
 # read as a second shepherd, so one run at a time holds a lock, and each closes every other pane a
 # pass ran in on the pass server and renames any other window called shepherd.
-# A pass's fresh start is most of its cost (68K cache-write tokens, $0.54 of a $0.89 median, 2026-11-07),
-# so a run with nothing due starts none (40 of 275 passes were NOOP) and a non-urgent line waits for
-# the debounce. Lines a run held back are not handed to the last pass, so they are never its miss.
+# A pass's fresh start is most of its cost, so a run with nothing due starts none and a non-urgent
+# line waits for the debounce (FLEET_SHEPHERD_DEBOUNCE_MIN, below, has the numbers).
 # Talking holds a run only while the pass is answering or young: on 2026-11-04 the human talked
 # to a pass for 70 minutes and no sweep ran. What they said goes to the next pass as a handover.
 # Lease, orders and routing: the fleet-lead skill, "Verb: pass".
@@ -100,7 +99,7 @@ PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while 
 UNHANDLED="$LEDGER/.unhandled"  # how many checks in a row found an unhandled line
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pass running now
 NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
-PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>\t<lane_cols>: every pass, once scored
+PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>\t<lane_cols>: every pass, once scored; fleet-bench canary shepherd reads the lane columns by position
 # The pass is window shepherd of session hub, on the hub server. The runner owns that window, not
 # hub.conf: a declared window would get a shell or a second pass from tmx ensure. A run makes it
 # once and after that only respawns its pane, so it creates and kills no windows in hub; the
@@ -116,8 +115,8 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once
 # A run starts a pass only when something is due, and then only this long after the last pass
-# started, unless a due line is urgent. Measured 2026-11-07: 246 passes in 4.5 days at a median
-# $0.89, 40 of 275 given nothing, and each fresh start writes about 68K tokens of cache.
+# started, unless a due line is urgent. Measured 2026-11-07: a median pass cost $0.89, $0.54 of it
+# the fresh start's 68K cache-write tokens, and 40 of 275 scored passes were given nothing.
 : "${FLEET_SHEPHERD_DEBOUNCE_MIN:=30}"
 # Urgent lines start a pass on the next run: a red (nightly, shared, infra, a tripped watch), a
 # STALLED row (past fleet-sessions' stall threshold already), a usage-limit stop, and a line the
@@ -756,8 +755,8 @@ receipts() {
     given+="$key"$'\n'
     seen="$(awk -F'\t' -v k="$key" '$1 == k { print $3; exit }' "$DUE_LAST")"
     owe=""
-    [ -n "$early" ] || ! grep -qxF -- "$key" "$HANDED" || owe=1
-    if [ -n "$owe" ]; then
+    if [ -z "$early" ] && grep -qxF -- "$key" "$HANDED"; then
+      owe=1
       seen="${seen:-$now}"
       owed+="unhandled: $line"$'\n'
       if [ $(( (now - seen) / 60 )) -ge "$FLEET_SHEPHERD_UNHANDLED_MIN" ] && ! grep -qxF -- "$key" "$PAGED"; then
@@ -985,7 +984,7 @@ score_pass() {
   printf '%s\t%s\n' "$verdict" "$detail"
 }
 
-# lane_cols <id> <start> [transcript] -> "<model>\t<nudges>\t<survived>\t<missed>\t<wrong>/<parks>", the
+# lane_cols <id> <start> [transcript] -> "<model>\t<nudges>\t<survived>\t<missed>\t<wrong>\t<parks>", the
 # pass's canary score for passes.tsv, from the lines the machine computed and never from the pass's
 # own words, so both models are scored alike. It reads SCORE_HANDED (what the pass was handed) and
 # SCORE_DUE (this run's check), which cmd_run sets. nudges: the session nudge lines it was handed
@@ -993,7 +992,7 @@ score_pass() {
 # nudge, no progress); missed: the lines it left unhandled; wrong parks: the parks it made (park
 # files written while it ran) that this check's pace line calls parked on a clear machine.
 lane_cols() {
-  local id="$1" start="$2" model end k t nudges=0 survived=0 missed parks=0 wrong=0 now_keys p
+  local id="$1" start="$2" model end k t nudges=0 survived=0 missed parks=0 wrong=0 now_keys p clear
   model="$(cat "$LEDGER/.lane-$id" 2>/dev/null)"
   rm -f "$LEDGER/.lane-$id"
   now_keys="$(while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done <<<"${SCORE_DUE:-}")"
@@ -1006,13 +1005,14 @@ lane_cols() {
   done <<<"${SCORE_HANDED:-}"
   missed="$(grep -c '^unhandled: ' <<<"${SCORE_DUE:-}")"
   end="$(stat -c %Y "${3:-/nonexistent}" 2>/dev/null || date +%s)"
+  clear="$(grep -E '^(unhandled: )?pace: parked ' <<<"${SCORE_DUE:-}")"
   for p in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
     [ -f "$p" ] || continue
     t="$(stat -c %Y "$p")"; [ "$t" -ge "$start" ] && [ "$t" -le "$end" ] || continue
     parks=$((parks + 1))
-    grep -E '^(unhandled: )?pace: parked ' <<<"${SCORE_DUE:-}" | grep -qF -- "$(basename "$p")" && wrong=$((wrong + 1))
+    [ -z "$clear" ] || ! grep -qF -- "${p##*/}" <<<"$clear" || wrong=$((wrong + 1))
   done
-  printf '%s\t%s\t%s\t%s\t%s/%s' "${model:--}" "$nudges" "$survived" "${missed:-0}" "$wrong" "$parks"
+  printf '%s\t%s\t%s\t%s\t%s\t%s' "${model:--}" "$nudges" "$survived" "${missed:-0}" "$wrong" "$parks"
 }
 
 # pass_skill -> the skill a pass runs: the one this runner's conf names, so a rename is one edit there.
@@ -1109,7 +1109,7 @@ lean_flags() {
     else echo "$NAME: PASS_TOOLS is not a comma list of tool names: $PASS_TOOLS; the pass gets every tool" >&2; fi
   fi
   keep="$(awk -F'\t' '!/^#/ && NF >= 2 { print $2 }' "$FUNCTIONS")"
-  f="$({ for f in "$HOME/.claude/skills"/*/SKILL.md; do [ -e "$f" ] && basename "$(dirname "$f")"; done
+  f="$({ for f in "$HOME/.claude/skills"/*/SKILL.md; do [ ! -e "$f" ] || { f="${f%/SKILL.md}"; echo "${f##*/}"; }; done
         [ ! -d "$HOME/.claude/commands" ] || (cd "$HOME/.claude/commands" && find -L . -name '*.md' | sed 's|^\./||; s|\.md$||; s|/|:|g')
       } | grep -vxF -f <(printf '%s\n' "$keep") |
       jq -Rnc '[inputs | select(length > 0) | {(.): "name-only"}] | add // {} | if . == {} then empty else {skillOverrides: .} end')"

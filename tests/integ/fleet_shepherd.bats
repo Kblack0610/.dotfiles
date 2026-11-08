@@ -318,7 +318,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_equal "$(pass_id)" "$id"
   assert_equal "$(starts)" 1
   # b was held back, not handed: past the debounce it goes to the next pass plain, not as unhandled
-  awk -F'\t' -v OFS='\t' '{ $2 -= 31 * 60; print }' "$FLEET_SHEPHERD_DIR/.pass" > "$FLEET_SHEPHERD_DIR/.p" && mv "$FLEET_SHEPHERD_DIR/.p" "$FLEET_SHEPHERD_DIR/.pass"
+  aged 31
   run "$SH" run
   assert_output --partial 'started pass'
   run prompt
@@ -331,12 +331,18 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_output --partial 'unhandled: nudge LANDED: b f-b'
   assert_output --partial 'started pass'
   [ "$(pass_id)" != "$second" ]
-  # a STALLED row is urgent too, however young the last pass
+  # a STALLED row is urgent too, however young the last pass, and so is each red the producers write
   live "$(pass_id)" idle
   doc "[$(row c STALLED false false)]"
   run "$SH" run
   assert_output --partial 'started pass'
   assert_equal "$(starts)" 4
+  live "$(pass_id)" idle; idle_pass
+  doc "[$(row c STALLED true true)]" '[{"repo":"r1","reason":"ci red","escalated":false}]'
+  run "$SH" run
+  assert_output --partial 'nightly red: r1'
+  assert_output --partial 'started pass'
+  assert_equal "$(starts)" 5
 }
 
 @test "a settled fleet pages once, and work coming back re-arms the page" {
@@ -1590,7 +1596,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   doc "[$(row b LANDED false false)]"
   run "$SH" run  # a pass with no transcript is STALLED (exit 1); this test reads its lane, not its verdict
   assert_equal "$(model_of)" claude-opus-5-5
-  assert_equal "$(cut -f5- "$FLEET_SHEPHERD_DIR/passes.tsv")" "$(printf 'claude-opus-5-5\t1\t0\t1\t0/0')"
+  assert_equal "$(cut -f5- "$FLEET_SHEPHERD_DIR/passes.tsv")" "$(printf 'claude-opus-5-5\t1\t0\t1\t0\t0')"
   # the third pass is the canary's; a nudge whose session is due an escalation now did not move it
   doc "[$(row c STALLED false false)]"
   run "$SH" run
@@ -1599,7 +1605,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   run "$SH" run
   assert_output --partial 'escalate STALLED: c r-c'
   assert_equal "$(model_of)" claude-opus-5-5
-  assert_equal "$(sed -n 3p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0/0')"
+  assert_equal "$(sed -n 3p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0')"
   # Negative control: no CANARY_MODEL, no canary
   unset CANARY_MODEL
   doc "[$(row d DONE false false)]"
