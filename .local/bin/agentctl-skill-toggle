@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# agentctl-skill-toggle - the nightly skill-usage toggle: land the skillOverrides that keep
+# "name-only" on exactly the skills with no use in 30 days.
+#
+#   agentctl-skill-toggle [--dry-run]     agentctl: skill-toggle.conf; --dry-run prints the change, lands nothing
+#
+# No model runs. `skill-drift --overrides` diffs origin/main's .claude/settings.json against
+# six-signal use; a change lands as a queue item, a worktree, one commit, a PR and agent-land,
+# because the file is tracked and stowed and an in-place write would dirty the main checkout.
+# An earlier toggle PR still open stops the run, so one change waits for the human at a time.
+# Verdict: WORKED landed a change, NOOP none needed, BLOCKED an earlier PR is open, FAILED otherwise.
+set -uo pipefail
+# The user manager's PATH has no ~/.local/bin, where skill-drift, agent-queue and agent-land live.
+PATH="$HOME/.local/bin:$PATH"
+# shellcheck source=/dev/null
+. "$HOME/.local/lib/agent-proof.sh" || { echo "agentctl-skill-toggle: agent-proof.sh not found; cannot publish an outcome" >&2; exit 1; }
+NAME="${AGENTCTL_NAME:-skill-toggle}"
+REPO="${DOTFILES:-$HOME/.dotfiles}"
+BRANCH_PREFIX=chore/skill-toggle-
+DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
+# shellcheck source=../lib/origin-repo.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/origin-repo.sh"
+report() { [ "$DRY" = 1 ] || proof_outcome "$NAME" "$@"; }
+# A run that fails before its PR exists undoes what it made, since nothing else reaps a branch
+# with no PR or closes its item; once the PR exists, reap closes the item when it merges.
+queued='' made='' pushed='' n=''
+undo() {
+    [ -z "$n" ] || return 0
+    [ -z "$pushed" ] || git -C "$REPO" push -q origin --delete "$branch"
+    [ -z "$made" ] || { git -C "$REPO" worktree remove --force "$wt"; git -C "$REPO" branch -q -D "$branch"; }
+    [ -z "$queued" ] || agent-queue move "$slug" done --status failed >/dev/null
+}
+fail() { undo; report FAILED "$1"; echo "agentctl-skill-toggle: $1" >&2; exit 1; }
+# skill-drift by path beside this script, so a worktree run counts with the worktree's copy.
+DRIFT="$(dirname "$(readlink -f "$0")")/skill-drift"
+
+git -C "$REPO" fetch -q origin main || fail "git fetch origin main failed in $REPO"
+base=$(mktemp) || fail "mktemp failed"
+trap 'rm -f "$base"' EXIT
+git -C "$REPO" show origin/main:.claude/settings.json > "$base" || fail "origin/main has no .claude/settings.json"
+# The new file is written by jq, so one already in jq's format keeps the PR to skillOverrides.
+jq . "$base" | cmp -s - "$base" || fail "origin/main .claude/settings.json is not in jq's format; a rewrite would reformat all of it"
+plan=$(SKILL_SETTINGS="$base" "$DRIFT" --overrides --json) || fail "skill-drift --overrides failed"
+# A "|" separator, not a tab: whitespace IFS would collapse an empty hide list into restore's slot.
+IFS='|' read -r days nh nr hide restore < <(jq -r '[.days, (.hide | length), (.restore | length), (.hide | join(" ")), (.restore | join(" "))] | map(tostring) | join("|")' <<<"$plan")
+summary="hide $nh${hide:+ ($hide)}, restore $nr${restore:+ ($restore)}"
+
+if [ -z "$hide$restore" ]; then
+    report NOOP "no change over ${days}d"
+    echo "skill-toggle: no change over ${days}d"
+    exit 0
+fi
+title="chore(skills): name-only follows ${days}-day use, hide $nh, restore $nr"
+if [ "$DRY" = 1 ]; then
+    echo "skill-toggle: would land: $title: $summary"
+    exit 0
+fi
+
+open=$(cd "$REPO" && gh pr list --state open --limit 200 --json number,headRefName \
+    -q "[.[] | select(.headRefName | startswith(\"$BRANCH_PREFIX\")) | .number] | first // empty") ||
+    fail "gh pr list failed"
+if [ -n "$open" ]; then
+    report BLOCKED "toggle PR #$open from an earlier night is still open ($summary)"
+    echo "skill-toggle: toggle PR #$open is still open; land or close it first"
+    exit 0
+fi
+
+day=$(date +%F)
+slug="skill-toggle-$day"
+branch="$BRANCH_PREFIX$day"
+wt="$HOME/.worktrees/dotfiles-$slug"
+agent-queue add --running --project dotfiles --from auto:skill-toggle --slug "$slug" --title "$title" "$title: $summary" >/dev/null ||
+    fail "agent-queue add $slug failed"
+queued=1
+git -C "$REPO" worktree add -q "$wt" -b "$branch" origin/main || fail "git worktree add $wt failed"
+made=1
+jq --argjson p "$plan" '.skillOverrides = $p.skillOverrides' "$wt/.claude/settings.json" > "$wt/.claude/settings.json.new" &&
+    mv "$wt/.claude/settings.json.new" "$wt/.claude/settings.json" || fail "could not write $wt/.claude/settings.json"
+body="The nightly skill-usage toggle: skillOverrides keeps name-only on exactly the skills with no use in ${days} days (Skill calls, typed commands, skill bodies, SKILL.md reads, script runs, CLI runs; \`skill-drift --overrides\`). A skill another skill or a CLAUDE.md layer routes to is never hidden.
+
+- Hidden: ${hide:-none}
+- Listed again: ${restore:-none}
+
+Item: $slug"
+git -C "$wt" commit -q -m "$title" -m "$summary" -- .claude/settings.json || fail "git commit failed in $wt"
+git -C "$wt" push -q -u origin "$branch" || fail "git push $branch failed"
+pushed=1
+url=$(cd "$wt" && gh pr create --base main --head "$branch" --title "$title" --body "$body") || fail "gh pr create failed for $branch"
+n="${url##*/}"
+repo=$(origin_repo "$wt") && agent-queue set "$slug" "pr=$repo#$n" >/dev/null ||
+    echo "agentctl-skill-toggle: PR #$n is not recorded on $slug; agent-land records it" >&2
+(cd "$wt" && agent-land "$n" --item "$slug") || fail "agent-land $n failed; PR #$n stays open with worktree $wt, and reap closes $slug when it merges ($summary)"
+git -C "$REPO" worktree remove "$wt" && git -C "$REPO" branch -q -D "$branch" ||
+    echo "agentctl-skill-toggle: landed, but $wt was not removed" >&2
+report WORKED "landed #$n: $summary"
+echo "skill-toggle: landed #$n: $summary"
