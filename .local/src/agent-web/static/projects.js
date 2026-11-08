@@ -57,7 +57,7 @@ const pLine = (c) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><t
   `<td class="n">${c.percent == null ? "-" : c.percent + "%"}</td><td class="n">${c.pace.toFixed(1)}</td>` +
   `<td class="n">${c.eta_days == null ? "-" : c.eta_days + "d"}</td><td class="n">${c.running.length}</td>` +
   `<td class="n">${c.waiting}</td><td class="n">${c.queued}</td><td class="n">${c.held}</td>` +
-  `<td class="n">${c.done_today}</td><td class="n">${esc(c.oldest)}</td></tr>`;
+  `<td class="n">${c.done_today}</td><td class="n">${pDash(c.oldest)}</td></tr>`;
 
 // A fold of the opened card: its title and what it holds, kept open across redraws by pst.folds.
 const pFold = (k, title, says, inner) =>

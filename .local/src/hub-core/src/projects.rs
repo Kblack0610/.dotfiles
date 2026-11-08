@@ -337,8 +337,8 @@ pub fn build(
                 && r.lane != "playtest"
                 && (r.version.is_none() || r.version == c.version);
             if counted {
-                c.doing += usize::from(r.state == "doing");
-                c.hot += usize::from(matches!(r.priority.as_str(), "urgent" | "high"));
+                c.doing += usize::from(r.doing());
+                c.hot += usize::from(r.hot());
             }
         }
     }
@@ -353,16 +353,11 @@ pub fn build(
             }
         }
         let midnight = crate::text::local_day_start(now.timestamp());
-        for i in q.items.iter().filter(|i| i.state == State::Done) {
-            let today = i
-                .finished
-                .as_deref()
-                .and_then(|f| chrono::DateTime::parse_from_rfc3339(f).ok())
-                .is_some_and(|f| f.timestamp() >= midnight);
-            if let Some(k) = owner(i, &labs)
-                .and_then(|o| at(&mut cards, &o))
-                .filter(|_| today)
-            {
+        let today = q.items.iter().filter(|i| {
+            i.state == State::Done && i.finished_at().is_some_and(|f| f.timestamp() >= midnight)
+        });
+        for i in today {
+            if let Some(k) = owner(i, &labs).and_then(|o| at(&mut cards, &o)) {
                 cards[k].done_today += 1;
             }
         }
@@ -378,7 +373,7 @@ pub fn build(
                     c.queued += 1;
                     if i.hold.is_some() {
                         c.held += 1;
-                    } else if let Some(m) = i.timing(now).in_state {
+                    } else if let Some(m) = i.ready_min(now) {
                         c.oldest_ready_min = Some(c.oldest_ready_min.map_or(m, |o| o.max(m)));
                     }
                 }
@@ -748,15 +743,22 @@ mod tests {
         use chrono::TimeZone;
         let now = chrono::Utc.with_ymd_and_hms(2026, 11, 7, 20, 0, 0).unwrap();
         let ago = |h: i64| (now - chrono::Duration::hours(h)).to_rfc3339();
+        // Queued 50h ago, released from its hold 30h ago: it has been ready 30h.
         let mut ready_old = item("r1", State::Queued, "trader", None);
-        ready_old.queued = Some(ago(30));
+        ready_old.queued = Some(ago(50));
+        ready_old.ready = Some(ago(30));
         let mut ready_new = item("r2", State::Queued, "trader", None);
         ready_new.queued = Some(ago(2));
         let mut held = item("h", State::Queued, "trader", None);
         held.queued = Some(ago(90));
         held.hold = Some("after r1".into());
         let mut today = item("t", State::Done, "trader", None);
-        today.finished = Some(now.to_rfc3339());
+        // An older minute stamp, no seconds and no zone, still reads as UTC.
+        today.finished = Some(
+            (now - chrono::Duration::minutes(30))
+                .format("%Y-%m-%dT%H:%M")
+                .to_string(),
+        );
         let mut before = item("y", State::Done, "trader", None);
         before.finished = Some(ago(48));
         let q = Queue {
@@ -799,7 +801,7 @@ mod tests {
         assert_eq!(
             c.oldest_ready_min,
             Some(30 * 60),
-            "a held item's wait is not the oldest"
+            "ready since its release, not since it was queued; a held item's wait is not the oldest"
         );
         assert_eq!(wait_word(c.oldest_ready_min), "30h");
         assert_eq!(wait_word(None), "-");
