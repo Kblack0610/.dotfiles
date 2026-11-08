@@ -1132,6 +1132,20 @@ TASK_ID = re.compile(r"<task-id>([\w.-]+)</task-id>")
 BG_OUTPUT = re.compile(r"/tasks/([\w.-]+)\.output")
 WORD = re.compile(r"[\w./~@:-]{5,}")
 RUNNER_COMMANDS = ("fleet-lead", "fleet-overseer")
+GUARD_DENY = re.compile(r"^PreToolUse:\w+ hook error: ([\w.-]+): ")
+_POLLS = []
+
+
+def wait_loop(cmd):
+    """block-poll.py's own test for a sleeping wait loop, so this count and the guard agree."""
+    if not _POLLS:
+        import importlib.util
+        hook = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".claude", "hooks", "block-poll.py")
+        spec = importlib.util.spec_from_file_location("block_poll", hook)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _POLLS.append(lambda c: any(mod.polls(t) for t in mod.code_texts(mod.strip_heredocs(c))))
+    return _POLLS[0](cmd)
 
 
 def readonly_call(name, inp):
@@ -1448,14 +1462,21 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
                 emit("group", "background", "timed out into background", 1, 0, nctx)
             cmd = str(inp.get("command") or inp.get("file_path") or "")
             out = BG_OUTPUT.search(cmd)
-            if out:
+            denied = GUARD_DENY.match(text)
+            if denied:
+                # The call never ran, so it neither polled nor read anything.
+                if out or denied.group(1) == "block-poll":
+                    emit("group", "background", f"denied by {denied.group(1)}", 1, 0, nctx)
+            elif out:
                 # Before its notice a read is polling a run still going; after it, the read is how
                 # the session sees the output, which the notice does not carry.
                 n = noticed.get(out.group(1))
                 when = "after its notice" if n is not None and n <= i else "before its notice"
                 emit("group", "background", f"read task output {when}", 1, len(text) * later, nctx)
-            elif name == "Bash" and re.search(r"\bsleep\b|\buntil\b", cmd):
-                emit("group", "background", "sleep or until loop", 1, len(text) * later, nctx)
+            elif name == "Bash" and re.search(r"\bsleep\b", cmd) and wait_loop(cmd):
+                # In the background a loop wakes the session once; in the foreground it holds the turn.
+                key = "background wait loop" if inp.get("run_in_background") else "sleep or until loop"
+                emit("group", "background", key, 1, len(text) * later, nctx)
             elif name in ("Monitor", "TaskOutput"):
                 emit("group", "background", name, 1, 0, nctx)
         # Serial: this response and the next were read-only, none of this one's calls failed and

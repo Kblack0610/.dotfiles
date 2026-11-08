@@ -169,6 +169,28 @@ group() { jq -c "[.groups.$1[] | [.key,.calls,.ctx]] | sort" <<<"$(out)"; }
   assert_output --partial '["read task output before its notice",2,3300]'
 }
 
+@test "background: a wait loop is what block-poll calls one, and a call a guard denied never ran" {
+  cat > "$D/projects/p/s1.jsonl" <<EOF
+$(A w1 100 01 "$(B toolu_w1 'until grep -q ok f; do sleep 5; done')")
+$(R toolu_w1 'ok')
+$(A w2 200 02 "$(B toolu_w2 'until grep -q ok f; do sleep 5; done' '"run_in_background":true')")
+$(R toolu_w2 'started')
+$(A w3 300 03 "$(B toolu_w3 'git commit -m \\"wait until the sleep test passes\\"')")
+$(R toolu_w3 'ok')
+$(A w4 400 04 "$(B toolu_w4 'make && sleep 2 && curl -s localhost')")
+$(R toolu_w4 'ok')
+$(A w5 500 05 "$(B toolu_w5 'tail -n 5 /tmp/x/tasks/bz9.output')")
+$(R toolu_w5 'PreToolUse:Bash hook error: block-poll: Background task bz9 is still running')
+$(A w6 600 06 "$(B toolu_w6 'while true; do sleep 1; done')")
+$(R toolu_w6 'PreToolUse:Bash hook error: block-poll: This foreground loop polls')
+$(A w7 700 07 "$(B toolu_w7 'echo hi')")
+$(R toolu_w7 'PreToolUse:Bash hook error: checkout-guard: not here')
+$(A w8 800 08 '')
+EOF
+  run group background
+  assert_output '[["background wait loop",1,400],["denied by block-poll",2,1300],["sleep or until loop",1,200],["started",1,400]]'
+}
+
 @test "mcp calls group by server, and ToolSearch loads count" {
   run group mcp
   assert_output '[["playwright",1,1900]]'
