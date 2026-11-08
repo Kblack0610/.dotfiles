@@ -398,7 +398,7 @@ release_done() {
   local b sid _
   while IFS=$'\t' read -r b _ sid _; do
     [ -n "$sid" ] && [ "$b" != DONE ] || continue
-    [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$sid" 2>/dev/null)")" = DONE ] && rm -f "$LEDGER/$sid"
+    if [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$sid" 2>/dev/null)")" = DONE ]; then rm -f "$LEDGER/$sid"; fi
   done <<<"$1"
 }
 escalate() { ledger_write "$1" escalated "$2" && finding_paged "$1" "$2"; }
