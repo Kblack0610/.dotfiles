@@ -688,3 +688,26 @@ EOF
   assert_equal "$(project_slug agent-runtime)" ar
   assert_equal "$(project_slug supercalifragilistic)" supercal
 }
+
+# -- a repo under the temp dir is no project -----------------------------------
+
+@test "an unregistered git repo under the temp dir is _unscoped, never tmp.XXXXXXXXXX" {
+  # A lane that git-inits a mktemp dir and runs codex there minted outcome keys tmp.70ZiGFH1KX,
+  # which the notes doctor failed on. NEGATIVE CONTROL: before the fix this printed the basename.
+  write_map "$APPS"
+  mkdir -p "$TMPDIR/tmp.AbC123xyZ/sub"
+  git -C "$TMPDIR/tmp.AbC123xyZ" init -q -b main
+  run resolve_project_name "$TMPDIR/tmp.AbC123xyZ"
+  assert_success
+  assert_output '_unscoped'
+  run resolve_project_name "$TMPDIR/tmp.AbC123xyZ/sub"
+  assert_output '_unscoped'
+}
+
+@test "a registered repo under the temp dir still resolves to its project" {
+  mkdir -p "$TMPDIR/tmp.AbC123xyZ"
+  git -C "$TMPDIR/tmp.AbC123xyZ" init -q -b main
+  printf '{ "paths": { "%s": "kept" } }\n' "$TMPDIR/tmp.AbC123xyZ" > "$MAP"
+  run resolve_project_name "$TMPDIR/tmp.AbC123xyZ"
+  assert_output 'kept'
+}

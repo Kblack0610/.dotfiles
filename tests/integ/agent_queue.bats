@@ -238,37 +238,72 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
 }
 
-@test "the map's queue_rank puts a ranked project first within a priority, under red and urgent, over cleanup" {
+@test "a project's #prio ranks its items within a priority, under red and urgent, over cleanup" {
   "$AQ" add --project app --slug a-app "a"
   "$AQ" add --project app --slug b-app-cleanup --tags cleanup "b"
   "$AQ" add --project game --slug c-game "c"
   "$AQ" add --project app --slug d-app-urgent --priority urgent "d"
   "$AQ" add --project tools --slug e-tools "e"
-  # Without queue_rank the order is as before: cleanup first, then queued time.
+  # With no #prio set the order is as before: cleanup first, then queued time.
   run bash -c "'$AQ' list --json | jq -r .slug"
   assert_output $'d-app-urgent\nb-app-cleanup\na-app\nc-game\ne-tools'
-  jq '.queue_rank = ["game"]' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  printf 'game\tfocus\n' > "$NOTES_FIXTURE/prios"
   run bash -c "'$AQ' list --json | jq -r .slug"
-  # urgent still heads; game, ranked, beats the older app items and the app cleanup.
+  # urgent still heads; game, focused, beats the older app items and the app cleanup.
   assert_output $'d-app-urgent\nc-game\nb-app-cleanup\na-app\ne-tools'
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
 }
 
-@test "a multi-project queue_rank orders by list position; a rank that is not a list ranks nothing" {
-  "$AQ" add --project tools --slug a-tools "a"
+@test "#prio ranks focus and only first, then high, then normal, then low; a map queue_rank ranks nothing" {
+  "$AQ" add --project elsewhere --slug a-else "a"
   "$AQ" add --project app --slug b-app "b"
   "$AQ" add --project game --slug c-game "c"
-  jq '.queue_rank = ["game", "app"]' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  "$AQ" add --project cockpit --slug d-cockpit "d"
+  printf 'game\thigh\nelsewhere\tlow\ncockpit\tonly\n' > "$NOTES_FIXTURE/prios"
   run bash -c "'$AQ' list --json | jq -r .slug"
-  assert_output $'c-game\nb-app\na-tools'
-  # A string or an object where the list belongs falls back to queued time, never an error.
-  for bad in '"game"' '{"game": 1}'; do
-    jq --argjson r "$bad" '.queue_rank = $r' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
-    run bash -c "'$AQ' list --json | jq -r .slug"
-    assert_success
-    assert_output $'a-tools\nb-app\nc-game'
-  done
+  assert_output $'d-cockpit\nc-game\nb-app\na-else'
+  # The retired map key is not a second order: it changes nothing.
+  printf '' > "$NOTES_FIXTURE/prios"
+  jq '.queue_rank = ["game"]' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  assert_output $'a-else\nb-app\nc-game\nd-cockpit'
+}
+
+@test "while a project is #prio/only, other projects' items hold on focus, but red, urgent and requested ones do not" {
+  "$AQ" add --project app --slug a-app "a"
+  "$AQ" add --project app --slug b-app-red --tags red "b"
+  "$AQ" add --project app --slug c-app-urgent --priority urgent "c"
+  "$AQ" add --project app --slug d-app-req --tags requested "d"
+  "$AQ" add --project game --slug e-game "e"
+  # Negative control: no only, nothing holds.
+  run bash -c "'$AQ' list --json | jq -r 'select(.hold) | .slug'"
+  assert_output ''
+  printf 'game\tonly\napp\thigh\n' > "$NOTES_FIXTURE/prios"
+  run bash -c "'$AQ' list --json | jq -r '\"\\(.slug) \\(.hold // \"-\")\"'"
+  assert_output $'b-app-red -\nc-app-urgent -\ne-game -\na-app focus: only game\nd-app-req -'
+  # A lone check (show, start_next) gives the same answer as the listing.
+  run "$AQ" show a-app --json
+  [ "$(jq -r .hold <<<"$output")" = "focus: only game" ]
+  # focus ranks, it never holds.
+  printf 'game\tfocus\n' > "$NOTES_FIXTURE/prios"
+  run bash -c "'$AQ' list --json | jq -r 'select(.hold) | .slug'"
+  assert_output ''
+}
+
+@test "an after: successor off focus stays queued when its item closes; on focus it starts" {
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
+  "$AQ" add --project app --slug first --running "a" >/dev/null
+  "$AQ" add --project app --slug second --after first "b" >/dev/null
+  printf 'game\tonly\n' > "$NOTES_FIXTURE/prios"
+  run "$AQ" move first done --status ok
+  assert_success
+  assert_not_called 'start --item second'
+  [ -n "$(item queued second)" ]
+  "$AQ" add --project game --slug g1 --running "c" >/dev/null
+  "$AQ" add --project game --slug g2 --after g1 "d" >/dev/null
+  run "$AQ" move g1 done --status ok
+  assert_called 'fleet-dispatch start --item g2'
 }
 
 @test "an after: on a re-queued slug holds while the slug is live, whatever an old done record says" {
@@ -323,6 +358,20 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = tonight ]
 }
 
+@test "the night window is the clock hours' night part, and with none a night item holds and says why" {
+  "$AQ" add --project game --slug tonight --tags night "a"
+  export MACHINE_MODE_HOURS="$BATS_TEST_TMPDIR/hours"
+  printf 'day|02:00-22:00|open|x\nnight|22:00-02:00|full|y\n' > "$MACHINE_MODE_HOURS"
+  AGENT_QUEUE_NOW=22:30 run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = tonight ]
+  AGENT_QUEUE_NOW=03:00 run "$AQ" next --json
+  [ "$(jq -r '.slug // empty' <<<"$output")" != tonight ]
+  printf 'day|00:00-24:00|open|x\n' > "$MACHINE_MODE_HOURS"
+  AGENT_QUEUE_NOW=02:00 run "$AQ" next --json
+  [ "$(jq -r '.slug // empty' <<<"$output")" != tonight ]
+  [ "$(jq -r .hold <<<"$("$AQ" show tonight --json)")" = "night (the hours file has no night part)" ]
+}
+
 @test "a dated at: tag holds across days until its moment; at:HH:MM alone does not" {
   "$AQ" add --project game --slug tomorrow --tags "at:2026-11-05T09:00" "a"
   "$AQ" add --project game --slug clock --tags "at:09:00" "b"
@@ -372,6 +421,29 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   ask a2 answered 'whatever'
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = any ]
+}
+
+# 2026-11-07: can-we-get-cloud-vast-clarke-p3-live queued behind an ask the judge had answered, and
+# upwork-p2..p5 behind one later cancelled; neither ask could ever release them.
+@test "add and set tags= refuse an ask that can never release the item: cancelled, the judge's answer, another option" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  ask dead cancelled
+  ask judged answered a judge
+  ask other answered 'b, stay' human
+  for t in ask:dead ask:judged=a ask:other=a; do
+    run "$AQ" add --project game --slug nope --tags "$t" "x"
+    assert_failure; assert_output --partial 'can never release it'
+  done
+  # Negative control: a pending ask, and the human's answer naming that option, are accepted.
+  ask live pending
+  "$AQ" add --project game --slug p3 --tags "tier3 ask:live=a" "go live"
+  ask yes answered 'a' human
+  "$AQ" add --project game --slug p4 --tags "ask:yes=a" "the next"
+  # Re-pointing an item off a dead ask goes through set, which checks the same way.
+  run "$AQ" set p3 tags="tier3 ask:dead"
+  assert_failure; assert_output --partial 'can never release it (cancelled)'
+  "$AQ" set p3 tags="tier3 ask:yes=a"
 }
 
 @test "a hold: tag holds an item while agent-hold holds that resource, whoever asks (ar-613)" {
@@ -1732,4 +1804,20 @@ started_item() {
   assert_failure 1
   assert_output --partial "already in the queue: one"
   [ ! -e "$AGENT_QUEUE_DIR/admission.jsonl" ]
+}
+
+@test "a partial merge cannot close ok or release after items" {
+  "$AQ" add --project game --running --slug partial 'two repos' >/dev/null
+  "$AQ" add --project game --slug next --after partial 'next phase' >/dev/null
+  "$AQ" set partial pr=o/game#1 merged=aaa111 partial=yes >/dev/null
+  run "$AQ" move partial done --status ok
+  assert_failure
+  assert_output --partial 'has a partial landing'
+  run "$AQ" show next --json
+  assert_equal "$(jq -r .hold <<<"$output")" 'after partial'
+  "$AQ" set partial partial= >/dev/null
+  run "$AQ" move partial done --status ok
+  assert_success
+  run "$AQ" show next --json
+  assert_equal "$(jq -r '.hold // ""' <<<"$output")" ''
 }

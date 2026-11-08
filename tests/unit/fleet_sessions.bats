@@ -826,6 +826,25 @@ SH
   [ "$(jq -r .nudged <<<"$output")" = true ]
 }
 
+@test "end to end: a reused slot branch reads the PR that holds its HEAD, not an older closed PR of the same name (2026-11-07)" {
+  landed_fixture
+  local oid old="1111111111111111111111111111111111111111"
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  # gh lists newest first: #1500 went out on another head branch, #1490 is an older closed PR of this branch's name
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "all-sources-p5-scoring\\t1500\\tMERGED\\tPASS\\t%s\\nfeat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$oid" "$old" > "$SANDBOX/bin/gh"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .fact <<<"$output")" = 'LANDED PR #1500 merged, tree clean, next phase: Phase 2: rollout @feat/x' ]
+
+  # with no PR holding HEAD, the closed one of the same name is old: it is not the blocker
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$old" > "$SANDBOX/bin/gh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [[ "$(jq -r .fact <<<"$output")" != *'closed without merging'* ]]
+}
+
 @test "end to end: plan mode with no approval dialog open is not NEEDS plan awaiting approval" {
   landed_fixture
   PANEL_PLAN_MODE=true panel "$SANDBOX/wt" "$SANDBOX/plan.md"
@@ -1040,6 +1059,38 @@ SH
 
   # negative control: a higher bar makes no row
   FLEET_SHARED_RED_BRANCHES=4 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
+}
+
+@test "end to end: the pool's ledger counts toward SHARED, a branch red on both gates once (ar-171)" {
+  # Gates moved to the runner pool (playground #1256), so most reds never reached the local ledger.
+  landed_fixture
+  local now l p
+  now="$(date +%s)" l="$XDG_STATE_HOME/unity-test-runs/test-failures.tsv" p="$XDG_STATE_HOME/unity-test-runs/pool-failures.tsv"
+  mkdir -p "${l%/*}"
+  # feat/x red locally and on the pool, feat/b and feat/c only on the pool (feat/c has no worktree here)
+  printf '%s	wt	feat/x	T.Pool
+' $((now - 900)) > "$l"
+  printf '%s	%s	%s	%s
+' $((now - 800)) wt feat/x T.Pool $((now - 700)) uc-b feat/b T.Pool $((now - 600)) - feat/c T.Pool > "$p"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -r .reason <<<"$shared")" = 'T.Pool red on 3 branches in 2h: feat/x, feat/b, feat/c' ]
+  [ "$(jq -r .fact <<<"$shared")" = "SHARED T.Pool @$((now - 900))" ]
+  [ "$(jq -r '.owners | join(",")' <<<"$shared")" = sid-9 ]
+
+  # the pool ledger alone, with no local one, still makes the row
+  rm "$l"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket == "SHARED") | .target' <<<"$output")" = T.Pool ]
+
+  # negative control: feat/x on both gates is one branch, so without feat/c it is two
+  printf '%s	wt	feat/x	T.Pool
+' $((now - 900)) > "$l"
+  sed -i '/feat\/c/d' "$p"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
 }
 
@@ -1366,6 +1417,82 @@ research_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -c '[.dirty, .blockers]' <<<"$output")" = '[1,["1 dirty file(s) (look-and-feel.conf)"]]' ]
+}
+
+@test "end to end: edits in other worktrees block a clean cwd from reading LANDED or finished" {
+  landed_fixture
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && echo "[]"\nexit 0\n' > "$SANDBOX/bin/gh"
+  mkdir -p "$HOME/.worktrees"
+  local other="$HOME/.worktrees/other work" unrelated="$HOME/.worktrees/unrelated"
+  git -C "$SANDBOX/wt" worktree add -q -b other "$other" origin/main
+  git -C "$SANDBOX/wt" worktree add -q -b unrelated "$unrelated" origin/main
+  echo unfinished > "$other/new.txt"
+  echo someone-else > "$unrelated/theirs.txt"
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md" "[\"$other/new.txt\"]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  assert_output --partial 'new.txt'
+  assert_output --partial 'other work'
+  refute_output --partial 'clean, nothing on the branch'
+
+  # Committing the edit still leaves work to land, even with all plan phases ticked.
+  git -C "$other" add new.txt
+  git -C "$other" -c user.email=t@t -c user.name=t commit -qm unfinished
+  phases_plan '- [x] Phase 1: done'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  assert_output --partial 'not on the default branch'
+
+  # Once the content lands, the unrelated sibling's dirt must not hold this session.
+  git -C "$SANDBOX/wt" update-ref refs/remotes/origin/main "$(git -C "$other" rev-parse HEAD)"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+}
+
+@test "a merged edited worktree suspected of turning main red blocks completion" {
+  git init -q "$SANDBOX/other"
+  git_facts() { echo '1 0 0 9 MERGED PASS 1 branch 0 no - - -'; }
+  main_health() { printf 'RED\tTests (#9)\tdeadbeef\t9\n'; }
+  run edited_work_blockers "$SANDBOX" "$SANDBOX/other/file"
+  assert_success
+  assert_output --partial 'STALLED unlanded work in'
+  assert_output --partial 'nightly red after PR #9'
+}
+
+@test "edited work waiting for CI stays WORKING, but a stalled sibling takes priority" {
+  local a="$SANDBOX/a" b="$SANDBOX/b"
+  git init -q "$a"; git init -q "$b"
+  git_facts() {
+    if [ "$1" = "$SANDBOX/a" ]; then echo '1 0 1 9 OPEN PENDING 1 branch 0 no - - -'
+    else echo '1 1 0 - - - 1 branch 0 no - - changed.txt'; fi
+  }
+  run edited_work_blockers "$SANDBOX" "$a/file"
+  assert_success
+  assert_output "WORKING unlanded work in $a: PR #9 open, CI PENDING"
+  run edited_work_blockers "$SANDBOX" "$(printf '%s\n' "$a/file" "$b/file")"
+  assert_success
+  assert_output --partial 'STALLED unlanded work in'
+}
+
+@test "edited work blockers inspect every edited repository once and skip the cwd and missing trees" {
+  local a="$SANDBOX/a" b="$SANDBOX/b" cwd="$SANDBOX/cwd"
+  git init -q "$a"; git init -q "$b"; git init -q "$cwd"
+  mkdir -p "$a/sub"
+  git_facts() {
+    printf '%s\n' "$1" >> "$SANDBOX/visited"
+    echo '1 1 0 - - - 1 branch 0 no - - changed.txt'
+  }
+  run edited_work_blockers "$cwd" "$(printf '%s\n' "$a/sub/one" "$a/sub/two" "$b/deleted/sub/file" "$cwd/ours" "$SANDBOX/gone/file")"
+  assert_success
+  assert_output --partial "$a: 1 dirty file(s) (changed.txt), no PR"
+  assert_output --partial "$b: 1 dirty file(s) (changed.txt), no PR"
+  [ "$(wc -l < "$SANDBOX/visited")" = 2 ]
 }
 
 @test "end to end: a busy session checking its own row reads finished while its bucket is WORKING" {
