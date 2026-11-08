@@ -129,8 +129,7 @@ EOF
 }
 
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
-# and agent-queue's read of the project priorities
-board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios$' || true; }
+board_calls() { grep '^notes' "$LOG" | grep -v '^notes ingest record ' || true; }
 
 # item <slug> [from] [lane] [profile] -> a running queue item, on project $ITEM_PROJECT (dotfiles)
 item() {
