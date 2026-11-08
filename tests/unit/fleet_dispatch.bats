@@ -107,6 +107,12 @@ echo "cpu  $((u + a)) $((n + b)) $((s + c)) $((i + d)) 0 0 0 0 0 0" > "$DISPATCH
   export LAB_STAGES="draft dev alpha beta prod"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue" AGENT_QUEUE_PROJECT_MAP="$DISPATCH_PROJECT_MAP" AGENT_QUEUE_START=0
+  # The launch env as stow deploys it, off the LAN (getent fails), so a start reads its defaults
+  # (dropped_tools) and adds no telemetry unless a test stubs getent to say it is on the LAN.
+  mkdir -p "$HOME/.config/shared-hooks"
+  cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$HOME/.config/shared-hooks/"
+  stub getent 'exit 2'
+  unset CLAUDE_AUTO_DROP_TOOLS
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-dispatch"
 }
@@ -4514,8 +4520,7 @@ board_item() {
   project game beta "$SANDBOX/repos/game"
   transcript abc-123 '{"permissionMode":"plan"}'
   printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
-  mkdir -p "$HOME/.config/shared-hooks"
-  cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
+  cp "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
   stub getent 'exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
     --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
@@ -4544,7 +4549,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session planned \
     --cwd "$SANDBOX/repos/game" --resume conv-plan
   assert_success
-  assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
+  assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
   assert_called 'set-option -t =planned: @dispatch game: plan-work'
   f=$(qitem running plan-work)
   assert_equal "$(qfield "$f" session) $(qfield "$f" origin)" 'default:planned resume'
@@ -4555,7 +4560,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session planned2 \
     --cwd "$SANDBOX/repos/game" --resume conv-plan
   assert_success
-  assert_called "AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-plan"
+  assert_called "AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-plan"
 }
 
 @test "start --resume refuses a conversation still running, and one two items list without --item" {
@@ -4736,7 +4741,7 @@ restore_setup() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
   assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work'
-  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-item"
+  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item"
   f=$(qitem running hub-work)
   assert_equal "$(qfield "$f" origin)" resume
   assert_equal "$(qfield "$f" session)" ''
@@ -4866,7 +4871,7 @@ harness_ready() {
   assert_equal "$(qfield "$f" agent) $(qfield "$f" account)" 'claude-lazer eval'
 }
 
-@test "a queue start drops DISPATCH_DROP_TOOLS, unless the task names one, ultracode or /loop, or the knob is empty" {
+@test "a queue start drops CLAUDE_AUTO_DROP_TOOLS from the launch env, unless the task names one, ultracode or /loop, or it is empty" {
   project game beta "$SANDBOX/repos/game"
   stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
   agent-queue add --project game --slug plain "fix the menu"
@@ -4874,17 +4879,40 @@ harness_ready() {
   agent-queue add --project game --slug lp "/loop 5m check the deploy"
   agent-queue add --project game --slug wf "run a Workflow over the PRs"
   for s in plain uc lp wf; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
-  DISPATCH_DROP_TOOLS='' && agent-queue add --project game --slug off "fix the footer" && cmd_start --item off >/dev/null || fail "start off"
+  agent-queue add --project game --slug off "fix the footer" && CLAUDE_AUTO_DROP_TOOLS='' cmd_start --item off >/dev/null || fail "start off"
   mask_sid "$NOTES_FIXTURE/cmds.log"
   run cat "$NOTES_FIXTURE/cmds.log"
+  # The default is claude-telemetry.sh's, the one list every automated start reads.
   assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=plain env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode'
   [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "only plain drops tools: $(cat "$NOTES_FIXTURE/cmds.log")"
   assert_line --index 4 --partial 'AGENT_QUEUE_ITEM=off env -u CLAUDE_CONFIG_DIR claude --model opus --session-id SID --permission-mode'
   # A value that is not a list of tool names never reaches the command line.
-  DISPATCH_DROP_TOOLS='Bash(rm:*);x' && agent-queue add --project game --slug bad "fix the header" >/dev/null
-  run cmd_start --item bad
-  assert_output --partial 'DISPATCH_DROP_TOOLS is not a comma list of tool names'
-  [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a bad knob reached the command line"
+  agent-queue add --project game --slug bad "fix the header" >/dev/null
+  CLAUDE_AUTO_DROP_TOOLS='Bash(rm:*);x' run cmd_start --item bad
+  assert_output --partial 'CLAUDE_AUTO_DROP_TOOLS is not a comma list of tool names'
+  [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a bad list reached the command line"
+  # With the file that holds the list gone, a start says so and drops none.
+  rm "$HOME/.config/shared-hooks/claude-telemetry.sh"
+  agent-queue add --project game --slug gone "fix the sidebar" >/dev/null
+  run cmd_start --item gone
+  assert_output --partial 'claude-telemetry.sh is missing, so this start drops no tools'
+  [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a start with no list file dropped tools"
+}
+
+@test "a queue item's resume drops the same tools; a resume of a conversation no item lists keeps every one" {
+  project game beta "$SANDBOX/repos/game"
+  transcript abc-123 '{"permissionMode":"plan"}'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  started_item fix-menu default:other
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s1 \
+    --cwd "$SANDBOX/repos/game" --resume abc-123 --item fix-menu
+  assert_success
+  assert_called 'claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode plan --allow-dangerously-skip-permissions --resume abc-123'
+  transcript def-456 '{"permissionMode":"plan"}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s2 \
+    --cwd "$SANDBOX/repos/game" --resume def-456
+  assert_success
+  assert_called '-c '"$SANDBOX"'/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume def-456'
 }
 
 # --- lane sandbox: DISPATCH_SANDBOX_PROFILE (the pattern is tests/integ/agent_run_sandbox.bats) ---

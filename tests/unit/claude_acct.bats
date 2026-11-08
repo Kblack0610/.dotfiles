@@ -234,12 +234,12 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
   assert_output ''
 }
 
-@test "a resumed claude keeps the model and permission flags and drops the brief" {
+@test "a resumed claude keeps the model, permission and dropped-tools flags and drops the brief" {
   src
   mkdir -p "$SANDBOX/proc/42"
-  printf 'claude\0--model\0opus\0--permission-mode\0bypassPermissions\0/one-shot do --model it\0' > "$SANDBOX/proc/42/cmdline"
+  printf 'claude\0--model\0opus\0--disallowedTools\0Workflow,ScheduleWakeup\0--permission-mode\0bypassPermissions\0/one-shot do --model it\0' > "$SANDBOX/proc/42/cmdline"
   run carry_flags 42
-  assert_output '--model opus --permission-mode bypassPermissions '
+  assert_output '--model opus --disallowedTools Workflow\,ScheduleWakeup --permission-mode bypassPermissions '
   printf 'claude\0--dangerously-skip-permissions\0--model=sonnet\0' > "$SANDBOX/proc/42/cmdline"
   run carry_flags 42
   assert_output '--dangerously-skip-permissions --model sonnet '
