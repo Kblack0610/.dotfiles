@@ -254,6 +254,24 @@ mod tests {
     }
 
     #[test]
+    fn the_builds_headers_are_hub_cores_columns() {
+        // Rule 8: the Builds table draws the first columns hub_core::builds sorts and filters;
+        // `forge` and `event` are dropdowns and `title` the open row's heading.
+        use hub_core::table::Row;
+        let js = include_str!("../static/releases.js");
+        let at = js.find("const BLD_COLS = {").expect("no BLD_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        let all = hub_core::builds::Run::COLUMNS;
+        assert_eq!(keys, all[..all.len() - 3]);
+        assert_eq!(all[all.len() - 3..], ["forge", "event", "title"]);
+    }
+
+    #[test]
     fn the_fleet_headers_are_hub_cores_columns() {
         // Rule 8: the Fleet table draws the columns hub_core::fleet::who sorts and filters.
         use hub_core::table::Row;

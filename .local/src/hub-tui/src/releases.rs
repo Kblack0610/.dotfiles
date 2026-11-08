@@ -47,6 +47,8 @@ pub struct ReleasesView {
     /// Whether the pane is open, and how far it is scrolled.
     pub open: bool,
     pub down: usize,
+    /// The Builds section under the channels, which `b` hands the keys to.
+    pub builds: crate::builds::BuildsView,
 }
 
 /// The row a selection stands for, so a new snapshot keeps the same channel selected.
@@ -56,7 +58,7 @@ pub fn row_id(r: &Release) -> RowId {
     (r.project.clone(), r.id.clone())
 }
 
-fn level(l: Level, p: Palette) -> Style {
+pub(crate) fn level(l: Level, p: Palette) -> Style {
     match l {
         Level::Bad => p.bad(),
         Level::Warn => p.warn(),
@@ -168,7 +170,7 @@ impl ReleasesView {
         out
     }
 
-    /// Under the table: the fold line, which says how to list what it folded, then Builds.
+    /// Under the table: the fold line, which says how to list what it folded.
     pub fn foot(&self, s: &Releases, p: Palette, w: usize) -> Vec<Line<'static>> {
         let mut out = vec![];
         if let Some(f) = self.folded(s).1 {
@@ -180,15 +182,8 @@ impl ReleasesView {
                     .map(|l| clip_line(Line::styled(l, p.dim()), w)),
             );
         }
-        out.extend(builds());
         out
     }
-}
-
-/// The Builds section's slot under the channels: it reads `~/.local/state/ci/runs.jsonl` with its
-/// own reader (ar-956), and until then it draws nothing, so the tab claims no build state.
-fn builds() -> Vec<Line<'static>> {
-    vec![]
 }
 
 fn row(r: &Release, p: Palette) -> Vec<Cell> {
@@ -449,10 +444,5 @@ mod tests {
             .iter()
             .any(|l| l.contains("Deps") && l.contains("unity-core")));
         assert!(lines.iter().all(|l| l.chars().count() <= 60), "{lines:?}");
-    }
-
-    #[test]
-    fn the_builds_slot_draws_nothing_yet() {
-        assert!(builds().is_empty());
     }
 }
