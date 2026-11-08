@@ -129,9 +129,7 @@ EOF
 }
 
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
-# board_calls -> the notes calls that touch the board; the record line and the queue's read of the
-# project prios (`notes projects --prios`, agent-queue's ranking since #1486) are not board calls.
-board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios$' || true; }
+board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' || true; }
 
 # item <slug> [from] [lane] [profile] -> a running queue item, on project $ITEM_PROJECT (dotfiles)
 item() {
@@ -249,13 +247,22 @@ item() {
   assert_line 'landed #42'
 }
 
-@test "behind main: stops before the checks and the merge with exit 3" {
+@test "behind main before the checks: merged in and pushed, then the gate runs on that head" {
+  printf '2\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'fetch: merged origin/main (2 behind) into the head and pushed it'
+  assert_line 'landed #42'
+  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | head -1 | cut -d: -f1)" ]
+}
+
+@test "behind main before the checks and the merge conflicts: exit 3, no checks, no merge" {
   printf '2\n' >"$NOTES_FIXTURE/behind"
+  touch "$NOTES_FIXTURE/merge.conflicts"
   run "$LAND" 42 --item ship
   assert_failure 3
-  assert_output --partial 'behind origin/main by 2, merge it and re-run'
-  refute_output --partial 're-gate'
-  run grep -c 'pr checks\|pr merge\|^notes' "$LOG"
+  assert_output --partial 'merging it conflicts'
+  run grep -c 'pr checks\|pr merge' "$LOG"
   assert_output 0
 }
 
@@ -263,7 +270,7 @@ item() {
   printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
   run "$LAND" 42 --item ship
   assert_success
-  assert_line 'fetch: merged origin/main (1 behind) into the green head and pushed it'
+  assert_line 'fetch: merged origin/main (1 behind) into the head and pushed it'
   refute_output --partial 'requires strict checks'
   assert_line 'landed #42'
   run grep -c 'pr checks' "$LOG"
