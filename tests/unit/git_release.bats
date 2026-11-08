@@ -71,12 +71,13 @@ tag() { git -C "$REPO" tag "$1"; }
   assert_output 'v0.5.0'
 }
 
-@test "git_product_tag: a digit before the product's -v is not a prerelease" {
-  commit one; tag app2-v1.0.0
-  commit two; tag app2-v1.1.0
-  run git_product_tag "$REPO" app2
+@test "git_product_tag: a number in the product's prefix is not a prerelease" {
+  commit one; tag app2.0-v1.0.0
+  commit two; tag app2.0-v1.1.0
+  commit three; tag app2.0-v1.2.0-rc1
+  run git_product_tag "$REPO" app2.0
   assert_success
-  assert_output 'app2-v1.1.0'
+  assert_output 'app2.0-v1.1.0'
 }
 
 @test "git_latest_tag: when EVERY tag is a prerelease, the highest one is still returned" {

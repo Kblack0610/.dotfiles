@@ -121,3 +121,11 @@ HOOKS
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'would roll personal/demoapp: v0.4.0 -> v0.4.1'
 }
+
+@test "a tasks.md sheet counts as a versioned sheet" {
+  shipped_at v0.4.0
+  rm "$LAB/README.md"
+  : > "$LAB/tasks.md"
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial 'would roll personal/demoapp: v0.4.0 -> v0.4.1'
+}

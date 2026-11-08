@@ -63,7 +63,8 @@ _gr_highest() {
   [ -n "$all" ] || return 0
   # Any suffix after a dotted version is a prerelease, as semver has it: an rc, or a
   # per-build tag such as the playground's `v0.5.0-dodginballs3`, which are builds of 0.5.0.
-  stable=$(printf '%s\n' "$all" | grep -vE -- '[0-9]\.[0-9]+-|-(rc|beta|alpha|pre|dev|snapshot)' || true)
+  # Anchored on the `v` of the version, so a dotted number in a product prefix is not one.
+  stable=$(printf '%s\n' "$all" | grep -vE -- '(^|-)v[0-9]+(\.[0-9]+)+-|-(rc|beta|alpha|pre|dev|snapshot)' || true)
   if [ -n "$stable" ]; then
     printf '%s' "$(printf '%s\n' "$stable" | head -1)"
   else

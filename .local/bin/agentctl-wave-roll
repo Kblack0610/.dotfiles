@@ -37,7 +37,10 @@ is_ver() { [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 # (projects.rs sheet_path: a README.md with a Version: line, else a tasks.md). The list's
 # second column is the index lane's link, which is summary.md for a whole profile (bnb), so
 # it cannot say whether a sheet exists.
-has_sheet() { grep -qE '^Version:[[:space:]]*v[0-9]' "$1/README.md" 2>/dev/null || [ -f "$1/tasks.md" ]; }
+has_sheet() {
+  [ -n "$1" ] || return 1
+  grep -qE '^[[:space:]]*Version:[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+' "$1/README.md" 2>/dev/null || [ -f "$1/tasks.md" ]
+}
 # ver_ge A B: A >= B, both bare `vX.Y.Z`.
 ver_ge() { [ "$(printf '%s\n%s\n' "${1#v}" "${2#v}" | sort -V | tail -1)" = "${1#v}" ]; }
 patch_after() { local v="${1#v}"; printf 'v%s.%s.%s' "${v%%.*}" "$(cut -d. -f2 <<<"$v")" "$(( ${v##*.} + 1 ))"; }
@@ -98,7 +101,7 @@ while read -r profile; do
     fetch_tags "$name"
     shipped="$(project_release_version "$name" 2>/dev/null)"
     [ -n "$shipped" ] || continue                    # notes-only: no tag to roll by
-    if ! is_ver "$ver" || ! has_sheet "$(dirname "$sheet")"; then
+    if ! is_ver "$ver" || ! has_sheet "${sheet:+$(dirname "$sheet")}"; then
       log "skip $name: no versioned sheet (shipped $shipped)"
       continue
     fi
