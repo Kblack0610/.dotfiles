@@ -74,7 +74,8 @@ bash_cmd() { jq -nc --arg c "$1" '{tool_name:"Bash", cwd:"/home/u/wt", tool_inpu
   for c in 'git commit -m "fix: find / -name x no longer hangs"' \
            "agent-queue add 'rg foo /mnt is denied by the guard'" \
            $'git commit -F - <<\'EOF\'\nfix: grep -rn foo /\nEOF' \
-           $'cat <<EOF\nfind / -name x\nEOF\necho done'; do
+           $'cat <<EOF\nfind / -name x\nEOF\necho done' \
+           $'git commit -m "multi\nline <<EOF find / -name x\nend"'; do
     run bash_cmd "$c"
     assert_success
     assert_output ""
@@ -86,7 +87,14 @@ bash_cmd() { jq -nc --arg c "$1" '{tool_name:"Bash", cwd:"/home/u/wt", tool_inpu
            $'cat <<EOF\nnote\nEOF\nrg foo /mnt' \
            "bash -c 'find / -name x'" \
            'find "/" -name x' \
-           "grep -rn 'a b' '/mnt'"; do
+           "grep -rn 'a b' '/mnt'" \
+           'echo "$(find / -name x)"' \
+           'echo "`rg foo /mnt`"' \
+           'eval "find / -name x"' \
+           'ssh host "find / -name x"' \
+           "watch -n1 'find / -name x'" \
+           $'echo "a" # it\'s\nfind / -name x' \
+           $'git commit -m "doc <<EOF syntax"\nfind / -name x'; do
     run bash_cmd "$c"
     assert_output --partial '"deny"'
   done
