@@ -241,6 +241,33 @@ pub fn is_open_task(line: &str) -> bool {
     is_task(line) && !is_checked(line) && !is_empty_unchecked(line)
 }
 
+/// The open task a line of text in `## Focus` stands for: a bare bullet loses its marker, a
+/// plain line is taken whole. `None` for what is not text to act on: a blank, a task, a
+/// heading, a rule or a comment. Mirrored by `loose_task` in markdown.lua.
+///
+/// A bullet with no text comes back as the empty `- [ ]` slot, which the sweep drops.
+pub fn loose_task(line: &str) -> Option<String> {
+    let t = line.trim();
+    let heading = t.starts_with('#') && t.trim_start_matches('#').starts_with(' ');
+    // `- [[a link]]` passes is_task, and only a one-character box is a task here.
+    let boxed = is_task(t) && t.as_bytes().get(4) == Some(&b']');
+    if t.is_empty() || boxed || heading || t.starts_with("---") || t.starts_with("<!--") {
+        return None;
+    }
+    let text = t
+        .strip_prefix(['-', '*', '+'])
+        .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        .unwrap_or(t)
+        .trim();
+    // `* [x] done` is a checklist in another bullet: it keeps its box.
+    let has_box = text.starts_with('[') && text.as_bytes().get(2) == Some(&b']');
+    Some(if has_box {
+        format!("- {text}")
+    } else {
+        format!("- [ ] {text}")
+    })
+}
+
 /// `- [ ]` with no text after it.
 pub fn is_empty_unchecked(line: &str) -> bool {
     match line.trim().strip_prefix("- [ ]") {
@@ -1122,6 +1149,11 @@ pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
 /// leaves room to move in both directions: pump to `#urgent`, push down to `#low`.
 pub(crate) const DEFAULT_PRIORITY: usize = 1; // #high
 
+/// The level of a task in `## Focus` that nobody placed in a lane: a line typed or pasted
+/// above the lanes, a row added without a tag. Low, not [`DEFAULT_PRIORITY`], because a line
+/// turned into a task was never ranked, so it must not sit among the ones that were.
+pub(crate) const FOCUS_DEFAULT_PRIORITY: usize = 2; // #low
+
 /// The default priority hashtag (`"#high"`).
 pub fn default_priority() -> &'static str {
     PRIORITIES[DEFAULT_PRIORITY].1
@@ -1132,16 +1164,25 @@ pub fn default_priority() -> &'static str {
 ///
 /// The placeholder is the load-bearing exclusion: the sweep re-emits one every run, so
 /// tagging it would make each sweep differ from the one before it and the file would churn
-/// forever. Prose is excluded for a simpler reason - it is not a task and cannot have a
-/// priority - which is what keeps the untagged bucket alive for the lines that belong there.
+/// forever. Prose is excluded for a simpler reason: it is not a task and cannot have a
+/// priority.
 pub fn with_default_priority(line: &str) -> String {
+    with_priority(line, default_priority())
+}
+
+/// [`with_default_priority`] for a row headed to `## Focus`.
+pub fn with_focus_priority(line: &str) -> String {
+    with_priority(line, PRIORITIES[FOCUS_DEFAULT_PRIORITY].1)
+}
+
+fn with_priority(line: &str, default: &str) -> String {
     if !is_task(line) || is_empty_unchecked(line) {
         return line.to_string();
     }
     if task_priority(line).is_some() {
         return one_priority(line);
     }
-    normalize_tags(&add_tag(line, default_priority()))
+    normalize_tags(&add_tag(line, default))
 }
 
 /// A task line with several priority tags (`#urgent #high`, `#low #low`) rewritten to carry
@@ -1368,6 +1409,14 @@ pub fn task_text(line: &str) -> String {
 /// moved the row to the top of its list, dropped an in-progress mark, and lost any tag the
 /// caller forgot to retype.
 pub fn retext_task(line: &str, text: &str) -> String {
+    // The row keeps its one created stamp: a stamp typed in the new words would ride in front
+    // of the old one and leave two (nc-83). A row with none takes the typed one.
+    let typed = text.trim();
+    let text = if split_created(line).1.is_some() {
+        cut_tags(typed, |t| is_created_tag(&t.to_lowercase())).0
+    } else {
+        typed.to_string()
+    };
     let text = text.trim();
     if !is_task(line) || text.is_empty() {
         return line.to_string();
@@ -1568,6 +1617,45 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loose_task_takes_text_and_leaves_the_rest() {
+        let task = |l: &str| loose_task(l);
+        assert_eq!(task("plain line").as_deref(), Some("- [ ] plain line"));
+        assert_eq!(task("- a bullet").as_deref(), Some("- [ ] a bullet"));
+        assert_eq!(task("* a star").as_deref(), Some("- [ ] a star"));
+        assert_eq!(task("+ a plus").as_deref(), Some("- [ ] a plus"));
+        assert_eq!(task("1. a number").as_deref(), Some("- [ ] 1. a number"));
+        assert_eq!(
+            task("**bold** words").as_deref(),
+            Some("- [ ] **bold** words")
+        );
+        assert_eq!(
+            task("#idea a tag first").as_deref(),
+            Some("- [ ] #idea a tag first")
+        );
+        assert_eq!(
+            task("- [[a link]] words").as_deref(),
+            Some("- [ ] [[a link]] words")
+        );
+        assert_eq!(task("- [docs](url)").as_deref(), Some("- [ ] [docs](url)"));
+        assert_eq!(task("* [ ] a list").as_deref(), Some("- [ ] a list"));
+        assert_eq!(task("+ [x] a done").as_deref(), Some("- [x] a done"));
+        assert_eq!(task("[ ] no bullet").as_deref(), Some("- [ ] no bullet"));
+        assert_eq!(task("-").as_deref(), Some("- [ ] "), "the empty slot");
+        for not_text in [
+            "",
+            "   ",
+            "- [ ] a task",
+            "- [x] done",
+            "- [/] doing",
+            "### Parked",
+            "---",
+            "<!-- c -->",
+        ] {
+            assert_eq!(task(not_text), None, "{not_text:?}");
+        }
+    }
 
     #[test]
     fn a_project_tag_names_its_project_and_leaves_the_rest_of_the_line() {
@@ -1880,6 +1968,21 @@ after
         assert_eq!(
             retext_task("- [ ] old #high words (3d) #c260531 #due0601", "new words"),
             "- [ ] new words (3d) #c260531 #due0601 #high"
+        );
+        // nc-83: a stamp typed in the new words never makes a second one, on either path
+        let row = "- [ ] old words #c1104 #high <!-- id:nc-71 -->";
+        assert_eq!(
+            retext_task(row, "new words #c1105"),
+            "- [ ] new words #c1104 #high <!-- id:nc-71 -->"
+        );
+        assert_eq!(
+            retext_task("- [ ] old #high words #c1104", "new #C1105 words"),
+            "- [ ] new words #c1104 #high"
+        );
+        assert_eq!(
+            retext_task("- [ ] old words #high", "new words #c1105"),
+            "- [ ] new words #c1105 #high",
+            "a row with no stamp takes the typed one"
         );
     }
 

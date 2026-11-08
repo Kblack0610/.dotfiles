@@ -15,8 +15,9 @@ use chrono::{Local, TimeZone};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::burn::Account;
 use crate::capacity::clock;
-use crate::costs::{Call, Live};
+use crate::costs::Call;
 use crate::fleet::runner::Watch;
 use crate::home::{self, Home, Kind, Need};
 use crate::jobs::{self, Job};
@@ -40,8 +41,8 @@ pub const STALL_MIN: i64 = 120;
 /// Yesterday's spend over the average by this ratio is warn, by `BAD_RATIO` bad.
 pub const WARN_RATIO: f64 = 1.25;
 pub const BAD_RATIO: f64 = 1.5;
-/// The Lazer pool past this share of its cap is warn.
-pub const LAZER_WARN: f64 = 0.9;
+/// A dollar-capped source (the Lazer pool, a gateway key) past this share of its cap is warn.
+pub const SPEND_WARN: f64 = 0.9;
 /// The runners whose overnight pass the Nightly area reports; Workers counts them too.
 pub const NIGHTLY_RUNNERS: [&str; 2] = ["dream", "nightly-sync"];
 /// The briefing's own runner, left out of what it reports.
@@ -111,9 +112,8 @@ pub struct Inputs {
     pub days: Vec<(String, Value)>,
     /// Queue items finished in the window.
     pub done: Option<Vec<Item>>,
-    pub live: Option<Live>,
-    /// Memory proposals waiting, and in how many projects.
-    pub mem0: (usize, usize),
+    /// claude-acct's source rows (the Costs tab's Burn rows); None when unread or stale.
+    pub sources: Option<Vec<Account>>,
     /// comms' one-line inbox summary.
     pub mail_stats: Option<String>,
     pub errors: Vec<String>,
@@ -669,18 +669,24 @@ fn costs(i: &Inputs) -> Area {
         let r: f64 = spent_in(calls);
         parts.push(format!("runners {} since {}", money(r), clock(i.since)));
     }
-    match i
-        .live
-        .as_ref()
-        .and_then(|l| l.lazer_spend.zip(l.lazer_budget))
-    {
-        Some((s, b)) => {
-            if b > 0.0 && s >= b * LAZER_WARN {
-                level = level.max(Level::Warn);
+    // Each dollar-capped source as the Burn rows read it; the windowed ones are the Burn section's.
+    match &i.sources {
+        Some(rows) => {
+            for a in rows {
+                let (Some(s), Some(b)) = (a.usd_used, a.usd_budget) else {
+                    // a gateway key or pool claude-acct could not read says so, never drops out
+                    if a.kind.starts_with("litellm") {
+                        parts.push(format!("{} unknown", a.name));
+                    }
+                    continue;
+                };
+                if b > 0.0 && s >= b * SPEND_WARN {
+                    level = level.max(Level::Warn);
+                }
+                parts.push(format!("{} {} of {}", a.name, money(s), money(b)));
             }
-            parts.push(format!("Lazer {} of {}", money(s), money(b)));
         }
-        None => parts.push("Lazer unknown".into()),
+        None => parts.push("sources unknown".into()),
     }
     Area {
         name: "Costs",
@@ -775,14 +781,6 @@ fn details(i: &Inputs, areas: &[Area]) -> Vec<String> {
                 names(&back, 6)
             ));
         }
-    }
-    let (n, p) = i.mem0;
-    if n > 0 {
-        also.push(format!(
-            "{} wait for review in {}. Keep one by running its curl in ~/.agent/dreams/<project>/mem0-queue.md.",
-            plural(n, "memory proposal", "memory proposals"),
-            plural(p, "project", "projects")
-        ));
     }
     if let Some(m) = &i.mail_stats {
         also.push(format!("Email: {}.", m.trim().trim_end_matches('.')));
@@ -1023,22 +1021,6 @@ pub fn issues(md: &str) -> Vec<String> {
         .collect()
 }
 
-/// Memory proposals waiting (`^curl ` lines of each `<dreams>/*/mem0-queue.md`) and the
-/// projects they wait in.
-pub fn mem0(dreams: &Path) -> (usize, usize) {
-    let mut n = 0;
-    let mut p = 0;
-    for e in std::fs::read_dir(dreams).into_iter().flatten().flatten() {
-        let q = std::fs::read_to_string(e.path().join("mem0-queue.md")).unwrap_or_default();
-        let k = q.lines().filter(|l| l.starts_with("curl ")).count();
-        if k > 0 {
-            n += k;
-            p += 1;
-        }
-    }
-    (n, p)
-}
-
 fn env_dir(k: &str, home: &Path, d: &str) -> PathBuf {
     std::env::var_os(k)
         .filter(|v| !v.is_empty())
@@ -1066,11 +1048,17 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
     use crate::session_actions::System;
     let home_dir = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     let mut errors = vec![];
-    let (state, queue, home, done, live) = std::thread::scope(|s| {
-        let live = s.spawn(|| {
+    let (state, queue, home, done, sources) = std::thread::scope(|s| {
+        let sources = s.spawn(|| {
             crate::prom::base()
-                .and_then(|b| crate::prom::instant(&b, &crate::costs::live_q()))
-                .map(|series| crate::costs::live(&series).0)
+                .and_then(|b| crate::prom::instant(&b, crate::burn::ACCOUNTS))
+                .and_then(|series| {
+                    let b = crate::burn::build(&series, None, crate::burn::Drip::default(), now);
+                    match b.stale {
+                        Some(note) => Err(note.to_string()),
+                        None => Ok(b.accounts),
+                    }
+                })
         });
         let done = s.spawn(move || {
             queue::list_since(&System, "done", &date_before(since, 0)).map(|items| {
@@ -1091,14 +1079,14 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
             queue,
             home,
             done.join().unwrap_or_else(|_| Err("panicked".into())),
-            live.join().unwrap_or_else(|_| Err("panicked".into())),
+            sources.join().unwrap_or_else(|_| Err("panicked".into())),
         )
     });
     let done = done
         .map_err(|e| errors.push(format!("agent-queue list --since: {e}")))
         .ok();
-    let live = live
-        .map_err(|e| errors.push(format!("Lazer spend: {e}")))
+    let sources = sources
+        .map_err(|e| errors.push(format!("claude-acct sources: {e}")))
         .ok();
 
     let (wdir, wstate) = crate::fleet::runner::watch_dirs(&home_dir.to_string_lossy(), |k| {
@@ -1147,8 +1135,7 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
         calls,
         days,
         done,
-        live,
-        mem0: mem0(&home_dir.join(".agent/dreams")),
+        sources,
         mail_stats: std::fs::read_to_string(comms.join("stats-summary.txt"))
             .ok()
             .filter(|s| !s.trim().is_empty()),
@@ -1226,11 +1213,20 @@ mod tests {
             calls: Some(vec![]),
             days,
             done: Some(vec![]),
-            live: Some(Live {
-                lazer_spend: Some(46.0),
-                lazer_budget: Some(250.0),
-                ..Default::default()
-            }),
+            sources: Some(vec![
+                Account {
+                    name: "main".into(),
+                    kind: "claude".into(),
+                    ..Default::default()
+                },
+                Account {
+                    name: "lazer".into(),
+                    kind: "litellm-team".into(),
+                    usd_used: Some(46.0),
+                    usd_budget: Some(250.0),
+                    ..Default::default()
+                },
+            ]),
             ..Default::default()
         }
     }
@@ -1416,18 +1412,20 @@ mod tests {
     #[test]
     fn a_trip_in_the_window_is_named_and_a_loud_one_is_bad() {
         let mut i = green();
-        let mut w = watch("claude-account-pace", "TRIP", NOW - 3600);
+        let mut w = watch("source-pace", "TRIP", NOW - 3600);
         w.severity = "high".into();
         i.watches.as_mut().unwrap().push(w);
         let inf = area(&build(&i), "Infra").clone();
         assert_eq!(inf.level, Level::Bad);
         assert_eq!(inf.details.len(), 1);
-        assert!(inf.details[0].starts_with("claude-account-pace tripped at "));
+        assert!(inf.details[0].starts_with("source-pace tripped at "));
     }
 
     fn need(kind: Kind, id: &str, text: &str) -> Need {
         Need {
             kind,
+            need: home::NeedKind::Ask,
+            rank: 0,
             project: "p".into(),
             text: text.into(),
             id: id.into(),
@@ -1507,6 +1505,22 @@ mod tests {
         assert_eq!(area(&build(&i), "Costs").level, Level::Warn);
         i.days.last_mut().unwrap().1 = day("", 410, 1300.0).1;
         assert_eq!(area(&build(&i), "Costs").level, Level::Bad);
+    }
+
+    #[test]
+    fn a_dollar_source_near_its_cap_warns_and_a_windowed_one_is_not_listed() {
+        let i = green();
+        let line = area(&build(&i), "Costs").line.clone();
+        assert!(line.ends_with(", lazer $46.00 of $250"), "{line}");
+        assert!(!line.contains("main"), "{line}");
+        let mut i = green();
+        i.sources.as_mut().unwrap()[1].usd_used = Some(230.0);
+        assert_eq!(area(&build(&i), "Costs").level, Level::Warn);
+        // negative control: an unread pool is named, not dropped
+        i.sources.as_mut().unwrap()[1].usd_used = None;
+        assert!(area(&build(&i), "Costs").line.ends_with(", lazer unknown"));
+        i.sources = None;
+        assert!(area(&build(&i), "Costs").line.ends_with("sources unknown"));
     }
 
     #[test]

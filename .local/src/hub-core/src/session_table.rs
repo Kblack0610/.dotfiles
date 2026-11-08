@@ -1,8 +1,8 @@
 //! The Sessions table on both surfaces: every session in `fleet-sessions`' state document, then
 //! the sessions that ended, so done stays visible after a window closes. An ended row comes from
-//! today's finished queue items that ran a session or landed a PR, or from an outcome row
-//! (`agentctl-session-outcomes ended`) for a session with no item, which only exists after the
-//! nightly run; each row names its source.
+//! today's finished queue items that ran a session or landed a PR, or from
+//! `agentctl-session-outcomes ended` for a session with no item, which reads the Stop-hook
+//! registry so a session shows the day it ends; each row names its source.
 //! Filtering, sorting and the chips are `crate::table`'s; this module is the join.
 
 use std::collections::{HashMap, HashSet};
@@ -20,8 +20,8 @@ use crate::table::{Row, Val};
 use crate::text::headline;
 use crate::vocab::Vocab;
 
-/// How far back outcome rows go. Outcomes are written once a night, so this reaches over the
-/// last run rather than a calendar day, which would be empty for most of it.
+/// How far back `agentctl-session-outcomes ended` reads. It covers today whatever the hour, and
+/// `feed` keeps only the rows that ended since local midnight, so "done today" means today.
 pub const ENDED_DAYS: u32 = 1;
 
 /// The shepherd's session and the NIGHTLY and SHARED rows: the fleet's own, not anyone's task.
@@ -102,6 +102,12 @@ pub struct SessionRow {
     pub source: Source,
     /// This live session counts as having no queue item (`item:none`).
     pub unlinked: bool,
+}
+
+/// What the given rows cost, summed: the overview's spend for the rows a view shows. A row with
+/// no cost adds nothing.
+pub fn spend<'a>(rows: impl IntoIterator<Item = &'a SessionRow>) -> f64 {
+    rows.into_iter().filter_map(|r| r.cost_usd).sum()
 }
 
 impl Row for SessionRow {
@@ -242,19 +248,25 @@ fn ended_argv() -> Vec<String> {
     argv(&["agentctl-session-outcomes", "ended", "--days", &days])
 }
 
+/// The `ended` rows that ended at or after `since`: the command reads a rolling day, the table
+/// shows a calendar one.
+fn ended_since(out: &str, since: i64) -> Vec<Ended> {
+    out.lines()
+        .filter_map(|l| serde_json::from_str::<Ended>(l).ok())
+        .filter(|e| e.updated_epoch.is_some_and(|t| t >= since))
+        .collect()
+}
+
 /// Read the feed. A source that fails leaves its part empty and says so in `errors`.
 pub fn feed(runner: &dyn Runner, registry: &Path) -> Feed {
     let mut errors = vec![];
     let items = queue::list(runner, "all")
         .map_err(|e| errors.push(format!("agent-queue: {e}")))
         .unwrap_or_default();
+    let since = crate::text::local_day_start(chrono::Local::now().timestamp());
     let ended = runner
         .run(&ended_argv())
-        .map(|o| {
-            o.lines()
-                .filter_map(|l| serde_json::from_str(l).ok())
-                .collect()
-        })
+        .map(|o| ended_since(&o, since))
         .map_err(|e| errors.push(format!("session outcomes: {e}")))
         .unwrap_or_default();
     Feed {
@@ -729,6 +741,19 @@ mod tests {
     }
 
     #[test]
+    fn spend_sums_only_the_rows_the_view_shows() {
+        let row = |project: &str, cost| SessionRow {
+            project: project.into(),
+            cost_usd: cost,
+            ..Default::default()
+        };
+        let r = vec![row("a", Some(1.5)), row("b", Some(2.0)), row("a", None)];
+        assert_eq!(spend(&r), 3.5);
+        let v = View::new::<SessionRow>("project:a", "", "", "");
+        assert_eq!(spend(v.apply(&r)), 1.5);
+    }
+
+    #[test]
     fn the_chips_split_the_rows() {
         let r = rows(&state(), &vocab(), &feed(), &[]);
         let v = View::new::<SessionRow>("", "", "", "");
@@ -834,5 +859,44 @@ mod tests {
         let f = super::feed(&R, Path::new("/nonexistent"));
         assert_eq!(rows(&[], &vocab(), &f, &[]).len(), 1);
         assert_eq!(f.errors, ["session outcomes: exit 1"]);
+    }
+
+    #[test]
+    fn the_feed_drops_an_ended_row_from_before_midnight() {
+        struct R;
+        impl Runner for R {
+            fn run(&self, argv: &[String]) -> Result<String, String> {
+                let now = chrono::Local::now().timestamp();
+                Ok(match argv[0].as_str() {
+                    "agent-queue" => String::new(),
+                    _ => [
+                        json!({"session_id":"now","updated_epoch":now}),
+                        json!({"session_id":"two days ago","updated_epoch":now - 2 * 86_400}),
+                    ]
+                    .map(|v| v.to_string())
+                    .join("\n"),
+                })
+            }
+        }
+        let f = super::feed(&R, Path::new("/nonexistent"));
+        let ids: Vec<&str> = f.ended.iter().map(|e| e.session_id.as_str()).collect();
+        assert_eq!(ids, ["now"]);
+    }
+
+    #[test]
+    fn ended_keeps_only_the_rows_since_midnight() {
+        let midnight = 1_794_000_000;
+        let out = [
+            json!({"session_id":"yesterday","updated_epoch":midnight - 1}),
+            json!({"session_id":"today","updated_epoch":midnight}),
+            json!({"session_id":"undated"}),
+        ]
+        .map(|v| v.to_string())
+        .join("\n");
+        let ids: Vec<String> = super::ended_since(&out, midnight)
+            .into_iter()
+            .map(|e| e.session_id)
+            .collect();
+        assert_eq!(ids, ["today"]);
     }
 }

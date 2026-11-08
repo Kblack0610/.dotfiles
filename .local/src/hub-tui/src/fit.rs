@@ -49,7 +49,7 @@ pub struct Table {
 }
 
 /// Terminal columns, not chars: an emoji job name (CI's "🔨 Build") takes two.
-fn len(s: &str) -> usize {
+pub fn len(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
@@ -196,9 +196,16 @@ impl Table {
             total -= (wid[j] + GAP) as isize;
         }
         if let Some(f) = self.flex {
+            // The room the flex column gets is what the others leave, so its own width is not
+            // counted against it.
+            let rest = if on[f] {
+                total - (wid[f] + GAP) as isize
+            } else {
+                total
+            };
             on[f] = w == 0
                 || self.flexkeep
-                || w as isize - total - GAP as isize >= self.flexmin as isize;
+                || w as isize - rest - GAP as isize >= self.flexmin as isize;
         }
         (on, wid)
     }
@@ -325,6 +332,18 @@ mod tests {
             "flex hides under flexmin"
         );
         assert_eq!(texts(&tb, 6), ["NAME", "alpha"], "N drops, NAME never");
+    }
+
+    #[test]
+    fn a_flex_column_in_keep_that_fits_is_not_hidden_by_its_own_width() {
+        let mut tb = t(&[&["alpha", "7", "short note"]]);
+        tb.keep = vec![0, 1, 2];
+        assert_eq!(texts(&tb, 24), ["NAME   N  NOTE", "alpha  7  short note"]);
+        assert_eq!(
+            texts(&tb, 12),
+            ["NAME   N", "alpha  7"],
+            "still hides under flexmin"
+        );
     }
 
     #[test]

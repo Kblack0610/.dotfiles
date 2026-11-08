@@ -1,6 +1,5 @@
 BADYAML|command:daily/analysis
 BADYAML|command:daily/standup
-BADYAML|command:daily/summary
 LONGDESC|agent:compliance-counsel
 LONGDESC|agent:quality-engineer
 LONGDESC|agent:root-cause-analyst
@@ -8,7 +7,6 @@ LONGDESC|agent:security-engineer
 NONASCII|agent:compliance-counsel
 NONASCII|command:daily/analysis
 NONASCII|command:daily/standup
-NONASCII|command:daily/summary
 NONASCII|command:my/autopilot
 NONASCII|command:my/go
 NONASCII|command:my/worktree-recycle

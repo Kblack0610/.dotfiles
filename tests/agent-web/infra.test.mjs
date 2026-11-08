@@ -1,4 +1,4 @@
-// Unit tests for Infra's Red fixes section (.local/src/agent-web/static/infra.js), run by
+// Unit tests for Infra's Red fixes and Red now sections (.local/src/agent-web/static/infra.js), run by
 // `node --test` from tests/unit/agent_web_queue.bats. The page's real scripts load into one vm
 // context, as the browser loads them; only the DOM is a stub. The split, the order and the
 // summary are hub_core::reds, tested in Rust; this checks how the section draws them.
@@ -57,4 +57,15 @@ test("a failed read says so in the section, never an empty list", () => {
 test("nothing open and nothing settled is the summary alone", () => {
   Object.assign(ist, { reds: { open: [], settled: [], summary: "no red fix queued in the last 7 days" }, redsErr: null });
   assert.equal(run("fixesSection()"), `<h2 class="sec" id="sec-fixes">Red fixes <span class="muted">no red fix queued in the last 7 days</span></h2>`);
+});
+
+test("red now draws the server's down runners and never judges a runner itself", () => {
+  const up = () => [{ labels: {}, value: 1 }];
+  const off = (name) => ({ labels: { name, host: "aws-burst-1", state: "offline" } });
+  const d = {
+    instant: { red: [{ labels: { item: "watch a" } }], runners: [off("aws-burst-1-unity-pool-1")], exporter_up: up(), rate_left: [{ labels: {}, value: 5 }], api: up() },
+    down: [{ labels: { name: "mini-1", host: "mac-mini", state: "missing" } }],
+  };
+  ctx.d = d;
+  assert.deepEqual([...run("redItems(d)")], ["watch a", "runner mini-1 missing"], "aws-burst-1 is offline in the series but not in down");
 });

@@ -219,10 +219,12 @@ function queuedTable(inst) {
 }
 
 // What is red: cc:red_now, the dashboard's table (watches, runners, nodes, feed, Sentinel) plus the
-// board's DOWN line (offline runners, stuck runs, the exporter and GitHub).
-function redItems(inst) {
+// board's DOWN line (the down runners hub_core::infra::runners_down judged, stuck runs, the
+// exporter and GitHub).
+function redItems(d) {
+  const inst = d.instant;
   const items = (inst.red || []).map((s) => s.labels.item).filter(Boolean).sort();
-  for (const r of inst.runners || []) if (["offline", "missing"].includes(r.labels.state)) items.push(`runner ${r.labels.name} ${r.labels.state}`);
+  for (const r of d.down || []) items.push(`runner ${r.labels.name} ${r.labels.state}`);
   for (const r of inst.waiting || []) if (r.labels.stuck === "true") items.push(`stuck run: ${r.labels.repo} ${r.labels.branch}, ${secs(r.value)}, no jobs`);
   // The likeliest cause first, as the hub board's DOWN line: a missed scrape (exporter_up 0 or
   // absent) blanks every exporter series, a spent rate limit leaves jobs and history unread,
@@ -527,7 +529,7 @@ function renderInfra() {
   const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3;
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
-  const red = redItems(inst);
+  const red = redItems(d);
   // Home owns the asks; Infra shows their count as a badge that opens Home.
   const asks = (cc["cc:asks_open"] || {})[""];
   const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
@@ -535,7 +537,7 @@ function renderInfra() {
   html += `<div id="sec-health">${domainTiles(cc)}<div class="sp"></div>${kpis(cc)}</div>`;
   html += red.length
     ? `<h2 class="sec" id="sec-red">Red now <span class="muted">${red.length}</span></h2><div class="panel down">${red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`
-    : `<h2 class="sec" id="sec-red">Red now <span class="muted">nothing: every rostered runner is registered and online</span></h2>`;
+    : `<h2 class="sec" id="sec-red">Red now <span class="muted">nothing: every rostered runner is online or powered off by the governor</span></h2>`;
   html += fixesSection();
   html += `<h2 class="sec" id="sec-machines">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`;
   html += ciSection(cc, inst, t1);
@@ -548,7 +550,7 @@ const pollInfra = poll("infra", refreshInfra, INFRA_REFRESH_MS);
 
 TABS.infra = {
   // The Jobs section (jobs.js) reads its own source on its own timer.
-  show() { renderInfra(); pollInfra(); renderJobs(); pollJobs(); },
+  show() { renderInfra(); pollInfra(); jst.render(); pollJobs(); },
   // Nothing on this machine changes Prometheus, so file events do not apply; only a resync does.
-  onEvent(ev) { if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); refreshJobs(); } },
+  onEvent(ev) { if (ev.kind === "resync" && st.tab === "infra") { refreshInfra(); jst.refresh(); } },
 };

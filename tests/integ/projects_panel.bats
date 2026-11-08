@@ -121,6 +121,31 @@ setup() {
   refute_output --partial 'accept'
 }
 
+@test "a, g and c reach the project's repo: its agents, its session, a new Claude" {
+  run "$PROJECTS_SH" --key list a
+  assert_output 'print(agents)+accept'
+  run "$PROJECTS_SH" --key list g
+  assert_output 'print(repo)+accept'
+  run "$PROJECTS_SH" --key list c
+  assert_output 'print(claude)+accept'
+  # Negative control: searching, the letters type themselves.
+  FZF_INPUT_STATE=enabled run "$PROJECTS_SH" --key list c
+  assert_output 'put(c)'
+}
+
+@test "--repo resolves a project through project-map.json, and a notes-only one fails" {
+  mkdir -p "$BATS_TEST_TMPDIR/checkout"
+  printf '{"paths":{"%s":"big-repo"},"trackers":{"big-alpha":{"repo":"big-repo"},"_comment":"x"}}\n' \
+    "$BATS_TEST_TMPDIR/checkout" >"$BATS_TEST_TMPDIR/map.json"
+  export PROJECT_MAP_FILE="$BATS_TEST_TMPDIR/map.json"
+  run "$PROJECTS_SH" --repo big-alpha
+  assert_success
+  assert_output "$BATS_TEST_TMPDIR/checkout"
+  run "$PROJECTS_SH" --repo idea
+  assert_failure
+  assert_output ''
+}
+
 @test "d toggles the drafts both ways" {
   run "$PROJECTS_SH" --key list d
   assert_output --partial 'change-prompt(all projects> )'

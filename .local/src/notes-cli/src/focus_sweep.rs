@@ -1,10 +1,13 @@
 //! `notes focus sweep` — reorganize today's `## Focus` by priority + status, so a task
 //! moves between lanes as its `#urgent`/`#high`/`#low` tag is set or its
-//! checkbox is checked: untagged todos on top, then `### Urgent` / `### High` /
-//! `### Low` (open tasks, in-priority order), done (`[x]`) under
-//! `--- / ### Done`. An in-progress `[/]` task keeps its mark inside its priority lane.
-//! Once active, empty lane headers + Done persist as drop targets, and an untagged task
-//! dropped under a lane header inherits that lane's tag.
+//! checkbox is checked: `### Urgent` / `### High` / `### Low` (open tasks, in-priority
+//! order), done (`[x]`) under `--- / ### Done`. An in-progress `[/]` task keeps its mark
+//! inside its priority lane. Empty lane headers + Done persist as drop targets, and an
+//! untagged task dropped under a lane header inherits that lane's tag.
+//!
+//! Every line in Focus is a task: a bare bullet or a plain line becomes `- [ ] <text>` and
+//! stays, with anything indented under it, so a paste is carried like any row instead of
+//! being lost with its day. A task in no lane files under `### Low`.
 //!
 //! This mirrors the nvim buffer sweep (markdown.lua rebuild_focus_body) so that
 //! tagging/checking a task from the cockpit organizes the note exactly like cycling it in
@@ -27,17 +30,22 @@ use anyhow::{bail, Result};
 use std::fs;
 
 // The priority lanes are md::PRIORITIES (the single source of truth, most-urgent first),
-// shared with tag detection. Untagged open tasks (rank == PRIORITIES.len()) stay unheaded on
-// top; checked tasks go under ### Done; each open task otherwise buckets by its tag. The
-// nvim sweep (markdown.lua LANES) mirrors the same set.
+// shared with tag detection. Checked tasks go under ### Done; each open task otherwise
+// buckets by its tag. The nvim sweep (markdown.lua LANES) mirrors the same set.
 
 /// Pure core: reorganize the ## Focus section of `content` by status. `None` when the
 /// section is absent or already organized (no change).
 ///
 /// The lane model itself lives in `sweep`, shared with the project-sheet sweep. Focus
 /// offers all three lanes.
-fn sweep_content(content: &str) -> Option<String> {
+pub(crate) fn sweep_content(content: &str) -> Option<String> {
     sweep::sweep_section(content, |h| h.eq_ignore_ascii_case("Focus"))
+}
+
+/// `content` with its `## Focus` filed: what a writer puts on disk, so a row it adds under the
+/// heading never sits above the lanes.
+pub(crate) fn filed(content: String) -> String {
+    sweep_content(&content).unwrap_or(content)
 }
 
 /// notes focus start <query> — toggle the first matching authored `## Focus` task
@@ -134,16 +142,10 @@ after
         let high = focus.find("### High").unwrap();
         let low = focus.find("### Low").unwrap();
         let done = focus.find("### Done").unwrap();
-        // an untagged task takes the default and lands in High, not above the lanes
+        // an untagged task takes the Focus default and lands in Low, not above the lanes
         let untagged = focus.find("untagged one").unwrap();
-        assert!(
-            out.contains("- [ ] untagged one #high"),
-            "defaulted:\n{out}"
-        );
-        assert!(
-            untagged > high && untagged < low,
-            "in the High lane:\n{out}"
-        );
+        assert!(out.contains("- [ ] untagged one #low"), "defaulted:\n{out}");
+        assert!(untagged > low && untagged < done, "in the Low lane:\n{out}");
         assert!(
             urgent < high && high < low,
             "lanes ordered urgent > high > low"
@@ -198,27 +200,79 @@ after
         assert!(out.contains(&format!("{}\n### somejob\n- [ ] theirs", md::ROLLUP_START)));
     }
 
-    // A note holding nothing but the placeholder still sweeps to nothing, so a fresh daily
-    // note is not born full of empty lane headers. The placeholder is the one task line that
-    // never takes the default - it is scaffold the sweep re-emits, and tagging it would make
-    // every sweep differ from the one before it.
+    // The lanes are the whole of Focus, so a note with nothing in it still has them, and the
+    // empty `- [ ]` slot that used to sit above them goes.
     #[test]
-    fn a_note_with_only_the_placeholder_is_left_alone() {
-        let note = "## Focus\n- [ ] \n\n## Notes\n";
-        assert!(sweep_content(note).is_none(), "nothing to organize");
+    fn a_note_with_only_the_slot_opens_on_the_bare_lanes() {
+        let lanes = "## Focus\n\n### Urgent\n\n### High\n\n### Low\n\n---\n### Done\n\n## Notes\n";
+        assert_eq!(
+            sweep_content("## Focus\n- [ ] \n\n## Notes\n").unwrap(),
+            lanes
+        );
+        assert_eq!(sweep_content("## Focus\n\n## Notes\n").unwrap(), lanes);
+        assert!(
+            sweep_content(lanes).is_none(),
+            "the bare lanes are the sorted form"
+        );
     }
 
-    // But a real untagged task IS something to organize now: it takes the default and the
-    // lanes appear around it.
     #[test]
-    fn untagged_todos_take_the_default_and_open_the_lanes() {
+    fn a_task_in_no_lane_files_under_low() {
         let note = "## Focus\n- [ ] a\n- [ ] b\n- [ ] \n\n## Notes\n";
         let out = sweep_content(note).expect("defaulting is a change");
+        let low = out.find("### Low").unwrap();
         assert!(
-            out.contains("- [ ] a #high") && out.contains("- [ ] b #high"),
+            out.contains("- [ ] a #low") && out.contains("- [ ] b #low"),
             "{out}"
         );
-        assert!(out.contains("### High"), "{out}");
+        assert!(out.find("- [ ] a").unwrap() > low, "{out}");
+    }
+
+    // A bare bullet and a plain line both stay in Focus as open tasks, in the lane they sit
+    // under, else Low; indented notes stay under them. Measured before this: 37 pasted lines
+    // in one note (2026-11-04) were read by nothing and lost with their day.
+    #[test]
+    fn every_line_of_text_becomes_a_task_where_it_stands() {
+        let note = "## Focus\nplain line\n- bare bullet\n    a note under it\n* star bullet\n\n### Urgent\ndropped in urgent\n\n## Notes\n";
+        let out = sweep_content(note).unwrap();
+        let focus = out.split("## Notes").next().unwrap();
+        let (urgent, low) = (
+            focus.find("### Urgent").unwrap(),
+            focus.find("### Low").unwrap(),
+        );
+        assert!(focus.contains("- [ ] dropped in urgent #urgent"), "{out}");
+        assert!(focus.find("dropped in urgent").unwrap() > urgent, "{out}");
+        assert!(
+            focus.contains("- [ ] plain line #low\n- [ ] bare bullet #low\n    a note under it\n- [ ] star bullet #low"),
+            "{out}"
+        );
+        assert!(focus.find("plain line").unwrap() > low, "{out}");
+        assert!(
+            sweep_content(&out).is_none(),
+            "the rewrite is idempotent:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_line_that_names_a_priority_files_by_it() {
+        let out = sweep_content("## Focus\nfix the bar #urgent\n\n## Notes\n").unwrap();
+        assert!(
+            out.contains("### Urgent\n- [ ] fix the bar #urgent"),
+            "{out}"
+        );
+    }
+
+    // A heading, a comment and a rule are not text to act on, and neither is a bullet with
+    // nothing in it. An indented line with no task above it has nothing to be a note of.
+    #[test]
+    fn only_text_becomes_a_task() {
+        let note =
+            "## Focus\n### Parked\n<!-- kept -->\n-\n### Urgent\n    orphan note\n\n## Notes\n";
+        let out = sweep_content(note).unwrap();
+        assert!(
+            out.contains("### Parked\n<!-- kept -->\n\n### Urgent\n- [ ] orphan note #urgent"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -237,8 +291,19 @@ after
     fn golden_matches_the_nvim_buffer_sweep() {
         // Byte-for-byte the output the nvim BufWritePre sweep produces for the same input
         // (markdown.lua rebuild_focus_body), locking the two surfaces in parity.
-        let note = "## Focus\n- [ ] plain top\n- [ ] task #high\n### Urgent\n- [ ] dropped\n- [ ] \n\n## Notes\nafter\n";
-        let expected = "## Focus\n- [ ] \n\n### Urgent\n- [ ] dropped #urgent\n\n### High\n- [ ] plain top #high\n- [ ] task #high\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
+        // tests/integ/notes_save_sweep.bats runs the same input through the real plugin.
+        let note = "## Focus\n- [ ] plain top\n- [ ] task #high\n- bare bullet\n    its note\nplain line\n### Urgent\n- [ ] dropped\ntyped here\n- [ ] \n\n## Notes\nafter\n";
+        let expected = "## Focus\n\n### Urgent\n- [ ] dropped #urgent\n- [ ] typed here #urgent\n\n### High\n- [ ] task #high\n\n### Low\n- [ ] plain top #low\n- [ ] bare bullet #low\n    its note\n- [ ] plain line #low\n\n---\n### Done\n\n## Notes\nafter\n";
+        assert_eq!(sweep_content(note).unwrap(), expected);
+    }
+
+    #[test]
+    fn golden_tag_grammar_matches_the_nvim_buffer_sweep() {
+        // `#high-priority` is no priority, a glued or code-spanned `#urgent` is no tag, and
+        // `#HIGH.` is high. tests/integ/notes_save_sweep.bats ("a save reads a priority tag by
+        // the CLI's tag grammar") runs the same input through markdown.lua's each_tag.
+        let note = "## Focus\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority\n- [ ] c foo#urgent\n- [ ] d `#urgent` #HIGH.\n\n## Notes\n";
+        let expected = "## Focus\n\n### Urgent\n\n### High\n- [ ] d `#urgent` #HIGH.\n\n### Low\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority #low\n- [ ] c foo#urgent #low\n\n---\n### Done\n\n## Notes\n";
         assert_eq!(sweep_content(note).unwrap(), expected);
     }
 

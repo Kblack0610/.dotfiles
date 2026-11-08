@@ -37,10 +37,9 @@ pub enum Ask {
 
 #[derive(Default)]
 pub struct QueueView {
-    /// The shared table's view: query, state chip, sort.
+    /// The shared table's view (query, state chip, sort) and its selection, an index into the
+    /// drawn rows, then into the candidates the open fold shows.
     pub table: DataTable,
-    /// Index into the drawn rows, then into the candidates the open fold shows.
-    pub sel: usize,
     /// The selected row's detail replaces the table.
     pub detail: bool,
     pub cands_open: bool,
@@ -64,7 +63,6 @@ impl QueueView {
     pub fn open(&mut self, query: &str) {
         let q = query.trim();
         self.table.clear();
-        self.sel = 0;
         self.detail = false;
         match hub_core::queue::section_chip(q) {
             _ if q.is_empty() => {}
@@ -89,7 +87,7 @@ impl QueueView {
     }
 
     pub fn selected<'a>(&self, q: &'a Queue, now: i64) -> Option<&'a Item> {
-        self.shown(q, now).get(self.sel).map(|r| r.item)
+        self.shown(q, now).get(self.table.sel).map(|r| r.item)
     }
 
     /// The candidates the fold lists: none while it is shut.
@@ -107,7 +105,7 @@ impl QueueView {
         c: &'a [Candidate],
         now: i64,
     ) -> Option<&'a Candidate> {
-        let i = self.sel.checked_sub(self.shown(q, now).len())?;
+        let i = self.table.sel.checked_sub(self.shown(q, now).len())?;
         self.shown_cands(c).get(i)
     }
 
@@ -116,10 +114,8 @@ impl QueueView {
     pub fn reselect(&mut self, was: Option<String>, q: &Queue, c: &[Candidate], now: i64) {
         let rows = self.shown(q, now);
         let n = rows.len() + self.shown_cands(c).len();
-        self.sel = was
-            .and_then(|s| rows.iter().position(|r| r.item.slug == s))
-            .unwrap_or(self.sel)
-            .min(n.saturating_sub(1));
+        let at = was.and_then(|s| rows.iter().position(|r| r.item.slug == s));
+        self.table.keep(at, n);
     }
 
     /// `page` is the body's height in rows: PgUp/PgDn and space move the selection a page,
@@ -151,34 +147,27 @@ impl QueueView {
         // `/ f s S x`, and every key while a query is being typed, are the shared table's.
         if !ctrl && (self.table.typing.is_some() || DataTable::owns(k.code)) {
             if self.table.key::<QueueRow>(k.code) == Took::View {
-                self.sel = 0;
                 self.detail = false;
             }
             return Ask::Done;
         }
         let Some(q) = q else { return Ask::Pass };
         let rows = self.shown(q, now);
-        let n = rows.len() + self.shown_cands(c).len();
-        let last = n.saturating_sub(1);
-        let half = (page / 2).max(1);
+        if self
+            .table
+            .moves(k, rows.len() + self.shown_cands(c).len(), page)
+        {
+            return Ask::Done;
+        }
+        if ctrl {
+            return Ask::Pass;
+        }
         let busy = || Some(Err("an action is still running".to_string()));
-        let item = rows.get(self.sel).map(|r| r.item);
+        let item = rows.get(self.table.sel).map(|r| r.item);
         match k.code {
-            KeyCode::Char('d') if ctrl => self.sel = (self.sel + half).min(last),
-            KeyCode::Char('u') if ctrl => self.sel = self.sel.saturating_sub(half),
-            _ if ctrl => return Ask::Pass,
-            KeyCode::Char('j') | KeyCode::Down => self.sel = (self.sel + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => self.sel = self.sel.saturating_sub(1),
-            KeyCode::PageDown | KeyCode::Char(' ') => self.sel = (self.sel + page.max(1)).min(last),
-            KeyCode::PageUp => self.sel = self.sel.saturating_sub(page.max(1)),
-            KeyCode::Char('g') | KeyCode::Home => self.sel = 0,
-            KeyCode::Char('G') | KeyCode::End => self.sel = last,
             KeyCode::Enter if item.is_some() => self.detail = !self.detail,
             KeyCode::Esc if self.detail => self.detail = false,
-            KeyCode::Esc if !self.table.is_default() => {
-                self.table.clear();
-                self.sel = 0;
-            }
+            KeyCode::Esc if !self.table.is_default() => self.table.clear(),
             KeyCode::Char('C') => {
                 self.cands_open = !self.cands_open;
                 self.reselect(None, q, c, now);
@@ -457,7 +446,7 @@ pub fn page(
     ));
     out.push(clip_line(Line::from(chips), w));
     let mut at_line = None;
-    if let (true, Some(r)) = (v.detail, rows.get(v.sel)) {
+    if let (true, Some(r)) = (v.detail, rows.get(v.table.sel)) {
         out.push(Line::raw(""));
         at_line = Some(out.len());
         out.extend(detail(r.item, r.timing, p, now, w));
@@ -472,10 +461,7 @@ pub fn page(
         ));
     } else {
         let mut t = table(&rows, v, p, w);
-        if v.sel < rows.len() {
-            t[v.sel + 1].style = p.sel();
-            at_line = Some(out.len() + v.sel + 1);
-        }
+        at_line = v.table.style(&mut t, p).map(|i| out.len() + i);
         out.append(&mut t);
         if older > 0 {
             out.push(Line::styled(format!("+{older} older"), p.dim()));
@@ -567,7 +553,7 @@ fn candidates(
     }
     .fit(w, p.head());
     let mut sel_at = None;
-    if let Some(at) = v.sel.checked_sub(above).filter(|i| *i < shown.len()) {
+    if let Some(at) = v.table.sel.checked_sub(above).filter(|i| *i < shown.len()) {
         t[at + 1].style = p.sel();
         sel_at = Some(out.len() + at + 1);
     }
@@ -801,7 +787,7 @@ pub(crate) mod tests {
         let mut v = QueueView::default();
         press(&mut v, &q, &[], 'j');
         press(&mut v, &q, &[], 'j');
-        assert_eq!(v.sel, 2);
+        assert_eq!(v.table.sel, 2);
         let want: [(&str, &[&str]); 5] = [
             ("needs you", &["pick-sides"]),
             ("running", &["fix-menu"]),
@@ -816,7 +802,7 @@ pub(crate) mod tests {
             assert_eq!(press(&mut v, &q, &[], 'f'), Ask::Done);
             assert_eq!(v.table.view.state, chip);
             assert_eq!(slugs(&v, &q), slugs_in, "{chip}");
-            assert_eq!(v.sel, 0, "a changed view starts at the top");
+            assert_eq!(v.table.sel, 0, "a changed view starts at the top");
         }
         // s sorts by the next column, S flips it: by `in` the longest-waiting row goes last.
         press(&mut v, &q, &[], 's');
@@ -882,7 +868,7 @@ pub(crate) mod tests {
             Ask::Done
         );
         assert_eq!(slugs(&v, &q), ["next-up", "night-sweep", "landed"]);
-        assert_eq!(v.sel, 0);
+        assert_eq!(v.table.sel, 0);
         let s = text(&q, &v, 160);
         assert!(
             s.contains("3 of 5") && s.contains("| /project:dotfiles"),
@@ -1102,10 +1088,8 @@ pub(crate) mod tests {
     #[test]
     fn a_new_read_keeps_the_selection_on_its_slug() {
         let q = fixture();
-        let mut v = QueueView {
-            sel: 2,
-            ..Default::default()
-        };
+        let mut v = QueueView::default();
+        v.table.sel = 2;
         assert_eq!(v.selected(&q, now()).unwrap().slug, "next-up");
         let mut fewer = fixture();
         fewer.items.retain(|i| i.slug != "pick-sides");
@@ -1118,7 +1102,7 @@ pub(crate) mod tests {
             "a done row keeps its place too"
         );
         v.reselect(Some("gone".into()), &Queue::default(), &[], now());
-        assert_eq!(v.sel, 0);
+        assert_eq!(v.table.sel, 0);
     }
 
     #[test]
@@ -1233,7 +1217,10 @@ pub(crate) mod tests {
         assert!(v.confirm.is_none(), "c does not cancel a candidate");
 
         press(&mut v, &q, &c, 'C');
-        assert_eq!(v.sel, 4, "folding brings the selection back to the rows");
+        assert_eq!(
+            v.table.sel, 4,
+            "folding brings the selection back to the rows"
+        );
         v.running = Some("promote x".into());
         press(&mut v, &q, &c, 'C');
         assert_eq!(

@@ -201,7 +201,7 @@ deck doctor                                        Check the toolchain on this m
 - **TARGET** may be empty (uses `DECK_HOME`), a file, a directory (renders every
   `marp: true` deck in it), or a bare deck name resolved under `DECK_HOME`.
 - **Theme names** accept the bare or prefixed form (`tech` == `kb-tech`).
-- **Deck home**: `DECK_HOME` (default `~/.notes/lab/decks`), so decks ride the notes
+- **Deck home**: `DECK_HOME` (default `decks/` under `~/.notes/lab/`, which `deck` makes on first use), so decks ride the notes
   vault sync across machines. Override with `--dir` or `$DECK_HOME`.
 - **View it**: `deck watch <name>` starts a marp server at `http://localhost:8088/`
   (port via `--port`/`$PORT`) and serves the deck at `/<name>.md` with live reload.

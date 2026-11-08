@@ -1,7 +1,7 @@
 //! The Daily tab's reader: one note from `notes show --json` (the CLI resolves the target and
 //! keeps it inside the notes), split so both hub surfaces draw the same thing. The daily note's
-//! `## Focus` comes apart into its lanes (`### Urgent`, `### High`, `### Low`, `### Done`, and
-//! the unheaded lines above them), the rollup block another profile's Focus is mirrored into
+//! `## Focus` comes apart into its lanes (`### Urgent`, `### High`, `### Low`, `### Done`; the
+//! lines above them read as Low, where the sweep files them), the rollup block another profile's Focus is mirrored into
 //! comes out on its own, and every other `##` section, plus the link footer, is a section to
 //! fold. A note that is not a daily note has no Focus and is all sections.
 //! Each lane and section carries the note line it starts on and the note line of every line of
@@ -53,10 +53,9 @@ pub struct Item {
     pub depth: usize,
 }
 
-/// A lane of Focus: its heading (`""` for the lines above the first one) and its lines, both
-/// as markdown for the web and as items for the terminal. `line` is the note line (from 0) of
-/// its heading (the `## Focus` line for the unheaded lane), and `lines[i]` the note line of line
-/// `i` of `markdown`, which skips the placeholder rows and the blank ends it leaves out.
+/// A lane of Focus: its heading and its lines, both as markdown for the web and as items for
+/// the terminal. `line` is the note line (from 0) of its heading, and `lines[i]` the note line
+/// of line `i` of `markdown`, which skips the placeholder rows and the blank ends it leaves out.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Lane {
     pub name: String,
@@ -137,8 +136,8 @@ pub fn parse(json: &str) -> Result<View, String> {
     Ok(build(note))
 }
 
-/// The task line `l` as an item, or None when it is not a checkbox line or is the empty
-/// placeholder (`- [ ] `) the sweep keeps at the top for typing into.
+/// The task line `l` as an item, or None when it is not a checkbox line or is an empty
+/// `- [ ] ` slot.
 fn item(l: &str) -> Option<Item> {
     let indent = l.len() - l.trim_start().len();
     let rest = l.trim_start().strip_prefix("- [")?;
@@ -199,6 +198,35 @@ fn lane(name: &str, line: usize, lines: &[Ln]) -> Lane {
     }
 }
 
+/// Hand the lines above the first lane to Low, ahead of its own so a row added at the lane's
+/// end stays in it. Until the next sweep files them, a note can hold such lines, and a past day
+/// keeps them; a note with no Low lane gets one ahead of Done, on the `## Focus` line.
+fn fold_into_low(top: Lane, lanes: &mut Vec<Lane>) {
+    if top.markdown.is_empty() {
+        return;
+    }
+    let Some(low) = lanes
+        .iter_mut()
+        .find(|l| l.name.eq_ignore_ascii_case("low"))
+    else {
+        let at = lanes
+            .iter()
+            .position(|l| l.name.eq_ignore_ascii_case("done"))
+            .unwrap_or(lanes.len());
+        let name = "Low".to_string();
+        lanes.insert(at, Lane { name, ..top });
+        return;
+    };
+    low.markdown = match low.markdown.as_str() {
+        "" => top.markdown,
+        own => format!("{}\n{own}", top.markdown),
+    };
+    low.lines.splice(0..0, top.lines);
+    low.items.splice(0..0, top.items);
+    low.open += top.open;
+    low.done += top.done;
+}
+
 /// `## Focus` from its heading's note line `head` and the lines below it.
 fn focus(head: usize, lines: &[Ln]) -> Focus {
     let (authored, rollup) = match lines.iter().position(|l| l.1.trim() == ROLLUP_START) {
@@ -218,7 +246,8 @@ fn focus(head: usize, lines: &[Ln]) -> Focus {
         }
     }
     lanes.push(lane(name, line, &authored[start..]));
-    lanes.retain(|l| !l.name.is_empty() || !l.items.is_empty() || !l.markdown.is_empty());
+    let top = lanes.remove(0);
+    fold_into_low(top, &mut lanes);
     let open = lanes.iter().map(|l| l.open).sum();
     let done = lanes.iter().map(|l| l.done).sum();
     Focus {
@@ -338,6 +367,43 @@ mod tests {
     }
 
     #[test]
+    fn the_lines_above_the_lanes_read_as_low() {
+        let note_md = "## Focus\n- [ ] typed on top\nstray line\n\n### Urgent\n- [ ] fire #urgent\n\n### Low\n- [ ] someday #low\n\n---\n### Done\n";
+        let f = build(note(note_md)).focus.expect("a focus");
+        let names: Vec<&str> = f.lanes.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Urgent", "Low", "Done"]);
+        let low = &f.lanes[1];
+        assert_eq!(
+            low.markdown,
+            "- [ ] typed on top\nstray line\n- [ ] someday #low"
+        );
+        assert_eq!(low.lines, [1, 2, 8], "each row keeps its note line");
+        assert_eq!((low.open, low.items.len()), (2, 2));
+        assert_eq!(low.line, 7, "the lane's own heading");
+        assert_eq!(f.open, 3);
+    }
+
+    #[test]
+    fn a_note_with_no_low_lane_gets_one_ahead_of_done() {
+        let f = build(note("## Focus\n- [ ] a task\n\n---\n### Done\n- [x] b\n"))
+            .focus
+            .unwrap();
+        let names: Vec<&str> = f.lanes.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Low", "Done"]);
+        assert_eq!(f.lanes[0].line, 0, "the `## Focus` line");
+        let f = build(note("## Focus\n- [ ] only\n")).focus.unwrap();
+        assert_eq!(f.lanes.len(), 1);
+        assert_eq!(f.lanes[0].name, "Low");
+    }
+
+    #[test]
+    fn an_empty_slot_above_the_lanes_is_no_lane() {
+        let f = build(note("## Focus\n- [ ] \n\n### Low\n")).focus.unwrap();
+        assert_eq!(f.lanes.len(), 1);
+        assert_eq!(f.lanes[0].markdown, "");
+    }
+
+    #[test]
     fn the_other_sections_and_the_footer_fold_on_their_own() {
         let v = build(note(NOTE));
         let titles: Vec<&str> = v.sections.iter().map(|s| s.title.as_str()).collect();
@@ -370,11 +436,11 @@ mod tests {
     }
 
     #[test]
-    fn a_focus_with_no_lanes_keeps_its_lines_in_one_unheaded_lane() {
+    fn a_focus_with_no_lanes_reads_as_low() {
         let v = build(note("## Focus\n- [ ] one\n- [x] two\npasted prose\n"));
         let f = v.focus.unwrap();
         assert_eq!(f.lanes.len(), 1);
-        assert_eq!(f.lanes[0].name, "");
+        assert_eq!(f.lanes[0].name, "Low");
         assert_eq!((f.open, f.done), (1, 1));
         assert!(f.lanes[0].markdown.contains("pasted prose"));
     }
@@ -420,10 +486,10 @@ mod tests {
         ));
         lines_match(&v);
         let f = v.focus.unwrap();
-        assert_eq!((f.lanes[0].name.as_str(), f.lanes[0].line), ("", 1));
-        assert_eq!(f.lanes[0].lines, [2]);
-        assert_eq!(f.lanes[1].markdown, "- [ ] a\n\n- [ ] b");
-        assert_eq!(f.lanes[1].lines, [5, 7, 8]);
+        assert_eq!(f.lanes[0].markdown, "- [ ] a\n\n- [ ] b");
+        assert_eq!(f.lanes[0].lines, [5, 7, 8]);
+        assert_eq!((f.lanes[1].name.as_str(), f.lanes[1].line), ("Low", 1));
+        assert_eq!(f.lanes[1].lines, [2]);
     }
 
     /// `notes show --json` for each target it knows; any other target is the CLI's error.

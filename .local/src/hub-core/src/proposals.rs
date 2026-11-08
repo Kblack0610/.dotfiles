@@ -37,7 +37,7 @@ impl Proposal {
 /// The Proposals table on both surfaces. A chip is what an accept does.
 impl Row for Proposal {
     const COLUMNS: &'static [&'static str] = &["stream", "project", "proposal", "created", "verb"];
-    const STATES: &'static [&'static str] = &["all", "queue", "row", "none"];
+    const STATES: &'static [&'static str] = &["all", "queue", "row", "mem0", "none"];
     const FACETS: &'static [&'static str] = &["stream", "project"];
 
     fn val(&self, col: &str) -> Val {

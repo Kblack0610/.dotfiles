@@ -3,7 +3,8 @@
 #
 # Usage: sessionizer.sh [dir | verb]
 #
-#   (no args)     pick with fzf, then switch to (or create) that directory's session
+#   (no args)     pick with fzf, then switch to (or create) that directory's session;
+#                 ctrl-n instead starts a new Claude in a fresh worktree of it (wt new --claude)
 #   <dir>         skip the picker and go straight there -- ANY directory, listed or not
 #   --list        the candidate rows, one per line. Assertable without a terminal.
 #   --name <dir>  the session name that <dir> would produce
@@ -183,10 +184,13 @@ cmd_list() {
 # loses its list position on a tie; a query that names the worktree still scores it higher.
 PICK_FLAGS=(--tiebreak=index --prompt='directory > ')
 
+# Prints the key (empty for Enter, or ctrl-n) on line 1 and the row on line 2: --expect, kept
+# out of PICK_FLAGS because the ranking tests reuse those with --filter.
 cmd_pick() {
   panel_need fzf
   panel_fzf_opts
-  cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PICK_FLAGS[@]}"
+  cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PICK_FLAGS[@]}" --expect=ctrl-n \
+    --header='enter go  ctrl-n new Claude in a fresh worktree'
 }
 
 # go <dir> -- ensure the session exists, then land in it.
@@ -230,8 +234,13 @@ case "${1:-}" in
   ;;
 -h | --help) panel_usage ;;
 '')
-  selected="$(cmd_pick)" || exit 1
-  [ -n "$selected" ] || exit 0 # cancelled the picker; not an error
+  picked="$(cmd_pick)" || exit 1
+  selected="${picked#*$'\n'}"
+  [ -n "$selected" ] && [ "$selected" != "$picked" ] || exit 0 # cancelled; not an error
+  if [ "${picked%%$'\n'*}" = ctrl-n ]; then
+    panel_need wt
+    exec wt new --claude -c "$selected" >/dev/null
+  fi
   go "$selected"
   ;;
 -*) panel_die "unknown verb: $1 (try --help)" ;;

@@ -2,7 +2,6 @@
 //! are filtered and sorted here by `hub_core::table`, so the page only draws.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use hub_core::boards;
 use hub_core::capacity::{self, Capacity};
@@ -12,13 +11,14 @@ use hub_core::session_table::{self, SessionRow};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Mutex;
+
+use crate::cache::{off, ReadCache};
 
 /// Folds concurrent tabs, quick reloads and every keystroke in the search into one read.
-const CACHE: Duration = Duration::from_secs(15);
+const CACHE_SECS: u64 = 15;
 /// `fleet-dispatch headroom` takes seconds on a loaded machine, and the state document it is
 /// shown beside moves once a minute.
-const CAPACITY_CACHE: Duration = Duration::from_secs(60);
+const CAPACITY_SECS: u64 = 60;
 
 /// The table view, the same keys the page keeps in its URL.
 #[derive(Deserialize, Default)]
@@ -46,19 +46,23 @@ struct Shown<'a> {
     buckets: &'a [String],
     errors: &'a [String],
     table: Summary,
+    /// What the shown rows cost (`session_table::spend`), for the overview row.
+    spend_usd: f64,
 }
 
 #[derive(Default)]
 pub struct Cache {
-    table: Mutex<Option<(Instant, Arc<Read>)>>,
-    page: Mutex<Option<(Instant, String, Arc<SessionPage>)>>,
-    capacity: Mutex<Option<(Instant, Arc<Capacity>)>>,
+    table: ReadCache<Read, CACHE_SECS>,
+    /// The last page opened, by its id.
+    page: ReadCache<Option<SessionPage>, CACHE_SECS, String>,
+    capacity: ReadCache<Capacity, CAPACITY_SECS>,
 }
 
 fn render(r: &Read, q: &TableQuery) -> String {
     let view = View::new::<SessionRow>(&q.q, &q.s, &q.sort, &q.dir);
     let (rows, table) = view.summary(&r.rows);
     let out = Shown {
+        spend_usd: session_table::spend(rows.iter().copied()),
         rows,
         buckets: &r.buckets,
         errors: &r.errors,
@@ -74,11 +78,7 @@ fn failed(e: String) -> String {
 
 impl Cache {
     async fn read(&self) -> Result<Arc<Read>, String> {
-        let mut c = self.table.lock().await;
-        if let Some((_, r)) = c.as_ref().filter(|(at, _)| at.elapsed() < CACHE) {
-            return Ok(r.clone());
-        }
-        let r = tokio::task::spawn_blocking(|| {
+        let read = off(|| {
             let (state, vocab) = session_table::read_state(&boards::fleet_state());
             let feed = session_table::feed(&System, &session_table::registry());
             Read {
@@ -87,12 +87,8 @@ impl Cache {
                 buckets: vocab.buckets().to_vec(),
                 errors: feed.errors,
             }
-        })
-        .await
-        .map(Arc::new)
-        .map_err(|e| e.to_string())?;
-        *c = Some((Instant::now(), r.clone()));
-        Ok(r)
+        });
+        self.table.get((), read).await
     }
 
     /// The view `q` asks for; every view is applied to the shared read outside the lock.
@@ -101,54 +97,34 @@ impl Cache {
     }
 
     /// One session's page, or None when nothing names `id`. The open page refreshes with the
-    /// list, so the last one is kept as the list's read is.
-    pub async fn page(&self, id: String) -> Result<Option<Arc<SessionPage>>, String> {
-        let mut c = self.page.lock().await;
-        let kept = c
-            .as_ref()
-            .filter(|(at, k, _)| *k == id && at.elapsed() < CACHE);
-        if let Some((_, _, p)) = kept {
-            return Ok(Some(p.clone()));
-        }
-        let read = self.read().await?;
+    /// list, so the last one is kept as the list's read is; a None is not kept.
+    pub async fn page(&self, id: String) -> Result<Arc<Option<SessionPage>>, String> {
         let key = id.clone();
-        let page = tokio::task::spawn_blocking(move || {
-            session_page::read(
-                &System,
-                &boards::shepherd_dir(),
-                &id,
-                &read.rows,
-                &read.state,
-            )
-        })
-        .await
-        .map_err(|e| e.to_string())?
-        .map(Arc::new);
-        if let Some(p) = &page {
-            *c = Some((Instant::now(), key, p.clone()));
-        }
-        Ok(page)
+        let read = async {
+            let read = self.read().await?;
+            off(move || {
+                session_page::read(
+                    &System,
+                    &boards::shepherd_dir(),
+                    &id,
+                    &read.rows,
+                    &read.state,
+                )
+            })
+            .await
+        };
+        self.page.get_if(key, read, Option::is_some).await
     }
 
     pub async fn capacity(&self) -> Result<Arc<Capacity>, String> {
-        let mut c = self.capacity.lock().await;
-        if let Some((_, got)) = c.as_ref().filter(|(at, _)| at.elapsed() < CAPACITY_CACHE) {
-            return Ok(got.clone());
-        }
-        let got = tokio::task::spawn_blocking(|| capacity::read_fleet(&System))
-            .await
-            .map(Arc::new)
-            .map_err(|e| e.to_string())?;
-        *c = Some((Instant::now(), got.clone()));
-        Ok(got)
+        let read = off(|| capacity::read_fleet(&System));
+        self.capacity.get((), read).await
     }
 
     /// Start a timer, and drop the header so the next read shows it on.
     pub async fn start(&self, name: String) -> Result<String, String> {
-        let out = tokio::task::spawn_blocking(move || capacity::start(&System, &name))
-            .await
-            .map_err(|e| e.to_string())??;
-        *self.capacity.lock().await = None;
+        let out = off(move || capacity::start(&System, &name)).await??;
+        self.capacity.clear().await;
         Ok(out)
     }
 }

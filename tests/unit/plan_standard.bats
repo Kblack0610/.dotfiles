@@ -176,6 +176,17 @@ prompt() { # prompt <project> <mode>
   refute_output --partial '## Playtest'
 }
 
+@test "plan mode injects once per session" {
+  tp="$BATS_TEST_TMPDIR/t.jsonl"
+  : > "$tp"
+  run bash -c "jq -nc --arg c '$HOME/work/aninfra' --arg t '$tp' '{hook_event_name: \"UserPromptSubmit\", permission_mode: \"plan\", cwd: \$c, transcript_path: \$t}' | bash '$HOOK'"
+  assert_output --partial 'additionalContext'
+  printf '%s\n' "$output" >> "$tp"
+  run bash -c "jq -nc --arg c '$HOME/work/aninfra' --arg t '$tp' '{hook_event_name: \"UserPromptSubmit\", permission_mode: \"plan\", cwd: \$c, transcript_path: \$t}' | bash '$HOOK'"
+  assert_success
+  assert_output ''
+}
+
 @test "other modes get nothing" {
   run prompt aninfra default
   assert_output ''
