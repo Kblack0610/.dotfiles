@@ -135,6 +135,14 @@ pub fn daylog_dir() -> PathBuf {
         .unwrap_or_else(|| home().join(".agent/daylog"))
 }
 
+/// `release-state`'s directory, holding the `state.json` it replaces by a rename.
+pub fn releases_dir() -> PathBuf {
+    std::env::var_os("RELEASE_STATE_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".agent/releases"))
+}
+
 /// `agent-usage tokens snapshot`'s records, one `<YYYY-MM-DD>.json` per day (its `TOKENS_DIR`).
 pub fn token_usage_dir() -> PathBuf {
     std::env::var_os("TOKENS_DIR")

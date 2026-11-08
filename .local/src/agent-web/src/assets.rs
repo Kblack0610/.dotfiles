@@ -40,6 +40,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("flow.js", JS, include_bytes!("../static/flow.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
+    ("releases.js", JS, include_bytes!("../static/releases.js")),
     ("costs.js", JS, include_bytes!("../static/costs.js")),
     ("sessions.js", JS, include_bytes!("../static/sessions.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
@@ -233,6 +234,23 @@ mod tests {
         let all = hub_core::schedules::Schedule::COLUMNS;
         assert_eq!(keys, all[..all.len() - 2]);
         assert_eq!(all[all.len() - 2..], ["repo", "next"]);
+    }
+
+    #[test]
+    fn the_releases_headers_are_hub_cores_columns() {
+        // Rule 8, less `id` and `where`: the channel says the one, a row's detail the other.
+        use hub_core::table::Row;
+        let js = include_str!("../static/releases.js");
+        let at = js.find("const REL_COLS = {").expect("no REL_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
+            .filter(|k| !k.contains('"') && !k.is_empty())
+            .collect();
+        let all = hub_core::releases::Release::COLUMNS;
+        assert_eq!(keys, all[..all.len() - 2]);
+        assert_eq!(all[all.len() - 2..], ["id", "where"]);
     }
 
     #[test]

@@ -30,6 +30,7 @@ mod projects;
 mod proposals;
 mod queue;
 mod reds;
+mod releases;
 mod schedules;
 mod sessions;
 mod shepherd;
@@ -146,6 +147,7 @@ async fn main() -> Result<()> {
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/schedules", get(schedules_list))
+        .route("/api/releases", get(releases_list))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
@@ -296,6 +298,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let tokens = boards::token_usage_dir();
     std::fs::create_dir_all(&tokens)?;
     targets.push((tokens, flat));
+    // release-state's snapshot, replaced by a rename: the Releases tab.
+    let snapshots = boards::releases_dir();
+    std::fs::create_dir_all(&snapshots)?;
+    targets.push((snapshots, flat));
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
         boards::fleet_state().parent().map(Path::to_path_buf),
@@ -377,6 +383,9 @@ fn classify(p: &Path) -> Option<String> {
             .extension()
             .is_some_and(|e| e == "json")
             .then(|| COSTS_EVENT.to_string());
+    }
+    if p.parent()? == boards::releases_dir().as_path() {
+        return (p.file_name()? == "state.json").then(|| r#"{"kind":"releases"}"#.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -1186,6 +1195,14 @@ async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) ->
         .into_response()
 }
 
+async fn releases_list(Query(q): Query<schedules::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        releases::get(q).await,
+    )
+        .into_response()
+}
+
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
@@ -1446,6 +1463,13 @@ mod tests {
             classify(&boards::token_usage_dir().join("2026-11-05.json.tmp")),
             None
         );
+        // release-state's snapshot arrives by a rename; its temp files and any other state.json
+        // are not it.
+        assert_eq!(
+            classify(&boards::releases_dir().join("state.json")).as_deref(),
+            Some(r#"{"kind":"releases"}"#)
+        );
+        assert_eq!(classify(&boards::releases_dir().join(".state.123")), None);
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),
             None

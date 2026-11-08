@@ -15,6 +15,7 @@ use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
 use hub_core::proposals::{self, Proposal};
 use hub_core::queue::{Candidate, Candidates, Queue};
+use hub_core::releases::{Release, Releases};
 use hub_core::schedules::{Schedule, Schedules};
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use hub_core::tasks::Feed;
@@ -32,6 +33,7 @@ use crate::jobs::{clean, row_id, JobsView, LogPane};
 use crate::projtab::{self, ProjView};
 use crate::proptab::ProposalsView;
 use crate::queuetab::{self, QueueView};
+use crate::releases::{self, ReleasesView};
 use crate::schedules::{self, SchedulesView};
 use crate::tasktab::{self, TaskView};
 use crate::{board, day, fleet, fleettab, focustab, hometab, logtab, outboxtab};
@@ -64,11 +66,12 @@ pub enum Tab {
     Fleet,
     Schedules,
     Costs,
+    Releases,
 }
 
 impl Tab {
     /// hub-core's layout order, every page the TUI can show (`tabs_are_the_layout` checks).
-    pub const ALL: [Tab; 10] = [
+    pub const ALL: [Tab; 11] = [
         Tab::Home,
         // The daily note; `o` shows the outbox under it (`hub --tab outbox` opens it there).
         Tab::Daily,
@@ -80,10 +83,11 @@ impl Tab {
         Tab::Fleet,
         Tab::Schedules,
         Tab::Costs,
+        Tab::Releases,
     ];
-    /// The tabs on the bar, in `ALL`'s order; digit N opens `SHOWN[N - 1]`. Daily is left off
-    /// (asked 2026-11-06): agent-web keeps it, and `hub --tab daily` still opens it here.
-    pub const SHOWN: [Tab; 9] = [
+    /// The tabs on the bar, in `ALL`'s order; digit N opens `SHOWN[N - 1]` and 0 the tenth. Daily
+    /// is left off (asked 2026-11-06): agent-web keeps it, and `hub --tab daily` still opens it.
+    pub const SHOWN: [Tab; 10] = [
         Tab::Home,
         Tab::Queue,
         Tab::Projects,
@@ -93,6 +97,7 @@ impl Tab {
         Tab::Fleet,
         Tab::Schedules,
         Tab::Costs,
+        Tab::Releases,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -106,6 +111,7 @@ impl Tab {
             Tab::Fleet => "Fleet",
             Tab::Schedules => "Schedules",
             Tab::Costs => "Costs",
+            Tab::Releases => "Releases",
         }
     }
     /// A tab by its title, or by a name hub-core's layout knows (an id or a retired name such as
@@ -126,13 +132,12 @@ impl Tab {
         Tab::SHOWN
             .iter()
             .position(|t| *t == self)
-            .and_then(|i| char::from_digit(i as u32 + 1, 10))
+            .and_then(|i| char::from_digit((i as u32 + 1) % 10, 10))
             .unwrap_or(' ')
     }
-    /// The tab a digit opens, 1 to 9 along the bar.
+    /// The tab a digit opens, along the number row: 1 for the first, 0 for the tenth.
     fn by_digit(c: char) -> Option<Tab> {
-        let n = c.to_digit(10)? as usize;
-        Tab::SHOWN.get(n.checked_sub(1)?).copied()
+        Tab::SHOWN.get((c.to_digit(10)? as usize + 9) % 10).copied()
     }
     /// The Grafana dashboard that keeps this page's trends; the file-fed pages have none.
     fn dashboard(self) -> Option<&'static str> {
@@ -140,9 +145,13 @@ impl Tab {
             Tab::Home => Some("kb-command-center"),
             Tab::Infra => Some("kb-ci-runners"),
             Tab::Queue | Tab::Costs => Some(hub_core::costs::DASHBOARD),
-            Tab::Daily | Tab::Projects | Tab::Sessions | Tab::Log | Tab::Fleet | Tab::Schedules => {
-                None
-            }
+            Tab::Daily
+            | Tab::Projects
+            | Tab::Sessions
+            | Tab::Log
+            | Tab::Fleet
+            | Tab::Schedules
+            | Tab::Releases => None,
         }
     }
 }
@@ -175,6 +184,8 @@ pub struct BoardFiles {
     pub daylog: PathBuf,
     /// The nightly token snapshots behind Costs' Where the tokens go.
     pub tokens: PathBuf,
+    /// `release-state`'s directory: its snapshot is replaced by a rename when a refresh finishes.
+    pub releases: PathBuf,
 }
 
 impl BoardFiles {
@@ -186,6 +197,7 @@ impl BoardFiles {
             shepherd: boards::shepherd_dir(),
             daylog: boards::daylog_dir(),
             tokens: boards::token_usage_dir(),
+            releases: boards::releases_dir(),
         }
     }
     fn watch_log(&self) -> PathBuf {
@@ -201,6 +213,11 @@ impl BoardFiles {
 
     pub fn is_token_file(&self, p: &Path) -> bool {
         p.parent() == Some(self.tokens.as_path()) && p.extension().is_some_and(|e| e == "json")
+    }
+
+    pub fn is_release_file(&self, p: &Path) -> bool {
+        p.parent() == Some(self.releases.as_path())
+            && p.file_name().is_some_and(|n| n == "state.json")
     }
 
     /// Whether a changed path is one the board tabs read (the shepherd dir holds other files).
@@ -266,6 +283,9 @@ pub enum Msg {
     Infra(Box<Infra>),
     Jobs(Box<Jobs>),
     Schedules(Box<Schedules>),
+    Releases(Box<Releases>),
+    /// `release-state` wrote a new snapshot.
+    ReleaseFile,
     /// The Sessions table's ended rows, then its header, which waits on headroom.
     SessionFeed(Box<hub_core::session_table::Feed>),
     Capacity(Box<hub_core::capacity::Capacity>),
@@ -348,6 +368,8 @@ pub struct App {
     pub hv: DataTable,
     pub sv: SchedulesView,
     pub schedules: Option<Schedules>,
+    pub rv: ReleasesView,
+    pub releases: Option<Releases>,
     pub files: BoardFiles,
     pub boards: Option<Boards>,
     pub forecast: Option<Forecast>,
@@ -447,6 +469,7 @@ pub struct App {
     ranked_read: Read,
     reds_read: Read,
     schedules_read: Read,
+    releases_read: Read,
     /// When the last Red fixes read finished, for `REDS_REFRESH`.
     reds_at: Option<std::time::Instant>,
     /// When the last Schedules read finished, for `SCHEDULES_REFRESH`.
@@ -491,6 +514,8 @@ impl App {
             hv: DataTable::default(),
             sv: SchedulesView::default(),
             schedules: None,
+            rv: ReleasesView::default(),
+            releases: None,
             files: BoardFiles::from_env(),
             boards: None,
             forecast: None,
@@ -549,6 +574,7 @@ impl App {
             ranked_read: Read::default(),
             reds_read: Read::default(),
             schedules_read: Read::default(),
+            releases_read: Read::default(),
             reds_at: None,
             schedules_at: None,
             costs_read: Read::default(),
@@ -587,6 +613,7 @@ impl App {
             (self.files.asks.clone(), true),
             (self.files.proposals.clone(), false),
             (self.files.tokens.clone(), false),
+            (self.files.releases.clone(), false),
         ];
         for f in [&self.paths.unity_runs, &self.files.state] {
             if let Some(d) = f.parent() {
@@ -664,6 +691,18 @@ impl App {
                 let paths = hub_core::fleet::Paths::from_env();
                 let s = hub_core::schedules::read(&paths, runner.as_ref());
                 let _ = tx.send(Msg::Schedules(Box::new(s)));
+            });
+        }
+    }
+
+    /// `release-state` replaces one file, so the tab reads on entering, on `r` and on that file's
+    /// event; the snapshot's age is worked out as it is drawn.
+    pub fn read_releases(&mut self) {
+        if self.releases_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let s = hub_core::releases::read(runner.as_ref());
+                let _ = tx.send(Msg::Releases(Box::new(s)));
             });
         }
     }
@@ -1218,6 +1257,9 @@ impl App {
                 if self.watch_failed.is_some() {
                     self.read_boards();
                     self.read_queue();
+                    if self.tab == Tab::Releases {
+                        self.read_releases();
+                    }
                 }
                 if self.tab == Tab::Sessions {
                     self.read_forecast();
@@ -1255,6 +1297,8 @@ impl App {
             }
             Msg::TokenFiles if self.tab == Tab::Costs => self.read_costs(),
             Msg::TokenFiles => {}
+            Msg::ReleaseFile if self.tab == Tab::Releases => self.read_releases(),
+            Msg::ReleaseFile => {}
             Msg::BoardFiles => self.read_boards(),
             Msg::ProposalFiles => self.read_proposals(),
             Msg::Tab(t, q) => {
@@ -1304,6 +1348,16 @@ impl App {
                 }
                 if self.schedules_read.done() && self.tab == Tab::Schedules {
                     self.read_schedules();
+                }
+            }
+            Msg::Releases(s) => {
+                let id = self.selected_release().map(releases::row_id);
+                self.releases = Some(*s);
+                if let Some(s) = &self.releases {
+                    self.rv.reselect(s, id);
+                }
+                if self.releases_read.done() && self.tab == Tab::Releases {
+                    self.read_releases();
                 }
             }
             Msg::Fleet(f) => {
@@ -1537,6 +1591,9 @@ impl App {
         if self.tab == Tab::Schedules && self.schedules_key(k) {
             return;
         }
+        if self.tab == Tab::Releases && self.releases_key(k) {
+            return;
+        }
         // A Ctrl or Alt chord is never one of the tab's letters, nor text for its query.
         if self.tab == Tab::Costs
             && !k
@@ -1577,6 +1634,9 @@ impl App {
                 }
                 if self.tab == Tab::Schedules {
                     self.read_schedules();
+                }
+                if self.tab == Tab::Releases {
+                    self.read_releases();
                 }
                 if self.tab == Tab::Costs {
                     self.read_costs();
@@ -1813,6 +1873,9 @@ impl App {
         if t == Tab::Schedules {
             self.read_schedules();
         }
+        if t == Tab::Releases {
+            self.read_releases();
+        }
         if t == Tab::Costs {
             self.read_costs();
         }
@@ -1852,6 +1915,12 @@ impl App {
         }
         if !self.tv.typing() && self.tv.project.is_some() && k.code == KeyCode::Char('F') {
             self.pv.folds = !self.pv.folds;
+            return true;
+        }
+        if let (false, KeyCode::Char('R'), Some((_, name))) =
+            (self.tv.typing(), k.code, self.tv.project.clone())
+        {
+            self.open_releases(&name);
             return true;
         }
         if !self.tv.typing() {
@@ -2424,6 +2493,46 @@ impl App {
         true
     }
 
+    fn selected_release(&self) -> Option<&Release> {
+        let s = self.releases.as_ref()?;
+        self.rv.shown(s).get(self.rv.table.sel).copied()
+    }
+
+    /// The Releases tab, on one project's channels: where a Projects card's badge leads.
+    fn open_releases(&mut self, project: &str) {
+        self.rv.table.view.q = format!("project:{project}");
+        self.rv.table.sel = 0;
+        self.go(Tab::Releases);
+    }
+
+    /// The Releases table's keys: Enter opens the row's pane.
+    fn releases_key(&mut self, k: KeyEvent) -> bool {
+        if self.rv.table.key::<Release>(k.code) != Took::No {
+            return true;
+        }
+        let rows = self.releases.as_ref().map_or(0, |s| self.rv.shown(s).len());
+        let before = self.rv.table.sel;
+        let rv = &mut self.rv;
+        match k.code {
+            KeyCode::Char('J') if rv.open => rv.down += 1,
+            KeyCode::Char('K') if rv.open => rv.down = rv.down.saturating_sub(1),
+            KeyCode::Enter => rv.open = !rv.open,
+            KeyCode::Esc => {
+                if rv.open {
+                    rv.open = false;
+                } else {
+                    rv.table.clear();
+                }
+            }
+            _ if rv.table.moves(k, rows, self.page) => {}
+            _ => return false,
+        }
+        if self.rv.table.sel != before {
+            self.rv.down = 0;
+        }
+        true
+    }
+
     fn open_log(&mut self) {
         let Some(j) = self.selected() else { return };
         let title = format!("{} {}", j.source.name(), j.name);
@@ -2477,6 +2586,8 @@ impl App {
             self.draw_jobs(f, body);
         } else if self.tab == Tab::Schedules {
             self.draw_schedules(f, body);
+        } else if self.tab == Tab::Releases {
+            self.draw_releases(f, body);
         } else if self.tab == Tab::Home && self.prv.open {
             self.draw_proposals(f, body);
         } else if self.tab == Tab::Log && self.log_days && self.boards.is_some() {
@@ -2590,6 +2701,11 @@ impl App {
             }
             Tab::Infra => format!(
                 "Enter log  / query  f state  s sort  S asc/desc  x clear  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Releases if self.rv.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Releases if self.rv.open => "Esc close  J/K scroll pane  j/k move  q quit".into(),
+            Tab::Releases => format!(
+                "Enter open  / query  f state  s sort  S asc/desc  x clear  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Schedules if self.sv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
@@ -3010,6 +3126,44 @@ impl App {
         }
     }
 
+    fn draw_releases(&mut self, f: &mut Frame, area: Rect) {
+        let Some(s) = &self.releases else {
+            f.render_widget(
+                Paragraph::new(Line::styled("Reading releases...", self.p.dim())),
+                area,
+            );
+            return;
+        };
+        let (list, pane) = if self.rv.open {
+            let [a, b] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .areas(area);
+            (a, Some(b))
+        } else {
+            (area, None)
+        };
+        let now = jobs::now();
+        let w = list.width as usize;
+        let status = self.rv.status(s, self.p, now);
+        let table = self.rv.table(s, self.p, w, true);
+        let foot = self.rv.foot(s, self.p, w);
+        let h = (list.height as usize)
+            .saturating_sub(status.len() + foot.len() + 1)
+            .max(1);
+        self.page = h;
+        let mut lines = status;
+        lines.extend(self.rv.table.window(table, h));
+        lines.extend(foot);
+        f.render_widget(Paragraph::new(lines), list);
+        let row = self.rv.shown(s).get(self.rv.table.sel).copied();
+        if let (Some(area), Some(r)) = (pane, row) {
+            let lines = releases::detail(r, self.p, now, area.width as usize);
+            let max = lines.len().saturating_sub(area.height as usize);
+            self.rv.down = self.rv.down.min(max);
+            let shown: Vec<Line> = lines.into_iter().skip(self.rv.down).collect();
+            f.render_widget(Paragraph::new(shown), area);
+        }
+    }
+
     fn draw_proposals(&mut self, f: &mut Frame, area: Rect) {
         let rows = open_rows(&self.proposals);
         let w = area.width as usize;
@@ -3187,7 +3341,9 @@ mod tests {
     impl Runner for Fake {
         fn run(&self, argv: &[String]) -> Result<String, String> {
             self.0.lock().unwrap().push(argv.join(" "));
-            Ok(String::new())
+            // Every other reader takes empty output as nothing found; JSON has no empty document.
+            let release_state = argv.first().is_some_and(|c| c == "release-state");
+            Ok(if release_state { "{}" } else { "" }.to_string())
         }
     }
 
@@ -4477,15 +4633,19 @@ mod tests {
         let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
         let layout: Vec<&str> = hub_core::layout::TABS.iter().map(|t| t.title).collect();
         assert_eq!(titles, layout);
-        // The bar is the layout less Daily, which only agent-web shows; digits 1 to 9 follow it.
+        // The bar is the layout less Daily, which only agent-web shows; the digits follow it.
         let shown: Vec<&str> = Tab::SHOWN.iter().map(|t| t.title()).collect();
         let bar: Vec<&str> = layout.iter().copied().filter(|t| *t != "Daily").collect();
         assert_eq!(shown, bar);
         for (i, t) in Tab::SHOWN.iter().enumerate() {
-            let d = char::from_digit(i as u32 + 1, 10).unwrap();
+            let d = char::from_digit((i as u32 + 1) % 10, 10).unwrap();
             assert_eq!((t.digit(), Tab::by_digit(d)), (d, Some(*t)));
         }
-        assert_eq!((Tab::Costs.digit(), Tab::by_digit('0')), ('9', None));
+        assert_eq!(Tab::Costs.digit(), '9');
+        assert_eq!(
+            (Tab::Releases.digit(), Tab::by_digit('0')),
+            ('0', Some(Tab::Releases))
+        );
         assert_eq!(Tab::Daily.digit(), ' ');
         assert_eq!(Tab::by_digit('2'), Some(Tab::Queue));
     }
@@ -4688,6 +4848,44 @@ mod tests {
         assert!(f.is_token_file(Path::new("/a/token-usage/2027-01-15.json")));
         assert!(!f.is_token_file(Path::new("/a/token-usage/2027-01-15.json.tmp")));
         assert!(!f.is_token_file(Path::new("/a/other/2027-01-15.json")));
+    }
+
+    #[test]
+    fn only_the_replaced_snapshot_is_a_release_file() {
+        let f = BoardFiles {
+            releases: "/a/releases".into(),
+            ..BoardFiles::from_env()
+        };
+        assert!(f.is_release_file(Path::new("/a/releases/state.json")));
+        assert!(!f.is_release_file(Path::new("/a/releases/.state.123")));
+        assert!(!f.is_release_file(Path::new("/a/other/state.json")));
+    }
+
+    #[test]
+    fn a_new_snapshot_rereads_the_releases_tab_only_while_it_is_shown() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Releases, tx);
+        a.handle(Msg::ReleaseFile);
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(Msg::Releases(_))
+        ));
+        a.handle(Msg::Releases(Box::default()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut b = with_tx(Tab::Costs, tx);
+        b.handle(Msg::ReleaseFile);
+        assert!(!b.releases_read.busy, "nothing to read off the tab");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn r_on_an_opened_card_opens_that_projects_releases() {
+        let mut a = app(Tab::Projects);
+        a.pv.open = true;
+        a.tv.project = Some(("personal".into(), "garden".into()));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('R')))));
+        assert_eq!(a.tab, Tab::Releases);
+        assert_eq!(a.rv.table.view.q, "project:garden");
     }
 
     /// Costs with a token snapshot read, no read left to start.
@@ -5065,7 +5263,7 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(
-            bar.starts_with(" HUB  1  2  3  4  5  6  7  8 Schedules  9 "),
+            bar.starts_with(" HUB  1  2  3  4  5  6  7  8 Schedules  9  0 "),
             "{bar:?}"
         );
         let wide: String = a

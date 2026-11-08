@@ -28,6 +28,7 @@ pub mod prom;
 pub mod proposals;
 pub mod queue;
 pub mod reds;
+pub mod releases;
 pub mod schedules;
 pub mod sections;
 pub mod session_actions;

@@ -238,6 +238,20 @@ pub fn open_lines(
     if let Some(f) = &pg.flow_line {
         out.extend(wrapped("  flow     ", f, Default::default(), p, w));
     }
+    if let Some(b) = &pg.releases {
+        let style = match b.level {
+            hub_core::releases::Level::Bad => p.bad(),
+            hub_core::releases::Level::Warn => p.warn(),
+            hub_core::releases::Level::Ok => Default::default(),
+        };
+        out.extend(wrapped(
+            "  releases ",
+            &format!("{} (R opens)", b.says),
+            style,
+            p,
+            w,
+        ));
+    }
     for e in &pg.errors {
         out.extend(wrapped("  ", e, p.warn(), p, w));
     }
@@ -494,6 +508,7 @@ pub(crate) mod tests {
     fn a_page() -> Page {
         Page {
             project: "garden".into(),
+            releases: None,
             flow_line: Some(
                 "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0".into(),
             ),
