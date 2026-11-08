@@ -10,7 +10,6 @@ export NPM_TOKEN="${NPM_TOKEN:-}"
 [ -f "package.json" ] || exit 0  # not applicable
 
 PKG=$(cat package.json 2>/dev/null)
-FAILED=0
 
 if [ -f "turbo.json" ] || echo "$PKG" | grep -q '"turbo"'; then
   TURBO_FILTER=""
@@ -25,13 +24,13 @@ if [ -f "turbo.json" ] || echo "$PKG" | grep -q '"turbo"'; then
       echo "Scoping checks to changed apps: $CHANGED_APPS" >&2
     fi
   fi
-  pnpm turbo run typecheck lint $TURBO_FILTER --output-logs=errors-only 2>&1 || FAILED=1
+  pnpm turbo run typecheck lint $TURBO_FILTER --output-logs=errors-only 2>&1 || exit 2
   FMT_OUT=$(mktemp)
-  pnpm format:check >"$FMT_OUT" 2>&1 || { FAILED=1; cat "$FMT_OUT" >&2; }
+  pnpm format:check >"$FMT_OUT" 2>&1 || { cat "$FMT_OUT" >&2; rm -f "$FMT_OUT"; exit 2; }
   rm -f "$FMT_OUT"
 else
-  echo "$PKG" | grep -q '"typecheck"' && { pnpm typecheck 2>&1 || FAILED=1; }
-  echo "$PKG" | grep -q '"lint"' && { pnpm lint 2>&1 || FAILED=1; }
+  echo "$PKG" | grep -q '"typecheck"' && { pnpm typecheck 2>&1 || exit 2; }
+  echo "$PKG" | grep -q '"lint"' && { pnpm lint 2>&1 || exit 2; }
 fi
 
 KNIP_WARN=0
@@ -45,6 +44,5 @@ echo "$PKG" | grep -q '"knip"' && {
 }
 rm -f "$KNIP_OUT"
 
-[ $FAILED -eq 1 ] && exit 2
 [ $KNIP_WARN -eq 1 ] && exit 1
 exit 0
