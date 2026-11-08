@@ -110,9 +110,10 @@
 #                                that range allows it: a new check has debt to freeze.
 #   skill-drift --overrides [--json]
 #                                the skill-usage toggle: the skillOverrides object that keeps
-#                                "name-only" on exactly the skills used in no more than
+#                                "name-only" on the skills used in no more than
 #                                SKILL_TOGGLE_MAX_SESSIONS (5) sessions in SKILL_TOGGLE_DAYS (30),
-#                                summed over the six signals, and lists the rest, from the settings
+#                                by any of the six signals, and lists one again past twice that
+#                                (the band stops a skill at the bar flipping nightly), from the settings
 #                                file SKILL_SETTINGS (~/.claude/settings.json). A skill another
 #                                SKILL.md or a CLAUDE.md layer names (routes to) is never hidden
 #                                and never restored for that alone; one used past the bar is restored. A
@@ -158,9 +159,10 @@ BASELINE="${SKILL_DRIFT_BASELINE:-$HOME/.agent/skill-drift.baseline}"
 STALE_DAYS="${SKILL_STALE_DAYS:-180}"
 USAGE_DAYS="${SKILL_USAGE_DAYS:-90}"
 TOGGLE_DAYS="${SKILL_TOGGLE_DAYS:-30}"
-# Above this many sessions in TOGGLE_DAYS a skill is listed in full. One audit session reading a
-# SKILL.md is a use, so a bar of 0 brought 19 of 35 name-only skills back on 2026-11-08 (about
-# 4.5K chars on every request) for one to four sessions each.
+# A listed skill used in this many sessions or fewer in TOGGLE_DAYS goes name-only, and a name-only
+# one is listed again past twice it. One audit session reading a SKILL.md is a use, so a bar of 0
+# brought 19 of 35 name-only skills back on 2026-11-08 (about 4.5K chars on every request) for one
+# to four sessions each.
 TOGGLE_MAX="${SKILL_TOGGLE_MAX_SESSIONS:-5}"
 SETTINGS="${SKILL_SETTINGS:-$HOME/.claude/settings.json}"
 # Every sign a skill was used: a Skill call, a typed command, its body loaded, its SKILL.md
@@ -571,14 +573,14 @@ check_stale() {
 # releases; what this is for is finding the ones that are idle because the router
 # never picks them, which is the overlap problem skill-refine has had no data for.
 declare -A USED=()
-# load_usage [days]: every skill with a use in the window (default USAGE_DAYS) into USED, as its
-# sessions summed over the use kinds.
+# load_usage [days]: every skill with a use in the window (default USAGE_DAYS) into USED, as the
+# number of sessions that used it by any of USE_KINDS.
 load_usage() {
   local s n
   while IFS=$'\t' read -r s n; do
-    [ -n "$s" ] && USED[$s]=$(( ${USED[$s]:-0} + n ))
+    [ -n "$s" ] && USED[$s]=$n
   done < <("$RECALL" stats --days "${1:-$USAGE_DAYS}" --kind "$USE_KINDS" --top 0 --json 2>/dev/null \
-             | jq -r '.rows[] | "\(.key)\t\(.sessions)"' 2>/dev/null)
+             | jq -r '.skill_sessions // {} | to_entries[] | select(.value > 0) | "\(.key)\t\(.value)"' 2>/dev/null)
   return 0
 }
 
@@ -586,7 +588,7 @@ check_unused() {
   local skill="$1"
   # No transcripts at all means we cannot tell, which is not the same as unused.
   [ ${#USED[@]} -gt 0 ] || return 0
-  [ -n "${USED[$skill]:-}" ] || add UNUSED "$skill" "${USAGE_DAYS}d" "no use in the last ${USAGE_DAYS}d of transcripts"
+  [ "${USED[$skill]:-0}" -gt 0 ] || add UNUSED "$skill" "${USAGE_DAYS}d" "no use in the last ${USAGE_DAYS}d of transcripts"
   return 0
 }
 
@@ -774,9 +776,10 @@ if [ "$MODE" = overrides ]; then
   hide=() restore=()
   while IFS= read -r s; do
     f="$SKILLS/$s/SKILL.md" state=${STATE[$s]:-listed}
-    if [ "${USED[$s]:-0}" -gt "$TOGGLE_MAX" ]; then
+    n=${USED[$s]:-0}
+    if [ "$n" -gt $((TOGGLE_MAX * 2)) ]; then
       [ "$state" = name-only ] && ! pinned "$f" && restore+=("$s")
-    elif [ "$state" = listed ] && [ -f "$f" ] && ! pinned "$f" && ! routed "$s"; then
+    elif [ "$n" -le "$TOGGLE_MAX" ] && [ "$state" = listed ] && [ -f "$f" ] && ! pinned "$f" && ! routed "$s"; then
       hide+=("$s")
     fi
   done < <({ for f in "$SKILLS"/*/SKILL.md; do [ -e "$f" ] && basename "$(dirname "$f")"; done
@@ -787,7 +790,7 @@ if [ "$MODE" = overrides ]; then
       ($h | split(" ") - [""]) as $h | ($r | split(" ") - [""]) as $r
       | {days: $d, max: $m, hide: $h, restore: $r, skillOverrides: (reduce $h[] as $s (del(.[$r[]]); .[$s] = "name-only"))}' <<<"$cur"
   else
-    echo "skill-toggle over ${TOGGLE_DAYS}d, listed above $TOGGLE_MAX sessions: hide ${#hide[@]} [${hide[*]}], restore ${#restore[@]} [${restore[*]}]"
+    echo "skill-toggle over ${TOGGLE_DAYS}d, name-only at $TOGGLE_MAX sessions or fewer, listed past $((TOGGLE_MAX * 2)): hide ${#hide[@]} [${hide[*]}], restore ${#restore[@]} [${restore[*]}]"
   fi
   exit 0
 fi
