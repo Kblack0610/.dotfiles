@@ -129,6 +129,10 @@ pub fn build(f: &Facts, now: i64) -> Timeline {
     let mut events: Vec<(i64, Line)> = vec![];
     let (mut runs, mut red) = (0, 0);
     for r in &f.runs {
+        // A row with no creation time is skipped, as `builds::parse` skips it.
+        let Some(created) = crate::fleet::ts(&r.created_at) else {
+            continue;
+        };
         let on_commit = shas.get(r.sha.as_str()).copied();
         let mine = !f.scoped
             || on_commit.is_some()
@@ -139,7 +143,7 @@ pub fn build(f: &Facts, now: i64) -> Timeline {
         }
         runs += 1;
         let mut r = r.clone();
-        r.settle(crate::fleet::ts(&r.created_at).unwrap_or_default(), now);
+        r.settle(created, now);
         red += usize::from(r.state == "red");
         if let Some(i) = on_commit {
             if rank(&r.state) > ci[i].as_ref().map_or(0, |w| rank(&w.state)) {
@@ -375,6 +379,10 @@ mod tests {
                 run("h13b", "agent-4/menu", None, at(15, 30), &[]),
                 run("h12", "agent-3/cart", Some("success"), at(10, 5), &[12]),
                 run("other", "agent-9/api", Some("failure"), at(11, 0), &[99]),
+                Run {
+                    created_at: "not a time".into(),
+                    ..run("c1", "main", Some("failure"), at(9, 2), &[])
+                },
             ],
             tags: vec![Tag {
                 tag: "web-v1.2.0".into(),

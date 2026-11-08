@@ -40,10 +40,11 @@ EOF
     {\"number\":5,\"title\":\"feat(game): saves\",\"state\":\"OPEN\",\"createdAt\":\"$NOW_ISO\",\"headRefName\":\"saves\",\"url\":\"u5\"},
     {\"number\":6,\"title\":\"chore(tools): lint\",\"state\":\"MERGED\",\"createdAt\":\"$NOW_ISO\",\"mergedAt\":\"$NOW_ISO\",\"url\":\"u6\"},
     {\"number\":7,\"title\":\"the menu\",\"state\":\"MERGED\",\"createdAt\":\"$NOW_ISO\",\"mergedAt\":\"$NOW_ISO\",\"url\":\"u7\"},
-    {\"number\":8,\"title\":\"feat(game): old\",\"state\":\"CLOSED\",\"createdAt\":\"2020-01-01T00:00:00Z\",\"closedAt\":\"2020-01-02T00:00:00Z\"}
+    {\"number\":9,\"title\":\"feat(game): long-lived\",\"state\":\"OPEN\",\"createdAt\":\"2020-01-01T00:00:00Z\"}
   ]"
   cat > "$SANDBOX/bin/gh" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SANDBOX/gh.calls"
 printf '%s' "$GH_REPLY"
 EOF
   # A key with no RUNS_<key> set is not in the ledger: exit 3, as schedules-sync says.
@@ -54,6 +55,7 @@ var="RUNS_$(printf '%s' "$2" | tr -c 'A-Za-z0-9' _)"
 printf '%s' "${!var}"
 EOF
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/schedules-sync"
+  export SANDBOX
 }
 
 teardown() { sandbox_teardown 2>/dev/null || true; }
@@ -62,12 +64,15 @@ teardown() { sandbox_teardown 2>/dev/null || true; }
   run "$PT" game
   assert_success
   assert_equal "$(jq -c '[.commits[] | [.subject, .prs]]' <<<"$output")" '[["feat(game): the menu (#7)",[7]]]'
-  # #5 matches the default prFilter (the project's name), #7 is the merge of a listed commit,
-  # #6 is another product's and #8 is older than the window.
-  assert_equal "$(jq -c '[.prs[].number]' <<<"$output")" '[5,7]'
-  assert_equal "$(jq -c '[.prs[].state]' <<<"$output")" '["open","merged"]'
+  # #5 and #9 match the default prFilter (the project's name), #7 is the merge of a listed
+  # commit, #6 is another product's. #9 opened long ago: the search says it was updated since.
+  assert_equal "$(jq -c '[.prs[].number]' <<<"$output")" '[5,7,9]'
+  assert_equal "$(jq -c '[.prs[].state]' <<<"$output")" '["open","merged","open"]'
   assert_equal "$(jq -c '[.tags[].tag]' <<<"$output")" '["game-v1.0.0"]'
   assert_equal "$(jq -c '[.branch, .scoped]' <<<"$output")" '["main",true]'
+  # PRs are searched by when they were last updated, not opened.
+  run grep -c -- "--search updated:>=$(date -u -d @$(( $(date +%s) - 7 * 86400 )) +%Y-%m-%d)" "$SANDBOX/gh.calls"
+  assert_output 1
 }
 
 @test "runs come from the GitHub key, else the Forgejo one, else a note names both" {
@@ -104,6 +109,21 @@ teardown() { sandbox_teardown 2>/dev/null || true; }
   assert_output --partial "project-timeline [--days N] <project>"
   run "$PT" --days 0 game
   assert_failure 2
+  run "$PT" --days 31 game
+  assert_failure 2
   run "$PT" "../x"
   assert_failure 2
+}
+
+@test "a prFilter that is not a regex is an error and matched as plain text; a default one is the name, escaped" {
+  jq '.trackers.game.prFilter = "game("' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  run "$PT" game
+  assert_success
+  assert_output --partial "\"prFilter 'game(': "
+  assert_equal "$(jq -c '[(.commits | length), (.prs | length)]' <<<"$output")" '[1,1]'
+
+  jq 'del(.trackers.game.prFilter) | .trackers["g.me"] = {"repo": "mono", "path": "games/game"}' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  run "$PT" g.me
+  assert_success
+  assert_equal "$(jq -c '[.prs[].number]' <<<"$output")" '[7]'
 }

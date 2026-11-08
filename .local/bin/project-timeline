@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # project-timeline - what happened on one lab project's code, as facts a page joins.
 #
-#   project-timeline [--days N] <project>
+#   project-timeline [--days N] <project>     N is 1 to 30, the run ledger's reach
 #
 # One JSON object of the project's commits, PRs, CI runs and release tags in the last N days
 # (default 7), read when its record opens on the Projects tab; hub_core::timeline joins it with the
@@ -11,7 +11,7 @@
 # and the rest still prints. Exit 0, 2 on usage. Tests: tests/unit/project_timeline.bats.
 set -uo pipefail
 
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
@@ -23,7 +23,7 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-n
 DAYS=7 PROJ=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --days) [[ "${2:-}" =~ ^[1-9][0-9]?$ ]] || usage; DAYS="$2"; shift 2 ;;
+    --days) [[ "${2:-}" =~ ^([1-9]|[12][0-9]|30)$ ]] || usage; DAYS="$2"; shift 2 ;;
     -h|--help) usage 0 ;;
     -*) usage ;;
     *) [ -z "$PROJ" ] || usage; PROJ="$1"; shift ;;
@@ -45,8 +45,6 @@ if [ -n "$DIR" ] && [ -e "$DIR/.git" ]; then
   git -C "$DIR" rev-parse -q --verify "$REF^{commit}" >/dev/null || REF="$BRANCH"
   PATHF="$(project_field "$PROJ" path)"
   FILTER="$(project_field "$PROJ" prFilter)"
-  # The registry's default: a product inside a repo (one with a path) filters by its own name.
-  [ -z "$FILTER" ] && [ -n "$PATHF" ] && FILTER="$PROJ"
   if GH="$(origin_repo "$DIR" github.com)"; then
     LEDGER="github:$GH"
   elif LEDGER="$(origin_repo "$DIR")"; then
@@ -64,15 +62,14 @@ else
   DIR=""
 fi
 
-export SINCE DIR REF BRANCH PATHF FILTER GH LEDGER TAGS NOTE
+export PROJ SINCE DIR REF BRANCH PATHF FILTER GH LEDGER TAGS NOTE
 exec python3 -I - <<'PY'
 import json, os, re, subprocess
 from datetime import datetime, timezone
 
 E = os.environ
 since = int(E["SINCE"])
-# The registry gives a product with a path its name as prFilter, so a filter is what scopes.
-out = {"since": since, "branch": E["BRANCH"], "scoped": bool(E["FILTER"]),
+out = {"since": since, "branch": E["BRANCH"], "scoped": bool(E["FILTER"] or E["PATHF"]),
        "commits": [], "prs": [], "runs": [], "tags": [], "notes": [], "errors": []}
 if E["NOTE"]:
     out["notes"].append(E["NOTE"])
@@ -99,7 +96,16 @@ def epoch(s):
         return None
 
 
-filt = re.compile(E["FILTER"], re.I) if E["FILTER"] else None
+# The registry's default prFilter for a product inside a repo (one with a path) is its own name.
+filt = None
+if E["FILTER"]:
+    try:
+        filt = re.compile(E["FILTER"], re.I)
+    except re.error as e:
+        out["errors"].append(f"prFilter {E['FILTER']!r}: {e}; matched as plain text")
+        filt = re.compile(re.escape(E["FILTER"]), re.I)
+elif E["PATHF"]:
+    filt = re.compile(re.escape(E["PROJ"]), re.I)
 d = E["DIR"]
 pr_refs = set()
 if d:
@@ -132,12 +138,12 @@ if d and E["GH"]:
         for p in prs:
             if filt and p["number"] not in pr_refs and not filt.search(p.get("title") or ""):
                 continue
-            row = {"number": p["number"], "title": p.get("title") or "", "state": (p.get("state") or "").lower(),
+            # The search keeps PRs updated in the window: an old open PR pushed to today is in,
+            # so its runs are the project's; the fold lists only its events in the window.
+            out["prs"].append({"number": p["number"], "title": p.get("title") or "", "state": (p.get("state") or "").lower(),
                    "created": epoch(p.get("createdAt")), "merged": epoch(p.get("mergedAt")),
                    "closed": epoch(p.get("closedAt")), "branch": p.get("headRefName") or "",
-                   "url": p.get("url") or ""}
-            if max(t or 0 for t in (row["created"], row["merged"], row["closed"])) >= since:
-                out["prs"].append(row)
+                   "url": p.get("url") or ""})
         if len(prs) >= 100:
             out["notes"].append("PRs: the newest 100 of those updated in the window only")
 elif d:
