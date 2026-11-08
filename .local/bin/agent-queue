@@ -440,11 +440,11 @@ ask_pending() {
   case "+${want,,}+" in *"+${ans,,}+"*) ;; *) echo "answered ${ans:-nothing}, not $want" ;; esac
 }
 
-# ask_options <id> -> the ask's answer vocabulary, comma separated; nothing when it has none.
+# ask_options <id> -> the ask's answer vocabulary, one option per line; nothing when it has none.
 ask_options() {
   local f; f="$(compgen -G "$AQ_ASKS/*/${1%%=*}.md" | head -1)"
   [ -n "$f" ] || return 0
-  sed -n 's/^options: *//p' "$f" | head -1 | tr '|' ','
+  sed -n 's/^options: *//p' "$f" | head -1 | tr '|' '\n'
 }
 
 # nightly_pending <repo> <local stamp> -> what today's scheduled runs of that repo still wait for, or
@@ -1334,7 +1334,7 @@ cmd_move() {
 # check_tags <tags> -- die on a hold tag the queue could not read, so a gate is never silently
 # open or shut: add and `set tags=` both check.
 check_tags() {
-  local tag why
+  local tag why opts rest opt
   for tag in $1; do
     case "$tag" in
       at:*) [[ "$tag" =~ ^at:([0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T)?([01][0-9]|2[0-3]):[0-5][0-9]$ ]] ||
@@ -1352,10 +1352,19 @@ check_tags() {
           *) die "$tag: that ask can never release it ($why); post a new one with agent-ask post --kind gate, which the judge never answers" ;;
         esac
         # With no option named, every answer releases the item, a "stop" among them.
+        # A name the ask does not offer can never match an answer, so the item would wait for good.
+        # An answer matches on its first word (ask_pending), and a slug may itself contain a +.
+        opts="$(ask_options "${tag#ask:}")"
+        [ -n "$opts" ] || continue
         if [[ "$tag" != *=* ]]; then
-          why="$(ask_options "${tag#ask:}")"
-          [ -z "$why" ] || die "$tag: that ask offers $why; name the answers that release the item: $tag=<option>[+<option>]"
-        fi ;;
+          die "$tag: that ask offers ${opts//$'\n'/,}; name the answers that release the item: $tag=<option>[+<option>]"
+        fi
+        rest="+${tag#*=}+"; rest="${rest,,}"
+        while IFS= read -r opt; do
+          opt="${opt%% *}"; opt="${opt%[.,;:!]}"
+          rest="${rest//"+${opt,,}+"/+}"
+        done <<<"$opts"
+        [ "$rest" = + ] || die "$tag: that ask offers ${opts//$'\n'/,}, and those are what an answer can match" ;;
       hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
     esac
   done

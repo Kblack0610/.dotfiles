@@ -146,15 +146,16 @@ queue_waits() {
 }
 load_queue_asks() {
   [ -z "${QUEUE_ASKS+set}" ] || return 0
-  QUEUE_ASKS=" $($AGENT_ASK_QUEUE_CMD list --json 2>/dev/null |
-    jq -r '(.tags // "") | split(" ")[] | select(startswith("ask:")) | .[4:] | split("=")[0]' 2>/dev/null | tr '\n' ' ') "
+  QUEUE_HOLDS="$($AGENT_ASK_QUEUE_CMD list --json 2>/dev/null | jq -r '
+    .slug as $s | (.tags // "") | split(" ")[] | select(startswith("ask:")) | .[4:]
+    | [$s, split("=")[0], (split("=")[1] // "")] | @tsv' 2>/dev/null)"
+  QUEUE_ASKS=" $(cut -f2 <<<"$QUEUE_HOLDS" | tr '\n' ' ') "
 }
 
 # queue_holders <id>: the active items held behind this ask, `<slug><TAB><releasing options>` each.
 queue_holders() {
-  $AGENT_ASK_QUEUE_CMD list --json 2>/dev/null | jq -r --arg id "$1" '
-    .slug as $s | (.tags // "") | split(" ")[] | select(startswith("ask:")) | .[4:]
-    | select(split("=")[0] == $id) | [$s, (split("=")[1] // "")] | @tsv' 2>/dev/null
+  load_queue_asks
+  awk -F'\t' -v OFS='\t' -v id="$1" '$2 == id { print $1, $3 }' <<<"$QUEUE_HOLDS"
 }
 
 # collapse a value to a single physical line (files are one key:value per line)
@@ -977,6 +978,7 @@ answer_route() {
   local f="$1" sid held spec items on alive="" who="session gone: "
   load_ask "$f"
   [ "${ASK[status]:-}" = pending ] || return 0
+  load_queue_asks
   sid="${ASK[claude_session]:-}"
   if [ -n "$sid" ]; then session_alive "$sid" && alive=1; else who="no session is waiting: "; fi
   held="$(queue_holders "${ASK[id]:-}")"
@@ -987,8 +989,11 @@ answer_route() {
       echo "  answer releases: $items${on:+ (on $on)}"
     done < <(cut -f2 <<<"$held" | sort -u)
   elif [ -n "${ASK[resume]:-}" ]; then
-    [ -z "$alive" ] || who=""
-    echo "  ${who}the answer starts \`${ASK[resume]:-}\`"
+    if [ -n "$alive" ]; then
+      echo "  the answer goes to the asking session and starts \`${ASK[resume]:-}\`"
+    else
+      echo "  ${who}the answer starts \`${ASK[resume]:-}\`"
+    fi
   elif [ -n "$alive" ]; then
     echo "  the answer goes to the asking session"
   else

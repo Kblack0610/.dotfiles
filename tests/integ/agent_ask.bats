@@ -824,6 +824,16 @@ ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
   assert_output 'sid-1'
 }
 
+@test "the card says a live session hears the answer and its resume command starts too" {
+  local id
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --resume '/captain resume' 'both?')"
+  run "$AGENT_ASK" card "$id"
+  assert_output --partial 'the answer goes to the asking session and starts `/captain resume`'
+  refute_output --partial 'session gone'
+}
+
 @test "cancel records its reason" {
   local id; id="$(post demo 'ship it?')"
   "$AGENT_ASK" cancel "$id" superseded by the v1.19 gate 2>/dev/null
