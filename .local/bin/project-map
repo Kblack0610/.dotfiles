@@ -23,6 +23,69 @@ usage() {
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
+# splice_members <orig> <want> <name> [<dir>] -- print <orig> with trackers.<name> (and
+# paths.<dir>) taken from <want> inserted as text after each object's last member, in the
+# indent or one-line style that member uses. Fails unless the result equals <want>.
+splice_members() {
+  python3 - "$@" <<'PY'
+import json, re, sys
+orig_path, want_path, name, path_dir = sys.argv[1:5]
+text = open(orig_path, encoding="utf-8").read()
+want = json.load(open(want_path, encoding="utf-8"))
+dec = json.JSONDecoder()
+ws = re.compile(r"\s*")
+
+def members(start):
+    """(key, key_pos, val_start, val_end) per member of the object at start, and its end."""
+    i, out = ws.match(text, start + 1).end(), []
+    if text[i] == "}":
+        return out, i + 1
+    while True:
+        key, j = json.decoder.scanstring(text, i + 1)
+        v = ws.match(text, ws.match(text, j).end() + 1).end()
+        _, e = dec.raw_decode(text, v)
+        out.append((key, i, v, e))
+        i = ws.match(text, e).end()
+        if text[i] == "}":
+            return out, i + 1
+        i = ws.match(text, i + 1).end()
+
+def col(pos):
+    return pos - (text.rfind("\n", 0, pos) + 1)
+
+def insert(obj_start, key, value):
+    global text
+    mem, end = members(obj_start)
+    if any(m[0] == key for m in mem):
+        sys.exit("project-map: %s is already a member; refusing a duplicate key" % key)
+    k = json.dumps(key, ensure_ascii=False)
+    if mem and "\n" not in text[mem[-1][3]:end - 1]:
+        piece, at = ", %s: %s" % (k, json.dumps(value, ensure_ascii=False, separators=(", ", ": "))), mem[-1][3]
+    else:
+        ind = " " * (col(mem[-1][1]) if mem else col(obj_start) + 2)
+        body = json.dumps(value, ensure_ascii=False, indent=2).replace("\n", "\n" + ind)
+        piece = "%s\n%s%s: %s" % ("," if mem else "", ind, k, body)
+        at = mem[-1][3] if mem else obj_start + 1
+        if not mem:
+            piece += "\n" + " " * col(obj_start)
+    text = text[:at] + piece + text[at:]
+
+def top(key):
+    return next((m[2] for m in members(ws.match(text).end())[0] if m[0] == key), None)
+
+for outer, inner in ([("paths", path_dir)] if path_dir else []) + [("trackers", name)]:
+    at = top(outer)
+    if at is None:
+        insert(ws.match(text).end(), outer, {inner: want[outer][inner]})
+    else:
+        insert(at, inner, want[outer][inner])
+
+if json.loads(text) != want:
+    sys.exit("project-map: the spliced registry does not match the jq result")
+sys.stdout.write(text)
+PY
+}
+
 cmd_add() {
   local name="" type="" lab="" repo="" path="" repo_dir="" branch=""
   [ $# -gt 0 ] || usage
@@ -102,11 +165,11 @@ cmd_add() {
       || die "--lab \"$lab\" is not a notes profile ($(tr '\n' ' ' <<<"$profiles"))"
   fi
 
-  # -- write: one jq pass, through the stow symlink ---------------------------------
+  # -- write: jq decides the content, a splice keeps the layout -------------------------
   # Globals, not locals: the EXIT trap runs after this function has returned.
-  BACKUP="$(mktemp)"; TMP="$(mktemp)"
-  trap 'rm -f "$BACKUP" "$TMP"' EXIT
-  local backup="$BACKUP" tmp="$TMP"
+  BACKUP="$(mktemp)"; TMP="$(mktemp)"; WANT="$(mktemp)"
+  trap 'rm -f "$BACKUP" "$TMP" "$WANT"' EXIT
+  local backup="$BACKUP" tmp="$TMP" want="$WANT"
   cat "$map" > "$backup"
   jq --arg n "$name" --arg type "$type" --arg lab "$lab" --arg repo "$repo" \
      --arg path "$path" --arg branch "$branch" --arg dir "$repo_dir" '
@@ -116,7 +179,12 @@ cmd_add() {
         + (if $path != "" then {path: $path} else {} end)
         + (if $branch != "" then {branch: $branch} else {} end)
         + (if $lab != "" then {lab: $lab} else {} end)
-        + {type: $type})' "$map" > "$tmp"
+        + {type: $type})' "$map" > "$want"
+  # jq would pretty-print the whole file and reflow every hand-compacted row, so only the
+  # new members are spliced into the original text; nothing is written unless the result
+  # parses equal to the jq output.
+  splice_members "$backup" "$want" "$name" "$repo_dir" > "$tmp" \
+    || die "could not splice $name into $map; the registry is unchanged"
   # `cat >`, never `mv`: the registry is a stow symlink into the private checkout, and a
   # rename would replace the link with a file that no repo tracks.
   cat "$tmp" > "$map"
