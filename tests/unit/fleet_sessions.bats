@@ -1979,24 +1979,30 @@ SH
   mkdir -p "$SANDBOX/a" "$SANDBOX/b"
   printf '# v\n\n## Phases\n- [x] 5 FreqAI (#875)\n' > "$SANDBOX/b/velvet.md"
   phases_plan '- [x] Phase 1: costs (#20)' '- [ ] Phase 2: walk-forward'
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/r","number":875}]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
   assert_failure
+  # Opening or merging it is this session's own act: no other plan overrides that.
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/r","number":875}]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
+  assert_success
   # Another plan naming #8750, or none at all, leaves the session's own evidence standing.
   printf '# v\n\n## Phases\n- [x] 5 FreqAI (#8750)\n' > "$SANDBOX/b/velvet.md"
   run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
   assert_success
   run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" ""
   assert_success
-  # Its own plan naming #875 wins, and the same plan under another account's plans dir is not another plan.
+  # Its own plan naming #875 wins.
   printf '# v\n\n## Phases\n- [x] 5 FreqAI (#875)\n' > "$SANDBOX/b/velvet.md"
   phases_plan '- [x] Phase 1: costs (#875)'
   run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
   assert_success
+  # A plan with this plan's file name under another dir is its account copy: no veto, even when
+  # only the copy has #875 ticked; with no plan of its own the other window's plan vetoes.
   cp "$SANDBOX/b/velvet.md" "$SANDBOX/a/plan.md"
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/r","number":875}]' "$SANDBOX/t.jsonl" - "$SANDBOX/a/plan.md"
-  assert_failure
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/r","number":875}]' "$SANDBOX/t.jsonl" "$SANDBOX/b/velvet.md" "$SANDBOX/a/plan.md"
+  phases_plan '- [ ] Phase 1: costs'
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/a/plan.md"
   assert_success
+  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" - "$SANDBOX/a/plan.md"
+  assert_failure
 }
 
 @test "end to end: a merged PR another session made on a shared worktree branch is not this session's (ar-455)" {

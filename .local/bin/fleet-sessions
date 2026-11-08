@@ -558,23 +558,24 @@ gate_ci() {
 }
 
 # pr_made_here <dir> <N> <branch> <session_prs JSON> <transcript> <plan|-> [<other plans>] -> true
-# when this session made PR #N of <dir>'s repo: its plan's Phases name #N (bare, not <repo>#N), or,
-# when no other plan in <other plans> (newline-separated: the plans of the other windows in this
-# worktree) names it, it opened or merged it (session_prs, a Forgejo repo's host dropped, since the
-# clone's origin names only owner/repo), its transcript holds the PR's URL, or it pushed <branch>
-# (the command, or git's `-> <branch>` line for a bare `git push`). A PR belongs to the plan it
-# served: worktrees and branch names are shared and recycled, and a session that reads another
-# window's PR (`gh pr view` prints its URL) holds it in its transcript. trader-real-money-plan read
-# LANDED on #42 and #50 of so-how-do-i-velvet-pine, run in another window of its worktree (ar-492).
+# when this session made PR #N of <dir>'s repo: its plan's Phases name #N (bare, not <repo>#N), it
+# opened or merged it (session_prs, a Forgejo repo's host dropped, since the clone's origin names
+# only owner/repo), or, when no plan in <other plans> (newline-separated: the plans of the other
+# windows in this worktree) names #N, its transcript holds the PR's URL or it pushed <branch> (the
+# command, or git's `-> <branch>` line for a bare `git push`). A PR belongs to the plan it served:
+# worktrees and branch names are shared and recycled, and a session that reads another window's PR
+# (`gh pr view` prints its URL) holds it in its transcript. trader-real-money-plan read LANDED on
+# #42 and #50 of so-how-do-i-velvet-pine, run in another window of its worktree (ar-492).
 pr_made_here() {
   local repo n="$2" br="$3" t="$5" plan="$6" other re
   repo="$(origin_repo "$1")"
   phases_name "$plan" "$n" && return 0
+  jq -e --arg r "${repo,,}" --argjson n "$n" 'any(.[]; (.repo | ascii_downcase | split("/")[-2:] | join("/")) == $r and .number == $n)' \
+    <<<"$4" >/dev/null 2>&1 && return 0
+  # The same plan under another account's plans dir is this plan, not another window's.
   while IFS= read -r other; do
     [ -n "$other" ] && [ "${other##*/}" != "${plan##*/}" ] && phases_name "$other" "$n" && return 1
   done <<<"${7:-}"
-  jq -e --arg r "${repo,,}" --argjson n "$n" 'any(.[]; (.repo | ascii_downcase | split("/")[-2:] | join("/")) == $r and .number == $n)' \
-    <<<"$4" >/dev/null 2>&1 && return 0
   [ -f "$t" ] || return 1
   [ -n "$repo" ] && grep -qiE "github\.com/$(re_quote "$repo")/pull/$n([^0-9]|$)" "$t" && return 0
   [ "$br" != - ] || return 1
