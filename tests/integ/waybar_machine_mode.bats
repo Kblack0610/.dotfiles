@@ -82,8 +82,12 @@ mode() { printf 'MACHINE_MODE=%s\nRUNNERS_PINNED=%s\n' "$1" "${2:-yes}" > "$HOME
 @test "each pinbar-mode leaf sets the mode of its own key" {
   run awk '/^submap = pinbar-mode$/,/^submap = pinbar-utils$/' "$REPO_ROOT/.config/hypr/conf.d/leader.conf"
   for m in r:reserved s:shared o:open f:full; do
-    assert_line --regexp "^bindpd = ,${m%:*}, ${m#*:}: .*, exec, \\\$HOME/\\.local/bin/machine-mode ${m#*:}\$"
+    assert_line --regexp "^bindpd = ,${m%:*}, ${m#*:}, exec, \\\$HOME/\\.local/bin/machine-mode ${m#*:}\$"
+    assert_line "bindp = ,${m%:*}, exec, ~/.config/waybar/pin-hint.sh close"
+    assert_line "bindp = ,${m%:*}, submap, reset"
   done
+  assert_line 'bindpd = ,escape, back, submap, pinbar'
+  assert_line 'bindpd = ,q, exit, submap, reset'
   run grep -c 'bindpd = ,m, machine mode >, submap, pinbar-mode' "$REPO_ROOT/.config/hypr/conf.d/leader.conf"
   assert_output 1
 }
