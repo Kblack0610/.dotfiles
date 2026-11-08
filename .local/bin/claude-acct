@@ -185,23 +185,27 @@ fetch() {
 # ceiling and not a weekly allowance), reached, usd_used and usd_max when the kind has them. That is
 # the only per-kind code; usage_json treats every row alike. Exit 1 when the source cannot be read.
 
-# read_codex <sessions dir> -> the plan's rate limits from the newest rollout that has any: every
-# token_count event carries them as of that call, and Codex has no usage endpoint to ask. A window
-# whose reset has passed reads as unused, with no reset until a rollout says when the next is.
+# read_codex <sessions dir> -> the plan's rate limits from the newest rollout with a windowed record:
+# every token_count event carries them as of that call, and Codex has no usage endpoint to ask. Codex
+# also logs records with no window (limit_id "premium"), often last, so each file is read from its
+# end for the newest record with a window; a line that does not parse (a rollout mid-write) is
+# skipped. A window whose reset has passed reads as unused, with no reset until a rollout says when.
 read_codex() {
-    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" f
-    f=$(find "$1" -name 'rollout-*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -20 | cut -d' ' -f2- |
-        while IFS= read -r f; do grep -q '"rate_limits"' "$f" && { echo "$f"; break; }; done)
-    [[ -n "$f" ]] || return 1
-    grep '"rate_limits"' "$f" | tail -1 | jq -ce --argjson now "$now" '.payload.rate_limits as $r
-        | def win(w): if w == null then null
-            elif (w.resets_at // 0) <= $now then {utilization: 0, resets_at: null}
-            else {utilization: w.used_percent, resets_at: (w.resets_at | todate)} end;
-        {plan: $r.plan_type, five_hour: win($r.primary), seven_day: win($r.secondary),
-         window: (($r.secondary.window_minutes // 10080) * 60), paced: true,
-         reached: ($r.rate_limit_reached_type != null
-                   and ([$r.primary.resets_at, $r.secondary.resets_at] | map(select(. != null)) | min // 0) > $now)}
-        | select(.five_hour or .seven_day)'
+    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" f out
+    while IFS= read -r f; do
+        out=$(tac "$f" | grep '"rate_limits"' | jq -cR --argjson now "$now" '
+            fromjson? | .payload.rate_limits? | objects | select(.primary or .secondary) | . as $r
+            | def win(w): if w == null then null
+                elif (w.resets_at // 0) <= $now then {utilization: 0, resets_at: null}
+                else {utilization: w.used_percent, resets_at: (w.resets_at | todate)} end;
+            {plan: $r.plan_type, five_hour: win($r.primary), seven_day: win($r.secondary),
+             window: (($r.secondary.window_minutes // 10080) * 60), paced: true,
+             reached: ($r.rate_limit_reached_type != null
+                       and ([$r.primary.resets_at, $r.secondary.resets_at] | map(select(. != null)) | min // 0) > $now)}' |
+            head -n1)
+        [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
+    done < <(find "$1" -name 'rollout-*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -20 | cut -d' ' -f2-)
+    return 1
 }
 
 # gateway_get <key file> <path> -> the gateway's JSON for that key. The key goes in on stdin, off the

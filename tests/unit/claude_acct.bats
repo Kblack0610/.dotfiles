@@ -1181,6 +1181,38 @@ budget() {
   [ "$(field codex .room.ok <<<"$output")" = true ]
 }
 
+@test "sources: codex reads the last record with a window, past a windowless premium one" {
+  src_setup
+  rollout 40 10 84
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","plan_type":"plus","primary":null,"secondary":null,"rate_limit_reached_type":null}}}\n' \
+    >> "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+}
+
+@test "sources: codex skips a newer rollout with no windowed record, and a torn last line" {
+  src_setup
+  rollout 40 10 84
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n{"payload":{"rate_limits":{"prim' \
+    > "$d/rollout-b.jsonl"
+  touch -d '-1 hour' "$d/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+}
+
+@test "sources: codex with no windowed record in any rollout is unread" {
+  src_setup
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n' \
+    > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = unread ]
+}
+
 @test "sources: a key at its cap has no room" {
   src_setup
   budget sk-lazer key 10 100
