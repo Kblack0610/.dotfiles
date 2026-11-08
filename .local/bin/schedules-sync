@@ -26,6 +26,16 @@ sent in curl's stdin config, never argv; with neither, a public repo still reads
   schedules-sync pending <repo>
                           what an agent-queue `nightly:<repo>` hold still waits for, one line;
                           exit 0 and no output when nothing is (repo: owner/name or name)
+  schedules-sync runs <repo> [--branch B] [--since T] [--until T]
+                          the ledger's runs of one repo (owner/name, or forgejo:owner/name),
+                          as a JSON array in created_at order, one object per run: its newest
+                          attempt's last row; --branch keeps one branch, --since/--until (ISO,
+                          UTC) bound created_at. The one reader of the ledger: fleet-sessions,
+                          fleet-bench and ci-failures read runs here, never from actions/runs.
+                          Exit 1 when the repo's last sync is over 30 minutes old, 3 when the
+                          list does not sync the repo (a caller tells "unknown" from "no runs"),
+                          4 when a past --until is after the last sync: that window is not yet
+                          complete, and the next pass completes it
 
 Deterministic, no model. schedules-sync.timer runs it every 10 minutes: GitHub sends this
 machine no event when a run ends, so it samples.
@@ -415,8 +425,9 @@ def run_key(r):
     return (r["forge"], r["repo"], r["id"], r["attempt"])
 
 
-def read_ledger():
-    """-> ({key: last row}, rows read, whether the file ends mid-line); None for no ledger."""
+def read_ledger(repo=None):
+    """-> ({key: last row}, rows read, whether the file ends mid-line); None for no ledger. With
+    <repo> (owner/name) only lines naming it are parsed: a reader of one repo skips the rest."""
     try:
         f = open(LEDGER)
     except OSError:
@@ -424,6 +435,8 @@ def read_ledger():
     last, n, line = {}, 0, ""
     with f:
         for line in f:
+            if repo and repo not in line.lower():
+                continue
             try:
                 r = json.loads(line)
                 last[run_key(r)] = r
@@ -465,6 +478,48 @@ def read_sync():
             return json.load(f).get("repos", {})
     except (OSError, ValueError, AttributeError):
         return {}
+
+
+def runs(argv, t):
+    """`runs <repo> [--branch B] [--since T] [--until T]` -> (exit code, JSON or a reason)."""
+    if not argv or argv[0].startswith("-") or len(argv) % 2 != 1:
+        return 2, "runs <repo> [--branch B] [--since T] [--until T]"
+    opts = dict(zip(argv[1::2], argv[2::2]))
+    if set(opts) - {"--branch", "--since", "--until"}:
+        return 2, f"runs: unknown option {sorted(set(opts) - {'--branch', '--since', '--until'})[0]}"
+    forge, _, name = argv[0].rpartition(":")
+    key = f"{forge or 'github'}:{name}".lower()
+    try:
+        since = parse_iso(opts["--since"]) if "--since" in opts else None
+        until = parse_iso(opts["--until"]) if "--until" in opts else None
+    except ValueError:
+        return 2, "runs: --since and --until are YYYY-MM-DDTHH:MM:SSZ"
+    entry = next((e for k, e in read_sync().items() if k.lower() == key), None)
+    if entry is None:
+        return 3, f"{argv[0]} is not in the run ledger ({REPOS})"
+    synced = when(entry.get("synced_at"))
+    if not synced or synced < t - STALE:
+        why = f": {entry['error']}" if entry.get("error") else ""
+        return 1, f"{argv[0]} last synced {entry.get('synced_at')}, older than {int(STALE.total_seconds() // 60)}m{why}"
+    if until and until <= t and synced < until:
+        return 4, f"{argv[0]} last synced {entry.get('synced_at')}, not yet past {opts['--until']}"
+    last, _, _ = read_ledger(f'"repo":"{name.lower()}"')
+    if last is None:
+        return 1, f"no ledger at {LEDGER}"
+    newest = {}
+    for r in last.values():
+        if f"{r['forge']}:{r['repo']}".lower() != key:
+            continue
+        if "--branch" in opts and r.get("branch") != opts["--branch"]:
+            continue
+        c = when(r.get("created_at"))
+        if (since and (not c or c < since)) or (until and (not c or c > until)):
+            continue
+        k = r["id"]
+        if k not in newest or (r.get("attempt") or 1) >= (newest[k].get("attempt") or 1):
+            newest[k] = r
+    rows = sorted(newest.values(), key=lambda r: (r.get("created_at") or "", r["id"]))
+    return 0, json.dumps(rows, separators=(",", ":"))
 
 
 def write_json(path, doc):
@@ -593,8 +648,12 @@ def main(argv):
         if left:
             print(", ".join(left))
         return 1 if left else 0
+    if argv and argv[0] == "runs":
+        rc, out = runs(argv[1:], now())
+        print(out, file=sys.stdout if rc == 0 else sys.stderr)
+        return rc
     if argv and argv[0] != "sync":
-        print(f"schedules-sync: unknown verb {argv[0]} (sync, pending, --help)", file=sys.stderr)
+        print(f"schedules-sync: unknown verb {argv[0]} (sync, pending, runs, --help)", file=sys.stderr)
         return 2
     try:
         repos = read_repos()

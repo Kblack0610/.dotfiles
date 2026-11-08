@@ -5,7 +5,8 @@
                    [--days N] [--until TIME] [--cache DIR] [--offline] [--json]
 
 Reads the finished GitHub Actions runs created in the N days (default 3) ending at --until
-(default now), and for every red run each attempt's jobs, each failed job's check-run
+(default now) from the run ledger (`schedules-sync runs`, synced every 10 minutes, so the last
+pass's runs are the newest it has), and for every red run each attempt's jobs, each failed job's check-run
 annotations and, when those say nothing but an exit code, its `--log-failed` output. Each
 failed job gets:
 
@@ -23,13 +24,12 @@ failed job gets:
 
 A red run counts once, in the bucket of its first root (non-derived) job. A run whose own
 conclusion is cancelled is not a red. A finished attempt's jobs, annotations and logs never
-change, so they are cached under DIR (default ~/.cache/ci-failures/<owner>-<name>); the run
-list is re-read online every time, since a rerun changes it. --offline reads only the cache.
-On a gh error the script stops fetching, reports what it has, says PARTIAL and exits 3.
+change, so they are cached under DIR (default ~/.cache/ci-failures/<owner>-<name>). --offline
+reads only that cache and the ledger. On a gh error, or a ledger that is stale or does not sync
+the repo, the script stops fetching, reports what it has, says PARTIAL and exits 3.
 """
 import argparse
 import datetime
-import glob
 import json
 import os
 import re
@@ -64,7 +64,8 @@ GENERIC = re.compile(r"^Process completed with exit code \d+\.?$")
 STAMP = re.compile(r"^\ufeff?\d{4}-\d\d-\d\dT[\d:.]+Z ?")
 ANSI = re.compile(r"(?:\x1b|\^\[)\[[0-9;]*m")
 WORKSPACE = re.compile(r"\S*?/(?:_work|work)/[^/\s]+/[^/\s]+/")
-RUN_FIELDS = "databaseId,workflowName,headBranch,headSha,event,status,conclusion,createdAt,attempt,url"
+# The one reader of the run ledger; a test points it at a stand-in.
+SCHEDULES_SYNC = os.environ.get("SCHEDULES_SYNC", "schedules-sync")
 
 
 class Partial(Exception):
@@ -124,35 +125,30 @@ class Source:
             f.write(data)
         return json.loads(data) if as_json else data
 
-    def runs(self, workflows, since, until):
-        if not self.offline:
-            span = f"{stamp(since)}..{stamp(until)}"
-            for wf in workflows or [None]:
-                args = ["run", "list", "-R", self.repo, "--created", span, "-L", "5000", "--json", RUN_FIELDS]
-                try:
-                    listed = json.loads(self.gh(*args, *(["--workflow", wf] if wf else [])))
-                except Partial:
-                    break
-                for run in listed:
-                    if run.get("status") != "completed":
-                        continue
-                    # A run's file records every --workflow it was listed under, so an offline
-                    # read can filter by the same file name gh was given.
-                    path = os.path.join(self.cache, f"run-{run['databaseId']}.json")
-                    seen = set()
-                    if os.path.exists(path):
-                        with open(path) as f:
-                            seen = set(json.load(f).get("_listed_as", []))
-                    run["_listed_as"] = sorted(seen | ({wf} if wf else set()))
-                    with open(path, "w") as f:
-                        json.dump(run, f)
+    def runs(self, since, until, closed):
+        """The finished runs created in the window, newest attempt each, in created order. The
+        ledger lists every workflow; --workflow keeps a run by its name or its file's name. A
+        closed window (--until given) needs a ledger synced past its end, else it is PARTIAL."""
+        argv = [SCHEDULES_SYNC, "runs", self.repo, "--since", stamp(since)] + (["--until", stamp(until)] if closed else [])
+        try:
+            got = subprocess.run(argv, capture_output=True, text=True)
+            why = "" if got.returncode == 0 else (got.stderr or got.stdout).strip()[:200]
+        except OSError as e:
+            why = str(e)
+        if why:
+            print(f"run ledger: {why}", file=sys.stderr)
+            self.partial = 1
+            return []
         out = []
-        for path in glob.glob(os.path.join(self.cache, "run-*.json")):
-            with open(path) as f:
-                run = json.load(f)
-            if since <= parse_time(run["createdAt"]) <= until:
-                out.append(run)
-        return sorted(out, key=lambda r: r["createdAt"])
+        for r in json.loads(got.stdout):
+            if r.get("status") != "completed":
+                continue
+            out.append({"databaseId": r["id"], "workflowName": r.get("workflow"), "headBranch": r.get("branch"),
+                        "headSha": r.get("sha"), "event": r.get("event"), "status": r["status"],
+                        "conclusion": r.get("conclusion"), "createdAt": r["created_at"],
+                        "attempt": r.get("attempt") or 1, "url": r.get("url"),
+                        "_listed_as": [os.path.basename(r.get("path") or "")] if r.get("path") else []})
+        return out
 
     def jobs(self, run, attempt):
         rid = run["databaseId"]
@@ -325,7 +321,7 @@ def analyse(runs, records, base, branches):
 
 
 def report(a, args, since, until, partial):
-    print(f"ci-failures: {args.repo}, {stamp(since)} to {stamp(until)}" + ("  PARTIAL: gh failed, counts are low" if partial else ""))
+    print(f"ci-failures: {args.repo}, {stamp(since)} to {stamp(until)}" + ("  PARTIAL: gh or the run ledger failed, counts are low" if partial else ""))
     pct = lambda n, d: f"{100 * n / d:.0f}%" if d else "-"
     print(f"runs: {a['runs']} finished, {a['red_runs']} red ({pct(a['red_runs'], a['runs'])}), "
           f"{a['pending_runs']} pending (red only on a check that waits for another run, not red), {a['cancelled']} cancelled (not red)")
@@ -365,7 +361,7 @@ def main(argv):
     since = until - datetime.timedelta(days=args.days)
     cache = args.cache or os.path.expanduser(f"~/.cache/ci-failures/{args.repo.replace('/', '-')}")
     src = Source(args.repo, cache, args.offline)
-    runs = src.runs(args.workflow, since, until)
+    runs = src.runs(since, until, bool(args.until))
     if args.workflow:
         want = set(args.workflow)
         runs = [r for r in runs if r["workflowName"] in want or want & set(r.get("_listed_as", []))]

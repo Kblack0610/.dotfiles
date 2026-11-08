@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
-# ci-failures.py: the counting script behind the ci-failures skill. It reads a cache of gh
-# responses (run-*.json, jobs-<run>-<attempt>.json, ann-<job>.json, log-<job>.txt), so the
-# fixture in tests/fixtures/ci-failures/ is a cache and --offline runs it with no network.
+# ci-failures.py: the counting script behind the ci-failures skill. It lists runs from the run
+# ledger (runs.jsonl and sync.json, read by this tree's schedules-sync) and reads a cache of gh
+# responses (jobs-<run>-<attempt>.json, ann-<job>.json, log-<job>.txt), so the fixture in
+# tests/fixtures/ci-failures/ is a ledger plus a cache and --offline runs it with no network.
 # The fixture holds one case per bucket and flag; each test names the run it pins.
 
 setup() {
@@ -13,6 +14,8 @@ setup() {
   SCRIPT="$REPO_ROOT/.claude/skills/ops/ci-failures/ci-failures.py"
   CACHE="$SANDBOX/cache"
   cp -r "$REPO_ROOT/tests/fixtures/ci-failures" "$CACHE"
+  export SCHEDULES_SYNC="$REPO_ROOT/.local/bin/schedules-sync" SCHEDULES_RUNS_LEDGER="$CACHE/runs.jsonl"
+  export SCHEDULES_NOW=1793750700 # 2026-11-04T00:05Z, the fixture's sync.json synced_at
   export GH_FIXTURE="$SANDBOX/gh"
   mkdir -p "$GH_FIXTURE"
 }
@@ -21,6 +24,9 @@ count() { python3 "$SCRIPT" --repo o/r --cache "$CACHE" --offline --until 2026-1
 
 # Print one field of the --json output, by a python expression over `d`.
 field() { count --json | python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
+
+# drop_run <id>: that run gone from the ledger
+drop_run() { jq -c --argjson id "$1" 'select(.id != $id)' "$CACHE/runs.jsonl" > "$CACHE/l" && mv "$CACHE/l" "$CACHE/runs.jsonl"; }
 
 sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']"; }
 
@@ -71,13 +77,13 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
 }
 
 @test "negative control: without the main run, the shared test red is no longer flagged main" {
-  rm "$CACHE/run-101.json"
+  drop_run 101
   assert_equal "$(sig PlayTests.Broken main)" "False"
   assert_equal "$(field "d['base']")" "[0, 0]"
 }
 
 @test "negative control: without the green run, the docs red is no longer green@sha" {
-  rm "$CACHE/run-105.json"
+  drop_run 105
   assert_equal "$(sig 'words N > N' green_sha)" "False"
 }
 
@@ -92,4 +98,12 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
   sed -i 's/Merge gate line/Docs gate line/' "$CACHE/jobs-109-1.json"
   assert_equal "$(field "d['red_runs'], d['pending_runs']")" "6 0"
   assert_equal "$(sig 'Docs gate line' bucket)" "check"
+}
+
+@test "negative control: a ledger last synced before the window ends is PARTIAL, exit 3, never a quiet low count" {
+  sed -i 's/2026-11-04T00:05:00Z/2026-11-03T23:59:00Z/' "$CACHE/sync.json"
+  run count
+  assert_failure 3
+  assert_output --partial 'not yet past 2026-11-04T00:00:00Z'
+  assert_output --partial 'PARTIAL'
 }

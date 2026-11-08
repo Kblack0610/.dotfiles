@@ -450,3 +450,48 @@ fj_serve() { cat > "$FJD/$(echo "repos/o/fj/actions/tasks?limit=50&page=$1" | tr
   run jq -sc 'map(.id) | [length, max, min]' "$LEDGER"
   assert_output '[25,25,1]'
 }
+
+# lrow <id> <attempt> <branch> <created> <conclusion>: one ledger row of o/game
+lrow() {
+  printf '{"forge":"github","repo":"o/game","id":%s,"attempt":%s,"workflow":"T","branch":"%s","status":"completed","conclusion":"%s","created_at":"%s"}\n' \
+    "$1" "$2" "$3" "$5" "$4" >> "$LEDGER"
+}
+
+@test "runs: the newest attempt of each run, in created order, filtered by branch, since and until" {
+  mkdir -p "$(dirname "$LEDGER")"
+  echo '{"repos":{"github:o/game":{"synced_at":"2025-11-06T11:55:00Z"}}}' > "$XDG_STATE_HOME/ci/sync.json"
+  lrow 2 1 main 2025-11-06T10:00:00Z failure
+  lrow 1 1 feat/x 2025-11-06T09:00:00Z success
+  lrow 2 2 main 2025-11-06T10:00:00Z success
+  lrow 3 1 main 2025-11-06T11:00:00Z failure
+  run "$SUBJECT" runs o/game
+  assert_success
+  run jq -c 'map([.id, .attempt, .conclusion])' <<<"$output"
+  assert_output '[[1,1,"success"],[2,2,"success"],[3,1,"failure"]]'
+  run "$SUBJECT" runs O/Game --branch main --since 2025-11-06T10:00:00Z --until 2025-11-06T10:30:00Z
+  assert_success
+  run jq -c 'map(.id)' <<<"$output"
+  assert_output '[2]'
+  # a future --until reads what the ledger has; it cannot be later than the sync
+  run "$SUBJECT" runs o/game --until 2025-11-07T00:00:00Z
+  assert_success
+}
+
+@test "runs fails closed: 3 for a repo it does not sync, 1 when stale, 4 for a window past the sync, 2 for bad usage" {
+  mkdir -p "$(dirname "$LEDGER")"
+  echo '{"repos":{"github:o/game":{"synced_at":"2025-11-06T11:55:00Z"},"github:o/old":{"synced_at":"2025-11-06T11:00:00Z","error":"HTTP 502"}}}' > "$XDG_STATE_HOME/ci/sync.json"
+  lrow 1 1 main 2025-11-06T09:00:00Z success
+  run "$SUBJECT" runs o/other
+  assert_failure 3
+  run "$SUBJECT" runs o/old
+  assert_failure 1
+  assert_output --partial 'HTTP 502'
+  run "$SUBJECT" runs o/game --until 2025-11-06T11:58:00Z
+  assert_failure 4
+  run "$SUBJECT" runs o/game --until 2025-11-06T11:50:00Z
+  assert_success
+  run "$SUBJECT" runs o/game --branch
+  assert_failure 2
+  run "$SUBJECT" runs o/game --until yesterday
+  assert_failure 2
+}

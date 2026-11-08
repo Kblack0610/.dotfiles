@@ -14,7 +14,7 @@ const sst = tblTab({
   chips: false, head: (t) => sessionsTiles(t.data) + sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
 
-const SESSION_COLS = { bucket: ["bucket"], project: ["project"], task: ["task"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"] };
+const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"] };
 
 const refreshCapacity = coalesce(async () => {
   try { sst.cap = await api("/api/sessions/capacity"); sst.capErr = null; } catch (e) { sst.capErr = e.message; }
@@ -79,7 +79,7 @@ function sessionRow(r) {
   const a = sessionAgent(r);
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "-" : dur(r.idle_min);
   const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
-  return `<tr class="click" data-key="${esc(r.key)}"><td><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td>` +
+  return `<tr class="click" data-key="${esc(r.key)}"><td><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
     `<td>${esc(r.project)}</td><td class="wrap">${esc(r.task)} ${sessionTags(r, a)}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
     `<td class="n">${idle}</td><td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td></tr>`;
 }

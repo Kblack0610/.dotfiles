@@ -1191,15 +1191,18 @@ commit_paths() {
 }
 
 # pr_ci <repo> <number> <session> <cfg> -> its size and the CI runs on its branch from its first
-# commit to merge (earlier runs are a reused branch name); red is failure, timed_out or
+# commit to merge (earlier runs are a reused branch name), read from the run ledger (schedules-sync
+# runs; exit 3 when the ledger does not sync the repo, 4 when it has not synced past the merge yet,
+# 1 when it is unreadable or stale); red is failure, timed_out or
 # startup_failure, and cancelled is superseded, not red. A repo with sections adds the PR's
 # sections and its gate workflow's runs; green_lost is a green gate on an earlier head that a later
 # commit replaced, main moving or a review change alike. A path inside no root is `other`.
 pr_ci() {
   local pr runs paths=''
   pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
-  runs=$(gh run list -R "$1" --branch "$(jq -r .headRefName <<<"$pr")" --limit 100 \
-    --json conclusion,createdAt,startedAt,updatedAt,workflowName,headSha) || return 1
+  runs=$("$SCHEDULES_SYNC" runs "$1" --branch "$(jq -r .headRefName <<<"$pr")" --until "$(jq -r .mergedAt <<<"$pr")") || return
+  runs=$(jq -c 'map({conclusion, workflowName: .workflow, headSha: .sha, createdAt: .created_at,
+    startedAt: (.started_at // .created_at), updatedAt: (.ended_at // .started_at // .created_at)})' <<<"$runs") || return 1
   if jq -e --arg r "$1" 'has($r)' <<<"$4" >/dev/null; then
     paths=$(commit_paths "$1" "$(jq -r .mergeCommit.oid <<<"$pr")") || return 1
   fi
@@ -1226,7 +1229,7 @@ pr_ci() {
 }
 
 cmd_review() {
-  local t since cfg new repo num sid row n=0 red=0 failed=0 msg days=''
+  local t since cfg new repo num sid row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days=''
   case "${1:-}" in
     '') ;;
     --days) days=${2:-}; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench review [--days N]"; return 2; } ;;
@@ -1241,17 +1244,23 @@ cmd_review() {
   [ -z "$new" ] || { trap ci_keep_newest EXIT; trap 'exit 143' TERM INT HUP; }
   while IFS=$'\t' read -r repo num sid; do
     [ -n "$repo" ] || continue
-    if ! row=$(pr_ci "$repo" "$num" "$sid" "$cfg"); then
-      say "gh failed counting $repo#$num"
-      failed=$((failed + 1))
-      continue
-    fi
+    rc=0; row=$(pr_ci "$repo" "$num" "$sid" "$cfg") || rc=$?
+    case $rc in
+      0) ;;
+      3) unsynced=$((unsynced + 1)); continue ;;
+      4) later=$((later + 1)); continue ;;
+      *) say "cannot count $repo#$num"; failed=$((failed + 1)); continue ;;
+    esac
     printf '%s\n' "$row" >> "$CI"
     n=$((n + 1)); red=$((red + $(jq .ci_red <<<"$row")))
   done <<<"$new"
   # a PR with no row is picked up by the next run, so one bad PR never holds back the rest
+  # a repo the run ledger does not sync has no CI facts: day-log-ci lists the repos it syncs
+  [ "$unsynced" -eq 0 ] || say "$unsynced PRs left out: their repos are not in the run ledger (day-log-ci)"
+  # a PR merged after the ledger's last sync is counted by the next review, once its runs are in
+  [ "$later" -eq 0 ] || say "$later PRs merged after the run ledger's last sync, left for the next review"
   if [ "$failed" -gt 0 ]; then
-    report_outcome FAILED "gh failed counting $failed PRs, $n counted"
+    report_outcome FAILED "cannot count $failed PRs (gh or the run ledger), $n counted"
     return 1
   fi
   if [ "$n" -eq 0 ]; then
@@ -3214,11 +3223,12 @@ triage_coverage() {
 # when it breaks something: these are its post-merge guard. Each red reads as one record naming
 # every merge it could be, because one red that queued a fix per merge would be a stampede.
 
-# hold_runs <owner/repo> -> the runs main's pushes started. A scheduled run is left out: it fails on
-# the environment moving, not on a merge.
+# hold_runs <owner/repo> -> the runs main's pushes started, from main_runs (exit 3: the run ledger
+# does not sync the repo). A scheduled run is left out: it fails on the environment moving, not on
+# a merge.
 hold_runs() {
   local runs
-  runs=$(main_runs "${1//\//_}" "$1" main) || return 1
+  runs=$(main_runs "$1" main) || return
   jq -c 'map(select(.event == "push"))' <<<"$runs"
 }
 
@@ -3293,7 +3303,7 @@ hold_streak() {
 # merge: {name, what, merges}. fleet-liveness counts once it is past triage's patience, so a flap
 # stays out. A repo whose runs cannot be read says so, and counts as nothing rather than as green.
 hold_reds() {
-  local t=$1 merges repo runs streak since w=fleet-liveness h=$((HOLD_HOURS * 3600))
+  local t=$1 merges repo runs rc streak since w=fleet-liveness h=$((HOLD_HOURS * 3600))
   # pr: and merged: are lists in step, one PR per repo (agent-land)
   merges=$(jq -c "$JQ_LIB"'[.[] | select(tagged("cleanup") and (.merged // "") != "" and (.finished | ep) != null)
     | . as $i | [(.pr | tostring | split(" ")), (.merged | tostring | split(" "))] | transpose[]
@@ -3306,7 +3316,9 @@ hold_reds() {
         merges: map(select(.at <= $s and $s - .at <= $h))} | select(.merges != [])' <<<"$merges"
   fi
   while IFS= read -r repo; do
-    runs=$(hold_runs "$repo") || { say "hold: cannot read the runs on $repo main"; continue; }
+    rc=0; runs=$(hold_runs "$repo") || rc=$?
+    if [ "$rc" -eq 3 ]; then say "hold: $repo is not in the run ledger (day-log-ci), so nothing guards its main"; continue; fi
+    [ "$rc" -eq 0 ] || { say "hold: cannot read the runs on $repo main"; continue; }
     jq -c "$MAIN_STREAKS"' | select(.green)' <<<"$runs" | while IFS= read -r streak; do
       hold_streak "$repo" "$streak" "$runs" "$merges"
     done

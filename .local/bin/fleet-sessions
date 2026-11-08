@@ -47,6 +47,10 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
+# FLEET_MAIN_TTL: seconds a gh answer (a PR list, a PR view) is reused across passes: every caller
+# (the ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on 2026-10-29 the fleet
+# spent GitHub's 5,000/hr REST limit; a PR's state is no less true five minutes later.
+: "${FLEET_MAIN_TTL:=300}"
 # Each fleet worker's sessions are rows too (remote_panel_lines).
 # shellcheck source=../lib/fleet-hosts.sh
 . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
@@ -521,6 +525,23 @@ prs_for() {
   cat "$key"
 }
 
+# branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
+# and activity_line all read it, from one ledger read per repo per pass ($CACHE). A repo the ledger
+# does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1.
+branch_runs() {
+  local d="$1" b="$2" all rc=0
+  all="$CACHE/runs_$(repo_slug "$d")" || return 1
+  if [ ! -f "$all" ]; then
+    main_runs "$(origin_repo "$d")" > "$all" || rc=$?
+    case $rc in
+      0) ;;
+      3) echo '[]' > "$all" ;;
+      *) : > "$all"; echo "run ledger ($(basename "$d"))" >> "$CACHE/unreadable" ;;
+    esac
+  fi
+  [ -s "$all" ] && jq -c --arg b "$b" 'map(select(.headBranch == $b))' "$all"
+}
+
 # gate_ci <dir> <branch> <head_oid> <ci> -> <ci> with the branch's dispatched gate runs folded in.
 # A pool gate is a workflow_dispatch run, which never appears in a PR's statusCheckRollup, so a PR
 # whose Checks passed read green while its gate was queued or red (#1175, #1180). Each
@@ -529,14 +550,12 @@ prs_for() {
 # is PENDING, else a red is FAIL. A run decides by MAIN_STREAKS' conclusions, so a cancelled,
 # skipped or stale one decides nothing, as gate-line.py passes over a cancelled one. Whether an
 # older gate still covers the head is Checks' call (gate-line.py), so an older green adds nothing.
-# Only a PASS or NONE can change; the run list is main_runs', reused for FLEET_MAIN_TTL, and one
-# gh cannot read keeps <ci> and is named unreadable.
+# Only a PASS or NONE can change; the run list is branch_runs', and one the ledger cannot answer
+# keeps <ci> and is named unreadable.
 gate_ci() {
   local d="$1" br="$2" oid="$3" ci="$4" runs wf st c sha seen="" pend=0 fail=0 pass=0
   case "$ci" in PASS|NONE) ;; *) echo "$ci"; return ;; esac
-  if ! runs="$(cd "$d" && main_runs "$(repo_slug .)" '{owner}/{repo}' "$br")"; then
-    echo "gh api actions/runs ($(basename "$d") $br)" >> "$CACHE/unreadable"; echo "$ci"; return
-  fi
+  if ! runs="$(branch_runs "$d" "$br")"; then echo "$ci"; return; fi
   while IFS=$'\t' read -r wf st c sha; do
     case $'\n'"$seen" in *$'\n'"$wf"$'\n'*) continue ;; esac
     [ "$sha" = "$oid" ] || git -C "$d" merge-base --is-ancestor "$sha" "$oid" 2>/dev/null || continue
@@ -634,7 +653,7 @@ main_state() {
 }
 
 # pr_states <owner/repo or host/owner/repo (Forgejo)> -> the repo's recent PRs as a JSON array of {number, state, mergedAt},
-# reused for FLEET_MAIN_TTL seconds across passes, as main_runs is and for the same reason. This
+# reused for FLEET_MAIN_TTL seconds across passes (its definition says why). This
 # keys on the repo the PR is in, not the cwd: one session lands PRs in several. A failed call is
 # not cached, but it is not retried for every other session in this pass either.
 pr_states() {
@@ -692,7 +711,7 @@ main_health() {
     base="$(default_base "$dir")"
     b="${base#origin/}"
     # Could not look is not green: say so, so the shepherd never reads a dead gh as healthy.
-    if ! runs="$(cd "$dir" && main_runs "$(repo_slug .)" '{owner}/{repo}' "$b")"; then
+    if ! runs="$(branch_runs "$dir" "$b")"; then
       printf 'UNKNOWN\t-\t-\t-\t%s\n' "$(basename "$url" .git)" > "$key"
       cut -f1-4 "$key"; return
     fi
@@ -893,6 +912,36 @@ git_facts() {
        && ! git -C "$d" merge-base --is-ancestor HEAD "$base" 2>/dev/null; then inpr=0; fi
   fi
   echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr ${branch:--} $(sync_facts "$d" "$base") ${oid:--} $(dirty_names "$paths")"
+}
+
+# activity_line <status> <open job> <doing> <dir|-> <branch> <head sha|-> <now epoch> -> what the
+# session is doing now, for the ACTIVITY column on Fleet and Sessions (nc-41), first match wins:
+# parked; testing (a test command runs); editing (busy, its last tool call an edit); waiting on
+# <workflow> <N>m (a run on its head still open in the run ledger, the oldest, N since it was
+# queued, +K for the others); red on <workflow>[, ...] (MAIN_STREAKS over its head's runs); gating
+# (a gate command runs); else the status word. CI is read only for a <dir> given (a branch off the
+# default one), at <head>, else HEAD. The ledger lags a run by up to one schedules-sync pass (10m).
+activity_line() {
+  local status="$1" ojob="$2" doing="$3" d="$4" br="$5" head="$6" now="$7" runs ci=""
+  [ "$status" = parked ] && { echo parked; return; }
+  [ "$ojob" = test ] && { echo testing; return; }
+  if [ "$status" = busy ] && [[ "$doing" =~ ^(Edit|Write|MultiEdit|NotebookEdit)(:|$) ]]; then echo editing; return; fi
+  if [ "$d" != - ]; then
+    [ "$head" != - ] || head="$(git -C "$d" rev-parse -q --verify HEAD 2>/dev/null || echo -)"
+    if [ "$head" != - ] && runs="$(branch_runs "$d" "$br")"; then
+      ci="$(jq -r --arg h "$head" --argjson now "$now" '
+        map(select(.headSha == $h))
+        | (map(select(.status != "completed")) | sort_by(.createdAt)) as $open
+        | if ($open | length) > 0 then
+            "waiting on \($open[0].workflowName) \([($now - ($open[0].createdAt | fromdateiso8601)) / 60 | floor, 0] | max)m"
+            + (if ($open | length) > 1 then " +\(($open | length) - 1)" else "" end)
+          else ['"$MAIN_STREAKS"' | .workflow] | if length > 0 then "red on \(join(", "))" else empty end
+          end' <<<"$runs" 2>/dev/null)"
+    fi
+  fi
+  if [ -n "$ci" ]; then echo "$ci"; return; fi
+  [ "$ojob" = gate ] && { echo gating; return; }
+  echo "${status:--}"
 }
 
 # parked_lines <agent-panel lines> -> one agent-panel-shaped line, status parked, per park
@@ -1120,6 +1169,10 @@ collect() {
       fi
     fi
     [ "$host" != - ] || printf '%s\t%s\n' "${cwd##*/}" "$sid" >> "$CACHE/cwds"   # SHARED rows' owners, by worktree
+    # ACTIVITY: CI is read on a branch off the default one, at its PR head, else at HEAD.
+    local act act_dir=-
+    if [ "$g" = 1 ] && [ "$branch" != - ] && [ "origin/$branch" != "$(default_base "$cwd")" ]; then act_dir="$cwd"; fi
+    act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$oid" "$now")"
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
@@ -1147,12 +1200,12 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host"
+      "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}"
   done
   main_rows
   checkout_rows "$off"
@@ -1170,7 +1223,7 @@ main_rows() {
     slug="${f##*/main_}"; sid="main-$slug"
     case "$st" in
       RED) reason="$repo red: $wfs" ;;
-      UNKNOWN) reason="$repo main CI unreadable (gh api actions/runs failed)" ;;
+      UNKNOWN) reason="$repo main CI unreadable (the run ledger has no fresh sync of it)" ;;
       *) continue ;;
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
@@ -1419,7 +1472,8 @@ json_rows() {
         {slug: .[46], is: .[47], row: (if .[48] == "-" then null else .[48] end),
          origin: (if .[49] == "-" then null else .[49] end)} end),
       project: (if (.[50] // "") == "" then null else .[50] end),
-      host: (if (.[51] // "-") == "-" then null else .[51] end)}'
+      host: (if (.[51] // "-") == "-" then null else .[51] end),
+      activity_line: (if (.[52] // "-") == "-" then null else .[52] end)}'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state

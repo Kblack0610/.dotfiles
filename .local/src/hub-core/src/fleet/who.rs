@@ -50,6 +50,9 @@ pub struct Who {
     pub state: String,
     /// When it started its present state, unix seconds.
     pub since: Option<i64>,
+    /// What a session is doing now, fleet-sessions' `activity_line` (testing, editing, waiting on
+    /// <workflow> Nm, red on <workflow>, gating, its status); blank for a runner.
+    pub activity: String,
     /// Why it is deployed: a runner's conf `DESCRIPTION`, what a session is on.
     #[serde(rename = "for")]
     pub purpose: String,
@@ -66,7 +69,7 @@ pub struct Who {
 
 impl Row for Who {
     const COLUMNS: &'static [&'static str] = &[
-        "kind", "who", "state", "since", "for", "doing", "under", "project",
+        "kind", "who", "state", "activity", "since", "for", "doing", "under", "project",
     ];
     /// The kind chips, then the state chips.
     const STATES: &'static [&'static str] = &[
@@ -97,6 +100,7 @@ impl Row for Who {
             "kind" => text(&self.kind),
             "who" => Val::Text(self.who.clone()),
             "state" => Val::Text(self.state.clone()),
+            "activity" => text(&self.activity),
             "since" => self.since.map_or(Val::None, |t| Val::Num(t as f64)),
             "for" => text(&self.purpose),
             "doing" => text(&self.doing),
@@ -186,6 +190,7 @@ fn runner(w: &Worker, at: i64) -> Who {
             .or(w.running_since)
             .or(call.map(|c| c.at))
             .or(w.last.as_ref().and_then(|o| o.at)),
+        activity: String::new(),
         purpose: w.description.clone(),
         doing,
         under: w
@@ -266,6 +271,7 @@ fn session(sess: &Value, at: i64) -> Option<Who> {
         key: target.to_string(),
         state,
         since: sess["age_min"].as_i64().map(|m| at - m * 60),
+        activity: s(sess, "activity_line").to_string(),
         // fleet-sessions' topic is what it is on; its queue item's slug is under it.
         purpose: s(sess, "topic").to_string(),
         doing: s(sess, "doing").to_string(),
@@ -398,7 +404,7 @@ mod tests {
     fn state() -> Value {
         json!({"sessions": [
             {"target": "lab/dotfiles-agent-3:1", "bucket": "WORKING", "age_min": 21,
-             "doing": "Bash: tests", "topic": "moonlit P3",
+             "doing": "Bash: tests", "topic": "moonlit P3", "activity_line": "red on CI",
              "dispatch": "agent-runtime: moonlit-p3", "item": {"slug": "moonlit-p3", "origin": "run"}},
             {"target": "hub/dotfiles:2", "bucket": "CHAT", "age_min": 4, "doing": "", "topic": "fleet tab plan",
              "item": null},
@@ -498,6 +504,9 @@ mod tests {
         assert_eq!(kf("dotfiles-agent-3"), ("session", "moonlit P3"));
         // DOING is what it does, FOR keeps the topic; a runner's lane is no longer its project.
         assert_eq!(row("dotfiles-agent-3").doing, "Bash: tests");
+        // ACTIVITY is fleet-sessions' activity_line; a runner has none.
+        assert_eq!(row("dotfiles-agent-3").activity, "red on CI");
+        assert_eq!(row("briefing").activity, "");
         assert_eq!(row("briefing").project, "");
         let chips = View::default().states(&r);
         let n = |s: &str| chips.iter().find(|c| c.name == s).map(|c| c.n);
