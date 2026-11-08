@@ -1082,6 +1082,16 @@ EOF
   assert_equal "$(judged_keys | cut -f3 | paste -sd' ')" 'a'
 }
 
+@test "judge: the prompt numbers the rows and asks for exactly that many verdicts" {
+  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"; echo "{\"verdicts\":[]}"'
+  c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
+  run judge "$(c a; c b; c c)"   # an empty reply fails the pass; only the prompt matters here
+  run grep -c '^[0-9]*\. {"project":"game"' "$NOTES_FIXTURE/prompt"
+  assert_output 3
+  grep -q '^3\. {"project":"game","stage":"beta","lane":"human","key":"c"' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
+  grep -qF 'There are 3 rows above. Return exactly 3 verdicts' "$NOTES_FIXTURE/prompt" || fail "$(cat "$NOTES_FIXTURE/prompt")"
+}
+
 @test "judge: a failed call is an error verdict for every row, with its reason, and the rows are judged again" {
   stub judge-stub 'echo "rate limited" >&2; exit 7'
   run judge '{"project":"game","stage":"beta","lane":"human","key":"a","text":"- [ ] a","tier":1,"line":"a"}'
