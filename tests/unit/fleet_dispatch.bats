@@ -29,7 +29,12 @@ acct() {
              elif $c == null then "no account has room under its weekly pace and after its live sessions"
              else "no account has room; \($c.name) is the closest, \($c.room.why)" end)}' <<<"$rows" > "$NOTES_FIXTURE/acct.json"
   rm -f "$NOTES_FIXTURE/room.n"
-  stub claude-acct '[ "$1 ${2:-}" = "room --json" ] || exit 0
+  stub claude-acct 'if [ "$1 ${2:-}" = "room --source" ]; then
+  echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"
+  [ -e "$NOTES_FIXTURE/src.$3" ] && { cat "$NOTES_FIXTURE/src.$3"; exit 1; }
+  echo "$3: room"; exit 0
+fi
+[ "$1 ${2:-}" = "room --json" ] || exit 0
 n=$(cat "$NOTES_FIXTURE/room.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/room.n"
 if [ -e "$NOTES_FIXTURE/acct.$n.json" ]; then cat "$NOTES_FIXTURE/acct.$n.json"; else cat "$NOTES_FIXTURE/acct.json"; fi'
 }
@@ -4572,7 +4577,10 @@ restore_setup() {
 
 # --- gateway harnesses: `start --harness` ---------------------------------------------------
 
-# A harness map, a key file and a gateway that says $1 of $150 is spent (default 1).
+# src_shut <source> <why> -- claude-acct room --source refuses <source> with <why>
+src_shut() { printf '%s\n' "$2" > "$NOTES_FIXTURE/src.$1"; }
+
+# A harness map whose harnesses each name the source they spend; claude-acct says every source has room.
 harness_ready() {
   game_ready
   printf 'sk-test\n' > "$SANDBOX/eval.key"
@@ -4580,13 +4588,12 @@ harness_ready() {
   jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" --arg gk "$SANDBOX/glm.key" --arg gc "$SANDBOX/eval-glm.json" '{
     gateway: {url: "https://gw.test", key_file: $k},
     harnesses: {
-      "claude-lazer": {timeout_min: 180, models: {sonnet: "sonnet"}},
-      opencode: {config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
-      glm: {launcher: "opencode", config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
-      codex: {account: "chatgpt", room: "agent-codex room", timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
-      "claude-cloud": {launcher: "claude-cloud", room: "claude-acct room", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
+      "claude-lazer": {source: "eval", timeout_min: 180, models: {sonnet: "sonnet"}},
+      opencode: {source: "eval", config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
+      glm: {launcher: "opencode", source: "glm", config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
+      codex: {source: "codex", timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
+      "claude-cloud": {launcher: "claude-cloud", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
-  stub curl "cat > \"\$NOTES_FIXTURE/curl.stdin\"; echo \"curl \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '{\"info\":{\"spend\":${1:-1},\"max_budget\":150}}'"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   stub tmux 'exit 0'
@@ -4604,41 +4611,45 @@ harness_ready() {
   assert_not_called 'claude --model'
   assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane eval --by human --harness opencode --picked qwen --ran qwen'
   f=$(qitem running fix-menu)
-  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account) $(qfield "$f" lane_run)" 'opencode qwen gateway run-9'
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account) $(qfield "$f" lane_run)" 'opencode qwen eval run-9'
   grep -q 'ses_eval' <<<"$(qfield "$f" sessions)" || fail "the run's session id is not on the item"
   grep -qF "$(qfield "$f" sessions | tr -d '[] ' | cut -d, -f1)" "$NOTES_FIXTURE/calls.log" || fail "claimed id is not the launched one"
 }
 
-@test "--harness glm runs opencode on its own overlay and reads the glm key's budget, not the eval key's" {
+@test "--harness glm runs opencode on its own overlay and asks for room on the glm source, not the eval one" {
   harness_ready
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_success
   assert_called "OPENCODE_CONFIG='$SANDBOX/eval-glm.json'"
   assert_called '--model litellm/reasoning\ \(glm-5.3\)'
-  grep -q 'Bearer sk-glm' "$NOTES_FIXTURE/curl.stdin" || fail "the budget was not read with the glm key"
-  # one gateway call, so the stdin file the stub overwrites per call is the whole story
-  assert_equal "$(grep -c '^curl' "$NOTES_FIXTURE/calls.log")" 1
-  ! grep -q 'sk-test' "$NOTES_FIXTURE/curl.stdin" || fail "the eval key reached the glm lane"
+  assert_called 'claude-acct room --source glm'
+  assert_not_called 'room --source eval'
+  # dispatch reads no budget itself: claude-acct is the one reader of a key
+  assert_not_called 'curl'
   f=$(qitem running fix-menu)
-  assert_equal "$(qfield "$f" agent) $(qfield "$f" model)" 'glm glm'
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'glm glm glm'
 }
 
-@test "--harness glm refuses once its key is spent, and starts nothing" {
+@test "--harness glm refuses once its source has no room, and starts nothing" {
   harness_ready
-  stub curl "echo '{\"info\":{\"spend\":50,\"max_budget\":50}}'"
+  src_shut glm 'glm: its key is spent'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_failure
-  assert_output --partial 'the glm key is spent'
+  assert_output --partial 'glm has no room: glm: its key is spent'
   assert_not_called 'opencode run'
 }
 
-@test "the key goes to the gateway on stdin, never on the command line" {
+@test "a source with no room, and a harness with no source, both refuse the start" {
   harness_ready
+  src_shut eval 'eval: its pool lazer is spent or inside its reserve'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
-  assert_success
-  assert_called 'https://gw.test/key/info'
-  assert_not_called 'sk-test'
-  grep -q 'Bearer sk-test' "$NOTES_FIXTURE/curl.stdin" || fail "curl was not handed the key"
+  assert_failure
+  assert_output --partial 'opencode has no room: eval: its pool lazer is spent'
+  jq 'del(.harnesses.opencode.source)' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
+  assert_failure 2
+  assert_output --partial 'harness opencode has no source'
+  assert_not_called 'wt new'
 }
 
 @test "an opencode brief reads the skill and carries its own closing rules, not the ones for a watched pane" {
@@ -4663,7 +4674,7 @@ harness_ready() {
   assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane eval --by human --harness claude-lazer --picked sonnet --ran sonnet'
   assert_not_called 'claude-acct pick'
   f=$(qitem running fix-menu)
-  assert_equal "$(qfield "$f" agent) $(qfield "$f" account)" 'claude-lazer gateway'
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" account)" 'claude-lazer eval'
 }
 
 @test "a queue start drops DISPATCH_DROP_TOOLS, unless the task names one, ultracode or /loop, or the knob is empty" {
@@ -4843,34 +4854,19 @@ launch_settings() { eval "printf %s $(grep -m1 -e '--settings' "$NOTES_FIXTURE/c
   [ -n "$(qitem queued fix-menu)" ] || fail "a refused item left the queue"
 }
 
-@test "a spent key and a gateway that cannot answer both refuse the start" {
-  harness_ready 150
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
-  assert_failure
-  assert_output --partial 'the opencode key is spent'
-  stub curl 'exit 22'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness opencode --model sonnet
-  assert_failure
-  assert_output --partial "cannot read the opencode key's budget"
-  assert_not_called 'wt new'
-}
-
-# A plan-billed harness: agent-codex room says whether the ChatGPT plan has use left (default yes).
-codex_room() { stub agent-codex "echo \"agent-codex \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '${2:-codex (plus): room}'; exit ${1:-0}"; }
-
+# A plan-billed harness: claude-acct room --source codex says whether the ChatGPT plan has use left.
 @test "--harness codex runs agent-codex on the plan login, gated by room and not the gateway, with a headless brief" {
   harness_ready
-  codex_room
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
   assert_success
-  assert_called 'agent-codex room'
+  assert_called 'claude-acct room --source codex'
   assert_not_called 'curl'
   assert_called 'AGENT_QUEUE_ITEM=fix-menu env -u LITELLM_MASTER_KEY -u OPENAI_API_KEY -u CODEX_API_KEY timeout 120m agent-codex run -m gpt-6.1-sol --dangerously-bypass-approvals-and-sandbox'
   assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it'
   assert_called 'Run agent-land in the foreground'
   assert_not_called '/one-shot Fix'
   f=$(qitem running fix-menu)
-  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'codex sol chatgpt'
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'codex sol codex'
 }
 
 # --- claude-cloud: a #cloud-ok item runs as a Claude cloud session ---------------------------
@@ -4897,7 +4893,7 @@ cloud_ready() {
 
 @test "a cloud-ok item with no room on the plan stays queued, as a local one would" {
   cloud_ready
-  stub claude-acct '[ "$1" = room ] && { echo "no account has room"; exit 1; }; exit 0'
+  stub claude-acct '[ "$1" = room ] && { echo "{\"pick\":null,\"why\":\"no account has room\"}"; exit 0; }; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cloud-fix
   assert_failure
   assert_output --partial 'claude-cloud has no room'
@@ -5005,11 +5001,11 @@ cloud_run_ready() {
 
 @test "codex refuses a spent plan and a plan item, and the item stays queued" {
   harness_ready
-  codex_room 1 'codex (plus): week spent'
+  src_shut codex 'codex: its week is spent'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
   assert_failure
-  assert_output --partial 'codex has no room: codex (plus): week spent'
-  codex_room
+  assert_output --partial 'codex has no room: codex: its week is spent'
+  rm "$NOTES_FIXTURE/src.codex"
   agent-queue add --project game --slug planned --mode plan --priority high "Think" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item planned --harness codex --model sol
   assert_failure
@@ -5056,16 +5052,15 @@ cloud_run_ready() {
 # --- spill to Lazer: a run pass past every account's cap ------------------------------------
 
 # Every account past its pace, spilling on (cap 2, line 80%), lazer-reserve on its own key, the
-# Lazer pool $1 of $250 spent (default 100, 40%), the key $2 of $100 (default 1), and model-lane
-# putting every task on Sonnet.
+# Lazer pool $1 of $250 spent (default 100, 40%), claude-acct saying the reserve source has room, and
+# model-lane putting every task on Sonnet.
 spill_ready() {
   harness_ready
   printf 'sk-reserve\n' > "$SANDBOX/reserve.key"
-  jq --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}' \
+  jq --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", source: "reserve", key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}' \
     "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
   acct "alt:pace:/home/u/.claude-personal:4 points over its weekly pace"
   stub lazer-spend "echo '{\"spend\":${1:-100},\"max_budget\":250}'"
-  stub curl "cat > \"\$NOTES_FIXTURE/curl.stdin\"; echo \"curl \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; echo '{\"info\":{\"spend\":${2:-1},\"max_budget\":100}}'"
   sonnet_lane
   export DISPATCH_SPILL_MAX_LIVE=2 DISPATCH_SPILL_POOL_PCT=80
 }
@@ -5081,13 +5076,14 @@ sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.l
   assert_called 'claude-lazer --model sonnet --session-id SID --permission-mode bypassPermissions'
   assert_called 'reserve.key AGENT_HARNESS=lazer-reserve '
   assert_not_called 'eval.key'
-  grep -q 'Bearer sk-reserve' "$NOTES_FIXTURE/curl.stdin" || fail "the budget check read another key"
+  assert_called 'claude-acct room --source reserve'
+  assert_not_called 'room --source eval'
   assert_called 'model-lane log --item fix-menu --task Fix the menu sides --lane sonnet --by rule --picked sonnet --ran sonnet --harness lazer-reserve'
   # the verdict that let it spill is the one logged: model-lane is asked once, not again by cmd_start
   [ "$(grep -c '^model-lane classify' "$NOTES_FIXTURE/calls.log")" -eq 1 ]
   assert_not_called '--lane eval'
   f=$(qitem running fix-menu)
-  assert_equal "$(qfield "$f" agent) $(qfield "$f" account) $(qfield "$f" origin) $(qfield "$f" model)" 'lazer-reserve gateway run sonnet'
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" account) $(qfield "$f" origin) $(qfield "$f" model)" 'lazer-reserve reserve run sonnet'
 }
 
 @test "a spill start leaves the account hold standing: the Stopped line keeps its duration" {
@@ -5145,8 +5141,9 @@ sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.l
   refuses 'no account has room; alt is the closest, 4 points over its weekly pace (spill to Lazer shut: the Lazer pool is at 80%, the line is DISPATCH_SPILL_POOL_PCT=80%)'
   assert_equal "$(outcome)" BLOCKED
   stub lazer-spend "echo '{\"spend\":100,\"max_budget\":250}'"
-  stub curl "cat > /dev/null; echo '{\"info\":{\"spend\":100,\"max_budget\":100}}'"
-  refuses 'spill to Lazer shut: the lazer-reserve key is spent ($0 left)'
+  src_shut reserve 'reserve: its pool lazer is spent or inside its reserve'
+  refuses 'spill to Lazer shut: the lazer-reserve key has no room: reserve: its pool lazer is spent'
+  rm "$NOTES_FIXTURE/src.reserve"
   stub lazer-spend 'exit 1'
   refuses "spill to Lazer shut: the Lazer pool's spend is unreadable"
   # a map with no lazer-reserve key_file never falls back to the gateway's (eval) key
