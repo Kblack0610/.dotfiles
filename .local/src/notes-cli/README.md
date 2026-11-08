@@ -165,6 +165,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | tag a task | `ptask <name> tag "<query>" --add=size/s --add=requested --remove=ai`; a row has one size, so a new `size/` replaces the old; a release is `move`'s |
 | change a task's text | `ptask <name> edit "<query>" --append "<more>"` or `--text "<new text>"`; keeps its place, state and tags. `--detail "<line>"` adds a detail line after the row's existing ones, alone or with either. `--was` with `--text` is the triager's rewrite: the text must be `type(area): title` with a title of 80 chars or fewer, the old words become a `was:` detail line, and the old row's own tags (`#requested`, `#tier/N`, `#size/x`) carry over unless the new text sets one of the same name; a rewrite to the row's own words writes nothing |
 | drop a task | `ptask <name> drop "<query>" --why "<why>"`, or `--dup <id>` for a duplicate; the row stays, ticked, with the reason in its marker |
+| undo a false close | `ptask <name> reopen <id> --why "<why>"`: the closed row goes back to `[ ]` with its done or drop stamp off the marker; with `--agent`, a row already archived into `agent/versions/` moves back onto the board. `agent-queue reopen <slug> --unland <owner>/<repo>#<N>` calls it for an item closed with the wrong PR |
 | name a row exactly | any verb's `<query>` can be the row's id (`ar-142`) |
 | tidy a sheet | `ptask <name> sweep` |
 | agent work | the same `ptask` verbs with `--agent`, which write to `agent/README.md` |

@@ -19,7 +19,10 @@
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource>   a started item back in the queue, held on that agent-hold
-#   reopen <slug> [--to running|waiting] [--why text]   a falsely-done item back to running (or waiting), its row started again
+#   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
+#       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
+#       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
+#       `notes ptask reopen`. Items `after:` it that the ok close released stay started.
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 #   admission [--json]    the backlog an automated add is admitted under, its limit, and the adds held in 7 days
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
@@ -1410,26 +1413,44 @@ cmd_requeue() {
 # new work under the slug. A reap that parked a live item in waiting/ needs none: the next reap that
 # lists its Claude moves it back to running.
 cmd_reopen() {
-  local usage="usage: agent-queue reopen <slug> [--to running|waiting] [--why text]"
-  local slug="${1:?$usage}" to=running why="" f dest status note row prof flag=()
+  local usage="usage: agent-queue reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]"
+  local slug="${1:?$usage}" to=running why="" unland="" f dest status note row prof flag=() refs=() oids=() kr=() ko=() i hit=0
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
       --to) to="${2:?--to needs a state}"; shift 2 ;;
       --why) why="${2:?--why needs a reason}"; shift 2 ;;
+      --unland) unland="${2:?--unland needs <owner>/<repo>#<N>}"; shift 2 ;;
       *) die "$usage" ;;
     esac
   done
   case "$to" in running | waiting) ;; *) die "reopen goes to running or waiting, not $to" ;; esac
   case "$why" in *$'\n'*) die "--why is one line" ;; esac
+  [ -z "$unland" ] || [[ "$unland" =~ ^[^/[:space:]]+/[^/#[:space:]]+#[0-9]+$ ]] || die "--unland takes <owner>/<repo>#<N>, not $unland"
   lock
   [ -z "$(find_item "$slug")" ] || die "$slug is still active: nothing to reopen"
   f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
   status="$(fm_get "$f" status)" note="$(fm_get "$f" note)"
-  [ "$status" = failed ] || die "$slug closed $status, not failed: that is new work under the slug (agent-queue add${status:+ --repeat})"
+  if [ -n "$unland" ]; then
+    # A false ok close (agent-land took a side PR from another repo, 2026-11-07): that PR comes
+    # off the item, its merge commit with it, so the item's own PR lands on it as its first.
+    [ "$status" = ok ] || die "--unland undoes an ok close, and $slug closed ${status:-with no status}"
+    read -ra refs <<<"$(fm_get "$f" pr)"
+    read -ra oids <<<"$(fm_get "$f" merged)"
+    for i in "${!refs[@]}"; do
+      if [ "${refs[i],,}" = "${unland,,}" ]; then hit=1; else kr+=("${refs[i]}") ko+=("${oids[i]:-}"); fi
+    done
+    [ "$hit" -eq 1 ] || die "$slug records pr:${refs[*]:-nothing}, not $unland"
+    header_set "$f" pr "${kr[*]}"
+    header_set "$f" merged "${ko[*]}"
+    i="$(fm_get "$f" closing_pr)"
+    [ "${i,,}" != "${unland,,}" ] || header_del "$f" closing_pr
+  else
+    [ "$status" = failed ] || die "$slug closed $status, not failed: that is new work under the slug (agent-queue add${status:+ --repeat})${status:+, or --unland <owner>/<repo>#<N> when it closed on a PR that was not its work}"
+  fi
   header_del "$f" status finished
   [ "$to" = running ] || header_set "$f" waiting "$(now_utc)"
-  header_set "$f" note "reopened from done (failed${note:+: $note})${why:+: $why}"
+  header_set "$f" note "reopened from done ($status${unland:+, unlanded $unland}${note:+: $note})${why:+: $why}"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "done ($status) -> $to: reopened${why:+: $why}"
   echo "$slug: done -> $to (reopened, was $status)"
@@ -1439,6 +1460,11 @@ cmd_reopen() {
   [ -n "$row" ] || return 0
   case "$(fm_get "$dest" lane)" in '' | agent) flag=(--agent) ;; esac
   exec 8>&-
+  # An ok close closed the row too: it opens again, its proof off, before it is started.
+  if [ -n "$unland" ]; then
+    notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" reopen "${row#*:}" --why "closed on $unland, not its work${why:+: $why}" >/dev/null 2>&1 ||
+      die "$slug is $to, but its board row ${row#*:} on ${row%%:*} could not be reopened: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} reopen ${row#*:} --why <why>"
+  fi
   notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1 ||
     die "$slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} start ${row#*:}"
   echo "$slug: board row ${row#*:} started again"
