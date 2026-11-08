@@ -306,3 +306,17 @@ hours_fixture() {
   assert_output --partial "names mode 'turbo'"
   [ ! -e "$STATE" ]
 }
+
+@test "a pin that failed at a part's start is retried on the next tick, and an old state file counts as by hand" {
+  hours_fixture
+  KUBE_FAIL=1 MACHINE_MODE_NOW=23:00 run "$MM" clock
+  assert_failure
+  assert_equal "$(state RUNNERS_PINNED) $(state CLOCK_PART)" "no night"
+  MACHINE_MODE_NOW=23:15 run "$MM" clock
+  assert_success
+  assert_equal "$(state RUNNERS_PINNED)" yes
+  printf 'MACHINE_MODE=reserved\nUNITY_SLOTS=1\nUNITY_BURST_SLOTS=0\nRUNNERS_PINNED=yes\n' > "$STATE"
+  MACHINE_MODE_NOW=12:00 run "$MM" clock
+  assert_output --partial "reserved was set by hand and you are here"
+  assert_equal "$(state MACHINE_MODE)" reserved
+}

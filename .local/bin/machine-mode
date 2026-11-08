@@ -171,11 +171,16 @@ clock_target() {
 }
 
 clock() {
-  local part want
+  local part want by
   read -r part want <<< "$(clock_target)"
   [ -n "$part" ] || exit 1
-  [ "$(state_value CLOCK_PART)" = "$part" ] && return 0
-  if [ "$(state_value MODE_BY)" = hand ] && [ "$(current_mode)" != "$want" ] && human_here; then
+  by="$(state_value MODE_BY)"
+  # A state file from before the clock names no setter: its mode was set by hand.
+  [ -z "$by" ] && [ -n "$(state_value MACHINE_MODE)" ] && by=hand
+  if [ "$(state_value CLOCK_PART)" = "$part" ]; then
+    # Applied this part already; retry only a runner pin that never reached the cluster.
+    [ "$(state_value RUNNERS_PINNED)" = no ] && [ "$by" = clock ] || return 0
+  elif [ "$by" = hand ] && [ "$(current_mode)" != "$want" ] && human_here; then
     echo "machine-mode: $part began; $(current_mode) was set by hand and you are here, so it holds until you are away"
     return 0
   fi

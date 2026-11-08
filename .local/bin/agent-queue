@@ -49,8 +49,8 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # shellcheck source=../lib/machine-mode.sh
 . "${MACHINE_MODE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh}"
 # The night window a `night` item may start in, local time, which may wrap midnight: the `night`
-# part of the system's clock hours (.config/machine-mode/hours).
-AQ_NIGHT="${AGENT_QUEUE_NIGHT:-$(clock_window night)}"
+# part of the system's clock hours (.config/machine-mode/hours), read when a night hold is checked.
+AQ_NIGHT="${AGENT_QUEUE_NIGHT:-}"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
@@ -350,6 +350,7 @@ hold_for() {
   for tag in $tags; do
     case "$tag" in
       night)
+        [ -n "$AQ_NIGHT" ] || AQ_NIGHT="$(clock_window night)"
         [ -n "$AQ_NIGHT" ] || { HOLD="night (the hours file has no night part)"; return; }
         hhmm_in "$now" "$AQ_NIGHT" || { HOLD="night ($AQ_NIGHT)"; return; } ;;
       at:[0-9][0-9]:[0-9][0-9]) [ "${now/:/}" -ge "${tag//[!0-9]/}" ] || { HOLD="$tag"; return; } ;;

@@ -2675,7 +2675,6 @@ present_left() {
   echo $(( n > 0 ? n : 0 ))
 }
 
-
 # queue_depth -> the queued items no hold stops, those waiting on the trickle included: what the
 # low water mark measures.
 queue_depth() { runnable 2>/dev/null | grep -c . || true; }
