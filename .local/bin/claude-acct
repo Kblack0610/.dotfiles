@@ -311,7 +311,7 @@ cmd_pick() {
     echo "claude-acct: $name ($note)" >&2
     # Told, never refused: a human start goes ahead whatever the pace, and never moves to the
     # paid Lazer reserve on its own; the hint names it, `cl --lazer` is the human's choice. The
-    # one automatic path onto Lazer is a dispatch run pass's spill (fleet-dispatch start_item).
+    # one automatic path onto Lazer is a dispatch run pass routing an item there (fleet-dispatch start_item).
     local rows
     rows=$(usage_json nospend | jq -s .)
     local picked
@@ -320,7 +320,7 @@ cmd_pick() {
         echo "claude-acct: $name would be refused an automatic start, $(jq -r .room.why <<< "$picked"); this start goes ahead" >&2
     fi
     if jq -e 'length > 0 and all(.[]; .room.capped)' <<< "$rows" >/dev/null; then
-        echo "claude-acct: every account is spent; cl --lazer runs Sonnet on the Lazer reserve, where dispatch passes already spill Sonnet-lane items" >&2
+        echo "claude-acct: every account is spent; cl --lazer runs Sonnet on the Lazer reserve, where dispatch passes already route Sonnet-lane items" >&2
     fi
     printf '%s\n' "$dir"
 }
@@ -731,16 +731,19 @@ room_source() {
 # session and a hand start are never refused. The verdict is each usage row's `room` object, written
 # once in usage_json; this picks the best account whose room is ok and says why when none is. --json
 # prints the same answer for readers: {pick (that account's name, or null), why (the refusal
-# sentence, or null), accounts (every account's name, dir, state, rank, live and room)}.
+# sentence, or null), accounts (every account's name, dir, state, rank, live and room), sources (every
+# row of the sources file, the same fields with its kind: fleet-dispatch routes over them)}.
 cmd_room() {
-    local rows json=0 pick pdir pline unread closest cwhy run_out resets why='' t=''
+    local all rows json=0 pick pdir pline unread closest cwhy run_out resets why='' t=''
     case "${1:-}" in
         "") ;;
         --json) json=1 ;;
         --source) room_source "${2:?usage: claude-acct room --source <name>}"; return ;;
         *) echo "usage: claude-acct room [--json | --source <name>]" >&2; return 3 ;;
     esac
-    rows=$(usage_json nospend | jq -s .)
+    # Only --json has a reader for the sources; the sentence is about the accounts alone.
+    if (( json )); then all=$(all_json nospend | jq -s .); else all=$(usage_json nospend | jq -s .); fi
+    rows=$(jq '[.[] | select(.kind == "claude")]' <<< "$all")
     # One read: the best account with room, whether one is unread, and the account a refused start
     # would fall back to (pick's best) with its own why and clock. \x1f, not a tab: read collapses
     # a run of tabs, so an empty field would shift the rest.
@@ -764,7 +767,8 @@ cmd_room() {
     fi
     if (( json )); then
         jq --arg p "$pick" --arg w "$why" '{pick: (if $p == "" then null else $p end), why: (if $w == "" then null else $w end),
-            accounts: [.[] | {name, dir, state, rank, live, week_used, week_gone, five_hour, room}]}' <<< "$rows"
+            accounts: [.[] | select(.kind == "claude") | {name, dir, state, rank, live, week_used, week_gone, five_hour, room}],
+            sources: [.[] | select(.kind != "claude") | {name, kind, state, rank, live, max_live, week_used, week_gone, room}]}' <<< "$all"
     elif [[ -n "$pick" ]]; then
         echo "claude-acct: room on $pline" >&2
         printf '%s\n' "$pdir"
@@ -1255,7 +1259,7 @@ park_flow() {
     status=$(jq -r '.status // empty' "$reg"); sid=$(jq -r '.sessionId // empty' "$reg"); cwd=$(jq -r '.cwd // empty' "$reg")
     [[ -n "$sid" && -d "$cwd" ]] || { refuse "its registry entry $reg has no session id or cwd"; return; }
     from=$(config_dir_of "$pid")
-    # A claude-lazer pane (a dispatch spill, a `cl --lazer`) is on no account: a resume would put it on one.
+    # A claude-lazer pane (a dispatch start routed to Lazer, a `cl --lazer`) is on no account: a resume would put it on one.
     [[ -z "$(gateway_of "$pid")" ]] || { refuse "it runs on the Lazer gateway, not an account; a resume would put it on one"; return; }
     [[ "$status" == shell ]] && shells=$(bg_shells "$pid")
     if [[ "$verb" == move && -n "$to_name" ]]; then
