@@ -1,5 +1,5 @@
 //! The Home tab: what needs you, what changed since last night, what analysis proposes, what is
-//! running, the numbers and the health strip, from `hub_core::home` and `hub_core::briefing`
+//! running (with the session counts), the spend and the health strip, from `hub_core::home` and `hub_core::briefing`
 //! (the readers agent-web's Home uses too). The machines, pools and CI that sat
 //! under it until phase 4 are the Infra tab's (docs/dashboards.md "Hub layout").
 
@@ -294,29 +294,42 @@ pub fn page(
     }
 
     out.push(Line::raw(""));
-    // The session counts head the list they count.
-    let sessions = if h.sessions.is_empty() {
+    // The session counts head the list they count: beside the heading when they fit, else on a
+    // line under it (clipping would cut the counts that matter, need you and stalled).
+    let counts = if h.sessions.is_empty() {
         String::new()
     } else {
-        format!("   sessions: {}", h.sessions)
+        format!("sessions: {}", h.sessions)
+    };
+    let running_head = |head: Vec<Span<'static>>, out: &mut Vec<Line<'static>>| {
+        let n: usize = head.iter().map(|s| s.content.chars().count()).sum();
+        if counts.is_empty() {
+            out.push(Line::from(head));
+        } else if n + 3 + counts.chars().count() <= w {
+            let mut line = head;
+            line.push(Span::styled(format!("   {counts}"), p.dim()));
+            out.push(Line::from(line));
+        } else {
+            out.push(clip_line(Line::from(head), w));
+            out.push(clip_line(Line::styled(format!("  {counts}"), p.dim()), w));
+        }
     };
     if h.running.is_empty() {
-        out.push(clip_line(
-            Line::from(vec![
+        running_head(
+            vec![
                 Span::styled("RUNNING  ", p.head()),
                 Span::styled("nothing running from the queue", p.dim()),
-                Span::styled(sessions, p.dim()),
-            ]),
-            w,
-        ));
+            ],
+            &mut out,
+        );
     } else {
-        out.push(clip_line(
-            Line::from(vec![
-                Span::styled(format!("RUNNING ({})", h.running.len()), p.head()),
-                Span::styled(sessions, p.dim()),
-            ]),
-            w,
-        ));
+        running_head(
+            vec![Span::styled(
+                format!("RUNNING ({})", h.running.len()),
+                p.head(),
+            )],
+            &mut out,
+        );
         let t = Table {
             mark: None,
             header: vec!["ITEM", "PROJECT", "PHASE", "NEXT", "ETA"],
@@ -576,17 +589,31 @@ mod tests {
             !out.contains("queue 1 running") && !out.contains("done today"),
             "{out}"
         );
-        let (num, need) = (
+        let (health, spend, need) = (
             out.find("HEALTH").unwrap(),
+            out.find("SPEND").unwrap(),
             out.find("NEEDS YOU (1)").unwrap(),
         );
-        assert!(num < need, "health sits above the lists: {out}");
+        assert!(
+            health < spend && spend < need,
+            "health and spend sit above the lists: {out}"
+        );
         assert!(out.contains("Question") && out.contains("dodginballs") && out.contains("2m"));
         assert!(
             out.contains(" ci WARN ") && out.contains("1 green"),
             "{out}"
         );
         assert!(!out.contains("k3s"), "green chips collapse: {out}");
+    }
+
+    #[test]
+    fn narrow_session_counts_drop_under_the_running_heading_whole() {
+        let out = viewed(&home(), &DataTable::default(), 60);
+        assert!(
+            out.contains("RUNNING  nothing running from the queue\n  sessions: 3 working, 1 need you, 0 stalled"),
+            "{out}"
+        );
+        assert!(out.lines().all(|l| l.chars().count() <= 60), "{out}");
     }
 
     #[test]

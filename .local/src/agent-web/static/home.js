@@ -1,7 +1,7 @@
 "use strict";
 // The Home tab, the front page: what needs you, what changed since last night, what analysis
 // proposes, what runs, the spend and the health strip.
-// The list and the numbers are hub_core::home (/api/home), the same join the hub TUI's Home tab
+// The list, the session counts and the spend are hub_core::home (/api/home), the same join the hub TUI's Home tab
 // draws; this file only lays them out. Needs you is the shared table (table.js, the view in the
 // URL); a row opens its record under it, an ask or an open dialog waiting.js's answer card, so it
 // is answered in place.

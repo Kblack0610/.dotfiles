@@ -1,5 +1,6 @@
-//! The Home tab for both surfaces: what needs the human, what is running, the headline numbers
-//! and the health chips. It joins what the other readers already read (fleet-sessions'
+//! The Home tab for both surfaces: what needs the human, what is running
+//! (with the session counts), the spend
+//! line and the health chips. It joins what the other readers already read (fleet-sessions'
 //! `state.json`, `queue::Queue`, `infra::Infra`, read by `gather`), and `build` reads nothing
 //! itself, so it is pure and both surfaces get the same rows in the same order.
 //!
@@ -847,7 +848,7 @@ pub fn gather(with_infra: bool) -> (Value, Queue, Result<Feed, String>, Option<I
 }
 
 /// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed,
-/// and infra: NEEDS YOU in `needs` order, the running items, the headline numbers and the chips.
+/// and infra: NEEDS YOU in `needs` order, the running items, the session counts, the spend line and the chips.
 pub fn build(
     state: &Value,
     queue: Option<&Queue>,
