@@ -21,6 +21,7 @@
 #                        # the verdict of one source (a Claude account or a row of the sources file)
 #                        # as one sentence; exit 0 room, 1 refused, 2 unread, 3 no such source
 #   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
+#   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve
 #   claude-acct cost     # {"<session id>": dollars} over CLAUDE_ACCT_COST_WINDOW (7d), from
 #                        # Prometheus; exit 2 when it cannot be read. fleet-shepherd's budgets read it
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
@@ -680,6 +681,10 @@ cmd_textfile() {
         (rows("claude_account_week_gone_percent"; .week_gone)),
         (rows("claude_account_room"; if .state == "unread" then null elif .room.ok then 1 else 0 end)),
         (rows("claude_account_room_headroom_points"; .room.headroom_points)),
+        (rows("claude_account_reserve_percent"; .room.reserve)),
+        # 0 for a dollar budget, which has no pace line: its burn, keeps and back-on-pace are not read
+        (rows("claude_account_paced"; if .paced == false then 0 else 1 end)),
+        (.[] | select(.parent != null) | "claude_account_parent{account=\"\(.name)\",kind=\"\(.kind)\",parent=\"\(.parent)\"} 1"),
         # each refusal as a label, 1 on every reason that holds the account now (ok when it has room)
         (.[] | select(.state != "unread") | .name as $n | .kind as $k | (.room.reasons | if . == [] then ["ok"] else . end)[]
             | "claude_account_room_reason{account=\"\($n)\",kind=\"\($k)\",reason=\"\(.)\"} 1"),
@@ -775,12 +780,28 @@ cmd_room() {
 # without a word, which is how the 2026-10-30 API change went two days unseen.
 cmd_check() {
     local rows
-    [[ "${1:-}" == usage ]] || { echo "usage: claude-acct check usage" >&2; return 2; }
-    rows=$(usage_json nospend | jq -s .)
-    jq -r 'map(select(.state == "unread") | .name) as $bad |
-        if ($bad | length) > 0 then "cannot read usage of \($bad | join(", "))"
-        else "usage read on \(length) accounts" end' <<< "$rows"
-    [[ "$(jq 'any(.state == "unread")' <<< "$rows")" == false ]]
+    case "${1:-}" in
+        usage)
+            rows=$(usage_json nospend | jq -s .)
+            jq -r 'map(select(.state == "unread") | .name) as $bad |
+                if ($bad | length) > 0 then "cannot read usage of \($bad | join(", "))"
+                else "usage read on \(length) accounts" end' <<< "$rows"
+            [[ "$(jq 'any(.state == "unread")' <<< "$rows")" == false ]] ;;
+        pace)
+            # Over pace is the room verdict's own words (pace, reserve, capped), never a second
+            # formula. An unread source cannot be told on pace, so it trips too; a Claude account's
+            # unread is check usage's (the claude-acct-usage watch), so it is not named twice.
+            rows=$(all_json nospend | jq -s '[.[] | {name, unread: (.state == "unread" and .kind != "claude"),
+                over: [(.room.reasons // [])[] | select(. == "pace" or . == "reserve" or . == "capped")]}]')
+            jq -r '(map(select(.unread) | .name)) as $u | (map(select(.over != [])) | map("\(.name) \(.over | join("+"))")) as $o
+                | if length == 0 then "no sources read"
+                  elif $u == [] and $o == [] then "every source on pace (\(length) sources)"
+                  else [if $u != [] then "unread: \($u | join(", "))" else empty end,
+                        if $o != [] then "over pace: \($o | join(", "))" else empty end] | join("; ") end' <<< "$rows"
+            # no row at all is nothing read, never a quiet green
+            [[ "$(jq 'length > 0 and all(.unread == false and .over == [])' <<< "$rows")" == true ]] ;;
+        *) echo "usage: claude-acct check usage|pace" >&2; return 2 ;;
+    esac
 }
 
 # --- move ------------------------------------------------------------------------------
