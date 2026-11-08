@@ -11,7 +11,7 @@ One Stop entry, one entrypoint:
 The coordinator runs two phases:
 
 ```
-phase 1  stop-checks.d/ parallel, exit-code aggregated, may BLOCK (exit 2); skipped on a clean tree
+phase 1  stop-checks.d/ parallel, exit-code aggregated, may BLOCK (exit 2); skipped when no files changed since SessionStart
 phase 2  stop-post.d/  sequential, stdout/stderr passed through, may BLOCK (JSON or exit 2); runs ALWAYS
 ```
 
@@ -26,9 +26,13 @@ Each `*.sh` is one independent check. The coordinator fans them out in parallel 
 | Exit code | Meaning | Coordinator behavior |
 |-----------|---------|----------------------|
 | `0` | pass (or check not applicable) | silent |
-| `1` | warn / advisory | stderr printed; coordinator still passes |
+| `1` | warn / advisory | logged; coordinator still passes |
 | `2` | block | coordinator exits 2; Claude is gated |
 | other | block (defensive) | same as `2` |
+
+SessionStart snapshots tracked and untracked file state with `stop-session-changes.py`, preserving the snapshot on resume and compaction. Stop exports the paths changed since that snapshot as `STOP_CHANGED_FILES`; `60-shell-tests.sh` uses that list instead of branch or pre-existing worktree dirt. A session without a snapshot skips content checks. Payloads without a session id retain the legacy worktree check.
+
+A timed-out check with no reported failures is logged and recorded as SKIPPED, does not block, and is never cached as a passing run. TAP failures printed before timeout still block.
 
 Project-type detection lives **inside each check** (e.g. `[ -f package.json ] || exit 0`), so the coordinator stays project-agnostic. To add a check, drop `<NN>-<name>.sh` into `stop-checks.d/` and `chmod +x`. Checks run in parallel — order is informational only.
 
