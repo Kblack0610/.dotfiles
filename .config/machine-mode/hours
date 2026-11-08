@@ -1,0 +1,12 @@
+# The day's parts: which machine mode this workstation runs in at what time of day, read by
+# .local/lib/machine-mode.sh. The one place the system's clock hours live.
+# Format:  part|window|mode|for
+#   part    the word `machine-mode hours` prints; `night` is also the agent-queue `night` tag's window
+#   window  HH:MM-HH:MM local time, start inclusive, end exclusive; it may wrap midnight
+#   mode    a row of the modes file, applied by `machine-mode clock` when the part begins
+#   for     what the part is for, as `machine-mode hours` shows it
+# The parts cover the day with no gap and no overlap (machine_mode.bats checks this file).
+# Schedule nightly work (runner SCHEDULE=, CI crons, `at:` items) inside `night`.
+
+day|06:00-01:00|open|your hours: board rows wait until you are away, queued items start
+night|01:00-06:00|full|unattended: night items, nightly builds and tests, twice the starts
