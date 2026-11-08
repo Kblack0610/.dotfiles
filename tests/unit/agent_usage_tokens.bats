@@ -71,6 +71,16 @@ echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":8
   assert_equal "$(grep -o -- '--by [a-z,]*' "$stub/calls" | tr '\n' ' ')" '--by project --by command --by session,tool '
 }
 
+@test "snapshot: the command cut is trimmed to the top 20 here, since recall is asked for every row" {
+  stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
+  rows="$(jq -nc '[range(25) | {key: "c\(.)", calls: 1, chars: (100 - .), carried: 0}]')"
+  printf '#!/bin/sh\necho %s\n' "'{\"totals\":{\"turns\":1},\"rows\":{\"command\":$rows}}'" > "$stub/recall"
+  printf '#!/bin/sh\necho {}\n' > "$stub/burn"
+  chmod +x "$stub"/*
+  TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[(.by_command | length), .by_command[0].head, .by_command[-1].head]')" '[20,"c0","c19"]'
+}
+
 @test "snapshot: no per-session cost from burn keeps every by_tool field, the allocations null" {
   stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
   cat > "$stub/recall" <<'EOS'

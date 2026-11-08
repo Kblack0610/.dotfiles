@@ -16,10 +16,10 @@ Usage:
                            [--context N] [--limit N] [--ignore-case/-i]
   claude-recall list [--project P] [--limit N]
   claude-recall show SESSION_ID_OR_PREFIX [--thinking]
-  claude-recall stats [--days N | --since YYYY-MM-DD] [--kind slash,skill,agent,prompt]
+  claude-recall stats [--days N | --since DATE|ISO] [--kind slash,skill,agent,prompt]
                       [--origin interactive|auto|all] [--by week|project] [--top K]
                       [--min N] [--min-words N] [--project P] [--json]
-  claude-recall tool-output [--days N | --since YYYY-MM-DD]
+  claude-recall tool-output [--days N | --since DATE|ISO]
                             [--by tool|command|filetype|kind|day|week|project]...
                             [--top K] [--json]
 
@@ -948,6 +948,15 @@ def window_bound(s):
     return t.strftime("%Y-%m-%dT%H:%M:%S"), t.timestamp()
 
 
+def bound_arg(s):
+    """An argparse type for --since/--until: validates with window_bound, keeps the text."""
+    try:
+        window_bound(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{s!r}: use YYYY-MM-DD (a local day) or an ISO time")
+    return s
+
+
 def days_ago(n):
     """The local date n days back, a bare --since for window_bound."""
     return (datetime.now() - timedelta(days=n)).strftime("%Y-%m-%d")
@@ -977,7 +986,7 @@ def cmd_tool_output(a):
     until = window_bound(a.until)[0] if a.until else "9999"
     # One scan fills every --by cut: a snapshot that wants three cuts reads the transcripts once.
     cuts = []
-    for by in a.by or ["tool"]:
+    for by in dict.fromkeys(a.by or ["tool"]):
         keys = by.split(",")
         cuts.append({"by": by, "keys": keys, "rows": {},
                      "fns": [{**RESULT_BY, **TURN_BY}[k] for k in keys]})
@@ -1103,7 +1112,9 @@ def cmd_tool_output(a):
           + "".join(f"\n    {x['session'][:8]} {x['project']}: {x['turns']:,} responses, carried "
                     f"{x['carried'] // 4:,} tokens' worth ({x['carried'] // max(x['chars'], 1)}x)"
                     for x in long[:3]) + "\n")
-    for by, order in orders.items():
+    for i, (by, order) in enumerate(orders.items()):
+        if i:
+            print()
         if by not in TURN_BY:
             print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13}  {by}"))
             for r in order:
@@ -1644,7 +1655,7 @@ def main():
 
     st = sub.add_parser("stats", help="count slash commands, skills, subagents, repeated prompts")
     st.add_argument("--days", type=int, default=30, help="window in days (default 30)")
-    st.add_argument("--since", help="window start, as tool-output (overrides --days)")
+    st.add_argument("--since", type=bound_arg, help="window start, as tool-output (overrides --days)")
     st.add_argument("--kind", help="comma list of " + ",".join(STATS_KINDS) + " (default all)")
     st.add_argument("--origin", choices=["interactive", "auto", "all"], default="all",
                     help="interactive = a turn in a CLI session (typed, or a dispatched task); "
@@ -1660,9 +1671,9 @@ def main():
 
     to = sub.add_parser("tool-output", help="token use and the tool output behind it")
     to.add_argument("--days", type=int, default=7, help="window in days (default 7)")
-    to.add_argument("--since", help="window start: YYYY-MM-DD (a local day) or an ISO time "
+    to.add_argument("--since", type=bound_arg, help="window start: YYYY-MM-DD (a local day) or an ISO time "
                                      "(overrides --days)")
-    to.add_argument("--until", help="window end, exclusive, in the same forms (default now)")
+    to.add_argument("--until", type=bound_arg, help="window end, exclusive, in the same forms (default now)")
     to.add_argument("--long-turns", type=int, default=LONG_TURNS,
                     help=f"responses without a compaction that make a long run (default {LONG_TURNS})")
     to.add_argument("--by", type=tool_output_by, action="append",
@@ -1679,8 +1690,8 @@ def main():
 
     tc = sub.add_parser("tool-calls", help="what tool calls cost in responses, by session kind")
     tc.add_argument("--days", type=int, default=7, help="window in days (default 7)")
-    tc.add_argument("--since", help="window start, as tool-output (overrides --days)")
-    tc.add_argument("--until", help="window end, exclusive, as tool-output")
+    tc.add_argument("--since", type=bound_arg, help="window start, as tool-output (overrides --days)")
+    tc.add_argument("--until", type=bound_arg, help="window end, exclusive, as tool-output")
     tc.add_argument("--top", type=int, default=15, help="rows per group (0 = all)")
     tc.add_argument("--project", "-p", help="substring match on repo")
     tc.add_argument("--json", action="store_true")

@@ -125,6 +125,14 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
   assert_failure 2
 }
 
+@test "a repeated cut counts once and keeps the flat shape; a bad --since is refused" {
+  run jq -c '[.by, (.rows | type)]' <<<"$(out --by tool --by tool)"
+  assert_output '["tool","array"]'
+  run "$RECALL" tool-output --since 10/20
+  assert_failure 2
+  assert_output --partial "use YYYY-MM-DD"
+}
+
 @test "a bare --since is a local day, as in burn; an ISO time stays exact" {
   # UTC-12: local midnight of 2026-10-20 is 12:00Z, after every fixture record (10:00Z)
   run jq -c '[.since, .totals.turns]' <<<"$(TZ=Etc/GMT+12 "$RECALL" tool-output --since 2026-10-20 --json)"
