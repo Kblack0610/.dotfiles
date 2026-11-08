@@ -40,8 +40,16 @@ Gather, in parallel where possible, then write the dated file + inbox pointer:
 DATE=$(date +%F)                      # the skill is allowed real dates; agents pass one if sandboxed
 OUT="$(notes path inbox)/${DATE}-reboot-restore.md"
 
-# 1. tmux sessions/windows (cwd + live branch + foreground cmd)
-tmux list-windows -a -F '#{session_name}:#{window_index} [#{pane_current_command}] #{pane_current_path}' 2>/dev/null
+# 1. tmux sessions/windows (cwd + live branch + foreground cmd), on EVERY live server.
+#    The worlds (hub, lab, ...) are named sockets and a bare `tmux` reaches only one of them, so
+#    walk the socket dir like panel_live_servers (.local/src/tmux/panel-lib.sh). has-session
+#    skips a socket file whose server is gone. Each row leads with the server name.
+for sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/*; do
+  [ -S "$sock" ] || continue
+  srv=${sock##*/}
+  tmux -L "$srv" has-session 2>/dev/null || continue
+  tmux -L "$srv" list-windows -a -F "$srv #{session_name}:#{window_index} [#{pane_current_command}] #{pane_current_path}"
+done
 
 # 2. Claude sessions
 ps -eo pid,etime,cmd | grep -E '[c]laude ' | grep -v claude-1000
