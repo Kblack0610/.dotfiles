@@ -13,7 +13,9 @@ script file, a heredoc body, and text in quotes, except a `-c` payload, which is
 Also denied: a foreground read of a background task's `tasks/<id>.output` while a process still
 holds that file open, i.e. the run is live and its notice has not come. 2026-11-05: 243 such reads
 re-read 27.7M tokens of context. The liveness test is stop-checks.d/10-git-workflow.sh's. The same
-read in the background (an `until grep` wait) and any read after the run exits are allowed.
+read in the background (an `until grep` wait) and any read after the run exits are allowed. The Read
+tool on that file is checked the same way: after the Bash form was denied, 6 of the 11 early reads
+left (2026-11-06/07, usage-cleanup pass 6) came through Read.
 Fail-open: any error allows the command.
 """
 import json
@@ -141,9 +143,15 @@ def deny(reason):
 
 def main():
     data = json.load(sys.stdin)
-    if data.get("tool_name", "Bash") != "Bash":
-        return
+    tool = data.get("tool_name", "Bash")
     tin = data.get("tool_input") or {}
+    if tool == "Read":
+        live = live_outputs(set(TASK_OUTPUT.findall(tin.get("file_path") or "")))
+        if live:
+            deny(LIVE_MSG.format(id=sorted(live)[0]))
+        return
+    if tool != "Bash":
+        return
     texts = code_texts(strip_heredocs(tin.get("command") or ""))
     if any(GH_WATCH.search(t) for t in texts):
         return deny(WATCH_MSG)
