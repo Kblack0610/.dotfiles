@@ -1296,7 +1296,7 @@ cmd_move() {
 # check_tags <tags> -- die on a hold tag the queue could not read, so a gate is never silently
 # open or shut: add and `set tags=` both check.
 check_tags() {
-  local tag aid
+  local tag why
   for tag in $1; do
     case "$tag" in
       at:*) [[ "$tag" =~ ^at:([0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T)?([01][0-9]|2[0-3]):[0-5][0-9]$ ]] ||
@@ -1304,7 +1304,15 @@ check_tags() {
       pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
       nightly:*) [[ "$tag" =~ ^nightly:[A-Za-z0-9_.-]+$ ]] || die "a nightly tag is nightly:<repo>, the repo's name, not $tag" ;;
       ask:*) [[ "$tag" =~ ^ask:[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "an ask tag is ask:<id>[=<option>], not $tag"
-        aid="${tag#ask:}"; compgen -G "$AQ_ASKS/*/${aid%%=*}.md" >/dev/null || die "$tag: no agent-ask has that id; post the ask first" ;;
+        # An ask already cancelled, or answered by the judge or another option, can never release
+        # the item: on 2026-11-07 can-we-get-cloud-vast-clarke-p3-live was queued behind an ask the
+        # judge had answered at post, and upwork-p2..p5 behind one cancelled later.
+        why="$(ask_pending "${tag#ask:}")"
+        case "$why" in
+          "" | pending) ;;
+          "no such ask") die "$tag: no agent-ask has that id; post the ask first" ;;
+          *) die "$tag: that ask can never release it ($why); post a new one with agent-ask post --kind gate, which the judge never answers" ;;
+        esac ;;
       hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
     esac
   done

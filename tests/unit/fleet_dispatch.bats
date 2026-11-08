@@ -341,7 +341,7 @@ verdict() {
   assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'one,two'
 }
 
-@test "candidates: a verdict from an older policy, or for the row's older text, is judged again" {
+@test "candidates: a verdict whose rule the policy dropped, or for the row's older text, is judged again" {
   project game beta "$SANDBOX/repos/game"
   row game agent 'stale policy' "- [ ] stale policy $T"
   row game agent 'retagged' "- [ ] retagged $T"
@@ -658,7 +658,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   refute_output --partial 'sketch'
   run grep -c 'judge called' "$NOTES_FIXTURE/calls.log"
   assert_output 0
-  # A changed policy makes every cached verdict stale, so the list says unjudged, not dispatch.
+  # A policy that drops the rule the verdicts name leaves them unusable, so the list says unjudged, not dispatch.
   echo 'policy v2' > "$DISPATCH_POLICY"
   run cmd_suggest --json
   assert_success
@@ -1688,6 +1688,23 @@ idle_held_machine() {
   assert_not_called 'wt new'
 }
 
+# 2026-11-07: a floor pass whose 2 unity items a starved pool held said "every queue item waits",
+# and the gate the other 40 waited on was named nowhere.
+@test "project floor: a finding that holds every idle project's item says so, and names the gate the rest wait on" {
+  idle_held_machine
+  export DISPATCH_PROJECT_FLOOR=1
+  agent-queue add --project game --slug busy "game work" >/dev/null
+  agent-queue move busy running >/dev/null
+  agent-queue add --project game --slug g2 "more game work" >/dev/null
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  findings "$(finding starved pool:unity '["app"]')"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  assert_output --partial 'finding firing: a1 (starved pool:unity), every item of an idle project waits; the rest wait on '
+  assert_output --regexp 'the rest wait on [^;]*real idle'
+  refute_output --partial 'every queue item waits'
+}
+
 @test "project floor: light items of idle projects, open only on a project pass under DISPATCH_PROJECT_FLOOR" {
   local items
   items=$(printf '%s\n' '{"slug":"g1","project":"game"}' '{"slug":"a1","project":"app"}' '{"slug":"a2","project":"app"}' '{"slug":"x1","project":"x"}')
@@ -1703,10 +1720,12 @@ idle_held_machine() {
 
 @test "starved names an item held on a cancelled ask, which no answer can release" {
   mkdir -p "$HOME/.agent/asks/game"
-  printf 'id: dead1\nstatus: cancelled\nquestion: q?\n' > "$HOME/.agent/asks/game/dead1.md"
+  printf 'id: dead1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/dead1.md"
   printf 'id: live1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/live1.md"
   agent-queue add --project game --slug k8 --tags 'ask:dead1' "kalshi p8" >/dev/null
   agent-queue add --project game --slug k9 --tags 'ask:live1' "waits on the human" >/dev/null
+  # The ask is cancelled after the item queued behind it (add refuses a dead one).
+  printf 'id: dead1\nstatus: cancelled\nquestion: q?\n' > "$HOME/.agent/asks/game/dead1.md"
   # A machine held by load still names the dead hold and fails.
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run cmd_starved
@@ -3281,7 +3300,7 @@ J
   assert_equal "$(outcome)" FAILED
 }
 
-@test "policy_sig: a workers.json edit keeps every verdict fresh; a policy edit judges again, and keeps the old verdict meanwhile" {
+@test "policy_sig: a workers.json edit keeps every verdict fresh; a policy edit that keeps the rule is not judged again" {
   project game beta "$SANDBOX/repos/game"
   row game agent 'judged' "- [ ] judged $T"
   verdict game agent 'judged' skip
@@ -3289,30 +3308,23 @@ J
   run cmd_candidates
   assert_output ''
   echo 'policy v3' >> "$DISPATCH_POLICY"
+  # 2026-11-07: re-judging every unchanged row after an edit spent the judge's day budget by 06:20.
   run cmd_candidates
-  assert_equal "$(jq -r .key <<<"$output")" 'judged'
+  assert_output ''
   # The edit voids nothing: the old verdict still counts as the row's verdict.
   run cmd_suggest --json
   assert_equal "$(jq -r .verdict <<<"$output")" skip
 }
 
-@test "judge: after a policy edit rows with no verdict go first, then a stale dispatch, then a stale skip; a reply that names no rule keeps the stale verdict" {
-  stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
-    printf "%s\n" "{\"verdicts\":[{\"project\":\"game\",\"lane\":\"agent\",\"key\":\"oldskip\",\"verdict\":\"skip\",\"rule\":\"nope\"}]}"'
+@test "judge: a reply that names no rule is an error record, and the verdict from an older policy stays in force" {
+  stub judge-stub 'printf "%s\n" "{\"verdicts\":[{\"project\":\"game\",\"lane\":\"agent\",\"key\":\"olddisp\",\"verdict\":\"skip\",\"rule\":\"nope\"}]}"'
   project game beta "$SANDBOX/repos/game"
-  row game agent 'oldskip' "- [ ] oldskip $T"
   row game agent 'olddisp' "- [ ] olddisp $T"
-  row game agent 'fresh' "- [ ] fresh $T"
-  verdict game agent 'oldskip' skip
   verdict game agent 'olddisp' dispatch
   echo 'policy v2' >> "$DISPATCH_POLICY"
-  cand() { jq -nc --arg k "$1" --arg l "$(line_of game agent "$1")" '{project:"game",stage:"beta",lane:"agent",key:$k,text:("- [ ] " + $k),prio:1,line:$l}'; }
-  DISPATCH_JUDGE_MAX=3 run judge "$(cand oldskip)
-$(cand olddisp)
-$(jq -nc '{project:"game",stage:"beta",lane:"agent",key:"fresh",text:"- [ ] fresh",prio:1}')"
-  assert_equal "$(grep -o '"key":"[a-z]*"' "$NOTES_FIXTURE/prompt" | cut -d'"' -f4 | paste -sd,)" 'fresh,olddisp,oldskip'
-  # The reply named a rule the policy lacks: that is an error record, and it leaves both stale verdicts in force.
-  assert_equal "$(latest_verdicts | jq -r 'select(.key == "oldskip" or .key == "olddisp") | .verdict' | paste -sd,)" 'dispatch,skip'
+  run judge "$(jq -nc --arg l "$(line_of game agent olddisp)" '{project:"game",stage:"beta",lane:"agent",key:"olddisp",text:"- [ ] olddisp",prio:1,line:$l}')"
+  assert_equal "$(jq -r 'select(.key == "olddisp") | .verdict' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" 'dispatch,error'
+  assert_equal "$(latest_verdicts | jq -r 'select(.key == "olddisp") | .verdict')" dispatch
 }
 
 @test "judge shares a capped batch across projects: each project's best row, then each one's next" {

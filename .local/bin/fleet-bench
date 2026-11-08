@@ -3031,8 +3031,12 @@ triage_shape() {
 
 # triage_route <rows> -> key, text, priority, route, cause, item tags. The first TRIAGE_ROUTES line
 # whose ERE matches the row decides; no match, or a route it does not know, is route "-". The cause
-# is that line's ERE hashed, so every row one line explains is one cause; a capture group in the ERE
-# adds its value, so one line can name many causes, such as one per runner.
+# is that line's ERE hashed, so every row one line explains is one cause. A line with a capture group
+# names one cause per value, such as one per runner or watch, and that cause is the row's kind (its
+# text to the first colon; every triage_shape row has one) plus the value, not the ERE: the watch
+# line lists every watch it routes, so each edit to it gave every watch a new cause, cause_tries
+# counted 0 again and triage_spent never sent a red two fixes did not hold to the human
+# (board-chain and runner-score, 2026-11-07).
 triage_route() {
   local key text pri re route skill fix tags t note hit cause extra
   while IFS=$'\t' read -r key text pri; do
@@ -3052,7 +3056,9 @@ triage_route() {
       printf '%s\t%s\t%s\t-\t-\t\n' "$key" "$text" "$pri"
       continue
     fi
-    [[ "$text" =~ $re ]] && re+=${BASH_REMATCH[1]:-}
+    if [[ "$text" =~ $re ]] && [ -n "${BASH_REMATCH[1]:-}" ]; then
+      if [[ "$text" == *:* ]]; then re="${text%%:*}:${BASH_REMATCH[1]}"; else re+=${BASH_REMATCH[1]}; fi
+    fi
     cause=$(printf '%s' "$re" | sha256sum | cut -c1-8)
     text+="${note:+; $note}"
     for t in ${tags:-}; do
