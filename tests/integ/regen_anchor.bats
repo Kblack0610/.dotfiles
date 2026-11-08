@@ -81,6 +81,26 @@ seed_anchor() {
   refute_output --partial '1999-01.jsonl'
 }
 
+@test "regen-anchor: --help prints usage and scaffolds nothing" {
+  before="$(find "$HOME/.agent" | sort)"
+  run bash "$REGEN" --help
+  assert_success
+  assert_output --partial "usage:"
+  [ "$(find "$HOME/.agent" | sort)" = "$before" ]
+}
+
+@test "regen-anchor: refuses any other argument starting with a dash and writes nothing" {
+  before="$(find "$HOME/.agent" | sort)"
+  for a in -x --bogus; do
+    run bash "$REGEN" "$a"
+    assert_failure 2
+    assert_output --partial "unknown option"
+  done
+  run bash "$REGEN" proj --bogus
+  assert_failure 2
+  [ "$(find "$HOME/.agent" | sort)" = "$before" ]
+}
+
 @test "regen-anchor: links the newest outcomes month by name, not the archived evals" {
   # The eval corpus stopped growing 2026-10-28; outcomes is what the nightly writes now.
   # A late re-observation touches an older month, so mtime would pick the wrong file.
