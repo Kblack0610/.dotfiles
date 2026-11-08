@@ -1905,6 +1905,12 @@ settle_item() {
   local st it pr report info state oid; st=$(item_state "$1")
   case "$st" in running | waiting | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(agent-queue show "$1" --json 2>/dev/null)
+  # A partial merge proves only one repo landed. The next PR may not exist yet.
+  if [ "$(jq -r '.partial // ""' <<<"$it")" = yes ]; then
+    [ "$st" = waiting ] || agent-queue move "$1" waiting --if "$st" >/dev/null || return 0
+    logline "reaped $2: queue item $1 waits for its final landing (partial)"
+    return 0
+  fi
   dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
   if [ -n "$pr" ]; then
