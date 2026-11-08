@@ -40,12 +40,13 @@ const CHANNEL_FIT: (usize, usize) = (15, 36);
 const VERSION_CAP: usize = 11;
 const STATUS_CAP: usize = 10;
 
-/// The changelog read for the opened channel: whose it is, which ask it answers (an answer to
-/// an earlier one is dropped), and what came back, None while it is being read.
+/// The changelog read for the opened channel: whose it is, whether a worker is still on it (one at
+/// a time, so holding a key over many projects asks for the last one only), and what came back,
+/// None while it is being read.
 #[derive(Default)]
 pub struct ChangelogRead {
     pub project: String,
-    pub gen: u64,
+    pub busy: bool,
     pub read: Option<Result<Changelog, String>>,
 }
 

@@ -286,7 +286,7 @@ pub enum Msg {
     /// `release-state` wrote a new snapshot.
     ReleaseFile,
     /// One project's changelog for the ask numbered first, or why it could not be read.
-    Changelog(u64, Result<Changelog, String>),
+    Changelog(Result<Changelog, String>),
     /// The Sessions table's ended rows, then its header, which waits on headroom.
     SessionFeed(Box<hub_core::session_table::Feed>),
     Capacity(Box<hub_core::capacity::Capacity>),
@@ -709,19 +709,35 @@ impl App {
     }
 
     /// Read the changelog of the selected channel's project, at `tag` or its newest release, in a
-    /// worker; an answer to an earlier ask is dropped when it lands.
+    /// worker. One read at a time: while it runs a new ask waits, and `sync_changelog` makes it
+    /// when the answer lands.
     fn read_changelog(&mut self, tag: Option<String>) {
         let Some(project) = self.selected_release().map(|r| r.project.clone()) else {
             return;
         };
-        self.rv.cl.gen += 1;
+        if self.rv.cl.busy {
+            return;
+        }
+        self.rv.cl.busy = true;
         self.rv.cl.project = project.clone();
         self.rv.cl.read = None;
-        let (gen, tx, runner) = (self.rv.cl.gen, self.tx.clone(), self.runner.clone());
+        self.rv.down = 0;
+        let (tx, runner) = (self.tx.clone(), self.runner.clone());
         std::thread::spawn(move || {
             let r = hub_core::releases::changelog(runner.as_ref(), &project, tag.as_deref());
-            let _ = tx.send(Msg::Changelog(gen, r));
+            let _ = tx.send(Msg::Changelog(r));
         });
+    }
+
+    /// With the pane open, the changelog is the selected channel's project's: read it when the
+    /// selection came to rest on another (a key, a re-sort, a new snapshot, an answer that landed).
+    fn sync_changelog(&mut self) {
+        let other = self
+            .selected_release()
+            .is_some_and(|r| r.project != self.rv.cl.project);
+        if self.rv.open && other {
+            self.read_changelog(None);
+        }
     }
 
     /// A read still going is not due: asking now would queue a second one behind it.
@@ -1373,14 +1389,15 @@ impl App {
                 if let Some(s) = &self.releases {
                     self.rv.reselect(s, id);
                 }
+                self.sync_changelog();
                 if self.releases_read.done() && self.tab == Tab::Releases {
                     self.read_releases();
                 }
             }
-            Msg::Changelog(gen, r) => {
-                if self.rv.cl.gen == gen {
-                    self.rv.cl.read = Some(r);
-                }
+            Msg::Changelog(r) => {
+                self.rv.cl.busy = false;
+                self.rv.cl.read = Some(r);
+                self.sync_changelog();
             }
             Msg::Fleet(f) => {
                 self.fleet = Some(*f);
@@ -2531,6 +2548,7 @@ impl App {
     /// tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
         if self.rv.table.key::<Release>(k.code) != Took::No {
+            self.sync_changelog();
             return true;
         }
         let by = match k.code {
@@ -2551,7 +2569,11 @@ impl App {
         match k.code {
             KeyCode::Char('J') if rv.open => rv.down += 1,
             KeyCode::Char('K') if rv.open => rv.down = rv.down.saturating_sub(1),
-            KeyCode::Enter => rv.open = !rv.open,
+            KeyCode::Enter => {
+                rv.open = !rv.open;
+                // Opening asks for the newest release again, whatever was read before.
+                rv.cl.project.clear();
+            }
             KeyCode::Esc => {
                 if rv.open {
                     rv.open = false;
@@ -2565,14 +2587,7 @@ impl App {
         if self.rv.table.sel != before {
             self.rv.down = 0;
         }
-        if self.rv.open {
-            let moved_to_another = self
-                .selected_release()
-                .is_some_and(|r| k.code == KeyCode::Enter || r.project != self.rv.cl.project);
-            if moved_to_another {
-                self.read_changelog(None);
-            }
-        }
+        self.sync_changelog();
         true
     }
 
@@ -3201,7 +3216,12 @@ impl App {
         f.render_widget(Paragraph::new(lines), list);
         let row = self.rv.shown(s).get(self.rv.table.sel).copied();
         if let (Some(area), Some(r)) = (pane, row) {
-            let cl = self.rv.cl.read.as_ref();
+            let cl = self
+                .rv
+                .cl
+                .read
+                .as_ref()
+                .filter(|_| self.rv.cl.project == r.project);
             let lines = releases::detail(r, self.p, now, area.width as usize, cl);
             let max = lines.len().saturating_sub(area.height as usize);
             self.rv.down = self.rv.down.min(max);
@@ -5000,17 +5020,44 @@ mod tests {
     }
 
     #[test]
-    fn moving_to_another_project_rereads_and_a_late_answer_for_the_old_one_is_dropped() {
+    fn moving_to_another_project_waits_for_the_read_going_then_reads_the_one_it_rests_on() {
+        let (mut a, rel, rx) = with_releases();
+        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Char('j'));
+        press(&mut a, KeyCode::Char('k'));
+        press(&mut a, KeyCode::Char('j'));
+        assert!(a.rv.cl.busy, "one worker, however many moves");
+        let alpha = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        a.handle(alpha);
+        assert_eq!(
+            a.rv.cl.project, "beta",
+            "the answer is for alpha, the row rests on beta"
+        );
+        assert!(a.rv.cl.read.is_none(), "so beta is being read");
+        answer(&mut a, &rx);
+        assert_eq!(
+            a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().project,
+            "beta"
+        );
+        assert_eq!(rel.0.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_query_that_moves_the_selection_to_another_project_rereads_too() {
         let (mut a, _rel, rx) = with_releases();
         press(&mut a, KeyCode::Enter);
-        let old = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        press(&mut a, KeyCode::Char('j'));
-        assert_eq!(a.rv.cl.project, "beta");
-        a.handle(old);
-        assert!(
-            a.rv.cl.read.is_none(),
-            "alpha's answer must not show on beta"
+        answer(&mut a, &rx);
+        assert_eq!(a.rv.cl.project, "alpha");
+        for c in ['/', 'b', 'e', 't', 'a'] {
+            press(&mut a, KeyCode::Char(c));
+        }
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(
+            a.selected_release().unwrap().project,
+            "beta",
+            "the query left beta only"
         );
+        assert!(a.rv.cl.read.is_none(), "so beta's changelog is being read");
         answer(&mut a, &rx);
         assert_eq!(
             a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().project,

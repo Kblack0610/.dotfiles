@@ -57,12 +57,12 @@ async function loadChangelog(project, tag = "") {
 function releaseChangelog(r) {
   const c = relcl, d = c.data;
   if (c.project !== r.project) return "";
-  if (c.err) return `<span class="warn">${esc(c.err)}</span>`;
-  if (!d) return `<span class="muted">reading...</span>`;
+  const warn = c.err ? `<span class="warn">${esc(c.err)}</span>` : "";
+  if (!d) return warn || `<span class="muted">reading...</span>`;
   const opts = d.tags.map((t) => `<option${t === d.tag ? " selected" : ""}>${esc(t)}</option>`).join("");
-  const says = `${esc(d.range)}, from ${esc(d.source)}${c.loading ? ", reading..." : ""}`;
-  const text = d.text ? `<div class="md rel-cl">${md(d.text)}</div>` : `<div class="muted">No merged PRs in ${esc(d.range)}.</div>`;
-  return `<select class="rel-tag" aria-label="Changelog tag" data-project="${esc(r.project)}">${opts}</select> <span class="muted">${says}</span>${text}`;
+  const says = warn || `<span class="muted">${esc(d.range)}, from ${esc(d.source)}${c.loading ? ", reading..." : ""}</span>`;
+  const text = c.err ? "" : d.text ? `<div class="md rel-cl">${md(d.text)}</div>` : `<div class="muted">No merged PRs in ${esc(d.range)}.</div>`;
+  return `<select class="rel-tag" aria-label="Changelog tag" data-project="${esc(r.project)}">${opts}</select> ${says}${text}`;
 }
 
 function releaseDetail(r) {

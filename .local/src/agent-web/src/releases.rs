@@ -63,21 +63,22 @@ pub struct ChangelogQuery {
     pub tag: String,
 }
 
-/// The body for one tag's changelog, or the collector's own words on why there is none.
-fn changelog_body(runner: &dyn Runner, q: &ChangelogQuery) -> Result<String, String> {
-    if q.project.is_empty() {
-        return Err("a project is required".into());
-    }
+/// The body for one tag's changelog, or the status and words of why there is none: 400 for a
+/// query the collector is never asked, 502 for its own failure.
+fn changelog_body(runner: &dyn Runner, q: &ChangelogQuery) -> Result<String, (StatusCode, String)> {
     let tag = Some(q.tag.as_str()).filter(|t| !t.is_empty());
-    let c = releases::changelog(runner, &q.project, tag)?;
-    serde_json::to_string(&c).map_err(|e| e.to_string())
+    if !releases::askable(&q.project, tag) {
+        return Err((StatusCode::BAD_REQUEST, "a project and a tag name are required".into()));
+    }
+    let c = releases::changelog(runner, &q.project, tag).map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
+    serde_json::to_string(&c).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// What `tag` of `project` shipped, with the tags to pick from (docs/operations/release-state.md).
 pub async fn changelog(UrlQuery(q): UrlQuery<ChangelogQuery>) -> Response {
     match tokio::task::spawn_blocking(move || changelog_body(&System, &q)).await {
         Ok(Ok(body)) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
-        Ok(Err(e)) => (StatusCode::BAD_REQUEST, e).into_response(),
+        Ok(Err(e)) => e.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -107,9 +108,12 @@ mod tests {
             serde_json::from_str(&changelog_body(&ok, &ask("p", "")).unwrap()).unwrap();
         assert_eq!((v["tag"].as_str(), v["tags"][0].as_str()), (Some("p-v1"), Some("p-v1")));
         let no = Says(Err("release-state: x is not a release tag of p".into()));
-        assert!(changelog_body(&no, &ask("p", "x")).unwrap_err().contains("not a release tag"));
-        assert!(changelog_body(&ok, &ask("", "")).is_err());
-        assert!(changelog_body(&ok, &ask("-h", "")).is_err());
+        let (status, words) = changelog_body(&no, &ask("p", "x")).unwrap_err();
+        assert!(status == StatusCode::BAD_GATEWAY && words.contains("not a release tag"));
+        for (p, t) in [("", ""), ("-h", ""), ("p", "-h")] {
+            let (status, _) = changelog_body(&ok, &ask(p, t)).unwrap_err();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{p:?} {t:?}");
+        }
     }
 
     fn rel(id: &str, level: releases::Level) -> Release {

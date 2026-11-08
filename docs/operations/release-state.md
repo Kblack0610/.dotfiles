@@ -49,7 +49,7 @@ A shipping app (`type: app`) with no targets gets one implicit `release` row: it
 
 ## Changelog for a version
 
-`changelog` takes any tag of the project's own line (the monorepo `name-v*` ladder or `v*`; a name that is not one of its tags is refused). The previous tag is the highest tag of the line that is an ancestor of the tag, skipping prereleases when the tag is a stable release. The source is the first `CHANGELOG.md` found at the tag, then at `origin/<branch>`, under the registry `path` and then the repo root, holding a heading with the version (`## [1.1.0] - date`; `1.1.0` does not match `1.1.01`). With none, the text is the merged PRs in `prev..tag`, filtered to the registry `path`. The Releases tab shows it in an opened row: agent-web has a tag picker, the TUI has `[` (older) and `]` (newer).
+`changelog` takes any tag of the project's own line (the monorepo `name-v*` ladder or `v*`; a name that is not one of its tags is refused). The previous tag is the highest tag of the line that is an ancestor of the tag, skipping prereleases when the tag is a stable release. The source is the first `CHANGELOG.md` found at the tag, then at `origin/<branch>`, under the registry `path`, and the repo root too when the project is its repo or has no `path` (a monorepo product never reads a root file that may be another product's), holding a heading with the version (`## [1.1.0] - date`; `1.1.0` does not match `1.1.01`). With none, the text is the merged PRs in `prev..tag`, filtered to the registry `path`, the newest 100, with a last line saying older ones are not shown. The Releases tab shows it in an opened row: agent-web has a tag picker, the TUI has `[` (older) and `]` (newer).
 
 ## Troubleshooting
 

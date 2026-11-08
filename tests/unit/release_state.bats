@@ -364,3 +364,31 @@ MD
   run cl web web-v1.1.0
   [ "$(jq -r .source <<<"$output")" = "merged PRs" ]
 }
+
+@test "changelog: a release is listed above its own candidates" {
+  ship "first (#1)" web-v1.0.0
+  ship "candidate (#2)" web-v1.1.0-rc1
+  ship "release (#3)" web-v1.1.0
+  [ "$(cl web | jq -c .tags)" = '["web-v1.1.0","web-v1.1.0-rc1","web-v1.0.0"]' ]
+}
+
+@test "changelog: more merged PRs than the cap end with a line saying so" {
+  ship "first (#1)" web-v1.0.0
+  for i in $(seq 1 103); do ship "change $i (#$((i + 1)))" "wip-$i"; git -C "$CLONE" tag -d "wip-$i" >/dev/null; done
+  git -C "$CLONE" tag web-v1.1.0
+  run cl web web-v1.1.0
+  assert_success
+  [ "$(jq -r .text <<<"$output" | wc -l)" -eq 101 ]
+  [ "$(jq -r .text <<<"$output" | tail -1)" = '- ... and older PRs, not shown' ]
+}
+
+@test "changelog: a product with a folder of its own does not take the repo root's changelog" {
+  jq '.trackers.web.path = "apps/web"' "$PROJECT_MAP_FILE" > "$SANDBOX/map" && mv "$SANDBOX/map" "$PROJECT_MAP_FILE"
+  printf '## 1.1.0\n\n- the other product\n' > "$CLONE/CHANGELOG.md"
+  ship "first (#1)" web-v1.0.0
+  ship "second (#2)" web-v1.1.0
+  [ "$(cl web web-v1.1.0 | jq -r .source)" = "merged PRs" ]
+  mkdir -p "$CLONE/apps/web"; printf '## 1.1.0\n\n- the web product\n' > "$CLONE/apps/web/CHANGELOG.md"
+  git -C "$CLONE" add -A; git -C "$CLONE" commit -qm "web log"; git -C "$CLONE" tag -f web-v1.1.0 >/dev/null
+  [ "$(cl web web-v1.1.0 | jq -r .text)" = "- the web product" ]
+}

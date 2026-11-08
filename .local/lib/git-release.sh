@@ -239,13 +239,14 @@ _gr_subjects() {
 #
 # Version-sorted, prereleases included: this is the list a human picks a version from, so an
 # rc or a per-build tag is a choice there, where git_latest_tag only answers "what shipped".
+# `versionsort.suffix=-` puts `v1.2.0-rc1` below `v1.2.0` where git alone ranks it above.
 # <scoped> is _gr_glob's: 0 for a project that is its repo, 1 for a product in a monorepo.
 git_tags() {
   local repo="$1" name="$2" scoped="$3" glob="${4:-}" g
   [ -n "$repo" ] && [ -d "$repo/.git" ] && command -v git >/dev/null 2>&1 || return 0
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
-  git -C "$repo" tag --list "$g" --sort=-v:refname 2>/dev/null || true
+  git -C "$repo" -c versionsort.suffix=- tag --list "$g" --sort=-v:refname 2>/dev/null || true
 }
 
 # git_prev_tag <repo> <name> <scoped> <glob> <tag> - the release before <tag> on its own
@@ -257,7 +258,7 @@ git_prev_tag() {
   [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -n "$tag" ] && command -v git >/dev/null 2>&1 || return 0
   g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
   [ -n "$g" ] || return 0
-  all=$(git -C "$repo" tag --list "$g" --merged "${tag}^" --sort=-v:refname 2>/dev/null) || return 0
+  all=$(git -C "$repo" -c versionsort.suffix=- tag --list "$g" --merged "${tag}^" --sort=-v:refname 2>/dev/null) || return 0
   if ! printf '%s\n' "$tag" | grep -qE -- "$_GR_PRERELEASE"; then
     all=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
   fi

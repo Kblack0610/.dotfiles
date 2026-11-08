@@ -432,6 +432,12 @@ impl Changelog {
     }
 }
 
+/// Whether a project and tag may be handed to the collector: a name that would read as an option
+/// or holds odd characters never is.
+pub fn askable(project: &str, tag: Option<&str>) -> bool {
+    crate::projects::safe_name(project) && !tag.is_some_and(|t| t.starts_with('-'))
+}
+
 /// One tag's changelog, or the newest release's when `tag` is None. The collector checks `tag`
 /// against the project's own tags; a name that would read as an option never reaches it.
 pub fn changelog(
@@ -439,7 +445,7 @@ pub fn changelog(
     project: &str,
     tag: Option<&str>,
 ) -> Result<Changelog, String> {
-    if !crate::projects::safe_name(project) || tag.is_some_and(|t| t.starts_with('-')) {
+    if !askable(project, tag) {
         return Err("release-state changelog: not a project or tag".into());
     }
     let mut argv: Vec<String> = ["release-state", "changelog", "--json", project]

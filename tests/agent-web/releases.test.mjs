@@ -169,6 +169,19 @@ test("a changelog the collector refused is said in the row, not left reading", a
   assert.match(box.innerHTML, /class="warn">Could not read releases \(HTTP 400\): release-state: binks has no release tags/);
 });
 
+test("a pick the collector refuses keeps the tag picker, so another tag can be tried", async () => {
+  await open();
+  const real = ctx.fetch;
+  ctx.fetch = async () => ({ ok: false, status: 502, statusText: "Bad Gateway", text: async () => "release-state: gone", headers: { get: () => "text/plain" } });
+  const select = { dataset: { project: "binks" }, value: "binks-v1" };
+  fire("change", { type: "change", target: { closest: (sel) => (sel === "select.rel-tag" ? select : null) } });
+  await settled();
+  ctx.fetch = real;
+  assert.match(box.innerHTML, /class="warn">Could not read releases \(HTTP 502\): release-state: gone/);
+  assert.match(box.innerHTML, /<select class="rel-tag"[^>]*>.*<option>binks-v1<\/option>/);
+  assert.doesNotMatch(box.innerHTML, /fix the/);
+});
+
 test("the Builds slot sits under the channels and draws nothing yet", () => {
   show();
   assert.match(box.innerHTML, /<div id="rel-tail"><\/div>$/);

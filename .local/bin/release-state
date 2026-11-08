@@ -383,7 +383,7 @@ changelog_section() {
 }
 
 cmd_changelog() {
-  local json=0 list=0 proj="" tag="" repo path branch all prev ver text="" source="" range ref file
+  local json=0 list=0 proj="" tag="" repo path branch all prev ver text="" source="" range ref file root_changelog
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
@@ -409,16 +409,23 @@ cmd_changelog() {
   branch="$(project_field "$proj" branch)"
   [ -n "$branch" ] || branch="$(default_branch "$repo")"
   ver="$(git_tag_version "$tag")"
+  # A root CHANGELOG.md is this project's own only when it is its repo or has no folder of its own:
+  # in a monorepo it may hold another product's `## 1.1.0`.
+  root_changelog=""
+  { [ -z "$path" ] || [ "$_PTS_SCOPED" = 0 ]; } && root_changelog=1
   # The tag's own file first; a project that writes its entry after tagging has it on the branch.
   for ref in "$tag" ${branch:+"origin/$branch"}; do
-    for file in ${path:+"$path/CHANGELOG.md"} CHANGELOG.md; do
+    for file in ${path:+"$path/CHANGELOG.md"} ${root_changelog:+CHANGELOG.md}; do
       text="$(changelog_section "$repo" "$ref" "$file" "$ver")"
       [ -n "$text" ] && { source="CHANGELOG.md"; break 2; }
     done
   done
   if [ -z "$source" ]; then
     source="merged PRs"
-    text="$(git_tag_changes "$repo" "$prev" "$tag" "$path" "$CHANGELOG_LINES" | sed 's/^/- /')"
+    text="$(git_tag_changes "$repo" "$prev" "$tag" "$path" "$((CHANGELOG_LINES + 1))" | sed 's/^/- /')"
+    if [ "$(wc -l <<<"$text")" -gt "$CHANGELOG_LINES" ]; then
+      text="$(head -n "$CHANGELOG_LINES" <<<"$text")"$'\n'"- ... and older PRs, not shown"
+    fi
   fi
   range="${prev:+$prev..}$tag"
   if [ "$json" = 1 ]; then
