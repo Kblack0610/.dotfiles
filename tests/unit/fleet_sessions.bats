@@ -1062,6 +1062,38 @@ SH
   [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
 }
 
+@test "end to end: the pool's ledger counts toward SHARED, a branch red on both gates once (ar-171)" {
+  # Gates moved to the runner pool (playground #1256), so most reds never reached the local ledger.
+  landed_fixture
+  local now l p
+  now="$(date +%s)" l="$XDG_STATE_HOME/unity-test-runs/test-failures.tsv" p="$XDG_STATE_HOME/unity-test-runs/pool-failures.tsv"
+  mkdir -p "${l%/*}"
+  # feat/x red locally and on the pool, feat/b and feat/c only on the pool (feat/c has no worktree here)
+  printf '%s	wt	feat/x	T.Pool
+' $((now - 900)) > "$l"
+  printf '%s	%s	%s	%s
+' $((now - 800)) wt feat/x T.Pool $((now - 700)) uc-b feat/b T.Pool $((now - 600)) - feat/c T.Pool > "$p"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -r .reason <<<"$shared")" = 'T.Pool red on 3 branches in 2h: feat/x, feat/b, feat/c' ]
+  [ "$(jq -r .fact <<<"$shared")" = "SHARED T.Pool @$((now - 900))" ]
+  [ "$(jq -r '.owners | join(",")' <<<"$shared")" = sid-9 ]
+
+  # the pool ledger alone, with no local one, still makes the row
+  rm "$l"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket == "SHARED") | .target' <<<"$output")" = T.Pool ]
+
+  # negative control: feat/x on both gates is one branch, so without feat/c it is two
+  printf '%s	wt	feat/x	T.Pool
+' $((now - 900)) > "$l"
+  sed -i '/feat\/c/d' "$p"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
+}
+
 @test "a repo's main run list is reused across passes for FLEET_MAIN_TTL, and a failed call is not" {
   # 2026-10-29: every caller ran a pass, and the fleet spent GitHub's 5,000/hr REST limit.
   git init -q --bare "$SANDBOX/origin.git"
