@@ -434,6 +434,8 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     if tab == Some(Tab::Releases) {
         let s = hub_core::releases::read(&hub_core::session_actions::System);
         let now = hub_core::jobs::now();
+        a.tab = Tab::Releases;
+        a.open_query(section);
         for l in
             a.rv.status(&s, a.p, now)
                 .iter()

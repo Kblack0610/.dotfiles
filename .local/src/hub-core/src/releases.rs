@@ -19,13 +19,13 @@ pub const STALE_SECS: i64 = 3600;
 const FOLD_NAMES: usize = 3;
 /// The collector's words, worst first (`RANK` in `release-state`). A word not listed here is
 /// new, so it is drawn amber and sorts with the exceptions rather than folding as green.
-const STATUSES: [&str; 6] = [
-    "drift",
-    "unknown",
-    "floating",
-    "ok",
-    "released",
-    "unreleased",
+const STATUSES: [(&str, Level); 6] = [
+    ("drift", Level::Bad),
+    ("unknown", Level::Warn),
+    ("floating", Level::Warn),
+    ("ok", Level::Ok),
+    ("released", Level::Ok),
+    ("unreleased", Level::Ok),
 ];
 
 /// What one row's state means, for its colour (docs/dashboards.md rule 5).
@@ -90,7 +90,7 @@ impl Watch {
 fn rank(status: &str) -> usize {
     STATUSES
         .iter()
-        .position(|s| *s == status)
+        .position(|(s, _)| *s == status)
         .unwrap_or(STATUSES.len())
 }
 
@@ -144,11 +144,10 @@ impl Release {
     }
 
     fn word(&self) -> Level {
-        match self.status.as_str() {
-            "drift" => Level::Bad,
-            "ok" | "released" | "unreleased" => Level::Ok,
-            _ => Level::Warn,
-        }
+        STATUSES
+            .iter()
+            .find(|(s, _)| *s == self.status)
+            .map_or(Level::Warn, |(_, l)| *l)
     }
 }
 
@@ -384,9 +383,14 @@ pub struct Badge {
     pub level: Level,
 }
 
-/// The badge for `project`; None when it has no channels. `project` is already a safe name.
+/// The badge for `project`; None when it has no channels, or when no refresh has run on this host
+/// yet, which the tab says and a project's page has no reason to. `project` is already a safe name.
 pub fn badge(runner: &dyn Runner, project: &str) -> Result<Option<Badge>, String> {
-    let rows = settle(show(runner, Some(project))?.rows);
+    let rows = match show(runner, Some(project)) {
+        Ok(s) => settle(s.rows),
+        Err(e) if e.contains("no snapshot yet") => return Ok(None),
+        Err(e) => return Err(e),
+    };
     Ok(rows.first().map(|worst| Badge {
         says: says(&rows),
         level: worst.level,
@@ -403,6 +407,16 @@ mod tests {
             assert_eq!(argv[..3], ["release-state", "show", "--json"]);
             self.0.clone()
         }
+    }
+
+    #[test]
+    fn a_host_with_no_snapshot_has_no_badge_and_a_broken_read_still_says_so() {
+        let none = Fake(Err(
+            "release-state: no snapshot yet; run: release-state refresh".into(),
+        ));
+        assert_eq!(badge(&none, "game"), Ok(None));
+        let broken = Fake(Err("jq: not found".into()));
+        assert!(badge(&broken, "game").unwrap_err().contains("jq"));
     }
 
     fn row(project: &str, id: &str, status: &str) -> serde_json::Value {

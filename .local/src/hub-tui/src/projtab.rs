@@ -239,15 +239,10 @@ pub fn open_lines(
         out.extend(wrapped("  flow     ", f, Default::default(), p, w));
     }
     if let Some(b) = &pg.releases {
-        let style = match b.level {
-            hub_core::releases::Level::Bad => p.bad(),
-            hub_core::releases::Level::Warn => p.warn(),
-            hub_core::releases::Level::Ok => Default::default(),
-        };
         out.extend(wrapped(
             "  releases ",
             &format!("{} (R opens)", b.says),
-            style,
+            crate::releases::alert(b.level, p),
             p,
             w,
         ));

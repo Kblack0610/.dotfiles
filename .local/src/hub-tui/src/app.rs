@@ -1821,6 +1821,7 @@ impl App {
                 }
             }
             (Tab::Queue, Some(q)) => self.qv.open(&q),
+            (Tab::Releases, Some(q)) => self.rv.open_view(q),
             (_, q) => self.open_project(q),
         }
     }
@@ -2499,8 +2500,7 @@ impl App {
 
     /// The Releases tab, on one project's channels: where a Projects card's badge leads.
     fn open_releases(&mut self, project: &str) {
-        self.rv.table.view.q = format!("project:{project}");
-        self.rv.table.sel = 0;
+        self.rv.open_view(format!("project:{project}"));
         self.go(Tab::Releases);
     }
 
@@ -4882,9 +4882,22 @@ mod tests {
         let mut a = app(Tab::Projects);
         a.pv.open = true;
         a.tv.project = Some(("personal".into(), "garden".into()));
+        a.rv.table.view.state = "green".into();
+        a.rv.table.view.sort = "status".into();
+        a.rv.open = true;
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('R')))));
         assert_eq!(a.tab, Tab::Releases);
         assert_eq!(a.rv.table.view.q, "project:garden");
+        assert!(a.rv.table.view.state.is_empty() && a.rv.table.view.sort.is_empty());
+        assert!(!a.rv.open, "the promise is this project's channels, unfiltered");
+    }
+
+    #[test]
+    fn a_query_for_the_releases_tab_sets_its_view_and_opens_no_project() {
+        let mut a = app(Tab::Releases);
+        a.open_query(Some("project:garden".into()));
+        assert_eq!(a.rv.table.view.q, "project:garden");
+        assert!(a.pv.want.is_none());
     }
 
     /// Costs with a token snapshot read, no read left to start.

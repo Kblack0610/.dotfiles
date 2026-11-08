@@ -11,6 +11,15 @@ use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::{clock, Palette};
 use crate::projtab::wrapped;
 
+/// A line's colour where only trouble is coloured: a green line would shout.
+pub(crate) fn alert(l: Level, p: Palette) -> Style {
+    if l == Level::Ok {
+        Style::default()
+    } else {
+        level(l, p)
+    }
+}
+
 /// `Release::COLUMNS` in capitals, in its order, the sort mark placed by that index. `id` and
 /// `where` filter without a column: the channel says the one, the pane the other.
 const HEADER: [&str; 7] = [
@@ -61,6 +70,16 @@ impl ReleasesView {
     }
 
     /// The rows drawn, in the view's sort or the reader's exceptions-first order.
+    pub fn open_view(&mut self, q: String) {
+        self.table.view = hub_core::table::View {
+            q,
+            ..Default::default()
+        };
+        self.table.sel = 0;
+        self.open = false;
+        self.down = 0;
+    }
+
     pub fn shown<'a>(&self, s: &'a Releases) -> Vec<&'a Release> {
         self.folded(s).0
     }
@@ -234,12 +253,11 @@ pub fn detail(r: &Release, p: Palette, now: i64, w: usize) -> Vec<Line<'static>>
         let since = t
             .since
             .map_or(String::new(), |at| format!(" since {}", clock(at, now)));
-        let style = if t.level == Level::Ok {
-            plain
-        } else {
-            level(t.level, p)
-        };
-        part("Watch", &format!("{} {}{since}", t.watch, t.state), style);
+        part(
+            "Watch",
+            &format!("{} {}{since}", t.watch, t.state),
+            alert(t.level, p),
+        );
     }
     if !r.deps.is_empty() {
         part("Deps", &r.deps_text, plain);
