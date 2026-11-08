@@ -443,7 +443,7 @@ git -C . merge-base --is-ancestor fedcba9876543210fedcba9876543210fedcba98 origi
 git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
 dotfiles-autopull --now .
 notes ingest record --stage land --action merged --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 -- ship
-notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 -- ship
+notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= closing_pr=o/r#42 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
 notes ptask dotfiles --agent done ship it --proof pr:42 commit:fedcba987654
@@ -648,7 +648,7 @@ EOF
   assert_line --index 6 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
   assert_line --index 7 --partial 'proof: gh pr view 42 --json mergeCommit'
   assert_line --index 8 --partial 'live: dotfiles-autopull --now .'
-  assert_line --index 9 'item: agent-queue set ship pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 9 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
   assert_line --index 10 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
   assert_line --index 11 --partial 'plan: tick'
   run cat "$LOG"
@@ -729,7 +729,7 @@ EOF
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 9 'item: agent-queue set tidy pr=42 merged=<sha> && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 9 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
   assert_line --index 10 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
@@ -782,7 +782,7 @@ EOF
   assert_success
   refute_output --partial 'could not record this session'
   assert_line 'item: split done with pr:o/p#552, beside o/r#42'
-  assert_line 'board: left to its first PR, o/r#42 (agent-land on that one closes the row if its board step failed)'
+  assert_line 'board: left to its closing PR, o/r#42 (agent-land on that one closes the row if its board step failed)'
   assert_line 'landed #552'
   run board_calls
   assert_output ''
@@ -793,7 +793,7 @@ EOF
   # A re-run of either PR records nothing twice; a second PR in a repo the item carries is refused.
   run "$LAND" 552 --item split
   assert_success
-  assert_line 'board: left to its first PR, o/r#42 (agent-land on that one closes the row if its board step failed)'
+  assert_line 'board: left to its closing PR, o/r#42 (agent-land on that one closes the row if its board step failed)'
   run agent-queue show split --json
   assert_equal "$(jq -r .pr <<<"$output")" 'o/r#42 o/p#552'
   echo https://github.com/o/p/pull/553 >"$NOTES_FIXTURE/url"
@@ -1055,4 +1055,81 @@ EOF
   DOTFILES_AUTOPULL="$SANDBOX/no-such-autopull" run "$LAND" 42 --item ship
   assert_success
   assert_line 'landed #42'
+}
+
+@test "partial landing holds after items and the board until the other repo lands" {
+  agent-queue add --project dotfiles --slug next --after ship 'next phase' >/dev/null
+  : >"$LOG"
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  assert_line 'board: left open until the final landing'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, .merged] | join(" ")' <<<"$output")" 'running yes o/r#42 fedcba9876543210fedcba9876543210fedcba98'
+  run agent-queue show next --json
+  assert_equal "$(jq -r .hold <<<"$output")" 'after ship'
+  run agent-queue next --json
+  refute_output --partial '"slug":"next"'
+  [ -z "$(board_calls)" ] || fail 'partial landing closed the row'
+  # Repeating the first landing keeps one PR and never releases its dependents.
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  run agent-queue show ship --json
+  assert_equal "$(jq -r .pr <<<"$output")" o/r#42
+  # The final PR comes from another checkout/repo and closes the one item.
+  echo OPEN >"$NOTES_FIXTURE/state"
+  echo https://github.com/o/p/pull/43 >"$NOTES_FIXTURE/url"
+  echo git@github.com:o/p.git >"$NOTES_FIXTURE/origin.url"
+  echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >"$NOTES_FIXTURE/merge.oid"
+  run "$LAND" 43 --item ship --plan "$PLAN" --phase '6. agent-land'
+  assert_success
+  assert_line 'plan: ticked "6. agent-land"'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, .merged] | join("|")' <<<"$output")" 'done||o/r#42 o/p#43|fedcba9876543210fedcba9876543210fedcba98 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  run agent-queue show next --json
+  assert_equal "$(jq -r '.hold // ""' <<<"$output")" ''
+  run board_calls
+  assert_output --partial 'done ship it --proof pr:43'
+}
+
+@test "partial protects an already merged PR and refuses a finished item or plan phase" {
+  echo MERGED >"$NOTES_FIXTURE/state"
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '.state + " " + .partial' <<<"$output")" 'running yes'
+  run "$LAND" 42 --item ship --partial --plan "$PLAN" --phase '6. agent-land'
+  assert_failure 2
+  run "$LAND" 42 --item ship
+  assert_success
+  run "$LAND" 42 --item ship --partial
+  assert_failure 2
+  assert_output --partial 'already done'
+}
+
+@test "partial dry run describes keeping the item and row open" {
+  run "$LAND" 42 --item ship --partial --dry-run
+  assert_success
+  assert_output --partial 'partial=yes before merging'
+  assert_output --partial 'board: left open until the final landing'
+  refute_output --partial 'move ship done'
+  refute_output --partial 'board: notes'
+}
+
+@test "the final second PR retries a failed board step after a partial first landing" {
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  echo OPEN >"$NOTES_FIXTURE/state"
+  echo https://github.com/o/p/pull/43 >"$NOTES_FIXTURE/url"
+  echo git@github.com:o/p.git >"$NOTES_FIXTURE/origin.url"
+  cp "$SANDBOX/bin/notes" "$SANDBOX/bin/notes-working"
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/notes"
+  run "$LAND" 43 --item ship
+  assert_failure 1
+  assert_output --partial 'board failed:'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '.state + " " + .closing_pr' <<<"$output")" 'done o/p#43'
+  cp "$SANDBOX/bin/notes-working" "$SANDBOX/bin/notes"
+  run "$LAND" 43 --item ship
+  assert_success
+  assert_output --partial 'board: closed "ship it" with pr:43'
 }

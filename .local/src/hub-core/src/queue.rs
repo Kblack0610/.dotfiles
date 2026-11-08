@@ -266,6 +266,18 @@ impl Item {
         out
     }
 
+    /// When it finished, read by the same stamp rule as `timing` (the older minute stamps too).
+    pub fn finished_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        said(&self.finished).and_then(stamp)
+    }
+
+    /// Minutes it has been ready at `now`: from `ready` (its hold's release), else `queued`,
+    /// the start `timing`'s wait measures from. None for an item with neither stamp.
+    pub fn ready_min(&self, now: chrono::DateTime<chrono::Utc>) -> Option<i64> {
+        let from = said(&self.ready).or(said(&self.queued)).and_then(stamp)?;
+        Some((now - from).num_minutes().max(0))
+    }
+
     /// What the item is in a few words: the `title:` header, else the task's first sentence
     /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
     pub fn title(&self) -> String {
