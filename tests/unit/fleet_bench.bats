@@ -2815,7 +2815,7 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   use_fixture
   # 2026-11-05: 8/10 unity slots busy, but the jobs wanted self-hosted,linux,unity-full, which only 2 matched.
   { cat "$FX/prom.tsv"
-    printf 'cc:pool_match_slots\tunity\t%s\t2\ncc:pool_match_busy\tunity\t%s\t2\n' "$(clock 09:30)" "$(clock 09:30)"
+    printf 'cc:pool_match_slots\tunity\t%s\t2\ncc:pool_match_busy\tunity\t%s\t2\ncc:pool_match_runners\tunity\t%s\t2\n' "$(clock 09:30)" "$(clock 09:30)" "$(clock 09:30)"
     printf 'cc:pool_match_labels\tunity/self-hosted,linux,unity-full\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
   BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
   run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
@@ -2828,12 +2828,19 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
   assert_output labels
   rm "$FLEET_BENCH_DIR/findings.jsonl"
-  # No slot has the labels at all.
+  # No runner has the labels at all.
   { cat "$FX/prom.tsv"
-    printf 'cc:pool_match_slots\tunity\t%s\t0\ncc:pool_match_busy\tunity\t%s\t0\n' "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+    printf 'cc:pool_match_slots\tunity\t%s\t0\ncc:pool_match_busy\tunity\t%s\t0\ncc:pool_match_runners\tunity\t%s\t0\n' "$(clock 09:30)" "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
   BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
   run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
   assert_output labels
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # The runners that have them are all down: capacity, not labels.
+  { cat "$FX/prom.tsv"
+    printf 'cc:pool_match_slots\tunity\t%s\t0\ncc:pool_match_busy\tunity\t%s\t0\ncc:pool_match_runners\tunity\t%s\t2\n' "$(clock 09:30)" "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output capacity
 }
 
 @test "findings: the live reader matches waiting jobs to runners by labels, withheld and offline slots out" {
@@ -2857,6 +2864,7 @@ JSON'
   assert_success
   assert_line "cc:pool_match_slots	unity	2"
   assert_line "cc:pool_match_busy	unity	1"
+  assert_line "cc:pool_match_runners	unity	4"
   assert_line "cc:pool_match_labels	unity/linux,self-hosted,unity-full	1"
 }
 
@@ -2977,7 +2985,9 @@ EOF
   BENCH_NOW=$T0 run "$SUBJECT" findings --run
   assert_success
   run grep -c "time=$((T0 - 1200))" "$SANDBOX/curl.log"
-  assert_output 3   # the finding metrics, the repos waiting in each pool, and the runners that fit the waiting jobs
+  assert_output 2   # the finding metrics, and the repos waiting in each pool
+  run grep -c "time=$T0\$" "$SANDBOX/curl.log"
+  assert_output 3   # and for the newest sample alone, the runners that fit the waiting jobs
   BENCH_NOW=$T0 run "$SUBJECT" findings --json
   assert_output --partial '"host-overload"'
   refute_output --partial '"scope":"prom"'
