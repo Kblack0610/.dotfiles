@@ -2756,13 +2756,30 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   run cmd_reap
   assert_success
   [ -n "$(qitem waiting fix-crash)" ] || fail "an open PR did not park it in waiting"
-  assert_output --partial 'flagged queue item fix-crash (no session recorded, PR o/game#12 not merged'
+  assert_output --partial 'flagged queue item fix-crash (no session recorded (PR o/game#12)'
+  # Parked on its open PR, later passes neither flag it again nor record another reap.
+  run cmd_reap
+  refute_output --partial 'flagged queue item fix-crash'
+  run grep -c 'action reaped --from game --item fix-crash' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
   printf 'CLOSED \n' > "$NOTES_FIXTURE/pr.state"
   run cmd_reap
   assert_success
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
   grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "the row was not handed back"
   refute_output --partial 'flagged queue item fix-crash'
+}
+
+@test "reap: an item with no session and a report is done; a flag keeps the note it had" {
+  started_item withreport '' && started_item noted ''
+  agent-queue set withreport report=/tmp/r.md >/dev/null
+  agent-queue set noted 'note=waiting on the vendor' >/dev/null
+  run cmd_reap
+  assert_success
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-withreport.md)" status)" ok
+  assert_equal "$(qfield "$(qitem running noted)" note)" 'no session recorded: nothing watches this item; agent-queue claim it from a session, or close it; was: waiting on the vendor'
+  run cmd_reap
+  refute_output --partial 'flagged queue item noted'
 }
 
 @test "reap leaves an item with no session alone inside its start grace" {

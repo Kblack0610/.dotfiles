@@ -1551,8 +1551,8 @@ ledger_counts() {
 # names (owner/repo#N, a forge URL, or a bare N by number). board_orphan_started: started agent rows
 # no active item names. merged_open_rows: done items with merge proof whose row is still open.
 # ownerless_running: running or waiting items with no session (reap flags them).
-# epic_linked_share: the agent rows filed under an epic (#of/) in the projects that have one open. landed_unverified: open epics whose every leaf
-# is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
+# epic_linked_share: the agent rows filed under an epic (#of/) in the projects that have one open.
+# landed_unverified: open epics whose every leaf is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
 # dup_pairs: instructions two homes restate, from the newest nightly docs-cleanup night's dups.json
 # (skill-drift --dups); the bound is dup_pairs_max, the same row skill-drift --dups --check holds.
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.

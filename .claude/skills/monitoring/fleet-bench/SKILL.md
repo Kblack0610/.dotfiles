@@ -122,7 +122,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `untracked_merged_prs` (now) | those same PRs no item names |
 | `board_orphan_started` (now) | started (`[/]`) agent rows in `notes board --json` that no active item's `row` names |
 | `merged_open_rows` (now) | items done in the window with `merged:` whose row is still open |
-| `ownerless_running` (now) | running or waiting items with neither `session` nor `sessions`; reap flags each in its `note:` and the chain table names them |
+| `ownerless_running` (now) | running or waiting items with neither `session` nor `sessions`; reap flags each past its start grace in its `note:` and the chain table names them |
 | `epic_linked_share` (now) | open agent rows filed under an epic (`#of/`) / open agent rows, in projects with an open epic (`notes projects --stats --json`) |
 | `landed_unverified` (now) | open epics whose every leaf is done: landed, waiting on proof of the outcome |
 | `doctor_fail` (now) | `FAIL` lines in the last `notes doctor` run (`BENCH_DOCTOR_LAST`) |

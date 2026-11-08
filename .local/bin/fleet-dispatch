@@ -1905,7 +1905,7 @@ unstart_orphans() {
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
 settle_item() {
-  local st it pr report info state oid; st=$(item_state "$1")
+  local st it pr report info state='' oid; st=$(item_state "$1")
   case "$st" in running | waiting | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(agent-queue show "$1" --json 2>/dev/null)
   # A partial merge proves only one repo landed. The next PR may not exist yet.
@@ -1914,12 +1914,16 @@ settle_item() {
     logline "reaped $2: queue item $1 waits for its final landing (partial)"
     return 0
   fi
-  dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
   if [ -n "$pr" ]; then
     if [ -n "$oid" ]; then state=MERGED
     else info=$(item_pr_state "$1" "$it") || info=''; read -r state oid <<<"$info"
     fi
+  fi
+  # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait.
+  [ "$state:$st" != OPEN:waiting ] || return 0
+  dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
+  if [ -n "$pr" ]; then
     case "$state" in
     MERGED)
       [ -n "$oid" ] || { logline "reaped $2: queue item $1 left: PR $pr merged with no merge commit gh could read"; return 0; }
@@ -1928,7 +1932,6 @@ settle_item() {
       logline "reaped $2: session gone, queue item $1 done, PR $pr merged"
       close_row "$1" ;;
     OPEN)
-      [ "$st" = waiting ] && return 0
       agent-queue move "$1" "waiting" --if "$st" >/dev/null || return 0
       agent-queue set "$1" "note=session $2 ended with PR $pr open" >/dev/null
       logline "reaped $2: session gone, queue item $1 waits on its open PR $pr"
@@ -1953,22 +1956,24 @@ settle_item() {
 
 # settle_sessionless <slug> <started> -- a started item recording no session, tmux or Claude: nothing
 # witnesses it ending and nothing can nudge it, so PRs #909 and #910 sat open with nobody on them. Its
-# PR still decides what it can (settle_item): merged or closed settles it, open parks it in waiting/.
-# Anything else stays put, never failed, since no-witness is not gone, and is flagged once on the item
-# and in the log. fleet-bench's ownerless_running counts it, so the board-chain watch pages it.
+# PR or report still decides what it can (settle_item): merged or closed settles it, open parks it in
+# waiting/, a report is done. Anything else stays put, never failed, since no-witness is not gone, and is
+# flagged once on the item and in the log, ahead of any note it had. fleet-bench's ownerless_running
+# counts it, so the board-chain watch pages it.
 settle_sessionless() {
-  local it pr flag
+  local it pr note flag
   past_reap_grace "$2" || return 0
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   pr=$(jq -r '.pr // ""' <<<"$it")
-  if [ -n "$pr" ]; then
+  if [ -n "$pr$(jq -r '.report // ""' <<<"$it")" ]; then
     settle_item "$1" unrecorded
     settle_row "$1"
     [ "$(item_state "$1")" != "done" ] || return 0
   fi
-  flag="no session recorded${pr:+, PR $pr not merged}: nothing watches this item; agent-queue claim it from a session, or close it"
-  [ "$(jq -r '.note // ""' <<<"$it")" != "$flag" ] || return 0
-  agent-queue set "$1" "note=$flag" >/dev/null || return 0
+  flag="no session recorded${pr:+ (PR $pr)}: nothing watches this item; agent-queue claim it from a session, or close it"
+  note=$(jq -r '.note // ""' <<<"$it")
+  case "$note" in *"$flag"*) return 0 ;; esac
+  agent-queue set "$1" "note=$flag${note:+; was: $note}" >/dev/null || return 0
   logline "queue item $1: $flag"
   echo "flagged queue item $1 ($flag)"
 }
