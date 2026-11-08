@@ -13,9 +13,10 @@
 #                                         release before it; --list names every tag to pick from
 #
 # Declared targets live in project-map.json `trackers.<p>.targets`; pinned is read from the
-# fetched remote branch, live from the cluster or health endpoint, deploy history from the
-# GitHub Deployments named after the target id, and a failed probe says `unknown`, never the
-# last good value. Schema and statuses: docs/operations/release-state.md.
+# fetched remote branch or, for a store channel, the newest recorded deploy; live from the
+# cluster, health endpoint or store API; deploy history from the GitHub Deployments named after
+# the target id, and a failed probe says `unknown`, never the last good value. Schema and
+# statuses: docs/operations/release-state.md.
 set -uo pipefail
 
 PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
@@ -38,6 +39,18 @@ PROBE_TIMEOUT="${RELEASE_PROBE_TIMEOUT:-20}"
 CHANGELOG_LINES=100
 # How many deployments a row keeps: what the opened row lists, and how far back PREV can look.
 DEPLOY_HISTORY=10
+# The read-only store credentials: one rbw entry per store, each a single line. Never the release
+# keys the upload workflows use. Formats: docs/operations/release-state.md, "Store credentials".
+RBW_STEAM=release_state_steam
+RBW_PLAY=release_state_play
+RBW_ASC=release_state_asc
+# How far back GetAppBuilds looks for the build a branch is on.
+STEAM_BUILDS=50
+STEAM_API=https://partner.steam-api.com/ISteamApps
+PLAY_API=https://androidpublisher.googleapis.com/androidpublisher/v3
+ASC_API=https://api.appstoreconnect.apple.com/v1
+# Set once by store_credentials, before the probes' subshells: the value, or why there is none.
+STEAM_KEY="" STEAM_WHY="" PLAY_TOKEN="" PLAY_WHY="" ASC_JWT="" ASC_WHY=""
 # One call per target. The REST list has no status on it, which would be one more call per row.
 DEPLOY_QUERY='query($owner: String!, $name: String!, $env: String!, $n: Int!) {
   repository(owner: $owner, name: $name) {
@@ -101,9 +114,18 @@ default_branch() {
   printf '%s' "${b#origin/}"
 }
 
-# pinned <project> <target-json> -> {value, source, error}
+# pinned <project> <target-json> <deploys-json> -> {value, source, error}
 pinned() {
-  local proj="$1" t="$2" repo path key image branch dir blob v=""
+  local proj="$1" t="$2" d="$3" repo path key image branch dir blob v=""
+  if [ "$(jq -r '.pinned.deployed // false' <<<"$t")" = true ]; then
+    # No file pins a store channel: the tag is chosen when it ships, so the pin is what the
+    # newest successful upload said it put there. Source none is a channel nothing has recorded.
+    jq -c 'if .error then {value: null, source: "github deployments", error: "deploy history unreadable"}
+           else ([.history[] | select(.state == "ok")][0].version) as $v
+             | if $v then {value: $v, source: "github deployments"} else {value: null, source: "none"} end
+           end' <<<"$d"
+    return
+  fi
   if [ "$(jq -r '.pinned.tag // false' <<<"$t")" = true ]; then
     v="$(project_release_tag "$proj" 2>/dev/null || true)"
     if [ -n "$v" ]; then
@@ -148,9 +170,159 @@ pinned() {
   fi
 }
 
+# A credential or a token goes to curl on stdin as a config file, so it is never in argv.
+secret_curl() { timeout "$PROBE_TIMEOUT" curl -fsS -g --max-time "$PROBE_TIMEOUT" -K - 2>/dev/null; }
+
+# store_get <url> [bearer-token]
+store_get() {
+  { printf 'url = "%s"\n' "$1"; [ -z "${2:-}" ] || printf 'header = "Authorization: Bearer %s"\n' "$2"; } | secret_curl
+}
+
+b64url() { basenc --base64url -w0 | tr -d '='; }
+
+# openssl signs ECDSA as DER; JOSE wants R and S as two fixed 32-byte integers. RS256 passes through.
+jose_sig() {
+  [ "$1" = ES256 ] || { cat; return; }
+  openssl asn1parse -inform DER 2>/dev/null \
+    | awk '/INTEGER/ { h = $0; sub(/.*:/, "", h); h = sprintf("%64s", h); gsub(/ /, "0", h); printf "%s", substr(h, length(h) - 63) }' \
+    | xxd -r -p
+}
+
+# jwt <RS256|ES256> <header-json> <claims-json> <pem> -> a signed JWT, or nothing. The key reaches
+# openssl through a process substitution: never argv, never a file on disk.
+jwt() {
+  local alg="$1" pem="$4" input sig
+  input="$(printf '%s' "$2" | b64url).$(printf '%s' "$3" | b64url)"
+  sig="$(printf '%s' "$input" | openssl dgst -sha256 -sign <(printf '%s' "$pem") -binary 2>/dev/null | jose_sig "$alg" | b64url)"
+  [ -n "$sig" ] && printf '%s.%s' "$input" "$sig"
+}
+
+rbw_read() { timeout "$PROBE_TIMEOUT" rbw get "$1" </dev/null 2>/dev/null; }
+
+# secret_field <json> <key>: on a pipe, because a here-string can land in a temp file.
+secret_field() { printf '%s' "$1" | jq -r --arg k "$2" '.[$k] // empty' 2>/dev/null; }
+
+play_credentials() {
+  local raw email pem now claims assertion answer
+  raw="$(rbw_read "$RBW_PLAY")" && [ -n "$raw" ] || { PLAY_WHY="no rbw entry $RBW_PLAY"; return; }
+  email="$(secret_field "$raw" client_email)"
+  pem="$(secret_field "$raw" private_key)"
+  [ -n "$email" ] && [ -n "$pem" ] || { PLAY_WHY="rbw entry $RBW_PLAY is not a service account"; return; }
+  now="$(now_epoch)"
+  claims="$(jq -nc --arg iss "$email" --argjson now "$now" \
+    '{iss: $iss, scope: "https://www.googleapis.com/auth/androidpublisher", aud: "https://oauth2.googleapis.com/token", iat: $now, exp: ($now + 600)}')"
+  assertion="$(jwt RS256 '{"alg":"RS256","typ":"JWT"}' "$claims" "$pem")"
+  [ -n "$assertion" ] || { PLAY_WHY="cannot sign with rbw entry $RBW_PLAY"; return; }
+  answer="$(printf 'url = "https://oauth2.googleapis.com/token"\ndata = "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=%s"\n' "$assertion" | secret_curl)" \
+    || { PLAY_WHY="google token request failed"; return; }
+  PLAY_TOKEN="$(printf '%s' "$answer" | jq -r '.access_token // empty' 2>/dev/null)"
+  [ -n "$PLAY_TOKEN" ] || PLAY_WHY="google token answer has no token"
+}
+
+asc_credentials() {
+  local raw kid iss pem now
+  raw="$(rbw_read "$RBW_ASC")" && [ -n "$raw" ] || { ASC_WHY="no rbw entry $RBW_ASC"; return; }
+  kid="$(secret_field "$raw" key_id)"
+  iss="$(secret_field "$raw" issuer_id)"
+  pem="$(secret_field "$raw" p8 | base64 -d 2>/dev/null)"
+  [ -n "$kid" ] && [ -n "$iss" ] && [ -n "$pem" ] || { ASC_WHY="rbw entry $RBW_ASC needs key_id, issuer_id and p8"; return; }
+  now="$(now_epoch)"
+  ASC_JWT="$(jwt ES256 "$(jq -nc --arg k "$kid" '{alg: "ES256", kid: $k, typ: "JWT"}')" \
+    "$(jq -nc --arg i "$iss" --argjson now "$now" '{iss: $i, iat: $now, exp: ($now + 900), aud: "appstoreconnect-v1"}')" "$pem")"
+  [ -n "$ASC_JWT" ] || ASC_WHY="cannot sign with rbw entry $RBW_ASC"
+}
+
+# store_credentials <targets> -> read once what these targets need. Runs in the main shell because
+# each probe is a subshell. `rbw unlocked` first: a bare `rbw get` on a locked vault raises pinentry
+# on the desktop, and the runner would do that every 15 minutes.
+store_credentials() {
+  local kinds why=""
+  kinds="$(jq -r '.target.live | objects | keys[]' <<<"$1" 2>/dev/null | sort -u)"
+  grep -qxE 'steam|play|testflight' <<<"$kinds" || return 0
+  command -v rbw >/dev/null 2>&1 || why="rbw is not installed"
+  [ -n "$why" ] || timeout "$PROBE_TIMEOUT" rbw unlocked </dev/null >/dev/null 2>&1 || why="rbw is locked"
+  if [ -n "$why" ]; then
+    STEAM_WHY="$why" PLAY_WHY="$why" ASC_WHY="$why"
+    return 0
+  fi
+  if grep -qx steam <<<"$kinds"; then
+    STEAM_KEY="$(rbw_read "$RBW_STEAM")"
+    [ -n "$STEAM_KEY" ] || STEAM_WHY="no rbw entry $RBW_STEAM"
+  fi
+  grep -qx play <<<"$kinds" && play_credentials
+  grep -qx testflight <<<"$kinds" && asc_credentials
+  return 0
+}
+
+probe_failed() { jq -nc --arg s "$1" --arg e "$2" '{value: null, source: $s, error: $e}'; }
+
+# bare_version <text> -> x.y.z when the text is only a version, optionally with "(build)"; a
+# store that keeps no tag can be compared on that much and no more.
+bare_version() { sed -nE 's/^v?([0-9]+\.[0-9]+\.[0-9]+)( \(.*\))?$/\1/p' <<<"$1"; }
+
+# live_steam: the branch's BuildID, named by the tag stage.sh writes in that build's description
+# ("<build> <tag> <sha>"). A build with no such description shows its BuildID.
+live_steam() {
+  local t="$1" app branch src betas builds bid desc v
+  app="$(jq -r '.live.steam.app' <<<"$t")"
+  branch="$(jq -r '.live.steam.branch' <<<"$t")"
+  src="steam $app/$branch"
+  [ -n "$STEAM_KEY" ] || { probe_failed "$src" "$STEAM_WHY"; return; }
+  betas="$(store_get "$STEAM_API/GetAppBetas/v1/?key=$STEAM_KEY&appid=$app")" \
+    || { probe_failed "$src" "steam GetAppBetas failed"; return; }
+  bid="$(jq -r --arg b "$branch" '.response.betas[$b].BuildID // empty' <<<"$betas" 2>/dev/null)"
+  [ -n "$bid" ] || { probe_failed "$src" "no branch $branch on the app"; return; }
+  builds="$(store_get "$STEAM_API/GetAppBuilds/v1/?key=$STEAM_KEY&appid=$app&count=$STEAM_BUILDS")" \
+    || { probe_failed "$src" "steam GetAppBuilds failed"; return; }
+  jq -e --arg b "$bid" '.response.builds | has($b)' <<<"$builds" >/dev/null 2>&1 \
+    || { probe_failed "$src" "build $bid is not in the last $STEAM_BUILDS builds"; return; }
+  desc="$(jq -r --arg b "$bid" '.response.builds[$b].Description // empty' <<<"$builds")"
+  v="$(tr ' ' '\n' <<<"$desc" | grep -E '^v?[0-9]+\.' | head -1)"
+  jq -nc --arg v "${v:-$bid}" --arg b "$bid" --arg s "$src" '{value: $v, build: $b, source: $s}'
+}
+
+# live_play: the release on the track with the highest version code that users can get. Reads the
+# edit-free tracks.releases list: an open edit could invalidate an upload running at the same time.
+live_play() {
+  local t="$1" pkg track src body rel v
+  pkg="$(jq -r '.live.play.package' <<<"$t")"
+  track="$(jq -r '.live.play.track' <<<"$t")"
+  src="play $pkg/$track"
+  [ -n "$PLAY_TOKEN" ] || { probe_failed "$src" "$PLAY_WHY"; return; }
+  body="$(store_get "$PLAY_API/applications/$pkg/tracks/$track/releases" "$PLAY_TOKEN")" \
+    || { probe_failed "$src" "play releases request failed"; return; }
+  rel="$(jq -c '[.releases[]? | select(.releaseLifecycleState == "RELEASE_LIFECYCLE_STATE_PUBLISHED")
+    | . + {code: ([.activeArtifacts[]?.versionCode | tonumber] | max)}] | max_by(.code) // empty' <<<"$body" 2>/dev/null)"
+  [ -n "$rel" ] || { probe_failed "$src" "nothing published on the track"; return; }
+  v="$(jq -r '.releaseName // empty' <<<"$rel")"
+  [ -n "$v" ] || { probe_failed "$src" "published release has no name"; return; }
+  jq -nc --arg v "$v" --arg b "$(jq -r '.code // empty' <<<"$rel")" --arg s "$src" --arg ver "$(bare_version "$v")" \
+    '{value: $v, build: $b, source: $s} + (if $ver == "" then {} else {version: $ver} end)'
+}
+
+# live_testflight: the newest processed iOS build. TestFlight keeps no tag, only the marketing
+# version and a build number.
+live_testflight() {
+  local t="$1" app src body ver build
+  app="$(jq -r '.live.testflight.app' <<<"$t")"
+  src="testflight $app"
+  [ -n "$ASC_JWT" ] || { probe_failed "$src" "$ASC_WHY"; return; }
+  body="$(store_get "$ASC_API/builds?filter[app]=$app&filter[processingState]=VALID&filter[expired]=false&filter[preReleaseVersion.platform]=IOS&sort=-uploadedDate&limit=1&include=preReleaseVersion" "$ASC_JWT")" \
+    || { probe_failed "$src" "app store connect request failed"; return; }
+  build="$(jq -r '.data[0].attributes.version // empty' <<<"$body" 2>/dev/null)"
+  ver="$(jq -r '[.included[]? | select(.type == "preReleaseVersions")][0].attributes.version // empty' <<<"$body" 2>/dev/null)"
+  [ -n "$build" ] && [ -n "$ver" ] || { probe_failed "$src" "no processed build"; return; }
+  jq -nc --arg v "$ver ($build)" --arg ver "$ver" --arg b "$build" --arg s "$src" '{value: $v, version: $ver, build: $b, source: $s}'
+}
+
 # live <target-json> -> {value, sha, source, error}
 live() {
   local t="$1" ctx ns dep ctr img url field body v
+  case "$(jq -r '.live | objects | keys[0] // empty' <<<"$t" 2>/dev/null)" in
+    steam) live_steam "$t"; return ;;
+    play) live_play "$t"; return ;;
+    testflight) live_testflight "$t"; return ;;
+  esac
   if jq -e '.live.k8s' <<<"$t" >/dev/null 2>&1; then
     ctx="$(jq -r '.live.k8s.context' <<<"$t")"
     ns="$(jq -r '.live.k8s.namespace' <<<"$t")"
@@ -268,18 +440,23 @@ telemetry() {
 row() {
   local proj="$1" t="$2" prev="$3" p l d status tel id tag drift_since="" now
   id="$(jq -r '.id' <<<"$t")"
-  p="$(pinned "$proj" "$t")"
-  l="$(live "$t")"
   d="$(deploys "$proj" "$t")"
+  p="$(pinned "$proj" "$t" "$d")"
+  l="$(live "$t")"
   tel="$(telemetry "$t")"
   tag="$(project_release_tag "$proj" 2>/dev/null || true)"
   now="$(now_epoch)"
-  local pv lv lsrc
+  local pv lv lsrc psrc lver
   pv="$(jq -r '.value // empty' <<<"$p")"
+  psrc="$(jq -r '.source // empty' <<<"$p")"
+  lver="$(jq -r '.version // empty' <<<"$l")"
   lv="$(jq -r '.value // empty' <<<"$l")"
   lsrc="$(jq -r '.source // empty' <<<"$l")"
   if [ -z "$pv" ] && [ "$(jq -r '.implicit // false' <<<"$t")" = true ]; then
     status=unreleased
+  elif [ -z "$pv" ] && [ "$psrc" = none ] && [ -n "$lv" ]; then
+    # A store channel no upload has been recorded for: live is known, there is nothing to hold it to.
+    status=released
   elif [ -z "$pv" ] || { [ "$lsrc" != none ] && [ -z "$lv" ]; }; then
     status=unknown
   elif [ "$pv" = latest ] || [ "$lv" = latest ]; then
@@ -289,6 +466,8 @@ row() {
   elif [ "$pv" = "$lv" ]; then
     status=ok
   elif [ -n "$(jq -r '.sha // empty' <<<"$l")" ] && sha_is_tag "$proj" "$t" "$lv" "$pv"; then
+    status=ok
+  elif [ -n "$lver" ] && [ "$(grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' <<<"$pv" | head -1)" = "$lver" ]; then
     status=ok
   else
     status=drift
@@ -318,6 +497,7 @@ refresh_snapshot() {
   # Read before the loop: a die inside a process substitution would only end that subshell,
   # and a full refresh would then overwrite the snapshot with zero rows.
   targets="$(targets_json "$only")" || die "cannot read the targets in $MAP"
+  store_credentials "$targets"
   tmp="$(mktemp "$STATE_DIR/.rows.XXXXXX")" || die "cannot write in $STATE_DIR"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
