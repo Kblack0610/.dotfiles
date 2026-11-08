@@ -1242,14 +1242,25 @@ budget() {
   [[ "$output" != *alt* ]] || fail "a Claude account named: $output"
 }
 
-@test "sources: room --json and pick stay Claude-only" {
+@test "sources: room --json keeps pick and accounts Claude-only and lists every source beside them" {
   src_setup
   week main 30 84
   week alt 80 84
-  rollout 1 0 84
+  rollout 96 0 84
+  budget sk-lazer key 40 100
+  budget sk-res key 5 20
+  budget team team 40 100
   run --separate-stderr "$ACCT" room --json
   assert_success
   [ "$(jq -r '[.accounts[].name] | join(",")' <<<"$output")" = "main,alt" ]
+  [ "$(jq -r .pick <<<"$output")" = main ]
+  assert_equal "$(jq -c '[.sources[] | [.name, .kind, .room.ok, .room.reason, .max_live]]' <<<"$output")" \
+    '[["codex","codex",false,"reserve",null],["lazer","litellm-team",true,"ok",null],["res","litellm-key",true,"ok",2]]'
+  jq -e 'all(.sources[]; .rank | type == "number")' <<<"$output"
+  # the sentence form stays about the accounts
+  run --separate-stderr "$ACCT" room
+  assert_success
+  refute_output --partial codex
 }
 
 @test "sources: an unknown kind, a bad line, and a name that is also an account are named, not rowed" {
