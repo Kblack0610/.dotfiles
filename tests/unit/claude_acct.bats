@@ -446,22 +446,32 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   [ "$(field alt .live <<<"$output")" = 1 ]
 }
 
-@test "live_of forks no cat per process" {
-  # A cat per /proc entry was 2.3s of every pick at load 17, inside agent-ask's 30s judge guard (ar-1007).
+@test "live_of forks no tool per process" {
+  # pick runs this loop on every agentctl-run call; a fork per /proc entry cost 2.3s of 2.5s (ar-1007).
   local p
-  for p in 1:claude 2:bash 3:claude; do
-    mkdir -p "$SANDBOX/proc/${p%%:*}"
-    echo "${p#*:}" > "$SANDBOX/proc/${p%%:*}/comm"
-    : > "$SANDBOX/proc/${p%%:*}/environ"
+  for p in 1:claude:"" 2:bash:"" 3:claude:"$ALT" 4:claude:gw; do
+    IFS=: read -r pid comm dir <<<"$p"
+    mkdir -p "$SANDBOX/proc/$pid"
+    echo "$comm" > "$SANDBOX/proc/$pid/comm"
+    case "$dir" in
+      "") printf 'HOME=/h\0' ;;
+      gw) printf 'ANTHROPIC_BASE_URL=https://llm.example\0' ;;
+      *) printf 'A=1\0CLAUDE_CONFIG_DIR=%s/\0CLAUDE_CONFIG_DIR=/not-first\0' "$dir" ;;
+    esac > "$SANDBOX/proc/$pid/environ"
   done
+  mkdir -p "$SANDBOX/proc/5"   # a process gone between the glob and the read: no comm, no environ
+  echo claude > "$SANDBOX/proc/5/comm"; rm "$SANDBOX/proc/5/comm"
   mkdir -p "$SANDBOX/shim"
-  printf '#!/bin/sh\necho "$@" >> "%s/cat.log"\nexec /bin/cat "$@"\n' "$SANDBOX" > "$SANDBOX/shim/cat"
-  chmod +x "$SANDBOX/shim/cat"
+  for p in cat head tr sed awk grep; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s/fork.log"\nexec /usr/bin/env -i PATH=/usr/bin:/bin %s "$@"\n' "$p" "$SANDBOX" "$p" > "$SANDBOX/shim/$p"
+    chmod +x "$SANDBOX/shim/$p"
+  done
   src
-  PATH="$SANDBOX/shim:$PATH" run live_of
+  PATH="$SANDBOX/shim:$PATH" run --separate-stderr live_of
   assert_success
-  [ "$(grep -c '^@$' <<<"$output")" = 2 ]
-  [ ! -e "$SANDBOX/cat.log" ] || { cat "$SANDBOX/cat.log"; false; }
+  [ -z "$stderr" ]
+  [ "$(sort <<<"$output" | paste -sd' ')" = "@ @$ALT" ]
+  [ ! -e "$SANDBOX/fork.log" ] || { cat "$SANDBOX/fork.log"; false; }
 }
 
 @test "textfile: publishes each account, marks a failed read, and leaves no temp file" {
