@@ -133,10 +133,6 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 # The lowest model-lane lane a started item runs on: every dispatched session lands its own PR,
 # and the human approved Sonnet for that (2026-11-05), not Haiku.
 : "${DISPATCH_LANE_FLOOR:=sonnet}"
-# Spill to Lazer: when no account has room, a pass may start a Sonnet-lane item on the claude-reserve
-# key instead (SPILL_HARNESS); the human approved it on by default, 2 live, under 80% of the pool (2026-11-06).
-: "${DISPATCH_SPILL_MAX_LIVE:=2}"   # spill sessions live at once; 0 turns spilling off
-: "${DISPATCH_SPILL_POOL_PCT:=80}"   # percent of the Lazer pool's budget (lazer-spend) at which spilling stops
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
 AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finished ok (its finished_ok)
@@ -152,10 +148,8 @@ HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which 
 # unattended only through its own lanes (policy.md "Tier"): a red item and a tier-3 cleanup row merge
 # behind the red-fix gate (t3_cleanup_picks), every other row goes to an open PR as a night item (fill_night).
 UNATTENDED_TIER_CEILING=2
-# The harness a spill runs on: claude-lazer on the claude-reserve key, never the eval key (harnesses.json).
-SPILL_HARNESS=lazer-reserve
-SPILL_REFUSED="$DIR/spill-refused"   # <day> TAB <slug> TAB <why>: an item that may not spill, for the rest of the day
-NO_SPILL=()   # this pass's "<slug> (<why>)" for items that may not spill; NO_ROOM, the account reason
+LANE_CACHE="$DIR/lane-cache"   # <day> TAB <slug> TAB <verdict json>: the verdict of an item no source could take, for the rest of the day
+NO_ROUTE=()   # this pass's "<slug> (<why>)" for items no source with room could take; NO_ROOM, the account reason
 
 say() { printf 'fleet-dispatch: %s\n' "$*" >&2; }
 logline() { mkdir -p "$DIR"; printf -- '- %s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$LOG"; }
@@ -732,45 +726,12 @@ acct_room() {
   return 1
 }
 
-# --- spill to Lazer: a run start past every account's cap -----------------------------------
-# When the only gate shut is account room, a pass may still start a queue item, on SPILL_HARNESS: a
-# Sonnet-lane item within the unattended tier ceiling, under DISPATCH_SPILL_MAX_LIVE live spills, with
-# the Lazer pool under DISPATCH_SPILL_POOL_PCT and budget left on the key. Load, idle, holds and the
-# rest still hold it. A spill is a run session: it holds run units like any other.
-
-# spill_live -> how many items on SPILL_HARNESS have a live session.
-spill_live() {
-  local server sess agent host n=0 _s _o _p _a _st _w _t _i
-  while IFS=$'\x1f' read -r _s server sess _o _p _a _st _w agent _t _i host; do
-    [ "$agent" = "$SPILL_HARNESS" ] && session_live "$sess" "$server" "$host" && n=$((n + 1))
-  done < <(item_sessions)
-  echo "$n"
-}
-
-# spill_shut -> why no spill may start, from this machine's own counts; nothing when one may. The
-# cap counts this pass's spills (SPILLED) on top of the live ones cmd_run read (SPILL_LIVE). A map
-# without the harness's own key_file shuts it: the fallback is the gateway's key, the eval one.
-spill_shut() {
-  [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { echo "off (DISPATCH_SANDBOX_PROFILE is set, and a Lazer start cannot hold the sandbox)"; return; }
-  [ "${DISPATCH_SPILL_MAX_LIVE:-0}" -gt 0 ] 2>/dev/null || { echo "off (DISPATCH_SPILL_MAX_LIVE=0)"; return; }
-  jq -e --arg h "$SPILL_HARNESS" '.harnesses[$h].key_file' "$HARNESSES" >/dev/null 2>&1 ||
-    { echo "unset: $HARNESSES has no $SPILL_HARNESS with its own key_file"; return; }
-  local live=$(( ${SPILL_LIVE:-$(spill_live)} + ${SPILLED:-0} ))
-  [ "$live" -lt "$DISPATCH_SPILL_MAX_LIVE" ] || echo "full: $live of DISPATCH_SPILL_MAX_LIVE=$DISPATCH_SPILL_MAX_LIVE spill sessions live"
-}
-
-# spill_note <spill_shut or spill_money reason> -> the words an account stop carries for it: none when
-# spilling is off, so an account stop reads as it did before spilling was a thing.
-spill_note() { case "$1" in '' | off*) ;; *) printf ' (spill to Lazer %s)' "$1" ;; esac; }
-
-# spill_money -> why the gateway says no spill may start; nothing when the Lazer pool is under
-# DISPATCH_SPILL_POOL_PCT of its budget and the spill key has budget left. Unreadable is shut.
-spill_money() {
-  local pct left
-  pct=$(lazer-spend --json 2>/dev/null | jq -e '.spend / .max_budget * 100 | floor' 2>/dev/null) ||
-    { echo "shut: the Lazer pool's spend is unreadable"; return; }
-  [ "$pct" -lt "$DISPATCH_SPILL_POOL_PCT" ] || { echo "shut: the Lazer pool is at $pct%, the line is DISPATCH_SPILL_POOL_PCT=$DISPATCH_SPILL_POOL_PCT%"; return; }
-  left=$(claude-acct room --source "$(harness_source "$SPILL_HARNESS")" 2>&1) || echo "shut: the $SPILL_HARNESS key has no room: $left"
+# other_room -> rc 0 when a source some harness in the map spends (its `source`) has room, read from
+# the sources claude-acct room --json carries (ACCT_ROWS, which acct_room read).
+other_room() {
+  [ -r "$HARNESSES" ] && [ -n "${ACCT_ROWS:-}" ] || return 1
+  jq -e --slurpfile map "$HARNESSES" '[$map[0].harnesses[]? | .source // empty] as $s
+    | any(.sources[]?; .room.ok == true and (.name as $n | any($s[]; . == $n)))' <<<"$ACCT_ROWS" >/dev/null 2>&1
 }
 
 # item_tier <item json> -> the item's tier: what its title or task says (row_tier), else its `tier<N>`
@@ -799,13 +760,14 @@ cmd_item_tier() {
   item_tier "$it"
 }
 
-# spill_cached <slug> -> why the item may not spill, when a pass found that today; spill_refused
-# <slug> <why> records it, so later passes do not ask model-lane again for every Opus item.
-spill_cached() { awk -F'\t' -v d="$(date +%F)" -v s="$1" '$1 == d && $2 == s { print $3; exit }' "$SPILL_REFUSED" 2>/dev/null; }
-spill_refused() {
+# lane_cached <slug> -> the verdict a pass recorded today for an item no source could take;
+# lane_cache <slug> <verdict> records it, so later passes do not ask model-lane again for every
+# Opus item while only other sources have room. Only a skip reads it: a start classifies afresh.
+lane_cached() { awk -F'\t' -v d="$(date +%F)" -v s="$1" '$1 == d && $2 == s { print $3; exit }' "$LANE_CACHE" 2>/dev/null; }
+lane_cache() {
   local d; d=$(date +%F); mkdir -p "$DIR"
-  { awk -F'\t' -v d="$d" '$1 == d' "$SPILL_REFUSED" 2>/dev/null; printf '%s\t%s\t%s\n' "$d" "$1" "$2"; } > "$SPILL_REFUSED.tmp" &&
-    mv -f "$SPILL_REFUSED.tmp" "$SPILL_REFUSED"
+  { awk -F'\t' -v d="$d" -v s="$1" '$1 == d && $2 != s' "$LANE_CACHE" 2>/dev/null; printf '%s\t%s\t%s\n' "$d" "$1" "$(jq -c . <<<"$2")"; } > "$LANE_CACHE.tmp" &&
+    mv -f "$LANE_CACHE.tmp" "$LANE_CACHE"
 }
 
 # live_hand -> one line per live queue item a run slot does not hold: started by hand, redispatched
@@ -1275,6 +1237,7 @@ gateway_launch() {
   fi
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")
+  ! headless "$harness" || [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: $harness runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
   case "$(harness_launcher "$harness")" in
     claude-lazer)
       launch_mode "$(jq -r 'if .mode == "plan" then "plan" else "bypassPermissions" end' <<<"$it")"
@@ -1283,7 +1246,6 @@ gateway_launch() {
       cmd="$cmd ANTHROPIC_CUSTOM_HEADERS=$(printf '%q' "x-litellm-tags: queue:$slug") claude-lazer --model $(printf '%q' "$id") --session-id $sid $flags $(printf '%q' "$brief")"
       ;;
     opencode)
-      [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: opencode runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
       # Standalone: the background service would not see this run's env or config. Nothing else
       # can name the run for the outcome join, so the id is chosen here.
       sid="ses_eval$(date +%s%N)"
@@ -1292,7 +1254,6 @@ gateway_launch() {
       cmd="$cmd --title $(printf '%q' "$slug") --model $(printf '%q' "$id") --agent build $(printf '%q' "$brief") </dev/null"
       ;;
     codex)
-      [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: codex runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
       # The ChatGPT login bills the plan; an API key in the pane's env would bill per token instead.
       # agent-codex claims the thread id on the item when codex names it.
       cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") env -u LITELLM_MASTER_KEY -u OPENAI_API_KEY -u CODEX_API_KEY"
@@ -1332,8 +1293,9 @@ cloud_routed() {
     jq -e '((.agent // "claude") | . == "claude" or . == "claude-cloud") and ((.model // "") | . == "" or . == "cloud") and ((" " + (.tags // "") + " ") | contains(" cloud-ok "))' >/dev/null 2>&1
 }
 
-# headless <harness> -- the harness runs to its end with no slash commands, hooks or human at the pane.
-headless() { case "$(harness_launcher "$1")" in opencode|codex) return 0 ;; esac; return 1; }
+# headless <harness> -- the harness runs to its end with no slash commands, hooks or human at the pane:
+# its `headless` in the map.
+headless() { jq -e --arg h "$1" '.harnesses[$h].headless == true' "$HARNESSES" >/dev/null 2>&1; }
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on
@@ -1348,7 +1310,7 @@ headless() { case "$(harness_launcher "$1")" in opencode|codex) return 0 ;; esac
 #                           queue and ask writes go to the inventory's fleet_state_host (AGENT_STATE_HOST).
 #   --harness NAME          with --item: run it on claude or a gateway harness in harnesses.json, not
 #                           the item's `agent:`: claude-lazer and opencode on the eval key, codex on the ChatGPT plan, lazer-reserve
-#                           (a run pass's spill) on the claude-reserve key.
+#                           on the claude-reserve key (where a run pass routes a Sonnet-lane item, start_item).
 #   --brief FILE --row KEY  claim the open row (an id in any case), promote it into a queue item with the brief as
 #                           its task, and start that item as --item does.
 #   --resume ID             a new session --session NAME in --cwd DIR running claude --resume.
@@ -1521,8 +1483,8 @@ cmd_start() {
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
     if [ "$harness" = claude ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model"
-    # A run pass's spill is not an experiment: it logs under the lane model-lane picked, with its harness.
-    elif [ "$origin" = run ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model" "$harness"
+    # A routed start is not an experiment: it logs under the lane model-lane picked, with its harness.
+    elif [ -n "$verdict" ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model" "$harness"
     elif [ "$harness" = claude-cloud ]; then :   # not a pairing the human picked, and no model of ours ran
     else eval_log "$item" "$(item_headline "$it")" "$harness" "$model"
     fi
@@ -2033,11 +1995,11 @@ start_items() {
     fi
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
-  # No account had room and nothing it tried may spill: held, so BLOCKED, naming what it tried.
-  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_SPILL[@]}" -gt 0 ]; then
-    why=$(printf '%s, ' "${NO_SPILL[@]:0:3}")
-    [ "${#NO_SPILL[@]}" -le 3 ] || why="$why$(( ${#NO_SPILL[@]} - 3 )) more, "
-    settle BLOCKED "$NO_ROOM, and no queue item may spill to Lazer: ${why%, }"
+  # No item it tried had a source with room it may run on: held, so BLOCKED, naming what it tried.
+  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_ROUTE[@]}" -gt 0 ]; then
+    why=$(printf '%s, ' "${NO_ROUTE[@]:0:3}")
+    [ "${#NO_ROUTE[@]}" -le 3 ] || why="$why$(( ${#NO_ROUTE[@]} - 3 )) more, "
+    settle BLOCKED "${NO_ROOM:+$NO_ROOM, and }no queue item has a source with room it may run on: ${why%, }"
     return 0
   fi
   # Every item this pass picked was started by someone else: the work moved, nothing failed.
@@ -2057,12 +2019,10 @@ start_items() {
 held_outcome() { case "$1" in "held (agent-hold"*) echo NOOP ;; *) echo BLOCKED ;; esac; }
 
 # What a start takes out of runnable, as a jq condition: next_items and stats' urgent/high counts read it.
-TAKEN_JQ='(.waits | not) and (.agent // "claude") == "claude"'
+TAKEN_JQ='(.waits | not)'
 
 # next_items -> the queued items a pass may try, in agent-queue's order (red, priority, project rank, cleanup, age),
-# one JSON object a line. An item whose `agent:` is a gateway harness is an eval run the human paired,
-# so only a hand or a batch starts it; a pass moves a claude item onto Lazer only as a spill, when no
-# account has room (start_item).
+# one JSON object a line, whatever harness each runs on: start_item routes it to a source with room.
 next_items() {
   runnable 2>/dev/null | jq -c "select($TAKEN_JQ)" 2>/dev/null
   return 0
@@ -2357,20 +2317,85 @@ eval_log() {
   agent-queue set "$1" "lane_run=$id" >/dev/null || logline "could not stamp lane_run=$id on queue item $1"
 }
 
-# start_item <item json> -- past the gates: start it, and publish what happened. rc 3 when no
-# account has room and no spill may start, which ends the pass: the next item would find none
-# either. rc 4 when another start (a hand start, say) took the item first: that is not a failed
-# launch, and the pass goes on. rc 5 when no account has room and this item may not spill (an Opus
-# lane, a tier past the ceiling): the pass goes on to the next item, which may.
+# item_pinned <item json> -- rc 0 when the human pinned the item to a harness: an `agent:` other than
+# claude (or claude-cloud, which cloud_routed reads) that no route recorded (`routed:`, start_item), so a
+# requeued routed item routes again.
+item_pinned() {
+  jq -e '(.agent // "claude") as $a | ($a != "claude" and $a != "claude-cloud" and $a != (.routed // ""))' <<<"$1" >/dev/null 2>&1
+}
+
+# route <item json> <verdict json, or empty> -- the candidate a run start takes: ROUTE_HARNESS and
+# ROUTE_MODEL (empty for claude, which runs the verdict's model), or rc 1 with every refusal in
+# ROUTE_WHY. A pinned item's harness is its one candidate; an item with no verdict candidates runs on
+# claude. Candidates go in fit order and, within a fit, by their source's rank, lowest first (use it or
+# lose it): claude's is the rank of the account acct_room picked (its rc in the caller's ACCT_RC), every
+# other's the rank of its source in ACCT_ROWS. Claude needs an account with room. Another harness needs
+# its source's room, this machine (a fleet worker and a sandbox profile run claude only), an item it can
+# hold (a headless one takes no plan item) and, when routed rather than pinned, a tier within the
+# unattended ceiling: a red goes past it, only to a harness that can run the red-fix gate.
+route() {
+  local it="$1" verdict="$2" cands h m src tier why=()
+  ROUTE_HARNESS='' ROUTE_MODEL='' ROUTE_WHY=''
+  if item_pinned "$it"; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
+  else cands=$(jq -c '.candidates // empty | select(length > 0)' <<<"${verdict:-null}" 2>/dev/null); fi
+  [ -n "$cands" ] || cands='[{"harness": "claude", "model": "", "fit": 0}]'
+  tier=$(item_tier "$it")
+  while read -r h m; do
+    if [ "$h" = claude ]; then
+      [ "${ACCT_RC:-1}" = 0 ] && { ROUTE_HARNESS=claude; return 0; }
+      why+=("claude: no account has room"); continue
+    fi
+    src=$(harness_source "$h")
+    if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
+    elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
+    elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
+    elif headless "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless, and this is a plan item")
+    elif ! item_pinned "$it" && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it"; then why+=("$h: tier $tier is past the unattended ceiling")
+    elif ! item_pinned "$it" && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
+    elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
+      why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room"' <<<"$ACCT_ROWS")")
+    else ROUTE_HARNESS=$h ROUTE_MODEL=$m; return 0
+    fi
+  done < <(jq -r --argjson c "$cands" --arg d "${ACCT_DIR:-}" --slurpfile map "$HARNESSES" '. as $r | ($map[0].harnesses // {}) as $hs
+      | $c | map(.rank = (if .harness == "claude" then ([$r.accounts[]? | select(.dir == $d) | .rank] | first)
+          else ($hs[.harness].source // "") as $s | ([$r.sources[]? | select(.name == $s) | .rank] | first) end // 1e9))
+      | sort_by(.fit, .rank)[] | "\(.harness) \(.model)"' <<<"$ACCT_ROWS" 2>/dev/null ||
+    jq -r '.[] | select(.harness == "claude") | "claude "' <<<"$cands")
+  ROUTE_WHY=$(printf '%s; ' "${why[@]}"); ROUTE_WHY=${ROUTE_WHY%; }
+  return 1
+}
+
+# start_item <item json> -- past the gates: route it (route) and start it, and publish what happened.
+# rc 3 when usage cannot be read, which ends the pass: the next item could not be routed either. rc 4
+# when another start (a hand start, say) took the item first: that is not a failed launch, and the
+# pass goes on. rc 5 when no candidate it may run on has room (an Opus item while only Codex has room,
+# a pinned harness whose source is spent): the pass goes on to the next item, which may.
 start_item() {
-  local it="$1" slug why rc verdict='' floor='' keep=0 harness=claude no spill
-  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE
+  local it="$1" slug rc verdict='' cached floor='' keep=0 harness=claude
+  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE ACCT_RC=0
   slug=$(jq -r .slug <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
   # Asked again here, as launch does: the gate's answer may be minutes old. ACCT_WHY names the
   # closest account and why its verdict refuses, as in gate. ACCT_ROWS is local, so a later gate
   # asks afresh after this start.
-  if acct_room; then
+  acct_room || ACCT_RC=$?
+  [ "$ACCT_RC" != 2 ] || { settle BLOCKED "queue item $slug waits: account usage unreadable ($ACCT_WHY)"; return 3; }
+  # Today's verdict for an item no source could take skips it without asking model-lane again; a
+  # start always classifies afresh, and cmd_start logs that verdict, so model-lane is asked once.
+  cached=$(lane_cached "$slug")
+  if [ -n "$cached" ] && ! route "$it" "$cached"; then :
+  else
+    item_pinned "$it" || cloud_routed "$slug" || verdict=$(lane_pick "$slug" claude)
+    # A broken router is not a fact about the item: the next pass asks again.
+    route "$it" "$verdict" || { [ -z "$verdict" ] || lane_cache "$slug" "$verdict"; }
+  fi
+  if [ -z "$ROUTE_HARNESS" ]; then
+    say "queue item $slug has no source with room it may run on: $ROUTE_WHY"
+    NO_ROUTE+=("$slug ($ROUTE_WHY)"); [ "$ACCT_RC" = 0 ] || NO_ROOM=$ACCT_WHY
+    return 5
+  fi
+  harness=$ROUTE_HARNESS
+  if [ "$harness" = claude ]; then
     # A floor start leaves the hold standing (keep, settle): a red-floor one went past the machine
     # gates, and a run-floor one past an account over its pace has no room either.
     if red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"; keep=1
@@ -2379,47 +2404,19 @@ start_item() {
       floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
       keep=$ACCT_PAST_PACE
     fi
-    # cmd_start picks the model through model-lane and logs the pick (lane_pick, lane_log).
-    START_ORIGIN=run RUN_ACCOUNT=$ACCT_DIR cmd_start --item "$slug" ${PLACE_HOST:+--host "$PLACE_HOST"}
+    START_ORIGIN=run START_VERDICT=$verdict RUN_ACCOUNT=$ACCT_DIR cmd_start --item "$slug" ${PLACE_HOST:+--host "$PLACE_HOST"}
   else
-    why=$ACCT_WHY
-    spill=$(spill_shut)
-    [ -z "$spill" ] || { settle BLOCKED "queue item $slug waits: $why$(spill_note "$spill")"; return 3; }
-    # A spill runs on this machine, never on a worker: an item placed on one waits for account room.
-    if [ -n "${PLACE_HOST:-}" ]; then no="it was placed on $PLACE_HOST, and a spill runs here"
-    else no=$(spill_cached "$slug"); fi
-    if [ -z "$no" ]; then
-      # A red spills whatever its tier: it merges behind the red-fix gate on any harness, and a red
-      # left waiting for account room keeps the fleet broken. Every other tier-3 item waits, an
-      # untiered one on a harness project included (item_tier).
-      no=$(item_tier "$it")
-      if [ "$no" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it"; then no="tier $no is past the unattended ceiling"; else no=''; fi
-      if [ -z "$no" ]; then
-        verdict=$(lane_pick "$slug" claude)
-        case "$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)" in
-          sonnet | haiku) ;;
-          '') no="model-lane gave no verdict" ;;
-          *) no="model-lane puts it on $(jq -r .dispatch_model <<<"$verdict")" ;;
-        esac
-      fi
-      # A broken router is not a fact about the item: the next pass asks again.
-      [ -z "$verdict" ] || [ -z "$no" ] || spill_refused "$slug" "$no"
-    fi
-    if [ -n "$no" ]; then
-      say "queue item $slug may not spill to Lazer: $no"
-      NO_SPILL+=("$slug ($no)"); NO_ROOM=$why
-      return 5
-    fi
-    spill=$(spill_money)
-    [ -z "$spill" ] || { settle BLOCKED "queue item $slug waits: $why$(spill_note "$spill")"; return 3; }
-    harness=$SPILL_HARNESS floor=" on Lazer ($SPILL_HARNESS, sonnet), spilled: $why"
-    # The verdict that let it spill is the one cmd_start logs, so model-lane is asked once.
-    START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model sonnet
+    if item_pinned "$it"; then floor=" on $harness ($ROUTE_MODEL), the harness it is pinned to"
+    else floor=" on $harness ($ROUTE_MODEL), routed by model-lane"; fi
+    # A start past the account hold leaves it standing, like a floor start.
+    [ "$ACCT_RC" = 0 ] || { floor="$floor while $ACCT_WHY"; keep=1; }
+    START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL"
   fi
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
-    # A spill goes past the account hold without ending it, like a floor start.
-    [ "$harness" = claude ] || { SPILLED=$(( ${SPILLED:-0} + 1 )); keep=1; }
+    # The route is recorded beside the `agent:` cmd_start set, so a requeued item routes again.
+    [ "$harness" = claude ] || item_pinned "$it" || agent-queue set "$slug" "routed=$harness" >/dev/null ||
+      say "could not record routed=$harness on queue item $slug"
     [ "$keep" = 0 ] || FLOOR_HELD=1
     settle WORKED "started queue item $slug${PLACE_HOST:+ on $PLACE_HOST}$floor"
   elif [ "$(item_state "$slug")" != queued ]; then
@@ -2525,8 +2522,8 @@ cmd_starved() {
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
   [ -n "$stopped$items$board$low" ] || { [ -z "$dead" ]; return; }
   # Held by load only when every closed gate is a load gate; an account with no room still starves,
-  # and gate leaves that one out while a spill may start, so room is read here from the verdict gate
-  # reads too (ACCT_ROWS, asked once for both).
+  # and gate leaves that one out while another source has room, so room is read here from the verdict
+  # gate reads too (ACCT_ROWS, asked once for both).
   # Idle is the last pass's sample, as old as the window this verdict reads: a reader never samples.
   local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0 IDLE_CACHED=$(( DISPATCH_STARVED_MIN * 60 ))
   acct_room || room=$?
@@ -2960,9 +2957,9 @@ gate() {
   acct_room; rc=$?
   case $rc in
     0) ;;
-    # No room is not a stop while a spill may start (start_item); unreadable usage always is.
-    1) local spill; spill=$(spill_shut); [ -n "$spill" ] || spill=$(spill_money)
-       [ -z "$spill" ] || why+=("$ACCT_WHY$(spill_note "$spill")") ;;
+    # No account room is not a stop while another source a harness spends has room (start_item
+    # routes there); unreadable usage always is.
+    1) other_room || why+=("$ACCT_WHY, and no other source has room") ;;
     *) why+=("account usage unreadable ($ACCT_WHY)") ;;
   esac
   local red=0; red_floor_open && red=1
@@ -3043,8 +3040,8 @@ cmd_run() {
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
-  QUEUE_HELD='' STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 RUN_GATED=0 FLOOR_HELD=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= SPILLED=0 NO_ROOM=
-  NO_SPILL=()
+  QUEUE_HELD='' STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 RUN_GATED=0 FLOOR_HELD=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
+  NO_ROUTE=()
   [ "$DRY" = 1 ] || triage_pass
   # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and
   # agent-queue holds a night item to its window. A dispatch hold stops even this. A judge that
@@ -3059,7 +3056,6 @@ cmd_run() {
   probe_hosts "$runs"
   RED_LIVE=$(live_reds | grep -c . || true)
   BUSY_PROJECTS=$(busy_projects)
-  SPILL_LIVE=$(spill_live)
   UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
   demand_pass "$runs"
   # Room is this machine's units plus every placed worker's.
