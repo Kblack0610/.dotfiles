@@ -530,8 +530,10 @@ rowj() { jq -cn "{session_id: \"a\", target: \"lab/game-agent-1:1\", project: \"
 
 iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 
-# A gh stand-in: pr view and run list served from $GHD, every call logged. agentctl-run is
-# stubbed too, so a test can prove the count never launches a model.
+# A gh stand-in: pr view served from $GHD, every call logged, and a run ledger stand-in serving
+# $GHD/runs-<branch>.json (gh run list field names) as `schedules-sync runs` rows: exit 3 while
+# $GHD/unsynced exists, 4 while $GHD/later does. agentctl-run is stubbed too, so a test can prove
+# the count never launches a model.
 docs_prs() { local n; for n in "$@"; do printf 'docs/a.md\n' > "$GHD/files-$n"; done; }
 drop_sections() { jq -c 'del(.sections)' "$FLEET_BENCH_DIR/pr-ci.jsonl" > "$SANDBOX/c" && mv "$SANDBOX/c" "$FLEET_BENCH_DIR/pr-ci.jsonl"; }
 stub_review() {
@@ -542,7 +544,6 @@ echo "gh $*" >> "$D/calls.log"
 [ -e "$D/fail" ] && exit 1
 case "$1 $2" in
   "pr view") cat "$D/pr-$3.json" ;;
-  "run list") cat "$D/runs-$6.json" ;;
   "pr list") cat "$D/repo-prs.json" ;;
   "api --paginate") case $3 in
       repos/o/r/commits/*) n=${3#repos/o/r/commits/sha}; cat "$D/files-${n%%\?*}" ;;
@@ -554,7 +555,17 @@ GH
   cat >> "$SANDBOX/bin/agentctl-run" <<'AR'
 echo "agentctl-run $*" >> "$D/reviewer.log"
 AR
-  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/agentctl-run"
+  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
+  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
+  cat >> "$SCHEDULES_SYNC" <<'SS'
+echo "schedules-sync $*" >> "$D/calls.log"
+[ -e "$D/unsynced" ] && { echo "$2 is not in the run ledger" >&2; exit 3; }
+[ -e "$D/later" ] && { echo "$2 not yet past $6" >&2; exit 4; }
+[ "$1 $3 $5" = "runs --branch --until" ] || exit 2
+jq -c 'map({workflow: .workflowName, sha: .headSha, status: "completed", conclusion,
+  created_at: .createdAt, started_at: .startedAt, ended_at: .updatedAt})' "$D/runs-$4.json"
+SS
+  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/agentctl-run" "$SCHEDULES_SYNC"
   mkdir -p "$HOME/.agent/outcomes/game"
 }
 
@@ -651,6 +662,28 @@ gate_runs_of() {
        $r + {workflowName: "Tests", conclusion: "success", headSha: "a"},
        $r + {workflowName: "Tests", conclusion: "success", headSha: "b"},
        $r + {workflowName: "Lint", conclusion: "failure", headSha: "b"}]' > "$GHD/runs-b$1.json"
+}
+
+@test "review: a repo the run ledger does not sync is left out with a count, and one merged after its last sync waits" {
+  stub_review
+  merged_pr s1 7 35
+  touch "$GHD/unsynced"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  assert_output --partial '1 PRs left out: their repos are not in the run ledger (day-log-ci)'
+  [ ! -s "$FLEET_BENCH_DIR/pr-ci.jsonl" ]
+  # the ledger is asked up to the merge, so a run that ends just before it is in the count
+  grep -q -- "^schedules-sync runs o/r --branch b7 --until $(iso $((T0 - 3600)))$" "$GHD/calls.log"
+  rm "$GHD/unsynced"; touch "$GHD/later"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  assert_output --partial '1 PRs merged after the run ledger'"'"'s last sync, left for the next review'
+  [ ! -s "$FLEET_BENCH_DIR/pr-ci.jsonl" ]
+  rm "$GHD/later"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -sc 'map([.number, .ci_runs])' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[[7,1]]'
 }
 
 @test "review: a repo with sections gets each PR's sections and gate runs, a path in no root is other" {
@@ -1841,25 +1874,30 @@ red_item() {
   assert_line 'red_fix_min_p50=?'
 }
 
-# hold_setup: the queue and watch stubs, plus a gh serving raw GitHub JSON through the real --jq
+# hold_setup: the queue and watch stubs, a gh serving raw GitHub JSON through the real --jq, and
+# a run ledger stand-in serving $GHD/runs (actions/runs rows on main) as `schedules-sync runs` rows
 hold_setup() {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"; printf '[]' > "$GHD/runs"
-  export FLEET_MAIN_TTL=0 # each test's runs decide
+  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
+  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
+  cat >> "$SCHEDULES_SYNC" <<'SS'
+[ -e "$D/down" ] && exit 1
+[ "$1 $3 $4" = "runs --branch main" ] || exit 2
+jq -c 'map({id, event, workflow: .name, status, conclusion, sha: .head_sha, created_at})' "$D/runs"
+SS
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
   cat >> "$SANDBOX/bin/gh" <<'GH'
 [ -e "$D/down" ] && exit 1
 case "$*" in
-  *actions/runs*) for a in "$@"; do [ "${p:-}" = --jq ] && q=$a; p=$a; done
-    jq "$q" <<<"{\"workflow_runs\":$(cat "$D/runs")}" ;;
   "run view "*) cat "$D/log.$3" 2>/dev/null ;;
   *repos/o/r/commits/*) s=$*; s=${s##*commits/}; cat "$D/files.${s%%\?*}" ;;
   *repos/o/r/contents/*) f=$*; f=${f##*/contents/}; f=${f%%\?*}; cat "$D/${f##*/}" ;;
   *) exit 1 ;;
 esac
 GH
-  chmod +x "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/gh" "$SCHEDULES_SYNC"
 }
 
 # ci <id> <conclusion> <sha> <offset>: one run of main, appended

@@ -8,7 +8,19 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
-  export FLEET_MAIN_TTL=0 # each test's gh answers decide; the reuse test sets its own
+  export FLEET_MAIN_TTL=0 # each test's gh answers decide
+  # The run ledger stand-in: `runs <repo>` answers every $LEDGER_DIR/<branch>.json (see ledger),
+  # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
+  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" LEDGER_DIR="$SANDBOX/ledger"
+  mkdir -p "$LEDGER_DIR"
+  cat > "$SCHEDULES_SYNC" <<'SS'
+#!/usr/bin/env bash
+echo "$*" >> "$LEDGER_DIR/calls"
+[ "$1" = runs ] && [ $# -eq 2 ] || exit 2
+[ ! -e "$LEDGER_DIR/FAIL" ] || { echo "$2 last synced 2026-10-25T09:00:00Z, older than 30m" >&2; exit 1; }
+cat "$LEDGER_DIR"/*.json 2>/dev/null | jq -cs 'add // []'
+SS
+  chmod +x "$SCHEDULES_SYNC"
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-sessions"
 }
@@ -176,8 +188,11 @@ b() { session_bucket "$@"; }
 
 # r <workflow> <conclusion> <sha> <minute>: one main_runs row
 r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headSha":"%s","createdAt":"2026-10-25T10:%02d:00Z"}' "$1" "$2" "$3" "$4"; }
-# page <rows>: those rows as GitHub's actions/runs answer, for a stub gh to serve
-page() { jq -c '{workflow_runs: map({name: .workflowName, status, conclusion, head_sha: .headSha, created_at: .createdAt})}' <<<"$1"; }
+# ledger <branch> <main_runs rows>: those rows as `schedules-sync runs` answers them on that branch
+ledger() {
+  jq -c --arg b "$1" 'to_entries | map(.value as $r | {id: (.key + 1), event: ($r.event // "push"), workflow: $r.workflowName, branch: $b,
+    status: $r.status, conclusion: $r.conclusion, sha: $r.headSha, created_at: $r.createdAt})' <<<"$2" > "$LEDGER_DIR/${1//\//_}.json"
+}
 
 @test "main_state names each workflow whose latest decided run failed, with its last green" {
   run main_state <<<"[$(r Tests success g1 1),$(r Tests failure r1 2),$(r Checks success c1 3)]"
@@ -744,7 +759,7 @@ landed_fixture() {
   oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$oid" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$oid" > "$SANDBOX/bin/gh"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench" # no estimates unless a test writes one
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
@@ -831,7 +846,7 @@ SH
   local oid old="1111111111111111111111111111111111111111"
   oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   # gh lists newest first: #1500 went out on another head branch, #1490 is an older closed PR of this branch's name
-  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "all-sources-p5-scoring\\t1500\\tMERGED\\tPASS\\t%s\\nfeat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$oid" "$old" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\nprintf "all-sources-p5-scoring\\t1500\\tMERGED\\tPASS\\t%s\\nfeat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$oid" "$old" > "$SANDBOX/bin/gh"
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
@@ -839,7 +854,7 @@ SH
   [ "$(jq -r .fact <<<"$output")" = 'LANDED PR #1500 merged, tree clean, next phase: Phase 2: rollout @feat/x' ]
 
   # with no PR holding HEAD, the closed one of the same name is old: it is not the blocker
-  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$old" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\nprintf "feat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$old" > "$SANDBOX/bin/gh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [[ "$(jq -r .fact <<<"$output")" != *'closed without merging'* ]]
@@ -898,8 +913,8 @@ SH
   git -C "$SANDBOX/wt" checkout -q -b feat/x "$red"
   phases_plan '- [ ] Phase 1: fix main'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  runs="[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
-  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { jq -c "${@: -1}" <<<%q; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$(page "$runs")" "$red" > "$SANDBOX/bin/gh"
+  ledger main "[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
+  printf '#!/usr/bin/env bash\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$red" > "$SANDBOX/bin/gh"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
 
@@ -935,9 +950,9 @@ SH
   [ "$(jq -r '.main[0].fact' "$SANDBOX/state.json")" = "NIGHTLY origin red: Tests @${red:0:8} (#875)" ]
 
   # an unreadable CI is reported, never read as green
-  printf '#!/usr/bin/env bash\n[ "$1" = api ] && exit 1\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$red" > "$SANDBOX/bin/gh"
+  touch "$LEDGER_DIR/FAIL"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .reason' <<<"$output")" = 'origin main CI unreadable (gh api actions/runs failed)' ]
+  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .reason' <<<"$output")" = 'origin main CI unreadable (the run ledger has no fresh sync of it)' ]
   # a new fact on the same row is not the one nudged
   [ "$(jq -r 'select(.bucket == "NIGHTLY") | .nudged' <<<"$output")" = false ]
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
@@ -1094,8 +1109,9 @@ SH
   [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
 }
 
-@test "a repo's main run list is reused across passes for FLEET_MAIN_TTL, and a failed call is not" {
-  # 2026-10-29: every caller ran a pass, and the fleet spent GitHub's 5,000/hr REST limit.
+@test "a repo's runs are read from the run ledger once per pass; a failed read is UNKNOWN, a repo it does not sync has no runs" {
+  # 2026-10-29: every caller listed actions/runs itself, and the fleet spent GitHub's 5,000/hr REST
+  # limit; the ledger has one writer (schedules-sync), and every reader goes through it.
   git init -q --bare "$SANDBOX/origin.git"
   git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
   git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
@@ -1106,24 +1122,28 @@ SH
   git -C "$SANDBOX/wt" checkout -q -b feat/x "$green"
   phases_plan '- [ ] Phase 1: x'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  runs="[$(r Tests success "$green" 1)]"
-  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo run >> "$HOME/runcalls"; jq -c "${@: -1}" <<<%q; exit 0; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$(page "$runs")" "$green" > "$SANDBOX/bin/gh"
+  ledger main "[$(r Tests success "$green" 1)]"
+  printf '#!/usr/bin/env bash\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$green" > "$SANDBOX/bin/gh"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess"
 
-  FLEET_MAIN_TTL=300 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
-  FLEET_MAIN_TTL=300 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(wc -l < "$HOME/runcalls")" -eq 1 ]
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .main_red' <<<"$output")" = false ]
+  [ "$(grep -c '^runs ' "$LEDGER_DIR/calls")" -eq 1 ]
 
-  # past the TTL it asks again; a failure then is UNKNOWN, never the cached green
-  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo run >> "$HOME/runcalls"; exit 1; }\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$green" > "$SANDBOX/bin/gh"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(wc -l < "$HOME/runcalls")" -eq 2 ]
-  [ "$(jq -r 'select(.bucket == "NIGHTLY") | .reason' <<<"$output")" = 'origin main CI unreadable (gh api actions/runs failed)' ]
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(wc -l < "$HOME/runcalls")" -eq 3 ]
+  # a failed read is UNKNOWN and named unreadable, never the last green
+  touch "$LEDGER_DIR/FAIL"
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  [ "$(jq -r '.main[0].reason' "$SANDBOX/state.json")" = 'origin main CI unreadable (the run ledger has no fresh sync of it)' ]
+  jq -e '.unreadable | index("run ledger (wt)")' "$SANDBOX/state.json" >/dev/null
+
+  # exit 3, a repo the ledger does not sync, is no runs: no NIGHTLY row and nothing unreadable
+  rm "$LEDGER_DIR/FAIL"
+  printf '#!/usr/bin/env bash\nexit 3\n' > "$SCHEDULES_SYNC"
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  [ "$(jq -r '.main | length' "$SANDBOX/state.json")" = 0 ]
+  [ "$(jq -r '.unreadable | length' "$SANDBOX/state.json")" = 0 ]
 }
 
 # queue_item <state> <session> -- a started agent-queue item on session s1's tmux session
@@ -1180,7 +1200,7 @@ queue_item() {
 clean_fixture() {
   landed_fixture
   panel "$SANDBOX/wt"
-  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\n' > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/gh"
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
 }
@@ -1421,7 +1441,7 @@ research_item() {
 
 @test "end to end: edits in other worktrees block a clean cwd from reading LANDED or finished" {
   landed_fixture
-  printf '#!/usr/bin/env bash\n[ "$1" = api ] && echo "[]"\nexit 0\n' > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/gh"
   mkdir -p "$HOME/.worktrees"
   local other="$HOME/.worktrees/other work" unrelated="$HOME/.worktrees/unrelated"
   git -C "$SANDBOX/wt" worktree add -q -b other "$other" origin/main
@@ -1990,7 +2010,7 @@ SH
 
   # An open branch PR stays attributed whoever opened it: it is unlanded work in this tree.
   echo '{"type":"user","message":{"content":"walk-forward results"}}' > "$SANDBOX/t.jsonl"
-  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t875\\tOPEN\\tPASS\\t%s\\n"\n' \
+  printf '#!/usr/bin/env bash\nprintf "feat/x\\t875\\tOPEN\\tPASS\\t%s\\n"\n' \
     "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$SANDBOX/bin/gh"
   rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}"/fleet-sessions* 2>/dev/null || true
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -2070,7 +2090,6 @@ explain_state() {
     > "$SANDBOX/bin/agent-panel"
   cat > "$SANDBOX/bin/gh" <<'SH'
 #!/usr/bin/env bash
-[ "$1" = api ] && { echo "[]"; exit 0; }
 case "$*" in
   *"--repo o/one"*) echo '[{"number":7,"state":"MERGED","mergedAt":"2026-10-30T12:00:00Z"}]' ;;
   *"--repo o/two"*) echo '[{"number":9,"state":"OPEN","mergedAt":null}]' ;;
@@ -2305,23 +2324,16 @@ PROM
 }
 
 
-# open_pr_gh <json rollup> [main runs page] [feat/x runs page]: a gh whose `pr list` answers one
-# OPEN PR for feat/x at the worktree's HEAD, folded by fleet-sessions' own -q filter, so the fold
-# itself is under test. `api` answers the main runs page (see page) when given, else no runs, a
-# feat/x runs query the third page, else no runs, and a job's steps query $SANDBOX/job_<id>.json.
+# open_pr_gh <json rollup>: a gh whose `pr list` answers one OPEN PR for feat/x at the worktree's
+# HEAD, folded by fleet-sessions' own -q filter, so the fold itself is under test. Runs are the
+# ledger's (see ledger); a job's steps query answers $SANDBOX/job_<id>.json (see job).
 open_pr_gh() {
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   printf '[{"number":9,"state":"OPEN","headRefName":"feat/x","headRefOid":"%s","statusCheckRollup":%s}]' \
     "$oid" "$1" > "$SANDBOX/prs.json"
-  printf '%s' "${2:-}" > "$SANDBOX/runs.json"
-  printf '%s' "${3:-}" > "$SANDBOX/branch_runs.json"
   cat > "$SANDBOX/bin/gh" <<GH
 #!/usr/bin/env bash
-if [ "\$1" = api ]; then
-  case "\$2" in */actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;; esac
-  f="$SANDBOX/runs.json"; case "\$*" in *branch=feat/x*) f="$SANDBOX/branch_runs.json" ;; esac
-  [ -s "\$f" ] && jq -c "\${@: -1}" "\$f" || echo "[]"; exit 0
-fi
+case "\$1 \${2:-}" in "api "*/actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;; esac
 while [ \$# -gt 0 ]; do [ "\$1" = -q ] && { jq -r "\$2" "$SANDBOX/prs.json"; exit; }; shift; done
 GH
   chmod +x "$SANDBOX/bin/gh"
@@ -2338,43 +2350,49 @@ GH
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
 }
 
-# gate <workflow> <status> <conclusion> <sha> <minute> [event]: one actions/runs row on feat/x
-gate() { printf '{"name":"%s","event":"%s","status":"%s","conclusion":%s,"head_sha":"%s","created_at":"2026-10-29T10:%02d:00Z"}' \
+# gate <workflow> <status> <conclusion> <sha> <minute> [event]: one main_runs row, for ledger feat/x
+gate() { printf '{"workflowName":"%s","event":"%s","status":"%s","conclusion":%s,"headSha":"%s","createdAt":"2026-10-29T10:%02d:00Z"}' \
   "$1" "${6:-workflow_dispatch}" "$2" "$( [ "$3" = - ] && echo null || echo "\"$3\"")" "$4" "$5"; }
 
 @test "end to end: Checks green does not make a PR green while its dispatched gate is queued or red (ar-191)" {
   landed_fixture
   local oid old; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)" old="$(git -C "$SANDBOX/wt" rev-parse HEAD~1)"
   export FLEET_MAIN_TTL=0
-  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' queued - "$oid" 5)]}"
+  ledger feat/x "[$(gate 'Tests (affected)' queued - "$oid" 5)]"
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
 
   # a red gate newer than a green one is red; an older green does not hide it
-  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed success "$old" 1),$(gate 'Tests (affected)' completed failure "$oid" 5)]}"
+  ledger feat/x "[$(gate 'Tests (affected)' completed success "$old" 1),$(gate 'Tests (affected)' completed failure "$oid" 5)]"
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
 
   # a cancelled run decides nothing, a pull_request run is the rollup's, and a run on a commit the
   # head does not hold (a reused slot branch's old PR) is not this PR's gate
-  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed success "$oid" 1),$(gate 'Tests (affected)' completed cancelled "$oid" 3),$(gate Checks completed failure "$oid" 4 pull_request),$(gate Shots completed failure 0000000000000000000000000000000000000000 5)]}"
+  ledger feat/x "[$(gate 'Tests (affected)' completed success "$oid" 1),$(gate 'Tests (affected)' completed cancelled "$oid" 3),$(gate Checks completed failure "$oid" 4 pull_request),$(gate Shots completed failure 0000000000000000000000000000000000000000 5)]"
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
 
   # an older green alone adds nothing: whether it still covers the head is Checks' call
-  open_pr_gh '[]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed success "$old" 1)]}"
+  ledger feat/x "[$(gate 'Tests (affected)' completed success "$old" 1)]"
+  open_pr_gh '[]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .ci <<<"$output")" = PASS ]
 
   # only a gate workflow counts, and a stale run decides nothing, as in MAIN_STREAKS
-  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Multi (named)' completed failure "$oid" 4),$(gate 'Tests (affected)' completed stale "$oid" 5)]}"
+  ledger feat/x "[$(gate 'Multi (named)' completed failure "$oid" 4),$(gate 'Tests (affected)' completed stale "$oid" 5)]"
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
   FLEET_GATE_WORKFLOWS='^(Tests|Multi)( |$)' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
 
   # a rollup still running stays running, whatever the gate says
-  open_pr_gh '[{"status":"IN_PROGRESS","conclusion":""}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed failure "$oid" 5)]}"
+  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 5)]"
+  open_pr_gh '[{"status":"IN_PROGRESS","conclusion":""}]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
 }
@@ -2390,7 +2408,7 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
   checks='[{"name":"Checks","conclusion":"FAILURE","detailsUrl":"https://github.com/o/r/actions/runs/1/job/77"}]'
   job 77 'Harness tests:success' 'Merge gate line:failure'
-  open_pr_gh "$checks" '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$oid" 5)]}"
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr_gh "$checks"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
 
@@ -2398,24 +2416,24 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   # is on an older commit, so the head has none
   for runs in "$(gate 'Tests (affected)' completed success "$oid" 5)" "$(gate 'Tests (affected)' completed failure "$oid" 5)" \
               '' "$(gate 'Tests (affected)' in_progress - "$old" 5)"; do
-    open_pr_gh "$checks" '' "{\"workflow_runs\":[$runs]}"
+    ledger feat/x "[$runs]"; open_pr_gh "$checks"
     run "$REPO_ROOT/.local/bin/fleet-sessions" --json
     [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
   done
   # and a real red: another step failed, the job was cancelled, another check is red, or the
   # step knob is off
-  open_pr_gh "$checks" '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$oid" 5)]}"
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr_gh "$checks"
   job 78 'Docs within their budgets:failure' 'Merge gate line:failure'
   job 79 'Harness tests:cancelled' 'Merge gate line:skipped'
   for id in 78 79; do
-    open_pr_gh "${checks/job\/77/job/$id}" '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$oid" 5)]}"
+    ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr_gh "${checks/job\/77/job/$id}"
     run "$REPO_ROOT/.local/bin/fleet-sessions" --json
     [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
   done
-  open_pr_gh "${checks%]},{\"context\":\"Lint\",\"state\":\"FAILURE\"}]" '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$oid" 5)]}"
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr_gh "${checks%]},{\"context\":\"Lint\",\"state\":\"FAILURE\"}]"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  open_pr_gh "$checks" '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$oid" 5)]}"
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr_gh "$checks"
   FLEET_GATE_LINE_STEPS='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
 }
@@ -2434,7 +2452,7 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   top="$("${g[@]}" rev-parse HEAD)"
   "${g[@]}" checkout -q feat/a
   # Checks green, and the PR's gate runs on its own branch feat/x, not the session's feat/a
-  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$mid" 5)]}"
+  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$mid" 5)]"; open_pr_gh '[{"conclusion":"SUCCESS"}]'
   # stack_pr <state> <head> [<state> <head>]: newest first, as gh lists them
   stack_pr() {
     local out="[" n=12
@@ -2466,18 +2484,43 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   [ "$(jq -r .pr_state <<<"$output")" = null ]
 }
 
-@test "gate_ci: a branch run list gh cannot read keeps the rollup's answer and is named unreadable (ar-191)" {
+@test "gate_ci: a branch run list the ledger cannot read keeps the rollup's answer and is named unreadable (ar-191)" {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  touch "$LEDGER_DIR/FAIL"
   git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/one.git
   export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
   run gate_ci "$SANDBOX/one" feat/x deadbeef PASS
   assert_output PASS
-  grep -qx 'gh api actions/runs (one feat/x)' "$CACHE/unreadable"
+  grep -qx 'run ledger (one)' "$CACHE/unreadable"
   # a red or running rollup is not asked about at all
   : > "$CACHE/unreadable"
   run gate_ci "$SANDBOX/one" feat/x deadbeef FAIL
   assert_output FAIL
   [ ! -s "$CACHE/unreadable" ]
+}
+
+@test "activity_line: parked, testing and editing win; then the head's open run, then its reds by workflow; else gating or the status" {
+  now=$(date -ud 2026-10-29T10:30:00Z +%s)
+  run_row() { printf '{"workflowName":"%s","status":"%s","conclusion":%s,"headSha":"%s","createdAt":"2026-10-29T10:%02d:00Z"}' "$@"; }
+  open="[$(run_row Tests in_progress null h 10),$(run_row Lint queued null h 20),$(run_row Tests completed '"failure"' old 5)]"
+  red="[$(run_row Tests completed '"failure"' h 1),$(run_row Tests completed '"success"' h 2),$(run_row Lint completed '"failure"' h 3),$(run_row Docs completed '"cancelled"' h 4)]"
+  # branch_runs is asked only once CI decides the line
+  branch_runs() { echo x >> "$SANDBOX/asked"; cat "$SANDBOX/runs"; }
+  echo "$open" > "$SANDBOX/runs"
+  [ "$(activity_line parked test - "$SANDBOX" feat/x h "$now")" = parked ]
+  [ "$(activity_line busy test Edit:x "$SANDBOX" feat/x h "$now")" = testing ]
+  [ "$(activity_line busy agent 'Edit: fleet-sessions' "$SANDBOX" feat/x h "$now")" = editing ]
+  [ ! -e "$SANDBOX/asked" ]
+  [ "$(activity_line busy agent 'Bash: make' "$SANDBOX" feat/x h "$now")" = 'waiting on Tests 20m +1' ]
+  # runs of another head say nothing about this one
+  [ "$(activity_line idle gate - "$SANDBOX" feat/x other "$now")" = gating ]
+  # Tests went green on a re-run, Lint is red, a cancelled run decides nothing
+  echo "$red" > "$SANDBOX/runs"
+  [ "$(activity_line idle gate - "$SANDBOX" feat/x h "$now")" = 'red on Lint' ]
+  # no dir (the default branch, or no git) reads no CI
+  [ "$(activity_line idle none - - feat/x h "$now")" = idle ]
+  [ "$(activity_line '' - - - - - "$now")" = - ]
+  [ "$(wc -l < "$SANDBOX/asked")" -eq 3 ]
 }
 
 @test "end to end: an open PR's fact carries its head, so a new push that is still red is nudged again" {
@@ -2597,7 +2640,8 @@ main_change() {
   # (shepherd skill, nudge step 3); these are the facts it reads to do that.
   conflict_fixture
   local tip; tip="$(git -C "$SANDBOX/wt" rev-parse origin/main)"
-  open_pr_gh '[{"conclusion":"SUCCESS"}]' "$(page "[$(r Tests failure "$tip" 1)]")"
+  ledger main "[$(r Tests failure "$tip" 1)]"
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   session="$(jq -c 'select(.bucket != "NIGHTLY")' <<<"$output")"
   main="$(jq -c 'select(.bucket == "NIGHTLY")' <<<"$output")"

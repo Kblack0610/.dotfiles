@@ -64,7 +64,7 @@ const callsTable = (recent) => `<table class="tbl"><tr><th class="n">when</th><t
   `<td class="${x.ok ? "" : "bad"}">${x.ok ? "ok" : "error"}</td><td>${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">Langfuse</a>` : `<span class="muted">${esc(x.id)}</span>`}</td></tr>`).join("")}</table>`;
 
 // The table's headers: hub_core::fleet::who::Who::COLUMNS (checked by assets.rs).
-const FLEET_COLS = { kind: ["kind"], who: ["who"], state: ["state"], since: ["since", "n"], for: ["for"], doing: ["doing now"], under: ["under it"], project: ["project"] };
+const FLEET_COLS = { kind: ["kind"], who: ["who"], state: ["state"], activity: ["activity"], since: ["since", "n"], for: ["for"], doing: ["doing now"], under: ["under it"], project: ["project"] };
 const STATE_CLASS = { failed: "bad", held: "bad", "needs you": "warn", stalled: "warn", idle: "muted", off: "muted", chat: "muted", parked: "muted", landed: "muted" };
 // A runner opens its page, a session its record on the Sessions tab.
 const whoHref = (r) => (r.opens === "runner" ? runnerHref(r.key) : "#sessions/" + encodeURIComponent(r.key));
@@ -73,7 +73,7 @@ function whoRow(r) {
   const shut = fst.fold.has(r.key);
   const fold = r.kids ? `<button class="thsort" data-fold="${esc(r.key)}" aria-expanded="${!shut}" title="${shut ? "unfold" : "fold"} the ${r.kids} rows under it">${shut ? "&gt;" : "v"}</button> ` : "";
   return `<tr class="wr" data-href="${esc(whoHref(r))}"><td class="muted">${fold}${esc(r.kind)}</td><td><a href="${esc(whoHref(r))}">${esc(r.who)}</a></td>` +
-    `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
+    `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="muted">${esc(r.activity)}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
     `<td class="wrap">${esc(r.for)}</td><td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${esc(r.project)}</td></tr>`;
 }
 
