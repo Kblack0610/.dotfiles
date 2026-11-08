@@ -137,7 +137,7 @@ This dir is loaded by Claude Code as the project's harness layer:
   `/sc:*` (analyze, manual-test), `/my:*` (autopilot, fix-ci, go, worktree-recycle), `/kb:*` (workflow, implement, ci), `/daily:*` (analysis, standup), plus `dream` and `remember`.
 
   These counts are load-bearing only as a rough orientation — treat `ls ~/.claude/{agents,skills,commands}` as the truth, since the live registry merges this repo with the private overlay.
-- **`.claude/hooks/`** - Stop-hook gate runs `stop-checks.d/` (git/node/cargo/python/go/shell-test health), then `stop-post.d/` (session register, plan sync to `~/.agent/plans/{project}/`, focus reconcile, anchor regen, ask-filed check, wind-down). Plus PreToolUse guards such as `block-pip.sh` and `large-file-warning.sh`. Topology and the per-script list: `.claude/hooks/README.md`.
+- **`.claude/hooks/`** - Stop-hook gate runs `stop-checks.d/` (git/node/cargo/python/go/shell-test health), then `stop-post.d/` (session register, plan sync to `~/.agent/plans/{project}/`, focus reconcile, anchor regen, ask-filed check, wind-down). Plus PreToolUse guards such as `block-pip.sh` and `large-read-guard.py`. Topology and the per-script list: `.claude/hooks/README.md`.
 - **`.claude/settings.json` / `settings.local.json`** — permissions, env, hook wiring.
 
 The Claude rules and the Codex `AGENTS.md` are deliberately kept in sync via the rulesync source — don't drift one from the other.
