@@ -10,6 +10,7 @@ setup() {
   seq 1 1999 > "$D/small.txt"
   { printf 'x\0y\n'; seq 1 3000; } > "$D/blob.dat"
   seq 1 3000 > "$D/page.png"
+  mkdir -p "$D/sub" && seq 1 2500 > "$D/sub/deep.txt"
 }
 
 # The hook prints nothing to allow, so an empty reply reads as allow.
@@ -51,7 +52,9 @@ bash_decision() {
 }
 
 @test "a cat whose output reaches the context is denied, in any clause" {
-  for c in 'cat big.txt' "cat $D/big.txt" 'cat -n big.txt' 'ls; cat small.txt big.txt' 'true && cat big.txt' 'LC_ALL=C cat big.txt' '/bin/cat big.txt' 'cat "big.txt"'; do
+  for c in 'cat big.txt' "cat $D/big.txt" 'cat -n big.txt' 'ls; cat small.txt big.txt' 'true && cat big.txt' 'LC_ALL=C cat big.txt' '/bin/cat big.txt' 'cat "big.txt"' \
+    $'cat big.txt\necho hi' $'echo a\ncat big.txt' 'cat big.txt 2>/dev/null' 'cat big.txt 2>&1' 'if true; then cat big.txt; fi' 'for f in a; do cat big.txt; done' \
+    'cat big.txt # note' 'echo a#b; cat big.txt' 'cat < big.txt' $'cat small.txt \\\n big.txt' 'cd sub && cat deep.txt'; do
     run bash_decision "$c"
     assert_output deny
   done
@@ -59,7 +62,7 @@ bash_decision() {
 
 @test "negative control: a piped, redirected, captured or short cat is allowed" {
   for c in 'cat big.txt | head -n 5' 'cat big.txt | wc -l' 'cat big.txt > out.txt' 'cat big.txt >> out.txt' 'x=$(cat big.txt); echo ${#x}' 'cat small.txt' 'cat blob.dat' \
-    'rg -n 5 big.txt' 'echo "cat big.txt"' "cat <<'EOF' > f.txt
+    'rg -n 5 big.txt' 'echo "cat big.txt"' 'cat big.txt 1> out.txt' 'cat big.txt &> out.txt' $'# cat big.txt\nls' 'cat deep.txt' "cat <<'EOF' > f.txt
 cat big.txt
 EOF" 'cat'; do
     run bash_decision "$c"
