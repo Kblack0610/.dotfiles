@@ -40,7 +40,7 @@ clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 # shellcheck disable=SC2016 # jq source, not shell
 WAITING_JQ='[.rows[] | select(.state == "open" and .id != null and (.text | test("(^| )#plan( |$)"; "i")))
   | select($only == "" or .project == $only)
-  | select($seen[.project + "\t" + .text] | not)] | sort_by(.since // "") | .[]'
+  | select($seen[.project + "\t" + .text] | not)] | sort_by(.since // "") | .[:$max][]'
 
 # seen: the record's refused rows, by project and words.
 seen() {
@@ -102,7 +102,7 @@ $open"
     proof_why "$p $id: model call failed: ${first:-no output}"
     FAILED=$((FAILED + 1)); return 1
   fi
-  ans="$(sed -n '/^INBOX-PLAN-START$/,/^INBOX-PLAN-END$/p' <<<"$out" | sed '1d;$d' | jq -c 'select(type == "object")' 2>/dev/null | head -n 1)"
+  ans="$(sed -n '/^INBOX-PLAN-START$/,/^INBOX-PLAN-END$/p' <<<"$out" | sed '1d;$d' | jq -c -n '[inputs | select(type == "object")] | .[:1][]' 2>/dev/null)"
   [ -n "$ans" ] || { refused "$p" "the model returned no plan" "$text"; return 1; }
 
   local goal size new d r n=0 why
@@ -111,10 +111,10 @@ $open"
   [ -n "$goal" ] || { refused "$p" "the plan had no goal" "$text"; return 1; }
   dets=(--detail "goal: $goal")
   while IFS= read -r d; do d="$(clean 200 <<<"$d")"; [ -n "$d" ] && dets+=(--detail "approach: $d"); done \
-    < <(jq -r '.approach[]? | strings' <<<"$ans" | head -n 6)
+    < <(jq -r '[.approach[]? | strings] | .[:6][]' <<<"$ans")
   while IFS= read -r d; do d="$(clean 200 <<<"$d")"; [ -n "$d" ] && dets+=(--detail "check: $d"); done \
-    < <(jq -r '.checks[]? | strings' <<<"$ans" | head -n 6)
-  mapfile -t rows < <(jq -r '.split[]? | strings' <<<"$ans" | head -n 6)
+    < <(jq -r '[.checks[]? | strings] | .[:6][]' <<<"$ans")
+  mapfile -t rows < <(jq -r '[.split[]? | strings] | .[:6][]' <<<"$ans")
   why="$(( ${#dets[@]} / 2 )) plan lines"
   [ "${#rows[@]}" -gt 0 ] && dets+=(--detail "split: ${#rows[@]} rows under $id")
   size="$(jq -r '.size // "" | tostring' <<<"$ans")"
@@ -168,7 +168,7 @@ main() {
     [ "$KICK" = 1 ] || [ "$DRY" = 1 ] || { proof_why "notes board --json failed"; proof_report "$NAME" FAILED; }
     return 1
   fi
-  rows="$(jq -c --arg only "$ONLY" --argjson seen "$(seen)" "$WAITING_JQ" <<<"$board" | head -n "$INBOX_PLAN_MAX")"
+  rows="$(jq -c --arg only "$ONLY" --argjson seen "$(seen)" --argjson max "$INBOX_PLAN_MAX" "$WAITING_JQ" <<<"$board")"
   # The unit by name, not $NAME: a caller's AGENTCTL_NAME is its own.
   if [ "$KICK" = 1 ]; then
     [ -n "$rows" ] || return 0

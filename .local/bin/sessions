@@ -237,7 +237,7 @@ resolve_id() {
 lookup_field() {
   # $1 = session id, $2 = jq field -> first match across registries
   registry_lines --all \
-    | jq -rc --arg id "$1" --arg f "$2" 'select(.session_id==$id) | .[$f]' 2>/dev/null | head -1
+    | jq -rcn --arg id "$1" --arg f "$2" '[inputs | select(.session_id==$id) | .[$f]] | .[:1][]' 2>/dev/null
 }
 
 session_cwd() {
@@ -250,7 +250,7 @@ session_cwd() {
   # 2. Otherwise the transcript records cwd on its first few entries.
   t=$(transcript_path "$id")
   if [ -n "$t" ] && [ -f "$t" ]; then
-    cwd=$(head -40 "$t" 2>/dev/null | jq -rc 'select(.cwd != null) | .cwd' 2>/dev/null | head -1)
+    cwd=$(head -40 "$t" 2>/dev/null | jq -rcn '[inputs | select(.cwd != null) | .cwd] | .[:1][]' 2>/dev/null)
     [ -n "$cwd" ] && [ -d "$cwd" ] && { echo "$cwd"; return; }
   fi
   echo ""
