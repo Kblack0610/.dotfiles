@@ -1349,10 +1349,17 @@ pub(crate) fn tag_token(t: &str) -> Result<String> {
 }
 
 /// `line` with `remove` dropped and `add` added. A row has one size and one priority, so
-/// adding a `#size/<s>` or a `#urgent`/`#high`/`#low` replaces the one it had.
+/// adding a `#size/<s>` or a `#urgent`/`#high`/`#low` replaces the one it had. It has one
+/// created stamp too, its origin day, so an added `#cMMDD` lands only on a row with none:
+/// `--add c1105` on a `#c1104` row gave nc-71 both (nc-83).
 pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
+    let stamped = md::split_created(line).1.is_some();
+    let add: Vec<&String> = add
+        .iter()
+        .filter(|t| !(stamped && md::is_created_tag(&t[1..].to_lowercase())))
+        .collect();
     let sized = add.iter().any(|t| t.starts_with("#size/"));
-    let old = size_tag(line).filter(|t| sized && !add.iter().any(|a| a == t));
+    let old = size_tag(line).filter(|t| sized && !add.iter().any(|a| *a == t));
     let mut l = old
         .into_iter()
         .chain(remove.iter().map(String::as_str))
@@ -2217,6 +2224,21 @@ Version: v1.13.0
             retag(high, &t(&["low"]), &[]),
             "- [ ] row #c1105 #low <!-- id:ar-1 -->",
             "a new priority replaces the old one, even a less urgent one"
+        );
+        assert_eq!(
+            retag(high, &t(&["c1107", "C1108", "ai"]), &[]),
+            "- [ ] row #high #c1105 #ai <!-- id:ar-1 -->",
+            "a stamped row keeps its one created stamp, whatever the case of the new one"
+        );
+        assert_eq!(
+            retag("- [ ] row #high <!-- id:ar-1 -->", &t(&["c1107"]), &[]),
+            "- [ ] row #high #c1107 <!-- id:ar-1 -->",
+            "a row with no stamp takes one"
+        );
+        assert_eq!(
+            retag("- [ ] row #c1104 #urgent #c1105", &[], &t(&["c1105"])),
+            "- [ ] row #c1104 #urgent",
+            "--remove clears a stray stamp"
         );
         assert_eq!(
             carry_tags(high, "fix(x): reworded #urgent"),
