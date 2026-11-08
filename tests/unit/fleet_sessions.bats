@@ -2307,8 +2307,8 @@ PROM
 
 # open_pr_gh <json rollup> [main runs page] [feat/x runs page]: a gh whose `pr list` answers one
 # OPEN PR for feat/x at the worktree's HEAD, folded by fleet-sessions' own -q filter, so the fold
-# itself is under test. `api` answers the main runs page (see page) when given, else no runs, and
-# a feat/x runs query the third page, else no runs.
+# itself is under test. `api` answers the main runs page (see page) when given, else no runs, a
+# feat/x runs query the third page, else no runs, and a job's steps query $SANDBOX/job_<id>.json.
 open_pr_gh() {
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   printf '[{"number":9,"state":"OPEN","headRefName":"feat/x","headRefOid":"%s","statusCheckRollup":%s}]' \
@@ -2318,6 +2318,7 @@ open_pr_gh() {
   cat > "$SANDBOX/bin/gh" <<GH
 #!/usr/bin/env bash
 if [ "\$1" = api ]; then
+  case "\$2" in */actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;; esac
   f="$SANDBOX/runs.json"; case "\$*" in *branch=feat/x*) f="$SANDBOX/branch_runs.json" ;; esac
   [ -s "\$f" ] && jq -c "\${@: -1}" "\$f" || echo "[]"; exit 0
 fi
@@ -2376,6 +2377,93 @@ gate() { printf '{"name":"%s","event":"%s","status":"%s","conclusion":%s,"head_s
   open_pr_gh '[{"status":"IN_PROGRESS","conclusion":""}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' completed failure "$oid" 5)]}"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+}
+
+# job <id> <step:conclusion>...: one Actions job's steps, for gate_line_only
+job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | split(":") | {name: .[0], conclusion: .[1]}]}' > "$SANDBOX/job_$id.json"; }
+
+@test "end to end: a red gate line is CI running while a gate on its head runs, red once it finished (ar-82)" {
+  # 2026-11-03 agent-54 #1692 read STALLED CI red: Checks ends with the Merge gate line step,
+  # red until the pool gate run it waits on finishes.
+  landed_fixture
+  local oid old checks; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)" old="$(git -C "$SANDBOX/wt" rev-parse HEAD~1)"
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  checks='[{"name":"Checks","conclusion":"FAILURE","detailsUrl":"https://github.com/o/r/actions/runs/1/job/77"}]'
+  job 77 'Harness tests:success' 'Merge gate line:failure'
+  open_pr_gh "$checks" '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$oid" 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
+
+  # negative controls: the gate finished (green or red), there is no gate run, or the one running
+  # is on an older commit, so the head has none
+  for runs in "$(gate 'Tests (affected)' completed success "$oid" 5)" "$(gate 'Tests (affected)' completed failure "$oid" 5)" \
+              '' "$(gate 'Tests (affected)' in_progress - "$old" 5)"; do
+    open_pr_gh "$checks" '' "{\"workflow_runs\":[$runs]}"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  done
+  # and a real red: another step failed, the job was cancelled, another check is red, or the
+  # step knob is off
+  open_pr_gh "$checks" '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$oid" 5)]}"
+  job 78 'Docs within their budgets:failure' 'Merge gate line:failure'
+  job 79 'Harness tests:cancelled' 'Merge gate line:skipped'
+  for id in 78 79; do
+    open_pr_gh "${checks/job\/77/job/$id}" '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$oid" 5)]}"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  done
+  open_pr_gh "${checks%]},{\"context\":\"Lint\",\"state\":\"FAILURE\"}]" '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$oid" 5)]}"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  open_pr_gh "$checks" '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$oid" 5)]}"
+  FLEET_GATE_LINE_STEPS='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
+@test "end to end: a stacked branch inside another open PR is that PR's, not files with no PR (ar-82)" {
+  # 2026-11-03 agent-51 feat/tourney-daily-cap read "N file(s) not on the default branch, no PR"
+  # while its commits were inside #1674, the PR of the branch built on it.
+  landed_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) mid top
+  "${g[@]}" checkout -q -b feat/a origin/main
+  echo a > "$SANDBOX/wt/a.txt"; "${g[@]}" add a.txt; "${g[@]}" commit -q -m a
+  "${g[@]}" checkout -q -B feat/x   # the branch built on it, whose PR holds feat/a's commits
+  echo b > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m b
+  mid="$("${g[@]}" rev-parse HEAD)"
+  echo c > "$SANDBOX/wt/c.txt"; "${g[@]}" add c.txt; "${g[@]}" commit -q -m c
+  top="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" checkout -q feat/a
+  # Checks green, and the PR's gate runs on its own branch feat/x, not the session's feat/a
+  open_pr_gh '[{"conclusion":"SUCCESS"}]' '' "{\"workflow_runs\":[$(gate 'Tests (affected)' in_progress - "$mid" 5)]}"
+  # stack_pr <state> <head> [<state> <head>]: newest first, as gh lists them
+  stack_pr() {
+    local out="[" n=12
+    while [ $# -gt 0 ]; do
+      out+="$([ "$out" = "[" ] || echo ,){\"number\":$n,\"state\":\"$1\",\"headRefName\":\"feat/x\",\"headRefOid\":\"$2\",\"statusCheckRollup\":[{\"conclusion\":\"SUCCESS\"}]}"
+      n=$((n - 1)); shift 2
+    done
+    printf '%s]' "$out" > "$SANDBOX/prs.json"
+  }
+  stack_pr OPEN "$mid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #12 CI running' ]
+  # two open PRs hold it: the oldest, nearest the branch, is its PR
+  stack_pr OPEN "$top" OPEN "$mid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 11 ]
+
+  # negative controls: an open PR that does not hold HEAD, or a closed one that does, is not it
+  stack_pr OPEN "$("${g[@]}" rev-parse origin/main)"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '1 file(s) not on the default branch, no PR' ]
+  stack_pr CLOSED "$top"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = '1 file(s) not on the default branch, no PR' ]
+  # and a HEAD still on the base, which every open PR holds, takes none of them
+  "${g[@]}" checkout -q --detach origin/main
+  stack_pr OPEN "$top"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr_state <<<"$output")" = null ]
 }
 
 @test "gate_ci: a branch run list gh cannot read keeps the rollup's answer and is named unreadable (ar-191)" {
