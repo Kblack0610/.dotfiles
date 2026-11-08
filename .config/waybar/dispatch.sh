@@ -82,7 +82,7 @@ else
       assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
       account)
         # Each account's published reasons, one entry per account: "alt reserve, main pace+five_hour".
-        reasons="$(jq -r '[.data.result[] | select(.metric.__name__ == "claude_account_room_reason") | .metric]
+        reasons="$(jq -r '[.data.result[] | select(.metric.__name__ == "claude_account_room_reason" and (.metric.kind // "claude") == "claude") | .metric]
             | group_by(.account) | map("\(.[0].account) \(map(.reason) | unique | join("+"))") | join(", ")' <<< "$raw")"
         paused="no account has room${reasons:+: $reasons}" ;;
       other) paused="a gate (fleet-dispatch headroom says which)" ;;
