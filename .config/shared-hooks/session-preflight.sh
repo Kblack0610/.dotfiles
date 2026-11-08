@@ -175,7 +175,11 @@ if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2
           END {
             for (i = 1; i <= r && shown < max; i++) { print rest[i]; shown++ }
             for (i = 1; i <= e && shown < max; i++) { print extra[i]; shown++ }
-          }' | awk -F'\t' -v w="$BOARD_WIDTH" '{ t = $2; if (length(t) > w) t = substr(t, 1, w - 3) "..."; printf "  [%s] %s\n", $1, t }'
+          }' | while IFS=$'\t' read -r proj text; do
+          # Cut in bash: it counts characters in a UTF-8 locale, where mawk and BSD awk count bytes.
+          [ "${#text}" -le "$BOARD_WIDTH" ] || text="${text:0:BOARD_WIDTH-3}..."
+          printf '  [%s] %s\n' "$proj" "$text"
+        done
         # Say what was dropped. A silent truncation reads as "that is all of it", which is
         # the same failure as an empty channel reporting nothing to report.
         if [ "${agent_total:-0}" -gt "$BOARD_MAX" ]; then

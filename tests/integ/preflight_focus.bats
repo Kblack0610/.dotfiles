@@ -177,22 +177,28 @@ EOF
   [ "$(grep -c 'follow-up ' <<<"$output")" -eq 2 ]
 }
 
-@test "a long agent board row is cut to its first 160 characters" {
+@test "an agent board row longer than 160 characters is cut to 160, a row of 160 is kept whole" {
   cp "$REPO_ROOT/.config/shared-hooks/focus-lib.sh" \
      "$REPO_ROOT/.config/shared-hooks/anchor-lib.sh" "$DEPLOY/"
   seed_tracker_map
-  long="fix(x): $(printf 'a%.0s' $(seq 1 300)) TAILMARK"
-  printf '#!/usr/bin/env bash\n[ "$1 $2" = "board --agent" ] && printf "notes-cockpit\\t%%s\\nnotes-cockpit\\tshort row\\n" "%s"\nexit 0\n' "$long" > "$SANDBOX/bin/notes"
+  # 168 characters, one of them a 3-byte em dash inside the kept part, and exactly 160.
+  long="long\u2014$(printf 'a%.0s' $(seq 1 155))TAILMARK"
+  edge="edge$(printf 'b%.0s' $(seq 1 156))"
+  cat > "$SANDBOX/bin/notes" <<EOF
+#!/usr/bin/env bash
+[ "\$1 \$2" = "board --agent" ] && printf 'notes-cockpit\t%b\nnotes-cockpit\t%s\n' "$long" "$edge"
+exit 0
+EOF
   chmod +x "$SANDBOX/bin/notes"
 
-  run context
+  LC_ALL=C.UTF-8 run context
   assert_success
-  row=$(grep -F '[notes-cockpit] fix(x):' <<<"$output")
-  [ "${#row}" -eq $((2 + 16 + 160)) ]
-  [[ "$row" == *... ]]
+  row=$(grep -F '[notes-cockpit] long' <<<"$output")
+  text=${row#  \[notes-cockpit\] }
+  [ "$(LC_ALL=C.UTF-8 bash -c 'echo ${#1}' _ "$text")" -eq 160 ]
+  [[ "$text" == *aaa... ]]
   refute_output --partial 'TAILMARK'
-  # Negative control: a short row is printed whole.
-  assert_output --partial '[notes-cockpit] short row'
+  assert_output --partial "[notes-cockpit] $edge"
 }
 
 @test "the agent lane joins through trackers.repo, NOT the directory name" {

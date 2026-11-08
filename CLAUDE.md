@@ -16,8 +16,8 @@ Rules for this repo only. Rules that span repos live in `~/.claude/CLAUDE.md`.
 
 ## Path-scoped rules
 
-- Rules for one part of this repo live in `.claude/rules/*.md`, whose `paths:` frontmatter loads each only when a session reads or edits a matching file: `agent-runtime.md` (agentctl, fleet-*, budgets, pipelines, outcomes, dream) and `skill-corpus.md` (skills, commands, agents). This file keeps only what every session here needs. `.claude/rules` is in `.stow-local-ignore`, because stowed it would load as user rules in every project; `tests/unit/claude_rules.bats` checks each glob still matches a file. Why: this file loads on every turn here.
+- Rules for one part of this repo live in `.claude/rules/*.md`, whose `paths:` frontmatter loads each only when a session reads or edits a matching file: `agent-runtime.md` (agentctl, fleet-*, budgets, pipelines, outcomes, dream) and `skill-corpus.md` (skills, commands, agents). This file keeps only what every session here needs. `.claude/rules` is in `.stow-local-ignore`, because stowed it would load as user rules in every project; `tests/unit/claude_rules.bats` checks each glob still matches a file. Why: this file loads on every turn here, and most of it applied to one subtree.
 
 ## Hard limits on budgets
 
-- Do not refuse `cl`, a hand start or a running session, or add a deny or a blanket model or effort downgrade; choosing a model per task by the `model-lane` skill is fine, and so is lowering a lane's budget in its conf. Why: a limit never cuts off the human's own work; unattended work is held to computed budgets instead. The budget mechanism is in `.claude/rules/agent-runtime.md`.
+- Do not refuse `cl`, a hand start or a running session, or add a deny or a blanket model or effort downgrade; choosing a model per task by the `model-lane` skill is fine, and so is lowering a lane's budget in its conf. Why: the human's asks (2026-10-20, 11-01, 11-05): limits never cut off their own work, and every automated call runs on a computed budget so no lane overspends. The budget mechanism is in `.claude/rules/agent-runtime.md`.
