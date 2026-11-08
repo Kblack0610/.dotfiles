@@ -758,6 +758,12 @@ enum OutboxCmd {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
     },
+    /// Take the `#ask` line that is RAW byte for byte out of the outbox and write it, with the
+    /// answer on stdin, to today's `inbox/<date>.md` (the sweep's write path for a question)
+    Answer {
+        #[arg(required = true, num_args = 1..)]
+        raw: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1311,6 +1317,11 @@ fn main() -> Result<()> {
             Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
             Some(OutboxCmd::Move { project, raw }) => {
                 outbox::move_line(&prof, &log, &project, &raw.join(" "))?
+            }
+            Some(OutboxCmd::Answer { raw }) => {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                outbox::answer(&prof, &log, &raw.join(" "), &text)?
             }
         },
         Cmd::Log {
