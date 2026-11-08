@@ -62,12 +62,13 @@
 #                                that recurred in BENCH_GUARD_RECUR sessions (a guard row), and
 #                                queues the week's canary run
 #   fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]]
-#                                | start <id> | score <id>
+#                                | start <id> | score <id> | shepherd [--days N] [--json]
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
 #                                the PR's own tests as the oracle. queue adds one night item per task
 #                                a week (retro runs it), start puts the session's worktree at the
 #                                task's base, score lays the oracle over it and records pass or fail
-#                                once per run; verify proves each oracle fails at base, passes at merge
+#                                once per run; verify proves each oracle fails at base, passes at merge;
+#                                shepherd compares the shepherd's pass lanes (its CANARY_MODEL) by model
 #   fleet-bench room             exit 1 while board_open is past board_open_max; information only,
 #                                no filer holds on it (the board-open watch alerts)
 #   fleet-bench triage [--dry-run|--coverage|--route <key>...]
@@ -252,6 +253,7 @@ EPIC_BASELINES="$DIR/epic-baselines.jsonl"   # an open epic's ETA, frozen when f
 FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy pass writes no findings row
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"   # fleet-sessions --write
 RUNDOWNS="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/rundowns"   # the newest one is the last summary
+SHEPHERD_PASSES="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/passes.tsv"   # one scored pass a row, fleet-shepherd the writer
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 CAL_ARGS=(--argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX")
 
@@ -4092,14 +4094,46 @@ canary_lanes() {
     fi
 }
 
+# canary_shepherd [--days N] [--json] -> one row per model the shepherd's passes ran on over the
+# last N days (default 7), from the lane columns fleet-shepherd's lane_cols appends to passes.tsv
+# (model, nudges, survived, missed, wrong parks, parks; read by position here): passes,
+# NOOP share, the nudges they made and the share that moved their session (no escalation due by
+# the next run), lines left unhandled per pass, and parks made on a clear machine of all parks.
+# Rows from before the lane columns are left out. Promote the canary model only on equal scores.
+canary_shepherd() {
+  local days=7 json="" since
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="${2:-}"; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "canary shepherd: --days takes a whole number"; return 2; }; shift 2 ;;
+      --json) json=1; shift ;;
+      *) say "usage: fleet-bench canary shepherd [--days N] [--json]"; return 2 ;;
+    esac
+  done
+  [ -r "$SHEPHERD_PASSES" ] || { say "canary shepherd: no $SHEPHERD_PASSES"; return 1; }
+  since="$(date -u -d "@$(( $(now) - days * 86400 ))" '+%F %H:%M')"
+  jq -Rnc --arg since "$since" "$JQ_LIB"'
+    [inputs | split("\t") | select(length >= 10 and .[0] >= $since and .[4] != "")
+     | {verdict: .[2], model: .[4], nudges: (.[5] | tonumber), survived: (.[6] | tonumber),
+        missed: (.[7] | tonumber), wrong: (.[8] | tonumber), parks: (.[9] | tonumber)}]
+    | group_by(.model) | map(
+        (map(.nudges) | add) as $n | (map(.parks) | add) as $p
+        | {model: .[0].model, passes: length, noop_share: ratio(map(select(.verdict == "NOOP")) | length; length),
+           nudges: $n, progress_share: ratio($n - (map(.survived) | add); $n),
+           missed_per_pass: ratio(map(.missed) | add; length), wrong_parks: (map(.wrong) | add), parks: $p}) | .[]' "$SHEPHERD_PASSES" |
+    if [ -n "$json" ]; then cat; else
+      jq -r '"\(.model)\t\(.passes) passes\tnoop \(.noop_share // "-")\t\(.nudges) nudges\tprogress \(.progress_share // "-")\tmissed/pass \(.missed_per_pass // "-")\twrong parks \(.wrong_parks)/\(.parks)"'
+    fi
+}
+
 cmd_canary() {
   case "${1:-}" in
     list) shift; canary_list "$@" ;;
+    shepherd) shift; canary_shepherd "$@" ;;
     verify) shift; canary_verify "$@" ;;
     queue) shift; canary_queue "$@" ;;
     start) shift; canary_start "$@" ;;
     score) shift; canary_score "$@" ;;
-    *) say "usage: fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]] | start <id> | score <id>"; return 2 ;;
+    *) say "usage: fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]] | start <id> | score <id> | shepherd [--days N] [--json]"; return 2 ;;
   esac
 }
 
