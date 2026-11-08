@@ -51,6 +51,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-yaml sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
+# Every download below (tmux, fzf, shellcheck, shfmt) goes to GitHub's release CDN, which answers a
+# 504 now and then, and the image is rebuilt on every CI run with no layer cache, so one 504 failed
+# the ui tier and the lint job together. curl reads this file, so the
+# retry lives in one place and each download keeps its plain `curl -fsSL`.
+RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
+
 # python3 + PyYAML are RUNTIME dependencies of a subject, not build tools:
 # sentinel-manifest parses and validates watch manifests with them. Without python3 the
 # whole `sentinel_manifest` suite fails with `env: 'python3': No such file or directory`;
