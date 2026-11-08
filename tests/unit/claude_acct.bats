@@ -609,6 +609,23 @@ STUB
   assert_output 0.07
 }
 
+@test "the session rate collapses each account to one series, so a new metric label still has a partner 6h back" {
+  cat > "$SANDBOX/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >> "$SANDBOX/prom.args"
+echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.06"]}]}}'
+STUB
+  export CC_PROM_URL=http://prom.test SANDBOX
+  run bash -c "source '$ACCT'; session_rate; session_rate '' codex"
+  assert_success
+  run grep -c 'max by (account) (claude_account_week_used_percent{kind=~"claude|"} offset 6h)' "$SANDBOX/prom.args"
+  assert_output 1
+  run grep -c 'max by (account) (claude_account_week_used_percent{account="codex"} offset 6h)' "$SANDBOX/prom.args"
+  assert_output 1
+  run grep -c 'avg_over_time((max by (account) (claude_account_live_sessions{account="codex"}))\[6h:5m\])' "$SANDBOX/prom.args"
+  assert_output 1
+}
+
 @test "room: today's numbers refuse main and take alt" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 66 102   # 39% of the week gone

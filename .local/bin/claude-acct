@@ -403,12 +403,13 @@ cmd_cost() {
 # read. A reset inside the window reads low, never high. nospend reads the cache at any age and never
 # asks Prometheus; the claude-acct-usage timer's `textfile` keeps the cache fresh. With a source name
 # it is that source's own 6h change in used percent per live session, SESSION_RATE until it has history.
+# Each account is one series (max by account) before the offset and the average: a label added to the
+# textfile (kind, #1488) leaves the new series no partner 6h back, and a raw subtraction reads nothing.
 session_rate() {
-    local f="$CACHE/session_rate" r q='sum(clamp_min(claude_account_week_used_percent{kind=~"claude|"} - claude_account_week_used_percent{kind=~"claude|"} offset 6h, 0)) / sum(avg_over_time(claude_account_live_sessions{kind=~"claude|"}[6h])) / 6'
-    if [[ -n "${2:-}" ]]; then
-        f="$CACHE/session_rate.$2"
-        q="sum(clamp_min(claude_account_week_used_percent{account=\"$2\"} - claude_account_week_used_percent{account=\"$2\"} offset 6h, 0)) / sum(avg_over_time(claude_account_live_sessions{account=\"$2\"}[6h])) / 6"
-    fi
+    local f="$CACHE/session_rate" r q sel='kind=~"claude|"'
+    if [[ -n "${2:-}" ]]; then f="$CACHE/session_rate.$2" sel="account=\"$2\""; fi
+    q="sum(clamp_min(max by (account) (claude_account_week_used_percent{$sel}) - max by (account) (claude_account_week_used_percent{$sel} offset 6h), 0))"
+    q+=" / sum(avg_over_time((max by (account) (claude_account_live_sessions{$sel}))[6h:5m])) / 6"
     if [[ -s "$f" ]] && { [[ "${1:-}" == nospend ]] || (( $(date +%s) - $(stat -c %Y "$f") < RATE_TTL )); }; then
         cat "$f"; return
     fi
