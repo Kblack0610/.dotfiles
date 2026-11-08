@@ -17,13 +17,13 @@ The level says how fast the fleet starts work. `mid` is the confs' own numbers. 
 
 | Limit | Read by | low | mid | high |
 |---|---|---|---|---|
-| `DISPATCH_PER_PASS` | fleet-dispatch | 1 | 3 | 6 |
+| `DISPATCH_PER_PASS` | fleet-dispatch | no cap | no cap | no cap |
 | `DISPATCH_NIGHT_MAX` | fleet-dispatch | 3 | 6 | 12 |
 | `DISPATCH_MAX_LOAD`, a core | fleet-dispatch | 0.9 | 1.5 | 2.1 |
 | `CLAUDE_ACCT_PACE_SLACK_PCT`, points past pace | claude-acct room | 1 | 5 | 10 |
 | `CLAUDE_ACCT_RESERVE_PCT`, kept for you | claude-acct room | 20 | 15 | 10 |
 
-The numbers here are today's conf values (the two claude-acct rows come from `.config/claude-acct/pace.conf`; their names are the levels file's column keys, not env vars, so exporting one changes nothing). The conf is the baseline: change it there and every level follows. Nothing is written when you switch, so the next dispatch pass and the next `claude-acct room` read the new level. `cl`, `claude-acct pick` and hand starts are never refused by it: pick's rank ignores the level, and only its stderr hint about an automatic start follows it. Run units (`DISPATCH_MAX_LIVE`), budgets, and the thermal, memory and GitHub gates are not scaled. `fleet-dispatch headroom` prints the level next to the limits it is applying now.
+The numbers here are today's conf values. `DISPATCH_PER_PASS` is unset, and 0 is no cap at every level, so the scaled load limit is what bounds a pass; set it above 0 and the level scales it again (the two claude-acct rows come from `.config/claude-acct/pace.conf`; their names are the levels file's column keys, not env vars, so exporting one changes nothing). The conf is the baseline: change it there and every level follows. Nothing is written when you switch, so the next dispatch pass and the next `claude-acct room` read the new level. `cl`, `claude-acct pick` and hand starts are never refused by it: pick's rank ignores the level, and only its stderr hint about an automatic start follows it. Run units (`DISPATCH_MAX_LIVE`), budgets, and the thermal, memory and GitHub gates are not scaled. `fleet-dispatch headroom` prints the level next to the limits it is applying now.
 
 ## Use
 
