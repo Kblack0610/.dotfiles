@@ -2,7 +2,7 @@
 //! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear), green rows folded to one line,
 //! the selected row's versions, watches and dependencies in a pane under the list.
 
-use hub_core::releases::{fold, Deploy, Level, Release, Releases, STALE_SECS};
+use hub_core::releases::{fold, Changelog, Deploy, Level, Release, Releases, STALE_SECS};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -34,7 +34,7 @@ const HEADER: [&str; 9] = [
     "DEPS",
 ];
 /// The width of the pane's labels, as the longest one.
-const LABEL: usize = 8;
+const LABEL: usize = 9;
 /// PROJECT and CHANNEL at 80 columns and at their widest: each takes half of whatever a wider
 /// terminal adds. A version is short enough for one cap, and DEPS only gets what is left.
 const PROJECT_FIT: (usize, usize) = (13, 26);
@@ -44,6 +44,16 @@ const STATUS_CAP: usize = 10;
 /// `10-26 15:02 fail`.
 const LAST_DEPLOY_CAP: usize = 16;
 
+/// The changelog read for the opened channel: whose it is, whether a worker is still on it (one at
+/// a time, so holding a key over many projects asks for the last one only), and what came back,
+/// None while it is being read.
+#[derive(Default)]
+pub struct ChangelogRead {
+    pub project: String,
+    pub busy: bool,
+    pub read: Option<Result<Changelog, String>>,
+}
+
 #[derive(Default)]
 pub struct ReleasesView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
@@ -51,6 +61,7 @@ pub struct ReleasesView {
     /// Whether the pane is open, and how far it is scrolled.
     pub open: bool,
     pub down: usize,
+    pub cl: ChangelogRead,
     /// The Builds section under the channels, which `b` hands the keys to.
     pub builds: crate::builds::BuildsView,
 }
@@ -84,6 +95,14 @@ impl ReleasesView {
         self.table.sel = 0;
         self.open = false;
         self.down = 0;
+    }
+
+    /// The tag `by` places along the picker from the one on show (positive is older), if any.
+    pub fn pick(&self, by: isize) -> Option<String> {
+        let Some(Ok(c)) = &self.cl.read else {
+            return None;
+        };
+        c.neighbour(by).map(String::from)
     }
 
     pub fn shown<'a>(&self, s: &'a Releases) -> Vec<&'a Release> {
@@ -237,8 +256,15 @@ fn deploy_line(d: &Deploy, now: i64) -> String {
     out
 }
 
-/// The pane: the row's status, then each part that has anything to say, wrapped to `w`.
-pub fn detail(r: &Release, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// The pane: the row's status, then each part that has anything to say, wrapped to `w`, then the
+/// project's changelog (`cl`, None while it is being read).
+pub fn detail(
+    r: &Release,
+    p: Palette,
+    now: i64,
+    w: usize,
+    cl: Option<&Result<Changelog, String>>,
+) -> Vec<Line<'static>> {
     let mut status = r.status.clone();
     if let Some(t) = r.drift_since {
         status += &format!(" since {}", clock(t, now));
@@ -284,6 +310,39 @@ pub fn detail(r: &Release, p: Palette, now: i64, w: usize) -> Vec<Line<'static>>
     }
     if !r.deps.is_empty() {
         part("Deps", &r.deps_text, plain);
+    }
+    match cl {
+        None => part("Changelog", "reading...", p.dim()),
+        Some(Err(e)) => part("Changelog", e, p.warn()),
+        Some(Ok(c)) => {
+            let place = c.position().map_or(String::new(), |i| {
+                format!(", {} of {}", i + 1, c.tags.len())
+            });
+            part(
+                "Changelog",
+                &format!(
+                    "{} ({}, from {}{place}); [ older, ] newer",
+                    c.tag, c.range, c.source
+                ),
+                plain,
+            );
+            if c.text.is_empty() {
+                out.extend(wrapped(
+                    "    ",
+                    &format!("no merged PRs in {}", c.range),
+                    p.dim(),
+                    p,
+                    w,
+                ));
+            }
+            for line in c.text.lines() {
+                if line.trim().is_empty() {
+                    out.push(Line::raw(""));
+                } else {
+                    out.extend(wrapped("    ", line.trim_end(), plain, p, w));
+                }
+            }
+        }
     }
     out
 }
@@ -457,7 +516,7 @@ mod tests {
     #[test]
     fn the_pane_says_both_sides_every_watch_and_the_deps() {
         let s = sample();
-        let lines: Vec<String> = detail(&s.rows[0], Palette::default(), AT, 60)
+        let lines: Vec<String> = detail(&s.rows[0], Palette::default(), AT, 60, None)
             .iter()
             .map(text)
             .collect();
@@ -475,6 +534,45 @@ mod tests {
             .iter()
             .any(|l| l.contains("Deps") && l.contains("unity-core")));
         assert!(lines.iter().all(|l| l.chars().count() <= 60), "{lines:?}");
+    }
+
+    fn changelog(tag: &str, text: &str) -> Changelog {
+        Changelog {
+            project: "binks".into(),
+            tag: tag.into(),
+            prev: Some("v1".into()),
+            source: "merged PRs".into(),
+            range: format!("v1..{tag}"),
+            text: text.into(),
+            tags: ["v3", "v2", "v1"].map(String::from).to_vec(),
+        }
+    }
+
+    fn pane(cl: Option<&Result<Changelog, String>>, w: usize) -> Vec<String> {
+        let s = sample();
+        detail(&s.rows[0], Palette::default(), AT, w, cl)
+            .iter()
+            .map(text)
+            .collect()
+    }
+
+    #[test]
+    fn the_pane_ends_in_the_changelog_of_the_tag_on_show_and_where_it_sits_in_the_picker() {
+        let ok = Ok(changelog(
+            "v2",
+            "- a fix (#1)\n\n### Added\n- a long line that has to wrap at the pane width (#2)",
+        ));
+        let lines = pane(Some(&ok), 40);
+        let at = lines.iter().position(|l| l.contains("Changelog")).unwrap();
+        let head = lines[at..at + 2].join(" ");
+        assert!(head.contains("v2") && head.contains("2 of 3"), "{lines:?}");
+        assert!(lines.iter().any(|l| l.trim() == "- a fix (#1)"));
+        assert!(lines.iter().any(|l| l.trim() == "### Added"));
+        assert!(lines.iter().any(|l| l.contains("(#2)")), "{lines:?}");
+        assert!(
+            lines[1..].iter().all(|l| l.chars().count() <= 40),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -499,6 +597,34 @@ mod tests {
     }
 
     #[test]
+    fn a_changelog_still_being_read_or_refused_or_empty_says_so() {
+        assert!(pane(None, 80)
+            .iter()
+            .any(|l| l.contains("Changelog") && l.contains("reading...")));
+        let err = Err("release-state: binks has no release tags".to_string());
+        assert!(pane(Some(&err), 100)
+            .iter()
+            .any(|l| l.contains("binks has no release tags")));
+        let none = Ok(changelog("v2", ""));
+        assert!(pane(Some(&none), 80)
+            .iter()
+            .any(|l| l.trim() == "no merged PRs in v1..v2"));
+    }
+
+    #[test]
+    fn the_picker_walks_older_and_newer_and_stops_at_the_ends() {
+        let mut v = ReleasesView::default();
+        assert_eq!(v.pick(1), None, "nothing read, nothing to pick");
+        v.cl.read = Some(Ok(changelog("v2", "")));
+        assert_eq!(v.pick(1).as_deref(), Some("v1"));
+        assert_eq!(v.pick(-1).as_deref(), Some("v3"));
+        v.cl.read = Some(Ok(changelog("v1", "")));
+        assert_eq!(v.pick(1), None);
+        v.cl.read = Some(Err("gone".into()));
+        assert_eq!(v.pick(1), None);
+    }
+
+    #[test]
     fn the_pane_lists_the_history_and_its_runs_and_says_a_failed_read() {
         use hub_core::releases::{Deploy, Deploys};
         let mut s = sample();
@@ -515,7 +641,7 @@ mod tests {
             ..Default::default()
         };
         let p = Palette::default();
-        let pane = detail(&s.rows[0], p, AT, 200);
+        let pane = detail(&s.rows[0], p, AT, 200, None);
         let lines: Vec<String> = pane.iter().map(text).collect();
         assert!(
             lines.iter().any(|l| l.contains("Prev") && l.contains("v1")),
@@ -533,7 +659,7 @@ mod tests {
             error: Some("gh api failed".into()),
             ..Default::default()
         };
-        let lines: Vec<String> = detail(&s.rows[0], p, AT, 200).iter().map(text).collect();
+        let lines: Vec<String> = detail(&s.rows[0], p, AT, 200, None).iter().map(text).collect();
         assert!(
             lines.iter().any(|l| l.contains("gh api failed (o/r)")),
             "{lines:?}"

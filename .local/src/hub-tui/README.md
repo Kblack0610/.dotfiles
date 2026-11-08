@@ -59,6 +59,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `x` | Jobs table: clear the query, chip and sort |
 | `b` / `B`, `w`, `/`, `s` / `S`, `x` | Costs: the next / previous cut (its sort resets), the next window, type a query, sort by the next column / flip it, clear the query and sort |
 | `h` | Jobs table: every run of the selected job, unfolded (again to go back) |
+| `[` / `]` | Releases, pane open: the changelog of the next older / newer tag of the selected project (Enter reads the newest release's) |
 | `R` | Projects, on an opened card: that project's channels on Releases |
 | Enter | Jobs table: open the selected row's log (follows the tail) |
 | `J`/`K`, PgUp/PgDn | Jobs table, log open: scroll the log |
