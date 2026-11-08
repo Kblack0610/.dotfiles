@@ -45,6 +45,12 @@ for a in "$@"; do
   case "$a" in
     --rotate) ROTATE=1 ;;
     --all) ALL=1 ;;
+    # A flag is never a project name: without this, --help scaffolds anchors/--help.md.
+    -*)
+      echo "regen-anchor: unknown option '$a'" >&2
+      echo "usage: regen-anchor.sh [project] [--rotate] | --all" >&2
+      exit 2
+      ;;
     *) ARGS+=("$a") ;;
   esac
 done
