@@ -120,6 +120,19 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial r2
 }
 
+@test "due never nudges a session holding an open ask it filed, and nudges the same row once the ask is gone" {
+  own="$(row a DONE false false | jq -c '. + {own_asks: 1}')"
+  doc "[$own, $(row b LANDED false false | jq -c '. + {own_asks: 2}'), $(row c STALLED false false | jq -c '. + {own_asks: 1}'), $(row d DONE false false)]"
+  run "$SH" due
+  refute_output --partial 'nudge DONE: a '
+  refute_output --partial 'nudge LANDED: b '
+  refute_output --partial 'nudge STALLED: c '
+  assert_line 'nudge DONE: d f-d'
+  doc "[$(jq -c '. + {own_asks: 0}' <<<"$own")]"
+  run "$SH" due
+  assert_line 'nudge DONE: a f-a'
+}
+
 @test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
   # no item could be filed (the add fails), so the red is the human's, as before ar-623
   stub agent-queue '[ "$1" = add ] && { echo "agent-queue: unknown project: x" >&2; exit 2; }; exit 0'
