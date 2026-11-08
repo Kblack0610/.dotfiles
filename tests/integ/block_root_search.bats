@@ -70,6 +70,28 @@ bash_cmd() { jq -nc --arg c "$1" '{tool_name:"Bash", cwd:"/home/u/wt", tool_inpu
   done
 }
 
+@test "quoted and heredoc text that names a root search is not a search" {
+  for c in 'git commit -m "fix: find / -name x no longer hangs"' \
+           "agent-queue add 'rg foo /mnt is denied by the guard'" \
+           $'git commit -F - <<\'EOF\'\nfix: grep -rn foo /\nEOF' \
+           $'cat <<EOF\nfind / -name x\nEOF\necho done'; do
+    run bash_cmd "$c"
+    assert_success
+    assert_output ""
+  done
+}
+
+@test "negative control: the same search as code, after a quoted or heredoc part, is still denied" {
+  for c in 'git commit -m "msg" && find / -name x' \
+           $'cat <<EOF\nnote\nEOF\nrg foo /mnt' \
+           "bash -c 'find / -name x'" \
+           'find "/" -name x' \
+           "grep -rn 'a b' '/mnt'"; do
+    run bash_cmd "$c"
+    assert_output --partial '"deny"'
+  done
+}
+
 @test "no network mounts means nothing is denied" {
   echo '/dev/sda1 / ext4 rw 0 0' > "$ROOT_SEARCH_MOUNTS"
   run grep_at /
