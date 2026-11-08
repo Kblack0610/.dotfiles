@@ -1,10 +1,11 @@
 //! One project's page, read when its card is opened (dashboards rule 10), never for every card:
 //! the Flow line, what needs the human, the epics by system with each system's criteria, the
-//! next stage's gaps and the shipped versions. Every number is counted by its owner and this
-//! module only joins them and says the words, so agent-web and the hub TUI print the same lines:
-//! `fleet-bench epics` (the chain, `epics.rs`), `project-stage-check` (next stage and system
-//! criteria) and `notes projects --roadmap --json` (shipped versions). A source that fails is
-//! named in `errors` and the rest of the page still shows.
+//! next stage's gaps, the shipped versions and the dev timeline. Every number is counted by its
+//! owner and this module only joins them and says the words, so agent-web and the hub TUI print
+//! the same lines: `fleet-bench epics` (the chain, `epics.rs`), `project-stage-check` (next stage
+//! and system criteria), `notes projects --roadmap --json` (shipped versions) and
+//! `project-timeline` (`timeline.rs`). A source that fails is named in `errors` and the rest of
+//! the page still shows.
 
 use std::collections::BTreeMap;
 
@@ -65,6 +66,8 @@ pub struct Page {
     pub shipped: Vec<String>,
     /// The channels' one-line badge, linking to the Releases tab; None with no channels.
     pub releases: Option<crate::releases::Badge>,
+    /// The Timeline fold; None when `project-timeline` could not be read (named in `errors`).
+    pub timeline: Option<crate::timeline::Timeline>,
     pub errors: Vec<String>,
 }
 
@@ -368,10 +371,14 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
         },
         Err(e) => p.errors.push(format!("notes projects --roadmap: {e}")),
     }
-    match crate::releases::badge(runner, name) {
-        Ok(b) => p.releases = b,
-        Err(e) => p.errors.push(e),
-    }
+    let channels = crate::releases::channels(runner, name).unwrap_or_else(|e| {
+        p.errors.push(e);
+        vec![]
+    });
+    p.releases = crate::releases::badge(&channels);
+    let (timeline, errors) = crate::timeline::read(runner, name, channels, now);
+    p.timeline = timeline;
+    p.errors.extend(errors);
     p.shipped_says = match p.shipped.len() {
         0 => "none yet".into(),
         1 => "1 version".into(),
@@ -475,6 +482,11 @@ mod tests {
                     0,
                     r#"{"rows":[{"project":"game","id":"game-prod","status":"drift"}]}"#.into(),
                 ),
+                (
+                    "project-timeline --days 7 game",
+                    0,
+                    r#"{"tags":[{"tag":"v0.1.0","at":1794000000}]}"#.into(),
+                ),
             ],
             seen: RefCell::new(vec![]),
         }
@@ -551,6 +563,7 @@ mod tests {
         );
         assert_eq!(p.shipped_says, "1 version");
         assert_eq!(p.releases.unwrap().says, "1 channel: 1 drift");
+        assert_eq!(p.timeline.unwrap().says, "7d: 1 tag");
     }
 
     #[test]
