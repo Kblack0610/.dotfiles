@@ -21,6 +21,7 @@ Fail-open: any error allows the call.
 import json
 import os
 import re
+import subprocess
 import sys
 
 SEP = r"(?:^|[;&|(){}\s])"
@@ -31,7 +32,7 @@ LOOP = re.compile(r"(until|while|for)\s+(.*?)" + SEP + r"do" + END + r"(.*)" + S
 SLEEP = re.compile(SEP + r"sleep" + END)
 BREAK = re.compile(SEP + r"(break|exit)" + END)
 SHELL_C = re.compile(SEP + r"(?:ba|z|da|k)?sh(?:\s+-\S+)*\s+-[a-z]*c\s*$")
-TASK_OUTPUT = re.compile(r"/tasks/([\w.-]+)\.output")
+TASK_OUTPUT = re.compile(r"""([^\s'"]*/tasks/([\w.-]+)\.output)""")
 HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 
 WATCH_MSG = (
@@ -115,8 +116,11 @@ def polls(text):
     return False
 
 
-def live_outputs(ids):
+def live_outputs(found):
     """The ids whose tasks/<id>.output some process still holds open: the run is still going."""
+    if not os.path.isdir("/proc"):
+        return lsof_live(found)
+    ids = {i for _, i in found}
     ends = {"/tasks/%s.output" % i: i for i in ids}
     live = set()
     for pid in os.listdir("/proc"):
@@ -137,10 +141,26 @@ def live_outputs(ids):
     return live
 
 
+def lsof_live(found):
+    """No /proc (macOS): ask lsof whether anything holds each named output file open."""
+    live = set()
+    for path, i in found:
+        path = os.path.expanduser(os.path.expandvars(path))
+        if not os.path.isfile(path):
+            continue
+        try:
+            r = subprocess.run(["lsof", "-t", "--", path], capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.stdout.strip():
+            live.add(i)
+    return live
+
+
 def live_reason(text):
     """The deny reason when text names a tasks/<id>.output that a live run still holds, else None."""
-    ids = set(TASK_OUTPUT.findall(text))
-    live = live_outputs(ids) if ids else set()
+    found = set(TASK_OUTPUT.findall(text))
+    live = live_outputs(found) if found else set()
     return LIVE_MSG.format(id=sorted(live)[0]) if live else None
 
 

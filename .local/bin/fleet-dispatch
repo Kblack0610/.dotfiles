@@ -1667,7 +1667,7 @@ item_brief() {
   fi
   [[ "$tags" == *" night "* ]] && pr_only=' --pr-only'
   load_kinds
-  kind=$(jq -r '.type // empty' <<<"$it"); [ -n "$kind" ] || kind=$(row_kind "$(jq -r '.title // .task // ""' <<<"$it")")
+  kind=$(item_kind "$it")
   [ -z "$kind" ] || { entry=${KIND_ENTRY[$kind]:-}; exit_=${KIND_EXIT[$kind]:-}; }
   entry=${entry:-/one-shot}
   # A kind that opens no PR has no PR to stop at, and no tier-3 merge gate to name.
@@ -2308,31 +2308,42 @@ item_headline() {
 # take. The one read lane_pick and start's `size=` header share.
 item_size() { jq -r '[(.task // "") | match("#size/([sml])\\b"; "i").captures[0].string | ascii_downcase][0] // empty' <<<"$1"; }
 
+# item_kind <item json> -> the item's row type: its `type:` (promote copies it from the board row),
+# else its title or task parsed as a row (row_kind); nothing for a bare one. The kind the session
+# prompt's entry skill and the model-lane class (kind/size) share.
+item_kind() {
+  local k
+  k=$(jq -r '.type // empty' <<<"$1"); [ -n "$k" ] || k=$(row_kind "$(jq -r '.title // .task // ""' <<<"$1")")
+  [ -z "$k" ] || printf '%s\n' "$k"
+}
+
 # lane_pick <slug> <harness> -> model-lane's verdict for a queued Claude item started with no --model,
 # at DISPATCH_LANE_FLOOR; nothing when it is not queued, runs another harness, or model-lane fails.
-# It classifies the item's headline and its board #size/ tag, never the whole task: the body carries
+# It classifies the item's headline, its board #size/ tag and its kind (item_kind), which make the
+# task class a candidate is promoted for (model-lane score), never the whole task: the body carries
 # the same dispatch boilerplate on every item, and its words would pick the lane. Not the item's
 # weight either: agent-queue derives that from load (a Unity checkout or a plan is heavy), not size.
 # Every start of an item comes through cmd_start (a pass, a hand start, a plan phase, an after: chain),
 # so this is the one place an item's model is picked.
 lane_pick() {
-  local it size
+  local it size kind
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   [ "$(jq -r .state <<<"$it")" = queued ] && [ "${2:-$(jq -r '.agent // "claude"' <<<"$it")}" = claude ] || return 0
-  size=$(item_size "$it")
-  model-lane classify "$(item_headline "$it")" --floor "$DISPATCH_LANE_FLOOR" ${size:+--size "$size"} 2>/dev/null |
+  size=$(item_size "$it"); kind=$(item_kind "$it")
+  model-lane classify "$(item_headline "$it")" --floor "$DISPATCH_LANE_FLOOR" ${size:+--size "$size"} ${kind:+--kind "$kind"} 2>/dev/null |
     jq -ce 'select(.lane and .dispatch_model)' 2>/dev/null || true
 }
 
 # lane_log <slug> <task> <verdict json> <model ran> [harness] -- the started item's pick goes in model-lane's
-# log and its run id on the item as lane_run, so the item's close reports the outcome (agent-queue
-# move) and the lane can graduate or demote on evidence. No verdict (model-lane failed) logs nothing:
+# log, with the verdict's task class, and its run id on the item as lane_run, so the item's close reports
+# the outcome (agent-queue move) and the lane, or a candidate promoted for the class, can demote on evidence. No verdict (model-lane failed) logs nothing:
 # the item ran on opus, and a broken router never blocks a start.
 lane_log() {
-  local id
+  local id cls
   [ -n "$3" ] || return 0
+  cls=$(jq -r '.class // empty' <<<"$3")
   id=$(model-lane log --item "$1" --task "$2" --lane "$(jq -r .lane <<<"$3")" --by "$(jq -r '.by // "rule"' <<<"$3")" \
-    --picked "$(jq -r '.model // .dispatch_model' <<<"$3")" --ran "$4" ${5:+--harness "$5"} 2>/dev/null) && [ -n "$id" ] ||
+    --picked "$(jq -r '.model // .dispatch_model' <<<"$3")" --ran "$4" ${5:+--harness "$5"} ${cls:+--class "$cls"} 2>/dev/null) && [ -n "$id" ] ||
     { logline "model-lane log failed for queue item $1; it runs unrated"; return 0; }
   agent-queue set "$1" "lane_run=$id" >/dev/null || logline "could not stamp lane_run=$id on queue item $1"
 }
@@ -2722,9 +2733,6 @@ present_left() {
   n=$(( DISPATCH_PRESENT_PER_HOUR - ${n:-0} ))
   echo $(( n > 0 ? n : 0 ))
 }
-
-# human_here -> rc 0 unless fleet-presence says away. Unreadable counts as here: the slower rate.
-human_here() { case "$(fleet-presence 2>/dev/null)" in away*) return 1 ;; esac; return 0; }
 
 # queue_depth -> the queued items no hold stops, those waiting on the trickle included: what the
 # low water mark measures.

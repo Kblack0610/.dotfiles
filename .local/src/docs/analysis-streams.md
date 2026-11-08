@@ -1,6 +1,6 @@
 # Analysis streams
 
-The method every analysis stream follows: tokens (`usage-cleanup`), pipeline time (`pipeline-eval`), CI (`ci-failures`, `ci-cost`, `ci-cleanup`), docs (`docs-cleanup`) and, for what to route where, runtime reds (last rule). A stream's skill names its sources, its metrics and where its report lives, and links here for the rest. A rule that a skill used to copy lives only here.
+The method every analysis stream follows: tokens (`usage-cleanup`), pipeline time (`pipeline-eval`), CI (`ci-failures`, `ci-cost`, `ci-cleanup`), docs (`docs-cleanup`), fixed context (`context-trim`) and, for what to route where, runtime reds (last rule). A stream's skill names its sources, its metrics and where its report lives, and links here for the rest. A rule that a skill used to copy lives only here.
 
 ## A finding
 
