@@ -988,12 +988,16 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   "$SH" check >/dev/null
   "$SH" check >/dev/null                      # owed, but only just
   [ ! -s "$HOME/pages" ]
+  # due for an hour is not owed for an hour: the clock starts when a pass was handed the line
   sed -i 's/\t[0-9]*\t/\t1000\t/' "$FLEET_SHEPHERD_DIR/.due"
+  "$SH" check >/dev/null
+  [ ! -s "$HOME/pages" ]
+  sed -i 's/\t[0-9]*$/\t1000/' "$FLEET_SHEPHERD_DIR/.handed"
   "$SH" check >/dev/null
   run cat "$HOME/pages"
   assert_output --partial '-p high -t shepherd unhandled'
   assert_output --partial 'watch: queue-starved tripped (high)'
-  sed -i 's/\t[0-9]*\t/\t1000\t/' "$FLEET_SHEPHERD_DIR/.due"
+  sed -i 's/\t[0-9]*$/\t1000/' "$FLEET_SHEPHERD_DIR/.handed"
   "$SH" check >/dev/null
   assert_equal "$(grep -c unhandled "$HOME/pages")" 1
   # once it stops being due the page is spent, so the next hour-long miss pages again
@@ -1007,7 +1011,7 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   export STUB_TRIPPED='queue-starved\thigh\n'
   "$SH" check >/dev/null
   "$SH" check >/dev/null
-  sed -i 's/\t[0-9]*\t/\t1000\t/' "$FLEET_SHEPHERD_DIR/.due"
+  sed -i 's/\t[0-9]*$/\t1000/' "$FLEET_SHEPHERD_DIR/.handed"
   "$SH" check >/dev/null
   run grep 'escalate NEEDS' "$HOME/pages"
   assert_output --partial '-p high -t shepherd -r tmux:hub/demo-agent-1:2 unhandled'
@@ -1592,8 +1596,14 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   doc "[$(row a DONE false false), $(row b LANDED false false)]"
   run "$SH" run
   assert_equal "$(model_of)" claude-opus-5-5
-  # the pass nudged a (gone now) and left b as it was (owed)
+  # the pass nudged a (gone now) and left b as it was (owed); a run the debounce holds in between
+  # prunes a from .handed, and the score still counts it, from the pass's own lane file
   doc "[$(row b LANDED false false)]"
+  FLEET_SHEPHERD_DEBOUNCE_MIN=30 FLEET_SHEPHERD_URGENT_RE='^$' run "$SH" run
+  assert_output --partial 'none urgent'
+  refute_output --partial 'started pass'
+  run grep -c '^nudge DONE: a' "$FLEET_SHEPHERD_DIR/.handed"
+  assert_output 0
   run "$SH" run  # a pass with no transcript is STALLED (exit 1); this test reads its lane, not its verdict
   assert_equal "$(model_of)" claude-opus-5-5
   assert_equal "$(cut -f5- "$FLEET_SHEPHERD_DIR/passes.tsv")" "$(printf 'claude-opus-5-5\t1\t0\t1\t0\t0')"
@@ -1611,4 +1621,18 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   doc "[$(row d DONE false false)]"
   run "$SH" run; run "$SH" run
   assert_equal "$(model_of)" claude-opus-5-5
+}
+
+@test "canary lane: a park the pass made counts wrong only when the pace line names that session exactly" {
+  export CLAUDE_ACCT_PARKED_DIR="$HOME/parked"; mkdir -p "$CLAUDE_ACCT_PARKED_DIR"
+  doc "[$(row a DONE false false)]"
+  "$SH" run >/dev/null
+  local id; id="$(pass_id)"; live "$id" idle
+  aged 1
+  # while it ran it parked lab/q (named on a clear machine) and p and hub:2 (named nowhere)
+  touch "$CLAUDE_ACCT_PARKED_DIR/q" "$CLAUDE_ACCT_PARKED_DIR/p" "$CLAUDE_ACCT_PARKED_DIR/hub:2"
+  doc "[$(jq -c '.bucket = "PARKED" | .target = "lab/q:1"' <<<"$(row q DONE true true)"), $(row b DONE false false)]"
+  run "$SH" run
+  assert_output --partial 'pace: parked lab/q:1 while the machine reads CLEAR'
+  assert_equal "$(grep -P "\t$id\t" "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f9,10)" "$(printf '1\t3')"
 }

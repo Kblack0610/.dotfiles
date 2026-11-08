@@ -93,7 +93,7 @@ LEASE="$LEDGER/.lease"
 BLOCKED="$LEDGER/.blocked"   # this pass's `fleet-assess --blocked` rows; .prev holds the last pass's
 INFRA="$LEDGER/.infra"       # this pass's infra and watch lines
 DUE_LAST="$LEDGER/.due"      # <key>\t<role>\t<first seen epoch>\t<line>: what the last check found due
-HANDED="$LEDGER/.handed"     # <key>: due lines handed to a pass, so only those can come back unhandled
+HANDED="$LEDGER/.handed"     # <key>\t<epoch>: due lines handed to a pass and when, so only those can come back unhandled
 SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to leave, and why
 PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while they stay due
 UNHANDLED="$LEDGER/.unhandled"  # how many checks in a row found an unhandled line
@@ -740,10 +740,11 @@ due_key() { sed -E 's/^unhandled: //; s/; then: .*$//; s/[0-9]+m/Nm/g' <<<"$1"; 
 # line handed to a pass ($HANDED) can be owed: a run that starts no pass (no_pass_why) checks with
 # FLEET_SHEPHERD_HAND=0, so a line it held back comes to the next pass plain. While the
 # last pass is still working it may yet reach a line, so its lines come back plain and nothing is
-# counted against it. A line owed for FLEET_SHEPHERD_UNHANDLED_MIN pages the human high, once: on 2026-11-04 the passes
+# counted against it. A line owed FLEET_SHEPHERD_UNHANDLED_MIN after it was handed (not after it was
+# first due: the debounce may hold it first) pages the human high, once: on 2026-11-04 the passes
 # reported "dispatch NOOP" for 6.5h and nobody was told.
 receipts() {
-  local line key out="" owed="" keys="" given="" rows="" now seen owe early=""
+  local line key out="" owed="" keys="" given="" rows="" now seen owe handed early=""
   touch "$DUE_LAST" "$SKIPPED" "$PAGED" "$HANDED"
   now="$(date +%s)"
   ! last_working || early=1
@@ -755,16 +756,16 @@ receipts() {
     given+="$key"$'\n'
     seen="$(awk -F'\t' -v k="$key" '$1 == k { print $3; exit }' "$DUE_LAST")"
     owe=""
-    if [ -z "$early" ] && grep -qxF -- "$key" "$HANDED"; then
+    handed="$(awk -F'\t' -v k="$key" '$1 == k { print $2; exit }' "$HANDED")"
+    if [ -z "$early" ] && [ -n "$handed" ]; then
       owe=1
-      seen="${seen:-$now}"
       owed+="unhandled: $line"$'\n'
-      if [ $(( (now - seen) / 60 )) -ge "$FLEET_SHEPHERD_UNHANDLED_MIN" ] && ! grep -qxF -- "$key" "$PAGED"; then
+      if [ $(( (now - handed) / 60 )) -ge "$FLEET_SHEPHERD_UNHANDLED_MIN" ] && ! grep -qxF -- "$key" "$PAGED"; then
         # A session's due line is cmd_due's "<verb> <BUCKET>: <server>/<session>:<window> ...",
         # so its target is where the page points; other lines (pace, infra) point nowhere.
         ref=""
         [[ "$key" =~ ^(nudge|escalate)\ [A-Z]+:\ ([^ /]+/[^ ]+:[0-9]+) ]] && ref="tmux:${BASH_REMATCH[2]}"
-        agent-notify -p high -t shepherd ${ref:+-r "$ref"} "unhandled $(( (now - seen) / 60 ))m: $key" >/dev/null 2>&1 || true
+        agent-notify -p high -t shepherd ${ref:+-r "$ref"} "unhandled $(( (now - handed) / 60 ))m: $key" >/dev/null 2>&1 || true
         printf '%s\n' "$key" >> "$PAGED"
       fi
     else
@@ -778,9 +779,9 @@ receipts() {
   awk 'NR == FNR { if ($0 != "") k[$0] = 1; next } $0 in k' <(printf '%s' "$keys") "$PAGED" > "$PAGED.tmp" \
     && mv -f "$PAGED.tmp" "$PAGED"
   # what is handed stays handed while it is due; a check a pass runs hands it what it sees
-  { awk 'NR == FNR { if ($0 != "") k[$0] = 1; next } $0 in k' <(printf '%s' "$keys") "$HANDED"
-    [ "${FLEET_SHEPHERD_HAND:-1}" = 0 ] || printf '%s' "$given"; } | sort -u > "$HANDED.tmp" \
+  awk -F'\t' 'NR == FNR { if ($0 != "") k[$0] = 1; next } $1 in k' <(printf '%s' "$keys") "$HANDED" > "$HANDED.tmp" \
     && mv -f "$HANDED.tmp" "$HANDED"
+  [ "${FLEET_SHEPHERD_HAND:-1}" = 0 ] || hand_keys "$given"
   printf '%s' "$rows" > "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due)
   if [ -n "$owed" ]; then
     seen="$(cat "$UNHANDLED" 2>/dev/null)"
@@ -986,15 +987,15 @@ score_pass() {
 
 # lane_cols <id> <start> [transcript] -> "<model>\t<nudges>\t<survived>\t<missed>\t<wrong>\t<parks>", the
 # pass's canary score for passes.tsv, from the lines the machine computed and never from the pass's
-# own words, so both models are scored alike. It reads SCORE_HANDED (what the pass was handed) and
-# SCORE_DUE (this run's check), which cmd_run sets. nudges: the session nudge lines it was handed
+# own words, so both models are scored alike. It reads .lane-<id> (its model, then the keys it was
+# started with, from hand_due) and SCORE_DUE (this run's check, which cmd_run sets). The keys are a
+# snapshot: .handed loses a line once it is not due, which is what a moved nudge does. nudges: the session nudge lines it was handed
 # that are gone now; survived: those whose session is due an escalation now (the fact outlived the
 # nudge, no progress); missed: the lines it left unhandled; wrong parks: the parks it made (park
 # files written while it ran) that this check's pace line calls parked on a clear machine.
 lane_cols() {
   local id="$1" start="$2" model end k t nudges=0 survived=0 missed parks=0 wrong=0 now_keys p clear
-  model="$(cat "$LEDGER/.lane-$id" 2>/dev/null)"
-  rm -f "$LEDGER/.lane-$id"
+  model="$(head -n 1 "$LEDGER/.lane-$id" 2>/dev/null)"
   now_keys="$(while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done <<<"${SCORE_DUE:-}")"
   while IFS= read -r k; do
     [[ "$k" =~ ^nudge\ (DONE|LANDED|STALLED|CHAT):\ ([^ ]+) ]] || continue
@@ -1002,15 +1003,19 @@ lane_cols() {
     nudges=$((nudges + 1)); t="${BASH_REMATCH[2]}"
     awk -v t="$t" '{ sub(/^unhandled: /, "") } $1 == "escalate" && $3 == t { f = 1 } END { exit !f }' <<<"${SCORE_DUE:-}" &&
       survived=$((survived + 1))
-  done <<<"${SCORE_HANDED:-}"
+  done < <(tail -n +2 "$LEDGER/.lane-$id" 2>/dev/null)
+  rm -f "$LEDGER/.lane-$id"
   missed="$(grep -c '^unhandled: ' <<<"${SCORE_DUE:-}")"
   end="$(stat -c %Y "${3:-/nonexistent}" 2>/dev/null || date +%s)"
-  clear="$(grep -E '^(unhandled: )?pace: parked ' <<<"${SCORE_DUE:-}")"
+  # the targets (<server>/<session>:<window>) the pace line calls parked on a clear machine, and
+  # each one's session alone, since a park file is named <session> or <session>:<window>
+  clear="$(sed -nE 's/^(unhandled: )?pace: parked (.*) while the machine reads CLEAR.*/\2/p' <<<"${SCORE_DUE:-}" |
+    tr ',' '\n' | sed -E 's/^ *[^/]*\///; s/ *$//' | awk 'NF { print; s = $0; sub(/:.*/, "", s); print s }')"
   for p in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
     [ -f "$p" ] || continue
     t="$(stat -c %Y "$p")"; [ "$t" -ge "$start" ] && [ "$t" -le "$end" ] || continue
     parks=$((parks + 1))
-    [ -z "$clear" ] || ! grep -qF -- "${p##*/}" <<<"$clear" || wrong=$((wrong + 1))
+    [ -z "$clear" ] || ! grep -qxF -- "${p##*/}" <<<"$clear" || wrong=$((wrong + 1))
   done
   printf '%s\t%s\t%s\t%s\t%s\t%s' "${model:--}" "$nudges" "$survived" "${missed:-0}" "$wrong" "$parks"
 }
@@ -1252,13 +1257,21 @@ no_pass_why() {
   echo "$(grep -c . <<<"$1") due, none urgent, last pass ${age}m ago"
 }
 
-# hand_due <due>: the lines a new pass was started with are handed to it, so the next check can
-# hold the ones it leaves against it.
-hand_due() {
-  local l
+# hand_keys <keys>: record due keys as handed now; a key already handed keeps its first time.
+# The one writer of .handed rows (receipts prunes them).
+hand_keys() {
   touch "$HANDED"
-  { cat "$HANDED"; while IFS= read -r l; do [ -z "$l" ] || due_key "$l"; done <<<"$1"; } | sort -u > "$HANDED.tmp" \
+  { cat "$HANDED"; awk -v t="$(date +%s)" 'NF { print $0 "\t" t }' <<<"$1"; } | awk -F'\t' '!s[$1]++' > "$HANDED.tmp" \
     && mv -f "$HANDED.tmp" "$HANDED"
+}
+
+# hand_due <id> <due>: the lines pass <id> was started with are handed to it, so the next check can
+# hold the ones it leaves against it, and its lane file keeps them for its score (lane_cols).
+hand_due() {
+  local l keys
+  keys="$(while IFS= read -r l; do [ -z "$l" ] || due_key "$l"; done <<<"$2")"
+  hand_keys "$keys"
+  [ ! -e "$LEDGER/.lane-$1" ] || printf '%s\n' "$keys" >> "$LEDGER/.lane-$1"
 }
 
 # run_locked: cmd_run, one at a time. Two runs (the timer and a hand run) would each read the same
@@ -1295,9 +1308,7 @@ cmd_run() {
     return 0
   fi
   # A document it could not refresh is the pass's first problem, not a reason to have no pass.
-  # What the last pass was handed is kept for its score (lane_cols) before this check moves it on.
   local due due_rc=0 trouble="" hold
-  SCORE_HANDED="$(cat "$HANDED" 2>/dev/null)"
   due="$(FLEET_SHEPHERD_HAND=0 cmd_check)" || due_rc=$?
   SCORE_DUE="$due"
   if [ "$due_rc" -gt 1 ]; then
@@ -1327,7 +1338,7 @@ cmd_run() {
     publish FAILED "${sd:+$sd; }could not start a pass in tmux -L $SERVER session $SESSION"
     return 1
   fi
-  hand_due "$due"
+  hand_due "$new" "$due"
   echo "$NAME: started pass ${new:0:8}: $ATTACH"
   local detail
   detail="${sd:+$sd; }started pass ${new:0:8}: $(printf '%s\n' "$due" | grep -c .) due, $ATTACH"
@@ -1363,7 +1374,7 @@ cmd_passes() {
   if { read -r id start n _; } 2>/dev/null < "$PASS" && [ -n "$id" ]; then
     printf '%s\t%s\tnow\t%s due, %s\n' "$(date -u -d "@$start" '+%F %H:%M')" "$id" "$n" "$(pass_status "$id")"
   elif [ ! -s "$PASSES" ]; then
-    echo "no passes yet: the runner starts one every run (agentctl status shepherd)"
+    echo "no passes yet: the runner starts one when something is due (agentctl status shepherd)"
     return 0
   fi
   tail -n "${1:-20}" "$PASSES" 2>/dev/null | tac
