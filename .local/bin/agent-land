@@ -12,7 +12,7 @@
 #
 # Steps, stopping at the first failure: head (HEAD must be the PR's head commit, before the body is
 # touched; else the merge would be refused as "Head branch was modified": run from the PR's own
-# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (HEAD must contain origin/<base> before the checks; after them, a base that moved on is merged in, pushed and landed on the same gate), item-line
+# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it and pushed, before the checks and again after them if the base moved on during them), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
 # "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item needs checks that ran), merge (--squash
@@ -29,8 +29,8 @@
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`).
-# Exit 0 landed, 1 a step failed, 2 usage, 3 behind origin/<base> before the checks, or a catch-up
-# merge that conflicts: merge it and re-run. A merge of <base> keeps a green gate green; gate again
+# Exit 0 landed, 1 a step failed, 2 usage, 3 a catch-up merge of origin/<base> that conflicts
+# (before or after the checks): resolve it and re-run. A merge of <base> keeps a green gate green; gate again
 # only when the repo's CI doc says that merge needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
 # --partial records a merged PR with partial: yes and leaves the item and row open. Reap waits
@@ -129,16 +129,6 @@ own_head() {
   fail head "HEAD ${here:0:8} is not the PR's head ${head_oid:0:8}, and no checkout of $head_ref is listed: git switch $head_ref (pushed and current) in a checkout of this repo, then re-run"
 }
 
-current_with_base() {
-  local out behind
-  out=$(git fetch -q origin 2>&1) || fail fetch "$(lastline "$out")"
-  behind=$(git rev-list --count "HEAD..origin/$base" 2>&1) || fail fetch "$(lastline "$behind")"
-  if [ "$behind" -ne 0 ]; then
-    printf 'agent-land: behind origin/%s by %s, merge it and re-run (a green gate stays green across a merge of %s unless the repo CI doc says otherwise)\n' "$base" "$behind" "$base" >&2
-    exit 3
-  fi
-}
-
 # strict_checks: whether <base> refuses a head whose required checks have not run on it: a ruleset's
 # required_status_checks rule with strict_required_status_checks_policy, or branch protection's
 # required_status_checks.strict. Read once. A 404 from the protection call is "not protected"; any
@@ -161,8 +151,8 @@ strict_checks() {
   [ "$strict" = yes ]
 }
 
-# catch_up: after a green gate, a base that moved on during the checks is merged in and pushed, and
-# that head keeps the same gate, since a merge of <base> keeps it green. It returns 0 when already
+# catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
+# the base moved on during the checks; that head keeps the same gate, since a merge of <base> keeps it green. It returns 0 when already
 # current, or after a push to a base with no strict required checks (strict_checks), and 1 after a
 # push to a strict one: the caller then waits on the PR checks again, because that base refuses a
 # head whose checks have not run (2026-11-05: unity-core-playground #1837 was refused twice). A base
@@ -175,7 +165,7 @@ catch_up() {
   out=$(git fetch -q origin 2>&1) || fail fetch "$(lastline "$out")"
   behind=$(git rev-list --count "HEAD..origin/$base" 2>&1) || fail fetch "$(lastline "$behind")"
   if [ "$behind" -eq 0 ]; then
-    echo "fetch: current with origin/$base"
+    [ "${1:-}" = before ] || echo "fetch: current with origin/$base"
     return 0
   fi
   # Before the merge, so a refusal leaves the checkout as it was. A fork head is not origin's branch.
@@ -189,7 +179,7 @@ catch_up() {
   # the local branch name differs from its upstream (agent-11 -> feat/x, PR #1252), and the upstream
   # itself can be the base (a worktree cut from origin/main tracks it).
   out=$(git push -q origin "HEAD:refs/heads/$head_ref" 2>&1) || fail push "$(lastline "$out")"
-  echo "fetch: merged origin/$base ($behind behind) into the green head and pushed it"
+  echo "fetch: merged origin/$base ($behind behind) into the head and pushed it"
   # GitHub works out whether a pushed head merges after the push and refuses the merge until then
   # ("not mergeable"). No event says when, so the PR is polled at the checks cadence until it
   # reads this head with a known answer; the merge step reports what it ends up refusing.
@@ -451,7 +441,9 @@ else
   # Before the checks too: a PR that conflicts with its base gets no pull_request run at all
   # (GitHub cannot build its merge ref), so its last, stale Checks red would read as a failure.
   review_gate
-  current_with_base
+  # A head behind <base> is caught up first, the same merge as after the gate: a session that
+  # stopped on exit 3 here left its green PR open while main moved (six waiting on 2026-11-07).
+  catch_up before || true
   wait_checks
   while ! catch_up; do wait_checks; done
 
