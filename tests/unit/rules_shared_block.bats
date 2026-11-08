@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # overview.md names the shared sections of the global CLAUDE.md with markers and the sync splices
 # them in, so the rule text has one home. The first half drives the splice on fixtures. The second
-# reads the real files: skipped where the private overlay is absent (public CI), it runs in the
-# Stop fast tier.
+# reads the real files, and checks that every ## heading of the global CLAUDE.md reaches Codex and
+# opencode through a marker or sits on LEFT_OUT: skipped where the private overlay is absent (public
+# CI), it runs in the Stop fast tier.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -84,6 +85,54 @@ MD
 
 # Headings of the real files, by their words before any bracket.
 headings() { grep -E '^##+ ' "$1" | sed -E 's/^#+ //; s/ \(.*//'; }
+
+# Sections of CLAUDE.md that Codex and opencode are meant not to get. Empty today: a section lands here
+# only by a decision, so a new one cannot miss them by omission. Names are the heading's leading words,
+# matched like a marker.
+LEFT_OUT=()
+
+# Headings of $2 (CLAUDE.md) that no marker of $1 (overview.md) names and LEFT_OUT does not list.
+# A marker matches a heading as the splice does: the whole heading, or its leading words.
+uncovered() {
+  local h m left
+  local -a markers
+  mapfile -t markers < <(sed -nE 's/^<!-- shared: (.+) -->$/\1/p' "$1")
+  while IFS= read -r h; do
+    for m in "${markers[@]}" "${LEFT_OUT[@]}"; do
+      [ "$h" = "$m" ] || [[ "$h" == "$m "* ]] && continue 2
+    done
+    printf '%s\n' "$h"
+  done < <(sed -nE 's/^## //p' "$2")
+}
+
+@test "coverage: a heading with no marker and not left out is reported" {
+  printf '<!-- shared: Core Principles -->\n' >"$T/o.md"
+  run uncovered "$T/o.md" "$T/CLAUDE.md"
+  assert_output "$(printf 'Writing Style (all artifacts)\nLast')"
+}
+
+@test "coverage: a left-out heading is not reported" {
+  printf '<!-- shared: Core Principles -->\n' >"$T/o.md"
+  LEFT_OUT=("Last" "Writing Style")
+  run uncovered "$T/o.md" "$T/CLAUDE.md"
+  assert_output ''
+}
+
+@test "real files: every ## heading of CLAUDE.md has a marker or is on the left-out list" {
+  local o="$PRIV/.config/rulesync-global/.rulesync/rules/overview.md" c="$PRIV/.claude/CLAUDE.md"
+  [ -f "$o" ] || skip "no private overlay at $PRIV"
+  run uncovered "$o" "$c"
+  assert_output ''
+}
+
+@test "real files: every left-out name is still a heading of CLAUDE.md" {
+  local c="$PRIV/.claude/CLAUDE.md" left
+  [ -f "$c" ] || skip "no private overlay at $PRIV"
+  for left in "${LEFT_OUT[@]}"; do
+    run grep -qE "^## ${left}( |\$)" "$c"
+    assert_success
+  done
+}
 
 @test "real files: every marker resolves" {
   local o="$PRIV/.config/rulesync-global/.rulesync/rules/overview.md"
