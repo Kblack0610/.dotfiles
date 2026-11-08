@@ -271,21 +271,30 @@ fn queue(i: &Inputs) -> Vec<Row> {
     out
 }
 
-/// One card as the widget says it: "agent-runtime 35%, ETA 69d, 4 running".
+/// One card as the widget says it: "agent-runtime 35%, ETA 69d, 4 running". The counts are never
+/// cut: past `LINE_MAX` they shorten to "11 run, 1 wait", and only the name and ETA are capped.
 fn project(c: &Card) -> String {
-    let mut s = format!("{} {}%", c.name, c.percent.unwrap_or(0));
-    s += &match c.eta_days {
+    let mut head = format!("{} {}%", c.name, c.percent.unwrap_or(0));
+    head += &match c.eta_days {
         Some(0) => ", nothing open".to_string(),
         Some(d) => format!(", ETA {d}d"),
         None => ", no ETA".to_string(),
     };
-    if !c.running.is_empty() {
-        s += &format!(", {} running", c.running.len());
+    let counts = |run: &str, wait: &str| {
+        let mut s = String::new();
+        if !c.running.is_empty() {
+            s += &format!(", {} {run}", c.running.len());
+        }
+        if c.waiting > 0 {
+            s += &format!(", {} {wait}", c.waiting);
+        }
+        s
+    };
+    let mut tail = counts("running", "waiting");
+    if head.chars().count() + tail.chars().count() > LINE_MAX {
+        tail = counts("run", "wait");
     }
-    if c.waiting > 0 {
-        s += &format!(", {} waiting", c.waiting);
-    }
-    cap(&s, LINE_MAX)
+    format!("{}{tail}", cap(&head, LINE_MAX - tail.chars().count()))
 }
 
 /// "Projects: 4 in flight of 25", then the first `CARDS` in flight, one line each, in the
@@ -783,6 +792,16 @@ mod tests {
             ]
         );
         assert!(lint(&rows), "{rows:#?}");
+    }
+
+    #[test]
+    fn a_busy_project_shortens_its_counts_so_waiting_still_shows() {
+        let busy = project(&card("unity-core-playground", 52, Some(54), 11, 1));
+        assert_eq!(busy, "unity-core-playground 52%, ETA 54d, 11 run, 1 wait");
+        let long = project(&card(&"x".repeat(60), 52, Some(54), 11, 1));
+        assert!(long.ends_with("..., 11 run, 1 wait"), "{long}");
+        assert!(long.chars().count() <= LINE_MAX, "{long}");
+        assert!(lint(&[busy, long]));
     }
 
     #[test]
