@@ -120,8 +120,7 @@
             "custom/projects",
             "custom/ai-agents",
             "custom/dispatch",
-            "custom/ci",
-            "custom/machine-mode"
+            "custom/ci"
         ]
     },
     // CPU use, load and temperature read as one pill (layout.css). custom/load prints the CPU

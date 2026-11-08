@@ -1,8 +1,7 @@
 #!/usr/bin/env bats
-# machine_mode.sh: the waybar chip. What these pin: nothing on the bar in open, because the bar has
-# no width to spare; the mode's initial otherwise, neutral because a mode is a choice and not a
-# health state (dashboards.md rule 5); amber in any mode when
-# the runner part never reached the cluster; the hover is the command's own output, escaped; the
+# machine_mode.sh: the waybar chip. What these pin: the mode's initial in every mode, open included,
+# neutral because a mode is a choice and not a health state (dashboards.md rule 5); amber in any
+# mode when the runner part never reached the cluster; the hover is the command's own output, escaped; the
 # chip has no text on a machine with no pool runners; the module is wired for the toggle.
 
 setup() {
@@ -23,21 +22,14 @@ setup() {
 
 mode() { printf 'MACHINE_MODE=%s\nRUNNERS_PINNED=%s\n' "$1" "${2:-yes}" > "$HOME/.agent/machine-mode.env"; }
 
-@test "the bar is the mode's initial and neutral when the machine is limited" {
-  for m in reserved:R shared:S; do
+@test "the bar is the mode's initial and neutral in every mode" {
+  for m in reserved:R shared:S open:O full:F; do
     mode "${m%:*}"
     run "$MODULE"
     assert_success
     assert_equal "$(jq -r .text <<< "$output")" "$ICON ${m#*:}"
     assert_equal "$(jq -r .class <<< "$output")" ok
   done
-}
-
-@test "open, the default, puts nothing on the bar" {
-  mode open
-  run "$MODULE"
-  assert_success
-  assert_equal "$(jq -r .text <<< "$output")" ""
 }
 
 @test "a switch that never reached the cluster paints the initial amber" {
@@ -76,6 +68,19 @@ mode() { printf 'MACHINE_MODE=%s\nRUNNERS_PINNED=%s\n' "$1" "${2:-yes}" > "$HOME
   assert_output 1
   run grep -c '^mode|.*|custom/machine-mode$' "$REPO_ROOT/.config/waybar/modules.registry"
   assert_output 1
+  # Right of the disk chip on the desktop bar, and out of the status group (so off the pin).
+  run grep -A1 '"custom/storage",$' "$REPO_ROOT/.config/waybar/config.desktop"
+  assert_line --index 1 --regexp '^ *"custom/machine-mode",$'
   run grep -c '"custom/machine-mode",\?$' "$REPO_ROOT/.config/waybar/config.base"
+  assert_output 0
+}
+
+@test "Super+A m has a leaf per mode, keyed by its initial, plus auto" {
+  run awk '/^submap = pinbar-mode$/,/^submap = pinbar-utils$/' "$REPO_ROOT/.config/hypr/conf.d/leader.conf"
+  local block="$output" m
+  for m in $(grep -v '^#' "$REPO_ROOT/.config/machine-mode/modes" | grep . | cut -d'|' -f1) auto; do
+    grep -qE "^bindpd = ,${m:0:1}, [^,]+, exec, \\\$HOME/\.local/bin/machine-mode $m$" <<<"$block" || fail "no leaf for $m"
+  done
+  run grep -c 'bindpd = ,m, machine mode >, submap, pinbar-mode' "$REPO_ROOT/.config/hypr/conf.d/leader.conf"
   assert_output 1
 }
