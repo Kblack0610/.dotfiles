@@ -52,6 +52,10 @@ if [ ! -t 0 ] && command -v jq >/dev/null 2>&1; then
   read -r HOOK_SOURCE HOOK_SID < <(cat 2>/dev/null | jq -r '"\(.source // "-") \(.session_id // "")"' 2>/dev/null) || true
   [ "$HOOK_SOURCE" != - ] || HOOK_SOURCE=""
 fi
+# Preserve the first snapshot across resume and compaction.
+if [ -n "$HOOK_SID" ]; then
+  python3 "$(dirname "$0")/stop-session-changes.py" start "$PROJECT_DIR" "$HOOK_SID" 2>/dev/null || true
+fi
 startup_mark setup
 
 HEADER=$(
