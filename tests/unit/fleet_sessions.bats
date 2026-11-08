@@ -826,6 +826,25 @@ SH
   [ "$(jq -r .nudged <<<"$output")" = true ]
 }
 
+@test "end to end: a reused slot branch reads the PR that holds its HEAD, not an older closed PR of the same name (2026-11-07)" {
+  landed_fixture
+  local oid old="1111111111111111111111111111111111111111"
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  # gh lists newest first: #1500 went out on another head branch, #1490 is an older closed PR of this branch's name
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "all-sources-p5-scoring\\t1500\\tMERGED\\tPASS\\t%s\\nfeat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$oid" "$old" > "$SANDBOX/bin/gh"
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .fact <<<"$output")" = 'LANDED PR #1500 merged, tree clean, next phase: Phase 2: rollout @feat/x' ]
+
+  # with no PR holding HEAD, the closed one of the same name is old: it is not the blocker
+  printf '#!/usr/bin/env bash\n[ "$1" = api ] && { echo "[]"; exit 0; }\nprintf "feat/x\\t1490\\tCLOSED\\tPASS\\t%s\\n"\n' "$old" > "$SANDBOX/bin/gh"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [[ "$(jq -r .fact <<<"$output")" != *'closed without merging'* ]]
+}
+
 @test "end to end: plan mode with no approval dialog open is not NEEDS plan awaiting approval" {
   landed_fixture
   PANEL_PLAN_MODE=true panel "$SANDBOX/wt" "$SANDBOX/plan.md"
