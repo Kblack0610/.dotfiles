@@ -118,6 +118,13 @@ emit() {
     printf '%s\t%s\n' "$base" "$state"
 }
 
+# hand_fired <conf> -> 0 when nothing starts the runner on a clock: no SCHEDULE and no
+# AUTOSTART=yes. Same test as fleet-bench's scheduled_runner (fleet-liveness's roster). Its
+# last verdict is one old run's, so it is not a fault the Overview row can clear.
+hand_fired() {
+    ! grep -qE '^SCHEDULE=["'"'"']?[^"'"'"' ]' "$1" && ! grep -qE '^AUTOSTART=["'"'"']?yes' "$1"
+}
+
 snapshot() {
     local f name st
 
@@ -126,7 +133,8 @@ snapshot() {
         [ -f "$f" ] || continue
         name="$(basename "$f" .conf)"
         st="$STATE_DIR/$name/status"
-        local state updated; state="$(kv "$st" state)"; updated="$(kv "$st" updated)"
+        local state updated hand=false; state="$(kv "$st" state)"; updated="$(kv "$st" updated)"
+        hand_fired "$f" && hand=true
         emit runner "$name" mdi:robot "$(jq -cn \
             --arg state "${state:-unknown}" \
             --arg project "$(kv "$st" project)" \
@@ -135,6 +143,7 @@ snapshot() {
             --arg updated "$(iso "$updated")" --argjson updated_epoch "$(num "$updated")" \
             --argjson duration "$(last_run_secs "agentctl@$name.service")" \
             --arg outcome "$(cat "$STATE_DIR/$name/last-outcome" 2>/dev/null)" \
+            --argjson hand "$hand" \
             --arg active "$(unit_prop "agentctl@$name.service" ActiveState)" \
             --arg next "$(iso_ts "$(unit_prop "agentctl-$name.timer" NextElapseUSecRealtime)")" \
             '{state: $state, project: $project, item: $item, detail: $detail,
@@ -142,7 +151,8 @@ snapshot() {
               last_outcome: $outcome, unit: $active,
               next_run: (if $next == "" then null else $next end),
               # Booleans, because mqtt2prom drops text: these are what Prometheus sees.
-              failed: ($state == "error" or $outcome == "STALLED" or $outcome == "FAILED"),
+              # A hand-fired runner (no clock) keeps one old verdict: only its state can fail it.
+              failed: ($state == "error" or (($hand | not) and ($outcome == "STALLED" or $outcome == "FAILED"))),
               # Waiting on a human is not a failure, but it is the one state worth a glance.
               blocked: ($state == "blocked" or $outcome == "BLOCKED"),
               running: ($active == "active" or $active == "activating"),
