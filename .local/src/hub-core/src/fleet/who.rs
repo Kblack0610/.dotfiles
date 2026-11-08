@@ -225,17 +225,16 @@ fn name_of(target: &str) -> String {
     }
 }
 
-/// The project a session works in: the dispatcher's `project: item` when it has one, else
-/// the repo its tmux session is named for (`dotfiles-agent-3` -> `dotfiles`).
-fn project_of(sess: &Value, name: &str) -> String {
-    if let Some((p, _)) = s(sess, "dispatch").split_once(": ") {
-        return p.to_string();
+/// The project a session works in: the dispatcher's `project: item` when it has one, else the
+/// `project` its row carries, which `fleet-sessions` resolves from the cwd through
+/// `project-map.json` (a `freqtrade_trading_attempt-agent-3` worktree is `trader`). Never the tmux
+/// session name: that is a worktree, not a project.
+fn project_of(sess: &Value) -> String {
+    match s(sess, "dispatch").split_once(": ") {
+        Some((p, _)) => p,
+        None => s(sess, "project"),
     }
-    let base = name.split(':').next().unwrap_or(name);
-    match base.rsplit_once("-agent-") {
-        Some((p, n)) if n.chars().all(|c| c.is_ascii_digit()) => p.to_string(),
-        _ => base.to_string(),
-    }
+    .to_string()
 }
 
 fn session(sess: &Value, at: i64) -> Option<Who> {
@@ -265,7 +264,7 @@ fn session(sess: &Value, at: i64) -> Option<Who> {
     Some(Who {
         tier: 3,
         kind: SESSION.into(),
-        project: project_of(sess, &name),
+        project: project_of(sess),
         who: name,
         opens: Opens::Session,
         key: target.to_string(),
@@ -409,7 +408,7 @@ mod tests {
             {"target": "hub/dotfiles:2", "bucket": "CHAT", "age_min": 4, "doing": "", "topic": "fleet tab plan",
              "item": null},
             {"target": "lab/ucp-agent-9:1", "bucket": "NEEDS", "age_min": 90, "doing": "asks",
-             "item": {"slug": "x", "origin": "hand"}},
+             "item": {"slug": "x", "origin": "hand"}, "project": "unity-core-playground"},
         ]})
     }
 
@@ -652,7 +651,10 @@ mod tests {
         );
         assert_eq!(s.key, "lab/dotfiles-agent-3:1");
         let h = r.iter().find(|x| x.who == "ucp-agent-9").unwrap();
-        assert_eq!((h.under.as_str(), h.project.as_str()), ("by hand x", "ucp"));
+        assert_eq!(
+            (h.under.as_str(), h.project.as_str()),
+            ("by hand x", "unity-core-playground")
+        );
         assert_eq!(s.since, Some(1000 - 21 * 60));
     }
 
