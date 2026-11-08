@@ -179,6 +179,22 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   refute_output --partial "paused by:"
 }
 
+@test "a #prio/only focus reads in amber with how many items it holds; no focus, or an old feed, no line" {
+  feed summary_dispatch.focus_projects=2 summary_dispatch.held_focus=7
+  run "$MODULE"
+  run tip
+  assert_output --partial "focus: <span color='$Y'>only 2 project(s)</span>, 7 queued held off it (reds, urgent and #requested still run)"
+  assert_output --partial "on a time tag, 7 off focus)"
+  feed summary_dispatch.focus_projects=0
+  run "$MODULE"
+  run tip
+  refute_output --partial "focus:"
+  feed
+  run "$MODULE"
+  run tip
+  refute_output --partial "focus:"
+}
+
 @test "a feed without the queue or room numbers reads - and says no headroom, never 0" {
   feed summary_dispatch.queued=- summary_dispatch.done_6h=- summary_dispatch.room_max_live=-
   run "$MODULE"
