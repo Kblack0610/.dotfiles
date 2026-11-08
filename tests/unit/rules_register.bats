@@ -113,11 +113,11 @@ row() {
   jq -nc '{source: "/nonexistent/x.md", anchor: "elsewhere rule", kind: "invariant", scenario: "a source on another machine"}' >> "$RULES_REGISTER"
   row 'under ten' high 'echo 3' 10
   run "$SUBJECT" rules --scenarios
-  assert_success
+  assert_failure 1
   assert_equal "${#lines[@]}" 3
-  assert_line "$(printf 'ok\trules.md\ta pushed branch has the wrong history\tNever force push.')"
-  assert_line "$(printf 'stale\trules.md\ta trim reworded the rule away\tAlways force push.')"
-  assert_line "$(printf 'absent\tx.md\ta source on another machine\telsewhere rule')"
+  assert_line "$(printf 'ok\t%s\ta pushed branch has the wrong history\tNever force push.' "$SANDBOX/rules.md")"
+  assert_line "$(printf 'stale\t%s\ta trim reworded the rule away\tAlways force push.' "$SANDBOX/rules.md")"
+  assert_line "$(printf 'absent\t/nonexistent/x.md\ta source on another machine\telsewhere rule')"
   run "$SUBJECT" rules
   assert_line 'scenarios=3'
   # The stale scenario fails --check like any rule whose text left its source.

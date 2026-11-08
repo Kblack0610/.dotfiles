@@ -33,7 +33,7 @@
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
 #                                recorded confidence, its measure died, or a rule's text left its source;
-#                                --scenarios lists the hard scenarios a context trim must keep
+#                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale
 #   fleet-bench kpi [--json] [--at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
 #                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS),
@@ -1813,9 +1813,13 @@ rules_summary() {
 
 # rules_scenarios <states array> -> one line per hard scenario: ok, stale or absent (source not here),
 # the source file, the scenario, and the anchor that must stay.
+# One line per scenario, with its full source (three files here are called CLAUDE.md); 1 when any is stale.
 rules_scenarios() {
-  jq -r '.[] | select((.scenario // "") != "")
-    | "\(if .anchored == true then "ok" elif .anchored == false then "stale" else "absent" end)\t\(.source | split("/") | last)\t\(.scenario)\t\(.anchor)"' <<<"$1"
+  local out
+  out=$(jq -r '.[] | select((.scenario // "") != "")
+    | "\(if .anchored == true then "ok" elif .anchored == false then "stale" else "absent" end)\t\(.source)\t\(.scenario)\t\(.anchor)"' <<<"$1")
+  [ -z "$out" ] || printf '%s\n' "$out"
+  ! grep -q '^stale' <<<"$out"
 }
 
 cmd_rules() {
