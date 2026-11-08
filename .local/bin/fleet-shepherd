@@ -219,7 +219,8 @@ tag_pane() {
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
 # the fleet-states.md bucket table: a manual row is never moved; DONE, LANDED and STALLED are
-# nudged once, and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, or a nudged row whose fact
+# nudged once (never while the session holds an open ask it filed: its window is where the
+# question waits), and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, or a nudged row whose fact
 # survived, is escalated once. A test red on several branches (shared) is owned by the queue item
 # shared_sample filed, and its sessions are told once; only one with no item escalates.
 # PARKED is fleet-pace's, below.
@@ -239,7 +240,9 @@ cmd_due() {
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
       | ([.idle_min // 0, .age_min // 0] | min) as $quiet
-      | if (.bucket | IN("DONE","LANDED","STALLED")) and (.nudged | not) then
+      | if (.own_asks // 0) > 0 and (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
+          empty
+        elif (.bucket | IN("DONE","LANDED","STALLED")) and (.nudged | not) then
           "nudge \(.bucket): \(.target) \(.fact // "")"
         elif .bucket == "CHAT" and (.nudged | not) and $quiet >= $chat then
           "nudge CHAT: \(.target) \(.fact // "")"
