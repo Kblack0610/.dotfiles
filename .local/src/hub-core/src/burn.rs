@@ -1,8 +1,9 @@
-//! The Costs tab's Burn section: how fast the weekly limits are being spent, how many sessions
-//! are going, whether that is over what the weeks can carry, the dispatch drip, and when each
-//! account is back on pace. `claude-acct` computes every pace figure and publishes it in its
-//! textfile (`claude_account_*`, `claude_fleet_session_rate_points_per_hour`); this only sums
-//! the per-account series and words them, so the hub TUI and agent-web print the same section
+//! The Costs tab's Burn section: how fast every model source is being spent (each Claude
+//! account, the Codex plan, the gateway keys and the Lazer pool), how many sessions are going,
+//! whether that is over what the windows can carry, the dispatch drip, and when each source is
+//! back on pace. `claude-acct` computes every figure for every source and publishes it in its
+//! textfile (`claude_account_*{kind}`, `claude_fleet_session_rate_points_per_hour`); this only
+//! sums the per-source series and words them, so the hub TUI and agent-web print the same section
 //! and no second formula exists. The drip is the `started` lines of fleet-dispatch's `log.md`.
 
 use std::collections::BTreeMap;
@@ -68,12 +69,14 @@ impl Room {
     }
 }
 
-/// The account series by account, keyed by metric name, and the age in seconds of the textfile
-/// they came from (None when the age series is missing). The room reasons are labels of one
-/// metric, so they are collected apart.
+/// The source series by source, keyed by metric name, and the age in seconds of the textfile
+/// they came from (None when the age series is missing). The room reasons, the kind and the parent
+/// pool are labels, so they are collected apart.
 pub struct Accounts<'a> {
     pub by: BTreeMap<&'a str, BTreeMap<&'a str, f64>>,
     pub reasons: BTreeMap<&'a str, Vec<String>>,
+    pub kinds: BTreeMap<&'a str, &'a str>,
+    pub parents: BTreeMap<&'a str, &'a str>,
     pub age: Option<f64>,
 }
 
@@ -94,14 +97,23 @@ impl<'a> Accounts<'a> {
         let mut a = Accounts {
             by: BTreeMap::new(),
             reasons: BTreeMap::new(),
+            kinds: BTreeMap::new(),
+            parents: BTreeMap::new(),
             age: None,
         };
         for s in series {
             let key = s.label("__name__").trim_start_matches("claude_account_");
             let Some(v) = s.value else { continue };
-            match (key, s.label("account")) {
+            let acc = s.label("account");
+            if !acc.is_empty() && !s.label("kind").is_empty() {
+                a.kinds.insert(acc, s.label("kind"));
+            }
+            match (key, acc) {
                 (AGE_KEY, _) => a.age = Some(v),
                 (_, "") => {}
+                ("parent", acc) => {
+                    a.parents.insert(acc, s.label("parent"));
+                }
                 ("room_reason", acc) => a
                     .reasons
                     .entry(acc)
@@ -141,10 +153,37 @@ impl<'a> Accounts<'a> {
 /// The metric name of the textfile's age, after the `claude_account_` prefix.
 pub const AGE_KEY: &str = "textfile_age_seconds";
 
-/// One Claude account's row.
+/// What an idle row says: a Claude account's token refreshes on launch; any other source has had
+/// no usage read yet.
+pub fn idle_note(kind: &str) -> &'static str {
+    if kind == DEFAULT_KIND {
+        "idle, token refreshes on launch"
+    } else {
+        "no usage read yet"
+    }
+}
+
+/// What a source's kind is when its textfile carries no `kind` label (one written before sources).
+pub const DEFAULT_KIND: &str = "claude";
+
+/// One source's row: a Claude account, the Codex plan, a gateway key or the Lazer pool.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Account {
     pub name: String,
+    /// claude-acct's kind: `claude`, `codex`, `litellm-key` or `litellm-team`.
+    pub kind: String,
+    /// A dollar budget, which has no pace line, so its burn, keeps and back-on-pace cells say
+    /// nothing. False by default, like a textfile written before sources: a Claude account.
+    pub unpaced: bool,
+    /// The last percent of the window kept for the human.
+    pub reserve: Option<f64>,
+    /// A dollar budget: spent this period and its cap.
+    pub usd_used: Option<f64>,
+    pub usd_budget: Option<f64>,
+    /// The pool this key spends inside; it has room only when the pool does.
+    pub parent: Option<String>,
+    /// The USED cell both surfaces print: `53%`, or `81% $81/$100` for a dollar budget.
+    pub used_text: String,
     /// `ok`, `unreadable` (claude-acct could not read its usage), `idle` (no usage yet) or
     /// `stale` (its textfile is not fresh).
     pub state: &'static str,
@@ -247,7 +286,18 @@ pub struct Burn {
     pub pace: Pace,
 }
 
-fn account(name: &str, a: &BTreeMap<&str, f64>, room: Option<Room>, stale: bool) -> Account {
+/// `53%`, `81% $81/$100` with a dollar budget, `-` with no figure.
+fn used_text(used: Option<f64>, usd: Option<f64>, budget: Option<f64>) -> String {
+    let pct = used.map_or("-".to_string(), |u| format!("{}%", u.floor()));
+    match (usd, budget) {
+        (Some(u), Some(b)) => format!("{pct} ${u:.0}/${b:.0}"),
+        _ => pct,
+    }
+}
+
+fn account(name: &str, read: &Accounts, stale: bool) -> Account {
+    let a = &read.by[name];
+    let room = read.room(name);
     let get = |k: &str| a.get(k).copied();
     let epoch = |k: &str| get(k).map(|v| v as i64);
     let used = get("week_used_percent");
@@ -262,8 +312,17 @@ fn account(name: &str, a: &BTreeMap<&str, f64>, room: Option<Room>, stale: bool)
     };
     let burn = get("burn_points_per_hour").unwrap_or(0.0);
     let sustain = get("sustain_points_per_hour");
+    let (usd_used, usd_budget) = (get("usd_used"), get("usd_budget"));
     Account {
         name: name.into(),
+        kind: read.kinds.get(name).unwrap_or(&DEFAULT_KIND).to_string(),
+        // absent on a textfile written before sources, which held Claude accounts only
+        unpaced: get("paced") == Some(0.0),
+        reserve: get("reserve_percent"),
+        usd_used,
+        usd_budget,
+        parent: read.parents.get(name).map(|p| p.to_string()),
+        used_text: used_text(used, usd_used, usd_budget),
         state,
         room,
         live: get("live_sessions").unwrap_or(0.0) as u32,
@@ -286,11 +345,7 @@ fn account(name: &str, a: &BTreeMap<&str, f64>, room: Option<Room>, stale: bool)
 pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn {
     let read = Accounts::read(series);
     let stale = read.stale();
-    let accounts: Vec<Account> = read
-        .by
-        .iter()
-        .map(|(n, a)| account(n, a, read.room(n), stale))
-        .collect();
+    let accounts: Vec<Account> = read.by.keys().map(|n| account(n, &read, stale)).collect();
     // Burn and sustain sum over the same accounts: an unreadable or idle one has neither, and
     // one with no sustain (its week is spent or past its reset) would otherwise add burn to
     // the OVER ratio with nothing on the other side.
@@ -362,7 +417,7 @@ impl Burn {
         let ahead: Vec<&Account> = self
             .accounts
             .iter()
-            .filter(|a| a.state == "ok" && a.is_ahead(self.at))
+            .filter(|a| a.state == "ok" && !a.unpaced && a.is_ahead(self.at))
             .collect();
         let mut at_burn: Vec<(String, i64)> = ahead
             .iter()
@@ -386,7 +441,7 @@ impl Burn {
             return "unknown, the figures are stale".into();
         }
         if p.on_pace {
-            return "every account is on pace".into();
+            return "every source is on pace".into();
         }
         let burn = if p.at_burn.is_empty() {
             "not before the reset".to_string()
@@ -585,7 +640,7 @@ mod tests {
         }
         assert_eq!(
             build(&s, None, quiet(), NOW).pace_text(&|t| t.to_string()),
-            "every account is on pace"
+            "every source is on pace"
         );
     }
 
@@ -670,5 +725,96 @@ mod tests {
             .accounts
             .iter()
             .all(|a| a.state == "ok"));
+    }
+
+    /// A series as claude-acct writes it since sources: every one carries the source's kind.
+    fn kinded(account: &str, kind: &str, name: &str, v: f64) -> Series {
+        let mut s = series(account, name, v);
+        s.labels.insert("kind".into(), kind.into());
+        s
+    }
+
+    /// The 2026-11-07 sources beside the fixture's Claude accounts: Codex on its week, the pool
+    /// and a key inside it on dollars.
+    fn sources() -> Vec<Series> {
+        let mut all = fixture();
+        for (k, v) in [
+            ("week_used_percent", 1.0),
+            ("week_gone_percent", 16.0),
+            ("sustain_points_per_hour", 0.71),
+            ("burn_points_per_hour", 0.0),
+            ("reserve_percent", 5.0),
+            ("paced", 1.0),
+            ("on_pace_idle_timestamp_seconds", (NOW - 60) as f64),
+        ] {
+            all.push(kinded("codex", "codex", k, v));
+        }
+        for (n, kind, used, usd, cap) in [
+            ("lazer", "litellm-team", 62.9, 157.19, 250.0),
+            ("reserve", "litellm-key", 81.4, 81.41, 100.0),
+        ] {
+            for (k, v) in [
+                ("week_used_percent", used),
+                ("usd_used", usd),
+                ("usd_budget", cap),
+                ("reserve_percent", 15.0),
+                ("paced", 0.0),
+            ] {
+                all.push(kinded(n, kind, k, v));
+            }
+        }
+        let mut parent = kinded("reserve", "litellm-key", "parent", 1.0);
+        parent.labels.insert("parent".into(), "lazer".into());
+        all.push(parent);
+        all
+    }
+
+    #[test]
+    fn an_idle_key_has_no_token_to_refresh() {
+        assert_eq!(idle_note("claude"), "idle, token refreshes on launch");
+        assert_eq!(idle_note("litellm-key"), "no usage read yet");
+    }
+
+    #[test]
+    fn every_source_is_a_row_with_its_kind_dollars_reserve_and_pool() {
+        let b = build(&sources(), None, Drip::default(), NOW);
+        let row = |n: &str| b.accounts.iter().find(|a| a.name == n).unwrap().clone();
+        assert_eq!(b.accounts.len(), 6);
+        assert_eq!(
+            row("main").kind,
+            "claude",
+            "no kind label is a Claude account"
+        );
+        assert!(!row("main").unpaced);
+        assert_eq!(row("main").used_text, "33%");
+        assert_eq!(row("codex").kind, "codex");
+        assert_eq!(row("codex").reserve, Some(5.0));
+        let r = row("reserve");
+        assert_eq!((r.kind.as_str(), r.unpaced), ("litellm-key", true));
+        assert_eq!(r.used_text, "81% $81/$100");
+        assert_eq!(r.parent.as_deref(), Some("lazer"));
+        assert_eq!(row("lazer").parent, None);
+        assert_eq!(row("lazer").used_text, "62% $157/$250");
+    }
+
+    #[test]
+    fn a_dollar_budget_adds_nothing_to_the_fleet_line_or_the_pace() {
+        let b = build(&sources(), Some(0.116), Drip::default(), NOW);
+        // the fixture's 4.52 against 1.37, plus Codex's 0 against 0.71; the keys carry no pace
+        assert!((b.fleet.burn - 4.52).abs() < 1e-9);
+        assert!((b.fleet.sustain - 2.08).abs() < 1e-9);
+        // A dollar budget has no back-on-pace time; counted as ahead, it would be "on pace only
+        // after the reset" and set this.
+        assert!(!b.pace.idle_rest_after_reset);
+        let only_keys: Vec<Series> = sources()
+            .into_iter()
+            .filter(|s| s.label("kind").starts_with("litellm") || s.label("account").is_empty())
+            .collect();
+        let k = build(&only_keys, None, Drip::default(), NOW);
+        assert!(
+            k.pace.on_pace,
+            "dollar budgets alone are never behind a pace line"
+        );
+        assert_eq!(k.pace_text(&|t| t.to_string()), "every source is on pace");
     }
 }

@@ -265,10 +265,6 @@ impl CostsView {
         out.push(bar("window", &b.windows, &b.window, "w"));
         out.push(bar("by", b.cuts, &b.by, "b/B"));
         out.push(clip_line(Line::from(tiles(&b, p)), w));
-        out.push(clip_line(Line::from(lazer(&b, p)), w));
-        if let Some(g) = glm(&b, p) {
-            out.push(clip_line(Line::from(g), w));
-        }
         out.push(clip_line(Line::from(direct(&b, p)), w));
         out.push(clip_line(Line::from(sources(&b, p)), w));
         for e in &b.errors {
@@ -327,7 +323,7 @@ impl CostsView {
 }
 
 /// The Burn section, first on the tab: the headline coloured by `level`, the drip and its hold
-/// badge, when each account is back on pace, and one row per account.
+/// badge, when each account is back on pace, and one row per source claude-acct reads.
 fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     let dim = |s: &str| Span::styled(s.to_string(), p.dim());
     if b.accounts.is_empty() {
@@ -381,31 +377,40 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
             match a.state {
                 "unreadable" => notes.push(note("usage unreadable", p.bad())),
                 "stale" => notes.push(note(burn::STALE_NOTE, p.bad())),
-                "idle" => notes.push(note("idle, token refreshes on launch", p.dim())),
+                "idle" => notes.push(note(burn::idle_note(&a.kind), p.dim())),
                 _ => {
                     let pc = |v: Option<f64>| v.map_or("-".into(), |v| format!("{}%", v.floor()));
                     let rate = |v: Option<f64>| v.map_or("-".into(), |v| format!("{v:.2}"));
+                    // A dollar budget has no pace line, so its pace cells say nothing.
+                    let paced = |s: String| if a.unpaced { "-".into() } else { s };
                     return Some(vec![
                         n(),
+                        a.kind.clone().into(),
                         a.live.to_string().into(),
-                        pc(a.used).into(),
+                        a.used_text.clone().into(),
                         pc(a.gone).into(),
+                        pc(a.reserve).into(),
                         match &a.room {
                             Some(r) => cell(r.text.clone(), if r.ok { p.good() } else { p.bad() }),
                             None => cell("-", p.dim()),
                         },
                         cell(
-                            rate(Some(a.burn)),
-                            if a.is_over() { p.warn() } else { Style::new() },
+                            paced(rate(Some(a.burn))),
+                            if !a.unpaced && a.is_over() {
+                                p.warn()
+                            } else {
+                                Style::new()
+                            },
                         ),
-                        rate(a.sustain).into(),
-                        a.on_pace(a.burn_at, b.at, &time).into(),
-                        a.on_pace(a.idle_at, b.at, &time).into(),
+                        paced(rate(a.sustain)).into(),
+                        paced(a.on_pace(a.burn_at, b.at, &time)).into(),
+                        paced(a.on_pace(a.idle_at, b.at, &time)).into(),
                         a.run_out.map_or("-".into(), time).into(),
                         a.resets.map_or("-".into(), time).into(),
                         pc(a.five_hour).into(),
                         a.five_hour_resets.map_or("-".into(), time).into(),
                         costs::usd(a.cost_24h).into(),
+                        a.parent.clone().unwrap_or("-".into()).into(),
                     ]);
                 }
             }
@@ -415,10 +420,12 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     out.extend(
         Table {
             header: vec![
-                "ACCOUNT",
+                "SOURCE",
+                "KIND",
                 "LIVE",
                 "USED",
                 "GONE",
+                "RESERVE",
                 "ROOM",
                 "BURN/H",
                 "KEEPS/H",
@@ -429,11 +436,12 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
                 "5H",
                 "5H RESETS",
                 "$24H",
+                "POOL",
             ],
             rows,
             // The 5h window and the day's dollars were Fleet's accounts table's; $24H goes first.
-            keep: vec![0, 4, 5, 6, 1, 11, 7, 8, 2, 3, 9, 10, 12, 13],
-            right: vec![1, 2, 3, 5, 6, 11, 13],
+            keep: vec![0, 6, 3, 1, 7, 8, 2, 13, 9, 10, 4, 5, 16, 11, 12, 14, 15],
+            right: vec![2, 3, 4, 5, 7, 8, 13, 15],
             ..Default::default()
         }
         .fit(w, p.head()),
@@ -545,51 +553,6 @@ fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
     s.push(Span::styled("LIVE 24H ", p.dim()));
     s.push(Span::raw(format!("{}  ", costs::usd(b.live.claude_24h))));
     s
-}
-
-/// `<spent> of <cap> (<pct>%)`, or the spend alone when there is no cap.
-fn of_cap(spent: Option<f64>, cap: Option<f64>) -> String {
-    match (spent, cap) {
-        (Some(sp), Some(cap)) if cap > 0.0 => format!(
-            "{} of {} ({})",
-            costs::usd(Some(sp)),
-            costs::usd(Some(cap)),
-            crate::fmt::pct(Some(sp / cap))
-        ),
-        (sp, _) => costs::usd(sp),
-    }
-}
-
-/// A key's spend against its cap, with the days to its reset when known.
-fn key_cap(spend: Option<f64>, budget: Option<f64>, reset_hours: Option<f64>) -> String {
-    let mut s = of_cap(spend, budget);
-    if let Some(h) = reset_hours {
-        s.push_str(&format!(" {:.0}d left", h / 24.0));
-    }
-    s
-}
-
-/// Every Lazer figure on one line: the gateway pool, the reserve key against its cap, and direct use.
-fn lazer(b: &Board, p: Palette) -> Vec<Span<'static>> {
-    let l = &b.live;
-    let reserve = key_cap(l.reserve_spend, l.reserve_budget, l.reserve_reset_hours);
-    vec![
-        Span::styled("LAZER ", p.dim()),
-        Span::raw(format!("{}  ", of_cap(l.lazer_spend, l.lazer_budget))),
-        Span::styled("RESERVE ", p.dim()),
-        Span::raw(reserve),
-    ]
-}
-
-/// The GLM pilot key against its cap, on its own line under the Lazer one (the two would not fit
-/// 80 columns). None until the key is minted and exports gauges, so no key reads as no line.
-fn glm(b: &Board, p: Palette) -> Option<Vec<Span<'static>>> {
-    let l = &b.live;
-    if l.glm_spend.is_none() && l.glm_budget.is_none() {
-        return None;
-    }
-    let cap = key_cap(l.glm_spend, l.glm_budget, l.glm_reset_hours);
-    Some(vec![Span::styled("GLM ", p.dim()), Span::raw(cap)])
 }
 
 /// Direct Lazer use with what it cannot see beside it, so a low figure never reads as all of it.
@@ -855,7 +818,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let wide = at(200);
-        let head = wide.iter().find(|l| l.starts_with("ACCOUNT")).unwrap();
+        let head = wide.iter().find(|l| l.starts_with("SOURCE")).unwrap();
         for col in ["5H", "5H RESETS", "$24H"] {
             assert!(head.contains(col), "{col} missing from {head}");
         }
@@ -869,7 +832,7 @@ mod tests {
         assert!(!bnb.contains('$'), "no figure is no dollars: {bnb}");
         // Narrow, $24H is the first to go and the 5h window stays.
         let narrow = at(100);
-        let head = narrow.iter().find(|l| l.starts_with("ACCOUNT")).unwrap();
+        let head = narrow.iter().find(|l| l.starts_with("SOURCE")).unwrap();
         assert!(!head.contains("$24H") && head.contains("5H"), "{head}");
     }
 
@@ -1032,19 +995,8 @@ mod tests {
     }
 
     #[test]
-    fn the_lazer_line_shows_pool_reserve_and_direct_with_what_direct_cannot_see() {
+    fn the_direct_line_shows_what_direct_cannot_see_and_the_pool_is_no_tile() {
         let mut c = costs();
-        c.live = hub_core::costs::Live {
-            lazer_spend: Some(93.36),
-            lazer_budget: Some(250.0),
-            reserve_spend: Some(19.52),
-            reserve_budget: Some(100.0),
-            reserve_reset_hours: Some(575.0),
-            glm_spend: Some(5.0),
-            glm_budget: Some(50.0),
-            glm_reset_hours: Some(720.0),
-            ..Default::default()
-        };
         c.sessions.push(Spent {
             session_id: "oc-direct".into(),
             harness: Some("opencode".into()),
@@ -1062,17 +1014,82 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
-        assert!(s.contains("LAZER $93.36 of $250 (37%)"), "{s}");
-        assert!(s.contains("RESERVE $19.52 of $100 (20%) 24d left"), "{s}");
-        assert!(s.contains("GLM $5.00 of $50.00 (10%) 30d left"), "{s}");
         let direct = s.lines().find(|l| l.starts_with("DIRECT")).unwrap();
         assert!(direct.contains("$0.00 +1 unpriced"), "{s}");
         assert!(direct.ends_with(hub_core::costs::DIRECT_NOTE), "{s}");
-        // negative control: with no gauges the line still names each figure, and none reads as $0
+        // the pool and its keys are Burn rows now, never a line of their own
+        assert!(
+            !s.lines()
+                .any(|l| l.starts_with("LAZER") || l.starts_with("GLM") || l.contains("RESERVE $")),
+            "{s}"
+        );
         let s = screen(&CostsView::default(), 80);
-        assert!(s.contains("LAZER -  RESERVE -"), "{s}");
         assert!(!s.contains("unpriced"), "{s}");
-        assert!(!s.contains("GLM"), "an unminted key is no line: {s}");
+    }
+
+    #[test]
+    fn a_dollar_source_is_a_burn_row_with_its_kind_dollars_reserve_and_pool() {
+        let mut all = vec![];
+        let mut kinded = |n: &str, kind: &str, k: &str, v: f64| {
+            let mut s = series(n, k, v);
+            s.labels.insert("kind".into(), kind.into());
+            all.push(s);
+        };
+        for (k, v) in [
+            ("week_used_percent", 41.0),
+            ("usd_used", 41.0),
+            ("usd_budget", 100.0),
+            ("reserve_percent", 15.0),
+            ("paced", 0.0),
+            ("burn_points_per_hour", 9.0),
+            ("sustain_points_per_hour", 1.0),
+        ] {
+            kinded("reserve", "litellm-key", k, v);
+        }
+        for (k, v) in [
+            ("week_used_percent", 1.0),
+            ("week_gone_percent", 14.0),
+            ("reserve_percent", 5.0),
+        ] {
+            kinded("codex", "codex", k, v);
+        }
+        let mut pool = series("reserve", "parent", 1.0);
+        pool.labels.insert("kind".into(), "litellm-key".into());
+        pool.labels.insert("parent".into(), "lazer".into());
+        all.push(pool);
+        let mut age = series("", "textfile_age_seconds", 120.0);
+        age.labels.remove("account");
+        all.push(age);
+        let c = Costs {
+            burn: burn::build(&all, None, Default::default(), 1_000_000),
+            ..costs()
+        };
+        let wide = CostsView::default()
+            .lines(&c, Palette::default(), 1_000_000, 200)
+            .0
+            .iter()
+            .map(crate::fit::plain)
+            .collect::<Vec<_>>();
+        let head = wide.iter().find(|l| l.starts_with("SOURCE")).unwrap();
+        for col in ["KIND", "RESERVE", "POOL"] {
+            assert!(head.contains(col), "{col} missing from {head}");
+        }
+        let row = wide.iter().find(|l| l.starts_with("reserve")).unwrap();
+        assert!(
+            row.contains("litellm-key") && row.contains("41% $41/$100"),
+            "{row}"
+        );
+        assert!(
+            row.contains("15%") && row.trim_end().ends_with("lazer"),
+            "{row}"
+        );
+        // negative control: a dollar budget has no pace line, so its 9 pts/h burn is not printed
+        assert!(!row.contains("9.00") && !row.contains("on pace"), "{row}");
+        let codex = wide.iter().find(|l| l.starts_with("codex")).unwrap();
+        assert!(
+            codex.contains("codex") && codex.contains("5%") && codex.contains("14%"),
+            "{codex}"
+        );
     }
 
     #[test]
