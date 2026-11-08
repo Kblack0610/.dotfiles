@@ -164,11 +164,12 @@
         ]
       },
       {
-        "matcher": "Read",
+        "matcher": "Read|Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/hooks/large-file-warning.sh"
+            "command": "python3 ~/.claude/hooks/large-read-guard.py || true",
+            "timeout": 5
           }
         ]
       },
@@ -201,7 +202,7 @@
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Bash|Read",
         "hooks": [
           {
             "type": "command",
