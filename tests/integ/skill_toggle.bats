@@ -63,6 +63,15 @@ kinds() { "$RECALL" stats --since 2026-10-01 --json --top 0 --kind body,read,scr
   assert_output "$(printf '%s\n' 'body alpha' 'body zeta' 'mention delta' 'read beta' 'script gamma')"
 }
 
+@test "skill_sessions counts a session once per skill, however many kinds it used it by" {
+  transcripts
+  # s1 also calls alpha by the Skill tool: two kinds, one session.
+  printf '%s\n' '{"type":"assistant","entrypoint":"cli","cwd":"/home/u/proj","timestamp":"2026-10-20T10:00:00Z","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"alpha"}}]}}' >> "$CLAUDE_TRANSCRIPTS/-home-u-proj/s1.jsonl"
+  run bash -c "'$RECALL' stats --since 2026-10-01 --json --top 0 --kind skill,body,read,script,mention | jq -c '[([.rows[] | select(.key == \"alpha\")] | length), .skill_sessions]'"
+  assert_success
+  assert_output '[2,{"alpha":1,"beta":1,"delta":1,"gamma":1,"zeta":1}]'
+}
+
 @test "the default stats kinds leave the four use kinds out" {
   transcripts
   run bash -c "'$RECALL' stats --since 2026-10-01 --json --top 0 | jq -r '.rows[].kind' | sort -u"
@@ -70,10 +79,11 @@ kinds() { "$RECALL" stats --since 2026-10-01 --json --top 0 --kind body,read,scr
   refute_output --regexp 'body|read|script|mention'
 }
 
-# skill-drift --overrides against a stub claude-recall that reports $FIXTURE_USED as used.
+# skill-drift --overrides against a stub claude-recall that reports $FIXTURE_USED as used:
+# "name" is a use in 11 sessions, past the default listing bar of 10; "name:N" is N sessions.
 overrides() {
   printf '#!/usr/bin/env bash\njq -n --arg u "$FIXTURE_USED" %s\n' \
-    "'{rows: (\$u | split(\" \") | map(select(length > 0) | {kind: \"skill\", key: .}))}'" > "$SANDBOX/recall"
+    "'{rows: [], skill_sessions: (\$u | split(\" \") | map(select(length > 0) | split(\":\") | {(.[0]): ((.[1] // \"11\") | tonumber)}) | add // {})}'" > "$SANDBOX/recall"
   chmod +x "$SANDBOX/recall"
   CLAUDE_RECALL="$SANDBOX/recall" SKILL_SETTINGS="$SANDBOX/settings.json" "$DRIFT" --overrides --json
 }
@@ -106,6 +116,19 @@ overrides() {
   assert_output '["delta","eps","zeta"]'
 }
 
+@test "a listed skill used in 5 or fewer sessions goes name-only, a name-only one is listed past 10, and between the two neither moves" {
+  echo '{"skillOverrides":{"alpha":"name-only","beta":"name-only","gamma":"name-only"}}' > "$SANDBOX/settings.json"
+  # name-only: alpha 5, beta 7 (in the band), gamma 11. listed: delta 2, eps 7 (in the band), zeta 11.
+  FIXTURE_USED="alpha:5 beta:7 gamma:11 delta:2 eps:7 zeta" run overrides
+  assert_success
+  run jq -c '[.max, .hide, .restore]' <<<"$output"
+  assert_output '[5,["delta"],["gamma"]]'
+  # The bar is SKILL_TOGGLE_MAX_SESSIONS; at 0 any use lists a skill.
+  SKILL_TOGGLE_MAX_SESSIONS=0 FIXTURE_USED="alpha:5 beta:7 gamma:11 delta:2 eps:7 zeta" run overrides
+  run jq -c '[.hide, .restore]' <<<"$output"
+  assert_output '[[],["alpha","beta","gamma"]]'
+}
+
 @test "no use counted at all refuses to hide everything" {
   echo '{"skillOverrides":{}}' > "$SANDBOX/settings.json"
   FIXTURE_USED="" run overrides
@@ -124,7 +147,7 @@ toggle_repo() {
   git -C "$DOTFILES" -c user.email=t@t -c user.name=t commit -qm init
   git -C "$DOTFILES" remote add origin "$SANDBOX/origin.git"
   git -C "$DOTFILES" push -q origin main
-  printf '#!/usr/bin/env bash\njq -n %s\n' "'{rows: [\"alpha\",\"beta\",\"gamma\",\"delta\",\"eps\"] | map({kind: \"skill\", key: .})}'" > "$SANDBOX/recall"
+  printf '#!/usr/bin/env bash\njq -n %s\n' "'{rows: [], skill_sessions: ([\"alpha\",\"beta\",\"gamma\",\"delta\",\"eps\"] | map({(.): 11}) | add)}'" > "$SANDBOX/recall"
   chmod +x "$SANDBOX/recall"
   export CLAUDE_RECALL="$SANDBOX/recall"
 }

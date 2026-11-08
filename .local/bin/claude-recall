@@ -712,6 +712,9 @@ def cmd_stats(a):
     names = frozenset(skill_names()) if kinds & set(USE_KINDS) else frozenset()
     agg = {}
     used = {}  # session -> skills and slash commands it ran, for intent coverage
+    # skill -> the sessions that used it by any counted use kind, so one session that calls a
+    # skill and reads its SKILL.md is one session, not two (skill-drift --overrides reads it)
+    skill_sessions = {}
 
     def add(kind, key, shown, bucket, session, origin, example):
         row = agg.setdefault((kind, key, bucket), {
@@ -721,6 +724,8 @@ def cmd_stats(a):
         row["shown"][shown] = row["shown"].get(shown, 0) + 1
         row["sessions"].add(session)
         row[origin].add(session)
+        if kind in ("skill", "slash") + USE_KINDS:
+            skill_sessions.setdefault(key, set()).add(session)
 
     for path in iter_files():
         try:
@@ -783,7 +788,9 @@ def cmd_stats(a):
 
     if a.json:
         print(json.dumps({"since": since, "origin": a.origin, "by": a.by or "",
-                          "rows": rows}, ensure_ascii=False))
+                          "rows": rows,
+                          "skill_sessions": {k: len(v) for k, v in sorted(skill_sessions.items())}},
+                         ensure_ascii=False))
         return 0
     if not rows:
         print(f"nothing counted since {since}")
