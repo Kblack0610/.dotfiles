@@ -195,13 +195,21 @@ EOF
   printf '%s\thigh\task\tAnswer the trader question.\n' "$now" >> "$HOME/.local/state/agent-notify/log"
   printf '%s\tlow\tSentinel: x\tFan is back to normal.\n' "$now" >> "$HOME/.local/state/agent-notify/log"
   printf '2020-01-01T00:00:00+00:00\thigh\told\told page\n' >> "$HOME/.local/state/agent-notify/log"
+  # the buzz budget's held log: one held today, one too old to count
+  printf '%s\thigh\tcomms\tCritical mail from the bank.\n' "$now" >> "$HOME/.local/state/agent-notify/log.held"
+  printf '2020-01-01T00:00:00+00:00\thigh\told\told held page\n' >> "$HOME/.local/state/agent-notify/log.held"
   run "$SUBJECT" report --since 1d --channel page --json
   assert_success
-  run python3 -c "import json,sys; d=json.loads(sys.argv[1])['channels']['page']; print(d['messages'], d['buzzed'], d['quiet_that_buzzed'], d['pass_pct'])" "$output"
-  assert_output "3 2 1 67"
+  run python3 -c "import json,sys; o=json.loads(sys.argv[1]); d=o['channels']['page']; print(d['messages'], d['buzzed'], d['quiet_that_buzzed'], d['pass_pct'], d['held'], o['summary']['pages_held_per_day'])" "$output"
+  assert_output "3 2 1 67 1 1.0"
   run "$SUBJECT" report --since 1d --channel page
   assert_success
   assert_line --partial "Comms, last 1d: 3 messages, 67% meet the standard."
+  # a window where the budget held everything still counts what it held
+  : > "$HOME/.local/state/agent-notify/log"
+  run "$SUBJECT" report --since 1d --channel page --json
+  run python3 -c "import json,sys; print(json.loads(sys.argv[1])['summary']['pages_held_per_day'])" "$output"
+  assert_output "1.0"
 }
 
 @test "snapshot stores the 7d and 28d reports; line and kpi read the newest, and kpi refuses a stale one" {
@@ -220,7 +228,7 @@ EOF
   assert_output --partial "comms 2026-11-05: 7d 50% of 2 messages meet the standard, phone buzzed 0.3 times a day (most 15); lowest: page 50%."
   run "$SUBJECT" kpi --json
   assert_success
-  assert_output '{"buzzes_per_day": {"7d": 0.3, "28d": 0.1}, "comms_pass_pct": {"7d": 50, "28d": 50}, "rows_pass_pct": {"7d": null, "28d": null}, "date": "2026-11-05"}'
+  assert_output '{"buzzes_per_day": {"7d": 0.3, "28d": 0.1}, "comms_pass_pct": {"7d": 50, "28d": 50}, "rows_pass_pct": {"7d": null, "28d": null}, "pages_held_per_day": {"7d": 0.0, "28d": 0.0}, "date": "2026-11-05"}'
   # an older day's file never wins over the newest
   python3 -c "import json,sys; d=json.load(open(sys.argv[1])); d['date']='2026-11-01'; json.dump(d, open(sys.argv[2],'w'))" \
     "$COMMS_SNAPSHOT_DIR/2026-11-05.json" "$COMMS_SNAPSHOT_DIR/2026-11-01.json"

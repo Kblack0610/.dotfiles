@@ -266,6 +266,18 @@ impl Item {
         out
     }
 
+    /// When it finished, read by the same stamp rule as `timing` (the older minute stamps too).
+    pub fn finished_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        said(&self.finished).and_then(stamp)
+    }
+
+    /// Minutes it has been ready at `now`: from `ready` (its hold's release), else `queued`,
+    /// the start `timing`'s wait measures from. None for an item with neither stamp.
+    pub fn ready_min(&self, now: chrono::DateTime<chrono::Utc>) -> Option<i64> {
+        let from = said(&self.ready).or(said(&self.queued)).and_then(stamp)?;
+        Some((now - from).num_minutes().max(0))
+    }
+
     /// What the item is in a few words: the `title:` header, else the task's first sentence
     /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
     pub fn title(&self) -> String {
@@ -734,17 +746,18 @@ impl Queue {
         self.in_state(s).count()
     }
 
-    /// `1 running, 2 up next (1 held)`: the phone widget's queue line.
+    /// `1 running, 1 ready, 1 held`: the phone widget's queue line. Ready is queued with no hold.
     pub fn counts_line(&self) -> String {
         let held = self
             .in_state(State::Queued)
             .filter(|i| i.hold.is_some())
             .count();
-        let mut next = format!("{} up next", self.count(State::Queued));
+        let ready = self.count(State::Queued) - held;
+        let mut s = format!("{} running, {ready} ready", self.count(State::Running));
         if held > 0 {
-            next += &format!(" ({held} held)");
+            s += &format!(", {held} held");
         }
-        format!("{} running, {next}", self.count(State::Running))
+        s
     }
 }
 

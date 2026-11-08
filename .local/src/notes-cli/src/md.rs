@@ -919,6 +919,32 @@ pub fn without_agent_tag(line: &str) -> String {
     without_words(line, is_agent_word)
 }
 
+/// Whether `line` is marked `#ask`, an outbox question for a quick read-only answer: the word
+/// is first (after any bullet or checkbox) or last. Only the text before the marker comment counts.
+pub fn ask_tag(line: &str) -> bool {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    let mut words = head.split_whitespace().skip_while(|w| {
+        matches!(*w, "-" | "*" | "[" | "]") || (w.starts_with('[') && w.ends_with(']'))
+    });
+    let first = words.next();
+    // The tag leads the question or ends it (ignoring `#p:` words), so "document the #ask flow"
+    // stays a task.
+    let last = head
+        .split_whitespace()
+        .rev()
+        .find(|w| project_tag_word(w).is_none());
+    first.is_some_and(is_ask_word) || last.is_some_and(is_ask_word)
+}
+
+fn is_ask_word(w: &str) -> bool {
+    w.eq_ignore_ascii_case("#ask")
+}
+
+/// `line` without its `#ask` tag, the rest as it was.
+pub fn without_ask_tag(line: &str) -> String {
+    without_words(line, is_ask_word)
+}
+
 fn without_words(line: &str, drop: impl Fn(&str) -> bool) -> String {
     // Only the dropped words and the space before each go; every other byte stays, so a line
     // with a double space or a tab is still found by its raw text after the move.
@@ -1409,6 +1435,14 @@ pub fn task_text(line: &str) -> String {
 /// moved the row to the top of its list, dropped an in-progress mark, and lost any tag the
 /// caller forgot to retype.
 pub fn retext_task(line: &str, text: &str) -> String {
+    // The row keeps its one created stamp: a stamp typed in the new words would ride in front
+    // of the old one and leave two (nc-83). A row with none takes the typed one.
+    let typed = text.trim();
+    let text = if split_created(line).1.is_some() {
+        cut_tags(typed, |t| is_created_tag(&t.to_lowercase())).0
+    } else {
+        typed.to_string()
+    };
     let text = text.trim();
     if !is_task(line) || text.is_empty() {
         return line.to_string();
@@ -1960,6 +1994,21 @@ after
         assert_eq!(
             retext_task("- [ ] old #high words (3d) #c260531 #due0601", "new words"),
             "- [ ] new words (3d) #c260531 #due0601 #high"
+        );
+        // nc-83: a stamp typed in the new words never makes a second one, on either path
+        let row = "- [ ] old words #c1104 #high <!-- id:nc-71 -->";
+        assert_eq!(
+            retext_task(row, "new words #c1105"),
+            "- [ ] new words #c1104 #high <!-- id:nc-71 -->"
+        );
+        assert_eq!(
+            retext_task("- [ ] old #high words #c1104", "new #C1105 words"),
+            "- [ ] new words #c1104 #high"
+        );
+        assert_eq!(
+            retext_task("- [ ] old words #high", "new words #c1105"),
+            "- [ ] new words #c1105 #high",
+            "a row with no stamp takes the typed one"
         );
     }
 

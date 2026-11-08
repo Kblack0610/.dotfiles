@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # panel-layout.sh - the preview layout of panel-lib.sh, for what cannot source it.
 #
-#   args <panel> [default]   the two fzf arguments panel_fzf_layout sets, one per line
+#   args <panel> [default]   the fzf arguments panel_fzf_layout sets, one per line
 #                            (agent-panel, which is Rust, passes them to fzf as they are)
 #   next <panel>             ctrl-/'s transform: the next layout as an fzf action, saved
 #

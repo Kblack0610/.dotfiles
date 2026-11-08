@@ -171,9 +171,11 @@ pub fn stages() {
 }
 
 /// A project's priority, the human's call on which projects agents should work first.
-/// Unset is normal. `fleet-dispatch` ranks a project's board rows by it before anything
-/// else. The `prio/` prefix keeps it apart from a row's `#high` / `#low` priority words.
-pub(crate) const PRIOS: [&str; 3] = ["prio/focus", "prio/high", "prio/low"];
+/// Unset is normal. `fleet-dispatch` and `agent-queue` rank a project's work by it, and
+/// while any project is `only` they start automated work for those projects alone (reds,
+/// urgent and requested work excepted). The `prio/` prefix keeps it apart from a row's
+/// `#high` / `#low` priority words.
+pub(crate) const PRIOS: [&str; 4] = ["prio/only", "prio/focus", "prio/high", "prio/low"];
 
 // -- stage and group: hashtags on the project's front page --------------------
 //
@@ -384,7 +386,7 @@ pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resu
     tag_verb(p, log, name, &refs, value)
 }
 
-/// `notes projects --prio <name> [--set focus|high|low|normal]`: read or set a project's
+/// `notes projects --prio <name> [--set only|focus|high|low|normal]`: read or set a project's
 /// priority. `normal` clears the tag. Reading prints the bare word, empty for normal.
 pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
     let dir = project_dir(p, name)?;
@@ -396,9 +398,9 @@ pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resul
         return Ok(());
     };
     let tag = match v {
-        "focus" | "high" | "low" => Some(format!("prio/{v}")),
+        "only" | "focus" | "high" | "low" => Some(format!("prio/{v}")),
         "normal" => None,
-        _ => bail!("unknown priority '{v}' (want: focus, high, low, normal)"),
+        _ => bail!("unknown priority '{v}' (want: only, focus, high, low, normal)"),
     };
     let updated = replace_head_tag(&content, &PRIOS, tag.as_deref())?;
     if updated != content {
@@ -409,7 +411,26 @@ pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resul
     Ok(())
 }
 
-/// The priority word a head declares (`focus`, `high`, `low`), empty for normal.
+/// `notes projects --prios`: every profile's indexed projects that declare a priority, as
+/// `name<TAB>prio`, one a line. The cheap read `agent-queue` takes on every listing: it reads
+/// only each front page's head, where `--stats` counts every sheet.
+pub fn prios() -> Result<()> {
+    for profile in config::all_profile_names()? {
+        let Ok(p) = config::resolve(Some(&profile)) else {
+            continue;
+        };
+        for (name, summary) in indexed(&p) {
+            let Some(dir) = summary.parent() else { continue };
+            let v = prio_of(dir);
+            if !v.is_empty() {
+                println!("{name}\t{v}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The priority word a head declares (`only`, `focus`, `high`, `low`), empty for normal.
 fn prio_of_str(content: &str) -> String {
     head_tag(content, &PRIOS)
         .and_then(|t| t.strip_prefix("prio/").map(str::to_string))
@@ -958,6 +979,26 @@ pub(crate) const ROW_TYPES: &[&str] = &[
     "design", "market", "legal", "run", "decide", "check", "epic",
 ];
 
+/// The channels a human's want enters by (`ptask add|file --want`), and THE list: the writer
+/// stamps `#requested` on a row that names one, and records it as the ingest event's `want`.
+pub(crate) const WANT_CHANNELS: &[&str] = &[
+    "outbox", "focus", "voice", "request", "ask", "meeting", "human",
+];
+
+/// `--want`'s value, or the channels there are.
+pub(crate) fn want_channel(s: &str) -> anyhow::Result<&'static str> {
+    WANT_CHANNELS
+        .iter()
+        .find(|c| **c == s.trim())
+        .copied()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "--want takes one of {}, not '{s}'",
+                WANT_CHANNELS.join(", ")
+            )
+        })
+}
+
 /// The `by_kind` key of a row with no well-formed `type(area):` prefix.
 pub(crate) const UNTYPED: &str = "untyped";
 
@@ -1011,8 +1052,30 @@ pub(crate) fn row_title(line: &str) -> String {
     split_row_prefix(&bare).unwrap_or(&bare).to_string()
 }
 
+/// One `notes row parse` line for a row or its bare text: `type area title ok`, tab-separated,
+/// `ok` 1 when the grammar parses it. An empty field prints as `-`, because a shell `read`
+/// with a tab IFS merges empty columns.
+pub(crate) fn row_parse_tsv(line: &str) -> String {
+    let title = row_title(line);
+    let title = if title.is_empty() {
+        "-".to_string()
+    } else {
+        title
+    };
+    match row_type_area(line) {
+        Some((ty, area)) => format!("{ty}\t{area}\t{title}\t1"),
+        None => format!("-\t-\t{title}\t0"),
+    }
+}
+
+/// The types a filer (a script, a prompt, `propose`) may give a row: every [`ROW_TYPES`]
+/// entry but `epic`, which is the human's to file. `notes row types` prints them.
+pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
+    ROW_TYPES.iter().copied().filter(|t| *t != "epic")
+}
+
 /// The row grammar the board feed parses, per top-level row: a retired priority word, two
-/// priorities, a retired tag or `since:` stamp, a malformed tier, `#size/xl` on a row that
+/// priorities, two created stamps on an open row, a retired tag or `since:` stamp, a malformed tier, `#size/xl` on a row that
 /// is not an epic, an epic on the agent board, and on the agent board a
 /// done row with no proof marker (`ptask done` refuses one, so it was closed by hand).
 /// Human sheet rows are closed by hand by design. On the agent board the open rows are also
@@ -1049,6 +1112,18 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
             out.push(format!(
                 "line {n}: {} priorities, keep one",
                 named.join(" ")
+            ));
+        }
+        let created: Vec<String> = tags
+            .iter()
+            .filter(|t| md::is_created_tag(t))
+            .map(|t| format!("#{t}"))
+            .collect();
+        // Open rows only: `ptask tag --remove` reaches an open row, so the finding can be cleared.
+        if created.len() > 1 && md::is_open_task(line) {
+            out.push(format!(
+                "line {n}: {} created stamps, keep the first",
+                created.join(" ")
             ));
         }
         if marker.contains("since:") {
@@ -3893,6 +3968,9 @@ mod stage_tag_tests {
         let two = replace_head_tag(&one, &PRIOS, Some("prio/low")).unwrap();
         assert_eq!(two.matches("#prio/").count(), 1, "{two}");
         assert_eq!(prio_of_str(&two), "low");
+        let only = replace_head_tag(&two, &PRIOS, Some("prio/only")).unwrap();
+        assert_eq!(prio_of_str(&only), "only");
+        assert!(!only.contains("#prio/low"), "only replaces the old word: {only}");
         let cleared = replace_head_tag(&two, &PRIOS, None).unwrap();
         assert_eq!(cleared, s, "clearing must restore the sheet byte for byte");
         assert_eq!(prio_of_str(&cleared), "");
@@ -4285,6 +4363,43 @@ Version: v0.2.0
         }
         // a bug is a fix row, not a type of its own
         assert_eq!(row_type_area("- [ ] bug(store): a title"), None);
+    }
+
+    #[test]
+    fn row_parse_prints_four_columns_for_every_line() {
+        assert_eq!(
+            row_parse_tsv("fix(audio): the gun sound plays late #high #size/s"),
+            "fix\taudio\tthe gun sound plays late\t1"
+        );
+        assert_eq!(
+            row_parse_tsv("- [/] feat(fleet-bench): a row line #c1107 <!-- id:ar-1 -->"),
+            "feat\tfleet-bench\ta row line\t1"
+        );
+        // the grammar's own refusals: an unknown type, a breaking `!`, an area with a slash
+        for text in [
+            "feature(x): a",
+            "fix(x)!: a",
+            "fix(a/b): a",
+            "no prefix at all",
+        ] {
+            let out = row_parse_tsv(text);
+            assert!(
+                out.starts_with("-\t-\t") && out.ends_with("\t0"),
+                "{text}: {out}"
+            );
+        }
+        assert_eq!(row_parse_tsv(""), "-\t-\t-\t0");
+        // a tab or CR inside the text never makes a fifth column: the title is its words
+        assert_eq!(row_parse_tsv("fix(x): a\tb\r"), "fix\tx\ta b\t1");
+        assert_eq!(row_parse_tsv("fix(x): a").split('\t').count(), 4);
+    }
+
+    #[test]
+    fn filer_types_are_the_row_types_but_epic() {
+        let types: Vec<_> = filer_types().collect();
+        assert!(!types.contains(&"epic"));
+        assert_eq!(types.len(), ROW_TYPES.len() - 1);
+        assert_eq!(types[..2], ["feat", "fix"]);
     }
 
     #[test]
@@ -5116,16 +5231,17 @@ mod move_layout_tests {
             - [ ] plain words with no prefix #low\n\
             - [ ] Fix(Area): wrong case #low\n\
             - [ ] feat(ok): {long} #low\n\
-            - [ ] feat(two): both #urgent #low\n\
+            - [ ] feat(two): both #urgent #c1104 #low #c1105\n\
             - [ ] chore(old): dead tags #oneshot #ci #high\n\
             - [ ] chore(old): stamped the old way #high <!-- since:2026-10-01 -->\n\
-            - [x] fix(done): closed rows skip the grammar <!-- pr:3 -->\n"
+            - [x] fix(done): closed rows skip the grammar #c1101 #c1102 <!-- pr:3 -->\n"
         );
         let got = row_findings(&sheet, true);
         assert_eq!(
             got,
             [
                 "line 8: #urgent #low priorities, keep one",
+                "line 8: #c1104 #c1105 created stamps, keep the first",
                 "line 9: #oneshot is retired (nothing reads it)",
                 "line 9: #ci is retired (nothing reads it)",
                 "line 10: since: is retired, the created stamp is #cMMDD",
@@ -5136,7 +5252,7 @@ mod move_layout_tests {
         );
         assert_eq!(
             row_findings(&sheet, false).len(),
-            4,
+            5,
             "the human sheet takes free text: only the stamp checks apply"
         );
         let clean = "- [ ] fix(a-b2): fine #high <!-- id:xy-1 -->\n\
@@ -5894,13 +6010,29 @@ mod shape_tests {
         fs::write(
             &gate,
             format!(
-                "#!/bin/sh\necho \"$*\" >> '{}'\necho 'FAIL  draft  A brief'\nexit {code}\n",
+                "#!/bin/sh\n[ -n \"$GATE_PROBE\" ] && exit 0\necho \"$*\" >> '{}'\necho 'FAIL  draft  A brief'\nexit {code}\n",
                 calls.display()
             ),
         )
         .unwrap();
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&gate, fs::Permissions::from_mode(0o755)).unwrap();
+        // Another test's fork can hold our write fd until its child execs, and exec then fails
+        // with ETXTBSY (26). Run the stub once, retrying on that error alone, so the runs the
+        // test cares about start after the last writer is gone.
+        const ETXTBSY: i32 = 26;
+        loop {
+            match std::process::Command::new(&gate)
+                .env("GATE_PROBE", "1")
+                .status()
+            {
+                Err(e) if e.raw_os_error() == Some(ETXTBSY) => std::thread::yield_now(),
+                r => {
+                    r.unwrap();
+                    break;
+                }
+            };
+        }
         let gate = gate.display().to_string();
         (s, sheet, gate)
     }

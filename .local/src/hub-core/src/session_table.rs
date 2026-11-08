@@ -104,6 +104,12 @@ pub struct SessionRow {
     pub unlinked: bool,
 }
 
+/// What the given rows cost, summed: the overview's spend for the rows a view shows. A row with
+/// no cost adds nothing.
+pub fn spend<'a>(rows: impl IntoIterator<Item = &'a SessionRow>) -> f64 {
+    rows.into_iter().filter_map(|r| r.cost_usd).sum()
+}
+
 impl Row for SessionRow {
     const COLUMNS: &'static [&'static str] = &[
         "bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness", "item",
@@ -732,6 +738,19 @@ mod tests {
         ));
         let r = rows(&[], &vocab(), &f, &[]);
         assert_eq!(r.iter().find(|x| x.key == "bad").unwrap().ended, "failed");
+    }
+
+    #[test]
+    fn spend_sums_only_the_rows_the_view_shows() {
+        let row = |project: &str, cost| SessionRow {
+            project: project.into(),
+            cost_usd: cost,
+            ..Default::default()
+        };
+        let r = vec![row("a", Some(1.5)), row("b", Some(2.0)), row("a", None)];
+        assert_eq!(spend(&r), 3.5);
+        let v = View::new::<SessionRow>("project:a", "", "", "");
+        assert_eq!(spend(v.apply(&r)), 1.5);
     }
 
     #[test]

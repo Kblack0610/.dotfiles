@@ -20,7 +20,7 @@ never express.
 | no inline shell in a bind | same |
 | strict-mode preamble, absolute `$SELF`, no bare `$0`, no truecolor | same (countdown ratchets) |
 | library behaviour: palette, fzf dialect, `$TMUX` handling, `fail` vs `die` | `tests/unit/panel_lib.bats` |
-| preview layout only from `panel_fzf_layout` | `tests/integ/panel_conformance.bats` |
+| preview layout and scroll keys only from `panel_fzf_layout` | `tests/integ/panel_conformance.bats` |
 
 A rule not in that table is advice. A rule in it will stop your PR.
 
@@ -124,7 +124,7 @@ so a machine without `gh` at all reported an authentication problem; it now does
 ```bash
 panel_fzf_opts                       # PANEL_FZF_OPTS=(--ansi --reverse --border)
 panel_fzf_table                      # PANEL_FZF_TABLE=(--cycle --no-sort --wrap --delimiter=TAB)
-panel_fzf_layout                     # PANEL_FZF_LAYOUT: the preview window and its ctrl-/ toggle
+panel_fzf_layout                     # PANEL_FZF_LAYOUT: the preview window, its ctrl-/ toggle, the scroll keys
 ```
 
 **Arrays, never a flag string.** The sandbox path contains a space *by design*
@@ -140,7 +140,7 @@ on `PATH`, which a popup does not guarantee) and never a bare `$0`.
 
 ## Layout: one helper
 
-A panel with a preview passes `"${PANEL_FZF_LAYOUT[@]}"` after `panel_fzf_layout [default]` and never spells `--preview-window` itself. Stacked is the default (list on top, preview below, 60%); `ctrl-/` steps stacked -> side by side (preview right, 65%: the preview is the read, the list only picks) -> hidden -> stacked, from whichever it opened in. A panel reopens in the layout `ctrl-/` last left it in, hidden included: it is saved per panel, by script name, in `${XDG_STATE_HOME:-~/.local/state}/panels/<panel>.layout`. With nothing saved, `set-environment -g PANEL_LAYOUT side` in `.tmux.conf` sets every panel, and a panel's own `[default]` comes after that. Why: each panel chose its own side and size, only one could toggle, and none remembered; one helper means one key and one rule everywhere. agent-panel is Rust and cannot source the library, so it takes the same two arguments from `panel-layout.sh args agent-panel`.
+A panel with a preview passes `"${PANEL_FZF_LAYOUT[@]}"` after `panel_fzf_layout [default]` and never spells `--preview-window` itself. Stacked is the default (list on top, preview below, 60%); `ctrl-/` steps stacked -> side by side (preview right, 65%: the preview is the read, the list only picks) -> hidden -> stacked, from whichever it opened in. A panel reopens in the layout `ctrl-/` last left it in, hidden included: it is saved per panel, by script name, in `${XDG_STATE_HOME:-~/.local/state}/panels/<panel>.layout`. With nothing saved, `set-environment -g PANEL_LAYOUT side` in `.tmux.conf` sets every panel, and a panel's own `[default]` comes after that. Why: each panel chose its own side and size, only one could toggle, and none remembered; one helper means one key and one rule everywhere. The same arguments carry the preview's scroll keys, one set in every panel: `ctrl-d`/`ctrl-u` half a page, `page-down`/`page-up` a page (fzf's own `shift-down`/`shift-up` and the wheel stay); a panel that needs one of those keys binds it after the layout and says so in its header (pr-viewer's `ctrl-d` details), and never binds a `preview-*-page` action itself. agent-panel is Rust and cannot source the library, so it takes the same arguments from `panel-layout.sh args agent-panel`.
 
 ## Speed: first paint under 300 ms
 

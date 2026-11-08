@@ -49,6 +49,9 @@ pub struct Event {
     /// `dispatch` (fleet-dispatch starting, reaping or settling) or `land` (a merge).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    /// The channel a human's want entered by (`--want`), on the write that stamped `#requested`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub want: Option<String>,
     /// The agent-queue item the write belongs to or names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,

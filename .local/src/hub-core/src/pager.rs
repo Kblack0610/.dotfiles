@@ -232,7 +232,9 @@ pub fn run(needs: &[Need], now: i64, p: &Paths, r: &dyn Runner) -> Result<Option
         .collect();
     let d = decide(needs, &paged, buzzed(&read(&p.ledger)?, now, &cfg), &cfg);
     if let Some(page) = &d.page {
-        let mut argv = vec!["agent-notify", "-p", page.priority, "-t", TITLE];
+        // A decision only the human can make: agent-notify's buzz budget never holds it, and
+        // `max_buzz_day` above is this sender's own cap.
+        let mut argv = vec!["agent-notify", "-p", page.priority, "-k", "decision", "-t", TITLE];
         if let Some(r) = &page.reference {
             argv.extend(["-r", r]);
         }
@@ -273,6 +275,8 @@ mod tests {
     fn row(kind: Kind, id: &str, human: bool, value: i64) -> Need {
         Need {
             kind,
+            need: crate::home::NeedKind::Ask,
+            rank: 0,
             project: "dotfiles".into(),
             text: format!("Question {id}?"),
             id: id.into(),
@@ -452,10 +456,10 @@ mod tests {
         let sent = r.0.into_inner();
         assert_eq!(sent.len(), 1);
         assert_eq!(
-            sent[0][..7],
-            ["agent-notify", "-p", "high", "-t", TITLE, "-r", "ask:a1"]
+            sent[0][..9],
+            ["agent-notify", "-p", "high", "-k", "decision", "-t", TITLE, "-r", "ask:a1"]
         );
-        assert_eq!(sent[0][7], page.text);
+        assert_eq!(sent[0][9], page.text);
         // comms-standard rule 12: the page as sent passes the page channel's lint.
         // The repo's channels file, not the stowed one: CI has no ~/.config.
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");

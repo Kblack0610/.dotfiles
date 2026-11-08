@@ -347,10 +347,15 @@ enum Cmd {
         /// project's own profile (bnb, personal); `tooling` is the tooling lane.
         #[arg(long, value_name = "NAME")]
         group: Option<String>,
-        /// Print a project's priority; with --set, declare it. One of: focus, high, low,
-        /// normal (clears it). fleet-dispatch ranks the project's board rows by it first.
+        /// Print a project's priority; with --set, declare it. One of: only, focus, high,
+        /// low, normal (clears it). fleet-dispatch and agent-queue rank the project's work by
+        /// it; while any project is `only`, automated starts take only those projects' work
+        /// (reds, urgent and requested work excepted)
         #[arg(long, value_name = "NAME")]
         prio: Option<String>,
+        /// Every profile's projects that declare a priority, as `name<TAB>prio`
+        #[arg(long)]
+        prios: bool,
         /// The value to write, for --stage / --group / --prio. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
@@ -368,6 +373,12 @@ enum Cmd {
     Comms {
         #[command(subcommand)]
         sub: Option<CommsCmd>,
+    },
+    /// The row grammar `type(area): title` (README "The task row"), for scripts and prompts
+    /// that would otherwise keep their own copy
+    Row {
+        #[command(subcommand)]
+        sub: RowCmd,
     },
     /// Mirror in-progress ClickUp tickets assigned to me into today's `## Focus`.
     /// Opt-in per profile via `clickup_list`; a no-op where it is unset.
@@ -432,6 +443,15 @@ enum ClickupCmd {
     /// Push status edits (`[/]`/`[x]`) on cu-linked `## Focus` items up to ClickUp (no fetch;
     /// the fast on-save path).
     Push,
+}
+
+#[derive(Subcommand)]
+enum RowCmd {
+    /// One row or row text per stdin line -> one `type area title ok` TSV line each, `ok` 1
+    /// when it parses; an empty field prints as `-`. Hashtags and stamps are not the title
+    Parse,
+    /// The types a filer may give a row, one space-separated line (`epic` is the human's)
+    Types,
 }
 
 #[derive(Subcommand)]
@@ -532,6 +552,10 @@ enum PtaskCmd {
         /// A detail line under the row: evidence, file:line, the original words. Repeatable
         #[arg(long, value_name = "LINE")]
         detail: Vec<String>,
+        /// The channel a human's want entered by (outbox, focus, voice, request, ask, meeting,
+        /// human): the row gets `#requested` and the ingest event names the channel
+        #[arg(long, value_name = "CHANNEL")]
+        want: Option<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -688,6 +712,9 @@ enum PtaskCmd {
         /// Another detail line under each row, after the `was:` line. Repeatable
         #[arg(long, value_name = "LINE")]
         detail: Vec<String>,
+        /// The channel the line came in by (as `add --want`): each row gets `#requested`
+        #[arg(long, value_name = "CHANNEL", conflicts_with = "dup")]
+        want: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -728,6 +755,12 @@ enum OutboxCmd {
     Move {
         #[arg(long, value_name = "PROJECT")]
         project: String,
+        #[arg(required = true, num_args = 1..)]
+        raw: Vec<String>,
+    },
+    /// Take the `#ask` line that is RAW byte for byte out of the outbox and write it, with the
+    /// answer on stdin, to today's `inbox/<date>.md` (the sweep's write path for a question)
+    Answer {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
     },
@@ -883,6 +916,7 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             game,
             pr,
             detail,
+            want: None,
             text,
         }) if detail.is_empty() => playtest::Op::Add {
             game,
@@ -912,9 +946,39 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
     })
 }
 
+/// `notes row parse|types`. Parse reads bytes, so one line that is not UTF-8 still gets its
+/// own output line instead of failing the rest.
+fn row_cmd(sub: &RowCmd) -> Result<()> {
+    use std::io::{BufRead, Write};
+    let mut out = std::io::stdout().lock();
+    match sub {
+        RowCmd::Parse => {
+            let mut stdin = std::io::stdin().lock();
+            let mut buf = Vec::new();
+            while stdin.read_until(b'\n', &mut buf)? > 0 {
+                let line = String::from_utf8_lossy(&buf);
+                let line = line.strip_suffix('\n').unwrap_or(&line);
+                writeln!(out, "{}", projects::row_parse_tsv(line))?;
+                buf.clear();
+            }
+        }
+        RowCmd::Types => writeln!(
+            out,
+            "{}",
+            projects::filer_types().collect::<Vec<_>>().join(" ")
+        )?,
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
+    // The grammar needs no profile, and its callers (agent-queue, the triage prompts) run where
+    // none may resolve.
+    if let Cmd::Row { sub } = &cli.cmd {
+        return row_cmd(sub);
+    }
     let prof = config::resolve(cli.profile.as_deref())?;
     let log = logging::Logger::new(prof.log_file.clone(), cli.verbose);
 
@@ -1078,6 +1142,7 @@ fn main() -> Result<()> {
                     game,
                     pr,
                     detail,
+                    want,
                     text,
                 }) => {
                     if game.is_some() || pr.is_some() {
@@ -1090,6 +1155,7 @@ fn main() -> Result<()> {
                         &text.join(" "),
                         &detail,
                         to.as_deref(),
+                        want.as_deref(),
                         lane,
                     )?
                 }
@@ -1151,6 +1217,7 @@ fn main() -> Result<()> {
                     lane: to_lane,
                     to,
                     detail,
+                    want,
                     query,
                 }) => {
                     let to_lane = match to_lane.as_str() {
@@ -1161,6 +1228,7 @@ fn main() -> Result<()> {
                     let how = project_tasks::Filing {
                         project,
                         lane: to_lane,
+                        want: want.as_deref().map(projects::want_channel).transpose()?,
                         how: match dup {
                             Some(id) => project_tasks::How::Dup(id),
                             None => project_tasks::How::Rows {
@@ -1249,6 +1317,11 @@ fn main() -> Result<()> {
             Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
             Some(OutboxCmd::Move { project, raw }) => {
                 outbox::move_line(&prof, &log, &project, &raw.join(" "))?
+            }
+            Some(OutboxCmd::Answer { raw }) => {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                outbox::answer(&prof, &log, &raw.join(" "), &text)?
             }
         },
         Cmd::Log {
@@ -1398,6 +1471,7 @@ fn main() -> Result<()> {
             stages,
             group,
             prio,
+            prios,
             set,
         } => {
             let level = if major {
@@ -1439,6 +1513,10 @@ fn main() -> Result<()> {
                 if set.is_some() {
                     lab_refresh::kick();
                 }
+                std::process::exit(0);
+            }
+            if prios {
+                projects::prios()?;
                 std::process::exit(0);
             }
             if let Some(n) = prio {
@@ -1515,6 +1593,7 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Row { .. } => unreachable!("handled before the profile resolves"),
         Cmd::Clickup { sub } => match sub {
             ClickupCmd::Sync => clickup::sync(&prof, &log)?,
             ClickupCmd::Push => clickup::push(&prof, &log)?,

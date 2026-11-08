@@ -28,6 +28,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
     ("charts.js", JS, include_bytes!("../static/charts.js")),
+    ("convo.js", JS, include_bytes!("../static/convo.js")),
     ("app.js", JS, include_bytes!("../static/app.js")),
     ("waiting.js", JS, include_bytes!("../static/waiting.js")),
     ("home.js", JS, include_bytes!("../static/home.js")),
@@ -174,6 +175,7 @@ mod tests {
 
     const APP_JS: &str = include_str!("../static/app.js");
     const FLEET_JS: &str = include_str!("../static/fleet.js");
+    const WAITING_JS: &str = include_str!("../static/waiting.js");
 
     /// The quoted names in the `[...]` or `{...}` after `const <name> = ` in `js`.
     fn js_list(js: &str, name: &str) -> Vec<String> {
@@ -189,19 +191,30 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn the_jobs_headers_are_hub_cores_columns() {
-        // Rule 8: the web draws the columns hub_core::table sorts and filters, every one of them.
-        use hub_core::table::Row;
-        let js = include_str!("../static/jobs.js");
-        let at = js.find("const JOB_COLS = {").expect("no JOB_COLS");
+    /// The keys of a `const <name> = { key: [...], ... };` column map.
+    fn col_keys<'a>(js: &'a str, name: &str) -> Vec<&'a str> {
+        let at = js.find(name).expect("no column map");
         let body = &js[at..at + js[at..].find('}').unwrap()];
-        let keys: Vec<&str> = body
-            .split(['{', ','])
+        body.split(['{', ','])
             .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
             .filter(|k| !k.contains('"') && !k.is_empty())
-            .collect();
-        assert_eq!(keys, hub_core::jobs::Job::COLUMNS);
+            .collect()
+    }
+
+    #[test]
+    fn the_web_tables_headers_are_hub_cores_columns() {
+        // Rule 8: the web draws the columns hub_core::table sorts and filters, every one of them.
+        use hub_core::table::Row;
+        let jobs = include_str!("../static/jobs.js");
+        assert_eq!(
+            col_keys(jobs, "const JOB_COLS = {"),
+            hub_core::jobs::Job::COLUMNS
+        );
+        let actions = include_str!("../static/actions.js");
+        assert_eq!(
+            col_keys(actions, "const ACTION_COLS = {"),
+            hub_core::actions::Action::COLUMNS
+        );
     }
 
     #[test]
@@ -239,6 +252,21 @@ mod tests {
     }
 
     #[test]
+    fn the_project_headers_are_hub_cores_columns() {
+        // Rule 8, as above; `"7d"` is a quoted key, so quotes come off each key here.
+        use hub_core::table::Row;
+        let js = include_str!("../static/projects.js");
+        let at = js.find("const P_COLS = {").expect("no P_COLS");
+        let body = &js[at..at + js[at..].find('}').unwrap()];
+        let keys: Vec<&str> = body
+            .split(['{', ','])
+            .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim().trim_matches('"')))
+            .filter(|k| !k.is_empty())
+            .collect();
+        assert_eq!(keys, hub_core::projects::Card::COLUMNS);
+    }
+
+    #[test]
     fn the_session_headers_are_hub_cores_columns() {
         // Rule 8, as above; `item`, `source` and `session` are search keys with no column here.
         use hub_core::table::Row;
@@ -252,6 +280,15 @@ mod tests {
             .collect();
         let columns = hub_core::session_table::SessionRow::COLUMNS;
         assert_eq!(keys, columns[..columns.len() - 3]);
+    }
+
+    #[test]
+    fn need_kinds_are_the_readers() {
+        // docs/dashboards.md rule 8: hub_core::home names a row's kind; the page only labels it.
+        for k in hub_core::home::NeedKind::ALL {
+            let line = format!("  {}: \"{}\",", k.slug(), k.label());
+            assert!(WAITING_JS.contains(&line), "{line} is not in waiting.js");
+        }
     }
 
     #[test]

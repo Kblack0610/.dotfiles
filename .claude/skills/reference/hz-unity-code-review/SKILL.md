@@ -31,6 +31,8 @@ Use this skill when reviewing Unity C# code or project settings that target Meta
 - Validating input handling for controllers, hands, and eye tracking
 - Auditing memory usage and GC allocation patterns
 
+Not for a general diff review (`/code-review`) or for reading a captured trace (`hz-perfetto-debug`).
+
 ## Key Review Areas
 
 ### 1. Rendering Pipeline Configuration

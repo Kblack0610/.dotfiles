@@ -42,7 +42,7 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
   echo "# first paint with the card: $((($(date +%s%N) - t0) / 1000000)) ms" >&3
-  screen_has '3 questions waiting'
+  screen_has '3 asks waiting'
   screen_has '1-9 pick . enter send'
   side_by_side
   keep_screen side_80x24
@@ -63,14 +63,15 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
   done
 }
 
-# The card reads on one screen (human, 2026-11-05): a full story (a long request, a turn with a
-# table and the ask repeated, a paragraph of context) still shows its last line beside the list.
+# The card reads on one screen (human, 2026-11-05): a full story (a long request, a turn with the
+# ask repeated, a paragraph of context) still shows its last line beside the list. The story reads
+# through `agent-panel plain` (the stub passes it through; tables and the rest are md.rs's tests).
 @test "at 144x33 the whole card, story and all, fits beside the list" {
   mkdir -p "$HOME/.claude/projects/p" "$HOME/.agent/sessions/delta"
   : > "$HOME/.claude/projects/p/sid-u.jsonl"
   printf '{"session_id":"sid-u","title":"runner-pool-tonight"}\n' > "$HOME/.agent/sessions/delta/sessions.jsonl"
   jq -cn --arg req "$(printf 'please sort out the runner pool for tonight %.0s' $(seq 1 12))" '{first: $req, prompt: "which goes first?",
-    said: ["| job | runner |\n|---|---|\n| sweep | pool |\n\nstep 1 done.\nstep 2 done.\nstep 3 done.\nstep 4 done.\nstep 5 done.\nstep 6 done.\nstep 7 done.\n\nSweep or rebuild first?\n\n1. sweep\n2. rebuild"]}' \
+    said: ["step 1 done.\nstep 2 done.\nstep 3 done.\nstep 4 done.\nstep 5 done.\nstep 6 done.\nstep 7 done.\n\nSweep or rebuild first?\n\n1. sweep\n2. rebuild"]}' \
     > "$NOTES_FIXTURE/agent-panel.said"
   local id; id="$(CLAUDE_CODE_SESSION_ID=sid-u "$AGENT_ASK" post --project delta --session delta-agent-4 \
     --options 'sweep=start the sweep before the nightly run so the cache is warm by morning|rebuild=rebuild the cache first and let the sweep wait for the next window' \
@@ -83,7 +84,6 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
   keep_screen story_144x33
   screen_has 'step 6 done. ...'
   screen_lacks 'step 7'
-  screen_lacks '| job'
   screen_has 'runner-pool-tonight: please sort out'
 }
 
@@ -138,7 +138,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   close_panel
   [ "$(cat "$f")" = hidden ]
   TM_WIDTH=200 TM_HEIGHT=50 open_panel
-  wait_until 'screen_has "3 questions waiting"'
+  wait_until 'screen_has "3 asks waiting"'
   run screen_has "list on top, card below"
   assert_failure
   keep_screen reopened_hidden_200x50
@@ -168,7 +168,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   keep_screen armed_80x24
   [ "$(status_of "$OLD")" = pending ]
   tmux_keys Enter
-  wait_until 'screen_has "2 questions waiting" && screen_lacks "Make stacked the default?"'
+  wait_until 'screen_has "2 asks waiting" && screen_lacks "Make stacked the default?"'
   screen_has 'sent "stacked" to'
   [ "$(status_of "$OLD")" = answered ]
   grep -qx 'answer: stacked' "$(ask_file "$OLD")"
@@ -181,7 +181,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until 'screen_has "send 1"'
   tmux_keys Escape
   wait_until 'screen_has "1-9 pick . enter send"'
-  screen_has '3 questions waiting'
+  screen_has '3 asks waiting'
   [ "$(status_of "$OLD")" = pending ]
 }
 
@@ -194,7 +194,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   keep_screen typing_80x24
   tmux_type 'both, stacked first'
   tmux_keys Enter
-  wait_until 'screen_has "2 questions waiting"'
+  wait_until 'screen_has "2 asks waiting"'
   grep -qx 'answer: both, stacked first' "$(ask_file "$OLD")"
 }
 
@@ -205,20 +205,60 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until "screen_has 'answering alpha:1'"
   tmux_type 'stacked'
   tmux_keys Enter
-  wait_until 'screen_has "2 questions waiting" && screen_lacks "Make stacked the default?"'
+  wait_until 'screen_has "2 asks waiting" && screen_lacks "Make stacked the default?"'
   tmux_keys t
   wait_until "screen_has 'answering beta:2:'"
   screen_matches '^│ answer> +│'
   screen_lacks 'stacked'
   tmux_type 'keep'
   tmux_keys Enter
-  wait_until 'screen_has "1 question waiting" && screen_lacks "Keep the merge queue?"'
+  wait_until 'screen_has "1 ask waiting" && screen_lacks "Keep the merge queue?"'
   grep -qx 'answer: keep' "$(ask_file "$MID")"
   # esc from typing puts the count back in the header.
   tmux_keys t
   wait_until "screen_has 'answering gamma:3'"
   tmux_keys Escape
-  wait_until 'screen_has "1 question waiting" && screen_lacks "answering"'
+  wait_until 'screen_has "1 ask waiting" && screen_lacks "answering"'
+}
+
+# plan_row: a session the state document has waiting on its plan dialog, and the card and
+# options agent-panel reads off that pane.
+plan_row() {
+  mkdir -p "$XDG_STATE_HOME/fleet"
+  printf '{"sessions":[{"target":"hub/demo:2","bucket":"NEEDS","reason":"plan awaiting approval","idle_min":90,"doing":"ExitPlanMode","topic":"Stop issues","cwd":"/nowhere/demo"}]}\n' \
+    >"$XDG_STATE_HOME/fleet/state.json"
+  printf 'plan waiting for your approval\nhub/demo:2  demo\n\n 1  Yes, and switch to BYPASS PERMISSIONS\n 2  Yes, manually approve edits\n 3  Tell Claude what to change  (t types it)\n' \
+    >"$NOTES_FIXTURE/agent-panel.dialog"
+  printf '1\t0\tYes, and switch to BYPASS PERMISSIONS\n2\t0\tYes, manually approve edits\n3\t1\tTell Claude what to change\n' \
+    >"$NOTES_FIXTURE/agent-panel.options"
+}
+
+@test "a plan row shows its dialog as the card, and 2 then enter presses 2 in that session" {
+  plan_row
+  TM_WIDTH=144 TM_HEIGHT=33 open_panel
+  wait_until 'screen_has "3 asks . 1 plan waiting"'
+  tmux_keys Down Down Down
+  wait_until 'screen_has "plan waiting for your approval" && screen_has "Yes, manually approve edits"'
+  keep_screen plan_144x33
+  tmux_keys 2
+  wait_until 'screen_has "send 2"'
+  tmux_keys Enter
+  wait_until 'screen_has "sent 2"'
+  grep -qx 'agent-panel answer hub/demo:2 2 --expect Yes, manually approve edits --' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "a plan dialog that closed before enter: the panel says not sent and stays open" {
+  plan_row
+  printf '4\nthe dialog in hub/demo:2 is gone; nothing sent\n' >"$NOTES_FIXTURE/agent-panel.answer"
+  TM_WIDTH=144 TM_HEIGHT=33 open_panel
+  wait_until 'screen_has "3 asks . 1 plan waiting"'
+  tmux_keys Down Down Down
+  wait_until 'screen_has "plan waiting for your approval"'
+  tmux_keys 2
+  wait_until 'screen_has "send 2"'
+  tmux_keys Enter
+  wait_until 'screen_has "not sent: the dialog in hub/demo:2 is gone"'
+  _tm has-session 2>/dev/null
 }
 
 @test "g goes to the asking session and closes the panel" {

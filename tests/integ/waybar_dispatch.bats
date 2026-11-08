@@ -28,7 +28,8 @@ STUB
 # running, 10 waiting; 5 started and 4 done in 1h, 50 started and 40 done (2 failed) in 24h;
 # 30 done and 18 added in 6h; 1522 agent, 451 human and 357 playtest board rows; 16 of 24 run units, 5 by hand), with the overrides applied. A
 # series is topic.key (a feed number, summary_shepherd.* for the shepherd); h2: prefixes another
-# host, dup: a second scrape of h1; a value of - drops the series.
+# host, dup: a second scrape of h1; a value of - drops the series. acct:<name>.<reason> is that
+# account's claude_account_room_reason series (claude-acct textfile, no topic).
 feed() {
   python3 - "$FX/prom.json" "$@" <<'PY'
 import json, sys
@@ -61,6 +62,11 @@ for k, v in s.items():
     host, inst = "h1", "i1"
     if k.startswith("h2:"): host, inst, k = "h2", "i2", k[3:]
     if k.startswith("dup:"): inst, k = "i9", k[4:]
+    if k.startswith("acct:"):
+        name, reason = k[5:].split(".")
+        res.append({"metric": {"__name__": "claude_account_room_reason", "account": name, "reason": reason,
+                               "instance": inst}, "value": [0, str(v)]})
+        continue
     topic, name = k.split(".")
     m = {"__name__": "mqtt_" + name, "topic": f"agents_{host}_main_{topic}"}
     m.update(host=host, instance=inst)
@@ -156,7 +162,13 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   feed summary_dispatch.room_held_account=1
   run "$MODULE"
   run tip
-  assert_output --partial "no account has room under its weekly pace"
+  assert_output --partial "paused by: <span color='$Y'>no account has room</span>"
+  # The accounts' published verdicts name each one's reason; the gate reads them, never its own guess.
+  feed summary_dispatch.room_held_account=1 acct:main.pace=1 acct:main.five_hour=1 acct:alt.reserve=1
+  run "$MODULE"
+  run tip
+  assert_output --partial "paused by: <span color='$Y'>no account has room: alt reserve, main five_hour+pace</span>"
+  refute_output --partial "under its weekly pace"
   feed summary_dispatch.room_held_assess=1
   run "$MODULE"
   run tip
@@ -165,6 +177,22 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   run tip
   refute_output --partial "paused by:"
+}
+
+@test "a #prio/only focus reads in amber with how many items it holds; no focus, or an old feed, no line" {
+  feed summary_dispatch.focus_projects=2 summary_dispatch.held_focus=7
+  run "$MODULE"
+  run tip
+  assert_output --partial "focus: <span color='$Y'>only 2 project(s)</span>, 7 queued held off it (reds, urgent and #requested still run)"
+  assert_output --partial "on a time tag, 7 off focus)"
+  feed summary_dispatch.focus_projects=0
+  run "$MODULE"
+  run tip
+  refute_output --partial "focus:"
+  feed
+  run "$MODULE"
+  run tip
+  refute_output --partial "focus:"
 }
 
 @test "a feed without the queue or room numbers reads - and says no headroom, never 0" {
@@ -191,7 +219,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   assert_equal "$(class)" warn
   run tip
-  assert_line --index 2 "<span color='$Y'>dispatch stopped 2h03m: no account has room under its weekly pace</span>"
+  assert_line --index 2 "<span color='$Y'>dispatch stopped 2h03m: no account has room</span>"
   refute_output --partial "(BLOCKED)"
   feed runner_fleet_dispatch.blocked=1 summary_dispatch.held_s=600
   run "$MODULE"

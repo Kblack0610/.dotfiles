@@ -1,18 +1,14 @@
-//! The Fleet tab: hub-core's `fleet`, shared with the TUI. The file parts are read on every
-//! request, so a file event shows at once; the Prometheus part is cached here as Infra's is.
-//! A runner's page (`/api/fleet/runner?name=`) is read only when it is opened, never cached.
-
-use std::time::{Duration, Instant};
+//! The Fleet tab: hub-core's `fleet`, shared with the TUI. It is all files, read on every
+//! request, so a file event shows at once. A runner's page (`/api/fleet/runner?name=`) is read
+//! only when it is opened. The accounts, tokens and Langfuse are the Costs tab's (costs.rs).
 
 use std::collections::HashSet;
 
-use hub_core::fleet::{self, who, who::Who, Fleet, Paths, Prom};
+use hub_core::fleet::{self, who, who::Who, Fleet, Paths};
 use hub_core::table::View;
 use serde::Deserialize;
-use tokio::sync::Mutex;
 
-/// As Infra's cache: a second tab or a reload inside this window reuses the last answer.
-const CACHE: Duration = Duration::from_secs(30);
+use crate::cache::off;
 
 /// The table view the page keeps in its URL (`q`, `s`, `sort`, `dir`, as every table's) and the
 /// tier 1 rows it has folded (`fold`, comma-separated runner names).
@@ -26,37 +22,15 @@ pub struct FleetQuery {
     pub fold: String,
 }
 
-#[derive(Default)]
-pub struct Cache(Mutex<Option<(Instant, Prom)>>);
-
-impl Cache {
-    async fn prom(&self) -> Prom {
-        let mut c = self.0.lock().await;
-        if let Some((at, p)) = c.as_ref() {
-            if at.elapsed() < CACHE {
-                return p.clone();
-            }
-        }
-        let p = tokio::task::spawn_blocking(fleet::prom)
-            .await
-            .unwrap_or_else(|e| Prom {
-                errors: vec![e.to_string()],
-                ..Default::default()
-            });
-        *c = Some((Instant::now(), p.clone()));
-        p
-    }
-
-    pub async fn get(&self, q: FleetQuery) -> String {
-        let files = tokio::task::spawn_blocking(|| fleet::files(&Paths::from_env()));
-        let p = self.prom().await;
-        let mut f = files.await.unwrap_or_else(|e| Fleet {
-            errors: vec![e.to_string()],
+/// A Fleet read. The files are read afresh each time, so there is nothing to keep.
+pub async fn get(q: FleetQuery) -> String {
+    let f = off(|| fleet::files(&Paths::from_env()))
+        .await
+        .unwrap_or_else(|e| Fleet {
+            errors: vec![e],
             ..Default::default()
         });
-        f.apply(&p);
-        render(f, &q)
-    }
+    render(f, &q)
 }
 
 /// The Fleet with its `who` rows cut to the view and folds, and the controls that drew them
@@ -88,9 +62,7 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
 
 /// One runner's page, read only when `#fleet/<name>` opens. An unknown name is the caller's 404.
 pub async fn runner(name: String) -> Result<String, String> {
-    let r = tokio::task::spawn_blocking(move || fleet::runner::read(&Paths::from_env(), &name))
-        .await
-        .map_err(|e| e.to_string())??;
+    let r = off(move || fleet::runner::read(&Paths::from_env(), &name)).await??;
     serde_json::to_string(&r).map_err(|e| e.to_string())
 }
 
@@ -102,6 +74,7 @@ mod tests {
     fn row(tier: u8, key: &str, parent: Option<&str>, kids: usize) -> Who {
         Who {
             tier,
+            kind: if tier == 3 { "session" } else { "lead" }.into(),
             who: key.into(),
             opens: if tier == 3 {
                 Opens::Session
@@ -111,6 +84,7 @@ mod tests {
             key: key.into(),
             state: "working".into(),
             since: None,
+            purpose: String::new(),
             doing: String::new(),
             under: String::new(),
             project: "dotfiles".into(),

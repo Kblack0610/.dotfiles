@@ -15,8 +15,9 @@ const el = () => new Proxy({}, {
   set: (t, k, v) => { t[k] = v; return true; },
 });
 const on = {};
+const fire = (e) => on[e.type].forEach((f) => f(e));
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const box = Object.assign(part(), { addEventListener: (ev, f) => { on[ev] = f; } });
+const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ??= []).push(f); } });
 const parts = { "jobs-head": part(), "jobs-facets": part(), "jobs-chips": part(), "jobs-body": part(), "jobs-tail": part() };
 const doc = { getElementById: (id) => (id === "jobs" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
@@ -32,7 +33,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "table.js", "jobs.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "jobs.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const jst = run("jst");
 
@@ -55,7 +56,7 @@ const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-t
 test("the table draws the server's rows, sort, chips and dropdowns", () => {
   run("st.tab = 'infra'");
   Object.assign(jst, { data, err: null, hist: null, log: null, all: false });
-  run("renderJobs()");
+  run("jst.render()");
   const h = box.innerHTML;
   assert.match(h, /2 of 3 in 24h/);
   assert.match(h, /<th class="n" aria-sort="ascending"><button class="thsort" data-tsort="" data-tdir="desc" title="sort by started">started \^<\/button><\/th>/, "the sorted header says its direction and that a click goes back to the default");
@@ -82,15 +83,15 @@ test("a view change lands in the URL and the API asks the server for it", async 
   asked = [];
   body = data;
   run("st.views.infra = 'q=source%3Aci&sort=started'");
-  on.click({ type: "click", target: target({ ts: "failed" }) });
+  fire({ type: "click", target: target({ ts: "failed" }) });
   await new Promise((r) => setImmediate(r));
   assert.equal(ctx.history.url, "#infra?q=source%3Aci&sort=started&s=failed");
   assert.equal(asked.at(-1), "/api/jobs?q=source%3Aci&s=failed&sort=started");
-  on.click({ type: "click", target: target({ tsort: "", tdir: "desc" }) });
+  fire({ type: "click", target: target({ tsort: "", tdir: "desc" }) });
   await new Promise((r) => setImmediate(r));
   assert.equal(ctx.history.url, "#infra?q=source%3Aci&s=failed", "the plain sort is a bare URL");
   jst.hist = "dream";
-  run("refreshJobs()");
+  run("jst.refresh()");
   await new Promise((r) => setImmediate(r));
   assert.equal(asked.at(-1), "/api/jobs?q=source%3Aci&s=failed&name=dream", "a history keeps the view");
   jst.hist = null;
@@ -100,7 +101,7 @@ test("a refresh while the search box has focus leaves the box alone", () => {
   Object.assign(jst, { data, err: null });
   box.innerHTML = "KEEP";
   doc.activeElement = { id: "jobs-q" };
-  run("renderJobs()");
+  run("jst.render()");
   doc.activeElement = null;
   assert.equal(box.innerHTML, "KEEP");
   assert.match(parts["jobs-body"].innerHTML, /playground \/ Tests/);
@@ -110,6 +111,6 @@ test("a refresh while the search box has focus leaves the box alone", () => {
 
 test("a failed collection says why instead of drawing an empty table", () => {
   Object.assign(jst, { data: { jobs: [], errors: ["gh: rate limited"] }, err: null });
-  run("renderJobs()");
-  assert.match(box.innerHTML, /<div class="empty">gh: rate limited<\/div>/);
+  run("jst.render()");
+  assert.match(box.innerHTML, /<div class="card err">gh: rate limited<\/div>/);
 });

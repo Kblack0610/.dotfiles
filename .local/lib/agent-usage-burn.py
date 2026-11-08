@@ -18,10 +18,19 @@ Sources and what each one is trusted for:
                its tmux `session:` name matching the worktree the session ran in while the item
                ran (items older than `sessions:` carry only that). A session no item names is
                a runner when headless, else interactive.
-  requests     the api-request-shape and api-request-blob lines Claude Code writes before a
-               session's first response: what that first request carried, part by part, in
-               chars (first_request_parts). Chars, because only the request total has a
-               token count; chars_per_token is that total over these chars.
+  shepherd     $FLEET_SHEPHERD_DIR/passes.tsv and .pass: every fleet-shepherd pass id. A pass
+               is an interactive cli session in ~/.dotfiles, so without this it reads as
+               interactive; it gets origin shepherd.
+  requests     the api-request lines Claude Code writes before each call, main threads and
+               subagents alike: a shape (system prompt, tools) by shapeHash, and the messages
+               as the base request's first `keep` plus a `tail` of blob hashes. Only blobs
+               Claude Code adds itself (instructions, listings, reminders) are stored as
+               api-request-blob lines; most conversation messages are in the transcript
+               instead, so they count in a request's tokens, not its parts (`conversation` is
+               only the stored ones). The response names its request
+               (requestRef). Parts are chars, because only the request total has a token
+               count: chars_per_token is the first requests' chars over their tokens, which
+               are nearly all fixed text, and every request's context_share uses it.
 There is no price table on purpose; see the agent-usage header.
 """
 import argparse
@@ -46,7 +55,7 @@ IDLE_LONG = 3600     # the prompt cache TTL these sessions request ("1h")
 IDLE_SHORT = 300     # the default cache TTL
 ITEM_LEAD = 600      # seconds a session may start before its item records `started:`
 
-# Where each part of the first request's system-role text starts. Text before the first
+# Where each part of a recorded request's system-role text starts. Text before the first
 # marker is system_other.
 SYS_PARTS = [("preflight", r"SessionStart hook additional context"), ("environment", r"^# Environment\n"),
              ("deferred_list", r"^The following deferred tools are now available"),
@@ -55,37 +64,149 @@ SYS_PARTS = [("preflight", r"SessionStart hook additional context"), ("environme
              ("skill_listing", r"^The following skills are available for use with the Skill tool")]
 
 
-def request_parts(shape, blobs):
-    """Chars per part of one recorded first request: system prompt, tool schemas, the
-    system-role listings, and the CLAUDE.md / MEMORY.md files in the first user block."""
+def shape_parts(shape):
+    """(parts, tools) of a request shape: the system prompt and each tool's schema, in chars."""
     parts, tools = Counter(), Counter()
     parts["system_prompt"] = sum(len(b.get("text", "")) for b in shape.get("system") or [])
     for t in shape.get("tools") or []:
         n = t.get("name", "?")
         tools[n] = len(json.dumps(t))
         parts["tools_mcp" if n.startswith("mcp__") else "tools_builtin"] += tools[n]
-    for m in blobs:
-        for j, b in enumerate(m.get("content") or []):
-            txt = b.get("text", "") if isinstance(b, dict) else ""
-            if m.get("role") == "system":
-                pos = sorted((x.start(), n) for n, pat in SYS_PARTS for x in [re.search(pat, txt, re.M)] if x)
-                parts["system_other"] += pos[0][0] if pos else len(txt)
-                for k, (at, n) in enumerate(pos):
-                    parts[n] += (pos[k + 1][0] if k + 1 < len(pos) else len(txt)) - at
-            elif j == 0 and "Contents of /" in txt:
-                for seg in re.split(r"(?=Contents of /)", txt):
-                    f = re.match(r"Contents of (\S+)", seg)
-                    if not f:
-                        parts["instructions_other"] += len(seg)
-                    elif f.group(1).endswith("MEMORY.md"):
-                        parts["memory_md"] += len(seg)
-                    elif os.path.basename(os.path.dirname(f.group(1))).startswith(".claude"):
-                        parts["global_claude_md"] += len(seg)
-                    else:
-                        parts["repo_claude_md"] += len(seg)
-            else:
-                parts["prompt"] += len(txt)
     return parts, tools
+
+
+def blob_parts(m):
+    """Chars per part of one recorded message: the system-role listings, the CLAUDE.md /
+    MEMORY.md files in a user message's first block, the prompt, and the rest."""
+    parts = Counter()
+    content = m.get("content") or []
+    for j, b in enumerate([content] if isinstance(content, str) else content):
+        if isinstance(b, str):
+            b = {"type": "text", "text": b}
+        elif not isinstance(b, dict):
+            b = {}
+        txt = b.get("text", "")
+        if m.get("role") == "system":
+            pos = sorted((x.start(), n) for n, pat in SYS_PARTS for x in [re.search(pat, txt, re.M)] if x)
+            parts["system_other"] += pos[0][0] if pos else len(txt)
+            for k, (at, n) in enumerate(pos):
+                parts[n] += (pos[k + 1][0] if k + 1 < len(pos) else len(txt)) - at
+        elif j == 0 and "Contents of /" in txt:
+            for seg in re.split(r"(?=Contents of /)", txt):
+                f = re.match(r"Contents of (\S+)", seg)
+                if not f:
+                    parts["instructions_other"] += len(seg)
+                elif f.group(1).endswith("MEMORY.md"):
+                    parts["memory_md"] += len(seg)
+                elif os.path.basename(os.path.dirname(f.group(1))).startswith(".claude"):
+                    parts["global_claude_md"] += len(seg)
+                else:
+                    parts["repo_claude_md"] += len(seg)
+        elif m.get("role") == "user" and b.get("type") == "text":
+            parts["prompt"] += len(txt)
+        else:
+            parts["conversation"] += len(json.dumps(b))
+    return parts
+
+
+class Parts:
+    """Parts of a set of recorded requests: chars per part, and each tool's schema over the
+    requests that carry it (a mean over all requests would shrink a tool few sessions load)."""
+
+    def __init__(self):
+        self.n, self.ctx = 0, 0
+        self.parts, self.tool_chars, self.tool_n = defaultdict(list), Counter(), Counter()
+
+    def add(self, ctx, parts, tools):
+        self.n += 1
+        self.ctx += ctx
+        for k, v in parts.items():
+            if v:
+                self.parts[k].append(v)
+        self.tool_chars.update(tools)
+        self.tool_n.update(tools.keys())
+
+    def chars(self):
+        return sum(sum(v) for v in self.parts.values())
+
+    def cpt(self):
+        """Chars a token over these requests, or None with none recorded."""
+        return self.chars() / self.ctx if self.ctx else None
+
+    def summary(self, cpt=None):
+        """cpt: chars a token, to turn each part into a share of these requests' context."""
+        total, n = self.chars(), self.n
+        keys = sorted(self.parts, key=lambda k: (-sum(self.parts[k]), k))
+        out = {"requests": n, "parts": {}}
+        if not cpt:  # these requests' own ratio, true only when they are nearly all fixed text
+            out["chars_per_token"] = round(self.cpt(), 2) if self.ctx else None
+        for k in keys:
+            v = self.parts[k]
+            out["parts"][k] = {"median_chars": int(statistics.median(v + [0] * (n - len(v)))),
+                               "mean_chars": sum(v) // n, "share": round(sum(v) / total, 3)}
+            if cpt:
+                out["parts"][k]["context_share"] = round(sum(v) / cpt / self.ctx, 4) if self.ctx else None
+        out["tools_mean_chars"] = {k: c // self.tool_n[k] for k, c in self.tool_chars.most_common(12)}
+        out["tool_requests"] = {k: self.tool_n[k] for k, _ in self.tool_chars.most_common(12)}
+        return out
+
+
+class Requests:
+    """One transcript's recorded requests, each resolved to its parts. A request keeps only its
+    own tail: its parts are its base's plus the tail's, so a long session is one pass, and only
+    a request that drops messages (keep under its base's length) walks the chain back. Shapes
+    and blobs are keyed by content hash, so their parts are worked out once for every file."""
+    shapes, blobs = {}, {}
+
+    def __init__(self):
+        self.reqs = {}
+
+    def blob(self, h):
+        return self.blobs.get(h) or Counter()
+
+    def hashes(self, ref):
+        chain = []
+        while ref:
+            chain.append(self.reqs[ref])
+            ref = chain[-1]["base"]
+        h = []
+        for r in reversed(chain):
+            h = h[:r["keep"]] + r["tail"]
+        return h
+
+    def line(self, d):
+        t = d.get("type")
+        if t == "api-request-shape":
+            h = d.get("shapeHash")
+            if h and h not in self.shapes:
+                self.shapes[h] = shape_parts(d.get("shape") or {})
+        elif t == "api-request-blob":
+            h = d.get("hash")
+            if h and h not in self.blobs:
+                self.blobs[h] = blob_parts(d.get("message") or {})
+        elif t == "api-request" and d.get("id"):
+            base, keep, tail = d.get("base"), d.get("keep") or 0, d.get("tail") or []
+            if base and base not in self.reqs:
+                return  # its base is in another file (a resume): its parts are unknown
+            b = self.reqs.get(base) or {"n": 0, "parts": Counter()}
+            if keep < b["n"]:
+                parts = Counter()
+                for h in self.hashes(base)[:keep]:
+                    parts.update(self.blob(h))
+            else:
+                parts = b["parts"].copy()
+            for h in tail:
+                parts.update(self.blob(h))
+            self.reqs[d["id"]] = {"base": base, "keep": keep, "tail": tail, "n": min(keep, b["n"]) + len(tail),
+                                  "parts": parts, "shape": d.get("shapeHash")}
+
+    def parts(self, ref):
+        """(parts, tools) of request `ref`, or None when it was not recorded."""
+        r = self.reqs.get(ref)
+        if r is None or r["shape"] not in self.shapes:  # no hash is never a key, so it is unrecorded
+            return None
+        sp, tools = self.shapes[r["shape"]]
+        return sp + r["parts"], tools
 
 
 def ts(s):
@@ -160,7 +281,7 @@ def scan(path, start, end, acc):
     sid = session_of(path)
     sess = acc["session"][sid]
     first, turns, seq = None, 0, 0  # seq: the session's responses, in the window or not
-    shape, blobs = None, []  # the first request, as recorded before the first response
+    reqs = Requests()
     try:
         fh = open(path, errors="ignore")
     except OSError:
@@ -174,11 +295,8 @@ def scan(path, start, end, acc):
             if first is None and d.get("type") in ("user", "assistant"):
                 first = d
             t = d.get("type")
-            if t == "api-request-shape" and shape is None and seq == 0:
-                shape = d.get("shape") or {}
-                continue
-            if t == "api-request-blob" and seq == 0 and len(blobs) < 2:
-                blobs.append(d.get("message") or {})
+            if t in ("api-request-shape", "api-request-blob", "api-request"):
+                reqs.line(d)
                 continue
             if t == "system" and "compact" in str(d.get("subtype", "")):
                 after_compact = True
@@ -247,13 +365,17 @@ def scan(path, start, end, acc):
             sess["context"] += ctx
             if kind == "subagent":
                 sess["subagent_context"] += ctx
+            req = reqs.parts(d.get("requestRef"))
+            if req is not None:
+                acc["every_parts"].add(ctx, *req)
+                acc["every_kind"][kind] += 1
+            else:
+                acc["every_unrecorded"] += 1
             if seq == 1 and kind != "subagent":
                 acc["first_ctx"].append(ctx)
                 sess["first_turn_context"] = ctx
-                if shape is not None:
-                    parts, tools = request_parts(shape, blobs)
-                    acc["first_parts"].append((ctx, parts))
-                    acc["first_tools"].update(tools)
+                if req is not None:
+                    acc["first_parts"].add(ctx, *req)
                 cause = "first-turn"
             elif after_compact:
                 cause = "after-compaction"
@@ -370,8 +492,25 @@ def queue_items(root):
     return items
 
 
-def origin_of(sid, meta, by_sid, by_tmux):
-    """(origin, item) for a session: a queue item names it, else its kind decides."""
+def shepherd_passes(root):
+    """Every fleet-shepherd pass's session id: passes.tsv (<start>\t<id>\t...) once scored,
+    .pass (<id>\t...) while it runs."""
+    ids = set()
+    for name, col in (("passes.tsv", 1), (".pass", 0)):
+        try:
+            for line in open(os.path.join(root, name), errors="ignore"):
+                f = line.rstrip("\n").split("\t")
+                if len(f) > col and f[col]:
+                    ids.add(f[col])
+        except OSError:
+            pass
+    return ids
+
+
+def origin_of(sid, meta, by_sid, by_tmux, passes=frozenset()):
+    """(origin, item) for a session: a shepherd pass, a queue item names it, else its kind decides."""
+    if sid in passes:
+        return "shepherd", None
     kind, cwd, first_t = meta.get(sid, ("?", "", None))
     it = by_sid.get(sid)
     if it is None and cwd and first_t:
@@ -390,6 +529,8 @@ def main():
     ap.add_argument("--since", help="start of the window (YYYY-MM-DD, an ISO time, or 90m/12h/2d ago); overrides --days")
     ap.add_argument("--before", help="end of the window (YYYY-MM-DD or ISO time), default now")
     ap.add_argument("--top", type=int, default=15, help="sessions in the by-session table (all in --json)")
+    ap.add_argument("--sort", choices=("cost", "turns", "context"), default="cost",
+                    help="order of the by-session table and its --json: registry cost (default), turns, or context tokens")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     end = ts(a.before) if a.before else dt.datetime.now().timestamp()
@@ -411,7 +552,7 @@ def main():
     acc = {"kind": defaultdict(tok), "model": defaultdict(tok), "cw_cause": defaultdict(tok),
            "trigger": defaultdict(tok), "idle_wakes": defaultdict(tok), "first_ctx": [],
            "mix": defaultdict(tok), "session": defaultdict(tok), "meta": {},
-           "first_parts": [], "first_tools": Counter(),
+           "first_parts": Parts(), "every_parts": Parts(), "every_kind": Counter(), "every_unrecorded": 0,
            "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "kind_files": defaultdict(set)}
     for p in glob.glob(os.path.join(proj_root, "**", "*.jsonl"), recursive=True):
         try:
@@ -431,6 +572,7 @@ def main():
             by_sid[x] = it
         if it["tmux"]:
             by_tmux[it["tmux"]].append(it)
+    passes = shepherd_passes(env.get("FLEET_SHEPHERD_DIR", f"{home}/.agent/shepherd"))
     sessions, by_origin = {}, defaultdict(Counter)
     for sid, v in acc["session"].items():
         if not v["turns"] and not v["compactions"]:
@@ -438,7 +580,7 @@ def main():
         r = reg_last.get(sid) or {}
         sp = sorted(prs_by_sess.get(sid, ()))
         c = r.get("cost_usd")
-        origin, it = origin_of(sid, acc["meta"], by_sid, by_tmux)
+        origin, it = origin_of(sid, acc["meta"], by_sid, by_tmux, passes)
         models = Counter()
         for k, turns in v.items():
             if k[:2] in ("m:", "s:"):
@@ -467,14 +609,15 @@ def main():
             "wait_share": round(v["wait_context"] / v["context"], 3) if v["context"] else None,
             "compactions": v["compactions"], "first_turn_context": v.get("first_turn_context"),
             "merged_prs": sp, "cost_per_merged_pr": round(c / len(sp), 2) if sp and c is not None else None}
-    sessions = dict(sorted(sessions.items(), key=lambda x: (-(x[1]["cost_usd"] or 0), -x[1]["context"])))
+    by_field = {"cost": lambda x: (-(x[1]["cost_usd"] or 0), -x[1]["context"]),
+                "turns": lambda x: (-x[1]["turns"], -x[1]["context"]),
+                "context": lambda x: (-x[1]["context"], -x[1]["turns"])}
+    sessions = dict(sorted(sessions.items(), key=by_field[a.sort]))
     turns_all = sum(v["turns"] for v in acc["mix"].values())
 
     def q(p):
         return fc[min(len(fc) - 1, int(len(fc) * p))] if fc else None
-    fp = acc["first_parts"]
-    fp_chars = sum(sum(p.values()) for _, p in fp)
-    fp_keys = sorted({k for _, p in fp for k in p}, key=lambda k: (-sum(p.get(k, 0) for _, p in fp), k))
+    first = acc["first_parts"]
     out = {
         "window": {"start": dt.datetime.fromtimestamp(start).isoformat(timespec="minutes"),
                    "end": dt.datetime.fromtimestamp(end).isoformat(timespec="minutes"),
@@ -492,14 +635,10 @@ def main():
         "zero_merge_context_share": round(zero_ctx / out_ctx, 3) if out_ctx else None,
         "first_turn_context": {"sessions": len(fc), "p10": q(0.1),
                                "median": int(statistics.median(fc)) if fc else None, "p90": q(0.9)},
-        "first_request_parts": {
-            "sessions": len(fp),
-            "chars_per_token": round(fp_chars / sum(c for c, _ in fp), 2) if fp else None,
-            "parts": {k: {"median_chars": int(statistics.median([p.get(k, 0) for _, p in fp])),
-                          "mean_chars": sum(p.get(k, 0) for _, p in fp) // len(fp),
-                          "share": round(sum(p.get(k, 0) for _, p in fp) / fp_chars, 3)} for k in fp_keys},
-            "tools_mean_chars": {k: v // len(fp) for k, v in acc["first_tools"].most_common(12)} if fp else {},
-        },
+        "first_request_parts": first.summary(),
+        "every_request_parts": {**acc["every_parts"].summary(first.cpt()),
+                                "by_kind": dict(acc["every_kind"].most_common()),
+                                "unrecorded": acc["every_unrecorded"]},
         "waits": {"calls": acc["wait_calls"], "context": acc["wait_ctx"],
                   "share": round(acc["wait_ctx"] / ctx_all, 3) if ctx_all else None},
         "turn_mix": {k: {"turns": acc["mix"][k]["turns"], "context": acc["mix"][k]["context"],
@@ -541,15 +680,22 @@ def main():
     f = out["first_turn_context"]
     print(f"first-turn context (main threads): median {f['median']}, p10 {f['p10']}, p90 {f['p90']} over {f['sessions']} sessions")
     r = out["first_request_parts"]
-    if r["sessions"]:
-        print(f"first request by part ({r['sessions']} sessions, {r['chars_per_token']} chars a token): "
+    if r["requests"]:
+        print(f"first request by part ({r['requests']} sessions, {r['chars_per_token']} chars a token): "
               + ", ".join(f"{k} {v['mean_chars']:,} ({v['share']:.0%})" for k, v in r["parts"].items() if v["share"] >= 0.005))
-        print("  largest tools (mean chars): " + ", ".join(f"{k} {v:,}" for k, v in r["tools_mean_chars"].items()))
+        print("  largest tools (mean chars over the requests that carry them): "
+              + ", ".join(f"{k} {v:,}" for k, v in r["tools_mean_chars"].items()))
+    r = out["every_request_parts"]
+    if r["requests"]:
+        print(f"every request by part ({r['requests']:,} recorded: "
+              + ", ".join(f"{k} {v:,}" for k, v in r["by_kind"].items()) + f"; {r['unrecorded']:,} unrecorded), share of their context: "
+              + ", ".join(f"{k} {v['context_share']:.1%}" for k, v in r["parts"].items()
+                          if v.get("context_share") is not None and v["context_share"] >= 0.001))
     wt = out["waits"]
     print(f"wait-style calls: {wt['calls']:,}, context {m(wt['context'])} ({wt['share']} of all)")
     print("turn mix: " + ", ".join(f"{k} {v['turns']:,} ({v['share']})" for k, v in out["turn_mix"].items()))
     print(f"compactions: {out['compactions']}\n")
-    print(f"by session (top {a.top} of {len(sessions)}; cost is the session's whole run, from the registry)")
+    print(f"by session (top {a.top} of {len(sessions)} by {a.sort}; cost is the session's whole run, from the registry)")
     print("  " + "\t".join(["session", "project", "origin", "model", "cost_usd", "turns", "context", "inv/wait/write/reply",
                             "wait_share", "compactions", "first_turn", "merged_prs", "per_pr"]))
     for sid, v in list(sessions.items())[:a.top]:

@@ -70,7 +70,7 @@ ask() {
 
 ask_fixture() {
   ask tp1 judge=take-recommend answer=Yes
-  ask fp1 judge=answer:left answer=right
+  ask fp1 judge=answer:left options= answer=right
   ask fn1 judge=human answer=yes
   ask tn1 judge=human answer=no
   ask tn2 judge=human 'answer=in session: ok, no then'
@@ -94,6 +94,28 @@ ask_fixture() {
   # pending: live_wait, pend; unscorable: unsc (free text), unclear (the asker's fault); gate and
   # old1 (another prompt) are out
   assert_output '[12,1,2,2,1,2,2,2,54.5,50,33.3,0.16]'
+  run "$JUDGE_EVAL" ask-judge --json
+  run jq -c '.agents[0].total | [.unscorable_pct, .unscorable_by]' <<<"$output"
+  assert_output '[18.2,{"answer naming no option":1,"unclear ask":1}]'
+  run "$JUDGE_EVAL" ask-judge
+  assert_line '  unscorable 2 of 11 (18.2%): 1 answer naming no option, 1 unclear ask'
+}
+
+@test "ask-judge: an answer with a note is scored by the option it leads with, free text by none" {
+  ask n_fn judge=human options='a|b' recommend=a 'answer=a (human 2026-11-06: keep moving)'
+  ask n_tn judge=human options='a|b' recommend=a 'answer=b: go with the other one'
+  ask n_tp judge=take-recommend options='a|b' recommend=a 'answer=in session: go with a'
+  ask n_ex judge=take-recommend options='ship it!|wait' 'recommend=ship it!' 'answer=Ship it!'
+  # negative controls: the article "a" names no option, two options name none, and free text to
+  # an ask with options is never compared as text (main read each as a disagreement)
+  ask n_art judge=human options='a|b' recommend=a 'answer=A new problem first: a broken thing'
+  ask n_two judge=human options='a|b' recommend=a 'answer=a or b, whichever'
+  ask n_txt judge=human options='a|b' recommend=a 'answer=whatever you recommend'
+  ask n_cxl judge=human options='a|b' recommend=a status=cancelled answer=
+  run "$JUDGE_EVAL" ask-judge --json
+  assert_success
+  run jq -c '.agents[0].total | [.tp, .fn, .tn, .unscorable, .unscorable_by]' <<<"$output"
+  assert_output '[2,1,1,4,{"answer naming no option":3,"cancelled unanswered":1}]'
 }
 
 @test "ask-judge: a deferral of a hard-stop type is no false-defer, one of a type that can go live is" {

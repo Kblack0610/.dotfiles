@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-propose - what an analysis stream proposes to the human, and the only writer of its store.
 #
-#   add --stream s --project p --verb queue|row|none [--arg text] [--why text] [--evidence path|url]
+#   add --stream s --project p --verb queue|row|mem0|none [--arg text] [--why text] [--evidence path|url]
 #       [--key k] "title"             file a proposal; print its id (the open one when it repeats)
 #   list [--json] [--status open|accepted|rejected|expired|all] [--stream s]
 #   show <id> | count
@@ -18,6 +18,9 @@ AP_DIR="${AGENT_PROPOSE_DIR:-$HOME/.agent/proposals}"
 AP_TTL_DAYS="${AGENT_PROPOSE_TTL_DAYS:-30}"   # an unread proposal is stale: dream's block expiry
 AP_KEEP_DAYS="${AGENT_PROPOSE_KEEP_DAYS:-90}" # a decided record, long enough to stop a repeat
 AP_MAX="${AGENT_PROPOSE_MAX:-12}"             # open per stream and project, above the largest real backlog (11)
+# Where the mem0 verb posts: MEM0_BASE_URL, MEM0_USER_ID and MEM0_SECRET (the sops file holding the
+# key), from the private overlay, since the URL may not enter this repo.
+AP_MEM0_LIB="${AGENT_PROPOSE_MEM0_LIB:-$HOME/.local/lib/mem0.sh}"
 
 die() { echo "agent-propose: $*" >&2; exit 1; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -54,9 +57,9 @@ cmd_add() {
   title="$*"
   [ -n "$stream" ] && [ -n "$project" ] && [ -n "$title" ] || die "add needs --stream, --project and a title"
   case "$verb" in
-    queue|row) [ -n "$arg" ] || die "add: --verb $verb needs --arg" ;;
+    queue|row|mem0) [ -n "$arg" ] || die "add: --verb $verb needs --arg" ;;
     none) ;;
-    *) die "add: --verb must be queue, row or none" ;;
+    *) die "add: --verb must be queue, row, mem0 or none" ;;
   esac
   [ -n "$key" ] || key="$stream/$project/$title"
   lock
@@ -104,15 +107,36 @@ record() { # <id>: the record's path, or die
 }
 
 # The fixed set of verbs, as the command each one runs: apply runs it and the surfaces show it.
+# mem0 is no command: apply posts .arg itself (mem0_post), so the key never reaches an argv.
 AP_ARGV='def argv: if .verb == "queue" then ["agent-queue", "add", "--project", .project, "--", .arg]
   elif .verb == "row" then ["notes", "ptask", .project, "--agent", "add", .arg]
   elif .verb == "none" then [] else null end;'
-AP_DOES="$AP_ARGV"'def does: if (argv // []) == [] then "nothing runs: the decision is recorded"
+AP_DOES="$AP_ARGV"'def does: if .verb == "mem0" then "post to mem0, verbatim: " + .arg
+  elif (argv // []) == [] then "nothing runs: the decision is recorded"
   else argv | join(" ") end;'
+
+# mem0_post <fact>: store it in mem0 as written (infer false: the extractor drops a dense fact and
+# still answers 200), and print the new memory ids. The key is read from sops at this moment and
+# goes to curl on stdin (-K -), so no record, file or process list ever holds it.
+mem0_post() {
+  local key body out ids
+  # shellcheck source=/dev/null
+  . "$AP_MEM0_LIB" || { echo "no mem0 lib at $AP_MEM0_LIB" >&2; return 1; }
+  mem0_load || return 1   # ~/.config/agentctl/mem0.env, or MEM0_ENV
+  key="$(mem0_key)" || return 1
+  body="$(jq -cn --arg c "$1" --arg u "$MEM0_USER_ID" \
+    '{messages: [{role: "user", content: $c}], user_id: $u, infer: false}')"
+  out="$(printf 'header = "X-API-Key: %s"\n' "$key" | curl -fsS --connect-timeout 10 --max-time 30 -K - -X POST "$MEM0_BASE_URL/memories" \
+    -H 'Content-Type: application/json' --data-binary "$body")" || return 1
+  ids="$(jq -r '[.results[]? | select(.event == "ADD") | .id] | join(" ")' <<<"$out" 2>/dev/null)"
+  [ -n "$ids" ] || { echo "mem0 stored nothing: $out" >&2; return 1; }
+  echo "mem0 $ids"
+}
 
 # apply <record file>: the verb, and only the fixed set. Its stdout is what the decision records.
 apply() {
   local f="$1" cmd
+  if jq -e '.verb == "mem0"' "$f" >/dev/null; then mem0_post "$(jq -r .arg "$f")"; return; fi
   jq -e "$AP_ARGV"'argv != null' "$f" >/dev/null || { echo "unknown verb $(jq -r .verb "$f")" >&2; return 1; }
   mapfile -d '' -t cmd < <(jq -j "$AP_ARGV"'argv[] | . + "\u0000"' "$f")
   [ "${#cmd[@]}" -eq 0 ] || "${cmd[@]}"

@@ -43,3 +43,16 @@
     color: #1b1d1e;
     font-weight: bold;
 }
+
+/* The input chip (audio_input.sh): amber on a rig input while REAPER is closed (silent), dim when
+ * muted or when the default is an input outside the list. */
+#custom-audio-input {
+    padding: 0 10px;
+}
+#custom-audio-input.warn {
+    color: #ffb86c;
+}
+#custom-audio-input.muted,
+#custom-audio-input.other {
+    opacity: 0.6;
+}

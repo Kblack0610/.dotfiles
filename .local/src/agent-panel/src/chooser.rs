@@ -6,7 +6,7 @@ use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 
 use crate::{account, asks, fzf, jsonl, parked, procmap::ProcMap, render, session, sort, tmux};
 
@@ -58,25 +58,45 @@ pub struct Agent {
 
 impl Agent {
     /// Waiting on the human, the fleet's NEEDS (`~/.local/src/docs/fleet-states.md`): at a
-    /// prompt or dialog (`!`), holding a pending ask, or idle in plan mode, which is a plan
-    /// awaiting approval (`bucket_facts` in fleet-sessions). A question asked only in the
-    /// conversation is not a source: the Stop check makes the session file it.
+    /// prompt or dialog (`!`, a plan to approve included) or holding a pending ask. Idle in plan
+    /// mode with no dialog open waits on nothing, as fleet-sessions reads it since #1360. A
+    /// question asked only in the conversation is not a source: the Stop check makes the
+    /// session file it.
     pub fn needs_attention(&self) -> bool {
-        self.glyph == '!' || self.ask.is_some() || (self.plan && self.glyph == '✓')
+        self.glyph == '!' || self.ask.is_some()
     }
 }
 
 /// Walk every tmux pane, keep those whose process tree contains a live Claude
 /// session, and build an ordered agent list.
 pub fn collect() -> Vec<Agent> {
-    live(tmux::list_panes(), &asks::pending_sessions(&asks::root()))
+    collect_read().0
 }
 
-fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> Vec<Agent> {
-    let Ok(procmap) = ProcMap::capture() else {
-        return Vec::new();
+/// What one read of the live agents could not see, one line per source that failed: a live
+/// tmux server's panes, `ps`, a live claude's session file. Empty when the read was whole. A
+/// view can show a partial list; a caller that decides a session is gone must not (ar-916).
+pub type Gaps = Vec<String>;
+
+/// `collect`, and what that read could not see.
+pub fn collect_read() -> (Vec<Agent>, Gaps) {
+    let (panes, mut gaps) = tmux::list_panes();
+    let (agents, more) = live(panes, &asks::pending_sessions(&asks::root()));
+    gaps.extend(more);
+    (agents, gaps)
+}
+
+fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>, Gaps) {
+    let procmap = match ProcMap::capture() {
+        Ok(p) => p,
+        Err(e) => return (Vec::new(), vec![format!("{e:#}")]),
     };
-    let sessions = session::load_all();
+    let (sessions, unreadable) = session::load_all();
+    let gaps: Gaps = unreadable
+        .into_iter()
+        .filter(|&pid| procmap.is_live(pid))
+        .map(|pid| format!("~/.claude/sessions/{pid}.json would not read, and pid {pid} is live"))
+        .collect();
     let accounts = account::load();
     let (proc_root, home) = (account::proc_root(), session::home());
     let live_claude: Vec<u32> = sessions
@@ -149,24 +169,30 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> Vec<Agent> 
             parked: false,
         });
     }
-    agents
+    (agents, gaps)
 }
 
 /// The live agents plus a row per parked session, the human's own session first: what a
 /// view that acts on sessions lists (agent-web, `list --json --parked`).
 pub fn collect_all() -> Vec<Agent> {
-    let panes = tmux::list_panes();
+    collect_all_read().0
+}
+
+/// `collect_all`, and what that read could not see (`Gaps`).
+pub fn collect_all_read() -> (Vec<Agent>, Gaps) {
+    let (panes, mut gaps) = tmux::list_panes();
     let attached: HashSet<(String, String)> = panes
         .iter()
         .filter(|p| p.attached)
         .map(|p| (p.server.clone(), p.session.clone()))
         .collect();
     let asking = asks::pending_sessions(&asks::root());
-    let agents = live(panes, &asking);
+    let (agents, more) = live(panes, &asking);
+    gaps.extend(more);
     let rows = parked::load(&parked::root());
     let mut all = with_parked(agents, rows, &attached, &asking, &account::load());
     attached_first(&mut all);
-    all
+    (all, gaps)
 }
 
 /// Append a row for each ledger whose tmux session has no live claude: one with a live claude
@@ -230,8 +256,9 @@ fn map_file_path() -> PathBuf {
     std::env::temp_dir().join(format!("agent-panel-{}.map", std::process::id()))
 }
 
-/// Interactive chooser: render rows, drive fzf, jump to the selection.
-pub fn run_interactive() -> Result<()> {
+/// Interactive chooser: render rows, drive fzf, jump to the selection. `query` is typed into
+/// the search box up front.
+pub fn run_interactive(query: Option<&str>) -> Result<()> {
     let agents = collect();
     if agents.is_empty() {
         println!("No claude agents running");
@@ -255,7 +282,7 @@ pub fn run_interactive() -> Result<()> {
             .map(|i| i + 1) // fzf pos() is 1-based
     });
 
-    let selected = fzf::run(&rows_text, &map_file, restore_line);
+    let selected = fzf::run(&rows_text, &map_file, restore_line, query);
     let _ = fs::remove_file(&map_file);
     let selected = selected?;
 
@@ -268,6 +295,24 @@ pub fn run_interactive() -> Result<()> {
         if !target.is_empty() {
             tmux::jump(target);
         }
+    }
+    Ok(())
+}
+
+/// ctrl-n: a new Claude in a fresh worktree of the repo the row's agent works in. `wt new
+/// --claude` is the one new-agent verb (Prefix+p c and Prefix+f ctrl-n call it too); wt maps a
+/// worktree path back to its main repo. A project header row has no target and starts nothing.
+pub fn run_new_agent(target: &str) -> Result<()> {
+    let Some(agent) = collect().into_iter().find(|a| a.target == target) else {
+        bail!("no agent at {target:?}");
+    };
+    let status = std::process::Command::new("wt")
+        .args(["new", "--claude", "-c", &agent.cwd])
+        .stdout(std::process::Stdio::null())
+        .status()
+        .context("cannot run wt")?;
+    if !status.success() {
+        bail!("wt new --claude -c {} failed", agent.cwd);
     }
     Ok(())
 }
@@ -335,8 +380,13 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// entry's time as `idle_since`, the process start as `started_at`, and `edited_files`), and
 /// what an action on the session needs (server, tmux session, window id, claude pid, account,
 /// attached, parked, plan slug, ask id). `parked` adds the parked rows (`collect_all`).
+///
+/// A read with gaps still prints the rows it has, then names each gap on stderr and exits 3:
+/// a partial list must not pass for a whole one to a caller that reads a missing session as
+/// gone (fleet-dispatch reap, ar-916).
 pub fn run_list(json: bool, parked: bool) -> Result<()> {
-    for a in if parked { collect_all() } else { collect() } {
+    let (agents, gaps) = if parked { collect_all_read() } else { collect_read() };
+    for a in agents {
         if !json {
             println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
             continue;
@@ -386,7 +436,14 @@ pub fn run_list(json: bool, parked: bool) -> Result<()> {
         });
         println!("{row}");
     }
-    Ok(())
+    if gaps.is_empty() {
+        return Ok(());
+    }
+    let _ = std::io::Write::flush(&mut std::io::stdout()); // a reader gone (EPIPE) still gets the 3
+    for g in &gaps {
+        eprintln!("agent-panel: incomplete read: {g}");
+    }
+    std::process::exit(3)
 }
 
 /// The last entry's own timestamp; the mtime when no entry carries one; with no transcript at
@@ -449,15 +506,11 @@ pub fn run_preview(map_file: &Path, row: &str) -> Result<()> {
         return Ok(());
     }
 
-    let (jsonl_path, project, summary, repo_full, ask) = lookup(map_file, &target);
-    render::preview(
-        &target,
-        jsonl_path.as_deref(),
-        &project,
-        &summary,
-        &repo_full,
-        &ask,
-    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    render::preview(&target, &lookup(map_file, &target), now);
     Ok(())
 }
 
@@ -479,25 +532,13 @@ fn extract_target(row: &str) -> Option<String> {
 
 /// Read the preview map file for a target row:
 /// `target \t jsonl \t project \t summary \t repo_full \t ask`.
-type MapRow = (Option<PathBuf>, String, String, String, String);
-fn lookup(map_file: &Path, target: &str) -> MapRow {
-    let Ok(text) = fs::read_to_string(map_file) else {
-        return MapRow::default();
-    };
-    for line in text.lines() {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.first() == Some(&target) {
-            let jsonl = f.get(1).filter(|s| !s.is_empty()).map(PathBuf::from);
-            return (
-                jsonl,
-                f.get(2).unwrap_or(&"").to_string(),
-                f.get(3).unwrap_or(&"").to_string(),
-                f.get(4).unwrap_or(&"").to_string(),
-                f.get(5).unwrap_or(&"").to_string(),
-            );
-        }
-    }
-    MapRow::default()
+/// The preview facts the map file holds for `target`; empty when it holds none.
+fn lookup(map_file: &Path, target: &str) -> render::Facts {
+    fs::read_to_string(map_file)
+        .ok()
+        .and_then(|text| text.lines().map(render::Facts::parse).find(|(t, _)| t == target))
+        .map(|(_, f)| f)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -536,13 +577,13 @@ mod tests {
     }
 
     #[test]
-    fn plan_mode_counts_only_while_idle() {
+    fn plan_mode_counts_only_with_its_dialog_open() {
+        let plan_dialog = Agent { glyph: '!', plan: true, ..live_agent("hub", "a", false) };
         let plan_idle = Agent { glyph: '✓', plan: true, ..live_agent("hub", "a", false) };
         let plan_busy = Agent { glyph: '~', plan: true, ..live_agent("hub", "b", false) };
-        let idle = Agent { glyph: '✓', ..live_agent("hub", "c", false) };
-        assert!(plan_idle.needs_attention());
+        assert!(plan_dialog.needs_attention());
+        assert!(!plan_idle.needs_attention());
         assert!(!plan_busy.needs_attention());
-        assert!(!idle.needs_attention());
     }
 
     #[test]
@@ -582,9 +623,9 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let map = dir.join("map");
         fs::write(&map, "hub/a:1\t\tdotfiles\tsum\tdotfiles-x\tJSVBgC\nhub/b:1\t\tnotes\t\t\t\n").unwrap();
-        assert_eq!(lookup(&map, "hub/a:1").4, "JSVBgC");
-        assert_eq!(lookup(&map, "hub/b:1").4, "");
-        assert_eq!(lookup(&map, "hub/none:1").4, "");
+        assert_eq!(lookup(&map, "hub/a:1").ask, "JSVBgC");
+        assert_eq!(lookup(&map, "hub/b:1").ask, "");
+        assert_eq!(lookup(&map, "hub/none:1").ask, "");
         fs::remove_dir_all(&dir).unwrap();
     }
 

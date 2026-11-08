@@ -217,10 +217,11 @@ panel_assert_no_bare_script_name() {
 }
 
 # A picker takes its preview layout from panel_fzf_layout (panel-lib.sh), never its own
-# --preview-window or change-preview-window: one layout, one ctrl-/ toggle, in every panel.
+# --preview-window, change-preview-window or preview scroll keys: one layout, one ctrl-/
+# toggle and one set of scroll keys, in every panel.
 panel_assert_layout_from_lib() {
   local f="$REPO_ROOT/$1"
-  ! grep -qE -- '--preview-window|change-preview-window' "$f"
+  ! grep -qE -- '--preview-window|change-preview-window|:preview-(half-)?page-' "$f"
 }
 
 # The palette must use ANSI indices 0-7/90 and SGR attributes only -- never truecolor.
