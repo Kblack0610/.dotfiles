@@ -656,6 +656,9 @@ mod tests {
             ("by hand x", "unity-core-playground")
         );
         assert_eq!(s.since, Some(1000 - 21 * 60));
+        // A row with no project and no dispatch says nothing, never a guess from its name.
+        let chat = r.iter().find(|x| x.who == "dotfiles:2").unwrap();
+        assert_eq!(chat.project, "");
     }
 
     #[test]
