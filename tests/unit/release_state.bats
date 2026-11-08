@@ -427,13 +427,15 @@ reply() { local IFS=,; GH_REPLY="{\"data\":{\"repository\":{\"deployments\":{\"n
       {"id": "a-steam-beta", "channel": "beta", "pinned": {"deployed": true}, "live": {"steam": {"app": "1", "branch": "beta"}}},
       {"id": "a-play-internal", "channel": "internal", "pinned": {"deployed": true}, "live": {"play": {"package": "p", "track": "internal"}}},
       {"id": "a-testflight", "channel": "beta", "pinned": {"deployed": true}, "live": {"testflight": {"app": "2"}}},
-      {"id": "b-steam-beta", "channel": "beta", "pinned": {"deployed": true}, "live": {"steam": {"app": "1"}}}
+      {"id": "b-steam-beta", "channel": "beta", "pinned": {"deployed": true}, "live": {"steam": {"app": "1"}}},
+      {"id": "c-two-kinds", "channel": "beta", "pinned": {"deployed": true}, "live": {"steam": {"app": "1", "branch": "beta"}, "testflight": {"app": "2"}}}
     ]}
   }
 }
 EOF
   AGENT_DIR="$HOME/agent" run "$REPO_ROOT/.local/bin/project-map-doctor" "$PROJECT_MAP_FILE"
   assert_output --partial 'target "b-steam-beta": live needs'
+  assert_output --partial 'target "c-two-kinds": live names more than one kind'
   refute_output --partial 'target "a-'
 }
 
@@ -526,7 +528,7 @@ printf '%s\n' "$cfg" >> "$SANDBOX/curl.config"
 [ "${CURL_FAIL:-0}" = 1 ] && exit 22
 case "$cfg" in
   *GetAppBetas*) printf '%s' "${STEAM_BETAS:-}" ;;
-  *GetAppBuilds*) printf '%s' "${STEAM_BUILDS_REPLY:-}" ;;
+  *GetAppBuilds*) [ "${STEAM_BUILDS_FAIL:-0}" = 1 ] && exit 22; printf '%s' "${STEAM_BUILDS_REPLY:-}" ;;
   *oauth2.googleapis.com/token*) printf '%s' '{"access_token":"play-token"}' ;;
   */tracks/*/releases*) printf '%s' "${PLAY_REPLY:-}" ;;
   *appstoreconnect*) printf '%s' "${ASC_REPLY:-}" ;;
@@ -599,6 +601,37 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
   export STEAM_BUILDS_REPLY='{"response":{"builds":{"4230881":{"Description":"manual upload"}}}}'
   "$RS" refresh game
   assert_equal "$(row game-steam-beta | jq -r .live.value)" 4230881
+}
+
+@test "steam: a failed build list is unknown, not a BuildID that reads as drift" {
+  store_setup
+  STEAM_BUILDS_FAIL=1 "$RS" refresh game
+  assert_equal "$(row game-steam-beta | jq -c '[.live.value, .live.error, .status]')" '[null,"steam GetAppBuilds failed","unknown"]'
+}
+
+@test "steam: a build outside the listed window is unknown" {
+  store_setup
+  export STEAM_BUILDS_REPLY='{"response":{"builds":{"999":{"Description":"game v0.1.0 abc"}}}}'
+  "$RS" refresh game
+  assert_equal "$(row game-steam-beta | jq -c '[.live.error, .status]')" '["build 4230881 is not in the last 50 builds","unknown"]'
+}
+
+@test "play: version codes sent as strings compare as numbers" {
+  store_setup
+  play_key
+  export PLAY_REPLY='{"releases":[
+    {"releaseName":"v0.4.0-g9","activeArtifacts":[{"versionCode":"9999"}],"releaseLifecycleState":"RELEASE_LIFECYCLE_STATE_PUBLISHED"},
+    {"releaseName":"v0.5.0-g1","activeArtifacts":[{"versionCode":"10000"}],"releaseLifecycleState":"RELEASE_LIFECYCLE_STATE_PUBLISHED"}]}'
+  "$RS" refresh game
+  assert_equal "$(row game-play-internal | jq -c '[.live.value, .live.build]')" '["v0.5.0-g1","10000"]'
+}
+
+@test "play: a published release with no name says so" {
+  store_setup
+  play_key
+  export PLAY_REPLY='{"releases":[{"activeArtifacts":[{"versionCode":7}],"releaseLifecycleState":"RELEASE_LIFECYCLE_STATE_PUBLISHED"}]}'
+  "$RS" refresh game
+  assert_equal "$(row game-play-internal | jq -r .live.error)" "published release has no name"
 }
 
 @test "steam: a branch the app does not have says so" {

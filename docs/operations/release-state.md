@@ -92,6 +92,7 @@ Each store has its own read-only credential in rbw, read once per refresh and on
 | PREV and LAST DEPLOY say `-` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly |
 | A store row is `unknown` with `rbw is locked` | The vault locked; run `rbw unlock`. The collector never unlocks it or raises pinentry |
 | A store row is `unknown` with `no rbw entry <name>` | The read-only credential is not made yet: see Store credentials |
+| A Steam row is `unknown` with `build <id> is not in the last 50 builds` | The branch has not moved in longer than `STEAM_BUILDS` covers. Raise that constant in `release-state` |
 | A Steam row is `unknown` with `no branch <name> on the app` | The branch does not exist on that app yet, or the registry says `default` where Steam says `public` |
 | A row is `unknown` with `no checkout for repo` | The repo key has no `paths` entry in the registry on this machine |
 | A game shows no row | It has no store target in the registry. Playground tags (`v0.5.0-barrage5`) number playground builds; a game's own version lives on its sheet, so a playground tag glob on a game makes the doctor report its sheet as behind |

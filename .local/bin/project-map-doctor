@@ -133,7 +133,8 @@ done < <(jq -r '
           else "trackers.\($p) target \"\($id)\": pinned needs {tag: true}, {deployed: true} or repo and path" end),
          (if .live == null or (.live.k8s.context and .live.k8s.namespace and .live.k8s.deployment) or .live.health.url
              or (.live.steam.app and .live.steam.branch) or (.live.play.package and .live.play.track) or .live.testflight.app then empty
-          else "trackers.\($p) target \"\($id)\": live needs k8s {context, namespace, deployment}, health {url}, steam {app, branch}, play {package, track} or testflight {app}" end))
+          else "trackers.\($p) target \"\($id)\": live needs k8s {context, namespace, deployment}, health {url}, steam {app, branch}, play {package, track} or testflight {app}" end),
+         (if (.live | objects | length) > 1 then "trackers.\($p) target \"\($id)\": live names more than one kind" else empty end))
     end' "$MAP_FILE" 2>/dev/null)
 while IFS= read -r dup; do
   [ -n "$dup" ] && fail "deploy target id $dup"

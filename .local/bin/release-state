@@ -272,8 +272,11 @@ live_steam() {
     || { probe_failed "$src" "steam GetAppBetas failed"; return; }
   bid="$(jq -r --arg b "$branch" '.response.betas[$b].BuildID // empty' <<<"$betas" 2>/dev/null)"
   [ -n "$bid" ] || { probe_failed "$src" "no branch $branch on the app"; return; }
-  builds="$(store_get "$STEAM_API/GetAppBuilds/v1/?key=$STEAM_KEY&appid=$app&count=$STEAM_BUILDS")" || builds=""
-  desc="$(jq -r --arg b "$bid" '.response.builds[$b].Description // empty' <<<"$builds" 2>/dev/null)"
+  builds="$(store_get "$STEAM_API/GetAppBuilds/v1/?key=$STEAM_KEY&appid=$app&count=$STEAM_BUILDS")" \
+    || { probe_failed "$src" "steam GetAppBuilds failed"; return; }
+  jq -e --arg b "$bid" '.response.builds | has($b)' <<<"$builds" >/dev/null 2>&1 \
+    || { probe_failed "$src" "build $bid is not in the last $STEAM_BUILDS builds"; return; }
+  desc="$(jq -r --arg b "$bid" '.response.builds[$b].Description // empty' <<<"$builds")"
   v="$(tr ' ' '\n' <<<"$desc" | grep -E '^v?[0-9]+\.' | head -1)"
   jq -nc --arg v "${v:-$bid}" --arg b "$bid" --arg s "$src" '{value: $v, build: $b, source: $s}'
 }
@@ -289,9 +292,10 @@ live_play() {
   body="$(store_get "$PLAY_API/applications/$pkg/tracks/$track/releases" "$PLAY_TOKEN")" \
     || { probe_failed "$src" "play releases request failed"; return; }
   rel="$(jq -c '[.releases[]? | select(.releaseLifecycleState == "RELEASE_LIFECYCLE_STATE_PUBLISHED")
-    | . + {code: ([.activeArtifacts[]?.versionCode] | max)}] | max_by(.code) // empty' <<<"$body" 2>/dev/null)"
+    | . + {code: ([.activeArtifacts[]?.versionCode | tonumber] | max)}] | max_by(.code) // empty' <<<"$body" 2>/dev/null)"
   [ -n "$rel" ] || { probe_failed "$src" "nothing published on the track"; return; }
   v="$(jq -r '.releaseName // empty' <<<"$rel")"
+  [ -n "$v" ] || { probe_failed "$src" "published release has no name"; return; }
   jq -nc --arg v "$v" --arg b "$(jq -r '.code // empty' <<<"$rel")" --arg s "$src" --arg ver "$(bare_version "$v")" \
     '{value: $v, build: $b, source: $s} + (if $ver == "" then {} else {version: $ver} end)'
 }
