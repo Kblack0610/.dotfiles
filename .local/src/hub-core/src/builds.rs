@@ -264,6 +264,30 @@ fn state_of(status: &str, conclusion: Option<&str>) -> &'static str {
     }
 }
 
+impl Run {
+    /// Sets the words a row draws from the ledger's fields: its state and level, when it started
+    /// (`created`, epoch seconds, when the ledger has no start) and how long it has taken.
+    pub(crate) fn settle(&mut self, created: i64, now: i64) {
+        self.state = state_of(&self.status, self.conclusion.as_deref()).to_string();
+        self.level = match self.state.as_str() {
+            "red" => Level::Bad,
+            "queued" => Level::Warn,
+            _ => Level::Ok,
+        };
+        let began = self.started_at.as_deref().and_then(crate::fleet::ts);
+        self.started = began.unwrap_or(created);
+        self.took = match self.state.as_str() {
+            "queued" => Some((now - created).max(0)),
+            "running" => Some((now - self.started).max(0)),
+            _ => self
+                .ended_at
+                .as_deref()
+                .and_then(crate::fleet::ts)
+                .map(|e| (e - self.started).max(0)),
+        };
+    }
+}
+
 /// The ledger's runs: each run once, as its last line wrote it, none older than `KEEP_DAYS`,
 /// with the words a row draws. The second value counts lines that did not parse.
 pub fn parse(text: &str, now: i64) -> (Vec<Run>, usize) {
@@ -282,27 +306,10 @@ pub fn parse(text: &str, now: i64) -> (Vec<Run>, usize) {
         .into_values()
         .filter_map(|mut r| {
             let created = crate::fleet::ts(&r.created_at)?;
-            if created < floor {
-                return None;
-            }
-            r.state = state_of(&r.status, r.conclusion.as_deref()).to_string();
-            r.level = match r.state.as_str() {
-                "red" => Level::Bad,
-                "queued" => Level::Warn,
-                _ => Level::Ok,
-            };
-            let began = r.started_at.as_deref().and_then(crate::fleet::ts);
-            r.started = began.unwrap_or(created);
-            r.took = match r.state.as_str() {
-                "queued" => Some((now - created).max(0)),
-                "running" => Some((now - r.started).max(0)),
-                _ => r
-                    .ended_at
-                    .as_deref()
-                    .and_then(crate::fleet::ts)
-                    .map(|e| (e - r.started).max(0)),
-            };
-            Some(r)
+            (created >= floor).then(|| {
+                r.settle(created, now);
+                r
+            })
         })
         .collect();
     // Live runs first, then the newest: a view the human has not sorted.
