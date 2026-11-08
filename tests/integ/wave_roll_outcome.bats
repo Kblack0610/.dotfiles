@@ -13,8 +13,12 @@ setup() {
   sandbox_init basic
   WAVE_ROLL="$REPO_ROOT/.local/bin/agentctl-wave-roll"
   printf 'personal\n' > "$NOTES_FIXTURE/profiles"
-  # name TAB sheet TAB status TAB version; no release version, so nothing ever rolls.
-  printf 'demoapp\t%s/sheet/v1.0.0.md\tactive\tv1.0.0\n' "$HOME" > "$NOTES_FIXTURE/projects.personal"
+  # name TAB index link TAB status TAB version; no release version, so nothing ever rolls.
+  # The index links summary.md, as every bnb project's does; the sheet is the README beside it.
+  LAB="$HOME/lab/demoapp"
+  mkdir -p "$LAB"
+  printf '# demoapp\nVersion: v1.0.0 #beta\n' > "$LAB/README.md"
+  printf 'demoapp\t%s/summary.md\tactive\tv1.0.0\n' "$LAB" > "$NOTES_FIXTURE/projects.personal"
   REPO="$SANDBOX/demoapp"
   git init -q "$SANDBOX/origin.git" --bare
   git init -q "$REPO"
@@ -59,7 +63,7 @@ HOOKS
 # sheet ran so far ahead of its tags that no later tag could roll it.
 
 shipped_at() { # $1=tag the app shipped; the sheet's open version is the same, so it rolls
-  printf 'demoapp\t%s/sheet/%s.md\tactive\t%s\n' "$HOME" "$1" "$1" > "$NOTES_FIXTURE/projects.personal"
+  printf 'demoapp\t%s/summary.md\tactive\t%s\n' "$LAB" "$1" > "$NOTES_FIXTURE/projects.personal"
   cat > "$WAVE_ROLL_HOOKS" <<HOOKS
 project_repo_path() { printf '%s' "$REPO"; }
 project_release_version() { printf '%s' '$1'; }
@@ -102,4 +106,26 @@ HOOKS
   printf 'v0.4.0\tcurrent\t3\t0\nv1.0.0\tplanned\t0\t0\n' > "$NOTES_FIXTURE/roadmap.demoapp"
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'v0.4.0 -> v1.0.0'
+}
+
+@test "a project with no versioned sheet is skipped, whatever its index links" {
+  # 2026-11-07: wave-roll skipped every project whose index links summary.md, which is all of
+  # bnb, so unity-core-playground sat on its shipped v0.5.0 and the doctor went red.
+  shipped_at v0.4.0
+  rm "$LAB/README.md"
+  run "$WAVE_ROLL" demoapp
+  assert_success
+  grep -q 'skip demoapp: no versioned sheet' "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
+  # NEGATIVE CONTROL: the same project with its sheet back rolls.
+  printf 'Version: v0.4.0\n' > "$LAB/README.md"
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial 'would roll personal/demoapp: v0.4.0 -> v0.4.1'
+}
+
+@test "a tasks.md sheet counts as a versioned sheet" {
+  shipped_at v0.4.0
+  rm "$LAB/README.md"
+  : > "$LAB/tasks.md"
+  run "$WAVE_ROLL" --dry-run demoapp
+  assert_output --partial 'would roll personal/demoapp: v0.4.0 -> v0.4.1'
 }
