@@ -51,6 +51,9 @@ pub trait Row {
     const STATES: &'static [&'static str];
     /// The columns whose values the web offers as dropdowns, each value a `key:value` term.
     const FACETS: &'static [&'static str];
+    /// A chip no row is under is left out, unless it is the one in force: for a table with
+    /// more kinds than usually have a row.
+    const HIDE_EMPTY: bool = false;
 
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
@@ -66,6 +69,39 @@ pub trait Row {
             .collect::<Vec<_>>()
             .join("\n")
             .to_lowercase()
+    }
+    /// What a `col:value` term tries, any of which will do: a column with many values at once
+    /// (a row's tags) lists them here.
+    fn vals(&self, col: &str) -> Vec<Val> {
+        vec![self.val(col)]
+    }
+    /// What the sort orders `col` by, when that is not what it shows (`urgent` above `high`).
+    fn rank(&self, col: &str) -> Val {
+        self.val(col)
+    }
+}
+
+/// A table over rows borrowed from a longer list: a surface narrows to its scope first (one
+/// project's rows) and hands the references to the view.
+impl<T: Row> Row for &T {
+    const COLUMNS: &'static [&'static str] = T::COLUMNS;
+    const STATES: &'static [&'static str] = T::STATES;
+    const FACETS: &'static [&'static str] = T::FACETS;
+
+    fn val(&self, col: &str) -> Val {
+        (*self).val(col)
+    }
+    fn in_state(&self, state: &str) -> bool {
+        (*self).in_state(state)
+    }
+    fn text(&self) -> String {
+        (*self).text()
+    }
+    fn vals(&self, col: &str) -> Vec<Val> {
+        (*self).vals(col)
+    }
+    fn rank(&self, col: &str) -> Val {
+        (*self).rank(col)
     }
 }
 
@@ -171,7 +207,10 @@ fn term(key: &str, value: &str) -> String {
 impl Term {
     fn hits<R: Row>(&self, r: &R, text: &mut Option<String>) -> bool {
         match self.key {
-            Some(k) => r.val(k).text().is_some_and(|t| t.starts_with(&self.value)),
+            Some(k) => r
+                .vals(k)
+                .iter()
+                .any(|v| v.text().is_some_and(|t| t.starts_with(&self.value))),
             None => text.get_or_insert_with(|| r.text()).contains(&self.value),
         }
     }
@@ -276,7 +315,7 @@ impl View {
             return kept.collect();
         }
         let mut keyed: Vec<(Val, &R)> = kept
-            .map(|r| match r.val(&self.sort) {
+            .map(|r| match r.rank(&self.sort) {
                 Val::Text(t) => (Val::Text(t.to_lowercase()), r),
                 v => (v, r),
             })
@@ -306,6 +345,9 @@ impl View {
                     kept.iter().filter(|r| r.in_state(s)).count()
                 },
             })
+            .enumerate()
+            .filter(|(i, c)| !R::HIDE_EMPTY || *i == 0 || c.n > 0 || c.name == self.state)
+            .map(|(_, c)| c)
             .collect()
     }
 
@@ -381,9 +423,21 @@ impl View {
         }
     }
 
-    /// The TUI's `f`: the next state chip, back to every row after the last.
+    /// The TUI's `f`: the next state chip, back to every row after the last. A table that hides
+    /// its empty chips steps with `cycle_shown`, which has the rows.
     pub fn cycle_state<R: Row>(&mut self) {
+        debug_assert!(
+            !R::HIDE_EMPTY,
+            "{} hides empty chips: use cycle_shown",
+            R::COLUMNS[0]
+        );
         self.state = next_of(&R::STATES[1.min(R::STATES.len())..], &self.state);
+    }
+
+    /// `f` over the chips `states` draws for these rows, so a hidden empty chip is never stepped on.
+    pub fn cycle_shown<R: Row>(&mut self, rows: &[R]) {
+        let shown: Vec<&str> = self.states(rows).iter().skip(1).map(|c| c.name).collect();
+        self.state = next_of(&shown, &self.state);
     }
 
     /// The TUI's `s`: sort by the next column, descending, back to the table's order after the last.

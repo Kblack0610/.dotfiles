@@ -32,6 +32,8 @@ Use this skill when investigating VR performance issues on Meta VR devices:
 - Thread contention and synchronization issues
 - High draw call counts or overdraw
 
+Not for CPU hotspots from sampling (`hz-simpleperf-debug`) or for logs, crashes and screenshots (`hz-vr-debug`). Not for our own games' perf pass: `game-eval`.
+
 ## VR Frame Time Targets
 
 These are the hard deadlines for each refresh rate. If a frame exceeds its target, the compositor must reproject or the user sees a stale frame.

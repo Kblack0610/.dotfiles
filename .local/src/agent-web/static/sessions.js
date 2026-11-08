@@ -1,29 +1,29 @@
 "use strict";
-// Sessions with no session open: the capacity header, the table and the folds under it. Rows and
-// the header come from hub-core (`session_table`, `capacity`) through /api/sessions/*, and the
-// server filters and sorts by the view in the URL (table.js). Any row opens that session's page,
-// `#sessions/<id>`, which is hub-core's `session_page` through /api/sessions/page; a session on a
-// pane here also has its Transcript and Screen beside it (app.js).
+// Sessions with no session open: the overview tiles, the capacity header, the table and the folds
+// under it. Rows, counts, spend and the header come from hub-core (`session_table`, `capacity`)
+// through /api/sessions/*, and the server filters and sorts by the view in the URL (table.js). Any
+// row opens that session's conversation, `#sessions/<id>` (app.js); its Details page is hub-core's
+// `session_page` through /api/sessions/page, and a session on a pane here also has its Screen.
 
 // A day's ended sessions on a busy day run to hundreds, so the table stops here until asked.
 const SESSIONS_OPEN = 200;
-const sst = { data: null, err: null, cap: null, capErr: null, all: false, confirm: null };
+const sst = tblTab({
+  tab: "sessions", id: "sessions", el: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
+  wait: "Loading the sessions.", state: { cap: null, capErr: null, all: false, confirm: null },
+  shown: () => !st.sel && st.tab === "sessions", got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
+  chips: false, head: (t) => sessionsTiles(t.data) + sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
+});
 
 const SESSION_COLS = { bucket: ["bucket"], project: ["project"], task: ["task"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"] };
 
-const refreshTable = coalesce(async () => {
-  const q = tblParams(st.views.sessions).toString();
-  try { sst.data = await api("/api/sessions/table" + (q ? "?" + q : "")); setBuckets(sst.data.buckets); sst.err = null; } catch (e) { sst.err = e.message; }
-  renderOverview();
-});
 const refreshCapacity = coalesce(async () => {
   try { sst.cap = await api("/api/sessions/capacity"); sst.capErr = null; } catch (e) { sst.capErr = e.message; }
-  renderOverview();
+  sst.render();
 });
 // The table's sources move only with what is on screen, so a session open reads only its page.
 function refreshSessions() {
-  if (st.sel) { if (st.view === "page") loadPage(); return; }
-  refreshTable();
+  if (st.sel) { if (st.view === "page") loadPage(); if (SPLIT.matches) sst.refresh(); return; }
+  sst.refresh();
   refreshCapacity();
 }
 
@@ -33,6 +33,18 @@ function capPart(p) {
     ? ` <span class="capask">${esc(p.confirm)} <button class="btn sm" data-go="${esc(p.start)}">Start</button> <button class="btn sm" data-keep>Cancel</button></span>`
     : ` <button class="btn sm" data-start="${esc(p.start)}">Start</button>`;
   return `<span class="${p.warn ? "capwarn" : ""}">${esc(p.text)}</span>${start}`;
+}
+
+// The overview row: the table's state chips as tiles, and what the shown rows cost. A tile is the
+// chip it replaces, so a tap filters the table and a tap on the one in force clears it.
+const TILE_COLOR = { running: "var(--b-working)", "needs you": "var(--b-needs)", stalled: "var(--b-stalled)", "done today": "var(--b-done)" };
+function sessionsTiles(d) {
+  const t = d.table;
+  const states = t.states.slice(1).map((c) => {
+    const on = c.name === t.state;
+    return `<button class="tile${on ? " on" : ""}" data-ts="${on ? "" : esc(c.name)}" style="--c:${TILE_COLOR[c.name] || "var(--c-other)"}"><span class="tl">${esc(c.name.toUpperCase())}</span><span class="tv">${c.n}</span></button>`;
+  });
+  return `<div class="tiles stiles">${states.join("")}${tile("SPEND", usd(d.spend_usd), "var(--accent)", `${t.shown} shown`)}</div>`;
 }
 
 function sessionsHead() {
@@ -78,36 +90,8 @@ function sessionsBody(d) {
   const more = shown.length - rows.length;
   return shown.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, SESSION_COLS)}${rows.map(sessionRow).join("")}</table>` +
-      (more ? `<button class="btn sm" data-all="1">+${more} older</button>` : "") + `</div>`
+      tblMore(more) + `</div>`
     : `<div class="panel">${t.total ? "No sessions match." : "No sessions, live or ended today."}</div>`;
-}
-
-function renderOverview() {
-  if (st.sel || st.tab !== "sessions") return;
-  const el = $("scroll"), d = sst.data;
-  if (!d || !d.table) {
-    const why = sst.err || (d?.errors || [])[0];
-    el.innerHTML = `<div class="empty">${why ? esc(why) : "Loading the sessions."}</div>`;
-    return;
-  }
-  // A refresh must not take the search box from under the human, so everything around it repaints and it stays.
-  if (document.activeElement?.id === "sessions-q") {
-    paint($("sessions-head"), sessionsHead());
-    paint($("sessions-facets"), tblFacets(d.table));
-    paint($("sessions-chips"), tblChips(d.table));
-    paint($("sessions-body"), sessionsBody(d));
-    paint($("sessions-folds"), overviewFolds(), wst.open);
-    return;
-  }
-  paint(el, `<div id="sessions-head">${sessionsHead()}</div>${tblBar("sessions", d.table, "search, or project:dotfiles pr:open item:none")}` +
-    `<div id="sessions-body">${sessionsBody(d)}</div><div id="sessions-folds">${overviewFolds()}</div>`, wst.open);
-}
-
-// The view changed: the URL follows it and the server applies it.
-function sessionsView(patch) {
-  setQuery(tblSet(st.views.sessions, patch));
-  sst.all = false;
-  refreshTable();
 }
 
 async function startTimer(name) {
@@ -139,7 +123,49 @@ async function openSession(id) {
   }
   const a = st.agents.find((x) => x.session === id || x.target === id);
   select(a || { target: id, session: id, paneless: true, status: "", summary: "", actions: [] });
+  sideShow(true);
 }
+
+// From 900px an open session keeps the list beside it (app.css): the same rows as the table, under
+// the same view, one compact line each, so the human moves between sessions without going Back.
+// Under 900px the list is not drawn and not read.
+const SPLIT = matchMedia("(min-width: 900px)");
+const isSel = (r) => !!st.sel && ((r.target && r.target === st.sel.target) || (r.session_id && r.session_id === st.sel.session));
+
+function sideRow(r) {
+  const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "" : dur(r.idle_min);
+  const pr = r.pr ? sessionPr(r) : "";
+  return `<button class="srow${isSel(r) ? " on" : ""}" data-key="${esc(r.key)}"><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span>` +
+    `<span class="sn">${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
+}
+
+function renderSide(scroll = false) {
+  const el = $("side");
+  if (!st.sel || !SPLIT.matches) { el.innerHTML = ""; return; }
+  const d = sst.data;
+  if (!d || !d.table) { el.innerHTML = `<div class="empty">${esc(sst.err || "Loading the sessions.")}</div>`; return; }
+  const rows = (d.rows || []).slice(0, SESSIONS_OPEN);
+  const more = (d.rows || []).length - rows.length;
+  paint(el, `<div class="seg fseg">${tblChips(d.table)}</div>` + (rows.length ? rows.map(sideRow).join("") : '<div class="muted">No sessions match.</div>') +
+    (more ? `<div class="muted">+${more} more on the table</div>` : ""));
+  if (scroll) el.querySelector(".srow.on")?.scrollIntoView({ block: "nearest" });
+}
+
+// A session just opened, or the screen crossed 900px: draw the list, reading it if it is not read.
+function sideShow(scroll) {
+  if (!st.sel || !SPLIT.matches) return renderSide();
+  if (sst.data) renderSide(scroll);
+  else sst.refresh();
+}
+SPLIT.addEventListener("change", () => sideShow(true));
+
+$("side").addEventListener("click", (e) => {
+  const patch = tblPatch(e);
+  if (patch) return sst.view(patch);
+  const b = e.target.closest(".srow");
+  const r = b && sst.data && sst.data.rows.find((x) => x.key === b.dataset.key);
+  if (r) sessionClick(r);
+});
 
 const pageRow = (label, html, warn) => `<div class="pgrow"><span class="pgk">${esc(label)}</span><span class="pgv${warn ? " capwarn" : ""}">${html}</span></div>`;
 
@@ -148,8 +174,9 @@ function pagePart(p) {
   return pageRow(p.label, p.link ? `<a href="${esc(p.link)}"${out}>${esc(p.text)}</a>` : esc(p.text), p.warn);
 }
 
-// The parts are hub-core's; what is drawn here is the card for a session still in the state
-// document, and the folds. An ended session's card is what it was opened for, so it starts open.
+// The Details view. The parts are hub-core's; what is drawn here is the card for a session still in
+// the state document, and the folds. An ended session's card is what it was opened for, so it
+// starts open.
 function pageHtml(p) {
   const s = sessionsOf().find((x) => (p.session_id && x.session_id === p.session_id) || (p.target && x.target === p.target));
   wst.open["page-outcome"] ??= true;
@@ -157,7 +184,6 @@ function pageHtml(p) {
   return `<div class="pghead"><span class="chip" style="--c:${bucketColor(p.bucket)}">${esc(p.bucket)}</span> <span class="muted">${esc(p.idle)}</span> ${esc(p.task)}</div>` +
     p.errors.map((e) => `<div class="card err">${esc(e)}</div>`).join("") +
     p.parts.map(pagePart).join("") +
-    pageRow("Transcript", '<button class="btn sm" data-transcript>Load</button>') +
     outcome + (s ? fold("page-state", "Fleet state", card(s, maxContext(), Date.now())) : "");
 }
 
@@ -180,26 +206,17 @@ const loadPage = coalesce(async () => {
 
 $("scroll").addEventListener("click", (e) => {
   const d = e.target.dataset || {};
-  if (st.sel) { if (d.transcript !== undefined) setView("transcript"); return; }
-  const patch = tblPatch(e);
-  if (patch) sessionsView(patch);
-  else if (d.start) { sst.confirm = d.start; renderOverview(); }
-  else if (d.keep !== undefined) { sst.confirm = null; renderOverview(); }
+  if (st.sel) return;
+  if (d.start) { sst.confirm = d.start; sst.render(); }
+  else if (d.keep !== undefined) { sst.confirm = null; sst.render(); }
   else if (d.go) startTimer(d.go);
-  else if (d.unlinked !== undefined) sessionsView({ q: "item:none", s: "" });
-  else if (d.all) { sst.all = true; renderOverview(); }
+  else if (d.unlinked !== undefined) sst.view({ q: "item:none", s: "" });
   else {
     const tr = e.target.closest("tr[data-key]");
     const r = tr && sst.data && sst.data.rows.find((x) => x.key === tr.dataset.key);
     if (r) sessionClick(r);
   }
 });
-for (const kind of ["input", "change"]) {
-  $("scroll").addEventListener(kind, (e) => {
-    const patch = !st.sel && tblPatch(e);
-    if (patch) sessionsView(patch);
-  });
-}
 
 // fleet-state writes every minute and the shepherd on each pass; only the open tab reads them.
 const watchFeed = pushed("sessions", ["watch"], refreshWatch);

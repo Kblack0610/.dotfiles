@@ -11,7 +11,7 @@
 #      A price table was tried and was 2.4x off ($164.66 against a true $68.49), so
 #      a wrong dollar figure must never reach a release changelog.
 #
-# PROM_URL points at a closed port throughout: these tests assert the local/offline
+# CC_PROM_URL points at a closed port throughout: these tests assert the local/offline
 # path and must give the same answer off-LAN as next to the cluster.
 
 setup() {
@@ -21,7 +21,7 @@ setup() {
   sandbox_init basic
 
   AU="$REPO_ROOT/.local/bin/agent-usage"
-  export AU PROM_URL='http://127.0.0.1:1' PROM_TIMEOUT=1
+  export AU CC_PROM_URL='http://127.0.0.1:1' PROM_TIMEOUT=1
 
   TX="$HOME/.claude/projects/-x/dedupe.jsonl"
   mkdir -p "$(dirname "$TX")"
@@ -93,16 +93,27 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
 #!/usr/bin/env bash
 q="$*"
 case "$q" in
-  *"by (type)"*) echo '{"data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
-  *"by (model) (claude_code_cost"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
-  *"by (model)"*) echo '{"data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
-  *) echo '{"data":{"result":[]}}' ;;
+  *"by (type)"*) echo '{"status":"success","data":{"result":[{"metric":{"type":"input"},"value":[0,"10"]},{"metric":{"type":"output"},"value":[0,"5"]}]}}' ;;
+  *"by (model)"*"claude_code_cost"*) echo '{"status":"success","data":{"result":[{"metric":{"model":"m1"},"value":[0,"1.23456"]},{"metric":{"model":"m2"},"value":[0,"0.5"]}]}}' ;;
+  *"by (model)"*) echo '{"status":"success","data":{"result":[{"metric":{"model":"m1"},"value":[0,"10"]},{"metric":{"model":"m2"},"value":[0,"5"]}]}}' ;;
+  *) echo '{"status":"success","data":{"result":[]}}' ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/curl"
   assert_equal "$(usage_field .usage_source)" 'otel'
   assert_equal "$(usage_field '.cost_by_model | tojson')" '{"m1":1.2346,"m2":0.5}'
   assert_equal "$(usage_field .cost_usd)" '1.73456'
+}
+
+@test "a session reads each counter's peak over the week, not its instant value" {
+  # An ended session's series are stale, so an instant sum reads 0; increase() drops the first sample.
+  printf '#!/usr/bin/env bash\necho "$*" >> "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[{"metric":{"type":"input","model":"m1"},"value":[0,"1"]}]}}' > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  SANDBOX="$SANDBOX" usage_field .usage_source >/dev/null
+  run grep -c 'max_over_time(claude_code_[a-zA-Z_]*{session_id="dedupe"}\[7d\])' "$SANDBOX/q"
+  assert_output 3
+  run grep -c 'increase(' "$SANDBOX/q"
+  assert_output 0
 }
 
 @test "without telemetry there is no per-model cost" {
@@ -245,7 +256,9 @@ wakes_row() { "$AU" wakes --since 3650d --project demo-proj --json | jq -r --arg
 #
 # The fixture (tests/fixtures/burn/home) is one worktree session of four calls (m1 is streamed as
 # two records, its wait-style Bash call on the second; m3 follows a 2h gap and a peer message;
-# m4 follows a compaction; m1's request is recorded as an api-request-shape and two blobs), one subagent call, one headless call, a registry with a superseded
+# m4 follows a compaction; m1's and m2's requests are recorded as one api-request-shape, two blobs and
+# an api-request each, m2's on m1's as its base), one subagent call (its request recorded, with Bash
+# only), one headless call (no recorded request), a registry with a superseded
 # row, outcomes naming PR o/r#1 twice, a dream log with one real and one dry run, and two queue
 # items that used s1's worktree (demo-task while s1 ran, old-task a day before).
 
@@ -403,11 +416,41 @@ burn_sorted() {
 
 @test "burn: the first request splits into its parts, in chars, from the recorded request" {
   assert_equal "$(burn '.first_request_parts.parts | map_values(.median_chars)')" \
-    '{"skill_listing":200,"preflight":100,"system_prompt":100,"memory_md":90,"global_claude_md":80,"repo_claude_md":60,"tools_builtin":38,"tools_mcp":21,"instructions_other":18,"prompt":14,"system_other":0}'
+    '{"skill_listing":200,"preflight":100,"system_prompt":100,"memory_md":90,"global_claude_md":80,"repo_claude_md":60,"tools_builtin":38,"tools_mcp":21,"instructions_other":18,"prompt":14}'
   assert_equal "$(burn '.first_request_parts.tools_mean_chars')" '{"Bash":38,"mcp__x__y":21}'
   # Negative control: only the worktree session recorded its request, so the headless one,
   # which still counts toward first_turn_context, adds no parts.
-  assert_equal "$(burn '[.first_request_parts.sessions, .first_turn_context.sessions]')" '[1,2]'
+  assert_equal "$(burn '[.first_request_parts.requests, .first_turn_context.sessions]')" '[1,2]'
+}
+
+@test "burn: every recorded request is measured, subagents too; a later request carries its base's parts" {
+  assert_equal "$(burn '.every_request_parts | [.requests, .by_kind, .unrecorded]')" '[3,{"worktree":2,"subagent":1},3]'
+  # m2's request is m1's two blobs plus two conversation messages the transcript holds, so both
+  # carry the same 200-char skill listing; the subagent's request has none.
+  assert_equal "$(burn '.every_request_parts.parts.skill_listing | [.mean_chars, .median_chars]')" '[133,200]'
+  assert_equal "$(burn '.every_request_parts.parts.system_prompt.mean_chars')" '83'
+}
+
+@test "burn: a tool's mean is over the requests that carry it, not every request" {
+  # Bash is in all 3 requests, the MCP tool only in the worktree session's 2: over all 3 it would read 14.
+  assert_equal "$(burn '.every_request_parts | [.tools_mean_chars, .tool_requests]')" '[{"Bash":38,"mcp__x__y":21},{"Bash":3,"mcp__x__y":2}]'
+}
+
+@test "burn: a context share is a part's chars at the first requests' chars a token, over every request's context" {
+  # first request: 721 chars over 50,010 tokens; every request: 400 listing chars over 50,010 + 51,001 + 3,005 tokens of context
+  assert_equal "$(burn '[.first_request_parts.chars_per_token, (.every_request_parts | has("chars_per_token")), .every_request_parts.parts.skill_listing.context_share]')" '[0.01,false,0.2667]'
+}
+
+@test "burn: a fleet-shepherd pass gets origin shepherd, scored (passes.tsv) or running (.pass)" {
+  burn_home
+  mkdir -p "$HOME/.agent/shepherd"
+  printf '2026-01-01 03:00\th1\tWORKED\tpass h1: 1 due, 15m\n' > "$HOME/.agent/shepherd/passes.tsv"
+  run bash -c "TZ=UTC '$AU' burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.by_session.h1.origin, .by_session.s1.origin, .by_origin.shepherd.sessions]'"
+  assert_output '["shepherd","run",1]'
+  rm "$HOME/.agent/shepherd/passes.tsv"
+  printf 's1\t1767225600\t1\t%%5\n' > "$HOME/.agent/shepherd/.pass"
+  run bash -c "TZ=UTC '$AU' burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.by_session.s1.origin, .by_session.s1.item, .by_session.h1.origin]'"
+  assert_output '["shepherd",null,"runner"]'
 }
 
 # -- spend check: the one check behind claude-spend-hourly and claude-spend-daily --
@@ -418,26 +461,26 @@ spend_curl() {
 }
 
 @test "spend check: under the ceiling exits 0 and names the window and the ceiling" {
-  spend_curl '{"data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}'
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}'
   run "$AU" spend check 1h 150
   assert_success
   assert_output 'last 1h: $88.4 (alert at $150)'
 }
 
 @test "spend check: over the ceiling exits 1" {
-  spend_curl '{"data":{"result":[{"metric":{},"value":[0,"1376.2"]}]}}'
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"1376.2"]}]}}'
   run "$AU" spend check 24h 900
   assert_failure 1
   assert_output 'last 24h: $1376.2 (alert at $900)'
 }
 
 @test "spend check: the query carries the window it was given" {
-  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"data":{"result":[]}}' > "$SANDBOX/bin/curl"
+  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[]}}' > "$SANDBOX/bin/curl"
   chmod +x "$SANDBOX/bin/curl"
   SANDBOX="$SANDBOX" run "$AU" spend check 24h 900
   assert_success
   assert_output 'last 24h: $0.0 (alert at $900)'
-  run grep -c 'increase(claude_code_cost_usage_USD_total\[24h\])' "$SANDBOX/q"
+  run grep -c 'max_over_time(claude_code_cost_usage_USD_total\[24h\])' "$SANDBOX/q"
   assert_output 1
 }
 
@@ -456,20 +499,31 @@ spend_curl() {
 }
 
 @test "spend check: an answer that is not a vector of numbers exits 2, never a silent zero" {
-  for body in '{}' '{"status":"error"}' 'not json' '{"data":{"result":[{"metric":{},"value":[0,"NaN"]}]}}'; do
+  for body in '{}' '{"status":"error"}' '{"status":"success","data":{"result":"x"}}' 'not json' '{"status":"success","data":{"result":[{"metric":{},"value":[0,"NaN"]}]}}'; do
     spend_curl "$body"
     run "$AU" spend check 1h 150
     assert_failure 2
   done
 }
 
-@test "spend check: no PROM_URL exits 2" {
-  AGENT_USAGE_CONF=/nonexistent PROM_URL='' run "$AU" spend check 1h 150
+@test "spend check: no CC_PROM_URL exits 2" {
+  CC_PROM_URL='' run "$AU" spend check 1h 150
   assert_failure 2
 }
 
+@test "spend check: the endpoint is CC_PROM_URL from the command-center env file, a stray PROM_URL is ignored" {
+  mkdir -p "$HOME/.config/command-center"
+  echo 'CC_PROM_URL=http://from-env.test' > "$HOME/.config/command-center/env"
+  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[]}}' > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  SANDBOX="$SANDBOX" CC_PROM_URL='' PROM_URL=http://stale.test run "$AU" spend check 1h 150
+  assert_success
+  run grep -c 'http://from-env.test/api/v1/query' "$SANDBOX/q"
+  assert_output 1
+}
+
 @test "spend check: just over the ceiling prints a figure that shows it" {
-  spend_curl '{"data":{"result":[{"metric":{},"value":[0,"150.4"]}]}}'
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"150.4"]}]}}'
   run "$AU" spend check 1h 150
   assert_failure 1
   assert_output 'last 1h: $150.4 (alert at $150)'

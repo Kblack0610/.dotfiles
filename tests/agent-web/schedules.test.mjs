@@ -16,7 +16,8 @@ const el = () => new Proxy({}, {
 });
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const box = Object.assign(part(), { addEventListener: (ev, f) => { on[ev] = f; } });
+const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
+const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 const parts = { "sched-head": part(), "sched-facets": part(), "sched-chips": part(), "sched-body": part() };
 const doc = { getElementById: (id) => (id === "schedules" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 const asked = [];
@@ -33,7 +34,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body, text: async () => "" }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "table.js", "jobs.js", "schedules.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "jobs.js", "schedules.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const schst = run("schst");
 
@@ -55,7 +56,7 @@ const data = { at: 1793942700, summary: "3 scheduled, 2 red, 1 no purpose, CI re
   rows: [nightly, row("timer", "journal-sync"), row("agentctl", "dream", { page: "dream", purpose: "nightly memory", result: "WORKED", ok: true, streak: 9, streak_word: "green 9" })] };
 
 const target = (attrs, tr = null) => ({ dataset: attrs, closest: (sel) => (sel === "tr.jr" ? tr : (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) ? { dataset: attrs } : null) });
-const show = () => { run("st.tab = 'schedules'"); Object.assign(schst, { data, err: null, sel: null }); run("renderSchedules()"); };
+const show = () => { run("st.tab = 'schedules'"); Object.assign(schst, { data, err: null, sel: null }); run("schst.render()"); };
 
 test("the table draws the summary, the mock's columns and a missing purpose", () => {
   show();
@@ -73,7 +74,7 @@ test("the table draws the summary, the mock's columns and a missing purpose", ()
 
 test("a row opens its detail and folds runs past the second", () => {
   show();
-  on.click({ target: target({}, { dataset: { key: "ci|playground / Tests" } }) });
+  fire("click", { target: target({}, { dataset: { key: "ci|playground / Tests" } }) });
   const h = box.innerHTML;
   assert.equal(schst.sel, "ci|playground / Tests");
   assert.match(h, /red since 11-01, triage queued, next 02:00/);
@@ -85,20 +86,20 @@ test("a row opens its detail and folds runs past the second", () => {
   assert.match(h, /PlayMode 2, PlayMode 8/);
   assert.match(h, /<summary class="muted">\+2 older<\/summary>/);
   assert.equal((h.match(/Open run/g) || []).length, 4);
-  on.click({ target: target({}, { dataset: { key: "ci|playground / Tests" } }) });
+  fire("click", { target: target({}, { dataset: { key: "ci|playground / Tests" } }) });
   assert.equal(schst.sel, null, "a second click closes it");
 });
 
 test("a row with no purpose says so in its detail", () => {
   show();
-  on.click({ target: target({}, { dataset: { key: "timer|journal-sync" } }) });
+  fire("click", { target: target({}, { dataset: { key: "timer|journal-sync" } }) });
   assert.match(box.innerHTML, /<span class="warn">no purpose written/);
 });
 
 test("an agentctl row goes to its runner's Fleet page and copies nothing", () => {
   show();
   loc.hash = "";
-  on.click({ target: target({}, { dataset: { key: "agentctl|dream" } }) });
+  fire("click", { target: target({}, { dataset: { key: "agentctl|dream" } }) });
   assert.equal(loc.hash, "fleet/dream");
   assert.equal(schst.sel, null);
 });
@@ -108,10 +109,10 @@ test("a header click, a chip and a query go to the server as view keys", async (
   run("st.views.schedules = ''");
   body = data;
   asked.length = 0;
-  on.click({ type: "click", target: target({ tsort: "streak", tdir: "asc" }) });
+  fire("click", { type: "click", target: target({ tsort: "streak", tdir: "asc" }) });
   await new Promise((r) => setImmediate(r));
   assert.match(asked.at(-1), /^\/api\/schedules\?sort=streak&dir=asc$/);
-  on.click({ type: "click", target: target({ ts: "red" }) });
+  fire("click", { type: "click", target: target({ ts: "red" }) });
   await new Promise((r) => setImmediate(r));
   assert.match(asked.at(-1), /s=red/);
   assert.match(run("st.views.schedules"), /s=red/, "the URL keeps the view, so it is a link");
@@ -122,11 +123,11 @@ test("a repaint leaves the search box in use and a failed read says why", () => 
   parts["sched-body"].innerHTML = "";
   doc.activeElement = { id: "sched-q", dataset: {} };
   box.innerHTML = "untouched";
-  run("renderSchedules()");
+  run("schst.render()");
   assert.equal(box.innerHTML, "untouched");
   assert.match(parts["sched-body"].innerHTML, /playground \/ Tests/);
   doc.activeElement = null;
   Object.assign(schst, { data: { rows: [], errors: ["schedules: gone"] }, err: null });
-  run("renderSchedules()");
+  run("schst.render()");
   assert.match(box.innerHTML, /schedules: gone/);
 });

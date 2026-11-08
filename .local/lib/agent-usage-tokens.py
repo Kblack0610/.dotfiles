@@ -24,7 +24,7 @@ A day is the local calendar day, the window both tools are given exactly.
 check exits 0 unless a watched number moved the worse way by more than TOKENS_DRIFT_PCT of the
 median of the TOKENS_BASELINE_DAYS days before it, or the better way by more than TOKENS_SUSPECT_PCT
 (a broken counter looks like a cliff); 1 on either, 2 when there is no fresh snapshot. It only
-reports: nothing here stops, limits or slows a session (dotfiles CLAUDE.md "Agent runtime").
+reports: nothing here stops, limits or slows a session (dotfiles CLAUDE.md "Hard limits on budgets").
 
 check --langfuse is the read-health watch: 1 when the newest two snapshots both carry a null
 langfuse section (the reader failed two nights running, the reason is in their errors), 0 when
@@ -88,18 +88,22 @@ def day_window(day):
 def snapshot(day):
     start, end = day_window(day)
     s, e = start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds")
-    recall = RECALL + ["--since", s, "--until", e, "--json", "--by"]
-    jobs = {"recall --by project": recall + ["project", "--top", "0"],
-            "recall --by command": recall + ["command", "--top", str(TOP_COMMANDS)],
-            "recall --by session,tool": recall + ["session,tool", "--top", "0"],
+    # Three cuts of one tool-output scan; the command cut is trimmed below, as --top is per scan.
+    cuts = ("project", "command", "session,tool")
+    recall = RECALL + ["--since", s, "--until", e, "--json", "--top", "0"]
+    for cut in cuts:
+        recall += ["--by", cut]
+    jobs = {"recall": recall,
             "tool-calls": CALLS + ["--since", s, "--until", e, "--json", "--top", str(TOP_TARGETS)],
             "burn": BURN + ["--before", e, "--days", f"{(end - start).total_seconds() / 86400:.6f}", "--json"],
             "langfuse": LANGFUSE + ["--since", s, "--until", e]}
     with ThreadPoolExecutor(len(jobs)) as pool:  # independent reads: the day costs the slowest one
         got = dict(zip(jobs, pool.map(run_json, jobs.values())))
     errors = [f"{name}: {err}" for name, (_, err) in got.items() if err]
-    proj, cmd, tool, calls, burn = (got[k][0] or {} for k in ("recall --by project", "recall --by command",
-                                                             "recall --by session,tool", "tool-calls", "burn"))
+    whole, calls, burn = (got[k][0] or {} for k in ("recall", "tool-calls", "burn"))
+    rows = whole.get("rows") or {}
+    proj, cmd, tool = ({**whole, "rows": rows.get(cut) or []} for cut in cuts)
+    cmd["rows"] = cmd["rows"][:TOP_COMMANDS]
 
     t = proj.get("totals") or {}
     tu = usage(t)

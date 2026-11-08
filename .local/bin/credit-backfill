@@ -56,13 +56,10 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # family <project> -> every registry project sharing its checkout, and the repo's owner.
 family() { local r; r="$(project_repo_name "$1")"; { project_field "$r" owner; project_lab_names "$r"; } | sort -u; }
 
-# gh_slug <project> -> owner/repo of the project's checkout's origin, or nothing.
-gh_slug() {
-  local dir url
-  dir="$(project_repo_path "$1")"; [ -n "$dir" ] || return 0
-  url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || return 0
-  sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##' <<<"$url"
-}
+# shellcheck source=../lib/origin-repo.sh
+. "$HERE/../lib/origin-repo.sh"
+# gh_slug <project> -> owner/repo of the project's checkout's origin (origin_repo), or nothing.
+gh_slug() { origin_repo "$(project_repo_path "$1")"; }
 
 # pr_facts <owner/repo> <N> -> one JSON line {files, size}, cached; nothing when gh cannot read it.
 # The file list is the REST one, paged as agent-land's credit reads it (`gh pr view` stops at 100
@@ -120,8 +117,12 @@ applies() {
 }
 
 # typed <text> <area> <type> -> the text as a board row's `type(area): title`; one that already has
-# a type keeps it (notes refuses a type it does not know).
-typed() { if grep -qE '^[a-z]+\([a-z0-9][a-z0-9-]*\): .' <<<"$1"; then echo "$1"; else echo "$3($2): $1"; fi; }
+# a type notes knows keeps it (`notes row parse` says whether the text parses); any other gets the prefix.
+typed() {
+  local ok
+  ok="$(printf '%s\n' "$1" | notes row parse | cut -f4)" && [ -n "$ok" ] || die "notes row parse failed (an old notes? notes-bootstrap --build-only)"
+  if [ "$ok" = 1 ]; then echo "$1"; else echo "$3($2): $1"; fi
+}
 
 row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n' "$@"; }
 
@@ -174,6 +175,7 @@ propose_items() {
     fi
     row story "${epic:--}" "$to" - "$size" done "pr:$n${merged:+ commit:${merged:0:12}}" "$s" "$(words "$title")"
   done < <(jq -r '.[] | select(.state == "done" and .status == "ok" and (.pr // "") != "" and (.row // "") == "")
+      | .pr |= (tostring | split(" ")[0]) | .merged |= (. // "" | tostring | split(" ")[0])
       | [.slug, .project, .pr, .plan, .merged, (.title // .task // .slug | split("\n")[0])] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$2")
 }
 
@@ -197,7 +199,7 @@ propose_plans() {
       its="$(jq -c --arg b "$base.md" '[.[] | select(((.plan // "") | split("/") | last) == $b)]' <<<"$items")"
       mapfile -t prs < <(
         jq -r '.[].name' <<<"$phases" | while IFS= read -r name; do phase_prs "$name"; done
-        jq -r '.[].pr // empty' <<<"$its" | while IFS= read -r i; do pr_num "$i" "$slug"; done)
+        jq -r '.[].pr // empty | tostring | split(" ")[]' <<<"$its" | while IFS= read -r i; do pr_num "$i" "$slug"; done)
       prj="$( ((${#prs[@]})) && credit "$m" "$slug" "${prs[@]}")"
       prj="${prj:-$( [ "$m" = "$top" ] && echo "$dflt" || echo "$m")}"
       type="$(project_field "$prj" type)"
@@ -209,7 +211,7 @@ propose_plans() {
         i=$((i + 1))
         it="$(jq -r --arg n "$i" '[.[] | select((.phases // "" | split(" ")) | index($n))]
           | (map(select(.state == "done" and .status == "ok")) + map(select(.state != "done"))) | first
-          | select(.) | [.slug, .state, .pr, .merged] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$its")"
+          | select(.) | [.slug, .state, (.pr // "" | tostring | split(" ")[0]), (.merged // "" | tostring | split(" ")[0])] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$its")"
         [ -n "$it" ] || it=$'-\t-\t-\t-'
         IFS=$'\t' read -r i_slug i_state i_pr i_merged <<<"$it"
         [ "$i_slug" = - ] && i_slug=""; [ "$i_merged" = - ] && i_merged=""
@@ -340,7 +342,7 @@ cmd_apply() {
           echo "credit-backfill: story under $key skipped: that epic is not applied" >&2
         else
           area="$sys"; [ "$area" != - ] || area="${epic_sys[$key]:-$prj}"
-          text="$(typed "$text" "$area" "$( [[ "$key" == std:* ]] && echo chore || echo feat)")"
+          text="$(typed "$text" "$area" "$( [[ "$key" == std:* ]] && echo chore || echo feat)")" || exit 1
           id="$(add_row "$prj" --agent "$text" "#size/$size${eid:+ #of/$eid}")" || id=""
         fi
         if [ -n "$id" ]; then

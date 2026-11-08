@@ -44,6 +44,8 @@ echo '{"result":"ok","session_id":"s-1"}'
 EOF
     chmod +x "$SANDBOX/bin/$h"
   done
+  # What claude's sandbox needs on PATH (SANDBOX_CLAUDE_NEEDS); stubs, so the suite does not need them installed.
+  for b in bwrap socat; do printf '#!/bin/sh\n' > "$SANDBOX/bin/$b"; chmod +x "$SANDBOX/bin/$b"; done
 }
 
 lane() { run "$RUN" --role build --data-class public "$@"; }
@@ -99,7 +101,7 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
 
 @test "a profile's own denyWrite paths are Edit() denies too, so Edit and Write cannot reach what Bash cannot" {
   printf '{"sandbox": {"filesystem": {"allowWrite": ["~/proj"], "denyWrite": ["~/proj/.github", "/srv/locked"]}}}\n' > "$HOME/.config/agentctl/sandbox/dw.json"
-  cd "$SANDBOX"
+  mkdir -p "$SANDBOX/lane-cwd" && cd "$SANDBOX/lane-cwd"   # not a repo, and not $HOME or above it
   SANDBOX_PROFILE=dw lane -p x
   assert_success
   run jq -r '.permissions.deny[]' <<<"$(settings)"
@@ -113,6 +115,17 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_output --partial "Refusing to run unsandboxed"
   [ ! -e "$SANDBOX/claude-argv.txt" ] || ! grep -qx -- '-p' "$SANDBOX/claude-argv.txt"
   FAKE_CLAUDE_VERSION=2.1.313 lane -p x
+  assert_success
+}
+
+@test "claude refuses a lane sandbox when a tool its sandbox needs is missing, and the refusal names it" {
+  AGENTCTL_NAME=probe SANDBOX_CLAUDE_NEEDS="bwrap no-such-socat" SANDBOX_PROFILE=lane lane -p x
+  assert_failure 78
+  assert_output --partial "no-such-socat is not installed"
+  [ ! -e "$SANDBOX/claude-argv.txt" ] || ! grep -qx -- '-p' "$SANDBOX/claude-argv.txt"
+  run jq -r '.why' "$HOME/.local/state/agentctl/sandbox-refusals.jsonl"
+  assert_output --partial "no-such-socat is not installed"
+  SANDBOX_CLAUDE_NEEDS="bwrap no-such-socat" lane -p x
   assert_success
 }
 
@@ -131,7 +144,7 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
 }
 
 @test "outside a repo the writable set is just allowWrite, and a profile with no allowWrite adds no directories" {
-  cd "$SANDBOX"
+  mkdir -p "$SANDBOX/lane-cwd" && cd "$SANDBOX/lane-cwd"   # not a repo, and not $HOME or above it
   printf '{"sandbox": {"network": {"allowedDomains": ["github.com"]}}}\n' > "$HOME/.config/agentctl/sandbox/bare.json"
   SANDBOX_PROFILE=bare lane -p x
   assert_success
@@ -223,4 +236,43 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_success
   run jq -r 'select(.agent == "probe") | .sandbox' "$HOME/.local/state/agentctl/calls.jsonl"
   assert_output lane
+}
+
+@test "a sandboxed lane started from \$HOME or above it refuses, since the cwd is writable; from its own directory it runs (control)" {
+  mkdir -p "$HOME/.local/state/agentctl/probe"
+  cd "$HOME/.local/state/agentctl/probe"
+  SANDBOX_PROFILE=lane lane -p x
+  assert_success
+  rm "$SANDBOX/claude-argv.txt"
+  for d in "$HOME" "$HOME/" /; do
+    cd "$d"
+    SANDBOX_PROFILE=lane lane -p x
+    assert_failure 78
+    assert_output --partial 'which holds all of $HOME'
+    [ ! -e "$SANDBOX/claude-argv.txt" ] || fail "claude ran from $d with all of \$HOME writable"
+  done
+  cd "$HOME"
+  lane -p x
+  assert_success   # an unsandboxed lane has no write bound to lose
+}
+
+@test "a refused sandboxed call leaves a line in sandbox-refusals.jsonl and none in calls.jsonl; a hand run leaves none" {
+  refusals="$HOME/.local/state/agentctl/sandbox-refusals.jsonl"
+  calls="$HOME/.local/state/agentctl/calls.jsonl"
+  SANDBOX_PROFILE=nope lane -p x
+  assert_failure 78
+  [ ! -s "$refusals" ] || fail "a hand run (no AGENTCTL_NAME) wrote a refusal line"
+  AGENTCTL_NAME=probe SANDBOX_PROFILE=nope lane -p x
+  assert_failure 78
+  run jq -c '[.agent, .sandbox, (.why | test("not readable"))]' "$refusals"
+  assert_output '["probe","nope",true]'
+  mkdir -p "$HOME/.config/agentctl/routes"
+  printf 'ROUTE_DESC=fixture\nROUTE_TRANSPORT=openai-compatible\nROUTE_BASE_URL="http://origin.test/v1"\nROUTE_MODEL_RAW="fast (fixture)"\nROUTE_KEY_SOURCE=none\nROUTE_PAYER=none\nROUTE_PERSONAL_SAFE=yes\nROUTE_WORK_SAFE=yes\nROUTE_FALLBACK_SAFE=yes\nROUTE_VERIFY_MODEL=x\nROUTE_VERIFY_API_BASE=http://origin.test\nROUTE_HARNESSES=raw\n' \
+    > "$HOME/.config/agentctl/routes/origin.route"
+  AGENTCTL_NAME=probe SANDBOX_PROFILE=lane run "$RUN" --role build --data-class public --harness raw --route origin -- true
+  assert_failure 78
+  assert_output --partial "cannot enforce lane sandbox 'lane'"
+  run jq -c '[.harness, (.why | test("cannot enforce"))]' "$refusals"
+  assert_line --index 1 '["raw",true]'
+  [ ! -s "$calls" ] || fail "a refusal wrote a calls.jsonl line, which every reader counts as a call"
 }

@@ -32,11 +32,24 @@ calls_new_id() { od -An -tx1 -N6 /dev/urandom | tr -d ' \n'; }
 # output has no such field, so its prose goes out and the caller's parse fails visibly. A capped
 # call returns CALLS_RC_CAPPED.
 calls_record() {
-  local harness="$1" id t0 t1 out rc=0 text
+  local harness="$1" id t0 t1 out rc=0 text tmp pid="" killed=""
   shift
   id="${AGENTCTL_CALL_ID:-$(calls_new_id)}"
   t0="$(date +%s%3N)"
-  out="$("$@")" || rc=$?
+  # A call its caller kills (agent-ask's timeout guard) still leaves its line, with the signal's
+  # exit code: killed inside a command substitution it left none, so three hung ask-judge calls on
+  # 2026-11-07 read as "0 failed" with no account or duration to tell why (ar-782).
+  tmp="$(mktemp)"
+  trap 'killed=1; [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null' TERM INT HUP
+  "$@" <&0 >"$tmp" &
+  pid=$!
+  [ -z "$killed" ] || kill -TERM "$pid" 2>/dev/null
+  wait "$pid" || rc=$?
+  # A trapped signal ends the first wait early; the second is the call's own exit.
+  # A killed call never reads as a success, even from a harness that exits 0 on TERM.
+  if [ -n "$killed" ]; then rc=0; wait "$pid" || rc=$?; [ "$rc" -gt 128 ] || rc=143; fi
+  trap - TERM INT HUP
+  out="$(cat "$tmp")"; rm -f -- "$tmp"
   t1="$(date +%s%3N)"
   # A non-JSON reply (a crash before the result object) is still the call's output.
   if text="$(jq -cer 'if type != "object" then error

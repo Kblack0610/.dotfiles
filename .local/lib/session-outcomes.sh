@@ -13,11 +13,42 @@
 # Field meanings and the observation rule: .config/agentctl/DREAMING.md
 # ("Session outcomes") in the private overlay.
 
+# shellcheck source=origin-repo.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/origin-repo.sh" || return 1
+
+# SO_PR_JQ - the jq defs every harness's PR scan shares. pr_cmd: a command that opens or merges
+# a PR, `gh pr create|merge` in command position (at a line start, after a shell separator, `sh -c`
+# or `ssh host`, past assignments and wrappers like env, sudo, timeout, xargs), so a search or
+# quoted pattern naming it, whose output is often test fixtures, is not one; or a curl POST to a Forgejo `.../pulls` or
+# `.../pulls/N/merge` URL (often `"$API/pulls"`, API set in an earlier call; a POST to a PR's
+# comments or reviews is not one). pr_refs:
+# the PRs a call's output names, as {repo, number}. A GitHub repo is `owner/repo`; a Forgejo one
+# is `host/owner/repo` (gh's own HOST/OWNER/REPO form), so a GitHub mirror of the same name stays
+# a different repo. Forgejo is told by its URL shape, `/pulls/N` on a host that is not github.com:
+# its hostnames are not named here, since this repo is public. A Forgejo merge prints no URL, so
+# its PR is found from the create call's `html_url`.
+SO_PR_JQ='
+  def pr_cmd: test("(^|[\\n;&|({`!]|\\b(ba|z)?sh\\s+-[a-z]*c\\s+[\"\u0027]?|\\bssh\\s+(-\\S+\\s+)*\\S+\\s+[\"\u0027]?)\\s*((\\w+=(\\$\\([^)]*\\)|\"[^\"]*\"|\u0027[^\u0027]*\u0027|\\S*)|env|command|exec|time|then|do|else|sudo|nohup|timeout\\s+\\S+|xargs(\\s+-\\S+)*)\\s+)*gh\\s+pr\\s+(create|merge)\\b")
+    or (test("\\bcurl\\b") and test("/pulls(/[0-9]+/merge)?([\"\u0027?\\s]|$)")
+        and test("(-X\\s*|--request[=\\s]+)POST\\b|\\s(-d|--data[a-z-]*)([=\\s@\u0027\"]|$)"));
+  def pr_refs: [ (scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
+                  | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}),
+                 (scan("[Mm]erged pull request ([^/\\s]+)/([^#\\s]+)#([0-9]+)")
+                  | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}),
+                 (scan("https?://([^/\\s\"]+)/([^/\\s\"]+)/([^/\\s\"]+)/pulls/([0-9]+)") | select(.[0] != "github.com")
+                  | {repo: "\(.[0])/\(.[1])/\(.[2])", number: (.[3] | tonumber)}) ] | unique;
+'
+
 # so_transcript_metrics FILE - one pass over a transcript, one JSON object out.
-# A PR counts only when a `gh pr create|merge` call's own result printed it, so a PR
-# merely viewed or pasted is not claimed. lessons_written counts corrections (the rule
-# is "after ANY correction, update lessons"); most land as `cat >>` through Bash, not
-# Edit, so both are counted. Malformed lines are skipped, not fatal:
+# A PR counts when a PR call's own result printed it (SO_PR_JQ), so a PR merely
+# viewed or pasted is not claimed, or when Claude Code wrote a pr-link record for it: that
+# record is how a PR made in a subagent, or whose output was persisted to a file, reaches
+# this transcript, since neither prints its URL in a tool result here. Claude Code also writes
+# a pr-link for a PR URL it only saw printed (a test's fixture o/r#99, session 5642f5f8), so `run`
+# drops a claim in a repo gh cannot resolve. (`run` also claims a PR whose body names the
+# session's own claude.ai/code link: so_session_links.)
+# lessons_written counts corrections (the rule is "after ANY correction, update lessons");
+# most land as `cat >>` through Bash, not Edit, so both are counted. Malformed lines are skipped, not fatal:
 # a transcript cut off by a crash is the session this feed most needs to see.
 # entrypoint is the first one a record carries: "sdk-cli" is a headless `claude -p`.
 # activity is how the session spent itself. A test run is a test command at the start of a
@@ -35,7 +66,7 @@
 # plan_gate counts ExitPlanMode calls and how many of them plan-standard.sh denied;
 # the human rejecting a plan is `denied` under hard_errors, not a gate denial.
 so_transcript_metrics() {
-  jq -nR --argjson sigs "${2:-[]}" '
+  jq -nR --argjson sigs "${2:-[]}" "$SO_PR_JQ"'
     def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
     def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";
     def text_of: if type == "string" then .
@@ -75,7 +106,7 @@ so_transcript_metrics() {
               | (if ($c | test(test_run)) then .test_runs += 1 else . end)
               | (if ($c | test(ci_poll)) then .ci_polls += 1 else . end)
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
-              | (if ($c | test("\\bgh\\s+pr\\s+(create|merge)\\b")) then .pr_ids[$u.id] = true else . end)
+              | (if ($c | pr_cmd) then .pr_ids[$u.id] = true else . end)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)
               | reduce ($sigs[] | select((($r.timestamp // "") | .[0:10]) > .since)
                         | select(.sig as $re | try ($c | test($re)) catch false)) as $s (.;
@@ -113,10 +144,7 @@ so_transcript_metrics() {
                      else . end
                  else . end)
               | (if ($err | not) and .pr_ids[$c.tool_use_id] then
-                   .prs += ([ $t | scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
-                              | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ]
-                          + [ $t | scan("[Mm]erged pull request ([^/\\s]+)/([^#\\s]+)#([0-9]+)")
-                              | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ])
+                   .prs += ($t | pr_refs)
                  else . end)
               | (if ($err | not) and .lesson_ids[$c.tool_use_id] then .lessons_written += 1 else . end)
               | (if ($err | not) and .done_ids[$c.tool_use_id] then
@@ -126,6 +154,8 @@ so_transcript_metrics() {
               .interrupts += 1
             else . end)
         end
+      elif $r.type == "pr-link" and ($r.prNumber | type) == "number" and (($r.prRepository // "") | test("^[^/\\s]+/[^/\\s]+$")) then
+        .prs += [{repo: $r.prRepository, number: $r.prNumber}]
       elif $r.type == "system" and $r.subtype == "compact_boundary" then
         .compactions[if $r.compactMetadata.trigger == "manual" then "manual" else "auto" end] += 1
       else . end)
@@ -147,7 +177,7 @@ so_transcript_metrics() {
 # has no Stop hook, and its own DB already holds cost and tokens. `session_v2` is the live table;
 # `session` and `part` stopped being written at 2.1.4. Times are milliseconds. A child session (a
 # subagent) adds to its root and gets no line. PRs follow the rule at the top of this file: a
-# `gh pr create|merge` call's own output printed it. `provider` is the session model's providerID:
+# PR call's own output printed it (SO_PR_JQ). `provider` is the session model's providerID:
 # `lazer` went to Lazer direct, which the gateway's lazer-pool never sees. No DB is no rows; a schema
 # it cannot read is rc 1.
 so_opencode_rows() {
@@ -163,21 +193,19 @@ so_opencode_rows() {
     FROM tree t JOIN session_v2 r ON r.id = t.root JOIN session_v2 s ON s.id = t.id GROUP BY t.root" > "$work/oc.sessions.json" || return 1
   sqlite3 -readonly -json "$db" "$tree
     SELECT t.root, m.data FROM tree t JOIN session_message m ON m.session_id = t.id
-    WHERE m.type = 'assistant' AND m.data LIKE '%gh pr %'" > "$work/oc.messages.json" || return 1
+    WHERE m.type = 'assistant' AND (m.data LIKE '%gh pr %' OR (m.data LIKE '%/api/v1/repos/%' AND m.data LIKE '%/pulls%'))" > "$work/oc.messages.json" || return 1
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   jq -r '(. // [])[].directory' "$work/oc.sessions.json" | sort -u | while IFS= read -r dir; do
     jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
   done | jq -cs from_entries > "$work/oc.projects.json" || return 1
-  jq -cn --slurpfile s "$work/oc.sessions.json" --slurpfile m "$work/oc.messages.json" --slurpfile p "$work/oc.projects.json" '
+  jq -cn --slurpfile s "$work/oc.sessions.json" --slurpfile m "$work/oc.messages.json" --slurpfile p "$work/oc.projects.json" "$SO_PR_JQ"'
     (($m[0] // []) | group_by(.root)
      | map({key: .[0].root,
             value: [ .[].data | fromjson | .content[]?
                      | select(.type == "tool" and .name == "bash" and .state.status == "completed"
-                              and (.state.input.command // "" | test("\\bgh pr (create|merge)\\b")))
-                     | [.state.content[]?.text] | join("\n")
-                     | scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
-                     | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)} ] | unique})
+                              and (.state.input.command // "" | pr_cmd))
+                     | [.state.content[]?.text] | join("\n") | pr_refs[] ] | unique})
      | from_entries) as $prs
     | ($s[0] // [])[]
     | ((.model // "{}") | fromjson) as $model
@@ -200,7 +228,7 @@ so_opencode_rows() {
 # price with all three rates and no cache writes (OpenAI bills none), since the token total is not
 # split by model; a session with any unpriced rollout, or no
 # price file, has cost_usd null, never a partial figure. PRs follow the rule at the top of this
-# file, from a `gh pr create|merge` shell call paired with its own output.
+# file, from a PR call (SO_PR_JQ) paired with its own output.
 so_codex_rows() {
   local dir="$1" work="$2" prices="${3:-}" f pj='{}'
   [ -d "$dir" ] || return 0
@@ -208,9 +236,7 @@ so_codex_rows() {
     pj="$(jq -c '.harnesses.codex.prices // {}' "$prices" 2>/dev/null)" || { echo "so_codex_rows: unreadable $prices, no Codex cost" >&2; pj='{}'; }
   fi
   find "$dir" -name 'rollout-*.jsonl' -type f | while IFS= read -r f; do
-    jq -cs --argjson prices "$pj" 'def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
-      def prs: [scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)") | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}];
-      def pr_cmd: test("\\bgh pr (create|merge)\\b");
+    jq -cs --argjson prices "$pj" "$SO_PR_JQ"'def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
       (map(select(.type == "session_meta")) | first | .payload) as $m
       | select($m.id)
       | (map(select(.type == "response_item") | .payload)) as $r
@@ -238,12 +264,12 @@ so_codex_rows() {
                       cacheCreation: ($u.cache_write_input_tokens // 0), cacheRead: ($u.cached_input_tokens // 0),
                       total: ($u.input_tokens + $u.output_tokens)} end),
           prs: ([ ($r[] | select(.type == "function_call" and .name == "exec_command")
-                   | select((.arguments | fromjson? | .cmd // "") | pr_cmd) | $out[.call_id] // "" | prs[]),
+                   | select((.arguments | fromjson? | .cmd // "") | pr_cmd) | $out[.call_id] // "" | pr_refs[]),
                   ($r[] | select(.type == "custom_tool_call" and .name == "exec")
-                   | select(.input // "" | pr_cmd) | $out[.call_id] // "" | prs[]),
+                   | select(.input // "" | pr_cmd) | $out[.call_id] // "" | pr_refs[]),
                   (.[] | select(.type == "event_msg" and .payload.type == "item_completed" and .payload.item.type == "CommandExecution")
                    | .payload.item | select(.command | if type == "array" then join(" ") else tostring end | pr_cmd)
-                   | .aggregated_output // "" | prs[]) ] | unique) }' "$f" || echo "so_codex_rows: unreadable $f" >&2
+                   | .aggregated_output // "" | pr_refs[]) ] | unique) }' "$f" || echo "so_codex_rows: unreadable $f" >&2
   done > "$work/cx.rows.jsonl"
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
@@ -282,8 +308,52 @@ so_lesson_sigs() {
     | group_by(.sig) | map(min_by(.since))'
 }
 
+# so_forgejo_pr_list HOST/OWNER/REPO WORKDIR LIMIT - the repo's newest LIMIT PRs from its Forgejo API,
+# in the `gh pr list --json number,state,title,mergedAt,body,mergeCommit` shape, so a reader of
+# gh's list takes them unchanged. The token is rbw entry SO_FORGEJO_ENTRY (one with repo scope),
+# read once per process, and goes in on stdin (-K -), never argv, and only to a host so_forgejo_hosts
+# lists. SO_FORGEJO_ERR says why on a failure: rc 1 = no token or a page failed (worth a retry),
+# rc 2 = the host is not listed (never called). Seams: SO_CURL SO_RBW.
+SO_FORGEJO_PAGE=50   # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50, whatever limit asks for
+SO_FORGEJO_TOKEN=""
+so_forgejo_pr_list() {
+  local repo="$1" work="$2" limit="$3" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}" page=1 got
+  case " $(so_forgejo_hosts) " in
+    *" ${repo%%/*} "*) ;;
+    *) SO_FORGEJO_ERR="${repo%%/*} is not in SO_FORGEJO_HOSTS, $repo unread"; return 2 ;;
+  esac
+  if [ -z "$SO_FORGEJO_TOKEN" ]; then
+    SO_FORGEJO_TOKEN="$("${SO_RBW:-rbw}" get "$entry" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
+    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (rbw $entry), $repo unread"; return 1; }
+  fi
+  rm -f "$work"/fj.page.*
+  while :; do
+    printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
+      "${SO_CURL:-curl}" -sSf -K - --max-time 30 -o "$work/fj.page.$(printf %04d "$page")" \
+        "https://${repo%%/*}/api/v1/repos/${repo#*/}/pulls?state=all&sort=newest&limit=$SO_FORGEJO_PAGE&page=$page" 2>"$work/fj.err" &&
+      got="$(jq 'length' "$work/fj.page.$(printf %04d "$page")" 2>/dev/null)" ||
+      { SO_FORGEJO_ERR="$repo unread: $(head -c 120 "$work/fj.err")"; return 1; }
+    [ "$got" -ge "$SO_FORGEJO_PAGE" ] && [ $((page * SO_FORGEJO_PAGE)) -lt "$limit" ] || break
+    page=$((page + 1))
+  done
+  jq -cs --argjson n "$limit" 'add | .[:$n] | map({number, title, body, mergedAt: .merged_at,
+                     state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
+                     mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)})' "$work"/fj.page.*
+}
+
+# so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:
+# SO_FORGEJO_HOSTS when set (even empty), else the private session-outcomes runner conf's. A host
+# comes from transcript text, so one not listed is never called.
+so_forgejo_hosts() {
+  if [ -n "${SO_FORGEJO_HOSTS+set}" ]; then printf '%s' "$SO_FORGEJO_HOSTS"; return; fi
+  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/session-outcomes.conf" 2>/dev/null
+    printf '%s' "${SO_FORGEJO_HOSTS:-}" ) || true
+}
+
 # so_pr_index FINAL_DAYS - stdin: a `gh pr list --json number,state,title,mergedAt,body,mergeCommit`
-# array for ONE repo. stdout: {"<number>": {state, merged_at, merge_oid, reverted}}.
+# array for ONE repo. stdout: {"<number>": {state, merged_at, merge_oid, reverted, links}}. links are
+# the claude.ai/code session ids the body names, the link Claude Code's attribution puts in every PR
+# it opens (so_session_links reads the same id from the session's side).
 # reverted = a merged PR, merged within FINAL_DAYS after this one, that is titled
 # `Revert "<title>"` (GitHub's button), has a title or body line where a revert word comes
 # before `#N` ("Reverts #240", `Revert "x (#5)"`), or says "This reverts commit <sha>" of
@@ -306,6 +376,7 @@ so_pr_index() {
     | map(. as $p
         | { key: ($p.number | tostring),
             value: { state: $p.state, merged_at: $p.mergedAt, merge_oid: ($p.mergeCommit.oid // null),
+                     links: ([($p.body // "") | scan("claude\\.ai/code/(session_[A-Za-z0-9]+)")[0]] | unique),
                      reverted: ( $p.state == "MERGED" and $p.mergedAt != null
                        and (($p.mergedAt | fromdateiso8601) as $at
                             | ($p.mergeCommit.oid // "") as $oid
@@ -392,12 +463,26 @@ so_rework_commits() {
 # so_rework_repos MAP - one `owner/repo<TAB>dir` line per project-map checkout whose origin is on
 # GitHub, so a PR's repo finds the clone blame runs in.
 so_rework_repos() {
-  local dir url
+  local dir repo
   jq -r '.paths // {} | keys[]' "$1" 2>/dev/null | while IFS= read -r dir; do
-    url=$(git -C "$dir" remote get-url origin 2>/dev/null) || continue
-    [[ "$url" =~ github\.com[:/]([^/]+)/([^/]+)$ ]] || continue
-    printf '%s/%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]%.git}" "$dir"
+    repo=$(origin_repo "$dir" github.com) || continue
+    printf '%s\t%s\n' "$repo" "$dir"
   done
+}
+
+# so_session_links PATH... - the claude.ai/code session ids the transcripts under PATH (files or
+# dirs, subagents/ included) recorded, one per line. A session records its link as a
+# `remote_session_change` attachment; matched as raw JSON with unescaped quotes, so a transcript that
+# quotes one inside a string does not count. A subagent records its own link, and the PRs it opens
+# carry that one, so a session's links are its transcript's and its subagents'. A missing PATH is
+# skipped; a file that could not be read fails it.
+so_session_links() {
+  local p paths=()
+  for p; do [ -e "$p" ] && paths+=("$p"); done
+  [ "${#paths[@]}" -gt 0 ] || return 0
+  grep -rhoE --include='*.jsonl' '\{"type":"remote_session_change","url":"https://claude\.ai/code/session_[A-Za-z0-9]+' "${paths[@]}" 2>/dev/null |
+    sed 's|.*/code/||' | sort -u
+  [ "${PIPESTATUS[0]}" -le 1 ]
 }
 
 # so_latest OUT_DIR - the newest observation of every session, one JSON line each.
@@ -421,6 +506,7 @@ so_latest() {
 # reads it out (`worst`, `card`), so the words always add up to the number.
 so_friction_def() {
   cat <<'EOF'
+def in_project($p): $p == "" or .project == $p or any((.projects // [])[]; . == $p);
 def friction_terms:
   [ [5, (.reverted_7d // 0), "reverted"],
     [2, (.prs_closed_unmerged // 0), "closed unmerged"],

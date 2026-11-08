@@ -26,8 +26,6 @@ const SCHEDULE_FIT: (usize, usize) = (12, 32);
 pub struct SchedulesView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,
-    pub sel: usize,
-    pub top: usize,
     /// Whether the pane is open, and how far it is scrolled.
     pub open: bool,
     pub down: usize,
@@ -49,10 +47,8 @@ impl SchedulesView {
     /// Move the selection to the row with this id after a refresh, or keep the index in range.
     pub fn reselect(&mut self, s: &Schedules, id: Option<RowId>) {
         let rows = self.shown(s);
-        if let Some(i) = id.and_then(|id| rows.iter().position(|r| row_id(r) == id)) {
-            self.sel = i;
-        }
-        self.sel = self.sel.min(rows.len().saturating_sub(1));
+        let at = id.and_then(|id| rows.iter().position(|r| row_id(r) == id));
+        self.table.keep(at, rows.len());
     }
 
     /// The reader's summary, then the view and how many rows it keeps.
@@ -107,9 +103,7 @@ impl SchedulesView {
         }
         .fit(w, p.head());
         if sel {
-            if let Some(l) = out.get_mut(self.sel + 1) {
-                l.style = p.sel();
-            }
+            self.table.style(&mut out, p);
         }
         out
     }
@@ -294,10 +288,10 @@ mod tests {
         let s = sample();
         let mut v = SchedulesView::default();
         v.reselect(&s, Some(("timer".into(), "journal".into())));
-        assert_eq!(v.sel, 1);
-        v.sel = 9;
+        assert_eq!(v.table.sel, 1);
+        v.table.sel = 9;
         v.reselect(&s, Some(("ci".into(), "gone".into())));
-        assert_eq!(v.sel, 1);
+        assert_eq!(v.table.sel, 1);
     }
 
     #[test]

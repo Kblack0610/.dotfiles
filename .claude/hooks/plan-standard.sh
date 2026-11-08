@@ -42,6 +42,10 @@ rows() {
 }
 
 if [ "$event" = UserPromptSubmit ]; then
+  # Once per session: every later plan-mode prompt would re-send the same text, and the
+  # ExitPlanMode check below names any gap anyway.
+  tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
+  [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
   sections=$(rows | awk -F'\t' '{print "- ## " $1 ": " $2}')
   rules=$(grep -E '^(Scaling|Depth): ' "$DOC")
   jq -nc --arg c "Plan standard for $label. The plan must carry these sections, and ExitPlanMode is denied without them:

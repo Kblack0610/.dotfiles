@@ -19,7 +19,8 @@
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
 #       (--item SLUG | --brief FILE --row KEY [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG])
-#                                    start ONE session the way every agent must: see cmd_start
+#       [--host W]                   start ONE session the way every agent must: see cmd_start
+#   fleet-dispatch hosts [--json]    each fleet worker: placed or not, run units, load, and why it takes no session
 #   fleet-dispatch record            keep each world's pane record; page when a world's server died
 #   fleet-dispatch restore [--server S] [--dry-run]  reopen a lost server's conversations as windows
 #
@@ -59,8 +60,13 @@ unset _k _v
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
 : "${DISPATCH_MAX_LIVE:=6}"   # run units the runner's own sessions may hold: a heavy item 2, a light one 1
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
-: "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine really idle: niced Unity runs fill it while load looks fine
+: "${DISPATCH_START_LOAD:=2.5}"   # 1-min load one session started in the last DISPATCH_START_LOAD_MIN minutes will still add; 0 is off. Provisional: 2.8 measured over 21 starts on 24 cores (2026-11-07), medium confidence; re-measure when the session mix changes
+: "${DISPATCH_START_LOAD_MIN:=5}"   # minutes a start counts as not yet in the load
+: "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine free, idle plus nice time, over the real idle sample (real_idle); the conf holds the human's floor
+: "${DISPATCH_IDLE_WINDOW:=60}"   # seconds the real idle sample spans: one 2 s top frame swung 17-41% on one busy hour (human, ask bo20dU, 2026-11-07)
+: "${DISPATCH_PROC_STAT:=/proc/stat}"
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06)
+: "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running or waiting item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
 : "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats)
@@ -78,14 +84,20 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$HERE/../lib/judge.sh"
 # shellcheck source=../src/agent-run/lib/sandbox.sh
 . "$HERE/../src/agent-run/lib/sandbox.sh"
+# The fleet worker roster (home-config's `fleet_workers` group) and the one ssh path to a worker.
+# shellcheck source=../lib/fleet-hosts.sh
+. "${FLEET_HOSTS_LIB:-$HERE/../lib/fleet-hosts.sh}"
+: "${DISPATCH_DEMAND_TTL:=2400}"   # seconds a cloud worker's demand key holds (demand_pass): two 15-minute passes plus slack, so one missed pass does not stop the box
+: "${DISPATCH_KUBE_ENV:=$HOME/.config/command-center/env}"   # where CC_KUBE_CONTEXT, the cluster the governor's ConfigMap lives on, is set
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, stages, enabled, off (load_kinds)
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
 : "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
-: "${DISPATCH_DROP_TOOLS=Workflow,ScheduleWakeup}"   # tools a new queue session starts without (see dropped_tools); empty keeps every tool
+: "${DISPATCH_DROP_TOOLS=Workflow,ScheduleWakeup,Artifact}"   # tools a new queue session starts without (see dropped_tools); empty keeps every tool
 : "${DISPATCH_SANDBOX_PROFILE:=}"   # a lane sandbox profile (agent-run docs/contract.md "Lane sandbox") every claude start runs under; empty is off, and a start that cannot hold the profile is refused (lane_sandbox)
 : "${DISPATCH_SANDBOX_GH_TOKEN_FILE:=}"   # the sandboxed session's own repo-scoped GitHub token file, as GH_TOKEN_FILE is for a runner; empty gives it no token
 : "${DISPATCH_REAP_GRACE:=600}"   # seconds after a start before reap may read a missing Claude as gone: a claude still booting has no registry entry yet
+: "${DISPATCH_REAP_CONFIRM:=120}"   # seconds between the two reaps that must both miss a Claude before it counts as gone: two reads closer than that share one load spike, so they are one witness. Provisional: one false fail (ar-900, 2026-11-07) whose re-read a minute later listed the session, low confidence; revisit on the next false reap or one held a pass too long
 : "${PARKED_DIR:=${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}}"   # claude-acct park: a parked pane is never reaped
 # Night items: the default notes profile's agent lanes of the dotfiles boards.
 : "${DISPATCH_NIGHT_PROFILE:=}"   # empty: notes' own default profile, where those boards live
@@ -121,16 +133,13 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 # The lowest model-lane lane a started item runs on: every dispatched session lands its own PR,
 # and the human approved Sonnet for that (2026-11-05), not Haiku.
 : "${DISPATCH_LANE_FLOOR:=sonnet}"
-# Spill to Lazer: when no account has room, a pass may start a Sonnet-lane item on the claude-reserve
-# key instead (SPILL_HARNESS); the human approved it on by default, 2 live, under 80% of the pool (2026-11-06).
-: "${DISPATCH_SPILL_MAX_LIVE:=2}"   # spill sessions live at once; 0 turns spilling off
-: "${DISPATCH_SPILL_POOL_PCT:=80}"   # percent of the Lazer pool's budget (lazer-spend) at which spilling stops
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
 AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finished ok (its finished_ok)
 AQ_EX_HELD=5       # agent-queue add's exit when admission held an automated add (its admit)
 LOG="$DIR/log.md"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
+IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session from a
@@ -139,10 +148,8 @@ HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which 
 # unattended only through its own lanes (policy.md "Tier"): a red item and a tier-3 cleanup row merge
 # behind the red-fix gate (t3_cleanup_picks), every other row goes to an open PR as a night item (fill_night).
 UNATTENDED_TIER_CEILING=2
-# The harness a spill runs on: claude-lazer on the claude-reserve key, never the eval key (harnesses.json).
-SPILL_HARNESS=lazer-reserve
-SPILL_REFUSED="$DIR/spill-refused"   # <day> TAB <slug> TAB <why>: an item that may not spill, for the rest of the day
-NO_SPILL=()   # this pass's "<slug> (<why>)" for items that may not spill; NO_ROOM, the account reason
+LANE_CACHE="$DIR/lane-cache"   # <day> TAB <slug> TAB <verdict json>: the verdict of an item no source could take, for the rest of the day
+NO_ROUTE=()   # this pass's "<slug> (<why>)" for items no source with room could take; NO_ROOM, the account reason
 
 say() { printf 'fleet-dispatch: %s\n' "$*" >&2; }
 logline() { mkdir -p "$DIR"; printf -- '- %s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$LOG"; }
@@ -226,6 +233,13 @@ def rank: sort_by((.cleanup // 1), (.pprio // 2), (.due // 3), (.req // 1), (.wr
 # shellcheck source=../lib/plan-phases.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
 repo_dir() { PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_repo_path "$1"; }
+# pr_repo_dir <pr ref> <project> -> the checkout an item's PR merged into: the repo an
+# <owner>/<repo>#<N> ref names (one project spans repos: agent-runtime lands in .dotfiles,
+# .dotfiles-private and home-config), else, for a bare number, the project's own.
+pr_repo_dir() {
+  [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] || { repo_dir "$2"; return; }
+  repo_dir "$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_of_repos_json "${BASH_REMATCH[1]}" | jq -r '.[]')"
+}
 # shellcheck source=../lib/agent-merge-proof.sh
 . "${MERGE_PROOF_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh}"
 # shellcheck source=../lib/chain-event.sh
@@ -276,11 +290,34 @@ load_kinds() {
     | map(tostring | gsub("[\t\n]"; " ")) | join("\t")' "$DISPATCH_KINDS")
 }
 
-# row_kind <text> -> the row's type, its `type(area):` or `type:` prefix; nothing for a bare row.
+# row_kind <text> -> the row's type, from the grammar's one home (`notes row parse`); nothing for a
+# bare or unknown row. ROW_KIND holds the rows a pass has loaded (row_kinds_load), so a lookup in a
+# `$(...)` costs no fork; a row not in it is parsed on the spot.
+declare -gA ROW_KIND=()
 row_kind() {
-  local body="${1#- \[?\] }"
-  [[ "$body" =~ ^([a-z]+)(\([a-z0-9-]+\))?: ]] && echo "${BASH_REMATCH[1]}"
+  local t
+  [ -n "$1" ] || return 0
+  if [ -n "${ROW_KIND[$1]+x}" ]; then t=${ROW_KIND[$1]}
+  else t=$(printf '%s\n' "${1//$'\n'/ }" | notes row parse 2>/dev/null | cut -f1) || t=''
+  fi
+  [ "$t" = - ] || [ -z "$t" ] || printf '%s\n' "$t"
   return 0
+}
+
+# row_kinds_load -- the `key TAB text` lines of `rows` on stdin: every text's type into ROW_KIND with
+# one `notes row parse`, which answers a line per line. A parse that fails or answers short loads
+# nothing and says so, and row_kind then parses row by row.
+row_kinds_load() {
+  local -a texts=() types=()
+  local key text i
+  while IFS=$'\t' read -r key text; do [ -n "$text" ] && texts+=("$text"); done
+  [ ${#texts[@]} -gt 0 ] || return 0
+  mapfile -t types < <(printf '%s\n' "${texts[@]}" | notes row parse 2>/dev/null | cut -f1)
+  if [ ${#types[@]} -ne ${#texts[@]} ]; then
+    say "notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)"
+    return 0
+  fi
+  for i in "${!texts[@]}"; do ROW_KIND[${texts[$i]}]=${types[$i]}; done
 }
 
 # kind_off <kind> <project> <stage> -> why the registry keeps a row of that kind from dispatching
@@ -337,7 +374,7 @@ cleanup_row() {
   local body="${2%%<!--*}" k c
   [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] || { echo 1; return; }
   load_kinds
-  k=$(row_kind "$body")
+  k=$(row_kind "$2")
   c=${KIND_CLEANUP[${k:-_}]:-}
   body=${body#- \[?\] }
   if { [ "$c" = true ] || { [ -n "$c" ] && grep -qiE -- "$c" <<<"$body"; }; } && ! grep -qiE -- "$DISPATCH_CLEANUP_NOT" <<<"$body"; then echo 0; else echo 1; fi
@@ -437,12 +474,27 @@ np() {
   if [ -n "$p" ]; then notes --profile "$p" "$@"; else notes "$@"; fi
 }
 
-# session_live <session> <server>
-session_live() { tmux -L "$2" has-session -t "=$1" 2>/dev/null; }
+# session_live <session> <server> [host] -- rc 1 only on evidence the tmux session is gone: tmux
+# says so, or its fleet worker left the roster, so nothing could ever answer for it (reap then reads
+# its PR). A worker that does not answer, or fails some other way, cannot tell, and cannot-tell is
+# live: every reader counts its units and reap leaves it be.
+session_live() {
+  [ -n "${3:-}" ] || { tmux -L "$2" has-session -t "=$1" 2>/dev/null; return; }
+  fleet_hosts >/dev/null
+  fleet_host "$3" >/dev/null || return 1
+  fleet_host_run "$3" tmux -L "$2" has-session -t "=$1" 2>/dev/null
+  [ $? -ne 1 ]
+}
+
+# on_host <host> <command> [args...] -- run it on that fleet worker, or here when <host> is empty.
+on_host() {
+  local h="$1"; shift
+  if [ -n "$h" ]; then fleet_host_run "$h" "$@"; else "$@"; fi
+}
 
 # The env prefix that starts claude on the account claude-acct pick chooses
 # (the same choice `cl` makes); empty for the main account or when claude-acct is missing. A run
-# pass has already chosen with `claude-acct room`, and passes that account in RUN_ACCOUNT.
+# pass has already chosen from `claude-acct room --json` (acct_room), and passes that account in RUN_ACCOUNT.
 # Accounts share ~/.claude/projects, so a resumed session works from either one.
 account_dir() {
   if [ "${RUN_ACCOUNT+set}" = set ]; then printf '%s' "$RUN_ACCOUNT"; else claude-acct pick || true; fi
@@ -465,8 +517,9 @@ telemetry_env() {
 
 # item_sessions -> one line per running or waiting queue item with a session, its fields split by
 # US (0x1f, so an empty field survives `read`): slug, server, tmux session, origin, project, area,
-# state, weight, agent, started, Claude session ids. The item's `session:` is the one record of where
-# it runs, `<server>:<tmux session>` (tmux turns a ':' in a session name into '_', so one ':' splits).
+# state, weight, agent, started, Claude session ids, host. The item's `session:` is the one record of
+# where it runs, `<server>:<tmux session>` (tmux turns a ':' in a session name into '_', so one ':'
+# splits), and `host:` the fleet worker that server is on, empty for this machine.
 # An item started in a hub window records no `session:`, only the Claude sessions that worked it
 # (`sessions:`); it comes out with an empty server and session, and only reap reads it.
 item_sessions() {
@@ -476,7 +529,7 @@ item_sessions() {
     | ((.session // "") | index(":")) as $i
     | [.slug, (if $i then .session[:$i] else "" end), (if $i then .session[$i + 1:] else "" end),
        (.origin // ""), .project, (.area // ""), .state, (.weight // "light"),
-       (.agent // "claude"), (.started // ""), (.sessions // "")] | join("\u001f")' 2>/dev/null
+       (.agent // "claude"), (.started // ""), (.sessions // ""), (.host // "")] | join("\u001f")' 2>/dev/null
   return 0
 }
 
@@ -494,7 +547,9 @@ panel_lists() { [ "$1" = claude ] || [ "$(harness_launcher "$1")" = claude-lazer
 # seconds (its claude may still be booting), or a panel it cannot read or that lists nobody.
 # An item that records its session ids is alive only while one of them is on the panel; the tmux
 # session counts only for one that records none: worktree lanes are recycled, and a new Claude in
-# an old item's lane is not its session (2026-11-07 ar-255, ar-487). REAP_PANEL caches one read per pass.
+# an old item's lane is not its session (2026-11-07 ar-255, ar-487). A recorded Claude whose process
+# still runs (claude_pid_live) is alive whatever the panel lists. REAP_PANEL caches one read per pass,
+# so its verdict is one witness: reap settles on it only when the reap before also missed (reap_confirm).
 claude_gone() {
   local server="$1" sess="$2" agent="$3" started="$4" sids="$5" t
   panel_lists "$agent" || return 1
@@ -512,18 +567,60 @@ claude_gone() {
     ($ids | split(" ") | map(select(. != ""))) as $ids
     | any(.[]; if $ids != [] then (.session_id // "") as $s | $s != "" and ($ids | index($s)) != null
                else $t != "/" and ((.target // "") | sub(":[^:/]*$"; "")) == $t end)
-    | not' <<<"$REAP_PANEL" >/dev/null
+    | not' <<<"$REAP_PANEL" >/dev/null || return 1
+  [ -z "$sids" ] || ! claude_pid_live "$sids"
 }
 
-# live_runs -> "<project>/<area> <weight>" for every running session this runner started itself. A
-# hand launch or a restore is tagged and tracked like any other, but holds none of the runner's
-# units: a dozen restored sessions must not stop dispatch for the day.
+# claude_pid_live <session ids> -- exit 0 when a Claude process recorded for one of those ids is
+# running: its ~/.claude*/sessions/<pid>.json names the id, the pid is alive and not a zombie, and,
+# when the file records procStart, started when the file says, so a reused pid is not a session.
+# agent-panel is a view of those files and can leave a live Claude out; the process is what makes a
+# session gone. Each file is parsed alone, so one half-written file hides no other.
+claude_pid_live() {
+  local f pid start st
+  for f in "$HOME"/.claude*/sessions/*.json; do
+    [ -e "$f" ] || continue
+    IFS=$'\t' read -r pid start < <(jq -r --arg ids "$1" '
+      ($ids | split(" ") | map(select(. != ""))) as $ids
+      | select((.sessionId // "") as $s | .pid != null and $s != "" and ($ids | index($s)) != null)
+      | [.pid, (.procStart // "")] | @tsv' "$f" 2>/dev/null) && [ -n "$pid" ] || continue
+    st=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null) || continue
+    [ -n "$st" ] || continue
+    [ "${st%% *}" != Z ] || continue
+    [ -z "$start" ] || [ "$(cut -d' ' -f20 <<<"$st")" = "$start" ] || continue
+    return 0
+  done
+  return 1
+}
+
+# reap_confirm <slug> -- exit 0 when an earlier reap, at least DISPATCH_REAP_CONFIRM seconds before,
+# also read the item's Claude as gone (claude_gone); else record this miss and exit 1. One agent-panel
+# read is not a witness: on 2026-11-07 (ar-900) a panel at 78% CPU under load 33 left a live session
+# out, and reap failed an urgent item whose re-read a minute later listed it. A reap that does not
+# read the item gone clears its mark (reap_seen), so only consecutive misses count. The mark stays
+# once confirmed, so an item settle_item leaves active (waiting on its open PR) stays gone; it goes
+# when the item closes, and cmd_reap prunes the marks of slugs no longer active.
+reap_confirm() {
+  local f="$DIR/reap-miss/$1" first
+  first=$(cat "$f" 2>/dev/null)
+  if [ -n "$first" ]; then
+    [ $(( $(date +%s) - first )) -ge "$DISPATCH_REAP_CONFIRM" ]; return
+  fi
+  mkdir -p "${f%/*}" && date +%s > "$f"
+  logline "reap: queue item $1's Claude is not on agent-panel; a reap ${DISPATCH_REAP_CONFIRM}s or more from now settles it if it still is not"
+  return 1
+}
+reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
+
+# live_runs -> "<project>/<area> <weight>[ <host>]" for every running session this runner started
+# itself, with the fleet worker it runs on. A hand launch or a restore is tagged and tracked like any
+# other, but holds none of the runner's units: a dozen restored sessions must not stop dispatch for the day.
 live_runs() {
-  local slug server sess origin project area state weight _rest
-  while IFS=$'\x1f' read -r slug server sess origin project area state weight _rest; do
+  local slug server sess origin project area state weight _agent _started _sids host
+  while IFS=$'\x1f' read -r slug server sess origin project area state weight _agent _started _sids host; do
     [ -n "$slug" ] || continue
     case "$origin" in '' | run) ;; *) continue ;; esac
-    session_live "$sess" "$server" && printf '%s/%s %s\n' "$project" "$area" "$weight"
+    session_live "$sess" "$server" "$host" && printf '%s/%s %s%s\n' "$project" "$area" "$weight" "${host:+ $host}"
   done < <(item_sessions)
   return 0
 }
@@ -531,12 +628,16 @@ live_runs() {
 # weight_units <weight> -> the run units an item of that weight holds.
 weight_units() { [ "$1" = heavy ] && echo 2 || echo 1; }
 
-# live_units -> the run units the runner's live sessions hold, out of DISPATCH_MAX_LIVE.
-live_units() {
-  local u=0 w
-  while read -r _ w; do u=$(( u + $(weight_units "$w") )); done < <(live_runs)
+# units_on <host> < live_runs -> the run units those sessions hold on that fleet worker, or on this
+# machine when <host> is empty.
+units_on() {
+  local u=0 w h
+  while read -r _ w h; do [ -n "$w" ] && [ "$h" = "$1" ] && u=$(( u + $(weight_units "$w") )); done
   echo "$u"
 }
+
+# live_units -> the run units the runner's live sessions hold on this machine, out of DISPATCH_MAX_LIVE.
+live_units() { live_runs | units_on ''; }
 
 # floor_open -- the live run sessions, plus what this pass started, are under DISPATCH_RUN_FLOOR: the
 # weekly pace and real idle do not hold this start. Load, fleet-assess, the reserve and holds still do.
@@ -553,8 +654,8 @@ live_reds() {
   agent-queue list --json --state active 2>/dev/null | jq -r '
     select(.state != "queued" and ((.origin // "") == "" or .origin == "run"))
     | select((" " + (.tags // "") + " ") | contains(" red "))
-    | (.session // "") | select(contains(":")) | index(":") as $i | "\(.[:$i]) \(.[$i + 1:])"' 2>/dev/null |
-    while read -r server sess; do session_live "$sess" "$server" && echo "$sess"; done
+    | (.host // "") as $h | (.session // "") | select(contains(":")) | index(":") as $i | "\(.[:$i]) \(.[$i + 1:]) \($h)"' 2>/dev/null |
+    while read -r server sess host; do session_live "$sess" "$server" "$host" && echo "$sess"; done
   return 0
 }
 
@@ -569,55 +670,68 @@ red_floor_open() {
   [ $(( live + ${RED_STARTED:-0} )) -lt "$DISPATCH_RED_FLOOR" ]
 }
 
+# busy_projects -> the projects with a running or waiting queue item, one a line. A hand or plan start
+# counts too, so the project floor lifts only a project nothing is working on.
+busy_projects() {
+  agent-queue list --json --state active 2>/dev/null |
+    jq -r 'select(.state == "running" or .state == "waiting") | .project // empty' | sort -u
+  return 0
+}
+
+# idle_project_items <item json lines> -> in queue order, the light items of every project that
+# BUSY_PROJECTS (cmd_run's read before its first start) does not name: the project floor's picks. All
+# of a project's items, not its first, so a head item a finding holds does not starve the rest;
+# start_items starts one a project. Light only: real idle is the gate that keeps heavy Unity runs off.
+idle_project_items() {
+  local busy=${BUSY_PROJECTS-$(busy_projects)}
+  jq -c --arg busy "$busy" '($busy | split("\n") | map(select(. != ""))) as $b
+    | select((.weight // "light") == "light" and ((.project // "") as $p | $b | index($p) | not))' <<<"$1"
+}
+
+# project_floor_open -- a project-floor start is due past real idle: PROJECT_PASS says the start is an
+# idle project's first item (idle_project_items), and this pass's project-floor starts are under
+# DISPATCH_PROJECT_FLOOR. Load, fleet-assess, agent-hold and every account's pace and reserve still hold it.
+project_floor_open() {
+  [ "${PROJECT_PASS:-0}" = 1 ] || return 1
+  [ "${DISPATCH_PROJECT_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 1
+  [ "${PROJECT_STARTED:-0}" -lt "$DISPATCH_PROJECT_FLOOR" ]
+}
+
 # is_red <item json> -- the item carries the red tag.
 is_red() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" red "* ]]; }
 
-# acct_room -- claude-acct room for a run start, with the pace line lifted while a floor is open
-# (claude-acct still refuses an account in its reserve, its 5h window or emptied before its reset).
+# acct_room -- the account a run start may take, from claude-acct's published answer: one
+# `claude-acct room --json` a step (ACCT_ROWS holds it, local to the caller that shares it; each
+# start asks afresh, since a start moves the burn). Its pick, the best account with room; while a
+# floor is open and there is none, the best refused for its pace alone (room.reasons == ["pace"]):
+# the reserve, its 5h window and committed burn still refuse. Sets ACCT_DIR (empty for the main
+# account), ACCT_WHY (claude-acct's own refusal sentence) when none may, and ACCT_PAST_PACE=1 when
+# the start goes past an account's pace. rc 1 when none may, 2 when none may and an account cannot
+# be read, or claude-acct gave no answer.
 acct_room() {
-  if floor_open || red_floor_open; then CLAUDE_ACCT_PACE_SLACK_PCT=100 claude-acct room; else claude-acct room; fi
+  local lift=false pick unread
+  ACCT_DIR='' ACCT_WHY='' ACCT_PAST_PACE=0
+  [ -n "${ACCT_ROWS:-}" ] || ACCT_ROWS=$(claude-acct room --json 2>/dev/null)
+  if ! jq -e '.accounts | type == "array"' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
+    ACCT_ROWS='' ACCT_WHY="claude-acct room --json gave no answer"; return 2
+  fi
+  if floor_open || red_floor_open; then lift=true; fi
+  pick=$(jq -r --argjson lift "$lift" '[(.pick as $p | .accounts[] | select(.name == $p) | "0 \(.dir)"),
+      (select($lift) | .accounts | sort_by(.rank)[] | select(.room.reasons == ["pace"]) | "1 \(.dir)")]
+    | first // empty' <<<"$ACCT_ROWS")
+  if [ -n "$pick" ]; then ACCT_PAST_PACE=${pick%% *} ACCT_DIR=${pick#* }; return 0; fi
+  IFS=$'\x1f' read -r unread ACCT_WHY < <(jq -r '[any(.accounts[]; .state == "unread"), .why // "claude-acct gave no reason"]
+    | map(tostring) | join("\u001f")' <<<"$ACCT_ROWS")
+  [ "$unread" = true ] && return 2
+  return 1
 }
 
-# --- spill to Lazer: a run start past every account's cap -----------------------------------
-# When the only gate shut is account room, a pass may still start a queue item, on SPILL_HARNESS: a
-# Sonnet-lane item within the unattended tier ceiling, under DISPATCH_SPILL_MAX_LIVE live spills, with
-# the Lazer pool under DISPATCH_SPILL_POOL_PCT and budget left on the key. Load, idle, holds and the
-# rest still hold it. A spill is a run session: it holds run units like any other.
-
-# spill_live -> how many items on SPILL_HARNESS have a live session.
-spill_live() {
-  local server sess agent n=0 _s _o _p _a _st _w _rest
-  while IFS=$'\x1f' read -r _s server sess _o _p _a _st _w agent _rest; do
-    [ "$agent" = "$SPILL_HARNESS" ] && session_live "$sess" "$server" && n=$((n + 1))
-  done < <(item_sessions)
-  echo "$n"
-}
-
-# spill_shut -> why no spill may start, from this machine's own counts; nothing when one may. The
-# cap counts this pass's spills (SPILLED) on top of the live ones cmd_run read (SPILL_LIVE). A map
-# without the harness's own key_file shuts it: the fallback is the gateway's key, the eval one.
-spill_shut() {
-  [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { echo "off (DISPATCH_SANDBOX_PROFILE is set, and a Lazer start cannot hold the sandbox)"; return; }
-  [ "${DISPATCH_SPILL_MAX_LIVE:-0}" -gt 0 ] 2>/dev/null || { echo "off (DISPATCH_SPILL_MAX_LIVE=0)"; return; }
-  jq -e --arg h "$SPILL_HARNESS" '.harnesses[$h].key_file' "$HARNESSES" >/dev/null 2>&1 ||
-    { echo "unset: $HARNESSES has no $SPILL_HARNESS with its own key_file"; return; }
-  local live=$(( ${SPILL_LIVE:-$(spill_live)} + ${SPILLED:-0} ))
-  [ "$live" -lt "$DISPATCH_SPILL_MAX_LIVE" ] || echo "full: $live of DISPATCH_SPILL_MAX_LIVE=$DISPATCH_SPILL_MAX_LIVE spill sessions live"
-}
-
-# spill_note <spill_shut or spill_money reason> -> the words an account stop carries for it: none when
-# spilling is off, so an account stop reads as it did before spilling was a thing.
-spill_note() { case "$1" in '' | off*) ;; *) printf ' (spill to Lazer %s)' "$1" ;; esac; }
-
-# spill_money -> why the gateway says no spill may start; nothing when the Lazer pool is under
-# DISPATCH_SPILL_POOL_PCT of its budget and the spill key has budget left. Unreadable is shut.
-spill_money() {
-  local pct left
-  pct=$(lazer-spend --json 2>/dev/null | jq -e '.spend / .max_budget * 100 | floor' 2>/dev/null) ||
-    { echo "shut: the Lazer pool's spend is unreadable"; return; }
-  [ "$pct" -lt "$DISPATCH_SPILL_POOL_PCT" ] || { echo "shut: the Lazer pool is at $pct%, the line is DISPATCH_SPILL_POOL_PCT=$DISPATCH_SPILL_POOL_PCT%"; return; }
-  left=$(gateway_left "$SPILL_HARNESS") || { echo "shut: cannot read the $SPILL_HARNESS key's budget"; return; }
-  awk -v l="$left" 'BEGIN { exit !(l > 0) }' || echo "shut: the $SPILL_HARNESS key is spent (\$$left left)"
+# other_room -> rc 0 when a source some harness in the map spends (its `source`) has room, read from
+# the sources claude-acct room --json carries (ACCT_ROWS, which acct_room read).
+other_room() {
+  [ -r "$HARNESSES" ] && [ -n "${ACCT_ROWS:-}" ] || return 1
+  jq -e --slurpfile map "$HARNESSES" '[$map[0].harnesses[]? | .source // empty] as $s
+    | any(.sources[]?; .room.ok == true and (.name as $n | any($s[]; . == $n)))' <<<"$ACCT_ROWS" >/dev/null 2>&1
 }
 
 # item_tier <item json> -> the item's tier: what its title or task says (row_tier), else its `tier<N>`
@@ -646,23 +760,24 @@ cmd_item_tier() {
   item_tier "$it"
 }
 
-# spill_cached <slug> -> why the item may not spill, when a pass found that today; spill_refused
-# <slug> <why> records it, so later passes do not ask model-lane again for every Opus item.
-spill_cached() { awk -F'\t' -v d="$(date +%F)" -v s="$1" '$1 == d && $2 == s { print $3; exit }' "$SPILL_REFUSED" 2>/dev/null; }
-spill_refused() {
+# lane_cached <slug> -> the verdict a pass recorded today for an item no source could take;
+# lane_cache <slug> <verdict> records it, so later passes do not ask model-lane again for every
+# Opus item while only other sources have room. Only a skip reads it: a start classifies afresh.
+lane_cached() { awk -F'\t' -v d="$(date +%F)" -v s="$1" '$1 == d && $2 == s { print $3; exit }' "$LANE_CACHE" 2>/dev/null; }
+lane_cache() {
   local d; d=$(date +%F); mkdir -p "$DIR"
-  { awk -F'\t' -v d="$d" '$1 == d' "$SPILL_REFUSED" 2>/dev/null; printf '%s\t%s\t%s\n' "$d" "$1" "$2"; } > "$SPILL_REFUSED.tmp" &&
-    mv -f "$SPILL_REFUSED.tmp" "$SPILL_REFUSED"
+  { awk -F'\t' -v d="$d" -v s="$1" '$1 == d && $2 != s' "$LANE_CACHE" 2>/dev/null; printf '%s\t%s\t%s\n' "$d" "$1" "$(jq -c . <<<"$2")"; } > "$LANE_CACHE.tmp" &&
+    mv -f "$LANE_CACHE.tmp" "$LANE_CACHE"
 }
 
 # live_hand -> one line per live queue item a run slot does not hold: started by hand, redispatched
 # or resumed. They add load, which the gate reads, but no run slot.
 live_hand() {
-  local slug server sess origin project area state _weight _rest
-  while IFS=$'\x1f' read -r slug server sess origin project area state _weight _rest; do
+  local slug server sess origin project area state _weight _agent _started _sids host
+  while IFS=$'\x1f' read -r slug server sess origin project area state _weight _agent _started _sids host; do
     [ -n "$slug" ] || continue
     case "$origin" in '' | run) continue ;; esac
-    session_live "$sess" "$server" && printf '%s/%s\n' "$project" "$area"
+    session_live "$sess" "$server" "$host" && printf '%s/%s\n' "$project" "$area"
   done < <(item_sessions)
   return 0
 }
@@ -722,7 +837,7 @@ judged_keys() {
 # cleanup rows.
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
-  local x planned dj dsig plan off kind
+  local x planned dj dsig plan off kind board
   local -A DET=() PLN=() PAR=()
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
@@ -743,6 +858,8 @@ cmd_candidates() {
       active=false
       [ "${SUGGEST:-0}" = 1 ] && [ -n "$(git -C "$repo" log -1 --since=24.hours --format=%h 2>/dev/null)" ] && active=true
       for lane in human agent; do
+        board=$(rows "$prof" "$name" "$lane")
+        row_kinds_load <<<"$board"
         while IFS=$'\t' read -r key text; do
           [ -n "$key" ] || continue
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
@@ -779,7 +896,7 @@ cmd_candidates() {
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
               + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio)'
-        done < <(rows "$prof" "$name" "$lane")
+        done <<<"$board"
       done
     done < <(notes --profile "$prof" projects 2>/dev/null)
   done
@@ -792,7 +909,7 @@ cmd_candidates() {
 # call (`judge_call`, its calls.jsonl line). A row the call could not judge gets an `error` verdict
 # saying why: the call failed, the reply named no rule of the policy, or it left the row out.
 judge() {
-  local cands="$1" prompt out verdicts wd rc cid err rules missing
+  local cands="$1" prompt out verdicts wd rc cid err rules missing n rows
   [ -n "$cands" ] || return 0
   # Over the cap, each project's best-ranked row (RANK_JQ) in turn, then each one's second, and so
   # on: in rank order alone the cap re-judged the same agent-runtime rows and never reached notes-cockpit.
@@ -802,23 +919,27 @@ judge() {
   # none, so an edit costs the board's new rows nothing; a stale dispatch, the verdict that
   # acts, before a stale skip.
   rules=$(policy_rules)
-  cands=$(jq -sc --argjson prules "$rules" --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
+  cands=$(jq -sc --argjson prules "$rules" --argjson max "$DISPATCH_JUDGE_MAX" --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
       ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
       | map(. as $c | . + {stale: (($by[[.project, .lane, .key] | tostring] // {}) as $d
           | if ($d | usable($prules)) and ($d | holds($c)) then (if $d.verdict == "dispatch" then 1 else 2 end) else 0 end)})
       | rank | to_entries | group_by(.value.project)
       | map(to_entries | map({round: .key, i: .value.key, row: .value.value})) | flatten
-      | sort_by(.row.stale, .round, (.row.cleanup // 1), .i) | .[].row | del(.stale)' <<<"$cands" |
-    head -n "$DISPATCH_JUDGE_MAX")
+      | sort_by(.row.stale, .round, (.row.cleanup // 1), .i) | .[:$max][].row | del(.stale)' <<<"$cands")
   [ -r "$DISPATCH_POLICY" ] || { JUDGE_WHY="no policy at $DISPATCH_POLICY"; say "$JUDGE_WHY"; return 1; }
+  # Rows are numbered and counted: on 2026-11-07 two 40-row passes came back with 39 verdicts,
+  # each dropping one row whole (hc-122, ar-269), and a dropped row is an error verdict.
+  # The count is of the numbered lines themselves, so the two never disagree.
+  rows=$(jq -c '{project, stage, lane, key, text, tier} + (if (.row_size // "") != "" then {size: .row_size} else {} end)
+    + (if (.details // "") != "" then {details} else {} end)' <<<"$cands" | awk '{ print NR ". " $0 }')
+  n=$(grep -c . <<<"$rows")
   prompt="## Rows to judge
 
-$(jq -c '{project, stage, lane, key, text, tier} + (if (.row_size // "") != "" then {size: .row_size} else {} end)
-  + (if (.details // "") != "" then {details} else {} end)' <<<"$cands")
+$rows
 
 ## Answer
 
-For every row above, return one verdict in the structured output. Copy project, lane and key exactly as given."
+There are $n rows above. Return exactly $n verdicts in the structured output, one per numbered row, in the same order. Copy project, lane and key exactly as given."
   # The call runs in an empty directory: from inside a repo, that repo's Stop hook runs its
   # tests after the answer, and the model's last message becomes a reply to the hook instead
   # of the verdicts (2026-10-27, run from ~/.dotfiles: every pass failed on one row).
@@ -1027,7 +1148,9 @@ launch_mode() {
 # dropped_tools <item json> -- " --disallowedTools <DISPATCH_DROP_TOOLS>" for a new claude start, or
 # nothing. Those tools' schemas ride on every turn of a session that never calls them: in the 7 days
 # to 2026-11-06, Workflow had 1 call and ScheduleWakeup 43 (all /loop) across about 2,900 sessions,
-# for about 10K chars a turn. A task that names one of them, ultracode or /loop keeps every tool.
+# for about 10K chars a turn. Artifact (2026-11-07, ask OaAlhA): 11 calls a week, all from queue
+# sessions the human rarely reads, for 35K chars on the turns that carry it; the human's own
+# sessions keep it. A task that names one of them, ultracode or /loop keeps every tool.
 # It goes before --permission-mode: the flag takes a list, so the brief after it would join it.
 dropped_tools() {
   [ -n "$DISPATCH_DROP_TOOLS" ] || return 0
@@ -1069,6 +1192,13 @@ last_mode() {
   tac "$t" | grep -m1 -o '"permissionMode":"[A-Za-z]*"' | cut -d'"' -f4
 }
 
+# resume_mode <id> <item mode> -> the mode a resume reopens in: the transcript's last one, else plan
+# for a plan item (a resume must not skip its approval), else bypassPermissions.
+resume_mode() {
+  local m; m=$(last_mode "$1")
+  if [ -n "$m" ]; then echo "$m"; elif [ "$2" = plan ]; then echo plan; else echo bypassPermissions; fi
+}
+
 # start_ready <server> <session> <pane> <ready text> -- an account that never opened this folder asks "Do you
 # trust this folder?" first, defaulting to "No, exit". claude-acct trust answers it once and waits
 # for claude's mode footer.
@@ -1083,14 +1213,9 @@ harness_launcher() { jq -er --arg h "$1" '.harnesses[$h].launcher // $h' "$HARNE
 # harness_key_file <harness> -> the key file it spends: its own `key_file`, else the gateway's (the eval key).
 harness_key_file() { jq -r --arg h "$1" '(.harnesses[$h].key_file // .gateway.key_file) | sub("^~"; env.HOME)' "$HARNESSES"; }
 
-# gateway_left <harness> -> dollars left on the key that harness spends, from the gateway itself; rc 1
-# when it cannot say. The key goes in on stdin, off the process list.
-gateway_left() {
-  local file key
-  file=$(harness_key_file "$1") && key=$(cat "$file") || return 1
-  curl -fsS -m 10 -K - "$(jq -r .gateway.url "$HARNESSES")/key/info" <<<"header = \"Authorization: Bearer $key\"" 2>/dev/null |
-    jq -e '.info | .max_budget - .spend' 2>/dev/null
-}
+# harness_source <harness> -> the source its runs spend, its `source` in the map (a row of claude-acct's
+# sources file; claude-acct is the one reader of how much that source has left).
+harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESSES" 2>/dev/null; }
 
 # gateway_launch <harness> <model> <item json> <brief> -- past every refusal, set cmd to the launch
 # line, and sid to the session id an opencode run takes. Refuses (rc 2, or 1 for the budget or room) before
@@ -1098,31 +1223,33 @@ gateway_left() {
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file room
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
   id=$(jq -r --arg h "$harness" --arg m "$model" '.harnesses[$h].models[$m] // empty' "$HARNESSES")
   [ -n "$id" ] || { say "start: harness $harness has no model $model"; return 2; }
-  room=$(jq -r --arg h "$harness" '.harnesses[$h].room // empty' "$HARNESSES")
-  if [ -n "$room" ]; then
-    # A plan-billed harness has no key budget; its `room` command says whether the plan has use left.
-    left=$($room 2>&1) || { say "start: $harness has no room: $left"; return 1; }
+  # Room is claude-acct's verdict on the source the harness spends; a cloud session spends a Claude
+  # account, picked at launch, so it asks for any account with room.
+  if [ "$(harness_launcher "$harness")" = claude-cloud ]; then
+    left=$(claude-acct room --json 2>&1)
+    jq -e '.pick != null' <<<"$left" >/dev/null 2>&1 || { say "start: $harness has no room: $(jq -r '.why // empty' <<<"$left" 2>/dev/null)"; return 1; }
   else
-    left=$(gateway_left "$harness") || { say "start: cannot read the $harness key's budget from the gateway"; return 1; }
-    awk -v l="$left" 'BEGIN { exit !(l > 0) }' || { say "start: the $harness key is spent (\$$left left)"; return 1; }
+    src=$(harness_source "$harness")
+    [ -n "$src" ] || { say "start: harness $harness has no source in $HARNESSES"; return 2; }
+    left=$(claude-acct room --source "$src" 2>&1) || { say "start: $harness has no room: $left"; return 1; }
   fi
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")
+  ! headless "$harness" || [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: $harness runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
   case "$(harness_launcher "$harness")" in
     claude-lazer)
       launch_mode "$(jq -r 'if .mode == "plan" then "plan" else "bypassPermissions" end' <<<"$it")"
-      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") $(telemetry_env "$cwd" "$slug")env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY=$(printf '%q' "$file")"
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") $(telemetry_env "$cwd" "$slug")env -u CLAUDE_CONFIG_DIR -u LITELLM_MASTER_KEY CLAUDE_LAZER_KEY=$(printf '%q' "$file") AGENT_HARNESS=$(printf '%q' "$harness")"
       sid=$(new_sid) || { say "start: no session id for queue item $slug; it stays queued"; return 1; }
       cmd="$cmd ANTHROPIC_CUSTOM_HEADERS=$(printf '%q' "x-litellm-tags: queue:$slug") claude-lazer --model $(printf '%q' "$id") --session-id $sid $flags $(printf '%q' "$brief")"
       ;;
     opencode)
-      [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: opencode runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
       # Standalone: the background service would not see this run's env or config. Nothing else
       # can name the run for the outcome join, so the id is chosen here.
       sid="ses_eval$(date +%s%N)"
@@ -1131,19 +1258,48 @@ gateway_launch() {
       cmd="$cmd --title $(printf '%q' "$slug") --model $(printf '%q' "$id") --agent build $(printf '%q' "$brief") </dev/null"
       ;;
     codex)
-      [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: codex runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
       # The ChatGPT login bills the plan; an API key in the pane's env would bill per token instead.
       # agent-codex claims the thread id on the item when codex names it.
       cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") env -u LITELLM_MASTER_KEY -u OPENAI_API_KEY -u CODEX_API_KEY"
       cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m agent-codex run -m $(printf '%q' "$id")"
       cmd="$cmd --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --color never $(printf '%q' "$brief")"
       ;;
+    claude-cloud)
+      # A Claude cloud session: a fresh GitHub clone on Anthropic's VM, billed to the plan, with none of
+      # this machine's skills, hooks or queue. So only an oneshot item below tier 3 may go, and only
+      # from a GitHub repo; claude-cloud-run keeps the pane until the session's PR is found.
+      [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: a cloud session cannot wait on a plan; $slug is a plan item"; return 2; }
+      [ "$(item_tier "$it")" != 3 ] || { say "start: $slug is tier 3, which merges behind a local gate a cloud session lacks"; return 2; }
+      repo=$(cloud_repo "$cwd") || { say "start: $slug has no GitHub repo for a cloud session to clone: $cwd"; return 2; }
+      # acct is cmd_start's (dynamic scope): the claude account this session bills, recorded as account=.
+      dir=$(account_dir); acct=$(basename "${dir:-main}")
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") $(account_env "$dir")CLOUD_TIMEOUT_MIN=$(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")"
+      cmd="$cmd claude-cloud-run $(printf '%q' "$slug") $(printf '%q' "$repo") $(printf '%q' "$brief")"
+      ;;
     *) say "start: no launcher for harness $harness"; return 2 ;;
   esac
 }
 
-# headless <harness> -- the harness runs to its end with no slash commands, hooks or human at the pane.
-headless() { case "$(harness_launcher "$1")" in opencode|codex) return 0 ;; esac; return 1; }
+# cloud_repo <dir> -> owner/repo of the GitHub remote a cloud session would clone; rc 1 for any other host.
+cloud_repo() {
+  local url; url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
+  [[ "$url" == *github.com[:/]* ]] || return 1
+  url=${url#*github.com[:/]}; url=${url%.git}
+  [[ "$url" == */* && "$url" != */*/* ]] && printf '%s\n' "$url"
+}
+
+# cloud_routed <slug> -> rc 0 when the queued item is a claude one tagged cloud-ok, which runs in a cloud
+# session: the tag is the human's word that it is self-contained, on GitHub, and needs no local skill.
+# An item that names another model (agent: codex, model: opus) is not routed: the cloud has one model.
+# agent=claude-cloud is what a start recorded, so a re-queued item routes again.
+cloud_routed() {
+  agent-queue show "$1" --json 2>/dev/null |
+    jq -e '((.agent // "claude") | . == "claude" or . == "claude-cloud") and ((.model // "") | . == "" or . == "cloud") and ((" " + (.tags // "") + " ") | contains(" cloud-ok "))' >/dev/null 2>&1
+}
+
+# headless <harness> -- the harness runs to its end with no slash commands, hooks or human at the pane:
+# its `headless` in the map.
+headless() { jq -e --arg h "$1" '.harnesses[$h].headless == true' "$HARNESSES" >/dev/null 2>&1; }
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on
@@ -1153,24 +1309,29 @@ headless() { case "$(harness_launcher "$1")" in opencode|codex) return 0 ;; esac
 # which the human had to ask about twice.
 #   --item SLUG             start that queued item: a worktree off --cwd (default: the project's
 #                           repo) with `wt new`, claude on the item's brief there.
+#   --host NAME             with --item: open it on that fleet worker (fleet-hosts.sh) over ssh, not here.
+#                           Claude only, in a repo the worker lists (fleet_repos), unsandboxed; its
+#                           queue and ask writes go to the inventory's fleet_state_host (AGENT_STATE_HOST).
 #   --harness NAME          with --item: run it on claude or a gateway harness in harnesses.json, not
 #                           the item's `agent:`: claude-lazer and opencode on the eval key, codex on the ChatGPT plan, lazer-reserve
-#                           (a run pass's spill) on the claude-reserve key.
+#                           on the claude-reserve key (where a run pass routes a Sonnet-lane item, start_item).
 #   --brief FILE --row KEY  claim the open row (an id in any case), promote it into a queue item with the brief as
 #                           its task, and start that item as --item does.
 #   --resume ID             a new session --session NAME in --cwd DIR running claude --resume.
 #                           The sheet is not touched: the row was claimed before the reboot.
-#                           --item SLUG re-attaches the started item that session was working.
+#                           --item SLUG re-attaches the started item that session was working;
+#                           without it, the running or waiting item that lists ID (`agent-queue mine --sid`).
 #                           --window NAME opens it as a window of --session instead, which may
 #                           already hold others: a world session like hub:dotfiles.
-#                           It reopens in the mode its transcript last shows, bypass when none.
+#                           It reopens in the mode its transcript last shows; with none, plan for
+#                           a plan item, else bypass.
 cmd_start() {
   local project='' prof='' lane=human key='' server='' model='' brief_file='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' brief cmd label origin acct mode rec size
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
-      --project | --profile | --row | --server | --model | --brief | --resume | --cwd | --session | --window | --area | --item | --harness) ;;
+      --project | --profile | --row | --server | --model | --brief | --resume | --cwd | --session | --window | --area | --item | --harness | --host) ;;
       *) say "start: unknown argument: $1"; return 2 ;;
     esac
     [ $# -ge 2 ] && [ -n "$2" ] || { say "start: $1 needs a value"; return 2; }
@@ -1188,11 +1349,21 @@ cmd_start() {
       --area) area=$2 ;;
       --item) item=$2 ;;
       --harness) harness=$2 ;;
+      --host) host=$2 ;;
     esac
     shift 2
   done
   [ -z "$harness" ] || [ -z "$resume" ] || { say "start: --harness starts an item; a resume stays on what it ran"; return 2; }
   [ -z "$harness" ] || [ -n "$item" ] || { say "start: --harness needs --item"; return 2; }
+  if [ -n "$host" ]; then
+    [ -n "$item" ] && [ -z "$resume$brief_file" ] || { say "start: --host starts a queued --item"; return 2; }
+    [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: a fleet worker cannot hold lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
+    fleet_hosts >/dev/null
+    hjson=$(fleet_host "$host") || { say "start: $host is not in the fleet roster ($FLEET_HOSTS_GROUP)"; return 2; }
+    state_env=$(jq -r .state_host <<<"$hjson")
+    [ -n "$state_env" ] || { say "start: $host has no fleet_state_host, so its session could not write the queue"; return 2; }
+    state_env="AGENT_STATE_HOST=$(printf '%q' "$state_env") "
+  fi
   # A new session goes where the manifests say; --server only puts a resume back where it was.
   [ -z "$server" ] || [ -n "$resume" ] || { say "start: --server is for --resume; the agent world comes from the manifests"; return 2; }
   [ -n "$server" ] || server=$(tmux-world agents)
@@ -1213,7 +1384,17 @@ cmd_start() {
     say "start: give exactly one of --brief, --item or --resume"
     return 2
   fi
+  if [ -n "$resume" ]; then
+    # One writer per transcript: a second claude on a live conversation would also take its item.
+    ! conversation_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
+    # A resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM too.
+    if [ -z "$item" ]; then
+      item=$(agent-queue mine --sid "$resume" 2>&1)
+      case $? in 0) ;; 2) say "start: ${item#agent-queue: }; pass --item"; return 1 ;; *) item='' ;; esac
+    fi
+  fi
   if [ -n "$item" ] && [ -z "$resume" ]; then
+    [ -n "$harness" ] || [ -n "$model" ] || ! cloud_routed "$item" || harness=claude-cloud
     # Before the lock: model-lane may ask an LLM (20s timeout), and another start must not wait on it.
     verdict=${START_VERDICT:-}; [ -n "$verdict" ] || [ -n "$model" ] || verdict=$(lane_pick "$item" "$harness")
     # One start of a queue item at a time, from the queued check until the item is running: on
@@ -1249,8 +1430,7 @@ cmd_start() {
       joined=1
     fi
     origin=${START_ORIGIN:-resume}
-    mode=$(last_mode "$resume")
-    launch_mode "${mode:-bypassPermissions}"
+    launch_mode "$(resume_mode "$resume" "$(jq -r '.mode // empty' <<<"${it:-null}")")"
     lane_sandbox "$cwd" || return 1
     cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
     if [ -n "$joined" ]; then
@@ -1271,37 +1451,45 @@ cmd_start() {
     [ -n "$cwd" ] && [ -d "$cwd" ] || { say "start: no repo to cut a worktree from for $project (--cwd)"; return 2; }
     origin=${START_ORIGIN:-hand}
     [ -n "$harness" ] || harness=$(jq -r '.agent // "claude"' <<<"$it")
+    [ -z "$host" ] || [ "$harness" = claude ] || { say "start: $item would run on $harness; a fleet worker runs claude only"; return 2; }
+    [ -z "$host" ] || jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
+      { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
     if [ "$harness" = claude ]; then
       [ -n "$model" ] || model=$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)
       model=${model:-opus}
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
       sid=$(new_sid) || { say "start: no session id for queue item $item; it stays queued"; return 1; }
       lane_sandbox "$cwd" || return 1
-      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$(dropped_tools "$it") --session-id $sid$sbx_flags"
+      cmd="${state_env}AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$(dropped_tools "$it") --session-id $sid$sbx_flags"
       [ "$mode" = plan ] || mode=bypassPermissions
       launch_mode "$mode"
       cmd="$cmd $flags $(printf '%q' "$(item_brief "$it")")"
-      acct=$(basename "${acct:-main}"); on=$acct${DISPATCH_SANDBOX_PROFILE:+, sandbox $DISPATCH_SANDBOX_PROFILE}
+      acct=$(basename "${acct:-main}"); on=$acct${DISPATCH_SANDBOX_PROFILE:+, sandbox $DISPATCH_SANDBOX_PROFILE}${host:+, host $host}
     else
       # Only a claude start is held to the profile: the other launchers have no flag for it, and running
       # one open while the knob says every session is sandboxed is the failure the knob prevents.
       [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: $item would run on $harness, which cannot enforce lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
       [ -n "$model" ] || model=$(jq -r '.model // empty' <<<"$it")
+      # A cloud session's model is its environment's, so the map's one entry stands for it.
+      [ "$(harness_launcher "$harness")" != claude-cloud ] || model=${model:-cloud}
       gateway_launch "$harness" "$model" "$it" "$(item_brief "$it" "$harness")" || return
-      # What the run bills: the map's `account` for a plan login (codex: chatgpt), else the gateway key.
-      acct=$(jq -r --arg h "$harness" '.harnesses[$h].account // "gateway"' "$HARNESSES") on=$harness
+      # What the run bills: the source the map names for the harness; a cloud session bills the claude
+      # account gateway_launch chose (acct).
+      [ "$(harness_launcher "$harness")" = claude-cloud ] || acct=$(harness_source "$harness")
+      on=$harness
     fi
-    session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new --server "$server" --detach -c "$cwd" | tail -1)
+    session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new ${host:+--host "$host"} --server "$server" --detach -c "$cwd" | tail -1)
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     size=$(item_size "$it")
-    agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} >/dev/null &&
+    agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} ${host:+"host=$host"} >/dev/null &&
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
     # The id was chosen above, so the claim is made here and not in the session's own start, where
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
     if [ "$harness" = claude ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model"
-    # A run pass's spill is not an experiment: it logs under the lane model-lane picked, with its harness.
-    elif [ "$origin" = run ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model" "$harness"
+    # A routed start is not an experiment: it logs under the lane model-lane picked, with its harness.
+    elif [ -n "$verdict" ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model" "$harness"
+    elif [ "$harness" = claude-cloud ]; then :   # not a pairing the human picked, and no model of ours ran
     else eval_log "$item" "$(item_headline "$it")" "$harness" "$model"
     fi
     dispatch_event started "$project" "$(item_headline "$it")" --item "$item" --to "$server:$session" --why "$model on $on"
@@ -1312,9 +1500,9 @@ cmd_start() {
   label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
   # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
   # A session this only joined keeps what it was: the label is for a session an agent started.
-  [ -n "$joined" ] || tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
+  [ -n "$joined" ] || on_host "$host" tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
     say "could not tag $session with @dispatch"
-  logline "started $session on $server ($origin) for $project: ${item:+queue item $item}${resume:+${item:+, }resume $resume}"
+  logline "started $session on $server${host:+ at $host} ($origin) for $project: ${item:+queue item $item}${resume:+${item:+, }resume $resume}"
   echo "started $session: $label"
 }
 
@@ -1395,9 +1583,8 @@ restore_world() {
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
     if conversation_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
     if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
-    mode=$(last_mode "$id")
-    mode=${mode:-bypassPermissions}
     item=$(agent-queue mine --sid "$id" 2>/dev/null) || item=''
+    mode=$(resume_mode "$id" "$([ -z "$item" ] || agent-queue show "$item" --json 2>/dev/null | jq -r '.mode // empty')")
     if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}"; continue; fi
     project=$(resolve_project_name "$cwd")
     if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
@@ -1449,6 +1636,16 @@ item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
   if [[ "$tags" == *" canary "* ]]; then jq -r .task <<<"$it"; return 0; fi
+  if [ "$harness" = claude-cloud ]; then
+    key=$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")
+    jq -r .task <<<"$it"
+    echo
+    echo "This runs in a Claude Code cloud session on a fresh clone of the repo: no local skills, hooks, agent-queue or agent-land. Follow the repo's own CLAUDE.md and tooling."
+    echo "Work on a new branch, run the repo's own tests for what you changed, push, and open a pull request. Never merge it."
+    echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}: fleet-dispatch finds the PR by that line, and the human's merge closes the item."
+    echo "If a step needs a decision from the human, put the question in the PR body, build the rest with that step off, and end the session."
+    return 0
+  fi
   [[ "$tags" == *" night "* ]] && pr_only=' --pr-only'
   load_kinds
   kind=$(jq -r '.type // empty' <<<"$it"); [ -n "$kind" ] || kind=$(row_kind "$(jq -r '.title // .task // ""' <<<"$it")")
@@ -1550,7 +1747,7 @@ item_row() {
 
 # close_row <slug> -- an item with a row, done ok, whose row is still started: the session died before
 # agent-land closed it, or closed the item before its PR merged (land_orphan). Closed only on merge proof (agent-merge-proof.sh) of the item's
-# merged: commit in the project's checkout, with proof "pr:<N> commit:<sha12>"; with no proof the
+# merged: commit in the checkout of the repo its PR names, with proof "pr:<N> commit:<sha12>"; with no proof the
 # row is left started and the reason logged, so a false close never happens.
 close_row() {
   local it row prof project lane key flag=() oid pr dir out
@@ -1559,10 +1756,11 @@ close_row() {
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
   [ "$lane" = agent ] && flag=(--agent)
   [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || return 0
-  oid=$(jq -r '.merged // empty' <<<"$it"); pr=$(jq -r '.pr // empty' <<<"$it")
-  dir=$(repo_dir "$project")
+  # The row closes on the item's first PR: pr: and merged: are lists in step, one PR per repo.
+  oid=$(jq -r '.merged // "" | split(" ")[0] // empty' <<<"$it"); pr=$(jq -r '.pr // "" | split(" ")[0] // empty' <<<"$it")
+  dir=$(pr_repo_dir "$pr" "$project")
   if [ -z "$oid" ] || [ -z "$dir" ] || ! out=$(merge_proof "$dir" "${pr##*#}" "$(merge_proof_branch "$dir")" "$oid" 2>&1); then
-    logline "queue item $1: $project row left started, no merge proof: ${out:-no merged commit or checkout}"
+    logline "queue item $1: $project row left started, no merge proof: ${out:-${oid:+no checkout of the repo $pr names}${oid:-no merged commit}}"
     return 0
   fi
   np "$prof" ptask "$project" "${flag[@]}" done "$key" --proof "pr:${pr##*#} commit:${oid:0:12}" >/dev/null 2>&1 ||
@@ -1745,6 +1943,14 @@ run_queue() {
       RED_PASS=1; start_items "$(jq -c 'select((" " + (.tags // "") + " ") | contains(" red "))' <<<"$items")" "$2"
       local rc=$?; RED_PASS=0; return "$rc"
     fi
+    # A project nothing is working on may start one item past real idle: one busy
+    # project cannot hold every other project's work behind the idle floor.
+    local idle_items; idle_items=$(idle_project_items "$items")
+    if [ -n "$idle_items" ] && PROJECT_PASS=1 project_floor_open && [ -z "$(PROJECT_PASS=1 gate)" ]; then
+      say "$why; a project nothing is working on starts on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"
+      PROJECT_PASS=1; start_items "$idle_items" "$2"
+      local prc=$?; PROJECT_PASS=0; return "$prc"
+    fi
     settle "$(held_outcome "$why")" "$why, queue item $(jq -r .slug <<<"$head") waits"
     [ "$DRY" = 1 ] || return 0
   fi
@@ -1778,20 +1984,26 @@ start_items() {
     [ "$rc" -ne 5 ] || continue
     [ "$rc" -eq 0 ] && STARTED=$(( ${STARTED:-0} + 1 ))
     [ "$rc" -eq 0 ] && is_red "$PICKED" && RED_STARTED=$(( ${RED_STARTED:-0} + 1 ))
+    if [ "$rc" -eq 0 ] && [ "${PROJECT_PASS:-0}" = 1 ]; then
+      PROJECT_STARTED=$(( ${PROJECT_STARTED:-0} + 1 ))
+      items=$(jq -c --arg p "$(jq -r '.project // ""' <<<"$PICKED")" 'select((.project // "") != $p)' <<<"$items")
+    fi
     if [ "$rc" -eq 0 ] && [[ "$(jq -r '.from // ""' <<<"$PICKED")" == board:* ]] && human_here; then
       left=${PRESENT_LEFT:-$(present_left)}
       [ "$DRY" = 1 ] || logline "present start: queue item $(jq -r .slug <<<"$PICKED") (DISPATCH_PRESENT_PER_HOUR=$DISPATCH_PRESENT_PER_HOUR)"
       PRESENT_LEFT=$(( left - 1 ))
       [ "$PRESENT_LEFT" -gt 0 ] || items=$(jq -c 'select(.from // "" | startswith("board:") | not)' <<<"$items")
     fi
-    [ "$rc" -eq 0 ] && UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
+    if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( HOST_FREE[$PLACE_HOST] - 1 ))
+    elif [ "$rc" -eq 0 ]; then UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
+    fi
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
-  # No account had room and nothing it tried may spill: held, so BLOCKED, naming what it tried.
-  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_SPILL[@]}" -gt 0 ]; then
-    why=$(printf '%s, ' "${NO_SPILL[@]:0:3}")
-    [ "${#NO_SPILL[@]}" -le 3 ] || why="$why$(( ${#NO_SPILL[@]} - 3 )) more, "
-    settle BLOCKED "$NO_ROOM, and no queue item may spill to Lazer: ${why%, }"
+  # No item it tried had a source with room it may run on: held, so BLOCKED, naming what it tried.
+  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_ROUTE[@]}" -gt 0 ]; then
+    why=$(printf '%s, ' "${NO_ROUTE[@]:0:3}")
+    [ "${#NO_ROUTE[@]}" -le 3 ] || why="$why$(( ${#NO_ROUTE[@]} - 3 )) more, "
+    settle BLOCKED "${NO_ROOM:+$NO_ROOM, and }no queue item has a source with room it may run on: ${why%, }"
     return 0
   fi
   # Every item this pass picked was started by someone else: the work moved, nothing failed.
@@ -1811,12 +2023,10 @@ start_items() {
 held_outcome() { case "$1" in "held (agent-hold"*) echo NOOP ;; *) echo BLOCKED ;; esac; }
 
 # What a start takes out of runnable, as a jq condition: next_items and stats' urgent/high counts read it.
-TAKEN_JQ='(.waits | not) and (.agent // "claude") == "claude"'
+TAKEN_JQ='(.waits | not)'
 
-# next_items -> the queued items a pass may try, in agent-queue's order (red, priority, cleanup, age),
-# one JSON object a line. An item whose `agent:` is a gateway harness is an eval run the human paired,
-# so only a hand or a batch starts it; a pass moves a claude item onto Lazer only as a spill, when no
-# account has room (start_item).
+# next_items -> the queued items a pass may try, in agent-queue's order (red, priority, project rank, cleanup, age),
+# one JSON object a line, whatever harness each runs on: start_item routes it to a source with room.
 next_items() {
   runnable 2>/dev/null | jq -c "select($TAKEN_JQ)" 2>/dev/null
   return 0
@@ -1831,28 +2041,192 @@ load_findings() {
   FIRING=$f
 }
 
-# pick_item <item json lines> -- PICKED is the first item that fits in UNITS_FREE and no firing
-# finding holds; rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be
-# read. PICK_FULL is 1 when units alone held them all.
+# pick_item <item json lines> -- PICKED is the first item that has a place and no firing finding
+# holds; rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
+# The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
+# go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
+# PLACE_HOST. PICK_FULL is 1 when units alone held them all.
 pick_item() {
-  local items="$1" it why need held=()
-  PICKED='' PICK_WHY='' PICK_FULL=1
+  local items="$1" it why need free host mwhy='' mread=0 fhit=0 held=()
+  PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST=''
   load_findings || { PICK_WHY="fleet-bench findings unreadable"; PICK_FULL=0; return 1; }
+  free=${UNITS_FREE:-$DISPATCH_MAX_LIVE}
   while IFS= read -r it; do
     [ -n "$it" ] || continue
     need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
-    if [ "$need" -gt "${UNITS_FREE:-$DISPATCH_MAX_LIVE}" ]; then
-      why="heavy needs $need run units, ${UNITS_FREE:-$DISPATCH_MAX_LIVE} free"
-    else
-      why=$(held_by "$it" "$FIRING"); [ -z "$why" ] || PICK_FULL=0
+    host='' why=''
+    if [ "$need" -le "$free" ] && { [ ${#HOST_PROBE[@]} -eq 0 ] || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then :
+    elif host=$(place_host "$it"); then :
+    elif [ "$need" -gt "$free" ]; then why="$([ "$need" -gt 1 ] && echo heavy || echo light) needs $need run units, $free free"
+    else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0
     fi
-    if [ -z "$why" ]; then PICKED=$it; return 0; fi
+    if [ -z "$why" ]; then why=$(held_by "$it" "$FIRING"); [ -z "$why" ] || { PICK_FULL=0; fhit=1; }; fi
+    if [ -z "$why" ]; then PICKED=$it PLACE_HOST=$host; return 0; fi
     [ "$DRY" = 0 ] || say "queue item $(jq -r .slug <<<"$it") waits: $why"
     held+=("$(jq -r .slug <<<"$it") ($why)")
   done <<<"$items"
   if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"
-  else PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"; fi
+  elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"
+  else PICK_WHY="machine pace: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }every queue item waits"; fi
   return 1
+}
+
+# --- fleet workers (fleet-hosts.sh): where a pass may place a session besides this machine --------
+
+# The roster is fleet_hosts (home-config's inventory, or FLEET_INVENTORY). With none, every pass
+# runs as it does with no workers.
+
+# probe_hosts <live_runs> -- one ssh to each placed worker (fleet_place) for its load, its cores, and
+# whether wt and claude are on its PATH and its agent-queue forwards (an older one would write the
+# queue on the worker): HOST_PROBE[<name>] is "<load> <cores> <ready 0|1>", or
+# "unreachable". HOST_FREE[<name>] is its fleet_max_live less the run units its live sessions hold,
+# and start_items takes each start there off it. HOST_POWER[<name>] is its fleet_power. Read once a
+# pass, before the gates, so every gate and pick in it reads the same numbers: a gate runs in a
+# subshell and cannot write back.
+declare -A HOST_PROBE=() HOST_FREE=() HOST_POWER=()
+probe_hosts() {
+  local name place max power out
+  HOST_PROBE=() HOST_FREE=() HOST_POWER=()
+  fleet_hosts >/dev/null
+  while IFS=$'\t' read -r name place max power; do
+    [ "$place" = true ] || continue
+    HOST_POWER[$name]=$power
+    HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$1") ))
+    # shellcheck disable=SC2016 # the worker's shell expands nothing here; the quotes are for cut
+    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && grep -qs state_forward "$(readlink -f "$(command -v agent-queue)")" && echo 1 || echo 0' 2>/dev/null); then
+      HOST_PROBE[$name]=$(tr '\n' ' ' <<<"$out")
+    else
+      HOST_PROBE[$name]=unreachable
+    fi
+  done < <(fleet_hosts | jq -r '[.name, .place, .max_live, .power] | @tsv')
+}
+
+# host_why <name> -> why that worker takes no session now, or nothing. Its pace is this runner's
+# (MAX_LOAD) over its own load and cores; its units are its own fleet_max_live.
+host_why() {
+  local p="${HOST_PROBE[$1]:-}" load cores ready
+  [ -n "$p" ] || { echo "$1 is not placed (fleet_place false, or not in $FLEET_HOSTS_GROUP)"; return; }
+  if [ "$p" = unreachable ]; then
+    echo "$1 did not answer over ssh${HOST_POWER[$1]:+${HOST_POWER[$1]/#governor/: off or booting (the ci-runner-governor starts it on demand), or its tailnet is down}}"
+    return
+  fi
+  [ "${HOST_FREE[$1]:-0}" -gt 0 ] || { echo "$1 is at its fleet_max_live"; return; }
+  read -r load cores ready <<<"$p"
+  [ "$ready" = 1 ] || { echo "$1 has no wt, no claude, or an agent-queue that does not forward"; return; }
+  over_pace "$load" "${cores:-1}" && echo "$1: load $load on $cores cores is over the $MAX_LOAD pace"
+  return 0
+}
+
+# remote_open -- some fleet worker takes a session now.
+remote_open() {
+  local n
+  for n in "${!HOST_PROBE[@]}"; do [ -n "$(host_why "$n")" ] || return 0; done
+  return 1
+}
+
+# host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
+# light claude item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos).
+# Heavy work (Unity), plans and other harnesses stay here: a worker is provisioned for light claude
+# sessions. Roster order, a worker the governor powers last: it costs money while it runs.
+host_takers() {
+  local dir
+  jq -e '(.weight // "light") == "light" and (.agent // "claude") == "claude" and (.plan // "") == ""
+    and ((" " + (.tags // "") + " ") | contains(" cloud-ok ") | not)' <<<"$1" >/dev/null || return 0
+  dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
+  fleet_hosts | jq -sr --arg d "$dir" 'map(select(.repos | index($d))) | sort_by(.power == "governor") | .[].name'
+}
+
+# place_host <item json> -> the first worker host_takers names that takes a session now.
+place_host() {
+  local name
+  [ ${#HOST_PROBE[@]} -gt 0 ] || return 1
+  while IFS= read -r name; do
+    [ -n "${HOST_PROBE[$name]:-}" ] && [ -z "$(host_why "$name")" ] && { echo "$name"; return 0; }
+  done < <(host_takers "$1")
+  return 1
+}
+
+# --- cloud workers: the demand the ci-runner-governor starts them on ---------------------------
+
+# demand_pass <live_runs> -- for each placed worker the governor powers (fleet_power: governor),
+# write the demand this pass has for it into the "<host>.demand" key of the governor's override
+# ConfigMap: the run units its sessions hold, plus the waiting items it would take, at most its
+# fleet_max_live. Each waiting item counts once, for the first place that takes it in the order
+# pick_item uses: this machine's free units while its own pace is open, then an open home worker,
+# then a powered one with room. Nothing counts while another gate is closed or a finding holds the
+# item: a box started into a closed gate would run for nothing. Each key ends DISPATCH_DEMAND_TTL
+# from now, so a dispatcher that stops writing lets the governor stop the box. The governor side:
+# home-config apps/ci-runner-governor/governor.py, the "workers" paragraph.
+demand_pass() {
+  local name it t takers took why='' here=0 need data='{}' says=() live
+  local -A cap=() want=()
+  for name in "${!HOST_POWER[@]}"; do
+    [ "${HOST_POWER[$name]}" = governor ] && want[$name]=0
+  done
+  [ ${#want[@]} -gt 0 ] || return 0
+  if why=$(GATE_NO_MACHINE=1 gate) && [ -n "$why" ]; then :
+  elif ! load_findings; then why="fleet-bench findings unreadable"
+  fi
+  if [ -z "$why" ]; then
+    [ "$UNITS_FREE" -le 0 ] || [ -n "$(machine_why)" ] || here=$UNITS_FREE
+    for name in "${!HOST_FREE[@]}"; do cap[$name]=${HOST_FREE[$name]}; done
+    while IFS= read -r it; do
+      [ -n "$it" ] && [ -z "$(held_by "$it" "$FIRING")" ] || continue
+      need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
+      if [ "$need" -le "$here" ]; then here=$(( here - need )); continue; fi
+      takers=$(host_takers "$it")
+      while IFS= read -r t; do
+        [ -n "$t" ] && [ "${cap[$t]:-0}" -gt 0 ] || continue
+        [ -n "${want[$t]+x}" ] || [ -z "$(host_why "$t")" ] || continue
+        cap[$t]=$(( cap[$t] - 1 ))
+        [ -z "${want[$t]+x}" ] || want[$t]=$(( want[$t] + 1 ))
+        break
+      done <<<"$takers"
+    done < <(next_items)
+  fi
+  for name in "${!want[@]}"; do
+    live=$(units_on "$name" <<<"$1")
+    data=$(jq -c --arg k "$name.demand" --argjson d "$(( live + want[$name] ))" --argjson u "$(( $(date +%s) + DISPATCH_DEMAND_TTL ))" \
+      '.[$k] = ({demand: $d, until: $u} | tojson)' <<<"$data")
+    says+=("$(( live + want[$name] )) for $name ($live live, ${want[$name]} waiting${why:+, none counted: $why})")
+  done
+  took=$(printf '%s; ' "${says[@]}"); demand_write "$data" "${took%; }"
+}
+
+# demand_write <data json> <what> -- merge-patch those keys into the governor's override ConfigMap,
+# one call for every worker, so no other key moves (machine-mode's pin, agent-web's override); the
+# ConfigMap is made when missing, and patched after all when another writer made it first. A dry
+# run says what it would write.
+demand_write() {
+  local ctx out ok=0 try k=() lits=()
+  [ "$DRY" = 0 ] || { say "would write demand $2"; return 0; }
+  # shellcheck source=/dev/null
+  ctx=${CC_KUBE_CONTEXT:-$(. "$DISPATCH_KUBE_ENV" 2>/dev/null; printf '%s' "${CC_KUBE_CONTEXT:-}")}
+  [ -n "$ctx" ] || { say "demand $2 unwritten: no CC_KUBE_CONTEXT in $DISPATCH_KUBE_ENV"; return 0; }
+  k=(kubectl --context "$ctx" --request-timeout=10s -n monitoring)
+  mapfile -t lits < <(jq -r 'to_entries[] | "--from-literal=\(.key)=\(.value)"' <<<"$1")
+  for try in 1 2; do
+    out=$("${k[@]}" patch configmap ci-runner-governor-override --type merge -p "$(jq -c '{data: .}' <<<"$1")" 2>&1) && { ok=1; break; }
+    [ "$try" = 1 ] && [[ "$out" == *NotFound* ]] || break
+    out=$("${k[@]}" create configmap ci-runner-governor-override "${lits[@]}" 2>&1) && { ok=1; break; }
+    [[ "$out" == *AlreadyExists* ]] || break
+  done
+  if [ "$ok" = 1 ]; then say "demand $2"; else say "demand $2 unwritten: $(tail -n 1 <<<"$out")"; fi
+}
+
+# cmd_hosts [--json] -- each worker in the roster, as a pass would read it now.
+cmd_hosts() {
+  local h name rows=()
+  probe_hosts "$(live_runs)"
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    name=$(jq -r .name <<<"$h")
+    rows+=("$(jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" \
+      '{name, dest, place, max_live, free: ($f | tonumber? // null), probe: $p, why: $w, repos, power}' <<<"$h")")
+  done < <(fleet_hosts)
+  [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
+  if [ "${1:-}" = --json ]; then printf '%s\n' "${rows[@]}"
+  else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)"'; fi
 }
 
 # item_repo <project> -> the repo name its code is pushed to, the runner exporter's `repo` label
@@ -1947,68 +2321,111 @@ eval_log() {
   agent-queue set "$1" "lane_run=$id" >/dev/null || logline "could not stamp lane_run=$id on queue item $1"
 }
 
-# start_item <item json> -- past the gates: start it, and publish what happened. rc 3 when no
-# account has room and no spill may start, which ends the pass: the next item would find none
-# either. rc 4 when another start (a hand start, say) took the item first: that is not a failed
-# launch, and the pass goes on. rc 5 when no account has room and this item may not spill (an Opus
-# lane, a tier past the ceiling): the pass goes on to the next item, which may.
+# item_pinned <item json> -- rc 0 when the human pinned the item to a harness: an `agent:` other than
+# claude (or claude-cloud, which cloud_routed reads) that no route recorded (`routed:`, start_item), so a
+# requeued routed item routes again.
+item_pinned() {
+  jq -e '(.agent // "claude") as $a | ($a != "claude" and $a != "claude-cloud" and $a != (.routed // ""))' <<<"$1" >/dev/null 2>&1
+}
+
+# route <item json> <verdict json, or empty> -- the candidate a run start takes: ROUTE_HARNESS and
+# ROUTE_MODEL (empty for claude, which runs the verdict's model), or rc 1 with every refusal in
+# ROUTE_WHY. A pinned item's harness is its one candidate; an item with no verdict candidates runs on
+# claude. Candidates go in fit order and, within a fit, by their source's rank, lowest first (use it or
+# lose it): claude's is the rank of the account acct_room picked (its rc in the caller's ACCT_RC), every
+# other's the rank of its source in ACCT_ROWS. Claude needs an account with room. Another harness needs
+# its source's room, this machine (a fleet worker and a sandbox profile run claude only), an item it can
+# hold (a headless one takes no plan item) and, when routed rather than pinned, a tier within the
+# unattended ceiling: a red goes past it, only to a harness that can run the red-fix gate.
+route() {
+  local it="$1" verdict="$2" cands h m src tier pinned=0 why=()
+  ROUTE_HARNESS='' ROUTE_MODEL='' ROUTE_WHY=''
+  item_pinned "$it" && pinned=1
+  if [ "$pinned" = 1 ]; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
+  else cands=$(jq -c '.candidates // empty | select(length > 0)' <<<"${verdict:-null}" 2>/dev/null); fi
+  [ -n "$cands" ] || cands='[{"harness": "claude", "model": "", "fit": 0}]'
+  tier=$(item_tier "$it")
+  while read -r h m; do
+    if [ "$h" = claude ]; then
+      [ "${ACCT_RC:-1}" = 0 ] && { ROUTE_HARNESS=claude; return 0; }
+      why+=("claude: no account has room"); continue
+    fi
+    src=$(harness_source "$h")
+    if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
+    elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
+    elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
+    elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
+    elif headless "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless, and this is a plan item")
+    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it"; then why+=("$h: tier $tier is past the unattended ceiling")
+    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
+    elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
+      why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room --json"' <<<"$ACCT_ROWS")")
+    else ROUTE_HARNESS=$h ROUTE_MODEL=$m; return 0
+    fi
+  done < <(jq -r --argjson c "$cands" --arg d "${ACCT_DIR:-}" --slurpfile map "$HARNESSES" '. as $r | ($map[0].harnesses // {}) as $hs
+      | $c | map(.rank = (if .harness == "claude" then ([$r.accounts[]? | select(.dir == $d) | .rank] | first)
+          else ($hs[.harness].source // "") as $s | ([$r.sources[]? | select(.name == $s) | .rank] | first) end // 1e9))
+      | sort_by(.fit, .rank)[] | "\(.harness) \(.model)"' <<<"$ACCT_ROWS" 2>/dev/null ||
+    # No readable map: claude is the one harness a start could launch.
+    jq -r '.[] | select(.harness == "claude") | "claude "' <<<"$cands")
+  ROUTE_WHY=$(printf '%s; ' "${why[@]}"); ROUTE_WHY=${ROUTE_WHY%; }
+  return 1
+}
+
+# start_item <item json> -- past the gates: route it (route) and start it, and publish what happened.
+# rc 3 when usage cannot be read, which ends the pass: the next item could not be routed either. rc 4
+# when another start (a hand start, say) took the item first: that is not a failed launch, and the
+# pass goes on. rc 5 when no candidate it may run on has room (an Opus item while only Codex has room,
+# a pinned harness whose source is spent): the pass goes on to the next item, which may.
 start_item() {
-  local it="$1" slug acct err why rc verdict='' floor='' keep=0 harness=claude no spill
+  local it="$1" slug rc verdict='' cached floor='' keep=0 harness=claude
+  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE ACCT_RC=0
   slug=$(jq -r .slug <<<"$it")
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
-  # Asked again here, as launch does: the gate's answer may be minutes old. Its last stderr line
-  # names the closest account and how far past its pace it is, as in gate.
-  err=$(mktemp)
-  if acct=$(acct_room 2>"$err"); then
-    rm -f "$err"
+  # Asked again here, as launch does: the gate's answer may be minutes old. ACCT_WHY names the
+  # closest account and why its verdict refuses, as in gate. ACCT_ROWS is local, so a later gate
+  # asks afresh after this start.
+  acct_room || ACCT_RC=$?
+  [ "$ACCT_RC" != 2 ] || { settle BLOCKED "queue item $slug waits: account usage unreadable ($ACCT_WHY)"; return 3; }
+  # Today's verdict for an item no source could take skips it without asking model-lane again; a
+  # start always classifies afresh, and cmd_start logs that verdict, so model-lane is asked once.
+  cached=$(lane_cached "$slug")
+  if [ -n "$cached" ] && ! route "$it" "$cached"; then :
+  else
+    item_pinned "$it" || cloud_routed "$slug" || verdict=$(lane_pick "$slug" claude)
+    # A broken router is not a fact about the item: the next pass asks again.
+    route "$it" "$verdict" || { [ -z "$verdict" ] || lane_cache "$slug" "$verdict"; }
+  fi
+  if [ -z "$ROUTE_HARNESS" ]; then
+    say "queue item $slug has no source with room it may run on: $ROUTE_WHY"
+    NO_ROUTE+=("$slug ($ROUTE_WHY)"); [ "$ACCT_RC" = 0 ] || NO_ROOM=$ACCT_WHY
+    return 5
+  fi
+  harness=$ROUTE_HARNESS
+  if [ "$harness" = claude ]; then
     # A floor start leaves the hold standing (keep, settle): a red-floor one went past the machine
     # gates, and a run-floor one past an account over its pace has no room either.
     if red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"; keep=1
+    elif project_floor_open; then floor=" on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"; keep=1
     elif floor_open; then
       floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
-      claude-acct room >/dev/null 2>&1 || keep=1
+      keep=$ACCT_PAST_PACE
     fi
-    # cmd_start picks the model through model-lane and logs the pick (lane_pick, lane_log).
-    START_ORIGIN=run RUN_ACCOUNT=$acct cmd_start --item "$slug"
+    START_ORIGIN=run START_VERDICT=$verdict RUN_ACCOUNT=$ACCT_DIR cmd_start --item "$slug" ${PLACE_HOST:+--host "$PLACE_HOST"}
   else
-    why=$(tail -n 1 "$err"); why=${why#claude-acct: }; rm -f "$err"
-    spill=$(spill_shut)
-    [ -z "$spill" ] || { settle BLOCKED "queue item $slug waits: $why$(spill_note "$spill")"; return 3; }
-    no=$(spill_cached "$slug")
-    if [ -z "$no" ]; then
-      # A red spills whatever its tier: it merges behind the red-fix gate on any harness, and a red
-      # left waiting for account room keeps the fleet broken. Every other tier-3 item waits, an
-      # untiered one on a harness project included (item_tier).
-      no=$(item_tier "$it")
-      if [ "$no" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it"; then no="tier $no is past the unattended ceiling"; else no=''; fi
-      if [ -z "$no" ]; then
-        verdict=$(lane_pick "$slug" claude)
-        case "$(jq -r '.dispatch_model // empty' <<<"$verdict" 2>/dev/null)" in
-          sonnet | haiku) ;;
-          '') no="model-lane gave no verdict" ;;
-          *) no="model-lane puts it on $(jq -r .dispatch_model <<<"$verdict")" ;;
-        esac
-      fi
-      # A broken router is not a fact about the item: the next pass asks again.
-      [ -z "$verdict" ] || [ -z "$no" ] || spill_refused "$slug" "$no"
-    fi
-    if [ -n "$no" ]; then
-      say "queue item $slug may not spill to Lazer: $no"
-      NO_SPILL+=("$slug ($no)"); NO_ROOM=$why
-      return 5
-    fi
-    spill=$(spill_money)
-    [ -z "$spill" ] || { settle BLOCKED "queue item $slug waits: $why$(spill_note "$spill")"; return 3; }
-    harness=$SPILL_HARNESS floor=" on Lazer ($SPILL_HARNESS, sonnet), spilled: $why"
-    # The verdict that let it spill is the one cmd_start logs, so model-lane is asked once.
-    START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model sonnet
+    if item_pinned "$it"; then floor=" on $harness ($ROUTE_MODEL), the harness it is pinned to"
+    else floor=" on $harness ($ROUTE_MODEL), routed by model-lane"; fi
+    # A start past the account hold leaves it standing, like a floor start.
+    [ "$ACCT_RC" = 0 ] || { floor="$floor while $ACCT_WHY"; keep=1; }
+    START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL"
   fi
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
-    # A spill goes past the account hold without ending it, like a floor start.
-    [ "$harness" = claude ] || { SPILLED=$(( ${SPILLED:-0} + 1 )); keep=1; }
+    # The route is recorded beside the `agent:` cmd_start set, so a requeued item routes again.
+    [ "$harness" = claude ] || item_pinned "$it" || agent-queue set "$slug" "routed=$harness" >/dev/null ||
+      say "could not record routed=$harness on queue item $slug"
     [ "$keep" = 0 ] || FLOOR_HELD=1
-    settle WORKED "started queue item $slug$floor"
+    settle WORKED "started queue item $slug${PLACE_HOST:+ on $PLACE_HOST}$floor"
   elif [ "$(item_state "$slug")" != queued ]; then
     say "queue item $slug was started by another start"; return 4
   else
@@ -2094,24 +2511,33 @@ cmd_stopped() {
 # low water starves: runnable under DISPATCH_LOW_WATER, rows a pass would pick, and no run start in
 # twice DISPATCH_STARVED_MIN (low_starved), which is a fill that has stopped filling.
 cmd_starved() {
-  local items board low last cut started why stopped
+  local items board low last cut started why stopped dead
   agent-hold check dispatch >/dev/null 2>&1 || { echo "dispatch is held (agent-hold), so nothing is starved"; return 0; }
   cut=$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 ))
   stopped=$(cmd_stopped)
   started=$(last_run_start)
-  if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ]; then return 0; fi
+  dead=$(dead_holds)
+  if [ -n "$dead" ]; then
+    echo "held on an ask that can never be answered:"
+    sed 's/^/  /' <<<"$dead"
+  fi
+  if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ]; then [ -z "$dead" ]; return; fi
   items=$(runnable | jq -rs --argjson cut "$cut" '
     [.[] | select((.priority == "urgent" or .priority == "high") and (.waits | not) and .t != null and .t < $cut)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority), queued \(.queued))"') || { echo "agent-queue unreadable"; return 1; }
   board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
-  [ -n "$stopped$items$board$low" ] || return 0
+  [ -n "$stopped$items$board$low" ] || { [ -z "$dead" ]; return; }
   # Held by load only when every closed gate is a load gate; an account with no room still starves,
-  # and gate leaves that one out while a spill may start, so room is asked here as gate asks it.
+  # and gate leaves that one out while another source has room, so room is read here from the verdict
+  # gate reads too (ACCT_ROWS, asked once for both).
+  # Idle is the last pass's sample, as old as the window this verdict reads: a reader never samples.
+  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0 IDLE_CACHED=$(( DISPATCH_STARVED_MIN * 60 ))
+  acct_room || room=$?
   why=$(gate)
   if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load |real idle )' &&
-    acct_room >/dev/null 2>&1; then
-    echo "held by load ($why), so nothing is starved"; return 0
+    [ "$room" = 0 ]; then
+    echo "held by load ($why), so nothing is starved"; [ -z "$dead" ]; return
   fi
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null &&
@@ -2125,6 +2551,16 @@ cmd_starved() {
   [ -z "$low" ] || echo "$low"
   echo "last run start: ${started:-none in the log}; last pass: ${last:-none recorded}"
   return 1
+}
+
+# dead_holds -> one line per queued item held on an ask that was cancelled, no longer exists, or the
+# human answered with another option: no
+# answer can release it (agent-queue ask_pending), so it waits for good unless someone sees it. On
+# 2026-11-07 trader's Kalshi phases sat behind cancelled ask ybXZIM and nothing named them.
+dead_holds() {
+  agent-queue list --json --state queued 2>/dev/null |
+    jq -r 'select((.hold // "") | test("^ask:[^ ]+ \\((cancelled|no such ask|answered [^,]*, not [^)]+)\\)")) | "\(.slug) (\(.project), \(.hold))"'
+  return 0
 }
 
 # low_starved <cut epoch> -> a line when runnable is under DISPATCH_LOW_WATER, no run pass has
@@ -2162,7 +2598,7 @@ board_starved() {
 # load and idle. The human reads it before raising DISPATCH_PER_PASS or DISPATCH_MAX_LIVE; nothing
 # here raises a limit.
 cmd_headroom() {
-  local live hand slots load cores idle runnable why could=0 floor_live red_live
+  local live hand slots load cores idle runnable why could=0 floor_live red_live starts pend
   live=$(live_units)
   floor_live=$(live_runs | grep -c . || true)
   red_live=$(live_reds | grep -c . || true)
@@ -2171,19 +2607,23 @@ cmd_headroom() {
   load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
   cores=$(nproc 2>/dev/null || echo 1)
   idle=$(real_idle)
+  read -r starts pend < <(pending_load)
   runnable=$(next_items | grep -c . || true)
+  local idle_projects; idle_projects=$(idle_project_items "$(next_items)" | jq -r .project | sort -u | grep -c . || true)
   why=$(IDLE_NOW=$idle gate)
   if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$DISPATCH_MAX_LIVE" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
-    --arg load "${load:-}" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
-    --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" '
+    --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
+    --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" \
+    --argjson project_floor "${DISPATCH_PROJECT_FLOOR:-0}" --argjson idle_projects "$idle_projects" '
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
-     load: ($load | num), load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
-     load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber)) * 100 | round / 100 end),
+     load: ($load | num), starting: $starts, load_pending: $pend, load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
+     load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_live: $red_live,
+     project_floor: $project_floor, idle_projects: $idle_projects,
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
      held: (if $held != "" then $held elif $live >= $max_live then "DISPATCH_MAX_LIVE: every run unit is used"
             elif $runnable == 0 then "nothing runnable" else null end)}
@@ -2196,10 +2636,11 @@ cmd_headroom() {
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts up to \(.per_pass), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
-        "  load:      \(.load // "?") of a \(.load_cap) cap, \(.load_room // "?") room",
+        "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace and idle do not hold a start",
-        "  red floor: \(.red_live) of \(.red_floor) red sessions live; under it pace, idle, load and fleet-assess do not hold a red"'
+        "  red floor: \(.red_live) of \(.red_floor) red sessions live; under it pace, idle, load and fleet-assess do not hold a red",
+        "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle"'
     fi
 }
 
@@ -2315,8 +2756,9 @@ cmd_stats() {
 # stopped on), running/ again once it does not. It is the one writer of that move for a live session.
 # A session neither read can see is left where it is.
 cmd_reap() {
-  local s d slug server sess origin project area state _weight agent started sids want waits='' seen=''
+  local s d slug server sess origin project area state _weight agent started sids host want waits='' seen='' gone live active=()
   unset REAP_PANEL
+  fleet_hosts >/dev/null   # once, so each session_live subshell inherits the roster
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
     [ -n "$d" ] || continue
@@ -2324,11 +2766,26 @@ cmd_reap() {
       jq -r 'select((.row // "") != "" and .status != "ok") | .slug' 2>/dev/null |
       while IFS= read -r s; do settle_row "$s"; done
   done
-  while IFS=$'\x1f' read -r slug server sess origin project area state _weight agent started sids; do
+  while IFS=$'\x1f' read -r slug server sess origin project area state _weight agent started sids host; do
     [ -n "$slug" ] || continue
-    if { [ -n "$sess" ] && ! session_live "$sess" "$server"; } || claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then
+    active+=("$slug")
+    # A tmux session gone is its own witness; a Claude missing from agent-panel needs a second reap
+    # (reap_confirm), and until then the item is left as it is: its Claude is not read as live either.
+    # A fleet worker that does not answer says nothing, so its item stays as it is (fleet-liveness
+    # pages a session that stops moving), and a live one there is beyond this agent-panel's sight:
+    # its pane ends with its claude (wt's _prepare), so its tmux session is the witness.
+    gone='' live=0
+    [ -z "$sess" ] || { session_live "$sess" "$server" "$host"; live=$?; }
+    if [ "$live" = 1 ]; then gone=1
+    elif [ -n "$host" ]; then continue
+    elif claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then reap_confirm "$slug" || continue; gone=1
+    else reap_seen "$slug"
+    fi
+    if [ -n "$gone" ]; then
       settle_item "$slug" "${sess:-${sids##* }}"
       settle_row "$slug"
+      # Closed, its mark goes at once: an item put back (agent-queue reopen) starts with no miss on record.
+      [ "$(item_state "$slug")" != "done" ] || reap_seen "$slug"
       continue
     fi
     [ -n "$sess" ] || continue
@@ -2341,6 +2798,12 @@ cmd_reap() {
     [ "$state" = "$want" ] && continue
     agent-queue move "$slug" "$want" --if "$state" >/dev/null && logline "reaped $sess: queue item $slug $state -> $want"
   done < <(item_sessions)
+  # A mark whose item is no longer active (closed by its session, cancelled) would count for a later
+  # item under the slug. No active item at all may be a queue that could not be read: keep them then.
+  [ ${#active[@]} -eq 0 ] || for s in "$DIR"/reap-miss/*; do
+    [ -e "$s" ] || continue
+    [[ " ${active[*]} " == *" ${s##*/} "* ]] || rm -f "$s"
+  done
   unstart_orphans
   reconcile_plans
   return 0
@@ -2397,9 +2860,35 @@ waiting_sessions() {
   return 0
 }
 
-# real_idle -> percent of the machine idle over a two-frame top sample; the first frame is since boot.
+# cpu_jiffies -> "<free> <total>" since boot from the aggregate cpu line of /proc/stat. Free is idle
+# plus nice: nice-19 work (the Unity editors) yields to whatever a start brings, by design. Total is
+# the first eight counters; guest time is already inside user and nice.
+cpu_jiffies() { awk '$1 == "cpu" { printf "%.0f %.0f\n", $3 + $5, $2 + $3 + $4 + $5 + $6 + $7 + $8 + $9; exit }' "$DISPATCH_PROC_STAT" 2>/dev/null; }
+
+# real_idle -> percent of the machine free over a DISPATCH_IDLE_WINDOW-second /proc/stat delta.
+# The kernel has no idle event, so this samples: one sample serves every gate for a window, so a
+# pass and its headroom wait once. Prints nothing when /proc/stat cannot be read (or, for a reader, with no sample in its window).
 # IDLE_NOW: a reading this call already took, so a report and its gate agree on one sample.
-real_idle() { [ -z "${IDLE_NOW:-}" ] || { echo "$IDLE_NOW"; return; }; LC_ALL=C top -bn2 -d2 2>/dev/null | sed -n 's/^%Cpu.* \([0-9.]*\) id,.*/\1/p' | tail -n 1; }
+# IDLE_CACHED=<seconds>: a reader's call (cmd_starved, so stats and the queue-starved watch) takes the
+# last sample up to that old and never waits out a new one, printing nothing without one: a reader
+# under a unit timeout (agent-mqtt-publish, 60s) cannot spend a whole window asleep.
+real_idle() {
+  [ -z "${IDLE_NOW:-}" ] || { echo "$IDLE_NOW"; return; }
+  local at pct f0 t0 f1 t1 age
+  # A sample from the future (the clock stepped back) is no sample.
+  if { read -r at pct < "$IDLE"; } 2>/dev/null && [[ "$at" =~ ^[0-9]+$ && "$pct" =~ ^[0-9.]+$ ]] &&
+    age=$(( $(date +%s) - at )) && [ "$age" -ge 0 ] && [ "$age" -lt "${IDLE_CACHED:-$DISPATCH_IDLE_WINDOW}" ]; then
+    echo "$pct"; return
+  fi
+  [ -z "${IDLE_CACHED:-}" ] || return 0
+  read -r f0 t0 < <(cpu_jiffies) || return 0
+  sleep "$DISPATCH_IDLE_WINDOW"
+  read -r f1 t1 < <(cpu_jiffies) || return 0
+  [ $(( t1 - t0 )) -gt 0 ] || return 0
+  pct=$(LC_ALL=C awk -v f=$(( f1 - f0 )) -v t=$(( t1 - t0 )) 'BEGIN { printf "%.1f", 100 * f / t }')
+  { mkdir -p "$DIR" && echo "$(date +%s) $pct" > "$IDLE.$$" && mv -f "$IDLE.$$" "$IDLE"; } 2>/dev/null || rm -f "$IDLE.$$"
+  echo "$pct"
+}
 
 # firing_findings -> the shared faults firing now, one per line. Open is not firing: a finding stays
 # open for an hour after its last sample, which would hold starts long after the fault cleared.
@@ -2412,6 +2901,55 @@ firing_findings() {
     | select((.epoch // $now) >= $now - $fresh * 60) | {rule, scope, repos, bind}'
 }
 
+# pending_load -> "<starts> <load>": the sessions started in the last DISPATCH_START_LOAD_MIN minutes
+# (the `started` lines the log already holds, as present_left counts its own) and the load they have
+# not yet put on the 1-min average. A start's load arrives minutes late, so a loop of starts that
+# each read the load sees the same low number; counting the starts closes that. Hand starts and a
+# pass's own earlier starts are in the log the moment cmd_start returns. A resume counts too: a
+# restored session boots and loads like a new one. An unreadable window refuses, like every gate.
+pending_load() {
+  local n
+  [ "$DISPATCH_START_LOAD" != 0 ] || { echo "0 0.0"; return; }
+  n=$(awk -v c="$(date -d "-$DISPATCH_START_LOAD_MIN min" '+%Y-%m-%d %H:%M')" '$4 == "started" && ($2 " " $3) >= c' "$LOG" 2>/dev/null | grep -c . || true)
+  LC_ALL=C awk -v n="${n:-0}" -v l="$DISPATCH_START_LOAD" 'BEGIN { printf "%d %.1f\n", n, n * l }'
+}
+
+# load_why <red 0|1> -> why this machine's load holds a start, or nothing; a red floor start goes past it.
+# over_pace <load> <cores> [pending] -- that load, plus what recent starts will add, is over the
+# MAX_LOAD pace per core. This machine's gate and each fleet worker's read it the same way.
+over_pace() { awk -v l="$1" -v c="$2" -v p="${3:-0}" -v m="$MAX_LOAD" 'BEGIN { exit !((l + p) / c > m) }'; }
+
+load_why() {
+  local load cores starts pend
+  load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
+  cores=$(nproc 2>/dev/null || echo 1)
+  read -r starts pend < <(pending_load)
+  [ "$1" = 0 ] && over_pace "${load:-0}" "$cores" "$pend" &&
+    echo "load ${load}$([ "$starts" = 0 ] || echo " plus $pend for $starts started in the last ${DISPATCH_START_LOAD_MIN} min") on ${cores} cores is over the ${MAX_LOAD} pace"
+  return 0
+}
+
+# idle_why <red 0|1> -> why this machine's real idle holds a start, or nothing. Read only when it
+# decides: a floor start goes past it and should not wait out a sample.
+idle_why() {
+  local idle
+  if [ "$1" = 1 ] || floor_open || project_floor_open; then :
+  # A reader with no sample in its window knows of no idle hold, which is not a hold.
+  elif idle=$(real_idle) && [ -z "$idle" ]; then [ -n "${IDLE_CACHED:-}" ] || echo "real idle unreadable"
+  elif awk -v i="$idle" -v m="$DISPATCH_MIN_IDLE" 'BEGIN { exit !(i < m) }'; then
+    echo "real idle ${idle}% is under ${DISPATCH_MIN_IDLE}%"
+  fi
+  return 0
+}
+
+# machine_why -> this machine's own holds (load_why, idle_why), "; "-joined, or nothing.
+machine_why() {
+  local red=0 l i
+  red_floor_open && red=1
+  l=$(load_why "$red"); i=$(idle_why "$red")
+  printf '%s%s%s' "$l" "${l:+${i:+; }}" "$i"
+}
+
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
 # refuses: a start nobody can justify costs more than waiting for the next pass. Findings are not
 # here: one is about a pool or a repo, so pick_item asks them per item.
@@ -2420,37 +2958,34 @@ firing_findings() {
 # Every gate is read and every closed one named, joined by "; ": naming the first only hid a load
 # hold behind an account hold for a whole day. A hold stops the reading: nothing else matters then.
 gate() {
-  local load cores infra github idle acct rc out why=()
+  local load infra github idle rc out why=()
   agent-hold check dispatch >/dev/null 2>&1 || { echo "held (agent-hold dispatch)"; return; }
-  # room's own last stderr line says which account is short and why; keep it.
-  acct=$(acct_room 2>&1 >/dev/null); rc=$?
-  acct=$(tail -n 1 <<<"$acct"); acct=${acct#claude-acct: }
+  # The verdict's own words say which account is short and why (ACCT_WHY); keep them.
+  acct_room; rc=$?
   case $rc in
     0) ;;
-    # No room is not a stop while a spill may start (start_item); unreadable usage always is.
-    1) local spill; spill=$(spill_shut); [ -n "$spill" ] || spill=$(spill_money)
-       [ -z "$spill" ] || why+=("${acct:-no account has room under its weekly pace}$(spill_note "$spill")") ;;
-    *) why+=("account usage unreadable${acct:+ ($acct)}") ;;
+    # No account room is not a stop while another source a harness spends has room (start_item
+    # routes there); unreadable usage always is.
+    1) other_room || why+=("$ACCT_WHY, and no other source has room") ;;
+    *) why+=("account usage unreadable ($ACCT_WHY)") ;;
   esac
   local red=0; red_floor_open && red=1
   [ "$red" = 1 ] || fleet-assess --watch-probe >/dev/null 2>&1 || why+=("fleet-assess says HOLD")
   # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
   infra="$(fleet-shepherd infra 2>/dev/null)" && why+=("$infra")
-  load=$(cut -d' ' -f1 "$DISPATCH_LOADAVG" 2>/dev/null)
-  cores=$(nproc 2>/dev/null || echo 1)
-  [ "$red" = 0 ] && awk -v l="${load:-0}" -v c="$cores" -v m="$MAX_LOAD" 'BEGIN { exit !(l / c > m) }' &&
-    why+=("load ${load} on ${cores} cores is over the ${MAX_LOAD} pace")
+  # This machine's own pace holds only a start here: while a fleet worker takes one, the pass goes
+  # on, and pick_item places each item on whichever is open (place_host).
+  # GATE_NO_MACHINE leaves this machine's pace out altogether, unread: demand_pass asks what else holds.
+  load='' idle=''
+  [ "${GATE_NO_MACHINE:-0}" = 1 ] || { load=$(load_why "$red"); idle=$(idle_why "$red"); }
+  [ -z "$load$idle" ] || ! remote_open || load='' idle=''
+  [ -z "$load" ] || why+=("$load")
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in
     '' | *unreadable*) why+=("github budget unreadable") ;;
     *LOW*) why+=("$github") ;;
   esac
-  idle=$(real_idle)
-  if [ "$red" = 1 ] || floor_open; then :
-  elif [ -z "$idle" ]; then why+=("real idle unreadable")
-  elif awk -v i="$idle" -v m="$DISPATCH_MIN_IDLE" 'BEGIN { exit !(i < m) }'; then
-    why+=("real idle ${idle}% is under ${DISPATCH_MIN_IDLE}%")
-  fi
+  [ -z "$idle" ] || why+=("$idle")
   [ "${#why[@]}" -eq 0 ] && return
   out=$(printf '%s; ' "${why[@]}"); echo "${out%; }"
 }
@@ -2503,6 +3038,7 @@ triage_pass() {
 
 cmd_run() {
   local why live room
+  fleet_hosts >/dev/null   # once, so each subshell of the pass inherits the roster
   DRY=0
   [ "${1:-}" = --dry-run ] && DRY=1
   mkdir -p "$DIR"
@@ -2511,8 +3047,8 @@ cmd_run() {
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
-  QUEUE_HELD='' STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_HELD=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= SPILLED=0 NO_ROOM=
-  NO_SPILL=()
+  QUEUE_HELD='' STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 RUN_GATED=0 FLOOR_HELD=0 PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
+  NO_ROUTE=()
   [ "$DRY" = 1 ] || triage_pass
   # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and
   # agent-queue holds a night item to its window. A dispatch hold stops even this. A judge that
@@ -2521,15 +3057,22 @@ cmd_run() {
   agent-hold check dispatch >/dev/null 2>&1 && fill_night
   # Skips no session can take for want of a definition go to inbox-plan; a dry run only reads.
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
-  live=$(live_units)
-  FLOOR_LIVE=$(live_runs | grep -c . || true)
+  local runs; runs=$(live_runs)
+  live=$(units_on '' <<<"$runs")
+  FLOOR_LIVE=$(grep -c . <<<"$runs" || true)
+  probe_hosts "$runs"
   RED_LIVE=$(live_reds | grep -c . || true)
-  SPILL_LIVE=$(spill_live)
+  BUSY_PROJECTS=$(busy_projects)
   UNITS_FREE=$(( DISPATCH_MAX_LIVE - live ))
-  room=$UNITS_FREE
+  demand_pass "$runs"
+  # Room is this machine's units plus every placed worker's.
+  # A worker adds room only when it takes a session now (host_why), not merely by being placed.
+  local h remote=0; for h in "${!HOST_FREE[@]}"; do [ -n "$(host_why "$h")" ] || remote=$(( remote + HOST_FREE[$h] )); done
+  room=$UNITS_FREE; [ "$room" -ge 0 ] || room=0
+  room=$(( room + remote ))
   [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS
   # A full fleet is working, not blocked: NOOP.
-  if [ "$room" -le 0 ]; then PROOF_HELD_KEEP=1 settle_board NOOP "at $live of $DISPATCH_MAX_LIVE run units, starting nothing"; return 0; fi
+  if [ "$room" -le 0 ]; then PROOF_HELD_KEEP=1 settle_board NOOP "at $live of $DISPATCH_MAX_LIVE run units${HOST_FREE[*]:+, every fleet worker full}, starting nothing"; return 0; fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
   # runnable, so the next pass has work before this one runs dry. An item a firing finding holds is
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held
@@ -2645,7 +3188,7 @@ fill_night() {
   active=$(agent-queue list --json --state active 2>/dev/null |
     jq -s '[.[] | select((.from | startswith("board:")) and ((" " + (.tags // "") + " ") | contains(" night ")))] | length' 2>/dev/null)
   active=$(( NIGHT_MAX - ${active:-0} )); [ "$active" -gt 0 ] || active=0
-  night=$(night_picks "$(night_rows '')" | head -n "$active")
+  night=$(night_picks "$(night_rows '')" "$active")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     NIGHT_FILLED=$(( NIGHT_FILLED + 1 ))
@@ -2698,7 +3241,8 @@ promote() {
     say "could not queue $project row, un-started: $id ($out)"
     return 1
   fi
-  slug=$(awk '{ print $2; exit }' <<<"$out"); PROMOTED=$slug
+  # The `<state> <slug> -> <file>` line, not the first: a warning on add's stderr may come before it.
+  slug=$(awk '$3 == "->" { print $2; exit }' <<<"$out"); PROMOTED=$slug
   agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} >/dev/null
   logline "filled queue item $slug from $project $lane row${tags:+ ($tags)}: $id"
   echo "queued $project: $id"
@@ -2767,7 +3311,7 @@ cmd_fill() {
 # row's place on its board, newest first; `rank` puts what the human asked for, then observer rows,
 # first (cleanup rows leave for t3_cleanup_picks, so kinds.json is the one cleanup rank).
 night_rows() {
-  local judged="$1" name sheet stage repo key text body t line n x planned dj dsig
+  local judged="$1" name sheet stage repo key text body t line n x planned dj dsig board
   local -A DET=() PLN=() PAR=()
   load_extras
   load_kinds
@@ -2778,6 +3322,8 @@ night_rows() {
     repo=$(repo_dir "$name")
     [ -n "$repo" ] && [ -d "$repo" ] || continue
     n=0
+    board=$(rows "$DISPATCH_NIGHT_PROFILE" "$name" agent)
+    row_kinds_load <<<"$board"
     while IFS=$'\t' read -r key text; do
       [ -n "$key" ] || continue
       n=$(( n + 1 ))
@@ -2805,7 +3351,7 @@ night_rows() {
           cleanup: $cleanup, project_prio: $pprio,
           details: $details, dsig: $dsig, planned: ($planned == 1),
           rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}'
-    done < <(rows "$DISPATCH_NIGHT_PROFILE" "$name" agent)
+    done <<<"$board"
   done
 }
 
@@ -2824,11 +3370,11 @@ t3_ready() {
     | . + {area: ($d.area | ascii_downcase)}' <<<"$1"
 }
 
-# night_picks <rows> -> up to DISPATCH_NIGHT_MAX t3_ready rows that are not cleanup: a cleanup row
+# night_picks <rows> [n] -> up to n (default DISPATCH_NIGHT_MAX) t3_ready rows that are not cleanup: a cleanup row
 # merges at any hour instead (t3_cleanup_picks). One row an area, so a night's PRs do not collide.
 # Human asks first (#requested), then observer rows, then most urgent, then oldest (night_rows' rank).
 night_picks() {
-  t3_ready "$1" | jq -sc --argjson max "$NIGHT_MAX" 'map(select(.cleanup != 0))
+  t3_ready "$1" | jq -sc --argjson max "${2:-$NIGHT_MAX}" 'map(select(.cleanup != 0))
     | sort_by(.rank, .prio, -.order) | unique_by([.project, .area]) | sort_by(.rank, .prio, -.order)
     | .[:$max] | .[]'
 }
@@ -2891,6 +3437,7 @@ main() {
     restore) shift; cmd_restore "$@" ;;
     headroom) shift; cmd_headroom "$@" ;;
     item-tier) shift; cmd_item_tier "$@" ;;
+    hosts) shift; cmd_hosts "$@" ;;
     -h | --help) sed -n '2,37p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
   esac

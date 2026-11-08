@@ -9,6 +9,7 @@ use std::time::Duration;
 use hub_core::boards::{self, DayRow, Watch};
 use hub_core::fleet::who::{Opens, Who};
 use hub_core::fleet::ASK_FILTERS;
+use hub_core::home::Need;
 use hub_core::infra::Infra;
 use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
@@ -159,6 +160,8 @@ const FOLDS: [(&str, char, &str); 6] = [
 
 /// How many job rows Infra's Jobs section shows; Enter opens the whole table.
 const JOBS_SHOWN: usize = 8;
+/// The footer while a table's query is being typed.
+const QUERY_HINT: &str = "type a query (word, key:value, -key:value), Enter applies, Esc cancels";
 
 /// The files the Sessions, Fleet and Log tabs are read from.
 #[derive(Clone)]
@@ -170,7 +173,7 @@ pub struct BoardFiles {
     pub proposals: PathBuf,
     pub shepherd: PathBuf,
     pub daylog: PathBuf,
-    /// The nightly token snapshots behind Fleet's Where the tokens go.
+    /// The nightly token snapshots behind Costs' Where the tokens go.
     pub tokens: PathBuf,
 }
 
@@ -253,6 +256,8 @@ pub enum Msg {
     ProposalActed(Result<String, String>),
     /// A job source's file changed (a run started or ended).
     Files,
+    /// The nightly token run wrote a snapshot (`~/.agent/token-usage`): Costs' token folds.
+    TokenFiles,
     /// The fleet state, watch.log or a day record changed.
     BoardFiles,
     /// `hub tab <name> [words]` asked for a page (tabreq.rs); the words name a project to open.
@@ -339,6 +344,8 @@ pub struct App {
     pub infra: Option<Infra>,
     pub jobs: Option<Jobs>,
     pub jv: JobsView,
+    /// The view over Home's Needs you table.
+    pub hv: DataTable,
     pub sv: SchedulesView,
     pub schedules: Option<Schedules>,
     pub files: BoardFiles,
@@ -354,20 +361,15 @@ pub struct App {
     pub fleet: Option<hub_core::fleet::Fleet>,
     /// The Queue tab's pipeline line: None until the first read.
     pub pipeline: Option<Result<Option<hub_core::pipeline::Pipeline>, String>>,
-    /// Fleet's one table: `/` query, `f` state, `s`/`S` sort, `x` clear (datatable).
+    /// Fleet's one table: `/` query, `f` state, `s`/`S` sort, `x` clear (datatable), and the
+    /// row j/k pick and Enter opens, an index into `fleettab::shown`.
     pub fleet_table: DataTable,
     /// The tier 1 rows folded (`z`), by runner name; their children leave the table.
     pub fleet_folded: std::collections::HashSet<String>,
-    /// The table row j/k pick and Enter opens, an index into `fleettab::shown`.
-    pub fleet_sel: usize,
     /// The runner whose page is open (Enter, or `hub tab fleet <runner>`); None is the tab.
     pub fleet_page: Option<String>,
     /// That page's read; None until it comes back.
     pub fleet_runner: Option<Result<hub_core::fleet::runner::Runner, String>>,
-    /// The tokens fold: open or shut, and which window.
-    pub fleet_tokens: fleettab::TokensView,
-    /// The Langfuse fold: open or shut, None while it follows its amber state.
-    pub fleet_langfuse: Option<bool>,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -420,6 +422,10 @@ pub struct App {
     pub ask_filter: usize,
     /// Log's Actions section; None until it is first opened.
     pub actions: Option<hub_core::actions::Gathered>,
+    /// The view of Log's Actions table.
+    pub actions_table: DataTable,
+    /// The Actions table has the keys: its `f` and `s` are not the Forecast and Rundowns folds.
+    log_actions: bool,
     /// Where the page's sections start, from the last draw (n/N jump between them on Log and
     /// Infra), with the `hub_core::layout` section names.
     sections: Vec<(&'static str, usize)>,
@@ -482,6 +488,7 @@ impl App {
             infra: None,
             jobs: None,
             jv: JobsView::default(),
+            hv: DataTable::default(),
             sv: SchedulesView::default(),
             schedules: None,
             files: BoardFiles::from_env(),
@@ -497,11 +504,8 @@ impl App {
             daily_outbox: false,
             fleet_table: DataTable::default(),
             fleet_folded: Default::default(),
-            fleet_sel: 0,
             fleet_page: None,
             fleet_runner: None,
-            fleet_tokens: Default::default(),
-            fleet_langfuse: None,
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -528,6 +532,8 @@ impl App {
             log_open: vec![],
             ask_filter: 0,
             actions: None,
+            actions_table: DataTable::default(),
+            log_actions: false,
             sections: vec![],
             seek: None,
             infra_jobs: false,
@@ -623,8 +629,9 @@ impl App {
         }
     }
 
-    /// The Costs tab's sources have no file watch, so it reads them on entering, on `r` and on
-    /// the tick while it is shown, at most every `COSTS_REFRESH`.
+    /// The Costs tab reads on entering, on `r`, on a new token snapshot (`Msg::TokenFiles`) and
+    /// on the tick while it is shown, at most every `COSTS_REFRESH`: its other sources have no
+    /// file to watch.
     pub fn read_costs(&mut self) {
         if self.costs_read.want() {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
@@ -694,14 +701,14 @@ impl App {
         }
     }
 
-    /// The Fleet tab mixes Prometheus (no push) with agentctl's ledger, the dispatch and ask
-    /// files and the token snapshots, so it reads on entering, on `r`, on the tick and on an
-    /// agentctl or snapshot file event while it is shown.
+    /// The Fleet tab reads agentctl's ledger and the dispatch and ask files, so it reads on
+    /// entering, on `r`, on the tick and on an agentctl file event while it is shown.
     pub fn read_fleet(&mut self) {
         if self.fleet_read.want() {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::Fleet(Box::new(hub_core::fleet::collect())));
+                let f = hub_core::fleet::files(&hub_core::fleet::Paths::from_env());
+                let _ = tx.send(Msg::Fleet(Box::new(f)));
             });
         }
     }
@@ -1113,7 +1120,7 @@ impl App {
         };
         let null = serde_json::Value::Null;
         let state = self.boards.as_ref().map_or(&null, |b| &b.watch.state);
-        hub_core::projects::build(stats, feed, state, self.queue.as_ref())
+        hub_core::projects::build(stats, feed, state, self.queue.as_ref(), chrono::Utc::now())
     }
 
     /// Open the project a `hub tab projects <name>` named, once the cards are read.
@@ -1246,6 +1253,8 @@ impl App {
                     self.read_fleet();
                 }
             }
+            Msg::TokenFiles if self.tab == Tab::Costs => self.read_costs(),
+            Msg::TokenFiles => {}
             Msg::BoardFiles => self.read_boards(),
             Msg::ProposalFiles => self.read_proposals(),
             Msg::Tab(t, q) => {
@@ -1431,8 +1440,8 @@ impl App {
             }
             Msg::Proposals(r) => {
                 self.proposals = Some(*r);
-                let last = self.prv.shown(open_rows(&self.proposals)).len();
-                self.prv.sel = self.prv.sel.min(last.saturating_sub(1));
+                let n = self.prv.shown(open_rows(&self.proposals)).len();
+                self.prv.table.clamp(n);
                 if self.proposals_read.done() {
                     self.read_proposals();
                 }
@@ -1478,7 +1487,7 @@ impl App {
 
     fn selected(&self) -> Option<&hub_core::jobs::Job> {
         let js = self.jobs.as_ref()?;
-        self.jv.shown(js).get(self.jv.sel).copied()
+        self.jv.shown(js).get(self.jv.table.sel).copied()
     }
 
     fn key(&mut self, k: KeyEvent) {
@@ -1500,10 +1509,10 @@ impl App {
             }
             return;
         }
-        if self.tab == Tab::Infra && self.infra_key(k) {
+        if self.tab == Tab::Home && self.home_key(k) {
             return;
         }
-        if self.tab == Tab::Home && self.home_key(k) {
+        if self.tab == Tab::Infra && self.infra_key(k) {
             return;
         }
         if self.tab == Tab::Log && self.log_key(k) {
@@ -1533,10 +1542,16 @@ impl App {
             && !k
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && self.cv.key(k.code)
         {
-            self.scroll = 0;
-            return;
+            let t = self.costs.as_ref().and_then(|c| c.tokens.as_ref());
+            if let Some(seek) = self.cv.fold(k.code, t) {
+                self.seek = seek;
+                return;
+            }
+            if self.cv.key(k.code) {
+                self.scroll = 0;
+                return;
+            }
         }
         let n = self.page.max(1);
         let tabs = Tab::SHOWN.len();
@@ -1626,7 +1641,7 @@ impl App {
     fn open_session(&mut self, target: &str) {
         self.go(Tab::Sessions);
         if let Some(i) = self.controls.rows().iter().position(|r| r.target == target) {
-            self.controls.sel = i;
+            self.controls.table.sel = i;
             self.controls.open = true;
             self.seek = Some(DETAIL);
         }
@@ -1635,9 +1650,7 @@ impl App {
     /// The Fleet tab's own keys; false leaves the key to the page's defaults. On a runner's page
     /// `[ ]` step to the previous or next runner and Esc goes back to the tab; on the tab the
     /// table keys (`/ f s S x`), j/k pick a row, Enter opens it (a runner's page, or a session on
-    /// the Sessions tab) and `z` folds a tier 1 row's children. `t` opens or folds Where the
-    /// tokens go and `w` switches its window, `l` opens or folds What Langfuse sees; none moves
-    /// the row, so the view stays put.
+    /// the Sessions tab) and `z` folds a tier 1 row's children.
     fn fleet_key(&mut self, k: KeyEvent) -> bool {
         if let Some(page) = self.fleet_page.clone() {
             let names = self.fleet_runners();
@@ -1662,35 +1675,8 @@ impl App {
             }
             return true;
         }
-        match self.fleet_table.key::<Who>(k.code) {
-            Took::View => {
-                self.fleet_sel = 0;
-                return true;
-            }
-            Took::Typing => return true,
-            Took::No => {}
-        }
-        let tokens = self.fleet.as_ref().and_then(|f| f.tokens.as_ref());
-        match k.code {
-            KeyCode::Char('t') if tokens.is_some() => {
-                let open = !self.fleet_tokens.is_open(tokens);
-                self.fleet_tokens.open = Some(open);
-                self.seek = open.then_some("tokens");
-                return true;
-            }
-            KeyCode::Char('w') if tokens.is_some() => {
-                self.fleet_tokens.day = !self.fleet_tokens.day;
-                return true;
-            }
-            KeyCode::Char('l') if tokens.is_some() => {
-                let shown = self.fleet_langfuse.unwrap_or_else(|| {
-                    tokens.is_some_and(|t| t.langfuse.figures.is_none() || t.stale)
-                });
-                self.fleet_langfuse = Some(!shown);
-                self.seek = (!shown).then_some("langfuse");
-                return true;
-            }
-            _ => {}
+        if self.fleet_table.key::<Who>(k.code) != Took::No {
+            return true;
         }
         let rows: Vec<(Opens, String)> = self.fleet.as_ref().map_or(vec![], |f| {
             fleettab::shown(f, &self.fleet_table, &self.fleet_folded)
@@ -1698,20 +1684,21 @@ impl App {
                 .map(|r| (r.opens, r.key.clone()))
                 .collect()
         });
-        let last = rows.len().saturating_sub(1);
-        self.fleet_sel = self.fleet_sel.min(last);
+        // The selection back in range of the rows for Enter and z: a re-read can leave fewer.
+        self.fleet_table.clamp(rows.len());
+        if self.fleet_table.moves(k, rows.len(), self.page) {
+            self.keep_fleet_sel_visible();
+            return true;
+        }
+        let sel = self.fleet_table.sel;
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => self.fleet_sel = (self.fleet_sel + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => self.fleet_sel = self.fleet_sel.saturating_sub(1),
-            KeyCode::Char('g') | KeyCode::Home => self.fleet_sel = 0,
-            KeyCode::Char('G') | KeyCode::End => self.fleet_sel = last,
-            KeyCode::Enter => match rows.get(self.fleet_sel).cloned() {
+            KeyCode::Enter => match rows.get(sel).cloned() {
                 Some((Opens::Runner, name)) => self.open_runner(&name),
                 Some((Opens::Session, target)) => self.open_session(&target),
                 None => {}
             },
             KeyCode::Char('z') => {
-                if let Some((Opens::Runner, name)) = rows.get(self.fleet_sel) {
+                if let Some((Opens::Runner, name)) = rows.get(sel) {
                     if !self.fleet_folded.remove(name) {
                         self.fleet_folded.insert(name.clone());
                     }
@@ -1727,7 +1714,7 @@ impl App {
     /// The reader's errors, the heading, the status and the table head sit above the first row.
     fn keep_fleet_sel_visible(&mut self) {
         let errors = self.fleet.as_ref().map_or(0, |f| f.errors.len());
-        let at = 3 + errors + self.fleet_sel;
+        let at = 3 + errors + self.fleet_table.sel;
         let h = self.page.max(1);
         if at < self.scroll {
             self.scroll = at;
@@ -1751,7 +1738,8 @@ impl App {
                     self.open_section(sec);
                 }
             }
-            // Fleet's own section names (`accounts`) scroll there; any other word is a runner.
+            // Fleet's own section names (`workers`) scroll there; any other word is a runner. A
+            // section that moved off Fleet (`tokens`) never gets here: tabreq::parse sends it on.
             (Tab::Fleet, Some(q)) if !q.trim().is_empty() => {
                 match crate::fleettab::runner_arg(&q) {
                     Some(name) => self.open_runner(name),
@@ -1764,7 +1752,15 @@ impl App {
                     }
                 }
             }
-            (Tab::Costs, Some(q)) => self.cv.open(&q),
+            // A section's name opens its fold and scrolls to it; other words set the view.
+            (Tab::Costs, Some(q)) => {
+                self.cv.open(&q);
+                let secs =
+                    hub_core::layout::resolve(self.tab.title()).map_or(&[][..], |t| t.sections);
+                if let Some(sec) = secs.iter().find(|s| s.eq_ignore_ascii_case(q.trim())) {
+                    self.seek = Some(sec);
+                }
+            }
             (Tab::Queue, Some(q)) => self.qv.open(&q),
             (_, q) => self.open_project(q),
         }
@@ -1779,12 +1775,6 @@ impl App {
         {
             self.log_open.push(sec);
             self.read_log_folds();
-        }
-        if self.tab == Tab::Fleet && sec == "tokens" {
-            self.fleet_tokens.open = Some(true);
-        }
-        if self.tab == Tab::Fleet && sec == "langfuse" {
-            self.fleet_langfuse = Some(true);
         }
         if !self.infra_jobs && !self.log_days {
             self.seek = Some(sec);
@@ -1805,6 +1795,7 @@ impl App {
         self.scroll = 0;
         self.infra_jobs = false;
         self.log_days = false;
+        self.log_actions = false;
         self.seek = None;
         if t == Tab::Log {
             self.read_log_folds();
@@ -1842,14 +1833,13 @@ impl App {
         }
     }
 
-    /// The Projects tab's keys: the card list's (projtab.rs), or with the rows open theirs
+    /// The Projects tab's keys: the list's (projtab.rs), or with the rows open theirs
     /// (tasktab.rs), where Esc clears a filter first and then, like Backspace, goes back.
     fn projects_key(&mut self, k: KeyEvent) -> bool {
         if !self.pv.open {
             let cards = self.cards().cards;
-            if k.code == KeyCode::Char('P') {
-                // Card 0 is All, so card i is cards[i - 1].
-                if let Some(c) = self.pv.card.checked_sub(1).and_then(|i| cards.get(i)) {
+            if k.code == KeyCode::Char('P') && self.pv.table.typing.is_none() {
+                if let Some(c) = self.pv.selected(&cards) {
                     self.prio_act(
                         c.profile.clone(),
                         c.name.clone(),
@@ -1860,13 +1850,13 @@ impl App {
             }
             return self.pv.key(&mut self.tv, k, &cards, self.page);
         }
-        if self.tv.prompt.is_none() && self.tv.project.is_some() && k.code == KeyCode::Char('f') {
+        if !self.tv.typing() && self.tv.project.is_some() && k.code == KeyCode::Char('F') {
             self.pv.folds = !self.pv.folds;
             return true;
         }
-        if self.tv.prompt.is_none() {
+        if !self.tv.typing() {
             let v = &self.tv;
-            let filtered = !v.search.is_empty() || v.lane.is_some() || v.said.is_some();
+            let filtered = !v.table.is_default() || v.said.is_some();
             if k.code == KeyCode::Backspace || (k.code == KeyCode::Esc && !filtered) {
                 self.pv.close(&mut self.tv);
                 self.scroll = 0;
@@ -1877,7 +1867,7 @@ impl App {
         if self.board_key(k) {
             return true;
         }
-        if k.code == KeyCode::Esc && self.tv.prompt.is_none() {
+        if k.code == KeyCode::Esc && !self.tv.typing() {
             self.pv.close(&mut self.tv);
             return true;
         }
@@ -1954,7 +1944,11 @@ impl App {
     /// the selected row in view while no detail is open.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
         let armed = |c: &Controls| c.confirm.is_some() || c.starting.is_some();
-        let was = (self.controls.open, self.controls.sel, armed(&self.controls));
+        let was = (
+            self.controls.open,
+            self.controls.table.sel,
+            armed(&self.controls),
+        );
         match self.controls.key(k) {
             Ask::Pass => return false,
             Ask::Done => {}
@@ -1966,14 +1960,14 @@ impl App {
         // row or a confirm is armed, and otherwise stays where the reader scrolled it.
         if self.controls.open {
             let now_armed = armed(&self.controls);
-            if !was.0 || was.1 != self.controls.sel || (now_armed && !was.2) {
+            if !was.0 || was.1 != self.controls.table.sel || (now_armed && !was.2) {
                 self.seek = Some(DETAIL);
             }
             return true;
         }
         self.seek = None;
         // The stage counts line, then the table's own header.
-        let at = 1 + self.controls.above() + self.controls.sel;
+        let at = 1 + self.controls.above() + self.controls.table.sel;
         let h = self.page.max(1);
         if at < self.scroll {
             self.scroll = at;
@@ -2027,7 +2021,17 @@ impl App {
             }
             return self.history_key(k);
         }
+        if self.log_actions && self.actions_key(k) {
+            return true;
+        }
         match k.code {
+            KeyCode::Enter | KeyCode::Char('/')
+                if !self.log_actions && self.log_open.contains(&"actions") =>
+            {
+                self.log_actions = true;
+                self.seek = Some("actions");
+                return k.code == KeyCode::Enter || self.actions_key(k);
+            }
             KeyCode::Char('h') => {
                 self.log_days = true;
                 self.scroll = 0;
@@ -2038,6 +2042,7 @@ impl App {
                 };
                 if let Some(i) = self.log_open.iter().position(|n| *n == name) {
                     self.log_open.remove(i);
+                    self.log_actions &= name != "actions";
                 } else {
                     self.log_open.push(name);
                     self.read_log_folds();
@@ -2050,6 +2055,21 @@ impl App {
             _ => return self.today_key(k),
         }
         true
+    }
+
+    /// The Actions table's keys. Esc or Backspace with nothing to clear gives the keys back to
+    /// Log; a key that is not the table's is Log's, so `n` still jumps and `a` still folds.
+    fn actions_key(&mut self, k: KeyEvent) -> bool {
+        let t = &mut self.actions_table;
+        if t.is_default() && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
+            self.log_actions = false;
+            return true;
+        }
+        if t.typing.is_none() && k.code == KeyCode::Esc {
+            t.clear();
+            return true;
+        }
+        t.key::<hub_core::actions::Action>(k.code) != Took::No
     }
 
     /// The day's keys on Log: `[` and `]` step a day, n and N jump between sections.
@@ -2182,43 +2202,70 @@ impl App {
         }
     }
 
-    /// Home's own keys. The page: F queues a fix for Since last night's next bad area, Enter
-    /// and the table keys (/ f s) open the proposals table. The table: those keys, j/k, Enter
-    /// the record, a accept, d reject; Esc steps back out.
+    /// Home's own keys. The page: the Needs you table's keys (/ f s S x, Esc clears its view
+    /// first), F queues a fix for Since last night's next bad area, a flow key opens its chip,
+    /// and Enter opens the proposals table. The proposals table: the table keys, j/k, Enter the
+    /// record, a accept, d reject; Esc steps back out.
+    /// Home from the reads held, as the page draws it.
+    fn home_build(&self) -> hub_core::home::Home {
+        let null = serde_json::Value::Null;
+        let state = self.boards.as_ref().map_or(&null, |b| &b.watch.state);
+        hub_core::home::build(
+            state,
+            self.queue.as_ref(),
+            self.tasks.as_ref(),
+            self.infra.as_ref(),
+        )
+    }
+
     fn home_key(&mut self, k: KeyEvent) -> bool {
-        if !self.prv.open && k.code == KeyCode::Char('F') {
-            self.queue_fix();
-            return true;
-        }
         if !self.prv.open {
-            if let KeyCode::Char(c) = k.code {
-                if let Some(chip) = hometab::FLOW_KEYS.iter().find(|(key, _)| *key == c) {
-                    self.open_flow(chip.1);
+            if self.hv.typing.is_none() {
+                if k.code == KeyCode::Char('F') {
+                    self.queue_fix();
+                    return true;
+                }
+                if let KeyCode::Char(c) = k.code {
+                    if let Some(chip) = hometab::FLOW_KEYS.iter().find(|(key, _)| *key == c) {
+                        self.open_flow(chip.1);
+                        return true;
+                    }
+                }
+                if k.code == KeyCode::Enter && !open_rows(&self.proposals).is_empty() {
+                    self.prv.open = true;
+                    return true;
+                }
+                if k.code == KeyCode::Esc && !self.hv.is_default() {
+                    self.hv.clear();
+                    self.scroll = 0;
+                    return true;
+                }
+                // Needs you hides its empty chips, so `f` steps over the ones drawn.
+                if k.code == KeyCode::Char('f') {
+                    let needs = self.home_build().needs;
+                    self.hv.view.cycle_shown(&needs);
+                    self.scroll = 0;
                     return true;
                 }
             }
-            let opens = k.code == KeyCode::Enter || DataTable::owns(k.code);
-            if !opens || open_rows(&self.proposals).is_empty() {
-                return false;
-            }
-            self.prv.open = true;
-            if k.code == KeyCode::Enter {
-                return true;
-            }
+            return match self.hv.key::<Need>(k.code) {
+                Took::View => {
+                    self.scroll = 0;
+                    true
+                }
+                Took::Typing => true,
+                Took::No => false,
+            };
         }
-        match self.prv.table.key::<Proposal>(k.code) {
-            Took::View => {
-                self.prv.sel = 0;
-                return true;
-            }
-            Took::Typing => return true,
-            Took::No => {}
+        if self.prv.table.key::<Proposal>(k.code) != Took::No {
+            return true;
         }
         let rows = self.prv.shown(open_rows(&self.proposals)).len();
         let pv = &mut self.prv;
+        if pv.table.moves(k, rows, self.page) {
+            return true;
+        }
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => pv.sel = (pv.sel + 1).min(rows.saturating_sub(1)),
-            KeyCode::Char('k') | KeyCode::Up => pv.sel = pv.sel.saturating_sub(1),
             KeyCode::Enter => pv.detail = !pv.detail,
             KeyCode::Char('a') => self.decide_proposal(true),
             KeyCode::Char('d') => self.decide_proposal(false),
@@ -2277,23 +2324,13 @@ impl App {
     }
 
     fn jobs_key(&mut self, k: KeyEvent) -> bool {
-        match self.jv.table.key::<Job>(k.code) {
-            Took::View => {
-                self.jv.sel = 0;
-                return true;
-            }
-            Took::Typing => return true,
-            Took::No => {}
+        if self.jv.table.key::<Job>(k.code) != Took::No {
+            return true;
         }
         let rows = self.jobs.as_ref().map_or(0, |j| self.jv.shown(j).len());
-        let last = rows.saturating_sub(1);
         let n = self.page.max(1);
         let jv = &mut self.jv;
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => jv.sel = (jv.sel + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => jv.sel = jv.sel.saturating_sub(1),
-            KeyCode::Char('g') | KeyCode::Home => jv.sel = 0,
-            KeyCode::Char('G') | KeyCode::End => jv.sel = last,
             KeyCode::PageDown | KeyCode::Char('J') if jv.log.is_some() => {
                 let l = jv.log.as_mut().unwrap();
                 l.back = l
@@ -2304,8 +2341,6 @@ impl App {
                 let l = jv.log.as_mut().unwrap();
                 l.back += if k.code == KeyCode::Char('K') { 1 } else { n };
             }
-            KeyCode::PageDown => jv.sel = (jv.sel + n).min(last),
-            KeyCode::PageUp => jv.sel = jv.sel.saturating_sub(n),
             KeyCode::Enter => self.open_log(),
             KeyCode::Esc => {
                 if jv.log.is_some() {
@@ -2315,7 +2350,6 @@ impl App {
                     self.read_jobs();
                 } else {
                     jv.table.clear();
-                    jv.sel = 0;
                 }
             }
             KeyCode::Char('h') => {
@@ -2325,7 +2359,7 @@ impl App {
                 } else {
                     name
                 };
-                self.jv.sel = 0;
+                self.jv.table.sel = 0;
                 self.read_jobs();
             }
             KeyCode::Char('o') => {
@@ -2333,42 +2367,29 @@ impl App {
                     open(&u);
                 }
             }
-            _ => return false,
+            _ => return jv.table.moves(k, rows, n),
         }
         true
     }
 
     fn selected_schedule(&self) -> Option<&Schedule> {
         let s = self.schedules.as_ref()?;
-        self.sv.shown(s).get(self.sv.sel).copied()
+        self.sv.shown(s).get(self.sv.table.sel).copied()
     }
 
     /// The Schedules table's keys. Enter opens the row's pane, or an agentctl row's Fleet page,
     /// which already says all the pane would.
     fn schedules_key(&mut self, k: KeyEvent) -> bool {
-        match self.sv.table.key::<Schedule>(k.code) {
-            Took::View => {
-                self.sv.sel = 0;
-                return true;
-            }
-            Took::Typing => return true,
-            Took::No => {}
+        if self.sv.table.key::<Schedule>(k.code) != Took::No {
+            return true;
         }
         let rows = self
             .schedules
             .as_ref()
             .map_or(0, |s| self.sv.shown(s).len());
-        let last = rows.saturating_sub(1);
-        let n = self.page.max(1);
-        let before = self.sv.sel;
+        let before = self.sv.table.sel;
         let sv = &mut self.sv;
         match k.code {
-            KeyCode::Char('j') | KeyCode::Down => sv.sel = (sv.sel + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => sv.sel = sv.sel.saturating_sub(1),
-            KeyCode::Char('g') | KeyCode::Home => sv.sel = 0,
-            KeyCode::Char('G') | KeyCode::End => sv.sel = last,
-            KeyCode::PageDown => sv.sel = (sv.sel + n).min(last),
-            KeyCode::PageUp => sv.sel = sv.sel.saturating_sub(n),
             KeyCode::Char('J') if sv.open => sv.down += 1,
             KeyCode::Char('K') if sv.open => sv.down = sv.down.saturating_sub(1),
             KeyCode::Enter => {
@@ -2386,7 +2407,6 @@ impl App {
                     sv.open = false;
                 } else {
                     sv.table.clear();
-                    sv.sel = 0;
                 }
             }
             KeyCode::Char('o') => {
@@ -2395,9 +2415,10 @@ impl App {
                     open(&u.url);
                 }
             }
+            _ if sv.table.moves(k, rows, self.page) => {}
             _ => return false,
         }
-        if self.sv.sel != before {
+        if self.sv.table.sel != before {
             self.sv.down = 0;
         }
         true
@@ -2548,7 +2569,7 @@ impl App {
     fn hints(&self) -> String {
         let tabs = "0-9";
         match self.tab {
-            Tab::Home if self.prv.table.typing.is_some() => {
+            Tab::Home if self.hv.typing.is_some() || self.prv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Home if self.prv.open => format!(
@@ -2557,9 +2578,13 @@ impl App {
             Tab::Infra if !self.infra_jobs => format!(
                 "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
-            Tab::Infra if self.jv.table.typing.is_some() => {
-                "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
+            Tab::Infra if self.jv.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Log if self.log_actions && self.actions_table.typing.is_some() => {
+                QUERY_HINT.into()
             }
+            Tab::Log if self.log_actions => format!(
+                "/ query  f state  s sort  S asc/desc  x clear  Esc back  j/k PgUp/PgDn ^d/^u scroll  {tabs} tabs  q quit"
+            ),
             Tab::Infra if self.jv.log.is_some() => {
                 "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open url  q quit".into()
             }
@@ -2589,16 +2614,16 @@ impl App {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Costs => format!(
-                "b/B cut  w window  / query  s sort  S asc/desc  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "b/B cut  w window  / query  s sort  S asc/desc  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
-                "type a query (tier:3 state:failed -who:x), Enter applies, Esc drops it".into()
+                "type a query (kind:session state:failed -who:x), Enter applies, Esc drops it".into()
             }
             Tab::Fleet if self.fleet_page.is_some() => format!(
                 "[ ] runner  Esc all runners  j/k PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Fleet => format!(
-                "j/k pick  Enter open  z fold  t tokens  w window  l langfuse  / query  f state  s/S sort  x clear  PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
+                "j/k pick  Enter open  z fold  / query  f state  s/S sort  x clear  PgUp/PgDn scroll  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
@@ -2626,17 +2651,20 @@ impl App {
             Tab::Queue => format!(
                 "j/k PgUp/PgDn ^d/^u pick  Enter detail  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Projects if self.tv.prompt.is_some() => {
+            Tab::Projects if self.tv.typing() || self.pv.table.typing.is_some() => {
                 "type, Enter submits, Esc cancels".into()
             }
             Tab::Projects if self.pv.open => format!(
-                "j/k pick  / search  l lane  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
-                if self.tv.project.is_some() { "f page sections  " } else { "" }
+                "j/k pick  / search  f chip  c sort  S flip  {}a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit",
+                if self.tv.project.is_some() { "F page sections  " } else { "" }
             ),
             Tab::Projects => format!(
-                "j/k pick  Enter open rows  / search all  P priority  r refresh  {tabs} tabs  q quit"
+                "j/k pick  Enter open  a all rows  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Home => format!("u w n e m b open a flow chip  F queue a fix  Enter proposals  {tabs}/Tab pages  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  q quit"),
+            Tab::Home => format!(
+                "/ query  f state  s/S sort  x clear  u w n e m b flow  F fix  {}{tabs}/Tab pages  j/k scroll  r refresh  o Grafana  q quit",
+                if open_rows(&self.proposals).is_empty() { "" } else { "Enter proposals  " }
+            ),
         }
     }
 
@@ -2683,15 +2711,8 @@ impl App {
         };
         let (lines, sections) = match (self.tab, &self.boards, &self.infra) {
             // What needs you; the machinery is Infra's.
-            (Tab::Home, b, i) => {
-                let null = serde_json::Value::Null;
-                let state = b.as_ref().map_or(&null, |b| &b.watch.state);
-                let mut home = hub_core::home::build(
-                    state,
-                    self.queue.as_ref(),
-                    self.tasks.as_ref(),
-                    i.as_ref(),
-                );
+            (Tab::Home, _, i) => {
+                let mut home = self.home_build();
                 match &self.proposals {
                     Some(open) => home.set_proposals(open),
                     None => home.proposals_unread = true,
@@ -2705,7 +2726,10 @@ impl App {
                 };
                 let graph = i.as_ref().is_some_and(|i| i.grafana.is_some());
                 let flow = (self.pipeline.is_none(), graph);
-                (hometab::page(&home, &night, self.p, now, w, flow), vec![])
+                (
+                    hometab::page(&home, &self.hv, &night, self.p, now, w, flow),
+                    vec![],
+                )
             }
             (Tab::Projects, ..) if !self.pv.open => match &self.projects {
                 None => reading("notes projects"),
@@ -2788,9 +2812,9 @@ impl App {
             // Every dollar, cut seven ways (coststab.rs, the same board agent-web draws).
             (Tab::Costs, ..) => match &self.costs {
                 None => reading("the costs"),
-                Some(c) => (self.cv.lines(c, self.p, w), vec![]),
+                Some(c) => self.cv.lines(c, self.p, now, w),
             },
-            // Who is working (runners by tier, then the live sessions), then who pays.
+            // Who is working: runners by tier, then the live sessions.
             (Tab::Fleet, ..) if self.fleet_page.is_some() => (
                 fleettab::runner_page(
                     self.fleet_page.as_deref().unwrap_or_default(),
@@ -2803,34 +2827,10 @@ impl App {
             ),
             (Tab::Fleet, ..) => match &self.fleet {
                 None => reading("the fleet"),
-                Some(f) => {
-                    let mut l = fleettab::page(
-                        f,
-                        &self.fleet_table,
-                        &self.fleet_folded,
-                        self.fleet_sel,
-                        self.p,
-                        now,
-                        w,
-                    );
-                    l.push(Line::raw(""));
-                    let at = l.len();
-                    l.extend(fleettab::tokens(
-                        f.tokens.as_ref(),
-                        self.fleet_tokens,
-                        self.p,
-                        now,
-                        w,
-                    ));
-                    let lf_at = l.len();
-                    l.extend(fleettab::langfuse(
-                        f.tokens.as_ref(),
-                        self.fleet_langfuse,
-                        self.p,
-                        w,
-                    ));
-                    (l, vec![("tokens", at), ("langfuse", lf_at)])
-                }
+                Some(f) => (
+                    fleettab::page(f, &self.fleet_table, &self.fleet_folded, self.p, now, w),
+                    vec![("workers", 0)],
+                ),
             },
             // Daily's outbox view: the outbox and today's intake steps (outboxtab.rs); Enter
             // edits the file.
@@ -2924,7 +2924,12 @@ impl App {
             let count = count.map_or(String::new(), |n| format!(" ({n})"));
             let open = self.log_open.contains(&name);
             let verb = if open { "folds" } else { "opens" };
-            l.push(head(format!("{title}{count}  {key} {verb} it")));
+            let filters = if open && name == "actions" {
+                ", Enter filters"
+            } else {
+                ""
+            };
+            l.push(head(format!("{title}{count}  {key} {verb} it{filters}")));
             if !open {
                 continue;
             }
@@ -2933,7 +2938,7 @@ impl App {
             l.extend(match name {
                 "actions" => match &self.actions {
                     None => reading("the actions"),
-                    Some(g) => logtab::actions(g, self.p, now, w),
+                    Some(g) => logtab::actions(g, &self.actions_table, self.p, now, w),
                 },
                 "changes" => fleet::changes(&b.watch, self.p, now, w),
                 "rundowns" => logtab::rundowns(&b.rundowns, b.rundowns_total, self.p, w),
@@ -2992,18 +2997,10 @@ impl App {
             .saturating_sub(status.len() + 1)
             .max(1);
         self.page = h;
-        // Keep the selection in view: the table header stays, rows scroll under it.
-        let sv = &mut self.sv;
-        if sv.sel < sv.top {
-            sv.top = sv.sel;
-        } else if sv.sel >= sv.top + h {
-            sv.top = sv.sel + 1 - h;
-        }
         let mut lines = status;
-        lines.extend(table.iter().take(1).cloned());
-        lines.extend(table.into_iter().skip(1 + sv.top).take(h));
+        lines.extend(self.sv.table.window(table, h));
         f.render_widget(Paragraph::new(lines), list);
-        let row = self.sv.shown(s).get(self.sv.sel).copied();
+        let row = self.sv.shown(s).get(self.sv.table.sel).copied();
         if let (Some(area), Some(r)) = (pane, row) {
             let lines = schedules::detail(r, self.p, s.at, area.width as usize);
             let max = lines.len().saturating_sub(area.height as usize);
@@ -3026,14 +3023,8 @@ impl App {
         let h = (area.height as usize)
             .saturating_sub(lines.len() + 1 + record.len())
             .max(1);
-        let pv = &mut self.prv;
-        if pv.sel < pv.top {
-            pv.top = pv.sel;
-        } else if pv.sel >= pv.top + h {
-            pv.top = pv.sel + 1 - h;
-        }
-        lines.extend(table.iter().take(1).cloned());
-        lines.extend(table.into_iter().skip(1 + pv.top).take(h));
+        self.page = h;
+        lines.extend(self.prv.table.window(table, h));
         lines.extend(record);
         f.render_widget(Paragraph::new(lines), area);
     }
@@ -3058,16 +3049,8 @@ impl App {
         let head = status.len() + 1;
         let h = (list.height as usize).saturating_sub(head).max(1);
         self.page = h;
-        // Keep the selection in view: the table header stays, rows scroll under it.
-        let jv = &mut self.jv;
-        if jv.sel < jv.top {
-            jv.top = jv.sel;
-        } else if jv.sel >= jv.top + h {
-            jv.top = jv.sel + 1 - h;
-        }
         let mut lines = status;
-        lines.extend(table.iter().take(1).cloned());
-        lines.extend(table.into_iter().skip(1 + jv.top).take(h));
+        lines.extend(self.jv.table.window(table, h));
         f.render_widget(Paragraph::new(lines), list);
         if let (Some(area), Some(l)) = (log, &mut self.jv.log) {
             let h = (area.height as usize).saturating_sub(1);
@@ -3380,7 +3363,7 @@ mod tests {
             a.handle(key('j'));
         }
         let s = screen(&mut a, 80, 20);
-        assert_eq!(a.qv.sel, 30);
+        assert_eq!(a.qv.table.sel, 30);
         assert!(a.scroll > 0, "the page scrolled with the selection");
         assert!(s.contains("Task 30"), "the selected row is on screen:\n{s}");
         a.handle(key('k'));
@@ -3394,16 +3377,16 @@ mod tests {
         screen(&mut a, 80, 20);
         a.handle(key('G'));
         let s = screen(&mut a, 80, 20);
-        assert_eq!(a.qv.sel, 39);
+        assert_eq!(a.qv.table.sel, 39);
         assert!(s.contains("Task 39"), "{s}");
         assert!(s.contains("CANDIDATES"), "G reaches the page's end:\n{s}");
         a.handle(key('g'));
         let s = screen(&mut a, 80, 20);
-        assert_eq!((a.qv.sel, a.scroll), (0, 0));
+        assert_eq!((a.qv.table.sel, a.scroll), (0, 0));
         assert!(s.contains("Task 0"), "{s}");
         // PgDn and space move the selection a page; the page follows rather than snapping back.
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::PageDown))));
-        assert_eq!(a.qv.sel, a.page);
+        assert_eq!(a.qv.table.sel, a.page);
         let want = format!("Task {}", a.page);
         assert!(screen(&mut a, 80, 20).contains(&want));
     }
@@ -3416,15 +3399,15 @@ mod tests {
         let half = a.page / 2;
         assert!(half > 0);
         a.handle(ctrl('d'));
-        assert_eq!(a.qv.sel, half);
+        assert_eq!(a.qv.table.sel, half);
         a.handle(ctrl('d'));
-        assert_eq!(a.qv.sel, 2 * half);
+        assert_eq!(a.qv.table.sel, 2 * half);
         a.handle(ctrl('u'));
-        assert_eq!(a.qv.sel, half);
+        assert_eq!(a.qv.table.sel, half);
         // NEGATIVE CONTROL: a plain d or u is no move.
         a.handle(key('d'));
         a.handle(key('u'));
-        assert_eq!(a.qv.sel, half);
+        assert_eq!(a.qv.table.sel, half);
     }
 
     #[test]
@@ -3813,6 +3796,64 @@ mod tests {
     }
 
     #[test]
+    fn logs_actions_table_takes_its_keys_and_gives_them_back() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = log_app(tx);
+        let at = |i, verb: &str| hub_core::actions::Action {
+            at: i,
+            actor: "shepherd".into(),
+            verb: verb.into(),
+            text: format!("row {verb}"),
+            priority: None,
+            reference: None,
+            source: "shepherd".into(),
+        };
+        a.actions = Some(hub_core::actions::Gathered {
+            actions: vec![at(2, "nudge"), at(1, "failed")],
+            ..Default::default()
+        });
+        a.log_open.push("actions");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        a.handle(key('f'));
+        a.handle(key('f'));
+        assert_eq!(a.actions_table.view.state, "failed");
+        assert_eq!(
+            a.log_open,
+            ["actions"],
+            "f is the chip, not the Forecast fold"
+        );
+        let s = screen(&mut a, 160, 60);
+        assert!(s.contains("row failed") && !s.contains("row nudge"), "{s}");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(
+            a.actions_table.is_default(),
+            "the first Esc clears the view"
+        );
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        a.handle(key('f'));
+        assert!(
+            a.log_open.contains(&"forecast"),
+            "the keys went back to Log"
+        );
+        a.log_open.retain(|n| *n != "forecast");
+        a.handle(key('/'));
+        a.handle(key('n'));
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.actions_table.view.q, "n", "/ goes straight to the query");
+        a.handle(key('/'));
+        a.handle(key('q'));
+        assert!(!a.quit, "q is typed into the query");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        a.handle(key('2'));
+        a.handle(key('6'));
+        a.handle(key('f'));
+        assert!(
+            a.log_open.contains(&"forecast"),
+            "leaving the tab left the table"
+        );
+    }
+
+    #[test]
     fn hub_tab_actions_opens_logs_actions_fold() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = log_app(tx);
@@ -4030,7 +4071,7 @@ mod tests {
     }
 
     #[test]
-    fn p_on_a_card_steps_its_priority_through_the_cli_and_all_writes_nothing() {
+    fn p_on_a_row_steps_its_priority_through_the_cli_and_an_empty_view_writes_nothing() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
@@ -4044,13 +4085,18 @@ mod tests {
         }
         a.handle(Msg::Projects(Box::new(l)));
         let s = screen(&mut a, 140, 30);
-        assert!(s.contains("DEMO  bnb, alpha, prio focus"), "{s}");
-        assert!(!s.contains("GARDEN  personal, alpha, prio"), "{s}");
+        assert!(s.contains("v0.1.0   focus"), "{s}");
         assert!(s.lines().last().unwrap().contains("P priority"), "{s}");
         fake.0.lock().unwrap().clear();
+        // Typed, P is a letter of the search; with no row kept it has nothing to step.
+        for c in "/P".chars() {
+            a.handle(key(c));
+        }
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.pv.table.view.q, "P");
         a.handle(key('P'));
-        assert!(fake.0.lock().unwrap().is_empty(), "All is not a project");
-        a.handle(key('j'));
+        assert!(fake.0.lock().unwrap().is_empty(), "no row, no write");
+        a.handle(key('x'));
         a.handle(key('P'));
         assert_eq!(a.tv.running.as_deref(), Some("demo prio high"));
         loop {
@@ -4091,19 +4137,15 @@ mod tests {
         a.handle(Msg::Projects(Box::new(loaded())));
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
+        assert!(at("ALL ROWS  4 open rows") < at("PROJECT "), "{s}");
         assert!(
-            at("ALL PROJECTS  4 open rows") < at("DEMO  bnb, alpha"),
-            "{s}"
-        );
-        assert!(
-            at("DEMO  bnb, alpha") < at("GARDEN  personal, alpha"),
+            at("demo  ") < at("garden  "),
             "by name when none is in flight"
         );
-        assert!(s.contains("v0.1.0 25% (1 of 4 by size)"), "{s}");
-        assert!(s.lines().last().unwrap().contains("Enter open rows"), "{s}");
+        assert!(s.contains("25%"), "{s}");
+        assert!(s.lines().last().unwrap().contains("a all rows"), "{s}");
 
         // The card's numbers stay on top of its rows.
-        a.handle(key('j'));
         let ran = |f: &Fake| f.0.lock().unwrap().join("\n");
         assert!(
             !ran(&fake).contains("fleet-bench"),
@@ -4126,15 +4168,15 @@ mod tests {
         assert!(ran(&fake).contains("fleet-bench epics --json --project demo"));
         let s = screen(&mut a, 140, 40);
         assert!(s.contains("NEEDS YOU") && s.contains("NEXT STAGE"), "{s}");
-        assert!(s.contains("f opens it"), "{s}");
-        assert!(s.lines().last().unwrap().contains("f page sections"), "{s}");
-        a.handle(key('f'));
+        assert!(s.contains("F opens it"), "{s}");
+        assert!(s.lines().last().unwrap().contains("F page sections"), "{s}");
+        a.handle(key('F'));
         assert!(a.pv.folds);
-        assert!(!screen(&mut a, 140, 40).contains("f opens it"));
-        a.handle(key('f'));
+        assert!(!screen(&mut a, 140, 40).contains("F opens it"));
+        a.handle(key('F'));
         let s = screen(&mut a, 140, 30);
         assert!(
-            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 open rows"),
+            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 of 3 open rows"),
             "{s}"
         );
         assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");
@@ -4183,11 +4225,10 @@ mod tests {
         assert!(a.pv.open && a.tv.said.is_none());
         a.handle(esc());
         assert!(!a.pv.open);
-        assert_eq!(a.pv.card, 1);
+        assert_eq!(a.pv.table.sel, 0);
 
         // All keeps the cross-project board, the last row scrolled into view.
-        a.handle(key('g'));
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        a.handle(key('a'));
         assert_eq!(a.tv.project, None);
         for _ in 0..4 {
             a.handle(key('j'));
@@ -4289,15 +4330,32 @@ mod tests {
     }
 
     #[test]
-    fn table_keys_stay_on_home_with_nothing_proposed() {
+    fn table_keys_on_home_drive_needs_you_and_only_enter_opens_proposals() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Home, tx);
-        a.proposals = Some(Ok(vec![]));
-        for c in ['s', 'f', '/'] {
-            a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c)))));
+        a.proposals = Some(Ok(vec![proposal("aa", "dream")]));
+        let key = |a: &mut App, c| a.handle(Msg::Input(Event::Key(KeyEvent::from(c))));
+        for c in ['s', 'f', '/', 'u'] {
+            key(&mut a, KeyCode::Char(c));
         }
-        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
-        assert!(!a.prv.open);
+        // The flow key u is typed into the query, not taken as a chip.
+        assert_eq!(a.hv.typing.as_deref(), Some("u"));
+        key(&mut a, KeyCode::Enter);
+        assert!(!a.prv.open && a.prv.table.is_default() && !a.hv.is_default());
+        // Esc clears the Needs you view first; Enter then opens the proposals table.
+        key(&mut a, KeyCode::Esc);
+        assert!(a.hv.is_default() && !a.prv.open);
+        key(&mut a, KeyCode::Enter);
+        assert!(a.prv.open);
+    }
+
+    #[test]
+    fn the_home_hint_offers_enter_only_with_something_proposed() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Home, tx);
+        assert!(!a.hints().contains("Enter proposals"));
+        a.proposals = Some(Ok(vec![proposal("aa", "dream")]));
+        assert!(a.hints().contains("Enter proposals"));
     }
 
     #[test]
@@ -4579,8 +4637,14 @@ mod tests {
         assert!(a.fleet_table.is_default());
         assert!(screen(&mut a, 160, 40).contains("dream"));
 
-        // f steps the state chip (held leads), s the sort.
+        // f steps the chips: the kinds (lead first), then the states (held leads them); s the sort.
         a.handle(ch('f'));
+        assert_eq!(a.fleet_table.view.state, "lead");
+        let s = screen(&mut a, 160, 40);
+        assert!(s.contains("dream") && !s.contains("idle-one"), "{s}");
+        for _ in 0..6 {
+            a.handle(ch('f'));
+        }
         assert_eq!(a.fleet_table.view.state, "held");
         a.handle(ch('f'));
         assert_eq!(a.fleet_table.view.state, "failed");
@@ -4588,110 +4652,31 @@ mod tests {
         assert!(s.contains("dream") && !s.contains("idle-one"), "{s}");
         a.handle(ch('x'));
         a.handle(ch('s'));
-        assert_eq!(a.fleet_table.view.sort, "tier");
+        assert_eq!(a.fleet_table.view.sort, "kind");
     }
 
     #[test]
-    fn the_fleet_tab_draws_the_table_and_the_accounts() {
+    fn the_fleet_tab_draws_the_table_and_a_moved_section_opens_on_costs() {
         let mut a = app(Tab::Fleet);
         assert!(screen(&mut a, 120, 10).contains("Reading the fleet..."));
         a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
         let s = screen(&mut a, 160, 40);
         assert!(s.lines().next().unwrap().contains("7 Fleet"), "{s}");
-        for want in ["FLEET", "TIER", "dotfiles-agent-11", "CLAUDE ACCOUNTS"] {
-            assert!(s.contains(want), "{want} missing from\n{s}");
-        }
         assert!(
-            !s.contains("DISPATCH JUDGE"),
-            "the judges moved to their pages and Log\n{s}"
+            !s.contains("WHERE THE TOKENS GO"),
+            "tokens are Costs' now\n{s}"
         );
-    }
-
-    /// A page read in flight that is never started again, so no test reads this machine's
-    /// agentctl state.
-    fn hold_runner(a: &mut App) {
-        a.fleet_runner_read.busy = true;
-        a.fleet_runner_read.again = false;
-    }
-
-    #[test]
-    fn enter_opens_the_picked_row_brackets_step_runners_and_esc_goes_back() {
-        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
-        let mut a = app(Tab::Fleet);
-        hold_runner(&mut a);
-        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
-        assert!(screen(&mut a, 160, 40).contains("j/k pick  Enter open"));
-
-        // The pick starts on the first row; j moves it and k goes back.
-        a.handle(k(KeyCode::Char('j')));
-        assert_eq!(a.fleet_sel, 1);
-        a.handle(k(KeyCode::Char('k')));
-        assert_eq!(a.fleet_sel, 0);
-
-        a.handle(k(KeyCode::Enter));
-        assert_eq!(a.fleet_page.as_deref(), Some("dream"));
-        assert!(screen(&mut a, 160, 40).contains("Reading dream..."));
-        // A read for another runner (the page moved on meanwhile) draws nothing.
-        a.handle(Msg::Runner(Box::new((
-            "idle-one".into(),
-            Err("late".into()),
-        ))));
-        assert!(a.fleet_runner.is_none());
-        hold_runner(&mut a);
-        a.handle(Msg::Runner(Box::new((
-            "dream".into(),
-            Ok(fleettab::tests::runner_fixture()),
-        ))));
-        let s = screen(&mut a, 160, 40);
-        assert!(
-            s.contains("DREAM  memory") && s.contains("status: retry 17:30"),
-            "{s}"
-        );
-        assert!(s.contains("Esc all runners"), "{s}");
-
-        // ] steps to the next runner's page and drops the last one's read.
-        hold_runner(&mut a);
-        a.handle(k(KeyCode::Char(']')));
-        assert_eq!(a.fleet_page.as_deref(), Some("idle-one"));
-        assert!(a.fleet_runner.is_none());
-
-        a.handle(k(KeyCode::Esc));
-        assert!(a.fleet_page.is_none() && a.tab == Tab::Fleet && !a.quit);
-        assert!(screen(&mut a, 160, 40).contains("FLEET"));
-    }
-
-    #[test]
-    fn z_folds_a_tier_one_row_and_enter_on_a_session_opens_it_on_the_sessions_tab() {
-        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
-        let mut a = app(Tab::Fleet);
-        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
-        assert!(screen(&mut a, 160, 40).contains("dotfiles-agent-11"));
-        a.handle(k(KeyCode::Char('z')));
-        assert!(a.fleet_folded.contains("dream"));
-        assert!(!screen(&mut a, 160, 40).contains("dotfiles-agent-11"));
-        a.handle(k(KeyCode::Char('z')));
-        assert!(a.fleet_folded.is_empty());
-        // Enter on the session row leaves the Fleet tab for Sessions.
-        a.handle(k(KeyCode::Char('G')));
-        assert_eq!(a.fleet_sel, 2);
-        a.handle(k(KeyCode::Enter));
-        assert_eq!(a.tab, Tab::Sessions);
-    }
-
-    #[test]
-    fn hub_tab_fleet_with_a_runner_opens_its_page_and_a_section_name_scrolls() {
-        let mut a = app(Tab::Home);
-        hold_runner(&mut a);
         a.fleet_read.busy = true;
         let (t, q) = crate::tabreq::parse("fleet inbox-triage").unwrap();
         a.handle(Msg::Tab(t, q));
         assert!(a.tab == Tab::Fleet);
         assert_eq!(a.fleet_page.as_deref(), Some("inbox-triage"));
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        a.costs_read.busy = true;
         let (t, q) = crate::tabreq::parse("fleet accounts").unwrap();
         a.handle(Msg::Tab(t, q));
         assert!(a.fleet_page.is_none());
-        assert_eq!(a.seek, Some("accounts"));
+        assert_eq!((a.tab, a.seek), (Tab::Costs, Some("burn")));
     }
 
     #[test]
@@ -4705,66 +4690,102 @@ mod tests {
         assert!(!f.is_token_file(Path::new("/a/other/2027-01-15.json")));
     }
 
+    /// Costs with a token snapshot read, no read left to start.
+    fn costs_app(tokens: bool) -> App {
+        let mut a = app(Tab::Costs);
+        a.costs_read.busy = true;
+        let c = hub_core::costs::Costs {
+            tokens: tokens.then(Default::default),
+            ..Default::default()
+        };
+        a.handle(Msg::Costs(Box::new(c)));
+        a.costs_read.busy = true;
+        a
+    }
+
     #[test]
-    fn t_opens_the_tokens_fold_and_goes_to_it_w_switches_its_window_and_the_row_stays() {
+    fn u_opens_the_tokens_fold_on_costs_and_goes_to_it_and_big_u_switches_its_window() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
-        let mut a = app(Tab::Fleet);
-        let mut f = fleettab::tests::fixture();
-        f.tokens = Some(Default::default());
-        a.handle(Msg::Fleet(Box::new(f)));
-        a.handle(k(KeyCode::Char('j')));
-        let sel = a.fleet_sel;
-        a.handle(k(KeyCode::Char('t')));
-        assert_eq!(a.fleet_tokens.open, Some(true));
+        let mut a = costs_app(true);
+        let s = screen(&mut a, 100, 60);
+        assert!(
+            s.contains("+ WHERE THE TOKENS GO") && s.contains("u opens it"),
+            "{s}"
+        );
+        a.handle(k(KeyCode::Char('u')));
+        assert_eq!(a.cv.tokens.open, Some(true));
         assert_eq!(a.seek, Some("tokens"));
-        let s = screen(&mut a, 80, 12);
+        let s = screen(&mut a, 100, 12);
         assert!(s.contains("WHERE THE TOKENS GO"), "{s}");
         assert_eq!(a.seek, None, "the section is on the page, so seek lands");
-        a.handle(k(KeyCode::Char('w')));
-        assert!(a.fleet_tokens.day);
-        assert!(screen(&mut a, 80, 12).contains("yesterday:"));
-        a.handle(k(KeyCode::Char('t')));
-        assert_eq!(a.fleet_tokens.open, Some(false));
-        assert_eq!(a.fleet_sel, sel);
+        a.handle(k(KeyCode::Char('U')));
+        assert!(a.cv.tokens.day);
+        assert!(screen(&mut a, 100, 60).contains("yesterday:"));
+        a.handle(k(KeyCode::Char('u')));
+        assert_eq!(a.cv.tokens.open, Some(false));
+        // x clears the view, not the folds.
+        a.handle(k(KeyCode::Char('x')));
+        assert!(a.cv.tokens.day && a.cv.tokens.open == Some(false));
     }
 
     #[test]
-    fn l_opens_the_langfuse_fold_and_goes_to_it_and_waits_for_a_snapshot() {
+    fn l_opens_the_langfuse_fold_on_costs_and_typing_keeps_u_and_l_as_text() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
-        let mut a = app(Tab::Fleet);
-        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
+        let mut a = costs_app(true);
         a.handle(k(KeyCode::Char('l')));
-        assert_eq!(a.fleet_langfuse, None, "no snapshot, no fold");
-        let mut f = fleettab::tests::fixture();
-        f.tokens = Some(Default::default());
-        a.handle(Msg::Fleet(Box::new(f)));
+        assert_eq!(
+            a.cv.langfuse,
+            Some(false),
+            "no figures opens it by default, so l folds it"
+        );
         a.handle(k(KeyCode::Char('l')));
-        assert_eq!(a.fleet_langfuse, Some(false), "no figures opens it by default, so l folds it");
-        a.handle(k(KeyCode::Char('l')));
-        assert_eq!(a.fleet_langfuse, Some(true));
-        assert_eq!(a.seek, Some("langfuse"));
+        assert_eq!((a.cv.langfuse, a.seek), (Some(true), Some("langfuse")));
+        a.handle(k(KeyCode::Char('/')));
+        for c in "ul".chars() {
+            a.handle(k(KeyCode::Char(c)));
+        }
+        assert_eq!(a.cv.typing.as_deref(), Some("ul"), "a query types u and l");
+        assert_eq!((a.cv.langfuse, a.cv.tokens.open), (Some(true), None));
     }
 
     #[test]
-    fn t_and_w_wait_for_a_snapshot_so_the_first_one_lands_folded() {
+    fn u_and_l_wait_for_a_snapshot_so_the_first_one_lands_folded() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
-        let mut a = app(Tab::Fleet);
-        a.handle(Msg::Fleet(Box::new(fleettab::tests::fixture())));
-        a.handle(k(KeyCode::Char('t')));
-        a.handle(k(KeyCode::Char('w')));
-        assert_eq!(a.fleet_tokens.open, None);
-        assert!(!a.fleet_tokens.day);
+        let mut a = costs_app(false);
+        a.handle(k(KeyCode::Char('u')));
+        a.handle(k(KeyCode::Char('U')));
+        a.handle(k(KeyCode::Char('l')));
+        assert_eq!(
+            (a.cv.tokens.open, a.cv.tokens.day, a.cv.langfuse),
+            (None, false, None)
+        );
+        assert!(screen(&mut a, 100, 60).contains("no snapshot in ~/.agent/token-usage"));
     }
 
     #[test]
-    fn hub_tab_fleet_tokens_opens_the_fold() {
+    fn hub_tab_fleet_tokens_opens_the_fold_on_costs() {
         let mut a = app(Tab::Home);
-        a.fleet_read.busy = true;
+        a.costs_read.busy = true;
         let (t, q) = crate::tabreq::parse("fleet tokens").unwrap();
         a.handle(Msg::Tab(t, q));
+        assert_eq!(a.tab, Tab::Costs);
         assert!(a.fleet_page.is_none());
-        assert_eq!(a.fleet_tokens.open, Some(true));
+        assert_eq!(a.cv.tokens.open, Some(true));
         assert_eq!(a.seek, Some("tokens"));
+        assert!(a.cv.q.is_empty(), "a section's name is no query");
+    }
+
+    #[test]
+    fn a_new_token_snapshot_rereads_costs_only_while_it_is_shown() {
+        let mut a = costs_app(true);
+        a.handle(Msg::TokenFiles);
+        assert!(a.costs_read.again, "Costs asks for its read again");
+        // Negative control: on Fleet a snapshot is nothing to read.
+        let mut a = app(Tab::Fleet);
+        a.fleet_read.busy = true;
+        a.costs_read.busy = true;
+        a.handle(Msg::TokenFiles);
+        assert!(!a.costs_read.again && !a.fleet_read.again);
     }
 
     #[test]

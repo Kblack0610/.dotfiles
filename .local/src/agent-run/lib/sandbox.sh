@@ -9,6 +9,7 @@
 # docs/contract.md "Lane sandbox" has the table.
 
 SANDBOX_DIR="${AGENTCTL_SANDBOX_DIR:-$HOME/.config/agentctl/sandbox}"
+AGENTCTL_SANDBOX_REFUSALS="${AGENTCTL_SANDBOX_REFUSALS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/sandbox-refusals.jsonl}"
 
 # The shape a profile must have before any harness builds flags from it. A list that is not an
 # array of strings would break the jq that builds the flags, and a path that is neither absolute
@@ -28,16 +29,22 @@ SANDBOX_SHAPE='
 sandbox_load() {
   SANDBOX_FILE=""
   if [ -n "${SANDBOX_PROFILE:-}" ]; then
-    [[ "$SANDBOX_PROFILE" =~ ^[a-z0-9][a-z0-9-]*$ ]] || role_die "SANDBOX_PROFILE '$SANDBOX_PROFILE' is not a profile name"
+    [[ "$SANDBOX_PROFILE" =~ ^[a-z0-9][a-z0-9-]*$ ]] || sandbox_refuse "SANDBOX_PROFILE '$SANDBOX_PROFILE' is not a profile name"
     SANDBOX_FILE="$SANDBOX_DIR/$SANDBOX_PROFILE.json"
-    [ -r "$SANDBOX_FILE" ] || role_die "lane sandbox '$SANDBOX_PROFILE' wants $SANDBOX_FILE, which is not readable. Refusing to run unsandboxed."
-    jq -e "$SANDBOX_SHAPE" "$SANDBOX_FILE" >/dev/null 2>&1 || role_die "lane sandbox $SANDBOX_FILE is not a valid profile: it needs a sandbox object, every list an array of strings, and every path absolute or ~/. Refusing to run unsandboxed."
+    [ -r "$SANDBOX_FILE" ] || sandbox_refuse "lane sandbox '$SANDBOX_PROFILE' wants $SANDBOX_FILE, which is not readable. Refusing to run unsandboxed."
+    jq -e "$SANDBOX_SHAPE" "$SANDBOX_FILE" >/dev/null 2>&1 || sandbox_refuse "lane sandbox $SANDBOX_FILE is not a valid profile: it needs a sandbox object, every list an array of strings, and every path absolute or ~/. Refusing to run unsandboxed."
+    # The cwd is writable in the sandbox, so a lane started from $HOME or above it (a user unit with
+    # no WorkingDirectory starts in $HOME) would have no write bound at all. Physical paths, so a
+    # symlinked $HOME cannot slip past.
+    local here home
+    here="$(pwd -P)"; home="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+    case "${home%/}/" in "${here%/}/"*) sandbox_refuse "lane sandbox '$SANDBOX_PROFILE' would run from $here, which holds all of \$HOME, and the cwd is writable. Start the lane from its own directory (its inbox or a worktree)." ;; esac
   fi
   # GH_TOKEN_FILE: the lane's own repo-scoped token, which the human creates. A sandboxed lane
   # cannot read gh's login (the profile hides it), and must not inherit a broad token from the
   # environment either, so without its own file it gets none.
   if [ -n "${GH_TOKEN_FILE:-}" ]; then
-    [ -r "$GH_TOKEN_FILE" ] && [ -s "$GH_TOKEN_FILE" ] || role_die "GH_TOKEN_FILE=$GH_TOKEN_FILE is not a readable, non-empty file"
+    [ -r "$GH_TOKEN_FILE" ] && [ -s "$GH_TOKEN_FILE" ] || sandbox_refuse "GH_TOKEN_FILE=$GH_TOKEN_FILE is not a readable, non-empty file"
     GH_TOKEN="$(tr -d '[:space:]' < "$GH_TOKEN_FILE")"
     export GH_TOKEN
     # The lane needs the token itself, not where it is kept.
@@ -45,6 +52,23 @@ sandbox_load() {
   elif [ -n "$SANDBOX_FILE" ]; then
     unset GH_TOKEN GITHUB_TOKEN
   fi
+}
+
+# sandbox_refuse <why>: refuse the run (role_die, exit 78), first appending a line for a named call
+# to AGENTCTL_SANDBOX_REFUSALS: {agent, role, harness, sandbox, at, why}. The lane-sandbox-refusals
+# watch reads it. It is not calls.jsonl, because every reader of that file counts a line as a call
+# made. A name comes from lib/calls.sh, which fleet-dispatch does not load, so there it only refuses.
+sandbox_refuse() {
+  local name=""
+  declare -F calls_name >/dev/null && name="$(calls_name)"
+  if [ -n "$name" ]; then
+    mkdir -p "$(dirname "$AGENTCTL_SANDBOX_REFUSALS")" 2>/dev/null
+    jq -cn --arg agent "$name" --arg role "${ROLE_NAME:-}" --arg harness "${harness:-}" --arg sandbox "${SANDBOX_PROFILE:-}" \
+      --arg at "$(date -Iseconds)" --arg why "$1" '
+      {agent: $agent, role: $role, harness: $harness, sandbox: $sandbox, at: $at, why: $why}
+      | with_entries(select(.value != ""))' | flock "$AGENTCTL_SANDBOX_REFUSALS" tee -a "$AGENTCTL_SANDBOX_REFUSALS" >/dev/null || true
+  fi
+  role_die "$1"
 }
 
 # sandbox_git_common -> the absolute git common dir of the cwd, or nothing outside a repo. In a
@@ -56,6 +80,11 @@ sandbox_git_common() {
 # The oldest claude that honours permissions.blockWritesOutsideWorkingDirectories. An older one
 # ignores the key, which would leave Edit and Write unbounded under the bypass a lane runs with.
 SANDBOX_CLAUDE_MIN="${SANDBOX_CLAUDE_MIN:-2.1.314}"
+
+# What claude's sandbox runtime needs on Linux: bwrap to jail the shell, socat to bridge it to the
+# proxy that enforces allowedDomains. Checked up front so a missing one is a recorded refusal, not a
+# failed call whose reason only claude's stderr carries.
+SANDBOX_CLAUDE_NEEDS="${SANDBOX_CLAUDE_NEEDS:-bwrap socat}"
 
 # sandbox_claude_version_ok -> success when the claude on PATH is at least SANDBOX_CLAUDE_MIN.
 sandbox_claude_version_ok() {

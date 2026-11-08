@@ -15,7 +15,8 @@ const el = () => new Proxy({}, {
 });
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const box = Object.assign(part(), { addEventListener: (ev, f) => { on[ev] = f; } });
+const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
+const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 const doc = { getElementById: (id) => (id === "costs" ? box : el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let body = {};
@@ -30,7 +31,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "actions.js", "table.js", "costs.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "costs.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const cost = run("cost");
 const tick = () => new Promise((r) => setImmediate(r));
@@ -42,7 +43,11 @@ const MODEL_COLS = ["model", "harness", "sessions", "tokens", "cost", "share", "
 // The table's columns are every Line column in Line::COLUMNS order, whatever the cut.
 const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src", "pr", "at"];
 // hub_core::burn::Burn as serialized: the 2026-11-06 fleet, 3.3x over what the weeks carry.
-const acct = (name, o) => ({ name, state: "ok", live: 0, used: 10, gone: 5, burn: 1, sustain: 2, over: 0.5, idle_at: 1794003600, burn_at: null, run_out: null, resets: 1794200000, ...o });
+// A source row: a Claude account unless `o` says otherwise; used_text is what burn::used_text prints.
+const acct = (name, o) => {
+  const a = { name, kind: "claude", unpaced: false, reserve: null, parent: null, state: "ok", room: { ok: true, reasons: [], headroom: 4.2, text: "room, 4 points spare" }, live: 0, used: 10, gone: 5, burn: 1, sustain: 2, over: 0.5, idle_at: 1794003600, burn_at: null, run_out: null, resets: 1794200000, ...o };
+  return { used_text: a.used == null ? "-" : `${Math.floor(a.used)}%`, ...a };
+};
 const burn = (o = {}) => ({
   at: 1794000000, level: "bad", head: "4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live, carries ~11", drip_line: "15 started in 1h, 349 in 24h",
   accounts: [acct("alt", { live: 9, used: 55, gone: 25, burn: 1.04, sustain: 0.36 }), acct("bnb", { live: 17, used: 7, gone: 1, burn: 1.97, sustain: 0.56 }), acct("main", { live: 13, used: 33, gone: 12, burn: 1.51, sustain: 0.45, burn_at: 1794000600 })],
@@ -54,7 +59,7 @@ const board = (o = {}) => ({
   at: 1794000000, by: "model", window: "7d",
   cuts: ["session", "model", "harness", "tool", "project", "runner", "kind"], windows: ["24h", "7d", "30d"],
   totals: [{ window: "24h", usd: 12.5, sessions: 3, unpriced: 0 }, { window: "7d", usd: 40, sessions: 9, unpriced: 2 }, { window: "30d", usd: 90, sessions: 20, unpriced: 2 }],
-  live: { claude_24h: 11, lazer_spend: 50, lazer_budget: 250, reserve_spend: 19.52, reserve_budget: 100, reserve_reset_hours: 575 },
+  live: { claude_24h: 11 },
   direct: { usd: 1.25, unpriced: 1, note: "opencode lazer/*, nightly; other direct use unseen" },
   sources: [{ name: "outcomes", as_of: 1793990000, stale: false }, { name: "token snapshot", as_of: 1793000000, stale: true }, { name: "calls", as_of: null, stale: true }],
   errors: [], columns: MODEL_COLS, source: "outcomes rows", eval_days: 7, unpriced: null,
@@ -66,7 +71,7 @@ const board = (o = {}) => ({
   table: { q: "", state: "", sort: "cost", dir: "asc", total: 2, shown: 2, states: [], columns: LINE_COLS.map((k) => (k === "cost" ? col(k, "asc", ["", "desc"]) : col(k))), facets: [{ key: "harness", on: null, clear: "", values: [{ value: "codex", n: 1, q: "harness:codex" }] }] },
   grafana: "https://grafana.example/d/kb-agents-overview", burn: burn(), ...o,
 });
-const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("renderCosts()"); return box.innerHTML; };
+const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("cost.render()"); return box.innerHTML; };
 const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) || (sel === "[data-ssort]" && "ssort" in attrs) ? { dataset: attrs } : null });
 
 test("the model cut draws the server's columns, order and sort, with its evaluation", () => {
@@ -91,21 +96,31 @@ test("the model cut draws the server's columns, order and sort, with its evaluat
 test("the head says spend, the live gauges and how old each source is", () => {
   const h = show(board());
   assert.match(h, /SPEND 7D[\s\S]*\$40\.00[\s\S]*9 sessions, 2 unpriced/);
-  assert.match(h, /LAZER POOL[\s\S]*of \$250 \(20%\)/);
-  assert.match(h, /LAZER RESERVE<\/span><span class="tv">\$19\.52<\/span><span class="ts1">of \$100 \(20%\), 24d left</);
+  assert.doesNotMatch(h, /LAZER (POOL|RESERVE|GLM)/, "the pool and its keys are Burn rows, not tiles");
   assert.match(h, /LAZER DIRECT<\/span><span class="tv">\$1\.25<\/span><span class="ts1"><span class="warn">\+1 unpriced<\/span>, opencode lazer\/\*, nightly; other direct use unseen</);
   assert.match(h, /<span class="warn">token snapshot /, "a stale source is amber");
   assert.match(h, /<span class="warn">calls never<\/span>/);
   assert.match(h, /<span class="muted">outcomes /);
 });
 
-test("with no gauges and no direct rows the Lazer tiles say unknown, never $0 or blank", () => {
+test("with no direct rows the direct tile says unknown, never $0 or blank", () => {
   const h = show(board({ live: {}, direct: undefined }));
-  assert.match(h, /LAZER RESERVE<\/span><span class="tv">-<\/span><\/div>/, "no gauge is unknown");
-  const reset = show(board({ live: { reserve_reset_hours: 48 } }));
-  assert.match(reset, /LAZER RESERVE<\/span><span class="tv">-<\/span><span class="ts1">2d left</, "no cap, so no leading comma");
   assert.match(h, /LAZER DIRECT<\/span><span class="tv">-<\/span><span class="ts1">not read</, "no direct figure says so");
   assert.doesNotMatch(h, /unpriced<\/span>, /);
+});
+
+test("a dollar source is a burn row with its kind, dollars, reserve and pool, and no pace cells", () => {
+  const key = acct("reserve", { kind: "litellm-key", unpaced: true, used: 41, used_text: "41% $41/$100", gone: null, reserve: 15, parent: "lazer", burn: 9, sustain: 1, idle_at: null, resets: null });
+  const h = show(board({ burn: burn({ accounts: [acct("main", { reserve: 15 }), key] }) }));
+  assert.match(h, /<tr><th>source<\/th><th>kind<\/th><th class="n">live<\/th><th class="n">used<\/th><th class="n">gone<\/th><th class="n">reserve<\/th><th>room<\/th>/);
+  assert.match(h, /<th class="n">24h<\/th><th>pool<\/th><\/tr>/);
+  assert.match(h, /<td>reserve<\/td><td>litellm-key<\/td><td class="n">0<\/td><td class="n">41% \$41\/\$100<\/td><td class="n">-<\/td><td class="n">15%<\/td>/);
+  // negative control: its 9 pts/h over a 1 pts/h line would be amber on a paced row
+  assert.match(h, /<td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td>-<\/td><td>-<\/td>/, "burn, keeps and both pace cells say nothing");
+  assert.doesNotMatch(h, /<td class="n warn">9\.00/);
+  assert.match(h, /<td>lazer<\/td><\/tr>/, "the pool it spends inside");
+  assert.match(h, /<td>main<\/td><td>claude<\/td><td class="n">0<\/td><td class="n">10%<\/td><td class="n">5%<\/td><td class="n">15%<\/td>/);
+  assert.match(h, /<td>-<\/td><\/tr>/, "a source with no pool says so");
 });
 
 test("the tool cut with no allocated dollars prints no dollars", () => {
@@ -127,18 +142,18 @@ test("a click becomes the view keys in the URL and the request", async () => {
   asked = [];
   body = board();
   run("st.tab = 'costs'; st.views.costs = 'q=harness%3Acodex&sort=cost&dir=asc'");
-  on.click({ type: "click", target: target({ cv: "w", cval: "24h" }) });
+  fire("click", { type: "click", target: target({ cv: "w", cval: "24h" }) });
   await tick();
   assert.equal(ctx.history.url, "#costs?q=harness%3Acodex&sort=cost&dir=asc&w=24h", "a window keeps the query and sort");
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&dir=asc&w=24h");
-  on.click({ type: "click", target: target({ cv: "by", cval: "runner" }) });
+  fire("click", { type: "click", target: target({ cv: "by", cval: "runner" }) });
   await tick();
   assert.equal(ctx.history.url, "#costs?q=harness%3Acodex&w=24h&by=runner", "a new cut drops the old cut's sort");
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&by=runner&w=24h");
-  on.click({ type: "click", target: target({ tsort: "cost", tdir: "asc" }) });
+  fire("click", { type: "click", target: target({ tsort: "cost", tdir: "asc" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&dir=asc&by=runner&w=24h");
-  on.input({ type: "input", target: { ...target({ tsearch: "" }), value: "-model:opus" } });
+  fire("input", { type: "input", target: { ...target({ tsearch: "" }), value: "-model:opus" } });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=-model%3Aopus&sort=cost&dir=asc&by=runner&w=24h");
 });
@@ -146,18 +161,18 @@ test("a click becomes the view keys in the URL and the request", async () => {
 test("a failed read says why instead of drawing an empty table", () => {
   run("st.tab = 'costs'");
   Object.assign(cost, { data: null, err: "502 bad gateway" });
-  run("renderCosts()");
-  assert.match(box.innerHTML, /<div class="empty">502 bad gateway<\/div>/);
+  run("cost.render()");
+  assert.match(box.innerHTML, /<div class="card err">502 bad gateway<\/div>/);
 });
 
-test("the burn section leads the tab: headline, drip with its hold link, pace and a row per account", () => {
+test("the burn section leads the tab: headline, drip with its hold link, pace and a row per source", () => {
   const h = show(board());
   assert.ok(h.indexOf("sec-burn") < h.indexOf("sec-totals"), "burn is above the spend tiles");
   assert.match(h, /<span class="burn bad">4\.5 pts\/h vs 1\.4 sustainable, 3\.3x OVER, 39 live, carries ~11<\/span>/);
   assert.match(h, /<details class="csec" data-k="burn" id="sec-burn" open>/, "red starts open");
   assert.match(h, /15 started in 1h, 349 in 24h <a class="warn" href="#sessions" title="fleet-assess says HOLD">dispatch held -> Sessions<\/a>/);
   assert.match(h, /at this burn: main [^;]+; if idle: all by /);
-  assert.match(h, /<td>bnb<\/td><td class="n">17<\/td><td class="n">7%<\/td><td class="n">1%<\/td><td class="n warn">1\.97<\/td><td class="n">0\.56<\/td><td>after reset<\/td>/, "an account over its sustainable rate is amber; burn that never gets there is after the reset");
+  assert.match(h, /<td>bnb<\/td><td>claude<\/td><td class="n">17<\/td><td class="n">7%<\/td><td class="n">1%<\/td><td class="n">-<\/td><td class="ok">room, 4 points spare<\/td><td class="n warn">1\.97<\/td><td class="n">0\.56<\/td><td>after reset<\/td>/, "an account over its sustainable rate is amber; burn that never gets there is after the reset");
   assert.doesNotMatch(h, /<td class="n warn">0\.45/, "keeps/h is never amber");
 });
 
@@ -172,9 +187,26 @@ test("a green burn folds to its headline, and a fold the reader set is kept", ()
 test("an account claude-acct could not read is named, and no data says so", () => {
   const b = burn({ accounts: [acct("old", { state: "unreadable" }), acct("new", { state: "idle" })] });
   const h = show(board({ burn: b }));
-  assert.match(h, /<td>old<\/td><td colspan="9" class="bad">usage unreadable<\/td>/);
-  assert.match(h, /<td>new<\/td><td colspan="9" class="muted">idle, token refreshes on launch<\/td>/);
+  assert.match(h, /<td>old<\/td><td colspan="16" class="bad">usage unreadable<\/td>/);
+  assert.match(h, /<td>new<\/td><td colspan="16" class="muted">idle, token refreshes on launch<\/td>/);
+  const key = show(board({ burn: burn({ accounts: [acct("glm", { kind: "litellm-key", state: "idle" })] }) }));
+  assert.match(key, /<td>glm<\/td><td colspan="16" class="muted">no usage read yet<\/td>/, "a key has no token to refresh");
   assert.match(show(board({ burn: burn({ accounts: [] }) })), /<div class="panel muted">no data from claude-acct<\/div>/);
+});
+
+test("the room column prints claude-acct's verdict: points past the line, the reserve, a stale textfile", () => {
+  const room = (o) => ({ ok: false, reasons: ["pace"], headroom: -19.5, text: "no room: pace 20 points past the line", ...o });
+  const b = burn({ stale: "stale, claude-acct's textfile is not fresh", accounts: [
+    acct("a", { room: room({}) }),
+    acct("b", { room: room({ reasons: ["reserve", "five_hour"], headroom: 3, text: "no room: reserve, five hour" }) }),
+    acct("c", { state: "stale" }),
+    acct("d", { room: null }),
+  ] });
+  const h = show(board({ burn: b }));
+  assert.match(h, /<td class="bad">no room: pace 20 points past the line<\/td>/);
+  assert.match(h, /<td class="bad">no room: reserve, five hour<\/td>/);
+  assert.match(h, /<td>c<\/td><td colspan="16" class="bad">stale, claude-acct&#39;s textfile is not fresh<\/td>/);
+  assert.match(h, /<td class="muted">-<\/td>/, "an account with no published verdict shows none, never a derived one");
 });
 
 // hub_core::sections::Block as serialized: All PRs, then the rows as printed cells.
@@ -203,13 +235,13 @@ test("a header click sorts the Sections block both ways without touching the mai
   asked = [];
   body = board({ sections: sections() });
   run("st.tab = 'costs'; st.views.costs = 'q=harness%3Acodex&sort=cost'");
-  on.click({ type: "click", target: target({ ssort: "gate_h", sdir: "desc" }) });
+  fire("click", { type: "click", target: target({ ssort: "gate_h", sdir: "desc" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&ssort=gate_h");
-  on.click({ type: "click", target: target({ ssort: "gate_h", sdir: "asc" }) });
+  fire("click", { type: "click", target: target({ ssort: "gate_h", sdir: "asc" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&ssort=gate_h&sdir=asc");
-  on.click({ type: "click", target: target({ ssort: "", sdir: "desc" }) });
+  fire("click", { type: "click", target: target({ ssort: "", sdir: "desc" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost", "the third click is the default order");
 });
@@ -225,10 +257,166 @@ test("a Sections fold the reader opened stays open through the repaint a sort cl
   const d = board({ sections: sections() });
   assert.doesNotMatch(show(d), /id="sec-sections" open/, "starts folded");
   box.querySelectorAll = () => [{ dataset: { k: "sections" }, open: true }];
-  run("renderCosts()");
+  run("cost.render()");
   assert.match(box.innerHTML, /id="sec-sections" open/, "the reader's open survives the repaint");
   box.querySelectorAll = () => [{ dataset: { k: "sections" }, open: false }];
-  run("renderCosts()");
+  run("cost.render()");
   assert.doesNotMatch(box.innerHTML, /id="sec-sections" open/, "and so does a fold they closed");
   box.querySelectorAll = () => [];
+});
+
+test("a burn row carries the 5h window, when it resets and the day's dollars", () => {
+  const h = show(board({ burn: burn({ accounts: [acct("main", { five_hour: 61.4, five_hour_resets: 1794007200, cost_24h: 12.5 }), acct("alt", { state: "idle" })] }) }));
+  assert.match(h, /<th>resets<\/th><th class="n">5h<\/th><th>5h resets<\/th><th class="n">24h<\/th><th>pool<\/th><\/tr>/);
+  assert.match(h, /<td class="n">61%<\/td><td>[^<-][^<]*<\/td><td class="n">\$12\.50<\/td><td>-<\/td><\/tr>/);
+  assert.match(h, /<td>alt<\/td><td colspan="16" class="muted">idle/, "a note row spans every column");
+  const none = show(board({ burn: burn({ accounts: [acct("main", {})] }) }));
+  assert.match(none, /<td class="n">-<\/td><td>-<\/td><td class="n">-<\/td><td>-<\/td><\/tr>/, "the control: no figures, no numbers");
+});
+
+test("the token and Langfuse folds sit between Burn and Sections", () => {
+  run("cost.open = {}");
+  const h = show(board({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }), sections: null }));
+  const at = (id) => h.indexOf(`id="${id}"`);
+  assert.ok(at("sec-burn") >= 0 && at("sec-burn") < at("sec-tokens") && at("sec-tokens") < at("sec-langfuse") && at("sec-langfuse") < at("sec-totals"));
+  assert.match(show(board()), /id="sec-tokens"><span class="warn">no snapshot|Where the tokens go <span class="warn">no snapshot/);
+});
+
+test("a new token snapshot re-reads Costs while it is shown, and not from another tab", async () => {
+  asked = [];
+  run("st.tab = 'fleet'");
+  run("TABS.costs").onEvent({ kind: "costs" });
+  await tick();
+  assert.equal(asked.length, 0, "the control: not shown, not read");
+  run("st.tab = 'costs'");
+  run("TABS.costs").onEvent({ kind: "fleet" });
+  await tick();
+  assert.equal(asked.length, 0, "another tab's event is not Costs'");
+  run("TABS.costs").onEvent({ kind: "costs" });
+  await tick();
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /^\/api\/costs/);
+});
+
+test("a Fleet link to a moved section opens Costs at that section", () => {
+  const r = ctx.route("#fleet/tokens");
+  assert.equal(r.tab, "costs");
+  assert.equal(r.section, "tokens");
+  assert.equal(ctx.route("#fleet/LANGFUSE").section, "langfuse");
+  assert.deepEqual([ctx.route("#fleet/accounts").tab, ctx.route("#fleet/accounts").section], ["costs", "burn"]);
+  const runner = ctx.route("#fleet/inbox-triage");
+  assert.deepEqual([runner.tab, runner.arg, runner.section], ["fleet", "inbox-triage", undefined], "the control: a runner page stays on Fleet");
+});
+
+// Where the tokens go: hub_core::tokens's sums, folded while fresh.
+const tokenRow = (name, chars, share, other = false) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other });
+const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15, tools: [tokenRow("Bash", 331000000, 0.823), tokenRow("Other (22)", 10000000, 0.026, true)], commands: [tokenRow("sed", 89000000, 0.221)] });
+const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
+const tail = (t) => { const f = run("cost"); f.open = {}; f.tokWin = "week"; return ctx.tokensSection({ tokens: t }); };
+
+test("the tokens section is folded while fresh, with the week on its head", () => {
+  const h = tail(tokens());
+  assert.match(h, /<details class="csec" data-k="tokens" id="sec-tokens"><summary>/);
+  assert.match(h, /Where the tokens go <span class="muted">7d 18\.0B, tool output 15%/);
+  assert.match(h, /by tool/);
+  assert.match(h, /by Bash command/);
+  assert.match(h, /82\.3%/);
+  assert.match(h, /href="#costs\?by=tool&w=7d"/);
+});
+
+test("a named row takes its chart slot and Other its grey", () => {
+  const h = tail(tokens());
+  assert.match(h, /background:var\(--c1\)/);
+  assert.match(h, /background:var\(--c-other\)/);
+  assert.doesNotMatch(h, /background:var\(--c2\)/);
+});
+
+test("a stale snapshot opens the section with an amber head, until the human shuts it", () => {
+  const h = tail(tokens({ stale: true }));
+  assert.match(h, /id="sec-tokens" open>/);
+  assert.match(h, /class="warn">7d 18\.0B, tool output 15%, stale: newest snapshot 2026-11-05/);
+  run("cost").open["tokens-stale"] = false;
+  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
+});
+
+test("no snapshot is an amber head with nothing to open", () => {
+  const h = tail(null);
+  assert.match(h, /class="warn">no snapshot/);
+  assert.doesNotMatch(h, /<details/);
+});
+
+test("the window switch picks yesterday, and a partial window says so", () => {
+  const f = run("cost");
+  tail(tokens());
+  f.data = board({ tokens: tokens({ day: { ...tokenSplit(3900000000), days: 1, partial: 1 } }) });
+  run("st.tab = 'costs'");
+  fire("click", { target: { closest: (sel) => (sel === "[data-tokwin]" ? { dataset: { tokwin: "day" } } : null) } });
+  assert.equal(f.tokWin, "day");
+  const h = ctx.tokensSection(f.data);
+  assert.match(box.innerHTML, /yesterday: 3\.9B context/, "the click repainted the tab");
+  assert.match(h, /yesterday: 3\.9B context/);
+  assert.match(h, /class="warn">, 1 of 1 partial/);
+  f.tokWin = "week";
+});
+
+test("a stale day names its date, not yesterday", () => {
+  const f = run("cost");
+  f.open = {};
+  f.tokWin = "day";
+  const h = ctx.tokensSection({ tokens: tokens({ stale: true }) });
+  assert.match(h, /2026-11-05: 3\.9B context/);
+  assert.doesNotMatch(h, /yesterday: /);
+  f.tokWin = "week";
+});
+
+test("the fold keeps what paint remembered, and going stale still opens it", () => {
+  const f = run("cost");
+  f.open = { tokens: true };
+  assert.match(ctx.tokensSection({ tokens: tokens() }), /id="sec-tokens" open>/);
+  f.open = { tokens: false };
+  assert.match(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /data-k="tokens-stale" id="sec-tokens" open>/);
+  f.open = { tokens: false, "tokens-stale": false };
+  assert.doesNotMatch(ctx.tokensSection({ tokens: tokens({ stale: true }) }), /id="sec-tokens" open>/);
+  f.open = {};
+});
+
+// What Langfuse sees: the newest snapshot's `.langfuse`, folded while it reads.
+const lfFigures = () => ({
+  tools: [{ tool: "Bash", calls: 35243, p50_ms: 99, p95_ms: 17487, total_s: 224341 }],
+  tool_executions: 38947, tool_errors: 854, tool_error_share: 0.0219, tool_error_classes: [{ name: "ShellError", n: 781 }],
+  gateway_calls: 194, gateway_errors: 26, gateway_error_share: 0.134, gateway_error_classes: [{ name: "invalid_key", n: 16 }],
+  gateway_cost_usd: 3.59, gateway_tokens: 2271863, gateway_models: [{ model: "claude-sonnet-5.5", calls: 33, errors: 0, cost_usd: 3.45 }], gateway_other_models: 14, truncated: false,
+});
+const lfTail = (t) => { const f = run("cost"); f.open = {}; return ctx.langfuseSection({ tokens: t }); };
+
+test("the langfuse section is folded while it reads, with both error shares and the gateway's cost on its head", () => {
+  const h = lfTail(tokens({ langfuse: { figures: lfFigures(), why: null } }));
+  assert.doesNotMatch(h, /id="sec-langfuse" open>/);
+  assert.match(h, /tool errors 2%, gateway errors 13%, \$3\.59 gateway/);
+});
+
+test("open, it draws the slowest tools, the error classes and the dearest models", () => {
+  const f = run("cost");
+  f.open = { langfuse: true };
+  const h = ctx.langfuseSection({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }) });
+  assert.match(h, /<td>Bash<\/td><td class="n">35,243<\/td><td class="n">99ms<\/td><td class="n">17\.5s<\/td>/);
+  assert.match(h, /854 of 38,947 executions \(ShellError 781\)/);
+  assert.match(h, /194 calls, 26 errors \(invalid_key 16\)/);
+  assert.match(h, /claude-sonnet-5\.5 \$3\.45, 14 more/);
+  f.open = {};
+});
+
+test("no figures opens the section amber and says why; a stale snapshot opens it too", () => {
+  const none = lfTail(tokens({ langfuse: { figures: null, why: "no key (rbw langfuse-api)" } }));
+  assert.match(none, /data-k="langfuse-stale" id="sec-langfuse" open>/);
+  assert.match(none, /class="warn">no figures in snapshot 2026-11-05/);
+  assert.match(none, /no key \(rbw langfuse-api\)/);
+  const stale = lfTail(tokens({ stale: true, langfuse: { figures: lfFigures(), why: null } }));
+  assert.match(stale, /data-k="langfuse-stale" id="sec-langfuse" open>/);
+  assert.match(stale, /stale: newest snapshot 2026-11-05/);
+});
+
+test("a snapshot from before the reader has no langfuse key and still draws the amber head", () => {
+  assert.match(lfTail(tokens()), /no figures in snapshot/);
+  assert.equal(ctx.langfuseSection({ tokens: null }), "");
 });

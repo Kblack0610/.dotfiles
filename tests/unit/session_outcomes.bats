@@ -122,6 +122,62 @@ EOF
   assert_equal "$(field a .board_done.proof)" 1
 }
 
+@test "pr-link records: a subagent's PR and a persisted-output PR reach .prs once, also when gh printed it; a malformed record is skipped" {
+  cat > "$TR/e.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e1","name":"Agent","input":{"subagent_type":"general-purpose","prompt":"open the PR"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e1","content":[{"type":"text","text":"Done, the PR is open."}]}]}}
+{"type":"pr-link","sessionId":"sess-e","prNumber":20,"prUrl":"https://github.com/o/r/pull/20","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-e","prNumber":20,"prUrl":"https://github.com/o/r/pull/20","prRepository":"o/r"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e2","name":"Bash","input":{"command":"gh pr create --title 'feat: e' --body x"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e2","content":"<persisted-output>\nOutput too large (37.6KB). Full output saved to: /tmp/tool-results/e2.txt\n</persisted-output>"}]}}
+{"type":"pr-link","sessionId":"sess-e","prNumber":21,"prUrl":"https://github.com/o/r/pull/21","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-e","prUrl":"https://github.com/o/r/pull/22"}
+{"type":"pr-link","sessionId":"sess-e","prNumber":"23","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-e","prNumber":24,"prRepository":""}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"e3","name":"Bash","input":{"command":"gh pr merge 20 --squash -R o/r"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e3","content":"Squashed and merged pull request o/r#20 (feat: e1)"}]}}
+EOF2
+  jq -cn --arg t "$TR/e.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-e", project: "proj", transcript: $t, title: "title e", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$GH_FIXTURE/prs.o-r" <<'EOF2'
+[{"number":10,"state":"MERGED","title":"feat: a","mergedAt":"2026-10-19T01:00:00Z"},
+ {"number":20,"state":"MERGED","title":"feat: e1","mergedAt":"2026-10-19T03:00:00Z"},
+ {"number":21,"state":"MERGED","title":"feat: e","mergedAt":"2026-10-19T04:00:00Z"}]
+EOF2
+  "$SUBJECT" run
+  assert_equal "$(field e '[.prs[].number] | join(",")')" "20,21"
+  assert_equal "$(field e .prs_merged)" 2
+  assert_equal "$(field a '[.prs[].number] | join(",")')" 10
+}
+
+@test "a claim in a repo gh cannot resolve (a fixture's pr-link, a search's output) is dropped and named, the run still WORKED" {
+  cat > "$TR/f.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"g1","name":"Bash","input":{"command":"rg -n 'gh pr create|pull/' tests/unit/x.bats"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"g1","content":"36: https://github.com/x/fixture/pull/10"}]}}
+{"type":"pr-link","sessionId":"sess-f","prNumber":99,"prUrl":"https://github.com/x/fixture/pull/99","prRepository":"x/fixture"}
+{"type":"pr-link","sessionId":"sess-f","prNumber":10,"prUrl":"https://github.com/o/r/pull/10","prRepository":"o/r"}
+EOF2
+  jq -cn --arg t "$TR/f.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-f", project: "proj", transcript: $t, title: "title f", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  # gh as it answers for a repo that does not exist; every other repo is the stub's
+  printf '#!/bin/sh\ncase "$*" in *"-R x/fixture "*) echo "GraphQL: Could not resolve to a Repository with the name '"'x/fixture'"'. (repository)" >&2; exit 1;; esac\nexec gh "$@"\n' > "$SANDBOX/bin/gh-gone"
+  chmod +x "$SANDBOX/bin/gh-gone"
+  SO_GH=gh-gone run "$SUBJECT" run
+  assert_success
+  assert_output --partial "claims dropped, gh cannot resolve: x/fixture"
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(field f '[.prs[] | "\(.repo)#\(.number)"] | join(",")')" "o/r#10"
+  assert_equal "$(field a '[.prs[].number] | join(",")')" 10
+  # negative control: the same error with gh auth failing is the token's fault, not a missing repo
+  touch "$GH_FIXTURE/auth.fail"
+  rm -rf "$SO_OUT"
+  SO_GH=gh-gone run "$SUBJECT" run
+  assert_failure
+  assert_equal "$(outcome)" STALLED
+}
+
 @test "reverted PR: B's #11 is reverted by #12 within the window" {
   "$SUBJECT" run
   assert_equal "$(field b '.prs[0].number')" 11
@@ -217,6 +273,141 @@ EOF
   assert_failure
   assert_equal "$(outcome)" STALLED
   [ ! -d "$SO_OUT/proj" ]
+}
+
+# -- Forgejo PRs --
+# fj_setup - session E opened PR 12 on a Forgejo host through its API, the create printing its
+# html_url, and merged it the same way, which prints no URL; it also read PR 7 with a GET, which
+# it must not claim. curl-fj serves that API: page 1 is 50 open PRs (#100-#149), page 2 holds
+# #12 merged and #7 closed, so a repo past one page is read whole. FJ_FAIL makes every read fail.
+fj_setup() {
+  cat > "$TR/e.jsonl" <<'EOF'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"f1","name":"Bash","input":{"command":"API=\"https://git.example.test/api/v1/repos/o/audio\"\ncurl -s -X POST -H \"Authorization: token $TOKEN\" -d @pr.json \"$API/pulls\" | jq -r '.number, .html_url'"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"f1","content":"12\nhttps://git.example.test/o/audio/pulls/12"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"f2","name":"Bash","input":{"command":"curl -s -X POST -d '{\"Do\":\"squash\"}' \"$API/pulls/12/merge\""}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"f2","content":""}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"f3","name":"Bash","input":{"command":"curl -s https://git.example.test/api/v1/repos/o/audio/pulls/7 | jq -r .html_url"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"f3","content":"https://git.example.test/o/audio/pulls/7"}]}}
+EOF
+  jq -cn --arg t "$TR/e.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-e", project: "proj", transcript: $t, title: "title e", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  printf 'fj-secret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
+  export SO_FORGEJO_HOSTS="git.other.test git.example.test"
+  cat > "$SANDBOX/bin/curl-fj" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/fj.argv"
+cat >> "$BATS_TEST_TMPDIR/fj.stdin"
+out="" url=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift ;; http*) url="$1" ;; esac
+  shift
+done
+[ -z "${FJ_FAIL:-}" ] || { echo "curl: (22) The requested URL returned error: 502" >&2; exit 22; }
+case "$url" in
+  *"&page=1") jq -cn '[range(100; 150) | {number: ., state: "open", merged: false, merged_at: null, merge_commit_sha: null, title: "t\(.)", body: ""}]' ;;
+  *"&page=2") jq -cn '[{number: 12, state: "closed", merged: true, merged_at: "2026-10-19T03:00:00Z", merge_commit_sha: "587713a", title: "docs: e", body: ""},
+                       {number: 7, state: "closed", merged: false, merged_at: null, merge_commit_sha: null, title: "seven", body: ""}]' ;;
+esac > "$out"
+STUB
+  chmod +x "$SANDBOX/bin/curl-fj"
+  export SO_CURL=curl-fj
+}
+
+@test "SO_PR_JQ: pr_cmd takes gh pr create|merge and a POST to a Forgejo pulls API; pr_refs keys a Forgejo PR by host/owner/repo" {
+  # shellcheck source=/dev/null
+  . "$SO_LIB_DIR/session-outcomes.sh"
+  cmd() { jq -rn --arg c "$1" "$SO_PR_JQ"'$c | pr_cmd'; }
+  assert_equal "$(cmd 'gh pr create --fill')" true
+  assert_equal "$(cmd 'gh pr merge 3 --squash')" true
+  assert_equal "$(cmd 'curl -X POST https://h/api/v1/repos/o/r/pulls')" true
+  assert_equal "$(cmd 'curl --data @b.json "$API/pulls" # API=https://h/api/v1/repos/o/r')" true
+  assert_equal "$(cmd 'curl -s -X POST -H "Authorization: token $TOKEN" -d @/tmp/pr.json "$API/pulls" | jq -r .html_url')" true
+  assert_equal "$(cmd "curl -s -d'{\"Do\":\"squash\"}' \"\$API/pulls/12/merge\"")" true
+  assert_equal "$(cmd 'curl -s https://h/api/v1/repos/o/r/pulls/7')" false
+  assert_equal "$(cmd 'curl -X POST https://h/api/v1/repos/o/r/issues')" false
+  assert_equal "$(cmd 'curl -X POST -d @r.json "$API/pulls/12/reviews"')" false
+  assert_equal "$(cmd 'curl -X POST -d @c.json "$API/issues/12/comments"')" false
+  assert_equal "$(cmd 'gh pr view 9')" false
+  # run as a command: after a separator, sh -c, assignments or a wrapper; a search or quote is not one
+  assert_equal "$(cmd 'cd w && GH_TOKEN=$(t) gh pr create --title "a b"')" true
+  assert_equal "$(cmd 'bash -lc "gh pr merge 3"')" true
+  assert_equal "$(cmd "ssh mini 'gh pr create --fill'")" true
+  assert_equal "$(cmd 'if x; then timeout 30 gh pr merge 3; fi')" true
+  assert_equal "$(cmd 'GH_TOKEN=$(rbw get x) sudo gh pr create')" true
+  assert_equal "$(cmd $'git push\ngh pr create --fill')" true
+  assert_equal "$(cmd $'git commit -m "$(cat <<\'E\'\nsay "hi\nE\n)" && gh pr create')" true
+  assert_equal "$(cmd "rg -n 'gh pr create|pull/' tests/unit/session_outcomes.bats")" false
+  assert_equal "$(cmd 'grep -c "gh pr merge" x')" false
+  assert_equal "$(cmd 'echo gh pr create')" false
+  refs() { jq -cn --arg t "$1" "$SO_PR_JQ"'$t | pr_refs'; }
+  assert_equal "$(refs 'https://github.com/o/r/pull/10')" '[{"repo":"o/r","number":10}]'
+  assert_equal "$(refs 'Squashed and merged pull request o/r#11 (x)')" '[{"repo":"o/r","number":11}]'
+  assert_equal "$(refs '{"html_url":"https://git.example.test/o/audio/pulls/12","diff_url":"https://git.example.test/o/audio/pulls/12.diff"}')" '[{"repo":"git.example.test/o/audio","number":12}]'
+  assert_equal "$(refs 'https://github.com/o/r/pulls/3 https://h/api/v1/repos/o/r/pulls/4')" '[]'
+}
+
+@test "a Forgejo PR: claimed from its create's html_url, looked up across API pages with the token on stdin, merged; a GET is not claimed and gh is never asked" {
+  fj_setup
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(field e '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
+  assert_equal "$(field e .prs_merged)" 1
+  assert_equal "$(grep -c 'git.example.test/api/v1/repos/o/audio/pulls?state=all&sort=newest&limit=50&page=' "$BATS_TEST_TMPDIR/fj.argv")" 2
+  run grep -c 'git.example.test' "$GH_FIXTURE/calls.log"
+  assert_output 0
+  # GitHub sessions are untouched beside it
+  assert_equal "$(field a '[.prs[].number] | join(",")')" 10
+  assert_equal "$(field a .prs_merged)" 1
+  # the token goes in on stdin, never curl's argv
+  run grep -c 'fj-secret-token' "$BATS_TEST_TMPDIR/fj.argv"
+  assert_output 0
+  grep -q 'header = "Authorization: token fj-secret-token"' "$BATS_TEST_TMPDIR/fj.stdin"
+}
+
+@test "a Forgejo read with no token or a failed page holds that session back, writes the rest, and a later run records it" {
+  fj_setup
+  rm "$RBW_FIXTURE/forgejo_repo_admin"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(field e .session_id)" null
+  assert_equal "$(field a .prs_merged)" 1
+  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: no token (rbw forgejo_repo_admin), git.example.test/o/audio unread; 1 session(s) held for the next run'
+
+  printf 'fj-secret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
+  FJ_FAIL=1 run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field e .session_id)" null
+  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: git.example.test/o/audio unread: curl: (22)'
+
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field e '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
+}
+
+@test "a Forgejo host SO_FORGEJO_HOSTS does not list is never called: its PR stays UNKNOWN and the report names the host" {
+  fj_setup
+  export SO_FORGEJO_HOSTS="git.other.test"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field e '.prs[0].state')" UNKNOWN
+  [ ! -e "$BATS_TEST_TMPDIR/fj.argv" ]
+  tail -1 "$AGENTCTL_STATE_DIR/session-outcomes/activity.log" | grep -q 'forgejo: git.example.test is not in SO_FORGEJO_HOSTS'
+}
+
+@test "so_forgejo_hosts: SO_FORGEJO_HOSTS when set, even empty; else the runner conf's" {
+  # shellcheck source=/dev/null
+  . "$SO_LIB_DIR/session-outcomes.sh"
+  mkdir -p "$BATS_TEST_TMPDIR/conf"
+  printf 'NAME=session-outcomes\nSO_FORGEJO_HOSTS="a.test b.test"\n' > "$BATS_TEST_TMPDIR/conf/session-outcomes.conf"
+  export AGENTCTL_CONF_DIR="$BATS_TEST_TMPDIR/conf"
+  unset SO_FORGEJO_HOSTS
+  assert_equal "$(so_forgejo_hosts)" "a.test b.test"
+  assert_equal "$(SO_FORGEJO_HOSTS='' so_forgejo_hosts)" ""
+  assert_equal "$(SO_FORGEJO_HOSTS=c.test so_forgejo_hosts)" c.test
+  assert_equal "$(AGENTCTL_CONF_DIR="$BATS_TEST_TMPDIR/none" so_forgejo_hosts)" ""
 }
 
 # One API message split across two records, a commit message that names a
@@ -835,6 +1026,18 @@ EOF
   assert_equal "$(r '.models | join(" ")')" claude-sonnet-5
 }
 
+@test "an opencode session's Forgejo PR: a POST to the pulls API that printed its html_url is claimed" {
+  oc_db
+  fj_setup
+  local fj
+  fj=$(jq -cn '{content: [{type: "tool", name: "bash", state: {status: "completed", input: {command: "curl -X POST -d @pr.json https://git.example.test/api/v1/repos/o/audio/pulls"}, content: [{type: "text", text: "https://git.example.test/o/audio/pulls/12"}]}}]}')
+  sqlite3 "$SO_OPENCODE_DB" "INSERT INTO session_message VALUES ('ses_root', 'assistant', '$fj');"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | [.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" \
+    "o/r#10 MERGED,git.example.test/o/audio#12 MERGED"
+}
+
 @test "an opencode session is observed once, and turns final like any other" {
   oc_db
   "$SUBJECT" run >/dev/null
@@ -890,28 +1093,31 @@ EOF
   assert_equal "$(field a '.class|tojson')" '{"size":null,"kind":"fix"}'
 }
 
-@test "the harness is what the transcript ran on: a gateway session is claude-lazer with no item, an account session is claude on a spilled item" {
+@test "the harness is what the launcher recorded: claude on a spilled item's account try, a legacy row by the item and the map" {
   queue_stub
   export SO_HARNESSES="$SANDBOX/harnesses.json"
-  jq -n '{gateway: {url: "https://gateway.example"}}' > "$SO_HARNESSES"
+  jq -n '{harnesses: {"lazer-reserve": {launcher: "claude-lazer"}}}' > "$SO_HARNESSES"
   {
-    jq -cn '{slug: "spilled", agent: "lazer-reserve", sessions: "sess-a sess-b sess-c"}'
+    jq -cn '{slug: "spilled", agent: "lazer-reserve", sessions: "sess-a sess-b sess-c sess-e sess-f"}'
   } > "$SANDBOX/items.jsonl"
   mkdir -p "$HOME/.claude-personal/projects/p"
   cp "$TR/c.jsonl" "$HOME/.claude-personal/projects/p/c.jsonl"
-  # a: the reserve run (gateway); b: the item's first try on an account; c: a row from before
-  # base_url, under another account's config dir; d: a hand `cl --lazer` on no item; e: another
-  # endpoint, which is not the gateway (negative control).
+  # a: the reserve run; b: the item's first try on an account, which records claude; c: a row from
+  # before the record, under another account's config dir; d: a hand `cl --lazer` on no item; e: a
+  # row from before the record under ~/.claude takes the gateway agent; f: one an earlier run gave a
+  # harness keeps it, though the item's agent and the map say otherwise.
+  mkdir -p "$SO_OUT/proj"
+  jq -cn '{session_id: "sess-f", harness: "claude", updated_epoch: 1}' > "$SO_OUT/proj/2026-11.jsonl"
   jq -c --arg tc "$HOME/.claude-personal/projects/p/c.jsonl" '
-    if .session_id == "sess-a" then . + {base_url: "https://gateway.example"}
-    elif .session_id == "sess-b" then . + {base_url: null}
+    if .session_id == "sess-a" then . + {harness: "lazer-reserve"}
+    elif .session_id == "sess-b" then . + {harness: "claude"}
     elif .session_id == "sess-c" then .transcript = $tc
-    else . + {base_url: "https://gateway.example"} end
-    | ., (select(.session_id == "sess-d") | .session_id = "sess-e" | .base_url = "https://other-proxy.example")' \
+    else . + {harness: "claude-lazer"} end
+    | ., (select(.session_id == "sess-d") | (.session_id = "sess-e", .session_id = "sess-f") | del(.harness))' \
     "$SO_SESSIONS/proj/sessions.jsonl" > "$SANDBOX/reg" && mv "$SANDBOX/reg" "$SO_SESSIONS/proj/sessions.jsonl"
   run "$SUBJECT" run
   assert_success
-  assert_equal "$(field a .harness) $(field b .harness) $(field c .harness) $(field d .harness) $(field e .harness)" 'lazer-reserve claude claude claude-lazer claude'
+  assert_equal "$(field a .harness) $(field b .harness) $(field c .harness) $(field d .harness) $(field e .harness) $(field f .harness)" 'lazer-reserve claude claude claude-lazer lazer-reserve claude'
   # the same rule over old outcomes rows: under ~/.claude keeps the gateway agent, another account does not
   jq -cn '{slug: "spilled", agent: "lazer-reserve", sessions: "old-gw old-acct"}' > "$SANDBOX/items.jsonl"
   mkdir -p "$SO_OUT/old"
@@ -919,6 +1125,41 @@ EOF
   run "$SUBJECT" backfill-harness 2026-11
   assert_success
   assert_equal "$(jq -r .harness "$SO_OUT/old/2026-11.jsonl" | paste -sd' ')" 'lazer-reserve claude'
+}
+
+@test "a Claude session never reads codex or opencode: not from an agent: codex item, a glm item, or a codex stamp an earlier run left" {
+  oc_db
+  queue_stub
+  export SO_HARNESSES="$SANDBOX/harnesses.json"
+  jq -n '{harnesses: {glm: {launcher: "opencode"}, codex: {launcher: "codex"}, "lazer-reserve": {launcher: "claude-lazer"}}}' > "$SO_HARNESSES"
+  {
+    jq -cn '{slug: "cx", agent: "codex", sessions: "sess-a sess-c"}'
+    jq -cn '{slug: "gl", agent: "glm", sessions: "sess-b"}'
+    jq -cn '{slug: "lz", agent: "lazer-reserve", sessions: "sess-d"}'
+  } > "$SANDBOX/items.jsonl"
+  # c: an earlier run stamped codex on it (the 8473b997 shape); the re-observation must not keep it
+  mkdir -p "$SO_OUT/proj"
+  jq -cn '{session_id: "sess-c", harness: "codex", updated_epoch: 1}' > "$SO_OUT/proj/2026-09.jsonl"
+  jq -c 'del(.harness)' "$SO_SESSIONS/proj/sessions.jsonl" > "$SANDBOX/reg" && mv "$SANDBOX/reg" "$SO_SESSIONS/proj/sessions.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a .harness) $(field b .harness) $(field c .harness)" 'claude claude claude'
+  # negative controls: a gateway item still gives its Claude session the gateway harness, and an
+  # opencode session's own row keeps opencode
+  assert_equal "$(field d .harness)" lazer-reserve
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | .harness')" opencode
+  # with no harness map the launcher is the name itself: a codex item or prior still reads claude
+  export SO_HARNESSES="$SANDBOX/no-map.json"
+  run "$SUBJECT" run --all
+  assert_success
+  assert_equal "$(field a .harness) $(field c .harness)" 'claude claude'
+  # the same rule over old outcomes rows: backfill gives a codex item's Claude session claude
+  jq -cn '{slug: "cx", agent: "codex", sessions: "old-cx"}' > "$SANDBOX/items.jsonl"
+  mkdir -p "$SO_OUT/old"
+  jq -cn '{session_id: "old-cx", account: "claude"}' > "$SO_OUT/old/2026-11.jsonl"
+  run "$SUBJECT" backfill-harness 2026-11
+  assert_success
+  assert_equal "$(jq -r .harness "$SO_OUT/old/2026-11.jsonl")" claude
 }
 
 @test "an opencode session on Lazer direct says so: provider lazer on the row and in costs" {
@@ -1263,4 +1504,194 @@ rework_repo() {
   rework_repo move
   "$SUBJECT" run
   assert_equal "$(field a '.rework | tojson')" '{"measured":1,"candidate_7d":0,"verified_30d":0}'
+}
+
+# lessons: one project, 3-day windows, now 2026-10-20 UTC. s1 and s2 stop before the 10-10 lessons,
+# s3 and s4 after them, s5 before the 10-18 one; s7's transcript is pruned, so it is not counted,
+# and s6 is another project's. Project tiny has one session each side, a hit then none: held on
+# the ratio, but MIN_SESSIONS is 2 here, so thin. The transcript path is the registry's: an outcome
+# row keeps only a boolean, which must not be read as a path.
+lessons_fixture() {
+  export TZ=UTC SO_OUT="$SANDBOX/lo" SO_LESSONS_DIR="$SANDBOX/lessons" SO_SESSIONS="$SANDBOX/reg" SO_LESSON_MIN_SESSIONS=2
+  mkdir -p "$SO_OUT/proj" "$SO_LESSONS_DIR" "$TR/l" "$SO_SESSIONS/proj" "$SO_SESSIONS/other" "$SO_SESSIONS/tiny"
+  bash_line() { jq -cn --arg c "$1" '{type: "assistant", message: {content: [{type: "tool_use", id: "x", name: "Bash", input: {command: $c}}]}}'; }
+  { bash_line 'killall node'; bash_line 'cd x && chmod -R 777 y'; } > "$TR/l/s1.jsonl"
+  bash_line 'ls' > "$TR/l/s2.jsonl"
+  bash_line 'chmod -R 777 z' > "$TR/l/s3.jsonl"
+  bash_line 'grep killall notes.md' > "$TR/l/s4.jsonl"
+  bash_line 'docker system prune -af' > "$TR/l/s5.jsonl"
+  bash_line 'git push --tags' > "$TR/l/t1.jsonl"
+  bash_line 'ls' > "$TR/l/t2.jsonl"
+  cp "$TR/l/s1.jsonl" "$TR/l/s6.jsonl"
+  local s day proj
+  for s in s1:2026-10-08 s2:2026-10-09 s3:2026-10-12 s4:2026-10-13 s5:2026-10-16 s7:2026-10-12 s6:2026-10-08 t1:2026-10-08 t2:2026-10-12; do
+    day=$(date -d "${s#*:}T12:00:00Z" +%s)
+    case "${s%%:*}" in s6) proj=other ;; t*) proj=tiny ;; *) proj=proj ;; esac
+    # an older registry row first: the newest row per session is the one read
+    jq -cn --arg id "${s%%:*}" --argjson at "$((day - 30 * 86400))" --arg p "$proj" '{session_id: $id, project: $p, updated: $at}' >> "$SO_SESSIONS/$proj/sessions.jsonl"
+    jq -cn --arg id "${s%%:*}" --argjson at "$day" --arg p "$proj" --arg tr "$TR/l/${s%%:*}.jsonl" \
+      '{session_id: $id, project: $p, updated: $at, transcript: $tr}' >> "$SO_SESSIONS/$proj/sessions.jsonl"
+    jq -cn --arg id "${s%%:*}" --argjson at "$day" --arg p "$proj" \
+      '{session_id: $id, project: $p, updated: ($at | todate), updated_epoch: $at, observed: $at, transcript: true}' >> "$SO_OUT/proj/2026-10.jsonl"
+  done
+  cat > "$SO_LESSONS_DIR/proj.md" <<'L'
+- **Never killall node; name the pid.** (2026-10-10, dream sweep) <!-- sig:2026-10-10 (^|[;&|]\s*)killall\s -->
+- **chmod 777 opens the key dir.** <!-- sig:2026-10-10 (^|[;&|]\s*)chmod\s+-R\s+777\b -->
+- **Never rm -rf a mount.** <!-- sig:2026-10-10 (^|[;&|]\s*)rm\s+-rf\s+/mnt -->
+- **docker prune takes the cache.** <!-- sig:2026-10-18 (^|[;&|]\s*)docker\s+system\s+prune -->
+- A note with no sig (2026-10-11, dream sweep)
+L
+  printf '%s\n' '- **Push tags one by one.** <!-- sig:2026-10-10 (^|[;&|]\s*)git\s+push\s+--tags -->' > "$SO_LESSONS_DIR/tiny.md"
+}
+
+@test "lessons: held, recurring, no-baseline, thin and early from the windows before and after; whole windows only are cached" {
+  lessons_fixture
+  run "$SUBJECT" lessons --days 3 --json
+  assert_success
+  run jq -c '[.lessons[] | [.claim[0:12], .verdict, .before.hits, .before.sessions, .after.hits, .after.sessions]], [.held, .recurring, .no_baseline, .thin, .early, .dream_lessons, .dream_with_sig]' <<<"$output"
+  assert_line '[["chmod 777 op","recurring",1,2,1,2],["docker prune","early",1,1,null,null],["Push tags on","thin",1,1,0,1],["Never killal","held",1,2,0,2],["Never rm -rf","no-baseline",0,2,0,2]]'
+  assert_line '[1,1,1,1,1,2,1]'
+  # the after window of the 10-18 lesson is not whole, so it is not cached; the other nine are
+  assert_equal "$(wc -l < "$SO_OUT/lesson-effect.jsonl")" 9
+  run "$SUBJECT" lessons --days 3
+  assert_line --partial '| held | proj | 2026-10-10 | 1/2 50% | 0/2 0% | Never killall node'
+  assert_line '1 held, 1 recurring, 1 no-baseline, 1 thin, 1 early (3d windows); 1 of 2 dream-sweep lessons carry a sig'
+}
+
+@test "lessons: a cached window is not scanned again; --cached reads only the cache; a bad arg is usage" {
+  lessons_fixture
+  run "$SUBJECT" lessons --cached --days 3 --json
+  assert_success
+  assert_equal "$(jq -c '[.held, .recurring, .early]' <<<"$output")" '[0,0,5]'
+  "$SUBJECT" lessons --days 3 >/dev/null
+  rm "$TR/l/s3.jsonl"   # the chmod recurrence: gone from disk, still in the cache
+  run "$SUBJECT" lessons --days 3 --json
+  assert_equal "$(jq -c '[.held, .recurring]' <<<"$output")" '[1,1]'
+  assert_equal "$(wc -l < "$SO_OUT/lesson-effect.jsonl")" 9
+  run "$SUBJECT" lessons --days 0
+  assert_failure 2
+}
+
+# add_prs ARRAY [JQ_ARG...] - append the PRs in jq ARRAY to the o/r gh fixture.
+add_prs() { local f="$1"; shift; jq "$@" ". + $f" "$GH_FIXTURE/prs.o-r" > "$SANDBOX/prs" && mv "$SANDBOX/prs" "$GH_FIXTURE/prs.o-r"; }
+
+# link_fixture - PR bodies that name claude.ai/code session links, and a clone of o/r whose merge
+# commits change: #20 apps/app1 (link of A's transcript), #21 apps/app1 and apps/app2 (link of A's
+# subagent), #22 infra/flux/apps/prod/app2 and docs (a link no transcript recorded; C only quotes it
+# in a string), #23 the same shape merged 80 days back (outside the band). app1 and app2 are the
+# repo's apps in the project map, credited by the real `agent-queue credit-of`.
+link_fixture() {
+  R="$SANDBOX/r"; export GIT_SSH_COMMAND=false
+  git init -q -b main "$R"; git -C "$R" remote add origin git@github.com:o/r.git
+  c() { mkdir -p "$R/$(dirname "$2")"; echo "$1" > "$R/$2"; [ -z "${3:-}" ] || { mkdir -p "$R/$(dirname "$3")"; echo "$1" > "$R/$3"; }
+        git -C "$R" add -A; git -C "$R" -c user.name=t -c user.email=t@t commit -qm "$1"; git -C "$R" rev-parse HEAD; }
+  c init README >/dev/null
+  O20=$(c "feat: one (#20)" apps/app1/x); O21=$(c "feat: both (#21)" apps/app1/y apps/app2/z)
+  O22=$(c "chore: infra (#22)" infra/flux/apps/prod/app2/y docs/z); O23=$(c "chore: old (#23)" infra/flux/apps/prod/app2/w)
+  git -C "$R" update-ref refs/remotes/origin/main HEAD
+  jq -cn --arg d "$R" '{paths: {($d): "proj"}, trackers: {_comment: "a string value",
+      app1: {repo: "proj", path: "apps/app1"}, app2: {repo: "proj", path: "apps/app2/"}}}' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_PROJECT_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
+  export SO_TRANSCRIPT_ROOTS="$TR" SO_QUEUE=queue-credit
+  printf '#!/usr/bin/env bash\n[ "$1" = credit-of ] || exit 1\nexec %q "$@"\n' "$REPO_ROOT/.local/bin/agent-queue" > "$SANDBOX/bin/queue-credit"
+  chmod +x "$SANDBOX/bin/queue-credit"
+  link() { printf '{"type":"attachment","attachment":{"type":"remote_session_change","url":"https://claude.ai/code/%s","pr":"https://claude.ai/code/%s"}}\n' "$1" "$1"; }
+  link session_AAA >> "$TR/a.jsonl"
+  mkdir -p "$TR/a/subagents"; link session_SUB > "$TR/a/subagents/agent-1.jsonl"
+  printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q","content":"{\"type\":\"remote_session_change\",\"url\":\"https://claude.ai/code/session_CLOUD\"}"}]}}' >> "$TR/c.jsonl"
+  add_prs '[
+      {number: 20, state: "MERGED", title: "feat: one", mergedAt: "2026-10-19T03:00:00Z", mergeCommit: {oid: $a}, body: "x\n\nhttps://claude.ai/code/session_AAA"},
+      {number: 21, state: "MERGED", title: "feat: both", mergedAt: "2026-10-19T04:00:00Z", mergeCommit: {oid: $b}, body: "https://claude.ai/code/session_SUB"},
+      {number: 22, state: "MERGED", title: "chore: infra", mergedAt: "2026-10-19T05:00:00Z", mergeCommit: {oid: $c}, body: "https://claude.ai/code/session_CLOUD"},
+      {number: 24, state: "OPEN", title: "chore: more infra", mergedAt: null, body: "https://claude.ai/code/session_CLOUD"},
+      {number: 23, state: "MERGED", title: "chore: old", mergedAt: "2026-07-31T05:00:00Z", mergeCommit: {oid: $d}, body: "https://claude.ai/code/session_OLD"}]' \
+    --arg a "$O20" --arg b "$O21" --arg c "$O22" --arg d "$O23"
+}
+
+@test "links: a PR whose body names the session's link, or its subagent's, is its PR, attributed by changed path" {
+  link_fixture
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '[.prs[] | "\(.number):\(.project)"] | join(",")')" "10:null,20:app1,21:proj"
+  assert_equal "$(field a .prs_merged)" 3
+  assert_equal "$(field a '.project + " " + (.projects | join(","))')" "proj app1,proj"
+  assert_equal "$(field c '.prs | length')" 0   # a link quoted in a string is not C's
+  # worst --project reaches a session of another project through its PRs: B (a revert, so it has
+  # friction) ran in proj and its linked #25 changed app1; C has friction and no app1 PR.
+  link session_BBB >> "$TR/b.jsonl"
+  add_prs '[{number: 25, state: "MERGED", title: "feat: b app1", mergedAt: "2026-10-19T06:00:00Z", mergeCommit: {oid: $o}, body: "https://claude.ai/code/session_BBB"}]' --arg o "$O20"
+  SO_NOW=$((SO_NOW + 60)) "$SUBJECT" run --all
+  run "$SUBJECT" worst --project app1 --days 30
+  assert_output --partial '`sess-b`'
+  refute_output --partial '`sess-c`'
+  run "$SUBJECT" worst --project proj --days 30
+  assert_output --partial '`sess-c`'
+}
+
+@test "links: a cloud session split evenly between projects goes to the one with more PRs overall" {
+  link_fixture
+  jq '.trackers.zz = {repo: "proj", path: "zz"}' "$SANDBOX/map.json" > "$SANDBOX/m" && mv "$SANDBOX/m" "$SANDBOX/map.json"
+  O26=$(c "feat: zz (#26)" zz/notes); O27=$(c "docs: notes (#27)" docs/notes)   # #27 is under no app: proj
+  add_prs '[{number: 26, state: "MERGED", title: "feat: zz", mergedAt: "2026-10-19T07:00:00Z", mergeCommit: {oid: $a}, body: "https://claude.ai/code/session_CLOUD"},
+            {number: 27, state: "MERGED", title: "docs: notes", mergedAt: "2026-10-19T08:00:00Z", mergeCommit: {oid: $b}, body: "https://claude.ai/code/session_CLOUD"}]' \
+    --arg a "$O26" --arg b "$O27"
+  run "$SUBJECT" run
+  assert_success
+  # one merged PR each for app2, zz and proj; the open #24 counts for proj, so proj wins over the
+  # alphabetically last zz
+  assert_equal "$(jq -r 'select(.harness == "claude-cloud") | .project + " " + (.projects | join(","))' "$SO_OUT"/proj/2026-10.jsonl)" "proj app2,proj,zz"
+}
+
+@test "links: a link no transcript recorded is a cloud session's line, under the app its PRs changed; an old one gets none" {
+  link_fixture
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(jq -r '[.session_id, .project, .harness, .prs_merged, .prs_open, (.projects | join(","))] | join(" ")' "$SO_OUT"/app2/2026-10.jsonl)" \
+    "session_CLOUD app2 claude-cloud 1 1 app2"
+  assert_equal "$(jq -r '[.prs[] | "\(.number):\(.project)"] | join(",")' "$SO_OUT"/app2/2026-10.jsonl)" "22:app2,24:null"
+  ! grep -rq session_OLD "$SO_OUT" || fail "a link merged outside the band got a line"
+  SO_NOW=$((SO_NOW + 60)) run "$SUBJECT" run
+  assert_equal "$(cat "$SO_OUT"/app2/*.jsonl | wc -l)" 1   # seen, nothing changed: not observed again
+  SO_NOW=$((SO_NOW + 7 * 86400)) run "$SUBJECT" run
+  assert_equal "$(jq -s 'last | .final' "$SO_OUT"/app2/2026-10.jsonl)" true
+}
+
+@test "links: a clone repo no due session names that cannot be listed is skipped and reported" {
+  link_fixture
+  X="$SANDBOX/x"; git init -q -b main "$X"; git -C "$X" remote add origin git@github.com:o/x.git
+  jq --arg d "$X" '.paths[$d] = "xproj"' "$SANDBOX/map.json" > "$SANDBOX/m" && mv "$SANDBOX/m" "$SANDBOX/map.json"
+  printf '#!/usr/bin/env bash\ncase " $* " in *" -R o/x "*) echo "HTTP 404" >&2; exit 1;; esac\nexec gh "$@"\n' > "$SANDBOX/bin/gh-x"
+  chmod +x "$SANDBOX/bin/gh-x"
+  SO_GH=gh-x run "$SUBJECT" run
+  assert_success
+  assert_output --partial "1 clone repo(s) unlisted, last o/x"
+  assert_equal "$(field a '[.prs[].number] | join(",")')" "10,20,21"
+}
+
+@test "links: an unreadable transcript makes no cloud line, since a link in it would read as one" {
+  link_fixture
+  link session_CLOUD > "$TR/locked.jsonl"; chmod 000 "$TR/locked.jsonl"
+  run "$SUBJECT" run
+  chmod 644 "$TR/locked.jsonl"
+  assert_success
+  [ ! -d "$SO_OUT/app2" ] || fail "a cloud line was made with a transcript unread"
+  assert_output --partial "a transcript unreadable, cloud sessions unread"
+}
+
+@test "links: a transcript root holding no link at all is read, not unreadable" {
+  link_fixture
+  mkdir -p "$SANDBOX/nolinks"; echo '{}' > "$SANDBOX/nolinks/x.jsonl"
+  SO_TRANSCRIPT_ROOTS="$SANDBOX/nolinks" run "$SUBJECT" run
+  assert_success
+  refute_output --partial "cloud sessions unread"
+  [ -d "$SO_OUT/app2" ] || fail "the cloud session got no line"
+}
+
+@test "links negative control: with no transcript root to read, no link becomes a cloud line, and the report says so" {
+  link_fixture
+  SO_TRANSCRIPT_ROOTS="$SANDBOX/none" run "$SUBJECT" run
+  assert_success
+  [ ! -d "$SO_OUT/app2" ] || fail "a cloud line was made without knowing the local links"
+  assert_equal "$(field a '[.prs[].number] | join(",")')" "10,20,21"   # the due session's own links still join
+  assert_output --partial "no transcript root, cloud sessions unread"
 }

@@ -9,6 +9,7 @@
 #   agentctl-session-outcomes langfuse [--all]             push outcomes and judge verdicts to Langfuse as scores
 #   agentctl-session-outcomes backfill-harness YYYY-MM     give that month's rows with no harness one
 #   agentctl-session-outcomes rework DIR [--days N] [--until T] [--sample N]   rework over a repo's commits
+#   agentctl-session-outcomes lessons [--days N] [--json] [--cached]   did each lesson with a sig change behaviour
 #
 # run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
 # resumed, or just turned SO_FINAL_DAYS old gets one line in ~/.agent/outcomes. Outcomes:
@@ -29,10 +30,14 @@
 # Claude config dir its transcript lives under, as `agent-usage burn` names it.
 # An opencode or Codex session has no registry row, so its line comes from opencode's DB
 # (so_opencode_rows) or Codex's rollout files (so_codex_rows).
-# `harness` on a line is claude, or what the queue item it worked says. A gateway item's real spend
+# `harness` on a line is what its launcher recorded (HARNESS_DEF). A gateway item's real spend
 # goes on the item as gateway_cost_usd (gateway_push).
-# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR
-# SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES SO_PROJECT_MAP SO_ROADMAP.
+# A Forgejo PR (repo `host/owner/repo`, session-outcomes.sh SO_PR_JQ) is looked up through that host's
+# API (so_forgejo_pr_list), only on a host SO_FORGEJO_HOSTS lists (the private runner conf sets
+# it). A failed read holds back the sessions naming that repo until a later run reads it; a host
+# not listed leaves its PRs UNKNOWN. The report says which.
+# Seams: SO_SESSIONS SO_OUT SO_NOW SO_GH SO_LIB_DIR SO_RBW SO_CURL SO_FORGEJO_ENTRY SO_BENCH SO_QUEUE SO_LESSONS_DIR
+# SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES SO_PROJECT_MAP SO_ROADMAP SO_TRANSCRIPT_ROOTS.
 # `class` on a line is {size, kind} of the queue item the session worked: the size and kind of the
 # item's `row:` on its project's roadmap, the item's own `type:` when the row is not there. The first
 # item of a chain that has either wins; a session with no item has no class. fleet-bench models --by
@@ -42,6 +47,14 @@
 # carries the fixes that rewrote its lines, from one blame pass per repo per run. A session with a
 # merged PR is observed once more when it turns SO_REWORK_VERIFY_DAYS (30) old, so the verified
 # count has had its whole window. `rework DIR` prints the same count for a repo's commits.
+# Session links: a PR whose body names a claude.ai/code session link (so_pr_index) is a PR of the
+# session whose transcript or subagents recorded that link (so_session_links), so a PR opened in a
+# subagent or by any command counts. The repos read are the due sessions' plus every repo with a
+# clone in the project map. A link no local transcript recorded, with a PR merged in the observation
+# band, is a session that ran elsewhere (claude.ai/code): it gets a line of its own, harness
+# claude-cloud, observed by the same rule as a registry row, on a run that has any session due.
+# Each merged PR whose repo has a clone gets `project` from its changed paths (agent-queue credit-of),
+# and `projects` on the line is the session's project plus its PRs', which `worst --project` matches.
 
 set -uo pipefail
 
@@ -59,7 +72,8 @@ ROADMAP="${SO_ROADMAP:-notes projects --roadmap}"   # given <project> --json: le
 OC_DB="${SO_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
 CX_DIR="${SO_CODEX_SESSIONS:-$HOME/.codex/sessions}"
 HARNESSES="${SO_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"
-PROJECT_MAP="${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"   # rework: a PR's repo -> the clone blame reads
+PROJECT_MAP="${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"   # a PR's repo -> its clone and its apps
+TR_ROOTS="${SO_TRANSCRIPT_ROOTS:-}"   # colon-separated; unset: every ~/.claude*/projects, for the links local transcripts recorded
 # Money as `worst` and `card` print it.
 FMT_DEF='def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;'
 LF_URL="${SO_LF_URL:-}"   # set by the private runner conf; this repo is public
@@ -108,30 +122,61 @@ roadmap_index() {
   [ -s "$3" ] || printf '{}' > "$3"
 }
 
-# The one harness rule, for `run` and `backfill-harness`: what the row says (opencode, codex), else
-# what the Claude Code transcript ran on. The Stop hook records `base_url` (ANTHROPIC_BASE_URL): set,
-# it ran on the gateway, so it is the item's gateway harness or claude-lazer (a hand `cl --lazer`);
-# null or another endpoint, it ran on an account, so claude whatever the item later spilled to. The
-# gateway is the harness map's `gateway.url` ($gwurl); with no map, no endpoint is the gateway. A row from before that
-# field takes the item's agent, except a gateway agent on a transcript under another account's config
-# dir: a gateway run unsets CLAUDE_CONFIG_DIR, so it is always under ~/.claude.
+# The one harness rule, for `run` and `backfill-harness`: what the row says. The launcher records it:
+# opencode and codex rows carry theirs, and the Stop hook stores the session's AGENT_HARNESS
+# (claude-lazer exports it, fleet-dispatch names the gateway harness it starts), claude when unset.
+# A row from before that record keeps the harness an earlier `run` gave the session, else takes the
+# item's agent, except a gateway agent (one the harness map launches by claude-lazer) on a transcript
+# under another account's config dir: a gateway run unsets CLAUDE_CONFIG_DIR, so it is always under
+# ~/.claude. Only a Claude session reaches that fallback (opencode and codex rows carry their own
+# harness), so neither the prior harness nor the item's agent can make it an opencode or codex one:
+# a session that worked an `agent: codex` item reads claude.
 HARNESS_DEF='def harness_of($i):
-  ($i.agent // "claude") as $a | ($a == "claude-lazer" or $a == "lazer-reserve") as $gw
-  | .harness // (
-      if has("base_url") then (
-        if $gwurl == "" or ((.base_url // "") | startswith($gwurl) | not) then "claude"
-        elif $gw then $a else "claude-lazer" end)
-      elif $gw and ((.account // (.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a)) // "claude") != "claude" then "claude"
+  def launcher: $hm.harnesses[.].launcher // .;
+  def claude_run: launcher | . != "opencode" and . != "codex";
+  ($i.agent // "claude") as $a
+  | .harness // (.prior_harness // empty | select(claude_run)) // (
+      if ($a | claude_run | not) then "claude"
+      elif ($a | launcher) == "claude-lazer"
+         and ((.account // (.transcript // "" | capture("/\\.(?<a>claude[^/]*)/projects/").a)) // "claude") != "claude" then "claude"
       else $a end);'
 
-# The gateway's URL from the harness map, or nothing when there is no map.
-gateway_url() { [ -r "$HARNESSES" ] && jq -r '.gateway.url // empty' "$HARNESSES"; }
+# The harness map as JSON, {} when there is none.
+harness_map() { { [ -r "$HARNESSES" ] && jq -c . "$HARNESSES"; } 2>/dev/null || echo '{}'; }
+
+# due_rows SEEN ALL - stdin: registry-shaped lines; stdout: those due an observation, with final,
+# rework_settled and the prior class and harness. A session id on two lines (it moved project
+# mid-life) takes the newest Stop.
+due_rows() {
+  jq -cnR --slurpfile seen "$1" --argjson now "$NOW" --argjson days "$FINAL_DAYS" \
+      --argjson vdays "$SO_REWORK_VERIFY_DAYS" --argjson all "$2" '
+      ($seen | map({key: .session_id, value: .}) | from_entries) as $s
+      | [inputs | fromjson? | select(type == "object" and .session_id and .updated)]
+      | group_by(.session_id) | map(max_by(.updated)) | .[]
+      | . + {final: (($now - .updated) >= $days * 86400),
+             rework_settled: (($now - .updated) >= $vdays * 86400),
+             prior_class: ($s[.session_id].class // null), prior_harness: ($s[.session_id].harness // null)}
+      | select(($s[.session_id] // null) as $p
+               | $all or $p == null
+                 or $p.updated_epoch != .updated
+                 or ($p.final == false and .final)
+                 or (($p.prs_merged // 0) > 0 and ($p.rework_settled // false) == false and .rework_settled
+                     and ($now - .updated) < ($vdays + $days) * 86400))
+    '
+}
 
 die_stalled() {
   echo "$NAME: $1" >&2
   proof_outcome "$NAME" STALLED "$1"
   exit 1
 }
+
+# null_metrics WORK SID - a session with no transcript to read: null metrics and time use. Newline-ended,
+# since the PR lists below cat every m file into one jq stream, and nullnull is not JSON.
+null_metrics() { printf 'null\n' | tee "$1/m.$2.json" > "$1/t.$2.json"; }
+
+# clone_of CLONES_TSV REPO - the local clone of an owner/name repo (so_rework_repos), or nothing.
+clone_of() { awk -F'\t' -v r="${2,,}" 'tolower($1) == r { print $2; exit }' "$1"; }
 
 cmd_run() {
   local work all=false
@@ -158,39 +203,25 @@ cmd_run() {
   # (it moved project mid-life); the newest Stop wins.
   if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then
     cat "$SESSIONS"/*/sessions.jsonl
-  fi | cat - "$work/opencode.jsonl" "$work/codex.jsonl" | jq -cnR --slurpfile seen "$work/seen.jsonl" \
-        --argjson now "$NOW" --argjson days "$FINAL_DAYS" --argjson vdays "$SO_REWORK_VERIFY_DAYS" --argjson all "$all" '
-      ($seen | map({key: .session_id, value: .}) | from_entries) as $s
-      | [inputs | fromjson? | select(type == "object" and .session_id and .updated)]
-      | group_by(.session_id) | map(max_by(.updated)) | .[]
-      | . + {final: (($now - .updated) >= $days * 86400),
-             rework_settled: (($now - .updated) >= $vdays * 86400),
-             prior_class: ($s[.session_id].class // null)}
-      | select(($s[.session_id] // null) as $p
-               | $all or $p == null
-                 or $p.updated_epoch != .updated
-                 or ($p.final == false and .final)
-                 or (($p.prs_merged // 0) > 0 and ($p.rework_settled // false) == false and .rework_settled
-                     and ($now - .updated) < ($vdays + $days) * 86400))
-    ' > "$work/due.jsonl" || die_stalled "could not read the session registry"
+  fi | cat - "$work/opencode.jsonl" "$work/codex.jsonl" | due_rows "$work/seen.jsonl" "$all" > "$work/due.jsonl" || die_stalled "could not read the session registry"
 
   if [ ! -s "$work/due.jsonl" ]; then
     echo "$NAME: nothing due"
-    proof_report "$NAME" NOOP "nothing due$oc_note; $(gateway_push); $(lf_push "" "$work")"
+    proof_report "$NAME" NOOP "nothing due$oc_note; $(lessons_note); $(gateway_push); $(lf_push "" "$work")"
     return 0
   fi
 
   local queue_note=""
   queue_index "$work/queue.json" || queue_note="; queue unreadable, harness read as claude, items unknown"
   roadmap_index "$work/queue.json" "$work/due.jsonl" "$work/roadmap.json"
-  jq -c --slurpfile q "$work/queue.json" --slurpfile rm "$work/roadmap.json" --arg gwurl "$(gateway_url)" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
+  jq -c --slurpfile q "$work/queue.json" --slurpfile rm "$work/roadmap.json" --argjson hm "$(harness_map)" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
       | .items = ($i.items // [])
       | .class = (([($i.refs // [])[] | ($rm[0][.row] // {}) as $r
                    | {size: ($r.size // null), kind: ((($r.kind // "") | select(. != "")) // (.type | select(. != "")) // null)}
                    | select(.size != null or .kind != null)] | first) // .prior_class)
       | .harness = harness_of($i)
       | if .harness == "opencode" or .harness == "codex" then
-          .prs = (((.prs // []) + [$i.pr // "" | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
+          .prs = (((.prs // []) + [$i.pr // "" | tostring | split(" ")[] | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
         else . end' "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
     die_stalled "could not join the due sessions to the queue"
 
@@ -200,49 +231,120 @@ cmd_run() {
   # fleet-bench retro turns a lesson recurring in two sessions into a guard row.
   local row sid tr n=0 sigs
   sigs=$(so_lesson_sigs | jq -c 'map({sig, since})') || sigs='[]'
+  : > "$work/links.jsonl"
   while IFS= read -r row; do
     sid="$(jq -r .session_id <<<"$row")"
     tr="$(jq -r '.transcript // ""' <<<"$row")"
     if [ -n "$tr" ] && [ -f "$tr" ]; then
       so_transcript_metrics "$tr" "$sigs" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
       "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null\n' > "$work/t.$sid.json"
+      so_session_links "$tr" "${tr%.jsonl}/subagents" | jq -Rcn --arg s "$sid" '{($s): [inputs]}' >> "$work/links.jsonl"
     else
-      # Newline-ended: the repo list below cats every m file into one jq stream, and nullnull is not JSON.
-      printf 'null\n' > "$work/m.$sid.json"
-      printf 'null\n' > "$work/t.$sid.json"
+      null_metrics "$work" "$sid"
     fi
     n=$((n + 1))
   done < "$work/due.jsonl"
 
   # One `gh pr list` per repo per run, never per PR: under fleet load per-PR calls are
-  # what tripped the 403 rate limit.
-  local repo
-  { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo' | sort -u > "$work/repos"
-  printf '{}' > "$work/index.json"
+  # what tripped the 403 rate limit. The due sessions' repos, plus every repo with a clone in the
+  # project map, where a PR that names a session link may sit. A Forgejo repo is one paged API read
+  # instead; it is the home cluster, so a failed one holds back only its own sessions.
+  local repo forge_note=""
+  so_rework_repos "$PROJECT_MAP" > "$work/clones.tsv"
+  # A due session's repo that cannot be listed stalls the run; a clone's alone is skipped and reported.
+  # A repo gh cannot resolve while `gh auth status` passes is no repo (a test fixture's o/r in a
+  # pr-link or printed URL): it is skipped, its claims are dropped from every line, and the report
+  # names it. With auth failing the same error is the token's fault, so it stalls like any other.
+  { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -r 'select(. != null) | .prs[].repo' |
+    sort -u > "$work/repos.due"
+  sort -u "$work/repos.due" <(cut -f1 "$work/clones.tsv") > "$work/repos"
+  : > "$work/index.jsonl"; : > "$work/repos.gone"
+  local unlisted=0 list_note="" gh_auth=""
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
-    "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
-      --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err" \
-      || die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
-    so_pr_index "$FINAL_DAYS" < "$work/prs.json" > "$work/idx.json" \
+    if [[ "$repo" == */*/* ]]; then
+      so_forgejo_pr_list "$repo" "$work" "$PR_LIMIT" > "$work/prs.json" || {
+        [ $? = 1 ] && printf '%s\n' "$repo" >> "$work/fj.held"
+        forge_note="$forge_note; forgejo: $SO_FORGEJO_ERR"; continue; }
+    elif ! "$GH" pr list -R "$repo" --state all --limit "$PR_LIMIT" \
+        --json number,state,title,mergedAt,body,mergeCommit > "$work/prs.json" 2>"$work/gh.err"; then
+      if grep -q 'Could not resolve to a Repository' "$work/gh.err"; then
+        [ -n "$gh_auth" ] || { "$GH" auth status >/dev/null 2>&1 && gh_auth=ok || gh_auth=fail; }
+        [ "$gh_auth" = ok ] && { printf '%s\n' "$repo" >> "$work/repos.gone"; continue; }
+      fi
+      grep -qixF -- "$repo" "$work/repos.due" && die_stalled "gh pr list $repo failed: $(head -c 200 "$work/gh.err")"
+      unlisted=$((unlisted + 1)) list_note="; $((unlisted)) clone repo(s) unlisted, last $repo"
+      continue
+    fi
+    so_pr_index "$FINAL_DAYS" < "$work/prs.json" | jq -c --arg r "$repo" '{($r): .}' >> "$work/index.jsonl" \
       || die_stalled "could not index PRs for $repo"
-    jq -c --arg r "$repo" --slurpfile i "$work/idx.json" '. + {($r): $i[0]}' \
-      "$work/index.json" > "$work/index.next" && mv "$work/index.next" "$work/index.json"
   done < "$work/repos"
+  jq -cs 'add // {}' "$work/index.jsonl" > "$work/index.json" || die_stalled "could not merge the PR indexes"
+  if [ -s "$work/repos.gone" ]; then
+    list_note="$list_note; claims dropped, gh cannot resolve: $(paste -sd, "$work/repos.gone")"
+  fi
+
+  # Session links. A PR whose body names a due session's link joins its prs. A link no local
+  # transcript recorded, with a PR merged in the band (every one with --all), is a session that ran
+  # elsewhere and gets a line of its own. With no transcript root to read, every link would look like
+  # one, so none is made and the report says so.
+  local cloud_note="" r cand=() roots=()
+  if [ -n "$TR_ROOTS" ]; then IFS=: read -ra cand <<<"$TR_ROOTS"; else cand=("$HOME"/.claude*/projects); fi
+  for r in "${cand[@]}"; do [ -d "$r" ] && roots+=("$r"); done
+  jq -cs 'add // {}' "$work/links.jsonl" 2>/dev/null > "$work/links.json" || printf '{}' > "$work/links.json"
+  if [ "${#roots[@]}" -eq 0 ]; then
+    cloud_note="; no transcript root, cloud sessions unread"
+  elif so_session_links "${roots[@]}" > "$work/local.txt"; then
+    { cat "$work/local.txt"; jq -r '.[][]' "$work/links.json"; } | jq -Rcs 'split("\n") | map(select(. != ""))' > "$work/local.json" ||
+      die_stalled "could not read the local session links"
+  else
+    cloud_note="; a transcript unreadable, cloud sessions unread"   # a link it holds would read as a cloud one
+  fi
+  # {"<link>": [{repo, number}]} over every listed PR
+  jq -c '[to_entries[] | .key as $r | .value | to_entries[] | {repo: $r, number: (.key | tonumber), v: .value}
+          | .v.links[]? as $l | {l: $l, pr: {repo, number}, merged: (if .v.state == "MERGED" then .v.merged_at else null end)}]' \
+    "$work/index.json" > "$work/linked.json" || die_stalled "could not index the PRs' session links"
+  jq -c --slurpfile ln "$work/links.json" --slurpfile lk "$work/linked.json" '
+      ($ln[0][.session_id] // []) as $mine
+      | if ($mine | length) == 0 then . else
+          .prs = (.prs // []) + [$lk[0][] | select(.l as $l | $mine | index($l)) | .pr] end' \
+    "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
+    die_stalled "could not join the due sessions to their PR links"
+  if [ -s "$work/local.json" ]; then
+    jq -c --slurpfile loc "$work/local.json" --argjson now "$NOW" --argjson all "$all" \
+        --argjson band "$(((SO_REWORK_VERIFY_DAYS + FINAL_DAYS) * 86400))" '
+        ($loc[0] | map({key: ., value: true}) | from_entries) as $local
+        | [.[] | select($local[.l] | not)] | group_by(.l)[]
+        | ([.[].merged | select(.) | fromdateiso8601] | max) as $last
+        | select($last != null and ($all or ($now - $last) < $band))
+        | {session_id: .[0].l, project: null, harness: "claude-cloud", title: "",
+           updated: $last, edits: 0, prs: (map(.pr) | unique)}' "$work/linked.json" |
+      due_rows "$work/seen.jsonl" "$all" > "$work/cloud.jsonl" || die_stalled "could not read the cloud sessions"
+    while IFS= read -r sid; do null_metrics "$work" "$sid"; done < <(jq -r .session_id "$work/cloud.jsonl")
+    n=$((n + $(wc -l < "$work/cloud.jsonl")))
+    cat "$work/cloud.jsonl" >> "$work/due.jsonl"
+  fi
+
+  # The PRs the due sessions name, kept from the index, since each row's jq below reads the whole
+  # of it; and the merged ones among them, which rework and attribution read.
+  { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -cn --slurpfile i "$work/index.json" '
+      reduce (inputs | select(. != null) | .prs[]) as $p ({};
+        ($p.number | tostring) as $n | ($i[0][$p.repo][$n] // null) as $v
+        | if $v == null then . else .[$p.repo][$n] = $v end)' > "$work/index.due.json" ||
+    die_stalled "could not list the due sessions' PRs"
+  jq -r 'to_entries[] | .key as $r | .value | to_entries[]
+         | select(.value.state == "MERGED" and .value.merged_at and .value.merge_oid)
+         | [$r, .key, .value.merge_oid, (.value.merged_at | fromdateiso8601)] | @tsv' "$work/index.due.json" > "$work/merged.tsv" ||
+    die_stalled "could not list the merged PRs to read rework for"
 
   # Rework: one blame pass per repo, over the fixes since the oldest merged PR a due session
   # names. The clone is fetched first, so a fix merged since its last pull is seen; one that will
   # not fetch is read as it stands, and the report says so. A repo with no clone stays unmeasured.
   local rework_note="" dir branch since
   printf '{}' > "$work/rework.json"
-  { cat "$work"/m.*.json; jq -c '{prs: (.prs // [])}' "$work/due.jsonl"; } | jq -rn --slurpfile i "$work/index.json" '
-      [inputs | select(. != null) | .prs[] | . as $p | ($i[0][$p.repo][($p.number | tostring)] // {})
-       | select(.state == "MERGED" and .merged_at and .merge_oid) | {repo: $p.repo, at: (.merged_at | fromdateiso8601)}]
-      | group_by(.repo)[] | "\(.[0].repo)\t\(map(.at) | min)"' > "$work/rework.due" ||
-    die_stalled "could not list the merged PRs to read rework for"
-  if [ -s "$work/rework.due" ]; then so_rework_repos "$PROJECT_MAP"; fi > "$work/clones.tsv"
+  sort -t$'\t' -k1,1 -k4,4n "$work/merged.tsv" | awk -F'\t' '!seen[$1]++ { print $1 "\t" $4 }' > "$work/rework.due"
   while IFS=$'\t' read -r repo since; do
-    dir=$(awk -F'\t' -v r="${repo,,}" 'tolower($1) == r { print $2; exit }' "$work/clones.tsv")
+    dir=$(clone_of "$work/clones.tsv" "$repo")
     [ -n "$dir" ] || continue
     timeout 120 git -C "$dir" fetch -q origin </dev/null 2>/dev/null || rework_note="$rework_note; rework: $repo not fetched"
     branch=$(merge_proof_branch "$dir") || { rework_note="$rework_note; rework: $repo has no origin branch"; continue; }
@@ -250,6 +352,31 @@ cmd_run() {
       jq -c --arg r "$repo" --slurpfile i "$work/rw.json" '. + {($r): $i[0]}' "$work/rework.json" > "$work/rework.next" &&
       mv "$work/rework.next" "$work/rework.json" || rework_note="$rework_note; rework: $repo unread"
   done < "$work/rework.due"
+
+  # What each merged PR changed, from its merge commit in the clone (fetched above), credited to an
+  # app by `agent-queue credit-of`, the queue's own rule; a PR no app wins is its repo's project, the
+  # one the repo's name resolves to (project-name.sh). No clone, a commit the clone does not have, or
+  # an unreadable rule leaves the PR's project unknown, and the report says so for the rule.
+  local num oid at proj files win attr_note="" names=()
+  local -A rproj=()
+  mapfile -t names < <(sed 's|.*/||' "$work/repos")
+  PROJECT_MAP_FILE="$PROJECT_MAP" bash -c '. "$1" && shift && project_of_repos_json "$@"' _ \
+      "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" "${names[@]}" 2>/dev/null |
+    jq -c --rawfile repos "$work/repos" '. as $b | [$repos | split("\n")[] | select(. != "")
+      | {key: ., value: $b[split("/") | last]} | select(.value)] | from_entries' > "$work/repoproj.json" ||
+    { printf '{}' > "$work/repoproj.json"; attr_note="; repo projects unread"; }
+  while IFS=$'\t' read -r repo proj; do rproj[$repo]=$proj; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' "$work/repoproj.json")
+  : > "$work/attr.tsv"
+  while IFS=$'\t' read -r repo num oid at; do
+    dir=$(clone_of "$work/clones.tsv" "$repo") proj=${rproj[$repo]:-}
+    [ -n "$dir" ] && [ -n "$proj" ] || continue
+    files=$(git -C "$dir" -c core.quotepath=off diff --name-only "$oid^1" "$oid" 2>/dev/null) || continue
+    win=$(printf '%s\n' "$files" | AGENT_QUEUE_PROJECT_MAP="$PROJECT_MAP" "$QUEUE" credit-of "$proj" 2>/dev/null) || { attr_note="; credit-of unread"; continue; }
+    win=${win%%$'\t'*}
+    printf '%s\t%s\n' "$repo#$num" "${win:-$proj}" >> "$work/attr.tsv"
+  done < "$work/merged.tsv"
+  jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries' "$work/attr.tsv" > "$work/attr.json" ||
+    die_stalled "could not read the PRs' projects"
 
   # Delivery from the bench, keyed by session and kept to the due ones, since each row's jq
   # reads the whole map. An unreadable bench leaves delivery null and says so in the
@@ -275,23 +402,35 @@ cmd_run() {
   : > "$work/lines.jsonl"
   while IFS= read -r row; do
     sid="$(jq -r .session_id <<<"$row")"
-    jq -c --argjson row "$row" --slurpfile idx "$work/index.json" --slurpfile time_use "$work/t.$sid.json" \
+    jq -c --argjson row "$row" --slurpfile idx "$work/index.due.json" --slurpfile time_use "$work/t.$sid.json" \
        --slurpfile bench "$work/bench.json" --slurpfile agents "$work/agents.json" --arg observed "$observed" \
-       --slurpfile rw "$work/rework.json" --argjson now "$NOW" --argjson rdays "$SO_REWORK_DAYS" '
+       --slurpfile rw "$work/rework.json" --argjson now "$NOW" --argjson rdays "$SO_REWORK_DAYS" \
+       --slurpfile attr "$work/attr.json" --slurpfile rp "$work/repoproj.json" --rawfile gone "$work/repos.gone" '
       . as $m | $idx[0] as $ix
+      | ($gone | split("\n") | map(select(. != "") | {key: ., value: true}) | from_entries) as $gn
       | ($m // {}) as $mm
       | ($mm.entrypoint == "sdk-cli") as $runner
-      | [ (($mm.prs // []) + ($row.prs // []))[] | . as $p
+      | [ (($mm.prs // []) + ($row.prs // []) | unique)[] | select($gn[.repo] | not) | . as $p
           | ($ix[$p.repo][($p.number | tostring)] // {state: "UNKNOWN", merged_at: null, reverted: false})
-          | {repo: $p.repo, number: $p.number, state, merged_at, reverted}
+          | {repo: $p.repo, number: $p.number, state, merged_at, reverted,
+             project: ($attr[0]["\($p.repo)#\($p.number)"] // null)}
             + (($rw[0][$p.repo] // null) as $r | .merge_oid as $oid
                | if $r != null and .state == "MERGED" and .merged_at and $oid
                  then ($r[$oid] // []) as $f
                    | {rework: {seen_days: (($now - (.merged_at | fromdateiso8601)) / 86400 | floor),
                                candidate: any($f[]; .days <= $rdays), verified: any($f[]; .named), fixes: $f}}
                  else {} end) ] as $prs
+      # a cloud session has no project of its own: the one its attributed PRs most often name, a tie
+      # going to the one with more PRs overall, where an unattributed (open, or no clone) PR counts
+      # for the project of its repo
+      | (if $runner then "_runner"
+         elif $row.harness == "claude-cloud" then
+           ([$prs[] | {p: (.project // $rp[0][.repo]), a: (.project != null)} | select(.p)]
+            | group_by(.p) | max_by([(map(select(.a)) | length), length]) | .[0].p) // "_unscoped"
+         else $row.project end) as $proj
       | { session_id: $row.session_id,
-          project: (if $runner then "_runner" else $row.project end),
+          project: $proj,
+          projects: ([$proj] + [$prs[].project | select(.)] | unique),
           runner: $runner,
           harness: $row.harness,
           provider: $row.provider,
@@ -337,6 +476,15 @@ cmd_run() {
     ' "$work/m.$sid.json" >> "$work/lines.jsonl" || die_stalled "could not build the line for $sid"
   done < "$work/due.jsonl"
 
+  # A session naming a repo whose read failed gets no line this run, so the next run sees it
+  # due again and records its PR's state instead of a lasting UNKNOWN.
+  if [ -s "$work/fj.held" ]; then
+    jq -c --rawfile h "$work/fj.held" '($h | split("\n")) as $held | select(all(.prs[]?.repo; IN($held[]) | not))' \
+      "$work/lines.jsonl" > "$work/lines.keep" || die_stalled "could not hold back the unread Forgejo sessions"
+    forge_note="$forge_note; $(( $(wc -l < "$work/lines.jsonl") - $(wc -l < "$work/lines.keep") )) session(s) held for the next run"
+    mv "$work/lines.keep" "$work/lines.jsonl"
+  fi
+
   # Append last, all at once: a run that fails above leaves the output untouched.
   local line proj month written=0
   while IFS= read -r line; do
@@ -347,8 +495,8 @@ cmd_run() {
     written=$((written + 1))
   done < "$work/lines.jsonl"
 
-  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note$rework_note"
-  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$rework_note; $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
+  echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note$forge_note$rework_note$attr_note$cloud_note$list_note"
+  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$forge_note$rework_note$attr_note$cloud_note$list_note; $(lessons_note); $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
 }
 
 # ledger_push - the work ledger's cost and time (~/.config/agentctl/QUEUE.md): every queue item
@@ -488,7 +636,7 @@ so_worst_by() {
   jq -rn --arg by "$1" --arg p "$2" --argjson days "$3" --argjson top "$4" --argjson json "$5" \
       --argjson now "$NOW" "$(so_friction_def)$FMT_DEF"'
     [inputs
-     | select($p == "" or .project == $p)
+     | select(in_project($p))
      | select(.updated_epoch >= $now - $days * 86400)
      | . + {friction: friction}
      | . as $r
@@ -536,7 +684,7 @@ cmd_worst() {
   so_latest "$OUT" | jq -rn --arg p "$project" --argjson now "$NOW" --argjson json "$json" \
       --argjson days "$days" --argjson top "$top" "$(so_friction_def)$FMT_DEF"'
     [inputs
-     | select($p == "" or .project == $p)
+     | select(in_project($p))
      | select(.updated_epoch >= $now - $days * 86400)
      | . + {friction: friction}
      | select(.friction > 0)]
@@ -686,6 +834,123 @@ cmd_card() {
       end' <<<"$rows"
 }
 
+# lessons [--days N] [--json] [--cached] - did a lesson change behaviour. For each lesson with a sig
+# (so_lesson_sigs), the share of its project's sessions (the lesson file's name) whose Bash commands
+# match the sig in the N days (14) before the day it was written, against the N days after that day.
+# The sessions are the registry's (newest row per session, as `run` reads it, since an outcome row
+# keeps only whether its transcript was read): one sits in the window its last stop falls in, and only
+# one whose transcript is still on disk counts, hit or not. The sig is matched afresh rather than read
+# from lesson_hits, which counts only after the lesson's date and so has no before window. Each window is scanned once, when it is whole (LESSON_LAG_DAYS after its
+# end, so the 02:30 run has rows for it), and kept in $OUT/lesson-effect.jsonl; --cached reads only
+# that file. Verdicts: held (the after share is at most LESSON_HELD_RATIO of the before share),
+# recurring, no-baseline (no session hit it before, so nothing to compare), thin (a whole window with
+# fewer than LESSON_MIN_SESSIONS sessions, too few to call), early (a window not whole yet).
+# The last line counts the dream-sweep lessons and how many carry a sig: a lesson with none is not
+# measured. `run` refreshes it nightly; fleet-bench KPI lesson_held_share reads the --json.
+LESSON_HELD_RATIO="${SO_LESSON_HELD_RATIO:-0.5}"  # provisional (standards.md): revisit once 10 lessons have a verdict
+LESSON_MIN_SESSIONS="${SO_LESSON_MIN_SESSIONS:-5}"  # provisional: a window below this is thin; same revisit
+LESSON_LAG_DAYS=2
+
+# lesson_window ROWS SIG PROJECT FROM TO - one cache line {sessions, hits} for that window, over
+# ROWS (the registry's newest row per session, read once per refresh).
+lesson_window() {
+  local rows="$1" sig="$2" proj="$3" from="$4" to="$5" tr hits=0 list=()
+  while IFS= read -r tr; do
+    [ -f "$tr" ] && list+=("$tr")
+  done < <(jq -r --arg p "$proj" --argjson f "$from" --argjson t "$to" '
+    select(.project == $p and .updated >= $f and .updated < $t) | .transcript // empty' "$rows")
+  if [ "${#list[@]}" -gt 0 ]; then
+    hits=$(printf '%s\0' "${list[@]}" | xargs -0 jq -rR --arg re "$sig" '
+      fromjson? | select(.type == "assistant") | .message.content[]?
+      | select(.type == "tool_use" and .name == "Bash")
+      | select((.input.command // "") | try test($re) catch false) | input_filename' 2>/dev/null | sort -u | wc -l)
+  fi
+  jq -cn --argjson s "${#list[@]}" --argjson h "$hits" '{sessions: $s, hits: $h}'
+}
+
+# lessons_refresh DAYS - scan every whole window not yet in the cache. Prints how many it added.
+lessons_refresh() {
+  local days="$1" cache="$OUT/lesson-effect.jsonl" sigs added=0 l sig since proj day0 w from to r rows
+  sigs=$(so_lesson_sigs | jq -c '.[] | {sig, since, p: (.file | sub("\\.md$"; ""))}') || return 1
+  [ -n "$sigs" ] || { echo 0; return 0; }
+  mkdir -p "$OUT" && touch "$cache" || return 1
+  rows=$(mktemp) || return 1
+  if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then cat "$SESSIONS"/*/sessions.jsonl; fi |
+    jq -cn '[inputs | select(type == "object" and .session_id and (.updated | numbers))]
+            | group_by(.session_id)[] | max_by(.updated)' > "$rows" || { rm -f "$rows"; return 1; }
+  while IFS= read -r l; do
+    sig=$(jq -r .sig <<<"$l"); since=$(jq -r .since <<<"$l"); proj=$(jq -r .p <<<"$l")
+    day0=$(date -d "$since" +%s) || continue
+    for w in before after; do
+      if [ "$w" = before ]; then from=$((day0 - days * 86400)) to=$day0
+      else from=$((day0 + 86400)) to=$((day0 + 86400 + days * 86400)); fi
+      [ "$NOW" -ge $((to + LESSON_LAG_DAYS * 86400)) ] || continue
+      jq -e --arg s "$sig" --arg d "$since" --argjson n "$days" --arg w "$w" \
+        'select(.sig == $s and .since == $d and .days == $n and .window == $w)' "$cache" >/dev/null 2>&1 && continue
+      r=$(lesson_window "$rows" "$sig" "$proj" "$from" "$to") &&
+        jq -c --arg s "$sig" --arg d "$since" --argjson n "$days" --arg w "$w" --arg p "$proj" --argjson at "$NOW" \
+          '{sig: $s, since: $d, project: $p, days: $n, window: $w} + . + {at: $at}' <<<"$r" >> "$cache" ||
+        { rm -f "$rows"; return 1; }
+      added=$((added + 1))
+    done
+  done <<<"$sigs"
+  rm -f "$rows"
+  echo "$added"
+}
+
+# lessons_note - the nightly refresh, as a clause for run's report. A failed scan is said, not fatal:
+# the rows are written, and the next run scans the windows again.
+lessons_note() {
+  local n
+  n=$(lessons_refresh 14) && printf 'lessons: %s window(s) scanned' "$n" || printf 'lessons: scan failed'
+}
+
+cmd_lessons() {
+  local days=14 json=false cached=false use="usage: $NAME lessons [--days N] [--json] [--cached]"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { echo "$use" >&2; return 2; }; days="$2"; shift 2 ;;
+      --json) json=true; shift ;;
+      --cached) cached=true; shift ;;
+      *) echo "$use" >&2; return 2 ;;
+    esac
+  done
+  $cached || lessons_refresh "$days" >/dev/null || { echo "$NAME lessons: scan failed" >&2; return 1; }
+  local dir="${SO_LESSONS_DIR:-$HOME/.agent/lessons}" dream sigd sigs
+  dream=$(cat "$dir"/*.md 2>/dev/null | grep -c 'dream sweep')
+  sigd=$(cat "$dir"/*.md 2>/dev/null | grep 'dream sweep' | grep -c '<!-- sig:')
+  sigs=$(so_lesson_sigs) || return 1
+  { [ -f "$OUT/lesson-effect.jsonl" ] && cat "$OUT/lesson-effect.jsonl"; true; } |
+  jq -rn --argjson sigs "$sigs" --argjson days "$days" --argjson ratio "$LESSON_HELD_RATIO" --argjson min "$LESSON_MIN_SESSIONS" --argjson json "$json" \
+     --argjson dream "$dream" --argjson sigd "$sigd" '
+    def share: if . == null or .sessions == 0 then null else .hits / .sessions end;
+    def pct: if . == null then "-" else "\(. * 1000 | round / 10)%" end;
+    [inputs | select(.days == $days)] as $c
+    | [$sigs[] | . as $l
+       | ($c | map(select(.sig == $l.sig and .since == $l.since and .window == "before")) | last) as $b
+       | ($c | map(select(.sig == $l.sig and .since == $l.since and .window == "after")) | last) as $a
+       | {sig, since, claim, project: (.file | sub("\\.md$"; "")),
+          before: ($b | if . then {sessions, hits} else null end), after: ($a | if . then {sessions, hits} else null end)}
+       | .verdict = (if .before == null then "early"
+                     elif .before.hits == 0 then "no-baseline"
+                     elif .after == null then "early"
+                     elif .before.sessions < $min or .after.sessions < $min then "thin"
+                     elif (.after | share) <= ($ratio * (.before | share)) then "held"
+                     else "recurring" end)] as $ls
+    | ($ls | map(.verdict) | {held: (map(select(. == "held")) | length), recurring: (map(select(. == "recurring")) | length),
+                              no_baseline: (map(select(. == "no-baseline")) | length), thin: (map(select(. == "thin")) | length), early: (map(select(. == "early")) | length)}) as $t
+    | if $json then {lessons: $ls, days: $days} + $t + {dream_lessons: $dream, dream_with_sig: $sigd} | tojson
+      else
+        (if ($ls | length) == 0 then "_(no lesson carries a sig, so none is measured)_"
+         else (["| verdict | project | since | before | after | lesson |", "|---|---|---|---|---|---|"]
+               + ($ls | map("| \(.verdict) | \(.project) | \(.since) | "
+                            + (.before | if . then "\(.hits)/\(.sessions) \(share | pct)" else "-" end) + " | "
+                            + (.after | if . then "\(.hits)/\(.sessions) \(share | pct)" else "-" end) + " | "
+                            + (.claim | gsub("[|\n]"; " ") | .[0:70]) + " |"))) | join("\n") end),
+        "\($t.held) held, \($t.recurring) recurring, \($t.no_baseline) no-baseline, \($t.thin) thin, \($t.early) early (\($days)d windows); \($sigd) of \($dream) dream-sweep lessons carry a sig"
+      end'
+}
+
 # rework DIR [--days N] [--until T] [--sample N] - the rework count over a repo's own commits:
 # every commit on its default branch in the N days (60) to T (now), the same method `run` puts on
 # each merged PR. Non-fix commits old enough for their window are the base; the review's figure
@@ -750,7 +1015,7 @@ cmd_backfill_harness() {
     cp -p "$f" "$f.bak" || { echo "$NAME: no .bak for $f; left alone" >&2; continue; }
     next="$f.next"  # beside $f, so the mv below is a rename on one filesystem
     if ! { cp -p "$f.bak" "$next" &&
-        jq -c --slurpfile q "$work/queue.json" --arg gwurl "$(gateway_url)" "$HARNESS_DEF"'
+        jq -c --slurpfile q "$work/queue.json" --argjson hm "$(harness_map)" "$HARNESS_DEF"'
           if .harness == null then .harness = harness_of($q[0][.session_id // ""] // {}) else . end' "$f.bak" > "$next" &&
         [ "$(jq -cs 'map(del(.harness))' "$f.bak")" = "$(jq -cs 'map(del(.harness))' "$next")" ]; }; then
       rm -f "$next" "$f.bak"; echo "$NAME: $f would change beyond harness; left alone" >&2; continue
@@ -771,6 +1036,7 @@ case "${1:-run}" in
   langfuse) shift; cmd_langfuse "$@" ;;
   backfill-harness) shift; cmd_backfill_harness "$@" ;;
   rework) shift; cmd_rework "$@" ;;
-  -h|--help) sed -n '2,39p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--by hook|skill] [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | costs [--days N] | langfuse [--all] | backfill-harness YYYY-MM | rework DIR [--days N] [--until T] [--sample N]" >&2; exit 2 ;;
+  lessons) shift; cmd_lessons "$@" ;;
+  -h|--help) sed -n '2,40p' "$0" ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--by hook|skill] [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | costs [--days N] | langfuse [--all] | backfill-harness YYYY-MM | rework DIR [--days N] [--until T] [--sample N] | lessons [--days N] [--json] [--cached]" >&2; exit 2 ;;
 esac

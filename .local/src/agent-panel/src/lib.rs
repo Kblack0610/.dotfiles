@@ -5,8 +5,10 @@
 pub mod account;
 pub mod asks;
 pub mod chooser;
+pub mod dialog;
 pub mod fzf;
 pub mod jsonl;
+pub mod md;
 pub mod parked;
 pub mod procmap;
 pub mod render;

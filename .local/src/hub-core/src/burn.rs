@@ -1,8 +1,9 @@
-//! The Costs tab's Burn section: how fast the weekly limits are being spent, how many sessions
-//! are going, whether that is over what the weeks can carry, the dispatch drip, and when each
-//! account is back on pace. `claude-acct` computes every pace figure and publishes it in its
-//! textfile (`claude_account_*`, `claude_fleet_session_rate_points_per_hour`); this only sums
-//! the per-account series and words them, so the hub TUI and agent-web print the same section
+//! The Costs tab's Burn section: how fast every model source is being spent (each Claude
+//! account, the Codex plan, the gateway keys and the Lazer pool), how many sessions are going,
+//! whether that is over what the windows can carry, the dispatch drip, and when each source is
+//! back on pace. `claude-acct` computes every figure for every source and publishes it in its
+//! textfile (`claude_account_*{kind}`, `claude_fleet_session_rate_points_per_hour`); this only
+//! sums the per-source series and words them, so the hub TUI and agent-web print the same section
 //! and no second formula exists. The drip is the `started` lines of fleet-dispatch's `log.md`.
 
 use std::collections::BTreeMap;
@@ -17,12 +18,177 @@ pub const RATE_Q: &str = "claude_fleet_session_rate_points_per_hour";
 /// Where the dispatch hold is explained (the Sessions header), as `SPEND_BADGE` names Costs.
 pub const HOLD_BADGE: &str = "5 Sessions";
 
-/// One Claude account's row.
+/// claude-acct's published answer on an automatic start for one account (its `room` object in
+/// the textfile: `claude_account_room`, `_room_headroom_points`, `_room_reason`). The hub prints
+/// it and never re-derives it from used and gone.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Room {
+    pub ok: bool,
+    /// Every refusal that holds the account now (`unread`, `capped`, `reserve`, `pace`,
+    /// `five_hour`, `committed`); empty when it has room.
+    pub reasons: Vec<String>,
+    /// Points under the line after slack, negative past it; None without a week.
+    pub headroom: Option<f64>,
+    /// `words` of it, so a surface that cannot call Rust prints the same sentence.
+    pub text: String,
+}
+
+impl Room {
+    pub fn new(ok: bool, reasons: Vec<String>, headroom: Option<f64>) -> Self {
+        let mut r = Room {
+            ok,
+            reasons,
+            headroom,
+            text: String::new(),
+        };
+        r.text = r.words();
+        r
+    }
+
+    /// The verdict in words: `room, 4 points spare`, or `no room: pace 20 points past the line`.
+    fn words(&self) -> String {
+        let pts = |n: f64| format!("{n} point{}", if n == 1.0 { "" } else { "s" });
+        if self.ok {
+            return match self.headroom {
+                Some(h) if h >= 0.0 => format!("room, {} spare", pts(h.floor())),
+                _ => "room".into(),
+            };
+        }
+        let why: Vec<String> = self
+            .reasons
+            .iter()
+            .map(|r| match (r.as_str(), self.headroom) {
+                ("pace", Some(h)) => format!("pace {} past the line", pts((-h).ceil())),
+                (r, _) => r.replace('_', " "),
+            })
+            .collect();
+        if why.is_empty() {
+            return "no room".into();
+        }
+        format!("no room: {}", why.join(", "))
+    }
+}
+
+/// The source series by source, keyed by metric name, and the age in seconds of the textfile
+/// they came from (None when the age series is missing). The room reasons, the kind and the parent
+/// pool are labels, so they are collected apart.
+pub struct Accounts<'a> {
+    pub by: BTreeMap<&'a str, BTreeMap<&'a str, f64>>,
+    pub reasons: BTreeMap<&'a str, Vec<String>>,
+    pub kinds: BTreeMap<&'a str, &'a str>,
+    pub parents: BTreeMap<&'a str, &'a str>,
+    pub age: Option<f64>,
+}
+
+/// claude-acct's textfile, however old, plus one series for its age (`claude_account_textfile_age_seconds`,
+/// no account label, the oldest file when a second host exposes one) so a surface says "stale" past `burn::STALE_AFTER_SECS` instead of showing
+/// nothing; no `max without`, which would drop the metric names the table reads. An empty
+/// answer makes the table say no data.
+pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} or label_replace(max(time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"}), "__name__", "claude_account_textfile_age_seconds", "", "")"#;
+
+/// What a surface says in place of an account's figures when the textfile is not fresh.
+pub const STALE_NOTE: &str = "stale, claude-acct's textfile is not fresh (timer claude-acct-usage)";
+
+/// A textfile older than this is not read (claude-acct's timer runs every 15 minutes).
+pub const STALE_AFTER_SECS: f64 = 3600.0;
+
+impl<'a> Accounts<'a> {
+    pub fn read(series: &'a [Series]) -> Self {
+        let mut a = Accounts {
+            by: BTreeMap::new(),
+            reasons: BTreeMap::new(),
+            kinds: BTreeMap::new(),
+            parents: BTreeMap::new(),
+            age: None,
+        };
+        for s in series {
+            let key = s.label("__name__").trim_start_matches("claude_account_");
+            let Some(v) = s.value else { continue };
+            let acc = s.label("account");
+            if !acc.is_empty() && !s.label("kind").is_empty() {
+                a.kinds.insert(acc, s.label("kind"));
+            }
+            match (key, acc) {
+                (AGE_KEY, _) => a.age = Some(v),
+                (_, "") => {}
+                ("parent", acc) => {
+                    a.parents.insert(acc, s.label("parent"));
+                }
+                ("room_reason", acc) => a
+                    .reasons
+                    .entry(acc)
+                    .or_default()
+                    .push(s.label("reason").to_string()),
+                (_, acc) => {
+                    a.by.entry(acc).or_default().insert(key, v);
+                }
+            }
+        }
+        a
+    }
+
+    /// The textfile is older than an hour, or Prometheus has no age for it: what it says cannot
+    /// be shown as what is true now.
+    pub fn stale(&self) -> bool {
+        self.age.is_none_or(|age| age >= STALE_AFTER_SECS)
+    }
+
+    /// The account's published verdict; None when it has not published one (unreadable, or an
+    /// older textfile).
+    pub fn room(&self, account: &str) -> Option<Room> {
+        let ok = self.by.get(account)?.get("room")?;
+        let reasons = self
+            .reasons
+            .get(account)
+            .into_iter()
+            .flatten()
+            .filter(|r| *r != "ok")
+            .cloned()
+            .collect();
+        let headroom = self.by[account].get("room_headroom_points").copied();
+        Some(Room::new(*ok == 1.0, reasons, headroom))
+    }
+}
+
+/// The metric name of the textfile's age, after the `claude_account_` prefix.
+pub const AGE_KEY: &str = "textfile_age_seconds";
+
+/// What an idle row says: a Claude account's token refreshes on launch; any other source has had
+/// no usage read yet.
+pub fn idle_note(kind: &str) -> &'static str {
+    if kind == DEFAULT_KIND {
+        "idle, token refreshes on launch"
+    } else {
+        "no usage read yet"
+    }
+}
+
+/// What a source's kind is when its textfile carries no `kind` label (one written before sources).
+pub const DEFAULT_KIND: &str = "claude";
+
+/// One source's row: a Claude account, the Codex plan, a gateway key or the Lazer pool.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Account {
     pub name: String,
-    /// `ok`, `unreadable` (claude-acct could not read its usage) or `idle` (no usage yet).
+    /// claude-acct's kind: `claude`, `codex`, `litellm-key` or `litellm-team`.
+    pub kind: String,
+    /// A dollar budget, which has no pace line, so its burn, keeps and back-on-pace cells say
+    /// nothing. False by default, like a textfile written before sources: a Claude account.
+    pub unpaced: bool,
+    /// The last percent of the window kept for the human.
+    pub reserve: Option<f64>,
+    /// A dollar budget: spent this period and its cap.
+    pub usd_used: Option<f64>,
+    pub usd_budget: Option<f64>,
+    /// The pool this key spends inside; it has room only when the pool does.
+    pub parent: Option<String>,
+    /// The USED cell both surfaces print: `53%`, or `81% $81/$100` for a dollar budget.
+    pub used_text: String,
+    /// `ok`, `unreadable` (claude-acct could not read its usage), `idle` (no usage yet) or
+    /// `stale` (its textfile is not fresh).
     pub state: &'static str,
+    /// claude-acct's verdict on an automatic start.
+    pub room: Option<Room>,
     pub live: u32,
     pub used: Option<f64>,
     pub gone: Option<f64>,
@@ -38,6 +204,11 @@ pub struct Account {
     pub burn_at: Option<i64>,
     pub run_out: Option<i64>,
     pub resets: Option<i64>,
+    /// The 5-hour window: percent used and when it resets.
+    pub five_hour: Option<f64>,
+    pub five_hour_resets: Option<i64>,
+    /// What the account's sessions cost at list price over the last 24 hours.
+    pub cost_24h: Option<f64>,
 }
 
 impl Account {
@@ -46,16 +217,16 @@ impl Account {
         self.sustain.is_some_and(|s| self.burn > s)
     }
 
-    /// Used is ahead of the week gone, so it has pace to win back.
-    pub fn is_ahead(&self) -> bool {
-        matches!((self.used, self.gone), (Some(u), Some(g)) if u > g)
+    /// claude-acct publishes the time it is back on pace as now when it already is, so the
+    /// verdict is read off the series and not derived again from used and gone.
+    pub fn is_ahead(&self, now: i64) -> bool {
+        !self.idle_at.is_some_and(|t| t <= now)
     }
 
     /// A back-on-pace cell: `on pace` when it already is, the time, or `after reset` when the
     /// reset puts it on pace first. The surface words the time.
     pub fn on_pace(&self, at: Option<i64>, now: i64, time: &dyn Fn(i64) -> String) -> String {
         match at {
-            _ if !self.is_ahead() => "on pace".into(),
             Some(t) if t <= now => "on pace".into(),
             Some(t) => time(t),
             None => "after reset".into(),
@@ -107,17 +278,32 @@ pub struct Burn {
     /// `bad` when the fleet is over, `warn` when one account is or none can be read, `ok`, or
     /// `none` with no data.
     pub level: &'static str,
+    /// Set when the textfile is not fresh: every figure below is then old, and the surfaces say so.
+    pub stale: Option<&'static str>,
     pub accounts: Vec<Account>,
     pub fleet: Fleet,
     pub drip: Drip,
     pub pace: Pace,
 }
 
-fn account(name: &str, a: &BTreeMap<&str, f64>) -> Account {
+/// `53%`, `81% $81/$100` with a dollar budget, `-` with no figure.
+fn used_text(used: Option<f64>, usd: Option<f64>, budget: Option<f64>) -> String {
+    let pct = used.map_or("-".to_string(), |u| format!("{}%", u.floor()));
+    match (usd, budget) {
+        (Some(u), Some(b)) => format!("{pct} ${u:.0}/${b:.0}"),
+        _ => pct,
+    }
+}
+
+fn account(name: &str, read: &Accounts, stale: bool) -> Account {
+    let a = &read.by[name];
+    let room = read.room(name);
     let get = |k: &str| a.get(k).copied();
     let epoch = |k: &str| get(k).map(|v| v as i64);
     let used = get("week_used_percent");
-    let state = if get("read_ok") == Some(0.0) {
+    let state = if stale {
+        "stale"
+    } else if get("read_ok") == Some(0.0) {
         "unreadable"
     } else if used.is_none() {
         "idle"
@@ -126,9 +312,19 @@ fn account(name: &str, a: &BTreeMap<&str, f64>) -> Account {
     };
     let burn = get("burn_points_per_hour").unwrap_or(0.0);
     let sustain = get("sustain_points_per_hour");
+    let (usd_used, usd_budget) = (get("usd_used"), get("usd_budget"));
     Account {
         name: name.into(),
+        kind: read.kinds.get(name).unwrap_or(&DEFAULT_KIND).to_string(),
+        // absent on a textfile written before sources, which held Claude accounts only
+        unpaced: get("paced") == Some(0.0),
+        reserve: get("reserve_percent"),
+        usd_used,
+        usd_budget,
+        parent: read.parents.get(name).map(|p| p.to_string()),
+        used_text: used_text(used, usd_used, usd_budget),
         state,
+        room,
         live: get("live_sessions").unwrap_or(0.0) as u32,
         used,
         gone: get("week_gone_percent"),
@@ -139,19 +335,17 @@ fn account(name: &str, a: &BTreeMap<&str, f64>) -> Account {
         burn_at: epoch("on_pace_burn_timestamp_seconds"),
         run_out: epoch("run_out_timestamp_seconds"),
         resets: epoch("resets_timestamp_seconds"),
+        five_hour: get("five_hour_percent"),
+        five_hour_resets: epoch("five_hour_resets_timestamp_seconds"),
+        cost_24h: get("cost_24h_usd"),
     }
 }
 
 /// The section from claude-acct's series (fresh ones only; none is "no data") and the drip.
 pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn {
-    let mut by: BTreeMap<&str, BTreeMap<&str, f64>> = BTreeMap::new();
-    for s in series {
-        let key = s.label("__name__").trim_start_matches("claude_account_");
-        if let Some(v) = s.value {
-            by.entry(s.label("account")).or_default().insert(key, v);
-        }
-    }
-    let accounts: Vec<Account> = by.iter().map(|(n, a)| account(n, a)).collect();
+    let read = Accounts::read(series);
+    let stale = read.stale();
+    let accounts: Vec<Account> = read.by.keys().map(|n| account(n, &read, stale)).collect();
     // Burn and sustain sum over the same accounts: an unreadable or idle one has neither, and
     // one with no sustain (its week is spent or past its reset) would otherwise add burn to
     // the OVER ratio with nothing on the other side.
@@ -173,7 +367,7 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
     let level = if accounts.is_empty() {
         "none"
     } else if counted.is_empty() {
-        // Accounts exist but none can be read: a quiet fleet is not what this means.
+        // Accounts exist but none can be read (or the textfile is stale): a quiet fleet is not what this means.
         "warn"
     } else if burn > sustain {
         "bad"
@@ -184,6 +378,7 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
     };
     let mut b = Burn {
         at,
+        stale: stale.then_some(STALE_NOTE),
         level,
         accounts,
         fleet,
@@ -199,6 +394,9 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
 impl Burn {
     /// The headline: burn against what the weeks carry, and the sessions going.
     fn head_text(&self) -> String {
+        if let Some(note) = self.stale {
+            return note.into();
+        }
         let f = &self.fleet;
         let ratio = f.over.map_or(String::new(), |o| {
             format!(
@@ -219,7 +417,7 @@ impl Burn {
         let ahead: Vec<&Account> = self
             .accounts
             .iter()
-            .filter(|a| a.state == "ok" && a.is_ahead())
+            .filter(|a| a.state == "ok" && !a.unpaced && a.is_ahead(self.at))
             .collect();
         let mut at_burn: Vec<(String, i64)> = ahead
             .iter()
@@ -239,8 +437,11 @@ impl Burn {
     /// the way the surface does.
     pub fn pace_text(&self, time: &dyn Fn(i64) -> String) -> String {
         let p = &self.pace;
+        if self.stale.is_some() {
+            return "unknown, the figures are stale".into();
+        }
         if p.on_pace {
-            return "every account is on pace".into();
+            return "every source is on pace".into();
         }
         let burn = if p.at_burn.is_empty() {
             "not before the reset".to_string()
@@ -315,7 +516,16 @@ mod tests {
                 out.push(series(n, k, v));
             }
         }
+        out.push(age(120.0));
         out
+    }
+
+    /// The fixture with its textfile age replaced.
+    fn aged(secs: f64) -> Vec<Series> {
+        let mut s = fixture();
+        s.retain(|x| !x.label("__name__").ends_with(AGE_KEY));
+        s.push(age(secs));
+        s
     }
 
     fn quiet() -> Drip {
@@ -422,10 +632,15 @@ mod tests {
             if x.label("__name__").ends_with("week_gone_percent") {
                 x.value = Some(90.0);
             }
+            if x.label("__name__")
+                .ends_with("on_pace_idle_timestamp_seconds")
+            {
+                x.value = Some(NOW as f64);
+            }
         }
         assert_eq!(
             build(&s, None, quiet(), NOW).pace_text(&|t| t.to_string()),
-            "every account is on pace"
+            "every source is on pace"
         );
     }
 
@@ -451,5 +666,155 @@ mod tests {
             at.map(|i| format!("{} Sessions", (i + 1) % 10)).as_deref(),
             Some(HOLD_BADGE)
         );
+    }
+    fn reason(account: &str, why: &str) -> Series {
+        let mut s = series(account, "room_reason", 1.0);
+        s.labels.insert("reason".into(), why.into());
+        s
+    }
+
+    fn age(secs: f64) -> Series {
+        let mut s = series("", "textfile_age_seconds", secs);
+        s.labels.remove("account");
+        s
+    }
+
+    /// Used 22 against gone 16 and slack 5 is 1 point past the line; 18 is inside it.
+    #[test]
+    fn the_published_verdict_is_printed_as_given_with_its_points() {
+        let mut all = vec![];
+        for (n, ok, headroom, why) in [
+            ("a", 0.0, -1.0, "pace"),
+            ("b", 1.0, 3.0, "ok"),
+            ("c", 0.0, 12.0, "reserve"),
+        ] {
+            all.push(series(n, "week_used_percent", 20.0));
+            all.push(series(n, "room", ok));
+            all.push(series(n, "room_headroom_points", headroom));
+            all.push(reason(n, why));
+        }
+        all.push(reason("c", "five_hour"));
+        let b = build(&all, None, Drip::default(), NOW);
+        let room = |n: &str| {
+            b.accounts
+                .iter()
+                .find(|a| a.name == n)
+                .unwrap()
+                .room
+                .clone()
+                .unwrap()
+        };
+        assert_eq!(room("a").text, "no room: pace 1 point past the line");
+        assert_eq!(room("b").text, "room, 3 points spare");
+        assert!(room("b").reasons.is_empty(), "ok is not a refusal");
+        assert_eq!(room("c").text, "no room: reserve, five hour");
+    }
+
+    #[test]
+    fn an_account_with_no_published_verdict_has_none_rather_than_a_derived_one() {
+        let b = build(&fixture(), None, Drip::default(), NOW);
+        assert!(b.accounts.iter().all(|a| a.room.is_none()));
+    }
+
+    #[test]
+    fn a_textfile_over_an_hour_old_is_stale_not_a_green_fleet() {
+        let b = build(&aged(7300.0), None, Drip::default(), NOW);
+        assert!(b.accounts.iter().all(|a| a.state == "stale"));
+        assert_eq!(b.level, "warn");
+        assert!(build(&fixture(), None, Drip::default(), NOW)
+            .accounts
+            .iter()
+            .all(|a| a.state == "ok"));
+    }
+
+    /// A series as claude-acct writes it since sources: every one carries the source's kind.
+    fn kinded(account: &str, kind: &str, name: &str, v: f64) -> Series {
+        let mut s = series(account, name, v);
+        s.labels.insert("kind".into(), kind.into());
+        s
+    }
+
+    /// The 2026-11-07 sources beside the fixture's Claude accounts: Codex on its week, the pool
+    /// and a key inside it on dollars.
+    fn sources() -> Vec<Series> {
+        let mut all = fixture();
+        for (k, v) in [
+            ("week_used_percent", 1.0),
+            ("week_gone_percent", 16.0),
+            ("sustain_points_per_hour", 0.71),
+            ("burn_points_per_hour", 0.0),
+            ("reserve_percent", 5.0),
+            ("paced", 1.0),
+            ("on_pace_idle_timestamp_seconds", (NOW - 60) as f64),
+        ] {
+            all.push(kinded("codex", "codex", k, v));
+        }
+        for (n, kind, used, usd, cap) in [
+            ("lazer", "litellm-team", 62.9, 157.19, 250.0),
+            ("reserve", "litellm-key", 81.4, 81.41, 100.0),
+        ] {
+            for (k, v) in [
+                ("week_used_percent", used),
+                ("usd_used", usd),
+                ("usd_budget", cap),
+                ("reserve_percent", 15.0),
+                ("paced", 0.0),
+            ] {
+                all.push(kinded(n, kind, k, v));
+            }
+        }
+        let mut parent = kinded("reserve", "litellm-key", "parent", 1.0);
+        parent.labels.insert("parent".into(), "lazer".into());
+        all.push(parent);
+        all
+    }
+
+    #[test]
+    fn an_idle_key_has_no_token_to_refresh() {
+        assert_eq!(idle_note("claude"), "idle, token refreshes on launch");
+        assert_eq!(idle_note("litellm-key"), "no usage read yet");
+    }
+
+    #[test]
+    fn every_source_is_a_row_with_its_kind_dollars_reserve_and_pool() {
+        let b = build(&sources(), None, Drip::default(), NOW);
+        let row = |n: &str| b.accounts.iter().find(|a| a.name == n).unwrap().clone();
+        assert_eq!(b.accounts.len(), 6);
+        assert_eq!(
+            row("main").kind,
+            "claude",
+            "no kind label is a Claude account"
+        );
+        assert!(!row("main").unpaced);
+        assert_eq!(row("main").used_text, "33%");
+        assert_eq!(row("codex").kind, "codex");
+        assert_eq!(row("codex").reserve, Some(5.0));
+        let r = row("reserve");
+        assert_eq!((r.kind.as_str(), r.unpaced), ("litellm-key", true));
+        assert_eq!(r.used_text, "81% $81/$100");
+        assert_eq!(r.parent.as_deref(), Some("lazer"));
+        assert_eq!(row("lazer").parent, None);
+        assert_eq!(row("lazer").used_text, "62% $157/$250");
+    }
+
+    #[test]
+    fn a_dollar_budget_adds_nothing_to_the_fleet_line_or_the_pace() {
+        let b = build(&sources(), Some(0.116), Drip::default(), NOW);
+        // the fixture's 4.52 against 1.37, plus Codex's 0 against 0.71; the keys carry no pace
+        assert!((b.fleet.burn - 4.52).abs() < 1e-9);
+        assert!((b.fleet.sustain - 2.08).abs() < 1e-9);
+        // A dollar budget has no back-on-pace time; counted as ahead, it would be "on pace only
+        // after the reset" and set this.
+        assert!(!b.pace.idle_rest_after_reset);
+        let only_keys: Vec<Series> = sources()
+            .into_iter()
+            .filter(|s| s.label("kind").starts_with("litellm") || s.label("account").is_empty())
+            .collect();
+        let k = build(&only_keys, None, Drip::default(), NOW);
+        assert!(
+            k.pace.on_pace,
+            "dollar budgets alone are never behind a pace line"
+        );
+        assert_eq!(k.pace_text(&|t| t.to_string()), "every source is on pace");
     }
 }

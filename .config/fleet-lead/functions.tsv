@@ -1,0 +1,22 @@
+# Fleet function routing: the one table. fleet-shepherd reads it (line_role, roles_for, pass_prompt, check) and
+# tests/unit/fleet_roles.bats pins every row to a real skill and heading. Add a function by adding its row here.
+# Columns, tab separated: function, skill, due-line prefixes, section, invoked.
+#   prefixes   |-separated; a due line goes to the first row, in file order, with a prefix it starts with (after
+#              any "unhandled: ") and that ends at a word boundary, so "nudge" does not claim "nudged". A bare *
+#              is the default row: the lead answers what no other row claims. Empty means no due line routes
+#              here; the skill is loaded by name.
+#   section    a heading in the skill's SKILL.md (backticks ignored, a prefix of the heading is enough)
+#   invoked    "due line" when the row has prefixes, "by name" when it has none (the test pins this)
+# Spend and accounts (fleet-accounts and fleet-pace both hold claude-acct) stay split here until the sibling plan
+# "account and spend pace owner" moves them; so do worktrees ("worktree lifecycle") and runner roles.
+load	fleet-pace	pace:|blocked:|limit:	Pace check	due line
+delivery	shepherd	nudge|escalate|overdue|nightly red|shared red	Verb: nudge	due line
+dispatch	fleet-dispatch	watch: queue-starved	Starved queue	due line
+lead	fleet-lead	finding|infra:|watch:|improve:|*	Verb: pass	due line
+accounts	fleet-accounts		Read the room	by name
+asks	fleet-asks		File an ask	by name
+queue	fleet-queue		File an item	by name
+runners	fleet-runners		Read first	by name
+benchmarks	fleet-bench		Verbs	by name
+messages	fleet-comms		Pick the channel	by name
+memory	fleet-memory		Which job	by name

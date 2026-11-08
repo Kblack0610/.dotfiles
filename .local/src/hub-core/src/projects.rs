@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::home::{self, Running};
 use crate::queue::{Item, Queue, State};
 use crate::session_actions::Runner;
+use crate::table::Val;
 use crate::tasks::Feed;
 
 /// The open version's rows and closes, as notes-cli counts them (`Progress` there).
@@ -139,9 +140,20 @@ pub struct Card {
     /// Open rows tagged `#requested` (the human's asks of the agents), both lanes.
     pub requested: usize,
     pub inbox: usize,
+    /// Started rows (`[/]`) among the ones `progress.open` counts.
+    pub doing: usize,
+    /// Rows tagged `#urgent` or `#high` among the ones `progress.open` counts.
+    pub hot: usize,
     pub running: Vec<Running>,
     pub waiting: usize,
+    /// Every queued item, held or not.
     pub queued: usize,
+    /// The queued items a hold keeps from starting (`after`, `night`, `at:`, `pr:`, `ask:`).
+    pub held: usize,
+    /// Items that finished since local midnight, whatever their status.
+    pub done_today: usize,
+    /// Minutes the longest-waiting ready item (queued, no hold) has sat; None when none is ready.
+    pub oldest_ready_min: Option<i64>,
     pub status: String,
     pub status_date: String,
 }
@@ -149,6 +161,87 @@ pub struct Card {
 impl Card {
     pub fn in_flight(&self) -> bool {
         !self.running.is_empty() || self.waiting > 0
+    }
+
+    /// Rows closed per week: the open version's rows closed in the last 28 days, over 4. Rounded
+    /// here to the one decimal a surface prints: quarters are ties, and Rust and JS break them
+    /// apart, so a surface formatting the raw value would read differently from the next.
+    pub fn pace(&self) -> f64 {
+        (f64::from(self.progress.closed_28d) * 2.5).round() / 10.0
+    }
+}
+
+/// The list of projects, one row a card. Its own order is in flight first, so no column is
+/// sorted until asked. Empty words read as no value, the `-` a surface draws.
+impl crate::table::Row for Card {
+    const COLUMNS: &'static [&'static str] = &[
+        "project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d",
+        "pct", "pace", "eta", "run", "wait", "queued", "held", "today", "oldest",
+    ];
+    const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
+    const FACETS: &'static [&'static str] = &["profile", "stage"];
+
+    fn val(&self, col: &str) -> Val {
+        let word = |s: &str| {
+            if s.is_empty() {
+                Val::None
+            } else {
+                Val::Text(s.to_string())
+            }
+        };
+        let num = |n: Option<u32>| n.map_or(Val::None, |n| Val::Num(f64::from(n)));
+        match col {
+            "project" => word(&self.name),
+            "profile" => word(&self.profile),
+            "stage" => word(&self.stage),
+            "version" => self.version.as_deref().map_or(Val::None, word),
+            "prio" => word(&self.prio),
+            "open" => num(Some(self.progress.open)),
+            "doing" => Val::Num(self.doing as f64),
+            "hot" => Val::Num(self.hot as f64),
+            "done" => num(Some(self.progress.done)),
+            "7d" => num(Some(self.progress.closed_7d)),
+            "pct" => num(self.percent),
+            "pace" => Val::Num(self.pace()),
+            "eta" => num(self.eta_days),
+            "run" => Val::Num(self.running.len() as f64),
+            "wait" => Val::Num(self.waiting as f64),
+            "queued" => Val::Num(self.queued as f64),
+            "held" => Val::Num(self.held as f64),
+            "today" => Val::Num(self.done_today as f64),
+            "oldest" => self
+                .oldest_ready_min
+                .map_or(Val::None, |m| Val::Num(m as f64)),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        match s {
+            "in flight" => self.in_flight(),
+            "waiting" => self.waiting > 0,
+            _ => false,
+        }
+    }
+
+    /// A bare word searches what a project is called, what it is for and its note.
+    fn text(&self) -> String {
+        format!("{}\n{}\n{}", self.name, self.goal, self.status).to_lowercase()
+    }
+
+    fn rank(&self, col: &str) -> Val {
+        match col {
+            // `next_prio`'s words, normal being blank, lowest first.
+            "prio" => ["low", "", "high", "focus"]
+                .iter()
+                .position(|p| *p == self.prio)
+                .map_or(Val::None, |i| Val::Num(i as f64)),
+            "version" => self
+                .version
+                .as_deref()
+                .map_or(Val::None, |v| Val::Text(crate::tasks::release_order(v))),
+            _ => self.val(col),
+        }
     }
 }
 
@@ -184,12 +277,19 @@ fn owner(i: &Item, labs: &[&str]) -> Option<String> {
         .map(String::from)
 }
 
+/// A minute count at a glance, `text::age`'s words: what the `oldest` column prints.
+pub fn wait_word(min: Option<i64>) -> String {
+    min.map_or_else(|| "-".to_string(), |m| crate::text::age(m * 60))
+}
+
 /// The cards, in flight first (running, then waiting), then by closes in 7 days, then name.
+/// `now` dates the queue's waits and its done-today count.
 pub fn build(
     stats: &[Stats],
     feed: Option<&Feed>,
     state: &Value,
     queue: Option<&Queue>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Projects {
     let mut out = Projects::default();
     let labs: Vec<&str> = stats.iter().map(|s| s.name.as_str()).collect();
@@ -220,15 +320,25 @@ pub fn build(
                 c.inbox = p.inbox;
             }
         }
-        for r in f.rows.iter().filter(|r| r.requested) {
+        for r in &f.rows {
             let Some(p) = r.project.as_deref() else {
                 continue;
             };
-            if let Some(c) = cards
+            let Some(c) = cards
                 .iter_mut()
                 .find(|c| c.name == p && c.profile == r.profile)
-            {
-                c.requested += 1;
+            else {
+                continue;
+            };
+            c.requested += usize::from(r.requested);
+            // DOING and HOT count the rows OPEN counts: the open version's, in the human and
+            // agent lanes (no playtest list, nothing aimed at a later release), not yet done.
+            let counted = r.state != "done"
+                && r.lane != "playtest"
+                && (r.version.is_none() || r.version == c.version);
+            if counted {
+                c.doing += usize::from(r.doing());
+                c.hot += usize::from(r.hot());
             }
         }
     }
@@ -242,6 +352,15 @@ pub fn build(
                 None => out.unlinked.push(format!("{}: {}", r.project, r.title)),
             }
         }
+        let midnight = crate::text::local_day_start(now.timestamp());
+        let today = q.items.iter().filter(|i| {
+            i.state == State::Done && i.finished_at().is_some_and(|f| f.timestamp() >= midnight)
+        });
+        for i in today {
+            if let Some(k) = owner(i, &labs).and_then(|o| at(&mut cards, &o)) {
+                cards[k].done_today += 1;
+            }
+        }
         for i in q
             .items
             .iter()
@@ -249,7 +368,15 @@ pub fn build(
         {
             match owner(i, &labs).and_then(|o| at(&mut cards, &o)) {
                 Some(k) if i.state == State::Waiting => cards[k].waiting += 1,
-                Some(k) => cards[k].queued += 1,
+                Some(k) => {
+                    let c = &mut cards[k];
+                    c.queued += 1;
+                    if i.hold.is_some() {
+                        c.held += 1;
+                    } else if let Some(m) = i.ready_min(now) {
+                        c.oldest_ready_min = Some(c.oldest_ready_min.map_or(m, |o| o.max(m)));
+                    }
+                }
                 None => out.unlinked.push(format!("{}: {}", i.project, i.title())),
             }
         }
@@ -287,8 +414,8 @@ pub fn summary(c: &Card) -> String {
     s
 }
 
-/// The card's queue in one line, on the list card's first line: `1 running, 0 waiting, 2 queued`.
-pub fn queue(c: &Card) -> String {
+/// The card's queue in one line, at the head of `counts`: `1 running, 0 waiting, 2 queued`.
+fn queue(c: &Card) -> String {
     format!(
         "{} running, {} waiting, {} queued",
         c.running.len(),
@@ -319,7 +446,13 @@ pub fn gather() -> Projects {
     let queue = Queue::read(&runner);
     let feed = crate::tasks::feed(&runner).ok();
     match stats(&runner) {
-        Ok(stats) => build(&stats, feed.as_ref(), &state, Some(&queue)),
+        Ok(stats) => build(
+            &stats,
+            feed.as_ref(),
+            &state,
+            Some(&queue),
+            chrono::Utc::now(),
+        ),
         Err(e) => Projects {
             errors: vec![e],
             ..Default::default()
@@ -327,8 +460,8 @@ pub fn gather() -> Projects {
     }
 }
 
-/// The cards as JSON, each with its `summary` line and `in_flight`, so a reader prints the same
-/// words the TUI does and computes nothing.
+/// The cards as JSON, each with its `summary` line, `in_flight` and `pace`, so a reader prints
+/// the same words the TUI does and computes nothing.
 pub fn to_json(p: &Projects) -> Value {
     let mut v = serde_json::to_value(p).unwrap_or_default();
     if let Some(cards) = v["cards"].as_array_mut() {
@@ -337,6 +470,8 @@ pub fn to_json(p: &Projects) -> Value {
             j["counts"] = counts(c).into();
             j["note_says"] = note_says(c).into();
             j["in_flight"] = c.in_flight().into();
+            j["pace"] = c.pace().into();
+            j["oldest"] = wait_word(c.oldest_ready_min).into();
         }
     }
     v
@@ -347,6 +482,72 @@ mod tests {
     use super::*;
     use crate::tasks::{Project, Row};
     use serde_json::json;
+
+    #[test]
+    fn the_list_sorts_filters_and_searches_on_the_one_view() {
+        use crate::table::View;
+        let card = |name: &str, stage: &str, prio: &str, version: &str, closed: u32| Card {
+            profile: "personal".into(),
+            name: name.into(),
+            stage: stage.into(),
+            prio: prio.into(),
+            version: Some(version.into()),
+            goal: format!("{name} goal"),
+            progress: Progress {
+                closed_28d: closed,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut cards = vec![
+            card("low", "alpha", "low", "v0.10.0", 10),
+            card("normal", "beta", "", "v0.9.0", 2),
+            card("focus", "alpha", "focus", "v0.2.0", 0),
+            Card {
+                name: "bare".into(),
+                ..Default::default()
+            },
+        ];
+        cards[1].waiting = 1;
+        cards[2].running = vec![Running {
+            slug: "s1".into(),
+            title: "wire it".into(),
+            project: "focus".into(),
+            started: None,
+            target: None,
+            phases: None,
+        }];
+        let names = |q: &str, s: &str, sort: &str, dir: &str| -> Vec<String> {
+            View::new::<Card>(q, s, sort, dir)
+                .apply(&cards)
+                .iter()
+                .map(|c| c.name.clone())
+                .collect()
+        };
+        assert_eq!(cards[0].pace(), 2.5, "28-day closes over 4 weeks");
+        assert_eq!(card("", "", "", "", 1).pace(), 0.3, "a tie rounds up, once");
+        assert_eq!(
+            names("pace:0.5", "", "", ""),
+            ["normal"],
+            "the figure shown"
+        );
+        assert_eq!(names("", "", "", ""), ["low", "normal", "focus", "bare"]);
+        assert_eq!(names("", "in flight", "", ""), ["normal", "focus"]);
+        assert_eq!(names("", "waiting", "", ""), ["normal"]);
+        assert_eq!(names("stage:alpha", "", "", ""), ["low", "focus"]);
+        assert_eq!(names("-stage:alpha normal", "", "", ""), ["normal"]);
+        assert_eq!(
+            names("", "", "prio", ""),
+            ["focus", "normal", "bare", "low"],
+            "focus outranks normal outranks low, not the alphabet"
+        );
+        assert_eq!(
+            names("stage:alpha", "", "version", ""),
+            ["low", "focus"],
+            "v0.10.0 is newer than v0.2.0"
+        );
+        assert_eq!(names("", "", "pace", "")[0], "low");
+    }
 
     #[test]
     fn each_card_carries_the_summary_the_tui_prints() {
@@ -421,7 +622,7 @@ mod tests {
         let s: Vec<Stats> =
             serde_json::from_value(json!([{"profile": "bnb", "name": "a", "prio": "focus"}, {"profile": "bnb", "name": "b"}]))
                 .unwrap();
-        let p = build(&s, None, &json!({}), None);
+        let p = build(&s, None, &json!({}), None, chrono::Utc::now());
         let prio = |n: &str| p.cards.iter().find(|c| c.name == n).unwrap().prio.clone();
         assert_eq!(prio("a"), "focus");
         assert_eq!(prio("b"), "");
@@ -512,7 +713,13 @@ mod tests {
             }],
             ..Feed::default()
         };
-        let p = build(&stats, Some(&feed), &json!({}), Some(&q));
+        let p = build(
+            &stats,
+            Some(&feed),
+            &json!({}),
+            Some(&q),
+            chrono::Utc::now(),
+        );
         let names: Vec<&str> = p.cards.iter().map(|c| c.name.as_str()).collect();
         // trader runs one and waits one; agent-runtime runs one; notes-cockpit closed most.
         assert_eq!(names, ["trader", "agent-runtime", "notes-cockpit"]);
@@ -529,6 +736,78 @@ mod tests {
             "no row and no lab of that name: unlinked, never guessed from the repo"
         );
         assert!(p.cards[0].in_flight() && !p.cards[2].in_flight());
+    }
+
+    #[test]
+    fn a_card_counts_its_board_slice_and_its_queue_slice() {
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2026, 11, 7, 20, 0, 0).unwrap();
+        let ago = |h: i64| (now - chrono::Duration::hours(h)).to_rfc3339();
+        // Queued 50h ago, released from its hold 30h ago: it has been ready 30h.
+        let mut ready_old = item("r1", State::Queued, "trader", None);
+        ready_old.queued = Some(ago(50));
+        ready_old.ready = Some(ago(30));
+        let mut ready_new = item("r2", State::Queued, "trader", None);
+        ready_new.queued = Some(ago(2));
+        let mut held = item("h", State::Queued, "trader", None);
+        held.queued = Some(ago(90));
+        held.hold = Some("after r1".into());
+        let mut today = item("t", State::Done, "trader", None);
+        // An older minute stamp, no seconds and no zone, still reads as UTC.
+        today.finished = Some(
+            (now - chrono::Duration::minutes(30))
+                .format("%Y-%m-%dT%H:%M")
+                .to_string(),
+        );
+        let mut before = item("y", State::Done, "trader", None);
+        before.finished = Some(ago(48));
+        let q = Queue {
+            items: vec![ready_old, ready_new, held, today, before],
+            ..Queue::default()
+        };
+        let row = |state: &str, priority: &str| Row {
+            profile: "personal".into(),
+            project: Some("trader".into()),
+            state: state.into(),
+            priority: priority.into(),
+            ..Row::default()
+        };
+        let feed = Feed {
+            rows: vec![
+                row("open", "high"),
+                row("doing", "urgent"),
+                row("doing", "low"),
+                row("open", ""),
+                row("done", "high"),
+                Row {
+                    lane: "playtest".into(),
+                    ..row("open", "high")
+                },
+                Row {
+                    version: Some("v0.1.0".into()),
+                    ..row("doing", "high")
+                },
+            ],
+            ..Feed::default()
+        };
+        let p = build(&[st("trader", 3)], Some(&feed), &json!({}), Some(&q), now);
+        let c = &p.cards[0];
+        assert_eq!(
+            (c.doing, c.hot),
+            (2, 2),
+            "a done, playtest or later-release row counts neither"
+        );
+        assert_eq!((c.queued, c.held, c.done_today), (3, 1, 1));
+        assert_eq!(
+            c.oldest_ready_min,
+            Some(30 * 60),
+            "ready since its release, not since it was queued; a held item's wait is not the oldest"
+        );
+        assert_eq!(wait_word(c.oldest_ready_min), "30h");
+        assert_eq!(wait_word(None), "-");
+        let j = to_json(&p);
+        assert_eq!(j["cards"][0]["oldest"], "30h");
+        assert_eq!(j["cards"][0]["held"], 1);
     }
 
     #[test]

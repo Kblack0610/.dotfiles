@@ -21,9 +21,6 @@ NOTES_ROLL="$REPO_ROOT/.local/bin/notes-roll"
 # The REAL agentctl, by path. `agentctl` on PATH is a stub (fleet.sh's mutation verbs are
 # asserted through it), so a test of agentctl's own contract must not go through PATH.
 AGENTCTL_BIN="$REPO_ROOT/.local/bin/agentctl"
-# The shared board parser. Exported so a subject can find it even though sandbox_init
-# rewrites $HOME, which is where the deployed copy would otherwise live.
-AGENT_BOARD_LIB="$REPO_ROOT/.local/lib/agent-board.sh"
 # The shared lab-feed parser, same reason again. Its other consumer lives in the private
 # overlay (lab-sync's regen-project-index.sh), so this suite is where the grammar is pinned.
 LAB_FEED_LIB="$REPO_ROOT/.local/lib/lab-feed.sh"
@@ -43,7 +40,13 @@ MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
 CHAIN_EVENT_LIB="$REPO_ROOT/.local/lib/chain-event.sh"
 # The plan checklist and `epic:` reader agent-queue, credit-backfill and fleet-sessions share, same reason again.
 PLAN_PHASES_LIB="$REPO_ROOT/.local/lib/plan-phases.sh"
-export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN AGENT_BOARD_LIB LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB PLAN_PHASES_LIB
+# The fleet worker roster and state forwarding agent-queue, agent-ask, wt and fleet-dispatch share.
+# No suite reads the real roster or forwards to a real state host: a test that wants workers
+# writes its own inventory and points FLEET_INVENTORY at it.
+FLEET_HOSTS_LIB="$REPO_ROOT/.local/lib/fleet-hosts.sh"
+FLEET_INVENTORY=/nonexistent/fleet-inventory.yml
+unset AGENT_STATE_HOST FLEET_HOSTS_JSON
+export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB PLAN_PHASES_LIB FLEET_HOSTS_LIB FLEET_INVENTORY
 
 # sandbox_init [fixture-name]
 # Builds $SANDBOX with an isolated HOME/TMPDIR, puts stubs first on PATH, and seeds
@@ -212,7 +215,6 @@ sandbox_init() {
   # test asserting on proof output sees an empty file rather than a failure.
   mkdir -p "$HOME/.local/lib"
   ln -sfn "$REPO_ROOT/.local/lib/agent-proof.sh" "$HOME/.local/lib/agent-proof.sh"
-  ln -sfn "$REPO_ROOT/.local/lib/agent-board.sh" "$HOME/.local/lib/agent-board.sh"
   ln -sfn "$REPO_ROOT/.local/lib/lab-feed.sh" "$HOME/.local/lib/lab-feed.sh"
   ln -sfn "$REPO_ROOT/.local/lib/md-render.sh" "$HOME/.local/lib/md-render.sh"
   ln -sfn "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$HOME/.local/lib/agent-merge-proof.sh"
