@@ -1404,6 +1404,13 @@ errlog() {
     '{name: $n, finished: $f, outcome: "WORKED", err: [$a, $b]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
 }
 
+# quietrun <runner> <finished offset>: a run that wrote no stderr, its empty range at the log's end
+quietrun() {
+  local b; b=$(stat -c %s "$AGENTCTL_STATE_DIR/$1.stderr.log")
+  jq -cn --arg n "$1" --argjson f $((T0 + $2)) --argjson b "$b" \
+    '{name: $n, finished: $f, outcome: "NOOP", err: [$b, $b]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
+}
+
 # log_triage_setup: triage_setup, a promote stub logging to $PLOG and an empty route table
 log_triage_setup() {
   triage_setup
@@ -1452,6 +1459,25 @@ log_triage_setup() {
   run grep -c 'fix(logs): alpha error' "$BOARD"
   assert_output 1
   [ ! -s "$PLOG" ]
+}
+
+@test "triage: a stderr error none of the runner's newest two readable runs logs is no row" {
+  log_triage_setup
+  # one clean run is an intermittent gap, two are the fix gone live; quiet runs count, and a
+  # rotated range or an err with no numbers is no run
+  errlog alpha -60 'all good'
+  jq -cn --argjson f "$T0" '{name: "alpha", finished: $f, err: []}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'integer expression'
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
+  quietrun alpha -40
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output ''
+  errlog alpha -30 'error: lock /run/e/5.lock held by pid 6'
+  run "$SUBJECT" triage --dry-run
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
 }
 
 @test "triage: reading a run's stderr range writes no Broken pipe when SIGPIPE is ignored, as under systemd" {
@@ -4322,4 +4348,28 @@ start_rows() {
   BENCH_NOW=$((T0 + 60)) run "$SUBJECT" kpi --check '^startup_'
   assert_failure 1
   assert_line 'startup_ready_ms_p50 9000 (max 5000)'
+}
+
+@test "canary shepherd: the shepherd's pass lanes compare by model over the window, from passes.tsv's lane columns" {
+  export TZ=UTC FLEET_SHEPHERD_DIR="$SANDBOX/shepherd" BENCH_NOW=$(date -d 2026-11-07T12:00:00Z +%s)
+  mkdir -p "$FLEET_SHEPHERD_DIR"
+  printf '%s\n' \
+    $'2026-11-06 10:00\tp1\tWORKED\tpass p1: 2 due, 9m\tclaude-opus-5-5\t2\t0\t0\t0\t1' \
+    $'2026-11-06 10:15\tp2\tNOOP\tpass p2: 0 due, 3m\tclaude-opus-5-5\t0\t0\t0\t0\t0' \
+    $'2026-11-06 10:30\tp3\tWORKED\tpass p3: 3 due, 8m\tclaude-sonnet-5-5\t2\t1\t1\t1\t1' \
+    $'2026-11-06 10:45\tp4\tWORKED\tpass p4: 1 due, 5m' \
+    $'2026-10-20 10:00\tp0\tWORKED\tpass p0: 5 due, 9m\tclaude-sonnet-5-5\t5\t5\t5\t0\t0' > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  run "$SUBJECT" canary shepherd --json
+  assert_success
+  assert_equal "$(jq -sc . <<<"$output")" '[{"model":"claude-opus-5-5","passes":2,"noop_share":0.5,"nudges":2,"progress_share":1,"missed_per_pass":0,"wrong_parks":0,"parks":1},{"model":"claude-sonnet-5-5","passes":1,"noop_share":0,"nudges":2,"progress_share":0.5,"missed_per_pass":1,"wrong_parks":1,"parks":1}]'
+  run "$SUBJECT" canary shepherd
+  assert_line $'claude-sonnet-5-5\t1 passes\tnoop 0\t2 nudges\tprogress 0.5\tmissed/pass 1\twrong parks 1/1'
+  # the window reaches back to the old sonnet row only when asked
+  run "$SUBJECT" canary shepherd --days 30 --json
+  assert_equal "$(jq -s 'map(select(.model == "claude-sonnet-5-5")) | .[0].passes' <<<"$output")" 2
+  run "$SUBJECT" canary shepherd --days x
+  assert_failure 2
+  rm "$FLEET_SHEPHERD_DIR/passes.tsv"
+  run "$SUBJECT" canary shepherd
+  assert_failure 1
 }
