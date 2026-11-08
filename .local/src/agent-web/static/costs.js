@@ -3,7 +3,7 @@
 // and harness cuts. /api/costs is hub_core::costs::board, the view the hub TUI draws; this file
 // draws its answer and turns a click into the view keys (by, w, q, sort, dir) in the URL, so
 // `#costs?by=model&w=7d&q=harness:codex` is a link to that view. Trends are Grafana's. Above the
-// tiles: who pays (Burn, one row per Claude account), where the tokens go and what Langfuse sees.
+// tiles: who pays (Burn, one row per source claude-acct reads), where the tokens go and what Langfuse sees.
 
 // open: the folded sections' state; tokWin: the tokens section's window.
 const cost = tblTab({
@@ -61,21 +61,11 @@ function costsSwitch(name, all, on, key) {
     `<button class="${x === on ? "on" : ""}" data-cv="${key}" data-cval="${esc(x)}">${esc(x)}</button>`).join("") + `</div>`;
 }
 
-// "of $cap (pct%)" under a spend tile, or nothing when there is no cap.
-const ofCap = (spent, cap) => spent != null && cap ? `of ${usd(cap)} (${pct(spent / cap)})` : "";
-
-// The Lazer tiles, the TUI's `lazer` and `direct` lines: the gateway pool, the reserve key and the GLM
-// pilot key (once minted) against their caps, and direct use with what it cannot see beside it, so a low figure never reads as all of it.
-function lazerTiles(lz, dr) {
-  // a key's spend against its cap, then the days to its reset
-  const keyTile = (name, spend, budget, hours) => tile(name, usd(spend), "var(--c3)",
-    [ofCap(spend, budget), hours != null ? `${Math.round(hours / 24)}d left` : ""].filter(Boolean).join(", "));
-  const glm = lz.glm_spend != null || lz.glm_budget != null
-    ? keyTile("LAZER GLM", lz.glm_spend, lz.glm_budget, lz.glm_reset_hours) : "";
+// Direct Lazer use, the TUI's `direct` line, with what it cannot see beside it, so a low figure
+// never reads as all of it. The pool and its keys are Burn rows.
+function directTile(dr) {
   const unpriced = dr.unpriced ? `<span class="warn">+${dr.unpriced} unpriced</span>, ` : "";
-  return tile("LAZER POOL", usd(lz.lazer_spend), "var(--c3)", ofCap(lz.lazer_spend, lz.lazer_budget)) +
-    keyTile("LAZER RESERVE", lz.reserve_spend, lz.reserve_budget, lz.reserve_reset_hours) + glm +
-    tile("LAZER DIRECT", usd(dr.usd), "var(--c3)", unpriced + esc(dr.note || "not read"));
+  return tile("LAZER DIRECT", usd(dr.usd), "var(--c3)", unpriced + esc(dr.note || "not read"));
 }
 
 function costsTiles(d) {
@@ -83,34 +73,42 @@ function costsTiles(d) {
   return `<div class="tiles roomy">` + (d.totals || []).map((t) =>
     tile(`SPEND ${t.window.toUpperCase()}`, usd(t.usd), t.window === d.window ? "var(--c1)" : "var(--c-other)", `${t.sessions} sessions${t.unpriced ? `, ${t.unpriced} unpriced` : ""}`)).join("") +
     tile("LIVE 24H", usd(lz.claude_24h), "var(--c2)", "Prometheus, exported sessions only") +
-    lazerTiles(lz, d.direct || {}) + `</div>`;
+    directTile(d.direct || {}) + `</div>`;
 }
 
 // The Burn section (hub_core::burn, the hub's coststab.rs `burn`): the headline coloured by the
-// fleet's level, then the drip, when the accounts are back on pace and one row per account. Green
+// fleet's level, then the drip, when the accounts are back on pace and one row per source. Green
 // folds to its headline (dashboards rule 4); amber and red start open until the reader folds it.
 function burnPace(b) {
   const p = b.pace;
-  if (p.on_pace) return "every account is on pace";
+  if (p.on_pace) return "every source is on pace";
   const burn = p.at_burn.length ? p.at_burn.map(([n, t]) => `${esc(n)} ${when(t)}`).join(", ") : "not before the reset";
   const idle = p.idle_all_by == null ? "" : `; if idle: all by ${when(p.idle_all_by)}${p.idle_rest_after_reset ? ", the rest after the reset" : ""}`;
   return `at this burn: ${burn}${idle}`;
 }
 
-// A back-on-pace cell: on pace, the time, or after the reset (Account::on_pace).
-const burnCell = (a, t, at) => (!(a.used > a.gone) || (t != null && t <= at) ? "on pace" : t == null ? "after reset" : when(t));
+// A back-on-pace cell: on pace, the time, or after the reset (Account::on_pace); nothing for a
+// dollar budget, which has no pace line.
+const burnCell = (a, t, at) => (a.unpaced ? "-" : !(a.used > a.gone) || (t != null && t <= at) ? "on pace" : t == null ? "after reset" : when(t));
+
+// The Burn table's columns, the TUI's header in its order; true is a number column.
+const BURN_COLS = [["source"], ["kind"], ["live", true], ["used", true], ["gone", true], ["reserve", true], ["room"], ["burn/h", true], ["keeps/h", true],
+  ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["24h", true], ["pool"]];
 
 function burnRow(a, at, note) {
-  if (a.state === "unreadable") return `<tr><td>${esc(a.name)}</td><td colspan="13" class="bad">usage unreadable</td></tr>`;
-  if (a.state === "stale") return `<tr><td>${esc(a.name)}</td><td colspan="13" class="bad">${esc(note)}</td></tr>`;
-  if (a.state === "idle") return `<tr><td>${esc(a.name)}</td><td colspan="13" class="muted">idle, token refreshes on launch</td></tr>`;
+  // a row with no figures: its name, then one cell across the rest
+  const span = (cls, text) => `<tr><td>${esc(a.name)}</td><td colspan="${BURN_COLS.length - 1}" class="${cls}">${esc(text)}</td></tr>`;
+  if (a.state === "unreadable") return span("bad", "usage unreadable");
+  if (a.state === "stale") return span("bad", note);
+  // burn::idle_note's words
+  if (a.state === "idle") return span("muted", a.kind === "claude" ? "idle, token refreshes on launch" : "no usage read yet");
   const pc = (v) => (v == null ? "-" : Math.floor(v) + "%");
-  const rate = (v) => (v == null ? "-" : v.toFixed(2));
-  return `<tr><td>${esc(a.name)}</td><td class="n">${a.live}</td><td class="n">${pc(a.used)}</td><td class="n">${pc(a.gone)}</td>` +
+  const rate = (v) => (v == null || a.unpaced ? "-" : v.toFixed(2));
+  return `<tr><td>${esc(a.name)}</td><td>${esc(a.kind)}</td><td class="n">${a.live}</td><td class="n">${esc(a.used_text)}</td><td class="n">${pc(a.gone)}</td><td class="n">${pc(a.reserve)}</td>` +
     `<td class="${a.room ? (a.room.ok ? "ok" : "bad") : "muted"}">${a.room ? esc(a.room.text) : "-"}</td>` +
-    `<td class="n${a.sustain != null && a.burn > a.sustain ? " warn" : ""}">${rate(a.burn)}</td><td class="n">${rate(a.sustain)}</td>` +
+    `<td class="n${!a.unpaced && a.sustain != null && a.burn > a.sustain ? " warn" : ""}">${rate(a.burn)}</td><td class="n">${rate(a.sustain)}</td>` +
     `<td>${burnCell(a, a.burn_at, at)}</td><td>${burnCell(a, a.idle_at, at)}</td><td>${when(a.run_out)}</td><td>${when(a.resets)}</td>` +
-    `<td class="n">${pc(a.five_hour)}</td><td>${when(a.five_hour_resets)}</td><td class="n">${usd(a.cost_24h)}</td></tr>`;
+    `<td class="n">${pc(a.five_hour)}</td><td>${when(a.five_hour_resets)}</td><td class="n">${usd(a.cost_24h)}</td><td>${esc(a.parent || "-")}</td></tr>`;
 }
 
 function costsBurn(d) {
@@ -119,11 +117,10 @@ function costsBurn(d) {
   const cls = b.level === "bad" ? "bad" : b.level === "warn" ? "warn" : "ok";
   const held = b.drip.held ? ` <a class="warn" href="#sessions" title="${esc(b.drip.held)}">dispatch held -> Sessions</a>` : "";
   const open = cost.open.burn != null ? cost.open.burn : b.level !== "ok";
-  const th = (t) => `<th class="n">${t}</th>`;
   return `<details class="csec" data-k="burn" id="sec-burn"${open ? " open" : ""}><summary><h2 class="sec">Burn <span class="burn ${cls}">${esc(b.head)}</span></h2></summary>` +
     `<div class="panel"><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
     `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
-    `<div class="panel scroll"><table class="tbl"><tr><th>account</th>${["live", "used", "gone"].map(th).join("")}<th>room</th>${["burn/h", "keeps/h"].map(th).join("")}<th>at burn</th><th>if idle</th><th>runs out</th><th>resets</th>${th("5h")}<th>5h resets</th>${th("24h")}</tr>` +
+    `<div class="panel scroll"><table class="tbl"><tr>${BURN_COLS.map(([t, n]) => `<th${n ? ' class="n"' : ""}>${t}</th>`).join("")}</tr>` +
     b.accounts.map((a) => burnRow(a, b.at, b.stale)).join("") + `</table></div>` +
     `<div class="muted fold">burn/h is the last 6h rate per live session; keeps/h is what the rest of the week can carry to the reset; 24h is the list-price estimate, for scale.</div></details>`;
 }
