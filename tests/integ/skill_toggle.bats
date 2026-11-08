@@ -159,6 +159,8 @@ toggle_repo() {
   toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
   printf '#!/usr/bin/env bash\necho 77\n' > "$SANDBOX/bin-gh"; mkdir -p "$SANDBOX/ghbin"
   mv "$SANDBOX/bin-gh" "$SANDBOX/ghbin/gh"; chmod +x "$SANDBOX/ghbin/gh"
+  # rm first: the sandbox links this file to the repo copy, and a write would go through it.
+  rm -f "$HOME/.local/lib/agent-proof.sh"
   printf 'proof_outcome() { echo "verdict $2"; }\n' > "$HOME/.local/lib/agent-proof.sh"
   PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
   assert_success
