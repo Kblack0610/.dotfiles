@@ -2566,9 +2566,13 @@ impl App {
             back: 0,
             gen,
         });
-        let (tx, paths) = (self.tx.clone(), self.files.builds.clone());
+        let (tx, paths, jobs_paths) = (
+            self.tx.clone(),
+            self.files.builds.clone(),
+            self.paths.clone(),
+        );
         std::thread::spawn(move || {
-            let text = builds::log(&paths, &key, jobs::now()).map_err(|e| {
+            let text = builds::log(&paths, &jobs_paths, &key, jobs::now()).map_err(|e| {
                 if url.is_empty() {
                     e
                 } else {
@@ -2623,6 +2627,8 @@ impl App {
             && k.code == KeyCode::Char('b')
         {
             self.rv.builds.focus = !self.rv.builds.focus;
+            // The keys that close the channel pane are the channels': it must not outlive them.
+            self.rv.open = false;
             return true;
         }
         if self.rv.builds.focus {

@@ -166,6 +166,7 @@ mod tests {
                 running: 1,
                 queued: 0,
                 red: 2,
+                recent_red: 2,
             }),
             ..Default::default()
         };

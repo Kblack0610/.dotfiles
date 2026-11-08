@@ -225,6 +225,8 @@ pub struct Paths {
     pub unity_runs: PathBuf,
     /// Where finished GitHub logs are kept once fetched.
     pub cache: PathBuf,
+    /// The CI run ledger the Infra head counts.
+    pub builds: crate::builds::Paths,
 }
 
 impl Paths {
@@ -247,6 +249,7 @@ impl Paths {
                 .unwrap_or_else(|| home.join(".cache"))
                 .join("hub"),
             agentctl,
+            builds: crate::builds::Paths::from_env(),
         }
     }
 }
@@ -358,7 +361,7 @@ pub fn collect(paths: &Paths, opts: &Opts) -> Jobs {
     sort(&mut out.jobs);
     // The CI line belongs to the whole list: a source filter or one job's history has none.
     if opts.name.is_none() && opts.sources.len() == Source::ALL.len() {
-        let builds = crate::builds::read(&crate::builds::Paths::from_env(), at);
+        let builds = crate::builds::read(&paths.builds, at);
         out.ci = Some(builds.counts);
         out.errors
             .extend(builds.errors.into_iter().map(|e| format!("ci: {e}")));

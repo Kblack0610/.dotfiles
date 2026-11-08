@@ -115,7 +115,8 @@ function buildsHead(d) {
 
 // The channels' tail: the Builds block, once it has been read.
 function releaseBuilds() {
-  if (!bld.data || !bld.data.table) return bld.err ? `<div class="panel down">${esc(bld.err)}</div>` : "";
+  if (!bld.data) return bld.err ? `<div class="panel down">${esc(bld.err)}</div>` : "";
+  if (!bld.data.table) return `<div id="bld-head">${buildsHead(bld.data)}</div>`;
   return `<div data-tbl="${BUILDS_PRE}"><div id="bld-head">${buildsHead(bld.data)}</div>${tblBar("bld", bld.data.table, BUILDS_HINT)}` +
     `<div id="bld-body">${buildsBody(bld.data)}</div></div>`;
 }

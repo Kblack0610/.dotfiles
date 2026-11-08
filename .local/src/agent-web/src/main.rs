@@ -246,7 +246,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let claude = session::home().join(".claude");
     let projects = claude.join("projects");
     let (new_dirs, mut new_dirs_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
-    let (costs_events, mut costs_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (cached_events, mut cached_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watched = projects.clone();
     let events = tx.clone();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -259,10 +259,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 let _ = new_dirs.send(p.clone());
             }
             match classify(p) {
-                // Costs keeps its read for minutes, so the task below drops it before it tells
+                // Costs and Builds keep their read, so the task below drops it before it tells
                 // the page; a refresh that raced ahead would get the old snapshots back.
-                Some(msg) if msg == COSTS_EVENT => {
-                    let _ = costs_events.send(msg);
+                Some(msg) if msg == COSTS_EVENT || msg == BUILDS_EVENT => {
+                    let _ = cached_events.send(msg);
                 }
                 Some(msg) => {
                     let _ = events.send(msg); // no subscribers is fine
@@ -361,8 +361,12 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                     let Some(dir) = dir else { break };
                     failed.extend(add_watches(&mut w, vec![(dir, flat)]));
                 }
-                Some(msg) = costs_rx.recv() => {
-                    costs::forget().await;
+                Some(msg) = cached_rx.recv() => {
+                    if msg == BUILDS_EVENT {
+                        builds::forget().await;
+                    } else {
+                        costs::forget().await;
+                    }
                     let _ = tx.send(msg);
                 }
                 () = tokio::time::sleep(delay), if retry => {
@@ -380,6 +384,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
 
 /// A new token snapshot: the Costs tab reads afresh.
 const COSTS_EVENT: &str = r#"{"kind":"costs"}"#;
+const BUILDS_EVENT: &str = r#"{"kind":"builds"}"#;
 
 fn classify(p: &Path) -> Option<String> {
     if p.ends_with(".local/state/fleet/state.json") || p.ends_with(".agent/shepherd/watch.log") {
@@ -396,7 +401,7 @@ fn classify(p: &Path) -> Option<String> {
         return Some(r#"{"kind":"releases"}"#.to_string());
     }
     if hub_core::builds::Paths::from_env().is_ledger_file(p) {
-        return Some(r#"{"kind":"builds"}"#.to_string());
+        return Some(BUILDS_EVENT.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -1499,11 +1504,8 @@ mod tests {
         assert_eq!(classify(&boards::releases_dir().join(".state.123")), None);
         // schedules-sync's ledger and sync record are the Builds section's; its other files are not.
         let ci = hub_core::builds::Paths::from_env();
-        assert_eq!(
-            classify(&ci.ledger).as_deref(),
-            Some(r#"{"kind":"builds"}"#)
-        );
-        assert_eq!(classify(&ci.sync).as_deref(), Some(r#"{"kind":"builds"}"#));
+        assert_eq!(classify(&ci.ledger).as_deref(), Some(BUILDS_EVENT));
+        assert_eq!(classify(&ci.sync).as_deref(), Some(BUILDS_EVENT));
         assert_eq!(classify(&ci.sync.with_file_name("other.json")), None);
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),

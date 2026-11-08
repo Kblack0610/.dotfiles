@@ -4,7 +4,7 @@
 //! plain ones. A new ledger line pushes the `builds` event; a run's log is read when it is opened.
 
 use hub_core::builds::{self, Builds, Paths, Run, RunKey, STALE_SECS};
-use hub_core::jobs::now;
+use hub_core::jobs::{self, now};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 
@@ -67,10 +67,15 @@ pub async fn get(q: Query) -> String {
     read.map_or_else(failed, |b| render(&b, &q))
 }
 
+/// Drop the kept read, so the page's refetch after a ledger append sees the append.
+pub async fn forget() {
+    READ.clear().await;
+}
+
 /// The log tail of the run `key` names. The outer error is a request that names no run; the
 /// inner one, a log that could not be fetched.
 pub async fn log(key: RunKey) -> Result<String, String> {
-    off(move || builds::log(&Paths::from_env(), &key, now()))
+    off(move || builds::log(&Paths::from_env(), &jobs::Paths::from_env(), &key, now()))
         .await
         .and_then(|r| r)
 }
@@ -97,6 +102,7 @@ mod tests {
                 running: 1,
                 queued: 0,
                 red: 1,
+                ..Default::default()
             },
             rows,
             errors: vec![],

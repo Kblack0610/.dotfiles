@@ -596,6 +596,7 @@ mod tests {
                 agentctl: state,
                 unity_runs: root.join("unity-runs.tsv"),
                 cache: root.join("cache"),
+                builds: crate::builds::Paths::from_env(),
             },
             dispatch: root.join("dispatch"),
             state: root.join("state.json"),

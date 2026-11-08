@@ -22,6 +22,9 @@ use crate::table::{Row, Val};
 
 /// How long the ledger keeps a run, and so how far back this section reaches.
 pub const KEEP_DAYS: i64 = 30;
+
+/// How far back a red run still colours the count line.
+pub const RECENT_SECS: i64 = 86400;
 /// Branches that belong to no session: a session sitting on one is not what ran it.
 const SHARED_BRANCHES: [&str; 4] = ["main", "master", "develop", "HEAD"];
 
@@ -31,7 +34,6 @@ pub struct Paths {
     pub ledger: PathBuf,
     pub sync: PathBuf,
     pub fleet: PathBuf,
-    pub jobs: jobs::Paths,
 }
 
 impl Paths {
@@ -48,7 +50,6 @@ impl Paths {
             sync: ledger.with_file_name("sync.json"),
             ledger,
             fleet: crate::boards::fleet_state(),
-            jobs: jobs::Paths::from_env(),
         }
     }
 
@@ -185,16 +186,22 @@ pub struct Counts {
     pub running: usize,
     pub queued: usize,
     pub red: usize,
+    /// Red runs begun within `RECENT_SECS`: what colours a line quoting the counts.
+    pub recent_red: usize,
 }
 
 impl Counts {
-    fn of(rows: &[Run]) -> Counts {
+    fn of(rows: &[Run], now: i64) -> Counts {
         let n = |s: &str| rows.iter().filter(|r| r.state == s).count();
         Counts {
             total: rows.len(),
             running: n("running"),
             queued: n("queued"),
             red: n("red"),
+            recent_red: rows
+                .iter()
+                .filter(|r| r.state == "red" && now - r.started < RECENT_SECS)
+                .count(),
         }
     }
 
@@ -210,9 +217,10 @@ impl Counts {
         )
     }
 
-    /// The worst thing the counts say, for the colour of a line that quotes them.
+    /// The worst thing the counts say, for the colour of a line that quotes them. A red run
+    /// older than `RECENT_SECS` is history: 30 days of runs always hold one.
     pub fn level(&self) -> Level {
-        if self.red > 0 {
+        if self.recent_red > 0 {
             Level::Bad
         } else if self.queued > 0 {
             Level::Warn
@@ -390,7 +398,7 @@ pub fn read(paths: &Paths, now: i64) -> Builds {
         }
         Err(e) => out.errors.push(format!("owner session: {e}")),
     }
-    out.counts = Counts::of(&out.rows);
+    out.counts = Counts::of(&out.rows, now);
     out
 }
 
@@ -403,22 +411,41 @@ pub fn cap(rows: Vec<&Run>) -> (Vec<&Run>, usize) {
     (rows.into_iter().take(LIST_ROWS).collect(), more)
 }
 
-/// The run `key` names, from the ledger.
-pub fn find(paths: &Paths, key: &RunKey, now: i64) -> Result<Run, String> {
+/// The run `key` names, from the ledger, and whether a later attempt of the same run exists.
+pub fn find(paths: &Paths, key: &RunKey, now: i64) -> Result<(Run, bool), String> {
     let (rows, _) = parse(&read_text(&paths.ledger)?, now);
-    rows.into_iter()
+    let run = rows
+        .iter()
         .find(|r| r.key() == *key)
-        .ok_or_else(|| "that run is not in the ledger (older than 30 days, or never synced)".into())
+        .ok_or("that run is not in the ledger (older than 30 days, or never synced)")?;
+    let later = rows.iter().any(|r| {
+        (r.forge.as_str(), r.repo.as_str(), r.id) == (run.forge.as_str(), run.repo.as_str(), run.id)
+            && r.attempt > run.attempt
+    });
+    Ok((run.clone(), later))
 }
 
 /// The tail of a run's log, fetched on open. A finished GitHub run goes through `jobs::read_log`
 /// (the failed steps, else the whole log, cached once because the API budget is shared); a live
 /// one says so; Forgejo serves no log to a caller without a session, so its row points at the run.
-pub fn log(paths: &Paths, key: &RunKey, now: i64) -> Result<String, String> {
-    let run = find(paths, key, now)?;
+pub fn log(
+    paths: &Paths,
+    jobs_paths: &jobs::Paths,
+    key: &RunKey,
+    now: i64,
+) -> Result<String, String> {
+    let (run, superseded) = find(paths, key, now)?;
+    // `gh run view` and the log cache know the run, not its attempt: they would serve the latest
+    // attempt's log under this one's row.
+    if superseded {
+        return Ok(format!(
+            "Attempt {} was re-run; the hub reads only the latest attempt's log. Open {}/attempts/{}\n",
+            run.attempt, run.url, run.attempt
+        ));
+    }
     match run.forge.as_str() {
         "github" => jobs::read_log(
-            &paths.jobs,
+            jobs_paths,
             &LogRef::Gh {
                 url: run.url.clone(),
                 done: run.done(),
@@ -500,9 +527,16 @@ mod tests {
         ]
         .join("\n");
         let (rows, _) = parse(&text, NOW);
-        let c = Counts::of(&rows);
+        let c = Counts::of(&rows, NOW);
         assert_eq!(c.says(), "3 runs in 30 days: 1 running, 0 queued, 1 red");
-        assert_eq!(c.level(), Level::Bad);
+        let red = rows.iter().find(|r| r.id == 2).unwrap().started;
+        assert_eq!(c.level(), Level::Bad, "a red run begun within the day");
+        let later = Counts::of(&rows, red + RECENT_SECS + 1);
+        assert_eq!(
+            (later.red, later.level()),
+            (1, Level::Ok),
+            "an old red is history"
+        );
         assert_eq!(rows.iter().find(|r| r.id == 3).unwrap().state, "other");
     }
 
@@ -546,7 +580,6 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
-            jobs: jobs::Paths::from_env(),
         };
         let b = read(&p, NOW);
         std::fs::remove_dir_all(&d).unwrap();
@@ -568,7 +601,6 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
-            jobs: jobs::Paths::from_env(),
         };
         let key = |id| RunKey {
             forge: "forgejo".into(),
@@ -576,13 +608,40 @@ mod tests {
             id,
             attempt: 1,
         };
-        let got = log(&p, &key(5), NOW);
-        let missing = log(&p, &key(6), NOW);
+        let got = log(&p, &jobs::Paths::from_env(), &key(5), NOW);
+        let missing = log(&p, &jobs::Paths::from_env(), &key(6), NOW);
         std::fs::remove_dir_all(&d).unwrap();
         assert!(got
             .unwrap()
             .contains("https://git.example/Org/app/actions/runs/5"));
         assert!(missing.unwrap_err().contains("not in the ledger"));
+    }
+
+    #[test]
+    fn a_re_run_attempt_does_not_show_the_latest_attempts_log() {
+        let d = std::env::temp_dir().join(format!("hub-builds-attempt-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let first = line(7, "completed", Some("failure"), 600, "x");
+        let second = first.replace("\"attempt\":1", "\"attempt\":2");
+        std::fs::write(d.join("runs.jsonl"), format!("{first}\n{second}\n")).unwrap();
+        let p = Paths {
+            ledger: d.join("runs.jsonl"),
+            sync: d.join("sync.json"),
+            fleet: d.join("state.json"),
+        };
+        let key = RunKey {
+            forge: "github".into(),
+            repo: "Org/app".into(),
+            id: 7,
+            attempt: 1,
+        };
+        let got = log(&p, &jobs::Paths::from_env(), &key, NOW);
+        std::fs::remove_dir_all(&d).unwrap();
+        let got = got.unwrap();
+        assert!(
+            got.contains("Attempt 1 was re-run") && got.contains("/attempts/1"),
+            "{got}"
+        );
     }
 
     #[test]

@@ -190,6 +190,7 @@ pub mod tests {
                 running: 0,
                 queued: 1,
                 red: 1,
+                recent_red: 1,
             },
             rows,
             errors: vec![],
