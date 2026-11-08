@@ -21,6 +21,7 @@
         "temperature#gpu",
         "memory",
         "custom/storage",
+        "custom/machine-mode",
         "clock#date",
         "clock#time",
         "tray"
