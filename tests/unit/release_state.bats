@@ -270,6 +270,148 @@ EOF
   assert_output --partial 'deploy target id "dup" is used 2 times'
 }
 
+# changelog: what a tag shipped
+
+# ship <subject> <tag> - one commit, then the tag on it (local only: changelog reads local tags).
+ship() {
+  echo "$1" >> "$CLONE/log.txt"
+  git -C "$CLONE" add -A; git -C "$CLONE" commit -qm "$1"
+  git -C "$CLONE" tag "$2"
+}
+
+cl() { "$RS" changelog --json "$@"; }
+
+@test "changelog: a tag's CHANGELOG.md section, and only that section" {
+  cat > "$CLONE/CHANGELOG.md" <<'MD'
+# Changelog
+
+## [1.1.0] - 2026-02-01
+
+### Added
+
+- the second thing
+
+```sh
+# a comment in a fence is not a heading
+```
+
+## [1.1.01] - 2026-01-15
+
+- a version that only starts like 1.1.0
+
+## 1.0.0
+
+- the first thing
+MD
+  ship "first (#1)" web-v1.0.0
+  ship "second (#2)" web-v1.1.0
+  run cl web web-v1.1.0
+  assert_success
+  [ "$(jq -r .source <<<"$output")" = CHANGELOG.md ]
+  [ "$(jq -r .prev <<<"$output")" = web-v1.0.0 ]
+  jq -r .text <<<"$output" > "$SANDBOX/text"
+  grep -q 'the second thing' "$SANDBOX/text"
+  grep -q '### Added' "$SANDBOX/text"
+  grep -q 'a comment in a fence' "$SANDBOX/text"
+  # Negative controls: not the section before it, nor the one whose number only starts the same.
+  ! grep -q 'only starts like' "$SANDBOX/text"
+  ! grep -q 'the first thing' "$SANDBOX/text"
+  [ "$(cl web web-v1.0.0 | jq -r .text)" = '- the first thing' ]
+}
+
+@test "changelog: no section means the merged PRs between the tag and the release before it" {
+  ship "first (#1)" web-v1.0.0
+  ship "rc work (#2)" web-v1.1.0-rc1
+  ship "late fix (#3)" web-v1.1.0
+  ship "Merge branch main" web-v1.2.0
+  run cl web web-v1.1.0
+  assert_success
+  [ "$(jq -r .source <<<"$output")" = "merged PRs" ]
+  # A release compares against the release before it, not against its own candidate.
+  [ "$(jq -r .prev <<<"$output")" = web-v1.0.0 ]
+  [ "$(jq -r .range <<<"$output")" = web-v1.0.0..web-v1.1.0 ]
+  [ "$(jq -r .text <<<"$output")" = "$(printf -- '- late fix (#3)\n- rc work (#2)')" ]
+  # The candidate itself compares against what came before it.
+  [ "$(cl web web-v1.1.0-rc1 | jq -r .prev)" = web-v1.0.0 ]
+  # A merge commit and a subject with no PR number are not changes.
+  [ "$(cl web web-v1.2.0 | jq -r .text)" = "" ]
+}
+
+@test "changelog: the first tag has no previous, and the default is the newest release" {
+  ship "first (#1)" web-v1.0.0
+  ship "next (#2)" web-v1.1.0
+  ship "candidate (#3)" web-v1.2.0-rc1
+  [ "$(cl web web-v1.0.0 | jq -r .prev)" = null ]
+  run cl web
+  assert_success
+  [ "$(jq -r .tag <<<"$output")" = web-v1.1.0 ]
+  # The picker lists every tag of the line, candidates too, newest first, and no sibling's.
+  ship "sibling (#4)" other-v9.0.0
+  [ "$(cl web | jq -c .tags)" = '["web-v1.2.0-rc1","web-v1.1.0","web-v1.0.0"]' ]
+}
+
+@test "changelog: only a tag of the project's line is read" {
+  ship "first (#1)" web-v1.0.0
+  ship "sibling (#2)" other-v9.0.0
+  for bad in other-v9.0.0 main 'web-v1.0.0;id' 'web-v1.0.0 '; do
+    run "$RS" changelog web "$bad"
+    assert_failure 2
+    assert_output --partial 'is not a release tag of web'
+  done
+  run "$RS" changelog web -rf
+  assert_failure 2
+  run "$RS" changelog lonely
+  assert_failure 2
+  assert_output --partial 'no checkout'
+}
+
+@test "changelog: text mode names the range and where it came from; --list names the tags" {
+  ship "first (#1)" web-v1.0.0
+  ship "second (#2)" web-v1.1.0
+  run "$RS" changelog web
+  assert_success
+  assert_line --index 0 'web web-v1.1.0 (web-v1.0.0..web-v1.1.0, from merged PRs)'
+  assert_line '- second (#2)'
+  run "$RS" changelog --list web
+  assert_output "$(printf 'web-v1.1.0\nweb-v1.0.0')"
+}
+
+@test "changelog: a heading that only starts with the version is not its section" {
+  printf '## [1.1.01] - 2026-01-15\n\n- another release\n' > "$CLONE/CHANGELOG.md"
+  ship "first (#1)" web-v1.0.0
+  ship "second (#2)" web-v1.1.0
+  run cl web web-v1.1.0
+  [ "$(jq -r .source <<<"$output")" = "merged PRs" ]
+}
+
+@test "changelog: a release is listed above its own candidates" {
+  ship "first (#1)" web-v1.0.0
+  ship "candidate (#2)" web-v1.1.0-rc1
+  ship "release (#3)" web-v1.1.0
+  [ "$(cl web | jq -c .tags)" = '["web-v1.1.0","web-v1.1.0-rc1","web-v1.0.0"]' ]
+}
+
+@test "changelog: more merged PRs than the cap end with a line saying so" {
+  ship "first (#1)" web-v1.0.0
+  for i in $(seq 1 103); do ship "change $i (#$((i + 1)))" "wip-$i"; git -C "$CLONE" tag -d "wip-$i" >/dev/null; done
+  git -C "$CLONE" tag web-v1.1.0
+  run cl web web-v1.1.0
+  assert_success
+  [ "$(jq -r .text <<<"$output" | wc -l)" -eq 101 ]
+  [ "$(jq -r .text <<<"$output" | tail -1)" = '- ... and older PRs, not shown' ]
+}
+
+@test "changelog: a product with a folder of its own does not take the repo root's changelog" {
+  jq '.trackers.web.path = "apps/web"' "$PROJECT_MAP_FILE" > "$SANDBOX/map" && mv "$SANDBOX/map" "$PROJECT_MAP_FILE"
+  printf '## 1.1.0\n\n- the other product\n' > "$CLONE/CHANGELOG.md"
+  ship "first (#1)" web-v1.0.0
+  ship "second (#2)" web-v1.1.0
+  [ "$(cl web web-v1.1.0 | jq -r .source)" = "merged PRs" ]
+  mkdir -p "$CLONE/apps/web"; printf '## 1.1.0\n\n- the web product\n' > "$CLONE/apps/web/CHANGELOG.md"
+  git -C "$CLONE" add -A; git -C "$CLONE" commit -qm "web log"; git -C "$CLONE" tag -f web-v1.1.0 >/dev/null
+  [ "$(cl web web-v1.1.0 | jq -r .text)" = "- the web product" ]
+}
+
 # node <version> <state> <at> - one Deployment as the GraphQL answer carries it.
 node() {
   printf '{"createdAt":"%s","description":"%s","commitOid":"abcdef1234","ref":{"name":"main"},"latestStatus":{"state":"%s","logUrl":"https://example.test/run/%s","createdAt":"%s"}}' "$3" "$1" "$2" "$1" "$3"

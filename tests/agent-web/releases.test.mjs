@@ -68,7 +68,12 @@ const data = (o = {}) => ({
 });
 
 const target = (attrs, tr = null) => ({ dataset: attrs, closest: (sel) => (sel === "tr.jr" ? tr : sel === "[data-ts]" && "ts" in attrs ? { dataset: attrs } : null) });
-const show = (d = data()) => { run("st.tab = 'releases'"); Object.assign(relst, { data: d, err: null, sel: null }); run("relst.render()"); };
+const show = (d = data()) => {
+  run("st.tab = 'releases'");
+  Object.assign(relst, { data: d, err: null, sel: null });
+  Object.assign(run("relcl"), { project: null, data: null, err: null });
+  run("relst.render()");
+};
 
 test("the head asks the tab's question, counts the channels and says the snapshot's age", () => {
   show();
@@ -114,6 +119,7 @@ test("when everything is green the table says so and keeps the fold", () => {
 
 test("clicking a row opens its versions, every watch and its deps, and clicking again closes it", () => {
   show();
+  body = changelog();
   const tr = { dataset: { key: "binks|binks-prod" } };
   fire("click", { type: "click", target: target({}, tr) });
   const b = box.innerHTML;
@@ -123,6 +129,67 @@ test("clicking a row opens its versions, every watch and its deps, and clicking 
   assert.match(b, /<b>Deps<\/b> unity-core v0.5.0/);
   fire("click", { type: "click", target: target({}, tr) });
   assert.doesNotMatch(box.innerHTML, /<b>Pinned/);
+});
+
+const changelog = (o = {}) => ({
+  project: "binks", tag: "binks-v2", prev: "binks-v1", source: "merged PRs", range: "binks-v1..binks-v2",
+  text: "- fix the **probe** (#7)", tags: ["binks-v3", "binks-v2", "binks-v1"], ...o,
+});
+const open = async (d = changelog()) => {
+  show();
+  body = d;
+  asked.length = 0;
+  fire("click", { type: "click", target: target({}, { dataset: { key: "binks|binks-prod" } }) });
+  await settled();
+};
+
+test("opening a row reads its project's newest changelog and draws it under a tag picker", async () => {
+  await open();
+  assert.deepEqual(asked, ["/api/releases/changelog?project=binks"]);
+  const b = box.innerHTML;
+  assert.match(b, /<b>Changelog<\/b> <select class="rel-tag"[^>]*data-project="binks">/);
+  assert.match(b, /<option>binks-v3<\/option><option selected>binks-v2<\/option><option>binks-v1<\/option>/);
+  assert.match(b, /binks-v1\.\.binks-v2, from merged PRs/);
+  assert.match(b, /fix the <strong>probe<\/strong> \(#7\)/);
+});
+
+test("picking another tag reads that tag, and a tag with nothing in it says so", async () => {
+  await open();
+  asked.length = 0;
+  body = changelog({ tag: "binks-v1", prev: null, range: "binks-v1", text: "" });
+  const select = { dataset: { project: "binks" }, value: "binks-v1" };
+  fire("change", { type: "change", target: { closest: (sel) => (sel === "select.rel-tag" ? select : null) } });
+  await settled();
+  assert.deepEqual(asked, ["/api/releases/changelog?project=binks&tag=binks-v1"]);
+  assert.match(box.innerHTML, /No merged PRs in binks-v1\./);
+  // A change on anything else is not a pick.
+  asked.length = 0;
+  fire("change", { type: "change", target: { closest: () => null } });
+  await settled();
+  assert.equal(asked.length, 0);
+});
+
+test("a changelog the collector refused is said in the row, not left reading", async () => {
+  show();
+  const real = ctx.fetch;
+  ctx.fetch = async () => ({ ok: false, status: 400, statusText: "Bad Request", text: async () => "release-state: binks has no release tags", headers: { get: () => "text/plain" } });
+  fire("click", { type: "click", target: target({}, { dataset: { key: "binks|binks-prod" } }) });
+  await settled();
+  ctx.fetch = real;
+  assert.match(box.innerHTML, /class="warn">Could not read releases \(HTTP 400\): release-state: binks has no release tags/);
+});
+
+test("a pick the collector refuses keeps the tag picker, so another tag can be tried", async () => {
+  await open();
+  const real = ctx.fetch;
+  ctx.fetch = async () => ({ ok: false, status: 502, statusText: "Bad Gateway", text: async () => "release-state: gone", headers: { get: () => "text/plain" } });
+  const select = { dataset: { project: "binks" }, value: "binks-v1" };
+  fire("change", { type: "change", target: { closest: (sel) => (sel === "select.rel-tag" ? select : null) } });
+  await settled();
+  ctx.fetch = real;
+  assert.match(box.innerHTML, /class="warn">Could not read releases \(HTTP 502\): release-state: gone/);
+  assert.match(box.innerHTML, /<select class="rel-tag"[^>]*>.*<option>binks-v1<\/option>/);
+  assert.doesNotMatch(box.innerHTML, /fix the/);
 });
 
 const bcol = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });

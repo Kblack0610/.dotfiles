@@ -256,3 +256,47 @@ tag() { git -C "$REPO" tag "$1"; }
   assert_success
   assert_output ''
 }
+
+# git_tags / git_prev_tag / git_tag_changes
+
+@test "git_tags: the line's tags newest first; a scoped product never lists a sibling's" {
+  commit a; tag app-v1.9.0
+  commit b; tag app-v1.10.0
+  commit c; tag other-v5.0.0
+  commit d; tag v7.0.0
+  run git_tags "$REPO" app 1
+  assert_output "$(printf 'app-v1.10.0\napp-v1.9.0')"
+  # Unscoped, the project's own prefix still wins before a bare v*.
+  run git_tags "$REPO" app 0
+  assert_output "$(printf 'app-v1.10.0\napp-v1.9.0')"
+  # An explicit glob is authoritative.
+  run git_tags "$REPO" app 1 'other-v*'
+  assert_output 'other-v5.0.0'
+}
+
+@test "git_prev_tag: a release skips its own candidates; a candidate follows what came before it" {
+  commit a; tag v1.9.0
+  commit b; tag v1.10.0-rc1
+  commit c; tag v1.10.0
+  run git_prev_tag "$REPO" proj 0 '' v1.10.0
+  assert_output 'v1.9.0'
+  run git_prev_tag "$REPO" proj 0 '' v1.10.0-rc1
+  assert_output 'v1.9.0'
+  run git_prev_tag "$REPO" proj 0 '' v1.9.0
+  assert_output ''
+}
+
+@test "git_tag_changes: PR-numbered subjects between two tags, under a path filter" {
+  commit base; tag v1.0.0
+  commit "web change (#1)" apps/web/f.txt
+  commit "api change (#2)" apps/api/f.txt
+  commit "Merge pull request #3" apps/web/g.txt
+  tag v1.1.0
+  run git_tag_changes "$REPO" v1.0.0 v1.1.0
+  assert_output "$(printf 'api change (#2)\nweb change (#1)')"
+  run git_tag_changes "$REPO" v1.0.0 v1.1.0 apps/web
+  assert_output 'web change (#1)'
+  # Negative control: no previous tag means the whole history, not nothing.
+  run git_tag_changes "$REPO" '' v1.1.0
+  assert_output "$(printf 'api change (#2)\nweb change (#1)')"
+}

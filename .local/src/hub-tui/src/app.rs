@@ -16,7 +16,7 @@ use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
 use hub_core::proposals::{self, Proposal};
 use hub_core::queue::{Candidate, Candidates, Queue};
-use hub_core::releases::{Release, Releases};
+use hub_core::releases::{Changelog, Release, Releases};
 use hub_core::schedules::{Schedule, Schedules};
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use hub_core::tasks::Feed;
@@ -294,6 +294,8 @@ pub enum Msg {
     Releases(Box<Releases>),
     /// `release-state` wrote a new snapshot.
     ReleaseFile,
+    /// One project's changelog for the ask numbered first, or why it could not be read.
+    Changelog(Result<Changelog, String>),
     Builds(Box<Builds>),
     /// schedules-sync appended to the run ledger.
     BuildFile,
@@ -722,6 +724,38 @@ impl App {
                 let s = hub_core::releases::read(runner.as_ref());
                 let _ = tx.send(Msg::Releases(Box::new(s)));
             });
+        }
+    }
+
+    /// Read the changelog of the selected channel's project, at `tag` or its newest release, in a
+    /// worker. One read at a time: while it runs a new ask waits, and `sync_changelog` makes it
+    /// when the answer lands.
+    fn read_changelog(&mut self, tag: Option<String>) {
+        let Some(project) = self.selected_release().map(|r| r.project.clone()) else {
+            return;
+        };
+        if self.rv.cl.busy {
+            return;
+        }
+        self.rv.cl.busy = true;
+        self.rv.cl.project = project.clone();
+        self.rv.cl.read = None;
+        self.rv.down = 0;
+        let (tx, runner) = (self.tx.clone(), self.runner.clone());
+        std::thread::spawn(move || {
+            let r = hub_core::releases::changelog(runner.as_ref(), &project, tag.as_deref());
+            let _ = tx.send(Msg::Changelog(r));
+        });
+    }
+
+    /// With the pane open, the changelog is the selected channel's project's: read it when the
+    /// selection came to rest on another (a key, a re-sort, a new snapshot, an answer that landed).
+    fn sync_changelog(&mut self) {
+        let other = self
+            .selected_release()
+            .is_some_and(|r| r.project != self.rv.cl.project);
+        if self.rv.open && other {
+            self.read_changelog(None);
         }
     }
 
@@ -1389,9 +1423,15 @@ impl App {
                 if let Some(s) = &self.releases {
                     self.rv.reselect(s, id);
                 }
+                self.sync_changelog();
                 if self.releases_read.done() && self.tab == Tab::Releases {
                     self.read_releases();
                 }
+            }
+            Msg::Changelog(r) => {
+                self.rv.cl.busy = false;
+                self.rv.cl.read = Some(r);
+                self.sync_changelog();
             }
             Msg::Builds(b) => {
                 let id = self.selected_build().map(hub_core::builds::Run::key);
@@ -2620,7 +2660,7 @@ impl App {
     }
 
     /// The Releases keys: `b` hands them to the Builds table and back, otherwise they drive the
-    /// channels. Enter opens the channel's pane.
+    /// channels. Enter opens the channel's pane, `[` and `]` read an older or newer tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
         if self.rv.builds.table.typing.is_none()
             && self.rv.table.typing.is_none()
@@ -2635,6 +2675,19 @@ impl App {
             return self.builds_key(k);
         }
         if self.rv.table.key::<Release>(k.code) != Took::No {
+            self.sync_changelog();
+            return true;
+        }
+        let by = match k.code {
+            KeyCode::Char('[') => 1,
+            KeyCode::Char(']') => -1,
+            _ => 0,
+        };
+        if by != 0 && self.rv.open {
+            if let Some(tag) = self.rv.pick(by) {
+                self.rv.down = 0;
+                self.read_changelog(Some(tag));
+            }
             return true;
         }
         let rows = self.releases.as_ref().map_or(0, |s| self.rv.shown(s).len());
@@ -2643,7 +2696,11 @@ impl App {
         match k.code {
             KeyCode::Char('J') if rv.open => rv.down += 1,
             KeyCode::Char('K') if rv.open => rv.down = rv.down.saturating_sub(1),
-            KeyCode::Enter => rv.open = !rv.open,
+            KeyCode::Enter => {
+                rv.open = !rv.open;
+                // Opening asks for the newest release again, whatever was read before.
+                rv.cl.project.clear();
+            }
             KeyCode::Esc => {
                 if rv.open {
                     rv.open = false;
@@ -2657,6 +2714,7 @@ impl App {
         if self.rv.table.sel != before {
             self.rv.down = 0;
         }
+        self.sync_changelog();
         true
     }
 
@@ -2836,7 +2894,9 @@ impl App {
             Tab::Releases if self.rv.builds.focus => format!(
                 "Enter log  / query  f state  s sort  S asc/desc  x clear  o open run  b channels  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Releases if self.rv.open => "Esc close  J/K scroll pane  j/k move  q quit".into(),
+            Tab::Releases if self.rv.open => {
+                "Esc close  J/K scroll pane  [ ] older/newer tag  j/k move  q quit".into()
+            },
             Tab::Releases => format!(
                 "Enter open  / query  f state  s sort  S asc/desc  x clear  b builds  r refresh  {tabs} tabs  q quit"
             ),
@@ -3323,7 +3383,13 @@ impl App {
                 f.render_widget(Paragraph::new(lines), area);
             }
         } else if let Some(r) = self.rv.shown(s).get(self.rv.table.sel).copied() {
-            let lines = releases::detail(r, self.p, now, area.width as usize);
+            let cl = self
+                .rv
+                .cl
+                .read
+                .as_ref()
+                .filter(|_| self.rv.cl.project == r.project);
+            let lines = releases::detail(r, self.p, now, area.width as usize, cl);
             let max = lines.len().saturating_sub(area.height as usize);
             self.rv.down = self.rv.down.min(max);
             let shown: Vec<Line> = lines.into_iter().skip(self.rv.down).collect();
@@ -5121,6 +5187,123 @@ mod tests {
         b.handle(Msg::ReleaseFile);
         assert!(!b.releases_read.busy, "nothing to read off the tab");
         assert!(rx.try_recv().is_err());
+    }
+
+    /// `release-state`: two projects' channels, and for `changelog` the tags v3 v2 v1 with the one
+    /// asked for (the newest when none), every argv recorded.
+    #[derive(Default)]
+    struct Rel(std::sync::Mutex<Vec<String>>);
+
+    impl Runner for Rel {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            self.0.lock().unwrap().push(argv.join(" "));
+            let row = |p: &str| {
+                serde_json::json!({"project": p, "id": format!("{p}-prod"), "channel": "prod",
+                    "pinned": {"value": "v2", "source": "manifest"}, "status": "drift"})
+            };
+            Ok(match argv.get(1).map(String::as_str) {
+                Some("changelog") => {
+                    let tag = argv.get(4).map_or("v3", String::as_str);
+                    serde_json::json!({"project": argv[3], "tag": tag, "source": "merged PRs",
+                        "range": format!("prev..{tag}"), "text": "- a fix (#1)",
+                        "tags": ["v3", "v2", "v1"]})
+                }
+                _ => serde_json::json!({"generated_epoch": 1, "rows": [row("alpha"), row("beta")]}),
+            }
+            .to_string())
+        }
+    }
+
+    fn with_releases() -> (App, Arc<Rel>, std::sync::mpsc::Receiver<Msg>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut a = with_tx(Tab::Releases, tx);
+        let rel = Arc::new(Rel::default());
+        a.runner = rel.clone();
+        a.releases = Some(hub_core::releases::read(rel.as_ref()));
+        rel.0.lock().unwrap().clear();
+        (a, rel, rx)
+    }
+
+    fn answer(a: &mut App, rx: &std::sync::mpsc::Receiver<Msg>) {
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(m @ Msg::Changelog(..)) => a.handle(m),
+            _ => panic!("no changelog answer"),
+        }
+    }
+
+    #[test]
+    fn enter_reads_the_changelog_of_the_selected_channels_project_and_brackets_walk_its_tags() {
+        let (mut a, rel, rx) = with_releases();
+        press(&mut a, KeyCode::Char(']'));
+        assert!(rx.try_recv().is_err(), "a closed pane reads nothing");
+        press(&mut a, KeyCode::Enter);
+        assert!(
+            a.rv.open && a.rv.cl.read.is_none(),
+            "reading until it answers"
+        );
+        answer(&mut a, &rx);
+        assert_eq!(a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().tag, "v3");
+        press(&mut a, KeyCode::Char('['));
+        answer(&mut a, &rx);
+        assert_eq!(a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().tag, "v2");
+        press(&mut a, KeyCode::Char(']'));
+        answer(&mut a, &rx);
+        assert_eq!(a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().tag, "v3");
+        press(&mut a, KeyCode::Char(']'));
+        assert!(rx.try_recv().is_err(), "nothing newer than the newest tag");
+        let log = rel.0.lock().unwrap().clone();
+        let cl = [
+            "release-state changelog --json alpha",
+            "release-state changelog --json alpha v2",
+            "release-state changelog --json alpha v3",
+        ];
+        assert_eq!(log, cl, "one read each, for the project the row is on");
+    }
+
+    #[test]
+    fn moving_to_another_project_waits_for_the_read_going_then_reads_the_one_it_rests_on() {
+        let (mut a, rel, rx) = with_releases();
+        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Char('j'));
+        press(&mut a, KeyCode::Char('k'));
+        press(&mut a, KeyCode::Char('j'));
+        assert!(a.rv.cl.busy, "one worker, however many moves");
+        let alpha = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        a.handle(alpha);
+        assert_eq!(
+            a.rv.cl.project, "beta",
+            "the answer is for alpha, the row rests on beta"
+        );
+        assert!(a.rv.cl.read.is_none(), "so beta is being read");
+        answer(&mut a, &rx);
+        assert_eq!(
+            a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().project,
+            "beta"
+        );
+        assert_eq!(rel.0.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_query_that_moves_the_selection_to_another_project_rereads_too() {
+        let (mut a, _rel, rx) = with_releases();
+        press(&mut a, KeyCode::Enter);
+        answer(&mut a, &rx);
+        assert_eq!(a.rv.cl.project, "alpha");
+        for c in ['/', 'b', 'e', 't', 'a'] {
+            press(&mut a, KeyCode::Char(c));
+        }
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(
+            a.selected_release().unwrap().project,
+            "beta",
+            "the query left beta only"
+        );
+        assert!(a.rv.cl.read.is_none(), "so beta's changelog is being read");
+        answer(&mut a, &rx);
+        assert_eq!(
+            a.rv.cl.read.as_ref().unwrap().as_ref().unwrap().project,
+            "beta"
+        );
     }
 
     #[test]
