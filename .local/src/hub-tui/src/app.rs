@@ -1120,7 +1120,7 @@ impl App {
         };
         let null = serde_json::Value::Null;
         let state = self.boards.as_ref().map_or(&null, |b| &b.watch.state);
-        hub_core::projects::build(stats, feed, state, self.queue.as_ref())
+        hub_core::projects::build(stats, feed, state, self.queue.as_ref(), chrono::Utc::now())
     }
 
     /// Open the project a `hub tab projects <name>` named, once the cards are read.
