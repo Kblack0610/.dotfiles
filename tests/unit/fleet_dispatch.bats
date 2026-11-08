@@ -5470,6 +5470,7 @@ focus_on() {
   assert_output --partial 'focus:     only game; 1 queued item(s) held off focus (reds, urgent and #requested still run)'
   run cmd_stats
   assert_equal "$(jq -c '[.focus_projects, .held_focus]' <<<"$output")" '[1,1]'
+}
 
 # --- cloud workers: demand for the ci-runner-governor ---------------------------------------------
 
