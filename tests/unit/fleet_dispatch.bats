@@ -5095,7 +5095,7 @@ case "$1" in log) echo run-9 ;; classify)
   agent-queue add --project game --slug fix-next --priority high "Fix the next menu" >/dev/null
   srcs codex:ok:5
   : > "$NOTES_FIXTURE/calls.log"
-  export DISPATCH_PER_PASS=3   # gm-1 waits ahead of it
+  export DISPATCH_PER_PASS=3   # gm-1 may wait ahead of it
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-next'
   assert_equal "$(qfield "$(qitem running fix-next)" agent)" claude
@@ -5159,6 +5159,7 @@ case "$1" in log) echo run-9 ;; classify)
   assert_not_called 'agent-codex'
   # Negative control: a oneshot item takes codex, the lower rank.
   agent-queue add --project game --slug fix-next --priority high "Fix the next menu" >/dev/null
+  export DISPATCH_PER_PASS=3   # gm-1 may wait ahead of it
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-next on codex (sol)'
 }
