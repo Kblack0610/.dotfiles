@@ -446,6 +446,24 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   [ "$(field alt .live <<<"$output")" = 1 ]
 }
 
+@test "live_of forks no cat per process" {
+  # A cat per /proc entry was 2.3s of every pick at load 17, inside agent-ask's 30s judge guard (ar-1007).
+  local p
+  for p in 1:claude 2:bash 3:claude; do
+    mkdir -p "$SANDBOX/proc/${p%%:*}"
+    echo "${p#*:}" > "$SANDBOX/proc/${p%%:*}/comm"
+    : > "$SANDBOX/proc/${p%%:*}/environ"
+  done
+  mkdir -p "$SANDBOX/shim"
+  printf '#!/bin/sh\necho "$@" >> "%s/cat.log"\nexec /bin/cat "$@"\n' "$SANDBOX" > "$SANDBOX/shim/cat"
+  chmod +x "$SANDBOX/shim/cat"
+  src
+  PATH="$SANDBOX/shim:$PATH" run live_of
+  assert_success
+  [ "$(grep -c '^@$' <<<"$output")" = 2 ]
+  [ ! -e "$SANDBOX/cat.log" ] || { cat "$SANDBOX/cat.log"; false; }
+}
+
 @test "textfile: publishes each account, marks a failed read, and leaves no temp file" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 30 84

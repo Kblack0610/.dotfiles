@@ -367,10 +367,15 @@ email_of() {
 # live_of -> one line per running claude, "@" and the account dir it runs under. The "@" keeps the
 # main account's line non-empty: a trailing empty line is lost to $(...), and none at all reads as
 # one main session to grep. A claude on the Lazer gateway spends no account, so it is not one.
+# The comm is read with the read builtin: a `cat` per process forked once for each of about 1700
+# entries, 2.3s of pick's 2.5s at load 17 and far more under load, inside the 30s guard on
+# agent-ask's judge call, which three posts hit on 2026-11-07 (ar-1007).
 live_of() {
-    local c
+    local c comm
     for c in "$PROC"/[0-9]*/comm; do
-        [[ "$(cat "$c" 2>/dev/null)" == claude ]] || continue
+        comm=""
+        read -r comm 2>/dev/null < "$c"
+        [[ "$comm" == claude ]] || continue
         c="${c%/comm}"
         [[ -z "$(gateway_of "${c##*/}")" ]] || continue
         printf '@%s\n' "$(config_dir_of "${c##*/}")"
