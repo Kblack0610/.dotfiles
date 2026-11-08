@@ -70,10 +70,11 @@ kinds() { "$RECALL" stats --since 2026-10-01 --json --top 0 --kind body,read,scr
   refute_output --regexp 'body|read|script|mention'
 }
 
-# skill-drift --overrides against a stub claude-recall that reports $FIXTURE_USED as used.
+# skill-drift --overrides against a stub claude-recall that reports $FIXTURE_USED as used:
+# "name" is a use in 6 sessions, past the default bar of 5; "name:N" is N sessions.
 overrides() {
   printf '#!/usr/bin/env bash\njq -n --arg u "$FIXTURE_USED" %s\n' \
-    "'{rows: (\$u | split(\" \") | map(select(length > 0) | {kind: \"skill\", key: .}))}'" > "$SANDBOX/recall"
+    "'{rows: (\$u | split(\" \") | map(select(length > 0) | split(\":\") | {kind: \"skill\", key: .[0], sessions: ((.[1] // \"6\") | tonumber)}))}'" > "$SANDBOX/recall"
   chmod +x "$SANDBOX/recall"
   CLAUDE_RECALL="$SANDBOX/recall" SKILL_SETTINGS="$SANDBOX/settings.json" "$DRIFT" --overrides --json
 }
@@ -106,6 +107,19 @@ overrides() {
   assert_output '["delta","eps","zeta"]'
 }
 
+@test "a skill used in 5 or fewer sessions stays name-only; past 5, summed over the kinds, it is listed again" {
+  echo '{"skillOverrides":{"alpha":"name-only","beta":"name-only","gamma":"name-only"}}' > "$SANDBOX/settings.json"
+  # alpha 5 sessions; beta 3 + 3 over two kinds; gamma 1; delta, listed, 2.
+  FIXTURE_USED="alpha:5 beta:3 beta:3 gamma:1 delta:2 eps zeta" run overrides
+  assert_success
+  run jq -c '[.max, .hide, .restore]' <<<"$output"
+  assert_output '[5,["delta"],["beta"]]'
+  # The bar is SKILL_TOGGLE_MAX_SESSIONS; at 0 any use lists a skill.
+  SKILL_TOGGLE_MAX_SESSIONS=0 FIXTURE_USED="alpha:5 beta:3 beta:3 gamma:1 delta:2 eps zeta" run overrides
+  run jq -c '[.hide, .restore]' <<<"$output"
+  assert_output '[[],["alpha","beta","gamma"]]'
+}
+
 @test "no use counted at all refuses to hide everything" {
   echo '{"skillOverrides":{}}' > "$SANDBOX/settings.json"
   FIXTURE_USED="" run overrides
@@ -124,7 +138,7 @@ toggle_repo() {
   git -C "$DOTFILES" -c user.email=t@t -c user.name=t commit -qm init
   git -C "$DOTFILES" remote add origin "$SANDBOX/origin.git"
   git -C "$DOTFILES" push -q origin main
-  printf '#!/usr/bin/env bash\njq -n %s\n' "'{rows: [\"alpha\",\"beta\",\"gamma\",\"delta\",\"eps\"] | map({kind: \"skill\", key: .})}'" > "$SANDBOX/recall"
+  printf '#!/usr/bin/env bash\njq -n %s\n' "'{rows: [\"alpha\",\"beta\",\"gamma\",\"delta\",\"eps\"] | map({kind: \"skill\", key: ., sessions: 6})}'" > "$SANDBOX/recall"
   chmod +x "$SANDBOX/recall"
   export CLAUDE_RECALL="$SANDBOX/recall"
 }

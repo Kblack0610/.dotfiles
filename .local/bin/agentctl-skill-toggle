@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # agentctl-skill-toggle - the nightly skill-usage toggle: land the skillOverrides that keep
-# "name-only" on exactly the skills with no use in 30 days.
+# "name-only" on exactly the skills used in 5 or fewer sessions in 30 days (skill-drift --overrides).
 #
 #   agentctl-skill-toggle [--dry-run]     agentctl: skill-toggle.conf; --dry-run prints the change, lands nothing
 #
@@ -42,7 +42,7 @@ git -C "$REPO" show origin/main:.claude/settings.json > "$base" || fail "origin/
 jq . "$base" | cmp -s - "$base" || fail "origin/main .claude/settings.json is not in jq's format; a rewrite would reformat all of it"
 plan=$(SKILL_SETTINGS="$base" "$DRIFT" --overrides --json) || fail "skill-drift --overrides failed"
 # A "|" separator, not a tab: whitespace IFS would collapse an empty hide list into restore's slot.
-IFS='|' read -r days nh nr hide restore < <(jq -r '[.days, (.hide | length), (.restore | length), (.hide | join(" ")), (.restore | join(" "))] | map(tostring) | join("|")' <<<"$plan")
+IFS='|' read -r days max nh nr hide restore < <(jq -r '[.days, .max, (.hide | length), (.restore | length), (.hide | join(" ")), (.restore | join(" "))] | map(tostring) | join("|")' <<<"$plan")
 summary="hide $nh${hide:+ ($hide)}, restore $nr${restore:+ ($restore)}"
 
 if [ -z "$hide$restore" ]; then
@@ -76,7 +76,7 @@ git -C "$REPO" worktree add -q "$wt" -b "$branch" origin/main || fail "git workt
 made=1
 jq --argjson p "$plan" '.skillOverrides = $p.skillOverrides' "$wt/.claude/settings.json" > "$wt/.claude/settings.json.new" &&
     mv "$wt/.claude/settings.json.new" "$wt/.claude/settings.json" || fail "could not write $wt/.claude/settings.json"
-body="The nightly skill-usage toggle: skillOverrides keeps name-only on exactly the skills with no use in ${days} days (Skill calls, typed commands, skill bodies, SKILL.md reads, script runs, CLI runs; \`skill-drift --overrides\`). A skill another skill or a CLAUDE.md layer routes to is never hidden.
+body="The nightly skill-usage toggle: skillOverrides keeps name-only on exactly the skills used in ${max} or fewer sessions in ${days} days (Skill calls, typed commands, skill bodies, SKILL.md reads, script runs, CLI runs; \`skill-drift --overrides\`). A skill another skill or a CLAUDE.md layer routes to is never hidden.
 
 - Hidden: ${hide:-none}
 - Listed again: ${restore:-none}
