@@ -1404,6 +1404,13 @@ errlog() {
     '{name: $n, finished: $f, outcome: "WORKED", err: [$a, $b]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
 }
 
+# quietrun <runner> <finished offset>: a run that wrote no stderr, its empty range at the log's end
+quietrun() {
+  local b; b=$(stat -c %s "$AGENTCTL_STATE_DIR/$1.stderr.log")
+  jq -cn --arg n "$1" --argjson f $((T0 + $2)) --argjson b "$b" \
+    '{name: $n, finished: $f, outcome: "NOOP", err: [$b, $b]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
+}
+
 # log_triage_setup: triage_setup, a promote stub logging to $PLOG and an empty route table
 log_triage_setup() {
   triage_setup
@@ -1452,6 +1459,25 @@ log_triage_setup() {
   run grep -c 'fix(logs): alpha error' "$BOARD"
   assert_output 1
   [ ! -s "$PLOG" ]
+}
+
+@test "triage: a stderr error none of the runner's newest two readable runs logs is no row" {
+  log_triage_setup
+  # one clean run is an intermittent gap, two are the fix gone live; quiet runs count, and a
+  # rotated range or an err with no numbers is no run
+  errlog alpha -60 'all good'
+  jq -cn --argjson f "$T0" '{name: "alpha", finished: $f, err: []}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'integer expression'
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
+  quietrun alpha -40
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output ''
+  errlog alpha -30 'error: lock /run/e/5.lock held by pid 6'
+  run "$SUBJECT" triage --dry-run
+  assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
 }
 
 @test "triage: reading a run's stderr range writes no Broken pipe when SIGPIPE is ignored, as under systemd" {
