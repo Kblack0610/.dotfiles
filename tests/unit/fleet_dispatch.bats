@@ -5265,8 +5265,9 @@ cloud_run_ready() {
 # --- routing: a run pass over every source ------------------------------------------------
 
 # Every account past its pace, lazer-reserve on its own key, and model-lane putting every task on
-# Sonnet ($LANE when set), whose candidates are claude and codex at one fit and lazer-reserve at the
-# next. No source has room until a test says which (srcs).
+# Sonnet ($LANE when set; a bare-ID headline on Opus, as the router's LLM reads one), whose candidates
+# are claude and codex at one fit and lazer-reserve at the next. Opus's are lanes.yaml's: claude, then
+# codex at the next fit. No source has room until a test says which (srcs).
 route_ready() {
   harness_ready
   printf 'sk-reserve\n' > "$SANDBOX/reserve.key"
@@ -5278,7 +5279,9 @@ route_ready() {
 }
 sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; l=${LANE:-sonnet}
 case "$1" in log) echo run-9 ;; classify)
-  if [ "$l" = sonnet ]; then c="[{\"harness\":\"claude\",\"model\":\"sonnet\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0},{\"harness\":\"lazer-reserve\",\"model\":\"sonnet\",\"fit\":1}]"
+  [[ "$2" =~ ^[a-z]+-[0-9]+$ ]] && l=opus
+  if [ "$l" = opus ]; then c="[{\"harness\":\"claude\",\"model\":\"opus\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]"
+  elif [ "$l" = sonnet ]; then c="[{\"harness\":\"claude\",\"model\":\"sonnet\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0},{\"harness\":\"lazer-reserve\",\"model\":\"sonnet\",\"fit\":1}]"
   else c="[{\"harness\":\"claude\",\"model\":\"$l\",\"fit\":0}]"; fi
   echo "{\"lane\":\"$l\",\"by\":\"rule\",\"model\":\"$l\",\"dispatch_model\":\"$l\",\"candidates\":$c}" ;; esac'; }
 
@@ -5344,18 +5347,18 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'Dispatch stopped 3h00m: no account has room'
 }
 
-@test "an Opus item waits while only other sources have room, and a later pass does not ask model-lane again that day" {
+@test "an Opus item waits while only sources outside its lane have room, and a later pass does not ask model-lane again that day" {
   route_ready
-  srcs codex:ok:5
+  srcs codex:reserve:1 reserve:ok:20
   export LANE=opus
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'no account has room; alt is the closest, 4 points over its weekly pace, and no queue item has a source with room it may run on: fix-menu (claude: no account has room)'
+  assert_output --partial 'no account has room; alt is the closest, 4 points over its weekly pace, and no queue item has a source with room it may run on: fix-menu (claude: no account has room; codex: codex: inside its reserve)'
   assert_equal "$(outcome)" BLOCKED
   assert_not_called 'wt new'
   rm -f "$NOTES_FIXTURE/calls.log"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'fix-menu (claude: no account has room)'
+  assert_output --partial 'fix-menu (claude: no account has room; codex: codex: inside its reserve)'
   assert_not_called 'model-lane classify'
   [ -n "$(qitem queued fix-menu)" ] || fail "an Opus item left the queue"
   # Once an account has room, the cached verdict no longer skips it: it is classified afresh and starts.
@@ -5363,6 +5366,27 @@ case "$1" in log) echo run-9 ;; classify)
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-menu'
   assert_called 'model-lane classify'
+}
+
+@test "a bare-ID row classifies Opus and, with no account room, routes to codex at the Opus lane's next fit" {
+  route_ready
+  srcs codex:ok:5 reserve:ok:20
+  agent-queue add --project game --slug ucp-212 --priority urgent "ucp-212" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item ucp-212 on codex (sol), routed by model-lane while no account has room'
+  assert_called 'model-lane log --item ucp-212 --task ucp-212 --lane opus --by rule --picked opus --ran sol --harness codex'
+  f=$(qitem running ucp-212)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" routed) $(qfield "$f" model)" 'codex codex sol'
+  # Negative control: with an account that has room, claude takes the next one at fit 0, though codex ranks lower.
+  acct main:ok
+  srcs codex:ok:0.5
+  agent-queue add --project game --slug ucp-213 --priority urgent "ucp-213" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item ucp-213'
+  assert_equal "$(qfield "$(qitem running ucp-213)" agent) $(qfield "$(qitem running ucp-213)" model)" 'claude opus'
+  assert_not_called 'agent-codex'
 }
 
 @test "a plan item is never sent to a headless harness; the same item in oneshot mode is" {
