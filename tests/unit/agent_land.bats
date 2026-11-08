@@ -129,7 +129,8 @@ EOF
 }
 
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
-board_calls() { grep '^notes' "$LOG" | grep -v '^notes ingest record ' || true; }
+# and the focus read agent-queue next makes (notes projects --prios)
+board_calls() { grep '^notes' "$LOG" | grep -Ev '^notes (ingest record |projects --prios)' || true; }
 
 # item <slug> [from] [lane] [profile] -> a running queue item, on project $ITEM_PROJECT (dotfiles)
 item() {
