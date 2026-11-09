@@ -1232,6 +1232,30 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
   assert_output 'limit: lab/agent-1:1 stopped on the usage limit'
 }
 
+# gw_accts <team capped>: accts with the sources rows, the team one capped or not
+gw_accts() {
+  accts false 50 50 | jq -c --argjson c "$1" '.sources = [
+    {name: "lazer", kind: "litellm-team", room: {ok: false, capped: $c}},
+    {name: "reserve", kind: "litellm-key", room: {ok: false, capped: false}}]'
+}
+
+@test "a gateway team out of budget: its sessions get the exact move, sessions on accounts get nothing" {
+  doc "[$(acct_row lab/agent-55:1 %5 idle gateway), $(acct_row hub/dotfiles:2 %27 idle main)]"
+  STUB_ACCTS="$(gw_accts true)" run "$SH" due
+  assert_success
+  assert_output 'limit: lab/agent-55:1 idle on gateway, out of usage; then: claude-acct move lab/agent-55:1 --to alt'
+  # Negative control: the team has budget, and a key's own row is not the team's
+  STUB_ACCTS="$(gw_accts false)" run "$SH" due
+  assert_failure
+}
+
+@test "a gateway session stopped on a 429 names the move; an account session showing that text gets no line" {
+  doc "[$(acct_row lab/agent-55:1 %5 idle gateway | jq -c '.idle_min = 9'), $(idle_row lab/agent-1:1 %6 9)]"
+  STUB_ACCTS="$(gw_accts false)" STUB_PANE='API Error: 429 Budget has been exceeded! Team=t1 Current cost: 380, Max budget: 250\n' run "$SH" due
+  assert_success
+  assert_output 'limit: lab/agent-55:1 stopped on its gateway budget; then: claude-acct move lab/agent-55:1 --to alt'
+}
+
 @test "an account out of usage with no room anywhere is one line for the human" {
   doc "[$(acct_row hub/dotfiles:2 %27 idle main), $(acct_row hub/dotfiles:3 %19 idle main)]"
   STUB_ACCTS="$(accts true 100 40 noroom)" run "$SH" due
