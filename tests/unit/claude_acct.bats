@@ -1160,11 +1160,12 @@ codex_log() {
   touch -d "@${2:-$NOW}" "$1"
   rm -f "$XDG_CACHE_HOME/claude-acct/codex.json"
 }
-# codex_refused <file> <epoch> -- a run refused at the usage limit at that time, as Codex logs one: a
-# windowless record and a task_complete carrying codex_error_info usage_limit_exceeded
+# codex_refused <file> <epoch> -- a run refused at the usage limit at that time, in the shape of the
+# real one of 2026-11-08 16:18: a windowless record, then a task_complete whose error carries
+# codex_error_info usage_limit_exceeded
 codex_refused() {
-  printf '{"timestamp":"x","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"premium","primary":null,"secondary":null,"plan_type":null,"rate_limit_reached_type":null}}}\n{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"You have hit your usage limit.","codex_error_info":"usage_limit_exceeded"},"completed_at":%s}}\n' "$2" \
-    | codex_log "$1" "$2"
+  printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"premium","limit_name":null,"primary":null,"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"individual_limit":null,"spend_control_reached":null,"plan_type":null,"rate_limit_reached_type":null}}}\n{"timestamp":"%s","type":"event_msg","payload":{"type":"task_complete","last_agent_message":null,"error":{"message":"You have hit your usage limit.","codex_error_info":"usage_limit_exceeded"},"started_at":%s,"completed_at":%s,"duration_ms":1673}}\n' \
+    "$(date -u -d "@$2" +%FT%T.000Z)" "$(date -u -d "@$2" +%FT%T.000Z)" "$2" "$2" | codex_log "$1" "$2"
 }
 # rollout <week-used%> <5h-used%> <hours-until-week-reset>
 rollout() {
@@ -1470,6 +1471,52 @@ pro_rollout() {
   [ "$(field codex .reached <<<"$output")" = true ]
   [ "$(field codex .week_used <<<"$output")" = null ]
   [ "$(field codex .room.reason <<<"$output")" = capped ]
+}
+
+@test "sources: codex refusals with no reading lapse after the shortest window, and an undated one is unread" {
+  src_setup
+  codex_refused "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl" $((NOW - 5 * 3600 - 60))
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .reached <<<"$output")" = false ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+  # a refusal Codex logged with no time cannot be held to any reset, so it blocks
+  printf '{"payload":{"type":"task_complete","error":{"codex_error_info":"usage_limit_exceeded"}}}\n' \
+    | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-b.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = unread ]
+  [[ "$stderr" == *"a refusal with no time"* ]]
+}
+
+@test "sources: a codex refusal in an older file still counts when it is newer than the reading" {
+  # Two concurrent runs: A is refused at NOW-1h and stops; B logged its last reading at NOW-2h and
+  # kept writing other events, so its file is the newer one.
+  src_setup
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  codex_refused "$d/rollout-a.jsonl" $((NOW - 3600))
+  printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":10,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":40,"window_minutes":10080,"resets_at":%s},"rate_limit_reached_type":null}}}\n{"timestamp":"x","payload":{"type":"agent_message"}}\n' \
+    "$(date -u -d "@$((NOW - 7200))" +%FT%T.000Z)" $((NOW + 3600)) $((NOW + 84 * 3600)) | codex_log "$d/rollout-b.jsonl" $((NOW - 600))
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .five_hour <<<"$output")" = 100 ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+}
+
+@test "sources: a torn last line does not hide the codex reading before it" {
+  src_setup
+  rollout 40 10 84
+  printf '{"payload":{"rate_limits":{"prim' | codex_log -a "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+}
+
+@test "sources: a codex sessions tree that cannot be listed is unread, never idle" {
+  src_setup
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  rollout 40 10 84
+  chmod 000 "$d"
+  run --separate-stderr "$ACCT" status --json
+  chmod 755 "$d"
+  [ "$(field codex .state <<<"$output")" = unread ]
 }
 
 @test "sources: the codex reading is cached for the TTL like every other kind" {
