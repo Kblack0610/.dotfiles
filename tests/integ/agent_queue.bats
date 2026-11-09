@@ -1591,6 +1591,7 @@ EOF
 # `ptask ... add` prints its row with id lv-9 and exits 0, or, with
 # story.rc set, prints story.out on stderr and exits story.rc (3 is ptask's "already open").
 # `ptask ... propose` prints propose.out, else its words unchanged; propose.rc makes it refuse.
+# `ptask ... done` fails once done.rc exists (no open row); `ptask ... list` prints list.out, or fails with list.rc.
 story_notes() {
   jq '.trackers.level.lab = "bnb" | .trackers.arena.lab = "bnb"' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m.json"
   mv "$SANDBOX/m.json" "$AGENT_QUEUE_PROJECT_MAP"
@@ -1607,6 +1608,8 @@ case " $* " in
   if [ "$rc" = 0 ]; then printf -- '- [ ] %s #c1105 <!-- id:lv-9 -->\n' "${@: -1}"; else cat "$NOTES_FIXTURE/story.out" >&2; fi
   exit "$rc" ;;
 *' start '*) [ ! -e "$NOTES_FIXTURE/closed.${@: -1}" ] || { echo "no open task matches" >&2; exit 1; } ;;
+*' done '*) [ ! -e "$NOTES_FIXTURE/done.rc" ] || { echo "no open task matches" >&2; exit 1; } ;;
+*' list '*) [ ! -e "$NOTES_FIXTURE/list.rc" ] || exit 1; cat "$NOTES_FIXTURE/list.out" 2>/dev/null ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/notes"
@@ -1645,6 +1648,61 @@ STUB
   [ "$(field "$f" lane)" = agent ]
   [ "$(field "$f" profile)" = bnb ]
   [ "$(jq -r .row <<<"$("$AQ" show menus --json)")" = level:lv-9 ]
+}
+
+@test "an item closed ok with no PR closes its row on the item; one with a PR leaves it to agent-land" {
+  story_notes
+  "$AQ" add --project game --epic lv-3 --slug menus "feat(menu): live main menus" >/dev/null
+  "$AQ" move menus running >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move menus done --status ok
+  assert_success
+  assert_line 'menus: board row lv-9 closed'
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes --profile bnb ptask level --agent done lv-9 --proof item:menus'
+  # a board-promoted item, no profile: notes finds the project's own
+  "$AQ" add --project game --from board:game:gm-7 --running --slug promoted "fix(x): y" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move promoted done --status ok
+  assert_line 'promoted: board row gm-7 closed'
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes ptask game --agent done gm-7 --proof item:promoted'
+  # NEGATIVE CONTROL: a merged PR's row is agent-land's, closed on the merge
+  "$AQ" add --project game --epic lv-3 --running --slug landed "feat(menu): b" >/dev/null
+  "$AQ" set landed pr=o/r#4 merged=abc123 >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move landed done --status ok
+  assert_success
+  refute_output --partial 'board row'
+  run grep -c ' ptask .* done ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # and failed or cancelled leaves it to fleet-dispatch settle_row
+  "$AQ" add --project game --epic lv-3 --running --slug lost "feat(menu): c" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move lost done --status failed
+  run grep -c ' ptask .* done ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "a row already closed stays quiet on an ok close; one the close missed, or a board that cannot be read, is named on stderr" {
+  story_notes
+  touch "$NOTES_FIXTURE/done.rc"
+  # lv-90 is another row: the open rows are read by id, not by substring
+  printf -- '- [/] docs(menu): z <!-- id:lv-90 -->\n' > "$NOTES_FIXTURE/list.out"
+  "$AQ" add --project game --epic lv-3 --running --slug doc "docs(menu): a" >/dev/null
+  run "$AQ" move doc done --status ok
+  assert_success
+  refute_output --partial 'board row'
+  "$AQ" add --project game --epic lv-3 --running --slug stuck "docs(menu): b" >/dev/null
+  printf -- '- [/] docs(menu): b <!-- id:lv-9 -->\n' > "$NOTES_FIXTURE/list.out"
+  run "$AQ" move stuck done --status ok
+  assert_success
+  assert_output --partial 'agent-queue: stuck is done, but its board row lv-9 on level may still be open (no open task matches): notes --profile bnb ptask level --agent done lv-9 --proof item:stuck'
+  touch "$NOTES_FIXTURE/list.rc"
+  "$AQ" add --project game --epic lv-3 --running --slug blind "docs(menu): c" >/dev/null
+  run "$AQ" move blind done --status ok
+  assert_success
+  assert_output --partial 'agent-queue: blind is done, but its board row lv-9 on level may still be open'
 }
 
 @test "a want's channel reaches the story row's writer only when --want names it" {
