@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # playground-headless-test's metadata.replaces rows, read from the real SKILL.md: each deny row
 # refuses its hand form inside a playground checkout and allows the script it names; outside the
-# playground nothing is denied; the report row never denies.
+# playground, and in its asset-library project, nothing is denied.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -34,6 +34,9 @@ guard() {
   assert_output ""
   run guard 'echo "- note" >> Logs/pr-body.md'
   assert_output ""
+  # the same copy in another shape is still the copy
+  run guard 'tail -1 Logs/gate.txt | tee -a Logs/pr-body.md'
+  assert_output deny
 }
 
 @test "a bare Unity -runTests or -executeMethod is denied; the scripts are allowed" {
@@ -47,13 +50,20 @@ guard() {
   assert_output ""
   run guard 'rg -n "runTests" scripts/test/run.sh'
   assert_output ""
+  run guard 'grep -n -- -runTests scripts/test/run.sh'
+  assert_output ""
 }
 
-@test "negative controls: asset-library, another repo, and the report row" {
+@test "negative controls: asset-library by cd or by cwd, another repo, and the diagnosis pick" {
   run guard 'cd External/asset-library && "$U" -batchmode -executeMethod A.B.C'
+  assert_output ""
+  run guard '"$U" -batchmode -executeMethod A.B.C' "$PG/External/asset-library"
   assert_output ""
   run guard '"$U" -batchmode -runTests' /home/u/src/other-game
   assert_output ""
-  run guard 'scripts/test/affected-classes.py base HEAD'
+  run guard "{ grep '^CI gate green' Logs/gate.txt; } >> Logs/pr-body.md" /home/u/src/other-game
+  assert_output ""
+  # playground-nightly-fix runs affected-classes.py --why by hand to name a merge: not a bypass
+  run guard 'scripts/test/affected-classes.py m^1 m --why'
   assert_output ""
 }
