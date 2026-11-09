@@ -3,7 +3,8 @@
 // and harness cuts. /api/costs is hub_core::costs::board, the view the hub TUI draws; this file
 // draws its answer and turns a click into the view keys (by, w, q, sort, dir) in the URL, so
 // `#costs?by=model&w=7d&q=harness:codex` is a link to that view. Trends are Grafana's. Above the
-// tiles: who pays (Burn, one row per source claude-acct reads), where the tokens go and what Langfuse sees.
+// tiles: who spent the last 24h, who pays (Burn, one row per source claude-acct reads), where the tokens
+// go and what Langfuse sees.
 
 // open: the folded sections' state; tokWin: the tokens section's window.
 const cost = tblTab({
@@ -69,11 +70,24 @@ function directTile(dr) {
 }
 
 function costsTiles(d) {
-  const lz = d.live || {};
   return `<div class="tiles roomy">` + (d.totals || []).map((t) =>
-    tile(`SPEND ${t.window.toUpperCase()}`, usd(t.usd), t.window === d.window ? "var(--c1)" : "var(--c-other)", `${t.sessions} sessions${t.unpriced ? `, ${t.unpriced} unpriced` : ""}`)).join("") +
-    tile("LIVE 24H", usd(lz.claude_24h), "var(--c2)", "Prometheus, exported sessions only") +
+    tile(`SPEND ${t.window.toUpperCase()}`, usd(t.usd), t.window === d.window ? "var(--c1)" : "var(--c-other)", `outcomes, ${t.sessions} sessions${t.unpriced ? `, ${t.unpriced} unpriced` : ""}`)).join("") +
     directTile(d.direct || {}) + `</div>`;
+}
+
+// Who spent the last 24h (hub_core::costs::who_spent, the TUI's `who`): Claude Code live by runner
+// and you, then other harnesses from the nightly outcomes rows, whose unpriced sessions are counted,
+// never $0. A runner's figure is the Fleet tab's COST 24H.
+function whoSection(d) {
+  const w = d.who || { rows: [] };
+  const head = `${usd(w.usd)}: Claude ${usd(w.claude_usd)} live (exporting sessions); others: outcomes`;
+  if (!w.rows.length) return `<h2 class="sec" id="sec-who">Who spent 24h</h2><div class="panel muted">nothing read: no live Claude series and no outcomes row in 24h</div>`;
+  const note = (r) => r.source === "outcomes"
+    ? `outcomes, ${r.sessions} session${r.sessions === 1 ? "" : "s"}${r.unpriced ? `, <span class="warn">${r.unpriced} unpriced</span>` : ""}` : "live";
+  return `<h2 class="sec" id="sec-who">Who spent 24h <span class="muted">${esc(head)}</span></h2>` +
+    `<div class="panel scroll"><table class="tbl"><tr><th>who</th><th class="n">cost</th><th class="n">share</th><th>source</th></tr>` +
+    w.rows.map((r) => `<tr><td>${esc(r.who)}</td><td class="n">${usd(r.usd)}</td><td class="n">${r.usd == null ? "-" : pct(r.share)}</td><td class="muted">${note(r)}</td></tr>`).join("") +
+    `</table></div>`;
 }
 
 // The Burn section (hub_core::burn, the hub's coststab.rs `burn`): the headline coloured by the
@@ -93,9 +107,9 @@ const burnCell = (a, t, at) => (a.unpaced ? "-" : !(a.used > a.gone) || (t != nu
 
 // The Burn table's columns, the TUI's header in its order; true is a number column.
 const BURN_COLS = [["source"], ["kind"], ["live", true], ["bar"], ["used", true], ["gone", true], ["reserve", true], ["room"], ["burn/h", true], ["keeps/h", true],
-  ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["24h", true]];
+  ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["$24h", true]];
 // A key is a dollar budget: the columns that always say nothing for one are left out.
-const KEY_COLS = BURN_COLS.filter(([t]) => ["source", "live", "bar", "used", "reserve", "room", "resets", "24h"].includes(t));
+const KEY_COLS = BURN_COLS.filter(([t]) => ["source", "live", "bar", "used", "reserve", "room", "resets", "$24h"].includes(t));
 
 function burnRow(a, at, note, cols) {
   // a row with no figures: its name, then one cell across the rest
@@ -114,7 +128,7 @@ function burnRow(a, at, note, cols) {
     room: `<td class="${a.room ? (a.room.ok ? "ok" : "bad") : "muted"}">${a.room ? esc(a.room.text) : "-"}</td>`,
     "burn/h": `<td class="n${!a.unpaced && a.sustain != null && a.burn > a.sustain ? " warn" : ""}">${rate(a.burn)}</td>`, "keeps/h": `<td class="n">${rate(a.sustain)}</td>`,
     "at burn": `<td>${burnCell(a, a.burn_at, at)}</td>`, "if idle": `<td>${burnCell(a, a.idle_at, at)}</td>`, "runs out": `<td>${when(a.run_out)}</td>`, resets: `<td>${when(a.resets)}</td>`,
-    "5h": `<td class="n">${pc(a.five_hour)}</td>`, "5h resets": `<td>${when(a.five_hour_resets)}</td>`, "24h": `<td class="n">${usd(a.cost_24h)}</td>`,
+    "5h": `<td class="n">${pc(a.five_hour)}</td>`, "5h resets": `<td>${when(a.five_hour_resets)}</td>`, "$24h": `<td class="n">${usd(a.cost_24h)}</td>`,
   };
   return `<tr>${cols.map(([t]) => cells[t]).join("")}</tr>`;
 }
@@ -141,7 +155,7 @@ function costsBurn(d) {
     `<div class="panel"><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
     `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
     `<div class="panel scroll">${burnTable(b, BURN_COLS, b.accounts.filter((a) => !a.nested))}</div>` + burnKeys(b) +
-    `<div class="muted fold">bar: the fill is the share used, the tick the share of the week gone; burn/h is the last 6h rate per live session; keeps/h is what the rest of the week can carry to the reset; 24h is the list-price estimate, for scale.</div></details>`;
+    (b.legend?.length ? `<div class="muted fold">${b.legend.map(([t, d]) => `${esc(t.toLowerCase())}: ${esc(d)}`).join("; ")}</div>` : "") + "</details>";
 }
 
 // One table of a tokens window; a named row takes its chart slot, Other its grey (rule 5).
@@ -180,7 +194,7 @@ const lfClasses = (cs) => cs.length ? cs.map((c) => `${esc(c.name)} ${c.n.toLoca
 // What Langfuse sees: the figures only it has (tool latency, tool errors by class, gateway errors
 // and cost), the newest snapshot's `.langfuse` through hub-core's `tokens`. Shut while it
 // reads, open and amber when the reader failed that night or the snapshot is stale (rule 4). The
-// gateway's dollars are the gateway's alone; session cost is the table below, so none is summed here.
+// gateway's dollars are the gateway's alone; session cost is Who spent 24h, so none is summed here.
 function langfuseSection(d) {
   const t = d.tokens, lf = t?.langfuse;
   if (!t) return "";
@@ -199,7 +213,7 @@ function langfuseSection(d) {
     `<div class="panel scroll"><table class="tbl"><tr><th>slowest tools, by total time</th><th class="n">calls</th><th class="n">p50</th><th class="n">p95</th><th class="n">total</th></tr>${rows}</table>` +
     `<div class="muted">tool errors: ${f.tool_errors.toLocaleString()} of ${f.tool_executions.toLocaleString()} executions (${lfClasses(f.tool_error_classes)})${trunc}</div>` +
     `<div class="muted">gateway: ${f.gateway_calls.toLocaleString()} calls, ${f.gateway_errors.toLocaleString()} errors (${lfClasses(f.gateway_error_classes)}), ${kfmt(f.gateway_tokens)} tokens; dearest: ${models || "none"}</div>` +
-    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs?by=runner&w=24h">the table below</a></div></div></details>`;
+    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs">Who spent 24h</a></div></div></details>`;
 }
 
 // The Sections block (hub_core::sections, the TUI's coststab.rs `sections`): what each section of
@@ -219,7 +233,7 @@ function costsSections(d) {
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
-  let html = `${costsBurn(d)}${tokensSection(d)}${langfuseSection(d)}${costsSections(d)}<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`;
+  let html = `${whoSection(d)}${costsBurn(d)}${tokensSection(d)}${langfuseSection(d)}${costsSections(d)}<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`;
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;

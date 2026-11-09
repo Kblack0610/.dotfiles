@@ -120,7 +120,7 @@
 #                                `paths:` or disable-model-invocation skill is never toggled,
 #                                nor is an override value other than "name-only".
 #                                Prints the hide and restore lists; --json adds the object. The
-#                                nightly skill-toggle runner lands it (agentctl-skill-toggle).
+#                                nightly skill-toggle runner opens the PR (agentctl-skill-toggle).
 #                                Exit 2 when no use is counted at all: no transcripts is not
 #                                "nothing used".
 #   skill-drift --docs [--json]  DEADPATH and NOCMD over the GLOBAL docs instead of
@@ -754,7 +754,7 @@ doc_set() {
 
 # --- --overrides: the skill-usage toggle --------------------------------------
 #
-# A route (another skill or a CLAUDE.md layer naming the skill) is how a reader gets to it, so
+# A route (another skill, a global doc or a runner conf naming the skill) is how a reader gets to it, so
 # whether a routed skill is listed stays the human's call: the count never hides one. The name
 # matches whole (no letter, digit, - or _ beside it). A one-word name like scope matches prose
 # too, which errs on the side that leaves a skill alone.
@@ -768,7 +768,9 @@ if [ "$MODE" = overrides ]; then
   cur=$(jq -c '.skillOverrides // {}' "$SETTINGS") || { echo "skill-drift --overrides: $SETTINGS does not parse" >&2; exit 2; }
   load_usage "$TOGGLE_DAYS"
   [ ${#USED[@]} -gt 0 ] || { echo "skill-drift --overrides: no use counted in ${TOGGLE_DAYS}d of transcripts, which is not the same as nothing used" >&2; exit 2; }
-  mapfile -t ROUTE_DOCS < <(for f in "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" "$SKILLS"/*/SKILL.md; do [ -f "$f" ] && printf '%s\n' "$f"; done)
+  # Where a reader or a runner is sent to a skill. Not lessons, anchors or memory: they are history, and a skill named in prose there is not routed.
+  AC="$HOME/.config/agentctl"
+  mapfile -t ROUTE_DOCS < <(for f in "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" "$SKILLS"/*/SKILL.md "$HOME"/.local/src/docs/*.md "$AC"/*.md "$AC"/triage-routes "$AC"/agents/*.conf "$AC"/roles/* "$AC"/prompts/*; do [ -f "$f" ] && printf '%s\n' "$f"; done)
   declare -A STATE=()
   while IFS=$'\t' read -r s v; do STATE[$s]=$v; done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"$cur")
   # A paths-scoped or model-disabled skill has its own listing rule; the toggle leaves it alone.

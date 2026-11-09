@@ -352,8 +352,11 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
   assert_output --partial 'moved from the main Claude account to alt'
   run resume_cmd 0 "/w t" "" 'claude --resume s1' 'hi there'
   assert_output "cd /w\\ t && env -u CLAUDE_CONFIG_DIR claude --resume s1 hi\\ there"
-  run resume_cmd 1 /w /a 'claude --resume s1' hi
-  assert_output 'CLAUDE_CONFIG_DIR=/a claude --resume s1 hi'
+  # A pane that is its claude gets the launch env; with no claude-telemetry.sh it says so, and still
+  # carries the queue item.
+  run resume_cmd 1 /w /a 'claude --resume s1' hi fix-menu
+  assert_line --index 0 --partial 'no launch env from'
+  assert_line --index 1 'CLAUDE_CONFIG_DIR=/a AGENT_QUEUE_ITEM=fix-menu claude --resume s1 hi'
 }
 
 # week <account> <used%> <hours-until-reset> -- a fresh answer with a weekly window, now at NOW
@@ -367,24 +370,32 @@ week() {
 # field <name> <jq>: from status --json's rows or room --json's accounts
 field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | .[] | select(.name == \$a) | $2"; }
 
-@test "status --json: half the week gone, used under it, is under pace and lasts to the reset" {
-  export CLAUDE_ACCT_NOW=$NOW
+@test "status --json: run_out is when the live sessions empty the week at their burn now" {
+  # 2026-11-09: a straight line from the week start said main ran out Tue 21:12; its burn then ran
+  # it out Wed night to Thu morning (backtest: .59 points/h off over 6h, live x rate .32).
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
   week main 30 84
   week alt 80 84
+  live "$ALT" 10   # 1 point an hour, 20 left
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field main .week_gone <<<"$output")" = 50 ]
   [ "$(field main .room.ok <<<"$output")" = true ]
+  # no live sessions, no burn: it lasts to the reset
   [ "$(field main .run_out <<<"$output")" = null ]
   [ "$(field alt .room.reason <<<"$output")" = pace ]
-  # 84h gone for 80%, so 100% lands 21h from now
-  [ "$(field alt .run_out <<<"$output")" = "$((NOW + 21 * 3600))" ]
+  [ "$(field alt .run_out <<<"$output")" = "$((NOW + 20 * 3600))" ]
+  # Negative control: a burn that lasts past the reset is null, not a time after it.
+  live "" 1        # 0.1 an hour, 70 left: 700h, past the reset in 84h
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field main .run_out <<<"$output")" = null ]
 }
 
 @test "status --json: the first hour of a week, and an account past its limit" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 0 167
   week alt 104 10
+  live "$ALT" 1
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field main .room.ok <<<"$output")" = true ]
@@ -678,14 +689,21 @@ STUB
   export CLAUDE_ACCT_NOW=$NOW TZ=UTC
   week main 88 50
   week alt 15 152
+  # Running out before the reset at its burn is committed too, so both carry 10 live (1 point an
+  # hour) and alt, with 85 left against main's 12, stays the closest.
+  export CLAUDE_ACCT_SESSION_RATE=0.1
+  live "" 10
+  live "$ALT" 10
   run --separate-stderr "$ACCT" room
   assert_failure 1
   assert_output ''
-  assert_equal "$stderr" 'claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Tue 02:40 at this rate'
+  assert_equal "$stderr" 'claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 21:00 at this rate'
   # the same row status prints
   run "$ACCT" status
-  assert_line --regexp '^alt +- +15% +9% +Tue 02:40 '
+  assert_line --regexp '^alt +- +15% +9% +Mon 21:00 '
   # the reserve, when that is what refuses the closest one; it lasts to its reset
+  # no live sessions from here: a row with no burn lasts to its reset
+  rm -rf "${CLAUDE_ACCT_PROC:?}"/*
   week main 88 2
   week alt 90 100
   run --separate-stderr "$ACCT" room
@@ -877,15 +895,15 @@ seen_claude() {
   [ "$(field main .on_pace_idle <<<"$output")" = "$NOW" ]
   [ "$(field main .on_pace_burn <<<"$output")" = "$NOW" ]
   [ "$(field alt .on_pace_burn <<<"$output")" = null ]
-  # 30 points at 100 a week is 50.4h
-  [ "$(field alt .on_pace_idle <<<"$output")" = "$((NOW + 181440))" ]
+  # 25 points past the 5 of slack at 100 a week is 42h
+  [ "$(field alt .on_pace_idle <<<"$output")" = "$((NOW + 151200))" ]
   [ "$(field alt '.sustain * 84 | round' <<<"$output")" = 20 ]
 }
 
 @test "back on pace: a burn under the line closes the gap, and one that closes after the reset says null" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
-  week main 55 84   # 5 points over
-  week alt 80 84    # 30 points over: 101.6h at this burn, past the reset in 84h
+  week main 60 84   # 10 points over, 5 past the slack
+  week alt 80 84    # 25 past the slack: 84.7h at this burn, past the reset in 84h
   live "" 3
   live "$ALT" 3     # 0.3 an hour: the gap closes at 0.295 an hour
   run --separate-stderr "$ACCT" status --json
@@ -893,6 +911,21 @@ seen_claude() {
   # 5 / (100/168 - 0.3) = 16.935h
   [ "$(field main '.on_pace_burn - '$NOW' | . >= 60960 and . <= 60970' <<<"$output")" = true ]
   [ "$(field alt .on_pace_burn <<<"$output")" = null ]
+}
+
+@test "back on pace: is when room drops pace, so inside the slack is on pace now" {
+  # 2026-11-09: on_pace compared used with gone and ignored the slack, so ON-PACE read about 16h
+  # after the gate would let dispatch start on alt again.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 55 84   # 5 points over: inside the slack
+  week alt 56 84    # 6 over: one point past it
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field main .room.reasons <<<"$output" | jq -c .)" = '[]' ]
+  [ "$(field main .on_pace_idle <<<"$output")" = "$NOW" ]
+  [ "$(field alt .room.reason <<<"$output")" = pace ]
+  # 1 point at 100 a week is 1.68h
+  [ "$(field alt .on_pace_idle <<<"$output")" = "$((NOW + 6048))" ]
 }
 
 @test "status: the fleet line sums live, burn and what the weeks carry, and names the first back on pace" {
@@ -1172,6 +1205,17 @@ budget() {
   run --separate-stderr "$ACCT" status --json
   [ "$(field codex .room.ok <<<"$output")" = false ]
   [ "$(field codex .room.reason <<<"$output")" = reserve ]
+}
+
+@test "sources: the fleet line sums Claude accounts only, a codex point is another budget" {
+  # 2026-11-09: codex in the sum read 1.6/h vs 1.7/h, carries ~52; Claude alone was 1.3 vs 1.15.
+  src_setup
+  week main 80 84   # 20 left over 84h: 0.24 an hour
+  rollout 1 0 84    # codex: 99 left, 1.18 an hour, which the old sum added
+  run --separate-stderr "$ACCT" status
+  assert_success
+  assert_line --regexp '^codex '
+  assert_line --regexp '^fleet: 0 live, burn 0/h vs 0\.2/h sustainable'
 }
 
 @test "sources: a week whose reset has passed reads as unused" {

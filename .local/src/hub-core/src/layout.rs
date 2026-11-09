@@ -103,7 +103,9 @@ pub const TABS: [Tab; 12] = [
         title: "Costs",
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
-        sections: &["burn", "tokens", "langfuse", "sections", "totals", "table"],
+        sections: &[
+            "who", "burn", "tokens", "langfuse", "sections", "totals", "table",
+        ],
     },
     // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the
     // Builds section (CI runs, its own reader; release-state has no CI collector).

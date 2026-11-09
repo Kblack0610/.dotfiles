@@ -53,7 +53,8 @@ const burn = (o = {}) => ({
   accounts: [acct("alt", { live: 9, used: 55, gone: 25, burn: 1.04, sustain: 0.36 }), acct("bnb", { live: 17, used: 7, gone: 1, burn: 1.97, sustain: 0.56 }), acct("main", { live: 13, used: 33, gone: 12, burn: 1.51, sustain: 0.45, burn_at: 1794000600 })],
   fleet: { live: 39, burn: 4.52, sustain: 1.37, over: 3.3, rate: 0.116, carries: 11 },
   drip: { hour: 15, day: 349, held: "fleet-assess says HOLD" },
-  pace: { on_pace: false, at_burn: [["main", 1794000600]], idle_all_by: 1794003600, idle_rest_after_reset: false }, ...o,
+  pace: { on_pace: false, at_burn: [["main", 1794000600]], idle_all_by: 1794003600, idle_rest_after_reset: false },
+  legend: [["pts/h", "points of a weekly limit an hour"], ["GONE", "the share of the week gone"]], ...o,
 });
 const board = (o = {}) => ({
   at: 1794000000, by: "model", window: "7d",
@@ -119,7 +120,7 @@ test("the keys fold under their pool, and only a key refusing on its own starts 
   assert.ok(quiet.indexOf("<td>lazer</td>") < quiet.indexOf('data-k="burn-keys"'), "the fold is under the pool");
   assert.equal([...quiet.matchAll(/<td>glm<\/td>/g)].length, 1, "the key is listed once, in the fold");
   assert.ok(quiet.indexOf("<td>glm</td>") > quiet.indexOf('data-k="burn-keys"'));
-  assert.match(quiet, /<tr><th>source<\/th><th class="n">live<\/th><th>bar<\/th><th class="n">used<\/th><th class="n">reserve<\/th><th>room<\/th><th>resets<\/th><th class="n">24h<\/th><\/tr>/);
+  assert.match(quiet, /<tr><th>source<\/th><th class="n">live<\/th><th>bar<\/th><th class="n">used<\/th><th class="n">reserve<\/th><th>room<\/th><th>resets<\/th><th class="n">\$24h<\/th><\/tr>/);
   assert.match(quiet, /<td>alt<\/td>.*?width:80\.0%[^>]*><\/span><i style="left:min\(64\.0%,calc\(100% - 2px\)\)"><\/i>/, "a paced row has its tick, held inside the box");
   assert.doesNotMatch(quiet, /<td>glm<\/td>.*?<i style/, "a dollar budget has none");
   // negative control: the same key with a warn level opens, under the key paint has not remembered
@@ -134,7 +135,7 @@ test("a dollar source is a burn row with its kind, dollars and reserve, and no p
   const key = acct("reserve", { kind: "litellm-key", unpaced: true, used: 41, used_text: "41% $41/$100", gone: null, reserve: 15, parent: "lazer", burn: 9, sustain: 1, idle_at: null, resets: null });
   const h = show(board({ burn: burn({ accounts: [acct("main", { reserve: 15 }), key] }) }));
   assert.match(h, /<tr><th>source<\/th><th>kind<\/th><th class="n">live<\/th><th>bar<\/th><th class="n">used<\/th><th class="n">gone<\/th><th class="n">reserve<\/th><th>room<\/th>/);
-  assert.match(h, /<th class="n">24h<\/th><\/tr>/, "the pool column is gone: a key nests under its pool");
+  assert.match(h, /<th class="n">\$24h<\/th><\/tr>/, "the pool column is gone: a key nests under its pool");
   assert.match(h, /<td>reserve<\/td><td>litellm-key<\/td><td class="n">0<\/td><td>.*?<\/td><td class="n">41% \$41\/\$100<\/td><td class="n">-<\/td><td class="n">15%<\/td>/);
   // negative control: its 9 pts/h over a 1 pts/h line would be amber on a paced row
   assert.match(h, /<td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td>-<\/td><td>-<\/td>/, "burn, keeps and both pace cells say nothing");
@@ -193,6 +194,18 @@ test("the burn section leads the tab: headline, drip with its hold link, pace an
   assert.match(h, /at this burn: main [^;]+; if idle: all by /);
   assert.match(h, /<td>bnb<\/td><td>claude<\/td><td class="n">17<\/td><td>.*?<\/td><td class="n">7%<\/td><td class="n">1%<\/td><td class="n">-<\/td><td class="ok">room, 4 points spare<\/td><td class="n warn">1\.97<\/td><td class="n">0\.56<\/td><td>after reset<\/td>/, "an account over its sustainable rate is amber; burn that never gets there is after the reset");
   assert.doesNotMatch(h, /<td class="n warn">0\.45/, "keeps/h is never amber");
+  assert.match(h, /<div class="muted fold">pts\/h: points of a weekly limit an hour; gone: the share of the week gone<\/div>/, "the terms come from hub-core's one legend");
+});
+
+test("every term hub-core's burn::LEGEND defines, bar the headline's unit, is a column this page prints", () => {
+  const src = readFileSync(new URL("../../hub-core/src/burn.rs", dir), "utf8");
+  const block = src.slice(src.indexOf("pub const LEGEND"), src.indexOf("];", src.indexOf("pub const LEGEND")));
+  const terms = [...block.matchAll(/\(\s*"([^"]+)",\s*"/g)].map((m) => m[1]);
+  assert.ok(terms.length > 5, `read ${terms.length} terms`);
+  const h = show(board());
+  for (const t of terms.filter((t) => t !== "pts/h")) {
+    assert.ok(h.includes(`>${t.toLowerCase()}</th>`), `${t} is not a column`);
+  }
 });
 
 test("a green burn folds to its headline, and a fold the reader set is kept", () => {
@@ -286,7 +299,7 @@ test("a Sections fold the reader opened stays open through the repaint a sort cl
 
 test("a burn row carries the 5h window, when it resets and the day's dollars", () => {
   const h = show(board({ burn: burn({ accounts: [acct("main", { five_hour: 61.4, five_hour_resets: 1794007200, cost_24h: 12.5 }), acct("alt", { state: "idle" })] }) }));
-  assert.match(h, /<th>resets<\/th><th class="n">5h<\/th><th>5h resets<\/th><th class="n">24h<\/th><\/tr>/);
+  assert.match(h, /<th>resets<\/th><th class="n">5h<\/th><th>5h resets<\/th><th class="n">\$24h<\/th><\/tr>/);
   assert.match(h, /<td class="n">61%<\/td><td>[^<-][^<]*<\/td><td class="n">\$12\.50<\/td><\/tr>/);
   assert.match(h, /<td>alt<\/td><td colspan="16" class="muted">idle/, "a note row spans every column");
   const none = show(board({ burn: burn({ accounts: [acct("main", {})] }) }));
@@ -438,4 +451,23 @@ test("no figures opens the section amber and says why; a stale snapshot opens it
 test("a snapshot from before the reader has no langfuse key and still draws the amber head", () => {
   assert.match(lfTail(tokens()), /no figures in snapshot/);
   assert.equal(ctx.langfuseSection({ tokens: null }), "");
+});
+
+test("WHO SPENT 24H leads the tab: live Claude by runner, other harnesses from outcomes with their unpriced count", () => {
+  const who = { usd: 10, claude_usd: 9, rows: [
+    { who: "you", usd: 6, share: 0.6, source: "Prometheus", sessions: null, unpriced: null },
+    { who: "fleet-dispatch", usd: 3, share: 0.3, source: "Prometheus", sessions: null, unpriced: null },
+    { who: "codex", usd: 1, share: 0.1, source: "outcomes", sessions: 2, unpriced: 1 },
+    { who: "opencode", usd: null, share: 0, source: "outcomes", sessions: 1, unpriced: 1 },
+  ] };
+  const h = show(board({ who }));
+  assert.ok(h.indexOf("sec-who") < h.indexOf("sec-burn"), "who spent it is the first answer");
+  assert.match(h, /Who spent 24h <span class="muted">\$10\.00: Claude \$9\.00 live \(exporting sessions\); others: outcomes<\/span>/);
+  assert.match(h, /<tr><td>fleet-dispatch<\/td><td class="n">\$3\.00<\/td><td class="n">30%<\/td><td class="muted">live<\/td><\/tr>/);
+  assert.match(h, /<td>codex<\/td>.*?outcomes, 2 sessions, <span class="warn">1 unpriced<\/span>/);
+  assert.match(h, /<tr><td>opencode<\/td><td class="n">-<\/td><td class="n">-<\/td>/, "nothing priced is unknown, never $0");
+  assert.doesNotMatch(h, /LIVE 24H/, "the live total is this block's head, not a second tile");
+  // negative control: nothing read says so, never a $0 table
+  const none = show(board({ who: { usd: 0, claude_usd: null, rows: [] } }));
+  assert.match(none, /id="sec-who">Who spent 24h<\/h2><div class="panel muted">nothing read/);
 });

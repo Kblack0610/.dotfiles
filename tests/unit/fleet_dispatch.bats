@@ -113,6 +113,8 @@ echo "cpu  $((u + a)) $((n + b)) $((s + c)) $((i + d)) 0 0 0 0 0 0" > "$DISPATCH
   cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$HOME/.config/shared-hooks/"
   stub getent 'exit 2'
   unset CLAUDE_AUTO_DROP_TOOLS
+  # The prefix every launch line starts with (claude_launch_env, tested in claude_telemetry.bats).
+  LAUNCH_ENV=$(bash -c '. "$HOME/.config/shared-hooks/claude-telemetry.sh" && claude_launch_env' 2>/dev/null)
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-dispatch"
 }
@@ -1541,6 +1543,8 @@ room_on_floor() {
     acct "alt:$r:/home/u/.claude-personal"
     run "$REPO_ROOT/.local/bin/fleet-dispatch" run
     assert_output --partial 'no account has room; alt is the closest'
+    # ar-1073: the hold says why the open floor could not lift it
+    assert_output --partial 'the run floor lifts an account refused for its pace alone, and every one past its pace has another refusal'
     assert_not_called 'wt new'
   done
   # Negative control: the same account refused for its pace alone starts on the floor.
@@ -2974,7 +2978,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game \
     --server default --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "tmux -L default new-session -d -s fix-crash -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called "tmux -L default new-session -d -s fix-crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
   assert_called 'tmux -L default set-option -t =fix-crash: @dispatch game: resumed'
   assert_not_called 'start fix crash'
   assert_not_called 'wt new'
@@ -3025,7 +3029,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default \
     --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "fix-crash -c $SANDBOX/repos/game CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called "fix-crash -c $SANDBOX/repos/game ${LAUNCH_ENV}CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --permission-mode bypassPermissions --resume abc-123"
 }
 
 @test "start --resume never lands in a session that already exists on that server" {
@@ -3743,10 +3747,10 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   for s in a n p; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
   mask_sid "$NOTES_FIXTURE/cmds.log"
   run cat "$NOTES_FIXTURE/cmds.log"
-  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=a env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode bypassPermissions'
+  assert_line --index 0 --partial "AGENT_QUEUE_ITEM=a ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode bypassPermissions"
   assert_output --partial '/one-shot do a'
   assert_output --partial '/one-shot --pr-only do n'
-  assert_output --partial 'AGENT_QUEUE_ITEM=p env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode plan --allow-dangerously-skip-permissions'
+  assert_output --partial "AGENT_QUEUE_ITEM=p ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode plan --allow-dangerously-skip-permissions"
   refute_output --partial '/one-shot plan p'
   # An item with no board row still names itself in its PR body, and names no Task line.
   assert_output --partial 'The PR body carries the line "Item: a".'
@@ -4509,6 +4513,51 @@ board_item() {
   assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'
 }
 
+@test "suggest --write: a real pass stores what suggest --json prints; a dry pass writes none; a failed read, or an empty one with notes down, keeps the last" {
+  echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'game row' "- [ ] game row #high $T"
+  verdict game agent 'game row' skip   # cached, so the pass calls no judge and promotes nothing
+  snap="$HOME/.local/state/agentctl/dispatch/candidates.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  [ ! -e "$snap" ] || fail "a dry pass wrote the candidates snapshot"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(jq -r .key "$snap")" "game row"
+  run cmd_suggest --json
+  assert_equal "$(cat "$snap")" "$output"
+  before=$(cat "$snap")
+  cmd_suggest() { echo partial; return 1; }
+  run candidates_write
+  assert_failure
+  assert_equal "$(cat "$snap")" "$before"
+  cmd_suggest() { :; }
+  notes() { return 1; }
+  run candidates_write
+  assert_failure
+  assert_output --partial 'notes did not answer'
+  assert_equal "$(cat "$snap")" "$before"
+  [ -z "$(ls "${snap%/*}" | grep -v '^candidates.jsonl$')" ] || fail "a temp file was left behind"
+  unset -f notes
+  run candidates_write
+  assert_success
+  [ -e "$snap" ] && [ ! -s "$snap" ] || fail "an empty list with notes up did not clear the snapshot"
+}
+
+@test "promote: the promoted row leaves the candidates snapshot at once, every other row stays" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'urgent one' '- [ ] urgent one #urgent <!-- id:gm-7 -->'
+  mkdir -p "${CANDIDATES%/*}"
+  printf '%s\n' '{"project":"game","lane":"human","key":"gm-7"}' '{"project":"game","lane":"agent","key":"gm-7"}' \
+    '{"project":"game","lane":"human","key":"gm-8"}' > "$CANDIDATES"
+  touch -d '2026-11-09 08:07' "$CANDIDATES"
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human", key: "gm-7"}')" "" task
+  assert_success
+  assert_equal "$(jq -r '.lane + ":" + .key' "$CANDIDATES" | paste -sd' ')" "agent:gm-7 human:gm-8"
+  assert_equal "$(date -r "$CANDIDATES" +%H:%M)" 08:07   # `as of` stays the pass's time
+}
+
 @test "stats: open board rows by lane; an unreadable board leaves them out, never 0" {
   queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
@@ -4544,6 +4593,34 @@ board_item() {
   assert_called 'project=game'
 }
 
+@test "a started session's launch line exports telemetry and drops a parent Claude session's identity" {
+  # The pane runs no rc file and gets the tmux server's environment; a server started from inside a
+  # Claude session held no endpoint and that session's id and flags (16 of 16 queue sessions, 2026-11-08).
+  project game beta "$SANDBOX/repos/game"
+  transcript abc-123 '{"permissionMode":"plan"}'
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  stub getent 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
+    --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called 'OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318'
+  assert_called 'OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative'
+  assert_called '-u CLAUDE_CODE_SESSION_ID'
+  assert_called '-u CLAUDE_CODE_SESSION_ATTENDED'
+}
+
+@test "off the LAN a started session's launch line exports no telemetry, and still drops the parent's identity" {
+  project game beta "$SANDBOX/repos/game"
+  transcript abc-123 '{"permissionMode":"plan"}'
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  stub getent 'exit 2'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
+    --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called '-u CLAUDE_CODE_SESSION_ID'
+  assert_not_called 'OTEL_'
+}
+
 @test "start --resume --window opens a window of a live session, keeps a plan mode, and leaves its label alone" {
   project game beta "$SANDBOX/repos/game"
   transcript abc-123 '{"permissionMode":"plan"}'
@@ -4551,7 +4628,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
     --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "new-window -d -P -F #{pane_id} -t =dotfiles: -n crash -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume abc-123"
+  assert_called "new-window -d -P -F #{pane_id} -t =dotfiles: -n crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume abc-123"
   assert_not_called 'new-session'
   assert_not_called 'set-option'
 }
@@ -4564,7 +4641,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session planned \
     --cwd "$SANDBOX/repos/game" --resume conv-plan
   assert_success
-  assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
+  assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
   assert_called 'set-option -t =planned: @dispatch game: plan-work'
   f=$(qitem running plan-work)
   assert_equal "$(qfield "$f" session) $(qfield "$f" origin)" 'default:planned resume'
@@ -4575,7 +4652,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session planned2 \
     --cwd "$SANDBOX/repos/game" --resume conv-plan
   assert_success
-  assert_called "AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-plan"
+  assert_called "AGENT_QUEUE_ITEM=plan-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-plan"
 }
 
 @test "start --resume refuses a conversation still running, and one two items list without --item" {
@@ -4602,7 +4679,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s3 \
     --cwd "$SANDBOX/repos/game" --resume conv-two
   assert_success
-  assert_called "-s s3 -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-two"
+  assert_called "-s s3 -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-two"
 }
 
 @test "start --resume --window makes the session when it is not there yet, named as asked" {
@@ -4611,7 +4688,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
     --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "new-session -d -s dotfiles -n crash -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called "new-session -d -s dotfiles -n crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
 }
 
 # world <instance> <pane lines...> -- what a stub server answers; no instance is a server that is down.
@@ -4733,8 +4810,8 @@ restore_setup() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
   assert_called 'tmx ensure hub'
-  assert_called "-n planned -c $G env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
-  assert_called "-n working -c $G env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-work"
+  assert_called "-n planned -c $G ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
+  assert_called "-n working -c $G ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-work"
   for skipped in conv-armed conv-closed conv-alive conv-moved; do assert_not_called "--resume $skipped"; done
   assert_output --partial 'hub:dotfiles:armed: wound down on purpose, skipped'
   assert_output --partial 'hub:dotfiles:closed: wound down on purpose, skipped'
@@ -4756,7 +4833,7 @@ restore_setup() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
   assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work'
-  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item"
+  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item"
   f=$(qitem running hub-work)
   assert_equal "$(qfield "$f" origin)" resume
   assert_equal "$(qfield "$f" session)" ''
@@ -4898,9 +4975,9 @@ harness_ready() {
   mask_sid "$NOTES_FIXTURE/cmds.log"
   run cat "$NOTES_FIXTURE/cmds.log"
   # The default is claude-telemetry.sh's, the one list every automated start reads.
-  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=plain env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode'
+  assert_line --index 0 --partial "AGENT_QUEUE_ITEM=plain ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode"
   [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "only plain drops tools: $(cat "$NOTES_FIXTURE/cmds.log")"
-  assert_line --index 4 --partial 'AGENT_QUEUE_ITEM=off env -u CLAUDE_CONFIG_DIR claude --model opus --session-id SID --permission-mode'
+  assert_line --index 4 --partial "AGENT_QUEUE_ITEM=off ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --session-id SID --permission-mode"
   # A value that is not a list of tool names never reaches the command line.
   agent-queue add --project game --slug bad "fix the header" >/dev/null
   CLAUDE_AUTO_DROP_TOOLS='Bash(rm:*);x' run cmd_start --item bad
@@ -4927,7 +5004,7 @@ harness_ready() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s2 \
     --cwd "$SANDBOX/repos/game" --resume def-456
   assert_success
-  assert_called '-c '"$SANDBOX"'/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume def-456'
+  assert_called "-c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume def-456"
 }
 
 # --- lane sandbox: DISPATCH_SANDBOX_PROFILE (the pattern is tests/integ/agent_run_sandbox.bats) ---

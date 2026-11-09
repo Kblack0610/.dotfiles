@@ -248,8 +248,10 @@ impl CostsView {
         w: usize,
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let b = self.board(c);
-        let mut out = burn(&b.burn, self.keys, p, w);
-        let mut at = vec![("burn", 0), ("tokens", out.len())];
+        let mut out = who(&b.who, p, w);
+        let mut at = vec![("who", 0), ("burn", out.len())];
+        out.extend(burn(&b.burn, self.keys, p, w));
+        at.push(("tokens", out.len()));
         out.extend(tokens::tokens(b.tokens.as_ref(), self.tokens, p, now, w));
         at.push(("langfuse", out.len()));
         out.extend(tokens::langfuse(b.tokens.as_ref(), self.langfuse, p, w));
@@ -362,17 +364,27 @@ fn burn(b: &Burn, keys_set: Option<bool>, p: Palette, w: usize) -> Vec<Line<'sta
             p.warn(),
         ));
     }
-    let mut out = vec![
-        clip_line(
-            Line::from(vec![dim("BURN  "), Span::styled(b.head.clone(), style)]),
-            w,
-        ),
+    // The headline wraps between its clauses, never inside one, so a narrow pane keeps all of it.
+    let parts: Vec<&str> = b.head.split(", ").collect();
+    let mut out: Vec<Line<'static>> = crate::fit::wrap(&parts, ", ", w.saturating_sub(6))
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let lead = if i == 0 {
+                dim("BURN  ")
+            } else {
+                Span::raw("      ")
+            };
+            clip_line(Line::from(vec![lead, Span::styled(l, style)]), w)
+        })
+        .collect();
+    out.extend([
         clip_line(Line::from(drip), w),
         clip_line(
             Line::from(vec![dim("BACK ON PACE  "), Span::raw(b.pace_text(&time))]),
             w,
         ),
-    ];
+    ]);
     // A source with no figures has a line of its own, so its words do not widen the columns.
     let note = |a: &&Account| {
         let (text, style) = match a.state {
@@ -512,13 +524,10 @@ fn burn(b: &Burn, keys_set: Option<bool>, p: Palette, w: usize) -> Vec<Line<'sta
             out.extend(nested.iter().filter_map(note));
         }
     }
-    out.push(clip_line(
-        Line::styled(
-            "BURN/H: last 6h rate per session. KEEPS/H: what the week can carry. BAR: use, | is the week gone.",
-            p.dim(),
-        ),
-        w,
-    ));
+    let terms: Vec<String> = b.legend.iter().map(|(t, d)| format!("{t}: {d}.")).collect();
+    for l in crate::fit::wrap(&terms, " ", w) {
+        out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
     out.push(Line::raw(""));
     out
 }
@@ -602,7 +611,58 @@ fn sections(b: &Block, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// The window's spend from the outcomes rows, then what Prometheus says now.
+/// Who spent the last 24h: Claude Code live by runner and you, then other harnesses from the
+/// outcomes rows, whose unpriced sessions are counted, never $0. A runner's figure is Fleet's
+/// COST 24H.
+fn who(ws: &costs::WhoSpent, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![clip_line(
+        Line::from(vec![
+            Span::styled("WHO SPENT 24H  ", p.head()),
+            Span::raw(format!("{}  ", costs::usd(Some(ws.usd)))),
+            Span::styled(
+                format!(
+                    "Claude {} live (exporting sessions); others: outcomes",
+                    costs::usd(ws.claude_usd)
+                ),
+                p.dim(),
+            ),
+        ]),
+        w,
+    )];
+    if ws.rows.is_empty() {
+        out.push(Line::styled(
+            "  nothing read: no live Claude series and no outcomes row in 24h",
+            p.dim(),
+        ));
+    }
+    for r in &ws.rows {
+        let mut s = vec![Span::raw(format!(
+            "  {:<18} {:>8} {:>4}  ",
+            r.who,
+            costs::usd(r.usd),
+            r.usd
+                .map_or("-".into(), |_| format!("{:.0}%", r.share * 100.0))
+        ))];
+        match (r.source, r.sessions, r.unpriced) {
+            ("outcomes", Some(n), u) => {
+                let plural = if n == 1 { "" } else { "s" };
+                s.push(Span::styled(
+                    format!("outcomes, {n} session{plural}"),
+                    p.dim(),
+                ));
+                if let Some(u) = u.filter(|u| *u > 0) {
+                    s.push(Span::styled(format!(", {u} unpriced"), p.warn()));
+                }
+            }
+            _ => s.push(Span::styled("live", p.dim())),
+        }
+        out.push(clip_line(Line::from(s), w));
+    }
+    out.push(Line::raw(""));
+    out
+}
+
+/// The window's spend from the outcomes rows.
 fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
     let mut s = vec![];
     for t in &b.totals {
@@ -615,8 +675,7 @@ fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
         s.push(Span::styled(label, style));
         s.push(Span::raw(format!("{}  ", costs::usd(Some(t.usd)))));
     }
-    s.push(Span::styled("LIVE 24H ", p.dim()));
-    s.push(Span::raw(format!("{}  ", costs::usd(b.live.claude_24h))));
+    s.push(Span::styled("from outcomes", p.dim()));
     s
 }
 
@@ -842,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn the_burn_section_leads_and_fits_80_columns() {
+    fn who_spent_leads_then_the_burn_section_and_all_fits_80_columns() {
         let s = CostsView::default()
             .lines(&burning(), Palette::default(), 1_000_000, 80)
             .0
@@ -851,9 +910,14 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
-        let first = s.lines().next().unwrap();
+        assert!(s.starts_with("WHO SPENT 24H  $3.00  Claude - live"), "{s}");
         assert!(
-            first.starts_with("BURN  4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live"),
+            s.contains("  codex                 $3.00 100%  outcomes, 1 session\n"),
+            "{s}"
+        );
+        let burn = s.lines().find(|l| l.starts_with("BURN")).unwrap();
+        assert!(
+            burn.starts_with("BURN  4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live"),
             "{s}"
         );
         assert!(s.contains("DRIP  15 started in 1h, 349 in 24h"), "{s}");
@@ -870,6 +934,33 @@ mod tests {
             s.find("BURN").unwrap() < s.find("window:").unwrap(),
             "burn is above the spend tiles"
         );
+        // a narrow pane wraps the headline between clauses instead of cutting its last one
+        let narrow = CostsView::default()
+            .lines(&burning(), Palette::default(), 1_000_000, 50)
+            .0
+            .iter()
+            .map(crate::fit::plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            narrow.contains("\n      39 live, carries ~11\n"),
+            "{narrow}"
+        );
+        // every term on the section is defined under it, wrapped to the width
+        for t in ["pts/h: ", "GONE: ", "AT BURN: ", "IF IDLE: ", "$24H: "] {
+            assert!(s.contains(t), "{t} undefined: {s}");
+        }
+        // and every term the legend defines, bar the headline's unit, is a column the table prints
+        let wide = CostsView::default()
+            .lines(&burning(), Palette::default(), 1_000_000, 400)
+            .0
+            .iter()
+            .map(crate::fit::plain)
+            .find(|l| l.trim_start().starts_with("SOURCE"))
+            .unwrap();
+        for (t, _) in burn::LEGEND.iter().filter(|(t, _)| *t != "pts/h") {
+            assert!(wide.contains(t), "{t} is not a column: {wide}");
+        }
     }
 
     #[test]
@@ -1037,7 +1128,7 @@ mod tests {
     #[test]
     fn no_claude_acct_data_says_so_and_still_shows_the_spend() {
         let s = screen(&CostsView::default(), 80);
-        assert!(s.starts_with("BURN  no data from claude-acct"), "{s}");
+        assert!(s.contains("\nBURN  no data from claude-acct"), "{s}");
         assert!(s.contains("window:"), "{s}");
     }
 
