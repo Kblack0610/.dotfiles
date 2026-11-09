@@ -6,14 +6,16 @@
 # decided run is red: {workflow, red, green}. red is the first run of the red streak, green the
 # last green before it, null when none is in view; then red is the oldest red in view, which
 # slides as runs age out. A cancelled or skipped run decides nothing, so it neither hides a red
-# nor reads as green.
+# nor reads as green. A workflow is its file (workflowPath): workflowName follows the file's
+# run-name, so a retitled workflow would leave its old title red for as long as that run is in
+# view. workflow is the title of the first red, so the fact holds still while the streak runs on.
 MAIN_STREAKS='map(select(.status == "completed"
                     and (.conclusion | test("^(success|failure|timed_out|startup_failure)$"))))
-    | group_by(.workflowName)[] | sort_by(.createdAt) | reverse
+    | group_by(.workflowPath)[] | sort_by(.createdAt) | reverse
     | select(.[0].conclusion != "success")
     | (map(.conclusion == "success") | index(true)) as $g
-    | {workflow: .[0].workflowName, red: (if $g == null then .[-1] else .[$g - 1] end),
-       green: (if $g == null then null else .[$g] end)}'
+    | (if $g == null then .[-1] else .[$g - 1] end) as $red
+    | {workflow: $red.workflowName, red: $red, green: (if $g == null then null else .[$g] end)}'
 
 : "${MAIN_CACHE:=${XDG_CACHE_HOME:-$HOME/.cache}/fleet}"
 # The run ledger's one reader (schedules-sync runs); the sibling in this tree, so a worktree's
@@ -29,5 +31,5 @@ main_runs() {
   local runs rc=0
   runs="$("$SCHEDULES_SYNC" runs "$1" ${2:+--branch "$2"} 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] || { [ "$rc" -eq 3 ] && return 3; return 1; }
-  jq -ce 'map({id, event, workflowName: .workflow, headBranch: .branch, status, conclusion, headSha: .sha, createdAt: .created_at})' <<<"$runs"
+  jq -ce 'map({id, event, workflowName: .workflow, workflowPath: .path, headBranch: .branch, status, conclusion, headSha: .sha, createdAt: .created_at})' <<<"$runs"
 }

@@ -186,11 +186,11 @@ b() { session_bucket "$@"; }
   assert_output --partial 'LANDED PR #875 merged, tree clean'
 }
 
-# r <workflow> <conclusion> <sha> <minute>: one main_runs row
-r() { printf '{"workflowName":"%s","status":"completed","conclusion":"%s","headSha":"%s","createdAt":"2026-10-25T10:%02d:00Z"}' "$1" "$2" "$3" "$4"; }
+# r <run title> <conclusion> <sha> <minute> [file]: one main_runs row; its file defaults to the title's first word
+r() { printf '{"workflowName":"%s","workflowPath":"%s","status":"completed","conclusion":"%s","headSha":"%s","createdAt":"2026-10-25T10:%02d:00Z"}' "$1" "${5:-${1%% *}.yml}" "$2" "$3" "$4"; }
 # ledger <branch> <main_runs rows>: those rows as `schedules-sync runs` answers them on that branch
 ledger() {
-  jq -c --arg b "$1" 'to_entries | map(.value as $r | {id: (.key + 1), event: ($r.event // "push"), workflow: $r.workflowName, branch: $b,
+  jq -c --arg b "$1" 'to_entries | map(.value as $r | {id: (.key + 1), event: ($r.event // "push"), workflow: $r.workflowName, path: $r.workflowPath, branch: $b,
     status: $r.status, conclusion: $r.conclusion, sha: $r.headSha, created_at: $r.createdAt})' <<<"$2" > "$LEDGER_DIR/${1//\//_}.json"
 }
 
@@ -210,6 +210,28 @@ ledger() {
   assert_output "$(printf 'Multi\tr1\t-')"
   run main_state <<<'[]'
   assert_output ''
+}
+
+@test "main_state reads a workflow by its file, so a run title that moves on leaves no red behind (ar-1048)" {
+  # NEGATIVE CONTROL: grouped by title, the old title stays red once the file's runs carry a new one
+  run main_state <<<"[$(r 'Multi (nightly)' failure r1 1),$(r 'Multi (all)' success g1 2)]"
+  assert_output ''
+  # a streak spanning two titles is one red, named by its first run, so the fact holds still
+  run main_state <<<"[$(r 'Multi (all)' success g1 1),$(r 'Multi (nightly)' failure r1 2),$(r 'Multi (all)' failure r2 3)]"
+  assert_output "$(printf 'Multi (nightly)\tr1\tg1')"
+  # one title in two files is two workflows
+  run main_state <<<"[$(r Tests failure r1 1 a.yml),$(r Tests success g1 2 b.yml)]"
+  assert_output "$(printf 'Tests\tr1\t-')"
+}
+
+@test "main_state: a run of part of the suite neither clears nor raises a red (ar-1048)" {
+  # NEGATIVE CONTROL: with the file as the only key, this hand run hides the nightly's red
+  run main_state <<<"[$(r 'Multi (all)' failure r1 1),$(r 'Multi (named)' success g1 2)]"
+  assert_output "$(printf 'Multi (all)\tr1\t-')"
+  run main_state <<<"[$(r 'Multi (all)' success g1 1),$(r 'Multi (named)' failure r1 2),$(r 'Tests (affected)' failure r2 3)]"
+  assert_output ''
+  FLEET_PARTIAL_RUNS='^$' run main_state <<<"[$(r 'Multi (all)' success g1 1),$(r 'Multi (named)' failure r1 2)]"
+  assert_output "$(printf 'Multi (named)\tr1\tg1')"
 }
 
 @test "an open PR is STALLED when red or green-unmerged, WORKING while CI runs" {
@@ -991,6 +1013,13 @@ SH
   # a new fact on the same row is not the one nudged
   [ "$(jq -r 'select(.bucket == "NIGHTLY") | .nudged' <<<"$output")" = false ]
   [ "$(jq -r 'select(.bucket != "NIGHTLY") | .bucket' <<<"$output")" = LANDED ]
+
+  # the ledger's path reaches main_state: the same file green under a new title leaves no NIGHTLY row (ar-1048)
+  rm "$LEDGER_DIR/FAIL"
+  ledger main "[$(r 'Tests (nightly)' success "$green" 1),$(r 'Tests (nightly)' failure "$red" 2),$(r 'Tests (all)' success "$red" 3)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ -z "$(jq -c 'select(.bucket == "NIGHTLY")' <<<"$output")" ]
 }
 
 @test "end to end: a deployed checkout off main is one CHECKOUT row naming its actor, not a STALLED row per session" {
@@ -2433,9 +2462,9 @@ GH
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
 }
 
-# gate <workflow> <status> <conclusion> <sha> <minute> [event]: one main_runs row, for ledger feat/x
-gate() { printf '{"workflowName":"%s","event":"%s","status":"%s","conclusion":%s,"headSha":"%s","createdAt":"2026-10-29T10:%02d:00Z"}' \
-  "$1" "${6:-workflow_dispatch}" "$2" "$( [ "$3" = - ] && echo null || echo "\"$3\"")" "$4" "$5"; }
+# gate <run title> <status> <conclusion> <sha> <minute> [event]: one main_runs row, for ledger feat/x
+gate() { printf '{"workflowName":"%s","workflowPath":"%s.yml","event":"%s","status":"%s","conclusion":%s,"headSha":"%s","createdAt":"2026-10-29T10:%02d:00Z"}' \
+  "$1" "${1%% *}" "${6:-workflow_dispatch}" "$2" "$( [ "$3" = - ] && echo null || echo "\"$3\"")" "$4" "$5"; }
 
 @test "end to end: Checks green does not make a PR green while its dispatched gate is queued or red (ar-191)" {
   landed_fixture
@@ -2584,7 +2613,7 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
 
 @test "activity_line: parked, testing and editing win; then the head's open run, then its reds by workflow; else gating or the status" {
   now=$(date -ud 2026-10-29T10:30:00Z +%s)
-  run_row() { printf '{"workflowName":"%s","status":"%s","conclusion":%s,"headSha":"%s","createdAt":"2026-10-29T10:%02d:00Z"}' "$@"; }
+  run_row() { printf '{"workflowName":"%s","workflowPath":"%s.yml","status":"%s","conclusion":%s,"headSha":"%s","createdAt":"2026-10-29T10:%02d:00Z"}' "$1" "${1%% *}" "${@:2}"; }
   open="[$(run_row Tests in_progress null h 10),$(run_row Lint queued null h 20),$(run_row Tests completed '"failure"' old 5)]"
   red="[$(run_row Tests completed '"failure"' h 1),$(run_row Tests completed '"success"' h 2),$(run_row Lint completed '"failure"' h 3),$(run_row Docs completed '"cancelled"' h 4)]"
   # branch_runs is asked only once CI decides the line
@@ -2600,10 +2629,16 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   # Tests went green on a re-run, Lint is red, a cancelled run decides nothing
   echo "$red" > "$SANDBOX/runs"
   [ "$(activity_line idle gate - "$SANDBOX" feat/x h "$now")" = 'red on Lint' ]
+  # a workflow is its file: a green under another title clears the red (ar-1048)
+  echo "[$(run_row 'Tests (affected)' completed '"failure"' h 1),$(run_row 'Tests (all)' completed '"success"' h 2)]" > "$SANDBOX/runs"
+  [ "$(activity_line idle gate - "$SANDBOX" feat/x h "$now")" = gating ]
+  # on a branch a partial run is the gate, so its red counts: FLEET_PARTIAL_RUNS is main_state's alone
+  echo "[$(run_row 'Tests (affected)' completed '"failure"' h 1)]" > "$SANDBOX/runs"
+  [ "$(activity_line idle gate - "$SANDBOX" feat/x h "$now")" = 'red on Tests (affected)' ]
   # no dir (the default branch, or no git) reads no CI
   [ "$(activity_line idle none - - feat/x h "$now")" = idle ]
   [ "$(activity_line '' - - - - - "$now")" = - ]
-  [ "$(wc -l < "$SANDBOX/asked")" -eq 3 ]
+  [ "$(wc -l < "$SANDBOX/asked")" -eq 5 ]
 }
 
 @test "end to end: an open PR's fact carries its head, so a new push that is still red is nudged again" {

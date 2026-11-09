@@ -1987,7 +1987,7 @@ hold_setup() {
   cat >> "$SCHEDULES_SYNC" <<'SS'
 [ -e "$D/down" ] && exit 1
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
-jq -c 'map({id, event, workflow: .name, status, conclusion, sha: .head_sha, created_at})' "$D/runs"
+jq -c 'map({id, event, workflow: .name, path: "shell.yml", status, conclusion, sha: .head_sha, created_at})' "$D/runs"
 SS
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
   cat >> "$SANDBOX/bin/gh" <<'GH'
@@ -2005,7 +2005,7 @@ GH
 # ci <id> <conclusion> <sha> <offset>: one run of main, appended
 ci() {
   jq -c --argjson i "$1" --arg c "$2" --arg s "$3" --arg at "$(date -u -d "@$((T0 + $4))" +%FT%TZ)" \
-    '. + [{id: $i, event: ($ENV.CI_EVENT // "push"), name: "shell tests", status: "completed", conclusion: $c, head_sha: $s, created_at: $at}]' \
+    '. + [{id: $i, event: ($ENV.CI_EVENT // "push"), name: ($ENV.CI_NAME // "shell tests"), status: "completed", conclusion: $c, head_sha: $s, created_at: $at}]' \
     "$GHD/runs" > "$GHD/runs.new" && mv "$GHD/runs.new" "$GHD/runs"
 }
 
@@ -2041,6 +2041,18 @@ failed() {
   cleanup late -3700 6 bbb22222 .local/bin/other
   echo 'run tool' > "$GHD/tool.bats"
   ci 1 success aaa11111 -80001; ci 2 failure bbb22222 -3600
+  failed 2 unit/tool.bats
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'cleanup merge first (PR 5 at aaa11111)'
+}
+
+@test "hold: a merge's own run counts under another title, since a workflow is its file (ar-1048)" {
+  # NEGATIVE CONTROL: matched by title, its run is not found, so the merge dates from its later close and reads as after the red.
+  hold_setup
+  cleanup first -1000 5 aaa11111 .local/bin/tool
+  echo 'run tool' > "$GHD/tool.bats"
+  CI_NAME='shell (old)' ci 1 success aaa11111 -3000
+  ci 2 failure bbb22222 -2000
   failed 2 unit/tool.bats
   run "$SUBJECT" triage --dry-run
   assert_output --partial 'cleanup merge first (PR 5 at aaa11111)'

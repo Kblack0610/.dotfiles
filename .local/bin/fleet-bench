@@ -3294,7 +3294,7 @@ hold_streak() {
   local -A body
   near=$(jq -c --arg repo "$repo" --argjson s "$streak" --argjson runs "$3" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
     ($s.red.createdAt | ep) as $red | .[] | select(.repo == $repo)
-    | . as $m | .at = (([$runs[] | select(.workflowName == $s.workflow and .headSha == $m.sha) | .createdAt | ep] | first) // $m.at)
+    | . as $m | .at = (([$runs[] | select(.workflowPath == $s.red.workflowPath and .headSha == $m.sha) | .createdAt | ep] | first) // $m.at)
     | select(.at <= $red and $red - .at <= $h)' <<<"$4")
   [ -n "$near" ] || return 0
   id=$(jq -r .red.id <<<"$streak")
