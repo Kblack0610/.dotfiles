@@ -1363,12 +1363,12 @@ gw_accts() {
   assert_output --partial 'passing: 1 due'
 }
 
-@test "stuck: lines due and no pass started in two hours, whatever the lease says; a recent pass or nothing due is passing" {
+@test "stuck: lines due and no pass started in an hour, whatever the lease says; a recent pass or nothing due is passing" {
   printf 'k1\tshepherd\t1\tnudge DONE: a\nk2\tshepherd\t1\tescalate NEEDS: b\n' > "$FLEET_SHEPHERD_DIR/.due"
-  printf '%s\tp1-1111\tWORKED\tx\n' "$(date -u -d '130 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  printf '%s\tp1-1111\tWORKED\tx\n' "$(date -u -d '70 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
   run "$SH" stuck
   assert_failure 1
-  assert_line --index 0 --regexp '^stuck: 2 due and no pass started in (129|130|131)m$'
+  assert_line --index 0 --regexp '^stuck: 2 due and no pass started in (69|70|71)m$'
   assert_line 'last pass: p1-1111 WORKED'
   assert_line 'escalate NEEDS: b'
   assert_equal "$("$SH" stats | jq -c '[.stuck, (.stuck_why | test("2 due"))]')" '[true,true]'
@@ -1380,10 +1380,30 @@ gw_accts() {
   run "$SH" stuck
   assert_success
   printf 'k1\tshepherd\t1\tnudge DONE: a\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf '%s\tp1\tWORKED\tx\n' "$(date -u -d '20 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  run "$SH" stuck
+  assert_success
+  assert_output --regexp '^passing: 1 due, last pass (19|20|21)m ago$'
+}
+
+@test "stuck and the page: a line the debounce can hold gets DEBOUNCE_MIN longer, an urgent line does not" {
+  export FLEET_SHEPHERD_DEBOUNCE_MIN=60
+  printf 'k1\tshepherd\t1\tnudge DONE: a\n' > "$FLEET_SHEPHERD_DIR/.due"
   printf '%s\tp1\tWORKED\tx\n' "$(date -u -d '90 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
   run "$SH" stuck
   assert_success
-  assert_output --regexp '^passing: 1 due, last pass (89|90|91)m ago$'
+  printf 'k1\tshepherd\t1\tnudge DONE: a\nk2\tshepherd\t1\tunhandled: watch: x tripped (high)\n' > "$FLEET_SHEPHERD_DIR/.due"
+  run "$SH" stuck
+  assert_failure 1
+  # the page: 90 minutes owed pages an urgent line and not a held one
+  doc "[$(row a DONE false false)]"
+  export STUB_TRIPPED='queue-starved\thigh\n'
+  "$SH" check >/dev/null
+  sed -i "s/\t[0-9]*$/\t$(ago 90)/" "$FLEET_SHEPHERD_DIR/.handed"
+  "$SH" check >/dev/null
+  run cat "$HOME/pages"
+  assert_output --partial 'watch: queue-starved tripped (high)'
+  refute_output --partial 'nudge DONE: a'
 }
 
 @test "the .due record keeps each line's role and first-seen time across checks, for the Shepherd tab" {

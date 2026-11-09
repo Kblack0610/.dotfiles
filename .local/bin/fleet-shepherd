@@ -26,7 +26,7 @@
 #                          an item's `<size> <usd>` budget, by its task's #size/ tag, which hub_core::session_page shows
 #   fleet-shepherd stuck   exit 1 naming why when the shepherd has stopped passing: lines due and
 #                          no pass started in FLEET_SHEPHERD_STUCK_MIN, or an unhandled line at
-#                          two checks in a row; exit 0 otherwise. Sentinel's watch shepherd-stuck
+#                          two checks in a row that would start a pass; exit 0 otherwise. Sentinel's watch shepherd-stuck
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), re-page the human on escalated rows left unchanged (remind_sample),
@@ -113,7 +113,7 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_PASS_MAX_MIN:=30}" # a pass still working this long, with no human on it, is STALLED and closed
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
 : "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
-: "${FLEET_SHEPHERD_UNHANDLED_MIN:=120}" # a due line left this long with no answer pages the human, once (two debounces: one held pass is no miss)
+: "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once; DEBOUNCE_MIN more for a line the debounce can hold
 # A run starts a pass only when something is due, and then only this long after the last pass
 # started, unless a due line is urgent. Measured 2026-11-07: a median pass cost $0.89, $0.54 of it
 # the fresh start's 68K cache-write tokens, and 40 of 275 scored passes were given nothing.
@@ -123,8 +123,9 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # pass left unhandled is as urgent as the line itself: on 2026-11-09 any leftover skipped the debounce,
 # which started 59 passes a day. An answered ask has no line: ask-resume hands the answer to its session.
 : "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: )?(nightly red|shared red|infra:|watch:|limit:|(nudge|escalate) STALLED)}"
-# Lines due wait at most DEBOUNCE_MIN for a pass, so 120 is two of those and room for a late timer.
-: "${FLEET_SHEPHERD_STUCK_MIN:=120}" # lines due and no pass started this long: stuck
+# An urgent line starts a pass within a run or two, so 60 is a fault; only a line the debounce can
+# hold gets DEBOUNCE_MIN on top (stuck_min).
+: "${FLEET_SHEPHERD_STUCK_MIN:=60}" # lines due and no pass started this long: stuck
 # A queue session's budget, by its item's #size/ tag; unsized is most items. A budget is a
 # checkpoint, not a wall (Ken, 2026-11-05: development comes first): see budget_sample.
 : "${FLEET_SHEPHERD_BUDGET_S:=12}" "${FLEET_SHEPHERD_BUDGET_M:=25}" "${FLEET_SHEPHERD_BUDGET_L:=50}"
@@ -775,7 +776,7 @@ receipts() {
     if [ -z "$early" ] && [ -n "$handed" ]; then
       owe=1
       owed+="unhandled: $line"$'\n'
-      if [ $(( (now - handed) / 60 )) -ge "$FLEET_SHEPHERD_UNHANDLED_MIN" ] && ! grep -qxF -- "$key" "$PAGED"; then
+      if [ $(( (now - handed) / 60 )) -ge "$(unhandled_min "$line")" ] && ! grep -qxF -- "$key" "$PAGED"; then
         # A session's due line is cmd_due's "<verb> <BUCKET>: <server>/<session>:<window> ...",
         # so its target is where the page points; other lines (pace, infra) point nowhere.
         ref=""
@@ -800,7 +801,7 @@ receipts() {
   printf '%s' "$rows" > "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due)
   if [ -n "$owed" ]; then
     # A line the debounce holds is waiting its turn, so that check is not one more in the streak.
-    if ! no_pass_why "$owed" >/dev/null; then
+    if ! no_pass_why "$owed$out" >/dev/null; then
       seen="$(cat "$UNHANDLED" 2>/dev/null)"
       echo $(( ${seen//[!0-9]/} + 1 )) > "$UNHANDLED"
     fi
@@ -1261,6 +1262,18 @@ replace_pass() {
   sd+="${sd:+; }${scored#*$'\t'}"
 }
 
+# unhandled_min <line> -> minutes a handed line may go unanswered before it pages.
+unhandled_min() {
+  if grep -qE -- "$FLEET_SHEPHERD_URGENT_RE" <<<"$1"; then echo "$FLEET_SHEPHERD_UNHANDLED_MIN"
+  else echo $(( FLEET_SHEPHERD_UNHANDLED_MIN + FLEET_SHEPHERD_DEBOUNCE_MIN )); fi
+}
+
+# stuck_min -> minutes with lines due and no pass before the shepherd reads as stuck.
+stuck_min() {
+  if cut -f4 "$DUE_LAST" 2>/dev/null | grep -E -- "$FLEET_SHEPHERD_URGENT_RE" >/dev/null; then echo "$FLEET_SHEPHERD_STUCK_MIN"
+  else echo $(( FLEET_SHEPHERD_STUCK_MIN + FLEET_SHEPHERD_DEBOUNCE_MIN )); fi
+}
+
 # no_pass_why <due> -> why this run starts no pass; exit 1 when it should start one. Nothing due
 # starts none; something due starts one once FLEET_SHEPHERD_DEBOUNCE_MIN has passed since the last
 # pass started, or at once for a line FLEET_SHEPHERD_URGENT_RE matches.
@@ -1429,7 +1442,7 @@ cmd_stats() {
       --argjson skipped "$(lines "$SKIPPED")" \
       --argjson paged "$(lines "$PAGED")" \
       --argjson passes "$(awk -F'\t' -v c="$(date -u -d '24 hours ago' '+%F %H:%M')" '$1 >= c' "$PASSES" 2>/dev/null | grep -c .)" \
-      --argjson stuckmin "$FLEET_SHEPHERD_STUCK_MIN" '
+      --argjson stuckmin "$(stuck_min)" '
       (split("\n") | map(select(length > 0))) as $v
       | def n(w): $v | map(select(. == w)) | length;
       def nul: if . == "" then null else . end;
