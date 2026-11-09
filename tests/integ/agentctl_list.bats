@@ -166,6 +166,15 @@ skill_fixture() {
   assert_line '| alpha | observe | `daily` | - | - | - | none | purpose of alpha |'
 }
 
+@test "an AUTOSTART or MODEL in the caller's environment is not inherited by a conf that sets none" {
+  printf 'NAME=caller\nKIND=call\nLANE=learn\nROLE=judge\nDESCRIPTION=c\nEFFECT=none\n' > "$HOME/.config/agentctl/agents/caller.conf"
+  AUTOSTART=yes SCHEDULE=daily MODEL=leaked run "$AGENTCTL_BIN" list --md
+  assert_success
+  refute_output --partial 'invalid conf'
+  refute_output --partial 'KIND=call is started by its caller'
+  refute_output --partial 'leaked'
+}
+
 @test "agentctl skill prints the conf's SKILL, and --dangling lists the ones that resolve to nothing" {
   skill_fixture
   sed -i '/^NAME=/a SKILL=dream' "$HOME/.config/agentctl/agents/alpha.conf"
