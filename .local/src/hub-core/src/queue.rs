@@ -349,26 +349,7 @@ impl Item {
     /// The PR as `agent-land` records it (`owner/repo#N`; older items carry a bare number or a
     /// URL): the label a row prints and the page it links to, when the ledger names the repo.
     pub fn pr_link(&self) -> Option<(String, Option<String>)> {
-        let pr = self.pr.as_deref()?.trim();
-        if pr.is_empty() {
-            return None;
-        }
-        if pr.starts_with("https://") || pr.starts_with("http://") {
-            let n = pr.trim_end_matches('/').rsplit('/').next().unwrap_or(pr);
-            return Some((format!("#{n}"), Some(pr.into())));
-        }
-        match pr.split_once('#') {
-            Some((repo, n))
-                if !repo.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) =>
-            {
-                let short = repo.rsplit('/').next().unwrap_or(repo);
-                Some((
-                    format!("{short}#{n}"),
-                    Some(format!("https://github.com/{repo}/pull/{n}")),
-                ))
-            }
-            _ => Some((format!("#{}", pr.trim_start_matches('#')), None)),
-        }
+        pr_link_of(self.pr.as_deref()?)
     }
 
     /// A done row's PR in words, the same on both surfaces: `PR r#7 merged`, or `merge not
@@ -663,6 +644,30 @@ fn argv(args: &[&str]) -> Vec<String> {
         .chain(args.iter().copied())
         .map(String::from)
         .collect()
+}
+
+/// One PR as the ledger writes it: the label a row prints and its page, when the repo is named.
+pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
+    let pr = pr.trim();
+    if pr.is_empty() {
+        return None;
+    }
+    if pr.starts_with("https://") || pr.starts_with("http://") {
+        let n = pr.trim_end_matches('/').rsplit('/').next().unwrap_or(pr);
+        return Some((format!("#{n}"), Some(pr.into())));
+    }
+    match pr.split_once('#') {
+        Some((repo, n))
+            if !repo.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            let short = repo.rsplit('/').next().unwrap_or(repo);
+            Some((
+                format!("{short}#{n}"),
+                Some(format!("https://github.com/{repo}/pull/{n}")),
+            ))
+        }
+        _ => Some((format!("#{}", pr.trim_start_matches('#')), None)),
+    }
 }
 
 /// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
@@ -1067,7 +1072,10 @@ pub fn parse_candidates(jsonl: &str) -> Candidates {
 pub fn candidates(path: &std::path::Path) -> Result<Candidates, String> {
     let body = std::fs::read_to_string(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            format!("no snapshot yet at {}, the next dispatch pass writes one", path.display())
+            format!(
+                "no snapshot yet at {}, the next dispatch pass writes one",
+                path.display()
+            )
         }
         _ => format!("{}: {e}", path.display()),
     })?;

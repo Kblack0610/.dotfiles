@@ -215,6 +215,8 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .board h2.sec { max-width: 1200px; display: flex; gap: 10px; align-items: baseline; margin-top: 18px; }
 /* A table's state chips (static/table.js) and a muted mono time. */
 .fseg { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.tdays { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.tdate { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .fseg .n { font: var(--fs-xs) var(--mono); opacity: .75; }
 .ft { font: var(--fs-sm) var(--mono); color: var(--muted); }
 .muted { color: var(--muted); font-weight: normal; }
@@ -411,7 +413,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest] { display: block; flex: 0 0 100%; font-size: 12px; }
   .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest]::before { content: attr(data-label) ": "; color: var(--muted); }
   .tbl.tphone > * > tr:not([data-phone]), .tbl.tphone > * > tr:not([data-phone]) > td { display: block; white-space: normal; overflow-wrap: anywhere; }
-  .seg button, .tsort, .bfilter select { min-height: 40px; }
+  .seg button, .tsort, .bfilter select, .tdate { min-height: 40px; }
   .board { padding: 12px; }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }

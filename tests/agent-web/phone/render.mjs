@@ -30,7 +30,7 @@ const TABS = [
   { tab: "board", row: `#board tr.jr` },
   { tab: "sessions", row: `#scroll tr.click` },
   { tab: "infra", row: `#jobs tr.jr` },
-  { tab: "log", row: `#actions ${DATA_ROW}`, open: "sec-actions" },
+  { tab: "log", row: `#log-work ${DATA_ROW}` },
   { tab: "fleet", row: `#fleet tr.wr` },
   { tab: "schedules", row: `#schedules tr.jr` },
   { tab: "costs", row: `#costs-body ${DATA_ROW}` },
@@ -111,7 +111,8 @@ async function wire(context, page, { index, csp, roles }, seen) {
 // Runs in the page. Every width is against the viewport constant: a phone zooms out to fit a page
 // that is too wide, which grows innerWidth to match and would read as no overflow.
 function measure({ width, row: selector }) {
-  const shown = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  // A closed fold keeps its boxes in layout (content-visibility), so it is ruled out by name.
+  const shown = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !e.closest("details:not([open])"); };
   const scrollBox = (e) => {
     for (let p = e.parentElement; p; p = p.parentElement) if (["auto", "scroll"].includes(getComputedStyle(p).overflowX)) return p;
     return e.parentElement;

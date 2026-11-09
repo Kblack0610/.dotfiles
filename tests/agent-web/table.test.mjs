@@ -164,3 +164,31 @@ test("with the sort dropdown in use only what is around it repaints", () => {
   assert.equal(box("tt").innerHTML, "the bar in use");
   assert.match(box("tt-body").innerHTML, /rows y/);
 });
+
+const dayTarget = (attrs, tag = "BUTTON") => ({ tagName: tag, dataset: attrs, closest: (sel) => { const k = /^\[data-(.*)\]$/.exec(sel)?.[1].replace(/-(.)/g, (m, c) => c.toUpperCase()); return k in attrs ? { dataset: attrs } : null; } });
+
+test("the day control marks the window on, shows a picked date and escapes what it draws", () => {
+  ctx.a = { key: "day", on: "2026-11-03", windows: [["today", "Today"], ["", "7d"]], date: true };
+  const picked = run("tblDays(a)");
+  assert.match(picked, /<button class="" data-twin="day" data-tval="today">Today<\/button>/);
+  assert.match(picked, /<input type="date" class="tdate" data-twin="day" value="2026-11-03"/);
+  ctx.a = { key: "day", on: "", windows: [["", "7d"]], date: true };
+  assert.match(run("tblDays(a)"), /class="on" data-twin="day" data-tval="">7d/);
+  assert.match(run("tblDays(a)"), /class="tdate" data-twin="day" value=""/, "a window is no date");
+  ctx.a = { key: "day", on: "<x>", windows: [], date: true };
+  assert.doesNotMatch(run("tblDays(a)"), /<x>/);
+  ctx.a = { key: "hours", on: "", windows: [["", "24h"]] };
+  assert.doesNotMatch(run("tblDays(a)"), /tdate/, "no date asked, no picker");
+});
+
+test("a window click and a picked date each patch the control's one key; a blank window clears it", () => {
+  ctx.ev = (type, t, value) => ({ type, target: Object.assign(t, { value }) });
+  const patch = (type, t, value) => { ctx.e = ctx.ev(type, t, value); return JSON.parse(run("JSON.stringify(tblPatch(e))")); };
+  assert.deepEqual(patch("click", dayTarget({ twin: "day", tval: "30d" })), { day: "30d" });
+  assert.deepEqual(patch("click", dayTarget({ twin: "day", tval: "" })), { day: "" });
+  assert.deepEqual(patch("change", dayTarget({ twin: "day" }, "INPUT"), "2026-11-03"), { day: "2026-11-03" });
+  ctx.b = dayTarget({ twin: "day", tval: "30d" });
+  ctx.i = dayTarget({ twin: "day" }, "INPUT");
+  assert.equal(run("tblDropdown(b)"), false, "a window is a button, nothing to let go of");
+  assert.equal(run("tblDropdown(i)"), true);
+});

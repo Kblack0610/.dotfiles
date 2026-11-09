@@ -162,7 +162,7 @@ impl Tab {
     }
 }
 
-/// Log's folded sections, their keys and headings, in the page's order after the day and its
+/// Log's folded sections, their keys and headings, in the page's order after Work, the day and its
 /// history (hub_core::layout's Log sections; `log_folds_are_the_layout` checks).
 const FOLDS: [(&str, char, &str); 6] = [
     ("actions", 'a', "ACTIONS"),
@@ -172,6 +172,20 @@ const FOLDS: [(&str, char, &str); 6] = [
     ("forecast", 'f', "FORECAST"),
     ("ranked", 'w', "RANKED SESSIONS"),
 ];
+
+/// A Log table's keys. Esc or Backspace with nothing to clear gives the keys back to Log; a key
+/// that is not the table's is Log's, so `n` still jumps and `a` still folds.
+fn log_table_key<R: hub_core::table::Row>(t: &mut DataTable, has: &mut bool, k: KeyEvent) -> bool {
+    if t.is_default() && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
+        *has = false;
+        return true;
+    }
+    if t.typing.is_none() && k.code == KeyCode::Esc {
+        t.clear();
+        return true;
+    }
+    t.key::<R>(k.code) != Took::No
+}
 
 /// How many job rows Infra's Jobs section shows; Enter opens the whole table.
 const JOBS_SHOWN: usize = 8;
@@ -334,6 +348,8 @@ pub enum Msg {
     Pipeline(Result<Option<hub_core::pipeline::Pipeline>, String>),
     /// The machinery's actions over the last `logtab::ACTIONS_HOURS`, for Log's Actions section.
     Actions(Box<hub_core::actions::Gathered>),
+    /// Log's Work table, every project's done and not done.
+    Work(Box<hub_core::worklog::Gathered>),
     /// A day's note through `notes show --json` (hub_core::focus), or why it failed.
     Focus(Box<Result<hub_core::focus::View, String>>),
     /// The outbox and today's intake steps (hub_core::outbox), or why the read failed.
@@ -472,6 +488,14 @@ pub struct App {
     pub log_open: Vec<&'static str>,
     /// Which of `ASK_FILTERS` the answer judge's verdict list shows.
     pub ask_filter: usize,
+    /// Log's Work table; None until Log is first read.
+    pub work: Option<hub_core::worklog::Gathered>,
+    /// The view of Log's Work table.
+    pub work_table: DataTable,
+    /// Which of `logtab::WORK_WINDOWS` the Work table keeps, when no past day is open.
+    work_window: usize,
+    /// The Work table has the keys.
+    log_work: bool,
     /// Log's Actions section; None until it is first opened.
     pub actions: Option<hub_core::actions::Gathered>,
     /// The view of Log's Actions table.
@@ -508,6 +532,7 @@ pub struct App {
     costs_read: Read,
     costs_at: Option<std::time::Instant>,
     actions_read: Read,
+    work_read: Read,
     fleet_read: Read,
     fleet_runner_read: Read,
     pipeline_read: Read,
@@ -590,6 +615,10 @@ impl App {
             ask_filter: 0,
             actions: None,
             actions_table: DataTable::default(),
+            work: None,
+            work_table: DataTable::default(),
+            work_window: 0,
+            log_work: false,
             log_actions: false,
             sections: vec![],
             seek: None,
@@ -613,6 +642,7 @@ impl App {
             costs_read: Read::default(),
             costs_at: None,
             actions_read: Read::default(),
+            work_read: Read::default(),
             fleet_read: Read::default(),
             fleet_runner_read: Read::default(),
             pipeline_read: Read::default(),
@@ -808,8 +838,21 @@ impl App {
         }
     }
 
-    /// Log reads only what its open folds show (the day and changes come with the board files).
+    /// The Work table loops over the queue's item files, so it reads on a worker, as Actions does.
+    pub fn read_work(&mut self) {
+        if self.work_read.want() {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let g = hub_core::worklog::read(&hub_core::session_actions::System);
+                let _ = tx.send(Msg::Work(Box::new(g)));
+            });
+        }
+    }
+
+    /// Log reads Work and only what its open folds show (the day and changes come with the board
+    /// files).
     fn read_log_folds(&mut self) {
+        self.read_work();
         for name in self.log_open.clone() {
             match name {
                 "actions" => self.read_actions(),
@@ -1487,6 +1530,12 @@ impl App {
                     self.read_actions();
                 }
             }
+            Msg::Work(g) => {
+                self.work = Some(*g);
+                if self.work_read.done() {
+                    self.read_work();
+                }
+            }
             Msg::Focus(v) => {
                 self.focus = Some(*v);
                 if self.focus_read.done() {
@@ -1961,6 +2010,7 @@ impl App {
         self.infra_jobs = false;
         self.log_days = false;
         self.log_actions = false;
+        self.log_work = false;
         self.seek = None;
         if t == Tab::Log {
             self.read_log_folds();
@@ -2196,16 +2246,30 @@ impl App {
             }
             return self.history_key(k);
         }
+        if self.log_work && self.work_key(k) {
+            return true;
+        }
         if self.log_actions && self.actions_key(k) {
             return true;
         }
         match k.code {
+            KeyCode::Char('W') => {
+                self.log_actions = false;
+                self.log_work = true;
+                self.seek = Some("work");
+            }
             KeyCode::Enter | KeyCode::Char('/')
-                if !self.log_actions && self.log_open.contains(&"actions") =>
+                if !self.log_actions && !self.log_work && self.log_open.contains(&"actions") =>
             {
+                self.log_work = false;
                 self.log_actions = true;
                 self.seek = Some("actions");
                 return k.code == KeyCode::Enter || self.actions_key(k);
+            }
+            KeyCode::Enter | KeyCode::Char('/') if !self.log_actions && !self.log_work => {
+                self.log_work = true;
+                self.seek = Some("work");
+                return k.code == KeyCode::Enter || self.work_key(k);
             }
             KeyCode::Char('h') => {
                 self.log_days = true;
@@ -2232,19 +2296,26 @@ impl App {
         true
     }
 
-    /// The Actions table's keys. Esc or Backspace with nothing to clear gives the keys back to
-    /// Log; a key that is not the table's is Log's, so `n` still jumps and `a` still folds.
     fn actions_key(&mut self, k: KeyEvent) -> bool {
-        let t = &mut self.actions_table;
-        if t.is_default() && matches!(k.code, KeyCode::Esc | KeyCode::Backspace) {
-            self.log_actions = false;
+        log_table_key::<hub_core::actions::Action>(
+            &mut self.actions_table,
+            &mut self.log_actions,
+            k,
+        )
+    }
+
+    /// The Work table's keys, and `d` to step its window. A past day in the stepper is the
+    /// window while it is picked, so the first `d` goes back to the window it replaced.
+    fn work_key(&mut self, k: KeyEvent) -> bool {
+        if self.work_table.typing.is_none() && k.code == KeyCode::Char('d') {
+            if self.day.is_some() {
+                self.open_day(None);
+            } else {
+                self.work_window = (self.work_window + 1) % logtab::WORK_WINDOWS.len();
+            }
             return true;
         }
-        if t.typing.is_none() && k.code == KeyCode::Esc {
-            t.clear();
-            return true;
-        }
-        t.key::<hub_core::actions::Action>(k.code) != Took::No
+        log_table_key::<hub_core::worklog::Work>(&mut self.work_table, &mut self.log_work, k)
     }
 
     /// The day's keys on Log: `[` and `]` step a day, n and N jump between sections.
@@ -2897,9 +2968,15 @@ impl App {
                 "n/N section  Enter jobs table  j/k PgUp/PgDn ^d/^u scroll  r refresh  o Grafana  {tabs} tabs  q quit"
             ),
             Tab::Infra if self.jv.table.typing.is_some() => QUERY_HINT.into(),
-            Tab::Log if self.log_actions && self.actions_table.typing.is_some() => {
+            Tab::Log
+                if (self.log_actions && self.actions_table.typing.is_some())
+                    || (self.log_work && self.work_table.typing.is_some()) =>
+            {
                 QUERY_HINT.into()
             }
+            Tab::Log if self.log_work => format!(
+                "/ query  f state  s sort  S asc/desc  x clear  d window  Esc back  j/k PgUp/PgDn ^d/^u scroll  {tabs} tabs  q quit"
+            ),
             Tab::Log if self.log_actions => format!(
                 "/ query  f state  s sort  S asc/desc  x clear  Esc back  j/k PgUp/PgDn ^d/^u scroll  {tabs} tabs  q quit"
             ),
@@ -3223,7 +3300,48 @@ impl App {
         (lines, sections)
     }
 
-    /// Log: the day, then its history and each `FOLDS` section, a heading with its count when
+    /// Log's Work table under its heading: a past day in the stepper is its window, as on the web,
+    /// and `d` picks among the rest. The whole list only while it has the keys.
+    fn work_lines(&self, w: usize) -> Vec<Line<'static>> {
+        let asked = self
+            .day
+            .as_deref()
+            .unwrap_or(logtab::WORK_WINDOWS[self.work_window]);
+        let keys = if self.log_work {
+            "d window, Esc back"
+        } else {
+            "W filters it"
+        };
+        let title = format!(
+            "WORK ({})  {keys}",
+            if asked.is_empty() { "7d" } else { asked }
+        );
+        let mut l = vec![crate::fit::clip_line(Line::styled(title, self.p.head()), w)];
+        let Some(g) = &self.work else {
+            l.push(Line::styled("  Reading the work...", self.p.dim()));
+            return l;
+        };
+        let today = chrono::Local::now().date_naive();
+        let cap = if self.log_work {
+            hub_core::worklog::SHOWN
+        } else {
+            hub_core::layout::FOLD_ROWS
+        };
+        let day = today.format("%Y-%m-%d").to_string();
+        let window = hub_core::worklog::Window::parse(asked, today);
+        l.extend(logtab::work(
+            g,
+            &window,
+            &self.work_table,
+            cap,
+            &day,
+            self.p,
+            w,
+        ));
+        l
+    }
+
+    /// Log: Work, the day, then its history and each `FOLDS` section, a heading with its count when
     /// it is known and, when open, its rows; the section names are hub_core::layout's.
     fn log_page(
         &self,
@@ -3233,9 +3351,17 @@ impl App {
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let head = |t: String| crate::fit::clip_line(Line::styled(t, self.p.head()), w);
         let pg = day::today(b.rec.as_ref(), self.p, now, w);
-        let mut at: Vec<(&'static str, usize)> = vec![("day", 0)];
-        at.extend(pg.sections.into_iter().filter(|s| *s > 0).map(|s| ("", s)));
-        let mut l = pg.lines;
+        let mut l = self.work_lines(w);
+        l.push(Line::raw(""));
+        let base = l.len();
+        let mut at: Vec<(&'static str, usize)> = vec![("work", 0), ("day", base)];
+        at.extend(
+            pg.sections
+                .into_iter()
+                .filter(|s| *s > 0)
+                .map(|s| ("", s + base)),
+        );
+        l.extend(pg.lines);
         l.push(Line::raw(""));
         at.push(("history", l.len()));
         l.push(head(format!(
@@ -4169,7 +4295,7 @@ mod tests {
     #[test]
     fn log_folds_are_the_layout() {
         let log = hub_core::layout::resolve("log").unwrap();
-        let mut want = vec!["day", "history"];
+        let mut want = vec!["work", "day", "history"];
         want.extend(FOLDS.iter().map(|f| f.0));
         assert_eq!(log.sections, want.as_slice());
     }
@@ -4248,6 +4374,83 @@ mod tests {
             a.log_open.contains(&"forecast"),
             "leaving the tab left the table"
         );
+    }
+
+    #[test]
+    fn work_keeps_its_keys_with_actions_open_and_d_leaves_a_past_day() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = log_app(tx);
+        a.log_open.push("actions");
+        a.log_work = true;
+        a.log_key(KeyEvent::from(KeyCode::Enter));
+        assert!(a.log_work && !a.log_actions, "Enter stays in Work");
+        a.day = Some("2026-11-01".into());
+        a.log_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!((a.day.as_deref(), a.work_window), (None, 0));
+        a.log_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(a.work_window, 1);
+    }
+
+    #[test]
+    fn logs_work_table_leads_takes_its_keys_and_steps_its_window() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut a = log_app(tx);
+        assert!(screen(&mut a, 160, 60).contains("Reading the work..."));
+        let today = chrono::Local::now().format("%Y-%m-%dT09:30").to_string();
+        let row = |state, what: &str, when: String| hub_core::worklog::Work {
+            state,
+            when: Some(when),
+            project: "notes".into(),
+            what: what.into(),
+            kind: None,
+            pr: None,
+            url: None,
+            cost: None,
+            slug: None,
+            unproven: false,
+        };
+        a.handle(Msg::Work(Box::new(hub_core::worklog::Gathered {
+            rows: vec![
+                row("failed", "row broke", today.clone()),
+                row("done", "row shipped", today),
+                row("done", "row ancient", "2020-01-02T09:30".into()),
+            ],
+            ..Default::default()
+        })));
+        let s = screen(&mut a, 160, 60);
+        assert!(s.contains("WORK (7d)  W filters it"), "{s}");
+        assert!(s.contains("row broke") && !s.contains("row ancient"), "{s}");
+        assert!(
+            s.find("WORK (7d)").unwrap() < s.find("HISTORY (").unwrap(),
+            "Work leads the page: {s}"
+        );
+        a.handle(key('W'));
+        a.handle(key('f'));
+        assert!(
+            a.log_open.is_empty(),
+            "f is the chip, not the Forecast fold"
+        );
+        assert_eq!(a.work_table.view.state, "done");
+        a.handle(key('d'));
+        a.handle(key('d'));
+        a.handle(key('d'));
+        let s = screen(&mut a, 160, 60);
+        assert!(s.contains("WORK (all)  d window, Esc back"), "{s}");
+        assert!(s.contains("row ancient") && !s.contains("row broke"), "{s}");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(a.work_table.is_default(), "the first Esc clears the view");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        a.handle(key('f'));
+        assert!(
+            a.log_open.contains(&"forecast"),
+            "the keys went back to Log"
+        );
+        a.log_open.clear();
+        a.handle(key('/'));
+        a.handle(key('q'));
+        assert!(!a.quit, "with Actions folded, / is Work's query");
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.work_table.view.q, "q");
     }
 
     #[test]

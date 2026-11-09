@@ -5,22 +5,29 @@
 // actions`. The list is the shared table (table.js): the server filters and sorts by the view in
 // Log's URL query, which also holds the window (`#log?q=actor:shepherd&hours=72`).
 
-const ACTION_WINDOWS = [[12, "12h"], [24, "24h"], [72, "3d"], [168, "7d"]];
+const ACTION_WINDOWS = [["12", "12h"], ["", "24h"], ["72", "3d"], ["168", "7d"]];
 const ACTION_HOURS = 24;
 // `read` is the view the data answers; `all` shows past the first LOG_ROWS.
 const ast = tblTab({
   tab: "log", id: "actions", api: "/api/actions", hint: "search, or actor:shepherd verb:nudge -actor:dispatch",
   wait: "Loading.", state: { read: null, all: false },
-  params: (p, t) => { p.set("hours", actionHours()); t.asked = st.views.log || ""; }, got: (t) => { t.read = t.asked; },
+  params: (p, t) => { p.set("hours", actionHours()); t.asked = actionsView(); }, got: (t) => { t.read = t.asked; },
+  days: () => ({ key: "hours", on: actionHours() === ACTION_HOURS ? "" : String(actionHours()), windows: ACTION_WINDOWS }),
   head: (t) => actionsHead(t.data), body: (t) => actionsBody(t.data),
 });
 
 // The URL's window, when it is one of the buttons: the head says what the server was asked for.
 function actionHours() {
-  const h = Number(new URLSearchParams(st.views.log || "").get("hours"));
-  return ACTION_WINDOWS.some(([w]) => w === h) ? h : ACTION_HOURS;
+  const h = new URLSearchParams(st.views.log || "").get("hours");
+  return h && ACTION_WINDOWS.some(([w]) => w === h) ? Number(h) : ACTION_HOURS;
 }
 
+// This table's keys of Log's URL query: the Work table shares that query.
+function actionsView() {
+  const v = tblParams(st.views.log), h = new URLSearchParams(st.views.log || "").get("hours");
+  if (h) v.set("hours", h);
+  return v.toString();
+}
 
 // Open Log at its Actions section filtered to one actor (and verb), from another tab's link.
 function showActions(actor, verb) {
@@ -40,8 +47,7 @@ function actionsHead(d) {
   const hours = actionHours();
   const newest = d.table.total < inWindow ? `, newest ${d.table.total}` : "";
   const errs = [ast.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
-  return `<div class="bhead"><span>what the machinery did, ${d.table.shown} of ${inWindow} in ${hours}h${newest}</span></div>` +
-    `<div class="seg fseg">` + ACTION_WINDOWS.map(([h, l]) => `<button class="${hours === h ? "on" : ""}" data-hours="${h}">${l}</button>`).join("") + `</div>${errs}`;
+  return `<div class="bhead"><span>what the machinery did, ${d.table.shown} of ${inWindow} in ${hours}h${newest}</span></div>${errs}`;
 }
 
 function actionsBody(d) {
@@ -52,19 +58,13 @@ function actionsBody(d) {
     : `<div class="empty">${d.table.total ? "No action matches." : "Nothing recorded in the window."}</div>`;
 }
 
-$("actions").addEventListener("click", (e) => {
-  const t = e.target;
-  const h = t.closest("[data-hours]");
-  if (h) ast.view({ hours: h.dataset.hours === String(ACTION_HOURS) ? "" : h.dataset.hours });
-});
-
 // The shepherd's log and agent-notify's push "actions"; the dispatch log and the run ledger
 // arrive as "fleet", the queue as "queue".
 const actionsFeed = pushed("log", ["actions", "fleet", "queue"], ast.refresh);
 LOG_PARTS.push({
   show() {
     // A view this page has not read asks the server, and when it came by a link opens its section.
-    const view = st.views.log || "", fresh = ast.read !== view;
+    const view = actionsView(), fresh = ast.read !== view;
     if (fresh && view) $("sec-actions").open = true;
     ast.render();
     actionsFeed.show(fresh);
