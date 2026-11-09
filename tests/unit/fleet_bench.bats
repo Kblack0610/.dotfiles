@@ -24,6 +24,7 @@ setup() {
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
   export BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
+  export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
   export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json"   # nor the real estimator
   export BENCH_RELEASES_CMD=false BENCH_RELEASED_CMD=false   # nor the real release-state: request_to_live_h reads ?
   # nor the real roadmaps, the whole queue or the real plans (fleet-bench epics)
@@ -2448,7 +2449,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   run grep -c '^| output | merged_prs ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output 1
   source "$SUBJECT"
-  BENCH_VITALS='q1=revert_rate q2=sessions,nope' run bench_prom "$T0"
+  BENCH_VITALS='q1=revert_rate q2=sessions,nope' run bench_prom "$T0" '{"steps": []}'
   assert_line 'agent_bench_vital{question="q1",kpi="revert_rate"} 0'
   assert_line 'agent_bench_vital{question="q2",kpi="sessions"} 1'
   assert_line 'agent_bench_vital{question="q2",kpi="nope"} 2'
@@ -2792,10 +2793,47 @@ pipeline_fixture() {
   [ "$(jq '.drift' <<<"$output")" = null ]
 }
 
+@test "pipeline: a step carries the record's problems, and queued says why dispatch stopped" {
+  pipeline_fixture
+  jq -c '(.steps[] | select(.step == "running")) += {problems_n: 1, problems: [{ts: "t", subject: "r1", kind: "failed", why: "died", n: 1}]}' "$RJSON" > "$RJSON.new"
+  mv "$RJSON.new" "$RJSON"
+  export BENCH_STOPPED_CMD="echo {\"line\":\"Dispatch\\u0020stopped\"}"
+  run "$SUBJECT" pipeline --json
+  assert_success
+  run jq -c '[.steps[] | [.step, .problems_n, (.problems | length), .blocked]]' <<<"$output"
+  assert_output '[["inbox",null,0,null],["backlog",null,0,null],["queued",null,0,"Dispatch stopped"],["running",1,1,null],["waiting",null,0,null],["done",null,0,null]]'
+  run "$SUBJECT" pipeline
+  assert_line 'blocked at queued: Dispatch stopped'
+  assert_line 'problems over 24h: running 1'
+}
+
+@test "pipeline: a tick writes the snapshot before the gauges, even with no session progress" {
+  pipeline_fixture
+  source "$SUBJECT"
+  [ ! -s "$PROGRESS" ]
+  publish_window "$T0"
+  run jq -c '[.as_of, (.steps | length)]' "$PIPELINE_SNAPSHOT"
+  assert_output "[$T0,6]"
+}
+
+@test "pipeline: no problems and no stop leave a clean snapshot, and a failed write keeps the last one" {
+  pipeline_fixture
+  source "$SUBJECT"
+  publish_window "$T0"
+  run jq -c '[.steps[] | select((.problems | length) > 0 or .blocked)] | length' "$PIPELINE_SNAPSHOT"
+  assert_output 0
+  before=$(cat "$PIPELINE_SNAPSHOT")
+  chmod a-w "${PIPELINE_SNAPSHOT%/*}"
+  run pipeline_snapshot '{"new":true}'
+  chmod u+w "${PIPELINE_SNAPSHOT%/*}"
+  assert_failure
+  [ "$(cat "$PIPELINE_SNAPSHOT")" = "$before" ]
+}
+
 @test "pipeline: the gauges carry WIP, age, moves, dwell and drift per step" {
   pipeline_fixture
   source "$SUBJECT"
-  run bench_prom "$T0"
+  run bench_prom "$T0" "$(pipeline_json "$T0")"
   assert_success
   assert_line 'agent_chain_wip{step="backlog"} 1'
   assert_line 'agent_chain_age_minutes{step="queued",quantile="p90"} 120'
@@ -3034,7 +3072,7 @@ check_fixture() {
   kpi_setup; kpi_fixture; check_fixture
   "$SUBJECT" retro
   source "$SUBJECT"
-  run bench_prom "$T0"
+  run bench_prom "$T0" '{"steps": []}'
   assert_success
   assert_line 'agent_bench_improve{state="live"} 3'
   assert_line 'agent_bench_improve{state="improved"} 2'

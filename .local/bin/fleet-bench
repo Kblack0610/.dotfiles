@@ -244,6 +244,8 @@ set -uo pipefail
 : "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
 : "${BENCH_STEPS_CMD:=notes log --steps --json}"   # the record replayed per step: flows, dwell, the items it holds
 : "${BENCH_INBOX_CMD:=inbox_lines}"                # how many lines wait untriaged
+: "${BENCH_STOPPED_CMD:=fleet-dispatch stopped --json}"   # why nothing is leaving the queue, when dispatch has stopped
+: "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
 : "${BENCH_LEAD_DAYS:=28}"            # request_to_live_h: days of done items read back, so a merge released this week counts
 : "${BENCH_FLEET_COST_CMD:=agent-usage fleet-cost --json}"
@@ -764,9 +766,8 @@ window_stats() {
 # the ETAs scored in the window (no series when none was), and CI reds count the PRs merged
 # in the window by a session of that project. The KPIs ride along so a reader never runs `kpi`.
 bench_prom() {
-  local t="$1" kpis pl
+  local t="$1" pl="$2" kpis
   kpis=$(kpi_json "$t" "$(ledger_counts)") || kpis='{}'
-  pl=$(pipeline_json "$t") || pl='{"steps": []}'
   jq -rn --arg win "$BENCH_WINDOW_H" --argjson pl "$pl" --slurpfile w <(window_stats "$t") --slurpfile e <(loop_episodes "$t" $((t - LOOP_WINDOW_S))) \
      --slurpfile s <(in_window "$SCORES" done_epoch "$t") --slurpfile c <(ci_window "$t") --argjson k "$kpis" \
      --slurpfile ef <(effect_lines) --arg vitals "$BENCH_VITALS" "$JQ_LIB$IMPROVE_JQ$PROM_JQ$VITALS_JQ"'
@@ -812,10 +813,25 @@ bench_prom() {
         [{}, $pl.drift])'
 }
 
-# publish_window <now>: write bench_prom where node_exporter reads it.
+# pipeline_snapshot <json>: the file the pipeline line reads, renamed into place so no reader
+# sees half of it. A failed write leaves the last one, whose as_of shows its age.
+pipeline_snapshot() {
+  local dir=${PIPELINE_SNAPSHOT%/*} tmp
+  mkdir -p "$dir" && tmp=$(mktemp "$dir/.pipeline.XXXXXX") || return 1
+  if printf '%s\n' "$1" >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$PIPELINE_SNAPSHOT"; then return 0; fi
+  rm -f "$tmp"
+  return 1
+}
+
+# publish_window <now>: one pipeline_json for the snapshot and the gauges, so the line and Grafana
+# cannot disagree, then bench_prom where node_exporter reads it. The snapshot comes first: it does
+# not depend on the session progress the gauges need.
 publish_window() {
+  local pl
+  pl=$(pipeline_json "$1") || pl='{"steps": []}'
+  pipeline_snapshot "$pl" || say "could not write $PIPELINE_SNAPSHOT"
   [ -s "$PROGRESS" ] || return 0
-  prom_textfile fleet_bench.prom bench_prom "$1" || say "could not write fleet_bench.prom"
+  prom_textfile fleet_bench.prom bench_prom "$1" "$pl" || say "could not write fleet_bench.prom"
 }
 
 # outcomes_newest -> the newest session-outcomes line per session_id (its own reader rule)
@@ -1812,14 +1828,15 @@ inbox_lines() {
 # furthest past its step_age_p90_<step>_max in kpi-thresholds, null while every step is inside its
 # bound. A source that cannot be read leaves its numbers null.
 pipeline_json() {
-  local t=$1 items fin board rec inbox lim='{}'
+  local t=$1 items fin board rec inbox stopped lim='{}'
+  stopped=$($BENCH_STOPPED_CMD 2>/dev/null | jq -r '.line // empty' 2>/dev/null)
   items=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || items=null
   fin=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - 86400))" +%F)" 2>/dev/null | jq -sc .) || fin=null
   board=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce '.rows | arrays') || board=null
   rec=$($BENCH_STEPS_CMD 2>/dev/null | jq -ce 'select(.steps | arrays)') || rec=null
   inbox=$($BENCH_INBOX_CMD 2>/dev/null | jq -e 'numbers') || inbox=null
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
-  jq -cn --argjson t "$t" --arg steps "$PIPELINE_STEPS" --argjson lim "$lim" --argjson inbox "$inbox" \
+  jq -cn --argjson t "$t" --arg steps "$PIPELINE_STEPS" --argjson lim "$lim" --argjson inbox "$inbox" --arg stopped "$stopped" \
      --slurpfile a <(printf '%s' "$items") --slurpfile d <(printf '%s' "$fin") \
      --slurpfile b <(printf '%s' "$board") --slurpfile r <(printf '%s' "$rec") '
     def epoch: strings | sub("\\.[0-9]+"; "") | fromdateiso8601? // empty;
@@ -1841,13 +1858,15 @@ pipeline_json() {
        | {step: $s, wip: $w.n, age_p50_min: ($w.ages // [] | pct(50)), age_p90_min: $p90, oldest_min: ($w.ages // [] | max),
           in_1h: $f.in_1h, out_1h: $f.out_1h, in_24h: $f.in_24h, out_24h: $f.out_24h,
           dwell_p50_min: $f.dwell_p50_min, dwell_p90_min: $f.dwell_p90_min, bound: $bound,
-          ratio: (if $bound == null or $bound <= 0 or $p90 == null then null else $p90 / $bound * 100 | round / 100 end)}] as $rows
+          ratio: (if $bound == null or $bound <= 0 or $p90 == null then null else $p90 / $bound * 100 | round / 100 end),
+          problems_n: $f.problems_n, problems: ($f.problems // []),
+          blocked: (if $s == "queued" and $stopped != "" then $stopped else null end)}] as $rows
     | (if $a == null or $r == null then null
        else ($r.steps | map(.step as $s | (.items // [])[] | {key: ., value: $s}) | from_entries) as $rec
          | ($a | map({key: .slug, value: .state}) | from_entries) as $st
          | ([$a[] | select(if $rec[.slug] then $rec[.slug] != .state else (.queued // "") >= ($r.items_since // "~") end)] | length)
            + ([$rec | keys[] | select($st[.] == null)] | length) end) as $drift
-    | {since: $r.since, items_since: $r.items_since, drift: $drift,
+    | {as_of: $t, since: $r.since, items_since: $r.items_since, drift: $drift,
        bottleneck: ($rows | map(select((.ratio // 0) > 1)) | max_by(.ratio) | if . then {step, age_p90_min, bound, ratio} else null end),
        steps: $rows}'
 }
@@ -1866,8 +1885,11 @@ cmd_pipeline() {
     "",
     (.bottleneck | if . then "bottleneck: \(.step), age p90 \(.age_p90_min | m) against a bound of \(.bound | m) (\(.ratio)x)"
                    else "bottleneck: none, every step with a bound is inside it" end),
+    (.steps[] | select(.blocked) | "blocked at \(.step): \(.blocked)"),
     ([.steps[] | select(.in_24h != null and .step != "done" and .in_24h > .out_24h) | "\(.step) +\(.in_24h - .out_24h)"]
       | if length > 0 then "growing over 24h: \(join(", "))" else empty end),
+    ([.steps[] | select((.problems_n // 0) > 0) | "\(.step) \(.problems_n)"]
+      | if length > 0 then "problems over 24h: \(join(", "))" else empty end),
     "drift: \(.drift | c) queue items the record and the queue folders place apart (it sees queue items from \(.items_since // "-"))"' <<<"$json"
 }
 
