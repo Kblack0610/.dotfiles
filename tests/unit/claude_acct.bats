@@ -1218,6 +1218,35 @@ budget() {
   assert_line --regexp '^fleet: 0 live, burn 0/h vs 0\.2/h sustainable'
 }
 
+@test "sources: the textfile publishes the fleet line's own sum, and no burn when no Claude row is read" {
+  # ar-1149: hub-core burn.rs re-summed the rows with its own copy of this filter; it reads these now.
+  src_setup
+  export CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 80 84   # 20 left over 84h: 0.24 an hour
+  rollout 1 0 84    # codex: 99 left, 1.18 an hour, another budget
+  live "" 3
+  live "$ALT" 2     # alt has no usage read: its sessions are live, its burn is not summed
+  rm -f "$XDG_CACHE_HOME/claude-acct/alt.json"
+  mkdir -p "$SANDBOX/prom"
+  "$ACCT" textfile "$SANDBOX/prom"
+  run cat "$SANDBOX/prom/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="alt",kind="claude"} 0'
+  assert_line 'claude_fleet_live_sessions 5'
+  assert_line 'claude_fleet_session_rate_points_per_hour 0.1'
+  assert_line --regexp '^claude_fleet_burn_points_per_hour 0\.3(0000|$)'
+  assert_line --regexp '^claude_fleet_sustain_points_per_hour 0\.238'
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: 5 live, burn 0\.3/h vs 0\.2/h sustainable'
+  # negative control: with no Claude account read, live stays and burn and sustain are not written
+  rm -f "$XDG_CACHE_HOME/claude-acct/main.json" "$HOME/.claude/.credentials.json"
+  "$ACCT" textfile "$SANDBOX/prom"
+  run cat "$SANDBOX/prom/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="main",kind="claude"} 0'
+  assert_line 'claude_fleet_live_sessions 5'
+  refute_line --partial 'claude_fleet_burn'
+  refute_line --partial 'claude_fleet_sustain'
+}
+
 @test "sources: a week whose reset has passed reads as unused" {
   src_setup
   rollout 100 0 -2
