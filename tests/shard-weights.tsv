@@ -159,7 +159,6 @@
 0.1	unit/plan_approved.bats
 4.5	unit/plan_standard.bats
 0.6	unit/post_commit_sync.bats
-2.0	unit/pre_pr_verify.bats
 4.7	unit/project_map_add.bats
 12.3	unit/project_name.bats
 0.7	unit/prom_textfile.bats
