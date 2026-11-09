@@ -1442,6 +1442,37 @@ budget() {
   assert_failure 3
 }
 
+# Reads the shipped sources file on purpose: parallel codex starts drain the Plus 5h window while the
+# week is near empty, so the shipped codex row must carry a live cap.
+@test "sources: the shipped codex row has room for a second live start, not a third" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources"
+  export CLAUDE_ACCT_HARNESSES="$SANDBOX/harnesses.json"
+  echo '{"gateway":{"url":"http://gw.test"},"harnesses":{"codex":{"source":"codex"}}}' > "$CLAUDE_ACCT_HARNESSES"
+  mkdir -p "$HOME/.codex/sessions/2026/11"
+  printf '{"payload":{"type":"token_count","rate_limits":{"plan_type":"plus","primary":{"used_percent":1,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":1,"window_minutes":10080,"resets_at":%s},"rate_limit_reached_type":null}}}\n' \
+    $((NOW + 3600)) $((NOW + 84 * 3600)) > "$HOME/.codex/sessions/2026/11/rollout-a.jsonl"
+  week main 30 84
+  # agent-queue answers only the call source_live makes, with n running codex items
+  queue_running() {
+    printf '#!/usr/bin/env bash\n[[ "$*" == "list --json --state running" ]] || exit 2\nfor i in $(seq 1 %s); do echo "{\\"slug\\":\\"c$i\\",\\"agent\\":\\"codex\\"}"; done\n' "$1" > "$SANDBOX/bin/agent-queue"
+    chmod +x "$SANDBOX/bin/agent-queue"
+  }
+  # one live codex item: the second start has room
+  queue_running 1
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .max_live <<<"$output")" = 2 ]
+  [ "$(field codex .live <<<"$output")" = 1 ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+  # two live: the third waits, with weeks of allowance left
+  queue_running 2
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .live <<<"$output")" = 2 ]
+  [ "$(field codex .room.ok <<<"$output")" = false ]
+  [ "$(field codex '.room.reasons | index("max_live") != null' <<<"$output")" = true ]
+}
+
 # refused <key> <message>: what the gateway answers that key's free budget probe
 refused() { printf '{"error":{"message":"%s","type":"budget_exceeded"}}\n' "$2" > "$SANDBOX/gw/refused.$1"; }
 
