@@ -4508,15 +4508,15 @@ canary_dream() {
   jq -Rnc --arg since "$since" "$JQ_LIB"'
     [inputs | split("\t") | select(length >= 8 and .[0] >= $since)
      | {model: .[2], cost: ((.[4] | tonumber?) // null), verdict: .[5],
-        lessons: (.[6] | tonumber), refused: (.[7] | tonumber)}]
+        lessons: ((.[6] | tonumber?) // 0), refused: ((.[7] | tonumber?) // 0)}]
     | group_by(.model) | map(
         (map(.cost | select(. != null))) as $c
-        | {model: .[0].model, sweeps: length, cost_per_sweep: ratio($c | add // 0; $c | length),
+        | {model: .[0].model, sweeps: length, costed: ($c | length), cost_per_sweep: ratio($c | add // 0; $c | length),
            lessons_per_sweep: ratio(map(.lessons) | add; length),
            refused_share: ratio(map(select(.refused > 0)) | length; length),
            stalled_share: ratio(map(select(.verdict == "FAILED" or .verdict == "STALLED")) | length; length)}) | .[]' "$DREAM_TRIAL" |
     if [ -n "$json" ]; then cat; else
-      jq -r '"\(.model)\t\(.sweeps) sweeps\t$\(.cost_per_sweep // "-")/sweep\tlessons/sweep \(.lessons_per_sweep // "-")\trefused \(.refused_share // "-")\tfailed or stalled \(.stalled_share // "-")"'
+      jq -r '"\(.model)\t\(.sweeps) sweeps\t$\(.cost_per_sweep // "-")/sweep over \(.costed)\tlessons/sweep \(.lessons_per_sweep // "-")\trefused \(.refused_share // "-")\tfailed or stalled \(.stalled_share // "-")"'
     fi
 }
 

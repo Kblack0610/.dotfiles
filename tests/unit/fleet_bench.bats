@@ -5006,13 +5006,13 @@ start_rows() {
     $'2026-11-18\ta\topus\ts1\t2.0\tWORKED\t2\t0' \
     $'2026-11-19\tb\topus\ts2\t1.0\tSTALLED\t0\t1' \
     $'2026-11-19\tc\tsonnet\ts3\t0.5\tWORKED\t1\t0' \
-    $'2026-11-19\td\tsonnet\t-\t-\tFAILED\t0\t0' \
+    $'2026-11-19\td\tsonnet\t-\t-\tFAILED\t-\t-' \
     $'2026-10-01\te\tsonnet\ts0\t9\tWORKED\t9\t9' > "$DREAM_TRIAL_FILE"
   run "$SUBJECT" canary dream --json
   assert_success
-  assert_equal "$(jq -sc . <<<"$output")" '[{"model":"opus","sweeps":2,"cost_per_sweep":1.5,"lessons_per_sweep":1,"refused_share":0.5,"stalled_share":0.5},{"model":"sonnet","sweeps":2,"cost_per_sweep":0.5,"lessons_per_sweep":0.5,"refused_share":0,"stalled_share":0.5}]'
+  assert_equal "$(jq -sc . <<<"$output")" '[{"model":"opus","sweeps":2,"costed":2,"cost_per_sweep":1.5,"lessons_per_sweep":1,"refused_share":0.5,"stalled_share":0.5},{"model":"sonnet","sweeps":2,"costed":1,"cost_per_sweep":0.5,"lessons_per_sweep":0.5,"refused_share":0,"stalled_share":0.5}]'
   run "$SUBJECT" canary dream
-  assert_line $'sonnet\t2 sweeps\t$0.5/sweep\tlessons/sweep 0.5\trefused 0\tfailed or stalled 0.5'
+  assert_line $'sonnet\t2 sweeps\t$0.5/sweep over 1\tlessons/sweep 0.5\trefused 0\tfailed or stalled 0.5'
   # Negative control: the old row is outside 14 days and counts only when asked
   run "$SUBJECT" canary dream --days 90 --json
   assert_equal "$(jq -s 'map(select(.model == "sonnet")) | .[0].sweeps' <<<"$output")" 3
