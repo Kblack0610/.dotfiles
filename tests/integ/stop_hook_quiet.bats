@@ -269,7 +269,7 @@ run_session() {
   cp "$REPO_ROOT/.claude/hooks/stop-post.d/95-wind-down.sh" "$HOOK_DIR/stop-post.d/"
   echo 'target=%1' > "$spin/alpha__old.request"
   touch -d '2 days ago' "$spin/alpha__old.request"
-  echo "target=%2" > "$spin/aaa.request"
+  echo 'target=%2' > "$spin/aaa.request"
   dirty
   check red 2
   run_session aaa

@@ -278,7 +278,7 @@ is_session_id() {
 
 # UserPromptSubmit hook: a new prompt cancels this session's pending teardown. A teardown
 # deferred by failing Stop checks otherwise fires at the next clean Stop, even when the
-# human has since started new work. Never blocks a prompt. The leading * also matches a
+# human has since started new work. Never blocks a prompt. Also clears a
 # "<project>__<sid>" file written before the key was the session id alone.
 cmd_disarm() {
   local sid='' payload f removed=0
@@ -288,8 +288,8 @@ cmd_disarm() {
   fi
   sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
   is_session_id "$sid" || return 0
-  rm -f -- "$SPIN_DIR"/*"$sid".fired
-  for f in "$SPIN_DIR"/*"$sid".request; do
+  rm -f -- "$SPIN_DIR/$sid.fired" "$SPIN_DIR"/*__"$sid".fired
+  for f in "$SPIN_DIR/$sid.request" "$SPIN_DIR"/*__"$sid".request; do
     [ -f "$f" ] && rm -f -- "$f" && removed=1
   done
   [ "$removed" = 1 ] && echo "wind-down disarmed: a new prompt arrived; run /wind-down again when this work is done."
