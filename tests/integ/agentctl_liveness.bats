@@ -172,3 +172,16 @@ outcome() {
   assert_success
   assert_line 'agentctl: still running (CRITICAL=yes): beta'
 }
+
+@test "only an EFFECT=none runner can be CRITICAL: a pause must stop model work" {
+  for effect in draft shadow acts; do
+    runner beta 'SCHEDULE=hourly' 'CRITICAL=yes' "EFFECT=$effect"
+    run "$AGENTCTL_BIN" liveness
+    assert_failure
+    assert_output --partial "beta: invalid conf (CRITICAL=yes needs EFFECT=none, not $effect"
+  done
+  # Negative control: the model effects are refused only with CRITICAL=yes.
+  runner beta 'SCHEDULE=hourly' 'EFFECT=acts'
+  run "$AGENTCTL_BIN" liveness
+  assert_success
+}
