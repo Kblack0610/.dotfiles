@@ -186,6 +186,8 @@ pub struct BoardFiles {
     pub asks: PathBuf,
     /// agent-propose's store: a proposal filed or decided re-reads Home's section.
     pub proposals: PathBuf,
+    /// Claude's session files: a dialog opening or answered changes NEEDS YOU at once.
+    pub sessions: PathBuf,
     pub shepherd: PathBuf,
     pub daylog: PathBuf,
     /// The nightly token snapshots behind Costs' Where the tokens go.
@@ -204,6 +206,7 @@ impl BoardFiles {
             state: boards::fleet_state(),
             asks: boards::asks_dir(),
             proposals: boards::proposals_dir(),
+            sessions: boards::claude_sessions_dir(),
             shepherd: boards::shepherd_dir(),
             daylog: boards::daylog_dir(),
             tokens: boards::token_usage_dir(),
@@ -219,6 +222,10 @@ impl BoardFiles {
     pub fn rundowns(&self) -> PathBuf {
         self.shepherd.join("rundowns")
     }
+    pub fn is_session_file(&self, p: &Path) -> bool {
+        p.parent() == Some(self.sessions.as_path()) && p.extension().is_some_and(|e| e == "json")
+    }
+
     pub fn is_proposal_file(&self, p: &Path) -> bool {
         hub_core::boards::is_proposal_file(&self.proposals, p)
     }
@@ -279,6 +286,8 @@ pub enum Msg {
     Tick,
     /// agent-propose wrote a record.
     ProposalFiles,
+    /// A Claude session's status changed; only Home's NEEDS YOU reads it live.
+    SessionFiles,
     Proposals(Box<Result<Vec<Proposal>, String>>),
     /// Home's Since last night (hub_core::briefing::night).
     Night(Box<hub_core::briefing::Night>),
@@ -636,6 +645,7 @@ impl App {
             (self.queue_dir.clone(), true),
             (self.files.asks.clone(), true),
             (self.files.proposals.clone(), false),
+            (self.files.sessions.clone(), false),
             (self.files.tokens.clone(), false),
             (self.files.releases.clone(), false),
         ];
@@ -1373,6 +1383,8 @@ impl App {
             Msg::BuildFile => {}
             Msg::BoardFiles => self.read_boards(),
             Msg::ProposalFiles => self.read_proposals(),
+            Msg::SessionFiles if self.tab == Tab::Home => self.read_boards(),
+            Msg::SessionFiles => {}
             Msg::Tab(t, q) => {
                 self.go(t);
                 self.open_query(q);
@@ -3009,12 +3021,15 @@ impl App {
         let table = self.jv.table(js, self.p, w, false);
         let rows = table.len().saturating_sub(1);
         out.extend(table.into_iter().take(1 + JOBS_SHOWN));
-        out.push(Line::styled(
-            format!(
-                "  {} rows; Enter opens the table (/ search, s source, f state, h history, Enter log)",
-                rows
+        out.push(crate::fit::clip_line(
+            Line::styled(
+                format!(
+                    "  {} rows; Enter opens the table (/ search, s source, f state, h history, Enter log)",
+                    rows
+                ),
+                self.p.dim(),
             ),
-            self.p.dim(),
+            w,
         ));
         out
     }
@@ -3117,7 +3132,7 @@ impl App {
                         l.extend(table);
                         l
                     }
-                    Some(b) => fleet::page(&b.watch, table, self.p, now, w),
+                    Some(b) => fleet::page(&b.watch, table, self.p, now),
                 };
                 // From the status line, two above, so an armed action's confirm stays on screen.
                 let at = self.controls.open.then(|| {
@@ -3895,10 +3910,8 @@ mod tests {
             lines[6].contains("dotfiles-agent-9") && lines[6].contains("parked"),
             "{s}"
         );
-        assert!(
-            s.contains("ASKS (1)") && !s.contains("CHANGES"),
-            "the changes are Log's: {s}"
-        );
+        assert!(!s.contains("CHANGES"), "the changes are Log's: {s}");
+        assert!(!s.contains("ASKS ("), "the asks are Home's: {s}");
 
         a.handle(key('x'));
         let s = screen(&mut a, 140, 30);
@@ -5646,6 +5659,24 @@ mod tests {
             assert!(at(w[0]) < at(w[1]), "{} after {}: {s}", w[0], w[1]);
         }
         assert!(s.contains("Enter opens the table"), "{s}");
+    }
+
+    #[test]
+    fn infra_body_fits_80_columns() {
+        // `hub --once` prints body lines as they are, with no terminal to cut them (rule 11).
+        let mut a = infra_app();
+        a.tab = Tab::Infra;
+        let lines = a.body(80).0;
+        assert!(lines
+            .iter()
+            .any(|l| crate::fit::plain(l).contains("Enter opens")));
+        for l in lines {
+            let t = crate::fit::plain(&l);
+            assert!(
+                unicode_width::UnicodeWidthStr::width(t.as_str()) <= 80,
+                "{t}"
+            );
+        }
     }
 
     #[test]

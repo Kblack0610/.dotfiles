@@ -96,3 +96,71 @@ test("with a dropdown in use only what is around it repaints", () => {
   assert.equal(box("tt").innerHTML, "the bar in use");
   assert.match(box("tt-body").innerHTML, /rows z/);
 });
+
+const heads = (roles) => roles.map((role, i) => ({ dataset: { role, label: "col" + i } }));
+const cells = (n) => Array.from({ length: n }, (_, i) => ({ dataset: {}, textContent: "text" + i, querySelector: () => null }));
+const trOf = (c) => ({ cells: c, dataset: {}, textContent: c.map((x) => x.textContent).join(""), classList: { add(k) { this[k] = true; } } });
+const tableOf = (roles, rows) => ({ rows: [trOf(heads(roles)), ...rows], classList: { add(k) { this[k] = true; } } });
+
+test("a table is stamped from its own headers, and a row of another shape is left alone", () => {
+  const row = trOf(cells(3)), detail = trOf(cells(1)), t = tableOf(["lead", "glance", ""], [row, detail]);
+  ctx.subject = t;
+  run("tblStamp(subject)");
+  assert.equal(t.classList.tphone, true);
+  assert.equal(t.rows[0].dataset.phone, "head");
+  assert.equal(row.dataset.phone, "row");
+  assert.deepEqual(row.cells.map((c) => c.dataset.role), ["lead", "glance", "rest"]);
+  assert.deepEqual(row.cells.map((c) => c.dataset.label), ["col0", "col1", "col2"]);
+  assert.equal(detail.dataset.phone, undefined);
+  assert.equal(detail.cells[0].dataset.role, undefined);
+});
+
+test("a cell holding a control is never hidden, whatever its column", () => {
+  const row = trOf(cells(3)), t = tableOf(["lead", "", ""], [row]);
+  row.cells[2].querySelector = () => ({});
+  ctx.subject = t;
+  run("tblStamp(subject)");
+  assert.deepEqual(row.cells.map((c) => c.dataset.role), ["lead", "rest", "glance"]);
+});
+
+test("a table with no lead keeps its columns", () => {
+  const row = trOf(cells(2)), t = tableOf(["", ""], [row]);
+  ctx.subject = t;
+  run("tblStamp(subject)");
+  assert.equal(t.classList.tphone, undefined);
+  assert.equal(row.dataset.phone, undefined);
+});
+
+test("a row expanded by a tap is still expanded after a redraw", () => {
+  const before = trOf(cells(2)), t = tableOf(["lead", ""], [before]);
+  ctx.subject = t;
+  run("tblStamp(subject); tblExpanded.add('text0text1')");
+  const after = trOf(cells(2));
+  ctx.subject = tableOf(["lead", ""], [after]);
+  run("tblStamp(subject); tblExpanded.clear()");
+  assert.equal(after.classList.tx, true);
+});
+
+test("the sort dropdown lists each column, marks the sort, offers its reverse, and patches the view", () => {
+  ctx.subject = { sort: "run", columns: [{ key: "run", sort: "desc", next_dir: "asc" }, { key: "name", sort: null, next_dir: "asc" }] };
+  const html = run("tblSort(subject)");
+  assert.match(html, /<option value="\|">default sort/);
+  assert.match(html, /<option value="run\|desc" selected>sort: run</);
+  assert.match(html, /<option value="run\|asc">sort: run reversed</);
+  assert.match(html, /<option value="name\|asc">sort: name</);
+  ctx.subject = { type: "change", target: { value: "run|asc", dataset: { tsv: "" } } };
+  assert.deepEqual({ ...run("tblPatch(subject)") }, { sort: "run", dir: "asc" });
+  ctx.subject = { type: "change", target: { value: "|", dataset: { tsv: "" } } };
+  assert.deepEqual({ ...run("tblPatch(subject)") }, { sort: "", dir: "" });
+  assert.equal(run("tblSort({columns: []})"), "");
+});
+
+test("with the sort dropdown in use only what is around it repaints", () => {
+  run(`one.render()`);
+  box("tt").innerHTML = "the bar in use";
+  doc.activeElement = { id: "", dataset: { tsv: "" }, closest: (sel) => (sel === "#tt-facets" ? {} : null) };
+  run(`one.data.rows = ["y"]; one.all = false; one.render()`);
+  doc.activeElement = null;
+  assert.equal(box("tt").innerHTML, "the bar in use");
+  assert.match(box("tt-body").innerHTML, /rows y/);
+});

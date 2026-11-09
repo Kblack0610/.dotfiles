@@ -53,6 +53,8 @@ impl Row for Action {
     const COLUMNS: &'static [&'static str] = &["when", "actor", "verb", "prio", "source", "text"];
     const STATES: &'static [&'static str] = &["all", "loud", "failed"];
     const FACETS: &'static [&'static str] = &["actor", "verb"];
+    const LEAD: &'static str = "text";
+    const GLANCE: &'static [&'static str] = &["when", "actor", "verb"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| Val::Text(s.to_string());

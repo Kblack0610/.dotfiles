@@ -364,17 +364,27 @@ fn burn(b: &Burn, keys_set: Option<bool>, p: Palette, w: usize) -> Vec<Line<'sta
             p.warn(),
         ));
     }
-    let mut out = vec![
-        clip_line(
-            Line::from(vec![dim("BURN  "), Span::styled(b.head.clone(), style)]),
-            w,
-        ),
+    // The headline wraps between its clauses, never inside one, so a narrow pane keeps all of it.
+    let parts: Vec<&str> = b.head.split(", ").collect();
+    let mut out: Vec<Line<'static>> = crate::fit::wrap(&parts, ", ", w.saturating_sub(6))
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let lead = if i == 0 {
+                dim("BURN  ")
+            } else {
+                Span::raw("      ")
+            };
+            clip_line(Line::from(vec![lead, Span::styled(l, style)]), w)
+        })
+        .collect();
+    out.extend([
         clip_line(Line::from(drip), w),
         clip_line(
             Line::from(vec![dim("BACK ON PACE  "), Span::raw(b.pace_text(&time))]),
             w,
         ),
-    ];
+    ]);
     // A source with no figures has a line of its own, so its words do not widen the columns.
     let note = |a: &&Account| {
         let (text, style) = match a.state {
@@ -514,13 +524,10 @@ fn burn(b: &Burn, keys_set: Option<bool>, p: Palette, w: usize) -> Vec<Line<'sta
             out.extend(nested.iter().filter_map(note));
         }
     }
-    out.push(clip_line(
-        Line::styled(
-            "BURN/H: last 6h rate per session. KEEPS/H: what the week can carry. BAR: use, | is the week gone.",
-            p.dim(),
-        ),
-        w,
-    ));
+    let terms: Vec<String> = b.legend.iter().map(|(t, d)| format!("{t}: {d}.")).collect();
+    for l in crate::fit::wrap(&terms, " ", w) {
+        out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
     out.push(Line::raw(""));
     out
 }
@@ -940,6 +947,33 @@ mod tests {
             s.find("BURN").unwrap() < s.find("window:").unwrap(),
             "burn is above the spend tiles"
         );
+        // a narrow pane wraps the headline between clauses instead of cutting its last one
+        let narrow = CostsView::default()
+            .lines(&burning(), Palette::default(), 1_000_000, 50)
+            .0
+            .iter()
+            .map(crate::fit::plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            narrow.contains("\n      39 live, carries ~11\n"),
+            "{narrow}"
+        );
+        // every term on the section is defined under it, wrapped to the width
+        for t in ["pts/h: ", "GONE: ", "AT BURN: ", "IF IDLE: ", "$24H: "] {
+            assert!(s.contains(t), "{t} undefined: {s}");
+        }
+        // and every term the legend defines, bar the headline's unit, is a column the table prints
+        let wide = CostsView::default()
+            .lines(&burning(), Palette::default(), 1_000_000, 400)
+            .0
+            .iter()
+            .map(crate::fit::plain)
+            .find(|l| l.trim_start().starts_with("SOURCE"))
+            .unwrap();
+        for (t, _) in burn::LEGEND.iter().filter(|(t, _)| *t != "pts/h") {
+            assert!(wide.contains(t), "{t} is not a column: {wide}");
+        }
     }
 
     #[test]

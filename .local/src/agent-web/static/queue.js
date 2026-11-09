@@ -138,11 +138,10 @@ function qMin(m) {
   return `${Math.floor(m / 1440)}d${Math.floor((m % 1440) / 60)}h`;
 }
 
-// The table's columns: key -> [header, class]. `qx` columns drop away at phone width (app.css),
-// leaving state, in, project and title.
+// The table's columns: key -> [header, class].
 const Q_COLS = {
-  state: ["state"], in: ["in", "n"], wait: ["wait", "n qx"], run: ["run", "n qx"], project: ["project"],
-  kind: ["kind", "qx"], size: ["size", "qx"], acct: ["acct", "qx"], pr: ["pr", "qx"], title: ["title"],
+  state: ["state"], in: ["in", "n"], wait: ["wait", "n"], run: ["run", "n"], project: ["project"],
+  kind: ["kind"], size: ["size"], acct: ["acct"], pr: ["pr"], title: ["title"],
 };
 
 // The state cell: what the item is. A finish says how it ended.
@@ -157,18 +156,18 @@ function qState(i) {
 
 // The PR cell: hub-core's label as a link; a done item with no recorded merge says so on hover.
 function qPrCell(i) {
-  if (!i.pr) return `<td class="qx muted">-</td>`;
+  if (!i.pr) return `<td class="muted">-</td>`;
   const link = i.pr_url ? `<a href="${esc(i.pr_url)}" target="_blank" rel="noopener">${esc(i.pr_label || i.pr)}</a>` : esc(i.pr_label || i.pr);
   const flag = i.state === "done" && i.pr_label && !i.pr_merged ? ` <span class="muted" title="merge not recorded">?</span>` : "";
-  return `<td class="qx">${link}${flag}</td>`;
+  return `<td>${link}${flag}</td>`;
 }
 
 function qRow(i) {
   const t = i.timing || {};
   const dash = (v) => (v ? esc(v) : "-");
   return `<tr class="qr${i.slug === qst.sel ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
-    `<td class="n">${qMin(t.in_state)}</td><td class="n qx">${qMin(t.wait)}</td><td class="n qx">${qMin(t.run)}</td>` +
-    `<td>${esc(i.project)}</td><td class="qx">${dash(i.type)}</td><td class="qx">${dash(i.size)}</td><td class="qx">${dash(i.account)}</td>` +
+    `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
+    `<td>${esc(i.project)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
     `${qPrCell(i)}<td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>`;
 }
 

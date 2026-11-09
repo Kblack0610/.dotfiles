@@ -284,8 +284,8 @@ pub struct Burn {
     /// The headline and the drip, worded here so both surfaces print the same.
     pub head: String,
     pub drip_line: String,
-    /// `bad` when the fleet is over, `warn` when one account is or none can be read, `ok`, or
-    /// `none` with no data.
+    /// `bad` when the fleet is over, `warn` when one account is, no row has room or none can
+    /// be read, `ok`, or `none` with no data.
     pub level: &'static str,
     /// Set when the textfile is not fresh: every figure below is then old, and the surfaces say so.
     pub stale: Option<&'static str>,
@@ -296,7 +296,31 @@ pub struct Burn {
     pub fleet: Fleet,
     pub drip: Drip,
     pub pace: Pace,
+    /// What each term on the section means, in the order the surfaces print it.
+    pub legend: &'static [(&'static str, &'static str)],
 }
+
+/// The Burn section's terms, defined once for both surfaces.
+pub const LEGEND: &[(&str, &str)] = &[
+    ("pts/h", "points of a weekly limit an hour"),
+    (
+        "BAR",
+        "the fill is the share used, the tick the share of the week gone",
+    ),
+    ("GONE", "the share of the week gone"),
+    ("BURN/H", "the last 6h rate of its live sessions"),
+    (
+        "KEEPS/H",
+        "what the rest of the week can carry to the reset",
+    ),
+    (
+        "ROOM",
+        "claude-acct's answer on an automatic start, and why not",
+    ),
+    ("AT BURN", "when it is back on pace at this burn"),
+    ("IF IDLE", "when it is back on pace with nothing live"),
+    ("$24H", "the list-price estimate, for scale"),
+];
 
 /// The keys inside a pool, which draw on its money and so are not sources beside it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -465,7 +489,9 @@ pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
         "warn"
     } else if burn > sustain {
         "bad"
-    } else if accounts.iter().any(Account::is_over) {
+    } else if accounts.iter().any(Account::is_over)
+        || matches!(no_room(&accounts), (n, of) if of > 0 && n == of)
+    {
         "warn"
     } else {
         "ok"
@@ -478,12 +504,25 @@ pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
         keys,
         fleet,
         drip,
+        legend: LEGEND,
         ..Burn::default()
     };
     b.head = b.head_text();
     b.drip_line = format!("{} started in 1h, {} in 24h", b.drip.hour, b.drip.day);
     b.pace = b.pace_of();
     b
+}
+
+/// The rows' own verdict, so the headline cannot read green while every row refuses: the
+/// readable sources (not the keys in a pool) that say no room, and how many have a verdict.
+/// An unreadable row says so in its own state, so it is not counted as a refusal here.
+fn no_room(accounts: &[Account]) -> (usize, usize) {
+    let judged: Vec<&Room> = accounts
+        .iter()
+        .filter(|a| !a.nested && a.state == "ok")
+        .filter_map(|a| a.room.as_ref())
+        .collect();
+    (judged.iter().filter(|r| !r.ok).count(), judged.len())
 }
 
 impl Burn {
@@ -502,8 +541,13 @@ impl Burn {
         let carries = f
             .carries
             .map_or(String::new(), |n| format!(", carries ~{n}"));
+        let room = match no_room(&self.accounts) {
+            (0, _) => String::new(),
+            (n, of) if n == of => ", no room on any".into(),
+            (n, of) => format!(", no room on {n} of {of}"),
+        };
         format!(
-            "{:.1} pts/h vs {:.1} sustainable{ratio}, {} live{carries}",
+            "{:.1} pts/h vs {:.1} sustainable{ratio}{room}, {} live{carries}",
             f.burn, f.sustain, f.live
         )
     }
@@ -697,6 +741,52 @@ mod tests {
         s.push(series("alt", "burn_points_per_hour", 0.5));
         let b = build(&s, quiet(), NOW);
         assert_eq!(b.level, "warn", "{b:?}");
+    }
+
+    #[test]
+    fn the_headline_says_the_rows_no_room_so_a_fleet_under_its_weeks_is_not_green() {
+        let mut s = fixture();
+        for x in &mut s {
+            if x.label("__name__").ends_with("burn_points_per_hour") {
+                x.value = Some(x.value.unwrap() / 10.0);
+            }
+        }
+        let with = |rooms: [f64; 3]| {
+            let mut s = s.clone();
+            for (n, ok) in ["main", "alt", "bnb"].into_iter().zip(rooms) {
+                s.push(series(n, "room", ok));
+            }
+            build(&s, quiet(), NOW)
+        };
+        let all = with([0.0, 0.0, 0.0]);
+        assert_eq!(
+            all.head,
+            "0.5 pts/h vs 1.4 sustainable, 0.3x, no room on any, 39 live, carries ~11"
+        );
+        assert_eq!(all.level, "warn");
+        // a row refusing for its own reason is the row's news: the head says it, the section stays folded
+        let some = with([0.0, 1.0, 0.0]);
+        assert!(some.head.contains(", no room on 2 of 3,"), "{}", some.head);
+        assert_eq!(some.level, "ok");
+        // negative control: every row has room, so the headline adds nothing and stays green
+        let roomy = with([1.0, 1.0, 1.0]);
+        assert!(!roomy.head.contains("no room"), "{}", roomy.head);
+        assert_eq!(roomy.level, "ok");
+        assert_eq!(roomy.legend, LEGEND);
+    }
+
+    #[test]
+    fn an_unreadable_account_is_not_one_more_no_room_in_the_head() {
+        // its own state says unreadable, so it is not one more "no room" in the head
+        let mut s = fixture();
+        s.push(series("old", "read_ok", 0.0));
+        s.push(series("old", "room", 0.0));
+        let b = build(&s, quiet(), NOW);
+        assert_eq!(
+            b.accounts.iter().find(|a| a.name == "old").unwrap().state,
+            "unreadable"
+        );
+        assert!(!b.head.contains("no room"), "{}", b.head);
     }
 
     #[test]

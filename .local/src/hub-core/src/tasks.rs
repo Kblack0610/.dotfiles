@@ -95,6 +95,8 @@ impl crate::table::Row for Row {
     const STATES: &'static [&'static str] =
         &["all", "in progress", "filed today", "urgent", "requested"];
     const FACETS: &'static [&'static str] = &["project", "lane", "priority"];
+    const LEAD: &'static str = "text";
+    const GLANCE: &'static [&'static str] = &["priority", "project", "state"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| Val::Text(s.to_string());
