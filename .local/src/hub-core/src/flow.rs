@@ -105,7 +105,7 @@ impl Strip {
                     "board",
                     None,
                     Some(Target {
-                        tab: "projects",
+                        tab: "board",
                         state: "",
                     }),
                 ),
@@ -252,7 +252,7 @@ mod tests {
             to,
             vec![
                 None,
-                Some(("projects", "")),
+                Some(("board", "")),
                 Some(("queue", "up next")),
                 Some(("queue", "running")),
                 Some(("queue", "needs you")),
