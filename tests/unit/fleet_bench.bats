@@ -2830,6 +2830,18 @@ pipeline_fixture() {
   [ "$(cat "$PIPELINE_SNAPSHOT")" = "$before" ]
 }
 
+@test "pipeline: a rollup that fails leaves the last snapshot, as_of and all" {
+  pipeline_fixture
+  source "$SUBJECT"
+  publish_window "$T0"
+  before=$(cat "$PIPELINE_SNAPSHOT")
+  pipeline_json() { return 1; }
+  run publish_window "$((T0 + 600))"
+  assert_success
+  assert_output --partial "the rollup failed"
+  [ "$(cat "$PIPELINE_SNAPSHOT")" = "$before" ]
+}
+
 @test "pipeline: the gauges carry WIP, age, moves, dwell and drift per step" {
   pipeline_fixture
   source "$SUBJECT"

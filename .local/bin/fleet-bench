@@ -814,7 +814,7 @@ bench_prom() {
 }
 
 # pipeline_snapshot <json>: the file the pipeline line reads, renamed into place so no reader
-# sees half of it. A failed write leaves the last one, whose as_of shows its age.
+# sees half of it. A failed build or write leaves the last one, whose as_of shows its age.
 pipeline_snapshot() {
   local dir=${PIPELINE_SNAPSHOT%/*} tmp
   mkdir -p "$dir" && tmp=$(mktemp "$dir/.pipeline.XXXXXX") || return 1
@@ -828,8 +828,12 @@ pipeline_snapshot() {
 # not depend on the session progress the gauges need.
 publish_window() {
   local pl
-  pl=$(pipeline_json "$1") || pl='{"steps": []}'
-  pipeline_snapshot "$pl" || say "could not write $PIPELINE_SNAPSHOT"
+  if pl=$(pipeline_json "$1"); then
+    pipeline_snapshot "$pl" || say "could not write $PIPELINE_SNAPSHOT"
+  else
+    say "pipeline: the rollup failed; the last snapshot stays"
+    pl='{"steps": []}'
+  fi
   [ -s "$PROGRESS" ] || return 0
   prom_textfile fleet_bench.prom bench_prom "$1" "$pl" || say "could not write fleet_bench.prom"
 }

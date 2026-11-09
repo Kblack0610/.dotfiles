@@ -196,7 +196,9 @@ fn finish_problems(r: &mut Row, notes: &HashMap<String, String>) {
         p.why = p.why.chars().take(MAX_WHY_CHARS).collect();
     }
     r.problems_n = r.problems.len();
-    r.problems.sort_by(|a, b| b.ts.cmp(&a.ts));
+    // By instant, not text: the record's offsets differ across a DST change.
+    r.problems
+        .sort_by_key(|p| std::cmp::Reverse(DateTime::parse_from_rfc3339(&p.ts).ok()));
     r.problems.truncate(MAX_PROBLEMS);
 }
 
@@ -563,6 +565,16 @@ mod tests {
             .iter()
             .filter(|r| r.step != "running")
             .all(|r| r.problems.is_empty()));
+    }
+
+    #[test]
+    fn problems_sort_by_instant_across_an_offset_change() {
+        let mut a = item_ev("10:00", "reaped", "", "older", "item was running");
+        a.ts = "2026-11-05T10:30:00-07:00".into();
+        let mut b = item_ev("10:00", "reaped", "", "newer", "item was running");
+        b.ts = "2026-11-05T10:00:00-08:00".into();
+        let rows = replay(&[a, b], now());
+        assert_eq!(get(&rows, "running").problems[0].subject, "newer");
     }
 
     #[test]
