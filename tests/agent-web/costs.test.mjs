@@ -120,7 +120,7 @@ test("the keys fold under their pool, and only a key refusing on its own starts 
   assert.ok(quiet.indexOf("<td>lazer</td>") < quiet.indexOf('data-k="burn-keys"'), "the fold is under the pool");
   assert.equal([...quiet.matchAll(/<td>glm<\/td>/g)].length, 1, "the key is listed once, in the fold");
   assert.ok(quiet.indexOf("<td>glm</td>") > quiet.indexOf('data-k="burn-keys"'));
-  assert.match(quiet, /<tr><th>source<\/th><th class="n">live<\/th><th>bar<\/th><th class="n">used<\/th><th class="n">reserve<\/th><th>room<\/th><th>resets<\/th><th class="n">\$24h<\/th><\/tr>/);
+  assert.match(quiet, /<tr><th data-role="lead">source<\/th><th class="n">live<\/th><th>bar<\/th><th class="n" data-role="glance" data-named>used<\/th><th class="n">reserve<\/th><th data-role="glance">room<\/th><th>resets<\/th><th class="n">\$24h<\/th><\/tr>/);
   assert.match(quiet, /<td>alt<\/td>.*?width:80\.0%[^>]*><\/span><i style="left:min\(64\.0%,calc\(100% - 2px\)\)"><\/i>/, "a paced row has its tick, held inside the box");
   assert.doesNotMatch(quiet, /<td>glm<\/td>.*?<i style/, "a dollar budget has none");
   // negative control: the same key with a warn level opens, under the key paint has not remembered
@@ -134,7 +134,7 @@ test("the keys fold under their pool, and only a key refusing on its own starts 
 test("a dollar source is a burn row with its kind, dollars and reserve, and no pace cells", () => {
   const key = acct("reserve", { kind: "litellm-key", unpaced: true, used: 41, used_text: "41% $41/$100", gone: null, reserve: 15, parent: "lazer", burn: 9, sustain: 1, idle_at: null, resets: null });
   const h = show(board({ burn: burn({ accounts: [acct("main", { reserve: 15 }), key] }) }));
-  assert.match(h, /<tr><th>source<\/th><th>kind<\/th><th class="n">live<\/th><th>bar<\/th><th class="n">used<\/th><th class="n">gone<\/th><th class="n">reserve<\/th><th>room<\/th>/);
+  assert.match(h, /<tr><th data-role="lead">source<\/th><th>kind<\/th><th class="n">live<\/th><th>bar<\/th><th class="n" data-role="glance" data-named>used<\/th><th class="n" data-role="glance" data-named>gone<\/th><th class="n">reserve<\/th><th data-role="glance">room<\/th>/);
   assert.match(h, /<th class="n">\$24h<\/th><\/tr>/, "the pool column is gone: a key nests under its pool");
   assert.match(h, /<td>reserve<\/td><td>litellm-key<\/td><td class="n">0<\/td><td>.*?<\/td><td class="n">41% \$41\/\$100<\/td><td class="n">-<\/td><td class="n">15%<\/td>/);
   // negative control: its 9 pts/h over a 1 pts/h line would be amber on a paced row

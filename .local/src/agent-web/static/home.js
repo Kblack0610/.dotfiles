@@ -254,9 +254,12 @@ function drawHome() {
   const t = h.table;
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
   const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${needsBody(h)}</div></div>`;
-  // The flow strip, health, spend and vitals lead, so a long Needs list never buries them.
-  paint(el, errs + sec("Flow", null, flowHtml(h.flow, h.grafana)) +
-    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + spend + vitals + needs + nightSection() + propSection(h) + running, askst.open);
+  // Wide, the flow strip, health, spend and vitals lead, so a long Needs list never buries them.
+  // On a phone they are one line saying whether anything is wrong, so Needs you comes first.
+  const warn = (t) => `<span class="warn">${esc(t)}</span>`;
+  const status = [healthHtml(h.health), h.flow?.bottleneck && warn(h.flow.bottleneck), h.vitals && !h.vitals.all_ok && warn(h.vitals.head)].filter(Boolean).join(" ");
+  paint(el, errs + pfold("home-status", status, sec("Flow", null, flowHtml(h.flow, h.grafana)) +
+    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + spend + vitals) + needs + nightSection() + propSection(h) + running, askst.open);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.
