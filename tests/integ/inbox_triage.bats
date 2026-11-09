@@ -83,6 +83,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   st="$HOME/.local/state/agentctl/inbox-triage"
   grep -qx FAILED "$st/last-outcome"
   grep -q 'outcome=FAILED .*model call failed: You have hit your weekly limit - resets 7pm' "$st/activity.log"
+  grep -q '"action":"sweep-stopped".*"why":"model call failed: You have hit your weekly limit - resets 7pm"' "$HOME/.local/state/notes/ingest.jsonl" || fail "$(cat "$HOME/.local/state/notes/ingest.jsonl")"
   inbox | grep -q 'the gun sound is off'
 }
 
@@ -98,6 +99,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   st="$HOME/.local/state/agentctl/inbox-triage"
   grep -qx BLOCKED "$st/last-outcome"
   grep -q 'outcome=BLOCKED budget: .*why: stopped at its budget' "$st/activity.log" || fail "$(cat "$st/activity.log")"
+  grep -q '"action":"sweep-stopped"' "$HOME/.local/state/notes/ingest.jsonl" || fail "the stopped sweep was not recorded"
   inbox | grep -q 'the gun sound is off'
 }
 
@@ -265,8 +267,12 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run tasks
   assert_output --regexp '- \[ \] fix\(ui\): the menu flickers on resize #size/s #requested .*#high.*id:sc-4'
   assert_output --partial '  was: the menu flickers on resize #requested'
+  # a dropped row is no finished work, so it leaves Done at once for the version note
+  refute_output --partial 'menu flicker again'
+  run cat "$PROJ/scratch/agent/versions/v0.1.0.md"
   assert_output --regexp '- \[x\] menu flicker again .*dup:sc-4'
   assert_output --regexp '- \[x\] scratch .*dropped: triage: a header, not a task'
+  run tasks
   assert_output --partial '- [/] the save is slow <!-- id:sc-8 -->'
   refute_output --partial 'logo'
   # rewritten, then moved by its id, its old words with it
@@ -355,6 +361,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial '  - why: no project named'
   assert_output --partial 'triage kept 1 of 1 as filed (7d)'
   grep -q '"row":"chore(build): drop the old cache"' "$HOME/.local/state/notes/ingest.jsonl" || fail "the filed row's words were not recorded"
+  ! grep -q '"action":"sweep-stopped"' "$HOME/.local/state/notes/ingest.jsonl" || fail "a clean sweep recorded a stop"
 }
 
 @test "outbox: a #p: word that names no project goes to the model with the word as a hint, and is routed, not refused" {

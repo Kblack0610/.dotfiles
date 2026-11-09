@@ -56,6 +56,9 @@ struct RawConfig {
     /// `board` above is already this file's key for the board's PATH.
     #[serde(default)]
     board_layout: RawBoardLayout,
+    /// `[sheet]`: how a project sheet's `## Tasks` is laid out ([`SheetShape`]).
+    #[serde(default)]
+    sheet: SheetShape,
     /// `[project_type.<type>]`: what a lab project of a registry type carries beyond the core
     /// shape. Keyed by `trackers.<name>.type` in project-map.json. Absent = no extras.
     #[serde(default)]
@@ -72,6 +75,36 @@ pub struct ProjectType {
     /// Registry facts this type needs. Only `repo` is checked today (`Registry::has_repo`).
     #[serde(default)]
     pub requires: Vec<String>,
+}
+
+/// `[sheet]`: the sizes of a project sheet's `## Tasks` sections (`project_sweep`). Every key
+/// is optional; the defaults are the human's 2026-11-09 choice.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
+#[serde(default)]
+pub struct SheetShape {
+    /// Open rows in `### Next up`: the top of the rank, what is worked next.
+    pub next_up: usize,
+    /// Days a closed row stays in `### Done` before it rolls into `agent/versions/<v>.md`.
+    pub done_days: i64,
+    /// The most closed rows `### Done` keeps, newest first, whatever their age: a bulk close
+    /// (241 rows on agent-runtime on 2026-11-07) would otherwise fill the section for a week.
+    pub done_max: usize,
+}
+
+impl Default for SheetShape {
+    fn default() -> Self {
+        SheetShape {
+            next_up: 10,
+            done_days: 7,
+            done_max: 30,
+        }
+    }
+}
+
+/// The `[sheet]` table, read independently of the active profile like [`board_layout`]: a
+/// sheet looks the same in every org. The defaults when there is no config.
+pub fn sheet_shape() -> SheetShape {
+    load_raw().map(|(raw, _)| raw.sheet).unwrap_or_default()
 }
 
 /// Board layout: which org leads, and which orgs render in full.
@@ -527,6 +560,7 @@ fn builtin_default() -> RawConfig {
         outbox: default_outbox(),
         comms: RawComms::default(),
         board_layout: RawBoardLayout::default(),
+        sheet: SheetShape::default(),
         project_type: HashMap::new(),
     }
 }
