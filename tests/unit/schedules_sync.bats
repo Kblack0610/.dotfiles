@@ -260,6 +260,22 @@ pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
   # Friday's release in the first pending test already shows it holds nothing on other days.
 }
 
+@test "pending --day judges that date's slots, so a finished night stays released the next day" {
+  export TZ=America/Los_Angeles
+  pstate 2026-11-07T16:20:00Z "$(prun 2026-11-06T10:04:00Z completed)" "$(prun 2026-11-06T12:41:00Z completed)"
+  SCHEDULES_NOW="$(pnow '2026-11-07 08:20')" run "$SUBJECT" pending game --day 2026-11-06
+  assert_success
+  assert_output ''
+  # NEGATIVE CONTROL: without --day the same file is judged by 11-07, whose slots have no runs.
+  SCHEDULES_NOW="$(pnow '2026-11-07 08:20')" run "$SUBJECT" pending game
+  assert_failure 1
+  assert_output 'multi.yml not started'
+  run "$SUBJECT" pending game --day 11-06
+  assert_failure 2
+  run "$SUBJECT" pending game --when 2026-11-06
+  assert_failure 2
+}
+
 @test "pending fails closed: no file, a repo not in it, a stale sync, an unreadable cron" {
   export TZ=America/Los_Angeles
   SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
