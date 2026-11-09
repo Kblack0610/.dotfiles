@@ -252,6 +252,41 @@ pub struct Column {
     pub role: &'static str,
 }
 
+/// One table's phone layout: what the render harness draws its fixtures with.
+#[derive(Serialize, Debug)]
+pub struct PhoneTable {
+    pub columns: &'static [&'static str],
+    pub lead: &'static str,
+    pub glance: &'static [&'static str],
+}
+
+fn phone_table<R: Row>() -> PhoneTable {
+    PhoneTable {
+        columns: R::COLUMNS,
+        lead: R::LEAD,
+        glance: R::GLANCE,
+    }
+}
+
+/// Every table that names a phone layout. Costs picks its lead per cut in the page instead.
+pub fn phone_tables() -> Vec<PhoneTable> {
+    vec![
+        phone_table::<crate::home::Need>(),
+        phone_table::<crate::proposals::Proposal>(),
+        phone_table::<crate::queue::QueueRow<'static>>(),
+        phone_table::<crate::tasks::Row>(),
+        phone_table::<crate::projects::Card>(),
+        phone_table::<crate::session_table::SessionRow>(),
+        phone_table::<crate::jobs::Job>(),
+        phone_table::<crate::actions::Action>(),
+        phone_table::<crate::fleet::who::Who>(),
+        phone_table::<crate::schedules::Schedule>(),
+        phone_table::<crate::releases::Release>(),
+        phone_table::<crate::builds::Run>(),
+        phone_table::<crate::sections::Section>(),
+    ]
+}
+
 /// One dropdown value: how many rows it would show and the whole query that picks it.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct FacetValue {
@@ -511,28 +546,13 @@ fn next_of(list: &[&str], cur: &str) -> String {
 mod tests {
     #[test]
     fn phone_roles_name_real_columns() {
-        fn check<R: super::Row>() {
-            let name = std::any::type_name::<R>();
-            assert!(!R::LEAD.is_empty(), "{name} has no lead");
-            assert!(R::COLUMNS.contains(&R::LEAD), "{name} lead {}", R::LEAD);
-            assert!(R::GLANCE.len() <= 3, "{name} glances at too much");
-            for g in R::GLANCE {
-                assert!(R::COLUMNS.contains(g) && *g != R::LEAD, "{name} glance {g}");
+        for t in super::phone_tables() {
+            assert!(t.columns.contains(&t.lead), "lead {}", t.lead);
+            assert!(t.glance.len() <= 3, "{} glances at too much", t.lead);
+            for g in t.glance {
+                assert!(t.columns.contains(g) && *g != t.lead, "glance {g}");
             }
         }
-        check::<crate::home::Need>();
-        check::<crate::proposals::Proposal>();
-        check::<crate::queue::QueueRow<'static>>();
-        check::<crate::tasks::Row>();
-        check::<crate::projects::Card>();
-        check::<crate::session_table::SessionRow>();
-        check::<crate::jobs::Job>();
-        check::<crate::actions::Action>();
-        check::<crate::fleet::who::Who>();
-        check::<crate::schedules::Schedule>();
-        check::<crate::releases::Release>();
-        check::<crate::builds::Run>();
-        check::<crate::sections::Section>();
     }
 
     use super::*;

@@ -63,7 +63,22 @@ function dumpIndex() {
   const path = join(SCRATCH, "index.html");
   const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: join(SCRATCH, "target") }, encoding: "utf8" });
   if (r.status !== 0) throw new Error(`dumping assets::index() failed:\n${r.stdout}\n${r.stderr}`);
-  return { index: readFileSync(path, "utf8"), csp: readFileSync(`${path}.csp`, "utf8") };
+  return { index: readFileSync(path, "utf8"), csp: readFileSync(`${path}.csp`, "utf8"), roles: JSON.parse(readFileSync(`${path}.roles`, "utf8")) };
+}
+
+// The server's Column carries each column's phone role; the fixtures name only the keys, so the
+// roles come from hub-core itself, matched on the table's whole column list.
+function withRoles(body, roles) {
+  const byColumns = new Map(roles.map((t) => [t.columns.join(), t]));
+  const walk = (v) => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (!v || typeof v !== "object") return v;
+    const out = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    const t = Array.isArray(v.columns) && v.columns[0]?.key && byColumns.get(v.columns.map((c) => c.key).join());
+    if (t) out.columns = out.columns.map((c) => ({ ...c, role: c.key === t.lead ? "lead" : t.glance.includes(c.key) ? "glance" : "" }));
+    return out;
+  };
+  return walk(body);
 }
 
 const JS = "text/javascript; charset=utf-8";
@@ -78,7 +93,7 @@ function staticFile(name) {
   return { status: 200, contentType: TYPES[extname(name)], body, headers: NOSNIFF };
 }
 
-async function wire(context, page, { index, csp }, seen) {
+async function wire(context, page, { index, csp, roles }, seen) {
   await context.route("**/*", (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== ORIGIN) return route.abort();
@@ -87,7 +102,7 @@ async function wire(context, page, { index, csp }, seen) {
     if (path.startsWith("/static/")) return route.fulfill(staticFile(path.slice("/static/".length)));
     if (!(path in FIXTURES) && path.startsWith("/api/")) seen.unfixtured.add(path);
     const body = path in FIXTURES ? FIXTURES[path] : {};
-    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(withRoles(body, roles)) });
   });
   page.on("pageerror", (e) => seen.errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => { if (m.type() === "error") seen.errors.push(`console: ${m.text()}`); });
@@ -172,6 +187,9 @@ async function main() {
   console.log(`screenshots and numbers.json: ${out}`);
   const errored = results.filter((r) => r.errors.length);
   if (errored.length) { console.log(`FAIL: errors on ${errored.map((r) => r.tab).join(", ")}`); process.exit(1); }
+  // A tab whose row has no lead, or whose lead runs off the screen, is what this harness exists to catch.
+  const cut = control ? [] : results.filter((r) => r.leadVisible !== true || r.leadMethod !== "data-role");
+  if (cut.length) { console.log(`FAIL: no visible lead on ${cut.map((r) => r.tab).join(", ")}`); process.exit(1); }
   if (control) {
     const missed = results.filter((r) => !(r.pageOverflowX > 0));
     if (missed.length) { console.log(`FAIL: control overflow not reported on ${missed.map((r) => r.tab).join(", ")}`); process.exit(1); }

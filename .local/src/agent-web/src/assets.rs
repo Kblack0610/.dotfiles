@@ -207,6 +207,8 @@ mod tests {
             std::env::var("AGENT_WEB_INDEX_OUT").expect("AGENT_WEB_INDEX_OUT is the output path");
         std::fs::write(&out, index()).unwrap();
         std::fs::write(format!("{out}.csp"), CSP).unwrap();
+        let roles = serde_json::to_string(&hub_core::table::phone_tables()).unwrap();
+        std::fs::write(format!("{out}.roles"), roles).unwrap();
     }
 
     const APP_JS: &str = include_str!("../static/app.js");
