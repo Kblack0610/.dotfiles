@@ -1623,7 +1623,7 @@ conversation_live() {
 
 # wound_down <id> -- it asked to close: armed, or fired since its window last showed in a record.
 # wind-down.sh disarm clears both on the next prompt, so a conversation taken up again is reopened.
-wound_down() { compgen -G "$HOME/.agent/spin-down/*__$1.[rf]*" >/dev/null; }
+wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compgen -G "$HOME/.agent/spin-down/*__$1.[rf]*" >/dev/null; }
 
 # restore_world <lost record> <dry run 0|1> -- reopen each conversation as a window of the session
 # it was in, through start, with the running or waiting queue item that lists its Claude session

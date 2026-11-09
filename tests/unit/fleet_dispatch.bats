@@ -4854,8 +4854,8 @@ restore_setup() {
   transcript conv-plan '{"permissionMode":"bypassPermissions"}
 {"type":"permission-mode","permissionMode":"plan"}'
   transcript conv-work '{"permissionMode":"bypassPermissions"}'
-  : > "$HOME/.agent/spin-down/game__conv-armed.request"
-  : > "$HOME/.agent/spin-down/game__conv-closed.fired"
+  : > "$HOME/.agent/spin-down/conv-armed.request"
+  : > "$HOME/.agent/spin-down/conv-closed.fired"
   printf '{"pid":%s,"sessionId":"conv-alive"}' "$$" > "$HOME/.claude/sessions/$$.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
