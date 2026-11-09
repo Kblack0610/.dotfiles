@@ -6,7 +6,7 @@
   --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   /* type scale: everything is one of these */
-  --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 16px;
+  --head: 49px; --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 16px;
   --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #57564f; --line: #d4d1c8;
   --accent: #2f6fde; --wait: #d4483b; --busy: #c98a12; --idle: #3f9a5a;
   --user: #eaf0fb; --tool: #f1efe9;
@@ -37,7 +37,12 @@ header h1 { font-size: 16px; margin: 0; }
 .menu .bars { top: 16px; } .menu .bars::before { left: 0; top: -5px; } .menu .bars::after { left: 0; top: 5px; }
 .menu #menu-badge { position: absolute; top: -6px; right: -8px; margin: 0; }
 .cur { font-weight: 600; color: var(--muted); }
-.tabs { display: flex; gap: 4px; margin-left: auto; overflow-x: auto; scrollbar-width: none; }
+.tabs { display: flex; flex-direction: column; gap: 1px; }
+.navg { font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 8px 2px; }
+.outl { display: flex; flex-direction: column; margin: 1px 0 4px 10px; border-left: 1px solid var(--line); }
+.outl:empty { display: none; }
+.tabs .outl button { border: 0; padding: 3px 10px; font-size: var(--fs-sm); color: var(--muted); text-align: left; }
+.tabs .outl button:hover { color: var(--ink); }
 .tabs button { flex: none; }
 .tabs button, .seg button { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
 .tabs button.on, .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -47,7 +52,7 @@ header h1 { font-size: 16px; margin: 0; }
 .conn.live { background: var(--idle); }
 .conn.live.off { background: var(--wait); }
 .live-off { font-size: 12px; color: var(--wait); white-space: nowrap; }
-main { display: grid; grid-template-columns: 1fr; height: calc(100% - 49px - env(safe-area-inset-top, 0px)); }
+main { display: grid; grid-template-columns: 1fr; height: calc(100% - var(--head) - env(safe-area-inset-top, 0px)); }
 .dot { flex: none; width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; background: var(--idle); }
 .dot.waiting { background: var(--wait); box-shadow: 0 0 0 3px color-mix(in srgb, var(--wait) 25%, transparent); }
 .dot.busy, .dot.shell { background: var(--busy); }
@@ -369,10 +374,8 @@ span.warn { color: var(--b-stalled); }
 /* Releases: a long changelog scrolls inside the opened row. */
 .rel-cl { max-height: 320px; overflow: auto; margin-top: 4px; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
-@media (max-width: 760px) {
-  /* The Queue table keeps state, in, project and title; the detail has the rest. */
-  .tbl th.qx, .tbl td.qx { display: none; }
-  .board { padding: 12px; }
+/* Below the sidebar's width the same list is a dropdown the menu button opens (app.js menuOpen). */
+@media (max-width: 899px) {
   header { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
   .menu, .cur { display: inline-block; }
   .tabs { display: none; }
@@ -380,6 +383,20 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   header.open .tabs button { text-align: left; padding: 11px 12px; font-size: var(--fs-lg); border-color: transparent; }
   header.open .tabs button.on { border-color: var(--accent); }
   header.open .tabs form { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
+  header.open .tabs { max-height: calc(100dvh - 56px); overflow-y: auto; }
+}
+/* The sidebar (docs/dashboards.md, Sidebar): the tab list as a column under the header. */
+@media (min-width: 900px) {
+  .tabs { position: fixed; z-index: 10; top: calc(var(--head) + env(safe-area-inset-top, 0px)); bottom: 0; left: 0; width: 184px; padding: 4px 8px 10px; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); }
+  .tabs button { text-align: left; border-color: transparent; }
+  .tabs form { margin-top: auto; padding-top: 10px; }
+  main { margin-left: 184px; }
+  header { box-sizing: border-box; min-height: calc(var(--head) + env(safe-area-inset-top, 0px)); }
+}
+@media (max-width: 760px) {
+  /* The Queue table keeps state, in, project and title; the detail has the rest. */
+  .tbl th.qx, .tbl td.qx { display: none; }
+  .board { padding: 12px; }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }
   .thsort { display: inline-block; padding: 10px 2px; }

@@ -15,10 +15,10 @@ const el = () => new Proxy({}, {
 });
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
+const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); }, querySelectorAll: (q) => (q.includes("sec-") ? [parts["sec-candidates"]] : []) });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 let scrolled = 0;
-const parts = { "sec-candidates": { tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
+const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
 const doc = { getElementById: (id) => (id === "queue" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let reply = {};
@@ -208,7 +208,7 @@ test("a new section id scrolls to its section, not into the filter", async () =>
   load();
   reply = data;
   scrolled = 0;
-  run("st.arg = 'candidates'; st.views.queue = ''; st.section = null");
+  run("st.tab = 'queue'; st.arg = 'candidates'; st.views.queue = ''; st.section = null");
   run("refreshQueue()");
   await settle();
   assert.equal(scrolled, 1, "the page scrolled to Candidates once it drew");
