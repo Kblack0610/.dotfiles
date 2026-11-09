@@ -1684,8 +1684,10 @@ impl App {
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
-            let t = self.costs.as_ref().and_then(|c| c.tokens.as_ref());
-            if let Some(seek) = self.cv.fold(k.code, t) {
+            let c = self.costs.as_ref();
+            let t = c.and_then(|c| c.tokens.as_ref());
+            let keys = c.and_then(|c| c.burn.keys.as_ref());
+            if let Some(seek) = self.cv.fold(k.code, t, keys) {
                 self.seek = seek;
                 return;
             }
@@ -2923,7 +2925,7 @@ impl App {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Costs => format!(
-                "b/B cut  w window  / query  s sort  S asc/desc  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "b/B cut  w window  / query  s sort  S asc/desc  K keys  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
                 "type a query (kind:session state:failed -who:x), Enter applies, Esc drops it".into()
@@ -5343,6 +5345,22 @@ mod tests {
         a.handle(Msg::Costs(Box::new(c)));
         a.costs_read.busy = true;
         a
+    }
+
+    #[test]
+    fn big_k_reaches_the_keys_fold_on_costs() {
+        let k = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char('K'))));
+        let mut a = costs_app(true);
+        a.handle(k());
+        assert_eq!(a.cv.keys, None, "no fold on the page, nothing to open");
+        a.costs.as_mut().unwrap().burn.keys = Some(hub_core::burn::Keys {
+            head: "1 in lazer".into(),
+            level: "ok",
+        });
+        a.handle(k());
+        assert_eq!(a.cv.keys, Some(true));
+        a.handle(k());
+        assert_eq!(a.cv.keys, Some(false));
     }
 
     #[test]
