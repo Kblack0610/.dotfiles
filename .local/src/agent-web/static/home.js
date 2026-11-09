@@ -248,12 +248,14 @@ function drawHome() {
   const counts = h.sessions ? ` <span class="muted"><a href="#sessions">sessions</a>: ${esc(h.sessions)}</span>` : "";
   const running = sec("Running", h.running.length, capped("home-running", h.running, runningCard, "more", "Nothing running from the queue."), counts);
   const spend = h.spend ? sec("Spend", null, `<div class="cline">${esc(h.spend)} <a href="#costs">Costs</a></div>`) : "";
+  const vitals = h.vitals ? sec("Vitals", esc(h.vitals.head), h.vitals.all_ok ? "" : h.vitals.rows.map((r) =>
+    `<div class="cline vital${r.level === "warn" ? " warn" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join("")) : "";
   const t = h.table;
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
   const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${needsBody(h)}</div></div>`;
-  // The flow strip, health and spend lead, so a long Needs list never buries them.
+  // The flow strip, health, spend and vitals lead, so a long Needs list never buries them.
   paint(el, errs + sec("Flow", null, flowHtml(h.flow, h.grafana)) +
-    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + spend + needs + nightSection() + propSection(h) + running, askst.open);
+    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + spend + vitals + needs + nightSection() + propSection(h) + running, askst.open);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.

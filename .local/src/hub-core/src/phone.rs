@@ -70,7 +70,7 @@ fn row(level: Level, head: &'static str, text: impl Into<String>) -> Row {
 }
 
 /// A number with no trailing zeros: 372, 0.5, 0.86.
-fn plain(x: f64) -> String {
+pub(crate) fn plain(x: f64) -> String {
     let s = format!("{x:.2}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
@@ -160,7 +160,7 @@ fn etas(state: &Value, now: i64) -> Option<String> {
 }
 
 /// The value of `name` for `kpi` (and `window`, when it has one) in the bench series.
-fn kpi(infra: &Infra, name: &str, kpi: &str, window: &str) -> Option<f64> {
+pub(crate) fn kpi(infra: &Infra, name: &str, kpi: &str, window: &str) -> Option<f64> {
     infra
         .get("bench")
         .iter()
