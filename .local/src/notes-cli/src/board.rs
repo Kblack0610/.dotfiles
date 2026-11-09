@@ -452,12 +452,20 @@ fn release_rows(content: &str, cur: Option<V>, want: V) -> (Vec<String>, Vec<Str
 
 /// The top-level closed rows of a frozen note, or none when it does not exist.
 fn frozen_rows(note: &std::path::Path) -> Vec<String> {
+    note_rows(note, |_| true)
+}
+
+/// The closed rows of a version note whose place `keep` accepts: `true` for a row under the
+/// human sheet's `## Sheet done rows`, `false` for any other.
+fn note_rows(note: &std::path::Path, keep: impl Fn(bool) -> bool) -> Vec<String> {
     let Ok(content) = fs::read_to_string(note) else {
         return Vec::new();
     };
     let lines: Vec<&str> = content.lines().collect();
+    let sheet_span = md::section_span(&lines, project_tasks::SHEET_DONE_ROWS);
     project_tasks::done_rows(&content)
         .into_iter()
+        .filter(|r| keep(sheet_span.as_ref().is_some_and(|s| s.contains(&r.start))))
         .map(|r| lines[r.start].trim_end().to_string())
         .collect()
 }
@@ -478,11 +486,17 @@ fn release_view(dir: &std::path::Path, want: V) -> (LaneRows, LaneRows) {
             open.extend(o.into_iter().map(|l| (lane, l)));
             closed.extend(d.into_iter().map(|l| (lane, l)));
         }
-        let note = match lane {
-            Lane::Human => dir.join("versions").join(format!("{ver}.md")),
-            Lane::Agent => crate::projects::agent_note_path(dir, &ver),
+        // The agent note holds both lanes' rolled-off rows, each under its own section.
+        let agent_note = crate::projects::agent_note_path(dir, &ver);
+        let rows = match lane {
+            Lane::Human => {
+                let mut r = frozen_rows(&dir.join("versions").join(format!("{ver}.md")));
+                r.extend(note_rows(&agent_note, |sheet| sheet));
+                r
+            }
+            Lane::Agent => note_rows(&agent_note, |sheet| !sheet),
         };
-        closed.extend(frozen_rows(&note).into_iter().map(|l| (lane, l)));
+        closed.extend(rows.into_iter().map(|l| (lane, l)));
     }
     (open, closed)
 }
@@ -1026,6 +1040,28 @@ mod tests {
                 "- [x] old tag counts as now",
                 "- [x] agent stale (agent) (dropped)"
             ]
+        );
+        // The agent note holds both lanes' rolled-off rows: each counts in its own lane.
+        std::fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        std::fs::write(
+            dir.join("agent/versions/v1.13.0.md"),
+            "# n\n\n## Done rows\n- [x] agent rolled <!-- pr:5 -->\n\n\
+             ## Sheet done rows\n- [x] human rolled <!-- pr:6 -->\n",
+        )
+        .unwrap();
+        let (_, closed) = release_view(&dir, (1, 13, 0));
+        let closed: Vec<String> = closed.iter().map(|(l, r)| release_line(*l, r)).collect();
+        assert!(
+            closed.contains(&"- [x] human rolled (pr:6)".to_string()),
+            "{closed:?}"
+        );
+        assert!(
+            closed.contains(&"- [x] agent rolled (agent) (pr:5)".to_string()),
+            "{closed:?}"
+        );
+        assert!(
+            !closed.iter().any(|l| l.contains("human rolled (agent)")),
+            "{closed:?}"
         );
         // A frozen release is read from its note: the live sheet holds none of it.
         let (open, closed) = release_view(&dir, (1, 12, 0));

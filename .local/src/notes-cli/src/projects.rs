@@ -420,7 +420,9 @@ pub fn prios() -> Result<()> {
             continue;
         };
         for (name, summary) in indexed(&p) {
-            let Some(dir) = summary.parent() else { continue };
+            let Some(dir) = summary.parent() else {
+                continue;
+            };
             let v = prio_of(dir);
             if !v.is_empty() {
                 println!("{name}\t{v}");
@@ -1942,6 +1944,26 @@ fn prs_section<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
     format!("\n## PRs\n{list}")
 }
 
+/// Cut `## <heading>` out of `content`: its non-blank lines, and the content without the
+/// heading or its body. Empty lines and `content` unchanged when it has no such section.
+fn take_section(content: &str, heading: &str) -> (Vec<String>, String) {
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(span) = md::section_span(&lines, heading) else {
+        return (Vec::new(), content.to_string());
+    };
+    let rows = lines[span.clone()]
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim_end().to_string())
+        .collect();
+    let mut rest: Vec<&str> = lines[..span.start - 1].to_vec();
+    rest.extend(&lines[span.end..]);
+    while rest.last().is_some_and(|l| l.trim().is_empty()) {
+        rest.pop();
+    }
+    (rows, format!("{}\n", rest.join("\n")))
+}
+
 /// The closed rows of the version `cur` on a project's agent board: what
 /// [`release_agent_board`] moves, read before it moves them so the frozen note can list their PRs.
 fn agent_closed_rows(dir: &Path, cur: V) -> Vec<String> {
@@ -2107,6 +2129,17 @@ pub fn release(
         );
     }
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
+    // The sheet's rows that already rolled off its Done window wait in the agent note; the
+    // version they belong to is this one, so they freeze with the sheet's own.
+    let agent_note = agent_note_path(&dir, &fmt_version(cur));
+    let note = fs::read_to_string(&agent_note).unwrap_or_default();
+    let (rolled, note_rest) = take_section(&note, project_tasks::SHEET_DONE_ROWS);
+    // The frozen body is only `## Tasks` (`rebuild_sheet`), so the end of it is under Tasks.
+    let frozen_body = if rolled.is_empty() {
+        frozen_body
+    } else {
+        format!("{}\n{}\n", frozen_body.trim_end(), rolled.join("\n"))
+    };
     let agent_rows = agent_closed_rows(&dir, cur);
     let prs = prs_section(
         frozen_body
@@ -2146,6 +2179,11 @@ pub fn release(
         md::write_atomic(&frozen, &append_closeout(&prior, &stamped, &date))?;
     } else {
         fs::write(&frozen, &stamped)?;
+    }
+
+    // Frozen first, then the note: a failure in between leaves the rows in both, never neither.
+    if !rolled.is_empty() {
+        md::write_atomic(&agent_note, &note_rest)?;
     }
 
     // the agent board follows: its done rows go to the version's note
@@ -3096,11 +3134,15 @@ impl Progress {
         }
     }
 
-    /// The version note: its archived `## Done rows` count as closed, and its frozen
+    /// The version note: its archived `## Done rows` (and the sheet's `## Sheet done rows`)
+    /// count as closed, and its frozen
     /// `## Proof` table dates the closes that predate the `done:` stamp.
     fn note(&mut self, content: &str, ix: &crate::epics::Index, today: chrono::NaiveDate) {
         let lines: Vec<&str> = content.lines().collect();
-        if let Some(span) = md::section_span(&lines, "Done rows") {
+        for section in ["Done rows", project_tasks::SHEET_DONE_ROWS] {
+            let Some(span) = md::section_span(&lines, section) else {
+                continue;
+            };
             let body = lines[span].join("\n");
             let rows: Vec<&str> = body.lines().collect();
             self.closed(
@@ -3970,7 +4012,10 @@ mod stage_tag_tests {
         assert_eq!(prio_of_str(&two), "low");
         let only = replace_head_tag(&two, &PRIOS, Some("prio/only")).unwrap();
         assert_eq!(prio_of_str(&only), "only");
-        assert!(!only.contains("#prio/low"), "only replaces the old word: {only}");
+        assert!(
+            !only.contains("#prio/low"),
+            "only replaces the old word: {only}"
+        );
         let cleared = replace_head_tag(&two, &PRIOS, None).unwrap();
         assert_eq!(cleared, s, "clearing must restore the sheet byte for byte");
         assert_eq!(prio_of_str(&cleared), "");
@@ -4631,6 +4676,59 @@ Some prose left on the board.
         assert!(!board.contains("fix(d)"), "{board}");
         let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
         assert!(sheet.contains("feat(c): early"), "{sheet}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The sheet's rows that rolled off its Done window wait in the agent note; the release
+    // freezes them with the version and takes them out of the note.
+    #[test]
+    fn a_release_freezes_the_sheet_rows_that_rolled_off() {
+        let root = board_scratch("release-rolled");
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v1.13.0 #beta\n\n## Tasks\n- [x] feat(a): recent <!-- pr:11 -->\n",
+        )
+        .unwrap();
+        let agent_note = dir.join("agent/versions/v1.13.0.md");
+        fs::write(
+            &agent_note,
+            "# demo v1.13.0 - agent\n\n## Done rows\n- [x] fix(d): agent row <!-- pr:30 -->\n\n\
+             ## Sheet done rows\n- [x] feat(z): rolled off <!-- done:2026-10-01 pr:21 -->\n  its detail\n",
+        )
+        .unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+
+        release(&p, &log, "demo", Bump::Patch, false, false, None, false).unwrap();
+
+        let note = fs::read_to_string(dir.join("versions/v1.13.0.md")).unwrap();
+        assert!(
+            note.contains("- [x] feat(a): recent <!-- pr:11 -->\n- [x] feat(z): rolled off <!-- done:2026-10-01 pr:21 -->\n  its detail\n"),
+            "{note}"
+        );
+        assert!(note.contains("## PRs\n- pr:11\n- pr:21\n"), "{note}");
+        let agent = fs::read_to_string(&agent_note).unwrap();
+        assert!(
+            !agent.contains("Sheet done rows") && !agent.contains("feat(z)"),
+            "{agent}"
+        );
+        // NEGATIVE CONTROL: the agent lane's own rows stay in its note
+        assert!(
+            agent.contains("- [x] fix(d): agent row <!-- pr:30 -->"),
+            "{agent}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
