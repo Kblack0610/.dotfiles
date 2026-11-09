@@ -8,6 +8,6 @@
 # ties a harness to its source with `source`. Edited by hand; claude-acct is the only reader.
 codex    codex         ~/.codex/sessions                      reserve=5
 lazer    litellm-team  ~/.local/state/opencode/litellm-paid.key reserve=20
-reserve  litellm-key   ~/.local/state/claude-lazer/key        max_live=2 parent=lazer
-glm      litellm-key   ~/.local/state/agentctl/glm.key        parent=lazer
-eval     litellm-key   ~/.local/state/agentctl/lazer-eval.key parent=lazer
+reserve  litellm-key   ~/.local/state/claude-lazer/key        max_live=2 parent=lazer reserve=15
+glm      litellm-key   ~/.local/state/agentctl/glm.key        parent=lazer reserve=15
+eval     litellm-key   ~/.local/state/agentctl/lazer-eval.key parent=lazer reserve=15
