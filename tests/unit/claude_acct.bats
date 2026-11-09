@@ -1286,6 +1286,32 @@ pro_rollout() {
   [ "$(field codex .room.ok <<<"$output")" = false ]
 }
 
+@test "sources: a codex week logged as 10081 minutes is still the week" {
+  src_setup
+  pro_rollout 30 84 10081
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 30 ]
+}
+
+@test "sources: a codex window with no length is unread, and the stderr names it" {
+  src_setup
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":10,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":40,"resets_at":%s}}}}\n' \
+    "$((NOW + 3600))" "$((NOW + 84 * 3600))" > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = unread ]
+  [[ "$stderr" == *"unknown length [300,null]"* ]]
+}
+
+@test "sources: a codex record with only a 5h window has no week reading" {
+  src_setup
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":20,"window_minutes":300,"resets_at":%s},"secondary":null}}}\n' \
+    "$((NOW + 3600))" > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .five_hour <<<"$output")" = 20 ]
+  [ "$(field codex .week_used <<<"$output")" = null ]
+}
+
 @test "sources: a windowed record of another limit_id is not the plan's usage" {
   src_setup
   rollout 40 10 84
