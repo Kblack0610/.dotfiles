@@ -63,7 +63,7 @@ epic_new() {
   out="$(notes ptask "$p" add -- "$text #new" 2>&1)" || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 3 ] || return 1
   # A new epic prints its row; a twin is named on the refusal line. Either carries the id.
-  sed -nE 's/.*epic\(.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/\1/p' <<<"$out" | tail -n 1 | grep . || return 1
+  sed -nE 's/.*epic\(.*<!--(.*[^a-z])?id:([a-z0-9]+-[0-9]+).*/\2/p' <<<"$out" | tail -n 1 | grep . || return 1
 }
 
 # under_epic <row> <id>: the row with `#of/<id>` added unless it names a parent already.

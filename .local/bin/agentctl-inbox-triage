@@ -401,7 +401,7 @@ dup: only when another row in this list asks for the same thing; never the row's
 drop: only when the row is empty, is not a task, or itself says it is done, answered or superseded. Never drop a row for being old or unclear.
 A row marked (doing) is in progress: keep or rewrite it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.
 
-A row you rewrite that belongs to an open feature epic below ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard). $(new_epic_rule)
+A row you rewrite that belongs to an open feature epic below ends with #of/<the epic's id>. Otherwise give it no #of. $(new_epic_rule)
 
 ## Systems (project: ids)
 $(systems_of "$p")
