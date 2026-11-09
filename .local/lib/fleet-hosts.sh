@@ -18,13 +18,38 @@ _fh_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${FLEET_HOSTS_GROUP:=fleet_workers}"
 : "${FLEET_SSH_TIMEOUT:=5}"   # seconds an ssh to a worker or the state host may take to connect, and may go silent
 
-# fleet_inventory -> the inventory file: FLEET_INVENTORY, else home-config's from the project map.
-fleet_inventory() {
-  if [ -n "${FLEET_INVENTORY:-}" ]; then printf '%s' "$FLEET_INVENTORY"; return; fi
+# fleet_inventory_repo -> home-config's checkout, from the project map.
+fleet_inventory_repo() {
   declare -F project_repo_path >/dev/null ||
     . "${PROJECT_NAME_LIB:-$_fh_lib/../../.config/shared-hooks/project-name.sh}" 2>/dev/null || return 1
   local hc; hc=$(project_repo_path home-config 2>/dev/null) && [ -n "$hc" ] || return 1
-  printf '%s/ansible/inventory.yml' "$hc"
+  printf '%s' "$hc"
+}
+
+# fleet_inventory -> the inventory file: FLEET_INVENTORY, else home-config's as its upstream branch
+# holds it (a copy under the cache dir), else its working tree when it has no upstream. Nothing pulls
+# that checkout, so its working tree lags what merged on the forge; fleet_roster_fetch moves the ref.
+fleet_inventory() {
+  if [ -n "${FLEET_INVENTORY:-}" ]; then printf '%s' "$FLEET_INVENTORY"; return; fi
+  local hc; hc=$(fleet_inventory_repo) || return 1
+  local cache="${XDG_CACHE_HOME:-$HOME/.cache}/fleet-hosts"
+  if mkdir -p "$cache" 2>/dev/null &&
+    git -C "$hc" show '@{u}:ansible/inventory.yml' >"$cache/inventory.yml.$$" 2>/dev/null &&
+    mv -f "$cache/inventory.yml.$$" "$cache/inventory.yml"; then
+    printf '%s' "$cache/inventory.yml"
+  else
+    rm -f "$cache/inventory.yml.$$"
+    printf '%s/ansible/inventory.yml' "$hc"
+  fi
+}
+
+# fleet_roster_fetch: fetch home-config's upstream, the ref fleet_inventory reads, so a roster change
+# merged on the forge reaches the next pass. Only the remote-tracking ref moves, never the working
+# tree. Capped and fail-soft: an unreachable forge leaves the roster as last fetched.
+fleet_roster_fetch() {
+  [ -z "${FLEET_INVENTORY:-}" ] || return 0
+  local hc; hc=$(fleet_inventory_repo) || return 0
+  timeout "${FLEET_FETCH_SECS:-20}" git -C "$hc" fetch --quiet 2>/dev/null || true
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:

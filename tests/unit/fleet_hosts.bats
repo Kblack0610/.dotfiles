@@ -160,3 +160,29 @@ EOF
   assert_failure
   assert_output --partial 'could not open a session on hp-victus'
 }
+
+@test "the roster is the inventory as home-config's upstream holds it once fetched, not its stale working tree" {
+  unset FLEET_INVENTORY
+  local hc="$SANDBOX/home-config" up="$SANDBOX/up.git" pusher="$SANDBOX/pusher"
+  git init -q --bare "$up"
+  git clone -q "$up" "$pusher" 2>/dev/null
+  mkdir -p "$pusher/ansible"
+  printf 'all:\n  children:\n    fleet_workers:\n      hosts: {}\n' > "$pusher/ansible/inventory.yml"
+  git -C "$pusher" add -A && git -C "$pusher" -c user.name=t -c user.email=t@t commit -qm one && git -C "$pusher" push -q origin HEAD 2>/dev/null
+  git clone -q "$up" "$hc" 2>/dev/null
+  printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        razer-laptop:\n          ansible_host: 192.0.2.26\n          fleet_place: true\n' > "$pusher/ansible/inventory.yml"
+  git -C "$pusher" -c user.name=t -c user.email=t@t commit -qam two && git -C "$pusher" push -q origin HEAD 2>/dev/null
+  export HC_CHECKOUT="$hc"
+  project_repo_path() { printf '%s' "$HC_CHECKOUT"; }
+
+  run fleet_hosts
+  assert_output ''
+  fleet_roster_fetch
+  unset FLEET_HOSTS_JSON
+  assert_equal "$(fleet_host razer-laptop | jq -r '"\(.dest) \(.place)"')" '192.0.2.26 true'
+  assert_equal "$(fleet_inventory)" "$XDG_CACHE_HOME/fleet-hosts/inventory.yml"
+  grep -q 'hosts: {}' "$hc/ansible/inventory.yml"
+
+  git -C "$hc" branch -q --unset-upstream
+  assert_equal "$(fleet_inventory)" "$hc/ansible/inventory.yml"
+}
