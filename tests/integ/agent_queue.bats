@@ -910,7 +910,7 @@ notes --profile bnb ptask game --agent start gm-9"
   [ "$(field "$f" note)" = "a b c" ]
 }
 
-@test "retask replaces an active item's task from args or stdin and keeps its header; refuses an empty task or a done item" {
+@test "retask replaces a queued item's task from args or stdin and keeps its header; refuses an empty task or a started or done item" {
   "$AQ" add --project game --from "board:game:ar-9" --tags "at:2030-01-01T09:00" --slug r "expect 16.7"
   f="$(item queued r)"
   head="$(sed '/^---$/q' "$f")"
@@ -925,6 +925,9 @@ notes --profile bnb ptask game --agent start gm-9"
   assert_output --partial "line three"
   run "$AQ" retask r " "
   assert_failure; assert_output --partial "no task"
+  "$AQ" move r running
+  run "$AQ" retask r "too late"
+  assert_failure; assert_output --partial "r is running: its session already has the brief"
   "$AQ" move r done --status ok
   run "$AQ" retask r "too late"
   assert_failure; assert_output --partial "nothing active with slug r"
