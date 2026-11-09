@@ -1521,11 +1521,12 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if sweep {
-                project_tasks::sweep_all(&log, dry_run)?;
+                // Exits 1 when a sheet failed, so the nightly runner reads the failure.
+                let rc = project_tasks::sweep_all(&log, dry_run)?;
                 if !dry_run {
                     lab_refresh::kick();
                 }
-                std::process::exit(0);
+                std::process::exit(rc);
             }
             if migrate_rows {
                 migrate_rows::run(&log, dry_run)?;
