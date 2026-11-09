@@ -29,10 +29,8 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/../../../.config/shared-hooks/project-name.sh" || exit 1
 
 QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
-# fleet-sessions' state document, the one place a session's NEEDS reason is decided.
+# fleet-sessions' state document: a worker host's sessions, which no local read can see.
 FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-# The NEEDS reasons session_bucket gives a session waiting on a dialog in its own terminal.
-DIALOG_REASONS='["waiting on a prompt or permission", "plan awaiting approval"]'
 # The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]". The
 # picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
@@ -43,16 +41,23 @@ QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . C-d/C-u pgup/pg
 # beside the card (a third of the panel). Rows are NUL-ended, so fzf shows the two lines as one
 # item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
 # selected row still reads on fzf's selection bar.
-# prompt_list: the sessions with a dialog open,
-# "<target>\t<project>\t<idle min>\t<doing>\t<topic>\t<reason>", the project resolved from the
-# session's directory the way an ask's is.
+# prompt_list: the sessions with a dialog open now,
+# "<target>\t<project>\t<idle min>\t<doing>\t<topic>", the project resolved from the session's
+# directory the way an ask's is. Live from agent-panel, so a plan shows as soon as it waits and
+# goes when it is answered; QUESTIONS_ANSWERED is the one just answered, whose status file can
+# trail its pane by a moment. A worker's sessions come from the state document, a pass behind.
 prompt_list() {
-  [ -r "$FLEET_STATE_FILE" ] || return 0
   local t cwd rest
-  jq -r --argjson r "$DIALOG_REASONS" '.sessions[]? | select(.bucket == "NEEDS" and (.reason | IN($r[])))
-    | [.target, (.cwd // ""), (.idle_min // 0),
-       (.doing // "" | gsub("[\t\n]"; " ")), (.topic // "" | gsub("[\t\n]"; " ")), .reason] | @tsv' \
-    "$FLEET_STATE_FILE" 2>/dev/null |
+  {
+    agent-panel list --json 2>/dev/null | jq -r --argjson now "$(date +%s)" --arg done "${QUESTIONS_ANSWERED:-}" '
+      select(.status == "waiting" and .target != $done)
+      | [.target, (.cwd // ""), ((($now - (.idle_since // $now)) / 60 | floor | if . < 0 then 0 else . end)),
+         (.doing // "" | gsub("[\t\n]"; " ")), (.summary // "" | gsub("[\t\n]"; " "))] | @tsv' 2>/dev/null
+    [ -r "$FLEET_STATE_FILE" ] && jq -r --arg done "${QUESTIONS_ANSWERED:-}" '.sessions[]? | select((.target | contains("@")) and .activity == "waiting" and .target != $done)
+      | [.target, (.cwd // ""), (.idle_min // 0),
+         (.doing // "" | gsub("[\t\n]"; " ")), (.topic // "" | gsub("[\t\n]"; " "))] | @tsv' \
+      "$FLEET_STATE_FILE" 2>/dev/null
+  } |
     while IFS=$'\t' read -r t cwd rest; do
       printf '%s\t%s\t%s\n' "$t" "$( [ -n "$cwd" ] && resolve_project_name "$cwd" 2>/dev/null)" "$rest"
     done
@@ -105,7 +110,7 @@ cmd_rows() {
         e = now - $3 * 60
         L[k] = sprintf("2\t%d\t@%s\t", e, $1); A[k] = age(e)
         tool = $4; sub(/:.*/, "", tool)
-        if (tool == "ExitPlanMode" || $6 == "plan awaiting approval") Q[k] = "plan waiting for approval"
+        if (tool == "ExitPlanMode") Q[k] = "plan waiting for approval"
         else if (tool == "AskUserQuestion") Q[k] = "question waiting for an answer"
         else Q[k] = "prompt waiting in its terminal" ($4 != "" ? ": " $4 : "")
         S[k] = ($5 != "") ? faint $5 off : ""
@@ -198,7 +203,8 @@ after() {
   local n
   n="$(cmd_rows | rows_count)"
   st_write ""
-  printf 'hide-input+change-prompt~~+reload(%s rows)+change-header~%s~+' "$(printf '%q' "$SELF")" "$(waiting $n)"
+  printf 'hide-input+change-prompt~~+reload(QUESTIONS_ANSWERED=%q %q rows)+change-header~%s~+' \
+    "${QUESTIONS_ANSWERED:-}" "$SELF" "$(waiting $n)"
   if [ "$n" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
 }
 # The header back to the count, once typing (which names the question there) is over.
@@ -272,7 +278,7 @@ dialog_send() {
   local k="$1" t="${2#@}" seen="$3" err rc=0
   err="$(agent-panel answer "$t" "$k" --expect "$seen" -- ${4:+"$4"} 2>&1 >/dev/null)" || rc=$?
   case "$rc" in
-  0) after "sent $k \"$seen\" to $t" ;;
+  0) QUESTIONS_ANSWERED="$t" after "sent $k \"$seen\" to $t" ;;
   3) after "not taken: $t did not move on . g goes there" ;;
   4) after "not sent: ${err:-the dialog changed or closed}" ;;
   *) after "not sent: ${err:-agent-panel answer failed}" ;;

@@ -519,13 +519,23 @@ tmux_labels() {
 # session open that way. An ask with no owner blocks nobody; the state document still
 # lists it under `asks`.
 asks_for() {
-  local f
   [ -n "$1" ] || return 0
-  for f in "$ASK_ROOT"/*/*.md; do
-    [ -f "$f" ] || continue
-    grep -q '^status: pending$' "$f" || continue
-    grep -qxF "claude_session: $1" "$f" && basename "$f" .md
-  done
+  # The store keeps every ask ever filed, so collect reads it once for its whole pass.
+  awk -F'\t' -v s="$1" '$1 == s { print $2 }' <<<"${PENDING_ASKS-$(pending_asks)}"
+}
+
+# pending_asks -> "<claude session>\t<ask id>" per pending ask in the store, per owner line.
+pending_asks() {
+  awk '
+    function flush(   i, id) {
+      id = file; sub(/.*\//, "", id); sub(/\.md$/, "", id)
+      if (pending) for (i = 1; i <= n; i++) print owner[i] "\t" id
+      pending = 0; n = 0
+    }
+    FNR == 1 { if (file != "") flush(); file = FILENAME }
+    $0 == "status: pending" { pending = 1 }
+    /^claude_session: ./ { owner[++n] = substr($0, 17) }
+    END { if (file != "") flush() }' "$ASK_ROOT"/*/*.md 2>/dev/null
 }
 
 # Panes (<server>/<pane id>, agent-panel's .pane) holding a heavy process, one per line, from
@@ -1172,6 +1182,8 @@ collect() {
   # blink (every session "gone", every PR "-") as a change.
   # Exit 3 (a read with a gap) still prints the rows it read; they are kept, and the pass is named.
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
+  local PENDING_ASKS
+  PENDING_ASKS="$(pending_asks)"
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks ownask hv bucket fact edited \
