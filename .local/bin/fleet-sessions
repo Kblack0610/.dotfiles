@@ -829,6 +829,21 @@ main_health() {
   cut -f1-4 "$key"
 }
 
+# A --no-checkout submodule clone has HEAD but no index entries or working files.
+# Only ignore that state at the unchanged pin; a populated index preserves real deletions.
+empty_submodule() {
+  local d="$1" path="$2" pin staged head files
+  [ -e "$d/$path/.git" ] || return 1
+  pin="$(git -C "$d" rev-parse "HEAD:$path" 2>/dev/null)" || return 1
+  staged="$(git -C "$d" rev-parse ":$path" 2>/dev/null)" || return 1
+  head="$(git -C "$d/$path" rev-parse HEAD 2>/dev/null)" || return 1
+  [ "$pin" = "$head" ] && [ "$staged" = "$head" ] || return 1
+  files="$(find "$d/$path" -mindepth 1 -name .git -prune -o ! -type d -print -quit 2>/dev/null)" || return 1
+  [ -z "$files" ] || return 1
+  files="$(git -C "$d/$path" ls-files 2>/dev/null)" || return 1
+  [ -z "$files" ]
+}
+
 # dirty_paths <dir> <edited files, one absolute path per line>: the session's dirty files,
 # one repo-relative path per line. In its own worktree (under ~/.worktrees/) every dirty file
 # is its own. A repo's main checkout is shared with the human and other sessions, so there
@@ -839,13 +854,17 @@ dirty_paths() {
   case "$d/" in
     "$HOME/.worktrees/"*)
       git -C "$d" status --porcelain -z --no-renames 2>/dev/null \
-        | while IFS= read -r -d '' e; do printf '%s\n' "${e:3}"; done; return ;;
+        | while IFS= read -r -d '' e; do
+          empty_submodule "$d" "${e:3}" || printf '%s\n' "${e:3}"
+        done; return ;;
   esac
   [ -n "$edited" ] || return 0
   top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || return 0
   # -uall: an untracked file inside a new dir is listed by name, as edited_files names it.
   git -C "$d" status --porcelain -z --no-renames -uall 2>/dev/null \
-    | while IFS= read -r -d '' e; do printf '%s/%s\n' "$top" "${e:3}"; done \
+    | while IFS= read -r -d '' e; do
+        empty_submodule "$top" "${e:3}" || printf '%s/%s\n' "$top" "${e:3}"
+      done \
     | grep -xFf <(printf '%s\n' "$edited" | xargs -r -d '\n' realpath -m -- 2>/dev/null | grep .) \
     | cut -c"$(( ${#top} + 2 ))"-
 }

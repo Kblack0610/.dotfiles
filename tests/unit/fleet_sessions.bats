@@ -1505,6 +1505,59 @@ research_item() {
   [ "$(jq -c '[.dirty, .blockers]' <<<"$output")" = '[1,["1 dirty file(s) (look-and-feel.conf)"]]' ]
 }
 
+# A clone made with --no-checkout has HEAD but an empty index and working directory.
+empty_submodule_fixture() {
+  landed_fixture
+  mkdir -p "$HOME/.worktrees"
+  git -C "$SANDBOX/wt" checkout -q --detach
+  export EMPTY_WT="$HOME/.worktrees/empty submodule"
+  git -C "$SANDBOX/wt" worktree add -q "$EMPTY_WT" feat/x
+  git init -q "$SANDBOX/assets"
+  echo asset > "$SANDBOX/assets/asset.txt"
+  git -C "$SANDBOX/assets" add asset.txt
+  git -C "$SANDBOX/assets" -c user.email=t@t -c user.name=t commit -qm asset
+  git clone -q --no-checkout "$SANDBOX/assets" "$EMPTY_WT/External/asset library"
+  git -C "$EMPTY_WT" -c protocol.file.allow=always submodule add -q "$SANDBOX/assets" 'External/asset library'
+  git -C "$EMPTY_WT" -c user.email=t@t -c user.name=t commit -qm submodule
+  local oid
+  oid="$(git -C "$EMPTY_WT" rev-parse HEAD)"
+  printf '#!/usr/bin/env bash\nprintf "feat/x\\t875\\tMERGED\\tPASS\\t%s\\n"\n' "$oid" > "$SANDBOX/bin/gh"
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  panel "$EMPTY_WT" "$SANDBOX/plan.md"
+}
+
+@test "end to end: a same-pin submodule cloned without checkout reads clean and DONE" {
+  empty_submodule_fixture
+  [ "$(git -C "$EMPTY_WT/External/asset library" status --porcelain)" = 'D  asset.txt' ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  assert_equal "$(jq -c '[.dirty, .bucket, .finished, .blockers]' <<<"$output")" '[0,"DONE",true,[]]'
+  # The shared-checkout attribution path uses the same filter.
+  ln -s "$EMPTY_WT" "$SANDBOX/shared"
+  run dirty_paths "$SANDBOX/shared" "$EMPTY_WT/External/asset library"
+  assert_output ''
+}
+
+@test "empty submodule filtering preserves working files, indexed deletions, and changed pins" {
+  empty_submodule_fixture
+  local sub="$EMPTY_WT/External/asset library"
+  echo new > "$sub/new.txt"
+  run dirty_paths "$EMPTY_WT" ''
+  assert_output 'External/asset library'
+  rm "$sub/new.txt"
+  # An index populated by checkout makes missing working files a real deletion.
+  git -C "$sub" read-tree HEAD
+  run dirty_paths "$EMPTY_WT" ''
+  assert_output 'External/asset library'
+  git -C "$sub" read-tree --empty
+  git -C "$sub" -c user.email=t@t -c user.name=t commit -q --allow-empty -m next
+  run dirty_paths "$EMPTY_WT" ''
+  assert_output 'External/asset library'
+  git -C "$EMPTY_WT" add 'External/asset library'
+  run dirty_paths "$EMPTY_WT" ''
+  assert_output 'External/asset library'
+}
+
 @test "end to end: edits in other worktrees block a clean cwd from reading LANDED or finished" {
   landed_fixture
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/gh"
