@@ -110,6 +110,9 @@ overrides() {
   mkdir -p "$HOME/.local/src/docs" "$HOME/.config/agentctl/agents"
   echo '| Shell | skills `beta` |' > "$HOME/.local/src/docs/planning.md"
   echo 'SKILL=gamma' > "$HOME/.config/agentctl/agents/r.conf"
+  # Lessons are history: a skill named in one is still hidden.
+  mkdir -p "$HOME/.agent/lessons"
+  echo 'The delta skill was stale once.' > "$HOME/.agent/lessons/p.md"
   echo '{"skillOverrides":{}}' > "$SANDBOX/settings.json"
   FIXTURE_USED="alpha" run overrides
   assert_success

@@ -768,7 +768,9 @@ if [ "$MODE" = overrides ]; then
   cur=$(jq -c '.skillOverrides // {}' "$SETTINGS") || { echo "skill-drift --overrides: $SETTINGS does not parse" >&2; exit 2; }
   load_usage "$TOGGLE_DAYS"
   [ ${#USED[@]} -gt 0 ] || { echo "skill-drift --overrides: no use counted in ${TOGGLE_DAYS}d of transcripts, which is not the same as nothing used" >&2; exit 2; }
-  mapfile -t ROUTE_DOCS < <(doc_set; for f in "$SKILLS"/*/SKILL.md "$HOME"/.config/agentctl/agents/*.conf; do [ -f "$f" ] && printf '%s\n' "$f"; done)
+  # Where a reader or a runner is sent to a skill. Not lessons, anchors or memory: they are history, and a skill named in prose there is not routed.
+  AC="$HOME/.config/agentctl"
+  mapfile -t ROUTE_DOCS < <(for f in "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" "$SKILLS"/*/SKILL.md "$HOME"/.local/src/docs/*.md "$AC"/*.md "$AC"/triage-routes "$AC"/agents/*.conf "$AC"/roles/* "$AC"/prompts/*; do [ -f "$f" ] && printf '%s\n' "$f"; done)
   declare -A STATE=()
   while IFS=$'\t' read -r s v; do STATE[$s]=$v; done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"$cur")
   # A paths-scoped or model-disabled skill has its own listing rule; the toggle leaves it alone.
