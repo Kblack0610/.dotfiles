@@ -162,9 +162,6 @@ fn detail(n: &Node, v: &LineView, p: Palette, out: &mut Vec<Line<'static>>) {
             Line::raw(format!("  {}", t.text))
         });
     }
-    if let Some(g) = n.gap {
-        out.push(Line::styled(format!("  {g}"), p.dim()));
-    }
     if let Some(e) = &n.elsewhere {
         out.push(Line::styled(format!("  {e}"), p.dim()));
     }
@@ -269,7 +266,6 @@ mod tests {
             facts: vec![],
             problems_n: 0,
             problems: vec![],
-            gap: None,
             elsewhere: None,
         }
     }

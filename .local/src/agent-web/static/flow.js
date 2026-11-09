@@ -48,7 +48,6 @@ function railDetail(n) {
     (n.stop ? `<div class="rstop">Stopped: ${esc(n.stop)}</div>` : "") +
     n.facts.map((f) => `<div>${esc(f)}</div>`).join("") +
     (n.problems_n ? `<div class="rphead">Problems, 24h: ${n.problems_n}${view}</div>${n.problems.map(railProblem).join("")}` : view && `<div>${view}</div>`) +
-    (n.gap ? `<div class="muted">${esc(n.gap)}</div>` : "") +
     (n.elsewhere ? `<div class="muted">${esc(n.elsewhere)}</div>` : "") + `</div>`;
 }
 
