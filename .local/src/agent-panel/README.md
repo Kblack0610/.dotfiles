@@ -3,7 +3,8 @@
 A cross-platform tmux chooser for running Claude / AI agents. Lists every tmux
 window running an agent, grouped by project, with a live status glyph and a
 preview pane — pick one with fzf and jump to it. A magenta `P` after the glyph
-marks an agent in plan mode, read from the transcript's latest `permissionMode`.
+marks an agent in plan mode, read from the transcript's latest `permissionMode`;
+a bold white `M` in the same column marks manual (`default`) mode, which `manual-mode-investigate.sh` makes investigate-only, so that tab answers and does no work on its own. The preview's status line says `plan mode` or `manual mode` the same way.
 A blue `A` beside it marks an agent with a pending ask: a file under
 `~/.agent/asks/<project>/` (or `$AGENT_ASK_DIR`) with `status: pending` whose
 `claude_session` is this agent's session id. That is the same rule as `asks_for` in
