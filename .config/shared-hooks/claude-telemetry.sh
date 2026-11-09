@@ -135,3 +135,28 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
             claude_otel_attr queue.item "${AGENT_QUEUE_ITEM:-}"
     }
 fi
+
+# claude_launch_env -> the launch-line prefix for a claude started as a tmux pane command
+# (fleet-dispatch): `env` dropping a parent Claude session's identity, then every variable this file
+# exports, shell-quoted, with OTEL_RESOURCE_ATTRIBUTES from claude_telemetry_launch. No rc file runs in
+# such a pane, and it gets the tmux server's environment; a server started from inside a Claude
+# session holds that session's id, CHILD_SESSION and ATTENDED flags and messaging socket, and no
+# telemetry endpoint. Measured 2026-11-08: 16 of 16 live queue sessions exported no cost.
+# tests/unit/claude_telemetry.bats checks this list against every `export` above.
+claude_launch_env() {
+    local v val
+    printf 'env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN '
+    # CLAUDE_AUTO_DROP_TOOLS is read by the launcher (as --disallowedTools), never by claude.
+    for v in ENABLE_CLAUDEAI_MCP_SERVERS CLAUDE_CODE_ARTIFACT; do
+        val=$(printenv "$v") && printf '%s=%q ' "$v" "$val"
+    done
+    # The export, only where the guard above defined it: off the LAN nothing is added.
+    command -v claude_telemetry_launch >/dev/null 2>&1 || return 0
+    for v in CLAUDE_CODE_ENABLE_TELEMETRY OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_PROTOCOL \
+        OTEL_METRICS_EXPORTER OTEL_LOGS_EXPORTER OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE \
+        CLAUDE_CODE_ENHANCED_TELEMETRY_BETA OTEL_TRACES_EXPORTER OTEL_LOG_USER_PROMPTS \
+        OTEL_LOG_ASSISTANT_RESPONSES OTEL_LOG_TOOL_DETAILS OTEL_LOG_TOOL_CONTENT; do
+        val=$(printenv "$v") && printf '%s=%q ' "$v" "$val"
+    done
+    printf 'OTEL_RESOURCE_ATTRIBUTES=%q ' "$(claude_telemetry_launch)"
+}

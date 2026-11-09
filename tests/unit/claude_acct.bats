@@ -352,8 +352,11 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
   assert_output --partial 'moved from the main Claude account to alt'
   run resume_cmd 0 "/w t" "" 'claude --resume s1' 'hi there'
   assert_output "cd /w\\ t && env -u CLAUDE_CONFIG_DIR claude --resume s1 hi\\ there"
-  run resume_cmd 1 /w /a 'claude --resume s1' hi
-  assert_output 'CLAUDE_CONFIG_DIR=/a claude --resume s1 hi'
+  # A pane that is its claude gets the launch env; with no claude-telemetry.sh it says so, and still
+  # carries the queue item.
+  run resume_cmd 1 /w /a 'claude --resume s1' hi fix-menu
+  assert_line --index 0 --partial 'no launch env from'
+  assert_line --index 1 'CLAUDE_CONFIG_DIR=/a AGENT_QUEUE_ITEM=fix-menu claude --resume s1 hi'
 }
 
 # week <account> <used%> <hours-until-reset> -- a fresh answer with a weekly window, now at NOW
