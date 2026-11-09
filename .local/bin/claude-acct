@@ -190,9 +190,9 @@ fetch() {
 # every token_count event carries them as of that call, and Codex has no usage endpoint to ask. Codex
 # also logs records with no window (limit_id "premium"), often last, so each file is read from its
 # end for the newest record with a window; a line that does not parse (a rollout mid-write) is
-# skipped. Every rollout is a candidate, newest first: a run refused at the usage limit logs only a
-# windowless record, and on 2026-11-08 21 of them in a row hid the last real reading from a 20-file
-# scan. A window whose reset has passed reads as unused, with no reset until a rollout says when.
+# skipped. Every rollout is a candidate, newest first, until one has a window: a run refused at the
+# usage limit logs only a windowless record, and any number of them may follow the last reading.
+# A window whose reset has passed reads as unused, with no reset until a rollout says when.
 read_codex() {
     local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" f out
     while IFS= read -r f; do
