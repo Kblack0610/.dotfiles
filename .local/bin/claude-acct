@@ -187,25 +187,35 @@ fetch() {
 # the only per-kind code; usage_json treats every row alike. Exit 1 when the source cannot be read.
 
 # read_codex <sessions dir> -> the plan's rate limits from the newest rollout with a windowed record:
-# every token_count event carries them as of that call, and Codex has no usage endpoint to ask. Codex
-# also logs records with no window (limit_id "premium"), often last, so each file is read from its
-# end for the newest record with a window; a line that does not parse (a rollout mid-write) is
-# skipped. Every rollout is a candidate, newest first, until one has a window: a run refused at the
-# usage limit logs only a windowless record, and any number of them may follow the last reading.
+# every token_count event carries them as of that call, and Codex has no usage endpoint to ask. Only
+# the plan's own limit counts (limit_id "codex", or none in older rollouts); Codex also logs records
+# with no window (limit_id "premium"), often last, so each file is read from its end for the newest
+# record with a window; a line that does not parse (a rollout mid-write) is skipped. Every rollout is
+# a candidate, newest first, until one has a window: a run refused at the usage limit logs only a
+# windowless record, and any number of them may follow the last reading.
+# A window is named by its length, never its slot: Plus logs the 5h window as primary and the week
+# as secondary, Pro logs the week as primary and no 5h window at all. A length that is neither makes
+# the source unread, so it blocks instead of being paced on a guess.
 # A window whose reset has passed reads as unused, with no reset until a rollout says when.
 read_codex() {
     local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" f out
     while IFS= read -r f; do
         out=$(tac "$f" | grep '"rate_limits"' | jq -cR --argjson now "$now" '
-            fromjson? | .payload.rate_limits? | objects | select(.primary or .secondary) | . as $r
+            fromjson? | .payload.rate_limits? | objects | select((.limit_id // "codex") == "codex")
+            | select(.primary or .secondary) | . as $r
+            | [$r.primary, $r.secondary] | map(select(. != null)) as $ws
             | def win(w): if w == null then null
                 elif (w.resets_at // 0) <= $now then {utilization: 0, resets_at: null}
                 else {utilization: w.used_percent, resets_at: (w.resets_at | todate)} end;
-            {plan: $r.plan_type, five_hour: win($r.primary), seven_day: win($r.secondary),
-             window: (($r.secondary.window_minutes // 10080) * 60), paced: true,
+              def named(m): first($ws[] | select(.window_minutes == m)) // null;
+            if any($ws[]; .window_minutes != 300 and .window_minutes != 10080) then {unknown: true}
+            else
+            {plan: $r.plan_type, five_hour: win(named(300)), seven_day: win(named(10080)),
+             window: 604800, paced: true,
              reached: ($r.rate_limit_reached_type != null
-                       and ([$r.primary.resets_at, $r.secondary.resets_at] | map(select(. != null)) | min // 0) > $now)}' |
+                       and ($ws | map(.resets_at | select(. != null)) | min // 0) > $now)} end' |
             head -n1)
+        [[ "$out" == *'"unknown":true'* ]] && return 1
         [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
     done < <(find "$1" -name 'rollout-*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
     return 1
