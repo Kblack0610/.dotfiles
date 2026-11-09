@@ -212,7 +212,8 @@ function tblStamp(table) {
     [...tr.cells].forEach((td, i) => {
       // A control is never hidden: a row's detail need not repeat its buttons.
       td.dataset.role = heads[i].dataset.role || (td.querySelector("button, select, input") ? "glance" : "rest");
-      td.dataset.label = heads[i].dataset.label || "";
+      td.dataset.label = heads[i].dataset.label ?? heads[i].textContent.trim();
+      if ("named" in heads[i].dataset) td.dataset.named = "";
     });
     if (tblExpanded.has(tr.textContent)) tr.classList.add("tx");
   }
