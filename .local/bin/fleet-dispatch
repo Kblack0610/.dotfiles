@@ -1623,7 +1623,7 @@ conversation_live() {
 
 # wound_down <id> -- it asked to close: armed, or fired since its window last showed in a record.
 # wind-down.sh disarm clears both on the next prompt, so a conversation taken up again is reopened.
-wound_down() { compgen -G "$HOME/.agent/spin-down/*__$1.[rf]*" >/dev/null; }
+wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compgen -G "$HOME/.agent/spin-down/*__$1.[rf]*" >/dev/null; }
 
 # restore_world <lost record> <dry run 0|1> -- reopen each conversation as a window of the session
 # it was in, through start, with the running or waiting queue item that lists its Claude session
@@ -1955,7 +1955,8 @@ unstart_orphans() {
 # a board row still started closes on merge proof, close_row), OPEN waits in waiting/ for the merge
 # (where a --pr-only run leaves it), CLOSED is failed; a state gh cannot read, or a bare pr: whose PR
 # lacks the item's stamp, leaves it for the next pass. No PR but a `report` (a doc+ask kind's
-# doc, a stack-review report) is done ok: that was the deliverable. Neither is failed, the reason in note.
+# doc, a stack-review report) is done ok: that was the deliverable. A waiting item with neither
+# stays parked on its blocker, any other item with neither is failed, the reason in note.
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
@@ -1977,6 +1978,12 @@ settle_item() {
   fi
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait.
   [ "$state:$st" != OPEN:waiting ] || return 0
+  if [ "$st:$pr$report" = waiting: ]; then
+    [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
+    agent-queue set "$1" "note=session $2 ended; waiting without a PR" >/dev/null
+    logline "reaped $2: queue item $1 stays waiting without a PR"
+    return 0
+  fi
   dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
   if [ -n "$pr" ]; then
     case "$state" in
