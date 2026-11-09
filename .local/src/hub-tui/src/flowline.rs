@@ -357,11 +357,18 @@ mod tests {
         assert_eq!(v.key(KeyCode::Char(']'), &r), Took::Moved);
         assert_eq!(r.nodes[v.at(&r)].key, "running");
         let mut moved = rail();
-        let mut held = LineView { node: None, problem: None };
+        let mut held = LineView {
+            node: None,
+            problem: None,
+        };
         moved.worst = 3;
         held.key(KeyCode::Char('}'), &moved);
         moved.worst = 0;
-        assert_eq!(moved.nodes[held.at(&moved)].key, "running", "a marked problem holds its step");
+        assert_eq!(
+            moved.nodes[held.at(&moved)].key,
+            "running",
+            "a marked problem holds its step"
+        );
         assert_eq!(v.key(KeyCode::Enter, &r), Took::No, "the table's Enter");
         v.key(KeyCode::Char('}'), &r);
         assert!(text(&r, &v, 80).iter().any(|l| l.starts_with("> 01:16")));
