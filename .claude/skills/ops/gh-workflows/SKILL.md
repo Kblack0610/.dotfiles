@@ -44,7 +44,7 @@ EOF
 
 # Comment, merge, close
 gh pr comment <number> --body "..."
-gh pr merge <number> --squash --delete-branch --match-head-commit <sha>
+agent-land <number>   # merge: never gh pr merge, which forge-guard denies; agent-land records the PR on its queue item
 gh pr close <number>
 ```
 
