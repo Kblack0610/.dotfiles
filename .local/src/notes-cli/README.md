@@ -103,7 +103,7 @@ current/<name>/
   agent/README.md          the agent board (`ptask --agent`): the same two sections, no `Version:` line (it follows the sheet)
   ideas.md                 unshaped ideas for this project
   playtest.md              type game only: things to play and check off, one per row (`ptask --playtest`)
-  agent/versions/vX.Y.Z.md notes for a version, and the done rows `ptask --agent archive` or a release moves off the board
+  agent/versions/vX.Y.Z.md notes for a version, and the closed rows that rolled off either sheet's Done (`## Done rows` for the board, `## Sheet done rows` for the sheet) until the release freezes them
   versions/vX.Y.Z.md       frozen sheet of a closed version
   docs/                    every other note: the pitch, briefs, research, design docs, reviews, screenshots
 ```
@@ -167,9 +167,9 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | drop a task | `ptask <name> drop "<query>" --why "<why>"`, or `--dup <id>` for a duplicate; the row stays, ticked, with the reason in its marker |
 | undo a false close | `ptask <name> reopen <id> --why "<why>"`: the closed row goes back to `[ ]` with its done or drop stamp off the marker; with `--agent`, a row already archived into `agent/versions/` moves back onto the board. `agent-queue reopen <slug> --unland <owner>/<repo>#<N>` calls it for an item closed with the wrong PR |
 | name a row exactly | any verb's `<query>` can be the row's id (`ar-142`) |
-| tidy a sheet | `ptask <name> sweep` |
+| tidy a sheet | every `ptask` write already leaves its sheet laid out (see Sheet layout below). `ptask <name> sweep` also rewrites tags: a closed release's tag goes, `#urgent` aimed later becomes `#high`, an untagged row gets `#high`. `notes projects --sweep [--dry-run]` does that for every sheet in every profile, and `notes sheet-sweep <path> [--stdin] [--layout-only]` for one file (the nvim save pipes the buffer through it) |
 | agent work | the same `ptask` verbs with `--agent`, which write to `agent/README.md` |
-| shrink the agent board | `ptask <name> --agent archive [--dry-run]` moves its done rows to `agent/versions/<current version>.md` under `## Done rows` |
+| shrink the agent board | nothing to do: closed rows roll off on their own (Sheet layout below). `ptask <name> --agent archive [--dry-run]` moves every done row now |
 | add a playtest check | `ptask <name> --playtest add [--game <name>] [--pr <n>] "<scene or mode: what to look for>"`; one short ASCII line per check, under `## <game>` (default `## General`) in `playtest.md` |
 | work the playtest list | `ptask <name> --playtest list`, `ptask <name> --playtest done "<query>" --proof <ref>` (or `--unverified "<why>"`), `ptask <name> --playtest drop "<query>" --why "<why>"`; the board shows one `N playtest checks waiting -> playtest.md` line per project |
 | regenerate the boards | `notes board` |
@@ -181,6 +181,22 @@ The quick way in is the tmux popup: `Prefix+p`, or `<leader>np` from nvim. It li
 The human sheet (`README.md`) is the queue: what you asked for and what only you can do. Agents keep their own work on `--agent`. The full rules are in the `notes-system` skill, "Project board".
 
 ### The task row
+
+### Sheet layout
+
+The sweep lays out `## Tasks` in sections, top to bottom. A section heading shows only when it has rows, and no row is placed by hand: the section is a function of the row and the day, so a hand-moved row goes back to its place on the next write.
+
+| Section | Rows |
+|---|---|
+| `### Epics` | human sheet only: open `epic(` rows |
+| `### Now` | started rows, `[/]` |
+| `### Next up` | the top `next_up` open rows by rank: due date (overdue, today, within 3 days), then `#urgent` `#high` `#low`, then `#requested`, then oldest `#c`. A row aimed at a later release never enters it. To pull a row up, tag it `#urgent` or `#dueMMDD` |
+| `### Backlog` | the rest of the open rows, in the same order |
+| `### Done`, under `---` | rows closed in the last `done_days` days, at most `done_max`, newest first |
+
+An older, undated or dropped closed row rolls into `agent/versions/<open version>.md` (`## Done rows` from the agent board, `## Sheet done rows` from the human sheet), and `projects --release` freezes both with the version. A row aimed at a later release stays on the sheet. The sizes are `[sheet]` in `~/.config/notes/config.toml` (`next_up = 10`, `done_days = 7`, `done_max = 30`).
+
+The sweep at the end of a `ptask` write only moves rows and never changes a row's bytes, so a UI holding a row's `raw` for `--exact` still finds it. Tag rewrites happen only in the explicit sweeps listed above. A save in nvim also dates a box ticked by hand with `done:<today>`.
 
 Every project sheet, in every project and both lanes, uses one row format. Projects differ only by data in the registry, never by row format.
 

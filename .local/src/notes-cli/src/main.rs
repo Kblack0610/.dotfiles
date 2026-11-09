@@ -34,6 +34,7 @@ mod project_sweep;
 mod project_tasks;
 mod projects;
 mod propose;
+mod rank;
 mod registry;
 mod sheet;
 mod show;
@@ -291,7 +292,11 @@ enum Cmd {
         /// Exact duplicates are reported, never removed. Idempotent
         #[arg(long)]
         migrate_rows: bool,
-        /// With --retire-ai-tag or --migrate-rows: report what would change and write nothing
+        /// Sweep every project sheet and agent board, in every profile, into Now / Next up /
+        /// Backlog / Done, rolling closed rows past the `[sheet]` window into versions notes
+        #[arg(long)]
+        sweep: bool,
+        /// With --retire-ai-tag, --migrate-rows or --sweep: report what would change and write nothing
         #[arg(long)]
         dry_run: bool,
         /// With --release: step the minor (v0.1.2 -> v0.2.0)
@@ -385,6 +390,20 @@ enum Cmd {
     Clickup {
         #[command(subcommand)]
         sub: ClickupCmd,
+    },
+    /// Sweep one sheet file by path into Now / Next up / Backlog / Done (the editor's save hook)
+    SheetSweep {
+        /// The sheet: a project README.md or its agent/README.md
+        path: std::path::PathBuf,
+        /// Read the buffer from stdin and print the swept buffer; the file is not written
+        #[arg(long)]
+        stdin: bool,
+        /// With --stdin: only re-sort the sections, stamping and rolling off nothing
+        #[arg(long, requires = "stdin")]
+        layout_only: bool,
+        /// Report what would change and write nothing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Diagnose the notes system (config, dirs, gaps, sync, dead links)
     Doctor {
@@ -1466,6 +1485,7 @@ fn main() -> Result<()> {
             to_profile,
             retire_ai_tag,
             migrate_rows,
+            sweep,
             dry_run,
             minor,
             major,
@@ -1498,6 +1518,13 @@ fn main() -> Result<()> {
             if let Some(n) = retire_ai_tag {
                 let which = if n.is_empty() { None } else { Some(n.as_str()) };
                 projects::retire_ai_tag(&prof, &log, which, dry_run)?;
+                std::process::exit(0);
+            }
+            if sweep {
+                project_tasks::sweep_all(&log, dry_run)?;
+                if !dry_run {
+                    lab_refresh::kick();
+                }
                 std::process::exit(0);
             }
             if migrate_rows {
@@ -1610,6 +1637,17 @@ fn main() -> Result<()> {
             ClickupCmd::Sync => clickup::sync(&prof, &log)?,
             ClickupCmd::Push => clickup::push(&prof, &log)?,
         },
+        Cmd::SheetSweep {
+            path,
+            stdin,
+            layout_only,
+            dry_run,
+        } => std::process::exit(project_tasks::sheet_sweep(
+            &path,
+            stdin,
+            layout_only,
+            dry_run,
+        )?),
         Cmd::Doctor { untyped: true, .. } => doctor::untyped()?,
         Cmd::Doctor { projects: true, .. } => doctor::projects()?,
         Cmd::Doctor {

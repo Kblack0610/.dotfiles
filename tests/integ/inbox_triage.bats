@@ -265,8 +265,12 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run tasks
   assert_output --regexp '- \[ \] fix\(ui\): the menu flickers on resize #size/s #requested .*#high.*id:sc-4'
   assert_output --partial '  was: the menu flickers on resize #requested'
+  # a dropped row is no finished work, so it leaves Done at once for the version note
+  refute_output --partial 'menu flicker again'
+  run cat "$PROJ/scratch/agent/versions/v0.1.0.md"
   assert_output --regexp '- \[x\] menu flicker again .*dup:sc-4'
   assert_output --regexp '- \[x\] scratch .*dropped: triage: a header, not a task'
+  run tasks
   assert_output --partial '- [/] the save is slow <!-- id:sc-8 -->'
   refute_output --partial 'logo'
   # rewritten, then moved by its id, its old words with it
