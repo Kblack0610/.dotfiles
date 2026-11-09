@@ -33,8 +33,9 @@ pub struct Agent {
     pub cwd: String,
     /// Raw Claude status (`busy`, `idle`, `waiting`, `shell`); `glyph` is its display form.
     pub status: String,
-    /// In plan mode (Shift+Tab / EnterPlanMode), so it will not edit until a plan is approved.
-    pub plan: bool,
+    /// Its permission mode: plan (it will not edit until a plan is approved), manual
+    /// (investigate-only, `jsonl::Mode`), or neither.
+    pub mode: jsonl::Mode,
     /// The plan it works, by slug (`jsonl::RowInfo::plan_slug`); empty for none.
     pub plan_slug: String,
     /// The id of a pending ask (`agent-ask`) it owns, so it is waiting on the human: `asks.rs`.
@@ -127,11 +128,11 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
         }
 
         let jsonl_path = session::jsonl_path(&sess.session_id, &sess.cwd);
-        let (mut summary, plan, plan_slug) = if jsonl_path.exists() {
+        let (mut summary, mode, plan_slug) = if jsonl_path.exists() {
             let info = jsonl::row_info(&jsonl_path);
-            (info.summary, info.plan, info.plan_slug)
+            (info.summary, info.mode, info.plan_slug)
         } else {
-            (String::new(), false, String::new())
+            (String::new(), jsonl::Mode::Other, String::new())
         };
         // Prefer Claude's pane title (the live session title) over the JSONL
         // "say:" text; the row glyph already conveys status.
@@ -161,7 +162,7 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
             session_id: sess.session_id.clone(),
             cwd: sess.cwd.clone(),
             status: sess.status.clone(),
-            plan,
+            mode,
             plan_slug,
             ask: asking.get(&sess.session_id).cloned(),
             started_at: sess.started_at.map(|ms| ms / 1000),
@@ -420,7 +421,7 @@ pub fn run_list(json: bool, parked: bool, needs: bool) -> Result<()> {
             "cwd": a.cwd,
             "session_id": a.session_id,
             "transcript": a.jsonl.as_ref().map(|p| p.to_string_lossy()).unwrap_or_default(),
-            "plan_mode": a.plan,
+            "plan_mode": a.mode == jsonl::Mode::Plan,
             "idle_since": idle_since,
             "started_at": a.started_at,
             "context_tokens": info.context_tokens,
@@ -587,9 +588,9 @@ mod tests {
 
     #[test]
     fn plan_mode_counts_only_with_its_dialog_open() {
-        let plan_dialog = Agent { glyph: '!', plan: true, ..live_agent("hub", "a", false) };
-        let plan_idle = Agent { glyph: '✓', plan: true, ..live_agent("hub", "a", false) };
-        let plan_busy = Agent { glyph: '~', plan: true, ..live_agent("hub", "b", false) };
+        let plan_dialog = Agent { glyph: '!', mode: jsonl::Mode::Plan, ..live_agent("hub", "a", false) };
+        let plan_idle = Agent { glyph: '✓', mode: jsonl::Mode::Plan, ..live_agent("hub", "a", false) };
+        let plan_busy = Agent { glyph: '~', mode: jsonl::Mode::Plan, ..live_agent("hub", "b", false) };
         assert!(plan_dialog.needs_attention());
         assert!(!plan_idle.needs_attention());
         assert!(!plan_busy.needs_attention());

@@ -2,6 +2,7 @@
 
 use crate::chooser::Agent;
 use crate::sort::{Key, Sort};
+use crate::jsonl::Mode;
 
 // ANSI codes. Title is bold-only so it inherits the active terminal theme.
 const RED: &str = "\x1b[1;31m";
@@ -177,9 +178,13 @@ pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) 
 
         for a in group {
             let g = colorize(a.glyph);
-            // Plan-mode and pending-ask markers, each in its own column, blank otherwise,
-            // so targets stay aligned.
-            let mode = if a.plan { format!("{MAGENTA}P{RESET}") } else { " ".to_string() };
+            // Mode (plan, manual) and pending-ask markers, each in its own column, blank
+            // otherwise, so targets stay aligned.
+            let mode = match a.mode {
+                Mode::Plan => format!("{MAGENTA}P{RESET}"),
+                Mode::Manual => format!("{CYAN}M{RESET}"),
+                Mode::Other => " ".to_string(),
+            };
             let ask = if a.ask.is_some() { format!("{BLUE}A{RESET}") } else { " ".to_string() };
             let open = format!("{DIM}{}{RESET}", age(now, a.started_at));
             let target = if flat {
@@ -223,7 +228,7 @@ pub struct Facts {
     pub ask: String,
     pub status: String,
     pub started_at: Option<u64>,
-    pub plan: bool,
+    pub mode: Mode,
     pub account: String,
 }
 
@@ -237,7 +242,7 @@ impl Facts {
             ask: a.ask.clone().unwrap_or_default(),
             status: a.status.clone(),
             started_at: a.started_at,
-            plan: a.plan,
+            mode: a.mode,
             account: a.account.clone(),
         }
     }
@@ -247,7 +252,7 @@ impl Facts {
     pub fn line(&self, target: &str) -> String {
         let jsonl = self.jsonl.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         let started = self.started_at.map(|t| t.to_string()).unwrap_or_default();
-        [target, &jsonl, &self.project, &self.summary, &self.repo_full, &self.ask, &self.status, &started, if self.plan { "1" } else { "" }, &self.account]
+        [target, &jsonl, &self.project, &self.summary, &self.repo_full, &self.ask, &self.status, &started, self.mode.mark(), &self.account]
             .iter()
             .map(|f| f.replace(['\t', '\n'], " "))
             .collect::<Vec<_>>()
@@ -266,7 +271,7 @@ impl Facts {
             ask: get(5),
             status: get(6),
             started_at: get(7).parse().ok(),
-            plan: get(8) == "1",
+            mode: Mode::from_mark(&get(8)),
             account: get(9),
         };
         (get(0), facts)
@@ -312,8 +317,10 @@ fn page(target: &str, f: &Facts, now: u64, width: usize, r: &Read) -> String {
     let place = if !f.repo_full.is_empty() { &f.repo_full } else { &f.project };
     let mut status = vec![target.to_string()];
     status.extend([place.clone(), f.status.clone()].into_iter().filter(|x| !x.is_empty()));
-    if f.plan {
-        status.push("plan mode".into());
+    match f.mode {
+        Mode::Plan => status.push("plan mode".into()),
+        Mode::Manual => status.push("manual mode".into()),
+        Mode::Other => {}
     }
     if f.started_at.is_some() {
         status.push(format!("open {}", age(now, f.started_at).trim_start()));
@@ -415,7 +422,7 @@ mod tests {
         assert_eq!(short_target("_dotfiles", "0"), "0");
     }
 
-    fn agent(target: &str, glyph: char, plan: bool, ask: bool) -> Agent {
+    fn agent(target: &str, glyph: char, mode: Mode, ask: bool) -> Agent {
         Agent {
             glyph,
             target: target.to_string(),
@@ -429,7 +436,7 @@ mod tests {
             session_id: String::new(),
             cwd: String::new(),
             status: String::new(),
-            plan,
+            mode,
             ask: ask.then(|| "a1".to_string()),
             ..Agent::default()
         }
@@ -440,11 +447,12 @@ mod tests {
     }
 
     #[test]
-    fn marks_pending_ask_beside_plan_mode() {
+    fn marks_pending_ask_beside_plan_and_manual_mode() {
         let agents = [
-            agent("s:1", '✓', false, true),
-            agent("s:2", '✓', false, false),
-            agent("s:3", '~', true, true),
+            agent("s:1", '✓', Mode::Other, true),
+            agent("s:2", '✓', Mode::Other, false),
+            agent("s:3", '~', Mode::Plan, true),
+            agent("s:4", '✓', Mode::Manual, false),
         ];
         let (rows, _) = build(&agents, Sort::default(), 0);
         let a = format!("{BLUE}A{RESET}");
@@ -456,15 +464,17 @@ mod tests {
         assert!(!row(&rows, "s:2").contains(&a));
         assert!(row(&rows, "s:2").contains(&format!("    {o} s:2")));
         assert!(row(&rows, "s:3").contains(&format!("{p}{a} {o} s:3")));
+        // Manual mode takes the same column as plan mode, in its own letter.
+        assert!(row(&rows, "s:4").contains(&format!("{CYAN}M{RESET}  {o} s:4")));
     }
 
     #[test]
     fn shows_stage_and_labels_after_the_target() {
-        let mut stalled = agent("s:1", '✓', false, false);
+        let mut stalled = agent("s:1", '✓', Mode::Other, false);
         stalled.stage = "STALLED".into();
         stalled.labels = "manual".into();
         stalled.tags = "pinned".into();
-        let mut working = agent("s:2", '~', false, false);
+        let mut working = agent("s:2", '~', Mode::Other, false);
         working.stage = "WORKING".into();
         let (rows, _) = build(&[stalled, working], Sort::default(), 0);
         let want = format!("s:1 {RED}STALLED{RESET} {ORANGE}[pinned]{RESET} {CYAN}[manual]{RESET}");
@@ -482,16 +492,16 @@ mod tests {
 
     #[test]
     fn pins_the_shepherd_above_every_project() {
-        let mut a = agent("s:1", '✓', false, false);
+        let mut a = agent("s:1", '✓', Mode::Other, false);
         a.project = "alpha".into();
-        let mut shep = agent("s:2", '~', false, false);
+        let mut shep = agent("s:2", '~', Mode::Other, false);
         shep.project = "zulu".into();
         shep.tags = "pinned shepherd".into();
         let (rows, _) = build(&[a.clone(), shep], Sort::default(), 0);
         assert_eq!(headers(&rows), ["shepherd", "alpha"]);
         assert_eq!(rows[1].target, "s:2");
         // Negative control: without the lease tag it sorts into its project like any other row.
-        let mut plain = agent("s:2", '~', false, false);
+        let mut plain = agent("s:2", '~', Mode::Other, false);
         plain.project = "zulu".into();
         plain.tags = "pinned".into();
         let (rows, _) = build(&[a, plain], Sort::default(), 0);
@@ -512,10 +522,10 @@ mod tests {
     #[test]
     fn a_sort_other_than_project_is_one_flat_list_led_by_each_project() {
         use crate::sort::Key;
-        let mut old = agent("s:1", '✓', false, false);
+        let mut old = agent("s:1", '✓', Mode::Other, false);
         old.project = "zulu".into();
         old.started_at = Some(100);
-        let mut new = agent("s:2", '~', false, false);
+        let mut new = agent("s:2", '~', Mode::Other, false);
         new.project = "alpha".into();
         new.started_at = Some(5000);
         let open = Sort { key: Key::Open, reverse: false };
@@ -535,9 +545,9 @@ mod tests {
 
     #[test]
     fn pending_ask_needs_attention() {
-        assert!(agent("s:1", '✓', false, true).needs_attention());
-        assert!(agent("s:1", '!', false, false).needs_attention());
-        assert!(!agent("s:1", '~', true, false).needs_attention());
+        assert!(agent("s:1", '✓', Mode::Other, true).needs_attention());
+        assert!(agent("s:1", '!', Mode::Other, false).needs_attention());
+        assert!(!agent("s:1", '~', Mode::Plan, false).needs_attention());
     }
 
     #[test]
@@ -550,7 +560,7 @@ mod tests {
             ask: "a1".into(),
             status: "waiting".into(),
             started_at: Some(42),
-            plan: true,
+            mode: Mode::Plan,
             account: "bnb".into(),
         };
         let (target, back) = Facts::parse(&f.line("hub/s:1"));
