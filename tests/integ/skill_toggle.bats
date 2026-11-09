@@ -106,6 +106,17 @@ overrides() {
   assert_output '[["beta","eps","gamma"],["delta"]]'
 }
 
+@test "a skill a global doc or a runner conf routes to is never hidden" {
+  mkdir -p "$HOME/.local/src/docs" "$HOME/.config/agentctl/agents"
+  echo '| Shell | skills `beta` |' > "$HOME/.local/src/docs/planning.md"
+  echo 'SKILL=gamma' > "$HOME/.config/agentctl/agents/r.conf"
+  echo '{"skillOverrides":{}}' > "$SANDBOX/settings.json"
+  FIXTURE_USED="alpha" run overrides
+  assert_success
+  run jq -c '.hide' <<<"$output"
+  assert_output '["delta","eps","zeta"]'
+}
+
 @test "a paths-scoped or model-disabled skill is left alone" {
   printf -- '---\nname: beta\npaths:\n  - "x/**"\n---\n' > "$CLAUDE_SKILLS/beta/SKILL.md"
   printf -- '---\nname: gamma\ndisable-model-invocation: true\n---\n' > "$CLAUDE_SKILLS/gamma/SKILL.md"
