@@ -290,6 +290,7 @@ test("Vitals folds to its head when all are on target, and shows nothing until i
   assert.match(html, /Vitals <span class="muted">2 of 2 on target<\/span>/);
   assert.doesNotMatch(html, /cline vital/, "green is one line (dashboards rule 4)");
   assert.doesNotMatch(draw(home({ vitals: null })), /Vitals/);
+  assert.match(draw(home({ vitals: vitals(), grafana: "https://g" })), /Vitals <span class="muted">[^<]*<\/span> <a class="glink" href="https:\/\/g\/d\/kb-agents-overview"/, "the trend is one click away");
 });
 
 test("the flow strip leads Home, and the queue and done-today numbers are gone", () => {

@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::home::Level;
 use crate::infra::Infra;
-use crate::phone::{kpi, plain};
+use crate::phone::kpi;
 
 const GAUGE: &str = "agent_bench_vital";
 /// The window a row reads. A vital that is a level, not a rate, carries the same value in each.
@@ -72,6 +72,12 @@ impl Row {
             Level::Nodata => "?",
         }
     }
+}
+
+/// A number with no trailing zeros: 372, 0.5, 0.86.
+fn plain(x: f64) -> String {
+    let s = format!("{x:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 fn number(x: f64, unit: Unit) -> String {
@@ -366,6 +372,13 @@ mod tests {
     fn a_key_with_no_words_reads_as_its_own_name() {
         let v = read(&infra(vital(0.0, "flow", "some_new_kpi", Some(3.0), None))).unwrap();
         assert_eq!(v.rows[0].text(), "some new kpi 3");
+    }
+
+    #[test]
+    fn a_plain_number_has_no_trailing_zeros() {
+        assert_eq!(plain(372.0), "372");
+        assert_eq!(plain(0.5), "0.5");
+        assert_eq!(plain(0.863), "0.86");
     }
 
     #[test]
