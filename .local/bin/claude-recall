@@ -433,7 +433,22 @@ def cmd_show(a):
 # all six; they are off by default, since the tool-call scan is the slow part of a stats run.
 USE_KINDS = ("body", "read", "script", "mention")
 DEFAULT_KINDS = ("slash", "skill", "agent", "intent", "prompt")
-STATS_KINDS = DEFAULT_KINDS + USE_KINDS
+# bypass: a Bash call that ran (no hook denied it) matching a hand-typed form some skill's
+# metadata.replaces names, keyed by that skill (hand_methods.py owns the rows and the match).
+# Not a use: skill-drift reads it beside the use kinds for BYPASSED and RETIRE.
+STATS_KINDS = DEFAULT_KINDS + USE_KINDS + ("bypass",)
+
+
+def hand_methods():
+    """The hook module that owns metadata.replaces, beside this script in the same checkout."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / ".claude" / "hooks" / "hand_methods.py"
+    spec = importlib.util.spec_from_file_location("hand_methods", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+# How a tool_result reads when a PreToolUse hook denied the call, so it never ran.
+DENIED = "PreToolUse:Bash hook error:"
 BODY_RE = re.compile(r"\ABase directory for this skill: (\S+)")
 SKILL_PATH_RE = re.compile(r"skills/([\w.@+-]+(?:/[\w.@+-]+)*)")
 
@@ -619,15 +634,20 @@ def stats_repo(label):
     return re.sub(r"-agent-(?:\d+(?:-[a-z])?|a[0-9a-f]{12,})$", "", label)
 
 
-def stats_events(path, since, kinds=(), names=frozenset()):
+def stats_events(path, since, kinds=(), names=frozenset(), hand=None):
     """Yield (kind, key, origin, day, example) for one transcript. The USE_KINDS are yielded
-    only when kinds names them; names is skill_names()."""
+    only when kinds names them; names is skill_names(). hand is (module, rules) for bypass."""
     # A subagent transcript contributes its Skill and Agent calls but no prompts or slash
     # commands: its user records are the parent's dispatch prompt, not anything typed. Its
     # skill bodies, reads and runs count, since a subagent can use a skill.
     sub = "subagents" in path.parts
     tools = {"read", "script", "mention"} & set(kinds)
     body = "body" in kinds
+    bypass = hand if "bypass" in kinds and hand and hand[1] else None
+    # A bypass is a hand form that RAN: a call a PreToolUse hook refused (hand_methods.py's own
+    # deny included) is recorded too, so each match waits here for its tool_result and is
+    # dropped when that result is a hook denial. A deny row then reads zero once it holds.
+    pending = {}
     session_auto = None
     for line in path.open(errors="replace"):
         # Cheap substring gates before json.loads: tool results and api records are most
@@ -635,10 +655,16 @@ def stats_events(path, since, kinds=(), names=frozenset()):
         if '"type":"assistant"' in line:
             if not ('"name":"Skill"' in line or '"name":"Agent"' in line or '"name":"Task"' in line
                     or (tools and ('"name":"Read"' in line or '"name":"Bash"' in line)
-                        and ("skills/" in line or ("mention" in tools and '"name":"Bash"' in line)))):
+                        and ("skills/" in line or ("mention" in tools and '"name":"Bash"' in line)))
+                    or (bypass and '"name":"Bash"' in line)):
                 continue
         elif '"type":"user"' in line:
             if '"tool_use_id"' in line:
+                if pending and DENIED in line:
+                    for b in ((parse_line(line) or {}).get("message") or {}).get("content") or []:
+                        if (isinstance(b, dict) and b.get("is_error")
+                                and str(b.get("content")).startswith(DENIED)):
+                            pending.pop(b.get("tool_use_id"), None)
                 continue
             if sub and not (body and "Base directory for this skill" in line):
                 continue
@@ -664,10 +690,17 @@ def stats_events(path, since, kinds=(), names=frozenset()):
                     yield "skill", str(inp["skill"]).lstrip("/"), origin, ts, ""
                 elif b.get("name") in ("Agent", "Task"):
                     yield "agent", str(inp.get("subagent_type") or "general-purpose"), origin, ts, ""
-                elif tools:
-                    for kind, key in tool_use_events(b.get("name"), inp, names):
-                        if kind in tools:
-                            yield kind, key, origin, ts, ""
+                else:
+                    if tools:
+                        for kind, key in tool_use_events(b.get("name"), inp, names):
+                            if kind in tools:
+                                yield kind, key, origin, ts, ""
+                    if bypass and b.get("name") == "Bash":
+                        cmd = str(inp.get("command") or "")
+                        for skill in dict.fromkeys(r["skill"] for r in
+                                                   bypass[0].matches(cmd, rec.get("cwd"), bypass[1])):
+                            pending.setdefault(b.get("id") or id(b), []).append(
+                                ("bypass", skill, origin, ts, cmd))
         elif rtype == "user":
             text = user_text(rec)
             if not text:
@@ -692,6 +725,8 @@ def stats_events(path, since, kinds=(), names=frozenset()):
                     or s.startswith(HARNESS_PREFIXES)):
                 continue
             yield "prompt", None, origin, ts, s
+    for events in pending.values():
+        yield from events
 
 
 def cmd_stats(a):
@@ -710,6 +745,10 @@ def cmd_stats(a):
         print(f"claude-recall stats: no intents in {intents_path()}", file=sys.stderr)
     covers = {name: skills for name, skills, _ in intents}
     names = frozenset(skill_names()) if kinds & set(USE_KINDS) else frozenset()
+    hand = None
+    if "bypass" in kinds:
+        mod = hand_methods()
+        hand = (mod, mod.load_rules())
     agg = {}
     used = {}  # session -> skills and slash commands it ran, for intent coverage
     # skill -> the sessions that used it by any counted use kind, so one session that calls a
@@ -736,7 +775,7 @@ def cmd_stats(a):
         session = path.parent.parent.name if "subagents" in path.parts else path.stem
         project = None
         try:
-            for kind, key, origin, day, example in stats_events(path, since, kinds, names):
+            for kind, key, origin, day, example in stats_events(path, since, kinds, names, hand):
                 if kind in ("skill", "slash"):
                     used.setdefault(session, set()).add(key)
                 if a.origin != "all" and origin != a.origin:
@@ -774,6 +813,11 @@ def cmd_stats(a):
         # means the task gets described in words and the skill never fires.
         **({"covered_sessions": sum(1 for x in r["sessions"] if used.get(x, set()) & covers[key]),
             "covered_by": sorted(covers[key])} if k == "intent" else {}),
+        # bypass only: the sessions that also used the skill (any counted use kind). The rest
+        # did its work by hand with the skill never loaded.
+        **({"covered_sessions": sum(1 for x in r["sessions"]
+                                    if key in used.get(x, set()) or x in skill_sessions.get(key, ()))}
+           if k == "bypass" else {}),
     } for (k, key, b), r in agg.items() if len(r["sessions"]) >= a.min]
     rows.sort(key=lambda r: (STATS_KINDS.index(r["kind"]), r["bucket"],
                              -r["sessions"], -r["calls"], r["key"]))
@@ -808,6 +852,9 @@ def cmd_stats(a):
         elif r["kind"] == "intent":
             by = ",".join(r["covered_by"]) or "no skill"
             cov = f"skill ran in {r['covered_sessions']}/{r['sessions']} ({by})"
+            key = f"{key}  {c(DIM, cov)}"
+        elif r["kind"] == "bypass":
+            cov = f"skill used in {r['covered_sessions']}/{r['sessions']} | {r['example']}"
             key = f"{key}  {c(DIM, cov)}"
         print(f"  {r['sessions']:>8} {r['calls']:>6} {r['interactive_sessions']:>6} "
               f"{r['auto_sessions']:>5}  {key}")
@@ -1846,7 +1893,8 @@ def main():
     st.add_argument("--since", type=bound_arg, help="window start, as tool-output (overrides --days)")
     st.add_argument("--kind", help="comma list of " + ",".join(STATS_KINDS) + " (default "
                     + ",".join(DEFAULT_KINDS) + "; body, read, script and mention are the skill-use "
-                    "signals skill-drift adds to skill and slash)")
+                    "signals skill-drift adds to skill and slash; bypass counts calls matching a skill's "
+                    "metadata.replaces)")
     st.add_argument("--origin", choices=["interactive", "auto", "all"], default="all",
                     help="interactive = a turn in a CLI session (typed, or a dispatched task); "
                          "auto = headless, /loop fires, peer messages")

@@ -112,6 +112,27 @@ row() { jq -c --arg k "$1" --arg key "$2" '.rows[] | select(.kind==$k and .key==
   assert_output true
 }
 
+@test "bypass: a call matching a skill's metadata.replaces counts per skill, covered when the skill ran, not when a hook denied it" {
+  export CLAUDE_SKILLS="$SANDBOX/skills" XDG_CACHE_HOME="$SANDBOX/cache"
+  mkdir -p "$CLAUDE_SKILLS/one-shot" "$CLAUDE_SKILLS/other"
+  printf '%s\n' '---' 'name: one-shot' 'description: x' 'metadata:' '  replaces:' "    - match: 'gh\\s+run\\s+watch'" '      use: gh-run-wait' '---' > "$CLAUDE_SKILLS/one-shot/SKILL.md"
+  printf '%s\n' '---' 'name: other' 'description: x' '---' > "$CLAUDE_SKILLS/other/SKILL.md"
+  local ts='"timestamp":"2026-10-20T10:00:00Z"' cli='"entrypoint":"cli"' c='"cwd":"/home/u/proj"'
+  # s1 ran one-shot, so its watch is covered; s5 typed the form without it; s6 only quoted it.
+  echo "{\"type\":\"assistant\",$cli,$c,$ts,\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"gh run watch 1\"}}]}}" >> "$P/s1.jsonl"
+  echo "{\"type\":\"assistant\",$cli,$c,$ts,\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cd x; gh run watch 2 --exit-status\"}}]}}" > "$P/s5.jsonl"
+  echo "{\"type\":\"assistant\",$cli,$c,$ts,\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"git commit -m 'deny gh run watch'\"}}]}}" > "$P/s6.jsonl"
+  # s7 typed it and a PreToolUse hook denied it, so it never ran: not a bypass.
+  echo "{\"type\":\"assistant\",$cli,$c,$ts,\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t7\",\"name\":\"Bash\",\"input\":{\"command\":\"gh run watch 7\"}}]}}" > "$P/s7.jsonl"
+  echo "{\"type\":\"user\",$cli,$c,$ts,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t7\",\"is_error\":true,\"content\":\"PreToolUse:Bash hook error: hand-methods: use gh-run-wait\"}]}}" >> "$P/s7.jsonl"
+  out="$(stats --kind skill,bypass)"
+  run row bypass one-shot <<<"$out"
+  assert_output --partial '"calls":2,"sessions":2'
+  assert_output --partial '"covered_sessions":1'
+  run row bypass other <<<"$out"
+  assert_output ""
+}
+
 @test "negative control: a window after the fixture counts nothing, a bad kind is refused" {
   run "$RECALL" stats --since 2026-10-21
   assert_success
