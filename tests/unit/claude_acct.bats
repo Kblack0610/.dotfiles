@@ -84,11 +84,11 @@ creds() {
   export CLAUDE_ACCT_NOW=1800000000
   r1=$(date -u -d @$((1800000000 + 2 * 3600)) +%Y-%m-%dT%H:%M:%S+00:00)
   r2=$(date -u -d @$((1800000000 + 6 * 86400)) +%Y-%m-%dT%H:%M:%S+00:00)
-  usage main 90 75 "$r1"
+  usage main 97 75 "$r1"
   usage alt 10 70 "$r2"
   run "$ACCT" pick
   assert_line "$ALT"
-  usage main 84 75 "$r1"
+  usage main 94 75 "$r1"
   run --separate-stderr "$ACCT" pick
   assert_output ''
 }
@@ -685,12 +685,12 @@ STUB
 
 @test "room: with none, the line names the closest account, how far past its pace, and when it runs out" {
   # 2026-11-05 12:33: alt 15% used with 9% of its week gone, 1 point past the 5 of slack; bnb (here
-  # main) at 88%, inside its reserve. "no account has room" alone read as every account full.
+  # main) at 96%, inside its reserve. "no account has room" alone read as every account full.
   export CLAUDE_ACCT_NOW=$NOW TZ=UTC
-  week main 88 50
+  week main 96 50
   week alt 15 152
   # Running out before the reset at its burn is committed too, so both carry 10 live (1 point an
-  # hour) and alt, with 85 left against main's 12, stays the closest.
+  # hour) and alt, with 85 left against main's 4, stays the closest.
   export CLAUDE_ACCT_SESSION_RATE=0.1
   live "" 10
   live "$ALT" 10
@@ -704,11 +704,11 @@ STUB
   # the reserve, when that is what refuses the closest one; it lasts to its reset
   # no live sessions from here: a row with no burn lasts to its reset
   rm -rf "${CLAUDE_ACCT_PROC:?}"/*
-  week main 88 2
-  week alt 90 100
+  week main 96 2
+  week alt 97 100
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 88% of its week used, inside the last 15% kept for the human, lasts to its reset Fri 10:00'
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 96% of its week used, inside the last 5% kept for the human, lasts to its reset Fri 10:00'
 }
 
 @test "room: the slack is the edge of the pace line" {
@@ -725,7 +725,7 @@ STUB
 
 @test "room: the machine-mode level scales slack and reserve; pick, which cl uses, does not move" {
   export CLAUDE_ACCT_NOW=$NOW TZ=UTC
-  week main 88 50
+  week main 96 50
   week alt 15 152   # 1 point past mid's 5 of slack
   run --separate-stderr "$ACCT" pick
   local mid_pick="$output"
@@ -738,24 +738,24 @@ STUB
   assert_output "$ALT"
   run --separate-stderr "$ACCT" pick
   assert_output "$mid_pick"
-  echo MACHINE_MODE=reserved > "$HOME/.agent/machine-mode.env"   # low: 1 of slack, 20 kept back
+  echo MACHINE_MODE=reserved > "$HOME/.agent/machine-mode.env"   # low: 1 of slack, 7 kept back
   run --separate-stderr "$ACCT" room
   assert_failure 1
   [[ "$stderr" == *'5 points over its weekly pace (15% used, 9% of its week gone, 1 point of slack)'* ]] || fail "$stderr"
-  week main 82 2
-  week alt 90 100
+  week main 94 2
+  week alt 97 100
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  [[ "$stderr" == *'82% of its week used, inside the last 20% kept for the human'* ]] || fail "$stderr"
+  [[ "$stderr" == *'94% of its week used, inside the last 7% kept for the human'* ]] || fail "$stderr"
 }
 
 @test "room: the reserve holds late in the week, even under pace" {
   export CLAUDE_ACCT_NOW=$NOW
-  week main 85 2
-  week alt 90 2
+  week main 95 2
+  week alt 97 2
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  week main 84 2
+  week main 94 2
   run --separate-stderr "$ACCT" room
   assert_success
   assert_output ''
@@ -765,7 +765,7 @@ STUB
   export CLAUDE_ACCT_NOW=$NOW
   week main 10 84
   week alt 20 84
-  printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
+  printf '%s' "$(jq -c '.five_hour = {utilization: 97}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
   run --separate-stderr "$ACCT" room
   assert_success
   assert_output "$ALT"
@@ -961,7 +961,7 @@ seen_claude() {
 
 @test "room object: the reserve, the capped week and the live sessions each get their own reason" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
-  week main 87 2
+  week main 97 2
   week alt 100 2
   run --separate-stderr "$ACCT" room --json
   assert_failure 1
@@ -981,7 +981,7 @@ seen_claude() {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
   week main 22 141   # 1 point past its line and nothing else
   week alt 22 141
-  printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/alt.json")" > "$XDG_CACHE_HOME/claude-acct/alt.json"
+  printf '%s' "$(jq -c '.five_hour = {utilization: 97}' "$XDG_CACHE_HOME/claude-acct/alt.json")" > "$XDG_CACHE_HOME/claude-acct/alt.json"
   run --separate-stderr "$ACCT" room --json
   assert_failure 1
   [[ "$(field main '.room.reasons | join(",")' <<< "$output")" == pace ]]
@@ -997,10 +997,10 @@ seen_claude() {
   [[ "$(jq -r .why <<< "$output")" == 'no account has room; main is the closest, 1 point over its weekly pace (22% used, 16% of its week gone, 5 points of slack)'* ]]
   assert_equal "$stderr" ''
   # early in the week the reserve is past the line too, and both are named
-  week main 87 141
+  week main 97 141
   run --separate-stderr "$ACCT" room --json
   [[ "$(field main '.room.reasons | join(",")' <<< "$output")" == reserve,pace ]]
-  [[ "$(field main .room.why <<< "$output")" == '87% of its week used, inside the last 15% kept for the human' ]]
+  [[ "$(field main .room.why <<< "$output")" == '97% of its week used, inside the last 5% kept for the human' ]]
   week main 10 84
   run --separate-stderr "$ACCT" room --json
   assert_success
@@ -1015,7 +1015,7 @@ seen_claude() {
   CLAUDE_ACCT_PACE_SLACK_PCT=100 CLAUDE_ACCT_RESERVE_PCT=0 run --separate-stderr "$ACCT" room --json
   assert_failure 1
   [[ "$(field main .room.slack <<< "$output")" == 5 ]]
-  [[ "$(field main .room.reserve <<< "$output")" == 15 ]]
+  [[ "$(field main .room.reserve <<< "$output")" == 5 ]]
   run grep -nE 'CLAUDE_ACCT_(PACE_SLACK|RESERVE)_PCT:-' "$ACCT"
   assert_failure
 }
@@ -1035,7 +1035,7 @@ seen_claude() {
   assert_equal "$(jq -r '"\(.pick) \(.why)"' <<< "$output")" 'null no account has room and one cannot be read'
   week main 10 84
   week alt 20 84
-  printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
+  printf '%s' "$(jq -c '.five_hour = {utilization: 97}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
   run --separate-stderr "$ACCT" room --json
   assert_success
   [[ "$(field main .room.reason <<< "$output")" == five_hour ]]
@@ -1378,7 +1378,7 @@ budget() {
   assert_output 'every source on pace (5 sources)'
   # the same sources with codex well past its weekly line and the key inside its reserve
   rollout 90 0 84
-  budget sk-res key 18 20
+  budget sk-res key 19.5 20
   rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
   run --separate-stderr "$ACCT" check pace
   assert_failure 1
