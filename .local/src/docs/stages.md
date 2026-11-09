@@ -81,6 +81,15 @@ Each doc comes from an existing skill. There are no doc types beyond these.
 | beta | content rating, store listing | `content-rating`, `mobile-store-metadata` |
 | prod | incident and rollback runbook, credentials inventory | `docs-write` |
 
+## Versions
+
+A version is one release: what reached the project's users or target in one cut. Its number follows from what is in it, so nobody picks it.
+
+- Minor: the release holds a feature epic closed on proof (`lifecycle.md`, "What an epic is"). Patch: anything else, fixes, stories toward open epics, standing-epic work. Major: only the human; v1.0.0 is the first public release (the `prod` stage), and a later major is a break the human names (a save or API break, a relaunch).
+- Cadence comes from the stage: every 7 days at draft, dev, alpha and beta, every 14 at prod. A window with no closed rows cuts nothing.
+- A project that ships builds is versioned by its git tag and the sheet follows (`project_release_version`, `.config/shared-hooks/project-name.sh`). A game in the playground has its own tag family, `<game>-vX.Y.Z`, registered as its `tagGlob`. A project with no build (agent-runtime, home-config) uses the sheet's counter and has no tag.
+- Tooling today: `projects --release` bumps a patch unless told otherwise and refuses below beta, and the playground tags game builds `v<engine>-<game><N>`. Queue item `systems-versions-p5` (ar-1245) makes them follow this section, and `systems-versions-p6` (ar-1246) backfills one version per week of past work.
+
 ## What stays with the human
 
 These are never automated; each one is a `human` row, which the gate lists for the human to attest.

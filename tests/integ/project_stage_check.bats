@@ -262,6 +262,36 @@ DOC
   assert_output --partial 'a Criteria row names unknown system "ghost"'
 }
 
+@test "systems: --list prints the doc systems for base and the type, then the project's own" {
+  write_systems_doc
+  run "$CHECK" shooter --list
+  assert_success
+  assert_line --index 0 "$(printf 'docs\tdoc\t\tThe docs')"
+  assert_line --index 1 "$(printf 'netcode\tdoc\t\tMultiplayer')"
+  refute_output --partial 'payments'
+  jq '.trackers.shooter.systems = {netcode: {aliases: ["mp", "lobby"]}, dispatch: {is: "The queue", aliases: ["queue"]}}' \
+    "$PROJECT_MAP_FILE" > "$HOME/map.tmp" && mv "$HOME/map.tmp" "$PROJECT_MAP_FILE"
+  run "$CHECK" shooter --list
+  assert_success
+  assert_line --index 1 "$(printf 'netcode\tdoc\tmp,lobby\tMultiplayer')"
+  assert_line --index 2 "$(printf 'dispatch\town\tqueue\tThe queue')"
+  run "$CHECK" shooter --list --json
+  assert_success
+  assert_equal "$(jq -c '[.[] | [.id, .source, (.aliases | length)]]' <<<"$output")" '[["docs","doc",0],["netcode","doc",2],["dispatch","own",1]]'
+}
+
+@test "systems: an own entry can opt a project into a doc system of another type, and --list takes no --file" {
+  write_systems_doc
+  jq '.trackers.shooter.systems = {payments: {aliases: ["iap"]}}' \
+    "$PROJECT_MAP_FILE" > "$HOME/map.tmp" && mv "$HOME/map.tmp" "$PROJECT_MAP_FILE"
+  run "$CHECK" shooter --list
+  assert_success
+  assert_line --index 2 "$(printf 'payments\tdoc\tiap\tPurchases')"
+  run "$CHECK" shooter --list --file
+  assert_failure 2
+  assert_output --partial '--list takes only --json'
+}
+
 @test "a stage row can require a system by calling the checker, so the predicate lives in one doc" {
   write_systems_doc
   cat >> "$STAGES_DOC" <<'EOF2'
