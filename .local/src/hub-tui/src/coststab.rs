@@ -907,13 +907,26 @@ mod tests {
         let mut age = series("", "textfile_age_seconds", 120.0);
         age.labels.remove("account");
         all.push(age);
+        // claude-acct's fleet sum of the three accounts
+        for (k, v) in [
+            ("live_sessions", 39.0),
+            ("burn_points_per_hour", 4.52),
+            ("sustain_points_per_hour", 1.37),
+            ("session_rate_points_per_hour", 0.116),
+        ] {
+            all.push(hub_core::prom::Series {
+                labels: [("__name__".to_string(), format!("claude_fleet_{k}"))].into(),
+                value: Some(v),
+                points: vec![],
+            });
+        }
         let drip = hub_core::burn::Drip {
             hour: 15,
             day: 349,
             held: Some("fleet-assess says HOLD".into()),
         };
         Costs {
-            burn: burn::build(&all, Some(0.116), drip, 1_000_000),
+            burn: burn::build(&all, drip, 1_000_000),
             fleet_cost: fleet_block(),
             ..costs()
         }
@@ -1271,7 +1284,7 @@ mod tests {
         age.labels.remove("account");
         all.push(age);
         let c = Costs {
-            burn: burn::build(&all, None, Default::default(), 1_000_000),
+            burn: burn::build(&all, Default::default(), 1_000_000),
             ..costs()
         };
         let screen = |v: &CostsView, w: usize| {
@@ -1360,7 +1373,7 @@ mod tests {
         age.labels.remove("account");
         all.push(age);
         let c = Costs {
-            burn: burn::build(&all, None, Default::default(), 1_000_000),
+            burn: burn::build(&all, Default::default(), 1_000_000),
             ..costs()
         };
         let wide = CostsView::default()
