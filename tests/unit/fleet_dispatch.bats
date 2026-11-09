@@ -3849,6 +3849,33 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" status)" failed
 }
 
+@test "reap: a waiting item without a PR stays waiting with a note after its session ends" {
+  project game beta "$SANDBOX/repos/game"
+  started_item blocked lab:game-agent-1 run '' human waiting
+  started_item no-note lab:game-agent-2 run '' human waiting
+  agent-queue set blocked 'note=waiting for the human to answer ask abc' lane_run=trial-1 >/dev/null
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+
+  run cmd_reap
+  assert_success
+  refute_output --partial 'failed queue item'
+  assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
+  assert_equal "$(qfield "$(qitem waiting blocked)" note)" 'waiting for the human to answer ask abc'
+  assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
+  assert_equal "$(qfield "$(qitem waiting no-note)" note)" 'session game-agent-2 ended; waiting without a PR'
+  assert_not_called 'model-lane'
+  mtime=$(stat -c %y "$(qitem waiting blocked)")
+  dispatch_event() { echo "$*" >> "$NOTES_FIXTURE/events.log"; }
+
+  run cmd_reap
+  assert_success
+  assert [ ! -e "$NOTES_FIXTURE/events.log" ]
+  assert_equal "$(stat -c %y "$(qitem waiting blocked)")" "$mtime"
+  assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
+  assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
+  assert_not_called 'model-lane'
+}
+
 # pr_item <state> -- a board item on a gone session, its PR o/game#12 in <state> per the gh stub,
 # its row started, and the project's checkout a real clone whose origin/main holds one commit (OID).
 pr_item() {
