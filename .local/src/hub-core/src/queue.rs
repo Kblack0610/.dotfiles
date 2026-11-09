@@ -106,6 +106,9 @@ pub struct Item {
     /// `ok`, `failed` or `cancelled`, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// `yes` while an item that landed one PR still has its final landing to make.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial: Option<String>,
     /// Why a queued item cannot start yet: `after <slug>`, `night (...)`, `at:HH:MM`, `pr:<owner>/<repo>#<N> not merged`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
@@ -368,6 +371,21 @@ impl Item {
     /// beside `pr`, so a PR without it is one nobody proved landed.
     pub fn merged(&self) -> bool {
         said(&self.merged).is_some()
+    }
+
+    /// Why a waiting item waits, in the words of what its headers record.
+    pub fn waits_on(&self) -> &'static str {
+        if self.extra_str("ask").is_some() || self.extra_str("report").is_some() {
+            "on an ask or report"
+        } else if self.partial.as_deref() == Some("yes") {
+            "on a final landing"
+        } else if said(&self.pr).is_some() {
+            "on a PR"
+        } else if said(&self.note).is_some() {
+            "parked with a note"
+        } else {
+            "no reason recorded"
+        }
     }
 
     /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
@@ -730,7 +748,7 @@ pub struct Queue {
 }
 
 /// What `Queue::read` prefixes a failed `agent-queue list` with.
-const LIST_FAILED: &str = "agent-queue list";
+pub(crate) const LIST_FAILED: &str = "agent-queue list";
 
 impl Queue {
     /// False when `agent-queue list` failed, so `items` is empty for want of a read, not for want of items.

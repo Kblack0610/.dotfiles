@@ -41,7 +41,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 // The shape hub_core::flow::Rail serializes to.
 const node = (key, label, o = {}) => ({ key, label, count: "4", sub: "p90 2h", hot: false, stopped: false, to: null, stop: null, facts: [], problems_n: 0, problems: [], gap: null, elsewhere: null, ...o });
 const nodes = (over = {}) => [
-  node("inbox", "inbox", { count: "1", sub: "ok", gap: "failed sweeps: not recorded" }),
+  node("inbox", "inbox", { count: "1", sub: "ok" }),
   node("board", "board", { count: "312" }),
   node("queued", "queued", { count: "272", hot: true, stopped: true, stop: "Dispatch stopped 9h50m", facts: ["272 items, bound 12h (5.7x)"], to: { tab: "queue", state: "up next" } }),
   node("running", "running", { count: "9", problems_n: 11, problems: [{ text: "01:16  ucp-412  failed  died", item: "ucp-412" }, { text: "00:01  a line  refused  no", item: null }], to: { tab: "queue", state: "running" } }),
@@ -77,7 +77,6 @@ test("a picked step opens its problems, and one that names an item links it", ()
   assert.match(html, /<span class="rprob">00:01  a line  refused  no<\/span>/);
   fire("click", { target: { id: "", closest: (q) => (q === "[data-rail]" ? { dataset: { rail: "needs" } } : null) } });
   assert.equal(run("qfl.node"), "needs");
-  assert.match(drawStrip(rail(), null, "inbox"), /failed sweeps: not recorded/);
   assert.match(drawStrip(rail(), null, "gone"), /class="rnode stopped sel" data-rail="queued"/, "a step no longer there falls back to the worst");
 });
 

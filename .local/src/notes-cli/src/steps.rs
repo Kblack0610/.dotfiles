@@ -149,12 +149,26 @@ fn problem(e: &Event) -> Option<(&'static str, &'static str, String)> {
         "reaped" if why == "item was running" => Some(("running", "reaped", e.text.clone())),
         "refused" => Some(("inbox", "refused", why)),
         "left" => Some(("inbox", "left", why)),
+        "sweep-stopped" => Some(("inbox", "sweep stopped", why)),
+        "land-failed" => Some(("done", "land failed", why)),
         _ => None,
     }
 }
 
 /// Record `e`'s problem against its step, folding a repeat of the same subject and kind.
 fn note_problem(rows: &mut [Row], e: &Event) {
+    if e.action == "merged" {
+        // A landing that failed and then merged is fixed; a failure after this event still counts.
+        if let Some(r) = rows.iter_mut().find(|r| r.step == "done") {
+            let of = |p: &Problem| {
+                [&e.item, &e.pr]
+                    .iter()
+                    .any(|n| n.as_deref() == Some(&p.subject))
+            };
+            r.problems.retain(|p| p.kind != "land failed" || !of(p));
+        }
+        return;
+    }
     let Some((at, kind, why)) = problem(e) else {
         return;
     };
@@ -501,6 +515,12 @@ mod tests {
     #[test]
     fn each_kind_of_problem_lands_on_its_step_with_its_cause() {
         let events = vec![
+            with(
+                ev("09:00", "sweep-stopped", "outbox", "", "inbox sweep"),
+                None,
+                None,
+                Some("model call failed"),
+            ),
             item_ev("10:00", "item-set", "", "a", "note=session ended early"),
             item_ev(
                 "10:01",
@@ -522,8 +542,24 @@ mod tests {
                 None,
                 Some("unclear"),
             ),
+            with(
+                ev("14:00", "land-failed", "dotfiles", "", "o/r#42"),
+                None,
+                Some("ship"),
+                Some("checks: Checks"),
+            ),
         ];
         let rows = replay(&events, now());
+        let done = get(&rows, "done");
+        assert_eq!(
+            (
+                done.problems_n,
+                done.problems[0].subject.as_str(),
+                done.problems[0].kind,
+                done.problems[0].why.as_str()
+            ),
+            (1, "ship", "land failed", "checks: Checks")
+        );
         let running = get(&rows, "running");
         assert_eq!(running.problems_n, 2);
         assert_eq!(
@@ -539,7 +575,7 @@ mod tests {
             ("failed", "session ended early")
         );
         let inbox = get(&rows, "inbox");
-        assert_eq!(inbox.problems_n, 2);
+        assert_eq!(inbox.problems_n, 3);
         assert_eq!(
             (
                 inbox.problems[0].subject.as_str(),
@@ -547,6 +583,43 @@ mod tests {
             ),
             ("other", "unclear")
         );
+        assert_eq!(
+            (inbox.problems[2].kind, inbox.problems[2].why.as_str()),
+            ("sweep stopped", "model call failed")
+        );
+    }
+
+    #[test]
+    fn a_merge_clears_the_land_failures_before_it_and_not_after() {
+        let failed = |ts, item| {
+            with(
+                ev(ts, "land-failed", "dotfiles", "", "o/r#42"),
+                None,
+                Some(item),
+                Some("checks: Checks"),
+            )
+        };
+        let merged = with(
+            ev("11:00", "merged", "dotfiles", "", "ship it"),
+            None,
+            Some("ship"),
+            None,
+        );
+        let rows = replay(
+            &[
+                failed("10:00", "ship"),
+                failed("10:30", "other"),
+                merged.clone(),
+            ],
+            now(),
+        );
+        let done = get(&rows, "done");
+        assert_eq!(
+            (done.problems_n, done.problems[0].subject.as_str()),
+            (1, "other")
+        );
+        let rows = replay(&[merged, failed("12:00", "ship")], now());
+        assert_eq!(get(&rows, "done").problems_n, 1);
     }
 
     #[test]
