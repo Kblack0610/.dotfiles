@@ -54,9 +54,13 @@ pub const UNPRICED: &str =
 /// anything else (a curl probe, another machine) reaches Lazer with no record here.
 pub const DIRECT_NOTE: &str = "opencode lazer/*, nightly; other direct use unseen";
 
-/// The gauge the LIVE 24H tile reads: Claude Code's cost over the last 24 hours. What each source
-/// has spent of its window or dollars is the Burn section's, from claude-acct.
-pub(crate) const LIVE_Q: &str = "cc:claude_code_cost_24h_usd";
+/// Claude Code's cost over the last 24 hours by `service_name` and `agentctl_runner`. Home's
+/// `cc:claude_code_cost_24h_usd` is its sum (home-config's command-center rules), so the split
+/// Costs and Fleet show never disagrees with that total. What each source has spent of its window
+/// or dollars is the Burn section's, from claude-acct.
+pub(crate) const BY_RUNNER_Q: &str = "cc:claude_code_cost_24h_usd:by_runner";
+/// Who a Claude series with no runner is when it is an interactive session (`claude-code`).
+pub const YOU: &str = "you";
 
 /// One session's newest outcomes row, as `agentctl-session-outcomes costs` prints it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -165,19 +169,103 @@ pub struct Snapshot {
     pub langfuse_error: Option<String>,
 }
 
-/// The live gauge; missing when Prometheus has none.
+/// Claude Code's live 24h cost, whole and by who spent it; missing when Prometheus has none.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Live {
     pub claude_24h: Option<f64>,
+    /// Keyed by the runner (`agentctl_runner`), else `YOU` for an interactive session, else the
+    /// series' `service_name`.
+    pub by_who: BTreeMap<String, f64>,
 }
 
-/// The live gauge out of `LIVE_Q`'s series.
+/// The live figures out of `BY_RUNNER_Q`'s series; the whole is their sum.
 pub fn live(series: &[crate::prom::Series]) -> Live {
+    let mut by_who: BTreeMap<String, f64> = BTreeMap::new();
+    for s in series.iter().filter(|s| s.label("__name__") == BY_RUNNER_Q) {
+        let who = match (s.label("agentctl_runner"), s.label("service_name")) {
+            ("", "claude-code") => YOU,
+            ("", service) => service,
+            (runner, _) => runner,
+        };
+        *by_who.entry(who.to_string()).or_default() += s.value.unwrap_or(0.0);
+    }
     Live {
-        claude_24h: series
-            .iter()
-            .find(|s| s.label("__name__") == LIVE_Q)
-            .and_then(|s| s.value),
+        // a fold from 0.0, not `sum`: an empty f64 sum is -0.0
+        claude_24h: (!by_who.is_empty()).then(|| by_who.values().fold(0.0, |a, v| a + v)),
+        by_who,
+    }
+}
+
+/// One row of WHO SPENT 24H: a Claude spender from Prometheus, or another harness's sessions
+/// from the outcomes rows.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Spender {
+    pub who: String,
+    /// None when nothing in it is priced: unknown, never $0.
+    pub usd: Option<f64>,
+    pub share: f64,
+    /// `Prometheus` or `outcomes`, which say how fresh the row is.
+    pub source: &'static str,
+    /// An outcomes row's sessions in the window, and how many have no cost: spend unknown, never $0.
+    pub sessions: Option<usize>,
+    pub unpriced: Option<usize>,
+}
+
+/// Who spent the last 24 hours, costliest first. Claude Code is the live export (sessions that
+/// do not export are not in it); other harnesses are the nightly outcomes rows.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct WhoSpent {
+    pub usd: f64,
+    pub claude_usd: Option<f64>,
+    pub rows: Vec<Spender>,
+}
+
+/// A harness whose cost the live export carries: Claude Code, whatever the account or gateway.
+fn exports_live(s: &Spent) -> bool {
+    s.harness.as_deref().is_none_or(|h| h.starts_with("claude"))
+}
+
+pub fn who_spent(live: &Live, sessions: &[Spent], now: i64) -> WhoSpent {
+    let mut rows: Vec<Spender> = live
+        .by_who
+        .iter()
+        .map(|(who, usd)| Spender {
+            who: who.clone(),
+            usd: Some(*usd),
+            source: "Prometheus",
+            ..Spender::default()
+        })
+        .collect();
+    let mut other: BTreeMap<&str, Spender> = BTreeMap::new();
+    for s in sessions
+        .iter()
+        .filter(|s| !exports_live(s) && s.updated_epoch.unwrap_or(0) >= now - DAY)
+    {
+        let h = s.harness.as_deref().unwrap_or_default();
+        let r = other.entry(h).or_insert_with(|| Spender {
+            who: h.into(),
+            source: "outcomes",
+            sessions: Some(0),
+            unpriced: Some(0),
+            ..Spender::default()
+        });
+        r.sessions = r.sessions.map(|n| n + 1);
+        match cost(s) {
+            Some(c) => r.usd = Some(r.usd.unwrap_or(0.0) + c),
+            None => r.unpriced = r.unpriced.map(|n| n + 1),
+        }
+    }
+    rows.extend(other.into_values());
+    let usd = rows.iter().filter_map(|r| r.usd).sum::<f64>();
+    for r in &mut rows {
+        r.share = r.usd.filter(|_| usd > 0.0).map_or(0.0, |u| u / usd);
+    }
+    let key = |r: &Spender| r.usd.unwrap_or(-1.0);
+    rows.sort_by(|a, b| key(b).total_cmp(&key(a)).then_with(|| a.who.cmp(&b.who)));
+    WhoSpent {
+        usd,
+        claude_usd: live.claude_24h,
+        rows,
     }
 }
 
@@ -312,7 +400,10 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
     read_files(&mut c, paths, now);
     // One Prometheus base for the spend tiles and the Burn section; a failure is named once.
     let base = crate::prom::base();
-    match base.clone().and_then(|b| crate::prom::instant(&b, LIVE_Q)) {
+    match base
+        .clone()
+        .and_then(|b| crate::prom::instant(&b, BY_RUNNER_Q))
+    {
         Ok(series) => c.live = live(&series),
         Err(e) => c.errors.push(format!("Prometheus: {e}")),
     }
@@ -970,6 +1061,7 @@ pub struct Board {
     pub windows: Vec<&'static str>,
     pub totals: Vec<Total>,
     pub live: Live,
+    pub who: WhoSpent,
     pub direct: Direct,
     pub burn: Burn,
     /// Where the tokens go and what Langfuse sees: the newest week and day of snapshots, whatever
@@ -1105,6 +1197,7 @@ pub fn board(
         windows: WINDOWS.iter().map(|w| w.0).collect(),
         totals: totals(&c.sessions, c.at),
         live: c.live.clone(),
+        who: who_spent(&c.live, &c.sessions, c.at),
         direct: direct(&c.sessions, c.at),
         burn: c.burn.clone(),
         tokens: c.tokens.clone(),
@@ -1606,17 +1699,102 @@ not json
         assert_eq!(tokens(Some(61e6)), "61M");
     }
 
-    #[test]
-    fn the_live_tile_reads_claude_codes_24h_gauge_and_nothing_else() {
-        let g = |name: &str, v: f64| crate::prom::Series {
-            labels: BTreeMap::from([("__name__".to_string(), name.to_string())]),
+    fn by_runner(service: &str, runner: &str, v: f64) -> crate::prom::Series {
+        let mut labels = BTreeMap::from([
+            ("__name__".to_string(), BY_RUNNER_Q.to_string()),
+            ("service_name".to_string(), service.to_string()),
+        ]);
+        if !runner.is_empty() {
+            labels.insert("agentctl_runner".into(), runner.into());
+        }
+        crate::prom::Series {
+            labels,
             value: Some(v),
             points: vec![],
+        }
+    }
+
+    #[test]
+    fn the_live_split_names_each_runner_and_you_and_its_whole_is_their_sum() {
+        let l = live(&[
+            by_runner("claude-code", "", 57.0),
+            by_runner("claude-agentctl", "fleet-dispatch", 58.0),
+            by_runner("claude-agentctl", "shepherd", 40.0),
+            by_runner("claude-agentctl", "", 1.5),
+            by_runner("claude-code", "ask-judge", 2.5),
+        ]);
+        assert_eq!(l.claude_24h, Some(159.0));
+        assert_eq!(l.by_who.get(YOU), Some(&57.0));
+        assert_eq!(l.by_who.get("fleet-dispatch"), Some(&58.0));
+        assert_eq!(
+            l.by_who.get("ask-judge"),
+            Some(&2.5),
+            "a runner is its runner, whatever its service"
+        );
+        assert_eq!(
+            l.by_who.get("claude-agentctl"),
+            Some(&1.5),
+            "no runner is its service"
+        );
+        // negative control: another gauge is not the split, and none is unknown, never $0
+        let other = crate::prom::Series {
+            labels: BTreeMap::from([(
+                "__name__".to_string(),
+                "cc:claude_code_cost_24h_usd".to_string(),
+            )]),
+            value: Some(11.5),
+            points: vec![],
         };
-        let l = live(&[g("cc:lazer_spend_usd", 93.0), g(LIVE_Q, 11.5)]);
-        assert_eq!(l.claude_24h, Some(11.5));
-        // negative control: no 24h gauge is unknown, never another series' value
-        assert_eq!(live(&[g("cc:lazer_spend_usd", 93.0)]).claude_24h, None);
+        assert_eq!(live(&[other]), Live::default());
+    }
+
+    #[test]
+    fn who_spent_is_the_live_split_plus_other_harnesses_from_outcomes_costliest_first() {
+        let l = live(&[
+            by_runner("claude-code", "", 6.0),
+            by_runner("claude-agentctl", "fleet-dispatch", 3.0),
+        ]);
+        let mut c = costs();
+        // s1 (claude, 1h ago) is in the live export already; a codex session today and an
+        // unpriced one count from outcomes, s3 (codex, 3 days ago) is outside the window.
+        c.sessions.push(spent(
+            "c1",
+            "dotfiles",
+            "codex",
+            1.0,
+            &[("gpt-5.4", 0.0)],
+            600,
+        ));
+        let mut unpriced = spent("c2", "dotfiles", "codex", 0.0, &[], 900);
+        unpriced.cost_usd = None;
+        c.sessions.push(unpriced);
+        // a harness with nothing priced is unknown, not $0, and sorts after every priced row
+        let mut dark = spent("o1", "dotfiles", "opencode", 0.0, &[], 300);
+        dark.cost_usd = None;
+        c.sessions.push(dark);
+        let w = who_spent(&l, &c.sessions, NOW);
+        let rows: Vec<(&str, Option<f64>, &str)> = w
+            .rows
+            .iter()
+            .map(|r| (r.who.as_str(), r.usd, r.source))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (YOU, Some(6.0), "Prometheus"),
+                ("fleet-dispatch", Some(3.0), "Prometheus"),
+                ("codex", Some(1.0), "outcomes"),
+                ("opencode", None, "outcomes")
+            ]
+        );
+        assert_eq!((w.usd, w.claude_usd), (10.0, Some(9.0)));
+        assert_eq!((w.rows[2].sessions, w.rows[2].unpriced), (Some(2), Some(1)));
+        assert!((w.rows[0].share - 0.6).abs() < 1e-9);
+        // negative control: with no live export the Claude sessions in outcomes are not counted
+        // in its place, so the block says it has no Claude figure instead of a partial one
+        let w = who_spent(&Live::default(), &c.sessions, NOW);
+        assert_eq!(w.claude_usd, None);
+        assert_eq!(w.rows.len(), 2);
     }
 
     #[test]
@@ -1667,6 +1845,7 @@ not json
         let j = serde_json::to_value(&b).unwrap();
         assert_eq!(j["direct"]["note"], DIRECT_NOTE);
         assert!(j["live"].get("claude_24h").is_some());
+        assert!(j["who"]["rows"].is_array());
         assert!(
             j["live"].get("reserve_spend").is_none(),
             "the key tiles are Burn rows now"
