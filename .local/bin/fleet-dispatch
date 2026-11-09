@@ -515,14 +515,17 @@ on_host() {
 # The env prefix that starts claude on the account claude-acct names: the one `room` picks (the best
 # with room, under its weekly pace), else `pick`, since a hand start is never refused. A run pass has
 # already chosen from `claude-acct room --json` (acct_room) and passes that account in RUN_ACCOUNT.
-# Empty for the main account or when claude-acct is missing. 2026-11-05 a hand start went to an
-# account at 90% of its week while room named another at 79%. Accounts share ~/.claude/projects, so
+# Empty for the main account or when claude-acct is missing. Accounts share ~/.claude/projects, so
 # a resumed session works from either one.
 account_dir() {
   if [ "${RUN_ACCOUNT+set}" = set ]; then printf '%s' "$RUN_ACCOUNT"; return; fi
-  local room
-  room=$(claude-acct room --json 2>/dev/null | jq -r '.pick as $p | select($p != null) | "1 \(.accounts[] | select(.name == $p) | .dir)"' 2>/dev/null)
-  if [ -n "$room" ]; then printf '%s' "${room#1 }"; else claude-acct pick || true; fi
+  local rows
+  rows=$(claude-acct room --json 2>/dev/null)
+  if jq -e '.pick != null' <<<"$rows" >/dev/null 2>&1; then
+    jq -r '.pick as $p | .accounts[] | select(.name == $p) | .dir' <<<"$rows"; return
+  fi
+  say "start: no account has room ($(jq -r '.why // "no answer"' <<<"$rows" 2>/dev/null || echo "no answer")); a hand start goes ahead on pick's"
+  claude-acct pick || true
 }
 # account_env [dir]: the prefix for that account (the chosen one when no argument). Main unsets
 # the dir: a pane gets the tmux server's environment, which may carry an alt account.
