@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # forge-guard.py: in a checkout that commits .forgejo/workflows/mirror-to-github.yaml, gh pr
-# create/merge, agent-land and a push to a github.com remote are denied. The repos are fixtures
-# built here; the hook only reads git state, so nothing outside BATS_TEST_TMPDIR is touched.
+# create/merge, agent-land and a push to a github.com remote are denied; anywhere else gh pr merge
+# is denied naming agent-land. The repos are fixtures built here; the hook only reads git state,
+# so nothing outside BATS_TEST_TMPDIR is touched.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -67,9 +68,9 @@ gh pr merge 62 --squash --delete-branch 2>&1 | tail -1"
   allowed
   run at "$T/hc" 'gh pr view 62; gh pr list; git fetch origin'
   allowed
-  run at "$T/ps" 'git push origin HEAD && gh pr create --fill && gh pr merge 1 && agent-land 1'
+  run at "$T/ps" 'git push origin HEAD && gh pr create --fill && agent-land 1'
   allowed
-  run at /tmp 'gh pr merge 1 -R Kblack0610/personal-sites; gh pr create -R Kblack0610/unknown'
+  run at /tmp 'gh pr create -R Kblack0610/personal-sites; gh pr create -R Kblack0610/unknown'
   allowed
   run at /tmp "cd $T/hc && cd $T/ps && gh pr create --fill"
   allowed
@@ -123,10 +124,41 @@ git log -1'
 @test "review forms: a subshell's cd stays inside it, a missing map and a lookalike host allow" {
   run at "$T/ps" "(cd $T/hc && git log -1); gh pr create --fill"
   allowed
-  run env PROJECT_MAP_FILE="$T/none.json" bash -c "jq -nc '{tool_name:\"Bash\", cwd:\"$T/hc\", tool_input:{command:\"gh pr merge 1 -R o/home-config; git push origin HEAD\"}}' | python3 '$GUARD'"
+  run env PROJECT_MAP_FILE="$T/none.json" bash -c "jq -nc '{tool_name:\"Bash\", cwd:\"$T/hc\", tool_input:{command:\"gh pr create -R o/home-config; git push origin HEAD\"}}' | python3 '$GUARD'"
   denied
   assert_output --partial 'git push origin'
   git -C "$T/hc" remote add look "https://forgejo.example/x/github.com-mirror.git"
   run at "$T/hc" 'git push look HEAD'
+  allowed
+}
+
+@test "gh pr merge outside a Forgejo checkout is denied, naming agent-land with the PR and repo" {
+  run at "$T/ps" 'gh pr merge 1 --squash --delete-branch'
+  denied
+  assert_output --partial 'agent-land 1'
+  assert_output --partial 'ledger_coverage'
+  run at /tmp 'gh pr merge 563 --squash -R Kblack0610/.dotfiles-private'
+  denied
+  assert_output --partial 'agent-land 563 --repo Kblack0610/.dotfiles-private'
+  run at /tmp 'gh -R o/engine pr merge 915 --squash'
+  denied
+  assert_output --partial 'agent-land 915 --repo o/engine'
+  run at /tmp 'gh pr merge https://github.com/Kblack0610/personal-sites/pull/7 --squash'
+  denied
+  assert_output --partial 'agent-land 7 --repo Kblack0610/personal-sites'
+  run at "$T/ps" "bash -lc 'gh pr merge --auto'"
+  denied
+  assert_output --partial 'agent-land <N>'
+  # A Forgejo checkout keeps its own message: agent-land cannot run there.
+  run at "$T/hc" 'gh pr merge 62'
+  denied
+  assert_output --partial 'forgejo-ops'
+  refute_output --partial 'ledger_coverage'
+}
+
+@test "the rest of gh pr and text naming a merge pass" {
+  run at "$T/ps" 'gh pr view 1; gh pr checks 1; gh pr list --state merged; gh pr edit 1 --body-file b.md'
+  allowed
+  run at "$T/ps" 'echo "gh pr merge 1"; rg -n "gh pr merge" .; git commit -m "gh pr merge was the bug"'
   allowed
 }
