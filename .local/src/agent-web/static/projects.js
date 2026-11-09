@@ -141,7 +141,6 @@ function pDeep() {
 // project, under the view already in the URL.
 function pOpen(key) {
   pst.open = key;
-  bst.scope = key;
   bst.draft.key = key;
   const c = pst.data && pst.data.cards.find((x) => pKey(x) === key);
   if (c) { delete pst.page[c.name]; pReadPage(c.name); }

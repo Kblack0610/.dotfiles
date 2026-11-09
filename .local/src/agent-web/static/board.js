@@ -36,8 +36,7 @@ const bst = tblTab({
 function bMount(parent) {
   $(parent).appendChild($("b-root"));
   if (bst.scope === bScope()) return;
-  bst.scope = bScope();
-  bst.feed = null; bst.sel = null; bst.form = null; bst.all = false; bst.controlsKey = "";
+  bst.feed = null; bst.err = null; bst.msg = ""; bst.sel = null; bst.form = null; bst.all = false; bst.controlsKey = "";
 }
 
 // `feed.rows` is what the view keeps; a row's action index is into that list, which the drawn
@@ -51,7 +50,7 @@ const refreshBoard = coalesce(async () => {
   const q = p.toString();
   try {
     const got = await api("/api/board" + (q ? "?" + q : ""));
-    if (scope === bScope()) { bst.feed = got; bst.err = null; }
+    if (scope === bScope()) { bst.feed = got; bst.scope = scope; bst.err = null; }
   } catch (e) { if (scope === bScope()) bst.err = e.message; }
   if (st.tab === "projects") renderProjects();
   else if (bOnBoard()) renderBoard();
@@ -162,7 +161,7 @@ function bBody() {
   const rows = bst.all ? shown : shown.slice(0, B_OPEN);
   const more = shown.length - rows.length;
   // Lines still in an inbox are rows the triager has not filed: the Filed today chip is the ones it has.
-  const waiting = bst.feed.projects.filter((p) => !one || bProjKey(p) === pst.open).reduce((s, p) => s + (p.inbox || 0), 0);
+  const waiting = bst.feed.projects.filter((p) => !one || bProjKey(p) === bScope()).reduce((s, p) => s + (p.inbox || 0), 0);
   // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
   const focus = one ? [] : bst.feed.focus || [];
   const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";

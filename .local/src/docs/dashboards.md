@@ -36,7 +36,7 @@ The Companion app's Template widget is the main mobile view: Home, shortened to 
 
 ## Hub layout
 
-Both surfaces show the layout below, built in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. The list itself is `hub-core/src/layout.rs`: the TUI's `the_tabs_are_the_layout_and_each_digit_its_place` and agent-web's `tab_names_are_the_layout` fail when a surface drifts from it, and each surface's `log_folds_are_the_layout` holds Log's sections to it. TUI digits follow the bar, which is the order less Daily: 1 for the first, 0 for the tenth.
+Both surfaces show the layout below (`#` is layout order; the TUI's digit keys follow its own bar), built in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. The list itself is `hub-core/src/layout.rs`: the TUI's `the_tabs_are_the_layout_and_each_digit_its_place` and agent-web's `tab_names_are_the_layout` fail when a surface drifts from it, and each surface's `log_folds_are_the_layout` holds Log's sections to it. TUI digits follow the bar, which is the order less Daily: 1 for the first, 0 for the tenth.
 
 | # | Tab | Group | Question | Status |
 |---|---|---|---|---|

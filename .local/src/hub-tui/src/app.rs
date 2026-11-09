@@ -2455,9 +2455,11 @@ impl App {
                 self.qv.open("");
                 self.qv.table.view.state = to.state.into();
             }
-            // Agent-web's Board tab is `a` on Projects here.
-            "board" => self.go(Tab::Projects),
-            _ => {}
+            tab => {
+                if let Some(t) = Tab::parse(tab) {
+                    self.go(t);
+                }
+            }
         }
     }
 
