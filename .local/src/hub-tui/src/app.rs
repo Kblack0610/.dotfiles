@@ -29,6 +29,7 @@ use ratatui::Frame;
 use crate::builds as bv;
 use crate::controls::{Ask, Controls};
 use crate::datatable::{DataTable, Took};
+use crate::flowline;
 use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
 use crate::jobs::{log_lines, row_id, JobsView, LogPane};
@@ -910,7 +911,7 @@ impl App {
         }
     }
 
-    /// The flow strip's inbox and board are the fleet-bench gauges in Prometheus (no push): read
+    /// The flow strip's inbox and board are fleet-bench's snapshot, a file with no watch on it: read
     /// on entering Home or Queue, on `r` and on the tick while one is shown.
     pub fn read_pipeline(&mut self) {
         if self.pipeline_read.want() {
@@ -2134,6 +2135,26 @@ impl App {
             KeyCode::Char('G') | KeyCode::End => self.scroll = usize::MAX / 2,
             _ => {}
         }
+        let line_key = matches!(
+            k.code,
+            KeyCode::Char('[' | ']' | '{' | '}') | KeyCode::Esc | KeyCode::Enter
+        );
+        if line_key && !typing && !k.modifiers.contains(KeyModifiers::CONTROL) {
+            if let Some(q) = &self.queue {
+                let rail =
+                    hub_core::flow::Rail::build(Some(q), self.pipeline.as_ref(), jobs::now());
+                match self.qv.line.key(k.code, &rail) {
+                    flowline::Took::No => {}
+                    flowline::Took::Moved => return true,
+                    flowline::Took::Open(slug) => {
+                        self.qv.open(&slug);
+                        self.qv.detail = true;
+                        self.scroll = 0;
+                        return true;
+                    }
+                }
+            }
+        }
         match self.qv.key(
             k,
             self.queue.as_ref(),
@@ -3057,7 +3078,7 @@ impl App {
                 "j/k another row  c cancel  +/- priority  Esc close  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Queue => format!(
-                "j/k PgUp/PgDn ^d/^u pick  Enter detail  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
+                "j/k PgUp/PgDn ^d/^u pick  Enter detail  [ ] step  {{ }} problem  / f s S x table  c cancel  +/- priority  C candidates  p promote  o Grafana  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.tv.typing() || self.pv.table.typing.is_some() => {
                 "type, Enter submits, Esc cancels".into()
@@ -3179,17 +3200,13 @@ impl App {
             (Tab::Queue, ..) => match &self.queue {
                 None => reading("agent-queue"),
                 Some(q) => {
-                    let mut strip = hub_core::flow::Strip::build(Some(q));
-                    if let Some(r) = &self.pipeline {
-                        strip.set_pipeline(r);
-                    }
+                    let rail = hub_core::flow::Rail::build(Some(q), self.pipeline.as_ref(), now);
                     let (l, at) = queuetab::page(
                         q,
                         &self.qv,
                         self.candidates.as_ref(),
                         (
-                            &strip,
-                            self.pipeline.is_none(),
+                            &rail,
                             self.infra.as_ref().is_some_and(|i| i.grafana.is_some()),
                         ),
                         self.p,
@@ -3822,26 +3839,25 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_tab_shows_the_flow_strip_first() {
+    fn the_queue_tab_leads_with_the_line_and_its_keys_walk_it() {
         let mut a = app(Tab::Queue);
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         let top = |a: &mut App| {
             a.page_lines(100)
                 .iter()
-                .take(3)
+                .take(5)
                 .map(|l| l.to_string())
                 .collect::<Vec<_>>()
         };
         let t = top(&mut a);
-        assert!(
-            t[0].starts_with("FLOW  inbox - | board - | queued 2"),
-            "{t:?}"
-        );
-        assert!(t[1].contains("inbox, board: reading Prometheus"), "{t:?}");
+        assert!(t[0].starts_with("PIPELINE  reading"), "{t:?}");
+        assert!(t[1].starts_with("INBOX -> board -> queued"), "{t:?}");
         a.handle(Msg::Pipeline(Ok(None)));
         let t = top(&mut a);
-        assert!(t[0].starts_with("FLOW  inbox - | board - |"), "{t:?}");
-        assert!(!t.join("\n").contains("reading Prometheus"), "{t:?}");
+        assert!(t[1].contains("no snapshot"), "{t:?}");
+        press(&mut a, KeyCode::Char(']'));
+        let t = top(&mut a);
+        assert!(t[2].starts_with("inbox -> BOARD"), "{t:?}");
     }
 
     #[test]
