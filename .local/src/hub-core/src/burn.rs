@@ -2,9 +2,9 @@
 //! account, the Codex plan, the gateway keys and the Lazer pool), how many sessions are going,
 //! whether that is over what the windows can carry, the dispatch drip, and when each source is
 //! back on pace. `claude-acct` computes every figure for every source and publishes it in its
-//! textfile (`claude_account_*{kind}`, `claude_fleet_session_rate_points_per_hour`); this only
-//! sums the per-source series and words them, so the hub TUI and agent-web print the same section
-//! and no second formula exists. The drip is the `started` lines of fleet-dispatch's `log.md`.
+//! textfile (`claude_account_*{kind}`, and the fleet sum `claude_fleet_*`); this only reads and
+//! words them, so the hub TUI and agent-web print the same section and no second formula exists.
+//! The drip is the `started` lines of fleet-dispatch's `log.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -71,20 +71,23 @@ impl Room {
 
 /// The source series by source, keyed by metric name, and the age in seconds of the textfile
 /// they came from (None when the age series is missing). The room reasons, the kind and the parent
-/// pool are labels, so they are collected apart.
+/// pool are labels, so they are collected apart. `fleet` is claude-acct's fleet sum, keyed by the
+/// metric name after `claude_fleet_`.
 pub struct Accounts<'a> {
     pub by: BTreeMap<&'a str, BTreeMap<&'a str, f64>>,
+    pub fleet: BTreeMap<&'a str, f64>,
     pub reasons: BTreeMap<&'a str, Vec<String>>,
     pub kinds: BTreeMap<&'a str, &'a str>,
     pub parents: BTreeMap<&'a str, &'a str>,
     pub age: Option<f64>,
 }
 
-/// claude-acct's textfile, however old, plus one series for its age (`claude_account_textfile_age_seconds`,
+/// claude-acct's textfile (every source's series and the fleet sum), however old, plus one
+/// series for its age (`claude_account_textfile_age_seconds`,
 /// no account label, the oldest file when a second host exposes one) so a surface says "stale" past `burn::STALE_AFTER_SECS` instead of showing
 /// nothing; no `max without`, which would drop the metric names the table reads. An empty
 /// answer makes the table say no data.
-pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} or label_replace(max(time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"}), "__name__", "claude_account_textfile_age_seconds", "", "")"#;
+pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_(account|fleet)_.+"} or label_replace(max(time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"}), "__name__", "claude_account_textfile_age_seconds", "", "")"#;
 
 /// What a surface says in place of an account's figures when the textfile is not fresh.
 pub const STALE_NOTE: &str = "stale, claude-acct's textfile is not fresh (timer claude-acct-usage)";
@@ -96,14 +99,20 @@ impl<'a> Accounts<'a> {
     pub fn read(series: &'a [Series]) -> Self {
         let mut a = Accounts {
             by: BTreeMap::new(),
+            fleet: BTreeMap::new(),
             reasons: BTreeMap::new(),
             kinds: BTreeMap::new(),
             parents: BTreeMap::new(),
             age: None,
         };
         for s in series {
-            let key = s.label("__name__").trim_start_matches("claude_account_");
+            let name = s.label("__name__");
             let Some(v) = s.value else { continue };
+            if let Some(key) = name.strip_prefix("claude_fleet_") {
+                a.fleet.insert(key, v);
+                continue;
+            }
+            let key = name.trim_start_matches("claude_account_");
             let acc = s.label("account");
             if !acc.is_empty() && !s.label("kind").is_empty() {
                 a.kinds.insert(acc, s.label("kind"));
@@ -432,21 +441,18 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
     let stale = read.stale();
     let accounts = ordered(read.by.keys().map(|n| account(n, &read, stale)).collect());
     let keys = keys_fold(&accounts);
-    // Burn and sustain sum over the same accounts: an unreadable or idle one has neither, and
-    // one with no sustain (its week is spent or past its reset) would otherwise add burn to
-    // the OVER ratio with nothing on the other side. Claude accounts only, as claude-acct's fleet
-    // line (fleet_line, same filter): the session rate is theirs, and a codex point is a different budget.
-    let claude: Vec<&Account> = accounts.iter().filter(|a| a.kind == DEFAULT_KIND).collect();
-    let counted: Vec<&Account> = claude
-        .iter()
-        .copied()
-        .filter(|a| a.state == "ok" && a.sustain.is_some())
-        .collect();
-    let burn: f64 = counted.iter().map(|a| a.burn).sum();
-    let sustain: f64 = counted.iter().filter_map(|a| a.sustain).sum();
+    // claude-acct's fleet sum (its FLEET_JQ, the same one its fleet line prints), never a second
+    // sum of the rows here. It writes no burn or sustain when no account was summed, and a stale
+    // file's figures are not what is true now: either way nothing is counted.
+    let sum = |k: &str| read.fleet.get(k).copied();
+    let summed = match (sum("burn_points_per_hour"), sum("sustain_points_per_hour")) {
+        (Some(b), Some(s)) if !stale => Some((b, s)),
+        _ => None,
+    };
+    let (burn, sustain) = summed.unwrap_or((0.0, 0.0));
     let rate = rate.filter(|r| *r > 0.0);
     let fleet = Fleet {
-        live: claude.iter().map(|a| a.live).sum(),
+        live: sum("live_sessions").unwrap_or(0.0) as u32,
         burn,
         sustain,
         over: (sustain > 0.0).then(|| burn / sustain),
@@ -455,7 +461,7 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
     };
     let level = if accounts.is_empty() {
         "none"
-    } else if counted.is_empty() {
+    } else if summed.is_none() {
         // Accounts exist but none can be read (or the textfile is stale): a quiet fleet is not what this means.
         "warn"
     } else if burn > sustain {
@@ -587,7 +593,17 @@ mod tests {
         }
     }
 
-    /// The numbers of 2026-11-06 ~15:00 (plan fuzzy-scribbling-sky.md): three accounts, 39 live.
+    /// One of claude-acct's fleet sum series, which carry no account.
+    fn fleet(name: &str, v: f64) -> Series {
+        Series {
+            labels: [("__name__".to_string(), format!("claude_fleet_{name}"))].into(),
+            value: Some(v),
+            points: vec![],
+        }
+    }
+
+    /// The numbers of 2026-11-06 ~15:00 (plan fuzzy-scribbling-sky.md): three accounts, 39 live,
+    /// and the fleet sum claude-acct publishes for them.
     fn fixture() -> Vec<Series> {
         let mut out = vec![];
         for (n, live, used, gone, burn, sustain) in [
@@ -606,6 +622,9 @@ mod tests {
                 out.push(series(n, k, v));
             }
         }
+        out.push(fleet("live_sessions", 39.0));
+        out.push(fleet("burn_points_per_hour", 4.52));
+        out.push(fleet("sustain_points_per_hour", 1.37));
         out.push(age(120.0));
         out
     }
@@ -681,25 +700,32 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_account_is_listed_but_not_counted() {
+    fn the_fleet_is_claude_accts_published_sum_not_a_second_sum_of_the_rows() {
+        // Which rows count (Claude only, readable, paced, with a week) is claude-acct's FLEET_JQ,
+        // tested in tests/unit/claude_acct.bats; a row it did not sum changes nothing here.
         let mut s = fixture();
-        s.push(series("old", "read_ok", 0.0));
-        s.push(series("old", "live_sessions", 2.0));
+        s.push(series("extra", "week_used_percent", 10.0));
+        s.push(series("extra", "live_sessions", 5.0));
+        s.push(series("extra", "burn_points_per_hour", 9.0));
+        s.push(series("extra", "sustain_points_per_hour", 9.0));
         let b = build(&s, None, quiet(), NOW);
-        let old = b.accounts.iter().find(|a| a.name == "old").unwrap();
-        assert_eq!(old.state, "unreadable");
-        assert!((b.fleet.burn - 4.52).abs() < 1e-9, "its burn is not summed");
-        assert_eq!(b.fleet.live, 41, "its sessions are live all the same");
+        assert!(b.accounts.iter().any(|a| a.name == "extra"), "it is a row");
+        assert_eq!(b.fleet.live, 39);
+        assert!((b.fleet.burn - 4.52).abs() < 1e-9, "{:?}", b.fleet);
+        assert!((b.fleet.sustain - 1.37).abs() < 1e-9);
     }
 
     #[test]
-    fn an_account_with_no_sustain_adds_no_burn_to_the_ratio() {
+    fn rows_with_no_published_sum_are_not_a_green_fleet() {
+        // claude-acct writes no burn or sustain when it summed no account (and an older one wrote
+        // none at all): the rows are listed, the fleet is amber, and nothing is re-summed.
         let mut s = fixture();
-        s.push(series("spent", "week_used_percent", 100.0));
-        s.push(series("spent", "burn_points_per_hour", 3.0));
+        s.retain(|x| !x.label("__name__").starts_with("claude_fleet_burn"));
         let b = build(&s, None, quiet(), NOW);
-        assert!((b.fleet.burn - 4.52).abs() < 1e-9, "{:?}", b.fleet);
-        assert!((b.fleet.sustain - 1.37).abs() < 1e-9);
+        assert_eq!(b.accounts.len(), 3);
+        assert_eq!(b.level, "warn", "{b:?}");
+        assert_eq!((b.fleet.burn, b.fleet.sustain), (0.0, 0.0));
+        assert_eq!(b.fleet.live, 39);
     }
 
     #[test]
@@ -988,8 +1014,8 @@ mod tests {
     #[test]
     fn codex_and_a_dollar_budget_add_nothing_to_the_fleet_line_or_the_pace() {
         let b = build(&sources(), Some(0.116), Drip::default(), NOW);
-        // the fixture's 4.52 against 1.37, Claude accounts only: Codex's 0.71 is another budget
-        // the session rate does not carry; the keys carry no pace
+        // the fixture's published 4.52 against 1.37: Codex's 0.71 is another budget, which
+        // claude-acct leaves out of the sum (tests/unit/claude_acct.bats); the keys carry no pace
         assert!((b.fleet.burn - 4.52).abs() < 1e-9);
         assert!((b.fleet.sustain - 1.37).abs() < 1e-9);
         assert_eq!(b.fleet.carries, Some(11));

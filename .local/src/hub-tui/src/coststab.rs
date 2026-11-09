@@ -882,6 +882,18 @@ mod tests {
         let mut age = series("", "textfile_age_seconds", 120.0);
         age.labels.remove("account");
         all.push(age);
+        // claude-acct's fleet sum of the three accounts
+        for (k, v) in [
+            ("live_sessions", 39.0),
+            ("burn_points_per_hour", 4.52),
+            ("sustain_points_per_hour", 1.37),
+        ] {
+            let mut s = series("", k, v);
+            s.labels.remove("account");
+            s.labels
+                .insert("__name__".into(), format!("claude_fleet_{k}"));
+            all.push(s);
+        }
         let drip = hub_core::burn::Drip {
             hour: 15,
             day: 349,
