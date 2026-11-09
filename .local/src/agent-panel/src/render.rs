@@ -16,6 +16,7 @@ const BOLD: &str = "\x1b[1m";
 const ORANGE: &str = "\x1b[38;5;214m"; // window tags, matching the tmux status bar
 const MAGENTA: &str = "\x1b[1;35m";
 const BLUE: &str = "\x1b[1;34m";
+const WHITE: &str = "\x1b[1;37m"; // manual mode: cyan is the labels' colour, and one is `[manual]`
 
 /// Normalize a working-directory path to a project name: basename with any
 /// `-agent`, `-agent2`, `-agent-2` worktree suffix stripped, and the dotfiles
@@ -182,7 +183,7 @@ pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) 
             // otherwise, so targets stay aligned.
             let mode = match a.mode {
                 Mode::Plan => format!("{MAGENTA}P{RESET}"),
-                Mode::Manual => format!("{CYAN}M{RESET}"),
+                Mode::Manual => format!("{WHITE}M{RESET}"),
                 Mode::Other => " ".to_string(),
             };
             let ask = if a.ask.is_some() { format!("{BLUE}A{RESET}") } else { " ".to_string() };
@@ -465,7 +466,7 @@ mod tests {
         assert!(row(&rows, "s:2").contains(&format!("    {o} s:2")));
         assert!(row(&rows, "s:3").contains(&format!("{p}{a} {o} s:3")));
         // Manual mode takes the same column as plan mode, in its own letter.
-        assert!(row(&rows, "s:4").contains(&format!("{CYAN}M{RESET}  {o} s:4")));
+        assert!(row(&rows, "s:4").contains(&format!("{WHITE}M{RESET}  {o} s:4")));
     }
 
     #[test]
@@ -566,6 +567,8 @@ mod tests {
         let (target, back) = Facts::parse(&f.line("hub/s:1"));
         assert_eq!(target, "hub/s:1");
         assert_eq!(back, Facts { summary: "a title".into(), ..f });
+        let manual = Facts { mode: Mode::Manual, ..back.clone() };
+        assert_eq!(Facts::parse(&manual.line("hub/s:1")).1.mode, Mode::Manual);
         // Negative control: a short line from an older panel reads its missing fields as empty.
         let (_, old) = Facts::parse("hub/s:1\t\tproj");
         assert_eq!(old, Facts { project: "proj".into(), ..Facts::default() });
