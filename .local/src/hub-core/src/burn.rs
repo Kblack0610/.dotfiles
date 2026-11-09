@@ -6,7 +6,7 @@
 //! sums the per-source series and words them, so the hub TUI and agent-web print the same section
 //! and no second formula exists. The drip is the `started` lines of fleet-dispatch's `log.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
@@ -16,7 +16,7 @@ use crate::prom::Series;
 pub const RATE_Q: &str = "claude_fleet_session_rate_points_per_hour";
 
 /// Where the dispatch hold is explained (the Sessions header), as `SPEND_BADGE` names Costs.
-pub const HOLD_BADGE: &str = "5 Sessions";
+pub const HOLD_BADGE: &str = "4 Sessions";
 
 /// claude-acct's published answer on an automatic start for one account (its `room` object in
 /// the textfile: `claude_account_room`, `_room_headroom_points`, `_room_reason`). The hub prints
@@ -182,6 +182,8 @@ pub struct Account {
     pub usd_budget: Option<f64>,
     /// The pool this key spends inside; it has room only when the pool does.
     pub parent: Option<String>,
+    /// `parent` is itself a row, so this one is listed in the fold under it. Set by `ordered`.
+    pub nested: bool,
     /// The USED cell both surfaces print: `53%`, or `81% $81/$100` for a dollar budget.
     pub used_text: String,
     /// `ok`, `unreadable` (claude-acct could not read its usage), `idle` (no usage yet) or
@@ -280,10 +282,92 @@ pub struct Burn {
     pub level: &'static str,
     /// Set when the textfile is not fresh: every figure below is then old, and the surfaces say so.
     pub stale: Option<&'static str>,
+    /// Every source, in reading order (`ordered`); the surfaces list the `nested` ones in the fold.
     pub accounts: Vec<Account>,
+    /// The fold under the pool row; None when no source is nested.
+    pub keys: Option<Keys>,
     pub fleet: Fleet,
     pub drip: Drip,
     pub pace: Pace,
+}
+
+/// The keys inside a pool, which draw on its money and so are not sources beside it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Keys {
+    /// `3 in lazer, 0 live, tightest glm 96%`, worded here so both surfaces print the same.
+    pub head: String,
+    /// `warn` when a key's usage is unreadable or it refuses while its pool has room, which only
+    /// the fold can show, so it starts open; `ok` otherwise.
+    pub level: &'static str,
+}
+
+/// The sources in reading order: Claude accounts, the Codex plan, the pools, by name inside each,
+/// each key right after its pool. A key whose pool is not a row stays at the top level.
+fn ordered(mut accounts: Vec<Account>) -> Vec<Account> {
+    let kinds: BTreeMap<String, String> = accounts
+        .iter()
+        .map(|a| (a.name.clone(), a.kind.clone()))
+        .collect();
+    // Only a row with no pool above it can hold keys, so a chain or a cycle keeps its rows visible.
+    let roots: BTreeSet<String> = accounts
+        .iter()
+        .filter(|a| a.parent.as_ref().is_none_or(|p| *p == a.name))
+        .map(|a| a.name.clone())
+        .collect();
+    for a in &mut accounts {
+        a.nested = a
+            .parent
+            .as_ref()
+            .is_some_and(|p| *p != a.name && roots.contains(p));
+    }
+    accounts.sort_by_cached_key(|a| {
+        let top = match &a.parent {
+            Some(p) if a.nested => p.clone(),
+            _ => a.name.clone(),
+        };
+        let rank = match kinds[&top].as_str() {
+            DEFAULT_KIND => 0,
+            "codex" => 1,
+            "litellm-team" => 2,
+            _ => 3,
+        };
+        (rank, top, a.nested, a.name.clone())
+    });
+    accounts
+}
+
+fn keys_fold(accounts: &[Account]) -> Option<Keys> {
+    let keys: Vec<&Account> = accounts.iter().filter(|a| a.nested).collect();
+    if keys.is_empty() {
+        return None;
+    }
+    let pool_has_room = |a: &Account| {
+        accounts
+            .iter()
+            .find(|p| Some(&p.name) == a.parent.as_ref())
+            .and_then(|p| p.room.as_ref())
+            .is_some_and(|r| r.ok)
+    };
+    let alone = keys.iter().any(|a| {
+        a.state == "unreadable" || (a.room.as_ref().is_some_and(|r| !r.ok) && pool_has_room(a))
+    });
+    let pools: BTreeSet<&str> = keys.iter().filter_map(|a| a.parent.as_deref()).collect();
+    let tightest = keys
+        .iter()
+        .filter_map(|a| a.used.map(|u| (u, a)))
+        .max_by(|x, y| x.0.total_cmp(&y.0))
+        .map_or(String::new(), |(u, a)| {
+            format!(", tightest {} {}%", a.name, u.floor())
+        });
+    Some(Keys {
+        head: format!(
+            "{} in {}, {} live{tightest}",
+            keys.len(),
+            pools.into_iter().collect::<Vec<_>>().join(", "),
+            keys.iter().map(|a| a.live).sum::<u32>()
+        ),
+        level: if alone { "warn" } else { "ok" },
+    })
 }
 
 /// `53%`, `81% $81/$100` with a dollar budget, `-` with no figure.
@@ -322,6 +406,7 @@ fn account(name: &str, read: &Accounts, stale: bool) -> Account {
         usd_used,
         usd_budget,
         parent: read.parents.get(name).map(|p| p.to_string()),
+        nested: false,
         used_text: used_text(used, usd_used, usd_budget),
         state,
         room,
@@ -345,7 +430,8 @@ fn account(name: &str, read: &Accounts, stale: bool) -> Account {
 pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn {
     let read = Accounts::read(series);
     let stale = read.stale();
-    let accounts: Vec<Account> = read.by.keys().map(|n| account(n, &read, stale)).collect();
+    let accounts = ordered(read.by.keys().map(|n| account(n, &read, stale)).collect());
+    let keys = keys_fold(&accounts);
     // Burn and sustain sum over the same accounts: an unreadable or idle one has neither, and
     // one with no sustain (its week is spent or past its reset) would otherwise add burn to
     // the OVER ratio with nothing on the other side.
@@ -381,6 +467,7 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
         stale: stale.then_some(STALE_NOTE),
         level,
         accounts,
+        keys,
         fleet,
         drip,
         ..Burn::default()
@@ -661,9 +748,10 @@ mod tests {
 
     #[test]
     fn the_hold_badge_names_the_sessions_key() {
-        let at = crate::layout::TABS.iter().position(|t| t.id == "sessions");
         assert_eq!(
-            at.map(|i| format!("{} Sessions", (i + 1) % 10)).as_deref(),
+            crate::layout::bar_digit("sessions")
+                .map(|d| format!("{d} Sessions"))
+                .as_deref(),
             Some(HOLD_BADGE)
         );
     }
@@ -795,6 +883,103 @@ mod tests {
         assert_eq!(r.parent.as_deref(), Some("lazer"));
         assert_eq!(row("lazer").parent, None);
         assert_eq!(row("lazer").used_text, "62% $157/$250");
+    }
+
+    /// A key of `lazer`, or of a pool that is no row, with its own room verdict.
+    fn key(name: &str, parent: &str, used: f64, ok: bool) -> Account {
+        Account {
+            name: name.into(),
+            kind: "litellm-key".into(),
+            parent: Some(parent.into()),
+            used: Some(used),
+            room: Some(Room {
+                ok,
+                ..Room::default()
+            }),
+            ..Account::default()
+        }
+    }
+
+    fn pool(ok: bool) -> Account {
+        Account {
+            name: "lazer".into(),
+            kind: "litellm-team".into(),
+            room: Some(Room {
+                ok,
+                ..Room::default()
+            }),
+            ..Account::default()
+        }
+    }
+
+    #[test]
+    fn the_sources_read_claude_codex_then_the_pool_with_its_keys_after_it() {
+        let b = build(&sources(), None, Drip::default(), NOW);
+        let names: Vec<&str> = b.accounts.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["alt", "bnb", "main", "codex", "lazer", "reserve"],
+            "alphabetical would put codex and lazer among the accounts"
+        );
+        let nested: Vec<&str> = b
+            .accounts
+            .iter()
+            .filter(|a| a.nested)
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(nested, ["reserve"]);
+        assert_eq!(
+            b.keys.unwrap().head,
+            "1 in lazer, 0 live, tightest reserve 81%"
+        );
+    }
+
+    #[test]
+    fn a_key_whose_pool_is_not_a_row_stays_at_the_top_level() {
+        let rows = ordered(vec![pool(true), key("orphan", "gone", 10.0, true)]);
+        assert!(rows.iter().all(|a| !a.nested), "{rows:?}");
+        assert_eq!(keys_fold(&rows), None);
+    }
+
+    #[test]
+    fn keys_that_name_each_other_stay_at_the_top_level() {
+        let rows = ordered(vec![key("a", "b", 10.0, true), key("b", "a", 10.0, true)]);
+        assert!(rows.iter().all(|a| !a.nested), "{rows:?}");
+    }
+
+    #[test]
+    fn an_unreadable_key_opens_the_fold_even_with_its_pool_spent() {
+        let unreadable = Account {
+            state: "unreadable",
+            room: None,
+            ..key("glm", "lazer", 96.0, true)
+        };
+        let fold = keys_fold(&ordered(vec![pool(false), unreadable.clone()]));
+        assert_eq!(fold.unwrap().level, "warn");
+        // negative control: the same key, read, with nothing wrong
+        let read = Account {
+            state: "ok",
+            ..unreadable
+        };
+        let fold = keys_fold(&ordered(vec![pool(false), read]));
+        assert_eq!(fold.unwrap().level, "ok");
+    }
+
+    #[test]
+    fn the_fold_is_warn_only_when_a_key_refuses_and_its_pool_has_room() {
+        let level = |pool_ok, key_ok| {
+            keys_fold(&ordered(vec![
+                pool(pool_ok),
+                key("glm", "lazer", 96.0, key_ok),
+                key("eval", "lazer", 18.0, true),
+            ]))
+            .unwrap()
+            .level
+        };
+        assert_eq!(level(true, false), "warn");
+        // negative control: the pool row already says it is spent, so nothing is hidden
+        assert_eq!(level(false, false), "ok");
+        assert_eq!(level(true, true), "ok");
     }
 
     #[test]

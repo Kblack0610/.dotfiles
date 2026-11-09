@@ -1,7 +1,7 @@
 "use strict";
-// The rows under the Projects tab (projects.js opens them for one project or for all): the
-// shared table (table.js) over every project's open rows from `notes board --json` (/api/board,
-// which filters and sorts by the view in the tab's URL query): the human sheet, the agent board,
+// The Board tab (every project's rows) and the rows under an opened project on Projects: the
+// shared table (table.js) over the open rows from `notes board --json` (/api/board, which
+// filters and sorts by the view in the showing tab's URL query): the human sheet, the agent board,
 // playtest; each profile's Focus is a count linking to the Daily tab. A row opens under itself
 // with its actions: add, start, done, drop, move (to a project or a version), a release sooner
 // or later, edit and tags go through `notes ptask --exact` with the row's raw line (POST
@@ -11,12 +11,17 @@
 
 const B_LANES = ["human", "agent", "playtest"];
 const B_PRIORITIES = ["urgent", "high", "low"];
-// All holds thousands of rows, so the table stops here until asked.
+// The Board holds thousands of rows, so the table stops here until asked.
 const B_OPEN = 200;
+// One view serves both tabs, so what it reads and where its query lives follow the showing tab.
+const bOnBoard = () => st.tab === "board";
+const bTab = () => (bOnBoard() ? "board" : "projects");
+const bScope = () => (bOnBoard() ? "all" : pst.open);
 // The table is drawn under the add form (renderBoard), which a re-read leaves alone.
 const bst = tblTab({
-  tab: "projects", id: "board", el: "b-tbl", on: "board", refresh: () => refreshBoard(), table: (t) => t.feed?.table,
-  shown: () => st.tab === "projects" && !!pst.open, hint: "search, or lane:agent priority:high size:s -tag:ai",
+  get tab() { return bTab(); }, get scroller() { return bTab(); },
+  id: "board", el: "b-tbl", on: "b-root", refresh: () => refreshBoard(), table: (t) => t.feed?.table,
+  shown: () => bOnBoard() || (st.tab === "projects" && !!pst.open), hint: "search, or lane:agent priority:high size:s -tag:ai",
   state: {
     feed: null, busy: false, msg: "",
     draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
@@ -24,22 +29,31 @@ const bst = tblTab({
     // is open: { k, kind }.
     form: null, all: false, controlsKey: "",
   },
-  scroller: "projects", body: () => bBody(),
+  body: () => bBody(),
 });
 
+// The view moves to the tab that shows it; rows read for the other scope go with the move.
+function bMount(parent) {
+  $(parent).appendChild($("b-root"));
+  if (bst.scope === bScope()) return;
+  bst.feed = null; bst.err = null; bst.msg = ""; bst.sel = null; bst.form = null; bst.all = false; bst.controlsKey = "";
+}
+
 // `feed.rows` is what the view keeps; a row's action index is into that list, which the drawn
-// table always comes from. An answer for a project no longer open is dropped, and pOpen's own
-// read follows it.
+// table always comes from. An answer for a scope no longer showing is dropped, and whatever
+// opened the new one reads it. The Projects list has no rows to read.
 const refreshBoard = coalesce(async () => {
-  const scope = pst.open;
-  const p = scope ? tblParams(st.views.projects) : new URLSearchParams();
-  if (scope && scope !== "all") p.set("scope", scope);
+  const scope = bScope();
+  if (!scope) return;
+  const p = tblParams(st.views[bTab()]);
+  if (scope !== "all") p.set("scope", scope);
   const q = p.toString();
   try {
     const got = await api("/api/board" + (q ? "?" + q : ""));
-    if (scope === pst.open) { bst.feed = got; bst.err = null; }
-  } catch (e) { if (scope === pst.open) bst.err = e.message; }
+    if (scope === bScope()) { bst.feed = got; bst.scope = scope; bst.err = null; }
+  } catch (e) { if (scope === bScope()) bst.err = e.message; }
   if (st.tab === "projects") renderProjects();
+  else if (bOnBoard()) renderBoard();
 });
 
 // A row's identity across re-reads: its sheet and its exact line.
@@ -143,11 +157,11 @@ function bLine(r, i) {
 }
 
 function bBody() {
-  const t = bst.feed.table, shown = bst.feed.rows, one = pst.open !== "all";
+  const t = bst.feed.table, shown = bst.feed.rows, one = bScope() !== "all";
   const rows = bst.all ? shown : shown.slice(0, B_OPEN);
   const more = shown.length - rows.length;
   // Lines still in an inbox are rows the triager has not filed: the Filed today chip is the ones it has.
-  const waiting = bst.feed.projects.filter((p) => !one || bProjKey(p) === pst.open).reduce((s, p) => s + (p.inbox || 0), 0);
+  const waiting = bst.feed.projects.filter((p) => !one || bProjKey(p) === bScope()).reduce((s, p) => s + (p.inbox || 0), 0);
   // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
   const focus = one ? [] : bst.feed.focus || [];
   const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
@@ -161,7 +175,7 @@ function bBody() {
 }
 
 function renderBoard() {
-  const el = $("board");
+  const el = $("b-root");
   if (!bst.feed) { el.innerHTML = `<div class="empty">${bst.err ? esc(bst.err) : "Loading..."}</div>`; return; }
   // The add form is drawn once per project list, so a re-read never eats what is being typed.
   const key = bst.feed.projects.map(bProjKey).join(",");
@@ -222,7 +236,7 @@ function bTarget(r) {
   return { profile: r.profile, project: r.project, lane: r.lane, raw: r.raw };
 }
 
-$("board").addEventListener("click", (e) => {
+$("b-root").addEventListener("click", (e) => {
   const t = e.target, rows = bst.feed ? bst.feed.rows : [];
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
@@ -248,13 +262,13 @@ $("board").addEventListener("click", (e) => {
   if (opened) {
     bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : d.tag ? "tag" : "edit" };
     bst.render();
-    const i = $("board").querySelector(`[data-forminput="${opened}"]`);
+    const i = $("b-root").querySelector(`[data-forminput="${opened}"]`);
     if (i) i.focus();
     return;
   }
   if (d.formcancel) { bst.form = null; bst.render(); return; }
   if (d.formgo && bst.form) {
-    const i = d.formgo, q = (a) => $("board").querySelector(`[data-${a}="${i}"]`);
+    const i = d.formgo, q = (a) => $("b-root").querySelector(`[data-${a}="${i}"]`);
     const v = q("forminput").value.trim(), kind = bst.form.kind;
     let body, ok;
     if (kind === "done" || kind === "drop") {
@@ -278,10 +292,15 @@ $("board").addEventListener("click", (e) => {
     bWrite(Object.assign(body, bTarget(r)), ok);
   }
 });
-for (const ev of ["input", "change"]) $("board").addEventListener(ev, (e) => { if (e.target.closest(".badd")) bSaveDraft(); });
-$("board").addEventListener("keydown", (e) => {
+for (const ev of ["input", "change"]) $("b-root").addEventListener(ev, (e) => { if (e.target.closest(".badd")) bSaveDraft(); });
+$("b-root").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.id === "b-text") { e.preventDefault(); bAdd(); return; }
   const i = e.target.dataset.forminput || e.target.dataset.formremove;
-  if (i != null) { e.preventDefault(); const b = $("board").querySelector(`[data-formgo="${i}"]`); if (b) b.click(); }
+  if (i != null) { e.preventDefault(); const b = $("b-root").querySelector(`[data-formgo="${i}"]`); if (b) b.click(); }
 });
+
+TABS.board = {
+  show() { bMount("board"); renderBoard(); refreshBoard(); },
+  onEvent(ev) { if (st.tab === "board" && ev.kind === "resync") refreshBoard(); },
+};

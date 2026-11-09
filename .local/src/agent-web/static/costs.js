@@ -92,23 +92,43 @@ function burnPace(b) {
 const burnCell = (a, t, at) => (a.unpaced ? "-" : !(a.used > a.gone) || (t != null && t <= at) ? "on pace" : t == null ? "after reset" : when(t));
 
 // The Burn table's columns, the TUI's header in its order; true is a number column.
-const BURN_COLS = [["source"], ["kind"], ["live", true], ["used", true], ["gone", true], ["reserve", true], ["room"], ["burn/h", true], ["keeps/h", true],
-  ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["24h", true], ["pool"]];
+const BURN_COLS = [["source"], ["kind"], ["live", true], ["bar"], ["used", true], ["gone", true], ["reserve", true], ["room"], ["burn/h", true], ["keeps/h", true],
+  ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["24h", true]];
+// A key is a dollar budget: the columns that always say nothing for one are left out.
+const KEY_COLS = BURN_COLS.filter(([t]) => ["source", "live", "bar", "used", "reserve", "room", "resets", "24h"].includes(t));
 
-function burnRow(a, at, note) {
+function burnRow(a, at, note, cols) {
   // a row with no figures: its name, then one cell across the rest
-  const span = (cls, text) => `<tr><td>${esc(a.name)}</td><td colspan="${BURN_COLS.length - 1}" class="${cls}">${esc(text)}</td></tr>`;
+  const span = (cls, text) => `<tr><td>${esc(a.name)}</td><td colspan="${cols.length - 1}" class="${cls}">${esc(text)}</td></tr>`;
   if (a.state === "unreadable") return span("bad", "usage unreadable");
   if (a.state === "stale") return span("bad", note);
   // burn::idle_note's words
   if (a.state === "idle") return span("muted", a.kind === "claude" ? "idle, token refreshes on launch" : "no usage read yet");
   const pc = (v) => (v == null ? "-" : Math.floor(v) + "%");
   const rate = (v) => (v == null || a.unpaced ? "-" : v.toFixed(2));
-  return `<tr><td>${esc(a.name)}</td><td>${esc(a.kind)}</td><td class="n">${a.live}</td><td class="n">${esc(a.used_text)}</td><td class="n">${pc(a.gone)}</td><td class="n">${pc(a.reserve)}</td>` +
-    `<td class="${a.room ? (a.room.ok ? "ok" : "bad") : "muted"}">${a.room ? esc(a.room.text) : "-"}</td>` +
-    `<td class="n${!a.unpaced && a.sustain != null && a.burn > a.sustain ? " warn" : ""}">${rate(a.burn)}</td><td class="n">${rate(a.sustain)}</td>` +
-    `<td>${burnCell(a, a.burn_at, at)}</td><td>${burnCell(a, a.idle_at, at)}</td><td>${when(a.run_out)}</td><td>${when(a.resets)}</td>` +
-    `<td class="n">${pc(a.five_hour)}</td><td>${when(a.five_hour_resets)}</td><td class="n">${usd(a.cost_24h)}</td><td>${esc(a.parent || "-")}</td></tr>`;
+  const cells = {
+    source: `<td>${esc(a.name)}</td>`, kind: `<td>${esc(a.kind)}</td>`, live: `<td class="n">${a.live}</td>`,
+    // the fill is the share used, the tick the share of the week gone; a dollar budget has no week
+    bar: `<td>${meter(a.used / 100, null, a.unpaced || a.gone == null ? null : a.gone / 100)}</td>`,
+    used: `<td class="n">${esc(a.used_text)}</td>`, gone: `<td class="n">${pc(a.gone)}</td>`, reserve: `<td class="n">${pc(a.reserve)}</td>`,
+    room: `<td class="${a.room ? (a.room.ok ? "ok" : "bad") : "muted"}">${a.room ? esc(a.room.text) : "-"}</td>`,
+    "burn/h": `<td class="n${!a.unpaced && a.sustain != null && a.burn > a.sustain ? " warn" : ""}">${rate(a.burn)}</td>`, "keeps/h": `<td class="n">${rate(a.sustain)}</td>`,
+    "at burn": `<td>${burnCell(a, a.burn_at, at)}</td>`, "if idle": `<td>${burnCell(a, a.idle_at, at)}</td>`, "runs out": `<td>${when(a.run_out)}</td>`, resets: `<td>${when(a.resets)}</td>`,
+    "5h": `<td class="n">${pc(a.five_hour)}</td>`, "5h resets": `<td>${when(a.five_hour_resets)}</td>`, "24h": `<td class="n">${usd(a.cost_24h)}</td>`,
+  };
+  return `<tr>${cols.map(([t]) => cells[t]).join("")}</tr>`;
+}
+
+const burnTable = (b, cols, rows) => `<table class="tbl"><tr>${cols.map(([t, n]) => `<th${n ? ' class="n"' : ""}>${t}</th>`).join("")}</tr>` +
+  rows.map((a) => burnRow(a, b.at, b.stale, cols)).join("") + `</table>`;
+
+// The keys inside a pool, folded under its row. Amber starts open under its own fold key, because
+// paint remembers every fold it saw and the quiet key's memory would keep it shut.
+function burnKeys(b) {
+  if (!b.keys) return "";
+  const warn = b.keys.level !== "ok", k = warn ? "burn-keys-warn" : "burn-keys";
+  const head = `KEYS <span class="${warn ? "warn" : "muted"}">${esc(b.keys.head)}</span>`;
+  return `<div class="panel scroll">${cfold(k, head, burnTable(b, KEY_COLS, b.accounts.filter((a) => a.nested)), { [k]: cost.open[k] ?? warn })}</div>`;
 }
 
 function costsBurn(d) {
@@ -120,9 +140,8 @@ function costsBurn(d) {
   return `<details class="csec" data-k="burn" id="sec-burn"${open ? " open" : ""}><summary><h2 class="sec">Burn <span class="burn ${cls}">${esc(b.head)}</span></h2></summary>` +
     `<div class="panel"><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
     `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
-    `<div class="panel scroll"><table class="tbl"><tr>${BURN_COLS.map(([t, n]) => `<th${n ? ' class="n"' : ""}>${t}</th>`).join("")}</tr>` +
-    b.accounts.map((a) => burnRow(a, b.at, b.stale)).join("") + `</table></div>` +
-    `<div class="muted fold">burn/h is the last 6h rate per live session; keeps/h is what the rest of the week can carry to the reset; 24h is the list-price estimate, for scale.</div></details>`;
+    `<div class="panel scroll">${burnTable(b, BURN_COLS, b.accounts.filter((a) => !a.nested))}</div>` + burnKeys(b) +
+    `<div class="muted fold">bar: the fill is the share used, the tick the share of the week gone; burn/h is the last 6h rate per live session; keeps/h is what the rest of the week can carry to the reset; 24h is the list-price estimate, for scale.</div></details>`;
 }
 
 // One table of a tokens window; a named row takes its chart slot, Other its grey (rule 5).

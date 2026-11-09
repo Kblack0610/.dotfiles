@@ -88,6 +88,14 @@ async function drawn(data, open) {
   await settle(); await settle();
   return read();
 }
+// The Board tab under this view, once its rows have come back.
+async function onBoard(view = "") {
+  ctx.view = view;
+  ctx.answers = { "/api/projects": list() };
+  vm.runInContext(`st.tab = "board"; st.arg = ""; st.views.board = view; pst.open = null; TABS.board.show();`, ctx);
+  await settle(); await settle();
+  return read();
+}
 // A click on the page, on a target with these data attributes, inside a row when `row` is set.
 function click(id, dataset, row) {
   const target = { id: "", dataset, closest: (sel) => (sel === "tr[data-row]" && row != null ? { dataset: { row } } : null) };
@@ -98,7 +106,7 @@ test("the list is one table row per project with its counts, and the card's word
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
   const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, held: 1, done_today: 3, oldest: "30h" }), card({ profile: "personal", name: "garden", stage: "", version: null, percent: null, eta_days: null, summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
   assert.match(cards, /2 projects, 1 in flight; progress is the open version's rows by size/);
-  assert.match(cards, /<button class="btn sm" data-open="all">All rows 2<\/button>/);
+  assert.doesNotMatch(cards, /All rows/, "every project's rows are the Board tab");
   assert.match(cards, /id="projects-q".*id="projects-chips"/s);
   assert.match(cards, />all <.*>in flight <.*>waiting </s);
   assert.match(cards, /data-tsort="project".*data-tsort="pace"[^>]*>pace\/wk<.*data-tsort="queued"/s);
@@ -146,7 +154,7 @@ test("with a project open every card is read, and an answer for a list no longer
   assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/projects?")));
   draw(list([card({ name: "kept" })]));
   ctx.answers = { "/api/projects": list([card({ name: "stale" })]) };
-  vm.runInContext(`refreshProjects(); st.arg = "all";`, ctx);
+  vm.runInContext(`refreshProjects(); st.arg = "bnb/demo";`, ctx);
   await settle(); await settle();
   assert.equal(vm.runInContext(`pst.data.cards[0].name`, ctx), "kept");
 });
@@ -210,20 +218,17 @@ test("opening a card asks for its rows alone and draws them as the shared table"
 
 test("a row opens under itself with its actions, and a second click shuts it", async () => {
   await drawn(list(), "bnb/demo");
-  click("board", {}, "0");
+  click("b-root", {}, "0");
   assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="10">.*data-tag="0">Tags\.\.\./s);
-  click("board", {}, "0");
+  click("b-root", {}, "0");
   assert.doesNotMatch(read().rows, /bopen/);
 });
 
 test("a row action after the server filtered names the row on screen, not its place in the sheet", async () => {
-  await drawn(list(), "all");
-  ctx.answers = { "/api/projects": list() };
-  vm.runInContext(`st.views.projects = "q=water"; refreshBoard();`, ctx);
-  await settle(); await settle();
+  await onBoard("q=water");
   assert.match(read().rows, /1 of 2 open rows/);
   ctx.sent = [];
-  click("board", { start: "0" });
+  click("b-root", { start: "0" });
   await settle(); await settle();
   assert.equal(JSON.parse(ctx.sent.find((s) => s.body).body).raw, "- [ ] water the beds");
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "the re-read keeps the view");
@@ -261,19 +266,42 @@ test("a click into a project or Back clears the query; a deep link keeps its own
   assert.equal(vm.runInContext(`st.views.projects`, ctx), "q=menu");
 });
 
-test("All opens every project's rows, and a stats error is shown, not hidden", async () => {
-  const all = await drawn(list(), "all");
+test("Board reads every project's rows under its own view, and leaves them behind", async () => {
+  ctx.sent = [];
+  assert.match((await onBoard("q=water")).rows, /1 of 2 open rows/);
+  assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "no scope, the Board's own query");
+  ctx.sent = [];
+  vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; TABS.projects.show();`, ctx);
+  await settle(); await settle();
+  assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/board")), "the list has no rows to read");
+  assert.equal(vm.runInContext(`bst.feed`, ctx), null, "the Board's rows do not follow");
+  ctx.input = { data: list() };
+  ctx.answers = { "/api/projects/demo/page": page };
+  vm.runInContext(`pst.data = input.data; pOpen("bnb/demo");`, ctx);
+  await settle(); await settle();
+  assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"));
+});
+
+test("a Board answer that lands after the tab changed is dropped", async () => {
+  await onBoard();
+  vm.runInContext(`bst.feed = null; refreshBoard(); st.tab = "projects"; pst.open = "bnb/demo";`, ctx);
+  await settle(); await settle();
+  assert.equal(vm.runInContext(`bst.feed`, ctx), null);
+});
+
+test("Board opens every project's rows, and a stats error is shown, not hidden", async () => {
+  const all = await onBoard();
   assert.match(all.rows, /fix the menu.*water the beds/s);
   assert.match(all.rows, /<a class="btn sm" href="#daily">Daily: personal 3, bnb 1 open<\/a>/, "the daily notes' Focus is a count linking to Daily");
   assert.match(draw(list([], { errors: ["notes projects failed"] })).cards, /panel down">notes projects failed/);
 });
 
 test("rows past the cap wait behind a button, and a view with nothing says so", async () => {
-  await drawn(list(), "all");
+  await onBoard();
   ctx.input = Array.from({ length: 205 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + i, text: "r" + i }));
   vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 205, total: 205 } }; bst.render();`, ctx);
   assert.match(read().rows, /data-all="1">\+5 more/);
-  click("board", { all: "1" });
+  click("b-root", { all: "1" });
   assert.doesNotMatch(read().rows, /\+5 more/);
   assert.match(read().rows, />r204</);
   vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
