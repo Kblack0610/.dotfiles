@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # keys: the sheet of every live key. What these pin: a Hyprland chord is one row, its described
-# bind speaking for it; a tmux row is the bind's note, or its command when it has none; tmux is
+# bind speaking for it; a row with no description has an empty one and keeps its command; tmux is
 # read only from a socket that answered list-sessions, so a dead one is never booted; nvim's dump
 # is cached until its config changes. hyprctl, tmux and nvim are stubs; nothing live is touched.
 
@@ -17,6 +17,7 @@ setup() {
   # close, the submap reset); an Esc back that must not count as the way in; an undescribed bind.
   jq -n '[
     {submap: "", modmask: 64, key: "D", dispatcher: "exec", arg: "wofi --show drun", has_description: true, description: "app launcher"},
+    {submap: "", modmask: 64, key: "1", dispatcher: "workspace", arg: "1", has_description: true, description: "workspace 1"},
     {submap: "", modmask: 64, key: "Q", dispatcher: "killactive", arg: "", has_description: false, description: ""},
     {submap: "", modmask: 64, key: "A", dispatcher: "submap", arg: "pinbar", has_description: true, description: "pin leader"},
     {submap: "pinbar", modmask: 0, key: "k", dispatcher: "exec", arg: "pin-hint.sh close", has_description: false, description: ""},
@@ -79,19 +80,19 @@ live_socket() {
   run "$KEYS" --print
   assert_success
   assert_line $'hypr\t\tSuper+D\tapp launcher\texec wofi --show drun'
-  assert_line $'hypr\t\tSuper+Q\tkillactive\tkillactive'
+  assert_line $'hypr\t\tSuper+Q\t\tkillactive'
   assert_line $'hypr\t\tSuper+A k\tkeys sheet\texec kitty -e keys'
   assert_line $'hypr\t\tSuper+A escape\texit\tsubmap reset'
   assert_equal "$(grep -c $'^hypr\t\tSuper+A k\t' <<<"$output")" 1
 }
 
-@test "a tmux row is the bind's note, or its command when it has none; only the live copy table" {
+@test "a tmux row is the bind's note, or empty with its command when it has none; only the live copy table" {
   live_socket hub
   run "$KEYS" --print
   assert_success
   assert_line $'tmux\tprefix\tPrefix K\tEvery key\t'
-  assert_line $'tmux\tprefix\tPrefix x\tkill-pane\tkill-pane'
-  assert_line $'tmux\troot\tM-h\tselect-pane -L\tselect-pane -L'
+  assert_line $'tmux\tprefix\tPrefix x\t\tkill-pane'
+  assert_line $'tmux\troot\tM-h\t\tselect-pane -L'
   assert_line $'tmux\tcopy-mode-vi\tcopy-mode-vi: v\tBegin a selection\t'
   refute_output --partial 'C-Space'
 }
@@ -151,7 +152,13 @@ live_socket() {
   run "$KEYS" _list all
   assert_line --regexp $'^hypr\t\tSuper\\+D\thypr +Super\\+D +app launcher\t'
   assert_line --regexp $'^nvim\tn\t<leader>ff\tnvim +n <leader>ff .*Find files\t'
+  assert_line --regexp $'^hypr\t\tSuper\\+1\thypr +Super\\+1 +workspace 1\tworkspace 1$'
   refute_output --partial 'killactive'
+}
+
+@test "--md shows a bind with no description by its command" {
+  run "$KEYS" --md
+  assert_line '| hypr | `Super+Q` | killactive |'
 }
 
 @test "tab steps to the next layer and wraps; shift-tab steps back" {

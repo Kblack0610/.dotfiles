@@ -9,7 +9,7 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
-  CONFS=("$REPO_ROOT/.config/hypr/conf.d/keybindings.conf" "$REPO_ROOT/.config/hypr/conf.d/leader.conf")
+  CONFS=("$REPO_ROOT"/.config/hypr/conf.d/*.conf)
 }
 
 # Every chord as "<file>: <submap> <mods>,<key>", with " described" when one of its binds is.
