@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::home::{Home, Kind, Level, Need};
 use crate::infra::Infra;
 use crate::projects::{Card, Projects};
-use crate::queue::Queue;
+use crate::queue::{day_of, Queue, State};
 use crate::text::{age, cap};
 use crate::vocab::Vocab;
 
@@ -23,13 +23,16 @@ const ASK_MAX: usize = 44;
 const LINE_MAX: usize = 12 + ASK_MAX;
 /// How many projects the needs row names before the rest fold under "+N more".
 const PROJECTS: usize = 3;
+/// How many projects the Done section lists, busiest first, before the last folds the rest under "+N more": the widget is full
+/// at 4x5, so Done is a head and these rows (`widget-preview.sh --check` in home-config says).
+const DONE_PROJECTS: usize = 2;
 /// How many in-flight projects the projects section lists under its head; the widget is full at
 /// 4x4, so the rest fold into the head's count.
 const CARDS: usize = 2;
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Row {
     pub level: Level,
-    /// The section: red, error, needs, agents, queue, ci or projects. A section's first row is its head line,
+    /// The section: red, error, needs, done, agents, queue, ci or projects. A section's first row is its head line,
     /// `Title: value`, and the widget bolds what is before the colon.
     pub head: &'static str,
     pub text: String,
@@ -49,8 +52,8 @@ pub struct Inputs<'a> {
     pub infra: Option<&'a Infra>,
     /// The project cards (`projects::gather`), the ones the waybar chip and the hub draw.
     pub projects: Option<&'a Projects>,
-    /// PRs merged today, from the day-log record.
-    pub merged: Option<usize>,
+    /// The project of each PR merged today, from the day-log record (`merged_today`).
+    pub merged: Option<Vec<String>>,
     pub now: i64,
 }
 
@@ -188,47 +191,102 @@ fn agents(i: &Inputs) -> Vec<Row> {
     out
 }
 
-/// "Queue: 14 running, 16 ready, 83 held", then what it delivered today and the oldest ready
-/// item's wait: "37 done today, oldest ready waited 37h", then "164 PRs merged today, $4.24 each
-/// (28d $5.90)". The PR line stands without the queue, since it reads the day-log.
+/// "Done today: 42 queue items, 33 PRs merged", then one line per project, busiest first:
+/// "unity-core-playground 38 items, 25 PRs", the last ending ", +3 more" when there are others. Queue items done are the ok ones finished since local
+/// midnight and PRs come from the day-log, so each source counts only when it could be read; with
+/// neither there is no section.
+fn done(i: &Inputs) -> Vec<Row> {
+    let today = chrono::DateTime::from_timestamp(i.now, 0).map(|t| {
+        t.with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string()
+    });
+    let items: Option<Vec<&str>> = i.queue.map(|q| {
+        q.items
+            .iter()
+            .filter(|x| x.state == State::Done && x.status.as_deref() == Some("ok"))
+            .filter(|x| x.finished.as_deref().and_then(day_of) == today)
+            .map(|x| {
+                if x.project.is_empty() {
+                    "other"
+                } else {
+                    repo(&x.project)
+                }
+            })
+            .collect()
+    });
+    let prs = i.merged.as_ref();
+    if items.is_none() && prs.is_none() {
+        return vec![];
+    }
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let mut head = vec![];
+    if let Some(v) = &items {
+        head.push(plural(v.len(), "queue item", "queue items"));
+    }
+    if let Some(v) = prs {
+        head.push(plural(v.len(), "PR merged", "PRs merged"));
+    }
+    let mut out = vec![row(
+        Level::Ok,
+        "done",
+        format!("Done today: {}", head.join(", ")),
+    )];
+
+    let mut by: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for p in items.iter().flatten() {
+        by.entry(p).or_default().0 += 1;
+    }
+    for p in prs.into_iter().flatten() {
+        by.entry(repo(p)).or_default().1 += 1;
+    }
+    let mut by: Vec<(&str, (usize, usize))> = by.into_iter().collect();
+    by.sort_by_key(|(name, (n, m))| (std::cmp::Reverse(n + m), *name));
+    let shown = by.len().min(DONE_PROJECTS);
+    for (k, (name, (n, m))) in by.iter().take(shown).enumerate() {
+        // The fold rides on the last row, so the section stays a head and `DONE_PROJECTS` lines.
+        let fold = if k + 1 == shown && by.len() > shown {
+            format!(", +{} more", by.len() - shown)
+        } else {
+            String::new()
+        };
+        let tail = format!(
+            " {}{fold}",
+            counted(&[(*n, "item", "items"), (*m, "PR", "PRs")])
+        );
+        let room = LINE_MAX.saturating_sub(tail.chars().count());
+        out.push(row(Level::Ok, "done", format!("{}{tail}", cap(name, room))));
+    }
+    out
+}
+
+/// "Queue: 14 running, 16 ready, 83 held", then one detail line: the oldest ready item's wait and
+/// what a PR costs, "oldest ready waited 37h, $4.24 per PR (28d $5.90)". What the queue delivered
+/// today is the Done section's. The cost stands without the queue.
 fn queue(i: &Inputs) -> Vec<Row> {
     let mut out = vec![];
+    let mut said = vec![];
     if let Some(q) = i.queue {
         out.push(row(
             Level::Ok,
             "queue",
             format!("Queue: {}", q.counts_line()),
         ));
-        let stats = q.stats.as_ref();
-        let mut said = vec![];
-        if let Some(r) = stats.and_then(|s| s.recent.as_ref()) {
-            said.push(format!("{} done today", r.done_today));
-        }
-        let sitting = stats.and_then(|s| s.sitting.as_ref());
+        let sitting = q.stats.as_ref().and_then(|s| s.sitting.as_ref());
         if let Some(o) = sitting.and_then(|s| s.oldest_runnable.first()) {
             said.push(format!("oldest ready waited {}", age(o.minutes * 60)));
         }
-        if !said.is_empty() {
-            out.push(row(Level::Ok, "queue", said.join(", ")));
-        }
-    }
-    let mut prs = vec![];
-    if let Some(m) = i.merged {
-        prs.push(format!("{m} PRs merged today"));
     }
     if let Some(inf) = i.infra.filter(|x| x.ok) {
         if let Some(w) = kpi(inf, "agent_bench_kpi", "cost_per_pr", "7d") {
             let month = kpi(inf, "agent_bench_kpi", "cost_per_pr", "28d")
                 .map_or(String::new(), |m| format!(" (28d ${m:.2})"));
-            prs.push(if i.merged.is_some() {
-                format!("${w:.2} each{month}")
-            } else {
-                format!("${w:.2} per PR{month}")
-            });
+            said.push(format!("${w:.2} per PR{month}"));
         }
     }
-    if !prs.is_empty() {
-        out.push(row(Level::Ok, "queue", prs.join(", ")));
+    if !said.is_empty() {
+        out.push(row(Level::Ok, "queue", said.join(", ")));
     }
     out
 }
@@ -367,6 +425,7 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
     if !i.state.is_null() {
         rows.extend(needs(&waiting, i.now));
     }
+    rows.extend(done(i));
     rows.extend(agents(i));
     rows.extend(queue(i));
     rows.extend(i.infra.filter(|x| x.ok).and_then(ci));
@@ -382,8 +441,9 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
     Phone { state, rows }
 }
 
-/// PRs merged today from the day-log record (`DAYLOG_DIR`), None when there is none yet.
-pub fn merged_today() -> Option<usize> {
+/// The project of each PR merged today, from the day-log record (`DAYLOG_DIR`); None when there
+/// is no record yet.
+pub fn merged_today() -> Option<Vec<String>> {
     let dir = std::env::var("DAYLOG_DIR").unwrap_or_else(|_| {
         format!(
             "{}/.agent/daylog",
@@ -393,7 +453,16 @@ pub fn merged_today() -> Option<usize> {
     let day = chrono::Local::now().format("%F");
     let text = std::fs::read_to_string(format!("{dir}/{day}.json")).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
-    v["merged"].as_array().map(Vec::len)
+    let merged = v["merged"].as_array()?;
+    Some(
+        merged
+            .iter()
+            .map(|m| match m["project"].as_str() {
+                Some(p) if !p.is_empty() => p.to_string(),
+                _ => "other".to_string(),
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -537,6 +606,35 @@ mod tests {
         }
     }
 
+    /// `n` merged PRs, two of every three in one project.
+    fn merged(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|k| {
+                if k % 3 == 2 {
+                    "dotfiles"
+                } else {
+                    "unity-core-playground"
+                }
+                .to_string()
+            })
+            .collect()
+    }
+
+    fn done_item(slug: &str, project: &str, finished: i64) -> Item {
+        Item {
+            slug: slug.into(),
+            project: project.into(),
+            state: State::Done,
+            status: Some("ok".into()),
+            finished: Some(
+                chrono::DateTime::from_timestamp(finished, 0)
+                    .unwrap()
+                    .to_rfc3339(),
+            ),
+            ..Item::default()
+        }
+    }
+
     fn phone(state: &Value, q: Option<&Queue>, inf: Option<&Infra>) -> Phone {
         let h = home::build(state, q, None, inf);
         build(
@@ -546,7 +644,7 @@ mod tests {
                 queue: q,
                 infra: inf,
                 projects: None,
-                merged: Some(85),
+                merged: Some(merged(85)),
                 now: NOW,
             },
         )
@@ -593,15 +691,15 @@ mod tests {
                 "Vitals: 1 of 2 off target: Flow".to_string(),
             ]
         );
-        // Merged PRs and their cost read with the queue, the delivery section.
+        // What a PR costs reads with the queue; how many merged is the Done section's.
         assert_eq!(
             texts(&phone(&s, None, Some(&inf)), "queue"),
-            ["85 PRs merged today, $6.54 each (28d $7.00)"]
+            ["$6.54 per PR (28d $7.00)"]
         );
     }
 
     #[test]
-    fn the_queue_says_ready_held_and_what_it_delivered_today() {
+    fn the_queue_says_ready_held_and_how_long_the_oldest_waited() {
         let mut q = queue_of(vec![
             (State::Running, "r1"),
             (State::Queued, "q1"),
@@ -609,10 +707,6 @@ mod tests {
         ]);
         q.items[2].hold = Some("after q1".into());
         q.stats = Some(crate::queue::Stats {
-            recent: Some(crate::queue::Recent {
-                done_today: 37,
-                ..Default::default()
-            }),
             sitting: Some(crate::queue::Sitting {
                 oldest_runnable: vec![crate::queue::Waiter {
                     minutes: 37 * 60,
@@ -622,15 +716,89 @@ mod tests {
             }),
             ..Default::default()
         });
-        let p = phone(&state(), Some(&q), Some(&infra(vec![])));
+        let p = phone(&state(), Some(&q), Some(&infra(vec![("bench", bench())])));
         assert_eq!(
             texts(&p, "queue"),
             [
                 "Queue: 1 running, 1 ready, 1 held",
-                "37 done today, oldest ready waited 37h",
-                "85 PRs merged today",
+                "oldest ready waited 37h, $6.54 per PR (28d $7.00)",
             ]
         );
+    }
+
+    #[test]
+    fn done_leads_with_the_day_per_project_and_counts_only_what_was_read() {
+        let mut q = queue_of(vec![(State::Running, "r1")]);
+        // Every finish is NOW itself, so the machine's timezone cannot move one across midnight.
+        q.items.push(done_item("a", "agent-runtime", NOW));
+        q.items.push(done_item("b", "agent-runtime", NOW));
+        q.items.push(done_item("c", ".dotfiles", NOW));
+        q.items
+            .push(done_item("old", "agent-runtime", NOW - 3 * 86400));
+        let mut failed = done_item("bad", "agent-runtime", NOW);
+        failed.status = Some("failed".into());
+        q.items.push(failed);
+        let p = phone(&state(), Some(&q), Some(&infra(vec![])));
+        assert_eq!(
+            texts(&p, "done"),
+            [
+                "Done today: 3 queue items, 85 PRs merged",
+                "unity-core-playground 57 PRs",
+                "dotfiles 1 item, 28 PRs, +1 more",
+            ]
+        );
+        // After Needs, before Agents: near the top, not a detail under Queue.
+        let heads: Vec<&str> = p.rows.iter().map(|r| r.head).collect();
+        let at = |h: &str| heads.iter().position(|x| *x == h).unwrap();
+        assert!(at("needs") < at("done") && at("done") < at("agents"));
+        assert!(at("done") < at("queue"));
+    }
+
+    #[test]
+    fn done_names_the_busiest_projects_and_folds_the_rest() {
+        let mut q = queue_of(vec![]);
+        for (k, name) in ["a", "b", "c", "d", "e"].iter().enumerate() {
+            for n in 0..=k {
+                q.items.push(done_item(&format!("{name}{n}"), name, NOW));
+            }
+        }
+        let h = home::build(&state(), Some(&q), None, None);
+        let p = build(
+            &h,
+            &Inputs {
+                state: &state(),
+                queue: Some(&q),
+                infra: None,
+                projects: None,
+                merged: None,
+                now: NOW,
+            },
+        );
+        assert_eq!(
+            texts(&p, "done"),
+            [
+                "Done today: 15 queue items",
+                "e 5 items",
+                "d 4 items, +3 more",
+            ]
+        );
+    }
+
+    #[test]
+    fn done_is_absent_when_neither_source_could_be_read() {
+        let h = home::build(&state(), None, None, None);
+        let p = build(
+            &h,
+            &Inputs {
+                state: &state(),
+                queue: None,
+                infra: None,
+                projects: None,
+                merged: None,
+                now: NOW,
+            },
+        );
+        assert!(texts(&p, "done").is_empty());
     }
 
     #[test]
@@ -668,9 +836,11 @@ mod tests {
             p.rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
             [
                 "Needs you: nothing",
+                "Done today: 0 queue items, 85 PRs merged",
+                "unity-core-playground 57 PRs",
+                "dotfiles 28 PRs",
                 "Agents: 2 working",
                 "Queue: 1 running, 0 ready",
-                "85 PRs merged today",
                 "CI: 6/29 busy, 80% passed",
             ]
         );
@@ -695,7 +865,8 @@ mod tests {
         assert!(texts(&p, "ci").is_empty());
         let agents = texts(&p, "agents");
         assert_eq!(agents[0], "Agents: 8 working, 1 stalled");
-        assert_eq!(texts(&p, "queue"), ["85 PRs merged today"]);
+        assert!(texts(&p, "queue").is_empty());
+        assert_eq!(texts(&p, "done")[0], "Done today: 85 PRs merged");
     }
 
     #[test]
