@@ -298,13 +298,12 @@ fn vitals(args: Vec<String>) -> i32 {
         [a] if a == "--json" => true,
         _ => die(USAGE),
     };
-    let infra = hub_core::infra::gather();
-    let Some(v) = hub_core::vitals::read(&infra) else {
-        eprintln!(
-            "hub vitals: Prometheus: {}",
-            infra.error.as_deref().unwrap_or("did not answer")
-        );
-        return 1;
+    let v = match hub_core::vitals::fetch() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("hub vitals: Prometheus: {e}");
+            return 1;
+        }
     };
     if json {
         println!("{}", serde_json::to_string(&v).unwrap_or_default());

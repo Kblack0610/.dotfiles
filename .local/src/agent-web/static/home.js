@@ -249,7 +249,7 @@ function drawHome() {
   const running = sec("Running", h.running.length, capped("home-running", h.running, runningCard, "more", "Nothing running from the queue."), counts);
   const spend = h.spend ? sec("Spend", null, `<div class="cline">${esc(h.spend)} <a href="#costs">Costs</a></div>`) : "";
   const vitals = h.vitals ? sec("Vitals", esc(h.vitals.head), h.vitals.all_ok ? "" : h.vitals.rows.map((r) =>
-    `<div class="cline vital${r.level === "warn" ? " warn" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join(""),
+    `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join(""),
     h.grafana ? ` <a class="glink" href="${esc(h.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "") : "";
   const t = h.table;
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";

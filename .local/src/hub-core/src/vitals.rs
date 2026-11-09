@@ -86,7 +86,8 @@ fn number(x: f64, unit: Unit) -> String {
         Unit::Signed if x > 0.0 => format!("+{}", plain(x)),
         Unit::Signed => plain(x),
         Unit::Share => format!("{}%", plain((x * 1000.0).round() / 10.0)),
-        Unit::Hours => format!("{x:.0}h"),
+        Unit::Hours => number(x * 60.0, Unit::Minutes),
+        Unit::Minutes if x < 60.0 => format!("{x:.0}m"),
         Unit::Minutes => format!("{:.0}h", x / 60.0),
     }
 }
@@ -116,6 +117,19 @@ fn title(question: &str) -> String {
     let mut c = question.chars();
     c.next()
         .map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+}
+
+/// The vitals alone, one query: for a surface that shows only their line (`hub vitals`), where a
+/// full `gather` would ask everything and drop all but this.
+pub fn fetch() -> Result<Vitals, String> {
+    let base = crate::prom::base()?;
+    let mut infra = Infra {
+        ok: true,
+        ..Default::default()
+    };
+    let bench = crate::prom::instant(&base, crate::infra::BENCH_QUERY)?;
+    infra.instant.insert("bench", bench);
+    read(&infra).ok_or_else(|| "did not answer".to_string())
 }
 
 /// The rows as fleet-bench last published them, in its order. None when Prometheus did not
@@ -379,6 +393,14 @@ mod tests {
         assert_eq!(plain(372.0), "372");
         assert_eq!(plain(0.5), "0.5");
         assert_eq!(plain(0.863), "0.86");
+    }
+
+    #[test]
+    fn a_short_duration_reads_in_minutes_and_a_limit_never_reads_as_zero() {
+        assert_eq!(number(3198.0, Unit::Minutes), "53h");
+        assert_eq!(number(25.0, Unit::Minutes), "25m");
+        assert_eq!(number(340.0, Unit::Hours), "340h");
+        assert_eq!(number(0.5, Unit::Hours), "30m");
     }
 
     #[test]

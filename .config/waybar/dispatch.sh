@@ -195,7 +195,7 @@ tip="Q ready to start next, B on the board, D done today"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done
-vitals="$("${HUB:-$HOME/.local/bin/hub}" vitals 2>/dev/null | head -n 1)"
+vitals="$(PROM_TIMEOUT=2 "${HUB:-$HOME/.local/bin/hub}" vitals 2>/dev/null | head -n 1)"
 [ -n "$vitals" ] && tip+=$'\n\n'"vitals: $vitals"
 
 emit "$text" "$tip" "${LEVEL_CLASS[$level]}"

@@ -285,6 +285,11 @@ test("Vitals sits under Spend and above Needs you, a row per question, the off o
   assert.ok(html.indexOf("Spend") < html.indexOf("Vitals") && html.indexOf("Vitals") < html.indexOf("Needs you"), html);
 });
 
+test("an unread vital is dim, so it never looks like a healthy row", () => {
+  const rows = [{ question: "Trust", level: "nodata", parts: ["Ledger ?"] }];
+  assert.match(draw(home({ vitals: vitals({ rows }) })), /<div class="cline vital muted"><b>Trust<\/b> Ledger \?<\/div>/);
+});
+
 test("Vitals folds to its head when all are on target, and shows nothing until it is read", () => {
   const html = draw(home({ vitals: vitals({ head: "2 of 2 on target", all_ok: true }) }));
   assert.match(html, /Vitals <span class="muted">2 of 2 on target<\/span>/);
