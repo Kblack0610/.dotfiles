@@ -79,7 +79,7 @@ git -C "$REPO" worktree add -q "$wt" -b "$branch" origin/main || fail "git workt
 made=1
 jq --argjson p "$plan" '.skillOverrides = $p.skillOverrides' "$wt/.claude/settings.json" > "$wt/.claude/settings.json.new" &&
     mv "$wt/.claude/settings.json.new" "$wt/.claude/settings.json" || fail "could not write $wt/.claude/settings.json"
-body="The nightly skill-usage toggle: skillOverrides keeps name-only on the skills used in ${max} or fewer sessions in ${days} days, and lists one again past $((max * 2)) (Skill calls, typed commands, skill bodies, SKILL.md reads, script runs, CLI runs; \`skill-drift --overrides\`). A skill another skill or a CLAUDE.md layer routes to is never hidden.
+body="The nightly skill-usage toggle: skillOverrides keeps name-only on the skills used in ${max} or fewer sessions in ${days} days, and lists one again past $((max * 2)) (Skill calls, typed commands, skill bodies, SKILL.md reads, script runs, CLI runs; \`skill-drift --overrides\`). A skill another skill, a global doc or a runner routes to is never hidden.
 
 - Hidden: ${hide:-none}
 - Listed again: ${restore:-none}

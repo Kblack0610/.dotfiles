@@ -107,9 +107,9 @@ const burnCell = (a, t, at) => (a.unpaced ? "-" : !(a.used > a.gone) || (t != nu
 
 // The Burn table's columns, the TUI's header in its order; true is a number column.
 const BURN_COLS = [["source"], ["kind"], ["live", true], ["bar"], ["used", true], ["gone", true], ["reserve", true], ["room"], ["burn/h", true], ["keeps/h", true],
-  ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["24h", true]];
+  ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["$24h", true]];
 // A key is a dollar budget: the columns that always say nothing for one are left out.
-const KEY_COLS = BURN_COLS.filter(([t]) => ["source", "live", "bar", "used", "reserve", "room", "resets", "24h"].includes(t));
+const KEY_COLS = BURN_COLS.filter(([t]) => ["source", "live", "bar", "used", "reserve", "room", "resets", "$24h"].includes(t));
 
 function burnRow(a, at, note, cols) {
   // a row with no figures: its name, then one cell across the rest
@@ -128,7 +128,7 @@ function burnRow(a, at, note, cols) {
     room: `<td class="${a.room ? (a.room.ok ? "ok" : "bad") : "muted"}">${a.room ? esc(a.room.text) : "-"}</td>`,
     "burn/h": `<td class="n${!a.unpaced && a.sustain != null && a.burn > a.sustain ? " warn" : ""}">${rate(a.burn)}</td>`, "keeps/h": `<td class="n">${rate(a.sustain)}</td>`,
     "at burn": `<td>${burnCell(a, a.burn_at, at)}</td>`, "if idle": `<td>${burnCell(a, a.idle_at, at)}</td>`, "runs out": `<td>${when(a.run_out)}</td>`, resets: `<td>${when(a.resets)}</td>`,
-    "5h": `<td class="n">${pc(a.five_hour)}</td>`, "5h resets": `<td>${when(a.five_hour_resets)}</td>`, "24h": `<td class="n">${usd(a.cost_24h)}</td>`,
+    "5h": `<td class="n">${pc(a.five_hour)}</td>`, "5h resets": `<td>${when(a.five_hour_resets)}</td>`, "$24h": `<td class="n">${usd(a.cost_24h)}</td>`,
   };
   return `<tr>${cols.map(([t]) => cells[t]).join("")}</tr>`;
 }
@@ -155,7 +155,7 @@ function costsBurn(d) {
     `<div class="panel"><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
     `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
     `<div class="panel scroll">${burnTable(b, BURN_COLS, b.accounts.filter((a) => !a.nested))}</div>` + burnKeys(b) +
-    `<div class="muted fold">bar: the fill is the share used, the tick the share of the week gone; burn/h is the last 6h rate per live session; keeps/h is what the rest of the week can carry to the reset; 24h is the list-price estimate, for scale.</div></details>`;
+    (b.legend?.length ? `<div class="muted fold">${b.legend.map(([t, d]) => `${esc(t.toLowerCase())}: ${esc(d)}`).join("; ")}</div>` : "") + "</details>";
 }
 
 // One table of a tokens window; a named row takes its chart slot, Other its grey (rule 5).

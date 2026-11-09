@@ -1065,7 +1065,7 @@ pub fn parse_candidates(jsonl: &str) -> Candidates {
 pub fn candidates(path: &std::path::Path) -> Result<Candidates, String> {
     let body = std::fs::read_to_string(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            "no snapshot yet, the next dispatch pass writes one".to_string()
+            format!("no snapshot yet at {}, the next dispatch pass writes one", path.display())
         }
         _ => format!("{}: {e}", path.display()),
     })?;
