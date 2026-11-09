@@ -1218,12 +1218,25 @@ resume_prompt() {
     printf '%s' "$p"
 }
 
-# resume_cmd <direct 0|1> <cwd> <to dir> <claude ... --resume <id>> <prompt> -> the command
-# that resumes the session on that account: run as the pane's process when direct, typed into
-# the pane's shell (after a cd) when not
+# launch_env <cwd> [item] -> the launch-line prefix for a claude that is its pane's own process, which
+# runs no rc file: its queue item, then claude-telemetry.sh's claude_launch_env. Says so on stderr when
+# it cannot build one.
+launch_env() {
+    local f="$HOME/.config/shared-hooks/claude-telemetry.sh" env
+    [[ -z "${2:-}" ]] || printf 'AGENT_QUEUE_ITEM=%q ' "$2"
+    # shellcheck disable=SC2016
+    env=$(cd "$1" 2>/dev/null && AGENT_QUEUE_ITEM=${2:-} bash -c '. "$1" >/dev/null && claude_launch_env' _ "$f") ||
+        { echo "claude-acct: no launch env from $f; the resume exports no telemetry" >&2; return 0; }
+    printf '%s' "$env"
+}
+
+# resume_cmd <direct 0|1> <cwd> <to dir> <claude ... --resume <id>> <prompt> [item] -> the command
+# that resumes the session on that account: run as the pane's process, with launch_env, when direct,
+# typed into the pane's shell (after a cd) when not
 resume_cmd() {
     local c
     c="$4 $(printf %q "$5")"
+    [[ "$1" == 1 ]] && c="$(launch_env "$2" "${6:-}")$c"
     if [[ -n "$3" ]]; then c="CLAUDE_CONFIG_DIR=$(printf %q "$3") $c"
     else c="env -u CLAUDE_CONFIG_DIR $c"; fi
     [[ "$1" == 1 ]] || c="cd $(printf %q "$2") && $c"
@@ -1345,14 +1358,9 @@ park_flow() {
     base="claude $(carry_flags "$pid")--resume $(printf %q "$sid")"
     # A shell that exported these would otherwise keep the resume on the gateway.
     [[ "$from" == "$GATEWAY_FROM" ]] && base="env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN $base"
-    # A pane that is its claude runs no rc file: its launch line (fleet-dispatch's) carried the queue
-    # item and the launch env, so the respawn carries them again (claude-telemetry.sh claude_launch_env).
-    if ((direct)); then
-        local item
-        item=$(tr '\0' '\n' < "$PROC/$pid/environ" 2>/dev/null | sed -n 's/^AGENT_QUEUE_ITEM=//p' | head -n1)
-        base="${item:+AGENT_QUEUE_ITEM=$(printf %q "$item") }$(cd "$cwd" 2>/dev/null && AGENT_QUEUE_ITEM=$item \
-            bash -c '. "$HOME/.config/shared-hooks/claude-telemetry.sh" && claude_launch_env' 2>/dev/null)$base"
-    fi
+    # The queue item a pane claude's launch line carried (fleet-dispatch's), for its respawn.
+    local item=""
+    ((direct)) && item=$(tr '\0' '\n' < "$PROC/$pid/environ" 2>/dev/null | sed -n 's/^AGENT_QUEUE_ITEM=//p' | head -n1)
     if [[ "$verb" == move ]]; then
         echo "claude-acct: move $key ($server $pane, claude $pid, $status) from $(name_of "$from") to $name ($note)"
     else
@@ -1368,7 +1376,7 @@ park_flow() {
         cut -c1-100 <<< "$shells" | sed 's/^/    /'
     fi
     if [[ "$verb" == move ]]; then
-        echo "  then: $(resume_cmd "$direct" "$cwd" "$to" "$base" "$(resume_prompt move "$(name_of "$from")" "$name" "$status")")"
+        echo "  then: $(resume_cmd "$direct" "$cwd" "$to" "$base" "$(resume_prompt move "$(name_of "$from")" "$name" "$status")" "$item")"
     else
         echo "  then: write $PARKED/$key; claude-acct unpark $key resumes it with $base, on the account with room then"
     fi
@@ -1381,7 +1389,7 @@ park_flow() {
     if ! mkdir -p "$PARKED" || ! tmp=$(mktemp "$PARKED/.$key.XXXXXX"); then refuse "cannot write to $PARKED"; return; fi
     printf '%s\n' "session=$session" "server=$server" "target=$server/$session${win:+:$win}" "pane=$pane" \
         "direct=$direct" "pid=$pid" "session_id=$sid" "cwd=$cwd" "from=$from" "status=$status" \
-        "why=$verb" "parked=$(date +%s)" "resume=$base" > "$tmp"
+        "why=$verb" "parked=$(date +%s)" "resume=$base" "item=$item" > "$tmp"
 
     # A fleet-dispatch pane closes with its claude, and with it the session, its @dispatch
     # label and the name its ledger is filed under; held open, it is respawned in place.
@@ -1408,14 +1416,14 @@ park_flow() {
 # pane, on that account or else the one best() names now, await it, then delete the ledger.
 # A failure keeps the ledger, so `claude-acct unpark` can try again.
 unpark_ledger() {
-    local verb="$1" file="$2" what session server pane direct pid sid cwd from status why base to name note b cmd got scope
+    local verb="$1" file="$2" what session server pane direct pid sid cwd from status why base item to name note b cmd got scope
     what="${file##*/}"
     [[ -f "$file" ]] || { refuse "not parked: no $file"; return; }
     session=$(ledger_get "$file" session); session="${session:-${what%%:*}}"
     server=$(ledger_get "$file" server); pane=$(ledger_get "$file" pane); direct=$(ledger_get "$file" direct)
     pid=$(ledger_get "$file" pid); sid=$(ledger_get "$file" session_id); cwd=$(ledger_get "$file" cwd)
     from=$(ledger_get "$file" from); status=$(ledger_get "$file" status); why=$(ledger_get "$file" why)
-    base=$(ledger_get "$file" resume)
+    base=$(ledger_get "$file" resume); item=$(ledger_get "$file" item)
     [[ -n "$server" && -n "$pane" && -n "$sid" && -n "$cwd" && -n "$base" ]] || { refuse "$file is missing a field"; return; }
     # claude finds a session by its folder, so with the worktree gone nothing can resume it; the
     # ledger would only fail every later unpark (and unpark --all). Checked before tmux, since
@@ -1446,7 +1454,7 @@ unpark_ledger() {
     scope=""; [[ "$what" == *:* ]] && scope="$pane"
     [[ -z "$(find_claude "$server" "$session" "" "$scope")" ]] ||
         { refuse "a claude is already live in ${scope:-its panes}; delete $file if it is this session"; return; }
-    cmd=$(resume_cmd "$direct" "$cwd" "$to" "$base" "$(resume_prompt "${why:-park}" "$(name_of "$from")" "$name" "$status")")
+    cmd=$(resume_cmd "$direct" "$cwd" "$to" "$base" "$(resume_prompt "${why:-park}" "$(name_of "$from")" "$name" "$status")" "$item")
 
     cmd_link
     if [[ "$direct" == 1 ]]; then

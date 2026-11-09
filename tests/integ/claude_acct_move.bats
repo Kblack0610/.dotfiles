@@ -201,6 +201,34 @@ tmux_calls() { cat "$FIX/calls.log"; }
   assert_line --partial 'claude --model opus --resume sid-1'
 }
 
+@test "a parked pane claude's ledger keeps its queue item, not a launch env, and unpark builds the env then" {
+  session lab agent-2 %7 200 200 idle "" --model opus
+  printf 'AGENT_QUEUE_ITEM=fix-menu\0' > "$CLAUDE_ACCT_PROC/200/environ"
+  mkdir -p "$HOME/.config/shared-hooks"
+  cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/getent"; chmod +x "$SANDBOX/bin/getent"
+  run "$ACCT" park agent-2 --server lab
+  assert_success
+  run cat "$(PARKED_LEDGER agent-2)"
+  assert_line 'item=fix-menu'
+  assert_line 'resume=claude --model opus --resume sid-1'
+  run "$ACCT" unpark agent-2
+  assert_success
+  run tmux_calls
+  assert_line --partial "respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=fix-menu env -u CLAUDECODE"
+  assert_line --partial 'OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318'
+}
+
+@test "a respawn says so when it cannot build the launch env, and still carries the queue item" {
+  session lab agent-2 %7 200 200 idle "" --model opus
+  printf 'AGENT_QUEUE_ITEM=fix-menu\0' > "$CLAUDE_ACCT_PROC/200/environ"
+  run "$ACCT" move agent-2 --server lab
+  assert_success
+  assert_output --partial 'no launch env from'
+  run tmux_calls
+  assert_line --partial "respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=fix-menu claude --model opus --resume sid-1"
+}
+
 @test "a session with background shells is refused, and the shells are listed" {
   session lab agent-3 %9 300 301 shell ""
   proc 302 301 ""

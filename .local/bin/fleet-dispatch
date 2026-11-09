@@ -530,7 +530,11 @@ account_env() {
 # with spans labelled by project and queue item. A pane gets the tmux server's environment and runs no
 # rc file, so only its launch line can carry these.
 telemetry_env() {
-  (cd "$1" && AGENT_QUEUE_ITEM=${2:-} bash -c '. "$HOME/.config/shared-hooks/claude-telemetry.sh" && claude_launch_env' 2>/dev/null) || true
+  local f="$HOME/.config/shared-hooks/claude-telemetry.sh" env
+  # shellcheck disable=SC2016
+  env=$(cd "$1" 2>/dev/null && AGENT_QUEUE_ITEM=${2:-} bash -c '. "$1" >/dev/null && claude_launch_env' _ "$f") ||
+    { say "no launch env from $f, so this start exports no telemetry and keeps the tmux server's Claude session vars"; return 0; }
+  printf '%s' "$env"
 }
 
 # item_sessions -> one line per running or waiting queue item, its fields split by
