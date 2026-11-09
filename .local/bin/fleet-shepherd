@@ -96,7 +96,7 @@ DUE_LAST="$LEDGER/.due"      # <key>\t<role>\t<first seen epoch>\t<line>: what t
 HANDED="$LEDGER/.handed"     # <key>\t<epoch>: due lines handed to a pass and when, so only those can come back unhandled
 SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to leave, and why
 PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while they stay due
-UNHANDLED="$LEDGER/.unhandled"  # how many checks in a row found an unhandled line
+UNHANDLED="$LEDGER/.unhandled"  # how many checks in a row found an unhandled line that would start a pass
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pass running now
 NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>\t<lane_cols>: every pass, once scored; fleet-bench canary shepherd reads the lane columns by position
@@ -113,17 +113,18 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_PASS_MAX_MIN:=30}" # a pass still working this long, with no human on it, is STALLED and closed
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
 : "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
-: "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once
+: "${FLEET_SHEPHERD_UNHANDLED_MIN:=120}" # a due line left this long with no answer pages the human, once (two debounces: one held pass is no miss)
 # A run starts a pass only when something is due, and then only this long after the last pass
 # started, unless a due line is urgent. Measured 2026-11-07: a median pass cost $0.89, $0.54 of it
 # the fresh start's 68K cache-write tokens, and 40 of 275 scored passes were given nothing.
-: "${FLEET_SHEPHERD_DEBOUNCE_MIN:=30}"
+: "${FLEET_SHEPHERD_DEBOUNCE_MIN:=60}"
 # Urgent lines start a pass on the next run: a red (nightly, shared, infra, a tripped watch), a
-# STALLED row (past fleet-sessions' stall threshold already), a usage-limit stop, and a line the
-# last pass left unhandled. An answered ask has no line: ask-resume hands the answer to its session.
-: "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: |nightly red|shared red|infra:|watch:|limit:|(nudge|escalate) STALLED)}"
-# Lines due wait at most DEBOUNCE_MIN for a pass, so 60 is two of those and room for a late timer.
-: "${FLEET_SHEPHERD_STUCK_MIN:=60}" # lines due and no pass started this long: stuck
+# STALLED row (past fleet-sessions' stall threshold already) and a usage-limit stop. A line the last
+# pass left unhandled is as urgent as the line itself: on 2026-11-09 any leftover skipped the debounce,
+# which started 59 passes a day. An answered ask has no line: ask-resume hands the answer to its session.
+: "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: )?(nightly red|shared red|infra:|watch:|limit:|(nudge|escalate) STALLED)}"
+# Lines due wait at most DEBOUNCE_MIN for a pass, so 120 is two of those and room for a late timer.
+: "${FLEET_SHEPHERD_STUCK_MIN:=120}" # lines due and no pass started this long: stuck
 # A queue session's budget, by its item's #size/ tag; unsized is most items. A budget is a
 # checkpoint, not a wall (Ken, 2026-11-05: development comes first): see budget_sample.
 : "${FLEET_SHEPHERD_BUDGET_S:=12}" "${FLEET_SHEPHERD_BUDGET_M:=25}" "${FLEET_SHEPHERD_BUDGET_L:=50}"
@@ -798,8 +799,11 @@ receipts() {
   [ "${FLEET_SHEPHERD_HAND:-1}" = 0 ] || hand_keys "$given"
   printf '%s' "$rows" > "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due)
   if [ -n "$owed" ]; then
-    seen="$(cat "$UNHANDLED" 2>/dev/null)"
-    echo $(( ${seen//[!0-9]/} + 1 )) > "$UNHANDLED"
+    # A line the debounce holds is waiting its turn, so that check is not one more in the streak.
+    if ! no_pass_why "$owed" >/dev/null; then
+      seen="$(cat "$UNHANDLED" 2>/dev/null)"
+      echo $(( ${seen//[!0-9]/} + 1 )) > "$UNHANDLED"
+    fi
   elif [ -z "$early" ]; then
     rm -f "$UNHANDLED"
   fi
