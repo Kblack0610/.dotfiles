@@ -308,6 +308,7 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .cx { position: absolute; top: calc(100% + 3px); left: 50%; transform: translateX(-50%); font: 10px var(--mono); color: var(--muted); white-space: nowrap; }
 .cols { padding-bottom: 16px; }
 .tip { position: fixed; z-index: 50; pointer-events: none; white-space: pre; background: var(--ink); color: var(--panel); font: 12px/1.4 var(--mono); padding: 6px 8px; border-radius: 6px; max-width: min(420px, 90vw); overflow: hidden; }
+.tsort { display: none; }
 .tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
 .tbl th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -395,13 +396,26 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   header { box-sizing: border-box; min-height: calc(var(--head) + env(safe-area-inset-top, 0px)); }
 }
 @media (max-width: 760px) {
-  /* The Queue table keeps state, in, project and title; the detail has the rest. */
-  .tbl th.qx, .tbl td.qx { display: none; }
+  /* A row on a phone: its lead wraps at full width, its glance sits under it, the rest wait for a
+     tap (table.js stamps the roles). Direct children only, so a table nested in a detail is left alone. */
+  .tbl { font-size: 13px; }
+  .tsort { display: inline-block; }
+  .tbl.tphone, .tbl.tphone > tbody { display: block; }
+  .tbl.tphone > * > tr[data-phone=head] { display: none; }
+  .tbl.tphone > * > tr[data-phone=row] { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+  .tbl.tphone > * > tr[data-phone=row] > td { border: 0; padding: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+  .tbl.tphone > * > tr.sel[data-phone=row] { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .tbl.tphone > * > tr[data-phone=row] > td[data-role=lead] { flex: 0 0 100%; order: -1; }
+  .tbl.tphone > * > tr[data-phone=row] > td[data-role=glance] { color: var(--muted); font-size: 12px; }
+  .tbl.tphone > * > tr[data-phone=row] > td[data-role=rest] { display: none; }
+  .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest] { display: block; flex: 0 0 100%; font-size: 12px; }
+  .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest]::before { content: attr(data-label) ": "; color: var(--muted); }
+  .tbl.tphone > * > tr:not([data-phone]), .tbl.tphone > * > tr:not([data-phone]) > td { display: block; white-space: normal; overflow-wrap: anywhere; }
+  .seg button, .tsort, .bfilter select { min-height: 40px; }
   .board { padding: 12px; }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }
   .thsort { display: inline-block; padding: 10px 2px; }
-  .sched .opt { display: none; }
   .lane { grid-template-columns: 122px minmax(0, 1fr); gap: 6px; }
   .lane .ll { font-size: 11px; }
   .ticks span:nth-child(even) { display: none; }

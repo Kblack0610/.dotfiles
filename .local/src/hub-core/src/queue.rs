@@ -837,6 +837,8 @@ impl crate::table::Row for QueueRow<'_> {
     /// Queue sections list them.
     const STATES: &'static [&'static str] = &["all", "needs you", "running", "up next", "done"];
     const FACETS: &'static [&'static str] = &["project", "kind", "size", "acct"];
+    const LEAD: &'static str = "title";
+    const GLANCE: &'static [&'static str] = &["state", "in", "project"];
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;

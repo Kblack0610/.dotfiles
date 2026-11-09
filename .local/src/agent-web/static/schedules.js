@@ -15,7 +15,7 @@ const schst = tblTab({
 
 const schedKey = (r) => `${r.kind}|${r.name}`;
 
-const SCHED_COLS = { kind: ["kind", "opt"], name: ["name"], schedule: ["schedule", "opt"], last: ["last", "n"], result: ["result"], streak: ["streak"], triage: ["triage"] };
+const SCHED_COLS = { kind: ["kind"], name: ["name"], schedule: ["schedule"], last: ["last", "n"], result: ["result"], streak: ["streak"], triage: ["triage"] };
 
 
 function scheduleRow(r) {
@@ -23,7 +23,7 @@ function scheduleRow(r) {
   const open = schedKey(r) === schst.sel;
   const none = r.purpose ? "" : ` <span class="warn" title="this schedule does not say why it exists">no purpose</span>`;
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(schedKey(r))}">` +
-    `<td class="muted opt">${esc(r.kind)}</td><td class="wrap">${esc(r.name)}${none}</td><td class="opt">${esc(r.schedule)}</td>` +
+    `<td class="muted">${esc(r.kind)}</td><td class="wrap">${esc(r.name)}${none}</td><td>${esc(r.schedule)}</td>` +
     `<td class="n">${r.last ? when(r.last) : "-"}</td><td class="${cls}">${esc(r.result || "-")}</td>` +
     `<td class="${r.streak < 0 ? "bad" : ""}">${esc(r.streak_word)}</td><td class="wrap muted">${esc(r.triage)}</td></tr>`;
   return open ? row + scheduleDetail(r) : row;

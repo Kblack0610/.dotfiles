@@ -54,6 +54,10 @@ pub trait Row {
     /// A chip no row is under is left out, unless it is the one in force: for a table with
     /// more kinds than usually have a row.
     const HIDE_EMPTY: bool = false;
+    /// The column a phone row leads with, full width and wrapping. Empty keeps the plain table.
+    const LEAD: &'static str = "";
+    /// The few columns under the lead on a phone; the rest wait for a tap.
+    const GLANCE: &'static [&'static str] = &[];
 
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
@@ -87,6 +91,8 @@ impl<T: Row> Row for &T {
     const COLUMNS: &'static [&'static str] = T::COLUMNS;
     const STATES: &'static [&'static str] = T::STATES;
     const FACETS: &'static [&'static str] = T::FACETS;
+    const LEAD: &'static str = T::LEAD;
+    const GLANCE: &'static [&'static str] = T::GLANCE;
 
     fn val(&self, col: &str) -> Val {
         (*self).val(col)
@@ -242,6 +248,8 @@ pub struct Column {
     pub sort: Option<Dir>,
     pub next_sort: String,
     pub next_dir: Dir,
+    /// How a phone draws it: `lead`, `glance`, or empty for a column that waits for a tap.
+    pub role: &'static str,
 }
 
 /// One dropdown value: how many rows it would show and the whole query that picks it.
@@ -468,6 +476,13 @@ impl View {
                     sort: (self.sort == *key).then_some(self.dir),
                     next_sort,
                     next_dir,
+                    role: if *key == R::LEAD {
+                        "lead"
+                    } else if R::GLANCE.contains(key) {
+                        "glance"
+                    } else {
+                        ""
+                    },
                 }
             })
             .collect();
@@ -494,6 +509,32 @@ fn next_of(list: &[&str], cur: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn phone_roles_name_real_columns() {
+        fn check<R: super::Row>() {
+            let name = std::any::type_name::<R>();
+            assert!(!R::LEAD.is_empty(), "{name} has no lead");
+            assert!(R::COLUMNS.contains(&R::LEAD), "{name} lead {}", R::LEAD);
+            assert!(R::GLANCE.len() <= 3, "{name} glances at too much");
+            for g in R::GLANCE {
+                assert!(R::COLUMNS.contains(g) && *g != R::LEAD, "{name} glance {g}");
+            }
+        }
+        check::<crate::home::Need>();
+        check::<crate::proposals::Proposal>();
+        check::<crate::queue::QueueRow<'static>>();
+        check::<crate::tasks::Row>();
+        check::<crate::projects::Card>();
+        check::<crate::session_table::SessionRow>();
+        check::<crate::jobs::Job>();
+        check::<crate::actions::Action>();
+        check::<crate::fleet::who::Who>();
+        check::<crate::schedules::Schedule>();
+        check::<crate::releases::Release>();
+        check::<crate::builds::Run>();
+        check::<crate::sections::Section>();
+    }
+
     use super::*;
 
     struct T {
