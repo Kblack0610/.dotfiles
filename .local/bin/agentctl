@@ -128,6 +128,10 @@ load_agent() {
             yes|no) ;;
             *) printf 'invalid CRITICAL=%s (yes|no)\n' "$CRITICAL" >&2; exit 1 ;;
         esac
+        # A pause is how model work and load are stopped, so only a runner that runs no model
+        # may start through one.
+        [ "$CRITICAL" = no ] || [ "$EFFECT" = none ] \
+            || { printf 'CRITICAL=yes needs EFFECT=none, not %s: a pause must stop model work\n' "$EFFECT" >&2; exit 1; }
         # A systemd time span, or 0 for a runner whose start time is a promise (see
         # write_timer_file). Checked here so a typo is an invalid conf, not a timer that
         # systemd quietly runs with no delay.
