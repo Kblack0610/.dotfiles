@@ -16,6 +16,7 @@
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running or waiting item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--if <state>]
+#   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource>   a started item back in the queue, held on that agent-hold
@@ -1247,6 +1248,25 @@ cmd_set() {
   echo "$slug: $*"
 }
 
+# retask <slug> [task...] -- replace a queued item's task, from args or stdin like add: the correction
+# for a task that holds a wrong fact, since the task is what its session is briefed with. A started
+# item is refused: its session already has the brief, so tell the session instead. The header stays
+# as filed (its row, title and holds); `set type= area=` when the correction changes the item's kind.
+cmd_retask() {
+  local slug="${1:?usage: agent-queue retask <slug> [task...]}" f text tmp was
+  shift
+  if [ $# -gt 0 ]; then text="$*"; elif [ ! -t 0 ]; then text="$(cat)"; fi
+  [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  [ "$(state_of "$f")" = queued ] || die "$slug is $(state_of "$f"): its session already has the brief; tell the session"
+  was="$(fm_body "$f" | head -1)"
+  tmp="$(mktemp "$(dirname "$f")/.retask.XXXXXX")" || die "cannot write in $(dirname "$f")"
+  { awk '{ print } $0 == "---" { exit }' "$f"; printf '%s\n' "$text"; } > "$tmp" && mv -- "$tmp" "$f"
+  item_event item-set "$f" --why "task rewritten, was: $was"
+  echo "$slug: task rewritten"
+}
+
 # attribute <slug> -- credit an item by the files its PR changed, repo-relative paths on stdin.
 # The candidates are the registry projects with a `path` in the item's repo (its project's `repo`,
 # else the project itself). The one owning the most changed files gets the item, and every one
@@ -1679,11 +1699,11 @@ cmd_stats() {
 if [ -n "${AGENT_STATE_HOST:-}" ]; then
   # shellcheck source=../lib/fleet-hosts.sh
   . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
-  state_forward agent-queue "add attribute credit-of" "$@"
+  state_forward agent-queue "add retask attribute credit-of" "$@"
 fi
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | bump | set | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
