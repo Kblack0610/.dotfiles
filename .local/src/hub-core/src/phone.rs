@@ -196,16 +196,19 @@ fn agents(i: &Inputs) -> Vec<Row> {
 /// midnight and PRs come from the day-log, so each source counts only when it could be read; with
 /// neither there is no section.
 fn done(i: &Inputs) -> Vec<Row> {
-    let today = chrono::DateTime::from_timestamp(i.now, 0).map(|t| {
+    let Some(today) = chrono::DateTime::from_timestamp(i.now, 0).map(|t| {
         t.with_timezone(&chrono::Local)
             .format("%Y-%m-%d")
             .to_string()
-    });
-    let items: Option<Vec<&str>> = i.queue.map(|q| {
+    }) else {
+        return vec![];
+    };
+    // A failed `agent-queue list` leaves no items, which is not the same as none done today.
+    let items: Option<Vec<&str>> = i.queue.filter(|q| q.list_read()).map(|q| {
         q.items
             .iter()
-            .filter(|x| x.state == State::Done && x.status.as_deref() == Some("ok"))
-            .filter(|x| x.finished.as_deref().and_then(day_of) == today)
+            .filter(|x| x.state == State::Done && x.status.as_deref().unwrap_or("ok") == "ok")
+            .filter(|x| x.finished.as_deref().and_then(day_of).as_deref() == Some(&today))
             .map(|x| {
                 if x.project.is_empty() {
                     "other"
@@ -454,15 +457,7 @@ pub fn merged_today() -> Option<Vec<String>> {
     let text = std::fs::read_to_string(format!("{dir}/{day}.json")).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
     let merged = v["merged"].as_array()?;
-    Some(
-        merged
-            .iter()
-            .map(|m| match m["project"].as_str() {
-                Some(p) if !p.is_empty() => p.to_string(),
-                _ => "other".to_string(),
-            })
-            .collect(),
-    )
+    Some(merged.iter().map(crate::boards::pr_project).collect())
 }
 
 #[cfg(test)]
@@ -782,6 +777,23 @@ mod tests {
                 "d 4 items, +3 more",
             ]
         );
+    }
+
+    #[test]
+    fn a_failed_queue_list_is_not_a_zero_and_a_missing_status_counts_as_ok() {
+        let mut q = queue_of(vec![]);
+        let mut bare = done_item("a", "p", NOW);
+        bare.status = None;
+        q.items.push(bare);
+        let p = phone(&state(), Some(&q), None);
+        assert_eq!(
+            texts(&p, "done")[0],
+            "Done today: 1 queue item, 85 PRs merged"
+        );
+        q.items.clear();
+        q.errors.push("agent-queue list: boom".into());
+        let p = phone(&state(), Some(&q), None);
+        assert_eq!(texts(&p, "done")[0], "Done today: 85 PRs merged");
     }
 
     #[test]
