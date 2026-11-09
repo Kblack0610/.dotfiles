@@ -1118,23 +1118,27 @@ cmd_suggest() {
 }
 
 # candidates_write -- `suggest --write`: the snapshot the hub Candidates fold reads, so no view pays a
-# live suggest (55s on 1,600 rows, 2026-11-09). Written whole or not at all: a failed or empty read
-# (notes down reads as no rows) leaves the last one standing, and the fold's `as of` shows its age.
+# live suggest (55s on 1,600 rows, 2026-11-09). Written whole or not at all: a failed read, or an
+# empty one while notes does not answer (suggest reads that as no rows), leaves the last one
+# standing, and the fold's `as of` shows its age. An empty read with notes up is an empty list.
 candidates_write() {
+  local why=
   mkdir -p "${CANDIDATES%/*}"
-  if cmd_suggest --json > "$CANDIDATES.$$" 2>/dev/null && [ -s "$CANDIDATES.$$" ]; then
-    mv -f "$CANDIDATES.$$" "$CANDIDATES"
-  else
-    rm -f "$CANDIDATES.$$"; say "suggest: no rows read, the candidates snapshot is left as it was"; return 1
+  if ! cmd_suggest --json > "$CANDIDATES.$$"; then why="suggest failed"
+  elif [ ! -s "$CANDIDATES.$$" ] && ! notes projects --stats --json >/dev/null 2>&1; then why="notes did not answer"
   fi
+  if [ -z "$why" ]; then mv -f "$CANDIDATES.$$" "$CANDIDATES"; return 0; fi
+  rm -f "$CANDIDATES.$$"; say "suggest --write: $why, the candidates snapshot is left as it was"; return 1
 }
 
 # candidates_drop <project> <lane> <key> -- take a promoted row out of the snapshot now, so the fold
-# does not offer it again until the next pass rewrites the file.
+# does not offer it again until the next pass rewrites the file. The mtime is the pass's, since the
+# fold's `as of` is when the list was computed.
 candidates_drop() {
   [ -s "$CANDIDATES" ] || return 0
   jq -c --arg p "$1" --arg l "$2" --arg k "$3" 'select(.project != $p or .lane != $l or .key != $k)' \
-    "$CANDIDATES" > "$CANDIDATES.$$" 2>/dev/null && mv -f "$CANDIDATES.$$" "$CANDIDATES" || rm -f "$CANDIDATES.$$"
+    "$CANDIDATES" > "$CANDIDATES.$$" 2>/dev/null && touch -r "$CANDIDATES" "$CANDIDATES.$$" \
+    && mv -f "$CANDIDATES.$$" "$CANDIDATES" || rm -f "$CANDIDATES.$$"
 }
 
 # latest verdict per row, as JSON lines. An `error` record does not replace an earlier verdict: a call

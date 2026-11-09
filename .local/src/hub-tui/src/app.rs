@@ -4384,7 +4384,6 @@ mod tests {
             !ran.iter().any(|c| c.contains("suggest")),
             "the snapshot is read, never a live suggest: {ran:?}"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
         assert!(screen(&mut a, 160, 40).contains("+ CANDIDATES (0, 0 auto)"));
         a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));
         a.handle(key('C'));
