@@ -77,6 +77,10 @@ set -uo pipefail
 # red check because it is the merge block. A PR whose red jobs failed only in such steps reads CI
 # running while a gate on its head runs (gate_ci, ar-82).
 : "${FLEET_GATE_LINE_STEPS=^Merge gate line$}" # empty: off
+# Run names (Oniguruma) of runs on a default branch that test only part of a workflow's suite, so they say
+# nothing about main's health (main_state): unity-core-playground titles its scope in run-name, and
+# a hand `Multi (named)` passing a few classes does not clear the nightly `Multi (all)` red before it.
+: "${FLEET_PARTIAL_RUNS:=\((named|affected)\)$}"
 # The gates' per-test failures, one line each: epoch, worktree, branch (- when detached), test. The
 # local gate writes the first; pool-test-failures sync writes the runner pool's from its artifacts.
 TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/test-failures.tsv}"
@@ -728,9 +732,10 @@ default_base() {
 # decided run failed: "workflow \t first_red_sha \t last_green_sha|-". The red sha is the
 # FIRST failure after the last green (the oldest in the window when there is none), so the
 # fact holds still while a red streak runs on, and the suspect range ends where it broke.
-# Cancelled, skipped and running runs decide nothing, so they are passed over.
+# Cancelled, skipped, running and FLEET_PARTIAL_RUNS runs decide nothing, so they are passed over.
 main_state() {
-  jq -r "$MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
+  jq -r --arg partial "$FLEET_PARTIAL_RUNS" \
+    'map(select(.workflowName // "" | test($partial) | not)) | '"$MAIN_STREAKS"' | [.workflow, .red.headSha, (.green.headSha // "-")] | @tsv'
 }
 
 # pr_states <owner/repo or host/owner/repo (Forgejo)> -> the repo's recent PRs as a JSON array of {number, state, mergedAt},
