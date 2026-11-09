@@ -268,7 +268,7 @@ judge_line() {
 }
 
 # render_ask <file>: the card, the ask as the human reads it, in the asking session's pane
-# (post), the questions panel and the agent-panel preview (card). Colour only on a terminal
+# (post) and the questions panel (card). Colour only on a terminal
 # or with AGENT_ASK_COLOR=1; a session's tool output gets plain text.
 render_ask() {
   local f="$1" b="" d="" c="" g="" r="" x=""

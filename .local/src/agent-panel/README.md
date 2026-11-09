@@ -38,7 +38,7 @@ Bound in `~/.tmux.conf`:
   prompt (`!`) or holding a pending ask (`A`)
 - `Prefix + y` - the questions panel: every pending question, its card, answered in place (`.local/src/tmux/questions.sh`)
 
-The chooser preview shows the same card under `needs you`.
+The chooser's status line says `needs you` (amber) for a session with a pending ask; its card is in Prefix+y.
 
 In the chooser:
 
@@ -50,7 +50,7 @@ In the chooser:
 - `C-o` steps the sort: by project (grouped, the default), longest open first, needs you first, stalled first. Any sort but project is one flat list, each target led by its project. `A-o` reverses the sort. The panel reopens in the sort it was left in, saved in `${XDG_STATE_HOME:-~/.local/state}/panels/agent-panel.sort` (`src/sort.rs`).
 - The list is on top at full width and the preview below it. `C-/` steps stacked -> side by side -> hidden -> stacked, and the panel reopens in the layout `C-/` last left it in, hidden included. The layout is `panel_fzf_layout` in `../tmux/panel-lib.sh`, shared with every other panel: agent-panel runs `~/.local/src/tmux/panel-layout.sh args agent-panel` for its fzf arguments, and `tests/shared_layout.rs` checks they reach fzf as printed.
 - The preview scrolls on the keys every panel shares, from that same layout: `C-d`/`C-u` half a page, `PgDn`/`PgUp` a page, and fzf's own `S-Down`/`S-Up` and the mouse wheel.
-- The preview reads summary first (`render::preview`), each part under a bold title and a dim rule: one status line (target, worktree, status, plan mode, how long open, account) and the pane title; `needs you` (amber, the only colour) with the same card the questions panel shows, the ask's (`agent-ask card`) and the open plan or question dialog's (`agent-panel dialog`); the last tool call on one line; the last message in full as plain text (`agent-panel plain`); last the bottom 8 pane lines above Claude Code's input box and status bar, for a permission prompt or a live spinner. When a dialog card shows, the pane part is left out: it is the same dialog. Changed 2026-11-07 (ar-690, ar-691): the `question` title is now `needs you` and also carries an open dialog; the last tool moved above the last message; the pane tail went from 12 lines with colour and chrome to 8 plain lines without them.
+- The preview is the session's own pane (`render::preview`): one status line pinned at the top (amber `needs you` when it holds a pending ask, then target, worktree, status, plan mode, how long open, account and the pane title, cut to one row), then the pane in colour with 2000 lines of scrollback, opened at the bottom (`follow`) and wrapped at words. `render::clean_pane` cuts Claude Code's input box and status bar, trims trailing spaces, folds blank runs to one line and shortens full-width rules to the preview's width. Lines Claude Code wrapped at its own pane's width stay broken where it broke them. Changed 2026-11-09: the summary preview (ask and dialog cards, last tool, last message, an 8-line plain tail; 2026-11-07, ar-690/ar-691) went back to the whole pane; the summary of an ask is the questions panel's job.
 
 ## Why a binary (replacing the old bash scripts)
 
@@ -103,10 +103,10 @@ which owns the detach-and-attach hop.
 - `procmap.rs` — `ps`-based process table + pane→Claude pid mapping (the `/proc` replacement)
 - `tmux.rs` — `tmux` CLI wrappers per server (list-panes, capture-pane, jump)
 - `session.rs` — read `~/.claude/sessions/<pid>.json`; status glyph; at-the-prompt test; JSONL path
-- `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, the last message for the preview
+- `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, an open plan for the dialog card
 - `dialog.rs` - read an open plan or question dialog off a pane capture, and answer it with keys
 - `asks.rs` — which Claude sessions own a pending ask (`agent-ask`)
-- `render.rs` — project grouping, ANSI fzf rows, preview formatting
+- `render.rs` — project grouping, ANSI fzf rows, the preview's status line and pane cleaning
 - `md.rs` - markdown to plain text at a width (`agent-panel plain`)
 - `sort.rs` - the sort keys, their order and the saved sort
 - `fzf.rs` — spawn fzf with the rows + preview/next callbacks, and the shared preview layout from `panel-layout.sh`
