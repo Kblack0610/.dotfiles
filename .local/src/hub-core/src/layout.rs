@@ -77,7 +77,8 @@ pub const TABS: [Tab; 12] = [
         title: "Log",
         question: "What happened?",
         sections: &[
-            "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast", "ranked",
+            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
+            "ranked",
         ],
     },
     Tab {

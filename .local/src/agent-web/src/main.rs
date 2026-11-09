@@ -35,6 +35,7 @@ mod releases;
 mod schedules;
 mod sessions;
 mod shepherd;
+mod worklog;
 
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -84,6 +85,7 @@ struct AppState {
     infra: infra::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
+    work: worklog::Cache,
     schedules: schedules::Cache,
     session_table: sessions::Cache,
     pipeline: pipeline::Cache,
@@ -108,6 +110,7 @@ async fn main() -> Result<()> {
         oauth,
         sessions,
         actions: feed::Cache::new(events.subscribe()),
+        work: worklog::Cache::new(events.subscribe()),
         events,
         watch_off,
         infra: infra::Cache::default(),
@@ -170,6 +173,7 @@ async fn main() -> Result<()> {
         .route("/api/reds", get(reds::get))
         .route("/api/costs", get(costs::get))
         .route("/api/actions", get(feed::get))
+        .route("/api/log/work", get(worklog::get))
         .route("/api/events", get(events_stream))
         .route("/static/{name}", get(static_file))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));

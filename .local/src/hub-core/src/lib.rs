@@ -44,3 +44,4 @@ pub mod tokens;
 pub mod transcript;
 pub mod vitals;
 pub mod vocab;
+pub mod worklog;

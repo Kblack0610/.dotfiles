@@ -313,7 +313,9 @@ function seekSection() {
   const e = st.section && tabAnchors().find((x) => x.id === "sec-" + st.section);
   if (!e) return;
   st.section = null;
-  if (e.tagName === "DETAILS") e.open = true;
+  // A section inside a fold (Log's history in Day detail) opens the fold it sits in.
+  const fold = e.tagName === "DETAILS" ? e : e.closest?.("details");
+  if (fold) fold.open = true;
   if (e.scrollIntoView) e.scrollIntoView({ block: "start" });
 }
 // A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Daily link opens

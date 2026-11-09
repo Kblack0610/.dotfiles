@@ -50,6 +50,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("board.js", JS, include_bytes!("../static/board.js")),
     ("projects.js", JS, include_bytes!("../static/projects.js")),
     ("shepherd.js", JS, include_bytes!("../static/shepherd.js")),
+    ("work.js", JS, include_bytes!("../static/work.js")),
     ("actions.js", JS, include_bytes!("../static/actions.js")),
     ("fleet.js", JS, include_bytes!("../static/fleet.js")),
     ("focus.js", JS, include_bytes!("../static/focus.js")),
@@ -252,6 +253,10 @@ mod tests {
         assert_eq!(
             col_keys(actions, "const ACTION_COLS = {"),
             hub_core::actions::Action::COLUMNS
+        );
+        assert_eq!(
+            col_keys(include_str!("../static/work.js"), "const WORK_COLS = {"),
+            hub_core::worklog::Work::COLUMNS
         );
     }
 

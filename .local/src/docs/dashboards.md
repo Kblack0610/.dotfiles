@@ -134,5 +134,6 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 ### Log
 
 - Merges by hour are per project, on both surfaces: one row (TUI) or one stacked colour (web) per project, the busiest first, with the hourly total last. Both draw `hub_core::boards::merges_by_hour` over the server's local hours; the web gets it in `/api/log` (`hours`, `projects`).
-- Merged and Open PRs are grouped by project in the same order, each group with its count, its first 8 rows and the rest under "+N more". A PR's area and group stay as a short label on its row. Clicking a project in the web legend narrows both lists to that group.
+- Log opens with the Work table on both surfaces: `hub_core::worklog`, one row per queue item plus one per PR no item claims, every project, attention first until a header says otherwise. A window (Today, 7d, 30d, All, or one date) narrows finished rows only; unfinished rows stay, because something stuck five days ago is still not done, and a single past day shows only what finished that day. On the web the window is `wday` in Log's URL, and the stepper, `[` `]` and the chart bars write the same key.
+- A table with a time window takes it from `tblDays` in `table.js` (Work's days, Actions' hours), so no tab draws its own window buttons.
 - A PR's project is its repo's name in `project-map.json` (`project_of_repos_json` in `project-name.sh`); a record written before day-log stamped `project` falls back to the repo name without its leading dot.
