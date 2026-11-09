@@ -317,20 +317,12 @@ so_lesson_sigs() {
 SO_FORGEJO_PAGE=50   # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50, whatever limit asks for
 SO_FORGEJO_TOKEN=""
 so_forgejo_pr_list() {
-  local repo="$1" work="$2" limit="$3" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}" page=1 got
-  case " $(so_forgejo_hosts) " in
-    *" ${repo%%/*} "*) ;;
-    *) SO_FORGEJO_ERR="${repo%%/*} is not in SO_FORGEJO_HOSTS, $repo unread"; return 2 ;;
-  esac
-  if [ -z "$SO_FORGEJO_TOKEN" ]; then
-    SO_FORGEJO_TOKEN="$("${SO_RBW:-rbw}" get "$entry" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
-    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (rbw $entry), $repo unread"; return 1; }
-  fi
+  local repo="$1" work="$2" limit="$3" page=1 got
+  so_forgejo_auth "$repo" || return
   rm -f "$work"/fj.page.*
   while :; do
-    printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
-      "${SO_CURL:-curl}" -sSf -K - --max-time 30 -o "$work/fj.page.$(printf %04d "$page")" \
-        "https://${repo%%/*}/api/v1/repos/${repo#*/}/pulls?state=all&sort=newest&limit=$SO_FORGEJO_PAGE&page=$page" 2>"$work/fj.err" &&
+    so_forgejo_get "$repo" "pulls?state=all&sort=newest&limit=$SO_FORGEJO_PAGE&page=$page" \
+        -o "$work/fj.page.$(printf %04d "$page")" 2>"$work/fj.err" &&
       got="$(jq 'length' "$work/fj.page.$(printf %04d "$page")" 2>/dev/null)" ||
       { SO_FORGEJO_ERR="$repo unread: $(head -c 120 "$work/fj.err")"; return 1; }
     [ "$got" -ge "$SO_FORGEJO_PAGE" ] && [ $((page * SO_FORGEJO_PAGE)) -lt "$limit" ] || break
@@ -339,6 +331,39 @@ so_forgejo_pr_list() {
   jq -cs --argjson n "$limit" 'add | .[:$n] | map({number, title, body, mergedAt: .merged_at,
                      state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
                      mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)})' "$work"/fj.page.*
+}
+
+# so_forgejo_pr HOST/OWNER/REPO NUMBER - one PR in the `gh pr view --json
+# headRefName,createdAt,mergedAt,additions,deletions,mergeCommit` shape. headRefName is `#N`, the
+# branch the run ledger files a Forgejo PR's runs under (schedules-sync forgejo_rows); the API's
+# head.ref reads refs/pull/N/head once the branch is deleted. Why it failed goes to stderr.
+so_forgejo_pr() {
+  local repo="$1" n="$2" pr
+  so_forgejo_auth "$repo" || { printf '%s\n' "$SO_FORGEJO_ERR" >&2; return 1; }
+  pr="$(so_forgejo_get "$repo" "pulls/$n")" || return 1
+  jq -c '{headRefName: "#\(.number)", createdAt: .created_at, mergedAt: .merged_at, additions, deletions,
+          mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
+}
+
+# so_forgejo_auth HOST/OWNER/REPO - may the token go to this repo's host, and is it read? Sets
+# SO_FORGEJO_TOKEN (once per process) and, on a failure, SO_FORGEJO_ERR: rc as so_forgejo_pr_list.
+so_forgejo_auth() {
+  local repo="$1" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}"
+  case " $(so_forgejo_hosts) " in
+    *" ${repo%%/*} "*) ;;
+    *) SO_FORGEJO_ERR="${repo%%/*} is not in SO_FORGEJO_HOSTS, $repo unread"; return 2 ;;
+  esac
+  if [ -z "$SO_FORGEJO_TOKEN" ]; then
+    SO_FORGEJO_TOKEN="$("${SO_RBW:-rbw}" get "$entry" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
+    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (rbw $entry), $repo unread"; return 1; }
+  fi
+}
+
+# so_forgejo_get HOST/OWNER/REPO PATH [CURL ARG...] - one authed API read, after so_forgejo_auth
+so_forgejo_get() {
+  local repo="$1" path="$2"; shift 2
+  printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
+    "${SO_CURL:-curl}" -sSf -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path"
 }
 
 # so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:
