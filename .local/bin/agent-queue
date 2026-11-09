@@ -1694,11 +1694,11 @@ cmd_stats() {
        # Per local day, the day day-log keeps: each item counts on the day it reached that stage.
        # .waiting is the last move to waiting, so an item that waited twice counts on the later day.
        flow: (if $flow | not then null else (stage("queued"; .queued) + stage("started"; .started) + stage("waiting"; .waiting)
-           + ($done | stage("done"; .finished)))
+           + stage("review"; .review) + ($done | stage("done"; .finished)))
          | map(select(.day >= $since)) | group_by(.day)
          | map(at("done") as $fin | at("started") as $went | {key: .[0].day, value: {
              queued: (at("queued") | length), started: ($went | length), waiting: (at("waiting") | length),
-             done: ($fin | length), ok: ($fin | map(select(.status == "ok")) | length),
+             review: (at("review") | length), done: ($fin | length), ok: ($fin | map(select(.status == "ok")) | length),
              failed: ($fin | map(select(.status == "failed")) | length),
              cancelled: ($fin | map(select(.status == "cancelled")) | length),
              lead_minutes: ([$fin[] | mins(.queued; .finished)] | spread),

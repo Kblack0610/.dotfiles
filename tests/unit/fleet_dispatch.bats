@@ -2741,6 +2741,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   project game beta "$SANDBOX/repos/game"
   started_item v lab:game-agent-1 '' '' human review
   started_item w lab:game-agent-2 '' '' human review
+  sed -i "s/^started: .*/&\nreview: 2026-11-03T11:00:00Z/" "$AGENT_QUEUE_DIR"/review/*-w.md
   printf 'game-agent-%s\n' 1 2 > "$NOTES_FIXTURE/tmux.sessions.lab"
   stub agent-panel 'for x in 1:idle 2:waiting; do echo "{\"target\":\"lab/game-agent-${x%:*}:1\",\"status\":\"${x#*:}\"}"; done'
   stub agent-ask 'exit 0'
@@ -2748,6 +2749,10 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   assert_success
   [ -n "$(qitem review v)" ] || fail "a session idle at its PR left review"
   [ -n "$(qitem waiting w)" ] || fail "a session on a PR that asks the human is not waiting"
+  stub agent-panel 'for x in 1:idle 2:idle; do echo "{\"target\":\"lab/game-agent-${x%:*}:1\",\"status\":\"${x#*:}\"}"; done'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem review w)" ] || fail "an answered session on a PR did not go back to review"
 }
 
 # 2026-11-05: about a fifth of running items were dead: a shell kept the tmux session after claude
@@ -4014,6 +4019,15 @@ OUT
   assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
+}
+
+@test "reap: a gone session's waiting item that names a pending ask stays waiting on its open PR" {
+  pr_item OPEN
+  agent-queue move fix-crash waiting >/dev/null
+  agent-queue set fix-crash ask=PfpYTR >/dev/null
+  run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
 }
 
 @test "reap: a gone session's closed PR fails its item and hands the row back" {

@@ -320,6 +320,10 @@ impl Item {
             wait: mins(at(&self.ready).or(queued), started),
             run: match self.state {
                 State::Waiting => mins(started, waiting.filter(|w| Some(*w) >= started).or(end)),
+                State::Review => {
+                    let parked = at(&self.review).or(waiting);
+                    mins(started, parked.filter(|w| Some(*w) >= started).or(end))
+                }
                 _ => mins(started, end),
             },
             lead: mins(queued, end),
@@ -1864,6 +1868,18 @@ mod tests {
                 lead: Some(180)
             },
             "waiting: its run stops when it went to the human"
+        );
+        assert_eq!(
+            timed(
+                r#"{"slug":"p","state":"review","queued":"2026-11-06T09:00:00Z","started":"2026-11-06T09:10:00Z","review":"2026-11-06T11:00:00Z","task":"t"}"#
+            ),
+            Timing {
+                in_state: Some(60),
+                wait: Some(10),
+                run: Some(110),
+                lead: Some(180)
+            },
+            "review: its run stops when it parked on its PR"
         );
         assert_eq!(
             timed(

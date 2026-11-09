@@ -1984,8 +1984,10 @@ settle_item() {
     else info=$(item_pr_state "$1" "$it") || info=''; read -r state oid <<<"$info"
     fi
   fi
-  # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait.
+  # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait. A
+  # waiting item that names an ask stays waiting on it: the human's turn outlives the session.
   [ "$state:$st" != OPEN:review ] || return 0
+  [ "$state:$st" != OPEN:waiting ] || [ -z "$(jq -r '.ask // ""' <<<"$it")" ] || return 0
   case "$st:$pr$report" in waiting: | review:)
     [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
     agent-queue set "$1" "note=session $2 ended; $st without a PR" >/dev/null
@@ -2964,8 +2966,10 @@ cmd_reap() {
     want=running
     if [ -n "$sids" ] && panel_lists "$agent"; then grep -qxF -f <(printf 'sid:%s\n' $sids) <<<"$waits" && want=waiting
     else grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting; fi
-    # Parked on its PR and not asking the human: the session is idle at its PR, not working.
+    # Parked on its PR and not asking the human: the session is idle at its PR, not working. One
+    # that left review/ to ask the human goes back there once answered (its review: stamp says so).
     [ "$want:$state" != running:review ] || continue
+    [ "$want:$state" != running:waiting ] || [ -z "$(agent-queue show "$slug" --json 2>/dev/null | jq -r '.review // empty')" ] || want=review
     [ "$state" = "$want" ] && continue
     agent-queue move "$slug" "$want" --if "$state" >/dev/null && logline "reaped $sess: queue item $slug $state -> $want"
   done < <(item_sessions)
