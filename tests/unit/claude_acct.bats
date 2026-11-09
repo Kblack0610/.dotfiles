@@ -1206,6 +1206,21 @@ budget() {
   [ "$(field codex .week_used <<<"$output")" = 40 ]
 }
 
+@test "sources: codex reads past a run of refused rollouts, however long" {
+  src_setup
+  rollout 40 10 84
+  local d="$BATS_TEST_TMPDIR/codex/2026/11" i
+  touch -d '-2 hours' "$d/rollout-a.jsonl"
+  for i in $(seq 1 25); do
+    printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n' \
+      > "$d/rollout-refused-$i.jsonl"
+  done
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+}
+
 @test "sources: codex with no windowed record in any rollout is unread" {
   src_setup
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n' \
