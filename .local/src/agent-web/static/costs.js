@@ -155,7 +155,7 @@ function costsBurn(d) {
     `<div class="panel"><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
     `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
     `<div class="panel scroll">${burnTable(b, BURN_COLS, b.accounts.filter((a) => !a.nested))}</div>` + burnKeys(b) +
-    `<div class="muted fold">bar: the fill is the share used, the tick the share of the week gone; burn/h is the last 6h rate per live session; keeps/h is what the rest of the week can carry to the reset; 24h is the list-price estimate, for scale.</div></details>`;
+    `<div class="muted fold">${(b.legend || []).map(([t, d]) => `${esc(t.toLowerCase())}: ${esc(d)}`).join("; ")}</div></details>`;
 }
 
 // One table of a tokens window; a named row takes its chart slot, Other its grey (rule 5).

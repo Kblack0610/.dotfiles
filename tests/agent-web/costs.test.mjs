@@ -53,7 +53,8 @@ const burn = (o = {}) => ({
   accounts: [acct("alt", { live: 9, used: 55, gone: 25, burn: 1.04, sustain: 0.36 }), acct("bnb", { live: 17, used: 7, gone: 1, burn: 1.97, sustain: 0.56 }), acct("main", { live: 13, used: 33, gone: 12, burn: 1.51, sustain: 0.45, burn_at: 1794000600 })],
   fleet: { live: 39, burn: 4.52, sustain: 1.37, over: 3.3, rate: 0.116, carries: 11 },
   drip: { hour: 15, day: 349, held: "fleet-assess says HOLD" },
-  pace: { on_pace: false, at_burn: [["main", 1794000600]], idle_all_by: 1794003600, idle_rest_after_reset: false }, ...o,
+  pace: { on_pace: false, at_burn: [["main", 1794000600]], idle_all_by: 1794003600, idle_rest_after_reset: false },
+  legend: [["pts/h", "points of a weekly limit an hour"], ["GONE", "the share of the week gone"]], ...o,
 });
 const board = (o = {}) => ({
   at: 1794000000, by: "model", window: "7d",
@@ -193,6 +194,7 @@ test("the burn section leads the tab: headline, drip with its hold link, pace an
   assert.match(h, /at this burn: main [^;]+; if idle: all by /);
   assert.match(h, /<td>bnb<\/td><td>claude<\/td><td class="n">17<\/td><td>.*?<\/td><td class="n">7%<\/td><td class="n">1%<\/td><td class="n">-<\/td><td class="ok">room, 4 points spare<\/td><td class="n warn">1\.97<\/td><td class="n">0\.56<\/td><td>after reset<\/td>/, "an account over its sustainable rate is amber; burn that never gets there is after the reset");
   assert.doesNotMatch(h, /<td class="n warn">0\.45/, "keeps/h is never amber");
+  assert.match(h, /<div class="muted fold">pts\/h: points of a weekly limit an hour; gone: the share of the week gone<\/div>/, "the terms come from hub-core's one legend");
 });
 
 test("a green burn folds to its headline, and a fold the reader set is kept", () => {
