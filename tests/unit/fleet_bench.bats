@@ -1162,6 +1162,8 @@ case "$4" in
        printf -- '- [ ] %s <!-- id:ar-9%s -->\n' "$5" "$(wc -l < "$B")" ;;
   edit) [ "$6" = --text ] || exit 8
         awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+  done) [ "$6" = --proof ] || exit 8
+        awk -F'\t' -v q="$5" 'index($3, q) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
 esac
 NS
   chmod +x "$SANDBOX/bin/notes"
@@ -1547,7 +1549,8 @@ watch() {
   assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
   assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
   assert_equal "$(grep -c . <<<"$output")" 4
-  [ ! -s "$NLOG" ]
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
   run "$SUBJECT" triage
   assert_success
   run grep -c 'fix(runner): alpha is\|fix(runner): beta is\|fix(unit): app-picom\|check(watch): spend' "$BOARD"
@@ -1563,15 +1566,68 @@ watch() {
   assert_output NOOP
 }
 
-@test "triage: nothing at fault is a NOOP that never reads the board" {
+@test "triage: nothing at fault is a NOOP that writes nothing to the board" {
   triage_setup
   watch drift OK -90000 normal
   run "$SUBJECT" triage
   assert_success
   assert_output --partial 'no runner, unit, watch or log error at fault'
-  [ ! -s "$NLOG" ]
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
   run "$SUBJECT" triage --bogus
   assert_failure 2
+}
+
+# board_row <state> <text>: an open row on the agent board, as `notes ptask --agent list` prints it
+board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOARD"; }
+
+@test "triage: a recovered watch or hold row closes with a run proof; dry run names it and writes nothing" {
+  triage_setup
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  board_row ' ' 'fix(hold): liveness-179 went red after cleanup merges nc-76 (pr 1 at abc)'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: check(watch): drift tripped since'
+  assert_line 'retire: fix(hold): liveness-179 went red'
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'tripped since\|went red' "$BOARD"
+  assert_output 0
+  run grep -c -- '--agent done .* --proof run:fleet-bench-triage-' "$NLOG"
+  assert_output 2
+  run outcome
+  assert_output WORKED
+}
+
+@test "triage: a tripped watch keeps its row whatever its age, a started row is left, other rows are not touched" {
+  triage_setup
+  watch spend TRIP -600 normal      # inside the flap window: no new row, but still red
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): spend tripped since 2026-11-01, expected: spend is healthy.'
+  board_row '/' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  board_row ' ' 'check(watch): re-run the runner-score probe now the judge is typed'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c -- '--agent done' "$NLOG"
+  assert_output 0
+  run grep -c 'check(watch)' "$BOARD"
+  assert_output 3
+}
+
+@test "triage: a queue that cannot be read closes no row: unknown is not recovered" {
+  triage_setup
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  export TRIAGE_ITEMS_CMD=false
+  : > "$NLOG"
+  run "$SUBJECT" triage
+  run grep -c -- '--agent done' "$NLOG"
+  assert_output 0
+  run grep -c 'check(watch): drift' "$BOARD"
+  assert_output 1
 }
 
 @test "kpi: failed_unexplained counts the last 24h of failures with no reason, not reasoned or older ones" {
@@ -2489,7 +2545,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
 }
 
 # chain_fixture: a work chain where every link holds. Two PRs merged this week, each named by an
-# item (one repo-qualified, one bare); every started agent row has an active item; the one done
+# item (the owner's case differs on one); every started agent row has an active item; the one done
 # item's row is closed; the running item has a session; the one agent row in a project with an
 # open epic is filed under it, and that epic still has an open leaf; the doctor passed.
 chain_fixture() {
@@ -2504,7 +2560,7 @@ chain_fixture() {
   export BENCH_ADMISSION_CMD="echo {\"held_7d\":0}"
   items_stub "$(item run running high board:game:g-1 '{"session":"lab:game-agent-1","pr":"o/r#7"}')"
   DONE="$SANDBOX/done.jsonl"
-  item fin done high board:game:g-2 '{"pr":"9","merged":"abc123"}' > "$DONE"
+  item fin done high board:game:g-2 '{"pr":"o/other#9","merged":"abc123"}' > "$DONE"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ncat "%s"\n' "$DONE" "$DONE" > "$SANDBOX/bin/done-stub"
   BJSON="$SANDBOX/board.json" PJSON="$SANDBOX/projects.json"
   jq -cn '{rows: [{project: "game", lane: "agent", state: "doing", id: "g-1", type: "fix", tags: ["of/g-0"]},
@@ -2551,6 +2607,9 @@ chain_fixture() {
   ci_row '{repo: "o/r", number: 8, session_id: "h1", merged_epoch: ($t - 3600), ci_red: 0}'
   check "$(printf '%s\n' 'ledger_coverage 0.667 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
   sed -i '$d' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  # a bare number names no repo, so it credits nothing
+  sed -i 's|o/other#9|9|' "$DONE"
+  check "$(printf '%s\n' 'ledger_coverage 0.5 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
   # a started row no active item names
   jq -c '.rows += [{project: "game", lane: "agent", state: "doing", id: "g-5", type: "fix", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
   check 'board_orphan_started 1 (max 0)'
