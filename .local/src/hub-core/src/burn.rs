@@ -6,7 +6,7 @@
 //! sums the per-source series and words them, so the hub TUI and agent-web print the same section
 //! and no second formula exists. The drip is the `started` lines of fleet-dispatch's `log.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
@@ -296,8 +296,8 @@ pub struct Burn {
 pub struct Keys {
     /// `3 in lazer, 0 live, tightest glm 96%`, worded here so both surfaces print the same.
     pub head: String,
-    /// `warn` when a key refuses while its pool has room, which only the fold can show, so it
-    /// starts open; `ok` otherwise.
+    /// `warn` when a key's usage is unreadable or it refuses while its pool has room, which only
+    /// the fold can show, so it starts open; `ok` otherwise.
     pub level: &'static str,
 }
 
@@ -308,11 +308,17 @@ fn ordered(mut accounts: Vec<Account>) -> Vec<Account> {
         .iter()
         .map(|a| (a.name.clone(), a.kind.clone()))
         .collect();
+    // Only a row with no pool above it can hold keys, so a chain or a cycle keeps its rows visible.
+    let roots: BTreeSet<String> = accounts
+        .iter()
+        .filter(|a| a.parent.as_ref().is_none_or(|p| *p == a.name))
+        .map(|a| a.name.clone())
+        .collect();
     for a in &mut accounts {
         a.nested = a
             .parent
             .as_ref()
-            .is_some_and(|p| *p != a.name && kinds.contains_key(p));
+            .is_some_and(|p| *p != a.name && roots.contains(p));
     }
     accounts.sort_by_cached_key(|a| {
         let top = match &a.parent {
@@ -342,11 +348,10 @@ fn keys_fold(accounts: &[Account]) -> Option<Keys> {
             .and_then(|p| p.room.as_ref())
             .is_some_and(|r| r.ok)
     };
-    let alone = keys
-        .iter()
-        .any(|a| a.room.as_ref().is_some_and(|r| !r.ok) && pool_has_room(a));
-    let pools: std::collections::BTreeSet<&str> =
-        keys.iter().filter_map(|a| a.parent.as_deref()).collect();
+    let alone = keys.iter().any(|a| {
+        a.state == "unreadable" || (a.room.as_ref().is_some_and(|r| !r.ok) && pool_has_room(a))
+    });
+    let pools: BTreeSet<&str> = keys.iter().filter_map(|a| a.parent.as_deref()).collect();
     let tightest = keys
         .iter()
         .filter_map(|a| a.used.map(|u| (u, a)))
@@ -933,6 +938,30 @@ mod tests {
         let rows = ordered(vec![pool(true), key("orphan", "gone", 10.0, true)]);
         assert!(rows.iter().all(|a| !a.nested), "{rows:?}");
         assert_eq!(keys_fold(&rows), None);
+    }
+
+    #[test]
+    fn keys_that_name_each_other_stay_at_the_top_level() {
+        let rows = ordered(vec![key("a", "b", 10.0, true), key("b", "a", 10.0, true)]);
+        assert!(rows.iter().all(|a| !a.nested), "{rows:?}");
+    }
+
+    #[test]
+    fn an_unreadable_key_opens_the_fold_even_with_its_pool_spent() {
+        let unreadable = Account {
+            state: "unreadable",
+            room: None,
+            ..key("glm", "lazer", 96.0, true)
+        };
+        let fold = keys_fold(&ordered(vec![pool(false), unreadable.clone()]));
+        assert_eq!(fold.unwrap().level, "warn");
+        // negative control: the same key, read, with nothing wrong
+        let read = Account {
+            state: "ok",
+            ..unreadable
+        };
+        let fold = keys_fold(&ordered(vec![pool(false), read]));
+        assert_eq!(fold.unwrap().level, "ok");
     }
 
     #[test]

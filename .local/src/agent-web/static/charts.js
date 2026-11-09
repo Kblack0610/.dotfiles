@@ -10,10 +10,10 @@ const setBuckets = (list) => { if (list && list.length) BUCKETS = list; };
 const bucketRank = (b) => { const i = BUCKETS.indexOf(b); return i < 0 ? BUCKETS.length : i; };
 const bucketColor = (b) => `var(--b-${BUCKETS.includes(b) ? b.toLowerCase() : "chat"})`;
 
-// A horizontal meter: frac in [0, 1], with a tick at mark (same scale) when given.
+// A horizontal meter: frac in [0, 1], with a tick at mark (same scale) when given, kept inside the box at 100%.
 function meter(frac, color, mark) {
   const pc = (v) => (Math.max(0, Math.min(1, v || 0)) * 100).toFixed(1);
-  const tick = mark == null ? "" : `<i style="left:${pc(mark)}%"></i>`;
+  const tick = mark == null ? "" : `<i style="left:min(${pc(mark)}%,calc(100% - 2px))"></i>`;
   return `<span class="meter"><span style="width:${pc(frac)}%;background:${color || "var(--accent)"}"></span>${tick}</span>`;
 }
 
