@@ -811,7 +811,7 @@ struct RecordArgs {
     #[arg(long, value_parser = [
         "left", "refused", "planned", "item-added", "item-moved", "item-set",
         "item-claimed", "item-cancelled", "started", "reaped", "settled", "merged",
-        "parked", "unparked",
+        "parked", "unparked", "land-failed", "sweep-stopped",
     ])]
     action: String,
     /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
