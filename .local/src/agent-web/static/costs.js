@@ -12,7 +12,7 @@ const cost = tblTab({
   // The view keys past the table's: the cut, the window and the sessions sort.
   params: (p) => { const v = new URLSearchParams(st.views.costs || ""); for (const k of ["by", "w", "ssort", "sdir"]) if (v.get(k)) p.set(k, v.get(k)); },
   head: (t) => costsHead(t.data) + `<div id="sec-table">${costsSwitch("window", t.data.windows, t.data.window, "w")}${costsSwitch("by", t.data.cuts, t.data.by, "by")}</div>`,
-  table: (t) => t.data?.table && costsView(t.data),
+  table: (t) => t.data?.table && costsCutTable(t.data),
   body: (t) => costsBody(t.data), tail: (t) => costsTail(t.data),
 });
 
@@ -51,7 +51,7 @@ const COST_GLANCE = ["cost", "share", "tokens"];
 
 // The table sends every Line column in one order; each cut draws its own (model before harness),
 // and that cut's headers and phone sort list are the same columns.
-function costsView(d) {
+function costsCutTable(d) {
   const role = (k) => (k === d.columns[0] ? "lead" : COST_GLANCE.includes(k) ? "glance" : "");
   return { ...d.table, columns: d.columns.map((k) => d.table.columns.find((c) => c.key === k)).filter(Boolean).map((c) => ({ ...c, role: role(c.key) })) };
 }
@@ -60,7 +60,7 @@ function costsBody(d) {
   const t = d.table, rows = d.rows || [];
   if (!rows.length) return `<div class="panel">${t.total ? "Nothing matches the query." : "Nothing spent in this window."}</div>`;
   const shown = rows.slice(0, LOG_ROWS);
-  const head = costsView(d);
+  const head = costsCutTable(d);
   return `<div class="panel scroll"><table class="tbl">${tblHead(head, Object.fromEntries(d.columns.map((k) => [k, COST_COLS[k]])))}` +
     shown.map((r) => `<tr>${d.columns.map((k) => costCell(r, k, d)).join("")}</tr>`).join("") + `</table>${older(rows.length - shown.length)}</div>`;
 }
