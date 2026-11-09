@@ -74,6 +74,10 @@ st.act = { confirm: null, busy: false, msg: "", err: false };
 st.opts = { describe: {}, accounts: [] };
 api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs(); }).catch((e) => console.warn(e));
 
+// A fold opened on a phone stays open across redraws. Only then: a wide screen has them all open.
+document.addEventListener("toggle", (e) => { if (e.target.matches?.("details.pfold") && isPhone()) PFOLD[e.target.dataset.pf] = e.target.open; }, true);
+if (typeof matchMedia === "function") matchMedia(PHONE_WIDTH).addEventListener("change", pfoldFit);
+
 function renderActs() {
   const a = st.sel, box = $("acts");
   if (!a) { box.hidden = true; return; }
@@ -91,7 +95,8 @@ function renderActs() {
       + `<button class="btn primary${danger}" data-go ${st.act.busy || (c.action === "move" && !others.length) ? "disabled" : ""}>Yes, ${esc(actLabel(c.action).toLowerCase())}</button>`
       + `<button class="btn" data-no ${st.act.busy ? "disabled" : ""}>Cancel</button>`;
   } else {
-    html += (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
+    const btns = (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
+    if (btns) html += pfold("acts", "Actions", `<div class="actrow">${btns}</div>`);
   }
   if (st.act.msg) html += `<div class="msg${st.act.err ? " err" : ""}">${esc(st.act.msg)}</div>`;
   box.innerHTML = html;

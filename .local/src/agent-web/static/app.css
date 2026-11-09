@@ -397,7 +397,26 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   main { margin-left: 184px; }
   header { box-sizing: border-box; min-height: calc(var(--head) + env(safe-area-inset-top, 0px)); }
 }
+.pfold > summary { display: none; }
+.actrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 @media (max-width: 760px) {
+  /* One line standing in for a part of a tab (pfold in ui.js). */
+  .pfold { margin-bottom: 6px; }
+  .pfold > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; box-sizing: border-box; min-height: 40px; padding: 6px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font-size: 13px; cursor: pointer; }
+  .pfold > summary::-webkit-details-marker { display: none; }
+  .pfold > summary::before, details.csec > summary::before { content: "+"; color: var(--muted); font-family: var(--mono); }
+  .pfold[open] > summary::before, details.csec[open] > summary::before { content: "-"; }
+  details.csec > summary { display: flex; align-items: baseline; gap: 6px; }
+  details.csec > summary::-webkit-details-marker { display: none; }
+  /* A feed row's own words are why it is there: they wrap, and what follows goes under. */
+  .pr { flex-wrap: wrap; }
+  .pr .pt { flex: 1 1 60%; white-space: normal; overflow-wrap: anywhere; }
+  .pfold[open] > summary { margin-bottom: 8px; }
+  /* Sessions' filters and spend as chips, so the table starts in the first screen. */
+  .stiles { display: flex; flex-wrap: wrap; gap: 6px; }
+  .stiles .tile { flex-direction: row; align-items: center; gap: 6px; min-height: 40px; padding: 4px 10px 4px 12px; }
+  .stiles .tv { font-size: 15px; }
+  .stiles .ts1 { display: none; }
   /* A row on a phone: its lead wraps at full width, its glance sits under it, the rest wait for a
      tap (table.js stamps the roles). Direct children only, so a table nested in a detail is left alone. */
   .tsort { display: inline-block; }
@@ -409,9 +428,11 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .tbl.tphone > * > tr.sel[data-phone=row] { background: color-mix(in srgb, var(--accent) 14%, transparent); }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=lead] { flex: 0 0 100%; order: -1; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=glance] { color: var(--muted); font-size: 12px; }
+  .tbl.tphone > * > tr[data-phone=row] > td[data-named]::before { content: attr(data-label) " "; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=rest] { display: none; }
   .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest] { display: block; flex: 0 0 100%; font-size: 12px; }
   .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest]::before { content: attr(data-label) ": "; color: var(--muted); }
+  .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest][data-label=""]::before { content: none; }
   .tbl.tphone > * > tr:not([data-phone]), .tbl.tphone > * > tr:not([data-phone]) > td { display: block; white-space: normal; overflow-wrap: anywhere; }
   .seg button, .tsort, .bfilter select, .tdate { min-height: 40px; }
   .board { padding: 12px; }

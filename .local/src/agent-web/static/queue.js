@@ -247,11 +247,12 @@ function renderQueue() {
     qst.render();
     return;
   }
-  el.innerHTML = qCompose() + `<div id="q-list"></div>`;
+  el.innerHTML = pfold("q-add", "Add to the queue", qCompose()) + `<div id="q-list"></div>`;
   qst.render();
 }
 
-const qFlow = () => `<h2 class="sec" id="sec-flow">Flow</h2>${qStrip()}${qFlowTail()}`;
+const qFlow = () => pfold("q-flow", `Flow${qfl.data?.flow?.bottleneck ? ` <span class="warn">${esc(qfl.data.flow.bottleneck)}</span>` : ""}`,
+  `<h2 class="sec" id="sec-flow">Flow</h2>${qStrip()}${qFlowTail()}`);
 const qTableHead = () => `<h2 class="sec" id="sec-table">Queue <span class="muted">${qst.table.shown} of ${qst.table.total}</span></h2>`;
 
 // Every row the page has, in rank order: the first ones, then the rows kept per reason chip.

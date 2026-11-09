@@ -88,7 +88,7 @@ function fleetBody(d) {
 function fleetHead(d) {
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
   return `<div class="bhead"><span>fleet <span class="muted">who is working, and on what; ${d.table.shown} of ${d.table.total} rows, accounts and who spent what on <a href="#costs">Costs</a>, read ${d.at ? clock(d.at * 1e3) : "-"}</span></span></div>` +
-    `<div class="muted legend">${esc((d.legend || []).join(" | ") || "-")}</div>` +
+    pfold("fleet-legend", "Legend", `<div class="muted legend">${esc((d.legend || []).join(" | ") || "-")}</div>`) +
     (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
 }
 
