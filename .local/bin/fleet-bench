@@ -206,7 +206,7 @@ set -uo pipefail
 : "${TRIAGE_WATCH_AFTER:=21600}"     # triage: seconds a watch must stay TRIP before it is a row, Sentinel's 6h flap window
 : "${TRIAGE_WATCH_HIGH_AFTER:=900}" # triage: the same for a high or urgent watch: one dispatch pass, so one flap is not a row
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
-: "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs
+: "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs, so_forgejo_pr
 : "${BENCH_CANARY_DIR:=$HOME/.config/fleet-bench/canary}"   # canary: one <id>.json per task (content as data)
 : "${BENCH_CANARY_QUEUE_CMD:=agent-queue}"   # canary queue: show and add
 : "${BENCH_CANARY_TIMEOUT:=900}"   # canary: seconds an oracle may run
@@ -312,6 +312,8 @@ def run_rows: split("\n") | map(select(. != "") | split("\t")
   | {s: ((.[0] | tonumber) - (.[1] | tonumber)), res: .[2], branch: .[5], repo: .[6]});
 def total(f): map(f // 0) | add // 0;
 def key: "\(.repo)#\(.number)";
+# the lowercase owner/repo#N an item names (prkeys); the repo of a Forgejo row also carries its host
+def itemkey: "\(.repo // "" | split("/") | .[-2:] | join("/") | ascii_downcase)#\(.number)";
 # every PR an item names (pr and prs, owner/repo#N or a pull URL), lowercase owner/repo#N; a bare
 # number is #N, so it matches no pr-ci key
 def prkeys: [.pr, .prs] | map(strings) | join(" ") | ascii_downcase
@@ -1195,13 +1197,20 @@ commit_paths() {
 # commit to merge (earlier runs are a reused branch name), read from the run ledger (schedules-sync
 # runs; exit 3 when the ledger does not sync the repo, 4 when it has not synced past the merge yet,
 # 1 when it is unreadable or stale); red is failure, timed_out or
-# startup_failure, and cancelled is superseded, not red. A repo with sections adds the PR's
-# sections and its gate workflow's runs; green_lost is a green gate on an earlier head that a later
+# startup_failure, and cancelled is superseded, not red. A Forgejo PR (repo host/owner/repo,
+# session-outcomes.sh SO_PR_JQ) is read through that host's API, since gh speaks only to GitHub, and
+# keeps its outcomes name on the row; the ledger names it forgejo:owner/repo. A repo with sections
+# adds the PR's sections and its gate workflow's runs; green_lost is a green gate on an earlier head that a later
 # commit replaced, main moving or a review change alike. A path inside no root is `other`.
 pr_ci() {
-  local pr runs paths=''
-  pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
-  runs=$("$SCHEDULES_SYNC" runs "$1" --branch "$(jq -r .headRefName <<<"$pr")" --until "$(jq -r .mergedAt <<<"$pr")") || return
+  local pr runs paths='' ledger=$1
+  if [[ "$1" == */*/* ]]; then
+    pr=$(so_forgejo_pr "$1" "$2") || return 1
+    ledger=forgejo:${1#*/}
+  else
+    pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
+  fi
+  runs=$("$SCHEDULES_SYNC" runs "$ledger" --branch "$(jq -r .headRefName <<<"$pr")" --until "$(jq -r .mergedAt <<<"$pr")") || return
   runs=$(jq -c 'map({conclusion, workflowName: .workflow, headSha: .sha, createdAt: .created_at,
     startedAt: (.started_at // .created_at), updatedAt: (.ended_at // .started_at // .created_at)})' <<<"$runs") || return 1
   if jq -e --arg r "$1" 'has($r)' <<<"$4" >/dev/null; then
@@ -1229,6 +1238,15 @@ pr_ci() {
         end)'
 }
 
+# forgejo_ready <host/owner/repo> -> the lib loaded and the token read in this shell, so the
+# subshell each pr_ci runs in inherits them and a review reads the token once, a failed read too
+forgejo_ready() {
+  [ -z "${SO_FORGEJO_ERR:-}" ] || return 1
+  # shellcheck source=/dev/null
+  declare -F so_forgejo_auth >/dev/null || . "$BENCH_SO_LIB" || return 1
+  so_forgejo_auth "$1" || { say "$SO_FORGEJO_ERR"; return 1; }
+}
+
 cmd_review() {
   local t since cfg new repo num sid row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days='' off=' '
   case "${1:-}" in
@@ -1247,7 +1265,9 @@ cmd_review() {
     [ -n "$repo" ] || continue
     # a repo the ledger does not sync is learnt once per review, not paid a gh call per PR
     case "$off" in *" $repo "*) unsynced=$((unsynced + 1)); continue ;; esac
-    rc=0; row=$(pr_ci "$repo" "$num" "$sid" "$cfg") || rc=$?
+    rc=0
+    if [[ "$repo" == */*/* ]] && ! forgejo_ready "$repo"; then rc=1
+    else row=$(pr_ci "$repo" "$num" "$sid" "$cfg") || rc=$?; fi
     case $rc in
       0) ;;
       3) unsynced=$((unsynced + 1)); off+="$repo "; continue ;;
@@ -1263,7 +1283,7 @@ cmd_review() {
   # a PR merged after the ledger's last sync is counted by the next review, once its runs are in
   [ "$later" -eq 0 ] || say "$later PRs merged after the run ledger's last sync, left for the next review"
   if [ "$failed" -gt 0 ]; then
-    report_outcome FAILED "cannot count $failed PRs (gh or the run ledger), $n counted"
+    report_outcome FAILED "cannot count $failed PRs (gh, Forgejo or the run ledger), $n counted"
     return 1
   fi
   if [ "$n" -eq 0 ]; then
@@ -1618,7 +1638,7 @@ chain_counts() {
     | (if $a == null or $d == null or $c == null then null
        else (($a + $d) | map(prkeys[]) | INDEX(.)) as $refs
          | {total: ($c | length),
-            hit: ($c | map(select($refs["\(.repo // "" | ascii_downcase)#\(.number)"] or $refs["#\(.number)"])) | length)} end) as $cov
+            hit: ($c | map(select($refs[itemkey] or $refs["#\(.number)"])) | length)} end) as $cov
     | ($b // [] | map(select(.lane == "agent"))) as $agent
     | ($b // [] | map("\(.project):\(.id)") | INDEX(.)) as $open
     | ($p // [] | map(select((.epics // []) | length > 0) | .name) | INDEX(.)) as $epicked
@@ -2215,7 +2235,7 @@ models_json() {
     def ratio($a; $b): if $b > 0 then ($a / $b * 100 | round / 100) else null end;
     ($by | split(",")) as $bys | ($bys | index("class") != null) as $cl | ($bys | index("lane") != null) as $ln
     | ($runs | INDEX(.id)) as $rix
-    | ($ci | INDEX(key | ascii_downcase)) as $cix | ($sa[0] // {}) as $sp |
+    | ($ci | INDEX(itemkey)) as $cix | ($sa[0] // {}) as $sp |
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     def landed: .status == "ok" and (.pr // "") != "";
     def metered: (.gateway_cost_usd // "") != "";
