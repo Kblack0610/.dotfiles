@@ -284,7 +284,7 @@ report_outcome() { proof_lib && proof_outcome "$NAME" "$@"; }
 now() { printf '%s' "${BENCH_NOW:-$(date +%s)}"; }
 
 # jq helpers shared by every verb.
-VITALS_JQ='def vitals($v): [$v | split(" ")[] | split("=") | {question: .[0], kpi: (.[1] | split(",")[])}];'
+VITALS_JQ='def vitals($v): [$v | splits("\\s+") | select(test("^[^=]+=[^=]+$")) | split("=") | {question: .[0], kpi: (.[1] | split(",")[])}];'
 JQ_LIB='
 def median: sort | length as $n | if $n == 0 then null
   elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
@@ -1991,7 +1991,7 @@ KPI_DEFS="$JQ_LIB"'
     | ($tk | map(select((.date // "") >= $d0 and .date < $d1))) as $tw
     | ($tw | map(select(.merged_prs | numbers))) as $tp
     | ($tw | map(select(.context_split.start | numbers))) as $ts
-    | {sessions: ($s | length), merged_prs: ($c | map(select(.merged_epoch > $since and .merged_epoch <= $t)) | length),
+    | {sessions: ($s | length), merged_prs: ($c | map(select(.merged_epoch > $since and .merged_epoch <= $t)) | unique_by([.repo, .number]) | length),
        revert_rate: ratio(($s | total(.reverted_7d)); $prs),
        interrupts_per_day: ratio(($s | total(.corrections.interrupts)); $d),
        cost_per_pr: ratio(($s | total(.cost_usd)); $prs),

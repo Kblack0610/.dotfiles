@@ -132,7 +132,7 @@ brow() {
   # was never sampled, which no project can claim
   printf '{"session_id":"s%s","project":"game","basis":"default","made_epoch":0,"done_epoch":%s,"error_min":0,"horizon_min":60,"ratio":%s}\n' \
     1 "$T0" 1.5 2 "$T0" 2.5 > "$FLEET_BENCH_DIR/scores.jsonl"
-  printf '{"session_id":"a","merged_epoch":%s,"ci_red":2}\n{"session_id":"zz","merged_epoch":%s,"ci_red":7}\n' "$T0" "$T0" \
+  printf '{"repo":"o/r","number":1,"session_id":"a","merged_epoch":%s,"ci_red":2}\n{"repo":"o/r","number":2,"session_id":"zz","merged_epoch":%s,"ci_red":7}\n' "$T0" "$T0" \
     > "$FLEET_BENCH_DIR/pr-ci.jsonl"
   # one KPI past its limit and one inside it, so the phone can name what is over
   printf '%s\n' ci_red_per_pr_max=1 runners_bad_max=2 > "$KPI_THRESHOLDS"
@@ -2336,6 +2336,26 @@ loop_fixture() {
   ci_row '{repo: "o/r", number: 5, session_id: "h1", merged_epoch: ($t - 3456000), ci_red: 0}'
   run "$SUBJECT" kpi --json
   assert_equal "$(jq -c '.merged_prs | [.["7d"], .["28d"]]' <<<"$output")" '[2,3]'
+}
+
+@test "kpi: merged_prs counts a PR two sessions claimed once, and the same number in another repo apart" {
+  kpi_setup; mkdir -p "$FLEET_BENCH_DIR"
+  ci_row '{repo: "o/r", number: 1, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 0}'
+  ci_row '{repo: "o/r", number: 1, session_id: "h2", merged_epoch: ($t - 86400), ci_red: 0}'
+  ci_row '{repo: "o/other", number: 1, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 0}'
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '.merged_prs["7d"]' <<<"$output")" '2'
+}
+
+@test "kpi --vitals: a malformed BENCH_VITALS drops the bad token and keeps the rest" {
+  kpi_setup; kpi_fixture
+  BENCH_VITALS='  q1=revert_rate   junk
+q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
+  assert_success
+  assert_equal "$(jq -c 'map([.question, .kpi])' <<<"$output")" '[["q1","revert_rate"],["q2","sessions"]]'
+  BENCH_VITALS='junk' run "$SUBJECT" kpi --vitals --json
+  assert_success
+  assert_equal "$output" '[]'
 }
 
 @test "kpi --vitals: the BENCH_VITALS rows in order, an unknown key stays a row, and it takes no other mode" {
