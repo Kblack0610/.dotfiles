@@ -16,7 +16,6 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::Worker;
-use crate::costs::usd;
 use crate::table::{Row, Val, View};
 
 /// What a row opens: a runner's page or a session's record.
@@ -50,6 +49,8 @@ pub struct Who {
     pub state: String,
     /// When it started its present state, unix seconds.
     pub since: Option<i64>,
+    /// A runner's Claude Code cost over the last 24h (`Worker::cost_24h`); None for a session.
+    pub cost_24h: Option<f64>,
     /// What a session is doing now, fleet-sessions' `activity_line` (testing, editing, waiting on
     /// <workflow> Nm, red on <workflow>, gating, its status); blank for a runner.
     pub activity: String,
@@ -69,7 +70,7 @@ pub struct Who {
 
 impl Row for Who {
     const COLUMNS: &'static [&'static str] = &[
-        "kind", "who", "state", "activity", "since", "for", "doing", "under", "project",
+        "kind", "who", "state", "cost", "activity", "since", "for", "doing", "under", "project",
     ];
     /// The kind chips, then the state chips.
     const STATES: &'static [&'static str] = &[
@@ -102,6 +103,7 @@ impl Row for Who {
             "state" => Val::Text(self.state.clone()),
             "activity" => text(&self.activity),
             "since" => self.since.map_or(Val::None, |t| Val::Num(t as f64)),
+            "cost" => self.cost_24h.map_or(Val::None, Val::Num),
             "for" => text(&self.purpose),
             "doing" => text(&self.doing),
             "under" => text(&self.under),
@@ -158,11 +160,11 @@ fn runner(w: &Worker, at: i64) -> Who {
             Some(o) if o.word == "BLOCKED" && !o.text.is_empty() => o.text.clone(),
             _ => w.held_why.clone(),
         },
+        // Its dollars are the COST 24H column's.
         _ if call.is_some() => format!(
-            "called {}: {} calls 24h, {}",
+            "called {}: {} calls 24h",
             call.map_or("", |c| if c.ok { "ok" } else { "error" }),
             calls.n_24h,
-            usd(calls.cost_24h)
         ),
         (_, Some(_), _) if w.why.is_none() => "running".to_string(),
         (Some(o), ..) => format!("{} {}", o.word, o.text).trim().to_string(),
@@ -190,6 +192,7 @@ fn runner(w: &Worker, at: i64) -> Who {
             .or(w.running_since)
             .or(call.map(|c| c.at))
             .or(w.last.as_ref().and_then(|o| o.at)),
+        cost_24h: w.cost_24h,
         activity: String::new(),
         purpose: w.description.clone(),
         doing,
@@ -270,6 +273,7 @@ fn session(sess: &Value, at: i64) -> Option<Who> {
         key: target.to_string(),
         state,
         since: sess["age_min"].as_i64().map(|m| at - m * 60),
+        cost_24h: None,
         activity: s(sess, "activity_line").to_string(),
         // fleet-sessions' topic is what it is on; its queue item's slug is under it.
         purpose: s(sess, "topic").to_string(),
@@ -602,11 +606,11 @@ mod tests {
             ok: true,
             ..Default::default()
         }];
+        w.cost_24h = Some(4.5);
         let r = build(std::slice::from_ref(&w), &json!({}), 1000);
-        assert_eq!(
-            r[0].doing,
-            format!("called ok: 103 calls 24h, {}", usd(Some(9.85)))
-        );
+        // Its dollars are the live series' in COST 24H, not the ledger's in the text.
+        assert_eq!(r[0].doing, "called ok: 103 calls 24h");
+        assert_eq!(r[0].cost_24h, Some(4.5));
         assert_eq!(r[0].since, Some(950));
         // A runner nobody calls keeps its own line.
         let mut own = w.clone();

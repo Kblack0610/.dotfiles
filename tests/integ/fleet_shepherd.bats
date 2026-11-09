@@ -337,13 +337,20 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run prompt
   assert_line 'nudge LANDED: b f-b'
   refute_output --partial 'unhandled:'
-  # the pass leaves b as it was: that is owed, and owed is urgent, so the next run starts a pass at once
+  # the pass leaves b as it was: owed, but not urgent, so it waits for the debounce, and that wait is no streak
   live "$(pass_id)" idle
   local second; second="$(pass_id)"
   run "$SH" run
   assert_output --partial 'unhandled: nudge LANDED: b f-b'
+  assert_output --partial 'none urgent'
+  assert_equal "$(pass_id)" "$second"
+  [ ! -e "$FLEET_SHEPHERD_DIR/.unhandled" ]
+  # past the debounce the owed line starts a pass, and that check counts
+  aged 31
+  run "$SH" run
   assert_output --partial 'started pass'
   [ "$(pass_id)" != "$second" ]
+  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/.unhandled")" 1
   # a STALLED row is urgent too, however young the last pass, and so is each red the producers write
   live "$(pass_id)" idle
   doc "[$(row c STALLED false false)]"
@@ -970,6 +977,19 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   grep -q 'watch: queue-starved tripped (high)' "$FLEET_SHEPHERD_DIR/.pass.sh"
 }
 
+@test "debounce: a line left unhandled is as urgent as the line itself, so an owed red does not wait" {
+  export FLEET_SHEPHERD_DEBOUNCE_MIN=30 STUB_TRIPPED='queue-starved\thigh\n'
+  doc "[$(row d WORKING false false)]"
+  "$SH" run >/dev/null
+  live "$(pass_id)" idle
+  local id; id="$(pass_id)"
+  run "$SH" run
+  assert_output --partial 'unhandled: watch: queue-starved tripped (high)'
+  assert_output --partial 'started pass'
+  [ "$(pass_id)" != "$id" ]
+  assert_equal "$(cat "$FLEET_SHEPHERD_DIR/.unhandled")" 1
+}
+
 @test "a standing trip stays due until a pass answers it; a skip lasts while it trips, and a new trip is news" {
   doc "[$(row d WORKING false false)]"
   export STUB_TRIPPED='queue-starved\thigh\n'
@@ -1364,6 +1384,26 @@ gw_accts() {
   run "$SH" stuck
   assert_success
   assert_output --regexp '^passing: 1 due, last pass (19|20|21)m ago$'
+}
+
+@test "stuck and the page: a line the debounce can hold gets DEBOUNCE_MIN longer, an urgent line does not" {
+  export FLEET_SHEPHERD_DEBOUNCE_MIN=60
+  printf 'k1\tshepherd\t1\tnudge DONE: a\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf '%s\tp1\tWORKED\tx\n' "$(date -u -d '90 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
+  run "$SH" stuck
+  assert_success
+  printf 'k1\tshepherd\t1\tnudge DONE: a\nk2\tshepherd\t1\tunhandled: watch: x tripped (high)\n' > "$FLEET_SHEPHERD_DIR/.due"
+  run "$SH" stuck
+  assert_failure 1
+  # the page: 90 minutes owed pages an urgent line and not a held one
+  doc "[$(row a DONE false false)]"
+  export STUB_TRIPPED='queue-starved\thigh\n'
+  "$SH" check >/dev/null
+  sed -i "s/\t[0-9]*$/\t$(ago 90)/" "$FLEET_SHEPHERD_DIR/.handed"
+  "$SH" check >/dev/null
+  run cat "$HOME/pages"
+  assert_output --partial 'watch: queue-starved tripped (high)'
+  refute_output --partial 'nudge DONE: a'
 }
 
 @test "the .due record keeps each line's role and first-seen time across checks, for the Shepherd tab" {
