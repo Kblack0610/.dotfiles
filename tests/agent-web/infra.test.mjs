@@ -69,3 +69,18 @@ test("red now draws the server's down runners and never judges a runner itself",
   ctx.d = d;
   assert.deepEqual([...run("redItems(d)")], ["watch a", "runner mini-1 missing"], "aws-burst-1 is offline in the series but not in down");
 });
+
+test("the open red fixes cap at LOG_ROWS, then +N more", () => {
+  const n = run("LOG_ROWS") + 2;
+  Object.assign(ist, { reds: { open: Array.from({ length: n }, (_, i) => red(`ar-${i}`, "queued")), settled: [], summary: `${n} open` }, redsErr: null, open: {} });
+  const h = run("fixesSection()");
+  assert.equal(h.match(/QUEUED/g).length, n - 2);
+  assert.match(h, /<div class="muted more">\+2 more<\/div>$/);
+});
+
+test("CI lists no runs: one line links to Releases, whose Builds section has them", () => {
+  Object.assign(ist, { open: {} });
+  const h = run("ciSection({}, {}, Date.now())");
+  assert.ok(!h.includes("Recent runs"), "the runs are Releases'");
+  assert.match(h, /<div class="cline">Runs: every CI run is on <a href="#releases">Releases, Builds<\/a><\/div>$/);
+});
