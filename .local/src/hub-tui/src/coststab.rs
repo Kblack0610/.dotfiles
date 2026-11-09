@@ -9,14 +9,15 @@
 
 use hub_core::burn::{self, Account, Burn, Keys};
 use hub_core::costs::{self, Board, Costs};
+use hub_core::fleet_cost::FleetCost;
 use hub_core::sections::{self, Block};
 use hub_core::table::Val;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::Palette;
+use crate::fit::{cell, clip_line, wrap, Cell, Table};
+use crate::fmt::{clock, Palette};
 use crate::tokens::{self, TokensView};
 
 pub struct CostsView {
@@ -79,7 +80,7 @@ pub fn header(col: &str) -> &'static str {
         "calls" => "CALLS",
         "tokens" => "TOKENS",
         "cost" => "COST",
-        "share" => "SHARE",
+        "share" => "OF TABLE",
         "landed" => "LANDED",
         "redo" => "REDO",
         "reverts" => "REV",
@@ -248,8 +249,8 @@ impl CostsView {
         w: usize,
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let b = self.board(c);
-        let mut out = who(&b.who, p, w);
-        let mut at = vec![("who", 0), ("burn", out.len())];
+        let mut out = fleet(&b.fleet_cost, p, now, w);
+        let mut at = vec![("fleet", 0), ("burn", out.len())];
         out.extend(burn(&b.burn, self.keys, p, w));
         at.push(("tokens", out.len()));
         out.extend(tokens::tokens(b.tokens.as_ref(), self.tokens, p, now, w));
@@ -611,52 +612,69 @@ fn sections(b: &Block, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// Who spent the last 24h: Claude Code live by runner and you, then other harnesses from the
-/// outcomes rows, whose unpriced sessions are counted, never $0. A runner's figure is Fleet's
-/// COST 24H.
-fn who(ws: &costs::WhoSpent, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let mut out = vec![clip_line(
-        Line::from(vec![
-            Span::styled("WHO SPENT 24H  ", p.head()),
-            Span::raw(format!("{}  ", costs::usd(Some(ws.usd)))),
-            Span::styled(
-                format!(
-                    "Claude {} live (exporting sessions); others: outcomes",
-                    costs::usd(ws.claude_usd)
-                ),
-                p.dim(),
+/// The whole fleet's 24h cost: `hub_core::fleet_cost` builds every row and word, this draws them.
+fn fleet(f: &FleetCost, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let title = Span::styled("FLEET COST 24H  ", p.head());
+    if let Some(why) = &f.why {
+        return vec![
+            clip_line(
+                Line::from(vec![title, Span::styled(why.clone(), p.warn())]),
+                w,
             ),
-        ]),
-        w,
-    )];
-    if ws.rows.is_empty() {
-        out.push(Line::styled(
-            "  nothing read: no live Claude series and no outcomes row in 24h",
-            p.dim(),
+            Line::raw(""),
+        ];
+    }
+    let as_of = f.as_of.map_or("-".into(), |t| clock(t, now));
+    let (age, style) = if f.stale {
+        (format!("STALE, as of {as_of}"), p.warn())
+    } else {
+        (format!("as of {as_of}"), p.dim())
+    };
+    let mut out = vec![
+        clip_line(
+            Line::from(vec![
+                title,
+                Span::raw(format!("{}  ", f.usd)),
+                Span::styled(
+                    format!("measured {}  estimated {}  ", f.measured, f.estimated),
+                    p.dim(),
+                ),
+                Span::styled(age, style),
+            ]),
+            w,
+        ),
+        clip_line(Line::styled(f.coverage.clone(), p.dim()), w),
+    ];
+    for r in &f.rows {
+        out.push(clip_line(
+            Line::from(vec![
+                Span::raw(format!("  {:<19} {:>7} {:>4}  ", r.name, r.cost, r.share)),
+                Span::styled(r.basis.clone(), p.dim()),
+            ]),
+            w,
+        ));
+        if let Some(d) = &r.detail {
+            let items: Vec<&str> = d.split(", ").collect();
+            for l in wrap(&items, ", ", w.saturating_sub(4)) {
+                out.push(clip_line(Line::styled(format!("    {l}"), p.dim()), w));
+            }
+        }
+    }
+    for u in &f.unpriced {
+        let words: Vec<&str> = u.split(' ').collect();
+        for l in wrap(&words, " ", w.saturating_sub(2)) {
+            out.push(clip_line(Line::styled(format!("  {l}"), p.warn()), w));
+        }
+    }
+    if !f.days.is_empty() {
+        out.push(clip_line(
+            Line::styled(format!("last days  {}", f.days), p.dim()),
+            w,
         ));
     }
-    for r in &ws.rows {
-        let mut s = vec![Span::raw(format!(
-            "  {:<18} {:>8} {:>4}  ",
-            r.who,
-            costs::usd(r.usd),
-            r.usd
-                .map_or("-".into(), |_| format!("{:.0}%", r.share * 100.0))
-        ))];
-        match (r.source, r.sessions, r.unpriced) {
-            ("outcomes", Some(n), u) => {
-                let plural = if n == 1 { "" } else { "s" };
-                s.push(Span::styled(
-                    format!("outcomes, {n} session{plural}"),
-                    p.dim(),
-                ));
-                if let Some(u) = u.filter(|u| *u > 0) {
-                    s.push(Span::styled(format!(", {u} unpriced"), p.warn()));
-                }
-            }
-            _ => s.push(Span::styled("live", p.dim())),
-        }
-        out.push(clip_line(Line::from(s), w));
+    let foot: Vec<&str> = f.foot.split(' ').collect();
+    for l in wrap(&foot, " ", w) {
+        out.push(clip_line(Line::styled(l, p.dim()), w));
     }
     out.push(Line::raw(""));
     out
@@ -675,7 +693,7 @@ fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
         s.push(Span::styled(label, style));
         s.push(Span::raw(format!("{}  ", costs::usd(Some(t.usd)))));
     }
-    s.push(Span::styled("from outcomes", p.dim()));
+    s.push(Span::styled(b.totals_note, p.dim()));
     s
 }
 
@@ -896,12 +914,49 @@ mod tests {
         };
         Costs {
             burn: burn::build(&all, Some(0.116), drip, 1_000_000),
+            fleet_cost: fleet_block(),
             ..costs()
         }
     }
 
+    fn fleet_block() -> FleetCost {
+        let row = |name: &str, cost: &str, share: &str, basis: &str, detail: Option<&str>| {
+            hub_core::fleet_cost::Row {
+                name: name.into(),
+                usd: Some(1.0),
+                cost: cost.into(),
+                share: share.into(),
+                basis: basis.into(),
+                detail: detail.map(str::to_string),
+            }
+        };
+        FleetCost {
+            usd: "about $849".into(),
+            measured: "$310".into(),
+            estimated: "$538".into(),
+            as_of: Some(1_000_000),
+            coverage: "71% of tokens estimated: 280 of 458 sessions have no cost telemetry".into(),
+            rows: vec![
+                row("queue items", "$260", "31%", "30 sessions, $214 measured, $46 estimated", None),
+                row("shepherd", "$44", "5%", "61 sessions, measured", None),
+                row("dream", "$20", "2%", "22 sweeps, measured", None),
+                row(
+                    "other runners",
+                    "$30",
+                    "4%",
+                    "139 sessions, $12 measured, $18 estimated",
+                    Some("ask-judge $6.40, knowledge-engine $4.10, dispatch-judge $3.20, briefing $2.90, sentinel-diagnose $2.10, inbox-triage $1.80, $9.50 with no runner name"),
+                ),
+            ],
+            unpriced: vec!["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions".into()],
+            days: "11-07 $1,295  11-08 $738".into(),
+            foot: hub_core::fleet_cost::FOOT,
+            ..FleetCost::default()
+        }
+    }
+
     #[test]
-    fn who_spent_leads_then_the_burn_section_and_all_fits_80_columns() {
+    fn the_fleet_figure_leads_then_the_burn_section_and_all_fits_80_columns() {
         let s = CostsView::default()
             .lines(&burning(), Palette::default(), 1_000_000, 80)
             .0
@@ -910,11 +965,23 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
-        assert!(s.starts_with("WHO SPENT 24H  $3.00  Claude - live"), "{s}");
         assert!(
-            s.contains("  codex                 $3.00 100%  outcomes, 1 session\n"),
+            s.starts_with("FLEET COST 24H  about $849  measured $310  estimated $538  as of "),
             "{s}"
         );
+        assert!(
+            s.contains("  shepherd                $44   5%  61 sessions, measured\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("  dream                   $20   2%  22 sweeps, measured\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("sentinel-diagnose $2.10"),
+            "every runner is reachable: {s}"
+        );
+        assert!(s.contains("estimated\" is priced from tokens"), "{s}");
         let burn = s.lines().find(|l| l.starts_with("BURN")).unwrap();
         assert!(
             burn.starts_with("BURN  4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live"),

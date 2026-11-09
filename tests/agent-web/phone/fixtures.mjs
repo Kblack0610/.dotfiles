@@ -121,9 +121,16 @@ const actions = {
   counts: { actor: { shepherd: 3, dispatch: 2, sentinel: 2 }, verb: { page: 3, nudge: 2, start: 2 } }, errors: [],
 };
 
+// Log's Work table: hub_core::worklog.
+const logWork = {
+  table: table(8, ["state", "when", "project", "what", "kind", "pr", "cost"], ["all", "done", "active", "waiting", "queued", "failed", "cancelled"], { project: PROJECTS.slice(0, 5), kind: ["fix", "feat", "chore"] }),
+  rows: rows(8, (i) => ({ state: pick(["failed", "waiting", "active", "done", "done", "queued"], i), when: iso(ago(30 + i * 90)).slice(0, 16), project: pick(PROJECTS, i), what: TEXT[i], kind: pick(["fix", "feat", "chore"], i), pr: `.dotfiles#${1580 + i}`, url: "https://github.com/Kblack0610/.dotfiles/pull/1", cost: 1.25 * i, slug: SLUGS[i % SLUGS.length], unproven: false })),
+  more: 12, errors: [], today: iso(NOW).slice(0, 10), items_from: "2026-11-04", prs_from: "2026-10-14",
+};
+
 // Fleet: hub_core::fleet::who.
 const fleet = {
-  table: table(6, ["kind", "who", "state", "activity", "since", "for", "doing", "under", "project"], ["all", "lead", "deliver", "observe", "learn", "maintain", "session", "held", "failed", "working", "needs you", "stalled"], { kind: ["deliver", "observe"], state: ["working", "held"], project: PROJECTS.slice(0, 2) }),
+  table: table(6, ["kind", "who", "state", "cost", "activity", "since", "for", "doing", "under", "project"], ["all", "lead", "deliver", "observe", "learn", "maintain", "session", "held", "failed", "working", "needs you", "stalled"], { kind: ["deliver", "observe"], state: ["working", "held"], project: PROJECTS.slice(0, 2) }),
   who: rows(6, (i) => ({ key: `who-${i}`, kind: pick(["lead", "deliver", "observe", "maintain"], i), who: `fleet-${SLUGS[i]}`, state: pick(["working", "held", "needs you"], i), activity: pick(["editing", "reading", "gate"], i), since: ago(20 + i * 15), for: `${20 + i * 15}m`, doing: TEXT[i], under: "", project: pick(PROJECTS, i), opens: "", kids: 0 })),
   hidden: 0, legend: [], at: NOW, errors: [], workers: [],
   dispatch: { recent: [], eval: { rules: [], prompt_sha: "" } }, judge: { prompt: "", verdicts: [], eval: { rules: [], prompt_sha: "" } },
@@ -144,8 +151,22 @@ const account = (name, live, used, gone, burn, sustain) => ({ name, kind: "claud
 const COST_CUT = ["model", "harness", "sessions", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
 const costs = {
   at: NOW, by: "model", window: "7d", cuts: ["session", "model", "harness", "tool", "project", "runner", "kind"], windows: ["24h", "7d", "30d"],
-  totals: [{ window: "24h", usd: 412.5, sessions: 73, unpriced: 0 }, { window: "7d", usd: 2204, sessions: 512, unpriced: 2 }, { window: "30d", usd: 8120, sessions: 2040, unpriced: 2 }],
-  live: { claude_24h: 311 }, direct: { usd: 1.25, unpriced: 1, note: "opencode lazer/*, nightly; other direct use unseen" },
+  totals: [{ window: "7d", usd: 2204, sessions: 512, unpriced: 2 }, { window: "30d", usd: 8120, sessions: 2040, unpriced: 2 }],
+  totals_note: "whole-life cost of the sessions touched in the window, from outcomes",
+  fleet_cost: {
+    why: null, usd: "about $859", measured: "$320", estimated: "$539", as_of: NOW - 600, stale: false,
+    coverage: "69% of tokens estimated: 275 of 453 sessions have no cost telemetry",
+    rows: [
+      { name: "queue items", usd: 270, cost: "$270", share: "31%", basis: "102 sessions, $40 measured, $230 estimated", detail: null },
+      { name: "shepherd", usd: 44, cost: "$44", share: "5%", basis: "60 sessions, measured", detail: null },
+      { name: "other runners", usd: 30, cost: "$30", share: "4%", basis: "132 sessions, $13 measured, $17 estimated", detail: "ask-judge $6, knowledge-engine $4, dispatch-judge $3, a-runner-with-a-long-name $2, $15 with no runner name" },
+      { name: "lazer-reserve", usd: null, cost: "-", share: "-", basis: "0 of 1 session, no price known", detail: null },
+    ],
+    unpriced: ["claude-sonnet-4-6: 32M tokens in 1 session not in the total, no billed sessions"],
+    days: "11-05 $2,445  11-06 $1,750  11-07 $1,422  11-08 $775",
+    foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens at rates fitted to measured sessions.",
+  },
+  direct: { usd: 1.25, unpriced: 1, note: "opencode lazer/*, nightly; other direct use unseen" },
   sources: [{ name: "outcomes", as_of: NOW - 600, stale: false }], errors: [], columns: COST_CUT, source: "outcomes rows", eval_days: 7, unpriced: null,
   rows: rows(6, (i) => line({ model: pick(["opus-5-5", "sonnet-4-5", "gpt-5-codex", "haiku-4-5", "lazer/qwen3-coder-next-long-model-name", "lazer/deepseek-v3-2-exp"], i), harness: pick(["claude", "codex", "opencode"], i), sessions: 120 - i * 15, tokens: 9e9 - i * 1e9, cost: 900 - i * 120, share: 0.4 - i * 0.05, landed: 0.8 - i * 0.05, redo: i, reverts: i % 2, per_pr: 5.14 + i, src: pick(["outcomes", "mixed"], i) })),
   shown_usd: 300,
@@ -178,6 +199,6 @@ export const FIXTURES = {
   "/api/projects": projects, "/api/board": board,
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
   "/api/infra": infra, "/api/reds": reds, "/api/jobs": jobs,
-  "/api/log": log, "/api/log/history": logHistory, "/api/actions": actions,
+  "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
   "/api/fleet": fleet, "/api/schedules": schedules, "/api/costs": costs, "/api/releases": releases, "/api/builds": builds,
 };

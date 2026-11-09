@@ -8,6 +8,8 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
+use tokio::sync::broadcast::{self, error::TryRecvError};
 use tokio::sync::Mutex;
 
 /// The last read, kept for `TTL_SECS` and for the key it was read for (`()` when a module has
@@ -67,6 +69,63 @@ impl<T, const TTL_SECS: u64, K: PartialEq> ReadCache<T, TTL_SECS, K> {
     /// Drop the kept read, so the next request reads afresh and shows a write just made.
     pub async fn clear(&self) {
         *self.last.lock().await = None;
+    }
+}
+
+/// A [`ReadCache`] that an event outdates: the page refreshes on the same events, so a read is
+/// kept only until one of `kinds` arrives, and never past the TTL should the watcher be down.
+pub struct EventCache<T, const TTL_SECS: u64, K = ()> {
+    events: Mutex<broadcast::Receiver<String>>,
+    kinds: &'static [&'static str],
+    last: ReadCache<T, TTL_SECS, K>,
+}
+
+/// Whether anything queued says a ledger changed; a missed event might have.
+fn written(events: &mut broadcast::Receiver<String>, kinds: &[&str]) -> bool {
+    let mut any = false;
+    loop {
+        match events.try_recv() {
+            Ok(m) => {
+                let v: Value = serde_json::from_str(&m).unwrap_or_default();
+                any |= kinds.iter().any(|k| v["kind"] == *k);
+            }
+            Err(TryRecvError::Lagged(_)) => any = true,
+            Err(_) => return any,
+        }
+    }
+}
+
+impl<T: Send + 'static, const TTL_SECS: u64, K: PartialEq> EventCache<T, TTL_SECS, K> {
+    pub fn new(events: broadcast::Receiver<String>, kinds: &'static [&'static str]) -> Self {
+        Self {
+            events: Mutex::new(events),
+            kinds,
+            last: ReadCache::new(),
+        }
+    }
+
+    /// The read for `key`. Events are drained before the read, so one arriving during it outdates
+    /// it; the events lock is held across the read, so the next request sees that one.
+    pub async fn get(
+        &self,
+        key: K,
+        read: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<Arc<T>, String> {
+        self.get_if(key, read, |_| true).await
+    }
+
+    /// As `get`, keeping the answer only when `keep` says so.
+    pub async fn get_if(
+        &self,
+        key: K,
+        read: impl FnOnce() -> T + Send + 'static,
+        keep: impl FnOnce(&T) -> bool,
+    ) -> Result<Arc<T>, String> {
+        let mut events = self.events.lock().await;
+        if written(&mut events, self.kinds) {
+            self.last.clear().await;
+        }
+        self.last.get_if(key, off(read), keep).await
     }
 }
 

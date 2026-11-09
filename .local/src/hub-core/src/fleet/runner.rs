@@ -604,6 +604,7 @@ mod tests {
             judge_eval: root.join("no-judge-eval").display().to_string(),
             notes_state: root.join("notes"),
             lanes: root.join("lanes.tsv"),
+            fleet_cost: root.join("fleet-cost.json"),
         };
         (Fixture(root), paths)
     }

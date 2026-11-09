@@ -303,6 +303,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::releases::Release>(),
         phone_table::<crate::builds::Run>(),
         phone_table::<crate::sections::Section>(),
+        phone_table::<crate::worklog::Work>(),
     ];
     rows.into_iter().chain(cuts).collect()
 }

@@ -767,7 +767,7 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
     measured_usd = sum(s["measured"] for s in sess.values())
     estimated_usd = sum(s["estimated"] for s in sess.values())
     share = max(0.0, sum(billed.values()) / sum(priced.values()) - 1) if priced else 0.0
-    top = max((billed[o] / priced[o] - 1 for o in billed if billed[o] >= HELPER_MIN_BILLED), default=0.0)
+    top = max([billed[o] / priced[o] - 1 for o in billed if billed[o] >= HELPER_MIN_BILLED] + [0.0])
 
     gateway = sum(float(r["value"][1]) for r in prom(f"sum(increase(litellm_spend_metric_total[{int(end - start)}s]))", end))
     other = {k: {"usd": round(v["usd"], 2), "sessions": v["sessions"], "priced": v["priced"], "source": ",".join(sorted(v["sources"])) or None}

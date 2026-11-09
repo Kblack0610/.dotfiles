@@ -77,7 +77,8 @@ pub const TABS: [Tab; 12] = [
         title: "Log",
         question: "What happened?",
         sections: &[
-            "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast", "ranked",
+            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
+            "ranked",
         ],
     },
     Tab {
@@ -104,7 +105,7 @@ pub const TABS: [Tab; 12] = [
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
         sections: &[
-            "who", "burn", "tokens", "langfuse", "sections", "totals", "table",
+            "fleet", "burn", "tokens", "langfuse", "sections", "totals", "table",
         ],
     },
     // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the

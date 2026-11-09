@@ -35,6 +35,11 @@ pub fn fleet_state() -> PathBuf {
     agent_panel::vocab::fleet_state_file()
 }
 
+/// `agent-usage fleet-cost`'s file, beside the fleet state.
+pub fn fleet_cost() -> PathBuf {
+    fleet_state().with_file_name("fleet-cost.json")
+}
+
 /// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
 pub fn asks_dir() -> PathBuf {
     env("AGENT_ASK_DIR").unwrap_or_else(|| home().join(".agent/asks"))
@@ -401,25 +406,9 @@ pub fn project_order(rec: &Value, grid: &HourGrid) -> Vec<String> {
     order
 }
 
-/// `prs` in one group per project, groups in `order` and each keeping the order it was given; a
-/// project `order` does not name goes last, by name. Empty groups are left out.
-pub fn by_project<'a>(prs: &[&'a Value], order: &[String]) -> Vec<(String, Vec<&'a Value>)> {
-    let mut groups: Vec<(String, Vec<&'a Value>)> = vec![];
-    for pr in prs {
-        let p = pr_project(pr);
-        match groups.iter_mut().find(|g| g.0 == p) {
-            Some(g) => g.1.push(pr),
-            None => groups.push((p, vec![pr])),
-        }
-    }
-    let rank = |p: &str| order.iter().position(|o| o == p).unwrap_or(usize::MAX);
-    groups.sort_by(|a, b| rank(&a.0).cmp(&rank(&b.0)).then_with(|| a.0.cmp(&b.0)));
-    groups
-}
-
 /// A day's record as the web Log reads it: every merged and open PR carries its `project`
 /// (`pr_project`, so an older record reads the same), plus `hours` (merges_by_hour) and
-/// `projects` (project_order), so the browser draws the grid and the groups and computes neither.
+/// `projects` (project_order), so the browser draws the grid and computes neither.
 pub fn log_view<Tz: chrono::TimeZone>(mut rec: Value, tz: &Tz) -> Value {
     for k in ["merged", "open"] {
         if let Some(a) = rec[k].as_array_mut() {
@@ -753,19 +742,6 @@ mod tests {
         ]});
         let order = project_order(&rec, &merges_by_hour(&rec, &chrono::Utc));
         assert_eq!(order, vec!["dotfiles", "game", "web", "api"]);
-        let open: Vec<&Value> = rec["open"].as_array().unwrap().iter().collect();
-        let g: Vec<(String, Vec<u64>)> = by_project(&open, &order)
-            .into_iter()
-            .map(|(p, v)| (p, v.iter().map(|x| x["number"].as_u64().unwrap()).collect()))
-            .collect();
-        assert_eq!(
-            g,
-            vec![
-                ("game".into(), vec![4]),
-                ("web".into(), vec![1, 3]),
-                ("api".into(), vec![2])
-            ]
-        );
     }
 
     #[test]
