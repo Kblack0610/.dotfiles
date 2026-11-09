@@ -434,16 +434,19 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
     let keys = keys_fold(&accounts);
     // Burn and sustain sum over the same accounts: an unreadable or idle one has neither, and
     // one with no sustain (its week is spent or past its reset) would otherwise add burn to
-    // the OVER ratio with nothing on the other side.
-    let counted: Vec<&Account> = accounts
+    // the OVER ratio with nothing on the other side. Claude accounts only, as claude-acct's fleet
+    // line (fleet_line, same filter): the session rate is theirs, and a codex point is a different budget.
+    let claude: Vec<&Account> = accounts.iter().filter(|a| a.kind == DEFAULT_KIND).collect();
+    let counted: Vec<&Account> = claude
         .iter()
+        .copied()
         .filter(|a| a.state == "ok" && a.sustain.is_some())
         .collect();
     let burn: f64 = counted.iter().map(|a| a.burn).sum();
     let sustain: f64 = counted.iter().filter_map(|a| a.sustain).sum();
     let rate = rate.filter(|r| *r > 0.0);
     let fleet = Fleet {
-        live: accounts.iter().map(|a| a.live).sum(),
+        live: claude.iter().map(|a| a.live).sum(),
         burn,
         sustain,
         over: (sustain > 0.0).then(|| burn / sustain),
@@ -983,11 +986,13 @@ mod tests {
     }
 
     #[test]
-    fn a_dollar_budget_adds_nothing_to_the_fleet_line_or_the_pace() {
+    fn codex_and_a_dollar_budget_add_nothing_to_the_fleet_line_or_the_pace() {
         let b = build(&sources(), Some(0.116), Drip::default(), NOW);
-        // the fixture's 4.52 against 1.37, plus Codex's 0 against 0.71; the keys carry no pace
+        // the fixture's 4.52 against 1.37, Claude accounts only: Codex's 0.71 is another budget
+        // the session rate does not carry; the keys carry no pace
         assert!((b.fleet.burn - 4.52).abs() < 1e-9);
-        assert!((b.fleet.sustain - 2.08).abs() < 1e-9);
+        assert!((b.fleet.sustain - 1.37).abs() < 1e-9);
+        assert_eq!(b.fleet.carries, Some(11));
         // A dollar budget has no back-on-pace time; counted as ahead, it would be "on pace only
         // after the reset" and set this.
         assert!(!b.pace.idle_rest_after_reset);
