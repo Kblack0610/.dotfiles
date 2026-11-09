@@ -836,8 +836,9 @@ SEGMENTS = re.compile(r"\s*(?:&&|;|\|\||\|)\s*")  # one Bash call split into its
 
 
 def seg_words(seg):
-    """The words of one command segment, past env assignments and timeout, sudo, env, time."""
-    w = seg.split()
+    """The words of one command segment (a string, or its words), past env assignments and timeout,
+    sudo, env, time."""
+    w = seg.split() if isinstance(seg, str) else list(seg)
     while w and (("=" in w[0] and not w[0].startswith("-")) or w[0] in ("timeout", "sudo", "env", "time")):
         w = w[1:]
         while w and w[0] and (w[0][0].isdigit() or w[0].startswith("-")):
@@ -1324,13 +1325,27 @@ def result_text(b):
     return str(rc or "")
 
 
-# Read discipline: the responses a file read costs beyond itself. A read of a file a grep or rg
-# found in one of the LOCATE_WINDOW calls before it paid two responses where one call would do
-# (`rg -n -C`, or the locate and the slice chained in one command). A read of lines this stretch
-# already read, with no write to the file between, paid one for nothing. Logs, transcripts and
-# /tmp captures grow while a session runs, so reading one again is never counted as a repeat.
+# Read discipline: the responses a file read costs beyond itself. A read of lines within
+# LOCATE_CONTEXT of a numbered hit that a grep or rg in an earlier response of the last
+# LOCATE_WINDOW calls printed in that same file paid a response one call would have saved
+# (`rg -n -C 40`), so it is priced as the read's own response. A whole-file read or a range far
+# from every hit is the reader asking for more than any -C gives, and no pair. A list-only or
+# unnumbered grep, a name only in the pattern or the call's description, a grep in the same
+# response as the read, and a hit printed before a write to the file are no pair. A read of lines this
+# stretch already read, with no write to the file between, paid one for nothing. Logs,
+# transcripts and /tmp captures grow while a session runs, so reading one again is never a repeat.
 LOCATE_WINDOW = 8
+LOCATE_CONTEXT = 40  # the widest -C a pair is held to: one call printing 81 lines
 LOCATE_HEADS = {"grep", "rg", "ugrep", "ag"}
+# grep and rg flags whose value is the next word, so the word is neither pattern nor path
+LOCATE_VALUE_FLAGS = {"-e", "-f", "-g", "-t", "-T", "-A", "-B", "-C", "-m", "-M", "-j", "--glob", "--iglob",
+                      "--type", "--type-not", "--regexp", "--file", "--max-count", "--include", "--exclude",
+                      "-d", "--max-depth", "--exclude-dir", "--context", "--after-context", "--before-context"}
+RG_VALUE_FLAGS = {"-r", "-E", "--replace", "--encoding", "--color", "--colors", "--sort", "--sortr",
+                  "--max-columns", "--max-filesize", "--threads", "--pre"}  # grep -r and -E take none
+NUMBERED_FLAG = re.compile(r"^(?:--line-number|-[a-zA-Z]*n)")  # -n, -rn, -inw: grep prints N:
+NUMBERED_LINE = re.compile(r"(?m)^(\d+)[:-]")  # a one-file grep -n hit or -C context line
+SHELL_TOKEN = re.compile(r"""'[^']*'|"(?:\\.|[^"\\])*"|\\.|&&|\|\||[|;]|[^'"\\|;&]+|&""")
 SED_RANGE = re.compile(r"^(\d+)(?:,(\d+))?p$")
 REDIRECT = re.compile(r"^\d*[<>]")  # 2>/dev/null, 2>&1
 REDIRECT_OP = re.compile(r"\d*[<>]+&?")  # a bare 2> or >>, whose target is the next word
@@ -1420,21 +1435,83 @@ def write_paths(name, inp, cwd):
     return [p for p in out if p != "/dev/null" and "&" not in p]
 
 
-def locate_call(name, inp):
-    if name in ("Grep", "Glob"):
-        return True
-    return name == "Bash" and any(bash_head(s) in LOCATE_HEADS
-                                  for s in SEGMENTS.split((inp.get("command") or "").strip()))
+def shell_commands(line):
+    """One shell line split at |, ||, &&, ; and & outside quotes, each command as its words."""
+    segs, cur = [], ""
+    for t in SHELL_TOKEN.findall(line):
+        if t in ("|", "||", "&&", ";", "&"):
+            segs.append(cur)
+            cur = ""
+        else:
+            cur += t
+    out = []
+    for seg in segs + [cur]:
+        try:
+            out.append(shlex.split(seg))
+        except ValueError:
+            out.append(seg.split())
+    return out
 
 
-def located_by(p, recent, seg):
-    """True when one of the recent calls in this stretch was a grep or rg that named or found p."""
-    base = os.path.basename(p)
-    tail = "/".join(p.split("/")[-2:])
-    word = re.compile(r"(?<![\w.-])" + re.escape(base) + r"(?![\w.-])")
-    hit = re.compile(r"(?m)^(?:\./)?" + re.escape(base) + ":")  # grep -rn output for a file at the top of the tree
-    return any(s == seg and loc and (word.search(cmd) or tail in text or hit.search(text))
-               for s, loc, cmd, text in recent)
+def locate_paths(name, inp):
+    """The paths a grep call that prints line numbers names (None when it prints none). The Grep
+    tool's `path` in content mode; for a Bash grep or rg with -n, the words after the pattern,
+    read only up to a heredoc, whose body is text."""
+    if name == "Grep":
+        numbered = inp.get("output_mode") == "content" and inp.get("-n", True) is not False
+        return [inp.get("path") or ""] if numbered else None
+    if name != "Bash":
+        return None
+    cmd, paths, found = inp.get("command") or "", [], False
+    for line in cmd.splitlines():
+        for words in shell_commands(line.strip()):
+            w = seg_words(words)
+            head = os.path.basename(w[0]) if w else ""
+            if head not in LOCATE_HEADS:
+                continue
+            values = LOCATE_VALUE_FLAGS | (RG_VALUE_FLAGS if head == "rg" else set())
+            pos, skip, explicit, numbered = [], False, False, head == "ag"
+            for x in w[1:]:
+                if skip:
+                    skip = False
+                elif x in values:
+                    skip, explicit = True, explicit or x in ("-e", "--regexp", "-f", "--file")
+                elif x.startswith("-"):
+                    numbered = numbered or bool(NUMBERED_FLAG.match(x))
+                elif not REDIRECT.match(x):
+                    pos.append(x)
+            if numbered:
+                found = True
+                paths += pos if explicit else pos[1:]
+        if HEREDOC_RE.search(line):
+            break
+    return paths if found else None
+
+
+def same_file(p, printed):
+    """True when a path a grep printed or was given names the absolute read path p."""
+    printed = printed.rstrip("/")
+    while printed.startswith("./"):
+        printed = printed[2:]
+    return bool(printed) and (p == printed or p.endswith("/" + printed))
+
+
+def located_by(p, lo, hi, recent, seg, i, since):
+    """True when a grep in an earlier response of this stretch, after the last write to p (index
+    since), printed a numbered hit in p (a `path:N:` line, or an `N:` line from a grep that named
+    p as its one path) and the read's lines lo..hi all sit within LOCATE_CONTEXT of one hit."""
+    if hi is None:
+        return False
+    hit = re.compile(r"(?m)^(\S*?" + re.escape(os.path.basename(p)) + r")[:-](\d+)[:-]")
+    for s, ri, paths, text in recent:
+        if s != seg or ri >= i or ri <= since or paths is None:
+            continue
+        lines = [int(n) for f, n in hit.findall(text) if same_file(p, f)]
+        if len(paths) == 1 and same_file(p, paths[0]):
+            lines += [int(n) for n in NUMBERED_LINE.findall(text)]
+        if any(n - LOCATE_CONTEXT <= lo and hi <= n + LOCATE_CONTEXT for n in lines):
+            return True
+    return False
 
 
 def tool_calls_file(path, since, until, seen_msgs, emit):
@@ -1493,6 +1570,7 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
     emit("session", kind, project)
     last_in_seg, seen_words, repeats, edits = {}, set(), {}, 0
     spans, recent, hot = {}, deque(maxlen=LOCATE_WINDOW), {}  # read discipline: path -> [(seg, lo, hi)]
+    written = {}  # path -> the response index of its last write, older grep hits are stale
     agent_texts = []  # (seg, report): what an Agent handed back, for reads that re-check it
     for i, r in enumerate(resps):
         last_in_seg[r["seg"]] = i
@@ -1527,21 +1605,22 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
             nctx = nxt["ctx"] if nxt else 0
             for p in write_paths(name, inp, r["cwd"]):
                 spans.pop(p, None)
+                written[p] = i
             if name == "Bash" and not ro:  # a run can rewrite any generated file; code changes by edit
                 for p in [p for p in spans if path_class(p) != "code"]:
                     del spans[p]
             for p, lo, hi in ([] if err else read_spans(name, inp, r["cwd"])):
                 again = path_class(p) not in VOLATILE and not p.startswith("/tmp/") and any(
                     s == r["seg"] and lo <= (h or math.inf) and l <= (hi or math.inf) for s, l, h in spans.get(p, ()))
-                found = located_by(p, recent, r["seg"])
+                found = located_by(p, lo, hi, recent, r["seg"], i, written.get(p, -1))
                 segs = {s for s, _, _ in spans.get(p, ())}
                 fresh = r["seg"] not in segs  # first read of p in this stretch
                 tail = "/".join(p.split("/")[-2:])
                 spans.setdefault(p, []).append((r["seg"], lo, hi))
                 if win:
                     emit("n", kind, project, "reads", 1, nctx)
-                    if found:
-                        emit("n", kind, project, "locate_then_read", 1, nctx)
+                    if found:  # priced as the read's own response, the one a single call would have saved
+                        emit("n", kind, project, "locate_then_read", 1, r["ctx"])
                     if again:
                         emit("n", kind, project, "reread_same_lines", 1, nctx)
                     if fresh and any(s < r["seg"] for s in segs):
@@ -1551,7 +1630,7 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
                     if RULE_DOC.search(p):
                         emit("n", kind, project, "read_rule_doc", 1, nctx)
                     hot[p] = hot.get(p, 0) + nctx
-            recent.append((r["seg"], locate_call(name, inp), json.dumps(inp), text[:20000]))
+            recent.append((r["seg"], i, locate_paths(name, inp), text[:20000]))
             if name == "Agent" and text:
                 agent_texts.append((r["seg"], text[:50000]))
             if not win:
@@ -1692,8 +1771,8 @@ def cmd_tool_calls(a):
           f"{100 * al.get('parallel_responses', 0) / max(al.get('tool_responses', 0), 1):.1f}% of "
           f"tool responses carried more than one call")
     reads = al.get("reads", 0)
-    print(f"  {reads:,} file reads: {100 * al.get('locate_then_read', 0) / max(reads, 1):.1f}% read a file a grep "
-          f"found in the {LOCATE_WINDOW} calls before, {100 * al.get('reread_same_lines', 0) / max(reads, 1):.1f}% "
+    print(f"  {reads:,} file reads: {100 * al.get('locate_then_read', 0) / max(reads, 1):.1f}% read lines near a numbered "
+          f"hit an earlier grep printed (one rg -C could do both), {100 * al.get('reread_same_lines', 0) / max(reads, 1):.1f}% "
           f"read lines already read with no write between")
     print(f"  read triggers: {100 * al.get('read_after_compaction', 0) / max(reads, 1):.1f}% first re-read after a "
           f"compaction, {100 * al.get('read_after_subagent', 0) / max(reads, 1):.1f}% a file an Agent report named, "
