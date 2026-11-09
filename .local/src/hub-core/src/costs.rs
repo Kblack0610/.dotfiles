@@ -43,7 +43,7 @@ pub const STALE_SECS: i64 = 36 * 3600;
 /// The Grafana board with the spend trends; the tab draws no chart (dashboards rule 3).
 pub const DASHBOARD: &str = "kb-agents-overview";
 /// The line a TUI tab prints where it would show spend: the Costs tab and its key.
-pub const SPEND_BADGE: &str = "spend: 0 Costs";
+pub const SPEND_BADGE: &str = "spend: 9 Costs";
 
 /// What the tool cut says when its snapshots predate the allocation, on both surfaces.
 pub const UNPRICED: &str =
@@ -1464,10 +1464,9 @@ mod tests {
 
     #[test]
     fn the_spend_badge_names_the_costs_key() {
-        // The number row: 1 to 9, then 0 for the tenth tab.
-        let at = crate::layout::TABS.iter().position(|t| t.id == "costs");
         assert_eq!(
-            at.map(|i| format!("spend: {} Costs", (i + 1) % 10))
+            crate::layout::bar_digit("costs")
+                .map(|d| format!("spend: {d} Costs"))
                 .as_deref(),
             Some(SPEND_BADGE)
         );

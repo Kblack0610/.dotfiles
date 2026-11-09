@@ -1080,7 +1080,7 @@ pub mod tests {
         let s = text(&fixture(), 160);
         for want in [
             "dispatch: unreadable",
-            "FLEET  3 of 3 rows, spend: 0 Costs",
+            "FLEET  3 of 3 rows, spend: 9 Costs",
             "all 3  lead 1  deliver 0  observe 1  learn 0  maintain 0  session 1",
             "KIND",
             "FOR",

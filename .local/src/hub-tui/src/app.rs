@@ -124,7 +124,11 @@ impl Tab {
                 .into_iter()
                 .find(|t| t.title().eq_ignore_ascii_case(n))
         };
-        by_title(s).or_else(|| hub_core::layout::resolve(s).and_then(|t| by_title(t.title)))
+        by_title(s).or_else(|| {
+            let t = hub_core::layout::resolve(s)?;
+            // Agent-web's Board tab is `a` on Projects here.
+            by_title(if t.id == "board" { "Projects" } else { t.title })
+        })
     }
     fn index(self) -> usize {
         Tab::SHOWN.iter().position(|t| *t == self).unwrap_or(0)
@@ -190,6 +194,8 @@ pub struct BoardFiles {
     pub releases: PathBuf,
     /// schedules-sync's run ledger behind Releases' Builds section.
     pub builds: builds::Paths,
+    /// The Queue tab's Candidates: the snapshot each real `fleet-dispatch run` writes.
+    pub candidates: PathBuf,
 }
 
 impl BoardFiles {
@@ -203,6 +209,7 @@ impl BoardFiles {
             tokens: boards::token_usage_dir(),
             releases: boards::releases_dir(),
             builds: builds::Paths::from_env(),
+            candidates: boards::candidates_file(),
         }
     }
     fn watch_log(&self) -> PathBuf {
@@ -332,7 +339,7 @@ pub enum Msg {
     Queue(Box<Queue>),
     /// A queue cancel, bump or promote ended: its output, or why it failed.
     QueueActed(Result<String, String>),
-    /// `fleet-dispatch suggest --json` (hub_core::queue::candidates), or why it failed.
+    /// fleet-dispatch's Candidates snapshot (hub_core::queue::candidates), or why it failed.
     Candidates(Result<Candidates, String>),
     /// `notes board --json`, or why it failed.
     Tasks(Box<Result<Feed, String>>),
@@ -1002,15 +1009,13 @@ impl App {
         }
     }
 
-    /// The candidates read every board (seconds), so they are read in a worker on entering the
-    /// Queue tab, on `r` there and after a queue action, never on a queue file event.
+    /// The candidates are fleet-dispatch's snapshot, read in a worker on entering the Queue tab,
+    /// on `r` there and after a queue action (a promote takes its row out of the file).
     pub fn read_candidates(&mut self) {
         if self.candidates_read.want() {
-            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            let (tx, path) = (self.tx.clone(), self.files.candidates.clone());
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::Candidates(hub_core::queue::candidates(
-                    runner.as_ref(),
-                )));
+                let _ = tx.send(Msg::Candidates(hub_core::queue::candidates(&path)));
             });
         }
     }
@@ -2435,7 +2440,7 @@ impl App {
         true
     }
 
-    /// A flow chip's view: the Queue on its state chip, or the Projects tab.
+    /// A flow chip's view: the Queue on its state chip, or the Projects tab for the board chip.
     fn open_flow(&mut self, key: &str) {
         let Some(to) = hub_core::flow::Strip::build(None)
             .chips
@@ -2451,8 +2456,11 @@ impl App {
                 self.qv.open("");
                 self.qv.table.view.state = to.state.into();
             }
-            "projects" => self.go(Tab::Projects),
-            _ => {}
+            tab => {
+                if let Some(t) = Tab::parse(tab) {
+                    self.go(t);
+                }
+            }
         }
     }
 
@@ -4361,6 +4369,10 @@ mod tests {
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
+        let dir = std::env::temp_dir().join(format!("hub-tui-cands-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        a.files.candidates = dir.join("candidates.jsonl");
+        std::fs::write(&a.files.candidates, "").unwrap();
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         a.handle(Msg::QueueFiles);
         a.handle(key('2'));
@@ -4375,12 +4387,9 @@ mod tests {
         // The fake's queue read came back empty; put the fixture back.
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         let ran = fake.0.lock().unwrap().clone();
-        assert_eq!(
-            ran.iter()
-                .filter(|c| *c == "fleet-dispatch suggest --json")
-                .count(),
-            1,
-            "read once, on entering the tab, not on a queue file event: {ran:?}"
+        assert!(
+            !ran.iter().any(|c| c.contains("suggest")),
+            "the snapshot is read, never a live suggest: {ran:?}"
         );
         assert!(screen(&mut a, 160, 40).contains("+ CANDIDATES (0, 0 auto)"));
         a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));
@@ -4495,7 +4504,11 @@ mod tests {
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
-        assert_eq!(Tab::parse("board"), Some(Tab::Projects), "board is retired");
+        assert_eq!(
+            Tab::parse("board"),
+            Some(Tab::Projects),
+            "`a` opens it there"
+        );
         // Projects is the third tab on the bar, so 3 opens it.
         a.handle(key('3'));
         assert_eq!(a.tab, Tab::Projects);
@@ -4851,7 +4864,12 @@ mod tests {
         // docs/dashboards.md rule 8: both surfaces list hub_core::layout's tabs in its order,
         // and the digits follow that order along the number row, 1 for the first, 0 the tenth.
         let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
-        let layout: Vec<&str> = hub_core::layout::TABS.iter().map(|t| t.title).collect();
+        // Less Board: agent-web's tab for what `a` on Projects opens here.
+        let layout: Vec<&str> = hub_core::layout::TABS
+            .iter()
+            .map(|t| t.title)
+            .filter(|t| *t != "Board")
+            .collect();
         assert_eq!(titles, layout);
         // The bar is the layout less Daily, which only agent-web shows; the digits follow it.
         let shown: Vec<&str> = Tab::SHOWN.iter().map(|t| t.title()).collect();
@@ -4860,6 +4878,12 @@ mod tests {
         for (i, t) in Tab::SHOWN.iter().enumerate() {
             let d = char::from_digit((i as u32 + 1) % 10, 10).unwrap();
             assert_eq!((t.digit(), Tab::by_digit(d)), (d, Some(*t)));
+            let id = t.title().to_lowercase();
+            assert_eq!(
+                hub_core::layout::bar_digit(&id),
+                d.to_digit(10).map(|n| n as usize),
+                "the badges name this digit"
+            );
         }
         assert_eq!(Tab::Costs.digit(), '9');
         assert_eq!(

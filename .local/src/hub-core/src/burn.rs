@@ -16,7 +16,7 @@ use crate::prom::Series;
 pub const RATE_Q: &str = "claude_fleet_session_rate_points_per_hour";
 
 /// Where the dispatch hold is explained (the Sessions header), as `SPEND_BADGE` names Costs.
-pub const HOLD_BADGE: &str = "5 Sessions";
+pub const HOLD_BADGE: &str = "4 Sessions";
 
 /// claude-acct's published answer on an automatic start for one account (its `room` object in
 /// the textfile: `claude_account_room`, `_room_headroom_points`, `_room_reason`). The hub prints
@@ -748,9 +748,10 @@ mod tests {
 
     #[test]
     fn the_hold_badge_names_the_sessions_key() {
-        let at = crate::layout::TABS.iter().position(|t| t.id == "sessions");
         assert_eq!(
-            at.map(|i| format!("{} Sessions", (i + 1) % 10)).as_deref(),
+            crate::layout::bar_digit("sessions")
+                .map(|d| format!("{d} Sessions"))
+                .as_deref(),
             Some(HOLD_BADGE)
         );
     }

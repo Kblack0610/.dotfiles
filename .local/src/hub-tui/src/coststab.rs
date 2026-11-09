@@ -914,7 +914,7 @@ mod tests {
             "{s}"
         );
         assert!(s.contains("DRIP  15 started in 1h, 349 in 24h"), "{s}");
-        assert!(s.contains("dispatch held -> 5 Sessions"), "{s}");
+        assert!(s.contains("dispatch held -> 4 Sessions"), "{s}");
         assert!(
             s.contains("BACK ON PACE  at this burn: not before the reset; if idle: all by"),
             "{s}"

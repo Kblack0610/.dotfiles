@@ -40,7 +40,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 
 const chips = (over = {}) => [
   { key: "inbox", label: "inbox", value: "4", hot: false, to: null },
-  { key: "board", label: "board", value: "312", hot: false, to: { tab: "projects", state: "" } },
+  { key: "board", label: "board", value: "312", hot: false, to: { tab: "board", state: "" } },
   { key: "queued", label: "queued", value: "3 (2 ready)", hot: false, to: { tab: "queue", state: "up next" } },
   { key: "running", label: "running", value: "5", hot: false, to: { tab: "queue", state: "running" } },
   { key: "needs", label: "needs you", value: "2", hot: true, to: { tab: "queue", state: "needs you" } },
@@ -55,7 +55,7 @@ test("the strip draws every chip as a link to the Queue on its filter, the board
   assert.match(html, /href="#queue\?s=running" data-flow="running">running 5</);
   assert.match(html, /href="#queue\?s=needs%20you"[^>]*>needs you 2</);
   assert.match(html, /href="#queue" data-flow="drain">drain 6h \+4\/-9 shrinking</);
-  assert.match(html, /href="#projects" data-flow="board">board 312</);
+  assert.match(html, /href="#board" data-flow="board">board 312</);
   assert.match(html, /<span class="cchip fchip" data-flow="inbox">inbox 4<\/span>/);
 });
 

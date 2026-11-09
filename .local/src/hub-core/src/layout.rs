@@ -15,7 +15,7 @@ pub struct Tab {
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 11] = [
+pub const TABS: [Tab; 12] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -47,6 +47,13 @@ pub const TABS: [Tab; 11] = [
         title: "Projects",
         question: "Where is each project, and its tasks?",
         sections: &["cards", "rows"],
+    },
+    Tab {
+        id: "board",
+        group: "Work",
+        title: "Board",
+        question: "What is on every project's board?",
+        sections: &["rows"],
     },
     Tab {
         id: "sessions",
@@ -124,8 +131,6 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("overview", "home"),
     // Home's Numbers heading: the session counts head Running and the spend is its own SPEND line.
     ("numbers", "home"),
-    // Both surfaces' Board tab: its rows are the Projects tab's, one project at a time or All.
-    ("board", "projects"),
     // agent-web's Watch and Shepherd: one row per session on Sessions, the shepherd pinned first.
     ("watch", "sessions"),
     ("shepherd", "sessions"),
@@ -157,6 +162,18 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     ("fleet", "tokens", "costs", "tokens"),
     ("fleet", "langfuse", "costs", "langfuse"),
 ];
+
+/// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists, and
+/// Board, which is `a` on Projects there.
+pub const OFF_BAR: [&str; 2] = ["daily", "board"];
+
+/// A tab's key on the TUI's number row: 1 for the first, 0 for the tenth.
+pub fn bar_digit(id: &str) -> Option<usize> {
+    TABS.iter()
+        .filter(|t| !OFF_BAR.contains(&t.id))
+        .position(|t| t.id == id)
+        .map(|i| (i + 1) % 10)
+}
 
 /// Where a section that moved off `tab` lives now: its new tab and section.
 pub fn moved(tab: &str, sec: &str) -> Option<(&'static Tab, &'static str)> {
@@ -230,7 +247,7 @@ mod tests {
         assert_eq!(resolve("Outbox").map(|t| t.id), Some("daily"));
         assert_eq!(resolve("Daily").map(|t| t.id), Some("daily"));
         assert_eq!(TABS[0].id, "home", "the landing page leads");
-        assert_eq!(resolve("board").map(|t| t.id), Some("projects"));
+        assert_eq!(resolve("board").map(|t| t.id), Some("board"));
         assert_eq!(resolve("forecast").map(|t| t.id), Some("log"));
         assert_eq!(resolve("Watch").map(|t| t.id), Some("sessions"));
         assert_eq!(resolve("shepherd").map(|t| t.id), Some("sessions"));
