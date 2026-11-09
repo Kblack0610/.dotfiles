@@ -21,14 +21,13 @@
 # session whose plan they just approved, or an answered ask does. A row already on either sheet
 # under the same title, open or closed or dropped, is never filed again. With no epic it prints
 # what it would file and writes nothing. Exit 0, 1 when a write failed, 2 as above.
-# --list prints the project's system vocabulary, the one list a row's area is checked against:
-# the Systems ids of systems.md for its type, then its own from `systems` in its project-map.json
-# entry, one `id<TAB>own|doc<TAB>aliases (comma-separated)<TAB>what it is` line each (--json: an
-# array of {id, source, aliases, is}). An own entry named after a doc id adds aliases to it.
+# --list prints the project's systems (which ones: ~/.local/src/docs/systems.md, "The layers"),
+# one `id<TAB>doc|own<TAB>aliases (comma-separated)<TAB>what it is` line each (--json: an array of
+# {id, source, aliases, is}). A malformed `systems` entry exits 2.
 # How a Check cell is written and run: ~/.local/src/docs/stages.md, "Requirements".
 set -uo pipefail
 
-usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE="" LIST=""
 [ "$(basename "$0")" = project-system-check ] && SYSTEMS=1
@@ -273,17 +272,30 @@ systems() {
 }
 
 list_systems() {
-  local own
-  own="$(jq -c --arg n "$NAME" '(.trackers[$n].systems // {}) | if type == "object" then . else {} end' \
-    "$(project_map_file)" 2>/dev/null)" || own='{}'
-  rows "$SYSTEMS_DOC" Systems | jq -r -R -s --arg type "${TYPE:-none}" --argjson own "${own:-"{}"}" --arg json "$JSON" '
+  local own out
+  # A malformed entry exits 2 with its key named: an empty list would read as "no own systems".
+  own="$(jq -c --arg n "$NAME" '
+    def word: type == "string" and test("^[a-z][a-z0-9-]*$");
+    def entry: type == "object" and ((.aliases // []) | type == "array" and all(.[]; word))
+      and ((.is // "") | type == "string");
+    (.trackers[$n].systems // {}) as $s
+    | if ($s | type) != "object" then error("\($n): systems is not an object") else . end
+    | [$s | to_entries[] | select((.key | word | not) or (.value | entry | not)) | .key] as $bad
+    | if $bad == [] then $s
+      else error("\($n): bad systems entries: \($bad | join(", ")); want {\"<id>\": {\"is\": \"<line>\", \"aliases\": [\"<word>\"]}}, ids and aliases lowercase") end
+  ' "$(project_map_file)")" || { echo "project-stage-check: cannot read the systems of \"$NAME\" from $(project_map_file)" >&2; exit 2; }
+  out="$(rows "$SYSTEMS_DOC" Systems | jq -r -R -s --arg type "${TYPE:-none}" --argjson own "$own" --arg json "$JSON" '
     [split("\n")[] | select(length > 0) | split("\t") | {id: .[0], applies: (.[1] | split(", ")), is: .[2]}] as $doc
     | ($doc | map(.id)) as $ids
+    | [$own | keys[] | select(. as $k | ($ids | index($k) | not) and ($own[$k].is // "") == "")] as $nois
+    | if $nois != [] then error("own systems need an \"is\" line: \($nois | join(", "))") else . end
     | [$doc[] | select(.id as $i | .applies | index("base") or index($type) or ($own[$i] != null))
         | {id, source: "doc", aliases: ($own[.id].aliases // []), is}]
       + [$own | to_entries[] | select(.key as $k | $ids | index($k) | not)
-        | {id: .key, source: "own", aliases: (.value.aliases // []), is: (.value.is // "")}]
-    | if $json == "1" then . else .[] | [.id, .source, (.aliases | join(",")), .is] | @tsv end'
+        | {id: .key, source: "own", aliases: (.value.aliases // []), is: .value.is}]
+    | if $json == "1" then . else .[] | [.id, .source, (.aliases | join(",")), .is] | @tsv end')" \
+    || { echo "project-stage-check: \"$NAME\": the systems list did not build" >&2; exit 2; }
+  printf '%s\n' "$out"
   exit 0
 }
 

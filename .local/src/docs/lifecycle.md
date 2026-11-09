@@ -17,8 +17,8 @@ Work enters at any step. A small fix is a row and never needs a brief. The table
 ## What an epic is
 
 - An epic is one feature: one system, one outcome the human can check by using it, usually 3 to 15 stories, closed only on proof. Its title names the outcome (`epic(gameplay): school days, choices and the morality meter`), never the work. Its area is a system id from `~/.local/src/docs/systems.md`, so a project reads as system -> feature -> story.
-- Each system a project works on has one standing epic, `epic(<system>): <system> to standard`, for its criteria gaps (`project-stage-check --file` files them there) and for fixes and upkeep that serve no feature. Every leaf therefore has a parent: a feature epic when one fits, else its system's standing epic.
-- A system's progress is the leaves-only weighted done share of its open epics plus the epics closed in the open version (the `epics.rs` rollup). A project's progress is its list of systems, never one number.
+- Each system a project works on has one standing epic, `epic(<system>): <system> to standard`, for its criteria gaps (`project-stage-check --file` files them under it once it exists) and for fixes and upkeep that serve no feature. Every leaf has a parent: a feature epic when one fits, else its system's standing epic. Queue item `systems-versions-p2` makes `notes ptask` create the standing epic and link an unlinked leaf to it; until then the triager links by hand.
+- A system's progress is the leaves-only weighted done share of its open epics plus the epics closed in the open version. `epics.rs` rolls up each epic today and carries its system; the sum per system arrives with `systems-versions-p3`. A project's progress is its list of systems, never one number.
 - A release containing a feature epic closed on proof is a minor version (`stages.md`, "Versions").
 
 ## One key up

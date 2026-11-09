@@ -292,6 +292,20 @@ DOC
   assert_output --partial '--list takes only --json'
 }
 
+@test "systems: a malformed own entry exits 2 and names it, never an empty list" {
+  write_systems_doc
+  for bad in '{netcode: "mp"}' '{netcode: {aliases: "mp"}}' '{Dispatch: {is: "x"}}' '"dispatch"'; do
+    jq ".trackers.shooter.systems = $bad" "$PROJECT_MAP_FILE" > "$HOME/map.tmp" && mv "$HOME/map.tmp" "$PROJECT_MAP_FILE"
+    run "$CHECK" shooter --list
+    assert_failure 2
+    assert_output --partial 'cannot read the systems of "shooter"'
+  done
+  jq '.trackers.shooter.systems = {dispatch: {aliases: ["queue"]}}' "$PROJECT_MAP_FILE" > "$HOME/map.tmp" && mv "$HOME/map.tmp" "$PROJECT_MAP_FILE"
+  run "$CHECK" shooter --list
+  assert_failure 2
+  assert_output --partial 'own systems need an "is" line: dispatch'
+}
+
 @test "a stage row can require a system by calling the checker, so the predicate lives in one doc" {
   write_systems_doc
   cat >> "$STAGES_DOC" <<'EOF2'
