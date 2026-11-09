@@ -699,6 +699,7 @@ STUB
   run "$ACCT" status
   assert_line --regexp '^alt +- +15% +9% +Mon 21:00 '
   # the reserve, when that is what refuses the closest one; it lasts to its reset
+  # no live sessions from here: a row with no burn lasts to its reset
   rm -rf "${CLAUDE_ACCT_PROC:?}"/*
   week main 88 2
   week alt 90 100

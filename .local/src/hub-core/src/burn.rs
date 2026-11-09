@@ -435,7 +435,7 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
     // Burn and sustain sum over the same accounts: an unreadable or idle one has neither, and
     // one with no sustain (its week is spent or past its reset) would otherwise add burn to
     // the OVER ratio with nothing on the other side. Claude accounts only, as claude-acct's fleet
-    // line: the session rate is theirs, and a codex point is a different budget.
+    // line (fleet_line, same filter): the session rate is theirs, and a codex point is a different budget.
     let claude: Vec<&Account> = accounts.iter().filter(|a| a.kind == DEFAULT_KIND).collect();
     let counted: Vec<&Account> = claude
         .iter()
@@ -989,7 +989,7 @@ mod tests {
     fn codex_and_a_dollar_budget_add_nothing_to_the_fleet_line_or_the_pace() {
         let b = build(&sources(), Some(0.116), Drip::default(), NOW);
         // the fixture's 4.52 against 1.37, Claude accounts only: Codex's 0.71 is another budget
-        // (2026-11-09, it read 1.6 vs 1.7, carries ~52, with Claude alone at 1.3 vs 1.15); the keys carry no pace
+        // the session rate does not carry; the keys carry no pace
         assert!((b.fleet.burn - 4.52).abs() < 1e-9);
         assert!((b.fleet.sustain - 1.37).abs() < 1e-9);
         assert_eq!(b.fleet.carries, Some(11));
