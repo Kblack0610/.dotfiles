@@ -280,18 +280,17 @@ pub fn run_interactive(query: Option<&str>) -> Result<()> {
     let map_file = map_file_path();
     let rows = write_rows(&agents, &map_file, saved_sort())?;
     // fzf runs --disabled (the panel matches, `search`), so a query typed up front is applied here.
-    let (rows_text, restore_line) = match query.filter(|q| !q.trim().is_empty()) {
-        Some(q) => (search::filter(&fs::read_to_string(search::notes_path(&map_file))?, q, &search::read_topics()), None),
-        None => {
-            // Position the cursor on the currently active agent, if any.
-            let line = tmux::current_target().and_then(|cur| {
-                rows.iter()
-                    .position(|r| r.target == cur)
-                    .map(|i| i + 1) // fzf pos() is 1-based
-            });
-            (rows_text(&rows), line)
-        }
+    let rows_text = match query.filter(|q| !q.trim().is_empty()) {
+        Some(q) => search::filter(&fs::read_to_string(search::notes_path(&map_file))?, q, &search::read_topics()),
+        None => rows_text(&rows),
     };
+    // Position the cursor on the currently active agent, if it is listed.
+    let restore_line = tmux::current_target().and_then(|cur| {
+        rows_text
+            .lines()
+            .position(|l| l.split('\t').next() == Some(cur.as_str()))
+            .map(|i| i + 1) // fzf pos() is 1-based
+    });
 
     let selected = fzf::run(&rows_text, &map_file, restore_line, query);
     let _ = fs::remove_file(&map_file);
@@ -352,11 +351,21 @@ fn write_rows(agents: &[Agent], map_file: &Path, sort: sort::Sort) -> Result<Vec
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let (rows, map_lines) = render::build(agents, sort, now);
-    fs::write(map_file, map_lines.join("\n"))?;
+    write_whole(map_file, &map_lines.join("\n"))?;
     // A missing index leaves each note to its row text: search still works on what is shown.
     let index = search::index_path().and_then(|p| fs::read_to_string(p).ok()).unwrap_or_default();
-    fs::write(search::notes_path(map_file), search::notes(&rows, agents, &search::index_notes(&index)))?;
+    write_whole(&search::notes_path(map_file), &search::notes(&rows, agents, &search::index_notes(&index)))?;
     Ok(rows)
+}
+
+/// Write by rename, so a `match` or preview callback reading the file while a reload rewrites
+/// it sees the old file or the new one, never a truncated one.
+fn write_whole(path: &Path, text: &str) -> Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    fs::write(&tmp, text)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 fn rows_text(rows: &[render::Row]) -> String {
@@ -381,19 +390,29 @@ pub fn run_rows(map_file: &Path, asking: bool, step: Option<sort::Step>, query: 
         }
     }
     write_rows(&only_asking(collect(), asking), map_file, sort)?;
-    run_match(map_file, query)
+    print_matches(&fs::read_to_string(search::notes_path(map_file))?, query);
+    Ok(())
 }
 
 /// fzf `change` callback: the saved rows that match `query`, read from the notes `rows` wrote.
-/// No tmux or transcript reads, so it keeps up with typing.
+/// No tmux or transcript reads, so it keeps up with typing. Notes that cannot be read are
+/// rebuilt, slower, rather than read as no agents.
 pub fn run_match(map_file: &Path, query: &str) -> Result<()> {
-    let notes = fs::read_to_string(search::notes_path(map_file)).unwrap_or_default();
-    let rows = search::filter(&notes, query, &search::read_topics());
+    match fs::read_to_string(search::notes_path(map_file)) {
+        Ok(notes) => {
+            print_matches(&notes, query);
+            Ok(())
+        }
+        Err(_) => run_rows(map_file, false, None, query),
+    }
+}
+
+fn print_matches(notes: &str, query: &str) {
+    let rows = search::filter(notes, query, &search::read_topics());
     // No match prints nothing: a blank line would be an empty, selectable row in fzf.
     if !rows.is_empty() {
         println!("{rows}");
     }
-    Ok(())
 }
 
 /// The sort the panel was last left in (`sort::state_file`), project when none.

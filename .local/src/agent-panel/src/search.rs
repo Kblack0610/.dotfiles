@@ -93,8 +93,10 @@ pub fn notes(rows: &[Row], agents: &[Agent], index: &HashMap<String, String>) ->
             if let Some(a) = by_target.get(r.target.as_str()) {
                 note.push(' ');
                 note.push_str(&a.project);
+                // The checkout's own name (a worktree's carries its slug), not the whole path,
+                // whose /home/<user>/ is in every row and would make "home" match them all.
                 note.push(' ');
-                note.push_str(&a.cwd);
+                note.push_str(a.cwd.rsplit('/').find(|p| !p.is_empty()).unwrap_or(""));
                 if let Some(text) = index.get(&a.session_id) {
                     note.push(' ');
                     note.push_str(text);
@@ -107,10 +109,18 @@ pub fn notes(rows: &[Row], agents: &[Agent], index: &HashMap<String, String>) ->
         .join("\n")
 }
 
-/// Every typed word, case-insensitive, is somewhere in the note, the word itself or, for a
-/// topic, one of its words. Each entry of `words` is one typed word's alternatives.
+/// Every typed word, case-insensitive, is somewhere in the note. Each entry of `words` is one
+/// typed word (matched anywhere, as Prefix+R does) and, for a topic, its words, which match only
+/// at the start of a word: "helm" is not in "overwhelm", "pod" not in "tripod".
 fn matches(note: &str, words: &[Vec<&str>]) -> bool {
-    words.iter().all(|alts| alts.iter().any(|w| note.contains(w)))
+    words.iter().all(|alts| {
+        alts.first().is_some_and(|w| note.contains(w)) || alts.iter().skip(1).any(|w| starts_a_word(note, w))
+    })
+}
+
+fn starts_a_word(note: &str, w: &str) -> bool {
+    note.match_indices(w)
+        .any(|(i, _)| note[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric()))
 }
 
 /// The rows of `notes` (see [`notes`]) that match `query`, as fzf input. A leading `'` on a word
@@ -201,6 +211,16 @@ mod tests {
         assert_eq!(filter(&notes, "sound", &no_topics()), "");
         assert_eq!(filter(&notes, "network", &t), "");
         assert_eq!(filter(&notes, "snapcast", &t), filter(&notes, "snapcast", &no_topics()));
+        // A topic word matches at the start of a word only: "player" holds "aye" mid-word.
+        let t = topics("vote aye");
+        assert_eq!(filter(&notes, "vote", &t), "");
+        assert!(starts_a_word("set up snapcast", "snap") && !starts_a_word("whole housesnap", "snap"));
+    }
+
+    #[test]
+    fn the_cwd_adds_its_checkout_name_not_the_home_path() {
+        assert_eq!(targets(&filter(&fixture(), "game", &no_topics())), ["", "lab/game:1"]);
+        assert_eq!(filter(&fixture(), "home", &no_topics()), "");
     }
 
     fn targets(out: &str) -> Vec<&str> {

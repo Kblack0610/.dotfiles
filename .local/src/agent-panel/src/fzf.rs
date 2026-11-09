@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 /// The prompt says which rows are listed; ctrl-y flips it, and every reload reads it back.
 const PROMPT_ALL: &str = "Select agent > ";
 const PROMPT_ASKING: &str = "Asking only > ";
-const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-n new agent  C-y asking  C-o sort  A-o reverse  C-/ layout  C-d/C-u pgup/pgdn scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
+const HEADER: &str = "Enter=jump  A-n next-attention  C-s shepherd  C-t manual  C-l labels  C-n new agent  C-y asking  C-o sort  A-o reverse  C-/ layout  C-d/C-u pgup/pgdn scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
 
 /// The preview layout every panel shares, from its one source: `panel-layout.sh args agent-panel`
 /// (`.local/src/tmux/`, beside panel-lib.sh) prints the `--preview-window` to open with, which is
@@ -62,7 +62,8 @@ pub fn run(rows: &str, map_file: &Path, restore_line: Option<usize>, query: Opti
 /// fzf's arguments: layout, the preview and reload callbacks into `exe`, and the key binds.
 fn args(exe: &str, map: &str, restore_line: Option<usize>, query: Option<&str>, layout: &[String]) -> Vec<String> {
     let preview_cmd = format!("{exe} preview --map-file '{map}' {{}}");
-    let next_bind = format!("n:execute-silent({exe} next)+abort");
+    // A chord, never a bare letter: a bare key is not typed into the search box.
+    let next_bind = format!("alt-n:execute-silent({exe} next)+abort");
     // `fleet-shepherd open` is the one way to the running pass (Prefix o too): it hops worlds.
     let shepherd_bind = "ctrl-s:execute-silent(fleet-shepherd open)+abort".to_string();
     // A new agent beside the selected one: wt hops to the new session, so the panel closes.
@@ -185,6 +186,9 @@ mod tests {
         // fzf does not match: typing reloads the rows the panel matched (`search`).
         assert!(a.contains(&"--disabled".to_string()), "{a:?}");
         assert!(a.contains(&"change:reload(/bin/ap match --map-file '/tmp/m.map' --query={q})".to_string()), "{a:?}");
+        // Every letter types into the search box: no bind is a bare printable key.
+        assert!(a.contains(&"alt-n:execute-silent(/bin/ap next)+abort".to_string()), "{a:?}");
+        assert!(!a.iter().any(|x| x.len() > 2 && x.as_bytes()[1] == b':' && x.as_bytes()[0].is_ascii_alphanumeric()), "{a:?}");
         // Negative control: no query asked for, none passed.
         assert!(!args("/bin/ap", "/tmp/m.map", None, None, &[]).iter().any(|x| x.starts_with("--query")));
     }
