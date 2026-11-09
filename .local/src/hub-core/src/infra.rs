@@ -57,9 +57,6 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("failed", format!("{W} (github_run_failed)")),
         ("local_hourly", format!("sum by (hour, result) (fleet_local_gate_by_hour {LOCAL_FRESH})")),
         ("local_failed", format!("sum by (hour, repo, branch, platform, result) (fleet_local_gate_failed {LOCAL_FRESH})")),
-        // Recent runs, one series per run: the value is when it finished, or how long it took.
-        ("recent", format!("{W} (github_actions_run_recent)")),
-        ("recent_dur", format!("{W} (github_actions_run_recent_duration_seconds)")),
         // What is red right now, one row per item: the home-config `cc:red_now` recording rule,
         // which the dashboard's "What is red" table and the waybar day chip also read.
         ("red", "cc:red_now".into()),
@@ -78,8 +75,6 @@ pub const OPTIONAL: &[&str] = &[
     "withheld",
     "power",
     "governor",
-    "recent",
-    "recent_dur",
 ];
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -359,9 +354,7 @@ mod tests {
                 "runner_cores",
                 "withheld",
                 "power",
-                "governor",
-                "recent",
-                "recent_dur"
+                "governor"
             ]
         );
     }

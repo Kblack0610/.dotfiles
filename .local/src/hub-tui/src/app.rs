@@ -3009,12 +3009,15 @@ impl App {
         let table = self.jv.table(js, self.p, w, false);
         let rows = table.len().saturating_sub(1);
         out.extend(table.into_iter().take(1 + JOBS_SHOWN));
-        out.push(Line::styled(
-            format!(
-                "  {} rows; Enter opens the table (/ search, s source, f state, h history, Enter log)",
-                rows
+        out.push(crate::fit::clip_line(
+            Line::styled(
+                format!(
+                    "  {} rows; Enter opens the table (/ search, s source, f state, h history, Enter log)",
+                    rows
+                ),
+                self.p.dim(),
             ),
-            self.p.dim(),
+            w,
         ));
         out
     }
@@ -3117,7 +3120,7 @@ impl App {
                         l.extend(table);
                         l
                     }
-                    Some(b) => fleet::page(&b.watch, table, self.p, now, w),
+                    Some(b) => fleet::page(&b.watch, table, self.p, now),
                 };
                 // From the status line, two above, so an armed action's confirm stays on screen.
                 let at = self.controls.open.then(|| {
@@ -3895,10 +3898,8 @@ mod tests {
             lines[6].contains("dotfiles-agent-9") && lines[6].contains("parked"),
             "{s}"
         );
-        assert!(
-            s.contains("ASKS (1)") && !s.contains("CHANGES"),
-            "the changes are Log's: {s}"
-        );
+        assert!(!s.contains("CHANGES"), "the changes are Log's: {s}");
+        assert!(!s.contains("ASKS"), "the asks are Home's: {s}");
 
         a.handle(key('x'));
         let s = screen(&mut a, 140, 30);
@@ -5646,6 +5647,24 @@ mod tests {
             assert!(at(w[0]) < at(w[1]), "{} after {}: {s}", w[0], w[1]);
         }
         assert!(s.contains("Enter opens the table"), "{s}");
+    }
+
+    #[test]
+    fn infra_body_fits_80_columns() {
+        // `hub --once` prints body lines as they are, with no terminal to cut them (rule 11).
+        let mut a = infra_app();
+        a.tab = Tab::Infra;
+        let lines = a.body(80).0;
+        assert!(lines
+            .iter()
+            .any(|l| crate::fit::plain(l).contains("Enter opens")));
+        for l in lines {
+            let t = crate::fit::plain(&l);
+            assert!(
+                unicode_width::UnicodeWidthStr::width(t.as_str()) <= 80,
+                "{t}"
+            );
+        }
     }
 
     #[test]
