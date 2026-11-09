@@ -1162,6 +1162,9 @@ case "$4" in
        printf -- '- [ ] %s <!-- id:ar-9%s -->\n' "$5" "$(wc -l < "$B")" ;;
   edit) [ "$6" = --text ] || exit 8
         awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+  done) [ "$6" = --proof ] || exit 8
+        [ ! -e "$B.done-fails" ] || exit 1
+        awk -F'\t' -v q="$5" 'index($3, q) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
 esac
 NS
   chmod +x "$SANDBOX/bin/notes"
@@ -1547,7 +1550,8 @@ watch() {
   assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
   assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
   assert_equal "$(grep -c . <<<"$output")" 4
-  [ ! -s "$NLOG" ]
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
   run "$SUBJECT" triage
   assert_success
   run grep -c 'fix(runner): alpha is\|fix(runner): beta is\|fix(unit): app-picom\|check(watch): spend' "$BOARD"
@@ -1563,15 +1567,150 @@ watch() {
   assert_output NOOP
 }
 
-@test "triage: nothing at fault is a NOOP that never reads the board" {
+@test "triage: nothing at fault is a NOOP that writes nothing to the board" {
   triage_setup
   watch drift OK -90000 normal
   run "$SUBJECT" triage
   assert_success
   assert_output --partial 'no runner, unit, watch or log error at fault'
-  [ ! -s "$NLOG" ]
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
   run "$SUBJECT" triage --bogus
   assert_failure 2
+}
+
+# board_row <state> <text>: an open row on the agent board, as `notes ptask --agent list` prints it
+board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOARD"; }
+
+@test "triage: a recovered watch or hold row closes with a run proof; dry run names it and writes nothing" {
+  triage_setup
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  board_row ' ' 'fix(hold): liveness-179 went red after cleanup merges nc-76 (pr 1 at abc)'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: check(watch): drift tripped since'
+  assert_line 'retire: fix(hold): liveness-179 went red'
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'tripped since\|went red' "$BOARD"
+  assert_output 0
+  run grep -c -- '--agent done .* --proof run:fleet-bench-triage-' "$NLOG"
+  assert_output 2
+  run outcome
+  assert_output WORKED
+}
+
+@test "triage: a tripped watch keeps its row whatever its age, a started row is left, other rows are not touched" {
+  triage_setup
+  watch spend TRIP -600 normal      # inside the flap window: no new row, but still red
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): spend tripped since 2026-11-01, expected: spend is healthy.'
+  board_row '/' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  board_row ' ' 'check(watch): re-run the runner-score probe now the judge is typed'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c -- '--agent done' "$NLOG"
+  assert_output 0
+  run grep -c 'check(watch)' "$BOARD"
+  assert_output 3
+}
+
+@test "triage: a queue that cannot be read closes no row: unknown is not recovered" {
+  triage_setup
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  export TRIAGE_ITEMS_CMD=false
+  : > "$NLOG"
+  run "$SUBJECT" triage
+  run grep -c -- '--agent done' "$NLOG"
+  assert_output 0
+  run grep -c 'check(watch): drift' "$BOARD"
+  assert_output 1
+}
+
+@test "triage: a watch at ERROR keeps its row: a probe that could not run is not a recovery" {
+  triage_setup
+  watch drift ERROR -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  run "$SUBJECT" triage
+  run grep -c -- '--agent done' "$NLOG"
+  assert_output 0
+}
+
+@test "triage: a row in no shape triage writes stays open, however close its words" {
+  triage_setup
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): drift went red again after the deploy, look at the logs'
+  board_row ' ' 'fix(hold): drift tripped since yesterday'
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'retire:'
+}
+
+@test "triage: a row that will not close is said, and new reds are still filed" {
+  triage_setup
+  watch drift OK -90000 normal
+  watch spend TRIP -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  touch "$BOARD.done-fails"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'retire: could not close check(watch): drift tripped since'
+  run grep -c 'check(watch): spend' "$BOARD"
+  assert_output 1
+}
+
+@test "triage: a dry run with an unreadable board records no outcome" {
+  triage_setup
+  BENCH_NOTES_CMD=false run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'agent board unreadable'
+  run outcome
+  refute_output FAILED
+}
+
+@test "triage: a ci hold row closes only while its merge is still in the window hold_reds reads" {
+  hold_setup
+  cleanup kept -3600 5 aaa11111 .local/bin/tool
+  ci 1 success aaa11111 -3000
+  board_row ' ' 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge kept (PR 5 at aaa11111): shell tests red'
+  board_row ' ' 'fix(hold): ci-bbb22222-shell-tests went red after cleanup merge expired (PR 6 at bbb22222): shell tests red'
+  run "$SUBJECT" triage --dry-run
+  assert_line 'retire: fix(hold): ci-aaa11111-shell-tests went red'
+  refute_line 'retire: fix(hold): ci-bbb22222-shell-tests went red'
+}
+
+@test "triage: a repo that cannot be read keeps every hold row and still retires watch rows" {
+  hold_setup
+  watch drift OK -90000 normal
+  cleanup kept -3600 5 aaa11111 .local/bin/tool
+  ci 1 success aaa11111 -3000
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  board_row ' ' 'fix(hold): liveness-179 went red after cleanup merges kept (pr 5 at aaa11111)'
+  for state in unsynced down; do
+    touch "$GHD/$state"
+    run "$SUBJECT" triage --dry-run
+    assert_line 'retire: check(watch): drift tripped since'
+    refute_line 'retire: fix(hold): liveness-179 went red'
+    rm "$GHD/$state"
+  done
+  run "$SUBJECT" triage --dry-run
+  assert_line 'retire: fix(hold): liveness-179 went red'
+}
+
+@test "triage: a red whose failed log cannot be read keeps every hold row" {
+  hold_setup
+  cleanup before -7200 5 aaa11111 .local/bin/tool
+  cleanup inrange -3600 6 bbb22222 .local/bin/other
+  ci 1 success aaa11111 -7201; ci 2 failure bbb22222 -3601
+  board_row ' ' 'fix(hold): ci-ccc33333-shell-tests went red after cleanup merge inrange (PR 6 at ccc33333): shell tests red'
+  run "$SUBJECT" triage --dry-run
+  refute_line 'retire: fix(hold): ci-ccc33333-shell-tests went red'
+  echo 'lint failed' > "$GHD/log.2"
+  run "$SUBJECT" triage --dry-run
+  assert_line 'retire: fix(hold): ci-ccc33333-shell-tests went red'
 }
 
 @test "kpi: failed_unexplained counts the last 24h of failures with no reason, not reasoned or older ones" {
@@ -2046,6 +2185,7 @@ hold_setup() {
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
   cat >> "$SCHEDULES_SYNC" <<'SS'
 [ -e "$D/down" ] && exit 1
+[ -e "$D/unsynced" ] && exit 3
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
 jq -c 'map({id, event, workflow: .name, path: "shell.yml", status, conclusion, sha: .head_sha, created_at})' "$D/runs"
 SS
@@ -2489,7 +2629,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
 }
 
 # chain_fixture: a work chain where every link holds. Two PRs merged this week, each named by an
-# item (one repo-qualified, one bare); every started agent row has an active item; the one done
+# item (the owner's case differs on one); every started agent row has an active item; the one done
 # item's row is closed; the running item has a session; the one agent row in a project with an
 # open epic is filed under it, and that epic still has an open leaf; the doctor passed.
 chain_fixture() {
@@ -2504,7 +2644,7 @@ chain_fixture() {
   export BENCH_ADMISSION_CMD="echo {\"held_7d\":0}"
   items_stub "$(item run running high board:game:g-1 '{"session":"lab:game-agent-1","pr":"o/r#7"}')"
   DONE="$SANDBOX/done.jsonl"
-  item fin done high board:game:g-2 '{"pr":"9","merged":"abc123"}' > "$DONE"
+  item fin done high board:game:g-2 '{"pr":"o/other#9","merged":"abc123"}' > "$DONE"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ncat "%s"\n' "$DONE" "$DONE" > "$SANDBOX/bin/done-stub"
   BJSON="$SANDBOX/board.json" PJSON="$SANDBOX/projects.json"
   jq -cn '{rows: [{project: "game", lane: "agent", state: "doing", id: "g-1", type: "fix", tags: ["of/g-0"]},
@@ -2551,6 +2691,9 @@ chain_fixture() {
   ci_row '{repo: "o/r", number: 8, session_id: "h1", merged_epoch: ($t - 3600), ci_red: 0}'
   check "$(printf '%s\n' 'ledger_coverage 0.667 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
   sed -i '$d' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  # a bare number names no repo, so it credits nothing
+  sed -i 's|o/other#9|9|' "$DONE"
+  check "$(printf '%s\n' 'ledger_coverage 0.5 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
   # a started row no active item names
   jq -c '.rows += [{project: "game", lane: "agent", state: "doing", id: "g-5", type: "fix", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
   check 'board_orphan_started 1 (max 0)'
