@@ -2304,7 +2304,7 @@ mod tests {
         run(&p, &log).unwrap();
         let out = std::fs::read_to_string(today_path(&p)).unwrap();
         assert!(
-            out.contains("## Focus\n\n### Urgent\n\n### High\n\n### Low\n\n---\n### Done\n"),
+            out.contains("## Focus\n### Urgent\n\n### High\n\n### Low\n\n---\n### Done\n"),
             "{out}"
         );
         let _ = std::fs::remove_dir_all(&dir);
