@@ -1541,6 +1541,9 @@ room_on_floor() {
     acct "alt:$r:/home/u/.claude-personal"
     run "$REPO_ROOT/.local/bin/fleet-dispatch" run
     assert_output --partial 'no account has room; alt is the closest'
+    # ar-1073: the hold says why the open floor could not lift it
+    other=${r//pace/}; other=${other#,}; other=${other%,}
+    assert_output --partial "the run floor lifts the weekly pace alone, and alt is also refused for $other,"
     assert_not_called 'wt new'
   done
   # Negative control: the same account refused for its pace alone starts on the floor.

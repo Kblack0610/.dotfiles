@@ -730,7 +730,8 @@ is_red() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" red "* ]]; }
 # start asks afresh, since a start moves the burn). Its pick, the best account with room; while a
 # floor is open and there is none, the best refused for its pace alone (room.reasons == ["pace"]):
 # the reserve, its 5h window and committed burn still refuse. Sets ACCT_DIR (empty for the main
-# account), ACCT_WHY (claude-acct's own refusal sentence) when none may, and ACCT_PAST_PACE=1 when
+# account), ACCT_WHY (claude-acct's own refusal sentence, plus what kept an open floor from lifting
+# the best account past its pace) when none may, and ACCT_PAST_PACE=1 when
 # the start goes past an account's pace. rc 1 when none may, 2 when none may and an account cannot
 # be read, or claude-acct gave no answer.
 acct_room() {
@@ -745,7 +746,12 @@ acct_room() {
       (select($lift) | .accounts | sort_by(.rank)[] | select(.room.reasons == ["pace"]) | "1 \(.dir)")]
     | first // empty' <<<"$ACCT_ROWS")
   if [ -n "$pick" ]; then ACCT_PAST_PACE=${pick%% *} ACCT_DIR=${pick#* }; return 0; fi
-  IFS=$'\x1f' read -r unread ACCT_WHY < <(jq -r '[any(.accounts[]; .state == "unread"), .why // "claude-acct gave no reason"]
+  # With a floor open, say why it could not lift: the best account past its pace has another refusal.
+  IFS=$'\x1f' read -r unread ACCT_WHY < <(jq -r --argjson lift "$lift" '
+    ([.accounts | sort_by(.rank)[] | select(any(.room.reasons[]?; . == "pace") and (.room.reasons | length) > 1)][0]) as $p
+    | [any(.accounts[]; .state == "unread"),
+       (.why // "claude-acct gave no reason")
+       + (if $lift and $p != null then "; the run floor lifts the weekly pace alone, and \($p.name) is also refused for \($p.room.reasons - ["pace"] | join(", "))" else "" end)]
     | map(tostring) | join("\u001f")' <<<"$ACCT_ROWS")
   [ "$unread" = true ] && return 2
   return 1
@@ -2756,7 +2762,7 @@ cmd_headroom() {
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
         "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
-        "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace and idle do not hold a start",
+        "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it idle does not hold a start, nor the weekly pace of an account refused for its pace alone (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(.red_floor) red sessions live; under it pace, idle, load and fleet-assess do not hold a red",
         "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle",
         (if (.focus | length) > 0 then "  focus:     only \(.focus | join(" ")); \(.focus_held) queued item(s) held off focus (reds, urgent and #requested still run)" else empty end)'
