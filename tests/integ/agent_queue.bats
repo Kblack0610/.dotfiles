@@ -815,6 +815,64 @@ notes --profile bnb ptask game --agent start gm-9"
   [ -z "$(field "$(item queued rq)" lane_run)" ]
 }
 
+@test "move --end records why a run ended; a run that ended outside the model files no outcome, on a close or a requeue; timeout and stopped still rate" {
+  printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
+  chmod +x "$SANDBOX/bin/model-lane"
+  for s in lim prov cut ref req tmo stp; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
+  "$AQ" move lim done --status failed --end limit >/dev/null
+  "$AQ" move prov done --status failed --end provider >/dev/null
+  "$AQ" move cut done --status failed --end cut >/dev/null
+  "$AQ" move ref done --status failed --end refused >/dev/null
+  "$AQ" move req queued --end limit >/dev/null
+  "$AQ" move tmo done --status failed --end timeout >/dev/null
+  "$AQ" move stp done --status failed --end stopped >/dev/null   # negative control: a stop is the model's own end
+  run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
+  assert_output $'model-lane outcome r-tmo failed\nmodel-lane outcome r-stp failed'
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-lim.md)" end_reason)" = limit ]
+  [ "$(field "$(item queued req)" end_reason)" = limit ]
+  # A new run has not ended: the reason goes when the item runs again.
+  "$AQ" move req running >/dev/null
+  [ -z "$(field "$(item running req)" end_reason)" ]
+}
+
+@test "an item that waited with an end reason and then landed, or was cancelled, keeps none" {
+  "$AQ" add --project game --running --slug w "w" >/dev/null
+  "$AQ" move w waiting --end cut >/dev/null
+  [ "$(field "$(item waiting w)" end_reason)" = cut ]
+  "$AQ" move w done --status ok >/dev/null
+  [ -z "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-w.md)" end_reason)" ]
+  "$AQ" add --project game --running --slug x "x" >/dev/null
+  "$AQ" move x waiting --end limit >/dev/null
+  "$AQ" cancel x >/dev/null
+  [ -z "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-x.md)" end_reason)" ]
+}
+
+@test "an end reason is one of the known ones, in move and in set" {
+  "$AQ" add --project game --running --slug e "e" >/dev/null
+  run "$AQ" move e done --status failed --end tired
+  assert_failure
+  assert_output --partial 'end_reason is one of'
+  run "$AQ" set e end_reason=tired
+  assert_failure
+  run "$AQ" set e end_reason=limit
+  assert_success
+  [ "$(field "$(item running e)" end_reason)" = limit ]
+}
+
+@test "stats counts finished items by end reason, and leaves out the ones that name none" {
+  "$AQ" add --project game --running --slug a "a" >/dev/null
+  "$AQ" add --project game --running --slug b "b" >/dev/null
+  "$AQ" add --project game --running --slug c "c" >/dev/null
+  "$AQ" move a done --status failed --end limit >/dev/null
+  "$AQ" move b done --status failed --end limit >/dev/null
+  "$AQ" move c done --status failed >/dev/null
+  run "$AQ" stats --json
+  assert_success
+  assert_equal "$(jq -c .by_end <<<"$output")" '{"limit":2}'
+  run "$AQ" stats
+  assert_output --partial 'ends:    limit 2'
+}
+
 @test "done ok refuses an item with pr: and no merged:, and its after: item stays queued" {
   "$AQ" add --project game --running --slug p "p" >/dev/null
   "$AQ" add --project game --slug next --after p "next" >/dev/null
