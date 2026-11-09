@@ -138,13 +138,14 @@ fn candidates_view(c: &Candidates) -> serde_json::Value {
         "total": c.total, "auto": c.auto, "rows": view(&c.rows),
         "blocked_rows": view(&c.blocked_rows), "reasons": reasons,
         "urgent_blocked": c.urgent_blocked, "uncovered": c.uncovered, "clear": c.clear,
+        "as_of": c.as_of,
     })
 }
 
-/// The ranked board rows `fleet-dispatch suggest` prints, read through hub-core. Slow (every
-/// board), so the page asks for it on showing the tab and after a promote, not on queue events.
+/// The ranked board rows of fleet-dispatch's snapshot (`suggest --write`, each real pass), read
+/// through hub-core; the page asks for it on showing the tab and after a promote.
 pub async fn candidates() -> ApiResult<Json<serde_json::Value>> {
-    tokio::task::spawn_blocking(|| hub_queue::candidates(&System))
+    tokio::task::spawn_blocking(|| hub_queue::candidates(&hub_core::boards::candidates_file()))
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(|c| Json(candidates_view(&c)))
@@ -348,8 +349,12 @@ mod tests {
             0,
             "a skip is not a gap in cover"
         );
-        let none = candidates_view(&Candidates::default());
+        let none = candidates_view(&Candidates {
+            as_of: "08:07".into(),
+            ..Candidates::default()
+        });
         assert_eq!(none["rows"].as_array().unwrap().len(), 0);
+        assert_eq!(none["as_of"], "08:07", "the page stamps the fold with it");
     }
 
     #[test]
