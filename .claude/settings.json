@@ -362,6 +362,7 @@
     "pipeline-eval": "name-only",
     "plugin-authoring": "name-only",
     "prod-smoke-suite": "name-only",
+    "reaper-ops": "name-only",
     "run": "name-only",
     "runn-log-time": "name-only",
     "schedule": "name-only",
