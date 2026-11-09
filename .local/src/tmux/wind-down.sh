@@ -6,7 +6,8 @@
 #   wind-down.sh arm [--session]
 #       Record a spin-down request for THIS tmux window. Captures the exact
 #       target now (arm time, while $TMUX_PANE is reliable) into a sentinel at
-#       ~/.agent/spin-down/<project>.request. The Stop hook (95-wind-down.sh)
+#       ~/.agent/spin-down/<session-id>.request (<project>.request with no session id).
+#       The Stop hook (95-wind-down.sh)
 #       reads it after the normal Stop pipeline runs and fires the teardown.
 #       --session widens the kill from the window to the whole tmux session, unless a world
 #       manifest declares it (tmux-close, close.sh): then only the window closes.
@@ -102,19 +103,20 @@ cmd_arm() {
     esac
   fi
 
-  local proj sentinel sid
-  proj=$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")
+  local sentinel sid
   sid="${CLAUDE_CODE_SESSION_ID:-}"
   mkdir -p "$SPIN_DIR"
-  # Key the sentinel by Claude session id. Multiple Claude windows can run in the
+  # Key the sentinel by Claude session id ALONE. Multiple Claude windows can run in the
   # SAME project's tmux session at once; a single shared "<proj>.request" let one
   # session's Stop hook consume another's sentinel and kill the wrong window. The
-  # session id (== the Stop hook's stdin .session_id) isolates them. Fall back to
+  # session id (== the Stop hook's stdin .session_id) isolates them, and it is unique
+  # on its own: a project part only made arm and the hook disagree when arm ran from a
+  # cwd outside the project (2026-11-08, "_unscoped__<sid>" never found). Fall back to
   # the project-only name for non-Claude callers.
   if [ -n "$sid" ]; then
-    sentinel="$SPIN_DIR/${proj}__${sid}.request"
+    sentinel="$SPIN_DIR/${sid}.request"
   else
-    sentinel="$SPIN_DIR/${proj}.request"
+    sentinel="$SPIN_DIR/$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}").request"
   fi
 
   {
@@ -276,8 +278,8 @@ is_session_id() {
 
 # UserPromptSubmit hook: a new prompt cancels this session's pending teardown. A teardown
 # deferred by failing Stop checks otherwise fires at the next clean Stop, even when the
-# human has since started new work. Matched on the session id alone so a sentinel armed
-# from another directory (another project name) is found too. Never blocks a prompt.
+# human has since started new work. Never blocks a prompt. Also clears a
+# "<project>__<sid>" file written before the key was the session id alone.
 cmd_disarm() {
   local sid='' payload f removed=0
   [ ! -t 0 ] && payload=$(cat 2>/dev/null)
@@ -286,8 +288,8 @@ cmd_disarm() {
   fi
   sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
   is_session_id "$sid" || return 0
-  rm -f -- "$SPIN_DIR"/*__"$sid".fired
-  for f in "$SPIN_DIR"/*__"$sid".request; do
+  rm -f -- "$SPIN_DIR/$sid.fired" "$SPIN_DIR"/*__"$sid".fired
+  for f in "$SPIN_DIR/$sid.request" "$SPIN_DIR"/*__"$sid".request; do
     [ -f "$f" ] && rm -f -- "$f" && removed=1
   done
   [ "$removed" = 1 ] && echo "wind-down disarmed: a new prompt arrived; run /wind-down again when this work is done."

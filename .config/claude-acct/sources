@@ -6,7 +6,7 @@
 # items on the source, parent names the pool a key spends inside: it has room only when the pool does.
 # The Claude accounts are in `accounts`; each source is in exactly one of the two. harnesses.json
 # ties a harness to its source with `source`. Edited by hand; claude-acct is the only reader.
-codex    codex         ~/.codex/sessions                      reserve=5
+codex    codex         ~/.codex/sessions                      reserve=5 max_live=6
 lazer    litellm-team  ~/.local/state/opencode/litellm-paid.key reserve=20
 reserve  litellm-key   ~/.local/state/claude-lazer/key        max_live=2 parent=lazer reserve=15
 glm      litellm-key   ~/.local/state/agentctl/glm.key        parent=lazer reserve=15
