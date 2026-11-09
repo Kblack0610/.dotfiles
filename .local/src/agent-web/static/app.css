@@ -6,7 +6,7 @@
   --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   /* type scale: everything is one of these */
-  --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 16px;
+  --head: 49px; --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 16px;
   --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #57564f; --line: #d4d1c8;
   --accent: #2f6fde; --wait: #d4483b; --busy: #c98a12; --idle: #3f9a5a;
   --user: #eaf0fb; --tool: #f1efe9;
@@ -52,7 +52,7 @@ header h1 { font-size: 16px; margin: 0; }
 .conn.live { background: var(--idle); }
 .conn.live.off { background: var(--wait); }
 .live-off { font-size: 12px; color: var(--wait); white-space: nowrap; }
-main { display: grid; grid-template-columns: 1fr; height: calc(100% - 49px - env(safe-area-inset-top, 0px)); }
+main { display: grid; grid-template-columns: 1fr; height: calc(100% - var(--head) - env(safe-area-inset-top, 0px)); }
 .dot { flex: none; width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; background: var(--idle); }
 .dot.waiting { background: var(--wait); box-shadow: 0 0 0 3px color-mix(in srgb, var(--wait) 25%, transparent); }
 .dot.busy, .dot.shell { background: var(--busy); }
@@ -376,7 +376,7 @@ span.warn { color: var(--b-stalled); }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
 /* Below the sidebar's width the same list is a dropdown the menu button opens (app.js menuOpen). */
 @media (max-width: 899px) {
-  header { position: relative; }
+  header { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
   .menu, .cur { display: inline-block; }
   .tabs { display: none; }
   header.open .tabs { display: flex; flex-direction: column; align-items: stretch; gap: 2px; position: absolute; z-index: 20; top: 100%; left: 0; right: 0; margin: 0; padding: 8px 12px 12px; background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: 0 8px 20px rgba(0, 0, 0, .18); }
@@ -387,16 +387,16 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 }
 /* The sidebar (docs/dashboards.md, Sidebar): the tab list as a column under the header. */
 @media (min-width: 900px) {
-  .tabs { position: fixed; z-index: 10; top: calc(49px + env(safe-area-inset-top, 0px)); bottom: 0; left: 0; width: 184px; padding: 4px 8px 10px; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); }
+  .tabs { position: fixed; z-index: 10; top: calc(var(--head) + env(safe-area-inset-top, 0px)); bottom: 0; left: 0; width: 184px; padding: 4px 8px 10px; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); }
   .tabs button { text-align: left; border-color: transparent; }
   .tabs form { margin-top: auto; padding-top: 10px; }
   main { margin-left: 184px; }
+  header { box-sizing: border-box; min-height: calc(var(--head) + env(safe-area-inset-top, 0px)); }
 }
 @media (max-width: 760px) {
   /* The Queue table keeps state, in, project and title; the detail has the rest. */
   .tbl th.qx, .tbl td.qx { display: none; }
   .board { padding: 12px; }
-  header { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }
   .thsort { display: inline-block; padding: 10px 2px; }

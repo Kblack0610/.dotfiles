@@ -11,7 +11,7 @@ const el = () => new Proxy({}, {
   get: (t, k) => (k in t ? t[k] : k === "classList" ? { add() {}, remove() {}, toggle() {} } : k === "dataset" ? {} : () => el()),
   set: (t, k, v) => { t[k] = v; return true; },
 });
-const anchor = (id, title, tagName = "H2") => ({ id, tagName, open: false, scrolled: 0, matches: () => tagName === "H2", querySelector: (q) => (tagName === "H2" ? null : q === "h2" ? { firstChild: { textContent: title + " " } } : { firstChild: { textContent: title + " (3)" } }), firstChild: { textContent: title + " " }, scrollIntoView() { this.scrolled++; } });
+const anchor = (id, title, tagName = "H2") => ({ id, tagName, open: false, scrolled: 0, matches: (q) => q === tagName.toLowerCase(), querySelector: (q) => (tagName === "H2" ? null : q === "h2" ? { firstChild: { textContent: title + " " } } : { firstChild: { textContent: title + " (3)" } }), firstChild: { textContent: title + " " }, scrollIntoView() { this.scrolled++; } });
 const boards = {};
 const buttons = {};
 const made = [];
@@ -49,6 +49,19 @@ test("the open tab's anchors are listed under its button, by their own headings"
 test("a fold is listed by its heading's title, without the count beside it", () => {
   show("queue", [anchor("sec-flow", "Flow"), anchor("sec-candidates", "Candidates", "DETAILS")]);
   assert.match(outline.innerHTML, /data-sec="candidates">Candidates</);
+});
+
+test("a wrapper div is not listed, even with a heading inside it", () => {
+  const wrap = Object.assign(anchor("sec-history", "Merges by hour", "DIV"), { querySelector: () => ({ firstChild: { textContent: "Merges by hour" } }) });
+  show("log", [anchor("sec-actions", "Actions", "DETAILS"), anchor("sec-changes", "Changes", "DETAILS"), wrap]);
+  assert.doesNotMatch(outline.innerHTML, /Merges/);
+});
+
+test("a section repainted away before the click leaves nothing pending", () => {
+  show("infra", [anchor("sec-red", "Red now"), anchor("sec-ci", "CI")]);
+  boards.infra = { querySelectorAll: () => [] };
+  outline.onclick({ target: { closest: () => ({ dataset: { sec: "ci" } }) } });
+  assert.equal(vm.runInContext("st.section", ctx), null);
 });
 
 test("one anchor is no outline", () => {

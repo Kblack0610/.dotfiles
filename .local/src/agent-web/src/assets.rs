@@ -120,17 +120,13 @@ fn nav_html() -> String {
             group = t.group;
             html += &format!("<div class=\"navg\">{group}</div>\n");
         }
-        let on = if t.id == "home" { " class=\"on\"" } else { "" };
         let badge = match t.id {
             "home" => "<span id=\"ask-badge\"></span>",
             "queue" => "<span id=\"queue-badge\"></span>",
             "sessions" => "<span id=\"wait-badge\"></span>",
             _ => "",
         };
-        html += &format!(
-            "<button id=\"tab-{}\"{on}>{}{badge}</button>\n",
-            t.id, t.title
-        );
+        html += &format!("<button id=\"tab-{}\">{}{badge}</button>\n", t.id, t.title);
     }
     html
 }

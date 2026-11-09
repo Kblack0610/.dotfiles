@@ -6,8 +6,9 @@ outline.className = "outl";
 let outlineKey = null;
 
 function headingOf(e) {
-  // A heading's first text is its title; a count or note after it sits in its own span.
-  const h = e.matches("h2") ? e : e.querySelector("h2") || e.querySelector("summary");
+  // A heading's first text is its title; a count or note after it sits in its own span. A
+  // wrapper div has no title of its own, and an h2 inside it belongs to something else.
+  const h = e.matches("h2") ? e : e.matches("details") ? e.querySelector("h2") || e.querySelector("summary") : null;
   return h && h.firstChild ? h.firstChild.textContent.trim() : "";
 }
 
@@ -26,6 +27,7 @@ outline.onclick = (e) => {
   if (!b) return;
   st.section = b.dataset.sec;
   seekSection();
+  st.section = null; // a repaint can have taken the anchor; the next paint must not jump there
   menuOpen(false);
 };
 
