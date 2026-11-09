@@ -180,8 +180,6 @@ The quick way in is the tmux popup: `Prefix+p`, or `<leader>np` from nvim. It li
 
 The human sheet (`README.md`) is the queue: what you asked for and what only you can do. Agents keep their own work on `--agent`. The full rules are in the `notes-system` skill, "Project board".
 
-### The task row
-
 ### Sheet layout
 
 The sweep lays out `## Tasks` in sections, top to bottom. A section heading shows only when it has rows, and no row is placed by hand: the section is a function of the row and the day, so a hand-moved row goes back to its place on the next write.
@@ -197,6 +195,8 @@ The sweep lays out `## Tasks` in sections, top to bottom. A section heading show
 An older, undated or dropped closed row rolls into `agent/versions/<open version>.md` (`## Done rows` from the agent board, `## Sheet done rows` from the human sheet), and `projects --release` freezes both with the version. A row aimed at a later release stays on the sheet. The sizes are `[sheet]` in `~/.config/notes/config.toml` (`next_up = 10`, `done_days = 7`, `done_max = 30`).
 
 The sweep at the end of a `ptask` write only moves rows and never changes a row's bytes, so a UI holding a row's `raw` for `--exact` still finds it. Tag rewrites happen only in the explicit sweeps listed above. A save in nvim also dates a box ticked by hand with `done:<today>`.
+
+### The task row
 
 Every project sheet, in every project and both lanes, uses one row format. Projects differ only by data in the registry, never by row format.
 

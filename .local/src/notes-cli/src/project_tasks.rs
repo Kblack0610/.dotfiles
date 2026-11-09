@@ -1811,7 +1811,8 @@ pub fn sweep(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -
 /// when there is nothing to do, and the file itself is left to the editor's save. That is
 /// editor mode: a row ticked by hand without a `done:` date gets today's. Without `--stdin`
 /// the file is swept in place. `--layout-only` (with `--stdin`) only re-sorts the sections,
-/// stamping and rolling off nothing: the editor's live re-sort, which runs before any save.
+/// stamping, retagging and rolling off nothing: the editor's live re-sort, which runs before
+/// any save. A path that is no project sheet ([`is_sheet_path`]) is left as it is.
 pub fn sheet_sweep(path: &Path, stdin: bool, layout_only: bool, dry_run: bool) -> Result<i32> {
     use std::io::Read;
     let content = if stdin {
@@ -1821,9 +1822,16 @@ pub fn sheet_sweep(path: &Path, stdin: bool, layout_only: bool, dry_run: bool) -
     } else {
         fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?
     };
+    if !is_sheet_path(path) {
+        if stdin {
+            print!("{content}");
+        }
+        return Ok(0);
+    }
     if layout_only {
         let (_, dir) = sheet_home(path);
-        let swept = project_sweep::sweep_sheet(&content, &sweep_ctx(&dir, true)).map(|(c, _)| c);
+        let ctx = sweep_ctx(&dir, &content, false);
+        let swept = project_sweep::sweep_sheet(&content, &ctx).map(|(c, _)| c);
         print!("{}", swept.as_deref().unwrap_or(&content));
         return Ok(0);
     }
@@ -1851,7 +1859,7 @@ pub fn sheet_sweep(path: &Path, stdin: bool, layout_only: bool, dry_run: bool) -
 /// `notes projects --sweep` - sweep every project sheet and agent board in every profile:
 /// what ages the Done window and the due buckets on a night nothing else wrote a sheet.
 pub fn sweep_all(log: &Logger, dry_run: bool) -> Result<i32> {
-    let (mut changed, mut archived) = (0, 0);
+    let (mut changed, mut archived, mut failed) = (0, 0, 0);
     for profile in crate::config::all_profile_names()? {
         let Ok(p) = crate::config::resolve(Some(&profile)) else {
             continue;
@@ -1862,19 +1870,22 @@ pub fn sweep_all(log: &Logger, dry_run: bool) -> Result<i32> {
             };
             let sheets = [task_sheet(dir), task_sheet(&dir.join("agent"))];
             for sheet in sheets.into_iter().flatten() {
-                let content = fs::read_to_string(&sheet)?;
-                let Some(t) = sweep_file(&sheet, &content, Pass::Sweep, dry_run)? else {
-                    continue;
-                };
-                println!("{}", sheet.display());
-                for r in &t.report {
-                    println!("  {r}");
+                match sweep_one(&sheet, dry_run) {
+                    Ok(None) => {}
+                    Ok(Some(t)) => {
+                        println!("{}", sheet.display());
+                        for r in &t.report {
+                            println!("  {r}");
+                        }
+                        changed += 1;
+                        archived += t.archived;
+                    }
+                    // One bad sheet is that project's to fix; every other sheet still sweeps.
+                    Err(e) => {
+                        eprintln!("{}: {e:#}", sheet.display());
+                        failed += 1;
+                    }
                 }
-                if !dry_run {
-                    md::write_atomic(&sheet, &t.content)?;
-                }
-                changed += 1;
-                archived += t.archived;
             }
         }
     }
@@ -1886,7 +1897,36 @@ pub fn sweep_all(log: &Logger, dry_run: bool) -> Result<i32> {
             &format!("swept {changed} sheet(s), archived {archived}"),
         );
     }
+    if failed > 0 {
+        eprintln!("{failed} sheet(s) failed");
+        return Ok(1);
+    }
     Ok(0)
+}
+
+/// Sweep the sheet at `sheet` in place (unless `dry_run`): what it did, `None` for nothing.
+fn sweep_one(sheet: &Path, dry_run: bool) -> Result<Option<Tidied>> {
+    let content = fs::read_to_string(sheet).with_context(|| format!("read {}", sheet.display()))?;
+    let t = sweep_file(sheet, &content, Pass::Sweep, dry_run)?;
+    if let Some(t) = t.as_ref().filter(|_| !dry_run) {
+        md::write_atomic(sheet, &t.content)?;
+    }
+    Ok(t)
+}
+
+/// A path a project sheet or agent board lives at: `README.md` or `tasks.md`, never inside a
+/// `versions/` or `docs/` folder. A frozen version or a docs page can carry `## Tasks` too,
+/// and sweeping one would strip a record that is meant to stay as written.
+fn is_sheet_path(path: &Path) -> bool {
+    let named = path
+        .file_name()
+        .is_some_and(|n| n == "README.md" || n == "tasks.md");
+    named
+        && !path
+            .parent()
+            .into_iter()
+            .flat_map(Path::components)
+            .any(|c| c.as_os_str() == "versions" || c.as_os_str() == "docs")
 }
 
 /// What one [`tidy`] did to a sheet.
@@ -1934,26 +1974,22 @@ pub(crate) fn sweep_file(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let ctx = sweep_ctx(&dir, pass != Pass::Write);
-    let t = tidy(
-        &dir,
-        &name,
-        lane,
-        content,
-        &ctx,
-        pass == Pass::Editor,
-        dry_run,
-    )?;
+    let ctx = sweep_ctx(&dir, content, pass != Pass::Write);
+    // The editor dates a box ticked in this edit, so a row already closed and undated in the
+    // saved file (an old close from before `done:`) is no new tick.
+    let saved = (pass == Pass::Editor).then(|| fs::read_to_string(sheet).unwrap_or_default());
+    let t = tidy(&dir, &name, lane, content, &ctx, saved.as_deref(), dry_run)?;
     Ok((t.content != content).then_some(t))
 }
 
-/// What a sweep of a sheet under `dir` is measured against: today, the `[sheet]` shape and
-/// the project's open version.
-fn sweep_ctx(dir: &Path, rewrite: bool) -> project_sweep::Ctx {
+/// What a sweep of `content`, a sheet under `dir`, is measured against: today, the `[sheet]`
+/// shape and the open version, read from `content` itself so an editor buffer's unsaved
+/// `Version:` bump counts (an agent board's comes from the human sheet).
+fn sweep_ctx(dir: &Path, content: &str, rewrite: bool) -> project_sweep::Ctx {
     project_sweep::Ctx {
         today: chrono::Local::now().date_naive(),
         shape: crate::config::sheet_shape(),
-        open: open_version_for(dir),
+        open: version_in(dir, content),
         rewrite,
     }
 }
@@ -1975,13 +2011,12 @@ pub(crate) fn tidy(
     lane: Lane,
     content: &str,
     ctx: &project_sweep::Ctx,
-    editor: bool,
+    saved: Option<&str>,
     dry_run: bool,
 ) -> Result<Tidied> {
-    let stamped = if editor {
-        project_sweep::stamp_undated(content, ctx.today)
-    } else {
-        content.to_string()
+    let stamped = match saved {
+        Some(saved) => project_sweep::stamp_undated(content, saved, ctx.today),
+        None => content.to_string(),
     };
     let old = project_sweep::old_done(&stamped, ctx);
     let mut report = Vec::new();
@@ -2173,14 +2208,20 @@ fn archive_rows(
     let note = projects::ensure_agent_note(dir, name, &ver)?;
     let prior = fs::read_to_string(&note)?;
     // A row already in the note is not written twice: an editor buffer undone past its save,
-    // or a sheet written back from a stale copy, offers the same row again.
+    // or a sheet written back from a stale copy, offers the same row again. Known by its id
+    // only: two id-less rows can share every byte and still be two closes, and both are cut.
     let prior_lines: Vec<&str> = prior.lines().collect();
-    let have: std::collections::HashSet<&str> = md::section_span(&prior_lines, section)
-        .map(|span| prior_lines[span].iter().map(|l| l.trim_end()).collect())
+    let have: std::collections::HashSet<String> = md::section_span(&prior_lines, section)
+        .map(|span| {
+            prior_lines[span]
+                .iter()
+                .filter_map(|l| md::row_id(l))
+                .collect()
+        })
         .unwrap_or_default();
     let rows: Vec<String> = ranges
         .iter()
-        .filter(|r| !have.contains(lines[r.start].trim_end()))
+        .filter(|r| md::row_id(lines[r.start]).is_none_or(|id| !have.contains(&id)))
         .flat_map(|r| lines[r.clone()].iter().map(|l| (*l).to_string()))
         .collect();
     if !rows.is_empty() {
@@ -3275,6 +3316,44 @@ mod inbox_tests {
 
     // A human-sheet row that rolled off its Done window reopens from the agent note's
     // `## Sheet done rows`, back onto the human sheet, and leaves the note.
+    #[test]
+    fn two_closes_with_the_same_bytes_both_reach_the_note() {
+        let v = vault(
+            "roll-twins",
+            "",
+            "- [ ] feat(ui): one #high <!-- id:sc-1 -->\n",
+        );
+        let sheet = v.root.join("projects/scratch/README.md");
+        let note = v.root.join("projects/scratch/agent/versions/v0.1.0.md");
+        let twin = "- [x] bump deps <!-- done:2026-10-01 -->";
+        let content = fs::read_to_string(&sheet).unwrap() + &format!("{twin}\n{twin}\n");
+        write_sheet(&sheet, &content).unwrap();
+        let n = fs::read_to_string(&note).unwrap();
+        assert_eq!(n.matches(twin).count(), 2, "{n}");
+        assert!(!fs::read_to_string(&sheet).unwrap().contains("bump deps"));
+        // the same row with an id, offered again, is written once
+        let row = "- [x] fix(a): known <!-- id:sc-9 done:2026-10-01 -->";
+        let content = fs::read_to_string(&sheet).unwrap() + row + "\n";
+        write_sheet(&sheet, &content).unwrap();
+        write_sheet(&sheet, &(fs::read_to_string(&sheet).unwrap() + row + "\n")).unwrap();
+        assert_eq!(fs::read_to_string(&note).unwrap().matches(row).count(), 1);
+    }
+
+    #[test]
+    fn only_a_sheet_or_board_path_is_swept() {
+        for (path, sheet) in [
+            ("lab/projects/current/demo/README.md", true),
+            ("lab/projects/current/demo/agent/README.md", true),
+            ("lab/projects/current/demo/tasks.md", true),
+            ("lab/projects/current/demo/versions/v1.0.0.md", false),
+            ("lab/projects/current/demo/versions/README.md", false),
+            ("lab/projects/current/demo/docs/README.md", false),
+            ("lab/projects/current/demo/ideas.md", false),
+        ] {
+            assert_eq!(is_sheet_path(Path::new(path)), sheet, "{path}");
+        }
+    }
+
     #[test]
     fn a_rolled_off_sheet_row_reopens_from_the_agent_note() {
         let v = vault(

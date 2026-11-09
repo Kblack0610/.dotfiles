@@ -263,8 +263,11 @@ pub(crate) fn old_done(content: &str, ctx: &Ctx) -> Vec<std::ops::Range<usize>> 
 }
 
 /// `content` with `done:<today>` on each top-level closed row of `## Tasks` that has no
-/// `done:` and was not dropped: a box ticked by hand in the editor, which no CLI verb dated.
-pub(crate) fn stamp_undated(content: &str, today: NaiveDate) -> String {
+/// `done:`, was not dropped, and is not in `saved` as it stands: a box ticked by hand in the
+/// editor, which no CLI verb dated. A close already undated in the saved file is an old one,
+/// not this edit's, and keeps its bytes (the sweep rolls it off as undated).
+pub(crate) fn stamp_undated(content: &str, saved: &str, today: NaiveDate) -> String {
+    let before: std::collections::HashSet<&str> = saved.lines().map(str::trim_end).collect();
     let lines: Vec<&str> = content.lines().collect();
     let Some(span) = md::section_span(&lines, sheet::TASKS) else {
         return content.to_string();
@@ -276,6 +279,7 @@ pub(crate) fn stamp_undated(content: &str, today: NaiveDate) -> String {
         if span.contains(&r.start)
             && crate::project_tasks::done_on(l).is_none()
             && !md::is_dropped(l)
+            && !before.contains(l.trim_end())
         {
             out[r.start] = md::add_marker(l, &token);
         }
@@ -607,12 +611,15 @@ Version: v0.12.1
         assert!(!capped.iter().any(|t| t.starts_with("today")), "{capped:?}");
     }
 
-    // A box ticked by hand gets today's date; a dated or dropped close is left alone.
+    // A box ticked by hand gets today's date; a dated or dropped close, or one already closed
+    // and undated in the saved file, is left alone.
     #[test]
     fn stamp_undated_dates_only_hand_ticked_rows() {
         let s = "# d\n\n## Tasks\n- [x] by hand\n- [x] dated <!-- done:2026-11-01 -->\n\
-- [ ] open\n\n## Notes\n- [x] not a sheet row\n";
-        let out = stamp_undated(s, ctx().today);
+- [x] an old close\n- [ ] open\n\n## Notes\n- [x] not a sheet row\n";
+        let saved = s.replace("- [x] by hand", "- [ ] by hand");
+        let out = stamp_undated(s, &saved, ctx().today);
+        assert!(out.contains("- [x] an old close\n"), "{out}");
         assert!(
             out.contains("- [x] by hand <!-- done:2026-11-09 -->\n"),
             "{out}"
@@ -622,6 +629,6 @@ Version: v0.12.1
             "{out}"
         );
         assert!(out.contains("- [x] not a sheet row\n"), "{out}");
-        assert_eq!(stamp_undated(&out, ctx().today), out, "idempotent");
+        assert_eq!(stamp_undated(&out, &saved, ctx().today), out, "idempotent");
     }
 }

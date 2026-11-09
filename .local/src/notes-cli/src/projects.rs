@@ -2134,6 +2134,7 @@ pub fn release(
     let agent_note = agent_note_path(&dir, &fmt_version(cur));
     let note = fs::read_to_string(&agent_note).unwrap_or_default();
     let (rolled, note_rest) = take_section(&note, project_tasks::SHEET_DONE_ROWS);
+    // The frozen body is only `## Tasks` (`rebuild_sheet`), so the end of it is under Tasks.
     let frozen_body = if rolled.is_empty() {
         frozen_body
     } else {
