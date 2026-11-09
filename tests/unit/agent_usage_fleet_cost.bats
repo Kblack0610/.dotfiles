@@ -111,6 +111,14 @@ cost() { "$AU" fleet-cost --json | jq -c "$1 | walk(if type == \"number\" then .
   assert_output '[1,[0,1],5]'
 }
 
+@test "billed sessions costing less than their transcripts leave no helper line and no negative range" {
+  turn billed claude-opus-5-5 3000000 0 0 0   # priced $12, billed $10
+  turn unbilled claude-opus-5-5 1000000 0 0 0
+  run cost '[.total.helper_usd, .total.helper_range, .total.estimated]'
+  assert_success
+  assert_output '[0,[0,0],4]'
+}
+
 @test "a session on the gateway is its metered line only, and a later row for a session replaces an earlier one" {
   { printf '{"session_id":"g","harness":"opencode","provider":"litellm","updated_epoch":%s,"cost_usd":40}\n' "$NOW"
     printf '{"session_id":"l","harness":"claude-lazer","updated_epoch":%s,"cost_usd":40}\n' "$NOW"
