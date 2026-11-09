@@ -97,9 +97,11 @@ queue item: the first with `--partial`, the last without, which closes the item 
 `Item:` line, and fast-forwards the stowed checkout once merged (its `live:` line).
 
 ```bash
-( cd "$WT" && agent-land <private#> --partial )
-agent-land <public#>                           # from the public worktree; add --plan/--phase when a plan has one
+( cd "$WT" && agent-land <private#> --item <slug> --partial )   # --item: the PR is outside the item's repo
+agent-land <public#> --item <slug>              # from the public worktree; add --plan/--phase when a plan has one
 ```
+
+Each run prints `live:` once it fast-forwards that stowed checkout. When a run has no `live:` line (the checkout was dirty or off main), run `git fetch` THEN `git merge --ff-only origin/main` there on main (fetch first: the merge is server-side, so the local ref is stale).
 
 Cleanup: `wt reap "$WT"`, which refuses a live session (a refusal is the answer, leave the tree); delete the local feature branches it keeps, since `-d` keeps a squash-merged one. Leave the
 private repo's unrelated dirty branch exactly as you found it (a worktree never disturbs it).

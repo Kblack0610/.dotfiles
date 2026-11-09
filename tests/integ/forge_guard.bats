@@ -148,7 +148,14 @@ git log -1'
   assert_output --partial 'agent-land 7 --repo Kblack0610/personal-sites'
   run at "$T/ps" "bash -lc 'gh pr merge --auto'"
   denied
+  assert_output --partial 'agent-land <N> --item <slug>'
+  # A flag's value is not the PR number.
+  run at "$T/ps" 'gh pr merge --match-head-commit 1234567 --squash'
+  denied
   assert_output --partial 'agent-land <N>'
+  run at "$T/ps" 'gh pr merge --subject 5 12 --squash'
+  denied
+  assert_output --partial 'agent-land 12 --item'
   # A Forgejo checkout keeps its own message: agent-land cannot run there.
   run at "$T/hc" 'gh pr merge 62'
   denied
