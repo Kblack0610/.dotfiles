@@ -107,7 +107,7 @@ Show the table plus a grouped plan (LAND these N, FIX-THEN-LAND these N, DRAFT t
 
 ```bash
 # land (match the repo's convention: check git log for "Merge pull request" vs a flat squashed history)
-gh pr merge <n> --squash --delete-branch     # --delete-branch is safe ONLY because it merged
+agent-land <n> --partial                     # from a worktree of its head branch; the last one drops --partial
 
 # hold work that is not ready, without losing it
 gh pr ready <n> --undo
