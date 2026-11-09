@@ -120,7 +120,7 @@
 #                                `paths:` or disable-model-invocation skill is never toggled,
 #                                nor is an override value other than "name-only".
 #                                Prints the hide and restore lists; --json adds the object. The
-#                                nightly skill-toggle runner lands it (agentctl-skill-toggle).
+#                                nightly skill-toggle runner opens the PR (agentctl-skill-toggle).
 #                                Exit 2 when no use is counted at all: no transcripts is not
 #                                "nothing used".
 #   skill-drift --docs [--json]  DEADPATH and NOCMD over the GLOBAL docs instead of

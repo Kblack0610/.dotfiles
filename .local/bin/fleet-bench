@@ -3351,12 +3351,24 @@ triage_coverage() {
 # when it breaks something: these are its post-merge guard. Each red reads as one record naming
 # every merge it could be, because one red that queued a fix per merge would be a stampede.
 
+# hold_ledger <owner/repo> -> "<ledger name> <base branch>" from day-log-ci, the one list of watched
+# repos: a GitHub line as written, else a Forgejo line as forgejo:owner/repo (the name pr_ci uses),
+# else the repo and main, which the ledger then answers for.
+hold_ledger() {
+  cat "${SCHEDULES_REPOS:-$HOME/.config/agentctl/day-log-ci}" 2>/dev/null | awk -v want="$(tr '[:upper:]' '[:lower:]' <<<"$1")" -v fallback="$1 main" '
+    /^#/ || NF < 2 { next }
+    tolower($1) == want { print $1, $2; found = 1; exit }
+    tolower($1) ~ /^forgejo:/ { n = tolower($1); sub(/^forgejo:[^\/]+\//, "", n); if (n == want) forge = "forgejo:" n " " $2 }
+    END { if (!found) print (forge != "" ? forge : fallback) }'
+}
+
 # hold_runs <owner/repo> -> the runs main's pushes started, from main_runs (exit 3: the run ledger
 # does not sync the repo). A scheduled run is left out: it fails on the environment moving, not on
 # a merge.
 hold_runs() {
-  local runs
-  runs=$(main_runs "$1" main) || return
+  local runs name base
+  read -r name base < <(hold_ledger "$1")
+  runs=$(main_runs "$name" "$base") || return
   jq -c 'map(select(.event == "push"))' <<<"$runs"
 }
 
@@ -3375,9 +3387,11 @@ hold_memo() {
 }
 
 # hold_failed <owner/repo> <run id> -> the bats files that failed in that run, repo-relative; rc 1
-# when its log cannot be read, or is not there yet.
+# when its log cannot be read, or is not there yet. gh cannot read a Forgejo run's log, so one names
+# no file and counts against the merges since the last green, like any red that names none.
 hold_failed() {
   local log
+  [[ $(hold_ledger "$1") != forgejo:* ]] || return 0
   log=$(gh run view "$2" -R "$1" --log-failed 2>/dev/null) && [ -n "$log" ] || return 1
   { grep -oE 'in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
 }
