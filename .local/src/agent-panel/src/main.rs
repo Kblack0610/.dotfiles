@@ -108,6 +108,17 @@ enum Cmd {
         /// Move the saved sort first: `next` key (C-o) or `reverse` direction (A-o).
         #[arg(long, value_enum)]
         sort: Option<agent_panel::sort::Step>,
+        /// The search box text; only the matching rows print.
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
+        query: String,
+    },
+    /// Internal fzf change callback: the saved rows matching the search box (not meant to be run by hand).
+    #[command(hide = true)]
+    Match {
+        #[arg(long)]
+        map_file: PathBuf,
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
+        query: String,
     },
     /// Internal ctrl-n callback: a new Claude in a fresh worktree of the repo the agent at
     /// `target` works in (not meant to be run by hand).
@@ -158,7 +169,8 @@ fn main() -> anyhow::Result<()> {
             println!("{}", agent_panel::md::plain(&text, width.unwrap_or_else(agent_panel::md::width)));
             Ok(())
         }
-        Some(Cmd::Rows { map_file, asking, sort }) => chooser::run_rows(&map_file, asking, sort),
+        Some(Cmd::Rows { map_file, asking, sort, query }) => chooser::run_rows(&map_file, asking, sort, &query),
+        Some(Cmd::Match { map_file, query }) => chooser::run_match(&map_file, &query),
         Some(Cmd::NewAgent { target }) => chooser::run_new_agent(&target),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }
