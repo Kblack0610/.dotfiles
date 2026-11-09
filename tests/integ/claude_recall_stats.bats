@@ -125,9 +125,17 @@ row() { jq -c --arg k "$1" --arg key "$2" '.rows[] | select(.kind==$k and .key==
   # s7 typed it and a PreToolUse hook denied it, so it never ran: not a bypass.
   echo "{\"type\":\"assistant\",$cli,$c,$ts,\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t7\",\"name\":\"Bash\",\"input\":{\"command\":\"gh run watch 7\"}}]}}" > "$P/s7.jsonl"
   echo "{\"type\":\"user\",$cli,$c,$ts,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t7\",\"is_error\":true,\"content\":\"PreToolUse:Bash hook error: hand-methods: use gh-run-wait\"}]}}" >> "$P/s7.jsonl"
-  out="$(stats --kind skill,bypass)"
+  # s8: denied too, its result stored as a list of text blocks.
+  echo "{\"type\":\"assistant\",$cli,$c,$ts,\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"t8\",\"name\":\"Bash\",\"input\":{\"command\":\"gh run watch 8\"}}]}}" > "$P/s8.jsonl"
+  echo "{\"type\":\"user\",$cli,$c,$ts,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t8\",\"is_error\":true,\"content\":[{\"type\":\"text\",\"text\":\"PreToolUse:Bash hook error: hand-methods: no\"}]}]}}" >> "$P/s8.jsonl"
+  out="$(stats --kind skill,bypass,denied)"
   run row bypass one-shot <<<"$out"
   assert_output --partial '"calls":2,"sessions":2'
+  assert_output --partial '"covered_sessions":1'
+  run row denied one-shot <<<"$out"
+  assert_output --partial '"calls":2,"sessions":2'
+  # bypass alone still sees a Skill call, so coverage holds without asking for skill rows
+  run row bypass one-shot <<<"$(stats --kind bypass)"
   assert_output --partial '"covered_sessions":1'
   run row bypass other <<<"$out"
   assert_output ""

@@ -66,6 +66,39 @@ allowed() { assert_success; assert_output ""; }
   allowed
 }
 
+@test "a substitution inside single quotes is literal; one inside double quotes runs" {
+  run run_guard "git commit -m 'drop \`gh run watch\` and \$(gh run watch)'"
+  allowed
+  run run_guard 'echo "$(gh run watch 1)"'
+  denied
+  run run_guard 'echo `gh run watch 1`'
+  denied
+}
+
+@test "frontmatter ends only at a line that is exactly ---, CRLF too" {
+  printf -- '---\r\nname: crlf\r\ndescription: x\r\nmetadata:\r\n  replaces:\r\n    - match: zzcrlf\r\n      use: y\r\n---\r\nbody\r\n' > "$CLAUDE_SKILLS/fixture/SKILL.md"
+  run python3 "$GUARD" --list
+  assert_output --partial 'fixture#1'
+  printf -- '---\nname: f\ndescription: x\nmetadata:\n  replaces:\n    - match: zzdash\n      use: y\n      why: "----"\n---\n' > "$CLAUDE_SKILLS/fixture/SKILL.md"
+  run python3 "$GUARD" --check "$CLAUDE_SKILLS/fixture/SKILL.md"
+  assert_output ""
+  run python3 "$GUARD" --list
+  assert_output --partial 'zzdash'
+}
+
+@test "a rebuild that could not read a skill is not cached, so the next call retries" {
+  chmod 000 "$CLAUDE_SKILLS/fixture/SKILL.md"
+  run run_guard 'gh run watch 1'
+  denied
+  run bash -c 'ls "$XDG_CACHE_HOME"/claude-hooks/replaces-*.json'
+  assert_failure
+  chmod 644 "$CLAUDE_SKILLS/fixture/SKILL.md"
+  run run_guard 'U -batchmode -executeMethod A.B.C' /x/unity-core-playground
+  denied
+  run bash -c 'ls "$XDG_CACHE_HOME"/claude-hooks/replaces-*.json'
+  assert_success
+}
+
 @test "where scopes a row to a working directory" {
   run run_guard 'U -batchmode -executeMethod A.B.C -quit' /home/u/.worktrees/unity-core-playground-x
   denied

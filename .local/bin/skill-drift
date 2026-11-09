@@ -578,14 +578,14 @@ check_stale() {
 # A SIGNAL, not a verdict. A release runbook is supposed to look idle between
 # releases; what this is for is finding the ones that are idle because the router
 # never picks them, which is the overlap problem skill-refine has had no data for.
-declare -A USED=() BYPASS=() BYPASS_COVERED=() REPLACES=()
+declare -A USED=() BYPASS=() BYPASS_COVERED=() DENIED=() REPLACES=()
 # load_usage [days] [bypass]: every skill with a use in the window (default USAGE_DAYS) into USED,
 # as the number of sessions that used it by any of USE_KINDS. With "bypass" the same scan fills
 # BYPASS (sessions with a call matching the skill's metadata.replaces) and BYPASS_COVERED (those
-# of them that used the skill too).
+# of them that used the skill too), and DENIED (sessions a hook refused such a call in).
 load_usage() {
   local s n c kinds="$USE_KINDS" json
-  [ "${2:-}" = bypass ] && kinds="$kinds,bypass"
+  [ "${2:-}" = bypass ] && kinds="$kinds,bypass,denied"
   json="$("$RECALL" stats --days "${1:-$USAGE_DAYS}" --kind "$kinds" --top 0 --json 2>/dev/null)"
   while IFS=$'\t' read -r s n; do
     [ -n "$s" ] && USED[$s]=$n
@@ -593,6 +593,9 @@ load_usage() {
   while IFS=$'\t' read -r s n c; do
     [ -n "$s" ] && BYPASS[$s]=$n BYPASS_COVERED[$s]=$c
   done < <(jq -r '.rows[]? | select(.kind == "bypass") | "\(.key)\t\(.sessions)\t\(.covered_sessions // 0)"' <<<"$json" 2>/dev/null)
+  while IFS=$'\t' read -r s n; do
+    [ -n "$s" ] && DENIED[$s]=$n
+  done < <(jq -r '.rows[]? | select(.kind == "denied") | "\(.key)\t\(.sessions)"' <<<"$json" 2>/dev/null)
   return 0
 }
 
@@ -607,13 +610,14 @@ load_replaces() {
 }
 
 # A skill that declares the hand forms it replaces, with no use and no hand-typed form in the
-# window, is RETIRE: nobody does that work at all. That says more than UNUSED, so it replaces it.
+# window, ran or denied, is RETIRE: nobody does that work at all. That says more than UNUSED, so
+# it replaces it. A denied form is demand the guard redirected, never a reason to retire.
 check_unused() {
   local skill="$1"
   # No transcripts at all means we cannot tell, which is not the same as unused.
   [ ${#USED[@]} -gt 0 ] || return 0
   [ "${USED[$skill]:-0}" -gt 0 ] && return 0
-  if [ -n "${REPLACES[$skill]:-}" ] && [ "${BYPASS[$skill]:-0}" -eq 0 ]; then
+  if [ -n "${REPLACES[$skill]:-}" ] && [ "${BYPASS[$skill]:-0}" -eq 0 ] && [ "${DENIED[$skill]:-0}" -eq 0 ]; then
     add RETIRE "$skill" "${USAGE_DAYS}d" "no use and no hand-typed form of its work in the last ${USAGE_DAYS}d"
   else
     add UNUSED "$skill" "${USAGE_DAYS}d" "no use in the last ${USAGE_DAYS}d of transcripts"

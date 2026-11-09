@@ -25,7 +25,7 @@ bodies dropped, quoted text blanked, `sh -c`/`eval`/`ssh` payloads kept. A grep 
 is not the pattern.
 
 The rows are read from every deployed SKILL.md (CLAUDE_SKILLS, default ~/.claude/skills) and
-cached in ~/.cache/claude-hooks/replaces.json, rebuilt when any SKILL.md changes; this module is
+cached in ~/.cache/claude-hooks/replaces-<root hash>.json, rebuilt when any SKILL.md or this file changes; this module is
 the cache's one writer. `hand_methods.py --list` prints the rows; `--check <SKILL.md>` prints
 what is wrong with one file's rows (skill-drift's BADMETA lint).
 Fail-open: any error allows the call.
@@ -46,9 +46,12 @@ def skills_dir():
     return Path(os.environ.get("CLAUDE_SKILLS") or Path.home() / ".claude" / "skills")
 
 
-def cache_path():
-    root = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(root) / "claude-hooks" / "replaces.json"
+def cache_path(root):
+    """One cache per skills root, so skill-drift's or a test's root never evicts the hook's."""
+    import hashlib
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    tag = hashlib.sha1(str(root).encode()).hexdigest()[:12]
+    return Path(base) / "claude-hooks" / f"replaces-{tag}.json"
 
 
 def _block_poll():
@@ -58,12 +61,13 @@ def _block_poll():
     return mod
 
 
+FRONTMATTER = re.compile(r"---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", re.S)
+
+
 def frontmatter(text):
-    """The YAML between the opening `---` and the next `---` line, or None."""
-    if not text.startswith("---\n"):
-        return None
-    end = text.find("\n---", 4)
-    return text[4:end] if end != -1 else None
+    """The YAML between the opening `---` line and the next line that is exactly `---`, or None."""
+    m = FRONTMATTER.match(text)
+    return m.group(1) if m else None
 
 
 def row_problems(row):
@@ -103,7 +107,9 @@ def rows_of(skill_md):
 
 def _fingerprint(root):
     files = sorted(root.glob("*/SKILL.md"))
-    out = []
+    # This file too: a change to what a valid row is invalidates the cache.
+    me = Path(__file__).stat()
+    out = [["hand_methods.py", me.st_mtime_ns, me.st_size]]
     for f in files:
         try:
             st = f.stat()
@@ -117,7 +123,7 @@ def load_rules(root=None):
     """Every valid replaces row of every deployed skill, as dicts with compiled regexes."""
     root = Path(root) if root else skills_dir()
     fp = _fingerprint(root)
-    cache = cache_path()
+    cache = cache_path(root)
     raw = None
     try:
         cached = json.loads(cache.read_text())
@@ -126,16 +132,21 @@ def load_rules(root=None):
     except (OSError, ValueError, KeyError, AttributeError):
         pass
     if raw is None:
-        raw = []
-        for name, _, _ in fp:
+        raw, failed = [], False
+        for name, _, _ in fp[1:]:
             try:
                 rows = rows_of(root / name / "SKILL.md")
             except Exception:
+                # Unreadable now, or no yaml for this python3: use what parsed, cache nothing,
+                # so the next call tries again rather than allowing everything until an edit.
+                failed = True
                 continue
             for i, row in enumerate(rows):
                 if not row_problems(row):
                     raw.append({"skill": name, "id": f"{name}#{i + 1}", **row})
         try:
+            if failed:
+                raise OSError("partial rebuild, not cached")
             cache.parent.mkdir(parents=True, exist_ok=True)
             tmp = cache.with_suffix(".tmp.%d" % os.getpid())
             tmp.write_text(json.dumps({"root": str(root), "fingerprint": fp, "rows": raw}))
@@ -161,7 +172,9 @@ def code_texts(cmd):
         _BP = _block_poll()
     cmd = _BP.strip_heredocs(cmd)
     texts = _BP.code_texts(cmd, True)
-    for sub in re.findall(r"\$\(([^()]*)\)|`([^`]*)`", cmd):
+    # Inside single quotes `...` and $(...) are literal (a commit message, a PR body), so only
+    # substitutions outside them run.
+    for sub in re.findall(r"\$\(([^()]*)\)|`([^`]*)`", re.sub(r"'[^']*'", "''", cmd)):
         texts += _BP.code_texts(sub[0] or sub[1], True)
     return texts
 
