@@ -282,7 +282,7 @@ cmd_pick() {
   _binds list j k / 1 2 3 4 5 6 7 8 9 o e a g c q n s x d esc enter
   out="$(cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PROJECTS_FZF_TABLE[@]}" \
     --no-input --with-nth=4,5 --nth=1 --tabstop=1 --prompt='projects> ' \
-    --header=$'1-9/o open  e sheet  a agents  g repo\nc claude  n new  s stage  x archive  d drafts\n/ search  ctrl-/ layout  q quit' \
+    --header=$'1-9/o open  e sheet  a agents  g repo\nc claude  n new  s stage  x archive  d drafts\n/ search  ctrl-/ layout  q quit  !N urgent' \
     "${PANEL_FZF_LAYOUT[@]}" --preview="$Q --preview {1} {2}" \
     "${BINDS[@]}")" || return 0
   IFS="$PANEL_TAB" read -r profile name sheet _ <<<"${out#*$'\n'}"

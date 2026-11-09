@@ -32,5 +32,5 @@ teardown() { ui_teardown; }
   screen_has 'g repo'
   screen_has 'c claude'
   screen_has 'd drafts'
-  screen_has 'q quit'
+  screen_has 'q quit  !N urgent'
 }
