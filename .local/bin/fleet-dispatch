@@ -526,13 +526,16 @@ account_env() {
   if [ -n "$dir" ]; then printf 'CLAUDE_CONFIG_DIR=%q ' "$dir"; else printf 'env -u CLAUDE_CONFIG_DIR '; fi
 }
 
-# telemetry_env <cwd> [item]: the launch-line prefix that labels a session's spans with its project
-# and queue item. A pane gets the tmux server's environment, so only its launch line can say which
-# item it works. Empty off the LAN, where the snippet defines nothing and nothing is exported.
+# telemetry_env <cwd> [item]: the launch-line prefix claude-telemetry.sh's claude_launch_env gives:
+# a parent Claude session's identity dropped, the shared launch env and (on the LAN) the OTel export,
+# with spans labelled by project and queue item. A pane gets the tmux server's environment and runs no
+# rc file, so only its launch line can carry these.
 telemetry_env() {
-  local attrs
-  attrs=$(cd "$1" && AGENT_QUEUE_ITEM=${2:-} bash -c '. "$HOME/.config/shared-hooks/claude-telemetry.sh" && claude_telemetry_launch' 2>/dev/null) || return 0
-  printf 'OTEL_RESOURCE_ATTRIBUTES=%q ' "$attrs"
+  local f="$HOME/.config/shared-hooks/claude-telemetry.sh" env
+  # shellcheck disable=SC2016
+  env=$(cd "$1" 2>/dev/null && AGENT_QUEUE_ITEM=${2:-} bash -c '. "$1" >/dev/null && claude_launch_env' _ "$f") ||
+    { say "no launch env from $f, so this start exports no telemetry and keeps the tmux server's Claude session vars"; return 0; }
+  printf '%s' "$env"
 }
 
 # item_sessions -> one line per running or waiting queue item, its fields split by
