@@ -207,6 +207,8 @@ impl crate::table::Row for Need {
     ];
     const FACETS: &'static [&'static str] = &["project"];
     const HIDE_EMPTY: bool = true;
+    const LEAD: &'static str = "what";
+    const GLANCE: &'static [&'static str] = &["kind", "project", "waited"];
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;

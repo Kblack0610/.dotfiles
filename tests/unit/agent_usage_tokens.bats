@@ -17,6 +17,7 @@ setup() {
   export TOKENS_RECALL_CMD="$REPO_ROOT/.local/bin/claude-recall tool-output" TOKENS_BURN_CMD="$AU burn"
   export TOKENS_CALLS_CMD="$REPO_ROOT/.local/bin/claude-recall tool-calls"
   export TOKENS_LANGFUSE_CMD="sh -c 'echo null' langfuse"
+  export TOKENS_FLEET_COST_CMD="sh -c 'echo {\\\"total\\\":{\\\"usd\\\":1}}' fleet-cost"
   cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"
 }
 
@@ -29,6 +30,7 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
   assert_equal "$(snap '[.totals.responses, .totals.context, .totals.tool_chars, .context_per_response, .carried_x]')" '[6,179025,4,29837,2]'
   assert_equal "$(snap '[.start_context_median, .merged_prs, .cost_per_merged_pr, .totals.cost_usd, .compactions, .context_per_merged_pr]')" '[27008,2,2.5,5.0,1,89512]'
   assert_equal "$(snap '[.window.start, .window.end, .errors]')" '["2026-01-01T00:00:00+00:00","2026-01-02T00:00:00+00:00",[]]'
+  assert_equal "$(snap '.fleet_cost.total.usd')" 1
 }
 
 @test "snapshot: by tool, by command head, cost by project, and the stretches between compactions" {

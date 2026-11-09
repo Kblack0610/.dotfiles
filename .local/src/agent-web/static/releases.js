@@ -13,15 +13,15 @@ const relst = tblTab({
 const relKey = (r) => `${r.project}|${r.id}`;
 const relClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn" : "");
 
-const REL_COLS = { project: ["project"], channel: ["channel"], pinned: ["pinned", "opt"], live: ["live"], status: ["status"], prev: ["prev", "opt"], last_deploy: ["last deploy", "opt"], telemetry: ["telemetry", "opt"], deps: ["deps", "opt"] };
+const REL_COLS = { project: ["project"], channel: ["channel"], pinned: ["pinned"], live: ["live"], status: ["status"], prev: ["prev"], last_deploy: ["last deploy"], telemetry: ["telemetry"], deps: ["deps"] };
 
 function releaseRow(r) {
   const open = relKey(r) === relst.sel;
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(relKey(r))}">` +
-    `<td>${esc(r.project)}</td><td class="wrap">${esc(r.label)}</td><td class="opt">${esc(r.pinned_text)}</td>` +
+    `<td>${esc(r.project)}</td><td class="wrap">${esc(r.label)}</td><td>${esc(r.pinned_text)}</td>` +
     `<td class="${r.status === "drift" ? "bad" : ""}">${esc(r.live_text)}</td><td class="${relClass(r.status_level)}">${esc(r.status)}</td>` +
-    `<td class="opt">${esc(r.prev_text)}</td><td class="opt ${relClass(r.deploy_level)}">${esc(r.last_deploy_text)}</td>` +
-    `<td class="opt ${relClass(r.watch_level)}">${esc(r.telemetry_text)}</td><td class="wrap muted opt">${esc(r.deps_text)}</td></tr>`;
+    `<td>${esc(r.prev_text)}</td><td class="${relClass(r.deploy_level)}">${esc(r.last_deploy_text)}</td>` +
+    `<td class="${relClass(r.watch_level)}">${esc(r.telemetry_text)}</td><td class="wrap muted">${esc(r.deps_text)}</td></tr>`;
   return open ? row + releaseDetail(r) : row;
 }
 

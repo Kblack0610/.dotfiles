@@ -88,6 +88,8 @@ impl Row for Who {
         "stalled",
     ];
     const FACETS: &'static [&'static str] = &["kind", "state", "project"];
+    const LEAD: &'static str = "doing";
+    const GLANCE: &'static [&'static str] = &["who", "state", "for"];
 
     fn val(&self, col: &str) -> Val {
         let text = |t: &str| {

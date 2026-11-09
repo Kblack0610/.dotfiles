@@ -49,6 +49,8 @@ impl Row for Section {
     ];
     const STATES: &'static [&'static str] = &["all"];
     const FACETS: &'static [&'static str] = &[];
+    const LEAD: &'static str = "section";
+    const GLANCE: &'static [&'static str] = &["prs", "first_try", "cost_per_pr"];
 
     fn val(&self, col: &str) -> Val {
         let num = |n: Option<f64>| n.map_or(Val::None, Val::Num);
