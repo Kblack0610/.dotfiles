@@ -12,6 +12,7 @@ mod day;
 mod fit;
 mod fleet;
 mod fleettab;
+mod flowline;
 mod flowstrip;
 mod fmt;
 mod focustab;
@@ -398,7 +399,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.proposals = Some(hub_core::proposals::read(
             &hub_core::session_actions::System,
         ));
-        // Home leads with the flow strip, whose inbox and board are the gauges.
+        // Home leads with the flow strip, whose inbox and board are the snapshot's.
         a.pipeline = Some(hub_core::pipeline::read());
     }
     // Home counts the queue too, so it is read for the default pages as well.
