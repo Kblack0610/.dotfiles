@@ -2560,7 +2560,7 @@ lead_fixture() {
   run cat "$SANDBOX/released.calls"
   assert_output 'web ccc3333 ddd4444 eee5555'
   run "$SUBJECT" chain
-  assert_line 'request_to_live_h: p50 48h over 3 live in 7d (2 on merge, 1 in a tag), 1 merged in no tag yet, 1 unknown'
+  assert_line 'request_to_live_h: p50 48h over 3 live in 7d (2 on merge, 1 in a tag); of those merged in 28d, 1 in no tag yet, 1 unknown'
 }
 
 @test "chain: request_to_live_h reads ? while a trust KPI is under its bound, and its note says which" {
@@ -2573,7 +2573,7 @@ lead_fixture() {
   assert_success
   assert_equal "$(jq -c '.request_to_live_h["7d"]' <<<"$output")" null
   run "$SUBJECT" chain
-  assert_line 'request_to_live_h: p50 48h over 3 live in 7d (2 on merge, 1 in a tag), 1 merged in no tag yet, 1 unknown; reads ? until ledger_coverage 0.667 (min 0.95)'
+  assert_line 'request_to_live_h: p50 48h over 3 live in 7d (2 on merge, 1 in a tag); of those merged in 28d, 1 in no tag yet, 1 unknown; reads ? until ledger_coverage 0.667 (min 0.95)'
   # a trust KPI with no bound is not trusted either
   sed -i '/^epic_linked_share_min=/d' "$KPI_THRESHOLDS"
   sed -i '$d' "$FLEET_BENCH_DIR/pr-ci.jsonl"

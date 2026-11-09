@@ -685,8 +685,8 @@ cmd_changelog() {
 }
 
 # released <project> <sha>... -> one JSON object a commit: {sha, tag, at}, the oldest tag of the
-# project's line that contains it (git_first_tag) and its creation epoch; tag and at null when no
-# tag holds it yet. A commit the checkout lacks carries an error instead: an unfetched merge is
+# project's line that contains it (git_first_tag) and its creatordate epoch, a lower bound for a
+# lightweight tag; tag and at null when no tag holds it yet. A commit the checkout lacks carries an error instead: an unfetched merge is
 # unknown, never unreleased.
 cmd_released() {
   local proj="${1:-}" repo sha hit err

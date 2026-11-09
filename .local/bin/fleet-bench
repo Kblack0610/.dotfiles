@@ -1624,11 +1624,13 @@ wants_stats() {
 
 # lead_time_json <now> -> {hours, p50, at_merge, in_release, unreleased, unknown}: request to live
 # for the items the human asked for (from: human) with merge proof, finished in the last
-# BENCH_LEAD_DAYS. Request is the item's queued time. Live is the merge (finished) in a project
-# release-state has no row for, since its merge is its deploy; else the first tag of the project's
-# line holding every merged commit (release-state released), as no target records deploys yet.
-# hours and p50 cover those live in the last CHAIN_DAYS; unreleased counts the merged ones no tag
-# holds yet, unknown the ones whose commit the checkout lacks. A failure when the queue or the
+# BENCH_LEAD_DAYS. Request is the item's queued time. Live is the item's finished time (agent-land
+# closes it at the merge) in a project release-state has no row for, since its merge is its
+# deploy; else the first tag of the project's line holding every merged commit (release-state
+# released), as no target records deploys yet. hours and p50 cover those live in the last
+# CHAIN_DAYS; unreleased counts the merged ones no tag holds yet, unknown the ones whose commit
+# the checkout lacks (one of an item's merges in another repo makes it unknown too), both over
+# the whole BENCH_LEAD_DAYS. A failure when the queue or the
 # release snapshot cannot be read.
 lead_time_json() {
   local t=$1 items rel p released=() shas
@@ -1684,8 +1686,8 @@ chain_notes() {
     | "requested_unstarted_h: oldest is \(.project):\(.id), open since \(.since) (\(($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor)h)"' 2>/dev/null
   held=$(lead_untrusted "$(jq -r 'to_entries[] | "\(.key)=\(.value["7d"] // "?")"' <<<"$2")" | paste -sd, - | sed 's/,/, /g')
   if lead=$(lead_time_json "$t"); then
-    jq -r --argjson d "$CHAIN_DAYS" --arg held "$held" '"request_to_live_h: p50 \(.p50 // "-")h over \(.hours | length) live in \($d)d"
-      + " (\(.at_merge) on merge, \(.in_release) in a tag), \(.unreleased) merged in no tag yet, \(.unknown) unknown"
+    jq -r --argjson d "$CHAIN_DAYS" --argjson lead "$BENCH_LEAD_DAYS" --arg held "$held" '"request_to_live_h: p50 \(.p50 // "-")h over \(.hours | length) live in \($d)d"
+      + " (\(.at_merge) on merge, \(.in_release) in a tag); of those merged in \($lead)d, \(.unreleased) in no tag yet, \(.unknown) unknown"
       + (if $held == "" then "" else "; reads ? until \($held)" end)' <<<"$lead"
   else
     echo "request_to_live_h: the done items or the release-state snapshot unreadable"
@@ -1738,7 +1740,7 @@ chain_counts() {
       "cost_per_merged_item=\(n(if $d == null then null else [$d[] | select(.merged and (.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
         | if length == 0 then null else add / length * 100 | round / 100 end end))"')
-  printf '%s\n' "$links"
+  [ -n "$links" ] && printf '%s\n' "$links"
   if [ -n "$(lead_untrusted "$links")" ]; then echo "request_to_live_h=?"
   elif lead=$(lead_time_json "$t"); then jq -r '"request_to_live_h=\(.p50 // "?")"' <<<"$lead"
   else echo "request_to_live_h=?"; fi
