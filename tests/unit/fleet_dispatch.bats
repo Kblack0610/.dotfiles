@@ -1308,12 +1308,13 @@ game_ready() {
 
 @test "promote: a row whose item already finished ok is never queued again; a human row goes back recorded failed" {
   project game beta "$SANDBOX/repos/game"
-  row game human 'landed one' '- [ ] landed one <!-- id:gm-7 -->'
-  row game agent 'landed two' '- [ ] landed two <!-- id:gm-8 -->'
   for k in gm-7 gm-8; do
     agent-queue add --project game --from "board:game:$k" --slug "$k" "x" >/dev/null
     agent-queue move "$k" done --status ok >/dev/null
   done
+  # Rows written after the close: an ok close now closes its row, and these model rows left open before it did.
+  row game human 'landed one' '- [ ] landed one <!-- id:gm-7 -->'
+  row game agent 'landed two' '- [ ] landed two <!-- id:gm-8 -->'
   run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human", key: "gm-7"}')" "" task
   assert_failure
   assert_output --partial 'row un-started, recorded failed: gm-7 already finished ok'
@@ -3990,12 +3991,16 @@ orphan_seen() {
 
 # landed_item <state> [pr] -- pr_item's item closed ok by its own session with no merged: recorded,
 # as a --pr-only run left it before agent-queue refused that close (the store still holds those):
-# the row stays started and no active item names it.
+# the row stays started and no active item names it. The row file and calls.log are put back after the
+# move, which now closes the row of an ok close with no PR.
 landed_item() {
   export DISPATCH_NIGHT_PROFILE=bnb
   pr_item "$1"
   agent-queue set fix-crash pr= >/dev/null
+  cp "$NOTES_FIXTURE/rows.game.agent" "$SANDBOX/rows.kept"
   agent-queue move fix-crash done --status ok >/dev/null
+  mv "$SANDBOX/rows.kept" "$NOTES_FIXTURE/rows.game.agent"
+  sed -i '/--proof item:fix-crash/d' "$NOTES_FIXTURE/calls.log"
   agent-queue set fix-crash "pr=${2:-o/game#12}" >/dev/null
 }
 
