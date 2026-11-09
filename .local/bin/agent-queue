@@ -215,6 +215,21 @@ finished_ok() {
     "$1" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
 }
 
+# finished_row_ok <from> -> why an add from a board row is refused: an item under another slug already
+# finished ok on that row, as finished_ok reads the slug's. finished_ok keys on the slug, and a hand start slugs
+# `<project>-<key>` where promote slugs the row `<key>`, so a done row's refill slipped past it
+# (2026-11-07: trader tr-58 queued again after #635 merged). Refused adds exit AQ_EX_FINISHED.
+finished_row_ok() {
+  local key="${1#board:}" f
+  [ "$key" != "$1" ] || return 0
+  grep -lxF -e "from: board:$key" -e "row: $key" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
+    [ "$(fm_get "$f" status)" = ok ] || continue
+    printf '%s already finished ok on its own item %s (%s%s): pass --repeat to queue it again as new work\n' \
+      "$key" "$(fm_get "$f" slug)" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
+    break
+  done
+}
+
 # Admission (ar-697): an automated filer adds to the queue only while the items that can start now
 # number under a day of measured drain; the board is uncapped and takes the overflow, and dispatch
 # promotes from it as the queue drains. Automated: a `--from research:<facet>` or `auto:<filer>`,
@@ -898,6 +913,7 @@ cmd_add() {
   local why
   # Checked before slug is reused below: an explicit --slug is the same work by name.
   [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}")"
+  [ -n "$repeat" ] || [ -n "${why:-}" ] || why="$(finished_row_ok "$from")"
   [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
   # Under the lock, so two filers at once cannot both pass on the same count.
   if [ -n "$auto" ] && [ -z "$running" ] && [ -z "${AQ_ADMITTED:-}" ]; then

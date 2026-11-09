@@ -1963,7 +1963,8 @@ unstart_orphans() {
 # a board row still started closes on merge proof, close_row), OPEN waits in waiting/ for the merge
 # (where a --pr-only run leaves it), CLOSED is failed; a state gh cannot read, or a bare pr: whose PR
 # lacks the item's stamp, leaves it for the next pass. No PR but a `report` (a doc+ask kind's
-# doc, a stack-review report) is done ok: that was the deliverable. Neither is failed, the reason in note.
+# doc, a stack-review report) is done ok: that was the deliverable. A waiting item with neither
+# stays parked on its blocker, any other item with neither is failed, the reason in note.
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
@@ -1985,6 +1986,12 @@ settle_item() {
   fi
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait.
   [ "$state:$st" != OPEN:waiting ] || return 0
+  if [ "$st:$pr$report" = waiting: ]; then
+    [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
+    agent-queue set "$1" "note=session $2 ended; waiting without a PR" >/dev/null
+    logline "reaped $2: queue item $1 stays waiting without a PR"
+    return 0
+  fi
   dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
   if [ -n "$pr" ]; then
     case "$state" in

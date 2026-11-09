@@ -1327,6 +1327,29 @@ game_ready() {
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished row was queued again"
 }
 
+@test "promote: a row whose item finished ok under another slug is not queued again" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'landed three' '- [ ] landed three <!-- id:gm-9 -->'
+  agent-queue add --project game --from "board:game:gm-9" --slug game-gm-9 "x" >/dev/null
+  agent-queue move game-gm-9 done --status ok >/dev/null
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-9"}')" "" task
+  assert_failure
+  assert_output --partial 'gm-9 already finished ok on its own item game-gm-9'
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished row was queued again"
+}
+
+@test "promote: a failed item, or an ok one on a row with a longer key, leaves the row to be queued" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'retry' '- [ ] retry <!-- id:gm-9 -->'
+  agent-queue add --project game --from "board:game:gm-9" --slug game-gm-9 "x" >/dev/null
+  agent-queue move game-gm-9 done --status failed >/dev/null
+  agent-queue add --project game --from "board:game:gm-9x" --slug game-gm-9x "x" >/dev/null
+  agent-queue move game-gm-9x done --status ok >/dev/null
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-9"}')" "" task
+  assert_success
+  assert_output --partial 'queued game: gm-9'
+}
+
 @test "fleet-dispatch promote: the human's Start queues a row whose item finished ok, as a repeat" {
   project game beta "$SANDBOX/repos/game"
   row game human 'landed one' '- [ ] landed one <!-- id:gm-7 -->'
@@ -3824,6 +3847,33 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_output --partial 'failed queue item b'
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-a.md)" status)" ok
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" status)" failed
+}
+
+@test "reap: a waiting item without a PR stays waiting with a note after its session ends" {
+  project game beta "$SANDBOX/repos/game"
+  started_item blocked lab:game-agent-1 run '' human waiting
+  started_item no-note lab:game-agent-2 run '' human waiting
+  agent-queue set blocked 'note=waiting for the human to answer ask abc' lane_run=trial-1 >/dev/null
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+
+  run cmd_reap
+  assert_success
+  refute_output --partial 'failed queue item'
+  assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
+  assert_equal "$(qfield "$(qitem waiting blocked)" note)" 'waiting for the human to answer ask abc'
+  assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
+  assert_equal "$(qfield "$(qitem waiting no-note)" note)" 'session game-agent-2 ended; waiting without a PR'
+  assert_not_called 'model-lane'
+  mtime=$(stat -c %y "$(qitem waiting blocked)")
+  dispatch_event() { echo "$*" >> "$NOTES_FIXTURE/events.log"; }
+
+  run cmd_reap
+  assert_success
+  assert [ ! -e "$NOTES_FIXTURE/events.log" ]
+  assert_equal "$(stat -c %y "$(qitem waiting blocked)")" "$mtime"
+  assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
+  assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
+  assert_not_called 'model-lane'
 }
 
 # pr_item <state> -- a board item on a gone session, its PR o/game#12 in <state> per the gh stub,
