@@ -4539,7 +4539,7 @@ mod tests {
         );
         assert!(
             s.contains("FLOW  inbox - | board - | queued 2")
-                && s.contains("running 1 | needs you 1"),
+                && s.contains("running 1 | on a PR 0 | needs you 1"),
             "{s}"
         );
         assert!(
@@ -4552,7 +4552,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
-            s.contains("all 5  needs you 1  running 1  up next 2  done 1"),
+            s.contains("all 5  needs you 1  running 1  on a PR 0  up next 2  done 1"),
             "{s}"
         );
         assert!(

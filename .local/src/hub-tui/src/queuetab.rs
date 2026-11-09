@@ -248,6 +248,7 @@ fn state(i: &Item, p: Palette) -> Cell {
     match i.state {
         State::Waiting => cell("needs you", p.warn()),
         State::Running => cell("running", p.good()),
+        State::Review => "on a PR".into(),
         State::Queued if i.hold.is_some() => cell("held", p.warn()),
         State::Queued => "ready".into(),
         State::Done => {
@@ -740,7 +741,7 @@ pub(crate) mod tests {
         let done = line(&s, "Landed");
         assert!(done.contains("ok") && done.contains("#812"), "{done}");
         assert!(
-            s.contains("all 5  needs you 1  running 1  up next 2  done 1    5 of 5"),
+            s.contains("all 5  needs you 1  running 1  on a PR 0  up next 2  done 1    5 of 5"),
             "{s}"
         );
         assert!(
@@ -796,9 +797,10 @@ pub(crate) mod tests {
         press(&mut v, &q, &[], 'j');
         press(&mut v, &q, &[], 'j');
         assert_eq!(v.table.sel, 2);
-        let want: [(&str, &[&str]); 5] = [
+        let want: [(&str, &[&str]); 6] = [
             ("needs you", &["pick-sides"]),
             ("running", &["fix-menu"]),
+            ("on a PR", &[]),
             ("up next", &["next-up", "night-sweep"]),
             ("done", &["landed"]),
             (

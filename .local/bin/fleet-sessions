@@ -1096,7 +1096,7 @@ item_of() {
     {
       bysid = (sid != "" && mine_sid($3)); bysess = (solo == 1 && $2 == me && $3 == "-")
       if (!bysid && !bysess) next
-      if (($1 == "running" || $1 == "waiting") && ($2 == me || ($2 == "-" && bysid))) {
+      if (($1 == "running" || $1 == "waiting" || $1 == "review") && ($2 == me || ($2 == "-" && bysid))) {
         if ($1 == "running") own = own (own == "" ? "" : ",") $4
         if (hereslug == "") hereslug = $4
         here = 1; next

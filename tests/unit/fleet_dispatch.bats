@@ -1723,6 +1723,19 @@ idle_held_machine() {
   refute_output --partial 'started queue item a2'
 }
 
+@test "project floor: an item parked on its PR keeps its project busy, as a running one does" {
+  idle_held_machine
+  export DISPATCH_PROJECT_FLOOR=1
+  agent-queue add --project game --slug parked "game work" >/dev/null
+  agent-queue move parked review >/dev/null
+  agent-queue add --project game --slug g2 "more game work" >/dev/null
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item a1 on the project floor'
+  refute_output --partial 'started queue item g2'
+}
+
 @test "project floor: one start a project even with room for more" {
   idle_held_machine
   export DISPATCH_PROJECT_FLOOR=2
@@ -2724,6 +2737,19 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   [ -n "$(qitem running p)" ] && [ -n "$(qitem running q)" ] || fail "an answered session stayed waiting"
 }
 
+@test "reap leaves a live session's item in review while it works at its PR, and moves it to waiting only when it asks the human" {
+  project game beta "$SANDBOX/repos/game"
+  started_item v lab:game-agent-1 '' '' human review
+  started_item w lab:game-agent-2 '' '' human review
+  printf 'game-agent-%s\n' 1 2 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'for x in 1:idle 2:waiting; do echo "{\"target\":\"lab/game-agent-${x%:*}:1\",\"status\":\"${x#*:}\"}"; done'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem review v)" ] || fail "a session idle at its PR left review"
+  [ -n "$(qitem waiting w)" ] || fail "a session on a PR that asks the human is not waiting"
+}
+
 # 2026-11-05: about a fifth of running items were dead: a shell kept the tmux session after claude
 # exited, or a hub-window item had no session of its own, and reap read both as live forever.
 @test "reap settles an item whose claude exited though its tmux session lives; a parked pane, another agent and a fresh start are kept" {
@@ -2805,7 +2831,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   sed -i '/^session: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
   run cmd_reap
   assert_success
-  [ -n "$(qitem waiting fix-crash)" ] || fail "an open PR did not park it in waiting"
+  [ -n "$(qitem review fix-crash)" ] || fail "an open PR did not park it in review"
   assert_output --partial 'flagged queue item fix-crash (no session recorded (PR o/game#12)'
   # Parked on its open PR, later passes neither flag it again nor record another reap.
   run cmd_reap
@@ -2920,7 +2946,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
 
 # Confirmed gone stays gone: settle_item leaves an item whose PR is open waiting, and it must not
 # re-enter the mark-then-confirm cycle, logging a fresh miss and settling half as often.
-@test "reap keeps a confirmed miss for an item it leaves waiting on its open PR" {
+@test "reap keeps a confirmed miss for an item it parks in review on its open PR" {
   pr_item OPEN
   agent-queue move fix-crash waiting >/dev/null
   sed -i 's/^agent: claude$/agent: claude\nsessions: old-1/' "$AGENT_QUEUE_DIR"/waiting/*-fix-crash.md
@@ -2929,7 +2955,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   stub agent-ask 'exit 0'
   export DISPATCH_REAP_CONFIRM=0
   for _ in 1 2 3 4; do cmd_reap >/dev/null; done
-  [ -n "$(qitem waiting fix-crash)" ] || fail "the item left waiting"
+  [ -n "$(qitem review fix-crash)" ] || fail "the item did not park in review"
   [ -e "$FLEET_DISPATCH_DIR/reap-miss/fix-crash" ] || fail "the confirmed mark was dropped"
   run grep -c 'is not on agent-panel' "$FLEET_DISPATCH_DIR/log.md"
   assert_output 1
@@ -3923,14 +3949,14 @@ OUT
   grep -q 'row left started, no merge proof' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
 }
 
-@test "reap: a gone session's open PR moves its item to waiting once, row untouched" {
+@test "reap: a gone session's open PR moves its item to review once, row untouched" {
   pr_item OPEN
   run cmd_reap
-  assert_output --partial 'waiting queue item fix-crash (PR o/game#12 open'
-  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
   run cmd_reap
-  refute_output --partial 'waiting queue item'
-  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  refute_output --partial 'review queue item'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
 }
 
@@ -3967,7 +3993,7 @@ OUT
   # a running item whose lane went to another Claude settles on its open PR: the passes above missed it once already
   agent-queue move fix-crash running >/dev/null
   DISPATCH_REAP_CONFIRM=0 run cmd_reap
-  assert_output --partial 'waiting queue item fix-crash (PR o/game#12 open'
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
   # its own Claude back on the panel: running is left alone
   agent-queue move fix-crash running >/dev/null
   stub agent-panel 'echo "{\"target\":\"hub/dotfiles:3\",\"status\":\"busy\",\"session_id\":\"old-1\"}"'
@@ -3976,11 +4002,12 @@ OUT
   [ -n "$(qitem running fix-crash)" ] || fail "reaped an item whose own Claude is live"
 }
 
-@test "reap: a --pr-only item its session left waiting closes ok with merged: once the PR merges" {
+@test "reap: an item an older pass parked waiting on its open PR moves to review, and closes ok with merged: once the PR merges" {
   pr_item OPEN
   agent-queue move fix-crash waiting >/dev/null
   run cmd_reap
-  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
   printf 'MERGED %s\n' "$OID" > "$NOTES_FIXTURE/pr.state"
   run cmd_reap
   assert_success
@@ -5301,15 +5328,15 @@ cloud_run_ready() {
   export CLOUD_POLL_SEC=0 CLAUDE_BIN=claude
 }
 
-@test "claude-cloud-run records the session URL, finds the PR by its exact Item line, and parks the item waiting on it" {
+@test "claude-cloud-run records the session URL, finds the PR by its exact Item line, and parks the item in review on it" {
   cloud_run_ready
   printf '%s\n' '[{"number": 7, "createdAt": "2000-01-01T00:00:00Z", "body": "Item: cloud-fix"}, {"number": 8, "createdAt": "2099-01-01T00:00:00Z", "body": "Item: cloud-fix-extra"}, {"number": 9, "createdAt": "2099-01-01T00:00:00Z", "body": "text\r\nItem: cloud-fix\r\nmore"}]' > "$NOTES_FIXTURE/prs.json"
   run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
   assert_success
   assert_called 'claude --cloud do the task'
   assert_called 'gh pr list --repo acme/game --state all --search "Item: cloud-fix" in:body'
-  f=$(qitem waiting cloud-fix)
-  [ -n "$f" ] || fail "the item is not waiting"
+  f=$(qitem review cloud-fix)
+  [ -n "$f" ] || fail "the item is not in review"
   assert_equal "$(qfield "$f" pr)" 'acme/game#9'
   grep -q 'https://claude.ai/code/session_01AbC' "$f" || fail "the session URL is not on the item"
 }
@@ -5554,7 +5581,7 @@ case "$1" in log) echo run-9 ;; classify)
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item ci-first on codex (sol), routed by model-lane'
   assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it with --pr-only'
-  assert_called 'agent-queue move ci-first waiting'
+  assert_called 'agent-queue move ci-first review'
   assert_not_called 'Run agent-land in the foreground'
   assert_not_called 'merges only behind the red-fix gate'
 }
@@ -6083,7 +6110,7 @@ demand_of() {
   run cmd_reap
   assert_success
   run agent-queue show fix-crash --json
-  assert_equal "$(jq -r '.state + " " + .partial' <<<"$output")" 'waiting yes'
+  assert_equal "$(jq -r '.state + " " + .partial' <<<"$output")" 'review yes'
   run cmd_reap
   assert_success
   run agent-queue show next --json
