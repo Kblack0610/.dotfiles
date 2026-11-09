@@ -1,6 +1,6 @@
 //! The Queue tab: agent-queue's items as one table on the shared data-table component, the
 //! Infra Jobs style, read through `hub_core::queue`, the same reader and the same `QueueRow` as
-//! agent-web's Queue tab. Its sections are `flow` (the strip), `table` and `candidates`.
+//! agent-web's Queue tab. Its sections are `flow` (the pipeline line, `flowline`), `table` and `candidates`.
 //! `/ f s S x` are the shared table's keys; j/k pick a row (a done one too), Enter opens its
 //! detail, `c` arms a cancel that waits on y and `+`/`-` move its priority one step, both for an
 //! active item only. Below the table the Candidates fold (`hub_core::queue::candidates`, the
@@ -9,7 +9,7 @@
 //! promote`). Every write goes through hub-core.
 
 use chrono::{DateTime, Utc};
-use hub_core::flow::Strip;
+use hub_core::flow::Rail;
 use hub_core::queue::{
     money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing, TABLE_OPEN_ROWS,
 };
@@ -19,7 +19,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::flowstrip;
+use crate::flowline::{self, LineView};
 use crate::fmt::{clock, Palette};
 
 /// What a key on the Queue tab asks the app to do.
@@ -43,6 +43,8 @@ pub struct QueueView {
     /// The selected row's detail replaces the table.
     pub detail: bool,
     pub cands_open: bool,
+    /// The step and problem picked on the pipeline line.
+    pub line: LineView,
     /// The slug a cancel waits on y for.
     pub confirm: Option<String>,
     /// The action now running, as "cancel <slug>".
@@ -419,12 +421,12 @@ pub fn page(
     q: &Queue,
     v: &QueueView,
     cands: Option<&Result<Candidates, String>>,
-    flow: (&Strip, bool, bool),
+    flow: (&Rail, bool),
     p: Palette,
     now: i64,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let mut out = flowstrip::lines(flow.0, flow.1, flow.2, p, w);
+    let mut out = flowline::lines(flow.0, &v.line, flow.1, p, w);
     for e in &q.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
@@ -658,7 +660,7 @@ pub(crate) mod tests {
             q,
             v,
             c,
-            (&Strip::build(Some(q)), false, false),
+            (&Rail::build(Some(q), None, now()), false),
             Palette { no_color: true },
             now(),
             w,

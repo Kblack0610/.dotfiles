@@ -250,7 +250,7 @@ pub const FLOW_KEYS: [(char, &str); 6] = [
     ('b', "board"),
 ];
 
-/// Home as lines. `flow` is (the gauges have not answered yet, the `o graph` hint applies).
+/// Home as lines. `flow` is (the snapshot has not been read yet, the `o graph` hint applies).
 pub fn page(
     h: &Home,
     view: &DataTable,

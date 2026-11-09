@@ -361,6 +361,18 @@ mod tests {
     }
 
     #[test]
+    fn the_queue_tab_draws_the_line_and_a_click_picks_a_step() {
+        let flow = include_str!("../static/flow.js");
+        let queue = include_str!("../static/queue.js");
+        assert!(flow.contains("function railHtml(") && flow.contains("data-rail="));
+        assert!(queue.contains("railHtml(qfl.data.line") && queue.contains("[data-rail]"));
+        assert!(
+            !queue.contains("qfl.data.flow"),
+            "/api/flow carries the line now"
+        );
+    }
+
+    #[test]
     fn need_kinds_are_the_readers() {
         // docs/dashboards.md rule 8: hub_core::home names a row's kind; the page only labels it.
         for k in hub_core::home::NeedKind::ALL {
