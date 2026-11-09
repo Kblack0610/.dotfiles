@@ -1921,7 +1921,8 @@ unstart_orphans() {
 # a board row still started closes on merge proof, close_row), OPEN waits in waiting/ for the merge
 # (where a --pr-only run leaves it), CLOSED is failed; a state gh cannot read, or a bare pr: whose PR
 # lacks the item's stamp, leaves it for the next pass. No PR but a `report` (a doc+ask kind's
-# doc, a stack-review report) is done ok: that was the deliverable. Neither is failed, the reason in note.
+# doc, a stack-review report) is done ok: that was the deliverable. A waiting item with neither
+# stays waiting with its note; otherwise neither is failed, the reason in note.
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
@@ -1967,6 +1968,10 @@ settle_item() {
   elif [ -n "$report" ]; then
     agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
     logline "reaped $2: session gone, queue item $1 done with its report $report"
+  elif [ "$st" = waiting ]; then
+    agent-queue move "$1" waiting --if "$st" >/dev/null || return 0
+    agent-queue set "$1" "note=$(jq -r --arg fallback "session $2 ended; waiting without a PR" '.note // $fallback' <<<"$it")" >/dev/null
+    logline "reaped $2: queue item $1 stays waiting without a PR"
   else
     agent-queue move "$1" "done" --status failed --if "$st" >/dev/null || return 0
     agent-queue set "$1" "note=session $2 ended before it closed the item" >/dev/null
