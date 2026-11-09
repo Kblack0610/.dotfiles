@@ -58,7 +58,8 @@ setup() {
 
 @test "the bench section carries the vitals line, and no line when hub cannot read them" {
   printf '#!/usr/bin/env bash\necho "5 of 7 off target: Flow"\necho "Flow  !  a row"\n' > "$SANDBOX/bin/hub"
-  chmod +x "$SANDBOX/bin/hub"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-bench"
+  chmod +x "$SANDBOX/bin/hub" "$SANDBOX/bin/fleet-bench"
   run bash -c '"$FLEET" --list | cut -f1,5 | sed -E "s,\x1b\[[0-9;]*[a-zA-Z],,g"'
   assert_output --partial $'hint\t  vitals: 5 of 7 off target: Flow'
   refute_output --partial 'a row'
