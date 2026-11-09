@@ -25,12 +25,12 @@ fn env(k: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// `fleet-sessions`' state document, by the same variables it resolves.
 /// Claude Code's live session files, one per process: its status changes here first.
 pub fn claude_sessions_dir() -> PathBuf {
     home().join(".claude").join("sessions")
 }
 
+/// `fleet-sessions`' state document, by the same variables it resolves.
 pub fn fleet_state() -> PathBuf {
     agent_panel::vocab::fleet_state_file()
 }
@@ -97,6 +97,7 @@ pub fn state_with(
 
 fn unreadable(state: &mut Value, source: &str) {
     match state["unreadable"].as_array_mut() {
+        Some(u) if u.iter().any(|s| s == source) => {}
         Some(u) => u.push(source.into()),
         None => state["unreadable"] = json!([source]),
     }
@@ -1143,6 +1144,9 @@ mod tests {
             vec!["hub: list-panes failed".into()],
         );
         assert_eq!(st["unreadable"], json!(["agent-panel"]));
+        let mut again = st.clone();
+        unreadable(&mut again, "agent-panel");
+        assert_eq!(again["unreadable"], json!(["agent-panel"]));
         assert_eq!(st["sessions"][0]["bucket"], "WORKING");
     }
 

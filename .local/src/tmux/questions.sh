@@ -53,7 +53,7 @@ prompt_list() {
       select(.status == "waiting" and .target != $done)
       | [.target, (.cwd // ""), ((($now - (.idle_since // $now)) / 60 | floor | if . < 0 then 0 else . end)),
          (.doing // "" | gsub("[\t\n]"; " ")), (.summary // "" | gsub("[\t\n]"; " "))] | @tsv' 2>/dev/null
-    [ -r "$FLEET_STATE_FILE" ] && jq -r '.sessions[]? | select((.target | contains("@")) and .activity == "waiting")
+    [ -r "$FLEET_STATE_FILE" ] && jq -r --arg done "${QUESTIONS_ANSWERED:-}" '.sessions[]? | select((.target | contains("@")) and .activity == "waiting" and .target != $done)
       | [.target, (.cwd // ""), (.idle_min // 0),
          (.doing // "" | gsub("[\t\n]"; " ")), (.topic // "" | gsub("[\t\n]"; " "))] | @tsv' \
       "$FLEET_STATE_FILE" 2>/dev/null
