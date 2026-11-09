@@ -194,6 +194,8 @@ pub struct BoardFiles {
     pub releases: PathBuf,
     /// schedules-sync's run ledger behind Releases' Builds section.
     pub builds: builds::Paths,
+    /// The Queue tab's Candidates: the snapshot each real `fleet-dispatch run` writes.
+    pub candidates: PathBuf,
 }
 
 impl BoardFiles {
@@ -207,6 +209,7 @@ impl BoardFiles {
             tokens: boards::token_usage_dir(),
             releases: boards::releases_dir(),
             builds: builds::Paths::from_env(),
+            candidates: boards::candidates_file(),
         }
     }
     fn watch_log(&self) -> PathBuf {
@@ -336,7 +339,7 @@ pub enum Msg {
     Queue(Box<Queue>),
     /// A queue cancel, bump or promote ended: its output, or why it failed.
     QueueActed(Result<String, String>),
-    /// `fleet-dispatch suggest --json` (hub_core::queue::candidates), or why it failed.
+    /// fleet-dispatch's Candidates snapshot (hub_core::queue::candidates), or why it failed.
     Candidates(Result<Candidates, String>),
     /// `notes board --json`, or why it failed.
     Tasks(Box<Result<Feed, String>>),
@@ -1006,15 +1009,13 @@ impl App {
         }
     }
 
-    /// The candidates read every board (seconds), so they are read in a worker on entering the
-    /// Queue tab, on `r` there and after a queue action, never on a queue file event.
+    /// The candidates are fleet-dispatch's snapshot, read in a worker on entering the Queue tab,
+    /// on `r` there and after a queue action (a promote takes its row out of the file).
     pub fn read_candidates(&mut self) {
         if self.candidates_read.want() {
-            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            let (tx, path) = (self.tx.clone(), self.files.candidates.clone());
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::Candidates(hub_core::queue::candidates(
-                    runner.as_ref(),
-                )));
+                let _ = tx.send(Msg::Candidates(hub_core::queue::candidates(&path)));
             });
         }
     }
@@ -4368,6 +4369,10 @@ mod tests {
         let mut a = with_tx(Tab::Home, tx);
         let fake = Arc::new(Fake::default());
         a.runner = fake.clone();
+        let dir = std::env::temp_dir().join(format!("hub-tui-cands-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        a.files.candidates = dir.join("candidates.jsonl");
+        std::fs::write(&a.files.candidates, "").unwrap();
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         a.handle(Msg::QueueFiles);
         a.handle(key('2'));
@@ -4382,12 +4387,9 @@ mod tests {
         // The fake's queue read came back empty; put the fixture back.
         a.handle(Msg::Queue(Box::new(queuetab::tests::fixture())));
         let ran = fake.0.lock().unwrap().clone();
-        assert_eq!(
-            ran.iter()
-                .filter(|c| *c == "fleet-dispatch suggest --json")
-                .count(),
-            1,
-            "read once, on entering the tab, not on a queue file event: {ran:?}"
+        assert!(
+            !ran.iter().any(|c| c.contains("suggest")),
+            "the snapshot is read, never a live suggest: {ran:?}"
         );
         assert!(screen(&mut a, 160, 40).contains("+ CANDIDATES (0, 0 auto)"));
         a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));

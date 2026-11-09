@@ -49,7 +49,8 @@ Q="$(printf '%q' "$SELF")"
 # --- Rows ---
 # A row is the summary: number, name, stage, open count, and urgent in red when there is any.
 # The rest (profile, version, progress, ETA, high and low, the agent board) is the preview's
-# card, so a row fits the list's half of the popup at 144 columns.
+# card, so the widest row fits the side layout's list, 47 columns at a 144-column client. That
+# is why urgent is `!N` (tests/ui/projects_finder.bats renders it).
 # A draft's name is dim, so with d on the drafts read as drafts.
 cmd_list() {
   local drafts=0
@@ -69,7 +70,7 @@ cmd_list() {
         split(row[i], f, "\t")
         n = (i <= 9) ? i : " "
         c = (f[5] > 0) ? sprintf("%d open", f[5]) : D "clear" O
-        if (f[6] > 0) c = c sprintf("  %s%d urgent%s", E, f[6], O)
+        if (f[6] > 0) c = c sprintf("  %s!%d%s", E, f[6], O)
         printf "%s\t%s\t%s\t%s %s%-*s%s\t %s%-5s%s  %s\n", f[1], f[2], f[11],
           n, (f[3] == "draft" ? D : H), w, f[2], O, A, f[3], O, c
       }
@@ -262,7 +263,8 @@ _to_repo() {
 # The table flags minus --no-sort. An empty query shows the rows in their own order either
 # way; a search ranks by match, which is what makes "time" land on time-tangle rather than
 # on agent-run(time), the earlier row a scattered match also hits. Ties keep row order.
-PROJECTS_FZF_TABLE=(--cycle --wrap --tiebreak=index --delimiter="$PANEL_TAB")
+# No --wrap: a project is one row, and a narrower client clips the tail instead of adding rows.
+PROJECTS_FZF_TABLE=(--cycle --tiebreak=index --delimiter="$PANEL_TAB")
 
 # Project search reads the label (number, name, profile) and never the counts: --nth counts
 # the fields --with-nth shows, so the label is its own tab field and --tabstop=1 draws the
@@ -280,7 +282,7 @@ cmd_pick() {
   _binds list j k / 1 2 3 4 5 6 7 8 9 o e a g c q n s x d esc enter
   out="$(cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PROJECTS_FZF_TABLE[@]}" \
     --no-input --with-nth=4,5 --nth=1 --tabstop=1 --prompt='projects> ' \
-    --header='1-9/o open  e sheet  a agents  g repo  c claude  n new  s stage  x archive  d drafts  / search  ctrl-/ layout  q quit' \
+    --header=$'1-9/o open  e sheet  a agents  g repo\nc claude  n new  s stage  x archive  d drafts\n/ search  ctrl-/ layout  q quit  !N urgent' \
     "${PANEL_FZF_LAYOUT[@]}" --preview="$Q --preview {1} {2}" \
     "${BINDS[@]}")" || return 0
   IFS="$PANEL_TAB" read -r profile name sheet _ <<<"${out#*$'\n'}"
