@@ -81,6 +81,10 @@ CODEX_HOME                        # config and auth root; relocating it reselect
 CLAUDE_HEADLESS                   # ours: "no human is watching". Set by agentctl-run itself
 CLAUDE_CODE_SESSION_ID            # identity of the session, no routing effect
 CLAUDE_CODE_SESSION_ATTENDED      # 1 when a human is attached; agent-ask reads it, no routing effect
+CLAUDE_CODE_CHILD_SESSION         # 1 in a child of another session; fleet-dispatch drops it on launch, no routing effect
+CLAUDE_CODE_BRIDGE_SESSION_ID     # the remote-control bridge's session id; fleet-dispatch drops it on launch, no routing effect
+CLAUDE_CODE_MESSAGING_SOCKET      # the local inter-session message socket, not a model endpoint; fleet-dispatch drops it
+CLAUDE_CODE_MESSAGING_TOKEN       # auth for that local socket only, not a model credential; fleet-dispatch drops it
 CLAUDE_CODE_ENTRYPOINT            # how claude was started (cli, sdk); startup-telemetry.sh records it, no routing effect
 CLAUDE_CODE_EXECPATH              # the running claude binary; startup-telemetry.sh reads its version from it, no routing effect
 CLAUDE_CODE_ENABLE_TELEMETRY      # observability only
