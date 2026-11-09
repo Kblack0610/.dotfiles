@@ -190,42 +190,81 @@ fetch() {
 # every token_count event carries them as of that call, and Codex has no usage endpoint to ask. Only
 # the plan's own limit counts (limit_id "codex", or none in older rollouts); Codex also logs records
 # with no window (limit_id "premium"), often last, so each file is read from its end for the newest
-# record with a window; a line that does not parse (a rollout mid-write) is skipped. Every rollout is
-# a candidate, newest first, until one has a window: a run refused at the usage limit logs only a
-# windowless record, and any number of them may follow the last reading.
+# record with a window; a line that does not parse (a rollout mid-write) is skipped. Only rollouts
+# written within the week ($WEEK) of now are read, newest first, until one has a window: no window
+# outlives a week, so an older reading is unused anyway, and no rollout in the week reads as unused
+# (idle). Rollouts in the week that carry neither a reading nor a refusal read as unread.
+# A run refused at the usage limit ends with error codex_error_info "usage_limit_exceeded" and logs
+# only a windowless record. Every rollout of the week is searched for refusals, since a concurrent
+# run can write after one, and the newest is held against the reading by time: when it is newer,
+# the window that can reset soonest after it (its logged reset, or the refusal plus the window's
+# length when that reset had already passed) reads full and reached until then, and a run after
+# that is the probe. With no reading in the week a refusal holds the shortest window Codex logs
+# (5h); a refusal with no time reads unread.
 # A window is named by its length, never its slot: Plus logs the 5h window as primary and the week
 # as secondary, Pro logs the week as primary and no 5h window at all. Up to 6h is the 5h window and
 # 10000-10200 minutes the week (rollouts log 10080 and 10081); any other length, or none, makes the
-# source unread, so it blocks instead of being paced on a guess. The week's length is $WEEK.
+# source unread, so it blocks instead of being paced on a guess.
 # A window whose reset has passed reads as unused, with no reset until a rollout says when.
 read_codex() {
-    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" f out
-    while IFS= read -r f; do
-        out=$(tac "$f" | grep '"rate_limits"' | jq -cR --argjson now "$now" '
-            def win(w): if w == null then null
-                elif (w.resets_at // 0) <= $now then {utilization: 0, resets_at: null}
-                else {utilization: w.used_percent, resets_at: (w.resets_at | todate)} end;
-            def name(w): w.window_minutes as $m
-                | if $m == null then null elif $m <= 360 then "five_hour"
-                  elif $m >= 10000 and $m <= 10200 then "seven_day" else null end;
-            def named(ws; n): ws | map(select(name(.) == n)) | max_by(.used_percent);
-            fromjson? | .payload.rate_limits? | objects | select((.limit_id // "codex") == "codex")
-            | select(.primary or .secondary) | . as $r
-            | [$r.primary, $r.secondary] | map(select(. != null)) as $ws
-            | if any($ws[]; name(.) == null) then {unknown_window: [$ws[].window_minutes]}
-              else {plan: $r.plan_type, five_hour: win(named($ws; "five_hour")),
-                    seven_day: win(named($ws; "seven_day")), paced: true,
-                    reached: ($r.rate_limit_reached_type != null
-                              and ($ws | map(.resets_at | select(. != null)) | min // 0) > $now)}
-              end' |
-            head -n1)
-        if jq -e 'has("unknown_window")' <<< "${out:-null}" >/dev/null 2>&1; then
-            echo "claude-acct: codex: a window of unknown length $(jq -c .unknown_window <<< "$out") minutes in $f" >&2
-            return 1
-        fi
-        [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
-    done < <(find "$1" -name 'rollout-*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
-    return 1
+    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" found mt f reading refused
+    [[ -d "$1" ]] || { echo "claude-acct: codex: no sessions dir $1" >&2; return 1; }
+    found=$(find "$1" -name 'rollout-*.jsonl' -newermt "@$((now - WEEK))" -printf '%T@ %p\n') ||
+        { echo "claude-acct: codex: cannot list $1" >&2; return 1; }
+    if [[ -z "$found" ]]; then
+        echo '{"plan":null,"five_hour":null,"seven_day":{"utilization":0,"resets_at":null},"paced":true,"reached":false}'
+        return 0
+    fi
+    found=$(sort -rn <<< "$found")
+    # Newest file first, each from its end, each behind an "@<mtime>" line that dates a record with
+    # no timestamp. A torn last line gets its newline first, or tac glues it to the record before.
+    # jq stops at the first reading; the writers upstream then die of the closed pipe, not a failure.
+    reading=$({ while read -r mt f; do
+                    printf '@%s\n' "${mt%.*}"
+                    if [[ -n "$(tail -c1 -- "$f")" ]]; then { cat -- "$f"; echo; } | tac; else tac -- "$f"; fi || break
+                done <<< "$found" | grep -E '^@|"rate_limits"' || true; } |
+        jq -ncR 'def stamp: .[:19] + "Z" | fromdateiso8601?;
+            first(foreach inputs as $l (0; if $l | startswith("@") then $l[1:] | tonumber else . end;
+                . as $m | $l | select(startswith("@") | not) | fromjson? | objects | (.timestamp // "") as $ts
+                | .payload.rate_limits? | objects | select((.limit_id // "codex") == "codex")
+                | select(.primary or .secondary) | {r: ., at: (($ts | stamp) // $m)})) // null') || return 1
+    refused=$({ cut -d' ' -f2- <<< "$found" | xargs -d '\n' grep -h -F '"usage_limit_exceeded"' -- || true; } |
+        jq -nR '[inputs | fromjson? | objects
+                 | select(((.payload.error? | objects | .codex_error_info) // null) == "usage_limit_exceeded")
+                 | .payload.completed_at // (.timestamp // "" | .[:19] + "Z" | fromdateiso8601?) // "undated"]
+                | if any(.[]; . == "undated") then "undated" else max end') || return 1
+    [[ "$refused" == '"undated"' ]] && { echo "claude-acct: codex: a refusal with no time under $1" >&2; return 1; }
+    jq -cn --argjson now "$now" --argjson read "$reading" --argjson refused "$refused" --arg dir "$1" '
+        def win(w): if w == null then null
+            elif (w.resets_at // 0) <= $now then {utilization: 0, resets_at: null}
+            else {utilization: w.used_percent, resets_at: (w.resets_at | todate)} end;
+        def name(w): w.window_minutes as $m
+            | if $m == null then null elif $m <= 360 then "five_hour"
+              elif $m >= 10000 and $m <= 10200 then "seven_day" else null end;
+        def named(ws; n): ws | map(select(name(.) == n)) | max_by(.used_percent);
+        def fail(m): "claude-acct: codex: \(m)\n" | halt_error(1);
+        ($read.r // null) as $r
+        # the refusal that came after the reading, if one did
+        | (if $refused != null and ($read == null or $refused > $read.at) then $refused else null end) as $t
+        # when a window can next reset after the refusal at $t
+        | def after: if (.resets_at // 0) > $t then .resets_at else $t + .window_minutes * 60 end;
+        if $r == null then
+            if $t == null then fail("no reading or refusal in the rollouts of the last week under \($dir)")
+            elif $t + 300 * 60 > $now then {plan: null, five_hour: null, seven_day: null, paced: true, reached: true}
+            else {plan: null, five_hour: null, seven_day: {utilization: 0, resets_at: null}, paced: true, reached: false} end
+        else [$r.primary, $r.secondary] | map(select(. != null)) as $ws
+        | if any($ws[]; name(.) == null) then
+            fail("a window of unknown length \([$ws[].window_minutes] | tojson) minutes in a rollout under \($dir)")
+          else (if $t == null then null else $ws | map(after) | min end) as $hold
+            | (if $hold == null then $ws
+               else $ws | map(if after == $hold then .used_percent = 100 | .resets_at = $hold else . end) end) as $held
+            | {plan: $r.plan_type, five_hour: win(named($held; "five_hour")),
+               seven_day: win(named($held; "seven_day")), paced: true,
+               reached: (($r.rate_limit_reached_type != null
+                          and ($ws | map(.resets_at | select(. != null)) | min // 0) > $now)
+                         or ($hold != null and $hold > $now))}
+          end
+        end'
 }
 
 # gateway_curl <key file> <path> [curl args] -> the gateway's answer to that key. The key goes in on
@@ -271,9 +310,9 @@ budget_usage() {
 # fetch_source <name> <kind> <ref> -> the usage JSON of one source, cached for TTL like fetch
 fetch_source() {
     local name="$1" kind="$2" ref="$3" cache="$CACHE/$1.json" out tmp info refused
-    if [[ "$kind" == codex ]]; then read_codex "$ref"; return; fi   # local files: nothing to rate-limit
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then cat "$cache"; return 0; fi
     case "$kind" in
+        codex) out=$(read_codex "$ref") ;;
         litellm-key|litellm-team)
             info=$(gateway_get "$ref" /key/info | jq -e .info) || return 1
             refused=$(gateway_refused "$ref" "$(jq -r '.models[0] // empty' <<< "$info")" "${kind#litellm-}")
