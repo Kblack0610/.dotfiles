@@ -1,7 +1,7 @@
 ---
 name: catch-up
 description: >-
-  Brief a human who lost the thread of this session: goal, state, how it got here, the open question in plain words, each option's cost, a pick. Use for "catch me up", "what's going on here", "I have no idea what this is". Explain-first mode: discuss.
+  Brief a human who lost the thread of this session: goal, state, how it got here, the open question in plain words, each option's cost, a pick. Use for "catch me up", "what's going on here", "I have no idea what this is". This session only; all sessions: fleet-lead. Explain-first mode: discuss.
 metadata:
   category: messaging
   tags: [conversation, summary, explanation, asks]
@@ -23,10 +23,9 @@ Not for status across all sessions: that is `fleet-lead`. Not for explain-first 
 
 ## Steps
 
-1. Read before writing. Use what this session actually did: its own conversation so far, its plan file (`~/.claude/plans/<slug>.md` or the plan the session named), its queue item (`$AGENT_QUEUE_ITEM`), and its PR (`gh pr view <N> -R <repo>`). Do not reconstruct from memory. Anything you did not check, label as assumed.
-2. Change nothing. This turn is read-only: no edits, pushes, landings, posts or new asks.
-3. Write the answer in the shape below, in this order, under these headings.
-4. End by repeating the open question in the same words it was asked, with its options, so the human can answer it in one reply. If an ask id exists, give it after the question.
+1. Read before writing. Use what this session actually did: its own conversation so far, its pending ask (`agent-ask list --pending`, then `agent-ask card <id>` for the exact question and options), its plan file (`~/.claude/plans/<slug>.md` or the plan the session named), its queue item (`$AGENT_QUEUE_ITEM`), and its PR (`gh pr view <N> -R <repo>`). Do not reconstruct from memory. Anything you did not check, label as assumed.
+2. Change nothing. This turn is read-only: no edits, pushes or landings. The one exception: when the open question has no pending ask (it was only asked in chat), post it once with `agent-ask post`, as the `88-ask-filed` Stop hook requires.
+3. Write the answer in the shape below, in this order, under these headings. Keep it to about 25 lines: define only the terms the answer uses, and give each option at most three lines.
 
 ## The shape
 
@@ -45,10 +44,12 @@ Not for status across all sessions: that is `fleet-lead`. Not for explain-first 
 
 **If you say nothing.** What the session does next, or that it waits.
 
+**The question again.** Last, the open question in the same words it was asked, with its options, so the human can answer in one reply. The ask id goes after it. Skip when there is no open question.
+
 ## Do NOT
 
 - Do not use a term before defining it. The reader's not knowing the terms is the reason this skill runs.
 - Do not open with ids, PR numbers, SHAs or paths. They go after the point, if at all.
 - Do not balance the options artificially. If one is clearly right, say so and say why the others lose.
-- Do not pad: no restating the human's question, no closing recap, no offer to explain more.
+- Do not pad: no restating the human's question, no closing recap beyond the repeated question, no offer to explain more.
 - Do not answer with a plan or start acting on the question. The human decides after reading.
