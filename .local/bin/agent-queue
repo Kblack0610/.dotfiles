@@ -364,7 +364,13 @@ hold_for() {
   HOLD=""
   if [ -n "$after" ]; then
     after_status "$after"
-    [ "$AST" = ok ] || { HOLD="after $after"; return; }
+    case "$AST" in
+      ok) ;;
+      "") HOLD="after $after"; return ;;
+      # Any other close releases only if that slug is queued again and closes ok: say so, so the
+      # list and the hub show a dead hold apart from a live one.
+      *) HOLD="after $after closed $AST, dead: cancel it or set after=<slug>"; return ;;
+    esac
   fi
   focus_hold "${3-}" "${4-}" "$tags"
   [ -z "$HOLD" ] || return 0

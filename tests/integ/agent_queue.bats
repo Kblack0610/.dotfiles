@@ -339,9 +339,23 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move first done --status failed
   run "$AQ" next
   assert_failure
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first closed failed, dead: cancel it or set after=<slug>"
   "$AQ" add --project game --slug first --repeat "again"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first"
   "$AQ" move first done --status ok
   [ "$("$AQ" next --json | jq -r .slug)" = second ]
+}
+
+@test "an after: on an item closed cancelled says the hold is dead, through show as well as list" {
+  "$AQ" add --project game --slug first "a"
+  "$AQ" add --project game --slug second --after first "b"
+  "$AQ" move first done --status cancelled
+  run bash -c "'$AQ' show second --json | jq -r .hold"
+  assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
 }
 
 @test "night and at: tags hold until their time, other tags are labels" {
