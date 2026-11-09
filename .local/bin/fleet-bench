@@ -3456,7 +3456,7 @@ hold_test() {
 # merges whose area they are, the ones the Stop hook would pick for what each changed; a red that names none (lint, rust, a timeout) leaves only the merges
 # in last green..first red.
 hold_streak() {
-  local repo=$1 streak=$2 near id failed sha msha m f paths hits
+  local repo=$1 streak=$2 near id failed sha msha m f paths hits unread=0
   local -A body
   near=$(jq -c --arg repo "$repo" --argjson s "$streak" --argjson runs "$3" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
     ($s.red.createdAt | ep) as $red | .[] | select(.repo == $repo)
@@ -3465,35 +3465,36 @@ hold_streak() {
   [ -n "$near" ] || return 0
   id=$(jq -r .red.id <<<"$streak")
   failed=$(hold_memo "failed_${repo//\//_}_$id" hold_failed "$repo" "$id") ||
-    { say "hold: cannot read the log of run $id on $repo"; return 0; }
+    { say "hold: cannot read the log of run $id on $repo"; return 1; }
   sha=$(jq -r .red.headSha <<<"$streak")
   if [ -n "$failed" ]; then
     while IFS= read -r f; do
       body[$f]=$(hold_memo "test_${repo//\//_}_${sha}_${f//\//_}" hold_test "$repo" "$sha" "$f") ||
-        say "hold: cannot read $f on $repo at ${sha:0:8}"
+        { say "hold: cannot read $f on $repo at ${sha:0:8}"; unread=1; }
     done <<<"$failed"
-    hits=$(while IFS= read -r m; do
+    hits=$(rc=0; while IFS= read -r m; do
       msha=$(jq -r .sha <<<"$m")
       paths=$(hold_memo "files_${repo//\//_}_$msha" commit_paths "$repo" "$msha" 2>/dev/null) ||
-        { say "hold: cannot read the files of $repo ${msha:0:8}"; continue; }
+        { say "hold: cannot read the files of $repo ${msha:0:8}"; rc=1; continue; }
       for f in "${!body[@]}"; do
         test_picked "$paths" "$f" <<<"${body[$f]}" && { printf '%s\n' "$m"; break; }
       done
-    done <<<"$near")
+    done <<<"$near"; exit "$rc") || unread=1
   else
     hits=$(jq -c --argjson s "$streak" "$JQ_LIB"'select(.at > ($s.green.createdAt | ep))' <<<"$near")
   fi
-  [ -n "$hits" ] || return 0
+  [ -n "$hits" ] || return "$unread"
   jq -cs --argjson s "$streak" --arg failed "$failed" '
     {name: "ci-\($s.red.headSha[0:8])-\($s.workflow | ascii_downcase | gsub("[^a-z0-9]+"; "-"))",
      what: "\($s.workflow) red at \($s.red.headSha[0:8])\(if $failed == "" then ", no bats file named" else ": " + ($failed | split("\n") | join(", ")) end)",
      merges: .}' <<<"$hits"
+  return "$unread"
 }
 
 # hold_reds <now> <queue items> -> one record a line for each red now that counts against a cleanup
 # merge: {name, what, merges}. fleet-liveness counts once it is past triage's patience, so a flap
-# stays out. A repo whose runs cannot be read says so and counts as nothing, and the return is 1 so a
-# caller that needs "not red" can tell that from "unknown".
+# stays out. A repo or run that cannot be read, or that the run ledger does not hold, says so and
+# counts as nothing, and the return is 1 so a caller that needs "not red" can tell that from "unknown".
 hold_reds() {
   local t=$1 merges repo runs rc streak since w=fleet-liveness h=$((HOLD_HOURS * 3600)) unread=0
   # pr: and merged: are lists in step, one PR per repo (agent-land)
@@ -3509,11 +3510,11 @@ hold_reds() {
   fi
   while IFS= read -r repo; do
     rc=0; runs=$(hold_runs "$repo") || rc=$?
-    if [ "$rc" -eq 3 ]; then say "hold: $repo is not in the run ledger (day-log-ci), so nothing guards its main"; continue; fi
+    if [ "$rc" -eq 3 ]; then say "hold: $repo is not in the run ledger (day-log-ci), so nothing guards its main"; unread=1; continue; fi
     [ "$rc" -eq 0 ] || { say "hold: cannot read the runs on $repo main"; unread=1; continue; }
-    jq -c "$MAIN_STREAKS"' | select(.green)' <<<"$runs" | while IFS= read -r streak; do
-      hold_streak "$repo" "$streak" "$runs" "$merges"
-    done
+    while IFS= read -r streak; do
+      hold_streak "$repo" "$streak" "$runs" "$merges" || unread=1
+    done < <(jq -c "$MAIN_STREAKS"' | select(.green)' <<<"$runs")
   done < <(jq -r 'map(.repo) | unique[]' <<<"$merges")
   return "$unread"
 }
@@ -3536,11 +3537,16 @@ triage_hold_rows() {
 # row, every hold, plus every watch at TRIP whatever its age, so a fix that came back counts before
 # triage would file it.
 reds_live() {
-  local f
   { triage_rows; triage_log_rows; triage_red_rows; } | cut -f1
   jq -r "$JQ_LIB"'hold_key' <<<"$1"
+  watch_keys TRIP
+}
+
+# watch_keys <state> -> the row key of every watch in that Sentinel state, one a line
+watch_keys() {
+  local f
   for f in "$TRIAGE_WATCH_STATE"/*.state; do
-    [ -e "$f" ] && [ "$(cat "$f")" = TRIP ] || continue
+    [ -e "$f" ] && [ "$(cat "$f")" = "$1" ] || continue
     f=${f##*/}
     printf 'check(watch): %s tripped since\n' "${f%.state}"
   done
@@ -3643,26 +3649,39 @@ cmd_reds() {
 
 # triage_retire <dry> -> closes each check(watch) or fix(hold) row nobody started whose key left
 # reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it again.
-# Closes nothing when the live list cannot be trusted: an unreadable queue or run is not a recovery.
+# Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
+# board cannot be read, a watch whose probe could not run (ERROR), every hold row when a repo's runs
+# could not be read, and a ci- hold whose merge has left the REDS_DAYS window hold_reds reads. A row
+# that fails to close is said and tried again next pass: retiring never stops new reds being filed.
 # Leaves the count in TRIAGE_RETIRED.
 triage_retire() {
-  local dry=$1 t items holds live board title raw key
-  local shape='^((check\(watch\)|fix\(hold\)): [^ ]+ (tripped since|went red))'
+  local dry=$1 t items holds holds_read=1 live board slugs title raw key
+  local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red)'
+  local merge='after cleanup merges? ([^ ]+) \('
   TRIAGE_RETIRED=0
   [ -d "$TRIAGE_WATCH_STATE" ] || return 0
   t=$(now)
   items=$(reds_items "$t") || return 0
-  holds=$(hold_reds "$t" "$items") || return 0
-  live=$(reds_live "$holds" | tr '[:upper:]' '[:lower:]')
-  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
+  holds=$(hold_reds "$t" "$items") || holds_read=0
+  live=$({ reds_live "$holds"; watch_keys ERROR; } | tr '[:upper:]' '[:lower:]')
+  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { say "retire: $KPI_BOARD agent board unreadable"; return 0; }
+  slugs=$(jq -r '.[].slug' <<<"$items")
   while IFS=$'\t' read -r _ _ title raw; do
     [[ $title =~ $shape ]] || continue
     key=${BASH_REMATCH[1]}
     [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
-    TRIAGE_RETIRED=$((TRIAGE_RETIRED + 1))
-    if [ "$dry" = 1 ]; then echo "retire: $key"; continue; fi
-    $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent done "$key" --proof "run:fleet-bench-triage-$(date -d "@$t" +%F)" >/dev/null \
-      || { report_outcome FAILED "retire failed for $key"; return 1; }
+    if [[ $key == 'fix(hold): '* ]]; then
+      [ "$holds_read" = 1 ] || continue
+      if [[ $key == 'fix(hold): ci-'* ]]; then
+        [[ $raw =~ $merge ]] && grep -qxF -- "${BASH_REMATCH[1]}" <<<"$slugs" || continue
+      fi
+    fi
+    if [ "$dry" = 1 ]; then echo "retire: $key"; TRIAGE_RETIRED=$((TRIAGE_RETIRED + 1)); continue; fi
+    if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent done "$key" --proof "run:fleet-bench-triage-$(date -d "@$t" +%F)" >/dev/null; then
+      TRIAGE_RETIRED=$((TRIAGE_RETIRED + 1))
+    else
+      say "retire: could not close $key"
+    fi
   done <<<"$board"
 }
 
@@ -3700,7 +3719,7 @@ cmd_triage() {
     triage_retire 1
     return 0
   fi
-  triage_retire 0 || return 1
+  triage_retire 0
   if [ -z "$rows" ]; then
     say "no runner, unit, watch or log error at fault"
     if [ "$TRIAGE_RETIRED" -gt 0 ]; then report_outcome WORKED "$TRIAGE_RETIRED recovered rows closed"

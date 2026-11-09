@@ -1163,6 +1163,7 @@ case "$4" in
   edit) [ "$6" = --text ] || exit 8
         awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
   done) [ "$6" = --proof ] || exit 8
+        [ ! -e "$B.done-fails" ] || exit 1
         awk -F'\t' -v q="$5" 'index($3, q) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
 esac
 NS
@@ -1628,6 +1629,88 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   assert_output 0
   run grep -c 'check(watch): drift' "$BOARD"
   assert_output 1
+}
+
+@test "triage: a watch at ERROR keeps its row: a probe that could not run is not a recovery" {
+  triage_setup
+  watch drift ERROR -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  run "$SUBJECT" triage
+  run grep -c -- '--agent done' "$NLOG"
+  assert_output 0
+}
+
+@test "triage: a row in no shape triage writes stays open, however close its words" {
+  triage_setup
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): drift went red again after the deploy, look at the logs'
+  board_row ' ' 'fix(hold): drift tripped since yesterday'
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'retire:'
+}
+
+@test "triage: a row that will not close is said, and new reds are still filed" {
+  triage_setup
+  watch drift OK -90000 normal
+  watch spend TRIP -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  touch "$BOARD.done-fails"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'retire: could not close check(watch): drift tripped since'
+  run grep -c 'check(watch): spend' "$BOARD"
+  assert_output 1
+}
+
+@test "triage: a dry run with an unreadable board records no outcome" {
+  triage_setup
+  BENCH_NOTES_CMD=false run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'agent board unreadable'
+  run outcome
+  refute_output FAILED
+}
+
+@test "triage: a ci hold row closes only while its merge is still in the window hold_reds reads" {
+  hold_setup
+  cleanup kept -3600 5 aaa11111 .local/bin/tool
+  ci 1 success aaa11111 -3000
+  board_row ' ' 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge kept (PR 5 at aaa11111): shell tests red'
+  board_row ' ' 'fix(hold): ci-bbb22222-shell-tests went red after cleanup merge expired (PR 6 at bbb22222): shell tests red'
+  run "$SUBJECT" triage --dry-run
+  assert_line 'retire: fix(hold): ci-aaa11111-shell-tests went red'
+  refute_line 'retire: fix(hold): ci-bbb22222-shell-tests went red'
+}
+
+@test "triage: a repo that cannot be read keeps every hold row and still retires watch rows" {
+  hold_setup
+  watch drift OK -90000 normal
+  cleanup kept -3600 5 aaa11111 .local/bin/tool
+  ci 1 success aaa11111 -3000
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  board_row ' ' 'fix(hold): liveness-179 went red after cleanup merges kept (pr 5 at aaa11111)'
+  for state in unsynced down; do
+    touch "$GHD/$state"
+    run "$SUBJECT" triage --dry-run
+    assert_line 'retire: check(watch): drift tripped since'
+    refute_line 'retire: fix(hold): liveness-179 went red'
+    rm "$GHD/$state"
+  done
+  run "$SUBJECT" triage --dry-run
+  assert_line 'retire: fix(hold): liveness-179 went red'
+}
+
+@test "triage: a red whose failed log cannot be read keeps every hold row" {
+  hold_setup
+  cleanup before -7200 5 aaa11111 .local/bin/tool
+  cleanup inrange -3600 6 bbb22222 .local/bin/other
+  ci 1 success aaa11111 -7201; ci 2 failure bbb22222 -3601
+  board_row ' ' 'fix(hold): ci-ccc33333-shell-tests went red after cleanup merge inrange (PR 6 at ccc33333): shell tests red'
+  run "$SUBJECT" triage --dry-run
+  refute_line 'retire: fix(hold): ci-ccc33333-shell-tests went red'
+  echo 'lint failed' > "$GHD/log.2"
+  run "$SUBJECT" triage --dry-run
+  assert_line 'retire: fix(hold): ci-ccc33333-shell-tests went red'
 }
 
 @test "kpi: failed_unexplained counts the last 24h of failures with no reason, not reasoned or older ones" {
@@ -2102,6 +2185,7 @@ hold_setup() {
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
   cat >> "$SCHEDULES_SYNC" <<'SS'
 [ -e "$D/down" ] && exit 1
+[ -e "$D/unsynced" ] && exit 3
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
 jq -c 'map({id, event, workflow: .name, path: "shell.yml", status, conclusion, sha: .head_sha, created_at})' "$D/runs"
 SS
