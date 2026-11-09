@@ -216,14 +216,14 @@ finished_ok() {
 }
 
 # finished_row_ok <from> -> why an add from a board row is refused: an item under another slug already
-# finished ok on that row with a merge. finished_ok keys on the slug, and a hand start slugs
+# finished ok on that row, as finished_ok reads the slug's. finished_ok keys on the slug, and a hand start slugs
 # `<project>-<key>` where promote slugs the row `<key>`, so a done row's refill slipped past it
 # (2026-11-07: trader tr-58 queued again after #635 merged). Refused adds exit AQ_EX_FINISHED.
 finished_row_ok() {
   local key="${1#board:}" f
   [ "$key" != "$1" ] || return 0
-  grep -lE "^(from: board:|row: )${key}$" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
-    [ "$(fm_get "$f" status)" = ok ] && [ -n "$(fm_get "$f" merged)" ] || continue
+  grep -lxF -e "from: board:$key" -e "row: $key" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
+    [ "$(fm_get "$f" status)" = ok ] || continue
     printf '%s already finished ok on its own item %s (%s%s): pass --repeat to queue it again as new work\n' \
       "$key" "$(fm_get "$f" slug)" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
     break

@@ -1327,16 +1327,27 @@ game_ready() {
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished row was queued again"
 }
 
-@test "promote: a row whose merged item finished ok under another slug is not queued again" {
+@test "promote: a row whose item finished ok under another slug is not queued again" {
   project game beta "$SANDBOX/repos/game"
   row game agent 'landed three' '- [ ] landed three <!-- id:gm-9 -->'
   agent-queue add --project game --from "board:game:gm-9" --slug game-gm-9 "x" >/dev/null
-  agent-queue set game-gm-9 pr=o/game#5 merged=abc123 >/dev/null
   agent-queue move game-gm-9 done --status ok >/dev/null
   run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-9"}')" "" task
   assert_failure
   assert_output --partial 'gm-9 already finished ok on its own item game-gm-9'
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished row was queued again"
+}
+
+@test "promote: a failed item, or an ok one on a row with a longer key, leaves the row to be queued" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'retry' '- [ ] retry <!-- id:gm-9 -->'
+  agent-queue add --project game --from "board:game:gm-9" --slug game-gm-9 "x" >/dev/null
+  agent-queue move game-gm-9 done --status failed >/dev/null
+  agent-queue add --project game --from "board:game:gm-9x" --slug game-gm-9x "x" >/dev/null
+  agent-queue move game-gm-9x done --status ok >/dev/null
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-9"}')" "" task
+  assert_success
+  assert_output --partial 'queued game: gm-9'
 }
 
 @test "fleet-dispatch promote: the human's Start queues a row whose item finished ok, as a repeat" {
