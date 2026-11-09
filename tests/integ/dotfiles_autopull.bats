@@ -114,6 +114,19 @@ head_of() { git -C "$1" rev-parse HEAD; }
   assert_output 0
 }
 
+@test "--now links a file another tool's pull added, though the checkout is already current" {
+  export DOTFILES_DEPLOY="$REPO_ROOT/.local/bin/dotfiles-deploy"
+  rm -rf "$PRIV"
+  printf 'local\n' >"$HOME/f"
+  add_upstream pub .local/bin/hand-pulled v1
+  git -C "$PUB" pull -q
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'already current'
+  assert_line --index 1 '~: linked 1 missing file(s) into $HOME (dotfiles-deploy --apply --missing)'
+  assert_equal "$(readlink -f "$HOME/.local/bin/hand-pulled")" "$(readlink -f "$PUB/.local/bin/hand-pulled")"
+}
+
 @test "a fast-forward that adds a SKILL.md links the skill, flat" {
   export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
   add_upstream pub .claude/skills/ops/new-skill/SKILL.md v1
