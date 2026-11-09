@@ -126,7 +126,8 @@ test("a hash routes to its tab and the note it opens, decoded", () => {
   assert.deepEqual(r("#focus/status/inbox"), { name: "focus", tab: "daily", arg: "status/inbox", query: "" }, "an old Focus link still opens its note");
   assert.deepEqual(r("#outbox"), { name: "outbox", tab: "daily", arg: "outbox", query: "" }, "the retired Outbox tab is Daily's outbox");
   assert.deepEqual(r("#projects/notes-cockpit"), { name: "projects", tab: "projects", arg: "notes-cockpit", query: "" });
-  assert.deepEqual(r("#board"), { name: "board", tab: "projects", arg: "", query: "" });
+  assert.deepEqual(r("#board"), { name: "board", tab: "board", arg: "", query: "" });
+  assert.deepEqual(r("#projects/all"), { name: "projects", tab: "board", arg: "", query: "", section: "" });
   assert.deepEqual(r(""), { name: "", tab: "home", arg: "", query: "" }, "the landing tab is the first");
   assert.deepEqual(r("#fleet?lane=deliver&s=failed"), { name: "fleet", tab: "fleet", arg: "", query: "lane=deliver&s=failed" }, "after a ? is the tab's view state");
   assert.deepEqual(r("#nope"), { name: "nope", tab: "home", arg: "", query: "" });
