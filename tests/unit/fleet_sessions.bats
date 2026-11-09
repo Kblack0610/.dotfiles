@@ -620,6 +620,48 @@ ledger() {
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
+@test "live checkout descendants keep a shell WORKING while an idle sleep loop stays STALLED (ar-1065)" {
+  # Deterministic /proc snapshot: pid 1 has a readable cmdline but is never in live_wait's
+  # ancestor exclusion (which stops at init). All process discovery is stubbed; no job starts.
+  mkdir -p "$SANDBOX/wt" "$SANDBOX/other"
+  printf 'gate ci-gate.sh\ntest bats\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  ls() { printf 'lrwx------ 1 user user 0 Nov 8 00:00 /proc/1/cwd -> %s\n' "$SANDBOX/other"; }
+  ps() { printf '1 4343\n4343 4242\n4242 0\n'; }
+  tr() { printf '%s ' "$PROCESS_CMD"; }
+  local PROCESS_CMD job
+  for PROCESS_CMD in 'git submodule update --init --recursive' \
+      '/usr/bin/git -c filter.lfs.required=true submodule update --init' \
+      'git submodule--helper update --recursive' 'git -C target checkout main' 'git clone repo target' \
+      'git lfs pull' 'git-lfs smudge -- path' 'git-lfs filter-process'; do
+    job="$(live_wait "$SANDBOX/wt" 4242)"
+    [ "$job" = checkout ]
+    run b shell 0 0 0 33 1 2 0 - - - 1 - 1/2 x - "$job"
+    assert_output 'WORKING shell'
+    # A still-live operation retains the same stale-shell limit as gates and tests.
+    run b shell 0 0 0 120 1 2 0 - - - 1 - 1/2 x - "$job"
+    assert_output 'STALLED 2 dirty file(s), no PR, background shell idle over 120m'
+    # Neither a missing root nor an unrelated session can claim the transfer.
+    run live_wait "$SANDBOX/wt" 9999
+    assert_output ''
+    run live_wait "$SANDBOX/wt"
+    assert_output ''
+  done
+  PROCESS_CMD='git-lfs filter-process'
+  run live_wait "$SANDBOX/other"
+  assert_output 'checkout'
+  FLEET_TIME_USE_CONF="$SANDBOX/missing" run live_wait "$SANDBOX/wt" 4242
+  assert_output 'checkout'
+  for PROCESS_CMD in 'sleep 60' 'bash -c while sleep 60; do git submodule update; done' \
+      'git status' 'git log --grep=checkout' 'echo git lfs smudge' \
+      'git-lfs version' 'claude prompt git submodule update'; do
+    job="$(live_wait "$SANDBOX/wt" 4242)"
+    [ -z "$job" ]
+    run b shell 0 0 0 33 1 2 0 - - - 1 - 1/2 x - "${job:-jobs}"
+    assert_output 'STALLED 2 dirty file(s), no PR, background shell is not a gate or test'
+  done
+}
+
 @test "a finished plan is DONE past FLEET_IDLE_MIN even with a background shell" {
   # 2026-10-27: hub/dotfiles:1 sat 5/5 for over an hour as WORKING shell, never told to wind down.
   run b shell 0 0 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -
