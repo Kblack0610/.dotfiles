@@ -910,6 +910,31 @@ notes --profile bnb ptask game --agent start gm-9"
   [ "$(field "$f" note)" = "a b c" ]
 }
 
+@test "retask replaces a queued item's task from args or stdin and keeps its header; refuses an empty task or a started or done item" {
+  "$AQ" add --project game --from "board:game:ar-9" --tags "at:2030-01-01T09:00" --slug r "expect 16.7"
+  f="$(item queued r)"
+  head="$(sed '/^---$/q' "$f")"
+  run "$AQ" retask r "expect 85.0" "(17 of 20)"
+  assert_success
+  [ "$(sed -n '/^---$/,$p' "$f" | sed 1d)" = "expect 85.0 (17 of 20)" ]
+  [ "$(sed '/^---$/q' "$f")" = "$head" ]
+  printf 'line one\n---\nline three\n' | "$AQ" retask r
+  [ "$(sed -n '/^---$/,$p' "$f" | sed 1d)" = $'line one\n---\nline three' ]
+  [ "$(sed '/^---$/q' "$f")" = "$head" ]
+  run "$AQ" show r
+  assert_output --partial "line three"
+  run "$AQ" retask r " "
+  assert_failure; assert_output --partial "no task"
+  "$AQ" move r running
+  run "$AQ" retask r "too late"
+  assert_failure; assert_output --partial "r is running: its session already has the brief"
+  "$AQ" move r done --status ok
+  run "$AQ" retask r "too late"
+  assert_failure; assert_output --partial "nothing active with slug r"
+  run "$AQ" retask nowhere "x"
+  assert_failure
+}
+
 @test "a project rename moves the item's board origin with it, so agent-land closes the right row" {
   "$AQ" add --project game --from "board:game:fix the lobby: soon" --slug r "fix the lobby"
   run "$AQ" set r project=level "from=board:level:fix the lobby: soon"

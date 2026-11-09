@@ -16,6 +16,7 @@
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running or waiting item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--if <state>]
+#   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource>   a started item back in the queue, held on that agent-hold
@@ -213,6 +214,21 @@ finished_ok() {
   [ -z "${2-}" ] || [ "$(fm_body "$f" | head -1)" = "$(head -1 <<<"$2")" ] || return 0
   printf '%s already finished ok (%s%s): pass --repeat to queue it again as new work\n' \
     "$1" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
+}
+
+# finished_row_ok <from> -> why an add from a board row is refused: an item under another slug already
+# finished ok on that row, as finished_ok reads the slug's. finished_ok keys on the slug, and a hand start slugs
+# `<project>-<key>` where promote slugs the row `<key>`, so a done row's refill slipped past it
+# (2026-11-07: trader tr-58 queued again after #635 merged). Refused adds exit AQ_EX_FINISHED.
+finished_row_ok() {
+  local key="${1#board:}" f
+  [ "$key" != "$1" ] || return 0
+  grep -lxF -e "from: board:$key" -e "row: $key" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
+    [ "$(fm_get "$f" status)" = ok ] || continue
+    printf '%s already finished ok on its own item %s (%s%s): pass --repeat to queue it again as new work\n' \
+      "$key" "$(fm_get "$f" slug)" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
+    break
+  done
 }
 
 # Admission (ar-697): an automated filer adds to the queue only while the items that can start now
@@ -898,6 +914,7 @@ cmd_add() {
   local why
   # Checked before slug is reused below: an explicit --slug is the same work by name.
   [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}")"
+  [ -n "$repeat" ] || [ -n "${why:-}" ] || why="$(finished_row_ok "$from")"
   [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
   # Under the lock, so two filers at once cannot both pass on the same count.
   if [ -n "$auto" ] && [ -z "$running" ] && [ -z "${AQ_ADMITTED:-}" ]; then
@@ -1229,6 +1246,25 @@ cmd_set() {
   done
   item_event item-set "$f" --why "$*"
   echo "$slug: $*"
+}
+
+# retask <slug> [task...] -- replace a queued item's task, from args or stdin like add: the correction
+# for a task that holds a wrong fact, since the task is what its session is briefed with. A started
+# item is refused: its session already has the brief, so tell the session instead. The header stays
+# as filed (its row, title and holds); `set type= area=` when the correction changes the item's kind.
+cmd_retask() {
+  local slug="${1:?usage: agent-queue retask <slug> [task...]}" f text tmp was
+  shift
+  if [ $# -gt 0 ]; then text="$*"; elif [ ! -t 0 ]; then text="$(cat)"; fi
+  [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  [ "$(state_of "$f")" = queued ] || die "$slug is $(state_of "$f"): its session already has the brief; tell the session"
+  was="$(fm_body "$f" | head -1)"
+  tmp="$(mktemp "$(dirname "$f")/.retask.XXXXXX")" || die "cannot write in $(dirname "$f")"
+  { awk '{ print } $0 == "---" { exit }' "$f"; printf '%s\n' "$text"; } > "$tmp" && mv -- "$tmp" "$f"
+  item_event item-set "$f" --why "task rewritten, was: $was"
+  echo "$slug: task rewritten"
 }
 
 # attribute <slug> -- credit an item by the files its PR changed, repo-relative paths on stdin.
@@ -1692,11 +1728,11 @@ cmd_stats() {
 if [ -n "${AGENT_STATE_HOST:-}" ]; then
   # shellcheck source=../lib/fleet-hosts.sh
   . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
-  state_forward agent-queue "add attribute credit-of" "$@"
+  state_forward agent-queue "add retask attribute credit-of" "$@"
 fi
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | bump | set | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
