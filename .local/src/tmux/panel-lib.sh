@@ -229,7 +229,7 @@ panel_fzf_layout() {
     panel_fail "unknown layout: $first (stacked, side or hidden; saved in $file?)" || return 1
   helper="$(realpath "${BASH_SOURCE[0]}")"
   helper="$(printf '%q' "${helper%/*}/panel-layout.sh")"
-  PANEL_FZF_LAYOUT=(--preview-window="$(_panel_layout_spec "$first")"
+  PANEL_FZF_LAYOUT=(--preview-window="$(_panel_layout_spec "$first" "$PANEL_NAME")"
     "--bind=ctrl-/:transform($helper next $(printf '%q' "$PANEL_NAME"))"
     "--bind=$PANEL_SCROLL_BINDS")
 }
@@ -242,8 +242,9 @@ panel_layout_file() {
   printf '%s/panels/%s.layout\n' "${XDG_STATE_HOME:-$HOME/.local/state}" "$1"
 }
 
-# _panel_layout_spec stacked|side|hidden -- the --preview-window value for a layout. hidden is
-# stacked with the preview off, so the window has a shape to come back in.
+# _panel_layout_spec stacked|side|hidden [panel] -- the --preview-window value for a layout,
+# with the panel's own flags (panel_preview_extra) in every step, so ctrl-/ keeps them. hidden
+# is stacked with the preview off, so the window has a shape to come back in.
 _panel_layout_spec() {
   local w
   case "$1" in
@@ -252,7 +253,16 @@ _panel_layout_spec() {
   hidden) w="$(panel_fzf_preview down 60),hidden" ;;
   *) return 1 ;;
   esac
-  printf '%s\n' "${w#--preview-window=}"
+  printf '%s%s\n' "${w#--preview-window=}" "$(panel_preview_extra "${2:-}")"
+}
+
+# panel_preview_extra <panel> -- preview flags one panel adds to the shared layout. agent-panel's
+# preview is the session's own pane: word-wrapped, opened at the bottom like the pane, its status
+# line pinned while scrolling up.
+panel_preview_extra() {
+  case "$1" in
+  agent-panel) printf ',wrap-word,follow,~1' ;;
+  esac
 }
 
 # panel_layout_next <panel> -- ctrl-/'s fzf transform: print the next step of stacked -> side ->
@@ -277,7 +287,7 @@ panel_layout_next() {
   esac
   file="$(panel_layout_file "$panel")"
   mkdir -p "${file%/*}" && printf '%s\n' "$next" >"$file"
-  printf 'change-preview-window(%s)\n' "$(_panel_layout_spec "$next")"
+  printf 'change-preview-window(%s)\n' "$(_panel_layout_spec "$next" "$panel")"
 }
 
 # ── tmux ─────────────────────────────────────────────────────────────────────
