@@ -3,7 +3,7 @@
 //! `~/.config/agentctl/QUEUE.md`), so this module never opens `~/.agent/queue`: it runs
 //! `agent-queue list --json` and `agent-queue stats --json` through a `Runner` and types what
 //! they print. Cancel and bump are argv for agent-queue too. `candidates` types the ranked board
-//! rows `fleet-dispatch suggest --json` prints, for the tabs' Candidates section.
+//! rows of the snapshot `fleet-dispatch suggest --write` keeps, for the tabs' Candidates section.
 
 use std::collections::BTreeMap;
 
@@ -890,7 +890,7 @@ impl crate::table::Row for QueueRow<'_> {
 pub const CANDIDATES_SHOWN: usize = 30;
 
 /// One open board row `fleet-dispatch suggest --json` ranks: what the Queue tab's Candidates
-/// section shows. fleet-dispatch ranks it and nothing stores it; this only types it.
+/// section shows. fleet-dispatch ranks and stores it (`suggest --write`); this only types it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Candidate {
@@ -996,6 +996,9 @@ pub struct Candidates {
     pub urgent_blocked: usize,
     /// Projects worked on in the last day that have a row no worker covers, sorted.
     pub uncovered: Vec<String>,
+    /// When the snapshot was written, `HH:MM` (the day in front once it is not today's); empty
+    /// when the rows came from no file.
+    pub as_of: String,
 }
 
 impl Candidates {
@@ -1056,13 +1059,31 @@ pub fn parse_candidates(jsonl: &str) -> Candidates {
     c
 }
 
-/// The ranked candidates. Slow (it reads every board), so a view reads it off its draw loop.
-pub fn candidates(runner: &dyn Runner) -> Result<Candidates, String> {
-    let argv: Vec<String> = ["fleet-dispatch", "suggest", "--json"]
-        .into_iter()
-        .map(String::from)
-        .collect();
-    runner.run(&argv).map(|out| parse_candidates(&out))
+/// The ranked candidates, from the snapshot each real `fleet-dispatch run` writes (`suggest
+/// --write`, at `boards::candidates_file`): a file read, never a live suggest, which reads every
+/// board (55s on 1,600 rows, 2026-11-09). Stamped with the file's age, since it is up to a pass old.
+pub fn candidates(path: &std::path::Path) -> Result<Candidates, String> {
+    let body = std::fs::read_to_string(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            format!("no snapshot yet at {}, the next dispatch pass writes one", path.display())
+        }
+        _ => format!("{}: {e}", path.display()),
+    })?;
+    let mut c = parse_candidates(&body);
+    if let Ok(t) = std::fs::metadata(path).and_then(|m| m.modified()) {
+        c.as_of = as_of(t.into(), chrono::Local::now());
+    }
+    Ok(c)
+}
+
+/// `HH:MM`, with the day in front once it is not today's.
+fn as_of(t: chrono::DateTime<chrono::Local>, now: chrono::DateTime<chrono::Local>) -> String {
+    let f = if t.date_naive() == now.date_naive() {
+        "%H:%M"
+    } else {
+        "%b %-d %H:%M"
+    };
+    t.format(f).to_string()
 }
 
 /// A slug or a project name as agent-queue writes it, so nothing else reaches its argv.
@@ -1447,17 +1468,15 @@ mod tests {
     );
 
     #[test]
-    fn candidates_type_suggest_lines_in_rank_order() {
-        struct Out(&'static str, RefCell<Vec<String>>);
-        impl Runner for Out {
-            fn run(&self, argv: &[String]) -> Result<String, String> {
-                self.1.borrow_mut().push(argv.join(" "));
-                Ok(self.0.into())
-            }
-        }
-        let r = Out(SUGGEST, RefCell::default());
-        let c = candidates(&r).unwrap();
-        assert_eq!(r.1.borrow()[0], "fleet-dispatch suggest --json");
+    fn candidates_type_the_snapshot_lines_in_rank_order() {
+        let dir = std::env::temp_dir().join(format!("hub-cands-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("candidates.jsonl");
+        let e = candidates(&f).unwrap_err();
+        assert!(e.contains("next dispatch pass"), "no file yet: {e}");
+        std::fs::write(&f, SUGGEST).unwrap();
+        let c = candidates(&f).unwrap();
+        assert_eq!(c.as_of.len(), 5, "stamped HH:MM today: {}", c.as_of);
         assert_eq!((c.total, c.auto, c.more()), (2, 1, 0));
         let c = c.rows;
         let keys: Vec<&str> = c.iter().map(|c| c.key.as_str()).collect();
@@ -1467,11 +1486,26 @@ mod tests {
         assert_eq!(c[1].title(), "backtest report");
         assert_eq!(c[0].start_label(), "auto dispatch");
         assert_eq!(c[1].start_label(), "man held", "unjudged is not shown");
+        std::fs::write(&f, "").unwrap();
+        let c = candidates(&f).unwrap();
         assert_eq!(
-            candidates(&Out("", RefCell::default())).unwrap(),
-            Candidates::default(),
-            "no rows prints nothing"
+            (c.total, c.rows.len()),
+            (0, 0),
+            "an empty snapshot is no rows"
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn as_of_names_the_day_once_it_is_not_today() {
+        use chrono::TimeZone;
+        let at = |d, h| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 11, d, h, 7, 0)
+                .unwrap()
+        };
+        assert_eq!(as_of(at(9, 8), at(9, 9)), "08:07");
+        assert_eq!(as_of(at(8, 23), at(9, 9)), "Nov 8 23:07");
     }
 
     #[test]

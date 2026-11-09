@@ -439,3 +439,22 @@ test("a snapshot from before the reader has no langfuse key and still draws the 
   assert.match(lfTail(tokens()), /no figures in snapshot/);
   assert.equal(ctx.langfuseSection({ tokens: null }), "");
 });
+
+test("WHO SPENT 24H leads the tab: live Claude by runner, other harnesses from outcomes with their unpriced count", () => {
+  const who = { usd: 10, claude_usd: 9, rows: [
+    { who: "you", usd: 6, share: 0.6, source: "Prometheus", sessions: null, unpriced: null },
+    { who: "fleet-dispatch", usd: 3, share: 0.3, source: "Prometheus", sessions: null, unpriced: null },
+    { who: "codex", usd: 1, share: 0.1, source: "outcomes", sessions: 2, unpriced: 1 },
+    { who: "opencode", usd: null, share: 0, source: "outcomes", sessions: 1, unpriced: 1 },
+  ] };
+  const h = show(board({ who }));
+  assert.ok(h.indexOf("sec-who") < h.indexOf("sec-burn"), "who spent it is the first answer");
+  assert.match(h, /Who spent 24h <span class="muted">\$10\.00: Claude \$9\.00 live \(exporting sessions\); others: outcomes<\/span>/);
+  assert.match(h, /<tr><td>fleet-dispatch<\/td><td class="n">\$3\.00<\/td><td class="n">30%<\/td><td class="muted">live<\/td><\/tr>/);
+  assert.match(h, /<td>codex<\/td>.*?outcomes, 2 sessions, <span class="warn">1 unpriced<\/span>/);
+  assert.match(h, /<tr><td>opencode<\/td><td class="n">-<\/td><td class="n">-<\/td>/, "nothing priced is unknown, never $0");
+  assert.doesNotMatch(h, /LIVE 24H/, "the live total is this block's head, not a second tile");
+  // negative control: nothing read says so, never a $0 table
+  const none = show(board({ who: { usd: 0, claude_usd: null, rows: [] } }));
+  assert.match(none, /id="sec-who">Who spent 24h<\/h2><div class="panel muted">nothing read/);
+});

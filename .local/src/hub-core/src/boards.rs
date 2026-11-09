@@ -128,6 +128,17 @@ pub fn dispatch_dir() -> PathBuf {
     env("FLEET_DISPATCH_DIR").unwrap_or_else(|| home().join(".agent/dispatch"))
 }
 
+/// `fleet-dispatch`'s derived state, out of the autocommitted ~/.agent: `candidates.jsonl`, the
+/// snapshot each real pass writes (its `FLEET_DISPATCH_STATE`).
+pub fn dispatch_state_dir() -> PathBuf {
+    env("FLEET_DISPATCH_STATE").unwrap_or_else(|| home().join(".local/state/agentctl/dispatch"))
+}
+
+/// The ranked Candidates snapshot `fleet-dispatch suggest --write` keeps.
+pub fn candidates_file() -> PathBuf {
+    dispatch_state_dir().join("candidates.jsonl")
+}
+
 /// `day-log`'s records, one `<YYYY-MM-DD>.json` per local day (its `DAYLOG_DIR`).
 pub fn daylog_dir() -> PathBuf {
     std::env::var_os("DAYLOG_DIR")

@@ -65,7 +65,7 @@
 #                                queues the week's canary run: the claude lane, then each lane in
 #                                BENCH_CANARY_LANES whose source has room
 #   fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]]
-#                                | start <id> | score <id> | shepherd [--days N] [--json]
+#                                | start <id> | score <id> | shepherd [--days N] [--json] | dream [--days N] [--json]
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
 #                                the PR's own tests as the oracle. queue adds one night item per task
 #                                a week (retro runs it), start puts the session's worktree at the
@@ -271,6 +271,7 @@ FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy p
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"   # fleet-sessions --write
 RUNDOWNS="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/rundowns"   # the newest one is the last summary
 SHEPHERD_PASSES="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/passes.tsv"   # one scored pass a row, fleet-shepherd the writer
+DREAM_TRIAL="${DREAM_TRIAL_FILE:-$HOME/.agent/dreams/trial.tsv}"   # one counted sweep a row, agentctl-dream the writer
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 CAL_ARGS=(--argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX")
 
@@ -3350,12 +3351,24 @@ triage_coverage() {
 # when it breaks something: these are its post-merge guard. Each red reads as one record naming
 # every merge it could be, because one red that queued a fix per merge would be a stampede.
 
+# hold_ledger <owner/repo> -> "<ledger name> <base branch>" from day-log-ci, the one list of watched
+# repos: a GitHub line as written, else a Forgejo line as forgejo:owner/repo (the name pr_ci uses),
+# else the repo and main, which the ledger then answers for.
+hold_ledger() {
+  cat "${SCHEDULES_REPOS:-$HOME/.config/agentctl/day-log-ci}" 2>/dev/null | awk -v want="$(tr '[:upper:]' '[:lower:]' <<<"$1")" -v fallback="$1 main" '
+    /^#/ || NF < 2 { next }
+    tolower($1) == want { print $1, $2; found = 1; exit }
+    tolower($1) ~ /^forgejo:/ { n = tolower($1); sub(/^forgejo:[^\/]+\//, "", n); if (n == want) forge = "forgejo:" n " " $2 }
+    END { if (!found) print (forge != "" ? forge : fallback) }'
+}
+
 # hold_runs <owner/repo> -> the runs main's pushes started, from main_runs (exit 3: the run ledger
 # does not sync the repo). A scheduled run is left out: it fails on the environment moving, not on
 # a merge.
 hold_runs() {
-  local runs
-  runs=$(main_runs "$1" main) || return
+  local runs name base
+  read -r name base < <(hold_ledger "$1")
+  runs=$(main_runs "$name" "$base") || return
   jq -c 'map(select(.event == "push"))' <<<"$runs"
 }
 
@@ -3374,9 +3387,11 @@ hold_memo() {
 }
 
 # hold_failed <owner/repo> <run id> -> the bats files that failed in that run, repo-relative; rc 1
-# when its log cannot be read, or is not there yet.
+# when its log cannot be read, or is not there yet. gh cannot read a Forgejo run's log, so one names
+# no file and counts against the merges since the last green, like any red that names none.
 hold_failed() {
   local log
+  [[ $(hold_ledger "$1") != forgejo:* ]] || return 0
   log=$(gh run view "$2" -R "$1" --log-failed 2>/dev/null) && [ -n "$log" ] || return 1
   { grep -oE 'in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
 }
@@ -4489,6 +4504,36 @@ canary_lanes_section() {
     "| \(.harness)/\(.model // "-") | \(.runs) | \(.tasks) | \(.pass_rate | d) | \(.same_tasks | d) | \(.pass_rate_same | d) | \(.claude_pass_rate_same | d) | \(.min_per_run | d) | \(.turns_per_run | d) | \(if .cost_per_run == null then "-" else "$\(.cost_per_run)" end) | \(.tokens_per_run | d) |"' <<<"$j"
 }
 
+# canary_dream [--days N] [--json] -> one row per model dream's sweeps ran on over the last N days
+# (default 14), from agentctl-dream's trial.tsv (date, project, model, session, cost, verdict,
+# lessons added, memory refused): sweeps, cost and lessons added per sweep, the share with a memory
+# refused, the share FAILED or STALLED. No file yet is an empty answer, so the writer can land later.
+canary_dream() {
+  local days=14 json="" since
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="${2:-}"; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "canary dream: --days takes a whole number"; return 2; }; shift 2 ;;
+      --json) json=1; shift ;;
+      *) say "usage: fleet-bench canary dream [--days N] [--json]"; return 2 ;;
+    esac
+  done
+  [ -r "$DREAM_TRIAL" ] || { say "canary dream: no sweeps recorded yet ($DREAM_TRIAL)"; return 0; }
+  since="$(date -u -d "@$(( $(now) - days * 86400 ))" +%F)"
+  jq -Rnc --arg since "$since" "$JQ_LIB"'
+    [inputs | split("\t") | select(length >= 8 and .[0] >= $since)
+     | {model: .[2], cost: ((.[4] | tonumber?) // null), verdict: .[5],
+        lessons: ((.[6] | tonumber?) // 0), refused: ((.[7] | tonumber?) // 0)}]
+    | group_by(.model) | map(
+        (map(.cost | select(. != null))) as $c
+        | {model: .[0].model, sweeps: length, costed: ($c | length), cost_per_sweep: ratio($c | add // 0; $c | length),
+           lessons_per_sweep: ratio(map(.lessons) | add; length),
+           refused_share: ratio(map(select(.refused > 0)) | length; length),
+           stalled_share: ratio(map(select(.verdict == "FAILED" or .verdict == "STALLED")) | length; length)}) | .[]' "$DREAM_TRIAL" |
+    if [ -n "$json" ]; then cat; else
+      jq -r '"\(.model)\t\(.sweeps) sweeps\t$\(.cost_per_sweep // "-")/sweep over \(.costed)\tlessons/sweep \(.lessons_per_sweep // "-")\trefused \(.refused_share // "-")\tfailed or stalled \(.stalled_share // "-")"'
+    fi
+}
+
 # canary_shepherd [--days N] [--json] -> one row per model the shepherd's passes ran on over the
 # last N days (default 7), from the lane columns fleet-shepherd's lane_cols appends to passes.tsv
 # (model, nudges, survived, missed, wrong parks, parks; read by position here): passes,
@@ -4524,11 +4569,12 @@ cmd_canary() {
   case "${1:-}" in
     list) shift; canary_list "$@" ;;
     shepherd) shift; canary_shepherd "$@" ;;
+    dream) shift; canary_dream "$@" ;;
     verify) shift; canary_verify "$@" ;;
     queue) shift; canary_queue "$@" ;;
     start) shift; canary_start "$@" ;;
     score) shift; canary_score "$@" ;;
-    *) say "usage: fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]] | start <id> | score <id> | shepherd [--days N] [--json]"; return 2 ;;
+    *) say "usage: fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]] | start <id> | score <id> | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
   esac
 }
 

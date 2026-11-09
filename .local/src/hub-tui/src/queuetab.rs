@@ -3,10 +3,10 @@
 //! agent-web's Queue tab. Its sections are `flow` (the strip), `table` and `candidates`.
 //! `/ f s S x` are the shared table's keys; j/k pick a row (a done one too), Enter opens its
 //! detail, `c` arms a cancel that waits on y and `+`/`-` move its priority one step, both for an
-//! active item only. Below the table the Candidates fold (`hub_core::queue::candidates`,
-//! `fleet-dispatch suggest`): `C` opens it, j/k carry on into its rows, and `p` starts the
-//! selected one through the Projects tab's Start (`fleet-dispatch promote`). Every write goes
-//! through hub-core.
+//! active item only. Below the table the Candidates fold (`hub_core::queue::candidates`, the
+//! snapshot each `fleet-dispatch run` writes, `as of` its time): `C` opens it, j/k carry on into
+//! its rows, and `p` starts the selected one through the Projects tab's Start (`fleet-dispatch
+//! promote`). Every write goes through hub-core.
 
 use chrono::{DateTime, Utc};
 use hub_core::flow::Strip;
@@ -490,9 +490,15 @@ fn candidates(
         "C opens"
     };
     let (count, hint) = match cands {
-        None => (String::new(), "reading fleet-dispatch suggest"),
-        Some(Err(_)) => (String::new(), ""),
-        Some(Ok(c)) => (format!(" ({}, {} auto)", c.total, c.auto), hint),
+        None => (String::new(), "reading".to_string()),
+        Some(Err(_)) => (String::new(), String::new()),
+        Some(Ok(c)) => (
+            format!(" ({}, {} auto)", c.total, c.auto),
+            match c.as_of.as_str() {
+                "" => hint.into(),
+                t => format!("as of {t}  {hint}"),
+            },
+        ),
     };
     let mut out = vec![clip_line(
         heading(
@@ -1117,9 +1123,16 @@ pub(crate) mod tests {
         );
         assert!(!s.contains("bar-17"), "no row shows while folded\n{s}");
         assert!(text(&q, &QueueView::default(), 200).contains("+ CANDIDATES  reading"));
-        let err = Err("fleet-dispatch: unknown command suggest".to_string());
+        let err = Err("no snapshot yet, the next dispatch pass writes one".to_string());
         assert!(text_with(&q, &QueueView::default(), Some(&err), 200)
-            .contains("No candidates: fleet-dispatch: unknown command suggest"));
+            .contains("No candidates: no snapshot yet, the next dispatch pass writes one"));
+        let mut stamped = cands();
+        stamped.as_of = "08:07".into();
+        let s = text_with(&q, &QueueView::default(), Some(&Ok(stamped)), 200);
+        assert!(
+            s.contains("+ CANDIDATES (3, 2 auto)  as of 08:07  C opens"),
+            "{s}"
+        );
     }
 
     #[test]

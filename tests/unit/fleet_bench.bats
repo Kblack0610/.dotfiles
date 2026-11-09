@@ -2041,6 +2041,19 @@ failed() {
   for f; do printf 'fast tier\tFast tier\t2026-11-06T17:49:03Z #  in test file %s, line 60)\n' "$f"; done > "$GHD/log.$id"
 }
 
+@test "hold: a repo day-log-ci lists on Forgejo with another base is read under that name and base" {
+  hold_setup
+  export SCHEDULES_REPOS="$SANDBOX/day-log-ci"
+  printf '# watched\nforgejo:git.example.test/O/R master\n' > "$SCHEDULES_REPOS"
+  sed -i 's|\[ "$1 $3 $4" = "runs --branch main" \]|[ "$1 $2 $3 $4" = "runs forgejo:o/r --branch master" ]|' "$SCHEDULES_SYNC"
+  cleanup hit -7200 5 aaa11111 .local/bin/tool
+  ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'is not in the run ledger'
+  assert_output --partial 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge hit'
+}
+
 @test "hold: main going red on a merge's area test names that merge, and only that one" {
   hold_setup
   cleanup hit -7200 5 aaa11111 .local/bin/tool
@@ -4995,6 +5008,29 @@ start_rows() {
   BENCH_NOW=$((T0 + 60)) run "$SUBJECT" kpi --check '^startup_'
   assert_failure 1
   assert_line 'startup_ready_ms_p50 9000 (max 5000)'
+}
+
+@test "canary dream: the sweeps compare by model over the window; a sweep with no cost still counts; no file is an empty answer" {
+  export TZ=UTC DREAM_TRIAL_FILE="$SANDBOX/trial.tsv" BENCH_NOW=$(date -d 2026-11-20T12:00:00Z +%s)
+  run "$SUBJECT" canary dream --json
+  assert_success
+  assert_output --partial 'no sweeps recorded yet'
+  printf '%s\n' \
+    $'2026-11-18\ta\topus\ts1\t2.0\tWORKED\t2\t0' \
+    $'2026-11-19\tb\topus\ts2\t1.0\tSTALLED\t0\t1' \
+    $'2026-11-19\tc\tsonnet\ts3\t0.5\tWORKED\t1\t0' \
+    $'2026-11-19\td\tsonnet\t-\t-\tFAILED\t-\t-' \
+    $'2026-10-01\te\tsonnet\ts0\t9\tWORKED\t9\t9' > "$DREAM_TRIAL_FILE"
+  run "$SUBJECT" canary dream --json
+  assert_success
+  assert_equal "$(jq -sc . <<<"$output")" '[{"model":"opus","sweeps":2,"costed":2,"cost_per_sweep":1.5,"lessons_per_sweep":1,"refused_share":0.5,"stalled_share":0.5},{"model":"sonnet","sweeps":2,"costed":1,"cost_per_sweep":0.5,"lessons_per_sweep":0.5,"refused_share":0,"stalled_share":0.5}]'
+  run "$SUBJECT" canary dream
+  assert_line $'sonnet\t2 sweeps\t$0.5/sweep over 1\tlessons/sweep 0.5\trefused 0\tfailed or stalled 0.5'
+  # Negative control: the old row is outside 14 days and counts only when asked
+  run "$SUBJECT" canary dream --days 90 --json
+  assert_equal "$(jq -s 'map(select(.model == "sonnet")) | .[0].sweeps' <<<"$output")" 3
+  run "$SUBJECT" canary dream --days x
+  assert_failure 2
 }
 
 @test "canary shepherd: the shepherd's pass lanes compare by model over the window, from passes.tsv's lane columns" {
