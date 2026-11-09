@@ -58,7 +58,7 @@ setup() {
 
 @test "a row is the summary: stage, open and urgent; the rest is the preview's" {
   run bash -c "'$PROJECTS_SH' --list | sed -n 2p | cut -f5"
-  assert_output ' alpha  9 open  1 urgent'
+  assert_output ' alpha  9 open  !1'
   run bash -c "'$PROJECTS_SH' --list | sed -n 3p | cut -f5"
   assert_output ' alpha  2 open'
   run bash -c "'$PROJECTS_SH' --list | sed -n 1p | cut -f5"
