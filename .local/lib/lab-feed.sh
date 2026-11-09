@@ -19,7 +19,7 @@
 #                      instead), and resolved versions through a project-map path
 #                      that does not exist.
 #
-# So `lab/projects/index.md` — the file the lab root key (`Prefix+H`) opens — rendered every current
+# So `lab/projects/index.md` (the file tmux Prefix+P opens in the hub editor) rendered every current
 # project as `- **name** — —` for months. Nothing failed: an index that knows
 # nothing and an index that has nothing to report print the same thing. Same lesson
 # as any shared parser: a second copy of a grammar's regexes

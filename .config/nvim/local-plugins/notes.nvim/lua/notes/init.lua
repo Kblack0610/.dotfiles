@@ -120,7 +120,7 @@ local function get_projects_dir()
   return notes_path("projects", vim.fn.expand("~/.notes/lab/projects/current"))
 end
 
--- The projects front door. ONE file, the same one the lab root key (`Prefix+H`) opens and the same one
+-- The projects front door. ONE file, the same one tmux Prefix+P opens in the hub editor and the same one
 -- `notes` reads the `## Current` lane out of (notes-cli config.rs derives it as
 -- `<projects-dir>/../index.md`).
 --
@@ -166,7 +166,8 @@ end
 
 -- Rebuild the cwd's harpoon list. In lab: the projects index, then every beta and alpha
 -- project sheet, then whatever the user added (order in notes.harpoon.lab_slots).
--- Everywhere else in ~/.notes: today's daily in slot 1, the rest keep their order.
+-- Everywhere else in ~/.notes (the hub): today's daily, the projects index, then the user's
+-- pins from today; a new day wipes the list back to the two (notes.harpoon.hub_slots).
 local function sync_notes_harpoon_slots()
   if not is_in_notes_dir() then return end
 
@@ -192,11 +193,10 @@ local function sync_notes_harpoon_slots()
         daily_dir = vim.fn.fnamemodify(get_today_journal(), ":h") .. "/",
       })
     else
-      local pin = get_today_journal()
-      slots = { { value = pin, context = {} } }
-      for _, item in ipairs(items) do
-        if vim.fn.fnamemodify(item.value, ":p") ~= pin then table.insert(slots, item) end
-      end
+      slots = require("notes.harpoon").hub_slots(items, {
+        daily = get_today_journal(),
+        index = get_projects_anchor(),
+      })
     end
 
     list:clear()
@@ -326,6 +326,19 @@ function M.setup()
     desc = "Sync notes harpoon slots if starting in notes",
     group = journal_harpoon_group,
     callback = sync_notes_harpoon_slots,
+  })
+
+  -- The hub nvim lives for days, so VimEnter alone leaves yesterday's daily pinned. Prefix+N
+  -- (`tmx root hub`) `:e`s today's daily; entering that file is the day-turn event, so the
+  -- list resets there rather than on a timer. Lab keeps its own list and is left alone.
+  autocmd("BufEnter", {
+    desc = "Re-pin the hub harpoon list on entering today's daily",
+    group = journal_harpoon_group,
+    callback = function(args)
+      if is_in_lab() then return end
+      if vim.fn.fnamemodify(args.file, ":p") ~= get_today_journal() then return end
+      sync_notes_harpoon_slots()
+    end,
   })
 
   -- Neo-tree reveal globals (bound to <C-n>/<C-p> in plugins/harpoon.lua).

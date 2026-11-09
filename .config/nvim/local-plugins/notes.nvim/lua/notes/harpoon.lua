@@ -1,4 +1,4 @@
--- notes.harpoon: the order lab's harpoon list is rebuilt in. Pure (no harpoon, no shell),
+-- notes.harpoon: the order lab's and hub's harpoon lists are rebuilt in. Pure (no harpoon, no shell),
 -- so it is testable headless; init.lua's sync feeds it `notes projects --stats` and applies
 -- the result.
 
@@ -53,6 +53,26 @@ function M.lab_slots(items, stats_lines, opts)
     if not (auto or owned[path] or daily) then
       table.insert(out, item)
     end
+  end
+  return out
+end
+
+-- The hub list (any ~/.notes cwd outside lab, which is where the hub notes nvim runs): today's
+-- daily in slot 1, the projects index in slot 2, then the user's own pins - but only for the
+-- day they were made. When slot 1 is not today's daily the day has turned, and the list
+-- starts over as just those two, so yesterday's pins and dailies never pile up.
+--
+-- opts: daily (abs path of today's note), index (abs path of the projects index).
+function M.hub_slots(items, opts)
+  local first = items[1] and vim.fn.fnamemodify(items[1].value, ":p")
+  local out = {
+    { value = opts.daily, context = {} },
+    { value = opts.index, context = {} },
+  }
+  if first ~= opts.daily then return out end
+  for _, item in ipairs(items) do
+    local path = vim.fn.fnamemodify(item.value, ":p")
+    if path ~= opts.daily and path ~= opts.index then table.insert(out, item) end
   end
   return out
 end

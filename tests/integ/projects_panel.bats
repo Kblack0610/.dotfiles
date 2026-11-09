@@ -111,14 +111,19 @@ setup() {
   assert_output 'print(enter)+accept'
 }
 
-@test "o opens the project on the hub Board like Enter, e opens its sheet in the hub editor" {
+@test "o opens the sheet like Enter, b goes to the hub Projects tab" {
   run "$PROJECTS_SH" --key list o
   assert_output 'print(enter)+accept'
-  run "$PROJECTS_SH" --key list e
-  assert_output 'print(edit)+accept'
+  run "$PROJECTS_SH" --key list b
+  assert_output 'print(board)+accept'
   # Searching, both letters type themselves.
-  FZF_INPUT_STATE=enabled run "$PROJECTS_SH" --key list e
+  FZF_INPUT_STATE=enabled run "$PROJECTS_SH" --key list b
   refute_output --partial 'accept'
+}
+
+@test "e no longer has a meaning of its own: Enter opens the sheet" {
+  run "$PROJECTS_SH" --key list e
+  refute_output --partial 'print(edit)'
 }
 
 @test "a, g and c reach the project's repo: its agents, its session, a new Claude" {
@@ -181,6 +186,29 @@ setup() {
   assert_success
   run cat "$BATS_TEST_TMPDIR/calls"
   assert_output $'hub tab projects bnb/big-alpha\ntmx goto hub hub:board'
+}
+
+@test "--open sets the hub Projects tab to the project, then opens the sheet in the hub editor" {
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  for c in hub tmx; do
+    printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n' "$c" "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/$c"
+    chmod +x "$BATS_TEST_TMPDIR/bin/$c"
+  done
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --open bnb big-alpha /n/big-alpha/README.md
+  assert_success
+  run cat "$BATS_TEST_TMPDIR/calls"
+  assert_output $'hub tab projects bnb/big-alpha\ntmx open hub /n/big-alpha/README.md 1'
+}
+
+@test "--open still opens the sheet when the hub tab request fails" {
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nexit 1\n' >"$BATS_TEST_TMPDIR/bin/hub"
+  printf '#!/bin/sh\necho "tmx $*" >>"%s/calls"\n' "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/tmx"
+  chmod +x "$BATS_TEST_TMPDIR/bin/hub" "$BATS_TEST_TMPDIR/bin/tmx"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --open bnb big-alpha /n/s.md
+  assert_success
+  run cat "$BATS_TEST_TMPDIR/calls"
+  assert_output 'tmx open hub /n/s.md 1'
 }
 
 @test "--preview prints the hub's card for the project at the preview's width" {
