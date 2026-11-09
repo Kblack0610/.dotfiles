@@ -398,9 +398,9 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 @media (max-width: 760px) {
   /* A row on a phone: its lead wraps at full width, its glance sits under it, the rest wait for a
      tap (table.js stamps the roles). Direct children only, so a table nested in a detail is left alone. */
-  .tbl { font-size: 13px; }
   .tsort { display: inline-block; }
-  .tbl.tphone, .tbl.tphone > tbody { display: block; }
+  .tbl.tphone, .tbl.tphone > tbody { display: block; font-size: 13px; }
+  .tbl.tphone .btn { min-height: 40px; }
   .tbl.tphone > * > tr[data-phone=head] { display: none; }
   .tbl.tphone > * > tr[data-phone=row] { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
   .tbl.tphone > * > tr[data-phone=row] > td { border: 0; padding: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }

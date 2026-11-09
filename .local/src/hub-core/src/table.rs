@@ -260,6 +260,17 @@ pub struct PhoneTable {
     pub glance: &'static [&'static str],
 }
 
+/// How a phone draws the column `key` of a table with this lead and glance.
+pub fn role_of(key: &str, lead: &str, glance: &[&str]) -> &'static str {
+    if key == lead {
+        "lead"
+    } else if glance.contains(&key) {
+        "glance"
+    } else {
+        ""
+    }
+}
+
 fn phone_table<R: Row>() -> PhoneTable {
     PhoneTable {
         columns: R::COLUMNS,
@@ -268,9 +279,17 @@ fn phone_table<R: Row>() -> PhoneTable {
     }
 }
 
-/// Every table that names a phone layout. Costs picks its lead per cut in the page instead.
+/// Every table that names a phone layout, each Costs cut being one of its own.
 pub fn phone_tables() -> Vec<PhoneTable> {
-    vec![
+    let cuts = crate::costs::CUTS.iter().map(|cut| {
+        let columns = crate::costs::columns(cut);
+        PhoneTable {
+            columns,
+            lead: columns[0],
+            glance: crate::costs::CUT_GLANCE,
+        }
+    });
+    let rows = [
         phone_table::<crate::home::Need>(),
         phone_table::<crate::proposals::Proposal>(),
         phone_table::<crate::queue::QueueRow<'static>>(),
@@ -284,7 +303,8 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::releases::Release>(),
         phone_table::<crate::builds::Run>(),
         phone_table::<crate::sections::Section>(),
-    ]
+    ];
+    rows.into_iter().chain(cuts).collect()
 }
 
 /// One dropdown value: how many rows it would show and the whole query that picks it.
@@ -511,13 +531,7 @@ impl View {
                     sort: (self.sort == *key).then_some(self.dir),
                     next_sort,
                     next_dir,
-                    role: if *key == R::LEAD {
-                        "lead"
-                    } else if R::GLANCE.contains(key) {
-                        "glance"
-                    } else {
-                        ""
-                    },
+                    role: role_of(key, R::LEAD, R::GLANCE),
                 }
             })
             .collect();

@@ -98,8 +98,8 @@ test("with a dropdown in use only what is around it repaints", () => {
 });
 
 const heads = (roles) => roles.map((role, i) => ({ dataset: { role, label: "col" + i } }));
-const cells = (n) => Array.from({ length: n }, (_, i) => ({ dataset: {}, textContent: "text" + i }));
-const trOf = (c) => ({ cells: c, dataset: {}, classList: { add(k) { this[k] = true; } }, querySelector: () => c.find((td) => td.dataset.role === "lead") });
+const cells = (n) => Array.from({ length: n }, (_, i) => ({ dataset: {}, textContent: "text" + i, querySelector: () => null }));
+const trOf = (c) => ({ cells: c, dataset: {}, textContent: c.map((x) => x.textContent).join(""), classList: { add(k) { this[k] = true; } } });
 const tableOf = (roles, rows) => ({ rows: [trOf(heads(roles)), ...rows], classList: { add(k) { this[k] = true; } } });
 
 test("a table is stamped from its own headers, and a row of another shape is left alone", () => {
@@ -115,6 +115,14 @@ test("a table is stamped from its own headers, and a row of another shape is lef
   assert.equal(detail.cells[0].dataset.role, undefined);
 });
 
+test("a cell holding a control is never hidden, whatever its column", () => {
+  const row = trOf(cells(3)), t = tableOf(["lead", "", ""], [row]);
+  row.cells[2].querySelector = () => ({});
+  ctx.subject = t;
+  run("tblStamp(subject)");
+  assert.deepEqual(row.cells.map((c) => c.dataset.role), ["lead", "rest", "glance"]);
+});
+
 test("a table with no lead keeps its columns", () => {
   const row = trOf(cells(2)), t = tableOf(["", ""], [row]);
   ctx.subject = t;
@@ -126,7 +134,7 @@ test("a table with no lead keeps its columns", () => {
 test("a row expanded by a tap is still expanded after a redraw", () => {
   const before = trOf(cells(2)), t = tableOf(["lead", ""], [before]);
   ctx.subject = t;
-  run("tblStamp(subject); tblExpanded.add('text0')");
+  run("tblStamp(subject); tblExpanded.add('text0text1')");
   const after = trOf(cells(2));
   ctx.subject = tableOf(["lead", ""], [after]);
   run("tblStamp(subject); tblExpanded.clear()");

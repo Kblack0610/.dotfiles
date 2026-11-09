@@ -69,12 +69,12 @@ function dumpIndex() {
 // The server's Column carries each column's phone role; the fixtures name only the keys, so the
 // roles come from hub-core itself, matched on the table's whole column list.
 function withRoles(body, roles) {
-  const byColumns = new Map(roles.map((t) => [t.columns.join(), t]));
+  const byColumns = new Map(roles.map((t) => [[...t.columns].sort().join(), t]));
   const walk = (v) => {
     if (Array.isArray(v)) return v.map(walk);
     if (!v || typeof v !== "object") return v;
     const out = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
-    const t = Array.isArray(v.columns) && v.columns[0]?.key && byColumns.get(v.columns.map((c) => c.key).join());
+    const t = Array.isArray(v.columns) && v.columns[0]?.key && byColumns.get(v.columns.map((c) => c.key).sort().join());
     if (t) out.columns = out.columns.map((c) => ({ ...c, role: c.key === t.lead ? "lead" : t.glance.includes(c.key) ? "glance" : "" }));
     return out;
   };

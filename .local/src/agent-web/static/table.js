@@ -186,7 +186,6 @@ function tblTab(o) {
 // another cell count (a detail, a colspan) is left as it is, and a table with no lead keeps its columns.
 const TBL_OPENS = "tr.jr, tr.wr, tr.qr, tr.prop, tr.click, tr[data-open], tr[data-row]";
 const tblExpanded = new Set();
-const tblLead = (tr) => tr.querySelector(":scope > td[data-role=lead]")?.textContent;
 
 function tblStamp(table) {
   const [head, ...rows] = table.rows, heads = [...(head?.cells || [])];
@@ -197,10 +196,11 @@ function tblStamp(table) {
     if (tr.cells.length !== heads.length) continue;
     tr.dataset.phone = "row";
     [...tr.cells].forEach((td, i) => {
-      td.dataset.role = heads[i].dataset.role || "rest";
+      // A control is never hidden: a row's detail need not repeat its buttons.
+      td.dataset.role = heads[i].dataset.role || (td.querySelector("button, select, input") ? "glance" : "rest");
       td.dataset.label = heads[i].dataset.label || "";
     });
-    if (tblExpanded.has(tblLead(tr))) tr.classList.add("tx");
+    if (tblExpanded.has(tr.textContent)) tr.classList.add("tx");
   }
 }
 
@@ -219,8 +219,7 @@ function tblStampAdded(records) {
 function tblTap(e) {
   const tr = e.target.closest?.("tr[data-phone=row]");
   if (!tr || tr.matches(TBL_OPENS) || e.target.closest("a, button, select, input, summary")) return;
-  const lead = tblLead(tr);
-  if (tr.classList.toggle("tx")) tblExpanded.add(lead); else tblExpanded.delete(lead);
+  if (tr.classList.toggle("tx")) tblExpanded.add(tr.textContent); else tblExpanded.delete(tr.textContent);
 }
 
 if (typeof MutationObserver !== "undefined") {
