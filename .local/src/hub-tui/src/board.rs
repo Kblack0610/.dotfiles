@@ -773,17 +773,15 @@ impl<'a> Board<'a> {
         out
     }
 
-    /// The CI runs themselves are Releases' Builds section (`hub_core::builds`); CI points there.
+    /// The CI runs themselves are Releases' Builds section (`hub_core::builds`); CI points there,
+    /// and Releases names its own window so no number is repeated here.
     pub fn runs_badge(&self) -> Line<'static> {
         let key =
             hub_core::layout::bar_digit("releases").map_or(String::new(), |d| format!("{d} "));
         Line::from(vec![
             Span::styled("RUNS", self.p.head()),
             Span::styled(
-                format!(
-                    "  every CI run of {} days: {key}Releases, Builds",
-                    hub_core::builds::KEEP_DAYS
-                ),
+                format!("  every CI run: {key}Releases, Builds"),
                 self.p.dim(),
             ),
         ])
@@ -1960,7 +1958,7 @@ pub(crate) mod tests {
         let ci = tab(&fixture(), "ci", 160);
         assert_eq!(
             ci.lines().last(),
-            Some("RUNS  every CI run of 30 days: 0 Releases, Builds"),
+            Some("RUNS  every CI run: 0 Releases, Builds"),
             "{ci}"
         );
         assert!(!ci.contains("RECENT RUNS"), "the runs are Releases': {ci}");

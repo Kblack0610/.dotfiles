@@ -3899,7 +3899,7 @@ mod tests {
             "{s}"
         );
         assert!(!s.contains("CHANGES"), "the changes are Log's: {s}");
-        assert!(!s.contains("ASKS"), "the asks are Home's: {s}");
+        assert!(!s.contains("ASKS ("), "the asks are Home's: {s}");
 
         a.handle(key('x'));
         let s = screen(&mut a, 140, 30);

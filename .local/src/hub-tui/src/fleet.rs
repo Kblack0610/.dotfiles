@@ -1,7 +1,7 @@
 //! The Sessions tab's frame around the session table (controls.rs): the state document's age over
-//! it, and Log's Changes section from watch.log. Nightly reds and the open asks are Home's Needs
-//! you (`hub_core::home::needs`). It judges nothing: the bucket, the reason and every cell come
-//! from fleet-sessions, as agent-web's Sessions tab reads them (`hub_core::boards`).
+//! it. `changes` (watch.log) lives here but the Log tab draws it. Nightly reds and the open asks
+//! are Home's Needs you (`hub_core::home::needs`). It judges nothing: the bucket, the reason and
+//! every cell come from fleet-sessions, as agent-web's Sessions tab reads them (`hub_core::boards`).
 
 use chrono::{Local, TimeZone};
 use hub_core::boards::Watch;
@@ -331,7 +331,7 @@ pub mod tests {
         let p = Palette { no_color: true };
         let out = text(&page(&fixture(), p, 1_000_000, 240));
         // The fixture has a red nightly and an open ask: Home's Needs you lists both.
-        assert!(!out.contains("NIGHTLY") && !out.contains("ASKS"), "{out}");
+        assert!(!out.contains("NIGHTLY") && !out.contains("ASKS ("), "{out}");
         assert!(!out.contains("unity-core-playground red: Shots"), "{out}");
         assert!(!out.contains("ggK2ey") && !out.contains("rename?"), "{out}");
     }

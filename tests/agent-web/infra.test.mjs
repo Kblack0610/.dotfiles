@@ -82,5 +82,5 @@ test("CI lists no runs: one line links to Releases, whose Builds section has the
   Object.assign(ist, { open: {} });
   const h = run("ciSection({}, {}, Date.now())");
   assert.ok(!h.includes("Recent runs"), "the runs are Releases'");
-  assert.match(h, /<div class="cline">Runs: every CI run of 30 days is on <a href="#releases">Releases, Builds<\/a><\/div>$/);
+  assert.match(h, /<div class="cline">Runs: every CI run is on <a href="#releases">Releases, Builds<\/a><\/div>$/);
 });
