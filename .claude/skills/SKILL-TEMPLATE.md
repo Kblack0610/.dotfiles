@@ -32,6 +32,6 @@ Not for <adjacent case> - that is `<sibling-skill>`.
 
 ## How to use this template
 
-Copy it to `.claude/skills/<category>/<skill-name>/SKILL.md`, in the repo the `dotfiles-land` skill picks, then delete this trailing section. A new public skill also needs a line in the `.gitignore` allowlist. Run `skill-deploy` to link it, and never hand-write the symlink.
+Copy it to `.claude/skills/<category>/<skill-name>/SKILL.md`, in the repo the `dotfiles-land` skill picks, then delete this trailing section. A new public skill also needs a line in the `.gitignore` allowlist. Landing it links it (`dotfiles-autopull` runs `skill-deploy`); never hand-write the symlink.
 
 **House rules.** `~/.local/src/docs/skills.md` is the standard: frontmatter, the description budget, `reviewed`, the required heading, body size, ASCII. `skill-drift --lint .` checks what it can, and CI runs the same command.
