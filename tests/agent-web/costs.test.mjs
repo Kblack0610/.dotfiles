@@ -81,7 +81,7 @@ test("the model cut draws the server's columns, order and sort, with its evaluat
   assert.doesNotMatch(h, /data-tsort="runner"/, "a column the cut does not name is not drawn");
   const heads = [...h.matchAll(/title="sort by ([^"]+)"/g)].map((m) => m[1]);
   assert.deepEqual(heads.slice(0, 2), ["model", "harness"], "the header is in the cut's order, as the cells are");
-  assert.match(h, /aria-sort="ascending"><button class="thsort" data-tsort="" data-tdir="desc" title="sort by cost">cost \^/, "the sorted header says its direction");
+  assert.match(h, /aria-sort="ascending"[^>]*><button class="thsort" data-tsort="" data-tdir="desc" title="sort by cost">cost \^/, "the sorted header says its direction");
   assert.ok(h.indexOf("gpt-5-codex") < h.indexOf("opus-5-5"), "the server's order is kept");
   assert.match(h, /<td class="n">\$5\.14<\/td>/, "$ per PR");
   assert.match(h, /<td class="n">0\.88<\/td>/, "landed rate");

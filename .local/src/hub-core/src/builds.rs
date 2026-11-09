@@ -136,6 +136,8 @@ impl Row for Run {
     ];
     const STATES: &'static [&'static str] = &["all", "running", "queued", "red", "green"];
     const FACETS: &'static [&'static str] = &["repo", "forge", "event", "state"];
+    const LEAD: &'static str = "workflow";
+    const GLANCE: &'static [&'static str] = &["state", "repo", "took"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| match s {

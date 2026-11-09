@@ -166,6 +166,8 @@ impl crate::table::Row for Job {
     ];
     const STATES: &'static [&'static str] = &["all", "running", "queued", "done", "failed"];
     const FACETS: &'static [&'static str] = &["source", "result"];
+    const LEAD: &'static str = "name";
+    const GLANCE: &'static [&'static str] = &["state", "started", "result"];
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
