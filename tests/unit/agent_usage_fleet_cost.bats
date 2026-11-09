@@ -111,10 +111,48 @@ cost() { "$AU" fleet-cost --json | jq -c "$1 | walk(if type == \"number\" then .
   assert_output '[1,[0,1],5]'
 }
 
+@test "a session on the gateway is its metered line only, and a later row for a session replaces an earlier one" {
+  { printf '{"session_id":"g","harness":"opencode","provider":"litellm","updated_epoch":%s,"cost_usd":40}\n' "$NOW"
+    printf '{"session_id":"l","harness":"claude-lazer","updated_epoch":%s,"cost_usd":40}\n' "$NOW"
+    printf '{"session_id":"x","harness":"codex","updated_epoch":%s,"cost_usd":9,"cost_src":"price"}\n' "$NOW"
+    printf '{"session_id":"x","harness":"codex","updated_epoch":%s,"cost_usd":1,"cost_src":"price"}\n' "$((NOW - 60))"
+  } > "$OUTCOMES_ROOT/p/2026.jsonl"
+  run cost '[.other_harness.codex.usd, (.other_harness | keys)]'
+  assert_output '[9,["codex","gateway"]]'
+}
+
+@test "a session with two runner labels loses what came before once and keeps the label it has" {
+  jq -c '. + [{metric: {session_id: "billed", model: "claude-opus-5-5"}, value: [0, "3"]}]' "$FIX/window" > "$FIX/w" && mv "$FIX/w" "$FIX/window"
+  run cost '[.total.claude_measured, .by_runner.dream.measured]'
+  assert_output '[15,13]'
+}
+
+@test "a token type no billed session had makes the model unpriced, never $0 for that type" {
+  python3 - <<'PY'
+import json, os, random
+fix = os.environ["FIX"]
+random.seed(9)
+cost, tok = [], []
+for i in range(12):
+    t = [random.randint(1, 9) * 10**6, random.randint(1, 9) * 10**6, random.randint(1, 9) * 10**7, 0]
+    cost.append({"metric": {"session_id": f"z{i}", "model": "claude-nocw-1"}, "value": [0, str(sum(r * v / 1e6 for r, v in zip((4, 20, 0.2), t)))]})
+    for k, v in zip(("input", "output", "cacheRead", "cacheCreation"), t):
+        tok.append({"metric": {"session_id": f"z{i}", "model": "claude-nocw-1", "type": k}, "value": [0, str(v)]})
+json.dump(cost, open(f"{fix}/fit-cost", "w"))
+json.dump(tok, open(f"{fix}/fit-tok", "w"))
+PY
+  turn u claude-nocw-1 0 0 1000000 0
+  run cost '[.total.estimated, .unpriced["claude-nocw-1"].why]'
+  assert_output '[0,"no billed cache_write tokens to fit"]'
+}
+
 @test "Codex is tagged by its price source and a Prometheus failure writes nothing" {
   printf '{"session_id":"x","harness":"codex","updated_epoch":%s,"cost_usd":3.5,"cost_src":"price"}\n{"session_id":"y","harness":"codex","updated_epoch":%s,"cost_usd":null}\n' "$NOW" "$NOW" > "$OUTCOMES_ROOT/p/2026-11.jsonl"
   run cost '.other_harness.codex'
   assert_output '{"usd":3.5,"sessions":2,"priced":1,"source":"price"}'
+  # a price table is an estimate; only the gateway's dollars are metered
+  run cost '[.total.measured, .total.estimated]'
+  assert_output '[17.5,3.5]'
   echo 'prom_q() { return 1; }' > "$PROM_LIB"
   run "$AU" fleet-cost --json
   assert_failure

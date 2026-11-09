@@ -254,10 +254,27 @@ PROM
   assert_output --partial 'fleet-cost: the estimate failed; the last one stays'
   run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
   assert_output 1
-  [ ! -e "$BENCH_FLEET_COST_FILE.tmp" ]
+  run compgen -G "$BENCH_FLEET_COST_FILE.*tmp"
+  assert_failure
+  # the failure waits its interval too, so an outage is one attempt per interval
+  BENCH_FLEET_COST_CMD="echo {\"total\":{\"usd\":3}}" sample_at 1500
+  run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
+  assert_output 1
+  touch -d '1 hour ago' "$BENCH_FLEET_COST_FILE"
   BENCH_FLEET_COST_CMD="echo {\"total\":{\"usd\":2}}" sample_at 1800
   run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
   assert_output 2
+}
+
+@test "chain: estimated_token_share reads the estimate, and an estimate that stopped reads as unknown" {
+  kpi_setup
+  t=$(date +%s)
+  jq -cn --argjson e "$t" '{as_of_epoch: $e, coverage: {estimated_token_share: 0.7}}' > "$BENCH_FLEET_COST_FILE"
+  BENCH_NOW=$t run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '.estimated_token_share["7d"]' <<<"$output")" 0.7
+  jq -cn --argjson e "$((t - 7300))" '{as_of_epoch: $e, coverage: {estimated_token_share: 0.7}}' > "$BENCH_FLEET_COST_FILE"
+  BENCH_NOW=$t run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '.estimated_token_share["7d"]' <<<"$output")" null
 }
 
 @test "ETA comes from the session's own measured phases once two phase starts were sampled" {

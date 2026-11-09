@@ -361,11 +361,11 @@ def scan(path, start, end, acc):
                 b["output"] += o
                 b["cache_write"] += cw
                 b["cache_read"] += cr
-            t = acc["tok"][(sid, model)]
-            t["input"] += i
-            t["output"] += o
-            t["cache_write"] += cw
-            t["cache_read"] += cr
+            per_type = acc["tok"][(sid, model)]
+            per_type["input"] += i
+            per_type["output"] += o
+            per_type["cache_write"] += cw
+            per_type["cache_read"] += cr
             acc["kind_files"][kind].add(path)
             sess["turns"] += 1
             sess["context"] += ctx
@@ -539,6 +539,7 @@ FIT_HOURS = 24            # the priced sessions the rates come from
 FIT_MIN_SESSIONS = 6      # half are held out to score the fit
 FIT_MIN_MTOK = 5.0
 FIT_MAX_ERROR_PCT = 5.0   # a fit that misses its held-out sessions by more prices nothing
+GATEWAY_PROVIDERS = ("litellm", "gateway")
 HELPER_MIN_BILLED = 5.0   # an origin billed less than this says nothing about its helper share
 PROM_LOOKBACK = "7d"      # how far back a session's pre-window total is looked for
 
@@ -611,6 +612,10 @@ def fit_rates(samples):
         if final is None:
             unfit[model] = "the fit missed its held-out sessions"
             continue
+        missing = [t for t, v in zip(TOKEN_TYPES, final) if v <= 0]
+        if missing:   # no rate for a type is unknown, and would price that type at $0
+            unfit[model] = f"no billed {missing[0]} tokens to fit"
+            continue
         rates[model] = {**{t: round(v, 4) for t, v in zip(TOKEN_TYPES, final)},
                         "sessions": len(pairs), "fit_error_pct": round(err, 2)}
     return rates, unfit
@@ -643,11 +648,11 @@ def measured_in_window(start, end):
     before = {(r["metric"].get("session_id"), clean_model(r["metric"].get("model"))): float(r["value"][1])
               for r in prom(f"sum by (session_id, model)(max_over_time({PROM_COST}[{PROM_LOOKBACK}] offset {secs}s))", end)}
     out = {}
-    for r in now:
+    for r in now:   # one session can carry several runner labels; what came before comes off once
         key = (r["metric"].get("session_id"), clean_model(r["metric"].get("model")))
-        usd = max(0.0, float(r["value"][1]) - before.get(key, 0.0))
-        out[key] = (out.get(key, (0.0, None))[0] + usd, r["metric"].get("agentctl_runner"))
-    return out
+        usd, runner = out.get(key, (0.0, None))
+        out[key] = (usd + float(r["value"][1]), runner or r["metric"].get("agentctl_runner"))
+    return {k: (max(0.0, usd - before.get(k, 0.0)), runner) for k, (usd, runner) in out.items()}
 
 
 def runner_calls(state_dir):
@@ -667,7 +672,8 @@ def runner_calls(state_dir):
 
 
 def other_harnesses(start, end, root):
-    """Every non-Claude harness from its session outcomes: newest row per session, tagged by its price source."""
+    """Every non-Claude harness from its session outcomes: newest row per session, tagged by its price source.
+    Sessions that went through the gateway are left out: its metered line already has their dollars."""
     newest = {}
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
         try:
@@ -680,7 +686,9 @@ def other_harnesses(start, end, root):
                 r = json.loads(line)
             except ValueError:
                 continue
-            if r.get("harness") not in (None, "claude") and start <= (r.get("updated_epoch") or 0) < end:
+            at = r.get("updated_epoch") or 0
+            if (not (r.get("harness") or "claude").startswith("claude") and r.get("provider") not in GATEWAY_PROVIDERS
+                    and start <= at < end and at >= (newest.get(r.get("session_id")) or {}).get("updated_epoch", 0)):
                 newest[r.get("session_id")] = r
     out = defaultdict(lambda: {"usd": 0.0, "sessions": 0, "priced": 0, "sources": set()})
     for r in newest.values():
@@ -689,7 +697,7 @@ def other_harnesses(start, end, root):
         if r.get("cost_usd") is not None:
             b["usd"] += r["cost_usd"]
             b["priced"] += 1
-            b["sources"].add(r.get("cost_src") or "?")
+            b["sources"].add(r.get("cost_src") or "harness")
     return out
 
 
@@ -705,11 +713,12 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
         return {"usd": 0.0, "measured": 0.0, "estimated": 0.0, "sessions": 0, "sessions_measured": 0}
     by = {k: defaultdict(bucket) for k in ("origin", "runner", "account", "model")}
     sess = defaultdict(lambda: {"measured": 0.0, "estimated": 0.0, "priced": 0.0, "whole": True, "runner": None})
-    gateway_models = {r["metric"].get("model") for r in prom("sum by (model)(litellm_spend_metric_total)", end)}
+    # a name the direct bills also fit is direct traffic, whatever the gateway calls its own routes
+    gateway_models = {r["metric"].get("model") for r in prom("sum by (model)(litellm_spend_metric_total)", end)} - set(rates)
     for (sid, model), (usd, runner) in measured.items():
-        if usd > 0:
+        if usd > 0 and model not in gateway_models:
             sess[sid]["measured"] += usd
-            sess[sid]["runner"] = runner
+            sess[sid]["runner"] = sess[sid]["runner"] or runner
             by["model"][model]["measured"] += usd
     tokens_all = tokens_est = 0
     unpriced = defaultdict(lambda: {"tokens": 0, "sessions": set()})
@@ -763,8 +772,8 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
     gateway = sum(float(r["value"][1]) for r in prom(f"sum(increase(litellm_spend_metric_total[{int(end - start)}s]))", end))
     other = {k: {"usd": round(v["usd"], 2), "sessions": v["sessions"], "priced": v["priced"], "source": ",".join(sorted(v["sources"])) or None}
              for k, v in other_harnesses(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes")).items()}
+    priced_other = sum(v["usd"] for v in other.values())   # a price table or the harness's own sum, never a bill
     other["gateway"] = {"usd": round(gateway, 2), "sessions": len(gateway_sessions), "priced": len(gateway_sessions), "source": "metered"}
-    other_usd = sum(v["usd"] for v in other.values())
     helper_usd = estimated_usd * share
 
     def rows(cut):
@@ -777,15 +786,16 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
         "window": {"start": dt.datetime.fromtimestamp(start).astimezone().isoformat(timespec="seconds"),
                    "end": dt.datetime.fromtimestamp(end).astimezone().isoformat(timespec="seconds")},
         "as_of": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "as_of_epoch": int(dt.datetime.now().timestamp()),
         "rates": rates,
         "unpriced": {m: {"tokens": v["tokens"], "sessions": len(v["sessions"]), "why": unfit.get(m, "no billed sessions")}
                      for m, v in unpriced.items()},
         "coverage": {"tokens": tokens_all, "tokens_estimated": tokens_est,
                      "estimated_token_share": round(tokens_est / tokens_all, 4) if tokens_all else None,
                      "sessions": len(sess), "sessions_estimated": sum(1 for s in sess.values() if s["measured"] <= 0)},
-        "total": {"usd": round(measured_usd + estimated_usd + helper_usd + other_usd, 2),
-                  "measured": round(measured_usd + other_usd, 2), "claude_measured": round(measured_usd, 2),
-                  "estimated": round(estimated_usd + helper_usd, 2),
+        "total": {"usd": round(measured_usd + gateway + estimated_usd + helper_usd + priced_other, 2),
+                  "measured": round(measured_usd + gateway, 2), "claude_measured": round(measured_usd, 2),
+                  "estimated": round(estimated_usd + helper_usd + priced_other, 2),
                   "helper_usd": round(helper_usd, 2), "helper_range": [0, round(estimated_usd * top, 2)]},
         "by_origin": rows(by["origin"]), "by_runner": rows(by["runner"]),
         "by_account": rows(by["account"]), "by_model": rows(by["model"]),

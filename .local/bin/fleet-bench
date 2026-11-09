@@ -136,7 +136,7 @@
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
-# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN.
+# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT.
 
 set -uo pipefail
 
@@ -249,6 +249,7 @@ set -uo pipefail
 : "${BENCH_FLEET_COST_CMD:=agent-usage fleet-cost --json}"
 : "${BENCH_FLEET_COST_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/fleet-cost.json}"
 : "${BENCH_FLEET_COST_EVERY_MIN:=30}"
+: "${BENCH_FLEET_COST_TIMEOUT:=240}"
 : "${BENCH_RELEASES_CMD:=release-state show --json}"   # request_to_live_h: a project with a row goes live in a tag, one without on its merge
 : "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
@@ -623,16 +624,18 @@ cmd_sample() {
   report_outcome WORKED "$n sessions, $e estimates, $s scores"
 }
 
-# fleet_cost_step: the whole fleet's estimate, rewritten at most every BENCH_FLEET_COST_EVERY_MIN. A failed
-# run keeps the last file, whose as_of then reads stale on the Costs tab.
+# fleet_cost_step: the whole fleet's estimate, tried at most every BENCH_FLEET_COST_EVERY_MIN. A failed
+# run keeps the last file and waits the same interval (touch), so a Prometheus outage costs one
+# attempt per interval; its as_of_epoch then reads stale on the Costs tab and in the KPI.
 fleet_cost_step() {
   [ -z "$(find "$BENCH_FLEET_COST_FILE" -mmin "-$BENCH_FLEET_COST_EVERY_MIN" 2>/dev/null)" ] || return 0
   mkdir -p "$(dirname "$BENCH_FLEET_COST_FILE")"
-  local tmp="$BENCH_FLEET_COST_FILE.tmp"
-  if $BENCH_FLEET_COST_CMD > "$tmp" 2>/dev/null && jq -e .total "$tmp" >/dev/null 2>&1; then
+  local tmp="$BENCH_FLEET_COST_FILE.$$.tmp"
+  if timeout "$BENCH_FLEET_COST_TIMEOUT" $BENCH_FLEET_COST_CMD > "$tmp" 2>/dev/null && jq -e .total "$tmp" >/dev/null 2>&1; then
     mv "$tmp" "$BENCH_FLEET_COST_FILE"
   else
     rm -f "$tmp"
+    touch -c "$BENCH_FLEET_COST_FILE"
     say "fleet-cost: the estimate failed; the last one stays"
   fi
 }
@@ -1765,7 +1768,8 @@ chain_counts() {
   elif lead=$(lead_time_json "$t"); then jq -r '"request_to_live_h=\(.p50 // "?")"' <<<"$lead"
   else echo "request_to_live_h=?"; fi
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
-  echo "estimated_token_share=$(jq -r '.coverage.estimated_token_share // "?"' "$BENCH_FLEET_COST_FILE" 2>/dev/null || echo '?')"
+  # older than four tries is an estimator that stopped, not today's share
+  echo "estimated_token_share=$(jq -r --argjson oldest "$((t - BENCH_FLEET_COST_EVERY_MIN * 240))" 'if (.as_of_epoch // 0) < $oldest then "?" else .coverage.estimated_token_share // "?" end' "$BENCH_FLEET_COST_FILE" 2>/dev/null || echo '?')"
   local orphans dups
   # the newest night only: a runner that stopped must read ?, never an older night's count as now
   dups=$(ls -d "$BENCH_DOCS_CLEANUP_DIR"/*/ 2>/dev/null | tail -1)
