@@ -24,6 +24,7 @@ setup() {
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
   export BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
+  export BENCH_RELEASES_CMD=false BENCH_RELEASED_CMD=false   # nor the real release-state: request_to_live_h reads ?
   # nor the real roadmaps, the whole queue or the real plans (fleet-bench epics)
   export BENCH_ROADMAP_CMD=false BENCH_ALL_ITEMS_CMD=true BENCH_PLAN_DIRS="$SANDBOX/no-plans"
   SNAP="$SANDBOX/snap.jsonl"
@@ -2479,11 +2480,12 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
-  assert_output "$(printf -- '--since %s\n' "$(date -d "@$((T0 - 8 * 86400))" +%F)" "$(date -d "@$((T0 - 86400))" +%F)")"
+  # and request_to_live_h reads BENCH_LEAD_DAYS (28) back, so a merge released this week counts
+  assert_output "$(printf -- '--since %s\n' "$(date -d "@$((T0 - 28 * 86400))" +%F)" "$(date -d "@$((T0 - 8 * 86400))" +%F)" "$(date -d "@$((T0 - 86400))" +%F)")"
 }
 
 @test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {
@@ -2520,6 +2522,69 @@ chain_fixture() {
   # the doctor failed a check
   printf 'PASS  map is valid JSON\nFAIL  line 4: an epic belongs on the human sheet\n' > "$BENCH_DOCTOR_LAST"
   check 'doctor_fail 1 (max 0)'
+}
+
+# lead_fixture: on the clean chain, five items the human asked for and two that do not count. game
+# has no release-state row, so its merge is live: 48h and 12h. web has one, so live is the first
+# tag holding the merge: c went out in a tag 2 days ago, 192h after its request; d is in no tag
+# yet; the checkout lacks e. Outside the count: a merge 9 days ago, a shepherd item, an unmerged one.
+lead_fixture() {
+  chain_fixture
+  iso() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
+  lead() { jq -cn --arg s "$1" --arg p "$2" --arg f "$3" --arg q "$(iso "$4")" --arg d "$(iso "$5")" --arg m "$6" \
+    '{slug: $s, state: "done", priority: "high", from: $f, project: $p, queued: $q, finished: $d} + (if $m == "" then {} else {merged: $m} end)'; }
+  {
+    lead a game human 259200 86400 aaa1111
+    lead b game human 172800 129600 bbb2222
+    lead c web human 864000 777600 ccc3333
+    lead d web human 172800 86400 ddd4444
+    lead e web human 172800 86400 eee5555
+    lead old game human 1036800 777600 fff6666
+    lead bot game shepherd 172800 86400 abc7777
+    lead open game human 172800 86400 ''
+  } >> "$DONE"
+  export BENCH_RELEASES_CMD=releases-stub BENCH_RELEASED_CMD=released-stub
+  printf '#!/usr/bin/env bash\necho %s\n' "'{\"rows\":[{\"project\":\"web\"},{\"project\":\"web\"}]}'" > "$SANDBOX/bin/releases-stub"
+  jq -cn --argjson t "$T0" '{sha: "ccc3333", tag: "web-v1.1.0", at: ($t - 172800)}, {sha: "ddd4444", tag: null, at: null},
+    {sha: "eee5555", tag: null, at: null, error: "commit not in the checkout"}' > "$SANDBOX/released.jsonl"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ncat "%s"\n' "$SANDBOX/released" "$SANDBOX/released.jsonl" > "$SANDBOX/bin/released-stub"
+  chmod +x "$SANDBOX/bin/releases-stub" "$SANDBOX/bin/released-stub"
+}
+
+@test "chain: request_to_live_h is the p50 hours from request to live, the merge with no release row, else the first tag" {
+  lead_fixture
+  run "$SUBJECT" chain --json
+  assert_success
+  assert_equal "$(jq -c '.request_to_live_h | [.["7d"], .now]' <<<"$output")" '[48,true]'
+  # only a project with a release row asks release-state, once, with every merged commit
+  run cat "$SANDBOX/released.calls"
+  assert_output 'web ccc3333 ddd4444 eee5555'
+  run "$SUBJECT" chain
+  assert_line 'request_to_live_h: p50 48h over 3 live in 7d (2 on merge, 1 in a tag), 1 merged in no tag yet, 1 unknown'
+}
+
+@test "chain: request_to_live_h reads ? while a trust KPI is under its bound, and its note says which" {
+  # NEGATIVE CONTROL: the same fixture with the gate off reads 48, so the ? below is the gate
+  lead_fixture
+  ci_row '{repo: "o/r", number: 8, session_id: "h1", merged_epoch: ($t - 3600), ci_red: 0}'
+  BENCH_LEAD_TRUST= run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '.request_to_live_h["7d"]' <<<"$output")" 48
+  run "$SUBJECT" chain --json
+  assert_success
+  assert_equal "$(jq -c '.request_to_live_h["7d"]' <<<"$output")" null
+  run "$SUBJECT" chain
+  assert_line 'request_to_live_h: p50 48h over 3 live in 7d (2 on merge, 1 in a tag), 1 merged in no tag yet, 1 unknown; reads ? until ledger_coverage 0.667 (min 0.95)'
+  # a trust KPI with no bound is not trusted either
+  sed -i '/^epic_linked_share_min=/d' "$KPI_THRESHOLDS"
+  sed -i '$d' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  run "$SUBJECT" chain
+  assert_line --partial '; reads ? until epic_linked_share 1 (no min)'
+  # the release snapshot unreadable: ? with the gate open, and the note says so
+  export BENCH_RELEASES_CMD=false BENCH_LEAD_TRUST=
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '.request_to_live_h["7d"]' <<<"$output")" null
+  run "$SUBJECT" chain
+  assert_line 'request_to_live_h: the done items or the release-state snapshot unreadable'
 }
 
 @test "chain: dup_pairs reads the newest nightly dups.json against dup_pairs_max; no snapshot reads ?" {

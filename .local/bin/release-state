@@ -11,6 +11,9 @@
 #                                         what a tag shipped (default: the newest release): its
 #                                         CHANGELOG.md section, else the merged PRs since the
 #                                         release before it; --list names every tag to pick from
+#   release-state released <project> <sha>...
+#                                         per commit, one JSON line: the first tag of the project's
+#                                         line that holds it and when that tag was made
 #
 # Declared targets live in project-map.json `trackers.<p>.targets`; pinned is read from the
 # fetched remote branch or, for a store channel, the newest recorded deploy; live from the
@@ -67,7 +70,7 @@ die() {
   [ -n "${REFRESH_WHY:-}" ] && [ ! -s "$REFRESH_WHY" ] && printf '%s' "$*" > "$REFRESH_WHY"
   exit 2
 }
-usage() { sed -n '4,14p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '4,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 now_epoch() { date +%s; }
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
@@ -681,8 +684,29 @@ cmd_changelog() {
   fi
 }
 
+# released <project> <sha>... -> one JSON object a commit: {sha, tag, at}, the oldest tag of the
+# project's line that contains it (git_first_tag) and its creation epoch; tag and at null when no
+# tag holds it yet. A commit the checkout lacks carries an error instead: an unfetched merge is
+# unknown, never unreleased.
+cmd_released() {
+  local proj="${1:-}" repo sha hit err
+  [ -n "$proj" ] && [ $# -gt 1 ] || usage
+  shift
+  project_tag_scope "$proj" || die "$proj has no checkout, so no tags to read"
+  repo="$_PTS_REPO"
+  for sha in "$@"; do
+    hit="" err=""
+    if ! [[ "$sha" =~ ^[0-9a-f]{7,40}$ ]]; then err="not a commit sha"
+    elif ! git -C "$repo" cat-file -e "$sha^{commit}" 2>/dev/null; then err="commit not in the checkout"
+    else hit="$(git_first_tag "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB" "$sha")" || err="tag lookup failed"; fi
+    jq -nc --arg s "$sha" --arg h "$hit" --arg e "$err" '($h | split(" ")) as $f
+      | {sha: $s, tag: ($f[0] // null), at: ($f[1] // "" | tonumber? // null)} + (if $e == "" then {} else {error: $e} end)'
+  done
+}
+
 case "${1:-}" in
   changelog) shift; cmd_changelog "$@" ;;
+  released) shift; cmd_released "$@" ;;
   refresh) shift; cmd_refresh "$@" ;;
   show) shift; cmd_show "$@" ;;
   check) shift; cmd_check "$@" ;;

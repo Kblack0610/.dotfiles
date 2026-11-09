@@ -265,6 +265,18 @@ git_prev_tag() {
   printf '%s' "$(printf '%s\n' "$all" | head -1)"
 }
 
+# git_first_tag <repo> <name> <scoped> <glob> <sha> - "<tag> <epoch>": the oldest tag of the
+# line that contains <sha>, by the tag's creation time, prereleases included (a beta build
+# shipped it too). Empty when no tag holds it yet; the caller checks the commit exists first.
+git_first_tag() {
+  local repo="$1" name="$2" scoped="$3" glob="${4:-}" sha="$5" g
+  [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -n "$sha" ] && command -v git >/dev/null 2>&1 || return 0
+  g=$(_gr_glob "$repo" "$name" "$scoped" "$glob")
+  [ -n "$g" ] || return 0
+  git -C "$repo" tag --list "$g" --contains "$sha" --sort=creatordate \
+    --format='%(refname:short) %(creatordate:unix)' 2>/dev/null | head -1
+}
+
 # git_tag_changes <repo> <prev> <tag> [pathfilter] [limit] - what <tag> shipped: the merged
 # PRs between <prev> and it (everything before it when <prev> is empty), as subject lines.
 git_tag_changes() {
