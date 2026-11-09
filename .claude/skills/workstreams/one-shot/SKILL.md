@@ -14,7 +14,7 @@ Carries one task the whole way: work, validation, PR, merge, queue record, wind-
 
 ## Scope and triggers
 
-Take one task from description to landed and wound down with no check-ins - work under autopilot rules, implement in a fresh worktree, run final-pass, run the project's own merge gate, open the PR, merge it, record it on its agent-queue item, then run wind-down. Use when the user says "one shot this", "/one-shot <task>", "do it all and land it", "just ship this end to end", or "do the whole thing, validate, PR and wind down". Pass --pr-only to stop after the PR is open. Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI), /captain (batches of tickets, not one task), and wind-down (only the session note and teardown). Not for releases, which stay with release-coordinator and the user.
+Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI) and wind-down (only the session note and teardown).
 
 - The user hands over one well-scoped task and wants it landed without being asked anything.
 - The user wants the session to close itself once the work is merged.
@@ -43,23 +43,18 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    <the project's gate command> && agent-land <N> --item <slug> --plan ~/.claude/plans/<slug>.md --phase "<task>"
    ```
    `agent-land` waits for the PR's checks, merges the validated head, records the PR on the item and moves it to done, closes the board row when the item came from the board, and ticks the plan phase. With no gate script the command is `agent-land` alone. A project doc that gives its own gate-and-land command wins; add `--item --plan --phase` to its `agent-land`.
-   - A repo whose canonical forge is Forgejo (home-config): `gh` sees only the GitHub mirror, so `agent-land` cannot run there. Open and merge through the `forgejo-ops` PR API, then `agent-queue set <slug> pr=<owner>/home-config#<N> merged=<sha>; agent-queue move <slug> done --status ok` (reap proves that sha in the checkout project-map `paths` has for the repo the ref names, then closes the row), and tick the plan phase by hand.
+   - A repo whose canonical forge is Forgejo (home-config): `agent-land` cannot run there; read `references/landing.md` "Forgejo repo".
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command.
    - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes and lands on the same gate). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
    - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording.
-   - A sheet row the human wrote for this work: also `notes ptask <project> done "<row>" --proof pr:<N>`.
+   - A sheet row the human wrote for this work, work that can only run after a set time or a night's data, or work blocked on another queue item: read `references/landing.md`, never wait on it in this session.
    - Then do any post-land step the project's CLAUDE.md names (unity-core-playground has none). Wind-down releases the worktree.
-   - Work left that can only run after a set time, a day of data or a night's log is not waited on. Land what is done, queue the rest as an `at:` item whose task text names the plan file (the `at:` rule in agentctl `QUEUE.md`; a new session's brief carries only the task text), mark those phases `- [-] <name>: queue item <slug>`, and go to step 7. A session sitting on a `sleep` reads as STALLED, holds a dispatch unit, and holds back every item queued `after:` it.
-   - Work blocked on another queue item (one that fixes its red, or a PR that must land first) is not waited on either: nothing wakes an idle session when that item lands, and reap keeps this item in `running/`. Check the blocker first (`agent-queue show <blocker>`): done ok means carry on now.
-     - Record the open PR on this item: `agent-queue set <slug> pr=<owner>/<repo>#<N>`.
-     - Queue the rest: `agent-queue add --project <p> --after <blocker> "<next step, naming the plan file, the PR and its branch>"`, and mark the phase `- [-] <name>: queue item <new slug>`. A blocker that closes failed never releases an `after:` hold, so the wind-down note names the blocker.
-     - Wind down without `auto`, as `--pr-only` does: once the session is gone, reap parks this item in `waiting/` and closes it when the PR merges.
-   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<owner>/<repo>#<N>; agent-queue move <slug> waiting` (`done --status ok` refuses an item whose PR has not merged). The item and any board row wait for the human's merge; `fleet-dispatch reap` then closes both on merge proof. Reap reads only GitHub, so on a Forgejo repo whoever merges records it: `agent-queue set <slug> merged=<sha>; agent-queue move <slug> done --status ok`.
+   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<owner>/<repo>#<N>; agent-queue move <slug> waiting` (`done --status ok` refuses an item whose PR has not merged). The item and any board row wait for the human's merge; `fleet-dispatch reap` then closes both on merge proof (reap reads only GitHub; Forgejo: `references/landing.md`).
 
 7. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
    - **`--pr-only`**: the open PR is the end the human asked for, so invoke it without `auto`; step 0's finished check would read the open PR as unlanded and refuse.
-   - **Blocked mode** (a red gate you cannot fix, or a hard gate with nothing else in the task left to build: autopilot's hard-stop pauses only that action; a red another queue item fixes is the case above): file the blocker with `agent-ask post`, which is what `fleet-dispatch reap` reads to hold a live session's item in `waiting/` (a bare `agent-queue move <slug> waiting` goes back to `running/` on its next pass), write the note, but do NOT arm the teardown. Finish with the blocker and the exact next step, so the user sees it in an open window.
+   - **Blocked mode** (a red gate you cannot fix, or a hard gate with nothing else left to build): file it with `agent-ask post` and do NOT arm the teardown; read `references/landing.md` "Blocked mode".
 
 ## Do NOT
 
