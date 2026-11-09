@@ -164,7 +164,7 @@ head_of() { git -C "$1" rev-parse HEAD; }
   run "$PULL" --now "$PUB"
   assert_success
   assert_line --index 0 --partial 'fast-forwarded main'
-  assert_line --index 1 --partial 'updated 1 skill link(s), then skill-deploy failed (exit 1); report in'
+  assert_line --index 1 --partial 'updated 1 skill link(s), then skill-deploy failed (exit 1) on: in-the-way; report in'
   assert_equal "$(cat "$HOME/.claude/skills/in-the-way/SKILL.md")" hand-made
   assert_equal "$(readlink -f "$HOME/.claude/skills/fine")" "$(readlink -f "$PUB/.claude/skills/ops/fine")"
   run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"

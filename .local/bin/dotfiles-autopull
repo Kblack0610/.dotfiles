@@ -79,16 +79,18 @@ attach_missing() {
 
 # attach_skills -> one line when it changed a link or failed, nothing otherwise. Idempotent and quiet,
 # so it needs no check of what the move touched, and a skill a hand pull left unlinked heals too. A
-# failure's report, a CONFLICT skill-deploy will not resolve for us, goes to the log.
+# failure names its skills on the line, a CONFLICT skill-deploy will not resolve for us, and its report
+# goes to the log.
 attach_skills() {
-  local out rc n
+  local out rc n names
   [ -x "$SKILL_DEPLOY" ] || return 0
   out=$(DOTFILES="${REPOS[0]}" DOTFILES_PRIVATE="${REPOS[1]}" capped "$DEPLOY_SECS" "$SKILL_DEPLOY" --quiet 2>&1)
   rc=$?
   n=$(printf '%s\n' "$out" | grep -cE '^(LINKED|RELINKED|REMOVED) ')
   if [ "$rc" -ne 0 ]; then
     log_report 'skill-deploy --quiet' "$rc" "$out"
-    say "~: updated $n skill link(s), then skill-deploy failed (exit $rc); report in ${LOG/#"$HOME"/\~}"
+    names=$(printf '%s\n' "$out" | awk '$1 == "CONFLICT" || $1 == "FAILED" { print $2 }' | paste -sd ' ' -)
+    say "~: updated $n skill link(s), then skill-deploy failed (exit $rc)${names:+ on: $names}; report in ${LOG/#"$HOME"/\~}"
   elif [ "$n" -gt 0 ]; then
     say "~: updated $n skill link(s) in ~/.claude/skills (skill-deploy)"
   fi
