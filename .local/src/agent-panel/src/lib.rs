@@ -12,6 +12,7 @@ pub mod md;
 pub mod parked;
 pub mod procmap;
 pub mod render;
+pub mod search;
 pub mod send;
 pub mod session;
 pub mod sort;
