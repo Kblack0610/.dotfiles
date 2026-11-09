@@ -367,7 +367,7 @@ pub struct Home {
     /// No read has answered yet, so nothing can be said about what is open.
     pub proposals_unread: bool,
     pub running: Vec<Running>,
-    /// Where work sits from inbox to done; `set_pipeline` adds the gauges' half.
+    /// Where work sits from inbox to done; `set_pipeline` adds the snapshot's half.
     pub flow: crate::flow::Strip,
     /// The session counts that head Running (`12 working, 2 need you, 2 stalled`); empty when
     /// fleet-sessions' state has no counts.
@@ -813,7 +813,7 @@ pub fn needs(
 }
 
 impl Home {
-    /// The gauges' half of the flow strip (inbox, board, the amber step).
+    /// The snapshot's half of the flow strip (inbox, board, the amber step).
     pub fn set_pipeline(&mut self, read: &Result<Option<crate::pipeline::Pipeline>, String>) {
         self.flow.set_pipeline(read);
     }

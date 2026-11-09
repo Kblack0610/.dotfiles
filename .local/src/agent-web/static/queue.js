@@ -8,7 +8,7 @@
 // over fleet-dispatch's snapshot, `as of` its time), each with a Promote that is the board's Start.
 
 const Q_PRIORITIES = ["urgent", "high", "low"];
-// The strip's gauges are 10-minute fleet-bench series; a minute is plenty.
+// The line's snapshot is written every 10 minutes; a minute is plenty.
 const FLOW_REFRESH_MS = 60e3;
 // The queue form's modes in the human's words; the option values stay what agent-queue takes.
 const Q_MODE = { oneshot: "Run to PR", plan: "Plan first" };
@@ -52,17 +52,17 @@ const refreshCands = coalesce(async () => {
   if (st.tab === "queue") qst.render();
 });
 
-// The flow strip (flow.js) above the table: /api/flow is hub-core's `flow::Strip` over the live
-// queue and the cached gauges. A queue event re-reads it with the table; Prometheus pushes
-// nothing, so the open tab also re-reads on Infra's cadence.
-const qfl = { data: null, err: null };
+// The pipeline line (flow.js) above the table: /api/flow is hub-core's `flow::Rail` over the live
+// queue and fleet-bench's snapshot. A queue event re-reads it with the table; the snapshot is a
+// file that pushes nothing, so the open tab also re-reads on a cadence. node: the step picked.
+const qfl = { data: null, err: null, node: "" };
 const refreshFlow = coalesce(async () => {
   try { qfl.data = await api("/api/flow"); qfl.err = null; } catch (e) { qfl.err = e.message; }
   if (st.tab === "queue") qst.render();
 });
 const pollFlow = poll("queue", refreshFlow, FLOW_REFRESH_MS);
 
-const qStrip = () => qfl.data ? flowHtml(qfl.data.flow, qfl.data.grafana)
+const qStrip = () => qfl.data ? railHtml(qfl.data.line, qfl.node, qfl.data.grafana)
   : `<div class="flow muted">${qfl.err ? esc(qfl.err) : "reading"}</div>`;
 
 const refreshQueue = coalesce(async () => {
@@ -251,8 +251,13 @@ function renderQueue() {
   qst.render();
 }
 
-const qFlow = () => pfold("q-flow", `Flow${qfl.data?.flow?.bottleneck ? ` <span class="warn">${esc(qfl.data.flow.bottleneck)}</span>` : ""}`,
-  `<h2 class="sec" id="sec-flow">Flow</h2>${qStrip()}${qFlowTail()}`);
+// The fold's title says the worst step even while it is shut.
+function qFlowTitle() {
+  const r = qfl.data?.line, n = r?.nodes[r.worst];
+  const why = n?.stopped ? `${n.label} stopped` : n?.hot ? `${n.label} past its bound` : "";
+  return `Pipeline${why ? ` <span class="warn">${esc(why)}</span>` : ""}`;
+}
+const qFlow = () => pfold("q-flow", qFlowTitle(), `<h2 class="sec" id="sec-flow">Pipeline</h2>${qStrip()}${qFlowTail()}`);
 const qTableHead = () => `<h2 class="sec" id="sec-table">Queue <span class="muted">${qst.table.shown} of ${qst.table.total}</span></h2>`;
 
 // Every row the page has, in rank order: the first ones, then the rows kept per reason chip.
@@ -374,6 +379,8 @@ async function qAct(path, body) {
 const qPending = {};
 $("queue").addEventListener("click", (e) => {
   const t = e.target;
+  const point = t.closest("[data-rail]");
+  if (point) { qfl.node = point.dataset.rail; qst.render(); return; }
   if (t.id === "q-add") { qAdd(); return; }
   if (t.closest("[data-home]")) { e.preventDefault(); setTab("home"); return; }
   if (t.dataset.promote) { qPromote(Number(t.dataset.promote)); return; }
