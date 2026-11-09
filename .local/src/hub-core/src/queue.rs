@@ -724,12 +724,20 @@ pub struct Queue {
     pub errors: Vec<String>,
 }
 
+/// What `Queue::read` prefixes a failed `agent-queue list` with.
+const LIST_FAILED: &str = "agent-queue list";
+
 impl Queue {
+    /// False when `agent-queue list` failed, so `items` is empty for want of a read, not for want of items.
+    pub fn list_read(&self) -> bool {
+        !self.errors.iter().any(|e| e.starts_with(LIST_FAILED))
+    }
+
     pub fn read(runner: &dyn Runner) -> Queue {
         let mut q = Queue::default();
         match list(runner, "all") {
             Ok(items) => q.items = items,
-            Err(e) => q.errors.push(format!("agent-queue list: {e}")),
+            Err(e) => q.errors.push(format!("{LIST_FAILED}: {e}")),
         }
         match stats(runner) {
             Ok(s) => q.stats = Some(s),
