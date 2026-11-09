@@ -697,8 +697,8 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Sort the section by priority, done at the foot, and drop release tags the sheet
-    /// has passed
+    /// Lay the sheet out in Epics, Now, Next up, Backlog and Done, roll closed rows past the
+    /// Done window into versions/, and drop release tags the sheet has passed
     Sweep {
         /// Print what would change and leave the sheet alone
         #[arg(long = "dry-run")]
@@ -1521,11 +1521,12 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if sweep {
-                project_tasks::sweep_all(&log, dry_run)?;
+                // Exits 1 when a sheet failed, so the nightly runner reads the failure.
+                let rc = project_tasks::sweep_all(&log, dry_run)?;
                 if !dry_run {
                     lab_refresh::kick();
                 }
-                std::process::exit(0);
+                std::process::exit(rc);
             }
             if migrate_rows {
                 migrate_rows::run(&log, dry_run)?;

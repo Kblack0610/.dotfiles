@@ -820,8 +820,8 @@ const ROOT_DIRS: [&str; 3] = ["agent", "versions", "docs"];
 /// - a root entry outside the shape: a `*.md` outside [`Overlays::root_md`] or a dir outside
 ///   [`ROOT_DIRS`] belongs in `docs/`, any other file in `docs/assets/` (dotfiles are not
 ///   checked; a version note or a changelog is the layout check's finding, fixed by `--migrate`);
-/// - an agent board over [`AGENT_BOARD_BUDGET`] bytes, with how many done rows
-///   `notes ptask <name> --agent archive` would move to `agent/versions/`;
+/// - an agent board over [`AGENT_BOARD_BUDGET`] bytes, with how many done rows past the Done
+///   window `notes ptask <name> --agent sweep` would roll to `agent/versions/`;
 /// - an open row written twice on one sheet (same [`md::task_key`]).
 pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String> {
     let mut out = Vec::new();
@@ -879,11 +879,14 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
     let board = crate::agent_sheet::sheet_path(dir);
     if let Ok(content) = fs::read_to_string(&board) {
         if content.len() > AGENT_BOARD_BUDGET {
-            let done = crate::project_tasks::done_rows(&content).len();
-            let fix = if done > 0 {
-                format!("{done} done rows to move: notes ptask {name} --agent archive")
+            // Only the closed rows the sweep rolls off count: a row inside the Done window is
+            // what the board is meant to show, so the nightly sweep is the fix, never archive.
+            let ctx = crate::project_tasks::sweep_ctx(dir, &content, false);
+            let old = crate::project_sweep::old_done(&content, &ctx).len();
+            let fix = if old > 0 {
+                format!("{old} done rows past the Done window: notes ptask {name} --agent sweep")
             } else {
-                "no done rows; the open rows need triage".to_string()
+                "the open rows need triage".to_string()
             };
             out.push(format!(
                 "agent board is {} KiB, over the {} KiB budget ({fix})",
@@ -5905,7 +5908,7 @@ mod shape_tests {
     }
 
     #[test]
-    fn an_agent_board_over_budget_says_how_many_done_rows_go() {
+    fn an_agent_board_over_budget_counts_only_done_rows_past_the_window() {
         let s = sandbox("budget");
         let dir = s.p.projects.as_ref().unwrap().join("demo");
         fs::create_dir_all(dir.join("agent")).unwrap();
@@ -5924,10 +5927,25 @@ mod shape_tests {
             .expect("budget finding");
         assert!(
             line.contains(&format!(
-                "{n} done rows to move: notes ptask demo --agent archive"
+                "{n} done rows past the Done window: notes ptask demo --agent sweep"
             )),
             "{line}"
         );
+
+        // Two closes from today sit inside the window: the board is over on its open rows.
+        let today = chrono::Local::now().date_naive();
+        let mut board = String::from("# demo - agent board\nVersion: v0.0.1\n\n## Tasks\n");
+        board.push_str(&format!("- [x] shipped today <!-- done:{today} -->\n").repeat(2));
+        while board.len() <= AGENT_BOARD_BUDGET {
+            board.push_str("- [ ] an open row with some words on it\n");
+        }
+        fs::write(dir.join("agent/README.md"), &board).unwrap();
+        let f = shape_findings(&dir, "demo", &Overlays::default());
+        let line = f
+            .iter()
+            .find(|l| l.starts_with("agent board is"))
+            .expect("budget finding");
+        assert!(line.ends_with("(the open rows need triage)"), "{line}");
     }
 
     /// A registry fixture beside the sandbox, and the shipped overlay tables
