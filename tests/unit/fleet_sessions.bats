@@ -2487,6 +2487,10 @@ gate() { printf '{"workflowName":"%s","workflowPath":"%s.yml","event":"%s","stat
   open_pr_gh '[{"conclusion":"SUCCESS"}]'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 1),$(gate 'Tests (all)' in_progress - "$oid" 5)]"
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
   ledger feat/x "[$(gate 'Multi (affected)' completed failure "$oid" 1),$(gate 'Tests (all)' completed success "$oid" 5)]"
   open_pr_gh '[{"conclusion":"SUCCESS"}]'
   FLEET_GATE_WORKFLOWS='^(Tests|Multi)( |$)' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
