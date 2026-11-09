@@ -447,6 +447,25 @@ make_unfillable_submodule() {
   assert_output --partial 'has empty submodules: sub'
 }
 
+@test "a submodule cloned without its pinned commit counts as empty" {
+  # The clone lands, so <sub>/.git exists, but the commit is not in it and nothing is checked out.
+  make_empty_submodule
+  git -C "$MAIN/sub" commit --quiet --allow-empty -m c3
+  git -C "$MAIN" commit --quiet -am 'sub at c3'
+  git -C "$MAIN" push --quiet origin main
+  rm -f "$MAIN/sub/.git"
+  run wt_recycle "$WT" 1 origin/main
+  assert_failure
+  assert_output --partial 'has empty submodules: sub'
+}
+
+@test "a submodule name with a space is read whole" {
+  make_repo
+  git -C "$MAIN" config -f .gitmodules 'submodule.my lib.path' 'ext/my lib'
+  run wt_submodule_list "$MAIN"
+  assert_output "my lib${PANEL_TAB}ext/my lib"
+}
+
 @test "wt_prepare stops on an empty submodule, so no session starts" {
   make_unfillable_submodule
   run wt_prepare "$MAIN" "$WT" 1 recycle

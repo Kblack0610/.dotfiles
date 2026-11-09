@@ -261,13 +261,13 @@ wt_pr_merged_at_head() {
       'any(.[]; .state == "MERGED" and .headRefName == $b and .headRefOid == $h)' >/dev/null 2>&1
 }
 
-# wt_submodule_list <path> -- `<name> <path>` for each submodule in <path>'s .gitmodules.
+# wt_submodule_list <path> -- `<name><TAB><path>` for each submodule in <path>'s .gitmodules.
 wt_submodule_list() {
   local key sub
-  git -C "$1" config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null |
-    while read -r key sub; do
+  git -C "$1" config -z -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null |
+    while IFS=$'\n' read -r -d '' key sub; do
       key=${key#submodule.}
-      printf '%s %s\n' "${key%.path}" "$sub"
+      printf '%s\t%s\n' "${key%.path}" "$sub"
     done
 }
 
@@ -278,7 +278,7 @@ wt_submodule_list() {
 # URL, a deliberate local mirror included, is left alone.
 wt_heal_submodule_urls() {
   local name sub url
-  while read -r name sub; do
+  while IFS=$'\t' read -r name sub; do
     url=$(git -C "$1" config --get "submodule.$name.url") || continue
     case "$url" in */.git/*modules/*) ;; *) continue ;; esac
     panel_warn "$sub had the URL $url in the shared git config; restoring the one in .gitmodules"
@@ -287,12 +287,16 @@ wt_heal_submodule_urls() {
 }
 
 # wt_empty_submodules <path> -- the submodules git was asked to fill (a URL in the config) that
-# have no checkout in <path>.
+# have no checkout in <path>. A module with no index was cloned but never checked out: the
+# clone landed and the pinned commit was not in it.
 wt_empty_submodules() {
   local name sub
-  while read -r name sub; do
+  while IFS=$'\t' read -r name sub; do
     git -C "$1" config --get "submodule.$name.url" >/dev/null 2>&1 || continue
-    [ -e "$1/$sub/.git" ] || printf '%s\n' "$sub"
+    # The .git test first: without one, git -C answers for the enclosing worktree.
+    [ -e "$1/$sub/.git" ] &&
+      [ -e "$(git -C "$1/$sub" rev-parse --path-format=absolute --git-path index 2>/dev/null)" ] ||
+      printf '%s\n' "$sub"
   done < <(wt_submodule_list "$1")
 }
 
