@@ -6084,3 +6084,49 @@ demand_of() {
   assert_equal "$(jq -r .hold <<<"$output")" 'after fix-crash'
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail 'partial row closed'
 }
+
+@test "start: a hand start takes the account room names, not the one pick would (ar-275)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'tidy the loader' '- [ ] tidy the loader'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  # main is over its pace, bnb has room: pick (the stub prints nothing) would be main.
+  acct main:pace bnb:ok:/acct/bnb
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
+    --row 'tidy the loader' --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_called 'CLAUDE_CONFIG_DIR=/acct/bnb claude --model'
+  assert_not_called 'env -u CLAUDE_CONFIG_DIR claude --model'
+}
+
+@test "start: a hand start with no account having room still goes ahead, on pick's account (ar-275)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'tidy the loader' '- [ ] tidy the loader'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  acct main:pace bnb:pace:/acct/bnb
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
+    --row 'tidy the loader' --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_called 'env -u CLAUDE_CONFIG_DIR'
+  assert_called 'claude --model'
+  assert_not_called 'CLAUDE_CONFIG_DIR=/acct/bnb'
+  assert_output --partial "no account has room ("
+}
+
+@test "start: a hand start on room's main pick runs with the config dir unset (ar-275)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'tidy the loader' '- [ ] tidy the loader'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  acct main:ok bnb:pace:/acct/bnb
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
+    --row 'tidy the loader' --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_called 'env -u CLAUDE_CONFIG_DIR'
+  assert_not_called 'CLAUDE_CONFIG_DIR=1'
+  assert_not_called 'CLAUDE_CONFIG_DIR=/acct/bnb'
+}
