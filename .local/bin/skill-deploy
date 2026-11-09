@@ -76,6 +76,20 @@ rel_target() {
   fi
 }
 
+# resolve_gone <link> -> the absolute path a dangling link names: the deepest ancestor that
+# still exists, canonicalised, plus the missing tail. readlink -f alone fails once more
+# than the last component is gone (a deleted category), and -m is GNU only.
+resolve_gone() {
+  local t tail=""
+  t=$(readlink "$1")
+  case "$t" in /*) ;; *) t="$(dirname "$1")/$t" ;; esac
+  while [ ! -e "$t" ] && [ "$t" != / ] && [ "$t" != . ]; do
+    tail="/$(basename "$t")$tail"
+    t=$(dirname "$t")
+  done
+  printf '%s%s\n' "$(readlink -f "$t")" "$tail"
+}
+
 # A real directory in $SKILLS is normally untouchable. The single exception is a
 # link farm: a directory whose every entry is a symlink resolving back into one
 # of the two repos. `stow --no-folding` produces exactly that shape when it
@@ -166,7 +180,7 @@ for name in $(printf '%s\n' "${!OWNER[@]}" | sort); do
     # Without this the category migration stranded every machine: 29 dangling
     # links, and skill-deploy refused all of them and exited 1.
     if [ ! -e "$link" ]; then
-      case "$(cd "$(dirname "$link")" 2>/dev/null && readlink -f "$have" 2>/dev/null)" in
+      case "$(resolve_gone "$link")" in
         "$PUB"/*|"$PRIV"/*)
           if [ "$DRY" = 1 ]; then
             loud "WOULD RELINK $name  (source moved) -> $want"
@@ -212,20 +226,6 @@ for name in $(printf '%s\n' "${!OWNER[@]}" | sort); do
   fi
   linked=$((linked + 1))
 done
-
-# resolve_gone <link> -> the absolute path a dangling link names: the deepest ancestor that
-# still exists, canonicalised, plus the missing tail. readlink -f alone fails once more
-# than the last component is gone (a deleted category), and -m is GNU only.
-resolve_gone() {
-  local t tail=""
-  t=$(readlink "$1")
-  case "$t" in /*) ;; *) t="$(dirname "$1")/$t" ;; esac
-  while [ ! -e "$t" ] && [ "$t" != / ] && [ "$t" != . ]; do
-    tail="/$(basename "$t")$tail"
-    t=$(dirname "$t")
-  done
-  printf '%s%s\n' "$(readlink -f "$t")" "$tail"
-}
 
 # A DANGLING link into one of the repos, for a name neither repo defines any more, is a
 # deleted skill: nothing is left to repoint it to, and Claude Code would list a broken

@@ -37,8 +37,8 @@ target
 # NESTED directory - and Claude Code reads personal skills one level down only,
 # at ~/.claude/skills/<name>/SKILL.md, so every skill would silently vanish.
 # skill-deploy flattens category -> name while linking. It is called from
-# apply_dotfiles (base_functions.sh), so removing this line does not "restore"
-# deployment, it creates a second, broken one.
+# apply_dotfiles (base_functions.sh) and dotfiles-autopull, so removing this line
+# does not "restore" deployment, it creates a second, broken one.
 ^/\.claude/skills$
 ^/\.claude/projects$
 ^/\.claude/sessions$
