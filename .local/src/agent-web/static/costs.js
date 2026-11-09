@@ -3,7 +3,8 @@
 // and harness cuts. /api/costs is hub_core::costs::board, the view the hub TUI draws; this file
 // draws its answer and turns a click into the view keys (by, w, q, sort, dir) in the URL, so
 // `#costs?by=model&w=7d&q=harness:codex` is a link to that view. Trends are Grafana's. Above the
-// tiles: who pays (Burn, one row per source claude-acct reads), where the tokens go and what Langfuse sees.
+// tiles: who spent the last 24h, who pays (Burn, one row per source claude-acct reads), where the tokens
+// go and what Langfuse sees.
 
 // open: the folded sections' state; tokWin: the tokens section's window.
 const cost = tblTab({
@@ -69,11 +70,24 @@ function directTile(dr) {
 }
 
 function costsTiles(d) {
-  const lz = d.live || {};
   return `<div class="tiles roomy">` + (d.totals || []).map((t) =>
-    tile(`SPEND ${t.window.toUpperCase()}`, usd(t.usd), t.window === d.window ? "var(--c1)" : "var(--c-other)", `${t.sessions} sessions${t.unpriced ? `, ${t.unpriced} unpriced` : ""}`)).join("") +
-    tile("LIVE 24H", usd(lz.claude_24h), "var(--c2)", "Prometheus, exported sessions only") +
+    tile(`SPEND ${t.window.toUpperCase()}`, usd(t.usd), t.window === d.window ? "var(--c1)" : "var(--c-other)", `outcomes, ${t.sessions} sessions${t.unpriced ? `, ${t.unpriced} unpriced` : ""}`)).join("") +
     directTile(d.direct || {}) + `</div>`;
+}
+
+// Who spent the last 24h (hub_core::costs::who_spent, the TUI's `who`): Claude Code live by runner
+// and you, then other harnesses from the nightly outcomes rows, whose unpriced sessions are counted,
+// never $0. A runner's figure is the Fleet tab's COST 24H.
+function whoSection(d) {
+  const w = d.who || { rows: [] };
+  const head = `${usd(w.usd)}: Claude ${usd(w.claude_usd)} live (exporting sessions); others: outcomes`;
+  if (!w.rows.length) return `<h2 class="sec" id="sec-who">Who spent 24h</h2><div class="panel muted">nothing read: no live Claude series and no outcomes row in 24h</div>`;
+  const note = (r) => r.source === "outcomes"
+    ? `outcomes, ${r.sessions} session${r.sessions === 1 ? "" : "s"}${r.unpriced ? `, <span class="warn">${r.unpriced} unpriced</span>` : ""}` : "live";
+  return `<h2 class="sec" id="sec-who">Who spent 24h <span class="muted">${esc(head)}</span></h2>` +
+    `<div class="panel scroll"><table class="tbl"><tr><th>who</th><th class="n">cost</th><th class="n">share</th><th>source</th></tr>` +
+    w.rows.map((r) => `<tr><td>${esc(r.who)}</td><td class="n">${usd(r.usd)}</td><td class="n">${r.usd == null ? "-" : pct(r.share)}</td><td class="muted">${note(r)}</td></tr>`).join("") +
+    `</table></div>`;
 }
 
 // The Burn section (hub_core::burn, the hub's coststab.rs `burn`): the headline coloured by the
@@ -180,7 +194,7 @@ const lfClasses = (cs) => cs.length ? cs.map((c) => `${esc(c.name)} ${c.n.toLoca
 // What Langfuse sees: the figures only it has (tool latency, tool errors by class, gateway errors
 // and cost), the newest snapshot's `.langfuse` through hub-core's `tokens`. Shut while it
 // reads, open and amber when the reader failed that night or the snapshot is stale (rule 4). The
-// gateway's dollars are the gateway's alone; session cost is the table below, so none is summed here.
+// gateway's dollars are the gateway's alone; session cost is Who spent 24h, so none is summed here.
 function langfuseSection(d) {
   const t = d.tokens, lf = t?.langfuse;
   if (!t) return "";
@@ -199,7 +213,7 @@ function langfuseSection(d) {
     `<div class="panel scroll"><table class="tbl"><tr><th>slowest tools, by total time</th><th class="n">calls</th><th class="n">p50</th><th class="n">p95</th><th class="n">total</th></tr>${rows}</table>` +
     `<div class="muted">tool errors: ${f.tool_errors.toLocaleString()} of ${f.tool_executions.toLocaleString()} executions (${lfClasses(f.tool_error_classes)})${trunc}</div>` +
     `<div class="muted">gateway: ${f.gateway_calls.toLocaleString()} calls, ${f.gateway_errors.toLocaleString()} errors (${lfClasses(f.gateway_error_classes)}), ${kfmt(f.gateway_tokens)} tokens; dearest: ${models || "none"}</div>` +
-    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs?by=runner&w=24h">the table below</a></div></div></details>`;
+    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs">Who spent 24h</a></div></div></details>`;
 }
 
 // The Sections block (hub_core::sections, the TUI's coststab.rs `sections`): what each section of
@@ -219,7 +233,7 @@ function costsSections(d) {
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
-  let html = `${costsBurn(d)}${tokensSection(d)}${langfuseSection(d)}${costsSections(d)}<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`;
+  let html = `${whoSection(d)}${costsBurn(d)}${tokensSection(d)}${langfuseSection(d)}${costsSections(d)}<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`;
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;

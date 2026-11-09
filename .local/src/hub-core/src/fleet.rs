@@ -132,6 +132,8 @@ pub struct Worker {
     pub called_by: Option<String>,
     /// What the row opens to: how the runner is defined and what its calls did.
     pub registry: Registry,
+    /// Its Claude Code cost over the last 24h, `costs::BY_RUNNER_Q`; None when it has no series.
+    pub cost_24h: Option<f64>,
     /// Its lane's counted score from judge-eval; None when judge-eval lists no such lane.
     pub score: Option<RunnerScore>,
     /// The extras block its page draws, the conf's `DETAIL=` (`runner::DETAILS`); empty for none.
@@ -414,8 +416,17 @@ pub fn files(paths: &Paths) -> Fleet {
         .iter()
         .map(|c| (c.name.clone(), registry(c, &roles, &calls, &evals)))
         .collect();
+    // The same series as Costs' WHO SPENT 24H, so a runner's dollars match there.
+    let spent = crate::prom::base()
+        .and_then(|b| crate::prom::instant(&b, crate::costs::BY_RUNNER_Q))
+        .map(|s| crate::costs::live(&s).by_who)
+        .unwrap_or_else(|e| {
+            errors.push(format!("cost 24h: {e}"));
+            Default::default()
+        });
     let mut workers = workers(confs, &runs, &activity, &timers, at);
     for w in &mut workers {
+        w.cost_24h = spent.get(&w.name).copied();
         // A runner no timer starts can name its own next try (inbox-triage's retry).
         w.next = w
             .next
