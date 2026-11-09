@@ -64,7 +64,7 @@ test("Needs you is the shared table: the columns, the server's chips, the rank a
     ],
     table: { shown: 2, total: 2, states: [{ name: "all", n: 2 }, { name: "Question", n: 1 }, { name: "Failing", n: 1 }] },
   }));
-  assert.match(html, /<h2 class="sec">Needs you <span class="muted">2<\/span><\/h2>/);
+  assert.match(html, /<h2 class="sec" id="sec-needs">Needs you <span class="muted">2<\/span><\/h2>/);
   assert.match(html, /id="home-need-q" data-tsearch placeholder="search, or kind:ask project:dotfiles -kind:red"/);
   assert.match(html, /data-ts="Question">Question <span class="n">1<\/span>/);
   assert.match(html, /<th class="n"><button class="thsort" data-tsort="rank"[^>]*>rank \^<\/button><\/th>/);
@@ -86,7 +86,7 @@ test("a sort asked for marks its own header and takes the mark off the rank", ()
 
 test("the view keeps the count of the whole list, and no match is not an all-clear", () => {
   const html = draw({ ...home(), table: ntable([], { q: "kind:ask", total: 5, shown: 0 }) });
-  assert.match(html, /<h2 class="sec">Needs you <span class="muted">0 of 5<\/span><\/h2>/);
+  assert.match(html, /<h2 class="sec" id="sec-needs">Needs you <span class="muted">0 of 5<\/span><\/h2>/);
   assert.match(html, /No needs match\./);
   assert.doesNotMatch(html, /Nothing waits on you/);
   assert.match(html, /id="home-need-q"[^>]*value="kind:ask"/, "the box stays, so the view can be changed back");
@@ -413,7 +413,7 @@ function drawNight(n) {
 }
 
 test("Since last night shows only what is not ok, links each row and folds the ok areas", () => {
-  assert.match(drawNight(night()), /<h2 class="sec">Since last night <span class="muted">since Thu 18:00 <a href="#daily">briefing<\/a><\/span><\/h2><div class="cline muted">all 6 areas ok<\/div>/);
+  assert.match(drawNight(night()), /<h2 class="sec" id="sec-night">Since last night <span class="muted">since Thu 18:00 <a href="#daily">briefing<\/a><\/span><\/h2><div class="cline muted">all 6 areas ok<\/div>/);
   const html = drawNight(night({
     rows: [
       area("Workers overnight", "bad", { details: ["wave-roll failed 02:10"], fix: { project: "agent-runtime", task: "Fix it" } }),

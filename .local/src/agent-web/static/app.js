@@ -302,11 +302,14 @@ const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "
 // layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
 const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"] };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
+// The open tab's section anchors. Ids repeat across boards (Queue and Costs both have
+// sec-table) and a hidden board keeps its HTML, so a lookup stays on the board that shows.
+const tabAnchors = () => [...($(st.tab)?.querySelectorAll('[id^="sec-"]') || [])];
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
 // it paints; the first paint that has the section clears it.
 function seekSection() {
-  const e = st.section && $("sec-" + st.section);
+  const e = st.section && tabAnchors().find((x) => x.id === "sec-" + st.section);
   if (!e) return;
   st.section = null;
   if (e.tagName === "DETAILS") e.open = true;
