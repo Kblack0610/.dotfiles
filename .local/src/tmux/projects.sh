@@ -235,6 +235,8 @@ cmd_board() {
 # the board is one window away. The tab request never blocks the sheet: a hub that cannot be
 # reached takes it on its next start (see cmd_board).
 cmd_open() {
+  # A project with no sheet file has nothing to open in the editor: go to its board instead.
+  [[ -n "$3" && -f "$3" ]] || { cmd_board "$1" "$2"; return; }
   panel_need hub tmx
   hub tab projects "$1/$2" || true
   tmx open hub "$3" 1
@@ -314,7 +316,7 @@ case "${1:-}" in
 '') cmd_pick ;;
 --list) cmd_list "${2:-}" ;;
 --preview) cmd_preview "${2:?profile}" "${3:?name}" ;;
---open) cmd_open "${2:?profile}" "${3:?name}" "${4:?sheet}" ;;
+--open) cmd_open "${2:?profile}" "${3:?name}" "${4:-}" ;;
 --board) cmd_board "${2:?profile}" "${3:?name}" ;;
 --repo) cmd_repo "${2:?name}" ;;
 --key) cmd_key "${2:?view}" "${3:?key}" ;;

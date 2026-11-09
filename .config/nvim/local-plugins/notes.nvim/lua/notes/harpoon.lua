@@ -59,17 +59,24 @@ end
 
 -- The hub list (any ~/.notes cwd outside lab, which is where the hub notes nvim runs): today's
 -- daily in slot 1, the projects index in slot 2, then the user's own pins - but only for the
--- day they were made. When slot 1 is not today's daily the day has turned, and the list
--- starts over as just those two, so yesterday's pins and dailies never pile up.
+-- day they were made. A dated note from an earlier day, sitting in the daily dir, means the day
+-- has turned: the list starts over as just those two, so yesterday's pins and dailies never pile
+-- up. A pin moved or removed mid-day is not a day turn and keeps the list.
 --
 -- opts: daily (abs path of today's note), index (abs path of the projects index).
 function M.hub_slots(items, opts)
-  local first = items[1] and vim.fn.fnamemodify(items[1].value, ":p")
   local out = {
     { value = opts.daily, context = {} },
     { value = opts.index, context = {} },
   }
-  if first ~= opts.daily then return out end
+  local daily_dir = vim.fn.fnamemodify(opts.daily, ":h")
+  for _, item in ipairs(items) do
+    local path = vim.fn.fnamemodify(item.value, ":p")
+    if path ~= opts.daily and vim.fn.fnamemodify(path, ":h") == daily_dir
+        and vim.fn.fnamemodify(path, ":t"):match("^%d%d%d%d%-%d%d%-%d%d%.md$") then
+      return out
+    end
+  end
   for _, item in ipairs(items) do
     local path = vim.fn.fnamemodify(item.value, ":p")
     if path ~= opts.daily and path ~= opts.index then table.insert(out, item) end

@@ -194,10 +194,26 @@ setup() {
     printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n' "$c" "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/$c"
     chmod +x "$BATS_TEST_TMPDIR/bin/$c"
   done
-  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --open bnb big-alpha /n/big-alpha/README.md
+  local sheet="$BATS_TEST_TMPDIR/big-alpha/README.md"
+  mkdir -p "${sheet%/*}" && : >"$sheet"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --open bnb big-alpha "$sheet"
   assert_success
   run cat "$BATS_TEST_TMPDIR/calls"
-  assert_output $'hub tab projects bnb/big-alpha\ntmx open hub /n/big-alpha/README.md 1'
+  assert_output "$(printf 'hub tab projects bnb/big-alpha\ntmx open hub %s 1' "$sheet")"
+}
+
+@test "--open with no sheet file goes to the project's board instead of failing in tmx open" {
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  for c in hub tmx; do
+    printf '#!/bin/sh\necho "%s $*" >>"%s/calls"\n' "$c" "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/$c"
+    chmod +x "$BATS_TEST_TMPDIR/bin/$c"
+  done
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --open notes scratch ''
+  assert_success
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --open notes scratch "$BATS_TEST_TMPDIR/missing.md"
+  assert_success
+  run cat "$BATS_TEST_TMPDIR/calls"
+  assert_output $'hub tab projects notes/scratch\ntmx goto hub hub:board\nhub tab projects notes/scratch\ntmx goto hub hub:board'
 }
 
 @test "--open still opens the sheet when the hub tab request fails" {
@@ -205,10 +221,11 @@ setup() {
   printf '#!/bin/sh\nexit 1\n' >"$BATS_TEST_TMPDIR/bin/hub"
   printf '#!/bin/sh\necho "tmx $*" >>"%s/calls"\n' "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/tmx"
   chmod +x "$BATS_TEST_TMPDIR/bin/hub" "$BATS_TEST_TMPDIR/bin/tmx"
-  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --open bnb big-alpha /n/s.md
+  : >"$BATS_TEST_TMPDIR/s.md"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run "$PROJECTS_SH" --open bnb big-alpha "$BATS_TEST_TMPDIR/s.md"
   assert_success
   run cat "$BATS_TEST_TMPDIR/calls"
-  assert_output 'tmx open hub /n/s.md 1'
+  assert_output "tmx open hub $BATS_TEST_TMPDIR/s.md 1"
 }
 
 @test "--preview prints the hub's card for the project at the preview's width" {

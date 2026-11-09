@@ -335,6 +335,10 @@ function M.setup()
     desc = "Re-pin the hub harpoon list on entering today's daily",
     group = journal_harpoon_group,
     callback = function(args)
+      -- Cheap checks first: this fires on every buffer switch in every nvim, and the
+      -- get_today_journal/is_in_lab lookups each spawn the notes CLI.
+      if not is_in_notes_dir() then return end
+      if vim.fn.fnamemodify(args.file, ":t") ~= os.date("%Y-%m-%d") .. ".md" then return end
       if is_in_lab() then return end
       if vim.fn.fnamemodify(args.file, ":p") ~= get_today_journal() then return end
       sync_notes_harpoon_slots()

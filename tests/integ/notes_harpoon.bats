@@ -111,3 +111,16 @@ hub() {
   assert_success
   assert_output "$(printf '%s\n' 'T/daily/2026-11-09.md' 'T/lab/projects/index.md')"
 }
+
+@test "hub: a pin moved into slot 1 mid-day is not a day turn, the pins stay" {
+  run hub "{ { value = '$BATS_TEST_TMPDIR/scratch.md' }, { value = '$BATS_TEST_TMPDIR/daily/2026-11-09.md' },
+             { value = '$LAB/projects/index.md' } }"
+  assert_success
+  assert_output "$(printf '%s\n' 'T/daily/2026-11-09.md' 'T/lab/projects/index.md' 'T/scratch.md')"
+}
+
+@test "hub: yesterday's daily anywhere in the list is the day turn, even when moved out of slot 1" {
+  run hub "{ { value = '$BATS_TEST_TMPDIR/scratch.md' }, { value = '$BATS_TEST_TMPDIR/daily/2026-11-08.md' } }"
+  assert_success
+  assert_output "$(printf '%s\n' 'T/daily/2026-11-09.md' 'T/lab/projects/index.md')"
+}
