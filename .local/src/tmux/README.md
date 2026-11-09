@@ -26,7 +26,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 
 ## Keys
 
-`keys` (`Prefix+K`, or `Super+A k`) lists every key that is live: tmux's stock keys and ours, Hyprland and nvim, searchable. Each row is the bind's own `-N` note, so a new bind in `.tmux.conf` gets one (`tests/unit/tmux_keys_doc.bats` fails without it). muxpoon's `Prefix+a` / `Prefix+C-a` / `Prefix+e` / `M-1`..`M-4` come from its plugin. The prefix is `C-b`. Why a key is the key it is lives in the comment above its bind in `.tmux.conf`.
+`keys` (`Prefix+K`, or `Super+A k` then `a`/`h`/`t`/`n` for one layer) is every live key with what it is for, full screen, a tab per layer (all, Hyprland, tmux, nvim): tab / shift-tab switch, type to filter, ctrl-/ shows the command. `keys tmux` opens one tab. Each row is the bind's own `-N` note, so a new bind in `.tmux.conf` gets one (`tests/unit/tmux_keys_doc.bats` fails without it). muxpoon's `Prefix+a` / `Prefix+C-a` / `Prefix+e` / `M-1`..`M-4` come from its plugin. The prefix is `C-b`. Why a key is the key it is lives in the comment above its bind in `.tmux.conf`.
 
 ## Window Tags
 
