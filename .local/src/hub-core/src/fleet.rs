@@ -135,7 +135,7 @@ pub struct Worker {
     pub called_by: Option<String>,
     /// What the row opens to: how the runner is defined and what its calls did.
     pub registry: Registry,
-    /// Its cost over the last 24h, `fleet_cost`'s by_runner; None when it has no sessions there.
+    /// Its cost over the last 24h, `fleet_cost`'s by_runner; None when it has no priced sessions there.
     pub cost_24h: Option<f64>,
     /// Part of `cost_24h` is estimated from tokens.
     pub cost_estimated: bool,
@@ -439,7 +439,7 @@ pub fn files(paths: &Paths) -> Fleet {
     let mut workers = workers(confs, &runs, &activity, &timers, at);
     for w in &mut workers {
         if let Some(c) = spent.get(&w.name) {
-            w.cost_24h = Some(c.usd);
+            w.cost_24h = c.priced();
             w.cost_estimated = c.estimated >= 0.005;
         }
         // A runner no timer starts can name its own next try (inbox-triage's retry).

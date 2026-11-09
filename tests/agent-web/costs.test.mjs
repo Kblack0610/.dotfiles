@@ -467,12 +467,14 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
   const h = show(board({ fleet_cost }));
   assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn"), "the whole figure is the first answer");
   assert.match(h, /Fleet cost 24h about \$849 <span class="muted">measured \$310, estimated \$538, as of /);
-  assert.match(h, /<th class="n">% of fleet<\/th>/);
+  assert.match(h, /<th class="n" data-role="glance">% of fleet<\/th>/);
   assert.match(h, /<tr><td>shepherd<\/td><td class="n">\$44<\/td><td class="n">5%<\/td><td class="muted">61 sessions, measured<\/td><\/tr>/);
   assert.match(h, /colspan="3" class="muted wrap">ask-judge \$6\.40, briefing \$2\.90/, "every runner is reachable");
   assert.match(h, /<tr><td>lazer-reserve<\/td><td class="n">-<\/td>/, "nothing priced is unknown, never $0");
   assert.match(h, /not in the total/);
   assert.match(h, /last days 11-07 \$1,295/);
+  assert.match(h, /<th data-role="lead">who<\/th>/, "the table folds to a phone row");
+  assert.doesNotMatch(h.slice(h.indexOf('id="sec-fleet"'), h.indexOf("</tr>", h.indexOf('id="sec-fleet"'))), /<th(?![^>]*data-role)/, "no column waits for a tap, so estimated stays on screen");
   assert.match(show(board({ fleet_cost: { ...fleet_cost, stale: true } })), /class="warn">stale, as of /);
   // negative control: nothing read says so, never a $0 table
   const none = show(board({ fleet_cost: { why: "nothing read: no file", rows: [] } }));

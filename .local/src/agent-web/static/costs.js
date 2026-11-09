@@ -82,11 +82,12 @@ function fleetCostSection(d) {
   const title = `<h2 class="sec" id="sec-fleet">Fleet cost 24h`;
   if (f.why) return `${title}</h2><div class="panel"><span class="warn">${esc(f.why)}</span></div>`;
   const age = f.stale ? `<span class="warn">stale, as of ${when(f.as_of)}</span>` : `as of ${when(f.as_of)}`;
+  // Every column is on a phone's row too: "estimated" is never behind a tap.
   const row = (r) => `<tr><td>${esc(r.name)}</td><td class="n">${esc(r.cost)}</td><td class="n">${esc(r.share)}</td><td class="muted">${esc(r.basis)}</td></tr>` +
     (r.detail ? `<tr><td></td><td colspan="3" class="muted wrap">${esc(r.detail)}</td></tr>` : "");
   return `${title} ${esc(f.usd)} <span class="muted">measured ${esc(f.measured)}, estimated ${esc(f.estimated)}, ${age}</span></h2>` +
     `<div class="panel scroll"><div class="muted">${esc(f.coverage)}</div>` +
-    `<table class="tbl"><tr><th>who</th><th class="n">cost</th><th class="n">% of fleet</th><th>measured or estimated</th></tr>${f.rows.map(row).join("")}</table>` +
+    `<table class="tbl"><tr><th data-role="lead">who</th><th class="n" data-role="glance">cost</th><th class="n" data-role="glance">% of fleet</th><th data-role="glance">measured or estimated</th></tr>${f.rows.map(row).join("")}</table>` +
     f.unpriced.map((u) => `<div class="warn">${esc(u)}</div>`).join("") +
     (f.days ? `<div class="muted">last days ${esc(f.days)}</div>` : "") +
     `<div class="muted">${esc(f.foot)}</div></div>`;

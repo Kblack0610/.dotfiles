@@ -29,10 +29,18 @@ pub struct Cut {
     pub sessions: u64,
 }
 
+impl Cut {
+    /// Its dollars, or None when none of its sessions has a price: unknown, never $0.
+    pub fn priced(&self) -> Option<f64> {
+        (self.usd >= CENT).then_some(self.usd)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 struct Coverage {
-    estimated_token_share: f64,
+    /// Null when the window has no tokens at all.
+    estimated_token_share: Option<f64>,
     sessions: u64,
     sessions_estimated: u64,
 }
@@ -122,10 +130,10 @@ pub struct FleetCost {
 
 /// Dollars at a size that does not claim more than an estimate knows: cents only under $10.
 fn dollars(v: f64) -> String {
-    if v.abs() < 10.0 {
+    if v < 10.0 {
         return format!("${v:.2}");
     }
-    let digits = format!("{:.0}", v.abs());
+    let digits = format!("{v:.0}");
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i) % 3 == 0 {
@@ -133,7 +141,7 @@ fn dollars(v: f64) -> String {
         }
         out.push(c);
     }
-    format!("{}${out}", if v < 0.0 { "-" } else { "" })
+    format!("${out}")
 }
 
 fn count(n: u64, noun: &str) -> String {
@@ -169,6 +177,20 @@ fn harness_basis(h: &Harness) -> String {
     }
 }
 
+/// A `by_origin` key as a row name. A queue item's origin is free-form (`fleet-dispatch` also writes
+/// `resume`), so a key not listed is one more way a queue item started.
+fn origin_name(key: &str) -> String {
+    match key {
+        "run" => "queue, dispatch run".into(),
+        "hand" => "queue, hand-started".into(),
+        "plan" => "queue, plan".into(),
+        "queue" => "queue items".into(),
+        "shepherd" => "shepherd".into(),
+        "interactive" => "you, interactive".into(),
+        other => format!("queue, {other}"),
+    }
+}
+
 /// Every runner by name, costliest first; shepherd and dream have their own rows, and a headless
 /// session no runner claimed is the remainder.
 fn runners_line(f: &File, others: f64) -> Option<String> {
@@ -201,9 +223,8 @@ fn share_text(usd: Option<f64>, total: f64) -> String {
 
 /// The block from the file and the past days' totals (date, dollars), newest first.
 pub fn build(f: &File, past: &[(String, f64)], now: i64) -> FleetCost {
-    let origin = |k: &str| f.by_origin.get(k).cloned().unwrap_or_default();
     let dream = f.by_runner.get("dream").cloned().unwrap_or_default();
-    let runner = origin("runner");
+    let runner = f.by_origin.get("runner").cloned().unwrap_or_default();
     let others = Cut {
         usd: (runner.usd - dream.usd).max(0.0),
         measured: (runner.measured - dream.measured).max(0.0),
@@ -219,24 +240,20 @@ pub fn build(f: &File, past: &[(String, f64)], now: i64) -> FleetCost {
         basis,
         detail,
     };
-    let cut = |name: &str, c: &Cut, noun: &str| row(name, Some(c.usd), basis(c, noun), None);
-    let mut rows: Vec<Row> = [
-        ("queue, dispatch run", origin("run"), "session"),
-        ("queue, hand-started", origin("hand"), "session"),
-        ("queue, plan", origin("plan"), "session"),
-        ("queue items", origin("queue"), "session"),
-        ("shepherd", origin("shepherd"), "session"),
-        ("dream", dream, "sweep"),
-        ("you, interactive", origin("interactive"), "session"),
-    ]
-    .iter()
-    .filter(|(_, c, _)| c.sessions > 0 || c.usd >= CENT)
-    .map(|(n, c, noun)| cut(n, c, noun))
-    .collect();
+    // Every origin gets a row, so the rows add up to the total every share is taken of.
+    let mut rows: Vec<Row> = f
+        .by_origin
+        .iter()
+        .filter(|(k, _)| *k != "runner")
+        .map(|(k, c)| (origin_name(k), c, "session"))
+        .chain([("dream".to_string(), &dream, "sweep")])
+        .filter(|(_, c, _)| c.sessions > 0 || c.usd >= CENT)
+        .map(|(n, c, noun)| row(&n, c.priced(), basis(c, noun), None))
+        .collect();
     if others.sessions > 0 || others.usd >= CENT {
         rows.push(row(
             "other runners",
-            Some(others.usd),
+            others.priced(),
             basis(&others, "session"),
             runners_line(f, others.usd),
         ));
@@ -268,11 +285,16 @@ pub fn build(f: &File, past: &[(String, f64)], now: i64) -> FleetCost {
         estimated: dollars(t.estimated),
         as_of: Some(f.as_of_epoch),
         stale: f.stale(now),
-        coverage: format!(
-            "{:.0}% of tokens estimated: {} of {} have no cost telemetry",
-            c.estimated_token_share * 100.0,
-            c.sessions_estimated,
-            count(c.sessions, "session"),
+        coverage: c.estimated_token_share.map_or_else(
+            || "no tokens in the window".to_string(),
+            |share| {
+                format!(
+                    "{:.0}% of tokens estimated: {} of {} have no cost telemetry",
+                    share * 100.0,
+                    c.sessions_estimated,
+                    count(c.sessions, "session"),
+                )
+            },
         ),
         rows,
         unpriced: f
@@ -408,6 +430,51 @@ mod tests {
             r.detail.as_deref(),
             Some("ask-judge $12, $8.00 with no runner name")
         );
+    }
+
+    #[test]
+    fn an_origin_the_block_has_no_name_for_still_gets_a_row_so_the_rows_add_up() {
+        let mut f = file();
+        f.by_origin.insert(
+            "resume".into(),
+            Cut {
+                usd: 25.0,
+                measured: 0.0,
+                estimated: 25.0,
+                sessions: 4,
+            },
+        );
+        f.total.usd = 225.0;
+        let b = build(&f, &[], NOW);
+        let sum: f64 = b.rows.iter().filter_map(|r| r.usd).sum();
+        assert!((sum - 225.0).abs() < 1e-9, "{sum}");
+        assert_eq!(row(&b, "queue, resume").basis, "4 sessions, estimated");
+    }
+
+    #[test]
+    fn sessions_with_no_price_are_unknown_never_zero_dollars() {
+        let c = Cut {
+            sessions: 3,
+            ..Cut::default()
+        };
+        assert_eq!(c.priced(), None);
+        let mut f = file();
+        f.by_origin.insert("plan".into(), c);
+        let b = build(&f, &[], NOW);
+        let r = row(&b, "queue, plan");
+        assert_eq!((r.usd, r.cost.as_str(), r.share.as_str()), (None, "-", "-"));
+        assert_eq!(r.basis, "3 sessions, no price known");
+        assert_eq!(b.rows.last().unwrap().usd, None, "unknown sorts last");
+    }
+
+    #[test]
+    fn a_window_with_no_tokens_writes_null_and_still_reads() {
+        let f: File = serde_json::from_value(serde_json::json!({
+            "as_of_epoch": NOW,
+            "coverage": {"estimated_token_share": null, "sessions": 0, "sessions_estimated": 0},
+        }))
+        .unwrap();
+        assert_eq!(build(&f, &[], NOW).coverage, "no tokens in the window");
     }
 
     #[test]
