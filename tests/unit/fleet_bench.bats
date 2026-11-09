@@ -132,7 +132,7 @@ brow() {
   # was never sampled, which no project can claim
   printf '{"session_id":"s%s","project":"game","basis":"default","made_epoch":0,"done_epoch":%s,"error_min":0,"horizon_min":60,"ratio":%s}\n' \
     1 "$T0" 1.5 2 "$T0" 2.5 > "$FLEET_BENCH_DIR/scores.jsonl"
-  printf '{"session_id":"a","merged_epoch":%s,"ci_red":2}\n{"session_id":"zz","merged_epoch":%s,"ci_red":7}\n' "$T0" "$T0" \
+  printf '{"repo":"o/r","number":1,"session_id":"a","merged_epoch":%s,"ci_red":2}\n{"repo":"o/r","number":2,"session_id":"zz","merged_epoch":%s,"ci_red":7}\n' "$T0" "$T0" \
     > "$FLEET_BENCH_DIR/pr-ci.jsonl"
   # one KPI past its limit and one inside it, so the phone can name what is over
   printf '%s\n' ci_red_per_pr_max=1 runners_bad_max=2 > "$KPI_THRESHOLDS"
@@ -163,6 +163,10 @@ agent_bench_loop_dark_episodes 0
 # TYPE agent_bench_kpi gauge
 agent_bench_kpi{kpi="sessions",window="7d"} 0
 agent_bench_kpi{kpi="sessions",window="28d"} 0
+agent_bench_kpi{kpi="merged_prs",window="7d"} 2
+agent_bench_kpi{kpi="merged_prs",window="28d"} 2
+agent_bench_kpi{kpi="interrupts_per_day",window="7d"} 0
+agent_bench_kpi{kpi="interrupts_per_day",window="28d"} 0
 agent_bench_kpi{kpi="ci_red_per_pr",window="7d"} 4.5
 agent_bench_kpi{kpi="ci_red_per_pr",window="28d"} 4.5
 agent_bench_kpi{kpi="canary_runs",window="7d"} 0
@@ -173,6 +177,7 @@ agent_bench_kpi{kpi="runners_bad",window="7d"} 0
 agent_bench_kpi{kpi="failed_unexplained",window="7d"} 0
 agent_bench_kpi{kpi="board_open",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark",window="7d"} 0
+agent_bench_kpi{kpi="loop_dark_7d",window="7d"} 0
 agent_bench_kpi{kpi="ownerless_running",window="7d"} 0
 agent_bench_kpi{kpi="plans_unqueued",window="7d"} 0
 agent_bench_kpi{kpi="routes_unresolved",window="7d"} 0
@@ -185,6 +190,20 @@ agent_bench_kpi_limit{kpi="runners_bad"} 2
 # TYPE agent_bench_kpi_past gauge
 agent_bench_kpi_past{kpi="ci_red_per_pr"} 1
 agent_bench_kpi_past{kpi="runners_bad"} 0
+# HELP agent_bench_vital The front-page KPIs from BENCH_VITALS, by the question each answers; the value is its row. Read each one from agent_bench_kpi.
+# TYPE agent_bench_vital gauge
+agent_bench_vital{question="output",kpi="merged_prs"} 0
+agent_bench_vital{question="flow",kpi="queue_net_24h"} 1
+agent_bench_vital{question="flow",kpi="step_age_p90_queued"} 2
+agent_bench_vital{question="quality",kpi="rework_candidate_7d"} 3
+agent_bench_vital{question="quality",kpi="first_pass_share"} 4
+agent_bench_vital{question="you",kpi="human_answered_per_day"} 5
+agent_bench_vital{question="you",kpi="buzzes_per_day"} 6
+agent_bench_vital{question="cost",kpi="points_per_pr"} 7
+agent_bench_vital{question="trust",kpi="ledger_coverage"} 8
+agent_bench_vital{question="trust",kpi="loop_dark_7d"} 9
+agent_bench_vital{question="outcome",kpi="requested_unstarted_h"} 10
+agent_bench_vital{question="outcome",kpi="landed_unverified"} 11
 # HELP agent_bench_improve Improvement claims live now, and verdicts of each kind, from effect.jsonl.
 # TYPE agent_bench_improve gauge
 agent_bench_improve{state="live"} 0
@@ -1081,7 +1100,7 @@ kpi_setup() {
   export BENCH_NOW=$T0
   export BENCH_SO_LIB="$REPO_ROOT/.local/lib/session-outcomes.sh" SO_LESSONS_DIR="$SANDBOX/lessons"
   mkdir -p "$BENCH_OUTCOMES_DIR/game" "$BENCH_OUTCOMES_DIR/_runner" "$LEDGER_CONF_DIR" "$LEDGER_SRC"
-  printf '%s\n' revert_rate_max=0.1 interrupts_per_session_max=1 ci_red_per_pr_max=5 prs_per_session_min=1 > "$KPI_THRESHOLDS"
+  printf '%s\n' revert_rate_max=0.1 interrupts_per_day_max=0.2 ci_red_per_pr_max=5 > "$KPI_THRESHOLDS"
   BOARD="$SANDBOX/board.tsv"; NLOG="$SANDBOX/notes.log"
   printf 'board.md\t1\tother task\t- [ ] other task #low\n' > "$BOARD"
   printf '#!/usr/bin/env bash\nB=%q; L=%q; S=%q\n' "$BOARD" "$NLOG" "$REPO_ROOT/tests/helpers/stubs/notes" > "$SANDBOX/bin/notes"
@@ -1142,11 +1161,11 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"prs_per_session":[4,2.5],"revert_rate":[0.25,0.2],"interrupts_per_session":[2,1],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null]}'
+  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
-  assert_line '| interrupts_per_session | 2 | 1 | max 1 | past |'
-  assert_line '| prs_per_session | 4 | 2.5 | min 1 | ok |'
+  assert_line '| interrupts_per_day | 0.286 | 0.071 | max 0.2 | past |'
+  assert_line '| merged_prs | 2 | 3 | - | - |'
   assert_line '| cost_per_pr | 2 | 2 | - | - |'
 }
 
@@ -1260,7 +1279,7 @@ ask_row() {
   out_row game '{session_id: "h1", project: "game", updated_epoch: ($t - 86400), prs_merged: 0, reverted_7d: 0, cost_usd: 3}'
   run "$SUBJECT" kpi --json
   assert_success
-  run jq -c '[.sessions["7d"], .revert_rate["7d"], .cost_per_pr["7d"], .ci_red_per_pr["7d"], .interrupts_per_session["7d"], .revert_rate.status]' <<<"$output"
+  run jq -c '[.sessions["7d"], .revert_rate["7d"], .cost_per_pr["7d"], .ci_red_per_pr["7d"], .interrupts_per_day["7d"], .revert_rate.status]' <<<"$output"
   assert_output '[1,null,null,null,0,"-"]'
   rm -r "$BENCH_OUTCOMES_DIR"
   run "$SUBJECT" kpi
@@ -1274,7 +1293,7 @@ ask_row() {
   echo '{"buzzes_per_day":{"7d":63.1,"28d":28.5},"comms_pass_pct":{"7d":61,"28d":40}}' > "$COMMSKPI"
   run "$SUBJECT" kpi --json --at $((T0 - 864000))
   assert_success
-  run jq -c '[.sessions["7d"], .sessions["28d"], .prs_per_session["7d"], .buzzes_per_day["7d"], .board_open["7d"]]' <<<"$output"
+  run jq -c '[.sessions["7d"], .sessions["28d"], .merged_prs["7d"], .buzzes_per_day["7d"], .board_open["7d"]]' <<<"$output"
   assert_output '[1,1,1,null,null]'
   run "$SUBJECT" kpi --json
   run jq -c '[.sessions["7d"], .buzzes_per_day["7d"]]' <<<"$output"
@@ -1284,7 +1303,7 @@ ask_row() {
   run jq -sc '[map(.sessions), (map(.date) | unique | length)]' <<<"$output"
   assert_output '[[0,1,1],3]'
   run "$SUBJECT" kpi --trend 3
-  assert_line '| date | sessions | prs_per_session | revert_rate | interrupts_per_session | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | start_context_median | compactions_per_session | rework_candidate_7d | rework_verified_30d |'
+  assert_line '| date | sessions | merged_prs | revert_rate | interrupts_per_day | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | start_context_median | compactions_per_session | rework_candidate_7d | rework_verified_30d |'
   run "$SUBJECT" kpi --trend 0
   assert_failure 2
   run "$SUBJECT" kpi --at 'not a time'
@@ -1299,7 +1318,7 @@ ask_row() {
   run "$SUBJECT" effect $((T0 - 1728000)) --days 10 --json
   assert_success
   run jq -c '.kpis | map([.kpi, .before, .after, .verdict])' <<<"$output"
-  assert_output '[["sessions",1,1,"-"],["prs_per_session",2,2,"flat"],["revert_rate",0,0.5,"regressed"],["interrupts_per_session",2,2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["first_pass_share",null,null,"-"],["plan_gate_deny_rate",null,null,"-"],["canary_runs",0,0,"-"],["canary_pass_rate",null,null,"-"],["canary_cost_per_task",null,null,"-"],["canary_min_per_task",null,null,"-"],["canary_turns_per_task",null,null,"-"],["responses_per_merged_pr",null,null,"-"],["context_per_merged_pr",null,null,"-"],["tool_chars_per_call",null,null,"-"],["locate_read_share",null,null,"-"],["reread_share",null,null,"-"],["cache_write_share",null,null,"-"],["start_share",null,null,"-"],["start_context_median",null,null,"-"],["compactions_per_session",null,null,"-"],["rework_candidate_7d",null,null,"-"],["rework_verified_30d",null,null,"pending"]]'
+  assert_output '[["sessions",1,1,"-"],["merged_prs",0,0,"-"],["revert_rate",0,0.5,"regressed"],["interrupts_per_day",0.2,0.2,"flat"],["cost_per_pr",5,1,"improved"],["ci_red_per_pr",null,null,"-"],["first_pass_share",null,null,"-"],["plan_gate_deny_rate",null,null,"-"],["canary_runs",0,0,"-"],["canary_pass_rate",null,null,"-"],["canary_cost_per_task",null,null,"-"],["canary_min_per_task",null,null,"-"],["canary_turns_per_task",null,null,"-"],["responses_per_merged_pr",null,null,"-"],["context_per_merged_pr",null,null,"-"],["tool_chars_per_call",null,null,"-"],["locate_read_share",null,null,"-"],["reread_share",null,null,"-"],["cache_write_share",null,null,"-"],["start_share",null,null,"-"],["start_context_median",null,null,"-"],["compactions_per_session",null,null,"-"],["rework_candidate_7d",null,null,"-"],["rework_verified_30d",null,null,"pending"]]'
   run "$SUBJECT" effect $((T0 - 432000)) --days 10 --json
   assert_success
   run jq -c '([.kpis[] | .verdict] | unique), ([.kpis[] | .after] | unique)' <<<"$output"
@@ -2288,6 +2307,125 @@ loop_fixture() {
   assert_equal "$(jq -r .kpi <<<"$output")" loop_dark
 }
 
+@test "kpi: loop_dark_7d keeps a dark episode that cleared; loop_dark reads only the one still firing" {
+  kpi_setup; loop_fixture
+  frow starved pool:old -200000 -200000 shepherd; frow starved pool:old -200000 -190000 human
+  BENCH_NOW=$((T0 - 190000)) "$SUBJECT" respond "starved pool:old @$((T0 - 200000))" shepherd paged
+  run "$SUBJECT" kpi --json
+  assert_success
+  assert_equal "$(jq -c '[.loop_dark["7d"], .loop_dark_7d["7d"]]' <<<"$output")" '[1,2]'
+}
+
+@test "kpi: interrupts_per_day holds when sessions go up 4x and the count is flat (negative control)" {
+  kpi_setup; mkdir -p "$FLEET_BENCH_DIR"
+  out_row game '{session_id: "h1", project: "game", updated_epoch: ($t - 86400), prs_merged: 1, corrections: {interrupts: 7}}'
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '[.sessions["7d"], .interrupts_per_day["7d"]]' <<<"$output")" '[1,1]'
+  local i
+  for i in 2 3 4; do out_row game "{session_id: \"h$i\", project: \"game\", updated_epoch: (\$t - 86400), prs_merged: 1, corrections: {interrupts: 0}}"; done
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '[.sessions["7d"], .interrupts_per_day["7d"]]' <<<"$output")" '[4,1]'
+}
+
+@test "kpi: merged_prs counts claimed PRs by merge time; an unclaimed row or one past the window does not" {
+  kpi_setup; mkdir -p "$FLEET_BENCH_DIR"
+  ci_row '{repo: "o/r", number: 1, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 0}'
+  ci_row '{repo: "o/r", number: 2, session_id: "r1", merged_epoch: ($t - 86400), ci_red: 0}'
+  ci_row '{repo: "o/r", number: 3, merged_epoch: ($t - 86400), ci_red: 0}'
+  ci_row '{repo: "o/r", number: 4, session_id: "h1", merged_epoch: ($t - 864000), ci_red: 0}'
+  ci_row '{repo: "o/r", number: 5, session_id: "h1", merged_epoch: ($t - 3456000), ci_red: 0}'
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '.merged_prs | [.["7d"], .["28d"]]' <<<"$output")" '[2,3]'
+}
+
+@test "kpi: merged_prs counts a PR two sessions claimed once, and the same number in another repo apart" {
+  kpi_setup; mkdir -p "$FLEET_BENCH_DIR"
+  ci_row '{repo: "o/r", number: 1, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 0}'
+  ci_row '{repo: "o/r", number: 1, session_id: "h2", merged_epoch: ($t - 86400), ci_red: 0}'
+  ci_row '{repo: "o/other", number: 1, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 0}'
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '.merged_prs["7d"]' <<<"$output")" '2'
+}
+
+@test "kpi --vitals: a malformed BENCH_VITALS drops the bad token and keeps the rest" {
+  kpi_setup; kpi_fixture
+  BENCH_VITALS='  q1=revert_rate   junk
+q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
+  assert_success
+  assert_equal "$(jq -c 'map([.question, .kpi])' <<<"$output")" '[["q1","revert_rate"],["q2","sessions"]]'
+  BENCH_VITALS='junk' run "$SUBJECT" kpi --vitals --json
+  assert_success
+  assert_equal "$output" '[]'
+}
+
+@test "kpi --vitals: the BENCH_VITALS rows in order, an unknown key stays a row, and it takes no other mode" {
+  kpi_setup; kpi_fixture
+  BENCH_VITALS='q1=revert_rate,nope q2=sessions' run "$SUBJECT" kpi --vitals
+  assert_success
+  assert_line --index 0 '| Question | KPI | 7d | 28d | threshold | status |'
+  assert_line --index 2 '| q1 | revert_rate | 0.25 | 0.2 | max 0.1 | past |'
+  assert_line --index 3 '| q1 | nope | - | - | - | - |'
+  assert_line --index 4 '| q2 | sessions | 1 | 2 | - | - |'
+  BENCH_VITALS='q1=revert_rate' run "$SUBJECT" kpi --vitals --json
+  assert_equal "$(jq -c '[.[] | [.question, .kpi, .["7d"], .status]]' <<<"$output")" '[["q1","revert_rate",0.25,"past"]]'
+  run "$SUBJECT" kpi --vitals --trend 2
+  assert_failure 2
+  run "$SUBJECT" kpi --vitals --check
+  assert_failure 2
+}
+
+@test "kpi --vitals: the default list names only keys kpi_json carries, seven questions" {
+  kpi_setup; kpi_fixture
+  run "$SUBJECT" kpi --json
+  local all=$output
+  run "$SUBJECT" kpi --vitals --json
+  assert_success
+  assert_equal "$(jq -c 'map(.question) | unique | length' <<<"$output")" 7
+  assert_equal "$(jq -c --argjson all "$all" 'map(select(.kpi as $k | $all | has($k) | not) | .kpi)' <<<"$output")" '[]'
+}
+
+@test "scorecard opens with Vitals, above the KPI table, and the gauge lists the same rows with no value of its own" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  "$SUBJECT" scorecard
+  run grep -m2 '^## ' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_line --index 0 '## Vitals'
+  assert_line --index 1 '## KPIs'
+  run grep -c '^| output | merged_prs ' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output 1
+  source "$SUBJECT"
+  BENCH_VITALS='q1=revert_rate q2=sessions,nope' run bench_prom "$T0"
+  assert_line 'agent_bench_vital{question="q1",kpi="revert_rate"} 0'
+  assert_line 'agent_bench_vital{question="q2",kpi="sessions"} 1'
+  assert_line 'agent_bench_vital{question="q2",kpi="nope"} 2'
+}
+
+@test "kpi: points_per_pr is Claude points over Claude landed PRs; other kinds and unread points stay out" {
+  kpi_setup; sources_fixture
+  {
+    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1"}'
+    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2"}'
+    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"s1"}'
+    echo '{"slug":"d","agent":"lazer-reserve","status":"ok","pr":"o/r#4"}'
+  } > "$ITEMS"
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '.points_per_pr["7d"]' <<<"$output")" 4.67
+  stub_prom 'exit 7'
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '.points_per_pr["7d"]' <<<"$output")" null
+}
+
+@test "chain: queue_net_24h is the queued step's in minus out; an unreadable record reads null" {
+  pipeline_fixture
+  run "$SUBJECT" pipeline --json
+  local want; want=$(jq -c '.steps[] | select(.step == "queued") | .in_24h - .out_24h' <<<"$output")
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '.queue_net_24h["7d"]' <<<"$output")" "$want"
+  BENCH_STEPS_CMD=false run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '.queue_net_24h["7d"]' <<<"$output")" null
+}
+
 @test "kpi: no thresholds file leaves every status -" {
   kpi_setup; kpi_fixture
   rm "$KPI_THRESHOLDS"
@@ -2341,7 +2479,7 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -2561,11 +2699,11 @@ pipeline_fixture() {
   assert_output 'revert_rate 7d 0.25 past max 0.1'
   claim ar-139 revert_rate 0.3 max 0.1 2
   run "$SUBJECT" improve --json
-  [ "$(jq -r .kpi <<<"$output")" = interrupts_per_session ]
+  [ "$(jq -r .kpi <<<"$output")" = interrupts_per_day ]
   BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve --json
   assert_failure 1
   assert_output ''
-  printf '%s\n' revert_rate_max=1 interrupts_per_session_max=5 > "$KPI_THRESHOLDS"
+  printf '%s\n' revert_rate_max=1 interrupts_per_day_max=5 > "$KPI_THRESHOLDS"
   : > "$FLEET_BENCH_DIR/effect.jsonl"
   run "$SUBJECT" improve
   assert_failure 1
@@ -2573,7 +2711,7 @@ pipeline_fixture() {
 
 @test "improve: board_open past board_open_max is never picked; the watch alerts instead" {
   kpi_setup; kpi_fixture
-  printf '%s\n' revert_rate_max=1 interrupts_per_session_max=5 board_open_max=1 > "$KPI_THRESHOLDS"
+  printf '%s\n' revert_rate_max=1 interrupts_per_day_max=5 board_open_max=1 > "$KPI_THRESHOLDS"
   printf '%s\n' '- [ ] a #low' '- [ ] b #low' '- [ ] c #low' > "$SANDBOX/agent.md"
   export LEDGER_BOARDS="$SANDBOX/agent.md"
   run "$SUBJECT" kpi --check '^board_open$'
@@ -2593,11 +2731,11 @@ pipeline_fixture() {
   run jq -c 'del(.at)' "$FLEET_BENCH_DIR/effect.jsonl"
   assert_output '{"type":"claim","kpi":"revert_rate","subject":"ar-92","from":0.25,"bound":"max","threshold":0.1}'
   # a size the text already carries is kept
-  run "$SUBJECT" improve file interrupts_per_session 'fix(brief): shorter #size/m'
+  run "$SUBJECT" improve file interrupts_per_day 'fix(brief): shorter #size/m'
   assert_success
-  run grep -c '#size/m #kpi/interrupts_per_session --detail' "$NLOG"
+  run grep -c '#size/m #kpi/interrupts_per_day --detail' "$NLOG"
   assert_output 1
-  refute grep -q '#size/m #kpi/interrupts_per_session #size/s' "$NLOG"
+  refute grep -q '#size/m #kpi/interrupts_per_day #size/s' "$NLOG"
 }
 
 @test "improve file: a claimed KPI, one not past, or a failed add writes no claim; an open twin exits 3 and says to claim it" {
@@ -2606,13 +2744,13 @@ pipeline_fixture() {
   run "$SUBJECT" improve file revert_rate 'another try'
   assert_failure 1
   assert_output --partial 'already claimed by ar-139'
-  run "$SUBJECT" improve file prs_per_session 'more PRs'
+  run "$SUBJECT" improve file ci_red_per_pr 'fewer reds'
   assert_failure 1
   assert_output --partial 'not past its threshold (ok)'
-  ADD_RC=3 run "$SUBJECT" improve file interrupts_per_session 'shorter briefs'
+  ADD_RC=3 run "$SUBJECT" improve file interrupts_per_day 'shorter briefs'
   assert_failure 3
-  assert_output --partial 'fleet-bench improve claim interrupts_per_session <its id>'
-  ADD_RC=1 run "$SUBJECT" improve file interrupts_per_session 'shorter briefs'
+  assert_output --partial 'fleet-bench improve claim interrupts_per_day <its id>'
+  ADD_RC=1 run "$SUBJECT" improve file interrupts_per_day 'shorter briefs'
   assert_failure 1
   [ "$(wc -l < "$FLEET_BENCH_DIR/effect.jsonl")" -eq 1 ]
 }
@@ -2622,18 +2760,18 @@ pipeline_fixture() {
   run "$SUBJECT" improve claim revert_rate ar-141
   assert_success
   assert_output 'ar-141 claims revert_rate from 0.25'
-  run "$SUBJECT" improve claim interrupts_per_session 'ar-1; rm -rf'
+  run "$SUBJECT" improve claim interrupts_per_day 'ar-1; rm -rf'
   assert_failure 2
   run "$SUBJECT" improve claim revert_rate item:judge-stage-3
   assert_failure 1
   assert_output --partial 'already claimed by ar-141'
-  run "$SUBJECT" improve claim interrupts_per_session item:judge-stage-3
+  run "$SUBJECT" improve claim interrupts_per_day item:judge-stage-3
   assert_success
   [ ! -e "$NLOG" ]
   run "$SUBJECT" improve list
   assert_line 'live claims: 2 of 3'
   assert_line '  ar-141 revert_rate from 0.25 (max 0.1), 0d'
-  assert_line '  item:judge-stage-3 interrupts_per_session from 2 (max 1), 0d'
+  assert_line '  item:judge-stage-3 interrupts_per_day from 0.286 (max 0.2), 0d'
 }
 
 @test "improve claim: one row claims each KPI its lever moved, at the cap too, and each claim ends on its own verdict; file at the cap is refused" {
@@ -2644,29 +2782,29 @@ pipeline_fixture() {
   assert_output --partial 'claims are live (BENCH_IMPROVE_MAX 1)'
   BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve claim revert_rate ar-596
   assert_success
-  BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve claim interrupts_per_session ar-596
+  BENCH_IMPROVE_MAX=1 run "$SUBJECT" improve claim interrupts_per_day ar-596
   assert_success
-  assert_output 'ar-596 claims interrupts_per_session from 2'
+  assert_output 'ar-596 claims interrupts_per_day from 0.286'
   run "$SUBJECT" improve claim revert_rate ar-596
   assert_failure 1
   assert_output --partial 'already claimed by ar-596'
   run "$SUBJECT" improve list --json
-  [ "$(jq -c '[.live[] | [.subject, .kpi]] | sort' <<<"$output")" = '[["ar-596","interrupts_per_session"],["ar-596","revert_rate"],["ar-7","cost_per_pr"]]' ]
+  [ "$(jq -c '[.live[] | [.subject, .kpi]] | sort' <<<"$output")" = '[["ar-596","interrupts_per_day"],["ar-596","revert_rate"],["ar-7","cost_per_pr"]]' ]
   # a verdict on one KPI of the row leaves its other claim live
   printf '%s\n' '{"type":"verdict","at":9999999999,"kpi":"revert_rate","subject":"ar-596","verdict":"flat"}' >> "$FLEET_BENCH_DIR/effect.jsonl"
   run "$SUBJECT" improve list --json
-  [ "$(jq -c '[.live[] | [.subject, .kpi]] | sort' <<<"$output")" = '[["ar-596","interrupts_per_session"],["ar-7","cost_per_pr"]]' ]
+  [ "$(jq -c '[.live[] | [.subject, .kpi]] | sort' <<<"$output")" = '[["ar-596","interrupts_per_day"],["ar-7","cost_per_pr"]]' ]
 }
 
 # check_fixture: one claim of each kind, closed 15 days ago unless said
 check_fixture() {
   claim ar-1 revert_rate 0.5 max 0.1 20                        # 0.5 -> 0.25: improved
-  claim ar-2 interrupts_per_session 2 max 1 20                  # 2 -> 2: flat
-  claim ar-3 prs_per_session 8 min 1 20                         # 8 -> 4: regressed
+  claim ar-2 interrupts_per_day 0.286 max 0.2 20            # 0.286 -> 0.286: flat
+  claim ar-3 merged_prs 8 min 1 20                         # 8 -> 2: regressed
   claim ar-4 ci_red_per_pr 3 max 5 20                           # dropped: unproven
   claim ar-5 revert_rate 0.5 max 0.1 20                         # merged 3 days ago: still live
   claim ar-6 cost_per_pr 2 max 1 20                             # open: still live
-  claim item:judge-stage-3 interrupts_per_session 4 max 1 30    # item done with a PR: 4 -> 2 improved
+  claim item:judge-stage-3 interrupts_per_day 4 max 1 30    # item done with a PR: 4 -> 0.286 improved
   closed '{id: "ar-1", action: "done", why: "pr:981 commit:abc", ts: ago(15)}'
   closed '{id: "ar-2", action: "done", why: "pr:982 commit:abd", ts: ago(15)}'
   closed '{id: "ar-3", action: "done", why: "pr:983 commit:abe", ts: ago(15)}'
@@ -2683,7 +2821,7 @@ check_fixture() {
   assert_success
   assert_output --partial '5 checked: 2 improved, 1 flat, 1 regressed, 1 unproven'
   run jq -sc '[.[] | select(.type == "verdict") | [.subject, .verdict, .from, .after, .pr]] | sort' "$FLEET_BENCH_DIR/effect.jsonl"
-  assert_output '[["ar-1","improved",0.5,0.25,"981"],["ar-2","flat",2,2,"982"],["ar-3","regressed",8,4,"983"],["ar-4","unproven",3,null,null],["item:judge-stage-3","improved",4,2,990]]'
+  assert_output '[["ar-1","improved",0.5,0.25,"981"],["ar-2","flat",0.286,0.286,"982"],["ar-3","regressed",8,2,"983"],["ar-4","unproven",3,null,null],["item:judge-stage-3","improved",4,0.286,990]]'
   run "$SUBJECT" improve list --json
   run jq -c '[.live[].subject] | sort' <<<"$output"
   assert_output '["ar-5","ar-6","ar-92"]'
@@ -2698,9 +2836,9 @@ check_fixture() {
   kpi_setup; kpi_fixture; check_fixture
   "$SUBJECT" retro
   run grep ' add ' "$NLOG"
-  assert_output 'ptask agent-runtime --agent add fix(kpi): revert 983, prs_per_session went from 8 to 4 #kpi/prs_per_session #high #size/s --detail check: kpi prs_per_session from 4 (min 1), read 14d after the PR lands; kpi-thresholds is not edited'
+  assert_output 'ptask agent-runtime --agent add fix(kpi): revert 983, merged_prs went from 8 to 2 #kpi/merged_prs #high #size/s --detail check: kpi merged_prs from 2 (min 1), read 14d after the PR lands; kpi-thresholds is not edited'
   run jq -c 'select(.subject == "ar-92") | del(.at)' "$FLEET_BENCH_DIR/effect.jsonl"
-  assert_output '{"type":"claim","kpi":"prs_per_session","subject":"ar-92","from":4,"bound":"min","threshold":1}'
+  assert_output '{"type":"claim","kpi":"merged_prs","subject":"ar-92","from":2,"bound":"min","threshold":1}'
   : > "$NLOG"
   run "$SUBJECT" retro
   assert_success
@@ -2735,7 +2873,7 @@ check_fixture() {
 
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {
   kpi_setup; kpi_fixture
-  claim ar-2 interrupts_per_session 2 max 1 20
+  claim ar-2 interrupts_per_day 0.286 max 0.2 20
   claim ar-6 revert_rate 0.5 max 0.1 20
   closed '{id: "ar-2", action: "done", why: "pr:982", ts: ago(15)}'
   run "$SUBJECT" improve --json
@@ -2743,7 +2881,7 @@ check_fixture() {
   "$SUBJECT" retro
   run "$SUBJECT" improve --json
   assert_success
-  assert_output '{"kpi":"interrupts_per_session","value":2,"threshold":1,"bound":"max","last":{"subject":"ar-2","verdict":"flat"}}'
+  assert_output '{"kpi":"interrupts_per_day","value":0.286,"threshold":0.2,"bound":"max","last":{"subject":"ar-2","verdict":"flat"}}'
 }
 
 @test "retro check: an edited kpi-thresholds gives the same verdicts, since it compares values, not status" {
@@ -2751,7 +2889,7 @@ check_fixture() {
   "$SUBJECT" retro
   strict=$(jq -sc '[.[] | select(.type == "verdict") | [.subject, .verdict]] | sort' "$FLEET_BENCH_DIR/effect.jsonl")
   : > "$FLEET_BENCH_DIR/effect.jsonl"; : > "$NOTES_LOG"
-  printf '%s\n' revert_rate_max=1 interrupts_per_session_max=5 prs_per_session_min=0 > "$KPI_THRESHOLDS"
+  printf '%s\n' revert_rate_max=1 interrupts_per_day_max=5 merged_prs_min=0 > "$KPI_THRESHOLDS"
   check_fixture
   "$SUBJECT" retro
   run jq -sc '[.[] | select(.type == "verdict") | [.subject, .verdict]] | sort' "$FLEET_BENCH_DIR/effect.jsonl"
@@ -2820,7 +2958,7 @@ check_fixture() {
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   "$SUBJECT" scorecard
-  run grep -e '^## ' -e '^| revert_rate ' "$BENCH_SCORECARD_DIR/latest.md"
+  run grep -e '^## [^V]' -e '^| revert_rate ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_line --index 0 '## KPIs'
   assert_line --index 1 '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line --index 2 '## Forecast'
@@ -4634,8 +4772,8 @@ STUB
     > "$FLEET_BENCH_DIR/canary.jsonl"
   run "$SUBJECT" kpi --json
   assert_success
-  run jq -c '[.sessions, .prs_per_session, .canary_runs, .canary_pass_rate, .canary_cost_per_task, .canary_min_per_task, .canary_turns_per_task] | map([.["7d"], .["28d"]])' <<<"$output"
-  assert_output '[[1,2],[4,2.5],[1,2],[1,0.5],[3,4],[10,15],[40,50]]'
+  run jq -c '[.sessions, .merged_prs, .canary_runs, .canary_pass_rate, .canary_cost_per_task, .canary_min_per_task, .canary_turns_per_task] | map([.["7d"], .["28d"]])' <<<"$output"
+  assert_output '[[1,2],[2,3],[1,2],[1,0.5],[3,4],[10,15],[40,50]]'
   run "$SUBJECT" kpi --trend 2 --json
   run jq -sc 'map(.canary_runs)' <<<"$output"
   assert_output '[0,1]'
