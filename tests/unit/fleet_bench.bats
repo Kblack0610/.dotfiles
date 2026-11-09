@@ -218,6 +218,7 @@ agent_bench_improve{state="unproven"} 0
 # TYPE agent_chain_wip gauge
 agent_chain_wip{step="queued"} 0
 agent_chain_wip{step="running"} 0
+agent_chain_wip{step="review"} 0
 agent_chain_wip{step="waiting"} 0
 # HELP agent_chain_age_minutes Minutes the items at each step have sat there, p50 and p90.
 # TYPE agent_chain_age_minutes gauge
@@ -2673,7 +2674,7 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -2846,7 +2847,7 @@ lead_fixture() {
 
 # pipeline_fixture: one item at each queue step, one open agent row waiting and one the queued item
 # started, three inbox lines, two items finished (one inside 24h), and a record that holds each
-# item where the queue folders do. Ages: queued 2h, running 1h, waiting 10m, the row 3 days and 4h.
+# item where the queue folders do. Ages: queued 2h, running 1h, on a PR 30m, waiting 10m, the row 3 days and 4h.
 pipeline_fixture() {
   kpi_setup
   at() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
@@ -2856,7 +2857,8 @@ pipeline_fixture() {
   Q=$(item q1 queued high board:game:g-2 "{\"queued\":\"$(at 7200)\"}")
   R=$(item r1 running high human "{\"queued\":\"$(at 10000)\",\"started\":\"$(at 3600)\"}")
   W=$(item w1 waiting high human "{\"queued\":\"$(at 20000)\",\"started\":\"$(at 9000)\",\"waiting\":\"$(at 600)\"}")
-  items_stub "$Q" "$R" "$W"
+  V=$(item v1 review high human "{\"queued\":\"$(at 30000)\",\"started\":\"$(at 20000)\",\"review\":\"$(at 1800)\"}")
+  items_stub "$Q" "$R" "$V" "$W"
   DONE="$SANDBOX/done.jsonl" BJSON="$SANDBOX/board.json" RJSON="$SANDBOX/steps.json"
   { item d1 done high human "{\"finished\":\"$(at 1800)\"}"; item d0 done high human "{\"finished\":\"$(at 90000)\"}"; } > "$DONE"
   jq -cn --arg d "$(date -u -d "@$((T0 - 3 * 86400))" +%F)" '{rows: [
@@ -2869,6 +2871,7 @@ pipeline_fixture() {
     {step: "backlog", in_1h: 0, out_1h: 1, in_24h: 3, out_24h: 1, items: []},
     {step: "queued", in_1h: 1, out_1h: 0, in_24h: 2, out_24h: 1, dwell_p50_min: 16, dwell_p90_min: 20, items: ["q1"]},
     {step: "running", in_1h: 1, out_1h: 1, in_24h: 2, out_24h: 1, items: ["r1"]},
+    {step: "review", in_1h: 1, out_1h: 0, in_24h: 1, out_24h: 0, items: ["v1"]},
     {step: "waiting", in_1h: 1, out_1h: 0, in_24h: 1, out_24h: 0, items: ["w1"]},
     {step: "done", in_1h: 1, out_1h: 0, in_24h: 1, out_24h: 0, items: []}]}' > "$RJSON"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$DONE" > "$SANDBOX/bin/done-stub"
@@ -2882,12 +2885,12 @@ pipeline_fixture() {
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.steps[] | [.step, .wip, .age_p90_min, .in_1h, .out_24h, .ratio]], .drift, .bottleneck' <<<"$output"
-  assert_output "$(printf '%s\n' '[["inbox",3,null,2,4,null],["backlog",1,4560,0,1,null],["queued",1,120,1,1,0.67],["running",1,60,1,1,0.5],["waiting",1,10,1,0,null],["done",1,null,1,0,null]]' 0 null)"
+  assert_output "$(printf '%s\n' '[["inbox",3,null,2,4,null],["backlog",1,4560,0,1,null],["queued",1,120,1,1,0.67],["running",1,60,1,1,0.5],["review",1,30,1,0,null],["waiting",1,10,1,0,null],["done",1,null,1,0,null]]' 0 null)"
   run "$SUBJECT" pipeline
   assert_success
   assert_line 'queued       1        2h    2h      2h         1/0         2/1        16m   20m      3h'
   assert_line 'bottleneck: none, every step with a bound is inside it'
-  assert_line 'growing over 24h: inbox +1, backlog +2, queued +1, running +1, waiting +1'
+  assert_line 'growing over 24h: inbox +1, backlog +2, queued +1, running +1, review +1, waiting +1'
   assert_line "drift: 0 queue items the record and the queue folders place apart (it sees queue items from $(at 86400))"
   run "$SUBJECT" chain --check
   assert_success
@@ -2906,7 +2909,7 @@ pipeline_fixture() {
 @test "pipeline: a move the record missed is drift, and chain --check trips on it" {
   # NEGATIVE CONTROL: r1 finished, but its move to done never reached the record
   pipeline_fixture
-  items_stub "$Q" "$W"
+  items_stub "$Q" "$V" "$W"
   run "$SUBJECT" pipeline --json
   assert_success
   [ "$(jq '.drift' <<<"$output")" = 1 ]
@@ -2915,7 +2918,7 @@ pipeline_fixture() {
   assert_output 'chain_drift 1 (max 0)'
   # an item queued after the record began to see queue items, with no event of it, is drift too;
   # one queued before that is older than the record, not missed
-  items_stub "$Q" "$W" "$(item new queued high human "{\"queued\":\"$(at 60)\"}")" "$(item old queued high human "{\"queued\":\"$(at 100000)\"}")"
+  items_stub "$Q" "$V" "$W" "$(item new queued high human "{\"queued\":\"$(at 60)\"}")" "$(item old queued high human "{\"queued\":\"$(at 100000)\"}")"
   run "$SUBJECT" pipeline --json
   [ "$(jq '.drift' <<<"$output")" = 2 ]
 }
@@ -2926,7 +2929,7 @@ pipeline_fixture() {
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.drift, .since, (.steps[] | [.wip, .in_1h])]' <<<"$output"
-  assert_output '[null,null,[3,null],[1,null],[1,null],[1,null],[1,null],[1,null]]'
+  assert_output '[null,null,[3,null],[1,null],[1,null],[1,null],[1,null],[1,null],[1,null]]'
   run "$SUBJECT" chain --check
   assert_success
   # the line-per-step shape notes printed before items_since is not a record either
@@ -2944,7 +2947,7 @@ pipeline_fixture() {
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.steps[] | [.step, .problems_n, (.problems | length), .blocked]]' <<<"$output"
-  assert_output '[["inbox",null,0,null],["backlog",null,0,null],["queued",null,0,"Dispatch stopped"],["running",1,1,null],["waiting",null,0,null],["done",null,0,null]]'
+  assert_output '[["inbox",null,0,null],["backlog",null,0,null],["queued",null,0,"Dispatch stopped"],["running",1,1,null],["review",null,0,null],["waiting",null,0,null],["done",null,0,null]]'
   run "$SUBJECT" pipeline
   assert_line 'blocked at queued: Dispatch stopped'
   assert_line 'problems over 24h: running 1'
@@ -2956,7 +2959,7 @@ pipeline_fixture() {
   [ ! -s "$PROGRESS" ]
   publish_window "$T0"
   run jq -c '[.as_of, (.steps | length)]' "$PIPELINE_SNAPSHOT"
-  assert_output "[$T0,6]"
+  assert_output "[$T0,7]"
 }
 
 @test "pipeline: no problems and no stop leave a clean snapshot, and a failed write keeps the last one" {
@@ -4048,22 +4051,23 @@ items_stub() {
     '{"slug":"q3","project":"game","mode":"oneshot","state":"queued","tags":"night","hold":"night (22:00-06:00)"}' \
     '{"slug":"q4","project":"game","mode":"oneshot","state":"queued","after":"gone","hold":"after gone"}' \
     '{"slug":"w1","project":"game","mode":"plan","state":"waiting"}' \
+    '{"slug":"v1","project":"game","mode":"oneshot","state":"review","pr":"o/r#1"}' \
     '{"slug":"q5","project":"game","mode":"oneshot","state":"queued","after":"w1","hold":"after w1"}'
   # 3 slots: r0 (agent-1, already on the schedule, ends at its own ETA T0+1h) and r1 hold two,
   # so q1 starts now; q2 waits for q1 even though a slot frees at T0+1h. 60 min a phase.
   BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast --json
   assert_success
-  run jq -c '.items | {count, running, queued, waiting, on_schedule, phases, slots, finish: (.finish_p50 - '"$T0"'),
+  run jq -c '.items | {count, running, queued, review, waiting, on_schedule, phases, slots, finish: (.finish_p50 - '"$T0"'),
       rows: [.schedule[] | [.slug, .start - '"$T0"', .p50 - '"$T0"']], not: (.not_scheduled | map("\(.slug) \(.why)") | sort)}' <<<"$output"
-  assert_output '{"count":8,"running":2,"queued":5,"waiting":1,"on_schedule":1,"phases":3,"slots":3,"finish":7800,"rows":[["r1",0,3600],["q1",600,4200],["q2",4200,7800]],"not":["q3 held: night (22:00-06:00)","q4 after gone, which did not finish ok","q5 behind an item that is not scheduled","w1 waiting on you"]}'
+  assert_output '{"count":9,"running":2,"queued":5,"review":1,"waiting":1,"on_schedule":1,"phases":3,"slots":3,"finish":7800,"rows":[["r1",0,3600],["q1",600,4200],["q2",4200,7800]],"not":["q3 held: night (22:00-06:00)","q4 after gone, which did not finish ok","q5 behind an item that is not scheduled","v1 on a PR","w1 waiting on you"]}'
   # 1 slot: r0 holds it to T0+1h, so q1 and q2 run one after the other behind it, and r1 too
   BENCH_QUEUE_SLOTS=1 BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast --json
   run jq -c '[.items.schedule[] | [.slug, .start - '"$T0"']]' <<<"$output"
   assert_output '[["r1",0],["q1",3600],["q2",7200]]'
   BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
-  assert_line --partial 'agent queue: 8 items (2 running, 5 queued, 1 waiting on you), 3 phases on 3 dispatch slots'
+  assert_line --partial 'agent queue: 9 items (2 running, 5 queued, 1 on a PR, 1 waiting on you), 3 phases on 3 dispatch slots'
   assert_line --partial '(1 running already counted above)'
-  assert_line --partial 'not scheduled: 4: '
+  assert_line --partial 'not scheduled: 5: '
   assert_line --partial 'queue:game  q2'
 }
 

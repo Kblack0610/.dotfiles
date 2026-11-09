@@ -66,7 +66,7 @@ unset _k _v
 : "${DISPATCH_IDLE_WINDOW:=60}"   # seconds the real idle sample spans: one 2 s top frame swung 17-41% on one busy hour (human, ask bo20dU, 2026-11-07)
 : "${DISPATCH_PROC_STAT:=/proc/stat}"
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06)
-: "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running or waiting item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
+: "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
 : "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats)
@@ -546,7 +546,7 @@ telemetry_env() {
   printf '%s' "$env"
 }
 
-# item_sessions -> one line per running or waiting queue item, its fields split by
+# item_sessions -> one line per running, waiting or review queue item, its fields split by
 # US (0x1f, so an empty field survives `read`): slug, server, tmux session, origin, project, area,
 # state, weight, agent, started, Claude session ids, host. The item's `session:` is the one record of
 # where it runs, `<server>:<tmux session>` (tmux turns a ':' in a session name into '_', so one ':'
@@ -707,11 +707,11 @@ red_floor_open() {
   [ $(( live + ${RED_STARTED:-0} )) -lt "$DISPATCH_RED_FLOOR" ]
 }
 
-# busy_projects -> the projects with a running or waiting queue item, one a line. A hand or plan start
+# busy_projects -> the projects with a running, waiting or review queue item, one a line. A hand or plan start
 # counts too, so the project floor lifts only a project nothing is working on.
 busy_projects() {
   agent-queue list --json --state active 2>/dev/null |
-    jq -r 'select(.state == "running" or .state == "waiting") | .project // empty' | sort -u
+    jq -r 'select(.state == "running" or .state == "waiting" or .state == "review") | .project // empty' | sort -u
   return 0
 }
 
@@ -1471,7 +1471,7 @@ cmd_start() {
     it=$(agent-queue show "$item" --json 2>/dev/null) || { say "start: no queue item: $item"; return 2; }
     st=$(jq -r .state <<<"$it")
     if [ -n "$resume" ]; then
-      case "$st" in running | waiting) ;; *) say "start: $item is $st; --resume re-attaches an item already started"; return 1 ;; esac
+      case "$st" in running | waiting | review) ;; *) say "start: $item is $st; --resume re-attaches an item already started"; return 1 ;; esac
       [ "$(jq -r '.agent // "claude"' <<<"$it")" = claude ] || { say "start: $item ran on $(jq -r .agent <<<"$it"); --resume is for claude"; return 2; }
     else
       [ -z "$key$session" ] || { say "start: --item is a launch of its own: no --row or --session"; return 2; }
@@ -1759,10 +1759,10 @@ item_brief() {
   fi
   if [ -n "$row" ] && [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, promoted from a board row that is already started. Open the PR and do not merge: the human's merge closes the row."
-    echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug waiting (fleet-dispatch reap closes it once the PR merges)"
+    echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug review (fleet-dispatch reap closes it once the PR merges)"
   elif [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, and that item is its only record: touch no board or sheet row for it."
-    echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug waiting (fleet-dispatch reap closes it once the PR merges)"
+    echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug review (fleet-dispatch reap closes it once the PR merges)"
   else
     echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, and that item is its record: touch no other board or sheet row."
     echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
@@ -1960,21 +1960,21 @@ unstart_orphans() {
 
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
 # Still open, it goes by its PR's state (merged: when the item has one, else item_pr_state): MERGED records merged: and is done ok (and
-# a board row still started closes on merge proof, close_row), OPEN waits in waiting/ for the merge
-# (where a --pr-only run leaves it), CLOSED is failed; a state gh cannot read, or a bare pr: whose PR
+# a board row still started closes on merge proof, close_row), OPEN waits in review/ for the merge
+# (where a --pr-only run leaves it; waiting/ is only for an item whose session needs the human), CLOSED is failed; a state gh cannot read, or a bare pr: whose PR
 # lacks the item's stamp, leaves it for the next pass. No PR but a `report` (a doc+ask kind's
-# doc, a stack-review report) is done ok: that was the deliverable. A waiting item with neither
-# stays parked on its blocker, any other item with neither is failed, the reason in note.
+# doc, a stack-review report) is done ok: that was the deliverable. A waiting or review item with
+# neither stays parked on its blocker, any other item with neither is failed, the reason in note.
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
 settle_item() {
   local st it pr report info state='' oid; st=$(item_state "$1")
-  case "$st" in running | waiting | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
+  case "$st" in running | waiting | review | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(agent-queue show "$1" --json 2>/dev/null)
   # A partial merge proves only one repo landed. The next PR may not exist yet.
   if [ "$(jq -r '.partial // ""' <<<"$it")" = yes ]; then
-    [ "$st" = waiting ] || agent-queue move "$1" waiting --if "$st" >/dev/null || return 0
+    [ "$st" = review ] || agent-queue move "$1" review --if "$st" >/dev/null || return 0
     logline "reaped $2: queue item $1 waits for its final landing (partial)"
     return 0
   fi
@@ -1984,14 +1984,16 @@ settle_item() {
     else info=$(item_pr_state "$1" "$it") || info=''; read -r state oid <<<"$info"
     fi
   fi
-  # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait.
-  [ "$state:$st" != OPEN:waiting ] || return 0
-  if [ "$st:$pr$report" = waiting: ]; then
+  # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait. A
+  # waiting item that names an ask stays waiting on it: the human's turn outlives the session.
+  [ "$state:$st" != OPEN:review ] || return 0
+  [ "$state:$st" != OPEN:waiting ] || [ -z "$(jq -r '.ask // ""' <<<"$it")" ] || return 0
+  case "$st:$pr$report" in waiting: | review:)
     [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
-    agent-queue set "$1" "note=session $2 ended; waiting without a PR" >/dev/null
-    logline "reaped $2: queue item $1 stays waiting without a PR"
-    return 0
-  fi
+    agent-queue set "$1" "note=session $2 ended; $st without a PR" >/dev/null
+    logline "reaped $2: queue item $1 stays $st without a PR"
+    return 0 ;;
+  esac
   dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
   if [ -n "$pr" ]; then
     case "$state" in
@@ -2002,10 +2004,10 @@ settle_item() {
       logline "reaped $2: session gone, queue item $1 done, PR $pr merged"
       close_row "$1" ;;
     OPEN)
-      agent-queue move "$1" "waiting" --if "$st" >/dev/null || return 0
+      agent-queue move "$1" "review" --if "$st" >/dev/null || return 0
       agent-queue set "$1" "note=session $2 ended with PR $pr open" >/dev/null
-      logline "reaped $2: session gone, queue item $1 waits on its open PR $pr"
-      echo "waiting queue item $1 (PR $pr open, $2 ended)" ;;
+      logline "reaped $2: session gone, queue item $1 in review on its open PR $pr"
+      echo "review queue item $1 (PR $pr open, $2 ended)" ;;
     CLOSED)
       agent-queue move "$1" "done" --status failed --if "$st" >/dev/null || return 0
       agent-queue set "$1" "note=PR $pr closed unmerged; session $2 ended" >/dev/null
@@ -2027,7 +2029,7 @@ settle_item() {
 # settle_sessionless <slug> <started> -- a started item recording no session, tmux or Claude: nothing
 # witnesses it ending and nothing can nudge it, so PRs #909 and #910 sat open with nobody on them. Its
 # PR or report still decides what it can (settle_item): merged or closed settles it, open parks it in
-# waiting/, a report is done. Anything else stays put, never failed, since no-witness is not gone, and is
+# review/, a report is done. Anything else stays put, never failed, since no-witness is not gone, and is
 # flagged once on the item and in the log, ahead of any note it had. fleet-bench's ownerless_running
 # counts it, so the board-chain watch pages it.
 settle_sessionless() {
@@ -2904,7 +2906,7 @@ cmd_stats() {
       # The whole queue, as agent-queue counts it: every state, holds by kind, flow by the hour.
       + (if $aq == null then {} else
           ($aq.sitting.held_by // {}) as $h
-          | {queued: ($aq.active.queued // 0), running: ($aq.active.running // 0), waiting: ($aq.active.waiting // 0),
+          | {queued: ($aq.active.queued // 0), running: ($aq.active.running // 0), waiting: ($aq.active.waiting // 0), review: ($aq.active.review // 0),
              held: ($aq.sitting.held // 0), held_after: ($h.after // 0), held_pr: ($h.pr // 0), held_focus: ($h.focus // 0),
              held_time: (($h.night // 0) + ($h.at // 0))} + ($aq.recent // {}) end)
       # The room the last pass had, with why it was held as a 0/1 per kind.
@@ -2920,7 +2922,8 @@ cmd_stats() {
 # item with a row), go by its PR for one that records no session (settle_sessionless), and keep each
 # live one's state true to its session: waiting/ while it waits on the human
 # (Claude's own `waiting` status, which an open plan or dialog is, or a pending agent-ask it filed and
-# stopped on), running/ again once it does not. It is the one writer of that move for a live session.
+# stopped on), running/ again once it does not, except an item it parked in review/ on its PR, which
+# stays there. It is the one writer of that move for a live session.
 # A session neither read can see is left where it is.
 cmd_reap() {
   local s d slug server sess origin project area state _weight agent started sids host want waits='' seen='' gone live active=()
@@ -2963,6 +2966,10 @@ cmd_reap() {
     want=running
     if [ -n "$sids" ] && panel_lists "$agent"; then grep -qxF -f <(printf 'sid:%s\n' $sids) <<<"$waits" && want=waiting
     else grep -qxF -e "$server/$sess" -e "$sess" <<<"$waits" && want=waiting; fi
+    # Parked on its PR and not asking the human: the session is idle at its PR, not working. One
+    # that left review/ to ask the human goes back there once answered (its review: stamp says so).
+    [ "$want:$state" != running:review ] || continue
+    [ "$want:$state" != running:waiting ] || [ -z "$(agent-queue show "$slug" --json 2>/dev/null | jq -r '.review // empty')" ] || want=review
     [ "$state" = "$want" ] && continue
     agent-queue move "$slug" "$want" --if "$state" >/dev/null && logline "reaped $sess: queue item $slug $state -> $want"
   done < <(item_sessions)
