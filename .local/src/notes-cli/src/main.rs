@@ -697,8 +697,8 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Sort the section by priority, done at the foot, and drop release tags the sheet
-    /// has passed
+    /// Lay the sheet out in Epics, Now, Next up, Backlog and Done, roll closed rows past the
+    /// Done window into versions/, and drop release tags the sheet has passed
     Sweep {
         /// Print what would change and leave the sheet alone
         #[arg(long = "dry-run")]

@@ -820,8 +820,8 @@ const ROOT_DIRS: [&str; 3] = ["agent", "versions", "docs"];
 /// - a root entry outside the shape: a `*.md` outside [`Overlays::root_md`] or a dir outside
 ///   [`ROOT_DIRS`] belongs in `docs/`, any other file in `docs/assets/` (dotfiles are not
 ///   checked; a version note or a changelog is the layout check's finding, fixed by `--migrate`);
-/// - an agent board over [`AGENT_BOARD_BUDGET`] bytes, with how many done rows
-///   `notes ptask <name> --agent archive` would move to `agent/versions/`;
+/// - an agent board over [`AGENT_BOARD_BUDGET`] bytes, with how many done rows past the Done
+///   window `notes ptask <name> --agent sweep` would roll to `agent/versions/`;
 /// - an open row written twice on one sheet (same [`md::task_key`]).
 pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String> {
     let mut out = Vec::new();
@@ -884,7 +884,7 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
             let ctx = crate::project_tasks::sweep_ctx(dir, &content, false);
             let old = crate::project_sweep::old_done(&content, &ctx).len();
             let fix = if old > 0 {
-                format!("{old} done rows past the Done window: notes ptask {name} sweep")
+                format!("{old} done rows past the Done window: notes ptask {name} --agent sweep")
             } else {
                 "the open rows need triage".to_string()
             };
@@ -5927,7 +5927,7 @@ mod shape_tests {
             .expect("budget finding");
         assert!(
             line.contains(&format!(
-                "{n} done rows past the Done window: notes ptask demo sweep"
+                "{n} done rows past the Done window: notes ptask demo --agent sweep"
             )),
             "{line}"
         );
