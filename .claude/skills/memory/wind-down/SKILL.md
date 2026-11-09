@@ -237,8 +237,6 @@ If the session produced nothing to commit (pure Q&A / read-only), say so and ski
 ~/.dotfiles/.local/src/tmux/wind-down.sh arm --session  # close the whole tmux session (a world session: this window only)
 ```
 
-**Arm against the session's ORIGINAL project dir.** The Stop hook resolves the sentinel name from the `CLAUDE_PROJECT_DIR` the session started with, not from your current shell. If step 2 already released this session's worktree, a plain `arm` run from somewhere else (the main checkout, `$HOME`) writes `<other-project>__<sid>.request`, the hook never finds it, and the window silently stays open. Pass the original path explicitly: `CLAUDE_PROJECT_DIR=~/.worktrees/<repo>-<slug> wind-down.sh arm`. Why: 2026-09-30, unity-core-playground-agent-15 reaped its worktree, then armed from the main checkout, and the window never closed.
-
 Use `--session` only when the user said "session" / "close everything" or Claude clearly owns
 the whole session it spun up. Default to window scope.
 
@@ -257,11 +255,12 @@ thing shown before the window closes.
 
 ## Notes
 
-- Sentinel lives at `~/.agent/spin-down/<project>__<session-id>.request` - one per SESSION, not
-  per project, so several armed sessions in the same repo do not clobber each other. A sentinel
+- Sentinel lives at `~/.agent/spin-down/<session-id>.request` - one per SESSION, not
+  per project, so several armed sessions in the same repo do not clobber each other, and the
+  directory `arm` runs from does not matter. A sentinel
   left armed by a deferred run is intentional - it fires on the next clean Stop, unless a new
   prompt arrives first, which disarms it. To cancel by hand, `wind-down.sh disarm` (it reads
-  `$CLAUDE_CODE_SESSION_ID`) removes this session's sentinel under any project name.
+  `$CLAUDE_CODE_SESSION_ID`) removes this session's sentinel.
 - Closing the window leaves the rest of the tmux session intact (`detach-on-destroy off`).
   `--session` detaches the client; the terminal itself stays open.
 - Scrollback is saved to `~/.local/share/tmux-history/<session>/` before the window dies.
