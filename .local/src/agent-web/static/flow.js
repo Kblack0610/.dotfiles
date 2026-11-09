@@ -2,11 +2,10 @@
 // The flow strip, drawn once for Home and the Queue tab: hub-core's `flow::Strip`
 // (inbox | board | queued | running | needs you | done 24h | drain), which both pages receive
 // ready-made (`flow` in /api/home and /api/flow). A chip opens the Queue on its filter, the board
-// chip opens Projects; a step past its age bound is amber, the only colour. A count the reader
+// chip opens the Board; a step past its age bound is amber, the only colour. A count the reader
 // did not return is `-`, never 0 (the strip words it so).
 
 function flowHref(to) {
-  if (to.tab === "projects") return "#projects";
   return "#" + to.tab + (to.state ? "?s=" + encodeURIComponent(to.state) : "");
 }
 
