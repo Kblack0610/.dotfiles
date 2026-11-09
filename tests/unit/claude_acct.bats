@@ -1151,11 +1151,26 @@ EOS
   chmod +x "$SANDBOX/bin/curl"
   export SANDBOX
 }
+# codex_log [-a] <rollout file> [epoch] -- write (or append) stdin to a rollout stamped at that time
+# ($NOW by default), since only rollouts written within the week of now are read, and drop the
+# cached codex reading.
+codex_log() {
+  local append=; [[ "$1" == -a ]] && { append=1; shift; }
+  if [[ -n "$append" ]]; then cat >> "$1"; else cat > "$1"; fi
+  touch -d "@${2:-$NOW}" "$1"
+  rm -f "$XDG_CACHE_HOME/claude-acct/codex.json"
+}
+# codex_refused <file> <epoch> -- a run refused at the usage limit at that time, as Codex logs one: a
+# windowless record and a task_complete carrying codex_error_info usage_limit_exceeded
+codex_refused() {
+  printf '{"timestamp":"x","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"premium","primary":null,"secondary":null,"plan_type":null,"rate_limit_reached_type":null}}}\n{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"You have hit your usage limit.","codex_error_info":"usage_limit_exceeded"},"completed_at":%s}}\n' "$2" \
+    | codex_log "$1" "$2"
+}
 # rollout <week-used%> <5h-used%> <hours-until-week-reset>
 rollout() {
   local reset=$((NOW + $3 * 3600)) short=$((NOW + 3600))
   printf '{"payload":{"type":"token_count","rate_limits":{"plan_type":"plus","primary":{"used_percent":%s,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":%s,"window_minutes":10080,"resets_at":%s},"rate_limit_reached_type":null}}}\n' \
-    "$2" "$short" "$1" "$reset" > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+    "$2" "$short" "$1" "$reset" | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
 }
 # budget <file> <key|team> <spend> <max>
 budget() {
@@ -1259,7 +1274,7 @@ budget() {
 # there is no 5h window. pro_rollout <week-used%> <hours-until-week-reset> [window minutes]
 pro_rollout() {
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":%s,"window_minutes":%s,"resets_at":%s},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"plan_type":"prolite","rate_limit_reached_type":null}}}\n' \
-    "$1" "${3:-10080}" "$((NOW + $2 * 3600))" > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+    "$1" "${3:-10080}" "$((NOW + $2 * 3600))" | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
 }
 
 @test "sources: a Pro rollout's primary week reads as the week, with no 5h window" {
@@ -1297,7 +1312,7 @@ pro_rollout() {
 @test "sources: a codex window with no length is unread, and the stderr names it" {
   src_setup
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":10,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":40,"resets_at":%s}}}}\n' \
-    "$((NOW + 3600))" "$((NOW + 84 * 3600))" > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+    "$((NOW + 3600))" "$((NOW + 84 * 3600))" | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
   run --separate-stderr "$ACCT" status --json
   [ "$(field codex .state <<<"$output")" = unread ]
   [[ "$stderr" == *"unknown length [300,null]"* ]]
@@ -1306,7 +1321,7 @@ pro_rollout() {
 @test "sources: a codex record with only a 5h window has no week reading" {
   src_setup
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":20,"window_minutes":300,"resets_at":%s},"secondary":null}}}\n' \
-    "$((NOW + 3600))" > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+    "$((NOW + 3600))" | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
   run --separate-stderr "$ACCT" status --json
   [ "$(field codex .five_hour <<<"$output")" = 20 ]
   [ "$(field codex .week_used <<<"$output")" = null ]
@@ -1316,7 +1331,7 @@ pro_rollout() {
   src_setup
   rollout 40 10 84
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","plan_type":"plus","primary":{"used_percent":95,"window_minutes":300,"resets_at":%s},"secondary":null,"rate_limit_reached_type":null}}}\n' \
-    "$((NOW + 3600))" >> "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+    "$((NOW + 3600))" | codex_log -a "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
   run --separate-stderr "$ACCT" status --json
   [ "$(field codex .week_used <<<"$output")" = 40 ]
   [ "$(field codex .five_hour <<<"$output")" = 10 ]
@@ -1326,7 +1341,7 @@ pro_rollout() {
   src_setup
   rollout 40 10 84
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","plan_type":"plus","primary":null,"secondary":null,"rate_limit_reached_type":null}}}\n' \
-    >> "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+    | codex_log -a "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field codex .state <<<"$output")" = ok ]
@@ -1338,22 +1353,22 @@ pro_rollout() {
   rollout 40 10 84
   local d="$BATS_TEST_TMPDIR/codex/2026/11"
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n{"payload":{"rate_limits":{"prim' \
-    > "$d/rollout-b.jsonl"
-  touch -d '-1 hour' "$d/rollout-a.jsonl"
+    | codex_log "$d/rollout-b.jsonl"
+  touch -d "@$((NOW - 3600))" "$d/rollout-a.jsonl"
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field codex .state <<<"$output")" = ok ]
   [ "$(field codex .week_used <<<"$output")" = 40 ]
 }
 
-@test "sources: codex reads past a run of refused rollouts, however long" {
+@test "sources: codex reads past a run of windowless rollouts, however long" {
   src_setup
   rollout 40 10 84
   local d="$BATS_TEST_TMPDIR/codex/2026/11" i
-  touch -d '-2 hours' "$d/rollout-a.jsonl"
+  touch -d "@$((NOW - 7200))" "$d/rollout-a.jsonl"
   for i in $(seq 1 25); do
     printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n' \
-      > "$d/rollout-refused-$i.jsonl"
+      | codex_log "$d/rollout-windowless-$i.jsonl"
   done
   run --separate-stderr "$ACCT" status --json
   assert_success
@@ -1364,9 +1379,112 @@ pro_rollout() {
 @test "sources: codex with no windowed record in any rollout is unread" {
   src_setup
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n' \
-    > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+    | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
   run --separate-stderr "$ACCT" status --json
   [ "$(field codex .state <<<"$output")" = unread ]
+}
+
+@test "sources: codex reads only rollouts of the last week, and an idle one reads unused" {
+  src_setup
+  rollout 40 10 84
+  local f="$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  touch -d "@$((NOW - 604800 - 60))" "$f"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 0 ]
+  [ "$(field codex .plan <<<"$output")" = null ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+  # negative control: the same rollout a minute inside the week is read
+  touch -d "@$((NOW - 604800 + 60))" "$f"
+  rm -f "$XDG_CACHE_HOME/claude-acct/codex.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+}
+
+@test "sources: codex with no sessions dir is unread" {
+  src_setup
+  rm -rf "$BATS_TEST_TMPDIR/codex"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = unread ]
+}
+
+@test "sources: a refusal newer than the reading fills the 5h window until its reset" {
+  src_setup
+  rollout 40 10 84
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  touch -d "@$((NOW - 7200))" "$d/rollout-a.jsonl"
+  codex_refused "$d/rollout-b.jsonl" $((NOW - 3600))
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .five_hour <<<"$output")" = 100 ]
+  [ "$(field codex .five_hour_resets <<<"$output")" = $((NOW + 3600)) ]
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+  [ "$(field codex .reached <<<"$output")" = true ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+  # negative control: a refusal older than the reading changes nothing
+  codex_refused "$d/rollout-b.jsonl" $((NOW - 3 * 3600))
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .five_hour <<<"$output")" = 10 ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+}
+
+@test "sources: a codex refusal holds until its window can reset, then the next run is the probe" {
+  src_setup
+  rollout 40 10 84                       # the 5h window resets at NOW+1h
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  touch -d "@$((NOW - 7200))" "$d/rollout-a.jsonl"
+  codex_refused "$d/rollout-b.jsonl" $((NOW - 3600))
+  # past that reset, the refusal is spent and the window reads unused
+  CLAUDE_ACCT_NOW=$((NOW + 7200)) run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .five_hour <<<"$output")" = 0 ]
+  [ "$(field codex .reached <<<"$output")" = false ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+  # refused again after that reset: no logged reset follows it, so it holds one 5h window
+  codex_refused "$d/rollout-b.jsonl" $((NOW + 5400))
+  CLAUDE_ACCT_NOW=$((NOW + 7200)) run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .five_hour <<<"$output")" = 100 ]
+  [ "$(field codex .five_hour_resets <<<"$output")" = $((NOW + 5400 + 18000)) ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+}
+
+@test "sources: a Pro refusal holds the week, its only window" {
+  src_setup
+  pro_rollout 60 84
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  touch -d "@$((NOW - 7200))" "$d/rollout-a.jsonl"
+  codex_refused "$d/rollout-b.jsonl" $((NOW - 3600))
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 100 ]
+  [ "$(field codex .five_hour <<<"$output")" = null ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+}
+
+@test "sources: codex refusals with no reading in the week read reached, not unread" {
+  src_setup
+  codex_refused "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl" $((NOW - 600))
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .reached <<<"$output")" = true ]
+  [ "$(field codex .week_used <<<"$output")" = null ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+}
+
+@test "sources: the codex reading is cached for the TTL like every other kind" {
+  src_setup
+  rollout 40 10 84
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+  # a newer rollout behind the cache's back is not read until the cache is older than the TTL
+  local f="$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  sed -i 's/"used_percent":40/"used_percent":70/' "$f"
+  touch -d "@$NOW" "$f"    # sed restamps it at the real time, outside the week of $NOW
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+  CLAUDE_ACCT_TTL=0 run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 70 ]
 }
 
 @test "sources: a key at its cap has no room" {
@@ -1517,7 +1635,7 @@ pro_rollout() {
   echo '{"gateway":{"url":"http://gw.test"},"harnesses":{"codex":{"source":"codex"}}}' > "$CLAUDE_ACCT_HARNESSES"
   mkdir -p "$HOME/.codex/sessions/2026/11"
   printf '{"payload":{"type":"token_count","rate_limits":{"plan_type":"plus","primary":{"used_percent":1,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":1,"window_minutes":10080,"resets_at":%s},"rate_limit_reached_type":null}}}\n' \
-    $((NOW + 3600)) $((NOW + 84 * 3600)) > "$HOME/.codex/sessions/2026/11/rollout-a.jsonl"
+    $((NOW + 3600)) $((NOW + 84 * 3600)) | codex_log "$HOME/.codex/sessions/2026/11/rollout-a.jsonl"
   week main 30 84
   # agent-queue answers only the call source_live makes, with n running codex items
   queue_running() {
