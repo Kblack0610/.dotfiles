@@ -184,6 +184,23 @@ tmux_calls() { cat "$FIX/calls.log"; }
   (( on < exit && exit < respawn && respawn < off ))
 }
 
+@test "a respawned pane claude keeps its queue item and the launch env, and drops a parent Claude session's identity" {
+  # The pane ran no rc file: fleet-dispatch's launch line carried these, and a respawn without them
+  # exports no cost and loses the item.
+  session lab agent-2 %7 200 200 idle "" --model opus
+  printf 'AGENT_QUEUE_ITEM=fix-menu\0' > "$CLAUDE_ACCT_PROC/200/environ"
+  mkdir -p "$HOME/.config/shared-hooks"
+  cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/getent"; chmod +x "$SANDBOX/bin/getent"
+  run "$ACCT" move agent-2 --server lab
+  assert_success
+  run tmux_calls
+  assert_line --partial "respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=fix-menu env -u CLAUDECODE"
+  assert_line --partial 'OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318'
+  assert_line --partial 'queue.item=fix-menu'
+  assert_line --partial 'claude --model opus --resume sid-1'
+}
+
 @test "a session with background shells is refused, and the shells are listed" {
   session lab agent-3 %9 300 301 shell ""
   proc 302 301 ""

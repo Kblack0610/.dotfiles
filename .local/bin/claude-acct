@@ -1345,6 +1345,14 @@ park_flow() {
     base="claude $(carry_flags "$pid")--resume $(printf %q "$sid")"
     # A shell that exported these would otherwise keep the resume on the gateway.
     [[ "$from" == "$GATEWAY_FROM" ]] && base="env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN $base"
+    # A pane that is its claude runs no rc file: its launch line (fleet-dispatch's) carried the queue
+    # item and the launch env, so the respawn carries them again (claude-telemetry.sh claude_launch_env).
+    if ((direct)); then
+        local item
+        item=$(tr '\0' '\n' < "$PROC/$pid/environ" 2>/dev/null | sed -n 's/^AGENT_QUEUE_ITEM=//p' | head -n1)
+        base="${item:+AGENT_QUEUE_ITEM=$(printf %q "$item") }$(cd "$cwd" 2>/dev/null && AGENT_QUEUE_ITEM=$item \
+            bash -c '. "$HOME/.config/shared-hooks/claude-telemetry.sh" && claude_launch_env' 2>/dev/null)$base"
+    fi
     if [[ "$verb" == move ]]; then
         echo "claude-acct: move $key ($server $pane, claude $pid, $status) from $(name_of "$from") to $name ($note)"
     else
