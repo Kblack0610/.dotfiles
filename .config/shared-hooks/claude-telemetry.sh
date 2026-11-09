@@ -52,6 +52,20 @@ export ENABLE_CLAUDEAI_MCP_SERVERS
 # publish (claude 2.1.318 reads 0/false/no/off as "artifact_env_off", checked 2026-11-05).
 : "${CLAUDE_CODE_ARTIFACT:=0}"
 export CLAUDE_CODE_ARTIFACT
+# Tools every automated start runs without, as --disallowedTools: a queue start or resume
+# (fleet-dispatch dropped_tools), an agentctl runner and a shepherd pass (agent-run's claude
+# harness), and a claude-acct move carries the flag over. Their schemas ride on every turn of a
+# session that never calls them: in the 7 days to 2026-11-06 Workflow had 1 call and ScheduleWakeup
+# 43 (all /loop) across about 2,900 sessions, for about 10K chars a turn; Artifact (ask OaAlhA) had
+# 11 calls a week, all from queue sessions. A plain claude start reads none of it. Empty keeps every
+# tool, and so does a value that is not a comma list of tool names (it never reaches a command line).
+: "${CLAUDE_AUTO_DROP_TOOLS=Workflow,ScheduleWakeup,Artifact}"
+case "$CLAUDE_AUTO_DROP_TOOLS" in
+    *[!A-Za-z0-9_,]* | ,* | *, | *,,*)
+        printf 'claude-telemetry: CLAUDE_AUTO_DROP_TOOLS is not a comma list of tool names: %s; dropping none\n' "$CLAUDE_AUTO_DROP_TOOLS" >&2
+        CLAUDE_AUTO_DROP_TOOLS= ;;
+esac
+export CLAUDE_AUTO_DROP_TOOLS
 
 if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # claude_otel_attr <key> [value] -> OTEL_RESOURCE_ATTRIBUTES with <key> set to <value>, or

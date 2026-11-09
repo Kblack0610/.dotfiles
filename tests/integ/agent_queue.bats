@@ -339,9 +339,23 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move first done --status failed
   run "$AQ" next
   assert_failure
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first closed failed, dead: cancel it or set after=<slug>"
   "$AQ" add --project game --slug first --repeat "again"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first"
   "$AQ" move first done --status ok
   [ "$("$AQ" next --json | jq -r .slug)" = second ]
+}
+
+@test "an after: on an item closed cancelled says the hold is dead, through show as well as list" {
+  "$AQ" add --project game --slug first "a"
+  "$AQ" add --project game --slug second --after first "b"
+  "$AQ" move first done --status cancelled
+  run bash -c "'$AQ' show second --json | jq -r .hold"
+  assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
 }
 
 @test "night and at: tags hold until their time, other tags are labels" {
@@ -425,6 +439,42 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 
 # 2026-11-07: can-we-get-cloud-vast-clarke-p3-live queued behind an ask the judge had answered, and
 # upwork-p2..p5 behind one later cancelled; neither ask could ever release them.
+# 2026-11-08: upwork-p2 sat behind a bare tag on an ask whose option c meant stop, so c would have started it.
+@test "an ask: tag may list several releasing options, and must name them when the ask offers options" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\noptions: a|b|c\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  ask o1 pending
+  run "$AQ" add --project game --slug bare --tags "ask:o1" "x"
+  assert_failure
+  assert_output --partial 'that ask offers a,b,c'
+  "$AQ" add --project game --slug go --tags "ask:o1=a+b" "go"
+  # Negative control: an option the tag does not list holds, and says so for dead_holds to read.
+  ask o1 answered 'c' human
+  run "$AQ" next --json
+  assert_failure
+  run "$AQ" list --state queued
+  assert_output --partial 'answered c, not a+b'
+  ask o1 answered 'B, the other' human
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = go ]
+}
+
+@test "an ask: tag refuses an option the ask does not offer, which could never match an answer" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  printf 'id: o2\nstatus: pending\noptions: go|stop-burst+do-bridge|steps done, verify it\n' > "$AGENT_ASK_DIR/game/o2.md"
+  for t in ask:o2=goo ask:o2=go+ ask:o2=go++steps ask:o2=do-bridge; do
+    run "$AQ" add --project game --slug nope --tags "$t" "x"
+    assert_failure; assert_output --partial 'that ask offers go,stop-burst+do-bridge,steps done, verify it'
+  done
+  # Negative controls: a real option in any case, a slug holding a +, and a multi-word option by its first word.
+  "$AQ" add --project game --slug one --tags "ask:o2=GO" "x"
+  "$AQ" add --project game --slug two --tags "ask:o2=stop-burst+do-bridge+go" "x"
+  "$AQ" add --project game --slug three --tags "ask:o2=steps" "x"
+  # An ask with no options has nothing to check a name against.
+  printf 'id: o3\nstatus: pending\n' > "$AGENT_ASK_DIR/game/o3.md"
+  "$AQ" add --project game --slug four --tags "ask:o3=anything" "x"
+}
+
 @test "add and set tags= refuse an ask that can never release the item: cancelled, the judge's answer, another option" {
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
@@ -564,6 +614,52 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "closed ok, not failed"
   run "$AQ" reopen nosuch
   assert_failure; assert_output --partial "no finished item"
+}
+
+# ar-1031: agent-land closed shape-city-steam-console and its row on dotfiles-private#652, a side PR.
+@test "reopen --unland takes a false ok close's PR off the item and reopens its row; a PR it does not record is refused" {
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  "$AQ" add --project game --running --slug store "store page" >/dev/null
+  "$AQ" set store "row=game:gm-9" "profile=bnb" "pr=o/game#5 o/tools#652" "merged=aaa bbb" "closing_pr=o/tools#652" >/dev/null
+  "$AQ" move store done --status ok >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" reopen store --unland o/tools
+  assert_failure; assert_output --partial "--unland takes <owner>/<repo>#<N>"
+  run "$AQ" reopen store --unland o/tools#7
+  assert_failure; assert_output --partial "store records pr:o/game#5 o/tools#652, not o/tools#7"
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-store.md)" ] || fail "a refused reopen moved the item"
+  run "$AQ" reopen store --unland O/Tools#652 --why "a skill fix, not the store page"
+  assert_success; assert_output --partial "store: done -> running (reopened, was ok)"
+  f="$(item running store)"
+  [ "$(field "$f" pr)" = "o/game#5" ] || fail "pr: $(field "$f" pr)"
+  [ "$(field "$f" merged)" = aaa ] || fail "merged: $(field "$f" merged)"
+  [ -z "$(field "$f" closing_pr)" ] || fail "closing_pr: survived"
+  [ "$(field "$f" note)" = "reopened from done (ok, unlanded O/Tools#652): a skill fix, not the store page" ] || fail "note: $(field "$f" note)"
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game --agent reopen gm-9 --why closed on O/Tools#652, not its work: a skill fix, not the store page
+notes --profile bnb ptask game --agent start gm-9"
+  # A failed close takes no --unland: nothing landed to take off.
+  "$AQ" move store done --status failed >/dev/null
+  run "$AQ" reopen store --unland o/game#5
+  assert_failure; assert_output --partial "--unland undoes an ok close, and store closed failed"
+  # pr: and merged: out of step name no commit by index: refused, nothing changed.
+  "$AQ" add --project game --running --slug skew "skew" >/dev/null
+  "$AQ" set skew "pr=o/game#6 o/tools#653" "merged=ccc" >/dev/null
+  "$AQ" move skew done --status ok >/dev/null
+  run "$AQ" reopen skew --unland o/tools#653
+  assert_failure; assert_output --partial "skew records 2 pr: and 1 merged: entries, not in step"
+  # A bare ref is the PR by its number; a row reopen that fails (the row was never closed) still starts it.
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\n[[ " $* " != *" reopen "* ]]\n' > "$SANDBOX/bin/notes"
+  "$AQ" add --project game --running --slug bare "bare" >/dev/null
+  "$AQ" set bare "row=game:gm-10" "pr=654 o/game#7" "merged=ddd eee" >/dev/null
+  "$AQ" move bare done --status ok >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" reopen bare --unland o/tools#654
+  assert_success; assert_output --partial "board row gm-10 on game was not reopened"
+  assert_output --partial "bare: board row gm-10 started again"
+  f="$(item running bare)"
+  [ "$(field "$f" pr)" = "o/game#7" ] && [ "$(field "$f" merged)" = eee ] || fail "pr: $(field "$f" pr) merged: $(field "$f" merged)"
 }
 
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {

@@ -8,6 +8,7 @@
 #     --why "reason"    why you recommend it, one sentence; shown under that option
 #     --context "why"   the background the human needs; the question itself stays one line
 #     --session s       the asking session; default the caller's tmux session
+#   agent-ask decision <id>             the human's answer on one line: question, answer, its meaning
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
 #                                       options with meanings, recommendation, context, and
 #                                       last the judge line, a deferral included
@@ -145,8 +146,16 @@ queue_waits() {
 }
 load_queue_asks() {
   [ -z "${QUEUE_ASKS+set}" ] || return 0
-  QUEUE_ASKS=" $($AGENT_ASK_QUEUE_CMD list --json 2>/dev/null |
-    jq -r '(.tags // "") | split(" ")[] | select(startswith("ask:")) | .[4:] | split("=")[0]' 2>/dev/null | tr '\n' ' ') "
+  QUEUE_HOLDS="$($AGENT_ASK_QUEUE_CMD list --json 2>/dev/null | jq -r '
+    .slug as $s | (.tags // "") | split(" ")[] | select(startswith("ask:")) | .[4:]
+    | [$s, split("=")[0], (split("=")[1] // "")] | @tsv' 2>/dev/null)"
+  QUEUE_ASKS=" $(cut -f2 <<<"$QUEUE_HOLDS" | tr '\n' ' ') "
+}
+
+# queue_holders <id>: the active items held behind this ask, `<slug><TAB><releasing options>` each.
+queue_holders() {
+  load_queue_asks
+  awk -F'\t' -v OFS='\t' -v id="$1" '$2 == id { print $1, $3 }' <<<"$QUEUE_HOLDS"
 }
 
 # collapse a value to a single physical line (files are one key:value per line)
@@ -402,6 +411,8 @@ cmd_post() {
     while IFS= read -r f; do
       [ "$(field "$f" status)" = pending ] || continue
       mine="$(basename "$f" .md)"
+      # An ask a queue item holds is handed over: the item waits on it, the session does not.
+      ! queue_waits "$mine" || continue
       echo "agent-ask post: this session already has pending ask $mine: \"$(field "$f" question)\"" >&2
       echo "One open question per session. Fold this decision into that one: agent-ask cancel $mine superseded, then post one question that covers both (several decisions -> options like 'take-all=<each recommendation>|one-by-one=go through them here', the per-decision detail in --context). If $mine is moot, cancel it and post this one." >&2
       return 2
@@ -814,7 +825,7 @@ cmd_target() {
   local f sid row; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   sid="$(field "$f" claude_session)"
-  [ -n "$sid" ] || { echo "no Claude session owns this ask" >&2; return 1; }
+  [ -n "$sid" ] || { echo "no session is waiting on this ask; answer it here" >&2; return 1; }
   row="$(live_row "$sid")"
   if [ -z "$row" ]; then
     [ "$reopen" = 1 ] || { echo "session ended; target --reopen starts it again (claude --resume $sid)" >&2; return 1; }
@@ -903,8 +914,27 @@ cmd_card() {
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   render_ask "$f"
-  session_gone_note "$f"
+  answer_route "$f"
   render_story "$f"
+}
+
+# cmd_decision <id>: the human's answer on one line for the brief of the item it released: the
+# question, the answer and that option's meaning. Nothing for an ask the human has not answered.
+cmd_decision() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask decision <id>" >&2; return 2; }
+  local f; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  load_ask "$f"
+  [ "${ASK[status]:-}" = answered ] || return 0
+  case "${ASK[answered_by]:-}" in ""|human) ;; *) return 0 ;; esac
+  local answer="${ASK[answer]:-}" pick i meaning="" opts notes
+  pick="${answer%% *}"; pick="${pick%[.,;:!]}"
+  IFS='|' read -r -a opts <<< "${ASK[options]:-}"
+  IFS='|' read -r -a notes <<< "${ASK[option_notes]:-}"
+  for i in "${!opts[@]}"; do
+    [ "${opts[i],,}" = "${pick,,}" ] && meaning="${notes[i]:-}"
+  done
+  printf '%s Answer: %s%s\n' "${ASK[question]:-}" "$answer" "${meaning:+ ($meaning)}"
 }
 
 # session_alive <claude session id>: a Claude process holding that session is running. Reads
@@ -942,21 +972,34 @@ live_sessions() {
   grep -ho '"sessionId":"[^"]*"' "${live[@]}" | cut -d'"' -f4 | sort -u
 }
 
-# session_gone_note <ask file>: a pending ask whose session has ended is still the question;
-# say where its answer will go, since nothing will type it into a session.
-session_gone_note() {
-  local f="$1" sid
+# answer_route <ask file>: where the answer to a pending ask goes, first match wins: the queue items
+# it releases, its resume command, the asking session, a board row. The human reads this on the card.
+answer_route() {
+  local f="$1" sid held spec items on alive="" who="session gone: "
   load_ask "$f"
   [ "${ASK[status]:-}" = pending ] || return 0
+  load_queue_asks
   sid="${ASK[claude_session]:-}"
-  [ -n "$sid" ] || return 0
-  session_alive "$sid" && return 0
-  if [ -n "${ASK[resume]:-}" ]; then
-    echo "  session gone: the answer starts \`${ASK[resume]:-}\`"
+  if [ -n "$sid" ]; then session_alive "$sid" && alive=1; else who="no session is waiting: "; fi
+  held="$(queue_holders "${ASK[id]:-}")"
+  if [ -n "$held" ]; then
+    while IFS= read -r spec; do
+      items="$(awk -F'\t' -v s="$spec" '$2 == s { print $1 }' <<<"$held" | paste -sd, - | sed 's/,/, /g')"
+      on="${spec//+/ or }"
+      echo "  answer releases: $items${on:+ (on $on)}"
+    done < <(cut -f2 <<<"$held" | sort -u)
+  elif [ -n "${ASK[resume]:-}" ]; then
+    if [ -n "$alive" ]; then
+      echo "  the answer goes to the asking session and starts \`${ASK[resume]:-}\`"
+    else
+      echo "  ${who}the answer starts \`${ASK[resume]:-}\`"
+    fi
+  elif [ -n "$alive" ]; then
+    echo "  the answer goes to the asking session"
   else
-    echo "  session gone: the answer becomes a row on the ${ASK[project]:-} board"
+    echo "  ${who}the answer becomes a row on the ${ASK[project]:-} board"
   fi
-  echo "  g reopens the session"
+  [ -z "$sid" ] || [ -n "$alive" ] || echo "  g reopens the session"
 }
 
 # render_story <file>: what a panel's card adds under render_ask, one labelled block per line
@@ -1509,6 +1552,7 @@ case "$sub" in
   count)  cmd_count "$@" ;;
   show)   cmd_show "$@" ;;
   card)   cmd_card "$@" ;;
+  decision) cmd_decision "$@" ;;
   target) cmd_target "$@" ;;
   live-sessions) live_sessions ;;
   titles) session_titles ;;

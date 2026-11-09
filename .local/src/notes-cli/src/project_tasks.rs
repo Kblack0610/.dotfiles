@@ -1292,6 +1292,106 @@ pub fn redate(
     Ok(0)
 }
 
+/// `notes ptask <name> reopen <id> --why "<why>"` - undo a false close: the closed row with that
+/// id goes back to todo (`[ ]`), and what `done` or `drop` stamped on its marker comes off, so a
+/// proof that was never its work stops reading as delivery (2026-11-07: ucp-1207 kept pr:652,
+/// another repo's PR, after agent-land closed it from the wrong session). An agent board row
+/// already archived into its version note moves back onto the board. The why goes to the log.
+pub fn reopen(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    id: &str,
+    why: &str,
+    lane: Lane,
+) -> Result<i32> {
+    if !md::is_row_id(id) {
+        bail!("reopen takes a row id such as ar-142, not '{id}'");
+    }
+    let why = why.trim();
+    if why.is_empty() {
+        bail!("reopen needs --why: what made the close false");
+    }
+    let closed =
+        |l: &str| l.starts_with("- [") && md::is_checked(l) && md::row_id(l).as_deref() == Some(id);
+    let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
+        bail!("'{name}' has no task sheet yet");
+    };
+    let done = |verb: &str, row: &str, from: &Path| {
+        log.info(
+            "ptask",
+            &format!("{verb} {id} in {} ({name}): {why}", from.display()),
+        );
+        let ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
+        crate::ingest::record(p, &ev);
+        println!("reopened {}", row.trim());
+    };
+    if let Some((new, _)) =
+        md::edit_first_in_section(&content, sheet::TASKS, closed, |l| Some(unclose(l)))
+    {
+        md::write_atomic(&sheet, &new)?;
+        let row = new
+            .lines()
+            .find(|l| md::row_id(l).as_deref() == Some(id))
+            .unwrap_or_default();
+        done("reopened", row, &sheet);
+        return Ok(0);
+    }
+    if lane == Lane::Agent {
+        let dir = projects::project_dir(p, name)?;
+        for (_, note) in projects::version_notes(&projects::agent_dir(&dir).join("versions")) {
+            let text = fs::read_to_string(&note)?;
+            let Some((kept, row, detail)) =
+                md::cut_first_block_in_section(&text, "Done rows", closed)
+            else {
+                continue;
+            };
+            let mut block = vec![unclose(&row)];
+            block.extend(detail);
+            // The board first: a failure between the two writes leaves the row in both, never neither.
+            md::write_atomic(
+                &sheet,
+                &md::insert_under_heading(&content, sheet::TASKS, &block),
+            )?;
+            md::write_atomic(&note, &kept)?;
+            done("reopened from the archive", &block[0], &note);
+            return Ok(0);
+        }
+    }
+    eprintln!("no closed task with id {id} in {name}");
+    Ok(1)
+}
+
+/// `line` open again: `[ ]`, and the marker without what a close stamped. `done` puts its
+/// `done:<day>` token first and the proof after it, `drop` its `dropped:` or `dup:`; each only
+/// appends, so the close is that token and everything after it. The tokens before it (the id)
+/// stay, and so does any text after the marker; a title that quotes one is never read, since only
+/// the last marker is. Total: a row is never lost, since `edit_first_in_section` deletes on None.
+fn unclose(line: &str) -> String {
+    let t = line.trim_end();
+    let marker = t
+        .rfind("<!--")
+        .and_then(|at| Some((at, at + t[at..].find("-->")?)));
+    let Some((at, end)) = marker else {
+        return md::set_checkbox(t, ' ');
+    };
+    let inner: Vec<&str> = t[at + 4..end].split_whitespace().collect();
+    let cut = inner
+        .iter()
+        .position(|k| {
+            ["done:", "dropped:", "dup:"]
+                .iter()
+                .any(|c| k.starts_with(c))
+        })
+        .unwrap_or(inner.len());
+    let head = md::set_checkbox(t[..at].trim_end(), ' ');
+    let tail = &t[end + 3..];
+    match &inner[..cut] {
+        [] => format!("{head}{tail}"),
+        keep => format!("{head} <!-- {} -->{tail}", keep.join(" ")),
+    }
+}
+
 /// The marker token `done` stamps beside the proof: the day the row closed, what a project's
 /// pace counts (`notes projects --stats --json`). Before the proof, so a prose proof stays last.
 pub(crate) fn done_token(day: chrono::NaiveDate) -> String {
@@ -2648,6 +2748,77 @@ Version: v0.0.1
         );
         // nothing left to move is not an error
         assert_eq!(archive(&p, &log, "demo", false, Lane::Agent).unwrap(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A false close undone: the row opens again with its proof off, in place on the board or
+    // moved back from the version note it was archived into, its detail lines with it.
+    #[test]
+    fn reopen_undoes_a_close_on_the_board_and_from_the_archive() {
+        let root = std::env::temp_dir().join(format!("ptask-reopen-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo - agent board\n\n## Tasks\n- [ ] fix(a): open #size/s <!-- id:dm-1 -->\n- [x] fix(b): closed done:2026 #size/s <!-- id:dm-2 done:2026-11-07 pr:652 commit:24d818eb99fc -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/versions/v0.1.0.md"),
+            "# demo v0.1.0\n\n## Done rows\n- [x] fix(c): kept #size/s <!-- id:dm-3 done:2026-11-06 pr:9 -->\n- [x] fix(d): wrong #size/m <!-- id:dm-4 done:2026-11-07 unverified: no pr -->\n  - a detail under it\n- [x] fix(e): dropped #size/s <!-- id:dm-5 dropped: stale -->\n",
+        )
+        .unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+
+        assert!(
+            reopen(&p, &log, "demo", "dm-2", " ", Lane::Agent).is_err(),
+            "a why is required"
+        );
+        assert!(
+            reopen(&p, &log, "demo", "two", "x", Lane::Agent).is_err(),
+            "an id is required"
+        );
+        assert_eq!(
+            reopen(&p, &log, "demo", "dm-1", "x", Lane::Agent).unwrap(),
+            1,
+            "an open row is not closed"
+        );
+        assert_eq!(
+            reopen(&p, &log, "demo", "dm-2", "wrong PR", Lane::Agent).unwrap(),
+            0
+        );
+        assert_eq!(
+            reopen(&p, &log, "demo", "dm-4", "wrong PR", Lane::Agent).unwrap(),
+            0
+        );
+        let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
+        assert_eq!(
+            board,
+            "# demo - agent board\n\n## Tasks\n- [ ] fix(d): wrong #size/m <!-- id:dm-4 -->\n  - a detail under it\n- [ ] fix(a): open #size/s <!-- id:dm-1 -->\n- [ ] fix(b): closed done:2026 #size/s <!-- id:dm-2 -->\n"
+        );
+        let note = fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap();
+        assert_eq!(
+            note,
+            "# demo v0.1.0\n\n## Done rows\n- [x] fix(c): kept #size/s <!-- id:dm-3 done:2026-11-06 pr:9 -->\n- [x] fix(e): dropped #size/s <!-- id:dm-5 dropped: stale -->\n"
+        );
+        assert_eq!(unclose("- [x] t <!-- done:2026-11-07 pr:1 -->"), "- [ ] t");
+        assert_eq!(
+            unclose("- [x] t <!-- id:a-1 done:2026-11-07 pr:1 --> #low"),
+            "- [ ] t <!-- id:a-1 --> #low",
+            "text after the marker stays, and the row is never dropped"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

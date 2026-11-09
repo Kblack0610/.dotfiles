@@ -8,8 +8,10 @@
 //! | agentctl | `systemctl --user list-units agentctl@*`  | the run ledger `<state>/runs.jsonl` (agentctl)  |
 //! | timer    | the same, for other timer-started units  | journald unit records (user journal retention)  |
 //! | unity    | -                                        | `unity-test-runs/runs.tsv` (the slots ledger)   |
-//! | ci       | runner-exporter `github_runner_state`, `github_actions_job_waiting` | `github_actions_run_recent` |
 //! | k8s      | `kube_job_status_active`                  | `kube_job_status_*` (kube-state-metrics)        |
+//!
+//! CI runs are not jobs here: `builds` owns them (the Releases tab's Builds section), and
+//! `Jobs::ci` is the count Infra shows that links there.
 //!
 //! A k8s Job's log is its pods' lines in Loki (`loki.rs`), read only when a row is opened.
 //!
@@ -52,24 +54,16 @@ pub enum Source {
     Agentctl,
     Timer,
     Unity,
-    Ci,
     K8s,
 }
 
 impl Source {
-    pub const ALL: [Source; 5] = [
-        Source::Agentctl,
-        Source::Timer,
-        Source::Unity,
-        Source::Ci,
-        Source::K8s,
-    ];
+    pub const ALL: [Source; 4] = [Source::Agentctl, Source::Timer, Source::Unity, Source::K8s];
     pub fn name(self) -> &'static str {
         match self {
             Source::Agentctl => "agentctl",
             Source::Timer => "timer",
             Source::Unity => "unity",
-            Source::Ci => "ci",
             Source::K8s => "k8s",
         }
     }
@@ -217,6 +211,9 @@ pub struct Jobs {
     pub jobs: Vec<Job>,
     /// `<source>: <why>` for each source that could not be read.
     pub errors: Vec<String>,
+    /// How CI runs divide, for the line Infra shows in place of their rows; it links to the
+    /// Releases tab's Builds section, which owns them. None when the ledger could not be read.
+    pub ci: Option<crate::builds::Counts>,
 }
 
 /// Where the file-backed sources live. Each honours the variable its own writer reads, so a
@@ -228,6 +225,8 @@ pub struct Paths {
     pub unity_runs: PathBuf,
     /// Where finished GitHub logs are kept once fetched.
     pub cache: PathBuf,
+    /// The CI run ledger the Infra head counts.
+    pub builds: crate::builds::Paths,
 }
 
 impl Paths {
@@ -250,6 +249,7 @@ impl Paths {
                 .unwrap_or_else(|| home.join(".cache"))
                 .join("hub"),
             agentctl,
+            builds: crate::builds::Paths::from_env(),
         }
     }
 }
@@ -336,7 +336,6 @@ pub fn collect(paths: &Paths, opts: &Opts) -> Jobs {
                             e.extend(ge);
                             (j, e)
                         }
-                        Source::Ci => remote::ci(at),
                         Source::K8s => remote::k8s(at, since),
                     };
                     (src, got)
@@ -360,13 +359,20 @@ pub fn collect(paths: &Paths, opts: &Opts) -> Jobs {
         out.jobs = collapse(std::mem::take(&mut out.jobs));
     }
     sort(&mut out.jobs);
+    // The CI line belongs to the whole list: a source filter or one job's history has none.
+    if opts.name.is_none() && opts.sources.len() == Source::ALL.len() {
+        let builds = crate::builds::read(&paths.builds, at);
+        out.ci = Some(builds.counts);
+        out.errors
+            .extend(builds.errors.into_iter().map(|e| format!("ci: {e}")));
+    }
     out
 }
 
 /// A heartbeat timer runs 1440 times a day and would bury everything else. For the
 /// systemd-started sources, each job keeps one row for its latest run (counting the rest in
 /// `runs`) plus a row for every run that did not pass, so a failure is never folded away.
-/// CI, k8s and unity runs are each their own piece of work and stay one row per run.
+/// K8s and unity runs are each their own piece of work and stay one row per run.
 pub fn collapse(jobs: Vec<Job>) -> Vec<Job> {
     use std::collections::HashMap;
     let foldable =
@@ -426,8 +432,8 @@ mod tests {
             done(Source::Timer, "pulse", 100, true),
             done(Source::Timer, "pulse", 300, true),
             done(Source::Timer, "pulse", 200, false),
-            done(Source::Ci, "gate", 100, true),
-            done(Source::Ci, "gate", 200, true),
+            done(Source::Unity, "gate", 100, true),
+            done(Source::Unity, "gate", 200, true),
         ];
         let out = collapse(jobs);
         let pulse: Vec<_> = out.iter().filter(|j| j.name == "pulse").collect();
@@ -438,7 +444,7 @@ mod tests {
         assert_eq!(
             out.iter().filter(|j| j.name == "gate").count(),
             2,
-            "CI is never folded"
+            "unity runs are never folded"
         );
     }
 
@@ -452,14 +458,14 @@ mod tests {
 
     #[test]
     fn sort_is_running_queued_done() {
-        let mut q = Job::new(Source::Ci, "q", State::Queued);
+        let mut q = Job::new(Source::Unity, "q", State::Queued);
         q.secs = Some(10);
-        let mut r = Job::new(Source::Ci, "r", State::Running);
+        let mut r = Job::new(Source::Unity, "r", State::Running);
         r.started = Some(1);
         let mut v = vec![
-            done(Source::Ci, "old", 1, true),
+            done(Source::Unity, "old", 1, true),
             q,
-            done(Source::Ci, "new", 9, true),
+            done(Source::Unity, "new", 9, true),
             r,
         ];
         sort(&mut v);
@@ -471,7 +477,7 @@ mod tests {
     fn a_bare_word_searches_what_a_job_says_not_its_state() {
         use crate::table::View;
         let jobs = vec![
-            Job::new(Source::Ci, "gate", State::Done),
+            Job::new(Source::Unity, "gate", State::Done),
             Job::new(Source::Agentctl, "done-check", State::Running),
         ];
         let v = View::new::<Job>("done", "", "", "");

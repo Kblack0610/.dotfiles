@@ -1,7 +1,7 @@
 "use strict";
 // The Home tab, the front page: what needs you, what changed since last night, what analysis
-// proposes, what runs, the numbers and the health strip.
-// The list and the numbers are hub_core::home (/api/home), the same join the hub TUI's Home tab
+// proposes, what runs, the spend and the health strip.
+// The list, the session counts and the spend are hub_core::home (/api/home), the same join the hub TUI's Home tab
 // draws; this file only lays them out. Needs you is the shared table (table.js, the view in the
 // URL); a row opens its record under it, an ask or an open dialog waiting.js's answer card, so it
 // is answered in place.
@@ -200,7 +200,7 @@ function healthHtml(chips) {
     ` <span class="muted">${chips.length - bad.length} green</span>`;
 }
 
-const sec = (title, n, body) => `<h2 class="sec">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}</h2>${body}`;
+const sec = (title, n, body, extra = "") => `<h2 class="sec">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}${extra}</h2>${body}`;
 const needsHead = (t) => sec("Needs you", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`, "");
 
 // Since last night: the briefing's areas that are not ok, each linking to the tab that owns
@@ -244,14 +244,16 @@ function drawHome() {
   const capped = (k, rows, card, word, empty) => !rows.length ? `<div class="empty">${empty}</div>` :
     rows.slice(0, h.shown).map(card).join("") +
     (rows.length > h.shown ? cfold(k, `+${rows.length - h.shown} ${word}`, rows.slice(h.shown).map(card).join(""), askst.open) : "");
-  const running = sec("Running", h.running.length, capped("home-running", h.running, runningCard, "more", "Nothing running from the queue."));
-  const nums = h.numbers.map((n) => `<span><b>${esc(n.label)}</b> ${esc(n.value)}</span>`).join(", ");
+  // The session counts head the list they count, linking to the tab that lists the sessions.
+  const counts = h.sessions ? ` <span class="muted"><a href="#sessions">sessions</a>: ${esc(h.sessions)}</span>` : "";
+  const running = sec("Running", h.running.length, capped("home-running", h.running, runningCard, "more", "Nothing running from the queue."), counts);
+  const spend = h.spend ? sec("Spend", null, `<div class="cline">${esc(h.spend)} <a href="#costs">Costs</a></div>`) : "";
   const t = h.table;
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
   const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${needsBody(h)}</div></div>`;
-  // The flow strip and the two summary lines lead, so a long Needs list never buries them.
-  paint(el, errs + sec("Flow", null, flowHtml(h.flow, h.grafana)) + sec("Numbers", null, `<div class="cline hnum">${nums}</div>`) +
-    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + needs + nightSection() + propSection(h) + running, askst.open);
+  // The flow strip, health and spend lead, so a long Needs list never buries them.
+  paint(el, errs + sec("Flow", null, flowHtml(h.flow, h.grafana)) +
+    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + spend + needs + nightSection() + propSection(h) + running, askst.open);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.

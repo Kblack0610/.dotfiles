@@ -12,13 +12,13 @@ pub struct Tab {
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 10] = [
+pub const TABS: [Tab; 11] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
         title: "Home",
         question: "What needs me, and is everything OK?",
-        sections: &["needs", "proposals", "running", "numbers", "health"],
+        sections: &["needs", "proposals", "running", "spend", "health"],
     },
     // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
     // (the doc and Handled today) opens from that nav, so it is a section here, not a tab of its own.
@@ -76,7 +76,7 @@ pub const TABS: [Tab; 10] = [
         question: "What runs on its own, and why?",
         sections: &["table", "detail"],
     },
-    // Last, the tenth (key 0), so no digit shifts. Every dollar figure the other tabs showed is
+    // After Schedules, so no digit shifts. Every dollar figure the other tabs showed is
     // here, cut seven ways; they keep a one-line badge that links in.
     Tab {
         id: "costs",
@@ -84,6 +84,14 @@ pub const TABS: [Tab; 10] = [
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
         sections: &["burn", "tokens", "langfuse", "sections", "totals", "table"],
+    },
+    // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the
+    // Builds section (CI runs, its own reader; release-state has no CI collector).
+    Tab {
+        id: "releases",
+        title: "Releases",
+        question: "What is building, and what is live where?",
+        sections: &["table", "detail", "builds"],
     },
 ];
 
@@ -98,6 +106,8 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("waiting", "home"),
     ("asks", "home"),
     ("overview", "home"),
+    // Home's Numbers heading: the session counts head Running and the spend is its own SPEND line.
+    ("numbers", "home"),
     // Both surfaces' Board tab: its rows are the Projects tab's, one project at a time or All.
     ("board", "projects"),
     // agent-web's Watch and Shepherd: one row per session on Sessions, the shepherd pinned first.
@@ -187,6 +197,7 @@ mod tests {
     fn a_retired_name_or_a_title_resolves_to_its_tab() {
         assert_eq!(resolve("waiting").map(|t| t.id), Some("home"));
         assert_eq!(resolve("Overview").map(|t| t.id), Some("home"));
+        assert_eq!(resolve("numbers").map(|t| t.id), Some("home"));
         assert_eq!(resolve("QUEUE").map(|t| t.id), Some("queue"));
         assert_eq!(resolve("focus").map(|t| t.id), Some("daily"));
         assert_eq!(resolve("Outbox").map(|t| t.id), Some("daily"));

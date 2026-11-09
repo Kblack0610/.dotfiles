@@ -1,9 +1,9 @@
-//! GitHub Actions (runner-exporter) and k8s Jobs (kube-state-metrics), both from Prometheus.
+//! k8s Jobs (kube-state-metrics) and the Unity gates running now, from Prometheus.
 
 use std::collections::HashMap;
 
 use super::{Got, Job, LogRef, Source, State};
-use crate::prom::{self, Series, W};
+use crate::prom::{self, Series};
 
 fn join(parts: &[&str]) -> String {
     parts
@@ -50,117 +50,6 @@ pub(super) fn gate_rows(gates: &[Series], at: i64) -> Vec<Job> {
             j
         })
         .collect()
-}
-
-/// CI rows from the exporter's three series: running runners, waiting jobs, recent runs.
-pub(super) fn ci_rows(
-    busy: &[Series],
-    waiting: &[Series],
-    recent: &[Series],
-    durs: &[Series],
-    at: i64,
-) -> Vec<Job> {
-    let mut jobs = vec![];
-    for s in busy {
-        let mut j = Job::new(
-            Source::Ci,
-            format!("{} / {}", s.label("repo"), s.label("workflow")),
-            State::Running,
-        );
-        let secs = s.value.map(|v| v as i64);
-        j.secs = secs;
-        j.started = secs.map(|v| at - v);
-        j.detail = join(&[s.label("job_name"), s.label("branch"), s.label("name")]);
-        let url = s.label("url");
-        if !url.is_empty() {
-            j.url = Some(url.to_string());
-            j.log = Some(LogRef::Gh {
-                url: url.to_string(),
-                done: false,
-            });
-        }
-        jobs.push(j);
-    }
-    for s in waiting {
-        let mut j = Job::new(
-            Source::Ci,
-            format!("{} / {}", s.label("repo"), s.label("workflow")),
-            State::Queued,
-        );
-        j.secs = s.value.map(|v| v as i64);
-        let stuck = if s.label("stuck") == "true" {
-            "STUCK"
-        } else {
-            ""
-        };
-        j.detail = join(&[
-            s.label("job_name"),
-            s.label("branch"),
-            s.label("pool"),
-            stuck,
-        ]);
-        j.result = s.label("status").to_string();
-        let url = s.label("url");
-        if !url.is_empty() {
-            j.url = Some(url.to_string());
-        }
-        jobs.push(j);
-    }
-    let dur: HashMap<&str, i64> = durs
-        .iter()
-        .filter_map(|s| Some((s.label("url"), s.value? as i64)))
-        .collect();
-    for s in recent {
-        let Some(fin) = s.value.map(|v| v as i64) else {
-            continue;
-        };
-        let mut j = Job::new(
-            Source::Ci,
-            format!("{} / {}", s.label("repo"), s.label("workflow")),
-            State::Done,
-        );
-        let c = s.label("conclusion");
-        j.ok = conclusion_ok(c);
-        j.result = c.to_string();
-        j.finished = Some(fin);
-        let url = s.label("url");
-        j.secs = dur.get(url).copied();
-        j.started = j.secs.map(|d| fin - d);
-        j.detail = join(&[s.label("branch"), s.label("event")]);
-        if !url.is_empty() {
-            j.url = Some(url.to_string());
-            j.log = Some(LogRef::Gh {
-                url: url.to_string(),
-                done: true,
-            });
-        }
-        jobs.push(j);
-    }
-    jobs
-}
-
-pub(super) fn ci(at: i64) -> Got {
-    let base = match prom::base() {
-        Ok(b) => b,
-        Err(e) => return (vec![], vec![e]),
-    };
-    let q = |m: &str| prom::instant(&base, &format!("{W} ({m})"));
-    let (busy, waiting, recent, durs) = (
-        q("github_runner_state{state=\"running\"}"),
-        q("github_actions_job_waiting"),
-        q("github_actions_run_recent"),
-        q("github_actions_run_recent_duration_seconds"),
-    );
-    let mut errors = vec![];
-    let mut ok = |r: Result<Vec<Series>, String>| {
-        r.unwrap_or_else(|e| {
-            errors.push(e);
-            vec![]
-        })
-    };
-    let (busy, waiting, recent, durs) = (ok(busy), ok(waiting), ok(recent), ok(durs));
-    errors.dedup();
-    (ci_rows(&busy, &waiting, &recent, &durs, at), errors)
 }
 
 #[derive(Default)]
@@ -310,71 +199,6 @@ mod tests {
             ("pg-agent-9 EditMode", Some(955))
         );
         assert_eq!(j[0].detail, "fix/x pg-agent-9 workstation");
-    }
-
-    #[test]
-    fn ci_rows_from_the_three_series() {
-        let url = "https://github.com/O/platform/actions/runs/1";
-        let busy = [s(
-            &[
-                ("repo", "platform"),
-                ("workflow", "CI"),
-                ("job_name", "gate"),
-                ("url", "https://github.com/O/platform/actions/runs/2/job/3"),
-            ],
-            60.0,
-        )];
-        let waiting = [s(
-            &[
-                ("repo", "playground"),
-                ("workflow", "Checks"),
-                ("pool", "light"),
-                ("stuck", "true"),
-            ],
-            300.0,
-        )];
-        let recent = [
-            s(
-                &[
-                    ("repo", "platform"),
-                    ("workflow", "CI"),
-                    ("conclusion", "failure"),
-                    ("url", url),
-                    ("branch", "develop"),
-                ],
-                1000.0,
-            ),
-            s(
-                &[
-                    ("repo", "platform"),
-                    ("workflow", "Drift"),
-                    ("conclusion", "cancelled"),
-                    ("url", "u2"),
-                ],
-                900.0,
-            ),
-        ];
-        let durs = [s(&[("url", url)], 120.0)];
-        let j = ci_rows(&busy, &waiting, &recent, &durs, 5000);
-        assert_eq!((j[0].state, j[0].started), (State::Running, Some(4940)));
-        assert_eq!((j[1].state, j[1].secs), (State::Queued, Some(300)));
-        assert!(j[1].detail.ends_with("STUCK"));
-        assert_eq!(
-            (j[2].ok, j[2].started, j[2].secs),
-            (Some(false), Some(880), Some(120))
-        );
-        assert_eq!(
-            j[2].log,
-            Some(LogRef::Gh {
-                url: url.into(),
-                done: true
-            })
-        );
-        assert_eq!(
-            (j[3].ok, j[3].secs),
-            (None, None),
-            "cancelled is neither, and no duration is no guess"
-        );
     }
 
     #[test]

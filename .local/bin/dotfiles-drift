@@ -10,9 +10,9 @@
 # It found a worse instance on 2026-07-27: the private overlay's
 # watch-companion-loop had been merged since June but the DEPLOYED copy was a
 # stale gitignored physical file left behind by the public/private split. The
-# sentinel daemon had been executing June code for six weeks. Because
-# dotfiles-overlay-link refuses to touch "a link that already resolves", the
-# newer version could never attach on its own.
+# sentinel daemon had been executing June code for six weeks. A link that already
+# resolves is never replaced unattended, so the newer version could not attach on
+# its own.
 #
 # Three checks, each a distinct failure mode:
 #

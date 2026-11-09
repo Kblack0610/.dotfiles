@@ -14,6 +14,7 @@ mod assets;
 mod auth;
 mod board;
 mod briefing;
+mod builds;
 mod cache;
 mod cli;
 mod cloud;
@@ -30,6 +31,7 @@ mod projects;
 mod proposals;
 mod queue;
 mod reds;
+mod releases;
 mod schedules;
 mod sessions;
 mod shepherd;
@@ -146,6 +148,10 @@ async fn main() -> Result<()> {
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/schedules", get(schedules_list))
+        .route("/api/releases", get(releases_list))
+        .route("/api/releases/changelog", get(releases::changelog))
+        .route("/api/builds", get(builds_list))
+        .route("/api/builds/log", get(build_log))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
@@ -241,7 +247,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let claude = session::home().join(".claude");
     let projects = claude.join("projects");
     let (new_dirs, mut new_dirs_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
-    let (costs_events, mut costs_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (cached_events, mut cached_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watched = projects.clone();
     let events = tx.clone();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -254,10 +260,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 let _ = new_dirs.send(p.clone());
             }
             match classify(p) {
-                // Costs keeps its read for minutes, so the task below drops it before it tells
+                // Costs and Builds keep their read, so the task below drops it before it tells
                 // the page; a refresh that raced ahead would get the old snapshots back.
-                Some(msg) if msg == COSTS_EVENT => {
-                    let _ = costs_events.send(msg);
+                Some(msg) if msg == COSTS_EVENT || msg == BUILDS_EVENT => {
+                    let _ = cached_events.send(msg);
                 }
                 Some(msg) => {
                     let _ = events.send(msg); // no subscribers is fine
@@ -296,6 +302,15 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let tokens = boards::token_usage_dir();
     std::fs::create_dir_all(&tokens)?;
     targets.push((tokens, flat));
+    // release-state's snapshot, replaced by a rename: the Releases tab.
+    let snapshots = boards::releases_dir();
+    std::fs::create_dir_all(&snapshots)?;
+    targets.push((snapshots, flat));
+    // schedules-sync's run ledger and its sync record: the Releases tab's Builds section.
+    if let Some(dir) = hub_core::builds::Paths::from_env().ledger.parent() {
+        std::fs::create_dir_all(dir)?;
+        targets.push((dir.to_path_buf(), flat));
+    }
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
         boards::fleet_state().parent().map(Path::to_path_buf),
@@ -347,8 +362,12 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                     let Some(dir) = dir else { break };
                     failed.extend(add_watches(&mut w, vec![(dir, flat)]));
                 }
-                Some(msg) = costs_rx.recv() => {
-                    costs::forget().await;
+                Some(msg) = cached_rx.recv() => {
+                    if msg == BUILDS_EVENT {
+                        builds::forget().await;
+                    } else {
+                        costs::forget().await;
+                    }
                     let _ = tx.send(msg);
                 }
                 () = tokio::time::sleep(delay), if retry => {
@@ -366,6 +385,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
 
 /// A new token snapshot: the Costs tab reads afresh.
 const COSTS_EVENT: &str = r#"{"kind":"costs"}"#;
+const BUILDS_EVENT: &str = r#"{"kind":"builds"}"#;
 
 fn classify(p: &Path) -> Option<String> {
     if p.ends_with(".local/state/fleet/state.json") || p.ends_with(".agent/shepherd/watch.log") {
@@ -377,6 +397,12 @@ fn classify(p: &Path) -> Option<String> {
             .extension()
             .is_some_and(|e| e == "json")
             .then(|| COSTS_EVENT.to_string());
+    }
+    if boards::is_release_snapshot(&boards::releases_dir(), p) {
+        return Some(r#"{"kind":"releases"}"#.to_string());
+    }
+    if hub_core::builds::Paths::from_env().is_ledger_file(p) {
+        return Some(BUILDS_EVENT.to_string());
     }
     // Only day-log names its files by day; its `.tmp` and `.lock` never match.
     if let Some(day) = p.file_name()?.to_str()?.strip_suffix(".json") {
@@ -1186,6 +1212,30 @@ async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) ->
         .into_response()
 }
 
+async fn releases_list(Query(q): Query<schedules::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        releases::get(q).await,
+    )
+        .into_response()
+}
+
+async fn builds_list(Query(q): Query<builds::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        builds::get(q).await,
+    )
+        .into_response()
+}
+
+/// The run is named by its ledger key, never by a URL or a path.
+async fn build_log(Query(key): Query<hub_core::builds::RunKey>) -> ApiResult<Response> {
+    let text = builds::log(key)
+        .await
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
+    Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
+}
+
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
@@ -1293,7 +1343,7 @@ mod tests {
         });
         let home = hub_core::home::build(&state, None, None, None);
         assert_eq!(home.needs.len(), 2);
-        let (numbers, shown) = (home.numbers.clone(), home.shown);
+        let (sessions, shown) = (home.sessions.clone(), home.shown);
         let q = HomeQuery {
             q: "project:b".into(),
             ..Default::default()
@@ -1309,7 +1359,7 @@ mod tests {
         assert_eq!(out["table"]["total"], 2, "the count is of the whole list");
         assert_eq!(out["table"]["q"], "project:b");
         assert_eq!(out["shown"], shown, "flattened beside the rows");
-        assert_eq!(out["numbers"], serde_json::to_value(numbers).unwrap());
+        assert_eq!(out["sessions"], serde_json::to_value(sessions).unwrap());
         assert!(
             out["proposals_table"].is_object(),
             "Proposals' view rides beside it"
@@ -1446,6 +1496,18 @@ mod tests {
             classify(&boards::token_usage_dir().join("2026-11-05.json.tmp")),
             None
         );
+        // release-state's snapshot arrives by a rename; its temp files and any other state.json
+        // are not it.
+        assert_eq!(
+            classify(&boards::releases_dir().join("state.json")).as_deref(),
+            Some(r#"{"kind":"releases"}"#)
+        );
+        assert_eq!(classify(&boards::releases_dir().join(".state.123")), None);
+        // schedules-sync's ledger and sync record are the Builds section's; its other files are not.
+        let ci = hub_core::builds::Paths::from_env();
+        assert_eq!(classify(&ci.ledger).as_deref(), Some(BUILDS_EVENT));
+        assert_eq!(classify(&ci.sync).as_deref(), Some(BUILDS_EVENT));
+        assert_eq!(classify(&ci.sync.with_file_name("other.json")), None);
         assert_eq!(
             classify(Path::new("/h/.local/state/fleet/.state.AbC123")),
             None

@@ -107,6 +107,12 @@ echo "cpu  $((u + a)) $((n + b)) $((s + c)) $((i + d)) 0 0 0 0 0 0" > "$DISPATCH
   export LAB_STAGES="draft dev alpha beta prod"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue" AGENT_QUEUE_PROJECT_MAP="$DISPATCH_PROJECT_MAP" AGENT_QUEUE_START=0
+  # The launch env as stow deploys it, off the LAN (getent fails), so a start reads its defaults
+  # (dropped_tools) and adds no telemetry unless a test stubs getent to say it is on the LAN.
+  mkdir -p "$HOME/.config/shared-hooks"
+  cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$HOME/.config/shared-hooks/"
+  stub getent 'exit 2'
+  unset CLAUDE_AUTO_DROP_TOOLS
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-dispatch"
 }
@@ -903,6 +909,21 @@ kinds_match() {
   # Not judged twice: the verdict holds for the row's new text.
   run cmd_candidates
   assert_output ''
+}
+
+@test "item_brief: an item held on an ask is told the human's answer, in the cloud brief too" {
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  printf 'id: d1\nquestion: which label?\nstatus: answered\nanswer: a\nanswered_by: human\noptions: a|b\noption_notes: accept it|write by hand\n' > "$AGENT_ASK_ROOT/game/d1.md"
+  agent-ask() { "$REPO_ROOT/.local/bin/agent-ask" "$@"; }
+  it() { jq -cn --arg t "$1" '{slug: "s", mode: "oneshot", title: "plain task", task: "plain task", tags: $t}'; }
+  local line='The human already decided this in ask d1, so follow it: which label? Answer: a (accept it)'
+  run item_brief "$(it 'ask:d1=a+b')"
+  assert_line "$line"
+  run item_brief "$(it 'ask:d1=a+b')" claude-cloud
+  assert_line "$line"
+  # Negative control: no ask tag, no such line.
+  run item_brief "$(it '')"
+  refute_output --partial 'already decided'
 }
 
 @test "item_brief: a session starts on its kind's entry, by the item's type or its title's prefix; /one-shot otherwise" {
@@ -4514,8 +4535,7 @@ board_item() {
   project game beta "$SANDBOX/repos/game"
   transcript abc-123 '{"permissionMode":"plan"}'
   printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
-  mkdir -p "$HOME/.config/shared-hooks"
-  cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
+  cp "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/"
   stub getent 'exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
     --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
@@ -4544,7 +4564,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session planned \
     --cwd "$SANDBOX/repos/game" --resume conv-plan
   assert_success
-  assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
+  assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
   assert_called 'set-option -t =planned: @dispatch game: plan-work'
   f=$(qitem running plan-work)
   assert_equal "$(qfield "$f" session) $(qfield "$f" origin)" 'default:planned resume'
@@ -4555,7 +4575,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session planned2 \
     --cwd "$SANDBOX/repos/game" --resume conv-plan
   assert_success
-  assert_called "AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-plan"
+  assert_called "AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-plan"
 }
 
 @test "start --resume refuses a conversation still running, and one two items list without --item" {
@@ -4736,7 +4756,7 @@ restore_setup() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
   assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work'
-  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-item"
+  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item"
   f=$(qitem running hub-work)
   assert_equal "$(qfield "$f" origin)" resume
   assert_equal "$(qfield "$f" session)" ''
@@ -4866,7 +4886,7 @@ harness_ready() {
   assert_equal "$(qfield "$f" agent) $(qfield "$f" account)" 'claude-lazer eval'
 }
 
-@test "a queue start drops DISPATCH_DROP_TOOLS, unless the task names one, ultracode or /loop, or the knob is empty" {
+@test "a queue start drops CLAUDE_AUTO_DROP_TOOLS from the launch env, unless the task names one, ultracode or /loop, or it is empty" {
   project game beta "$SANDBOX/repos/game"
   stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
   agent-queue add --project game --slug plain "fix the menu"
@@ -4874,17 +4894,40 @@ harness_ready() {
   agent-queue add --project game --slug lp "/loop 5m check the deploy"
   agent-queue add --project game --slug wf "run a Workflow over the PRs"
   for s in plain uc lp wf; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
-  DISPATCH_DROP_TOOLS='' && agent-queue add --project game --slug off "fix the footer" && cmd_start --item off >/dev/null || fail "start off"
+  agent-queue add --project game --slug off "fix the footer" && CLAUDE_AUTO_DROP_TOOLS='' cmd_start --item off >/dev/null || fail "start off"
   mask_sid "$NOTES_FIXTURE/cmds.log"
   run cat "$NOTES_FIXTURE/cmds.log"
+  # The default is claude-telemetry.sh's, the one list every automated start reads.
   assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=plain env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode'
   [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "only plain drops tools: $(cat "$NOTES_FIXTURE/cmds.log")"
   assert_line --index 4 --partial 'AGENT_QUEUE_ITEM=off env -u CLAUDE_CONFIG_DIR claude --model opus --session-id SID --permission-mode'
   # A value that is not a list of tool names never reaches the command line.
-  DISPATCH_DROP_TOOLS='Bash(rm:*);x' && agent-queue add --project game --slug bad "fix the header" >/dev/null
-  run cmd_start --item bad
-  assert_output --partial 'DISPATCH_DROP_TOOLS is not a comma list of tool names'
-  [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a bad knob reached the command line"
+  agent-queue add --project game --slug bad "fix the header" >/dev/null
+  CLAUDE_AUTO_DROP_TOOLS='Bash(rm:*);x' run cmd_start --item bad
+  assert_output --partial 'CLAUDE_AUTO_DROP_TOOLS is not a comma list of tool names'
+  [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a bad list reached the command line"
+  # With the file that holds the list gone, a start says so and drops none.
+  rm "$HOME/.config/shared-hooks/claude-telemetry.sh"
+  agent-queue add --project game --slug gone "fix the sidebar" >/dev/null
+  run cmd_start --item gone
+  assert_output --partial 'claude-telemetry.sh is missing, so this start drops no tools'
+  [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a start with no list file dropped tools"
+}
+
+@test "a queue item's resume drops the same tools; a resume of a conversation no item lists keeps every one" {
+  project game beta "$SANDBOX/repos/game"
+  transcript abc-123 '{"permissionMode":"plan"}'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  started_item fix-menu default:other
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s1 \
+    --cwd "$SANDBOX/repos/game" --resume abc-123 --item fix-menu
+  assert_success
+  assert_called 'claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode plan --allow-dangerously-skip-permissions --resume abc-123'
+  transcript def-456 '{"permissionMode":"plan"}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s2 \
+    --cwd "$SANDBOX/repos/game" --resume def-456
+  assert_success
+  assert_called '-c '"$SANDBOX"'/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume def-456'
 }
 
 # --- lane sandbox: DISPATCH_SANDBOX_PROFILE (the pattern is tests/integ/agent_run_sandbox.bats) ---
@@ -5223,7 +5266,8 @@ cloud_run_ready() {
 
 # Every account past its pace, lazer-reserve on its own key, and model-lane putting every task on
 # Sonnet ($LANE when set), whose candidates are claude and codex at one fit and lazer-reserve at the
-# next. No source has room until a test says which (srcs).
+# next. Opus's are lanes.yaml's: claude, then codex and glm at the next fit. No source has room until
+# a test says which (srcs).
 route_ready() {
   harness_ready
   printf 'sk-reserve\n' > "$SANDBOX/reserve.key"
@@ -5235,7 +5279,8 @@ route_ready() {
 }
 sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; l=${LANE:-sonnet}
 case "$1" in log) echo run-9 ;; classify)
-  if [ "$l" = sonnet ]; then c="[{\"harness\":\"claude\",\"model\":\"sonnet\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0},{\"harness\":\"lazer-reserve\",\"model\":\"sonnet\",\"fit\":1}]"
+  if [ "$l" = opus ]; then c="[{\"harness\":\"claude\",\"model\":\"opus\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1},{\"harness\":\"glm\",\"model\":\"glm\",\"fit\":1}]"
+  elif [ "$l" = sonnet ]; then c="[{\"harness\":\"claude\",\"model\":\"sonnet\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0},{\"harness\":\"lazer-reserve\",\"model\":\"sonnet\",\"fit\":1}]"
   else c="[{\"harness\":\"claude\",\"model\":\"$l\",\"fit\":0}]"; fi
   echo "{\"lane\":\"$l\",\"by\":\"rule\",\"model\":\"$l\",\"dispatch_model\":\"$l\",\"candidates\":$c}" ;; esac'; }
 
@@ -5301,18 +5346,18 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'Dispatch stopped 3h00m: no account has room'
 }
 
-@test "an Opus item waits while only other sources have room, and a later pass does not ask model-lane again that day" {
+@test "an Opus item waits while only sources outside its lane have room, and a later pass does not ask model-lane again that day" {
   route_ready
-  srcs codex:ok:5
+  srcs codex:reserve:1 reserve:ok:20
   export LANE=opus
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'no account has room; alt is the closest, 4 points over its weekly pace, and no queue item has a source with room it may run on: fix-menu (claude: no account has room)'
+  assert_output --partial 'no account has room; alt is the closest, 4 points over its weekly pace, and no queue item has a source with room it may run on: fix-menu (claude: no account has room; codex: codex: inside its reserve; glm: no source glm in claude-acct room --json)'
   assert_equal "$(outcome)" BLOCKED
   assert_not_called 'wt new'
   rm -f "$NOTES_FIXTURE/calls.log"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'fix-menu (claude: no account has room)'
+  assert_output --partial 'fix-menu (claude: no account has room; codex: codex: inside its reserve; glm: no source glm in claude-acct room --json)'
   assert_not_called 'model-lane classify'
   [ -n "$(qitem queued fix-menu)" ] || fail "an Opus item left the queue"
   # Once an account has room, the cached verdict no longer skips it: it is classified afresh and starts.
@@ -5320,6 +5365,31 @@ case "$1" in log) echo run-9 ;; classify)
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-menu'
   assert_called 'model-lane classify'
+}
+
+# A bare-ID row (`ucp-212`, no words) is what the router's LLM sends to Opus (ar-1014); LANE stands in for it.
+@test "a bare-ID row on the Opus lane routes to codex at the next fit while no account has room" {
+  route_ready
+  srcs codex:ok:5 reserve:ok:20
+  export LANE=opus
+  agent-queue add --project game --slug ucp-212 --priority urgent "ucp-212" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item ucp-212 on codex (sol), routed by model-lane while no account has room'
+  assert_equal "$(outcome)" WORKED
+  assert_called 'agent-codex run -m gpt-6.1-sol'
+  assert_called 'model-lane log --item ucp-212 --task ucp-212 --lane opus --by rule --picked opus --ran sol --harness codex'
+  f=$(qitem running ucp-212)
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" routed) $(qfield "$f" model)" 'codex codex sol'
+  # Negative control: with an account that has room, claude takes the next one at fit 0, though codex ranks lower.
+  acct main:ok
+  srcs codex:ok:0.5
+  agent-queue add --project game --slug ucp-213 --priority urgent "ucp-213" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item ucp-213'
+  assert_equal "$(qfield "$(qitem running ucp-213)" agent) $(qfield "$(qitem running ucp-213)" model)" 'claude opus'
+  assert_not_called 'agent-codex'
 }
 
 @test "a plan item is never sent to a headless harness; the same item in oneshot mode is" {
@@ -5336,15 +5406,24 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'started queue item fix-next on codex (sol)'
 }
 
-@test "a routed item past the tier ceiling stays on claude, and the Sonnet item behind it routes" {
+@test "a routed tier-3 item goes only to a headless harness, on a brief that stops at the PR; the Sonnet item behind it routes" {
   route_ready
-  srcs codex:ok:5 reserve:ok:20
+  srcs codex:reserve:1 reserve:ok:20
   agent-queue add --project game --slug ci-first --priority urgent "ci: the runner retries a dead batch" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'queue item ci-first has no source with room it may run on: codex: tier 3 is past the unattended ceiling; claude: no account has room; lazer-reserve: tier 3 is past the unattended ceiling'
-  [ -n "$(qitem queued ci-first)" ] || fail "a tier 3 item was routed"
+  assert_output --partial 'queue item ci-first has no source with room it may run on: codex: codex: inside its reserve; claude: no account has room; lazer-reserve: tier 3 is past the unattended ceiling'
+  [ -n "$(qitem queued ci-first)" ] || fail "a tier 3 item went to a harness that would land it"
   [ -n "$(qitem running fix-menu)" ] || fail "the Sonnet item behind it did not route"
+  # With codex back in room, it takes the item PR-only: the merge waits on a review codex cannot run.
+  srcs codex:ok:5
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item ci-first on codex (sol), routed by model-lane'
+  assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it with --pr-only'
+  assert_called 'agent-queue move ci-first waiting'
+  assert_not_called 'Run agent-land in the foreground'
+  assert_not_called 'merges only behind the red-fix gate'
 }
 
 @test "a red past the ceiling routes only to a harness that can hold the red-fix gate" {

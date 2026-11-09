@@ -16,7 +16,8 @@ Usage:
                            [--context N] [--limit N] [--ignore-case/-i]
   claude-recall list [--project P] [--limit N]
   claude-recall show SESSION_ID_OR_PREFIX [--thinking]
-  claude-recall stats [--days N | --since DATE|ISO] [--kind slash,skill,agent,prompt]
+  claude-recall stats [--days N | --since DATE|ISO] [--kind slash,skill,agent,intent,prompt,
+                                                           body,read,script,mention]
                       [--origin interactive|auto|all] [--by week|project] [--top K]
                       [--min N] [--min-words N] [--project P] [--json]
   claude-recall tool-output [--days N | --since DATE|ISO]
@@ -425,7 +426,67 @@ def cmd_show(a):
     return 0
 
 
-STATS_KINDS = ("slash", "skill", "agent", "intent", "prompt")
+# The four signals beyond a Skill call and a typed command that a skill was used: its body was
+# loaded, its SKILL.md was read, a file under its directory was run, or a Bash command ran a
+# CLI of its name (fleet-dispatch, work-update). An argument is not a mention: a grep for a
+# name or a worktree named after it is work on the skill, not use of it. skill-drift reads
+# all six; they are off by default, since the tool-call scan is the slow part of a stats run.
+USE_KINDS = ("body", "read", "script", "mention")
+DEFAULT_KINDS = ("slash", "skill", "agent", "intent", "prompt")
+STATS_KINDS = DEFAULT_KINDS + USE_KINDS
+BODY_RE = re.compile(r"\ABase directory for this skill: (\S+)")
+SKILL_PATH_RE = re.compile(r"skills/([\w.@+-]+(?:/[\w.@+-]+)*)")
+
+
+def skill_names():
+    """The deployed skills, one directory each in CLAUDE_SKILLS (skill-drift's variable)."""
+    root = Path(os.environ.get("CLAUDE_SKILLS") or Path.home() / ".claude" / "skills")
+    try:
+        return {d.name for d in root.iterdir() if (d / "SKILL.md").exists()}
+    except OSError:
+        return set()
+
+
+def skill_of_path(path, names):
+    """(kind, skill) for a path under a skills/ dir: read for its SKILL.md, script for any other
+    file. Only the deployed layout (skills/<name>/) counts: the source tree nests skills under a
+    category (skills/ops/<name>/), and a call there is authoring the skill, not using it."""
+    segs = path.split("/")
+    hit = segs[0]
+    if (names and hit not in names) or hit == "SKILL.md":
+        return None
+    return ("read" if segs[-1] == "SKILL.md" else "script"), hit
+
+
+@functools.lru_cache(maxsize=None)
+def cli_names(names):
+    """The skills that ship a CLI of their name on PATH. A mention of any other name is a word
+    (scope, release, loop), never a command run."""
+    return frozenset(n for n in names if shutil.which(n))
+
+
+# A call that touches more skills than this is corpus work (an audit loop, a grep over the
+# names, skill-drift itself), not the use of any one of them, so it counts for none.
+CORPUS_CALL_SKILLS = 2
+
+
+def tool_use_events(name, inp, names):
+    """The read/script/mention signals of one Read or Bash call, one per skill and kind."""
+    out = set()
+    if name == "Read":
+        m = SKILL_PATH_RE.search(str(inp.get("file_path") or ""))
+        hit = m and skill_of_path(m.group(1), names)
+        if hit and hit[0] == "read":
+            out.add(hit)
+    elif name == "Bash":
+        cmd = str(inp.get("command") or "")
+        for m in SKILL_PATH_RE.finditer(cmd):
+            hit = skill_of_path(m.group(1), names)
+            if hit:
+                out.add(hit)
+        out.update(("mention", x) for x in bash_heads(cmd) & cli_names(names))
+    return out if len({k for _, k in out}) <= CORPUS_CALL_SKILLS else set()
+
 # A typed command record opens with its tag; one quoted inside a summary or paste does not.
 CMD_RE = re.compile(r"\A\s*<command-(?:name|message)>(?:.*?<command-name>)?/?([^<\s]+)</command-name>", re.S)
 # Masks applied before a prompt becomes a counting key, so "fix PR #712" and "fix PR #713"
@@ -558,22 +619,28 @@ def stats_repo(label):
     return re.sub(r"-agent-(?:\d+(?:-[a-z])?|a[0-9a-f]{12,})$", "", label)
 
 
-def stats_events(path, since):
-    """Yield (kind, key, origin, day, example) for one transcript.
-
-    A subagent transcript contributes its Skill and Agent calls but no prompts or slash
-    commands: its user records are the parent's dispatch prompt, not anything typed.
-    """
+def stats_events(path, since, kinds=(), names=frozenset()):
+    """Yield (kind, key, origin, day, example) for one transcript. The USE_KINDS are yielded
+    only when kinds names them; names is skill_names()."""
+    # A subagent transcript contributes its Skill and Agent calls but no prompts or slash
+    # commands: its user records are the parent's dispatch prompt, not anything typed. Its
+    # skill bodies, reads and runs count, since a subagent can use a skill.
     sub = "subagents" in path.parts
+    tools = {"read", "script", "mention"} & set(kinds)
+    body = "body" in kinds
     session_auto = None
     for line in path.open(errors="replace"):
         # Cheap substring gates before json.loads: tool results and api records are most
         # of the bytes and none of the signal.
         if '"type":"assistant"' in line:
-            if not ('"name":"Skill"' in line or '"name":"Agent"' in line or '"name":"Task"' in line):
+            if not ('"name":"Skill"' in line or '"name":"Agent"' in line or '"name":"Task"' in line
+                    or (tools and ('"name":"Read"' in line or '"name":"Bash"' in line)
+                        and ("skills/" in line or ("mention" in tools and '"name":"Bash"' in line)))):
                 continue
         elif '"type":"user"' in line:
-            if sub or '"tool_use_id"' in line:
+            if '"tool_use_id"' in line:
+                continue
+            if sub and not (body and "Base directory for this skill" in line):
                 continue
         else:
             continue
@@ -597,11 +664,22 @@ def stats_events(path, since):
                     yield "skill", str(inp["skill"]).lstrip("/"), origin, ts, ""
                 elif b.get("name") in ("Agent", "Task"):
                     yield "agent", str(inp.get("subagent_type") or "general-purpose"), origin, ts, ""
+                elif tools:
+                    for kind, key in tool_use_events(b.get("name"), inp, names):
+                        if kind in tools:
+                            yield kind, key, origin, ts, ""
         elif rtype == "user":
             text = user_text(rec)
             if not text:
                 continue
             origin = user_origin(rec)
+            m = BODY_RE.match(text)
+            if m:
+                if body:
+                    yield "body", m.group(1).rstrip("/").rsplit("/", 1)[-1], origin, ts, ""
+                continue
+            if sub:
+                continue
             m = CMD_RE.search(text)
             if m:
                 yield "slash", m.group(1), origin, ts, ""
@@ -619,7 +697,7 @@ def stats_events(path, since):
 def cmd_stats(a):
     """Count slash commands, skills, subagents and repeated prompts. SESSIONS is the
     headline: a /loop that re-fires a command 200 times in one session is one session."""
-    kinds = set(a.kind.split(",")) if a.kind else set(STATS_KINDS)
+    kinds = set(a.kind.split(",")) if a.kind else set(DEFAULT_KINDS)
     bad = kinds - set(STATS_KINDS)
     if bad:
         print(f"claude-recall stats: unknown kind {','.join(sorted(bad))} "
@@ -631,8 +709,12 @@ def cmd_stats(a):
     if "intent" in kinds and not intents:
         print(f"claude-recall stats: no intents in {intents_path()}", file=sys.stderr)
     covers = {name: skills for name, skills, _ in intents}
+    names = frozenset(skill_names()) if kinds & set(USE_KINDS) else frozenset()
     agg = {}
     used = {}  # session -> skills and slash commands it ran, for intent coverage
+    # skill -> the sessions that used it by any counted use kind, so one session that calls a
+    # skill and reads its SKILL.md is one session, not two (skill-drift --overrides reads it)
+    skill_sessions = {}
 
     def add(kind, key, shown, bucket, session, origin, example):
         row = agg.setdefault((kind, key, bucket), {
@@ -642,6 +724,8 @@ def cmd_stats(a):
         row["shown"][shown] = row["shown"].get(shown, 0) + 1
         row["sessions"].add(session)
         row[origin].add(session)
+        if kind in ("skill", "slash") + USE_KINDS:
+            skill_sessions.setdefault(key, set()).add(session)
 
     for path in iter_files():
         try:
@@ -652,7 +736,7 @@ def cmd_stats(a):
         session = path.parent.parent.name if "subagents" in path.parts else path.stem
         project = None
         try:
-            for kind, key, origin, day, example in stats_events(path, since):
+            for kind, key, origin, day, example in stats_events(path, since, kinds, names):
                 if kind in ("skill", "slash"):
                     used.setdefault(session, set()).add(key)
                 if a.origin != "all" and origin != a.origin:
@@ -704,7 +788,9 @@ def cmd_stats(a):
 
     if a.json:
         print(json.dumps({"since": since, "origin": a.origin, "by": a.by or "",
-                          "rows": rows}, ensure_ascii=False))
+                          "rows": rows,
+                          "skill_sessions": {k: len(v) for k, v in sorted(skill_sessions.items())}},
+                         ensure_ascii=False))
         return 0
     if not rows:
         print(f"nothing counted since {since}")
@@ -749,14 +835,37 @@ SUBCMD_HEADS = ("git", "gh", "notes", "agent-queue", "cargo", "npm", "kubectl", 
 SEGMENTS = re.compile(r"\s*(?:&&|;|\|\||\|)\s*")  # one Bash call split into its commands
 
 
+def seg_words(seg):
+    """The words of one command segment, past env assignments and timeout, sudo, env, time."""
+    w = seg.split()
+    while w and (("=" in w[0] and not w[0].startswith("-")) or w[0] in ("timeout", "sudo", "env", "time")):
+        w = w[1:]
+        while w and w[0] and (w[0][0].isdigit() or w[0].startswith("-")):
+            w = w[1:]  # timeout 30, env -i
+    return w
+
+
+HEREDOC_RE = re.compile(r"(?<!<)<<-?\s*['\"]?\w")
+DQUOTE_RE = re.compile(r'(?<!\\)"')
+
+
+def bash_heads(cmd):
+    """The basename of every command a Bash call runs, one per segment and line. A heredoc body
+    and the inner lines of a multi-line double-quoted string are text, not commands."""
+    heads, quoted = set(), False
+    for line in cmd.splitlines():
+        if not quoted:
+            heads.update(os.path.basename(w[0]) for w in map(seg_words, SEGMENTS.split(line.strip())) if w)
+        if HEREDOC_RE.search(line):
+            break
+        quoted ^= len(DQUOTE_RE.findall(line)) % 2 == 1
+    return heads
+
+
 def bash_head(cmd):
     """grep, sed, git show: the first real command of a Bash call, past env, cd and wrappers."""
     for seg in SEGMENTS.split(cmd.strip()):
-        w = seg.split()
-        while w and (("=" in w[0] and not w[0].startswith("-")) or w[0] in ("timeout", "sudo", "env", "time")):
-            w = w[1:]
-            while w and w[0] and (w[0][0].isdigit() or w[0].startswith("-")):
-                w = w[1:]  # timeout 30, env -i
+        w = seg_words(seg)
         if not w or w[0] == "cd":
             continue
         head = os.path.basename(w[0])
@@ -1656,7 +1765,9 @@ def main():
     st = sub.add_parser("stats", help="count slash commands, skills, subagents, repeated prompts")
     st.add_argument("--days", type=int, default=30, help="window in days (default 30)")
     st.add_argument("--since", type=bound_arg, help="window start, as tool-output (overrides --days)")
-    st.add_argument("--kind", help="comma list of " + ",".join(STATS_KINDS) + " (default all)")
+    st.add_argument("--kind", help="comma list of " + ",".join(STATS_KINDS) + " (default "
+                    + ",".join(DEFAULT_KINDS) + "; body, read, script and mention are the skill-use "
+                    "signals skill-drift adds to skill and slash)")
     st.add_argument("--origin", choices=["interactive", "auto", "all"], default="all",
                     help="interactive = a turn in a CLI session (typed, or a dispatched task); "
                          "auto = headless, /loop fires, peer messages")

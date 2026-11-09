@@ -63,10 +63,16 @@ const pLine = (c) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><t
 const pFold = (k, title, says, inner) =>
   cfold(`pg:${k}`, `<b>${esc(title)}</b> <span class="muted">${esc(says)}</span>`, `<div class="card pcard">${inner}</div>`, pst.folds);
 const pLines = (lines, cls) => lines.map((l) => `<div${cls ? ` class="${cls}"` : ""}>${esc(l)}</div>`).join("");
+// The Timeline fold: its notes, then one line per event newest first, colored by its level,
+// linked to its PR, run or deploy when it has one, then how many older ones the cap left out.
+const pTimeline = (t) => pLines(t.notes, "muted") + t.lines.map((l) => {
+  const text = /^https?:\/\//.test(l.url || "") ? `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.line)}</a>` : esc(l.line);
+  return `<div class="ptl${l.level === "ok" ? "" : ` ${esc(l.level)}`}">${text}</div>`;
+}).join("") + older(t.older);
 
 // The opened card, over its rows: the card, its goal and Flow, what needs the human (always
-// shown), then Build by system, Next stage, Shipped, In flight and the Agent note as folds whose
-// heads carry their counts, the TUI's opened card word for word.
+// shown), then Build by system, Next stage, Shipped, Timeline, In flight and the Agent note as folds
+// whose heads carry their counts, the TUI's opened card word for word.
 function pOpened(c) {
   let html = `<div class="card qitem pcard">` + pTop(c, [cchip("", esc(c.stage || "no stage"))]) +
     `<div class="pgoal">${c.goal ? esc(c.goal) : `<span class="muted">no goal set</span>`}</div>`;
@@ -75,6 +81,7 @@ function pOpened(c) {
   if (got.err) return html + `<div class="panel down">${esc(got.err)}</div></div>`;
   const pg = got.data;
   if (pg.flow_line) html += `<div class="cline">flow: ${esc(pg.flow_line)}</div>`;
+  if (pg.releases) html += `<div class="cline">releases: <a class="${pg.releases.level === "ok" ? "" : pg.releases.level}" href="#releases?q=${encodeURIComponent("project:" + c.name)}">${esc(pg.releases.says)}</a></div>`;
   html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("") + `</div>`;
   html += `<h2 class="sec">Needs you <span class="muted">${pg.needs.length || "nothing"}</span></h2>`;
   if (pg.needs.length) html += `<div class="card">${pLines(pg.needs, "qlate")}</div>`;
@@ -85,6 +92,7 @@ function pOpened(c) {
   html += pFold("next", "Next stage", pg.next_says,
     pg.next_rows.map((r) => `<div${r.result === "FAIL" ? ` class="qlate"` : ""}><b>${esc(r.result)}</b> ${esc(r.requirement)} <span class="muted">(${esc(r.stage)})</span></div>`).join(""));
   html += pFold("shipped", "Shipped", pg.shipped_says, pLines(pg.shipped));
+  if (pg.timeline) html += pFold("timeline", "Timeline", pg.timeline.says, pTimeline(pg.timeline));
   html += pFold("flight", "In flight", c.counts,
     c.running.length ? `<ul class="prun">${c.running.map(pRunning).join("")}</ul>` : `<div class="muted">nothing running</div>`);
   html += pFold("note", "Agent note", c.note_says,

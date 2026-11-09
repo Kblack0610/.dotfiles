@@ -234,12 +234,12 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
   assert_output ''
 }
 
-@test "a resumed claude keeps the model and permission flags and drops the brief" {
+@test "a resumed claude keeps the model, permission and dropped-tools flags and drops the brief" {
   src
   mkdir -p "$SANDBOX/proc/42"
-  printf 'claude\0--model\0opus\0--permission-mode\0bypassPermissions\0/one-shot do --model it\0' > "$SANDBOX/proc/42/cmdline"
+  printf 'claude\0--model\0opus\0--disallowedTools\0Workflow,ScheduleWakeup\0--permission-mode\0bypassPermissions\0/one-shot do --model it\0' > "$SANDBOX/proc/42/cmdline"
   run carry_flags 42
-  assert_output '--model opus --permission-mode bypassPermissions '
+  assert_output '--model opus --disallowedTools Workflow\,ScheduleWakeup --permission-mode bypassPermissions '
   printf 'claude\0--dangerously-skip-permissions\0--model=sonnet\0' > "$SANDBOX/proc/42/cmdline"
   run carry_flags 42
   assert_output '--dangerously-skip-permissions --model sonnet '
@@ -1111,6 +1111,7 @@ key=${hdr##*Bearer }; key=${key%\"*}
 case "$url" in
   */team/info*) cat "$SANDBOX/gw/team.json" ;;
   */key/info) cat "$SANDBOX/gw/$key.json" ;;
+  */v1/messages/count_tokens) if [[ -f "$SANDBOX/gw/refused.$key" ]]; then cat "$SANDBOX/gw/refused.$key"; else echo '{"input_tokens":1}'; fi ;;
   *) exit 22 ;;
 esac
 EOS
@@ -1125,7 +1126,7 @@ rollout() {
 }
 # budget <file> <key|team> <spend> <max>
 budget() {
-  local obj='{"info":{"spend":%s,"max_budget":%s,"budget_reset_at":null,"team_id":"t1"}}'
+  local obj='{"info":{"spend":%s,"max_budget":%s,"budget_reset_at":null,"team_id":"t1","models":["m1"]}}'
   [[ "$2" == team ]] && obj='{"team_info":{"spend":%s,"max_budget":%s,"budget_reset_at":null}}'
   # shellcheck disable=SC2059
   printf "$obj\n" "$3" "$4" > "$SANDBOX/gw/$1.json"
@@ -1179,6 +1180,53 @@ budget() {
   run --separate-stderr "$ACCT" status --json
   [ "$(field codex .week_used <<<"$output")" = 0 ]
   [ "$(field codex .room.ok <<<"$output")" = true ]
+}
+
+@test "sources: codex reads the last record with a window, past a windowless premium one" {
+  src_setup
+  rollout 40 10 84
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","plan_type":"plus","primary":null,"secondary":null,"rate_limit_reached_type":null}}}\n' \
+    >> "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+}
+
+@test "sources: codex skips a newer rollout with no windowed record, and a torn last line" {
+  src_setup
+  rollout 40 10 84
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n{"payload":{"rate_limits":{"prim' \
+    > "$d/rollout-b.jsonl"
+  touch -d '-1 hour' "$d/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+}
+
+@test "sources: codex reads past a run of refused rollouts, however long" {
+  src_setup
+  rollout 40 10 84
+  local d="$BATS_TEST_TMPDIR/codex/2026/11" i
+  touch -d '-2 hours' "$d/rollout-a.jsonl"
+  for i in $(seq 1 25); do
+    printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n' \
+      > "$d/rollout-refused-$i.jsonl"
+  done
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+}
+
+@test "sources: codex with no windowed record in any rollout is unread" {
+  src_setup
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n' \
+    > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = unread ]
 }
 
 @test "sources: a key at its cap has no room" {
@@ -1321,6 +1369,69 @@ budget() {
   assert_failure 3
 }
 
+# refused <key> <message>: what the gateway answers that key's free budget probe
+refused() { printf '{"error":{"message":"%s","type":"budget_exceeded"}}\n' "$2" > "$SANDBOX/gw/refused.$1"; }
+
+@test "sources: a team the gateway refuses reads the spend it refused at, and is capped, under a lower recorded spend" {
+  src_setup
+  budget sk-lazer key 0 100
+  budget team team 203.7 250
+  budget sk-res key 50 100
+  # Negative control: admitted, the row is the recorded spend
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field lazer .usd_used <<<"$output")" = 203.7 ]
+  [ "$(field lazer .room.capped <<<"$output")" = false ]
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  refused sk-lazer 'Budget has been exceeded! Team=t1 Current cost: 380.0063406899994, Max budget: 250.0'
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field lazer .usd_used <<<"$output")" = 380.0063406899994 ]
+  [ "$(field lazer .room.capped <<<"$output")" = true ]
+  [ "$(field res .usd_used <<<"$output")" = 50 ]
+  # the probe bills nothing and names a model the key may call
+  grep -q 'v1/messages/count_tokens' "$SANDBOX/curl.argv"
+  grep -q '"model":"m1"' "$SANDBOX/curl.argv"
+  run grep -c 'sk-lazer' "$SANDBOX/curl.argv"
+  assert_output 0
+}
+
+@test "sources: a refusal counts only for the budget it names" {
+  src_setup
+  budget sk-lazer key 0 100
+  budget team team 100 250
+  budget sk-res key 50 100
+  # the probe key's own ceiling is not the team's, and the team's is not the key's
+  refused sk-lazer 'Budget has been exceeded! Current cost: 101.5, Max budget: 100.0'
+  refused sk-res 'Budget has been exceeded! Team=t1 Current cost: 380, Max budget: 250.0'
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field lazer .usd_used <<<"$output")" = 100 ]
+  [ "$(field res .usd_used <<<"$output")" = 50 ]
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  refused sk-res 'Budget has been exceeded! Current cost: 104.25, Max budget: 100.0'
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field res .usd_used <<<"$output")" = 104.25 ]
+  [ "$(field res .room.capped <<<"$output")" = true ]
+}
+
+@test "sources: a probe that cannot tell warns and keeps the recorded spend" {
+  src_setup
+  budget sk-lazer key 0 100
+  budget team team 203.7 250
+  budget sk-res key 50 100
+  # Negative control: an admitted probe says nothing
+  run --separate-stderr "$ACCT" status --json
+  [[ "$stderr" != *"budget probe"* ]] || fail "$stderr"
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  refused sk-lazer 'key not allowed to access model m1'
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field lazer .usd_used <<<"$output")" = 203.7 ]
+  [[ "$stderr" == *"the budget probe could not tell"* ]] || fail "$stderr"
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json "$SANDBOX/gw/refused.sk-lazer"
+  jq '.info.models = []' "$SANDBOX/gw/sk-lazer.json" > "$SANDBOX/gw/k" && mv "$SANDBOX/gw/k" "$SANDBOX/gw/sk-lazer.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field lazer .usd_used <<<"$output")" = 203.7 ]
+  [[ "$stderr" == *"no model to run the budget probe with"* ]] || fail "$stderr"
+}
+
 @test "sources: a gateway that cannot be reached leaves the key unread, not zero" {
   src_setup
   printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
@@ -1370,8 +1481,8 @@ budget() {
   budget team team 40 100
   run --separate-stderr "$ACCT" room --source res
   assert_success
-  # the key, the parent's key and its team were asked: three calls, none for sk-other or the usage endpoint
-  [ "$(wc -l < "$SANDBOX/curl.argv")" = 3 ]
+  # the key and the parent's key, each read and probed, and the team: five calls, none for sk-other or the usage endpoint
+  [ "$(wc -l < "$SANDBOX/curl.argv")" = 5 ]
   grep -q 'sk-res' "$SANDBOX/curl.stdin"
   ! grep -q 'sk-other' "$SANDBOX/curl.stdin"
   ! grep -q 'anthropic' "$SANDBOX/curl.argv"

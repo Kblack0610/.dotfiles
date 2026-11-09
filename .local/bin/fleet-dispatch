@@ -93,7 +93,6 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, stages, enabled, off (load_kinds)
 : "${DISPATCH_LOADAVG:=/proc/loadavg}"
 : "${DISPATCH_START_WAIT:=120}"   # seconds a start waits for another start of a queue item to claim its own
-: "${DISPATCH_DROP_TOOLS=Workflow,ScheduleWakeup,Artifact}"   # tools a new queue session starts without (see dropped_tools); empty keeps every tool
 : "${DISPATCH_SANDBOX_PROFILE:=}"   # a lane sandbox profile (agent-run docs/contract.md "Lane sandbox") every claude start runs under; empty is off, and a start that cannot hold the profile is refused (lane_sandbox)
 : "${DISPATCH_SANDBOX_GH_TOKEN_FILE:=}"   # the sandboxed session's own repo-scoped GitHub token file, as GH_TOKEN_FILE is for a runner; empty gives it no token
 : "${DISPATCH_REAP_GRACE:=600}"   # seconds after a start before reap may read a missing Claude as gone: a claude still booting has no registry entry yet
@@ -1167,19 +1166,20 @@ launch_mode() {
   esac
 }
 
-# dropped_tools <item json> -- " --disallowedTools <DISPATCH_DROP_TOOLS>" for a new claude start, or
-# nothing. Those tools' schemas ride on every turn of a session that never calls them: in the 7 days
-# to 2026-11-06, Workflow had 1 call and ScheduleWakeup 43 (all /loop) across about 2,900 sessions,
-# for about 10K chars a turn. Artifact (2026-11-07, ask OaAlhA): 11 calls a week, all from queue
-# sessions the human rarely reads, for 35K chars on the turns that carry it; the human's own
-# sessions keep it. A task that names one of them, ultracode or /loop keeps every tool.
+# dropped_tools <item json> -- " --disallowedTools <list>" for a queue item's claude start or resume,
+# or nothing. The list is CLAUDE_AUTO_DROP_TOOLS, read the way telemetry_env reads the launch env, so
+# an env value wins and the default lives once, in claude-telemetry.sh (which says why). A task that
+# names one of them, ultracode or /loop keeps every tool. That file also refuses a value that is not a
+# list of tool names, on stderr, which is why only its stdout is discarded here.
 # It goes before --permission-mode: the flag takes a list, so the brief after it would join it.
 dropped_tools() {
-  [ -n "$DISPATCH_DROP_TOOLS" ] || return 0
-  [[ "$DISPATCH_DROP_TOOLS" =~ ^[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*$ ]] ||
-    { say "DISPATCH_DROP_TOOLS is not a comma list of tool names: $DISPATCH_DROP_TOOLS; dropping none"; return 0; }
-  jq -r .task <<<"$1" | grep -qiE "ultracode|/loop|${DISPATCH_DROP_TOOLS//,/|}" && return 0
-  printf ' --disallowedTools %s' "$DISPATCH_DROP_TOOLS"
+  local drop f="$HOME/.config/shared-hooks/claude-telemetry.sh"
+  [ -r "$f" ] || { say "$f is missing, so this start drops no tools"; return 0; }
+  # shellcheck disable=SC2016
+  drop=$(bash -c '. "$1" >/dev/null; printf %s "${CLAUDE_AUTO_DROP_TOOLS-}"' _ "$f")
+  [ -n "$drop" ] || return 0
+  jq -r .task <<<"$1" | grep -qiE "ultracode|/loop|${drop//,/|}" && return 0
+  printf ' --disallowedTools %s' "$drop"
 }
 
 # lane_sandbox <cwd> -- set the caller's sbx_env and sbx_flags for a claude start under
@@ -1454,7 +1454,7 @@ cmd_start() {
     origin=${START_ORIGIN:-resume}
     launch_mode "$(resume_mode "$resume" "$(jq -r '.mode // empty' <<<"${it:-null}")")"
     lane_sandbox "$cwd" || return 1
-    cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
+    cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
     if [ -n "$joined" ]; then
       target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
         { say "could not open window $window in $session on $server"; return 1; }
@@ -1647,10 +1647,27 @@ cmd_restore() {
 
 item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 
+# ask_decisions <tags> -> one line per ask: tag naming what the human decided. The ask that released
+# an item has no session left to hear its answer, so the brief is where the answer reaches the work.
+ask_decisions() {
+  local tag id line
+  for tag in $1; do
+    case "$tag" in
+      ask:?*)
+        id="${tag#ask:}"; id="${id%%=*}"
+        line="$(agent-ask decision "$id" 2>/dev/null)" || continue
+        [ -z "$line" ] || echo "The human already decided this in ask $id, so follow it: $line"
+        ;;
+    esac
+  done
+  return 0
+}
+
 # item_brief <item json> [harness] -> the prompt a queue item's session starts on: plan mode gets
 # the task as typed, oneshot runs it through its kind's entry skill (kinds.json `entry`, by the
 # item's type or its title's prefix; /one-shot when the kind names none), --pr-only for a `night`
-# item. A kind whose `exit` is doc+ask or proof opens no PR, so its brief ends on that close
+# item and for a tier-3 one, not a red, on a headless harness, which cannot run the red-fix gate's
+# review (route). A kind whose `exit` is doc+ask or proof opens no PR, so its brief ends on that close
 # instead of agent-land (doc_ask_brief, proof_brief). A headless harness (opencode, codex) has no
 # slash commands, hooks or human at the pane, so it reads the skill and closes differently.
 # A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief.
@@ -1662,13 +1679,16 @@ item_brief() {
     key=$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")
     jq -r .task <<<"$it"
     echo
+    ask_decisions "$tags"
     echo "This runs in a Claude Code cloud session on a fresh clone of the repo: no local skills, hooks, agent-queue or agent-land. Follow the repo's own CLAUDE.md and tooling."
     echo "Work on a new branch, run the repo's own tests for what you changed, push, and open a pull request. Never merge it."
     echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}: fleet-dispatch finds the PR by that line, and the human's merge closes the item."
     echo "If a step needs a decision from the human, put the question in the PR body, build the rest with that step off, and end the session."
     return 0
   fi
-  [[ "$tags" == *" night "* ]] && pr_only=' --pr-only'
+  if [[ "$tags" == *" night "* ]] || { headless "$harness" && [[ "$tags" != *" red "* ]] && [ "$(item_tier "$it")" = 3 ]; }; then
+    pr_only=' --pr-only'
+  fi
   load_kinds
   kind=$(item_kind "$it")
   [ -z "$kind" ] || { entry=${KIND_ENTRY[$kind]:-}; exit_=${KIND_EXIT[$kind]:-}; }
@@ -1682,6 +1702,7 @@ item_brief() {
   fi
   jq -r .task <<<"$it"
   echo
+  ask_decisions "$tags"
   [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
   [[ "$tags" == *" red "* || -n "$pr_only" || -n "$nopr" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Before agent-land, run the bats files the Stop hook picks for the files you changed and put the result in the PR body."
   row=$(item_row "$it")
@@ -1707,7 +1728,7 @@ item_brief() {
   echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}."
   if headless "$harness"; then
     echo "Right after gh pr create, run: agent-queue set $slug pr=<owner/repo#N>. A run cut off with a PR open then waits for the human instead of reading failed."
-    echo "Run agent-land in the foreground: a background command dies when this run exits."
+    [ -n "$pr_only" ] || echo "Run agent-land in the foreground: a background command dies when this run exits."
     echo "Skip what this harness lacks (final-pass, wind-down) and say so in the PR body."
     no_human
     return
@@ -2277,6 +2298,7 @@ demand_write() {
 # cmd_hosts [--json] -- each worker in the roster, as a pass would read it now.
 cmd_hosts() {
   local h name rows=()
+  fleet_roster_fetch
   probe_hosts "$(live_runs)"
   while IFS= read -r h; do
     [ -n "$h" ] || continue
@@ -2407,7 +2429,9 @@ item_pinned() {
 # other's the rank of its source in ACCT_ROWS. Claude needs an account with room. Another harness needs
 # its source's room, this machine (a fleet worker and a sandbox profile run claude only), an item it can
 # hold (a headless one takes no plan item) and, when routed rather than pinned, a tier within the
-# unattended ceiling: a red goes past it, only to a harness that can run the red-fix gate.
+# unattended ceiling: a red goes past it, only to a harness that can run the red-fix gate, and any
+# other item only to a headless one, whose brief then stops at the PR for a review the harness cannot
+# run (item_brief): an idle codex plan does the work, and the merge still waits (ar-1014).
 route() {
   local it="$1" verdict="$2" cands h m src tier pinned=0 why=()
   ROUTE_HARNESS='' ROUTE_MODEL='' ROUTE_WHY=''
@@ -2427,8 +2451,8 @@ route() {
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
     elif headless "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless, and this is a plan item")
-    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it"; then why+=("$h: tier $tier is past the unattended ceiling")
-    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
+    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it" && ! headless "$h"; then why+=("$h: tier $tier is past the unattended ceiling")
+    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && is_red "$it" && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
       why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room --json"' <<<"$ACCT_ROWS")")
     else ROUTE_HARNESS=$h ROUTE_MODEL=$m; return 0
@@ -2446,7 +2470,7 @@ route() {
 # start_item <item json> -- past the gates: route it (route) and start it, and publish what happened.
 # rc 3 when usage cannot be read, which ends the pass: the next item could not be routed either. rc 4
 # when another start (a hand start, say) took the item first: that is not a failed launch, and the
-# pass goes on. rc 5 when no candidate it may run on has room (an Opus item while only Codex has room,
+# pass goes on. rc 5 when no candidate it may run on has room (an Opus item while only lazer-reserve has room,
 # a pinned harness whose source is spent): the pass goes on to the next item, which may.
 start_item() {
   local it="$1" slug rc verdict='' cached floor='' keep=0 harness=claude
@@ -3135,6 +3159,7 @@ triage_pass() {
 
 cmd_run() {
   local why live room
+  fleet_roster_fetch
   fleet_hosts >/dev/null   # once, so each subshell of the pass inherits the roster
   DRY=0
   [ "${1:-}" = --dry-run ] && DRY=1

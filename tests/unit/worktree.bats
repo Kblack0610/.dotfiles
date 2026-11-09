@@ -424,6 +424,110 @@ make_drifted_submodule() {
   assert_output ''
 }
 
+# make_drifted_submodule, with agent-1 never initialised (a slot whose module store is empty),
+# and the trunk's commit moved on so `submodule update` has to clone.
+make_empty_submodule() {
+  make_drifted_submodule
+  git -C "$WT" submodule deinit --quiet --force sub
+  rm -rf "$(git -C "$WT" rev-parse --absolute-git-dir)/modules"
+  # deinit dropped the shared URL; a sibling clone having registered it is the real state.
+  git -C "$MAIN" submodule init --quiet sub
+}
+
+# make_empty_submodule, whose clone cannot succeed.
+make_unfillable_submodule() {
+  make_empty_submodule
+  git -C "$MAIN" config submodule.sub.url "$SANDBOX/gone.git"
+}
+
+@test "a recycle that leaves a submodule empty fails and names it" {
+  make_unfillable_submodule
+  run wt_recycle "$WT" 1 origin/main
+  assert_failure
+  assert_output --partial 'has empty submodules: sub'
+}
+
+@test "a submodule cloned without its pinned commit counts as empty" {
+  # The clone lands, so <sub>/.git exists, but the commit is not in it and nothing is checked out.
+  make_empty_submodule
+  git -C "$MAIN/sub" commit --quiet --allow-empty -m c3
+  git -C "$MAIN" commit --quiet -am 'sub at c3'
+  git -C "$MAIN" push --quiet origin main
+  rm -f "$MAIN/sub/.git"
+  run wt_recycle "$WT" 1 origin/main
+  assert_failure
+  assert_output --partial 'has empty submodules: sub'
+}
+
+@test "a submodule name with a space is read whole" {
+  make_repo
+  git -C "$MAIN" config -f .gitmodules 'submodule.my lib.path' 'ext/my lib'
+  run wt_submodule_list "$MAIN"
+  assert_output "my lib${PANEL_TAB}ext/my lib"
+}
+
+@test "wt_prepare stops on an empty submodule, so no session starts" {
+  make_unfillable_submodule
+  run wt_prepare "$MAIN" "$WT" 1 recycle
+  assert_failure
+  refute_output --partial 'reusing idle'
+}
+
+@test "a submodule that clones cleanly on recycle is filled and passes" {
+  make_empty_submodule
+  run wt_recycle "$WT" 1 origin/main
+  assert_success
+  run git -C "$WT/sub" rev-parse HEAD
+  assert_output "$C2"
+}
+
+@test "a failed update on an already-filled submodule still only warns" {
+  # Behind is usable; only empty stops the start. C3 was never pushed, and the main checkout's
+  # copy that wt_recycle would borrow it from is gone, so `update` cannot get it.
+  make_drifted_submodule
+  git -C "$WT" submodule update --quiet
+  git -C "$MAIN/sub" commit --quiet --allow-empty -m c3
+  git -C "$MAIN" commit --quiet -am 'sub at c3'
+  git -C "$MAIN" push --quiet origin main
+  rm -f "$MAIN/sub/.git"
+  run wt_recycle "$WT" 1 origin/main
+  assert_success
+  assert_output --partial 'are not at origin/main'
+}
+
+@test "a module store path in the shared URL is restored from .gitmodules" {
+  # 2026-11-08: the URL named agent-55's own store, and every clone in the repo failed on it.
+  make_empty_submodule
+  git -C "$MAIN" config submodule.sub.url "$MAIN/.git/worktrees/platform-agent-55/modules/sub"
+  run wt_recycle "$WT" 1 origin/main
+  assert_success
+  assert_output --partial 'restoring the one in .gitmodules'
+  run git -C "$MAIN" config --get submodule.sub.url
+  assert_output "$SUBORIGIN"
+  run git -C "$WT/sub" rev-parse HEAD
+  assert_output "$C2"
+}
+
+@test "a fresh worktree also gets the shared URL restored" {
+  make_drifted_submodule
+  git -C "$MAIN" config submodule.sub.url "$MAIN/.git/modules/sub"
+  SLOT="$WT_ROOT/platform-agent-2"
+  run wt_prepare "$MAIN" "$SLOT" 2 fresh
+  assert_success
+  run git -C "$MAIN" config --get submodule.sub.url
+  assert_output "$SUBORIGIN"
+}
+
+@test "a local mirror URL that is not a module store is left alone" {
+  make_drifted_submodule
+  git -C "$MAIN" config submodule.sub.url "$SANDBOX/mirror.git"
+  run wt_heal_submodule_urls "$WT"
+  assert_success
+  assert_output ''
+  run git -C "$MAIN" config --get submodule.sub.url
+  assert_output "$SANDBOX/mirror.git"
+}
+
 @test "recycling takes a submodule's new commit from the main checkout, not the network" {
   # The main fetch already brought it into the main checkout's copy; each worktree has its
   # own submodule store, and fetching it again was ~1s of ssh to github per recycle. C3

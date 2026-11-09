@@ -27,7 +27,8 @@
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
 #   claude-acct move <target> [--server S] [--to <account>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude and resume it on the account pick
-#                        # returns (or the one --to names), in the same pane: park, then unpark
+#                        # returns (or the one --to names), in the same pane: park, then unpark.
+#                        # A claude on the Lazer gateway moves onto that account too; park refuses one
 #   claude-acct park <target> [--server S] [--stop-shells] [--dry-run]
 #                        # exit that target's claude so it costs nothing while it waits,
 #                        # keeping the pane; the resume goes to ~/.agent/parked/<key>
@@ -185,52 +186,87 @@ fetch() {
 # ceiling and not a weekly allowance), reached, usd_used and usd_max when the kind has them. That is
 # the only per-kind code; usage_json treats every row alike. Exit 1 when the source cannot be read.
 
-# read_codex <sessions dir> -> the plan's rate limits from the newest rollout that has any: every
-# token_count event carries them as of that call, and Codex has no usage endpoint to ask. A window
-# whose reset has passed reads as unused, with no reset until a rollout says when the next is.
+# read_codex <sessions dir> -> the plan's rate limits from the newest rollout with a windowed record:
+# every token_count event carries them as of that call, and Codex has no usage endpoint to ask. Codex
+# also logs records with no window (limit_id "premium"), often last, so each file is read from its
+# end for the newest record with a window; a line that does not parse (a rollout mid-write) is
+# skipped. Every rollout is a candidate, newest first, until one has a window: a run refused at the
+# usage limit logs only a windowless record, and any number of them may follow the last reading.
+# A window whose reset has passed reads as unused, with no reset until a rollout says when.
 read_codex() {
-    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" f
-    f=$(find "$1" -name 'rollout-*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -20 | cut -d' ' -f2- |
-        while IFS= read -r f; do grep -q '"rate_limits"' "$f" && { echo "$f"; break; }; done)
-    [[ -n "$f" ]] || return 1
-    grep '"rate_limits"' "$f" | tail -1 | jq -ce --argjson now "$now" '.payload.rate_limits as $r
-        | def win(w): if w == null then null
-            elif (w.resets_at // 0) <= $now then {utilization: 0, resets_at: null}
-            else {utilization: w.used_percent, resets_at: (w.resets_at | todate)} end;
-        {plan: $r.plan_type, five_hour: win($r.primary), seven_day: win($r.secondary),
-         window: (($r.secondary.window_minutes // 10080) * 60), paced: true,
-         reached: ($r.rate_limit_reached_type != null
-                   and ([$r.primary.resets_at, $r.secondary.resets_at] | map(select(. != null)) | min // 0) > $now)}
-        | select(.five_hour or .seven_day)'
+    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" f out
+    while IFS= read -r f; do
+        out=$(tac "$f" | grep '"rate_limits"' | jq -cR --argjson now "$now" '
+            fromjson? | .payload.rate_limits? | objects | select(.primary or .secondary) | . as $r
+            | def win(w): if w == null then null
+                elif (w.resets_at // 0) <= $now then {utilization: 0, resets_at: null}
+                else {utilization: w.used_percent, resets_at: (w.resets_at | todate)} end;
+            {plan: $r.plan_type, five_hour: win($r.primary), seven_day: win($r.secondary),
+             window: (($r.secondary.window_minutes // 10080) * 60), paced: true,
+             reached: ($r.rate_limit_reached_type != null
+                       and ([$r.primary.resets_at, $r.secondary.resets_at] | map(select(. != null)) | min // 0) > $now)}' |
+            head -n1)
+        [[ -n "$out" ]] && { printf '%s\n' "$out"; return 0; }
+    done < <(find "$1" -name 'rollout-*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+    return 1
 }
 
-# gateway_get <key file> <path> -> the gateway's JSON for that key. The key goes in on stdin, off the
-# process list.
-gateway_get() {
-    local url key
-    url=$(jq -er '.gateway.url' "$HARNESSES" 2>/dev/null) && key=$(cat "$1" 2>/dev/null) || return 1
-    curl -fsS -m 10 -K - "$url$2" <<< "header = \"Authorization: Bearer $key\"" 2>/dev/null
+# gateway_curl <key file> <path> [curl args] -> the gateway's answer to that key. The key goes in on
+# stdin, off the process list.
+gateway_curl() {
+    local url key file=$1 path=$2
+    shift 2
+    url=$(jq -er '.gateway.url' "$HARNESSES" 2>/dev/null) && key=$(cat "$file" 2>/dev/null) || return 1
+    curl -sS -m 10 -K - "$@" "$url$path" <<< "header = \"Authorization: Bearer $key\"" 2>/dev/null
 }
 
-# budget_usage -> a LiteLLM budget object (spend, max_budget, budget_reset_at) in the usage shape:
-# percent of the budget spent, the reset, no pace line
+# gateway_get <key file> <path> -> the gateway's JSON for that key.
+gateway_get() { gateway_curl "$1" "$2" -f; }
+
+# gateway_refused <key file> <model> <team|key> -> the spend the gateway refuses this key at for that
+# budget, nothing while it admits it. The gateway enforces a counter it publishes nowhere: on
+# 2026-11-08 it refused at $380 with /team/info at $204, so a refusal is its only reader, and
+# count_tokens passes the same check and bills nothing. The model is one the key may call, or the
+# refusal would be about the model.
+gateway_refused() {
+    local body re='Budget has been exceeded! '
+    [[ -n "$2" ]] || { echo "claude-acct: ${1##*/}: no model to run the budget probe with; the spend is the recorded one" >&2; return 0; }
+    [[ "$3" == team ]] && re+='Team=[^ ]+ '
+    re+='Current cost: ([0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?),'
+    body=$(gateway_curl "$1" /v1/messages/count_tokens -X POST -H 'content-type: application/json' \
+        -d "$(jq -nc --arg m "$2" '{model: $m, messages: [{role: "user", content: "x"}]}')")
+    if [[ "$body" =~ $re ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+    elif [[ "$body" != *'Budget has been exceeded'* && ( -z "$body" || "$body" == *'"error"'* ) ]]; then
+        echo "claude-acct: ${1##*/}: the budget probe could not tell; the spend is the recorded one" >&2
+    fi
+}
+
+# budget_usage [refused spend] -> a LiteLLM budget object (spend, max_budget, budget_reset_at) in the
+# usage shape: percent of the budget spent, the reset, no pace line. A refused spend replaces the
+# recorded one, being the number the gateway acts on.
 budget_usage() {
-    jq -ce '{seven_day: {utilization: (if (.max_budget // 0) > 0 then .spend / .max_budget * 100 else 0 end),
+    jq -ce --argjson refused "${1:-null}" '.spend = ($refused // .spend) | {seven_day: {utilization: (if (.max_budget // 0) > 0 then .spend / .max_budget * 100 else 0 end),
                          resets_at: (.budget_reset_at // null)},
              five_hour: null, paced: false, usd_used: .spend, usd_max: .max_budget}'
 }
 
 # fetch_source <name> <kind> <ref> -> the usage JSON of one source, cached for TTL like fetch
 fetch_source() {
-    local name="$1" kind="$2" ref="$3" cache="$CACHE/$1.json" out tmp
+    local name="$1" kind="$2" ref="$3" cache="$CACHE/$1.json" out tmp info refused
     if [[ "$kind" == codex ]]; then read_codex "$ref"; return; fi   # local files: nothing to rate-limit
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then cat "$cache"; return 0; fi
     case "$kind" in
-        litellm-key) out=$(gateway_get "$ref" /key/info | jq -e .info | budget_usage) ;;
-        litellm-team)
-            local team
-            team=$(gateway_get "$ref" /key/info | jq -er .info.team_id) &&
-                out=$(gateway_get "$ref" "/team/info?team_id=$team" | jq -e .team_info | budget_usage) ;;
+        litellm-key|litellm-team)
+            info=$(gateway_get "$ref" /key/info | jq -e .info) || return 1
+            refused=$(gateway_refused "$ref" "$(jq -r '.models[0] // empty' <<< "$info")" "${kind#litellm-}")
+            if [[ "$kind" == litellm-key ]]; then
+                out=$(budget_usage "$refused" <<< "$info")
+            else
+                local team
+                team=$(jq -er .team_id <<< "$info") &&
+                    out=$(gateway_get "$ref" "/team/info?team_id=$team" | jq -e .team_info | budget_usage "$refused")
+            fi ;;
         *) echo "claude-acct: $name: unknown kind '$kind' (codex, litellm-key, litellm-team)" >&2; return 1 ;;
     esac || return 1
     [[ -n "$out" ]] || return 1
@@ -826,8 +862,10 @@ REGISTRY="$MAIN_DIR/sessions"
 MOVE_POLL="${CLAUDE_ACCT_POLL:-0.5}"
 MOVE_TIMEOUT="${CLAUDE_ACCT_MOVE_TIMEOUT:-60}"
 # Flags a resumed claude keeps from the one it replaces; the rest (a brief, --resume) are spent.
-CARRY_VALUE=(--model --permission-mode)
+CARRY_VALUE=(--model --permission-mode --disallowedTools)
 CARRY_BARE=(--dangerously-skip-permissions --allow-dangerously-skip-permissions)
+# The from= of a session that ran on the gateway, the name agent-panel gives it: never an account dir.
+GATEWAY_FROM=gateway
 
 # norm_dir <dir> -> the account dir as accounts() spells it: empty for the main account
 norm_dir() {
@@ -1168,9 +1206,10 @@ split_target() {
 
 # resume_prompt <move|park> <from name> <to name> <status> -> what the resumed session is told
 resume_prompt() {
-    local p
+    local p old="the $2 Claude account" why="$2 is out of usage"
     if [[ "$1" == move ]]; then
-        p="This session was moved from the $2 Claude account to $3, because $2 is out of usage. Nothing else changed: same conversation, same worktree. Pick up where you left off."
+        [[ "$2" == "$GATEWAY_FROM" ]] && { old="the Lazer gateway"; why="the gateway refused it on budget"; }
+        p="This session was moved from $old to $3, because $why. Nothing else changed: same conversation, same worktree. Pick up where you left off."
         [[ "$4" == shell ]] && p+=" The move stopped your background shells: restart any you still need."
     else
         p="This session was parked to save Claude usage: its claude exited while it waited, and it is now resumed on the $3 account. Same conversation, same worktree. Whatever you were waiting on (CI, a PR, a review, a hold) may have moved while you were parked, so re-check it before you carry on."
@@ -1275,8 +1314,12 @@ park_flow() {
     status=$(jq -r '.status // empty' "$reg"); sid=$(jq -r '.sessionId // empty' "$reg"); cwd=$(jq -r '.cwd // empty' "$reg")
     [[ -n "$sid" && -d "$cwd" ]] || { refuse "its registry entry $reg has no session id or cwd"; return; }
     from=$(config_dir_of "$pid")
-    # A claude-lazer pane (a dispatch start routed to Lazer, a `cl --lazer`) is on no account: a resume would put it on one.
-    [[ -z "$(gateway_of "$pid")" ]] || { refuse "it runs on the Lazer gateway, not an account; a resume would put it on one"; return; }
+    # A claude-lazer pane (a dispatch start routed to Lazer, a `cl --lazer`) is on no account. A move
+    # puts it on one on purpose; an unpark would do that unasked, so park refuses.
+    if [[ -n "$(gateway_of "$pid")" ]]; then
+        [[ "$verb" == move ]] || { refuse "it runs on the Lazer gateway, not an account; a resume would put it on one (claude-acct move does that on purpose)"; return; }
+        from=$GATEWAY_FROM
+    fi
     [[ "$status" == shell ]] && shells=$(bg_shells "$pid")
     if [[ "$verb" == move && -n "$to_name" ]]; then
         # The named account's own score line, the same numbers best() ranks.
@@ -1300,6 +1343,8 @@ park_flow() {
     local direct=0 base win
     [[ "$pid" == "$pane_pid" ]] && direct=1
     base="claude $(carry_flags "$pid")--resume $(printf %q "$sid")"
+    # A shell that exported these would otherwise keep the resume on the gateway.
+    [[ "$from" == "$GATEWAY_FROM" ]] && base="env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN $base"
     if [[ "$verb" == move ]]; then
         echo "claude-acct: move $key ($server $pane, claude $pid, $status) from $(name_of "$from") to $name ($note)"
     else
@@ -1408,6 +1453,13 @@ unpark_ledger() {
     await "session $sid to register on $name" resumed_or_trusted "$server" "$pane" "$sid" "$pid" "$to" ||
         { refuse "resume did not register; look at the pane ($file is kept for claude-acct unpark)"; return; }
     rm -f "$file"
+    # Its item bills this account now; left as the gateway harness it would keep a max_live slot.
+    if [[ "$from" == "$GATEWAY_FROM" ]]; then
+        local item
+        item=$(agent-queue mine --sid "$sid" 2>/dev/null)
+        [[ -z "$item" ]] || agent-queue set "$item" agent=claude "account=$name" >/dev/null 2>&1 ||
+            echo "claude-acct: $item still reads as on the gateway: agent-queue set failed" >&2
+    fi
     got=$(resumed "$sid" "$pid" "$to")
     if [[ "$verb" == move ]]; then
         echo "claude-acct: moved $what to $name: claude ${got% *}, ${got#* }"

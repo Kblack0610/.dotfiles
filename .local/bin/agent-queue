@@ -20,7 +20,10 @@
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource>   a started item back in the queue, held on that agent-hold
-#   reopen <slug> [--to running|waiting] [--why text]   a falsely-done item back to running (or waiting), its row started again
+#   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
+#       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
+#       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
+#       `notes ptask reopen`. Items `after:` it that the ok close released stay started.
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 #   admission [--json]    the backlog an automated add is admitted under, its limit, and the adds held in 7 days
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
@@ -29,8 +32,8 @@
 # A partial: yes item stays open until agent-land without --partial finishes it; reap also waits.
 # Holds: `after <slug>`, and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
 # pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until today's scheduled runs of that repo
-# have finished; see nightly_pending) and ask:<id>[=<option>] (until the human answers that agent-ask,
-# with that option when named; see ask_pending) and hold:<resource> (while agent-hold holds it; see
+# have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until the human answers that agent-ask,
+# with one of those options when named; see ask_pending) and hold:<resource> (while agent-hold holds it; see
 # hold_pending). A start on a later day is the dated form, never a held session.
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
@@ -362,7 +365,13 @@ hold_for() {
   HOLD=""
   if [ -n "$after" ]; then
     after_status "$after"
-    [ "$AST" = ok ] || { HOLD="after $after"; return; }
+    case "$AST" in
+      ok) ;;
+      "") HOLD="after $after"; return ;;
+      # Any other close releases only if that slug is queued again and closes ok: say so, so the
+      # list and the hub show a dead hold apart from a live one.
+      *) HOLD="after $after closed $AST, dead: cancel it or set after=<slug>"; return ;;
+    esac
   fi
   focus_hold "${3-}" "${4-}" "$tags"
   [ -z "$HOLD" ] || return 0
@@ -420,8 +429,8 @@ hold_pending() {
   printf '%s\n' "${out#held: "$1" }"
 }
 
-# ask_pending <id>[=<option>] -> why that agent-ask still holds an item, or nothing once the human
-# answered it (with <option> as the answer's first word, when one is named). A phase gated on the
+# ask_pending <id>[=<option>[+<option>]] -> why that agent-ask still holds an item, or nothing once
+# the human answered it (with one of those options as the answer's first word, when named). A phase gated on the
 # human's decision (live money, a vendor) is queued behind its ask instead of held by an open
 # session: on 2026-11-06 trader-real-money-plan sat 6h+ refusing to queue phases that would have
 # started on their own. Pending, cancelled, another answer or no such ask all hold.
@@ -438,7 +447,14 @@ ask_pending() {
   [ -z "$by" ] || [ "$by" = human ] || { echo "answered by $by, not the human"; return; }
   [ -n "$want" ] || return 0
   ans="$(sed -n 's/^answer: //p' "$f" | head -1)"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"
-  [ "${ans,,}" = "${want,,}" ] || echo "answered ${ans:-nothing}, not $want"
+  case "+${want,,}+" in *"+${ans,,}+"*) ;; *) echo "answered ${ans:-nothing}, not $want" ;; esac
+}
+
+# ask_options <id> -> the ask's answer vocabulary, one option per line; nothing when it has none.
+ask_options() {
+  local f; f="$(compgen -G "$AQ_ASKS/*/${1%%=*}.md" | head -1)"
+  [ -n "$f" ] || return 0
+  sed -n 's/^options: *//p' "$f" | head -1 | tr '|' '\n'
 }
 
 # nightly_pending <repo> <local stamp> -> what today's scheduled runs of that repo still wait for, or
@@ -1360,14 +1376,14 @@ cmd_move() {
 # check_tags <tags> -- die on a hold tag the queue could not read, so a gate is never silently
 # open or shut: add and `set tags=` both check.
 check_tags() {
-  local tag why
+  local tag why opts rest opt
   for tag in $1; do
     case "$tag" in
       at:*) [[ "$tag" =~ ^at:([0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T)?([01][0-9]|2[0-3]):[0-5][0-9]$ ]] ||
         die "a time tag is at:HH:MM or at:YYYY-MM-DDTHH:MM, not $tag" ;;
       pr:*) [[ "$tag" =~ ^pr:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]] || die "a PR tag is pr:<owner>/<repo>#<N>, not $tag" ;;
       nightly:*) [[ "$tag" =~ ^nightly:[A-Za-z0-9_.-]+$ ]] || die "a nightly tag is nightly:<repo>, the repo's name, not $tag" ;;
-      ask:*) [[ "$tag" =~ ^ask:[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "an ask tag is ask:<id>[=<option>], not $tag"
+      ask:*) [[ "$tag" =~ ^ask:[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "an ask tag is ask:<id>[=<option>[+<option>]], not $tag"
         # An ask already cancelled, or answered by the judge or another option, can never release
         # the item: on 2026-11-07 can-we-get-cloud-vast-clarke-p3-live was queued behind an ask the
         # judge had answered at post, and upwork-p2..p5 behind one cancelled later.
@@ -1376,7 +1392,21 @@ check_tags() {
           "" | pending) ;;
           "no such ask") die "$tag: no agent-ask has that id; post the ask first" ;;
           *) die "$tag: that ask can never release it ($why); post a new one with agent-ask post --kind gate, which the judge never answers" ;;
-        esac ;;
+        esac
+        # With no option named, every answer releases the item, a "stop" among them.
+        # A name the ask does not offer can never match an answer, so the item would wait for good.
+        # An answer matches on its first word (ask_pending), and a slug may itself contain a +.
+        opts="$(ask_options "${tag#ask:}")"
+        [ -n "$opts" ] || continue
+        if [[ "$tag" != *=* ]]; then
+          die "$tag: that ask offers ${opts//$'\n'/,}; name the answers that release the item: $tag=<option>[+<option>]"
+        fi
+        rest="+${tag#*=}+"; rest="${rest,,}"
+        while IFS= read -r opt; do
+          opt="${opt%% *}"; opt="${opt%[.,;:!]}"
+          rest="${rest//"+${opt,,}+"/+}"
+        done <<<"$opts"
+        [ "$rest" = + ] || die "$tag: that ask offers ${opts//$'\n'/,}, and those are what an answer can match" ;;
       hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
     esac
   done
@@ -1422,26 +1452,48 @@ cmd_requeue() {
 # new work under the slug. A reap that parked a live item in waiting/ needs none: the next reap that
 # lists its Claude moves it back to running.
 cmd_reopen() {
-  local usage="usage: agent-queue reopen <slug> [--to running|waiting] [--why text]"
-  local slug="${1:?$usage}" to=running why="" f dest status note row prof flag=()
+  local usage="usage: agent-queue reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]"
+  local slug="${1:?$usage}" to=running why="" unland="" f dest status note row prof flag=() refs=() oids=() kr=() ko=() i cp
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
       --to) to="${2:?--to needs a state}"; shift 2 ;;
       --why) why="${2:?--why needs a reason}"; shift 2 ;;
+      --unland) unland="${2:?--unland needs <owner>/<repo>#<N>}"; shift 2 ;;
       *) die "$usage" ;;
     esac
   done
   case "$to" in running | waiting) ;; *) die "reopen goes to running or waiting, not $to" ;; esac
   case "$why" in *$'\n'*) die "--why is one line" ;; esac
+  [ -z "$unland" ] || [[ "$unland" =~ ^[^/[:space:]]+/[^/#[:space:]]+#[0-9]+$ ]] || die "--unland takes <owner>/<repo>#<N>, not $unland"
   lock
   [ -z "$(find_item "$slug")" ] || die "$slug is still active: nothing to reopen"
   f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
   status="$(fm_get "$f" status)" note="$(fm_get "$f" note)"
-  [ "$status" = failed ] || die "$slug closed $status, not failed: that is new work under the slug (agent-queue add${status:+ --repeat})"
+  if [ -n "$unland" ]; then
+    # A false ok close (agent-land took a side PR from another repo, 2026-11-07): that PR comes
+    # off the item, its merge commit with it, so the item's own PR lands on it as its first.
+    [ "$status" = ok ] || die "--unland undoes an ok close, and $slug closed ${status:-with no status}"
+    read -ra refs <<<"$(fm_get "$f" pr)"
+    read -ra oids <<<"$(fm_get "$f" merged)"
+    # The lists are kept in step (set clears merged: with pr:); one out of step names no commit by index.
+    [ "${#oids[@]}" -eq 0 ] || [ "${#oids[@]}" -eq "${#refs[@]}" ] ||
+      die "$slug records ${#refs[@]} pr: and ${#oids[@]} merged: entries, not in step: agent-queue set $slug pr=<refs> merged=<shas> first"
+    for i in "${!refs[@]}"; do
+      # A bare ref is the PR by its number, as once_done reads it.
+      [ "${refs[i],,}" = "${unland,,}" ] || [ "${refs[i]}" = "${unland##*#}" ] || kr+=("${refs[i]}") ko+=("${oids[i]:-}")
+    done
+    [ "${#kr[@]}" -lt "${#refs[@]}" ] || die "$slug records pr:${refs[*]:-nothing}, not $unland"
+    header_set "$f" pr "${kr[*]}"
+    header_set "$f" merged "${ko[*]}"
+    cp="$(fm_get "$f" closing_pr)"
+    [ "${cp,,}" != "${unland,,}" ] || header_del "$f" closing_pr
+  else
+    [ "$status" = failed ] || die "$slug closed $status, not failed: that is new work under the slug (agent-queue add${status:+ --repeat})${status:+, or --unland <owner>/<repo>#<N> when it closed on a PR that was not its work}"
+  fi
   header_del "$f" status finished
   [ "$to" = running ] || header_set "$f" waiting "$(now_utc)"
-  header_set "$f" note "reopened from done (failed${note:+: $note})${why:+: $why}"
+  header_set "$f" note "reopened from done ($status${unland:+, unlanded $unland}${note:+: $note})${why:+: $why}"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "done ($status) -> $to: reopened${why:+: $why}"
   echo "$slug: done -> $to (reopened, was $status)"
@@ -1451,6 +1503,12 @@ cmd_reopen() {
   [ -n "$row" ] || return 0
   case "$(fm_get "$dest" lane)" in '' | agent) flag=(--agent) ;; esac
   exec 8>&-
+  # An ok close closed the row too: it opens again, its proof off, before it is started. A row
+  # that is not closed (the close never reached it) has nothing to reopen, so start still runs.
+  if [ -n "$unland" ]; then
+    notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" reopen "${row#*:}" --why "closed on $unland, not its work${why:+: $why}" >/dev/null 2>&1 ||
+      echo "agent-queue: $slug: board row ${row#*:} on ${row%%:*} was not reopened; if it is closed: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} reopen ${row#*:} --why <why>" >&2
+  fi
   notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1 ||
     die "$slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} start ${row#*:}"
   echo "$slug: board row ${row#*:} started again"
