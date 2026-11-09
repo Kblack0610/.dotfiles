@@ -1376,8 +1376,37 @@ cmd_move() {
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}"
   echo "$slug: $from -> $to"
   lane_outcome "$run" "$from" "$to" "$status"
-  [ "$to" = done ] && [ "$status" = ok ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
-  start_next "$slug"
+  [ "$to" = done ] && [ "$status" = ok ] || return 0
+  local rc=0
+  [ "${AGENT_QUEUE_START:-1}" != 1 ] || start_next "$slug" || rc=$?
+  close_row_on_item "$slug" "$dest"
+  return "$rc"
+}
+
+# close_row_on_item <slug> <file> -- an item closed ok with no PR closes its row, the item as proof:
+# its session's close is the claim, as the merge is for an item with a PR (agent-land, or
+# fleet-dispatch close_row when its session died first). Its sessions read the move as closing the
+# row, and a row left started reads as an orphan. A row already closed (a doc kind closes its own
+# with doc: proof) is left as it is; a close that fails warns unless the board shows the row closed.
+# After start_next, which scans the queue under the lock: this frees it before calling notes.
+close_row_on_item() {
+  local slug=$1 row prof lane pr flag=() out key board
+  IFS=$'\x1f' read -r row prof lane pr < <(item_json "$2" |
+    jq -r '[.row // "", .profile // "", .lane // "", .pr // ""] | join("\u001f")')
+  [ -n "$row" ] && [ -z "$pr" ] || return 0
+  case "$lane" in '' | agent) flag=(--agent) ;; esac
+  [ -n "${AQ_LOCKED-}" ] || exec 8>&-
+  key="${row#*:}"
+  if out="$(notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" done "$key" --proof "item:$slug" 2>&1)"; then
+    echo "$slug: board row $key closed"
+    return 0
+  fi
+  # Quiet only when the board reads and its open rows no longer hold this one (by id: lv-9 is not lv-90).
+  [[ "$key" =~ ^[a-z]{2,4}-[0-9]+$ ]] && key="id:$key"
+  if board="$(notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" list 2>/dev/null)" && ! grep -qwF -- "$key" <<<"$board"; then
+    return 0
+  fi
+  echo "agent-queue: $slug is done, but its board row ${row#*:} on ${row%%:*} may still be open (${out##*$'\n'}): notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} done ${row#*:} --proof item:$slug" >&2
 }
 
 # check_tags <tags> -- die on a hold tag the queue could not read, so a gate is never silently
