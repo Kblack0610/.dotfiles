@@ -199,6 +199,16 @@ pub async fn headers(mut res: Response) -> Response {
 mod tests {
     use super::*;
 
+    /// The phone render harness (tests/agent-web/phone/render.mjs) serves exactly this page and CSP.
+    #[test]
+    #[ignore = "writes files; run by the phone render harness"]
+    fn dump_index_for_phone_harness() {
+        let out =
+            std::env::var("AGENT_WEB_INDEX_OUT").expect("AGENT_WEB_INDEX_OUT is the output path");
+        std::fs::write(&out, index()).unwrap();
+        std::fs::write(format!("{out}.csp"), CSP).unwrap();
+    }
+
     const APP_JS: &str = include_str!("../static/app.js");
     const FLEET_JS: &str = include_str!("../static/fleet.js");
     const WAITING_JS: &str = include_str!("../static/waiting.js");
