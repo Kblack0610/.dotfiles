@@ -4509,6 +4509,51 @@ board_item() {
   assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'
 }
 
+@test "suggest --write: a real pass stores what suggest --json prints; a dry pass writes none; a failed read, or an empty one with notes down, keeps the last" {
+  echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'game row' "- [ ] game row #high $T"
+  verdict game agent 'game row' skip   # cached, so the pass calls no judge and promotes nothing
+  snap="$HOME/.local/state/agentctl/dispatch/candidates.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  [ ! -e "$snap" ] || fail "a dry pass wrote the candidates snapshot"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(jq -r .key "$snap")" "game row"
+  run cmd_suggest --json
+  assert_equal "$(cat "$snap")" "$output"
+  before=$(cat "$snap")
+  cmd_suggest() { echo partial; return 1; }
+  run candidates_write
+  assert_failure
+  assert_equal "$(cat "$snap")" "$before"
+  cmd_suggest() { :; }
+  notes() { return 1; }
+  run candidates_write
+  assert_failure
+  assert_output --partial 'notes did not answer'
+  assert_equal "$(cat "$snap")" "$before"
+  [ -z "$(ls "${snap%/*}" | grep -v '^candidates.jsonl$')" ] || fail "a temp file was left behind"
+  unset -f notes
+  run candidates_write
+  assert_success
+  [ -e "$snap" ] && [ ! -s "$snap" ] || fail "an empty list with notes up did not clear the snapshot"
+}
+
+@test "promote: the promoted row leaves the candidates snapshot at once, every other row stays" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'urgent one' '- [ ] urgent one #urgent <!-- id:gm-7 -->'
+  mkdir -p "${CANDIDATES%/*}"
+  printf '%s\n' '{"project":"game","lane":"human","key":"gm-7"}' '{"project":"game","lane":"agent","key":"gm-7"}' \
+    '{"project":"game","lane":"human","key":"gm-8"}' > "$CANDIDATES"
+  touch -d '2026-11-09 08:07' "$CANDIDATES"
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human", key: "gm-7"}')" "" task
+  assert_success
+  assert_equal "$(jq -r '.lane + ":" + .key' "$CANDIDATES" | paste -sd' ')" "agent:gm-7 human:gm-8"
+  assert_equal "$(date -r "$CANDIDATES" +%H:%M)" 08:07   # `as of` stays the pass's time
+}
+
 @test "stats: open board rows by lane; an unreadable board leaves them out, never 0" {
   queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
