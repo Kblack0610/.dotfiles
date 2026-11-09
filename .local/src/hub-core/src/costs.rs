@@ -22,10 +22,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::burn::{self, Burn};
+use crate::fleet_cost::FleetCost;
 use crate::queue;
 use crate::sections::{self, Sections};
 use crate::session_actions::Runner;
-use crate::table::{Row, Summary, Val, View};
+use crate::table::{self, Row, Summary, Val, View};
 
 const DAY: i64 = 24 * 3600;
 
@@ -43,7 +44,7 @@ pub const STALE_SECS: i64 = 36 * 3600;
 /// The Grafana board with the spend trends; the tab draws no chart (dashboards rule 3).
 pub const DASHBOARD: &str = "kb-agents-overview";
 /// The line a TUI tab prints where it would show spend: the Costs tab and its key.
-pub const SPEND_BADGE: &str = "spend: 0 Costs";
+pub const SPEND_BADGE: &str = "spend: 9 Costs";
 
 /// What the tool cut says when its snapshots predate the allocation, on both surfaces.
 pub const UNPRICED: &str =
@@ -53,10 +54,6 @@ pub const UNPRICED: &str =
 /// own DB prices a `lazer/*` session and the nightly outcomes run carries it; a direct call from
 /// anything else (a curl probe, another machine) reaches Lazer with no record here.
 pub const DIRECT_NOTE: &str = "opencode lazer/*, nightly; other direct use unseen";
-
-/// The gauge the LIVE 24H tile reads: Claude Code's cost over the last 24 hours. What each source
-/// has spent of its window or dollars is the Burn section's, from claude-acct.
-pub(crate) const LIVE_Q: &str = "cc:claude_code_cost_24h_usd";
 
 /// One session's newest outcomes row, as `agentctl-session-outcomes costs` prints it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -158,27 +155,14 @@ pub struct Snapshot {
     pub totals: Option<SnapshotTotals>,
     #[serde(skip)]
     pub errors: usize,
+    /// The whole fleet's cost that day (`fleet_cost.total.usd`); None before the estimator ran.
+    #[serde(skip)]
+    pub fleet_usd: Option<f64>,
     /// What Langfuse saw that day; None when its reader failed, `langfuse_error` says why.
     #[serde(skip)]
     pub langfuse: Option<crate::tokens::Langfuse>,
     #[serde(skip)]
     pub langfuse_error: Option<String>,
-}
-
-/// The live gauge; missing when Prometheus has none.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct Live {
-    pub claude_24h: Option<f64>,
-}
-
-/// The live gauge out of `LIVE_Q`'s series.
-pub fn live(series: &[crate::prom::Series]) -> Live {
-    Live {
-        claude_24h: series
-            .iter()
-            .find(|s| s.label("__name__") == LIVE_Q)
-            .and_then(|s| s.value),
-    }
 }
 
 /// Lazer use that went past the gateway, so the pool does not count it: the opencode sessions on
@@ -235,7 +219,8 @@ pub struct Costs {
     pub calls: Vec<Call>,
     /// Newest first.
     pub snapshots: Vec<Snapshot>,
-    pub live: Live,
+    /// The whole fleet's 24h cost; `why` says so when its file could not be read.
+    pub fleet_cost: FleetCost,
     /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
     pub burn: Burn,
     /// `fleet-bench sections --json`; empty when it failed (named in `errors`).
@@ -254,6 +239,8 @@ pub struct Paths {
     pub dispatch_log: PathBuf,
     /// fleet-dispatch's `headroom.json`, the last real pass's `headroom --json`.
     pub headroom: PathBuf,
+    /// `agent-usage fleet-cost`'s file.
+    pub fleet_cost: PathBuf,
 }
 
 impl Paths {
@@ -263,6 +250,7 @@ impl Paths {
             dispatch_log: crate::boards::dispatch_dir().join("log.md"),
             headroom: crate::boards::dispatch_dir().join("headroom.json"),
             tokens: crate::boards::token_usage_dir(),
+            fleet_cost: crate::boards::fleet_cost(),
         }
     }
 }
@@ -310,11 +298,9 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         Err(e) => c.errors.push(format!("fleet-bench sections: {e}")),
     }
     read_files(&mut c, paths, now);
-    // One Prometheus base for the spend tiles and the Burn section; a failure is named once.
     let base = crate::prom::base();
-    match base.clone().and_then(|b| crate::prom::instant(&b, LIVE_Q)) {
-        Ok(series) => c.live = live(&series),
-        Err(e) => c.errors.push(format!("Prometheus: {e}")),
+    if let Err(e) = &base {
+        c.errors.push(format!("Prometheus: {e}"));
     }
     c.burn = read_burn(base.as_deref().ok(), paths, now, &mut c.errors);
     c
@@ -329,21 +315,27 @@ fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
     }
     c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize, &mut c.errors);
     c.tokens = crate::tokens::from_snapshots(&c.snapshots, now);
+    let past: Vec<(String, f64)> = c
+        .snapshots
+        .iter()
+        // $0 is a day with no rate to fit (nothing billed that Prometheus kept): unknown, not free.
+        .filter_map(|s| Some((s.date.clone(), s.fleet_usd.filter(|u| *u > 0.0)?)))
+        .collect();
+    c.fleet_cost = match crate::fleet_cost::load(&paths.fleet_cost) {
+        Ok(f) => crate::fleet_cost::build(&f, &past, now),
+        Err(e) => crate::fleet_cost::missing(e),
+    };
 }
 
 /// The Burn section's sources: claude-acct's series and rate in Prometheus (`base`, when it
 /// resolved), the dispatch log for the drip, and the cached headroom for why it is held. A
 /// source that fails is named in `errors` and the rest still show.
 fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<String>) -> Burn {
-    let (mut series, mut rate) = (vec![], None);
+    let mut series = vec![];
     if let Some(b) = base {
         match crate::prom::instant(b, burn::ACCOUNTS) {
             Ok(s) => series = s,
             Err(e) => errors.push(format!("claude-acct series: {e}")),
-        }
-        match crate::prom::instant(b, burn::RATE_Q) {
-            Ok(s) => rate = s.first().and_then(|s| s.value),
-            Err(e) => errors.push(format!("session rate: {e}")),
         }
     }
     // The tail is bounded (LOG_TAIL), which covers a day of starts; a longer day undercounts.
@@ -353,12 +345,7 @@ fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<Strin
             errors.push(format!("dispatch log: {e}"));
             String::new()
         });
-    burn::build(
-        &series,
-        rate,
-        burn::drip(&log, now, held(&paths.headroom)),
-        now,
-    )
+    burn::build(&series, burn::drip(&log, now, held(&paths.headroom)), now)
 }
 
 /// The hold reason from the last pass's headroom, only when it names a kind: "nothing runnable"
@@ -417,6 +404,7 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
         commands: serde_json::from_value(v["by_command"].clone()).unwrap_or_default(),
         totals: serde_json::from_value(v["totals"].clone()).ok(),
         errors: v["errors"].as_array().map_or(0, Vec::len),
+        fleet_usd: v["fleet_cost"]["total"]["usd"].as_f64(),
         langfuse: crate::tokens::langfuse(&v["langfuse"]),
         langfuse_error: v["errors"]
             .as_array()
@@ -663,6 +651,9 @@ impl Row for Line {
         true
     }
 }
+
+/// Under a cut's first column on a phone: what the row cost.
+pub const CUT_GLANCE: &[&str] = &["cost", "share", "tokens"];
 
 /// The columns a cut shows, in order; both surfaces draw these and no others.
 pub fn columns(cut: &str) -> &'static [&'static str] {
@@ -927,6 +918,10 @@ pub fn totals(sessions: &[Spent], now: i64) -> Vec<Total> {
         .collect()
 }
 
+/// Under the 7D and 30D tiles: outcomes rows carry a session's whole life, not the window's share.
+pub const TOTALS_NOTE: &str =
+    "whole-life cost of the sessions touched in the window, from outcomes";
+
 /// One source's freshness, as the tab's head lists them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Source {
@@ -969,7 +964,8 @@ pub struct Board {
     pub cuts: &'static [&'static str],
     pub windows: Vec<&'static str>,
     pub totals: Vec<Total>,
-    pub live: Live,
+    pub fleet_cost: FleetCost,
+    pub totals_note: &'static str,
     pub direct: Direct,
     pub burn: Burn,
     /// Where the tokens go and what Langfuse sees: the newest week and day of snapshots, whatever
@@ -1090,6 +1086,10 @@ pub fn board(
             .columns
             .into_iter()
             .filter(|col| cols.contains(&col.key))
+            .map(|col| table::Column {
+                role: table::role_of(col.key, cols[0], CUT_GLANCE),
+                ..col
+            })
             .collect(),
         facets: filter
             .facets
@@ -1103,8 +1103,12 @@ pub fn board(
         window: w.into(),
         cuts: &CUTS,
         windows: WINDOWS.iter().map(|w| w.0).collect(),
-        totals: totals(&c.sessions, c.at),
-        live: c.live.clone(),
+        totals: totals(&c.sessions, c.at)
+            .into_iter()
+            .filter(|t| t.window != "24h")
+            .collect(),
+        fleet_cost: c.fleet_cost.clone(),
+        totals_note: TOTALS_NOTE,
         direct: direct(&c.sessions, c.at),
         burn: c.burn.clone(),
         tokens: c.tokens.clone(),
@@ -1154,6 +1158,7 @@ mod tests {
             tokens: d.clone(),
             dispatch_log: d.join("log.md"),
             headroom: d.join("headroom.json"),
+            fleet_cost: d.join("fleet-cost.json"),
         };
         std::fs::write(&paths.calls, "").unwrap();
         // Negative control: no snapshot, no tokens and no error.
@@ -1371,10 +1376,9 @@ mod tests {
 
     #[test]
     fn the_spend_badge_names_the_costs_key() {
-        // The number row: 1 to 9, then 0 for the tenth tab.
-        let at = crate::layout::TABS.iter().position(|t| t.id == "costs");
         assert_eq!(
-            at.map(|i| format!("spend: {} Costs", (i + 1) % 10))
+            crate::layout::bar_digit("costs")
+                .map(|d| format!("spend: {d} Costs"))
                 .as_deref(),
             Some(SPEND_BADGE)
         );
@@ -1389,9 +1393,11 @@ mod tests {
         let mut c = costs();
         c.sessions[0].cost_usd = None;
         c.sessions[0].cost_by_model = Some(BTreeMap::from([("claude-opus-5-5".into(), 4.0)]));
-        let b = board(&c, "session", "24h", "", "", "", ("", ""));
+        let b = board(&c, "session", "7d", "", "", "", ("", ""));
         assert_eq!(b.totals[0].usd, b.shown_usd, "the tile and the table agree");
         assert_eq!(b.totals[0].unpriced, 0);
+        let windows: Vec<&str> = b.totals.iter().map(|t| t.window).collect();
+        assert_eq!(windows, ["7d", "30d"], "the fleet figure is the 24h answer");
     }
 
     #[test]
@@ -1608,16 +1614,51 @@ not json
     }
 
     #[test]
-    fn the_live_tile_reads_claude_codes_24h_gauge_and_nothing_else() {
-        let g = |name: &str, v: f64| crate::prom::Series {
-            labels: BTreeMap::from([("__name__".to_string(), name.to_string())]),
-            value: Some(v),
-            points: vec![],
+    fn the_fleet_block_reads_its_file_and_the_snapshots_past_days() {
+        let d = std::env::temp_dir().join(format!("hub-costs-fleet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let paths = Paths {
+            calls: d.join("calls.jsonl"),
+            tokens: d.clone(),
+            dispatch_log: d.join("log.md"),
+            headroom: d.join("headroom.json"),
+            fleet_cost: d.join("fleet-cost.json"),
         };
-        let l = live(&[g("cc:lazer_spend_usd", 93.0), g(LIVE_Q, 11.5)]);
-        assert_eq!(l.claude_24h, Some(11.5));
-        // negative control: no 24h gauge is unknown, never another series' value
-        assert_eq!(live(&[g("cc:lazer_spend_usd", 93.0)]).claude_24h, None);
+        std::fs::write(&paths.calls, "").unwrap();
+        // Negative control: no file says so, and shows no figure.
+        let mut c = Costs::default();
+        read_files(&mut c, &paths, NOW);
+        assert!(c
+            .fleet_cost
+            .why
+            .as_deref()
+            .unwrap()
+            .starts_with("nothing read: "));
+        assert!(c.fleet_cost.rows.is_empty());
+        std::fs::write(
+            d.join("2027-01-14.json"),
+            r#"{"errors":[],"fleet_cost":{"total":{"usd":738.4}}}"#,
+        )
+        .unwrap();
+        std::fs::write(d.join("2027-01-13.json"), r#"{"errors":[]}"#).unwrap();
+        std::fs::write(
+            &paths.fleet_cost,
+            format!(r#"{{"as_of_epoch":{NOW},"total":{{"usd":5.0,"measured":5.0}}}}"#),
+        )
+        .unwrap();
+        let mut c = Costs::default();
+        read_files(&mut c, &paths, NOW);
+        let f = &c.fleet_cost;
+        assert_eq!(
+            (f.why.clone(), f.usd.as_str(), f.as_of),
+            (None, "about $5.00", Some(NOW))
+        );
+        assert_eq!(
+            f.days, "01-14 $738",
+            "a day with no fitted rate is not a $0 day"
+        );
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
@@ -1667,10 +1708,6 @@ not json
         assert_eq!((b.direct.usd, b.direct.unpriced), (2.5, 0));
         let j = serde_json::to_value(&b).unwrap();
         assert_eq!(j["direct"]["note"], DIRECT_NOTE);
-        assert!(j["live"].get("claude_24h").is_some());
-        assert!(
-            j["live"].get("reserve_spend").is_none(),
-            "the key tiles are Burn rows now"
-        );
+        assert!(j["fleet_cost"]["rows"].is_array());
     }
 }

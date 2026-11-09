@@ -79,7 +79,9 @@ load_agent() {
     [ -f "$conf" ] || { printf 'no such agent: %s\n' "$name" >&2; return 1; }
     (
         set -e
-        unset SKILL   # a conf without one must not inherit the caller's
+        # A conf without one of its keys must not inherit the caller's: Sentinel exports its
+        # own AUTOSTART=yes, which made every KIND=call conf read as invalid.
+        unset NAME KIND COMMAND LANE DESCRIPTION EFFECT SKILL MODEL ROLE ROUTE SCHEDULE AUTOSTART ENABLED CRITICAL RANDOM_DELAY RESTART INBOX
         # shellcheck disable=SC1090
         source "$conf"
         : "${NAME:?missing NAME}"

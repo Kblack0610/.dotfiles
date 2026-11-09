@@ -1,5 +1,5 @@
 //! The Home tab: what needs you, what changed since last night, what analysis proposes, what is
-//! running (with the session counts), the spend and the health strip, from `hub_core::home` and `hub_core::briefing`
+//! running (with the session counts), the spend, the vitals and the health strip, from `hub_core::home` and `hub_core::briefing`
 //! (the readers agent-web's Home uses too). The machines, pools and CI that sat
 //! under it until phase 4 are the Infra tab's (docs/dashboards.md "Hub layout").
 
@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use hub_core::briefing::{self, Fix, Night};
 use hub_core::home::{Chip, Home, Level, Need};
+use hub_core::vitals::Vitals;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
@@ -105,6 +106,45 @@ fn needs(h: &Home, view: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Line
     };
     out.extend(t.fit(w, p.dim()));
     more(&mut out, rows.len(), h.shown, "more", p);
+    out
+}
+
+/// VITALS: the head, then a row per question unless all are on target (dashboards rule 4). A row
+/// too wide for the screen stacks its clauses under the question.
+fn vitals(v: &Vitals, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let head = if v.all_ok { p.good() } else { p.warn() };
+    let mut out = vec![Line::from(vec![
+        Span::styled("VITALS    ", p.head()),
+        Span::styled(v.head.clone(), head),
+    ])];
+    if v.all_ok {
+        return out;
+    }
+    for r in &v.rows {
+        let style = if r.level == Level::Warn {
+            p.warn()
+        } else {
+            p.dim()
+        };
+        let lead = format!("  {:<8}{}  ", r.question, r.mark());
+        let room = w.saturating_sub(lead.len());
+        let parts = if r.text().len() <= room {
+            vec![r.text()]
+        } else {
+            r.parts.clone()
+        };
+        for (i, part) in parts.into_iter().enumerate() {
+            let label = if i == 0 {
+                lead.clone()
+            } else {
+                " ".repeat(lead.len())
+            };
+            out.push(clip_line(
+                Line::from(vec![Span::styled(label, style), Span::raw(part)]),
+                w,
+            ));
+        }
+    }
     out
 }
 
@@ -238,6 +278,9 @@ pub fn page(
             ]),
             w,
         ));
+    }
+    if let Some(v) = &h.vitals {
+        out.extend(vitals(v, p, w));
     }
     out.push(Line::raw(""));
 
@@ -778,5 +821,68 @@ mod tests {
         assert_eq!(next_fix(&n, &fixes).unwrap().0, "Nightly");
         let out = night_text(&home(), Some(&n), &fixes);
         assert!(out.contains("queued 2026-fix-from-web"), "{out}");
+    }
+
+    fn fleet_vitals() -> Vitals {
+        use hub_core::vitals::Row;
+        let row = |q: &str, level, parts: &[&str]| Row {
+            question: q.into(),
+            level,
+            parts: parts.iter().map(|s| s.to_string()).collect(),
+        };
+        Vitals {
+            head: "1 of 2 off target".into(),
+            line: "1 of 2 off target: Outcome".into(),
+            all_ok: false,
+            rows: vec![
+                row("Output", Level::Ok, &["1633 PRs merged in 7d"]),
+                row(
+                    "Outcome",
+                    Level::Warn,
+                    &["Oldest request 340h, limit 72h", "12 unverified, limit 0"],
+                ),
+            ],
+        }
+    }
+
+    fn drawn(v: &Vitals, w: usize) -> String {
+        vitals(v, Palette { no_color: true }, w)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn vitals_is_the_mockup_at_80_columns() {
+        assert_eq!(
+            drawn(&fleet_vitals(), 80),
+            "VITALS    1 of 2 off target\n  \
+             Output     1633 PRs merged in 7d\n  \
+             Outcome !  Oldest request 340h, limit 72h; 12 unverified, limit 0"
+        );
+    }
+
+    #[test]
+    fn a_vitals_row_too_wide_stacks_its_clauses_and_loses_none() {
+        let out = drawn(&fleet_vitals(), 50);
+        assert!(
+            out.contains("  Outcome !  Oldest request 340h, limit 72h\n"),
+            "{out}"
+        );
+        assert!(
+            out.ends_with("\n             12 unverified, limit 0"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn vitals_all_on_target_is_one_line() {
+        let v = Vitals {
+            head: "2 of 2 on target".into(),
+            all_ok: true,
+            ..fleet_vitals()
+        };
+        assert_eq!(drawn(&v, 80), "VITALS    2 of 2 on target");
     }
 }

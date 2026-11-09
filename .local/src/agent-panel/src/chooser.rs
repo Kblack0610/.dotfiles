@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::{account, asks, fzf, jsonl, parked, procmap::ProcMap, render, session, sort, tmux};
+use crate::{account, asks, fzf, jsonl, parked, procmap::ProcMap, render, search, session, sort, tmux};
 
 /// One detected Claude agent, ready to render.
 #[derive(Clone, Debug, Default)]
@@ -33,8 +33,9 @@ pub struct Agent {
     pub cwd: String,
     /// Raw Claude status (`busy`, `idle`, `waiting`, `shell`); `glyph` is its display form.
     pub status: String,
-    /// In plan mode (Shift+Tab / EnterPlanMode), so it will not edit until a plan is approved.
-    pub plan: bool,
+    /// Its permission mode: plan (it will not edit until a plan is approved), manual
+    /// (investigate-only, `jsonl::Mode`), or neither.
+    pub mode: jsonl::Mode,
     /// The plan it works, by slug (`jsonl::RowInfo::plan_slug`); empty for none.
     pub plan_slug: String,
     /// The id of a pending ask (`agent-ask`) it owns, so it is waiting on the human: `asks.rs`.
@@ -63,7 +64,12 @@ impl Agent {
     /// question asked only in the conversation is not a source: the Stop check makes the
     /// session file it.
     pub fn needs_attention(&self) -> bool {
-        self.glyph == '!' || self.ask.is_some()
+        self.at_dialog() || self.ask.is_some()
+    }
+
+    /// At a prompt or dialog in its own pane this moment (`!`), a plan to approve included.
+    pub fn at_dialog(&self) -> bool {
+        self.glyph == '!'
     }
 }
 
@@ -122,11 +128,11 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
         }
 
         let jsonl_path = session::jsonl_path(&sess.session_id, &sess.cwd);
-        let (mut summary, plan, plan_slug) = if jsonl_path.exists() {
+        let (mut summary, mode, plan_slug) = if jsonl_path.exists() {
             let info = jsonl::row_info(&jsonl_path);
-            (info.summary, info.plan, info.plan_slug)
+            (info.summary, info.mode, info.plan_slug)
         } else {
-            (String::new(), false, String::new())
+            (String::new(), jsonl::Mode::Other, String::new())
         };
         // Prefer Claude's pane title (the live session title) over the JSONL
         // "say:" text; the row glyph already conveys status.
@@ -156,7 +162,7 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
             session_id: sess.session_id.clone(),
             cwd: sess.cwd.clone(),
             status: sess.status.clone(),
-            plan,
+            mode,
             plan_slug,
             ask: asking.get(&sess.session_id).cloned(),
             started_at: sess.started_at.map(|ms| ms / 1000),
@@ -271,19 +277,25 @@ pub fn run_interactive(query: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
+    refresh_index();
     let map_file = map_file_path();
     let rows = write_rows(&agents, &map_file, saved_sort())?;
-    let rows_text = rows_text(&rows);
-
-    // Position the cursor on the currently active agent, if any.
+    // fzf runs --disabled (the panel matches, `search`), so a query typed up front is applied here.
+    let rows_text = match query.filter(|q| !q.trim().is_empty()) {
+        Some(q) => search::filter(&fs::read_to_string(search::notes_path(&map_file))?, q, &search::read_topics()),
+        None => rows_text(&rows),
+    };
+    // Position the cursor on the currently active agent, if it is listed.
     let restore_line = tmux::current_target().and_then(|cur| {
-        rows.iter()
-            .position(|r| r.target == cur)
+        rows_text
+            .lines()
+            .position(|l| l.split('\t').next() == Some(cur.as_str()))
             .map(|i| i + 1) // fzf pos() is 1-based
     });
 
     let selected = fzf::run(&rows_text, &map_file, restore_line, query);
     let _ = fs::remove_file(&map_file);
+    let _ = fs::remove_file(search::notes_path(&map_file));
     let selected = selected?;
 
     if let Some(line) = selected {
@@ -317,15 +329,44 @@ pub fn run_new_agent(target: &str) -> Result<()> {
     Ok(())
 }
 
-/// Render the rows in `sort` and write the preview map file they need.
+/// Start an incremental `sessions index` in the background, detached so closing the panel does
+/// not kill it, the way `sessions search` does: the titles a session took since the last refresh
+/// are searchable from the next open. Only when an index exists; the first build is sessions'.
+/// Where `setsid` is missing (macOS) nothing starts and search reads the index as it stands.
+fn refresh_index() {
+    if search::index_path().is_some_and(|p| p.exists()) {
+        let _ = std::process::Command::new("setsid")
+            .args(["-f", "sessions", "index"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// Render the rows in `sort` and write the preview map file they need, and the search notes
+/// beside it (`search::notes`).
 fn write_rows(agents: &[Agent], map_file: &Path, sort: sort::Sort) -> Result<Vec<render::Row>> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let (rows, map_lines) = render::build(agents, sort, now);
-    fs::write(map_file, map_lines.join("\n"))?;
+    write_whole(map_file, &map_lines.join("\n"))?;
+    // A missing index leaves each note to its row text: search still works on what is shown.
+    let index = search::index_path().and_then(|p| fs::read_to_string(p).ok()).unwrap_or_default();
+    write_whole(&search::notes_path(map_file), &search::notes(&rows, agents, &search::index_notes(&index)))?;
     Ok(rows)
+}
+
+/// Write by rename, so a `match` or preview callback reading the file while a reload rewrites
+/// it sees the old file or the new one, never a truncated one.
+fn write_whole(path: &Path, text: &str) -> Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    fs::write(&tmp, text)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 fn rows_text(rows: &[render::Row]) -> String {
@@ -338,7 +379,10 @@ fn rows_text(rows: &[render::Row]) -> String {
 /// fzf `reload` callback: print fresh rows and rewrite the map file, so a label change made
 /// from a key shows without leaving the chooser. `asking` keeps only the sessions waiting on
 /// the human (ctrl-y). `step` is a C-o or A-o press: it moves the saved sort first.
-pub fn run_rows(map_file: &Path, asking: bool, step: Option<sort::Step>) -> Result<()> {
+///
+/// `query` is the search box: the rows are filtered by it (`search::filter`), so a reload keeps
+/// what was typed.
+pub fn run_rows(map_file: &Path, asking: bool, step: Option<sort::Step>, query: &str) -> Result<()> {
     let mut sort = saved_sort();
     if let Some(step) = step {
         sort = sort.step(step);
@@ -346,8 +390,30 @@ pub fn run_rows(map_file: &Path, asking: bool, step: Option<sort::Step>) -> Resu
             sort::save(&file, sort)?;
         }
     }
-    println!("{}", rows_text(&write_rows(&only_asking(collect(), asking), map_file, sort)?));
+    write_rows(&only_asking(collect(), asking), map_file, sort)?;
+    print_matches(&fs::read_to_string(search::notes_path(map_file))?, query);
     Ok(())
+}
+
+/// fzf `change` callback: the saved rows that match `query`, read from the notes `rows` wrote.
+/// No tmux or transcript reads, so it keeps up with typing. Notes that cannot be read are
+/// rebuilt, slower, rather than read as no agents.
+pub fn run_match(map_file: &Path, query: &str) -> Result<()> {
+    match fs::read_to_string(search::notes_path(map_file)) {
+        Ok(notes) => {
+            print_matches(&notes, query);
+            Ok(())
+        }
+        Err(_) => run_rows(map_file, false, None, query),
+    }
+}
+
+fn print_matches(notes: &str, query: &str) {
+    let rows = search::filter(notes, query, &search::read_topics());
+    // No match prints nothing: a blank line would be an empty, selectable row in fzf.
+    if !rows.is_empty() {
+        println!("{rows}");
+    }
 }
 
 /// The sort the panel was last left in (`sort::state_file`), project when none.
@@ -384,11 +450,15 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// A read with gaps still prints the rows it has, then names each gap on stderr and exits 3:
 /// a partial list must not pass for a whole one to a caller that reads a missing session as
 /// gone (fleet-dispatch reap, ar-916).
-pub fn run_list(json: bool, parked: bool) -> Result<()> {
+pub fn run_list(json: bool, parked: bool, needs: bool) -> Result<()> {
     let (agents, gaps) = if parked { collect_all_read() } else { collect_read() };
     for a in agents {
         if !json {
-            println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
+            print!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
+            if needs {
+                print!("\t{}", u8::from(a.needs_attention()));
+            }
+            println!();
             continue;
         }
         let (info, mtime) = match &a.jsonl {
@@ -411,7 +481,7 @@ pub fn run_list(json: bool, parked: bool) -> Result<()> {
             "cwd": a.cwd,
             "session_id": a.session_id,
             "transcript": a.jsonl.as_ref().map(|p| p.to_string_lossy()).unwrap_or_default(),
-            "plan_mode": a.plan,
+            "plan_mode": a.mode == jsonl::Mode::Plan,
             "idle_since": idle_since,
             "started_at": a.started_at,
             "context_tokens": info.context_tokens,
@@ -578,9 +648,9 @@ mod tests {
 
     #[test]
     fn plan_mode_counts_only_with_its_dialog_open() {
-        let plan_dialog = Agent { glyph: '!', plan: true, ..live_agent("hub", "a", false) };
-        let plan_idle = Agent { glyph: '✓', plan: true, ..live_agent("hub", "a", false) };
-        let plan_busy = Agent { glyph: '~', plan: true, ..live_agent("hub", "b", false) };
+        let plan_dialog = Agent { glyph: '!', mode: jsonl::Mode::Plan, ..live_agent("hub", "a", false) };
+        let plan_idle = Agent { glyph: '✓', mode: jsonl::Mode::Plan, ..live_agent("hub", "a", false) };
+        let plan_busy = Agent { glyph: '~', mode: jsonl::Mode::Plan, ..live_agent("hub", "b", false) };
         assert!(plan_dialog.needs_attention());
         assert!(!plan_idle.needs_attention());
         assert!(!plan_busy.needs_attention());

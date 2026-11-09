@@ -376,6 +376,25 @@ MD
   assert_output "$(printf 'web-v1.1.0\nweb-v1.0.0')"
 }
 
+@test "released: each commit's first tag on the line, none yet as null, an unknown commit as an error" {
+  ship "first (#1)" web-v1.0.0
+  ship "second (#2)" other-v9.0.0
+  b=$(git -C "$CLONE" rev-parse HEAD)
+  ship "third (#3)" web-v1.1.0
+  echo more >> "$CLONE/log.txt"; git -C "$CLONE" commit -qam "fourth (#4)"
+  d=$(git -C "$CLONE" rev-parse HEAD)
+  at=$(git -C "$CLONE" log -1 --format=%ct web-v1.1.0)
+  run "$RS" released web "$b" "$d" 0123456789abcdef '--all'
+  assert_success
+  assert_line --index 0 "{\"sha\":\"$b\",\"tag\":\"web-v1.1.0\",\"at\":$at}"
+  assert_line --index 1 "{\"sha\":\"$d\",\"tag\":null,\"at\":null}"
+  assert_line --index 2 '{"sha":"0123456789abcdef","tag":null,"at":null,"error":"commit not in the checkout"}'
+  assert_line --index 3 '{"sha":"--all","tag":null,"at":null,"error":"not a commit sha"}'
+  run "$RS" released lonely "$b"
+  assert_failure 2
+  assert_output --partial 'no checkout'
+}
+
 @test "changelog: a heading that only starts with the version is not its section" {
   printf '## [1.1.01] - 2026-01-15\n\n- another release\n' > "$CLONE/CHANGELOG.md"
   ship "first (#1)" web-v1.0.0

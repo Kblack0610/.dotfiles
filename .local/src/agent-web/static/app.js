@@ -74,6 +74,10 @@ st.act = { confirm: null, busy: false, msg: "", err: false };
 st.opts = { describe: {}, accounts: [] };
 api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs(); }).catch((e) => console.warn(e));
 
+// A fold opened on a phone stays open across redraws. Only then: a wide screen has them all open.
+document.addEventListener("toggle", (e) => { if (e.target.matches?.("details.pfold") && isPhone()) PFOLD[e.target.dataset.pf] = e.target.open; }, true);
+if (typeof matchMedia === "function") matchMedia(PHONE_WIDTH).addEventListener("change", pfoldFit);
+
 function renderActs() {
   const a = st.sel, box = $("acts");
   if (!a) { box.hidden = true; return; }
@@ -91,7 +95,8 @@ function renderActs() {
       + `<button class="btn primary${danger}" data-go ${st.act.busy || (c.action === "move" && !others.length) ? "disabled" : ""}>Yes, ${esc(actLabel(c.action).toLowerCase())}</button>`
       + `<button class="btn" data-no ${st.act.busy ? "disabled" : ""}>Cancel</button>`;
   } else {
-    html += (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
+    const btns = (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
+    if (btns) html += pfold("acts", "Actions", `<div class="actrow">${btns}</div>`);
   }
   if (st.act.msg) html += `<div class="msg${st.act.err ? " err" : ""}">${esc(st.act.msg)}</div>`;
   box.innerHTML = html;
@@ -297,19 +302,25 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "queue", "projects", "sessions", "infra", "log", "fleet", "schedules", "costs", "releases"];
-const RETIRED_TABS = { "waiting": "home", "asks": "home", "board": "projects", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home" };
+const TAB_NAMES = ["home", "daily", "queue", "projects", "board", "sessions", "infra", "log", "fleet", "schedules", "costs", "releases"];
+const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home" };
 // layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
-const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"] };
+// And the web's old URL for every project's rows, which the TUI still opens with `a` on Projects.
+const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "projects/all": ["board", ""] };
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
+// The open tab's section anchors. Ids repeat across boards (Queue and Costs both have
+// sec-table) and a hidden board keeps its HTML, so a lookup stays on the board that shows.
+const tabAnchors = () => [...($(st.tab)?.querySelectorAll('[id^="sec-"]') || [])];
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
 // it paints; the first paint that has the section clears it.
 function seekSection() {
-  const e = st.section && $("sec-" + st.section);
+  const e = st.section && tabAnchors().find((x) => x.id === "sec-" + st.section);
   if (!e) return;
   st.section = null;
-  if (e.tagName === "DETAILS") e.open = true;
+  // A section inside a fold (Log's history in Day detail) opens the fold it sits in.
+  const fold = e.tagName === "DETAILS" ? e : e.closest?.("details");
+  if (fold) fold.open = true;
   if (e.scrollIntoView) e.scrollIntoView({ block: "start" });
 }
 // A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Daily link opens
@@ -376,7 +387,12 @@ function showLive(ev) {
 }
 
 function dispatch(ev) {
-  if (ev.kind === "sessions" || ev.kind === "resync") { refreshAgents(); if (st.view === "screen") loadScreen(); }
+  if (ev.kind === "sessions" || ev.kind === "resync") {
+    refreshAgents();
+    if (st.view === "screen") loadScreen();
+    // NEEDS YOU reads who is waiting live, so a dialog opened or answered changes it now.
+    if (st.tab === "home") refreshHome();
+  }
   if (ev.kind === "asks" || ev.kind === "resync") refreshAsks();
   if ((ev.kind === "transcript" && st.sel && ev.session === st.sel.session) || ev.kind === "resync") {
     if (st.view === "screen") loadScreen(); else loadNewer();

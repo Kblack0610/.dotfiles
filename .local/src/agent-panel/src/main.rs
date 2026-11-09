@@ -39,6 +39,10 @@ enum Cmd {
         /// hub-core `session_actions` acts on.
         #[arg(long)]
         parked: bool,
+        /// Add a fifth column, 1 when the agent needs the human this moment (a dialog or a
+        /// pending ask, what `next` jumps to), else 0: the tmux status line's count.
+        #[arg(long)]
+        needs: bool,
     },
     /// Exit 0 when the transcript's last word asks the human something (a question, a step for
     /// them to take, or an open dialog), else 1. The Stop check that makes a session file its ask.
@@ -104,6 +108,17 @@ enum Cmd {
         /// Move the saved sort first: `next` key (C-o) or `reverse` direction (A-o).
         #[arg(long, value_enum)]
         sort: Option<agent_panel::sort::Step>,
+        /// The search box text; only the matching rows print.
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
+        query: String,
+    },
+    /// Internal fzf change callback: the saved rows matching the search box (not meant to be run by hand).
+    #[command(hide = true)]
+    Match {
+        #[arg(long)]
+        map_file: PathBuf,
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
+        query: String,
     },
     /// Internal ctrl-n callback: a new Claude in a fresh worktree of the repo the agent at
     /// `target` works in (not meant to be run by hand).
@@ -123,7 +138,7 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         None => chooser::run_interactive(cli.query.as_deref()),
         Some(Cmd::Next) => chooser::run_next(),
-        Some(Cmd::List { json, parked }) => chooser::run_list(json, parked),
+        Some(Cmd::List { json, parked, needs }) => chooser::run_list(json, parked, needs),
         Some(Cmd::AsksHuman { transcript }) => {
             std::process::exit(if agent_panel::jsonl::asks_human_at(&transcript) { 0 } else { 1 })
         }
@@ -154,7 +169,8 @@ fn main() -> anyhow::Result<()> {
             println!("{}", agent_panel::md::plain(&text, width.unwrap_or_else(agent_panel::md::width)));
             Ok(())
         }
-        Some(Cmd::Rows { map_file, asking, sort }) => chooser::run_rows(&map_file, asking, sort),
+        Some(Cmd::Rows { map_file, asking, sort, query }) => chooser::run_rows(&map_file, asking, sort, &query),
+        Some(Cmd::Match { map_file, query }) => chooser::run_match(&map_file, &query),
         Some(Cmd::NewAgent { target }) => chooser::run_new_agent(&target),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
     }

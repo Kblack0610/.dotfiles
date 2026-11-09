@@ -42,6 +42,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab fleet [RUNNER]
        hub actions --since WHEN [--json | --records]
        hub phone --json
+       hub vitals [--json]
        hub needs --json | --page
        hub briefing --json | --md [--since WHEN]
        hub projects --json
@@ -128,6 +129,10 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("phone") {
         it.next();
         std::process::exit(phone(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("vitals") {
+        it.next();
+        std::process::exit(vitals(it.cloned().collect()));
     }
     if it.peek().map(|a| a.as_str()) == Some("briefing") {
         it.next();
@@ -285,6 +290,32 @@ fn phone(args: Vec<String>) -> i32 {
     0
 }
 
+/// `hub vitals`: the one-line summary, then a row per question, for tmux, waybar and the briefing;
+/// `--json` is the same read whole. Exit 1 when Prometheus did not answer.
+fn vitals(args: Vec<String>) -> i32 {
+    let json = match args.as_slice() {
+        [] => false,
+        [a] if a == "--json" => true,
+        _ => die(USAGE),
+    };
+    let v = match hub_core::vitals::fetch() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("hub vitals: Prometheus: {e}");
+            return 1;
+        }
+    };
+    if json {
+        println!("{}", serde_json::to_string(&v).unwrap_or_default());
+        return 0;
+    }
+    println!("{}", v.line);
+    for r in &v.rows {
+        println!("{:<8}{}  {}", r.question, r.mark(), r.text());
+    }
+    0
+}
+
 /// Epoch seconds, or an RFC 3339 time.
 fn parse_since(s: &str) -> Option<i64> {
     s.parse().ok().or_else(|| {
@@ -379,6 +410,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     if tab == Some(Tab::Queue) {
         a.tab = Tab::Queue;
         a.pipeline = Some(hub_core::pipeline::read());
+        // The Candidates fold, with its `as of`: fleet-dispatch's snapshot, a file read.
+        a.candidates = Some(hub_core::queue::candidates(&a.files.candidates));
+        // `--tab 'queue candidates'` opens the fold, as the tab request does.
+        a.open_query(section);
         // Only the link is needed here: the page's `o graph` hint reads the Grafana base.
         a.infra = Some(hub_core::infra::Infra {
             grafana: hub_core::infra::grafana(),
@@ -560,6 +595,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         }
         if e.paths.iter().any(|p| boards.is_proposal_file(p)) {
             let _ = files.send(Msg::ProposalFiles);
+        }
+        if e.paths.iter().any(|p| boards.is_session_file(p)) {
+            let _ = files.send(Msg::SessionFiles);
         }
     });
     // Kept alive until hub exits; dropping it ends the watch.

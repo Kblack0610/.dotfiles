@@ -126,11 +126,11 @@ const BAR: usize = 20;
 
 /// `[#######.............]`, the closed share of the open version by size.
 fn bar(percent: Option<u32>, p: Palette) -> Vec<Span<'static>> {
-    let on = percent.map_or(0, |pc| (pc as usize * BAR).div_ceil(100).min(BAR));
+    let (on, off) = crate::fmt::bar(percent, None, BAR);
     vec![
         Span::raw("["),
-        Span::styled("#".repeat(on), p.good()),
-        Span::styled(".".repeat(BAR - on), p.dim()),
+        Span::styled(on, p.good()),
+        Span::styled(off, p.dim()),
         Span::raw("]"),
     ]
 }

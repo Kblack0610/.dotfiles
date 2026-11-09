@@ -122,6 +122,8 @@ impl Row for Schedule {
     ];
     const STATES: &'static [&'static str] = &["all", "red", "ok", "unknown", "no-purpose"];
     const FACETS: &'static [&'static str] = &["kind", "repo", "result"];
+    const LEAD: &'static str = "name";
+    const GLANCE: &'static [&'static str] = &["last", "result", "streak"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| match s {

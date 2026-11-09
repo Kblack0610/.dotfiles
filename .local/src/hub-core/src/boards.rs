@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use agent_panel::chooser::{Agent, Gaps};
+
 use crate::session_actions::Runner;
 
 /// Transitions sent to the Sessions tab: about a day of a busy fleet, sync lines included.
@@ -23,9 +25,19 @@ fn env(k: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Claude Code's live session files, one per process: its status changes here first.
+pub fn claude_sessions_dir() -> PathBuf {
+    home().join(".claude").join("sessions")
+}
+
 /// `fleet-sessions`' state document, by the same variables it resolves.
 pub fn fleet_state() -> PathBuf {
     agent_panel::vocab::fleet_state_file()
+}
+
+/// `agent-usage fleet-cost`'s file, beside the fleet state.
+pub fn fleet_cost() -> PathBuf {
+    fleet_state().with_file_name("fleet-cost.json")
 }
 
 /// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
@@ -43,10 +55,11 @@ pub fn is_proposal_file(dir: &Path, p: &Path) -> bool {
     p.parent() == Some(dir) && p.extension().is_some_and(|e| e == "json")
 }
 
-/// `state.json` (null when missing or unreadable) with its `asks` read live from agent-ask. The
-/// file is a pass behind (fleet-state.timer: a minute after the last ~30s run), and an ask's one
-/// home is agent-ask's store, so a board shows what the questions panel shows. A failed read
-/// leaves no asks and names agent-ask in `unreadable`, as fleet-sessions does. The sources only
+/// `state.json` (null when missing or unreadable) with what must not lag read live over it: who
+/// is waiting on the human now (`live_waits`) and its `asks` from agent-ask. The file is a pass
+/// behind (fleet-state.timer: a minute after the last pass, and a pass takes most of a minute under
+/// load), and an ask's one home is agent-ask's store, so a board shows what the questions panel
+/// shows. A failed read leaves no asks and names agent-ask in `unreadable`, as fleet-sessions does. The sources only
 /// NEEDS YOU reads (critical mail, janitor lines, budget stops) join here too (`signals::join`).
 pub fn state(path: &Path, r: &dyn Runner) -> Value {
     state_with(
@@ -54,11 +67,18 @@ pub fn state(path: &Path, r: &dyn Runner) -> Value {
         r,
         &crate::signals::Paths::from_env(),
         chrono::Utc::now().timestamp(),
+        agent_panel::chooser::collect_read(),
     )
 }
 
 /// `state` with the signal sources and clock given, for a test.
-pub fn state_with(path: &Path, r: &dyn Runner, signals: &crate::signals::Paths, now: i64) -> Value {
+pub fn state_with(
+    path: &Path,
+    r: &dyn Runner,
+    signals: &crate::signals::Paths,
+    now: i64,
+    live: (Vec<Agent>, Gaps),
+) -> Value {
     let mut state = std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -66,20 +86,71 @@ pub fn state_with(path: &Path, r: &dyn Runner, signals: &crate::signals::Paths, 
     if !state.is_object() {
         return state;
     }
+    live_waits(&mut state, live);
     dialogs(&mut state, agent_panel::session::jsonl_path);
     let argv = ["agent-ask", "list", "--all", "--pending"].map(String::from);
     match r.run(&argv) {
         Ok(tsv) => state["asks"] = Value::Array(asks(&tsv)),
         Err(_) => {
             state["asks"] = json!([]);
-            match state["unreadable"].as_array_mut() {
-                Some(u) => u.push("agent-ask".into()),
-                None => state["unreadable"] = json!(["agent-ask"]),
-            }
+            unreadable(&mut state, "agent-ask");
         }
     }
     crate::signals::join(&mut state, signals, r, now);
     state
+}
+
+fn unreadable(state: &mut Value, source: &str) {
+    match state["unreadable"].as_array_mut() {
+        Some(u) if u.iter().any(|s| s == source) => {}
+        Some(u) => u.push(source.into()),
+        None => state["unreadable"] = json!([source]),
+    }
+}
+
+/// The reasons `session_bucket` gives a session at a dialog in its own terminal.
+const AT_PROMPT: &str = "waiting on a prompt or permission";
+const PLAN_WAITING: &str = "plan awaiting approval";
+
+/// Who waits on the human now, over the document's answer from a pass ago: a live agent that has
+/// neither a dialog open nor a pending ask stops being NEEDS the moment it is answered, and one
+/// at a dialog is NEEDS the moment it opens, so every reader of this document agrees with the
+/// tmux status line. Only an open dialog makes a row NEEDS here: an ask held by a queue item is
+/// handed over and stays the pass's call. A row with no live agent keeps what the pass said, which
+/// is every worker host's. A partial read applies to the agents it saw.
+fn live_waits(state: &mut Value, (agents, gaps): (Vec<Agent>, Gaps)) {
+    if !gaps.is_empty() {
+        unreadable(state, "agent-panel");
+    }
+    let Some(sessions) = state.get_mut("sessions").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for a in &agents {
+        match sessions.iter_mut().find(|s| s["target"] == a.target.as_str()) {
+            Some(s) if a.at_dialog() && s["bucket"] != "NEEDS" => {
+                s["bucket"] = "NEEDS".into();
+                s["reason"] = AT_PROMPT.into();
+                s["activity"] = a.status.as_str().into();
+            }
+            Some(s) if !a.needs_attention() && s["bucket"] == "NEEDS" => {
+                s["bucket"] = "WORKING".into();
+                s["reason"] = "answered, the next pass reads where it stands".into();
+                s["activity"] = a.status.as_str().into();
+            }
+            None if a.at_dialog() => sessions.push(json!({
+                "target": a.target,
+                "session_id": a.session_id,
+                "cwd": a.cwd,
+                "project": a.project,
+                "topic": a.summary,
+                "activity": a.status,
+                "bucket": "NEEDS",
+                "reason": AT_PROMPT,
+                "idle_min": 0,
+            })),
+            _ => {}
+        }
+    }
 }
 
 /// Each NEEDS session's open dialog, read live from the end of its transcript (`path`, by session
@@ -96,6 +167,9 @@ fn dialogs(state: &mut Value, path: impl Fn(&str, &str) -> PathBuf) {
             s["cwd"].as_str().unwrap_or(""),
         );
         if let Ok(Some(q)) = crate::transcript::pending_question(&at) {
+            if q.kind == "plan" {
+                s["reason"] = PLAN_WAITING.into();
+            }
             s["dialog"] = q.kind.into();
         }
     }
@@ -126,6 +200,17 @@ pub fn shepherd_dir() -> PathBuf {
 /// `fleet-dispatch`'s dir: `verdicts.jsonl` and `log.md` (its `FLEET_DISPATCH_DIR`).
 pub fn dispatch_dir() -> PathBuf {
     env("FLEET_DISPATCH_DIR").unwrap_or_else(|| home().join(".agent/dispatch"))
+}
+
+/// `fleet-dispatch`'s derived state, out of the autocommitted ~/.agent: `candidates.jsonl`, the
+/// snapshot each real pass writes (its `FLEET_DISPATCH_STATE`).
+pub fn dispatch_state_dir() -> PathBuf {
+    env("FLEET_DISPATCH_STATE").unwrap_or_else(|| home().join(".local/state/agentctl/dispatch"))
+}
+
+/// The ranked Candidates snapshot `fleet-dispatch suggest --write` keeps.
+pub fn candidates_file() -> PathBuf {
+    dispatch_state_dir().join("candidates.jsonl")
 }
 
 /// `day-log`'s records, one `<YYYY-MM-DD>.json` per local day (its `DAYLOG_DIR`).
@@ -321,25 +406,9 @@ pub fn project_order(rec: &Value, grid: &HourGrid) -> Vec<String> {
     order
 }
 
-/// `prs` in one group per project, groups in `order` and each keeping the order it was given; a
-/// project `order` does not name goes last, by name. Empty groups are left out.
-pub fn by_project<'a>(prs: &[&'a Value], order: &[String]) -> Vec<(String, Vec<&'a Value>)> {
-    let mut groups: Vec<(String, Vec<&'a Value>)> = vec![];
-    for pr in prs {
-        let p = pr_project(pr);
-        match groups.iter_mut().find(|g| g.0 == p) {
-            Some(g) => g.1.push(pr),
-            None => groups.push((p, vec![pr])),
-        }
-    }
-    let rank = |p: &str| order.iter().position(|o| o == p).unwrap_or(usize::MAX);
-    groups.sort_by(|a, b| rank(&a.0).cmp(&rank(&b.0)).then_with(|| a.0.cmp(&b.0)));
-    groups
-}
-
 /// A day's record as the web Log reads it: every merged and open PR carries its `project`
 /// (`pr_project`, so an older record reads the same), plus `hours` (merges_by_hour) and
-/// `projects` (project_order), so the browser draws the grid and the groups and computes neither.
+/// `projects` (project_order), so the browser draws the grid and computes neither.
 pub fn log_view<Tz: chrono::TimeZone>(mut rec: Value, tz: &Tz) -> Value {
     for k in ["merged", "open"] {
         if let Some(a) = rec[k].as_array_mut() {
@@ -673,19 +742,6 @@ mod tests {
         ]});
         let order = project_order(&rec, &merges_by_hour(&rec, &chrono::Utc));
         assert_eq!(order, vec!["dotfiles", "game", "web", "api"]);
-        let open: Vec<&Value> = rec["open"].as_array().unwrap().iter().collect();
-        let g: Vec<(String, Vec<u64>)> = by_project(&open, &order)
-            .into_iter()
-            .map(|(p, v)| (p, v.iter().map(|x| x["number"].as_u64().unwrap()).collect()))
-            .collect();
-        assert_eq!(
-            g,
-            vec![
-                ("game".into(), vec![4]),
-                ("web".into(), vec![1, 3]),
-                ("api".into(), vec![2])
-            ]
-        );
     }
 
     #[test]
@@ -979,7 +1035,7 @@ mod tests {
             confs: dir.clone(),
             agentctl: dir.clone(),
         };
-        let state = |f: &Path, r: &Fixed| state_with(f, r, &signals, 0);
+        let state = |f: &Path, r: &Fixed| state_with(f, r, &signals, 0, (vec![], vec![]));
         let s = state(&f, &Fixed(Ok(tsv.into())));
         assert_eq!(s["asks"].as_array().unwrap().len(), 1);
         assert_eq!(s["asks"][0]["id"], "new");
@@ -992,7 +1048,82 @@ mod tests {
         let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
         assert_eq!(s["asks"], json!([]));
         assert_eq!(s["unreadable"], json!(["agent-ask"]));
+        std::fs::write(&f, r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#).unwrap();
+        let answered = (vec![live("hub/a:1", '~', None)], vec![]);
+        let s = state_with(&f, &Fixed(Ok(tsv.into())), &signals, 0, answered);
+        assert_eq!(s["sessions"][0]["bucket"], "WORKING");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn live(target: &str, glyph: char, ask: Option<&str>) -> Agent {
+        Agent {
+            target: target.into(),
+            glyph,
+            status: if glyph == '!' { "waiting" } else { "busy" }.into(),
+            ask: ask.map(String::from),
+            ..Agent::default()
+        }
+    }
+
+    fn waits(rows: Value, agents: Vec<Agent>, gaps: Gaps) -> Value {
+        let mut st = json!({ "sessions": rows });
+        live_waits(&mut st, (agents, gaps));
+        st
+    }
+
+    #[test]
+    fn an_answered_dialog_stops_being_needs_before_the_next_pass() {
+        let st = waits(
+            json!([{"target": "hub/a:1", "bucket": "NEEDS", "reason": PLAN_WAITING}]),
+            vec![live("hub/a:1", '~', None)],
+            vec![],
+        );
+        assert_eq!(st["sessions"][0]["bucket"], "WORKING");
+    }
+
+    #[test]
+    fn a_dialog_opened_since_the_pass_is_needs_with_or_without_a_row() {
+        let st = waits(
+            json!([{"target": "hub/a:1", "bucket": "WORKING", "reason": "busy"}]),
+            vec![live("hub/a:1", '!', None), live("hub/new:1", '!', None)],
+            vec![],
+        );
+        for (i, target) in ["hub/a:1", "hub/new:1"].iter().enumerate() {
+            assert_eq!(st["sessions"][i]["target"], *target);
+            assert_eq!(st["sessions"][i]["bucket"], "NEEDS");
+            assert_eq!(st["sessions"][i]["reason"], AT_PROMPT);
+        }
+    }
+
+    #[test]
+    fn a_row_with_a_pending_ask_or_no_live_agent_keeps_what_the_pass_said() {
+        let rows = json!([
+            {"target": "hub/a:1", "bucket": "NEEDS", "reason": "1 pending ask(s)"},
+            {"target": "mini@hub/b:1", "bucket": "NEEDS", "reason": PLAN_WAITING},
+        ]);
+        let st = waits(rows.clone(), vec![live("hub/a:1", '~', Some("id"))], vec![]);
+        assert_eq!(st["sessions"], rows);
+    }
+
+    #[test]
+    fn a_handed_over_ask_does_not_bring_a_finished_session_back() {
+        let rows = json!([{"target": "hub/a:1", "bucket": "DONE", "reason": "handed off"}]);
+        let st = waits(rows.clone(), vec![live("hub/a:1", '-', Some("id"))], vec![]);
+        assert_eq!(st["sessions"], rows);
+    }
+
+    #[test]
+    fn a_partial_read_is_named_and_still_applies_to_what_it_saw() {
+        let st = waits(
+            json!([{"target": "hub/a:1", "bucket": "NEEDS", "reason": AT_PROMPT}]),
+            vec![live("hub/a:1", '~', None)],
+            vec!["hub: list-panes failed".into()],
+        );
+        assert_eq!(st["unreadable"], json!(["agent-panel"]));
+        let mut again = st.clone();
+        unreadable(&mut again, "agent-panel");
+        assert_eq!(again["unreadable"], json!(["agent-panel"]));
+        assert_eq!(st["sessions"][0]["bucket"], "WORKING");
     }
 
     #[test]

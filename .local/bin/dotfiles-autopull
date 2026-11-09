@@ -10,9 +10,9 @@
 #                                   happened; nothing for a repo that is not one of the checkouts
 #
 # Stow serves the main checkouts, so a merged change is live only once its checkout moves, and a
-# file it adds or moves to the other repo only once it has a link: after any move, `dotfiles-deploy
-# --apply --missing` links every deploy path of both checkouts that resolves to nothing in $HOME (one
-# more line when it linked or failed). It only creates links where nothing resolves; a file in $HOME
+# file it adds or moves to the other repo only once it has a link: every pass, moved or not (another
+# tool may have pulled), runs `dotfiles-deploy --apply --missing`, which links every deploy path of
+# both checkouts that resolves to nothing in $HOME (one more line when it linked or failed). It only creates links where nothing resolves; a file in $HOME
 # is never replaced. Stow ignores .claude/skills, so `skill-deploy --quiet` runs beside it (one more
 # line when it changed a link or failed).
 # `git merge --ff-only` refuses rather than overwrite a dirty or untracked file, so local work is
@@ -62,7 +62,7 @@ log_report() {
 
 # attach_missing -> one line when it linked anything or failed, nothing otherwise. A move can add a
 # tracked file and stow never runs on pull, so link every deploy path (both checkouts) that resolves
-# to nothing. Runs once per pass, after every move. A failure's report goes to the log.
+# to nothing. Runs once per pass, moved or not. A failure's report goes to the log.
 attach_missing() {
   local out rc n
   [ -x "$DEPLOY" ] || return 0
@@ -96,7 +96,7 @@ attach_skills() {
   fi
 }
 
-# attach_all: what every pass runs once, after every move
+# attach_all: what every pass runs once, moved or not
 attach_all() {
   attach_missing
   attach_skills
@@ -155,7 +155,7 @@ if [ "${1:-}" = --now ]; then
     [ -d "$repo/.git" ] && [ "$(phys "$repo/.git")" = "$common" ] || continue
     line=$(pull "$repo")
     echo "$line"
-    [[ "$line" != *": fast-forwarded "* ]] || attach_all
+    attach_all
     exit 0
   done
   exit 0
@@ -171,17 +171,14 @@ fi
 mkdir -p "$CACHE_DIR"
 echo "$now" >"$STAMP"
 
-moved=0
 for repo in "${REPOS[@]}"; do
   [ -d "$repo/.git" ] || continue
   line=$(pull "$repo")
-  [[ "$line" == *": fast-forwarded "* ]] || continue
-  moved=1
   # Only speak in the foreground: backgrounded from .zshrc it stays silent.
-  [ ! -t 1 ] || echo "$line"
+  if [[ -t 1 && "$line" == *": fast-forwarded "* ]]; then echo "$line"; fi
 done
-if [ "$moved" = 1 ]; then
-  line=$(attach_all)
-  [[ ! -t 1 || -z "$line" ]] || echo "$line"
-fi
+# Every pass attaches, moved or not: a checkout another tool pulled moved without this script, and
+# its new files would otherwise never link.
+line=$(attach_all)
+[[ ! -t 1 || -z "$line" ]] || echo "$line"
 exit 0

@@ -97,8 +97,8 @@ fn wrap_spans(spans: Vec<Span<'static>>, w: usize) -> Vec<Line<'static>> {
 }
 
 /// `Who::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
-const WHO_HEADER: [&str; 9] = [
-    "KIND", "WHO", "STATE", "ACTIVITY", "SINCE", "FOR", "DOING", "UNDER", "PROJECT",
+const WHO_HEADER: [&str; 10] = [
+    "KIND", "WHO", "STATE", "COST 24H", "ACTIVITY", "SINCE", "FOR", "DOING", "UNDER", "PROJECT",
 ];
 
 fn who_table(
@@ -145,6 +145,12 @@ fn who_table(
                     },
                 ),
                 cell(r.state.clone(), state),
+                format!(
+                    "{}{}",
+                    if r.cost_estimated { "~" } else { "" },
+                    usd(r.cost_24h)
+                )
+                .into(),
                 r.activity.clone().into(),
                 r.since.map_or("-".into(), |s| dur((now - s) as f64)).into(),
                 r.purpose.clone().into(),
@@ -158,11 +164,11 @@ fn who_table(
         header: WHO_HEADER.to_vec(),
         rows: cells,
         // FOR, capped, keeps its place beside WHO; DOING is the flex column and takes the rest.
-        keep: vec![1, 0, 2, 3, 5, 6, 4, 8, 7],
-        flex: Some(6),
+        keep: vec![1, 0, 2, 3, 4, 6, 7, 5, 9, 8],
+        flex: Some(7),
         flexmin: 12,
-        right: vec![4],
-        cap: vec![(1, 18), (3, 24), (5, 40), (7, 22), (8, 16)],
+        right: vec![3, 5],
+        cap: vec![(1, 18), (4, 24), (6, 40), (8, 22), (9, 16)],
         mark: t.mark::<Who>(),
         ..Default::default()
     }
@@ -877,6 +883,8 @@ pub mod tests {
             key: key.into(),
             state: state.into(),
             since: Some(NOW - 600),
+            cost_24h: (tier < 3).then_some(4.5),
+            cost_estimated: false,
             activity: String::new(),
             purpose: format!("{name} for"),
             doing: format!("{name} doing"),
@@ -1078,10 +1086,12 @@ pub mod tests {
         let s = text(&fixture(), 160);
         for want in [
             "dispatch: unreadable",
-            "FLEET  3 of 3 rows, spend: 0 Costs",
+            "FLEET  3 of 3 rows, spend: 9 Costs",
             "all 3  lead 1  deliver 0  observe 1  learn 0  maintain 0  session 1",
             "KIND",
             "FOR",
+            "COST 24H",
+            "$4.50",
             "dream for",
             "lead runs the sessions | observe reports",
             "1 sessions",

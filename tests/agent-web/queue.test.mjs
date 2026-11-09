@@ -15,10 +15,10 @@ const el = () => new Proxy({}, {
 });
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
+const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); }, querySelectorAll: (q) => (q.includes("sec-") ? [parts["sec-candidates"]] : []) });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 let scrolled = 0;
-const parts = { "sec-candidates": { tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
+const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
 const doc = { getElementById: (id) => (id === "queue" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let reply = {};
@@ -40,7 +40,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 
 const chips = (over = {}) => [
   { key: "inbox", label: "inbox", value: "4", hot: false, to: null },
-  { key: "board", label: "board", value: "312", hot: false, to: { tab: "projects", state: "" } },
+  { key: "board", label: "board", value: "312", hot: false, to: { tab: "board", state: "" } },
   { key: "queued", label: "queued", value: "3 (2 ready)", hot: false, to: { tab: "queue", state: "up next" } },
   { key: "running", label: "running", value: "5", hot: false, to: { tab: "queue", state: "running" } },
   { key: "needs", label: "needs you", value: "2", hot: true, to: { tab: "queue", state: "needs you" } },
@@ -55,7 +55,7 @@ test("the strip draws every chip as a link to the Queue on its filter, the board
   assert.match(html, /href="#queue\?s=running" data-flow="running">running 5</);
   assert.match(html, /href="#queue\?s=needs%20you"[^>]*>needs you 2</);
   assert.match(html, /href="#queue" data-flow="drain">drain 6h \+4\/-9 shrinking</);
-  assert.match(html, /href="#projects" data-flow="board">board 312</);
+  assert.match(html, /href="#board" data-flow="board">board 312</);
   assert.match(html, /<span class="cchip fchip" data-flow="inbox">inbox 4<\/span>/);
 });
 
@@ -127,30 +127,20 @@ test("the Queue is one table with the server's chips and every header a sort but
 test("a sorted header says its direction, and the number columns are n", () => {
   load({ ...data, table: { ...table, sort: "run", dir: "desc", columns: table.columns.map((c) => (c.key === "run" ? { ...c, sort: "desc", next_dir: "asc", next_sort: "run" } : c)) } });
   const h = draw();
-  assert.match(h, /<th class="n qx" aria-sort="descending"><button class="thsort" data-tsort="run" data-tdir="asc" title="sort by run">run v<\/button><\/th>/);
-  assert.match(h, /<th class="n"><button[^>]*>in<\/button><\/th>/);
+  assert.match(h, /<th class="n" aria-sort="descending" data-role="" data-label="run"><button class="thsort" data-tsort="run" data-tdir="asc" title="sort by run">run v<\/button><\/th>/);
+  assert.match(h, /<th class="n"[^>]*><button[^>]*>in<\/button><\/th>/);
 });
 
 test("in, wait and run are the server's timing minutes, and no timing reads -", () => {
   load();
   let h = draw();
-  assert.match(h, /<td class="n">2h10<\/td><td class="n qx">5m<\/td><td class="n qx">1h10<\/td>/);
-  assert.match(h, /<td class="n">42m<\/td><td class="n qx">3m<\/td><td class="n qx">42m<\/td>/);
+  assert.match(h, /<td class="n">2h10<\/td><td class="n">5m<\/td><td class="n">1h10<\/td>/);
+  assert.match(h, /<td class="n">42m<\/td><td class="n">3m<\/td><td class="n">42m<\/td>/);
   // Negative control: a running item with only stamps, no timing, works out nothing.
   load({ ...data, items: [item("n1", { state: "running", started: "2026-11-06T11:00:00Z", queued: "2026-11-06T10:00:00Z" })] });
   h = draw();
-  assert.match(h, /<td class="n">-<\/td><td class="n qx">-<\/td><td class="n qx">-<\/td>/);
+  assert.match(h, /<td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td>/);
   assert.doesNotMatch(h, /<td class="n">\d/);
-});
-
-test("phone width drops all but state, in, project and title by class", () => {
-  load();
-  const h = draw();
-  const heads = [...h.matchAll(/<th( class="([^"]*)")?>/g)].map((m) => (m[2] || "").split(" "));
-  const kept = ["state", "in", "project", "title"];
-  assert.equal(heads.filter((c) => !c.includes("qx")).length, kept.length);
-  assert.match(h, /<td class="qx">feat<\/td>/);
-  assert.ok(run("Q_COLS").pr[1].includes("qx") && !run("Q_COLS").title[1]);
 });
 
 test("a state cell says what the item is, and how a done one ended", () => {
@@ -208,7 +198,7 @@ test("a new section id scrolls to its section, not into the filter", async () =>
   load();
   reply = data;
   scrolled = 0;
-  run("st.arg = 'candidates'; st.views.queue = ''; st.section = null");
+  run("st.tab = 'queue'; st.arg = 'candidates'; st.views.queue = ''; st.section = null");
   run("refreshQueue()");
   await settle();
   assert.equal(scrolled, 1, "the page scrolled to Candidates once it drew");
@@ -285,5 +275,5 @@ test("a PR with no recorded merge says so, and a bare older number keeps its wor
 
 test("a row with a PR links it in the PR cell", () => {
   load();
-  assert.match(draw(), /<td class="qx"><a href="https:\/\/github\.com\/o\/r\/pull\/7"[^>]*>r#7<\/a><\/td>/);
+  assert.match(draw(), /<td><a href="https:\/\/github\.com\/o\/r\/pull\/7"[^>]*>r#7<\/a><\/td>/);
 });

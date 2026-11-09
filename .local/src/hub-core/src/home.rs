@@ -207,6 +207,8 @@ impl crate::table::Row for Need {
     ];
     const FACETS: &'static [&'static str] = &["project"];
     const HIDE_EMPTY: bool = true;
+    const LEAD: &'static str = "what";
+    const GLANCE: &'static [&'static str] = &["kind", "project", "waited"];
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
@@ -373,6 +375,8 @@ pub struct Home {
     /// What the fleet spent on Claude in 24h (`claude $573 in 24h`), the line that links to
     /// Costs; None when Prometheus did not answer (its error is in `errors`).
     pub spend: Option<String>,
+    /// The fleet's front page, one row per question; None when Prometheus did not answer.
+    pub vitals: Option<crate::vitals::Vitals>,
     pub health: Vec<Chip>,
     /// What could not be read, so a short list never reads as an all-clear.
     pub errors: Vec<String>,
@@ -910,6 +914,7 @@ pub fn build(
                 h.spend = Some(format!("claude ${x:.0} in 24h"));
             }
             h.health = i.health();
+            h.vitals = crate::vitals::read(i);
         }
     }
     h

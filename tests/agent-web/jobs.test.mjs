@@ -59,8 +59,8 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   run("jst.render()");
   const h = box.innerHTML;
   assert.match(h, /2 of 3 in 24h/);
-  assert.match(h, /<th class="n" aria-sort="ascending"><button class="thsort" data-tsort="" data-tdir="desc" title="sort by started">started \^<\/button><\/th>/, "the sorted header says its direction and that a click goes back to the default");
-  assert.match(h, /<th><button class="thsort" data-tsort="name" data-tdir="desc"[^>]*>name<\/button><\/th>/, "every other header sorts");
+  assert.match(h, /<th class="n" aria-sort="ascending"[^>]*><button class="thsort" data-tsort="" data-tdir="desc" title="sort by started">started \^<\/button><\/th>/, "the sorted header says its direction and that a click goes back to the default");
+  assert.match(h, /<th[^>]*><button class="thsort" data-tsort="name" data-tdir="desc"[^>]*>name<\/button><\/th>/, "every other header sorts");
   assert.match(h, /<button class="on" data-ts="">all <span class="n">2<\/span><\/button>/, "no chip is every row");
   assert.match(h, /<button class="" data-ts="failed">failed <span class="n">1<\/span><\/button>/);
   assert.match(h, /<option value="source:ci" selected>ci \(2\)<\/option>/, "the dropdown shows the value the query picks");

@@ -45,8 +45,8 @@ fn read(path: &Path) -> String {
 pub struct RowInfo {
     /// One-line summary of the most recent turn.
     pub summary: String,
-    /// The session is in plan mode.
-    pub plan: bool,
+    /// The permission mode it shows: plan, manual or neither.
+    pub mode: Mode,
     /// The plan it works: the stem of `plan_file` (`new-curious-garden`), empty for none.
     pub plan_slug: String,
 }
@@ -55,7 +55,7 @@ pub fn row_info(path: &Path) -> RowInfo {
     let text = read(path);
     RowInfo {
         summary: last_event_in(&text),
-        plan: permission_mode(&text).as_deref() == Some("plan"),
+        mode: Mode::of(permission_mode(&text).as_deref()),
         plan_slug: plan_slug(&plan_file(&text)),
     }
 }
@@ -862,6 +862,44 @@ fn last_event_in(text: &str) -> String {
     }
 }
 
+/// The permission mode a row marks. Manual is Claude's `default` mode, which
+/// `manual-mode-investigate.sh` makes investigate-only: the session answers and changes nothing,
+/// so a tab left in it does no work on its own. `acceptEdits`, bypass and the rest are `Other`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Other,
+    Plan,
+    Manual,
+}
+
+impl Mode {
+    pub fn of(permission_mode: Option<&str>) -> Mode {
+        match permission_mode {
+            Some("plan") => Mode::Plan,
+            Some("default") => Mode::Manual,
+            _ => Mode::Other,
+        }
+    }
+
+    /// Its one-letter mark (`P`, `M`), empty for `Other`; also its map-file field.
+    pub fn mark(self) -> &'static str {
+        match self {
+            Mode::Plan => "P",
+            Mode::Manual => "M",
+            Mode::Other => "",
+        }
+    }
+
+    pub fn from_mark(mark: &str) -> Mode {
+        match mark {
+            "P" => Mode::Plan,
+            "M" => Mode::Manual,
+            _ => Mode::Other,
+        }
+    }
+}
+
 /// The session's current permission mode (`plan`, `default`, `bypassPermissions`,
 /// ...): the last line carrying one. `~/.claude/sessions/<pid>.json` does not
 /// record it, but Claude writes a `permission-mode` entry with every turn's
@@ -1442,7 +1480,7 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}"#,
         ]);
         let info = row_info(&p);
-        assert!(info.plan);
+        assert_eq!(info.mode, Mode::Plan);
         assert_eq!(info.summary, "tool: Read");
         fs::remove_file(&p).ok();
 
@@ -1451,10 +1489,21 @@ mod tests {
             r#"{"type":"permission-mode","permissionMode":"plan"}"#,
             r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
         ]);
-        assert!(!row_info(&p).plan);
+        assert_eq!(row_info(&p).mode, Mode::Other);
         fs::remove_file(&p).ok();
 
-        assert!(!row_info(Path::new("/no/such/file.jsonl")).plan);
+        // Shift+Tab back to manual (`default`) marks it manual; acceptEdits is not manual.
+        let p = tmpfile("manual", &[
+            r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
+            r#"{"type":"permission-mode","permissionMode":"default"}"#,
+        ]);
+        assert_eq!(row_info(&p).mode, Mode::Manual);
+        fs::remove_file(&p).ok();
+        let p = tmpfile("edits", &[r#"{"type":"permission-mode","permissionMode":"acceptEdits"}"#]);
+        assert_eq!(row_info(&p).mode, Mode::Other);
+        fs::remove_file(&p).ok();
+
+        assert_eq!(row_info(Path::new("/no/such/file.jsonl")).mode, Mode::Other);
     }
 
     #[test]

@@ -15,6 +15,8 @@ const INDEX: &str = include_str!("index.html");
 pub const LOGIN: &str = include_str!("login.html");
 /// Where the page and app.css name the asset version.
 const VERSION_MARK: &str = "{{v}}";
+/// Where the page takes its tab list.
+const NAV_MARK: &str = "{{nav}}";
 
 const JS: &str = "text/javascript; charset=utf-8";
 const CSS: &str = "text/css; charset=utf-8";
@@ -41,12 +43,14 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
+    ("nav.js", JS, include_bytes!("../static/nav.js")),
     ("costs.js", JS, include_bytes!("../static/costs.js")),
     ("sessions.js", JS, include_bytes!("../static/sessions.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
     ("board.js", JS, include_bytes!("../static/board.js")),
     ("projects.js", JS, include_bytes!("../static/projects.js")),
     ("shepherd.js", JS, include_bytes!("../static/shepherd.js")),
+    ("work.js", JS, include_bytes!("../static/work.js")),
     ("actions.js", JS, include_bytes!("../static/actions.js")),
     ("fleet.js", JS, include_bytes!("../static/fleet.js")),
     ("focus.js", JS, include_bytes!("../static/focus.js")),
@@ -81,7 +85,8 @@ struct Built {
 fn built() -> &'static Built {
     static BUILT: OnceLock<Built> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let mut h = fnv(FNV_OFFSET, INDEX.as_bytes());
+        let page = INDEX.replace(NAV_MARK, &nav_html());
+        let mut h = fnv(FNV_OFFSET, page.as_bytes());
         for (name, _, body) in FILES {
             h = fnv(fnv(h, name.as_bytes()), body);
         }
@@ -99,11 +104,32 @@ fn built() -> &'static Built {
             })
             .collect();
         Built {
-            index: INDEX.replace(VERSION_MARK, &version),
+            index: page.replace(VERSION_MARK, &version),
             version,
             files,
         }
     })
+}
+
+/// The sidebar's tabs under their group headings, from `hub_core::layout`. Three tabs carry a
+/// count that their own script fills in.
+fn nav_html() -> String {
+    let mut html = String::new();
+    let mut group = "";
+    for t in &hub_core::layout::TABS {
+        if t.group != group {
+            group = t.group;
+            html += &format!("<div class=\"navg\">{group}</div>\n");
+        }
+        let badge = match t.id {
+            "home" => "<span id=\"ask-badge\"></span>",
+            "queue" => "<span id=\"queue-badge\"></span>",
+            "sessions" => "<span id=\"wait-badge\"></span>",
+            _ => "",
+        };
+        html += &format!("<button id=\"tab-{}\">{}{badge}</button>\n", t.id, t.title);
+    }
+    html
 }
 
 /// FNV-1a, 64-bit: stable across builds and Rust versions, unlike `DefaultHasher`, so the
@@ -174,6 +200,18 @@ pub async fn headers(mut res: Response) -> Response {
 mod tests {
     use super::*;
 
+    /// The phone render harness (tests/agent-web/phone/render.mjs) serves exactly this page and CSP.
+    #[test]
+    #[ignore = "writes files; run by the phone render harness"]
+    fn dump_index_for_phone_harness() {
+        let out =
+            std::env::var("AGENT_WEB_INDEX_OUT").expect("AGENT_WEB_INDEX_OUT is the output path");
+        std::fs::write(&out, index()).unwrap();
+        std::fs::write(format!("{out}.csp"), CSP).unwrap();
+        let roles = serde_json::to_string(&hub_core::table::phone_tables()).unwrap();
+        std::fs::write(format!("{out}.roles"), roles).unwrap();
+    }
+
     const APP_JS: &str = include_str!("../static/app.js");
     const FLEET_JS: &str = include_str!("../static/fleet.js");
     const WAITING_JS: &str = include_str!("../static/waiting.js");
@@ -215,6 +253,10 @@ mod tests {
         assert_eq!(
             col_keys(actions, "const ACTION_COLS = {"),
             hub_core::actions::Action::COLUMNS
+        );
+        assert_eq!(
+            col_keys(include_str!("../static/work.js"), "const WORK_COLS = {"),
+            hub_core::worklog::Work::COLUMNS
         );
     }
 
@@ -324,6 +366,28 @@ mod tests {
         for k in hub_core::home::NeedKind::ALL {
             let line = format!("  {}: \"{}\",", k.slug(), k.label());
             assert!(WAITING_JS.contains(&line), "{line} is not in waiting.js");
+        }
+    }
+
+    #[test]
+    fn the_nav_is_the_layout() {
+        // docs/dashboards.md rule 8: every tab, in the layout's order, under its own heading.
+        let page = index();
+        assert!(!page.contains(NAV_MARK), "the nav mark was not filled");
+        let mut at = 0;
+        let mut group = "";
+        for t in &hub_core::layout::TABS {
+            if t.group != group {
+                group = t.group;
+                let head = format!(">{group}</div>");
+                at += page[at..]
+                    .find(&head)
+                    .unwrap_or_else(|| panic!("{head} missing or out of order"));
+            }
+            let id = format!("id=\"tab-{}\"", t.id);
+            at += page[at..]
+                .find(&id)
+                .unwrap_or_else(|| panic!("{id} missing or out of order"));
         }
     }
 

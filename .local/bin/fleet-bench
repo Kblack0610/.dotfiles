@@ -65,7 +65,7 @@
 #                                queues the week's canary run: the claude lane, then each lane in
 #                                BENCH_CANARY_LANES whose source has room
 #   fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]]
-#                                | start <id> | score <id> | shepherd [--days N] [--json]
+#                                | start <id> | score <id> | shepherd [--days N] [--json] | dream [--days N] [--json]
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
 #                                the PR's own tests as the oracle. queue adds one night item per task
 #                                a week (retro runs it), start puts the session's worktree at the
@@ -136,7 +136,7 @@
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
-# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H.
+# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT.
 
 set -uo pipefail
 
@@ -245,6 +245,14 @@ set -uo pipefail
 : "${BENCH_STEPS_CMD:=notes log --steps --json}"   # the record replayed per step: flows, dwell, the items it holds
 : "${BENCH_INBOX_CMD:=inbox_lines}"                # how many lines wait untriaged
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
+: "${BENCH_LEAD_DAYS:=28}"            # request_to_live_h: days of done items read back, so a merge released this week counts
+: "${BENCH_FLEET_COST_CMD:=agent-usage fleet-cost --json}"
+: "${BENCH_FLEET_COST_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/fleet-cost.json}"
+: "${BENCH_FLEET_COST_EVERY_MIN:=30}"
+: "${BENCH_FLEET_COST_TIMEOUT:=240}"
+: "${BENCH_RELEASES_CMD:=release-state show --json}"   # request_to_live_h: a project with a row goes live in a tag, one without on its merge
+: "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
+: "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
@@ -267,6 +275,7 @@ FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy p
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"   # fleet-sessions --write
 RUNDOWNS="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/rundowns"   # the newest one is the last summary
 SHEPHERD_PASSES="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/passes.tsv"   # one scored pass a row, fleet-shepherd the writer
+DREAM_TRIAL="${DREAM_TRIAL_FILE:-$HOME/.agent/dreams/trial.tsv}"   # one counted sweep a row, agentctl-dream the writer
 NAME="${AGENTCTL_NAME:-fleet-bench}"   # each agentctl runner publishes under its own name
 CAL_ARGS=(--argjson minn "$BENCH_CAL_MIN_N" --argjson lo "$BENCH_CAL_MIN" --argjson hi "$BENCH_CAL_MAX")
 
@@ -593,6 +602,7 @@ cmd_sample() {
     publish_window "$t"
     findings_run "$t"
     epics_step "$t"
+    fleet_cost_step
     report_outcome NOOP "no live session"
     return 0
   fi
@@ -610,7 +620,24 @@ cmd_sample() {
   publish_window "$t"
   findings_run "$t"
   epics_step "$t"
+  fleet_cost_step
   report_outcome WORKED "$n sessions, $e estimates, $s scores"
+}
+
+# fleet_cost_step: the whole fleet's estimate, tried at most every BENCH_FLEET_COST_EVERY_MIN. A failed
+# run keeps the last file and waits the same interval (touch), so a Prometheus outage costs one
+# attempt per interval; its as_of_epoch then reads stale on the Costs tab and in the KPI.
+fleet_cost_step() {
+  [ -z "$(find "$BENCH_FLEET_COST_FILE" -mmin "-$BENCH_FLEET_COST_EVERY_MIN" 2>/dev/null)" ] || return 0
+  mkdir -p "$(dirname "$BENCH_FLEET_COST_FILE")"
+  local tmp="$BENCH_FLEET_COST_FILE.$$.tmp"
+  if timeout "$BENCH_FLEET_COST_TIMEOUT" $BENCH_FLEET_COST_CMD > "$tmp" 2>/dev/null && jq -e .total "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$BENCH_FLEET_COST_FILE"
+  else
+    rm -f "$tmp"
+    touch -c "$BENCH_FLEET_COST_FILE"
+    say "fleet-cost: the estimate failed; the last one stays"
+  fi
 }
 
 # epics_step <now>: freeze the epic baselines and write the scores this sample owes. A failure is
@@ -1592,6 +1619,8 @@ ledger_counts() {
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
+# request_to_live_h: the p50 hours from request to live (lead_time_json), ? until every
+# BENCH_LEAD_TRUST KPI holds its bound (lead_untrusted).
 # wants_unstamped: of the agent-lane rows the human's channels added over the last CHAIN_DAYS
 # (ingest.jsonl: an added or filed event whose writer is "human" or unnamed; only an agent row can
 # carry #requested), the share that carry no #requested. An event naming its channel (`want`, set by
@@ -1603,7 +1632,7 @@ ledger_counts() {
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting queue_net_24h"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -1616,15 +1645,76 @@ wants_stats() {
        by_project: ($w | group_by(.from) | map({key: .[0].from, value: {total: length, unstamped: map(select(.stamped | not)) | length}}) | from_entries)}' "$BENCH_INGEST"
 }
 
-# chain_notes <now>: the lines under the chain table that say which rows sit behind three of its numbers
+# lead_time_json <now> -> {hours, p50, at_merge, in_release, unreleased, unknown}: request to live
+# for the items the human asked for (from: human) with merge proof, finished in the last
+# BENCH_LEAD_DAYS. Request is the item's queued time. Live is the item's finished time (agent-land
+# closes it at the merge) in a project release-state has no row for, since its merge is its
+# deploy; else the first tag of the project's line holding every merged commit (release-state
+# released), as no target records deploys yet. hours and p50 cover those live in the last
+# CHAIN_DAYS; unreleased counts the merged ones no tag holds yet, unknown the ones whose commit
+# the checkout lacks (one of an item's merges in another repo makes it unknown too), both over
+# the whole BENCH_LEAD_DAYS. A failure when the queue or the
+# release snapshot cannot be read.
+lead_time_json() {
+  local t=$1 items rel p released=() shas
+  items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - BENCH_LEAD_DAYS * 86400))" +%F)" 2>/dev/null \
+    | jq -sc 'map(select(.from == "human" and (.merged // "") != "") | {project, merged, queued, finished})') || return 1
+  rel=$($BENCH_RELEASES_CMD 2>/dev/null | jq -ce '[.rows[].project] | unique') || return 1
+  for p in $(jq -r --argjson r "$rel" '[.[].project | select(IN($r[]))] | unique[]' <<<"$items"); do
+    mapfile -t shas < <(jq -r --arg p "$p" '.[] | select(.project == $p) | .merged | splits(" +") | select(. != "")' <<<"$items")
+    released+=("$($BENCH_RELEASED_CMD "$p" "${shas[@]}" 2>/dev/null | jq -sc .)")
+  done
+  jq -c --argjson t "$t" --argjson days "$CHAIN_DAYS" --argjson r "$rel" \
+     --slurpfile x <(printf '%s\n' "${released[@]}" '[]') "$JQ_LIB"'
+    . as $a | ($x | add | map(select(.sha)) | INDEX(.sha)) as $tag
+    | [$a[] | [.merged | splits(" +") | select(. != "")] as $s
+       | (.queued | ep) as $q
+       | if (.project | IN($r[])) | not then {kind: "at_merge", at: (.finished | ep)}
+         elif any($s[]; $tag[.] == null or $tag[.].error != null) then {kind: "unknown"}
+         elif any($s[]; $tag[.].at == null) then {kind: "unreleased"}
+         else {kind: "in_release", at: ([$s[] | $tag[.].at] | max)} end
+       | . + {q: $q}] as $rows
+    | ($rows | map(select(.at != null and .q != null and .at > $t - $days * 86400 and .at <= $t))) as $live
+    | ($live | map((.at - .q) / 3600 | round1)) as $h
+    | {hours: $h, p50: ($h | median | if . == null then null else round1 end),
+       at_merge: ($live | map(select(.kind == "at_merge")) | length),
+       in_release: ($live | map(select(.kind == "in_release")) | length),
+       unreleased: ($rows | map(select(.kind == "unreleased")) | length),
+       unknown: ($rows | map(select(.kind == "unknown")) | length)}' <<<"$items"
+}
+
+# lead_untrusted <key=value lines> -> one "<kpi> <value> (min <bound>)" line per BENCH_LEAD_TRUST
+# KPI that is unread, has no min in kpi-thresholds, or sits under it; nothing when all hold, and
+# request_to_live_h reads its value only then (a lead time over a ledger that misses half the
+# merges is not one).
+lead_untrusted() {
+  local kv=$1 k v min
+  for k in $BENCH_LEAD_TRUST; do
+    v=$(sed -n "s/^$k=//p" <<<"$kv" | tail -1)
+    min=$(sed -n "s/^${k}_min=//p" "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
+    if [ -z "$min" ]; then echo "$k ${v:-?} (no min)"
+    elif ! awk -v v="$v" -v m="$min" 'BEGIN { exit !(v ~ /^[0-9.]+$/ && v + 0 >= m + 0) }'; then echo "$k ${v:-?} (min $min)"; fi
+  done
+}
+
+# chain_notes <now> <chain json>: the lines under the chain table that say which rows sit behind
+# four of its numbers, the lead time's raw value while its trust KPIs hold it at ? among them
 chain_notes() {
-  local t=$1 stats
+  local t=$1 stats lead held
   $BENCH_ITEMS_CMD 2>/dev/null | jq -rs "$JQ_LIB"'
     map(ownerless | .slug) | select(. != []) | "ownerless_running: \(join(", "))"' 2>/dev/null
   $BENCH_BOARD_CMD 2>/dev/null | jq -r --argjson t "$t" '
     [.rows[]? | select(.lane == "agent" and .requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))]
     | sort_by(.since) | first // empty
     | "requested_unstarted_h: oldest is \(.project):\(.id), open since \(.since) (\(($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor)h)"' 2>/dev/null
+  held=$(lead_untrusted "$(jq -r 'to_entries[] | "\(.key)=\(.value["7d"] // "?")"' <<<"$2")" | paste -sd, - | sed 's/,/, /g')
+  if lead=$(lead_time_json "$t"); then
+    jq -r --argjson d "$CHAIN_DAYS" --argjson lead "$BENCH_LEAD_DAYS" --arg held "$held" '"request_to_live_h: p50 \(.p50 // "-")h over \(.hours | length) live in \($d)d"
+      + " (\(.at_merge) on merge, \(.in_release) in a tag); of those merged in \($lead)d, \(.unreleased) in no tag yet, \(.unknown) unknown"
+      + (if $held == "" then "" else "; reads ? until \($held)" end)' <<<"$lead"
+  else
+    echo "request_to_live_h: the done items or the release-state snapshot unreadable"
+  fi
   if stats=$(wants_stats "$t") && [ -n "$stats" ]; then
     jq -r --argjson d "$CHAIN_DAYS" '"wants_unstamped: \(.unstamped) of \(.total) human-channel agent rows added in \($d)d carry no #requested, by project"
       + (if .total == 0 then "" else " (" + ([.by_project | to_entries | sort_by(-.value.unstamped)[] | "\(.key) \(.value.unstamped)/\(.value.total)"] | join(", ")) + ")" end)' <<<"$stats"
@@ -1635,7 +1725,7 @@ chain_notes() {
 
 # chain_counts <now> -> one key=value line per KPI_CHAIN entry, ? when its source cannot be read
 chain_counts() {
-  local t=$1 since active done board projects ci
+  local t=$1 since active done board projects ci links lead
   since=$(date -d "@$((t - (CHAIN_DAYS + 1) * 86400))" +%F)
   active=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc .) || active=null
   done=$($BENCH_DONE_ITEMS_CMD --since "$since" 2>/dev/null | jq -sc .) || done=null
@@ -1643,7 +1733,7 @@ chain_counts() {
   projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') || projects=null
   ci=null; [ -r "$CI" ] && ci=$(ci_claimed | jq -sc --argjson t "$t" --argjson d "$CHAIN_DAYS" \
     'map(select(.merged_epoch > $t - $d * 86400 and .merged_epoch <= $t))')
-  jq -rn --argjson t "$t" --argjson days "$CHAIN_DAYS" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
+  links=$(jq -rn --argjson t "$t" --argjson days "$CHAIN_DAYS" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
      --slurpfile b <(printf '%s' "$board") --slurpfile p <(printf '%s' "$projects") \
      --slurpfile c <(printf '%s' "$ci") "$JQ_LIB"'
     def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
@@ -1672,8 +1762,14 @@ chain_counts() {
         | ($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor] | max // 0 end))",
       "cost_per_merged_item=\(n(if $d == null then null else [$d[] | select(.merged and (.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
-        | if length == 0 then null else add / length * 100 | round / 100 end end))"'
+        | if length == 0 then null else add / length * 100 | round / 100 end end))"')
+  [ -n "$links" ] && printf '%s\n' "$links"
+  if [ -n "$(lead_untrusted "$links")" ]; then echo "request_to_live_h=?"
+  elif lead=$(lead_time_json "$t"); then jq -r '"request_to_live_h=\(.p50 // "?")"' <<<"$lead"
+  else echo "request_to_live_h=?"; fi
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
+  # older than four tries is an estimator that stopped, not today's share
+  echo "estimated_token_share=$(jq -r --argjson oldest "$((t - BENCH_FLEET_COST_EVERY_MIN * 240))" 'if (.as_of_epoch // 0) < $oldest then "?" else .coverage.estimated_token_share // "?" end' "$BENCH_FLEET_COST_FILE" 2>/dev/null || echo '?')"
   local orphans dups
   # the newest night only: a runner that stopped must read ?, never an older night's count as now
   dups=$(ls -d "$BENCH_DOCS_CLEANUP_DIR"/*/ 2>/dev/null | tail -1)
@@ -2284,7 +2380,7 @@ models_json() {
         | ($done | map(select(.m == $m and .h == $h and .c == $c and .l == $l))) as $it
         | ($it | map(select(landed)) | length) as $landed
         | ($it | map(sids[]) | unique | map($o[.] // empty)) as $sess
-        | ($it | map({landed: landed, source: (if metered then "gateway" elif any(sids[]; $o[.] != null) then "list" else null end)})) as $priced_items
+        | ($it | map({landed: landed, source: (if metered then "gateway" elif any(sids[]; $o[.].cost_usd != null) then "list" else null end)})) as $priced_items
         | ($rs | map(select(($cl | not) and .ran == $m and .h == $h and (($ln | not) or .lane == $l)))) as $r
         | ($r | map(select(.outcome)) | length) as $rated
         | ($r | map(select(.outcome == "redo")) | length) as $redo
@@ -2600,7 +2696,7 @@ cmd_chain() {
   case "${1:-}" in
     --json) printf '%s\n' "$json" ;;
     --check) kpi_past "$json" ;;
-    *) kpi_table "$json"; chain_notes "$t" ;;
+    *) kpi_table "$json"; chain_notes "$t" "$json" ;;
   esac
 }
 
@@ -3279,12 +3375,24 @@ triage_coverage() {
 # when it breaks something: these are its post-merge guard. Each red reads as one record naming
 # every merge it could be, because one red that queued a fix per merge would be a stampede.
 
+# hold_ledger <owner/repo> -> "<ledger name> <base branch>" from day-log-ci, the one list of watched
+# repos: a GitHub line as written, else a Forgejo line as forgejo:owner/repo (the name pr_ci uses),
+# else the repo and main, which the ledger then answers for.
+hold_ledger() {
+  cat "${SCHEDULES_REPOS:-$HOME/.config/agentctl/day-log-ci}" 2>/dev/null | awk -v want="$(tr '[:upper:]' '[:lower:]' <<<"$1")" -v fallback="$1 main" '
+    /^#/ || NF < 2 { next }
+    tolower($1) == want { print $1, $2; found = 1; exit }
+    tolower($1) ~ /^forgejo:/ { n = tolower($1); sub(/^forgejo:[^\/]+\//, "", n); if (n == want) forge = "forgejo:" n " " $2 }
+    END { if (!found) print (forge != "" ? forge : fallback) }'
+}
+
 # hold_runs <owner/repo> -> the runs main's pushes started, from main_runs (exit 3: the run ledger
 # does not sync the repo). A scheduled run is left out: it fails on the environment moving, not on
 # a merge.
 hold_runs() {
-  local runs
-  runs=$(main_runs "$1" main) || return
+  local runs name base
+  read -r name base < <(hold_ledger "$1")
+  runs=$(main_runs "$name" "$base") || return
   jq -c 'map(select(.event == "push"))' <<<"$runs"
 }
 
@@ -3303,9 +3411,11 @@ hold_memo() {
 }
 
 # hold_failed <owner/repo> <run id> -> the bats files that failed in that run, repo-relative; rc 1
-# when its log cannot be read, or is not there yet.
+# when its log cannot be read, or is not there yet. gh cannot read a Forgejo run's log, so one names
+# no file and counts against the merges since the last green, like any red that names none.
 hold_failed() {
   local log
+  [[ $(hold_ledger "$1") != forgejo:* ]] || return 0
   log=$(gh run view "$2" -R "$1" --log-failed 2>/dev/null) && [ -n "$log" ] || return 1
   { grep -oE 'in test file [^,]+\.bats' <<<"$log" || true; } | sed -E 's#.*[ /](unit|integ|ui)/#tests/\1/#' | sort -u
 }
@@ -4418,6 +4528,36 @@ canary_lanes_section() {
     "| \(.harness)/\(.model // "-") | \(.runs) | \(.tasks) | \(.pass_rate | d) | \(.same_tasks | d) | \(.pass_rate_same | d) | \(.claude_pass_rate_same | d) | \(.min_per_run | d) | \(.turns_per_run | d) | \(if .cost_per_run == null then "-" else "$\(.cost_per_run)" end) | \(.tokens_per_run | d) |"' <<<"$j"
 }
 
+# canary_dream [--days N] [--json] -> one row per model dream's sweeps ran on over the last N days
+# (default 14), from agentctl-dream's trial.tsv (date, project, model, session, cost, verdict,
+# lessons added, memory refused): sweeps, cost and lessons added per sweep, the share with a memory
+# refused, the share FAILED or STALLED. No file yet is an empty answer, so the writer can land later.
+canary_dream() {
+  local days=14 json="" since
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="${2:-}"; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "canary dream: --days takes a whole number"; return 2; }; shift 2 ;;
+      --json) json=1; shift ;;
+      *) say "usage: fleet-bench canary dream [--days N] [--json]"; return 2 ;;
+    esac
+  done
+  [ -r "$DREAM_TRIAL" ] || { say "canary dream: no sweeps recorded yet ($DREAM_TRIAL)"; return 0; }
+  since="$(date -u -d "@$(( $(now) - days * 86400 ))" +%F)"
+  jq -Rnc --arg since "$since" "$JQ_LIB"'
+    [inputs | split("\t") | select(length >= 8 and .[0] >= $since)
+     | {model: .[2], cost: ((.[4] | tonumber?) // null), verdict: .[5],
+        lessons: ((.[6] | tonumber?) // 0), refused: ((.[7] | tonumber?) // 0)}]
+    | group_by(.model) | map(
+        (map(.cost | select(. != null))) as $c
+        | {model: .[0].model, sweeps: length, costed: ($c | length), cost_per_sweep: ratio($c | add // 0; $c | length),
+           lessons_per_sweep: ratio(map(.lessons) | add; length),
+           refused_share: ratio(map(select(.refused > 0)) | length; length),
+           stalled_share: ratio(map(select(.verdict == "FAILED" or .verdict == "STALLED")) | length; length)}) | .[]' "$DREAM_TRIAL" |
+    if [ -n "$json" ]; then cat; else
+      jq -r '"\(.model)\t\(.sweeps) sweeps\t$\(.cost_per_sweep // "-")/sweep over \(.costed)\tlessons/sweep \(.lessons_per_sweep // "-")\trefused \(.refused_share // "-")\tfailed or stalled \(.stalled_share // "-")"'
+    fi
+}
+
 # canary_shepherd [--days N] [--json] -> one row per model the shepherd's passes ran on over the
 # last N days (default 7), from the lane columns fleet-shepherd's lane_cols appends to passes.tsv
 # (model, nudges, survived, missed, wrong parks, parks; read by position here): passes,
@@ -4453,11 +4593,12 @@ cmd_canary() {
   case "${1:-}" in
     list) shift; canary_list "$@" ;;
     shepherd) shift; canary_shepherd "$@" ;;
+    dream) shift; canary_dream "$@" ;;
     verify) shift; canary_verify "$@" ;;
     queue) shift; canary_queue "$@" ;;
     start) shift; canary_start "$@" ;;
     score) shift; canary_score "$@" ;;
-    *) say "usage: fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]] | start <id> | score <id> | shepherd [--days N] [--json]"; return 2 ;;
+    *) say "usage: fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m]] | start <id> | score <id> | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
   esac
 }
 

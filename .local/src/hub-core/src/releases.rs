@@ -236,6 +236,8 @@ impl Row for Release {
     ];
     const STATES: &'static [&'static str] = &["all", "attention", "green"];
     const FACETS: &'static [&'static str] = &["project", "status"];
+    const LEAD: &'static str = "project";
+    const GLANCE: &'static [&'static str] = &["channel", "live", "status"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| match s {

@@ -7,48 +7,64 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tab {
     pub id: &'static str,
+    /// The sidebar heading agent-web files it under. Each group is one run of `TABS`, so a heading
+    /// never splits the order or moves a digit.
+    pub group: &'static str,
     pub title: &'static str,
     pub question: &'static str,
     pub sections: &'static [&'static str],
 }
 
-pub const TABS: [Tab; 11] = [
+pub const TABS: [Tab; 12] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
+        group: "Now",
         title: "Home",
         question: "What needs me, and is everything OK?",
-        sections: &["needs", "proposals", "running", "spend", "health"],
+        sections: &["needs", "proposals", "running", "spend", "vitals", "health"],
     },
     // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
     // (the doc and Handled today) opens from that nav, so it is a section here, not a tab of its own.
     // The day's briefing is drawn as one of the note's sections.
     Tab {
         id: "daily",
+        group: "Now",
         title: "Daily",
         question: "What is my day?",
         sections: &["nav", "lanes", "briefing", "rollup", "sections", "outbox"],
     },
     Tab {
         id: "queue",
+        group: "Work",
         title: "Queue",
         question: "What will agents do next?",
         sections: &["flow", "table", "candidates"],
     },
     Tab {
         id: "projects",
+        group: "Work",
         title: "Projects",
         question: "Where is each project, and its tasks?",
         sections: &["cards", "rows"],
     },
     Tab {
+        id: "board",
+        group: "Work",
+        title: "Board",
+        question: "What is on every project's board?",
+        sections: &["rows"],
+    },
+    Tab {
         id: "sessions",
+        group: "Work",
         title: "Sessions",
         question: "What is each agent doing?",
         sections: &["shepherd", "sessions", "detail"],
     },
     Tab {
         id: "infra",
+        group: "Ops",
         title: "Infra",
         question: "Is the machinery healthy?",
         sections: &[
@@ -57,14 +73,17 @@ pub const TABS: [Tab; 11] = [
     },
     Tab {
         id: "log",
+        group: "Ops",
         title: "Log",
         question: "What happened?",
         sections: &[
-            "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast", "ranked",
+            "work", "day", "history", "actions", "changes", "rundowns", "verdicts", "forecast",
+            "ranked",
         ],
     },
     Tab {
         id: "fleet",
+        group: "Ops",
         title: "Fleet",
         question: "Who is working, and on what?",
         sections: &["workers"],
@@ -72,6 +91,7 @@ pub const TABS: [Tab; 11] = [
     // After the older tabs, so they keep their digits.
     Tab {
         id: "schedules",
+        group: "Ops",
         title: "Schedules",
         question: "What runs on its own, and why?",
         sections: &["table", "detail"],
@@ -80,15 +100,19 @@ pub const TABS: [Tab; 11] = [
     // here, cut seven ways; they keep a one-line badge that links in.
     Tab {
         id: "costs",
+        group: "Spend, ship",
         title: "Costs",
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
-        sections: &["burn", "tokens", "langfuse", "sections", "totals", "table"],
+        sections: &[
+            "fleet", "burn", "tokens", "langfuse", "sections", "totals", "table",
+        ],
     },
     // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the
     // Builds section (CI runs, its own reader; release-state has no CI collector).
     Tab {
         id: "releases",
+        group: "Spend, ship",
         title: "Releases",
         question: "What is building, and what is live where?",
         sections: &["table", "detail", "builds"],
@@ -108,8 +132,6 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("overview", "home"),
     // Home's Numbers heading: the session counts head Running and the spend is its own SPEND line.
     ("numbers", "home"),
-    // Both surfaces' Board tab: its rows are the Projects tab's, one project at a time or All.
-    ("board", "projects"),
     // agent-web's Watch and Shepherd: one row per session on Sessions, the shepherd pinned first.
     ("watch", "sessions"),
     ("shepherd", "sessions"),
@@ -141,6 +163,18 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     ("fleet", "tokens", "costs", "tokens"),
     ("fleet", "langfuse", "costs", "langfuse"),
 ];
+
+/// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists, and
+/// Board, which is `a` on Projects there.
+pub const OFF_BAR: [&str; 2] = ["daily", "board"];
+
+/// A tab's key on the TUI's number row: 1 for the first, 0 for the tenth.
+pub fn bar_digit(id: &str) -> Option<usize> {
+    TABS.iter()
+        .filter(|t| !OFF_BAR.contains(&t.id))
+        .position(|t| t.id == id)
+        .map(|i| (i + 1) % 10)
+}
 
 /// Where a section that moved off `tab` lives now: its new tab and section.
 pub fn moved(tab: &str, sec: &str) -> Option<(&'static Tab, &'static str)> {
@@ -182,6 +216,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_group_is_one_run_of_the_tabs() {
+        let mut seen: Vec<&str> = Vec::new();
+        for t in &TABS {
+            if seen.last() != Some(&t.group) {
+                assert!(!seen.contains(&t.group), "{} splits {}", t.id, t.group);
+                seen.push(t.group);
+            }
+        }
+    }
+
+    #[test]
     fn ids_are_unique_and_a_retired_name_is_never_a_live_id() {
         let mut ids: Vec<&str> = TABS.iter().map(|t| t.id).collect();
         ids.sort();
@@ -203,7 +248,7 @@ mod tests {
         assert_eq!(resolve("Outbox").map(|t| t.id), Some("daily"));
         assert_eq!(resolve("Daily").map(|t| t.id), Some("daily"));
         assert_eq!(TABS[0].id, "home", "the landing page leads");
-        assert_eq!(resolve("board").map(|t| t.id), Some("projects"));
+        assert_eq!(resolve("board").map(|t| t.id), Some("board"));
         assert_eq!(resolve("forecast").map(|t| t.id), Some("log"));
         assert_eq!(resolve("Watch").map(|t| t.id), Some("sessions"));
         assert_eq!(resolve("shepherd").map(|t| t.id), Some("sessions"));

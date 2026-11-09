@@ -30,7 +30,7 @@ For debugging:
 
 # Audio
 - alsamixer
-- pavucontrol (volume control)
+- wiremix (volume control, PipeWire-native TUI)
 - audacity (mixing)
 - pipewire (audio)
 

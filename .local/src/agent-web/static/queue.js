@@ -5,7 +5,7 @@
 // are its `timing` minutes. Design: ~/.config/agentctl/QUEUE.md. The page never writes the
 // store itself; every change goes through agent-queue, and the SSE `queue` event re-reads it.
 // Below the queue, the Candidates fold: the ranked board rows (/api/queue/candidates, hub-core
-// over `fleet-dispatch suggest`), each with a Promote that is the board's Start.
+// over fleet-dispatch's snapshot, `as of` its time), each with a Promote that is the board's Start.
 
 const Q_PRIORITIES = ["urgent", "high", "low"];
 // The strip's gauges are 10-minute fleet-bench series; a minute is plenty.
@@ -40,8 +40,8 @@ const qst = tblTab({
   },
 });
 
-// The candidates read every board, so they are read on showing the tab and after a promote,
-// never on a queue event.
+// The candidates are fleet-dispatch's snapshot, read on showing the tab and after a promote (which
+// takes its row out of the file), never on a queue event.
 const refreshCands = coalesce(async () => {
   try { qst.cands = await api("/api/queue/candidates"); qst.candErr = null; } catch (e) { qst.candErr = e.message; }
   // An #urgent row nothing will start opens the fold, once; shut again, it stays shut.
@@ -138,11 +138,10 @@ function qMin(m) {
   return `${Math.floor(m / 1440)}d${Math.floor((m % 1440) / 60)}h`;
 }
 
-// The table's columns: key -> [header, class]. `qx` columns drop away at phone width (app.css),
-// leaving state, in, project and title.
+// The table's columns: key -> [header, class].
 const Q_COLS = {
-  state: ["state"], in: ["in", "n"], wait: ["wait", "n qx"], run: ["run", "n qx"], project: ["project"],
-  kind: ["kind", "qx"], size: ["size", "qx"], acct: ["acct", "qx"], pr: ["pr", "qx"], title: ["title"],
+  state: ["state"], in: ["in", "n"], wait: ["wait", "n"], run: ["run", "n"], project: ["project"],
+  kind: ["kind"], size: ["size"], acct: ["acct"], pr: ["pr"], title: ["title"],
 };
 
 // The state cell: what the item is. A finish says how it ended.
@@ -157,18 +156,18 @@ function qState(i) {
 
 // The PR cell: hub-core's label as a link; a done item with no recorded merge says so on hover.
 function qPrCell(i) {
-  if (!i.pr) return `<td class="qx muted">-</td>`;
+  if (!i.pr) return `<td class="muted">-</td>`;
   const link = i.pr_url ? `<a href="${esc(i.pr_url)}" target="_blank" rel="noopener">${esc(i.pr_label || i.pr)}</a>` : esc(i.pr_label || i.pr);
   const flag = i.state === "done" && i.pr_label && !i.pr_merged ? ` <span class="muted" title="merge not recorded">?</span>` : "";
-  return `<td class="qx">${link}${flag}</td>`;
+  return `<td>${link}${flag}</td>`;
 }
 
 function qRow(i) {
   const t = i.timing || {};
   const dash = (v) => (v ? esc(v) : "-");
   return `<tr class="qr${i.slug === qst.sel ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
-    `<td class="n">${qMin(t.in_state)}</td><td class="n qx">${qMin(t.wait)}</td><td class="n qx">${qMin(t.run)}</td>` +
-    `<td>${esc(i.project)}</td><td class="qx">${dash(i.type)}</td><td class="qx">${dash(i.size)}</td><td class="qx">${dash(i.account)}</td>` +
+    `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
+    `<td>${esc(i.project)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
     `${qPrCell(i)}<td class="wrap">${esc(i.title || i.slug)}${i.note ? ` <span class="muted">(${esc(i.note)})</span>` : ""}${qProof(i) ? " " + qProof(i) : ""}</td></tr>`;
 }
 
@@ -248,11 +247,12 @@ function renderQueue() {
     qst.render();
     return;
   }
-  el.innerHTML = qCompose() + `<div id="q-list"></div>`;
+  el.innerHTML = pfold("q-add", "Add to the queue", qCompose()) + `<div id="q-list"></div>`;
   qst.render();
 }
 
-const qFlow = () => `<h2 class="sec" id="sec-flow">Flow</h2>${qStrip()}${qFlowTail()}`;
+const qFlow = () => pfold("q-flow", `Flow${qfl.data?.flow?.bottleneck ? ` <span class="warn">${esc(qfl.data.flow.bottleneck)}</span>` : ""}`,
+  `<h2 class="sec" id="sec-flow">Flow</h2>${qStrip()}${qFlowTail()}`);
 const qTableHead = () => `<h2 class="sec" id="sec-table">Queue <span class="muted">${qst.table.shown} of ${qst.table.total}</span></h2>`;
 
 // Every row the page has, in rank order: the first ones, then the rows kept per reason chip.
@@ -299,11 +299,11 @@ function qCandBody() {
 function qCandidates() {
   const k = "sec:candidates", open = !!qst.open[k];
   const c = qst.cands;
-  const count = c ? `${c.total}, ${c.auto} auto${c.urgent_blocked ? `, <span class="qbad">${c.urgent_blocked} urgent blocked</span>` : ""}`
+  const count = c ? `${c.total}, ${c.auto} auto${c.urgent_blocked ? `, <span class="qbad">${c.urgent_blocked} urgent blocked</span>` : ""}${c.as_of ? `, as of ${esc(c.as_of)}` : ""}`
     : qst.candErr ? "unread" : "reading";
   let body;
   if (qst.candErr) body = `<div class="panel down">No candidates: ${esc(qst.candErr)}</div>`;
-  else if (!c) body = `<div class="card muted">Reading fleet-dispatch suggest...</div>`;
+  else if (!c) body = `<div class="card muted">Reading candidates...</div>`;
   else if (!c.rows.length) body = `<div class="card muted">No open board row to start.</div>`;
   else {
     const chip = (v, label) => `<button class="btn sm${v === qst.candReason ? " primary" : ""}" data-creason="${esc(v)}">${esc(label)}</button>`;

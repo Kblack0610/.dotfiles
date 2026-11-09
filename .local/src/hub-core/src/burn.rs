@@ -2,21 +2,19 @@
 //! account, the Codex plan, the gateway keys and the Lazer pool), how many sessions are going,
 //! whether that is over what the windows can carry, the dispatch drip, and when each source is
 //! back on pace. `claude-acct` computes every figure for every source and publishes it in its
-//! textfile (`claude_account_*{kind}`, `claude_fleet_session_rate_points_per_hour`); this only
-//! sums the per-source series and words them, so the hub TUI and agent-web print the same section
-//! and no second formula exists. The drip is the `started` lines of fleet-dispatch's `log.md`.
+//! textfile (`claude_account_*{kind}`, and the fleet sum `claude_fleet_*`); this reads them,
+//! divides for the OVER ratio and the sessions carried, and words them, so the hub TUI and
+//! agent-web print the same section and no second formula exists.
+//! The drip is the `started` lines of fleet-dispatch's `log.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
 use crate::prom::Series;
 
-/// The fleet's measured points of weekly limit one live session burns an hour (a 6h average).
-pub const RATE_Q: &str = "claude_fleet_session_rate_points_per_hour";
-
 /// Where the dispatch hold is explained (the Sessions header), as `SPEND_BADGE` names Costs.
-pub const HOLD_BADGE: &str = "5 Sessions";
+pub const HOLD_BADGE: &str = "4 Sessions";
 
 /// claude-acct's published answer on an automatic start for one account (its `room` object in
 /// the textfile: `claude_account_room`, `_room_headroom_points`, `_room_reason`). The hub prints
@@ -71,20 +69,23 @@ impl Room {
 
 /// The source series by source, keyed by metric name, and the age in seconds of the textfile
 /// they came from (None when the age series is missing). The room reasons, the kind and the parent
-/// pool are labels, so they are collected apart.
+/// pool are labels, so they are collected apart. `fleet` is claude-acct's fleet sum, keyed by the
+/// metric name after `claude_fleet_`.
 pub struct Accounts<'a> {
     pub by: BTreeMap<&'a str, BTreeMap<&'a str, f64>>,
+    pub fleet: BTreeMap<&'a str, f64>,
     pub reasons: BTreeMap<&'a str, Vec<String>>,
     pub kinds: BTreeMap<&'a str, &'a str>,
     pub parents: BTreeMap<&'a str, &'a str>,
     pub age: Option<f64>,
 }
 
-/// claude-acct's textfile, however old, plus one series for its age (`claude_account_textfile_age_seconds`,
+/// claude-acct's textfile (every source's series and the fleet sum), however old, plus one
+/// series for its age (`claude_account_textfile_age_seconds`,
 /// no account label, the oldest file when a second host exposes one) so a surface says "stale" past `burn::STALE_AFTER_SECS` instead of showing
 /// nothing; no `max without`, which would drop the metric names the table reads. An empty
 /// answer makes the table say no data.
-pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_account_.+"} or label_replace(max(time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"}), "__name__", "claude_account_textfile_age_seconds", "", "")"#;
+pub(crate) const ACCOUNTS: &str = r#"{__name__=~"claude_(account|fleet)_.+"} or label_replace(max(time() - node_textfile_mtime_seconds{file=~".*claude_acct.prom"}), "__name__", "claude_account_textfile_age_seconds", "", "")"#;
 
 /// What a surface says in place of an account's figures when the textfile is not fresh.
 pub const STALE_NOTE: &str = "stale, claude-acct's textfile is not fresh (timer claude-acct-usage)";
@@ -96,14 +97,20 @@ impl<'a> Accounts<'a> {
     pub fn read(series: &'a [Series]) -> Self {
         let mut a = Accounts {
             by: BTreeMap::new(),
+            fleet: BTreeMap::new(),
             reasons: BTreeMap::new(),
             kinds: BTreeMap::new(),
             parents: BTreeMap::new(),
             age: None,
         };
         for s in series {
-            let key = s.label("__name__").trim_start_matches("claude_account_");
+            let name = s.label("__name__");
             let Some(v) = s.value else { continue };
+            if let Some(key) = name.strip_prefix("claude_fleet_") {
+                a.fleet.insert(key, v);
+                continue;
+            }
+            let key = name.trim_start_matches("claude_account_");
             let acc = s.label("account");
             if !acc.is_empty() && !s.label("kind").is_empty() {
                 a.kinds.insert(acc, s.label("kind"));
@@ -182,6 +189,8 @@ pub struct Account {
     pub usd_budget: Option<f64>,
     /// The pool this key spends inside; it has room only when the pool does.
     pub parent: Option<String>,
+    /// `parent` is itself a row, so this one is listed in the fold under it. Set by `ordered`.
+    pub nested: bool,
     /// The USED cell both surfaces print: `53%`, or `81% $81/$100` for a dollar budget.
     pub used_text: String,
     /// `ok`, `unreadable` (claude-acct could not read its usage), `idle` (no usage yet) or
@@ -275,15 +284,121 @@ pub struct Burn {
     /// The headline and the drip, worded here so both surfaces print the same.
     pub head: String,
     pub drip_line: String,
-    /// `bad` when the fleet is over, `warn` when one account is or none can be read, `ok`, or
-    /// `none` with no data.
+    /// `bad` when the fleet is over, `warn` when one account is, no row has room or none can
+    /// be read, `ok`, or `none` with no data.
     pub level: &'static str,
     /// Set when the textfile is not fresh: every figure below is then old, and the surfaces say so.
     pub stale: Option<&'static str>,
+    /// Every source, in reading order (`ordered`); the surfaces list the `nested` ones in the fold.
     pub accounts: Vec<Account>,
+    /// The fold under the pool row; None when no source is nested.
+    pub keys: Option<Keys>,
     pub fleet: Fleet,
     pub drip: Drip,
     pub pace: Pace,
+    /// What each term on the section means, in the order the surfaces print it.
+    pub legend: &'static [(&'static str, &'static str)],
+}
+
+/// The Burn section's terms, defined once for both surfaces.
+pub const LEGEND: &[(&str, &str)] = &[
+    ("pts/h", "points of a weekly limit an hour"),
+    (
+        "BAR",
+        "the fill is the share used, the tick the share of the week gone",
+    ),
+    ("GONE", "the share of the week gone"),
+    ("BURN/H", "the last 6h rate of its live sessions"),
+    (
+        "KEEPS/H",
+        "what the rest of the week can carry to the reset",
+    ),
+    (
+        "ROOM",
+        "claude-acct's answer on an automatic start, and why not",
+    ),
+    ("AT BURN", "when it is back on pace at this burn"),
+    ("IF IDLE", "when it is back on pace with nothing live"),
+    ("$24H", "the list-price estimate, for scale"),
+];
+
+/// The keys inside a pool, which draw on its money and so are not sources beside it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Keys {
+    /// `3 in lazer, 0 live, tightest glm 96%`, worded here so both surfaces print the same.
+    pub head: String,
+    /// `warn` when a key's usage is unreadable or it refuses while its pool has room, which only
+    /// the fold can show, so it starts open; `ok` otherwise.
+    pub level: &'static str,
+}
+
+/// The sources in reading order: Claude accounts, the Codex plan, the pools, by name inside each,
+/// each key right after its pool. A key whose pool is not a row stays at the top level.
+fn ordered(mut accounts: Vec<Account>) -> Vec<Account> {
+    let kinds: BTreeMap<String, String> = accounts
+        .iter()
+        .map(|a| (a.name.clone(), a.kind.clone()))
+        .collect();
+    // Only a row with no pool above it can hold keys, so a chain or a cycle keeps its rows visible.
+    let roots: BTreeSet<String> = accounts
+        .iter()
+        .filter(|a| a.parent.as_ref().is_none_or(|p| *p == a.name))
+        .map(|a| a.name.clone())
+        .collect();
+    for a in &mut accounts {
+        a.nested = a
+            .parent
+            .as_ref()
+            .is_some_and(|p| *p != a.name && roots.contains(p));
+    }
+    accounts.sort_by_cached_key(|a| {
+        let top = match &a.parent {
+            Some(p) if a.nested => p.clone(),
+            _ => a.name.clone(),
+        };
+        let rank = match kinds[&top].as_str() {
+            DEFAULT_KIND => 0,
+            "codex" => 1,
+            "litellm-team" => 2,
+            _ => 3,
+        };
+        (rank, top, a.nested, a.name.clone())
+    });
+    accounts
+}
+
+fn keys_fold(accounts: &[Account]) -> Option<Keys> {
+    let keys: Vec<&Account> = accounts.iter().filter(|a| a.nested).collect();
+    if keys.is_empty() {
+        return None;
+    }
+    let pool_has_room = |a: &Account| {
+        accounts
+            .iter()
+            .find(|p| Some(&p.name) == a.parent.as_ref())
+            .and_then(|p| p.room.as_ref())
+            .is_some_and(|r| r.ok)
+    };
+    let alone = keys.iter().any(|a| {
+        a.state == "unreadable" || (a.room.as_ref().is_some_and(|r| !r.ok) && pool_has_room(a))
+    });
+    let pools: BTreeSet<&str> = keys.iter().filter_map(|a| a.parent.as_deref()).collect();
+    let tightest = keys
+        .iter()
+        .filter_map(|a| a.used.map(|u| (u, a)))
+        .max_by(|x, y| x.0.total_cmp(&y.0))
+        .map_or(String::new(), |(u, a)| {
+            format!(", tightest {} {}%", a.name, u.floor())
+        });
+    Some(Keys {
+        head: format!(
+            "{} in {}, {} live{tightest}",
+            keys.len(),
+            pools.into_iter().collect::<Vec<_>>().join(", "),
+            keys.iter().map(|a| a.live).sum::<u32>()
+        ),
+        level: if alone { "warn" } else { "ok" },
+    })
 }
 
 /// `53%`, `81% $81/$100` with a dollar budget, `-` with no figure.
@@ -322,6 +437,7 @@ fn account(name: &str, read: &Accounts, stale: bool) -> Account {
         usd_used,
         usd_budget,
         parent: read.parents.get(name).map(|p| p.to_string()),
+        nested: false,
         used_text: used_text(used, usd_used, usd_budget),
         state,
         room,
@@ -342,22 +458,24 @@ fn account(name: &str, read: &Accounts, stale: bool) -> Account {
 }
 
 /// The section from claude-acct's series (fresh ones only; none is "no data") and the drip.
-pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn {
+pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
     let read = Accounts::read(series);
     let stale = read.stale();
-    let accounts: Vec<Account> = read.by.keys().map(|n| account(n, &read, stale)).collect();
-    // Burn and sustain sum over the same accounts: an unreadable or idle one has neither, and
-    // one with no sustain (its week is spent or past its reset) would otherwise add burn to
-    // the OVER ratio with nothing on the other side.
-    let counted: Vec<&Account> = accounts
-        .iter()
-        .filter(|a| a.state == "ok" && a.sustain.is_some())
-        .collect();
-    let burn: f64 = counted.iter().map(|a| a.burn).sum();
-    let sustain: f64 = counted.iter().filter_map(|a| a.sustain).sum();
-    let rate = rate.filter(|r| *r > 0.0);
+    let accounts = ordered(read.by.keys().map(|n| account(n, &read, stale)).collect());
+    let keys = keys_fold(&accounts);
+    // claude-acct's fleet sum (its FLEET_JQ, the same one its fleet line prints), never a second
+    // sum of the rows here. It writes no burn or sustain when no account was summed, and a stale
+    // file's figures are not what is true now: either way nothing is counted.
+    let sum = |k: &str| read.fleet.get(k).copied();
+    let summed = match (sum("burn_points_per_hour"), sum("sustain_points_per_hour")) {
+        (Some(b), Some(s)) if !stale => Some((b, s)),
+        _ => None,
+    };
+    let (burn, sustain) = summed.unwrap_or((0.0, 0.0));
+    // the measured points of weekly limit one live session burns an hour (a 6h average)
+    let rate = sum("session_rate_points_per_hour").filter(|r| *r > 0.0);
     let fleet = Fleet {
-        live: accounts.iter().map(|a| a.live).sum(),
+        live: sum("live_sessions").unwrap_or(0.0) as u32,
         burn,
         sustain,
         over: (sustain > 0.0).then(|| burn / sustain),
@@ -366,12 +484,14 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
     };
     let level = if accounts.is_empty() {
         "none"
-    } else if counted.is_empty() {
+    } else if summed.is_none() {
         // Accounts exist but none can be read (or the textfile is stale): a quiet fleet is not what this means.
         "warn"
     } else if burn > sustain {
         "bad"
-    } else if accounts.iter().any(Account::is_over) {
+    } else if accounts.iter().any(Account::is_over)
+        || matches!(no_room(&accounts), (n, of) if of > 0 && n == of)
+    {
         "warn"
     } else {
         "ok"
@@ -381,14 +501,28 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
         stale: stale.then_some(STALE_NOTE),
         level,
         accounts,
+        keys,
         fleet,
         drip,
+        legend: LEGEND,
         ..Burn::default()
     };
     b.head = b.head_text();
     b.drip_line = format!("{} started in 1h, {} in 24h", b.drip.hour, b.drip.day);
     b.pace = b.pace_of();
     b
+}
+
+/// The rows' own verdict, so the headline cannot read green while every row refuses: the
+/// readable sources (not the keys in a pool) that say no room, and how many have a verdict.
+/// An unreadable row says so in its own state, so it is not counted as a refusal here.
+fn no_room(accounts: &[Account]) -> (usize, usize) {
+    let judged: Vec<&Room> = accounts
+        .iter()
+        .filter(|a| !a.nested && a.state == "ok")
+        .filter_map(|a| a.room.as_ref())
+        .collect();
+    (judged.iter().filter(|r| !r.ok).count(), judged.len())
 }
 
 impl Burn {
@@ -407,8 +541,13 @@ impl Burn {
         let carries = f
             .carries
             .map_or(String::new(), |n| format!(", carries ~{n}"));
+        let room = match no_room(&self.accounts) {
+            (0, _) => String::new(),
+            (n, of) if n == of => ", no room on any".into(),
+            (n, of) => format!(", no room on {n} of {of}"),
+        };
         format!(
-            "{:.1} pts/h vs {:.1} sustainable{ratio}, {} live{carries}",
+            "{:.1} pts/h vs {:.1} sustainable{ratio}{room}, {} live{carries}",
             f.burn, f.sustain, f.live
         )
     }
@@ -497,7 +636,17 @@ mod tests {
         }
     }
 
-    /// The numbers of 2026-11-06 ~15:00 (plan fuzzy-scribbling-sky.md): three accounts, 39 live.
+    /// One of claude-acct's fleet sum series, which carry no account.
+    fn fleet(name: &str, v: f64) -> Series {
+        Series {
+            labels: [("__name__".to_string(), format!("claude_fleet_{name}"))].into(),
+            value: Some(v),
+            points: vec![],
+        }
+    }
+
+    /// The numbers of 2026-11-06 ~15:00 (plan fuzzy-scribbling-sky.md): three accounts, 39 live,
+    /// and the fleet sum claude-acct publishes for them.
     fn fixture() -> Vec<Series> {
         let mut out = vec![];
         for (n, live, used, gone, burn, sustain) in [
@@ -516,6 +665,10 @@ mod tests {
                 out.push(series(n, k, v));
             }
         }
+        out.push(fleet("live_sessions", 39.0));
+        out.push(fleet("burn_points_per_hour", 4.52));
+        out.push(fleet("sustain_points_per_hour", 1.37));
+        out.push(fleet("session_rate_points_per_hour", 0.116));
         out.push(age(120.0));
         out
     }
@@ -538,7 +691,7 @@ mod tests {
 
     #[test]
     fn the_fixture_sums_to_the_fleet_line_and_is_over() {
-        let b = build(&fixture(), Some(4.52 / 39.0), quiet(), NOW);
+        let b = build(&fixture(), quiet(), NOW);
         assert_eq!(b.fleet.live, 39);
         assert!((b.fleet.burn - 4.52).abs() < 1e-9);
         assert!((b.fleet.sustain - 1.37).abs() < 1e-9);
@@ -558,7 +711,7 @@ mod tests {
 
     #[test]
     fn back_on_pace_says_when_idle_gets_there_and_when_burn_never_does() {
-        let b = build(&fixture(), Some(0.1), quiet(), NOW);
+        let b = build(&fixture(), quiet(), NOW);
         let t = |t: i64| format!("t{}", t - NOW);
         assert_eq!(
             b.pace_text(&t),
@@ -570,7 +723,7 @@ mod tests {
             "on_pace_burn_timestamp_seconds",
             (NOW + 60) as f64,
         ));
-        assert!(build(&s, None, quiet(), NOW)
+        assert!(build(&s, quiet(), NOW)
             .pace_text(&t)
             .starts_with("at this burn: alt t60;"));
     }
@@ -583,44 +736,97 @@ mod tests {
                 x.value = Some(x.value.unwrap() / 10.0);
             }
         }
-        assert_eq!(build(&s, None, quiet(), NOW).level, "ok");
+        assert_eq!(build(&s, quiet(), NOW).level, "ok");
         // alt alone burns above what its week carries; the fleet still fits.
         s.push(series("alt", "burn_points_per_hour", 0.5));
-        let b = build(&s, None, quiet(), NOW);
+        let b = build(&s, quiet(), NOW);
         assert_eq!(b.level, "warn", "{b:?}");
     }
 
     #[test]
-    fn an_unreadable_account_is_listed_but_not_counted() {
+    fn the_headline_says_the_rows_no_room_so_a_fleet_under_its_weeks_is_not_green() {
         let mut s = fixture();
-        s.push(series("old", "read_ok", 0.0));
-        s.push(series("old", "live_sessions", 2.0));
-        let b = build(&s, None, quiet(), NOW);
-        let old = b.accounts.iter().find(|a| a.name == "old").unwrap();
-        assert_eq!(old.state, "unreadable");
-        assert!((b.fleet.burn - 4.52).abs() < 1e-9, "its burn is not summed");
-        assert_eq!(b.fleet.live, 41, "its sessions are live all the same");
+        for x in &mut s {
+            if x.label("__name__").ends_with("burn_points_per_hour") {
+                x.value = Some(x.value.unwrap() / 10.0);
+            }
+        }
+        let with = |rooms: [f64; 3]| {
+            let mut s = s.clone();
+            for (n, ok) in ["main", "alt", "bnb"].into_iter().zip(rooms) {
+                s.push(series(n, "room", ok));
+            }
+            build(&s, quiet(), NOW)
+        };
+        let all = with([0.0, 0.0, 0.0]);
+        assert_eq!(
+            all.head,
+            "0.5 pts/h vs 1.4 sustainable, 0.3x, no room on any, 39 live, carries ~11"
+        );
+        assert_eq!(all.level, "warn");
+        // a row refusing for its own reason is the row's news: the head says it, the section stays folded
+        let some = with([0.0, 1.0, 0.0]);
+        assert!(some.head.contains(", no room on 2 of 3,"), "{}", some.head);
+        assert_eq!(some.level, "ok");
+        // negative control: every row has room, so the headline adds nothing and stays green
+        let roomy = with([1.0, 1.0, 1.0]);
+        assert!(!roomy.head.contains("no room"), "{}", roomy.head);
+        assert_eq!(roomy.level, "ok");
+        assert_eq!(roomy.legend, LEGEND);
     }
 
     #[test]
-    fn an_account_with_no_sustain_adds_no_burn_to_the_ratio() {
+    fn an_unreadable_account_is_not_one_more_no_room_in_the_head() {
+        // its own state says unreadable, so it is not one more "no room" in the head
         let mut s = fixture();
-        s.push(series("spent", "week_used_percent", 100.0));
-        s.push(series("spent", "burn_points_per_hour", 3.0));
-        let b = build(&s, None, quiet(), NOW);
+        s.push(series("old", "read_ok", 0.0));
+        s.push(series("old", "room", 0.0));
+        let b = build(&s, quiet(), NOW);
+        assert_eq!(
+            b.accounts.iter().find(|a| a.name == "old").unwrap().state,
+            "unreadable"
+        );
+        assert!(!b.head.contains("no room"), "{}", b.head);
+    }
+
+    #[test]
+    fn the_fleet_is_claude_accts_published_sum_not_a_second_sum_of_the_rows() {
+        // Which rows count (Claude only, readable, paced, with a week) is claude-acct's FLEET_JQ,
+        // tested in tests/unit/claude_acct.bats; a row it did not sum changes nothing here.
+        let mut s = fixture();
+        s.push(series("extra", "week_used_percent", 10.0));
+        s.push(series("extra", "live_sessions", 5.0));
+        s.push(series("extra", "burn_points_per_hour", 9.0));
+        s.push(series("extra", "sustain_points_per_hour", 9.0));
+        let b = build(&s, quiet(), NOW);
+        assert!(b.accounts.iter().any(|a| a.name == "extra"), "it is a row");
+        assert_eq!(b.fleet.live, 39);
         assert!((b.fleet.burn - 4.52).abs() < 1e-9, "{:?}", b.fleet);
         assert!((b.fleet.sustain - 1.37).abs() < 1e-9);
     }
 
     #[test]
+    fn rows_with_no_published_sum_are_not_a_green_fleet() {
+        // claude-acct writes no burn or sustain when it summed no account: the rows are listed,
+        // the fleet is amber, and nothing is re-summed.
+        let mut s = fixture();
+        s.retain(|x| !x.label("__name__").starts_with("claude_fleet_burn"));
+        let b = build(&s, quiet(), NOW);
+        assert_eq!(b.accounts.len(), 3);
+        assert_eq!(b.level, "warn", "{b:?}");
+        assert_eq!((b.fleet.burn, b.fleet.sustain), (0.0, 0.0));
+        assert_eq!(b.fleet.live, 39);
+    }
+
+    #[test]
     fn accounts_that_cannot_be_read_are_not_a_green_fleet() {
-        let b = build(&[series("old", "read_ok", 0.0)], None, Drip::default(), NOW);
+        let b = build(&[series("old", "read_ok", 0.0)], Drip::default(), NOW);
         assert_eq!(b.level, "warn", "{b:?}");
     }
 
     #[test]
     fn no_series_is_no_data() {
-        let b = build(&[], None, Drip::default(), NOW);
+        let b = build(&[], Drip::default(), NOW);
         assert_eq!(b.level, "none");
         assert!(b.accounts.is_empty());
     }
@@ -639,7 +845,7 @@ mod tests {
             }
         }
         assert_eq!(
-            build(&s, None, quiet(), NOW).pace_text(&|t| t.to_string()),
+            build(&s, quiet(), NOW).pace_text(&|t| t.to_string()),
             "every source is on pace"
         );
     }
@@ -661,9 +867,10 @@ mod tests {
 
     #[test]
     fn the_hold_badge_names_the_sessions_key() {
-        let at = crate::layout::TABS.iter().position(|t| t.id == "sessions");
         assert_eq!(
-            at.map(|i| format!("{} Sessions", (i + 1) % 10)).as_deref(),
+            crate::layout::bar_digit("sessions")
+                .map(|d| format!("{d} Sessions"))
+                .as_deref(),
             Some(HOLD_BADGE)
         );
     }
@@ -694,7 +901,7 @@ mod tests {
             all.push(reason(n, why));
         }
         all.push(reason("c", "five_hour"));
-        let b = build(&all, None, Drip::default(), NOW);
+        let b = build(&all, Drip::default(), NOW);
         let room = |n: &str| {
             b.accounts
                 .iter()
@@ -712,16 +919,21 @@ mod tests {
 
     #[test]
     fn an_account_with_no_published_verdict_has_none_rather_than_a_derived_one() {
-        let b = build(&fixture(), None, Drip::default(), NOW);
+        let b = build(&fixture(), Drip::default(), NOW);
         assert!(b.accounts.iter().all(|a| a.room.is_none()));
     }
 
     #[test]
     fn a_textfile_over_an_hour_old_is_stale_not_a_green_fleet() {
-        let b = build(&aged(7300.0), None, Drip::default(), NOW);
+        let b = build(&aged(7300.0), Drip::default(), NOW);
         assert!(b.accounts.iter().all(|a| a.state == "stale"));
         assert_eq!(b.level, "warn");
-        assert!(build(&fixture(), None, Drip::default(), NOW)
+        // its fleet sum is an hour old: not counted as the burn now
+        assert_eq!(
+            (b.fleet.burn, b.fleet.sustain, b.fleet.over),
+            (0.0, 0.0, None)
+        );
+        assert!(build(&fixture(), Drip::default(), NOW)
             .accounts
             .iter()
             .all(|a| a.state == "ok"));
@@ -777,7 +989,7 @@ mod tests {
 
     #[test]
     fn every_source_is_a_row_with_its_kind_dollars_reserve_and_pool() {
-        let b = build(&sources(), None, Drip::default(), NOW);
+        let b = build(&sources(), Drip::default(), NOW);
         let row = |n: &str| b.accounts.iter().find(|a| a.name == n).unwrap().clone();
         assert_eq!(b.accounts.len(), 6);
         assert_eq!(
@@ -797,12 +1009,111 @@ mod tests {
         assert_eq!(row("lazer").used_text, "62% $157/$250");
     }
 
+    /// A key of `lazer`, or of a pool that is no row, with its own room verdict.
+    fn key(name: &str, parent: &str, used: f64, ok: bool) -> Account {
+        Account {
+            name: name.into(),
+            kind: "litellm-key".into(),
+            parent: Some(parent.into()),
+            used: Some(used),
+            room: Some(Room {
+                ok,
+                ..Room::default()
+            }),
+            ..Account::default()
+        }
+    }
+
+    fn pool(ok: bool) -> Account {
+        Account {
+            name: "lazer".into(),
+            kind: "litellm-team".into(),
+            room: Some(Room {
+                ok,
+                ..Room::default()
+            }),
+            ..Account::default()
+        }
+    }
+
     #[test]
-    fn a_dollar_budget_adds_nothing_to_the_fleet_line_or_the_pace() {
-        let b = build(&sources(), Some(0.116), Drip::default(), NOW);
-        // the fixture's 4.52 against 1.37, plus Codex's 0 against 0.71; the keys carry no pace
+    fn the_sources_read_claude_codex_then_the_pool_with_its_keys_after_it() {
+        let b = build(&sources(), Drip::default(), NOW);
+        let names: Vec<&str> = b.accounts.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["alt", "bnb", "main", "codex", "lazer", "reserve"],
+            "alphabetical would put codex and lazer among the accounts"
+        );
+        let nested: Vec<&str> = b
+            .accounts
+            .iter()
+            .filter(|a| a.nested)
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(nested, ["reserve"]);
+        assert_eq!(
+            b.keys.unwrap().head,
+            "1 in lazer, 0 live, tightest reserve 81%"
+        );
+    }
+
+    #[test]
+    fn a_key_whose_pool_is_not_a_row_stays_at_the_top_level() {
+        let rows = ordered(vec![pool(true), key("orphan", "gone", 10.0, true)]);
+        assert!(rows.iter().all(|a| !a.nested), "{rows:?}");
+        assert_eq!(keys_fold(&rows), None);
+    }
+
+    #[test]
+    fn keys_that_name_each_other_stay_at_the_top_level() {
+        let rows = ordered(vec![key("a", "b", 10.0, true), key("b", "a", 10.0, true)]);
+        assert!(rows.iter().all(|a| !a.nested), "{rows:?}");
+    }
+
+    #[test]
+    fn an_unreadable_key_opens_the_fold_even_with_its_pool_spent() {
+        let unreadable = Account {
+            state: "unreadable",
+            room: None,
+            ..key("glm", "lazer", 96.0, true)
+        };
+        let fold = keys_fold(&ordered(vec![pool(false), unreadable.clone()]));
+        assert_eq!(fold.unwrap().level, "warn");
+        // negative control: the same key, read, with nothing wrong
+        let read = Account {
+            state: "ok",
+            ..unreadable
+        };
+        let fold = keys_fold(&ordered(vec![pool(false), read]));
+        assert_eq!(fold.unwrap().level, "ok");
+    }
+
+    #[test]
+    fn the_fold_is_warn_only_when_a_key_refuses_and_its_pool_has_room() {
+        let level = |pool_ok, key_ok| {
+            keys_fold(&ordered(vec![
+                pool(pool_ok),
+                key("glm", "lazer", 96.0, key_ok),
+                key("eval", "lazer", 18.0, true),
+            ]))
+            .unwrap()
+            .level
+        };
+        assert_eq!(level(true, false), "warn");
+        // negative control: the pool row already says it is spent, so nothing is hidden
+        assert_eq!(level(false, false), "ok");
+        assert_eq!(level(true, true), "ok");
+    }
+
+    #[test]
+    fn codex_and_a_dollar_budget_add_nothing_to_the_fleet_line_or_the_pace() {
+        let b = build(&sources(), Drip::default(), NOW);
+        // the fixture's published 4.52 against 1.37: Codex's 0.71 is another budget, which
+        // claude-acct leaves out of the sum (tests/unit/claude_acct.bats); the keys carry no pace
         assert!((b.fleet.burn - 4.52).abs() < 1e-9);
-        assert!((b.fleet.sustain - 2.08).abs() < 1e-9);
+        assert!((b.fleet.sustain - 1.37).abs() < 1e-9);
+        assert_eq!(b.fleet.carries, Some(11));
         // A dollar budget has no back-on-pace time; counted as ahead, it would be "on pace only
         // after the reset" and set this.
         assert!(!b.pace.idle_rest_after_reset);
@@ -810,7 +1121,7 @@ mod tests {
             .into_iter()
             .filter(|s| s.label("kind").starts_with("litellm") || s.label("account").is_empty())
             .collect();
-        let k = build(&only_keys, None, Drip::default(), NOW);
+        let k = build(&only_keys, Drip::default(), NOW);
         assert!(
             k.pace.on_pace,
             "dollar budgets alone are never behind a pace line"
