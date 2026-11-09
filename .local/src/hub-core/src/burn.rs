@@ -277,7 +277,7 @@ pub struct Burn {
     /// The headline and the drip, worded here so both surfaces print the same.
     pub head: String,
     pub drip_line: String,
-    /// `bad` when the fleet is over, `warn` when one account is, a row says no room or none can
+    /// `bad` when the fleet is over, `warn` when one account is, no row has room or none can
     /// be read, `ok`, or `none` with no data.
     pub level: &'static str,
     /// Set when the textfile is not fresh: every figure below is then old, and the surfaces say so.
@@ -307,9 +307,11 @@ pub const LEGEND: &[(&str, &str)] = &[
         "what the rest of the week can carry to the reset",
     ),
     (
-        "AT BURN, IF IDLE",
-        "when it is back on pace at this burn, or with nothing live",
+        "ROOM",
+        "claude-acct's answer on an automatic start, and why not",
     ),
+    ("AT BURN", "when it is back on pace at this burn"),
+    ("IF IDLE", "when it is back on pace with nothing live"),
     ("$24H", "the list-price estimate, for scale"),
 ];
 
@@ -479,7 +481,9 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
         "warn"
     } else if burn > sustain {
         "bad"
-    } else if accounts.iter().any(Account::is_over) || no_room(&accounts).0 > 0 {
+    } else if accounts.iter().any(Account::is_over)
+        || matches!(no_room(&accounts), (n, of) if of > 0 && n == of)
+    {
         "warn"
     } else {
         "ok"
@@ -502,11 +506,12 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
 }
 
 /// The rows' own verdict, so the headline cannot read green while every row refuses: the
-/// sources (not the keys in a pool) that say no room, and how many have a verdict at all.
+/// readable sources (not the keys in a pool) that say no room, and how many have a verdict.
+/// An unreadable row says so in its own state, so it is not counted as a refusal here.
 fn no_room(accounts: &[Account]) -> (usize, usize) {
     let judged: Vec<&Room> = accounts
         .iter()
-        .filter(|a| !a.nested)
+        .filter(|a| !a.nested && a.state == "ok")
         .filter_map(|a| a.room.as_ref())
         .collect();
     (judged.iter().filter(|r| !r.ok).count(), judged.len())
@@ -737,7 +742,10 @@ mod tests {
             "0.5 pts/h vs 1.4 sustainable, 0.3x, no room on any, 39 live"
         );
         assert_eq!(all.level, "warn");
-        assert!(with([0.0, 1.0, 0.0]).head.contains(", no room on 2 of 3,"));
+        // a row refusing for its own reason is the row's news: the head says it, the section stays folded
+        let some = with([0.0, 1.0, 0.0]);
+        assert!(some.head.contains(", no room on 2 of 3,"), "{}", some.head);
+        assert_eq!(some.level, "ok");
         // negative control: every row has room, so the headline adds nothing and stays green
         let roomy = with([1.0, 1.0, 1.0]);
         assert!(!roomy.head.contains("no room"), "{}", roomy.head);
@@ -755,6 +763,10 @@ mod tests {
         assert_eq!(old.state, "unreadable");
         assert!((b.fleet.burn - 4.52).abs() < 1e-9, "its burn is not summed");
         assert_eq!(b.fleet.live, 41, "its sessions are live all the same");
+        // its own state says unreadable, so it is not one more "no room" in the head
+        let mut s2 = s.clone();
+        s2.push(series("old", "room", 0.0));
+        assert!(!build(&s2, None, quiet(), NOW).head.contains("no room"));
     }
 
     #[test]

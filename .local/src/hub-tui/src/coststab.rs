@@ -947,8 +947,19 @@ mod tests {
             "{narrow}"
         );
         // every term on the section is defined under it, wrapped to the width
-        for t in ["pts/h: ", "GONE: ", "AT BURN, IF IDLE: ", "$24H: "] {
+        for t in ["pts/h: ", "GONE: ", "AT BURN: ", "IF IDLE: ", "$24H: "] {
             assert!(s.contains(t), "{t} undefined: {s}");
+        }
+        // and every term the legend defines, bar the headline's unit, is a column the table prints
+        let wide = CostsView::default()
+            .lines(&burning(), Palette::default(), 1_000_000, 400)
+            .0
+            .iter()
+            .map(crate::fit::plain)
+            .find(|l| l.trim_start().starts_with("SOURCE"))
+            .unwrap();
+        for (t, _) in burn::LEGEND.iter().filter(|(t, _)| *t != "pts/h") {
+            assert!(wide.contains(t), "{t} is not a column: {wide}");
         }
     }
 
