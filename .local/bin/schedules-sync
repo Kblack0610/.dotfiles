@@ -23,9 +23,10 @@ private list (never here), with the token FORGEJO_TOKEN, else `rbw get forgejo_r
 sent in curl's stdin config, never argv; with neither, a public repo still reads.
 
   schedules-sync          sync every repo, write the state file and the ledger, print the state path
-  schedules-sync pending <repo>
+  schedules-sync pending <repo> [--day YYYY-MM-DD]
                           what an agent-queue `nightly:<repo>` hold still waits for, one line;
-                          exit 0 and no output when nothing is (repo: owner/name or name)
+                          exit 0 and no output when nothing is (repo: owner/name or name);
+                          --day judges that local date's runs instead of today's
   schedules-sync runs <repo> [--branch B] [--since T] [--until T]
                           the ledger's runs of one repo (owner/name, or forgejo:owner/name),
                           as a JSON array in created_at order, one object per run: its newest
@@ -58,8 +59,11 @@ the last success, so a reader can tell stale from fresh per repo; the exit statu
 the other repos still land. A repo with no scheduled workflow is an empty list, not an error.
 
 `pending` reads the state file and nothing else. Each scheduled workflow's cron slots on
-today's local date must each have a finished run, or be past the slot (or the run's start)
-plus the workflow's timeout, which a triage reads as red. A slot still to come today holds.
+one local date (--day, else today) must each have a finished run, or be past the slot (or
+the run's start) plus the workflow's timeout, which a triage reads as red. A slot still to
+come that day holds. agent-queue passes the date of the item's `at:` tag, so a night that
+finished stays released: judged by today, a 22:00 slot (soak.yml) left a hold free only
+until midnight, when every slot of the new day held again (nightly-validate-20261108).
 A missing file, a repo not in it, or one not synced in 30 minutes holds (fails
 closed, like the `pr:` hold when gh cannot answer). A frequent cron holds all day, so tag
 only repos whose schedules run nightly.
@@ -605,8 +609,9 @@ def cron_slots(cron, start, end):
     return out
 
 
-def pending(name, t):
-    """-> what a nightly:<name> hold still waits for; empty when it releases."""
+def pending(name, t, day=None):
+    """-> what a nightly:<name> hold still waits for on local date `day` (default: t's);
+    empty when it releases."""
     try:
         with open(STATE) as f:
             repos = json.load(f).get("repos", [])
@@ -617,7 +622,7 @@ def pending(name, t):
         return [f"{name} not in the schedules state"]
     if not entry.get("synced_at") or t - parse_iso(entry["synced_at"]) > STALE:
         return [f"schedules state for {name} stale since {entry.get('synced_at')}"]
-    day = t.astimezone().date()  # today, local time; naive datetimes below are local too
+    day = day or t.astimezone().date()  # local time; naive datetimes below are local too
     start = datetime(day.year, day.month, day.day).astimezone(timezone.utc)
     end = (datetime(day.year, day.month, day.day) + timedelta(days=1)).astimezone(timezone.utc)
     out = []
@@ -649,10 +654,16 @@ def main(argv):
         print(__doc__)
         return 0
     if argv and argv[0] == "pending":
-        if len(argv) != 2:
-            print("schedules-sync: pending <repo>", file=sys.stderr)
+        day = None
+        if len(argv) == 4 and argv[2] == "--day":
+            try:
+                day = datetime.strptime(argv[3], "%Y-%m-%d").date()
+            except ValueError:
+                day = False
+        if len(argv) not in (2, 4) or day is False or (len(argv) == 4 and day is None):
+            print("schedules-sync: pending <repo> [--day YYYY-MM-DD]", file=sys.stderr)
             return 2
-        left = pending(argv[1], now())
+        left = pending(argv[1], now(), day)
         if left:
             print(", ".join(left))
         return 1 if left else 0

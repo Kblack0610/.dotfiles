@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # The skill-usage toggle: claude-recall stats counts the four use kinds beyond Skill calls and
 # typed commands (body, read, script, mention), skill-drift --overrides turns the six into the
-# skillOverrides to hide and restore, and agentctl-skill-toggle stops before landing anything
-# when there is no change or on --dry-run. Fixture transcripts, skills and settings only.
+# skillOverrides to hide and restore, and agentctl-skill-toggle stops before making anything
+# when there is no change or on --dry-run, and otherwise stops at the open PR. Fixture transcripts, skills and settings only.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -165,7 +165,7 @@ toggle_repo() {
   toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
   run "$TOGGLE" --dry-run
   assert_success
-  assert_output --partial 'would land'
+  assert_output --partial 'would open a PR'
   assert_output --partial 'hide 1 (zeta), restore 1 (beta)'
   run git -C "$DOTFILES" worktree list
   assert_equal "$(wc -l <<<"$output")" 1
@@ -189,6 +189,24 @@ toggle_repo() {
   assert_success
   assert_output --partial 'verdict BLOCKED'
   assert_output --partial 'PR #77 is still open'
+}
+
+@test "a new change stops at its open PR: BLOCKED, the worktree gone, agent-land never called" {
+  toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
+  mkdir -p "$SANDBOX/ghbin"
+  printf '#!/usr/bin/env bash\ncase "$*" in "pr create"*) echo https://github.com/o/r/pull/88 ;; esac\n' > "$SANDBOX/ghbin/gh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/ghbin/agent-queue"
+  printf '#!/usr/bin/env bash\ntouch %q\n' "$SANDBOX/landed" > "$SANDBOX/ghbin/agent-land"
+  chmod +x "$SANDBOX"/ghbin/*
+  rm -f "$HOME/.local/lib/agent-proof.sh" "$HOME/.local/bin/agent-queue" "$HOME/.local/bin/agent-land"
+  printf 'proof_outcome() { echo "verdict $2"; }\n' > "$HOME/.local/lib/agent-proof.sh"
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
+  assert_success
+  assert_output --partial 'verdict BLOCKED'
+  assert_output --partial 'opened #88 for review'
+  [ ! -e "$SANDBOX/landed" ]
+  run git -C "$DOTFILES" worktree list
+  assert_equal "$(wc -l <<<"$output")" 1
 }
 
 @test "a settings file jq would reformat stops the toggle before it makes anything" {

@@ -2041,6 +2041,19 @@ failed() {
   for f; do printf 'fast tier\tFast tier\t2026-11-06T17:49:03Z #  in test file %s, line 60)\n' "$f"; done > "$GHD/log.$id"
 }
 
+@test "hold: a repo day-log-ci lists on Forgejo with another base is read under that name and base" {
+  hold_setup
+  export SCHEDULES_REPOS="$SANDBOX/day-log-ci"
+  printf '# watched\nforgejo:git.example.test/O/R master\n' > "$SCHEDULES_REPOS"
+  sed -i 's|\[ "$1 $3 $4" = "runs --branch main" \]|[ "$1 $2 $3 $4" = "runs forgejo:o/r --branch master" ]|' "$SCHEDULES_SYNC"
+  cleanup hit -7200 5 aaa11111 .local/bin/tool
+  ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'is not in the run ledger'
+  assert_output --partial 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge hit'
+}
+
 @test "hold: main going red on a merge's area test names that merge, and only that one" {
   hold_setup
   cleanup hit -7200 5 aaa11111 .local/bin/tool
