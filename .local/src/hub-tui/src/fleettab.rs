@@ -145,7 +145,12 @@ fn who_table(
                     },
                 ),
                 cell(r.state.clone(), state),
-                usd(r.cost_24h).into(),
+                format!(
+                    "{}{}",
+                    if r.cost_estimated { "~" } else { "" },
+                    usd(r.cost_24h)
+                )
+                .into(),
                 r.activity.clone().into(),
                 r.since.map_or("-".into(), |s| dur((now - s) as f64)).into(),
                 r.purpose.clone().into(),
@@ -879,6 +884,7 @@ pub mod tests {
             state: state.into(),
             since: Some(NOW - 600),
             cost_24h: (tier < 3).then_some(4.5),
+            cost_estimated: false,
             activity: String::new(),
             purpose: format!("{name} for"),
             doing: format!("{name} doing"),

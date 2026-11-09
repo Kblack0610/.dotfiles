@@ -453,21 +453,29 @@ test("a snapshot from before the reader has no langfuse key and still draws the 
   assert.equal(ctx.langfuseSection({ tokens: null }), "");
 });
 
-test("WHO SPENT 24H leads the tab: live Claude by runner, other harnesses from outcomes with their unpriced count", () => {
-  const who = { usd: 10, claude_usd: 9, rows: [
-    { who: "you", usd: 6, share: 0.6, source: "Prometheus", sessions: null, unpriced: null },
-    { who: "fleet-dispatch", usd: 3, share: 0.3, source: "Prometheus", sessions: null, unpriced: null },
-    { who: "codex", usd: 1, share: 0.1, source: "outcomes", sessions: 2, unpriced: 1 },
-    { who: "opencode", usd: null, share: 0, source: "outcomes", sessions: 1, unpriced: 1 },
-  ] };
-  const h = show(board({ who }));
-  assert.ok(h.indexOf("sec-who") < h.indexOf("sec-burn"), "who spent it is the first answer");
-  assert.match(h, /Who spent 24h <span class="muted">\$10\.00: Claude \$9\.00 live \(exporting sessions\); others: outcomes<\/span>/);
-  assert.match(h, /<tr><td>fleet-dispatch<\/td><td class="n">\$3\.00<\/td><td class="n">30%<\/td><td class="muted">live<\/td><\/tr>/);
-  assert.match(h, /<td>codex<\/td>.*?outcomes, 2 sessions, <span class="warn">1 unpriced<\/span>/);
-  assert.match(h, /<tr><td>opencode<\/td><td class="n">-<\/td><td class="n">-<\/td>/, "nothing priced is unknown, never $0");
-  assert.doesNotMatch(h, /LIVE 24H/, "the live total is this block's head, not a second tile");
+test("the fleet figure leads the tab: every row says measured or estimated and every % is of the fleet", () => {
+  const fleet_cost = { why: null, usd: "about $849", measured: "$310", estimated: "$538", as_of: 1700000000, stale: false,
+    coverage: "71% of tokens estimated: 280 of 458 sessions have no cost telemetry",
+    rows: [
+      { name: "queue items", usd: 260, cost: "$260", share: "31%", basis: "30 sessions, $214 measured, $46 estimated", detail: null },
+      { name: "shepherd", usd: 44, cost: "$44", share: "5%", basis: "61 sessions, measured", detail: null },
+      { name: "other runners", usd: 30, cost: "$30", share: "4%", basis: "139 sessions, estimated", detail: "ask-judge $6.40, briefing $2.90" },
+      { name: "lazer-reserve", usd: null, cost: "-", share: "-", basis: "1 session, no price known", detail: null },
+    ],
+    unpriced: ["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions"],
+    days: "11-07 $1,295  11-08 $738", foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens." };
+  const h = show(board({ fleet_cost }));
+  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn"), "the whole figure is the first answer");
+  assert.match(h, /Fleet cost 24h about \$849 <span class="muted">measured \$310, estimated \$538, as of /);
+  assert.match(h, /<th class="n">% of fleet<\/th>/);
+  assert.match(h, /<tr><td>shepherd<\/td><td class="n">\$44<\/td><td class="n">5%<\/td><td class="muted">61 sessions, measured<\/td><\/tr>/);
+  assert.match(h, /colspan="3" class="muted wrap">ask-judge \$6\.40, briefing \$2\.90/, "every runner is reachable");
+  assert.match(h, /<tr><td>lazer-reserve<\/td><td class="n">-<\/td>/, "nothing priced is unknown, never $0");
+  assert.match(h, /not in the total/);
+  assert.match(h, /last days 11-07 \$1,295/);
+  assert.match(show(board({ fleet_cost: { ...fleet_cost, stale: true } })), /class="warn">stale, as of /);
   // negative control: nothing read says so, never a $0 table
-  const none = show(board({ who: { usd: 0, claude_usd: null, rows: [] } }));
-  assert.match(none, /id="sec-who">Who spent 24h<\/h2><div class="panel muted">nothing read/);
+  const none = show(board({ fleet_cost: { why: "nothing read: no file", rows: [] } }));
+  assert.match(none, /id="sec-fleet">Fleet cost 24h<\/h2><div class="panel"><span class="warn">nothing read: no file/);
+  assert.doesNotMatch(none, /% of fleet/);
 });

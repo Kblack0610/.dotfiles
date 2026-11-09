@@ -73,7 +73,7 @@ function whoRow(r) {
   const shut = fst.fold.has(r.key);
   const fold = r.kids ? `<button class="thsort" data-fold="${esc(r.key)}" aria-expanded="${!shut}" title="${shut ? "unfold" : "fold"} the ${r.kids} rows under it">${shut ? "&gt;" : "v"}</button> ` : "";
   return `<tr class="wr" data-href="${esc(whoHref(r))}"><td class="muted">${fold}${esc(r.kind)}</td><td><a href="${esc(whoHref(r))}">${esc(r.who)}</a></td>` +
-    `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.cost_24h == null ? "-" : `<a href="#costs">${usd(r.cost_24h)}</a>`}</td><td class="muted">${esc(r.activity)}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
+    `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.cost_24h == null ? "-" : `<a href="#costs">${r.cost_estimated ? "~" : ""}${usd(r.cost_24h)}</a>`}</td><td class="muted">${esc(r.activity)}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
     `<td class="wrap">${esc(r.for)}</td><td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td><td class="muted">${esc(r.project)}</td></tr>`;
 }
 
