@@ -320,11 +320,16 @@ scroll_bind='--bind=ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up,pa
   echo side > "$XDG_STATE_HOME/panels/agent-panel.layout"
   run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" args agent-panel
   assert_success
-  assert_line --index 0 '--preview-window=right,65%,border-left,wrap'
+  assert_line --index 0 '--preview-window=right,65%,border-left,wrap,wrap-word,follow,~1'
   assert_line --index 1 "$(layout_bind agent-panel)"
   assert_line --index 2 "$scroll_bind"
   run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" args
   assert_failure
+  # ctrl-/ keeps agent-panel's own flags on every step; other panels never get them.
+  FZF_COLUMNS=100 FZF_PREVIEW_COLUMNS=54 run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" next agent-panel
+  assert_output 'change-preview-window(down,60%,border-top,wrap,hidden,wrap-word,follow,~1)'
+  FZF_COLUMNS=100 FZF_PREVIEW_COLUMNS=54 run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" next questions
+  assert_output 'change-preview-window(down,60%,border-top,wrap,hidden)'
 }
 
 # ── tmux ─────────────────────────────────────────────────────────────────────
