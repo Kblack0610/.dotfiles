@@ -85,6 +85,7 @@ mod tests {
             state: "working".into(),
             since: None,
             cost_24h: None,
+            cost_estimated: false,
             activity: String::new(),
             purpose: String::new(),
             doing: String::new(),

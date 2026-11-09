@@ -266,7 +266,7 @@ fn token_table(title: &'static str, rows: &[Share], p: Palette, w: usize) -> Vec
         })
         .collect();
     Table {
-        header: vec![title, "CALLS", "OUTPUT", "SHARE", "RE-READ"],
+        header: vec![title, "CALLS", "OUTPUT", "OF OUTPUT", "RE-READ"],
         rows,
         keep: vec![0, 3, 2, 4, 1],
         right: vec![1, 2, 3, 4],

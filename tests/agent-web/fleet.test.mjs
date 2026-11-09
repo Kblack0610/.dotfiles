@@ -318,7 +318,7 @@ test("a judge has no tile on the Fleet tab, and Log's verdict headers link to th
   st.tab = "fleet";
 });
 
-test("COST 24H is a runner's live Claude dollars linking to Costs, and none is a dash, never $0", () => {
+test("COST 24H is a runner's dollars linking to Costs, and none is a dash, never $0", () => {
   vm.runInContext("st", ctx).tab = "fleet";
   vm.runInContext("fst", ctx).data = fleetData;
   ctx.renderFleet();
@@ -326,5 +326,8 @@ test("COST 24H is a runner's live Claude dollars linking to Costs, and none is a
   assert.match(h, />cost 24h<\/button><\/th>/);
   assert.match(h, /<td class="bad">failed<\/td><td class="n"><a href="#costs">\$4\.50<\/a><\/td>/);
   assert.match(h, /<td class="warn">needs you<\/td><td class="n">-<\/td>/, "a session has no runner cost");
+  vm.runInContext("fst", ctx).data = { ...fleetData, who: fleetData.who.map((r) => ({ ...r, cost_estimated: r.cost_24h != null })) };
+  ctx.renderFleet();
+  assert.match(box.innerHTML, /<a href="#costs">~\$4\.50<\/a>/, "an estimated figure is marked on the screen");
   assert.doesNotMatch(h, /\$0\.00/);
 });
