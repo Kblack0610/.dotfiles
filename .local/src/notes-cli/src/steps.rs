@@ -16,7 +16,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 /// The chain's steps, in order. `done` is terminal: it counts arrivals, never what sits in it.
-pub const STEPS: [&str; 6] = ["inbox", "backlog", "queued", "running", "waiting", "done"];
+pub const STEPS: [&str; 7] = [
+    "inbox", "backlog", "queued", "running", "review", "waiting", "done",
+];
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum Key {

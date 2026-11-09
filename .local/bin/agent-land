@@ -246,7 +246,7 @@ it=$(agent-queue show "$item" --json 2>/dev/null) || die "no queue item $item (a
 # and `merged:` their merge commits in the same order, so a task split across repos lands each on
 # its one item. Which repo this PR is in needs gh, so once_done checks it after the PR is read.
 case "$(jq -r 'if .state == "done" and .status == "ok" and (.pr // "") != "" then "done-ok" else .state end' <<<"$it")" in
-running | waiting | queued | done-ok) ;;
+running | waiting | review | queued | done-ok) ;;
 *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
 esac
 # With no --repo, the item's own pr:<owner>/<repo>#<pr> names the repo: the bare number alone would

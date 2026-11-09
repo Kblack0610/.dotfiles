@@ -46,7 +46,7 @@ impl Work {
         match self.state {
             "failed" => 0,
             "waiting" => 1,
-            "active" | "open" => 2,
+            "active" | "open" | "review" => 2,
             "done" => 3,
             "cancelled" => 4,
             _ => 5,
@@ -62,6 +62,7 @@ impl Row for Work {
         "done",
         "active",
         "waiting",
+        "review",
         "queued",
         "failed",
         "cancelled",
@@ -273,6 +274,12 @@ where
             at(&i.finished),
         ),
         State::Waiting => ("waiting", at(&i.waiting).or_else(|| at(&i.started))),
+        State::Review => (
+            "review",
+            at(&i.review)
+                .or_else(|| at(&i.waiting))
+                .or_else(|| at(&i.started)),
+        ),
         State::Running => ("active", at(&i.started)),
         State::Queued => ("queued", at(&i.queued)),
     };

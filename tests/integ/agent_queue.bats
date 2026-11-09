@@ -790,6 +790,14 @@ notes --profile bnb ptask game --agent start gm-9"
   [ "$(field "$f" session)" = lab:game-agent-1 ]
   "$AQ" move w waiting
   [ -n "$(field "$(item waiting w)" waiting)" ]
+  "$AQ" move w review
+  [ -n "$(field "$(item review w)" review)" ]
+  run "$AQ" list --state active
+  assert_output --partial $'review\t'
+  run "$AQ" list --state waiting
+  assert_output 'queue: nothing waiting'
+  run "$AQ" list --state review --json
+  [ "$(jq -r .slug <<<"$output")" = w ]
   run "$AQ" move w done
   assert_failure; assert_output --partial "--status"
   "$AQ" move w done --status ok
@@ -1031,7 +1039,7 @@ notes --profile bnb ptask game --agent start gm-9"
   assert_failure 1
 }
 
-@test "mine: the Claude session decides first, across tmux sessions and in waiting; none with a session id exits 1" {
+@test "mine: the Claude session decides first, across tmux sessions and in waiting or review; none with a session id exits 1" {
   printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.session"
   export TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
   "$AQ" add --project game --running --session lab:dotfiles --slug tmux-only "an item of the same tmux session"
@@ -1040,6 +1048,9 @@ notes --profile bnb ptask game --agent start gm-9"
   assert_success
   assert_output ours
   "$AQ" move ours waiting
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" mine
+  assert_output ours
+  "$AQ" move ours review
   CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" mine
   assert_output ours
   unset TMUX

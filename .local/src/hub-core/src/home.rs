@@ -519,7 +519,7 @@ pub fn needs(
     let items: Vec<&Item> = queue.map(|q| q.items.iter().collect()).unwrap_or_default();
     let item_of = |name: &str| {
         items.iter().copied().find(|i| {
-            matches!(i.state, State::Waiting | State::Running)
+            matches!(i.state, State::Waiting | State::Running | State::Review)
                 && i.session.as_deref().is_some_and(|s| tmux_name(s) == name)
         })
     };
