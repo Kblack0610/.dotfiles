@@ -123,6 +123,43 @@ test("a cell holding a control is never hidden, whatever its column", () => {
   assert.deepEqual(row.cells.map((c) => c.dataset.role), ["lead", "rest", "glance"]);
 });
 
+test("a hand-written table's labels come from its header text, and a named glance cell keeps its name", () => {
+  const hs = [["lead", "host"], ["glance", "temp"], ["", "where"]].map(([role, textContent], i) => ({ dataset: i === 1 ? { role, named: "" } : { role }, textContent }));
+  const row = trOf(cells(3)), t = { rows: [trOf(hs), row], classList: { add() {} } };
+  ctx.subject = t;
+  run("tblStamp(subject)");
+  assert.deepEqual(row.cells.map((c) => c.dataset.label), ["host", "temp", "where"]);
+  assert.deepEqual(row.cells.map((c) => "named" in c.dataset), [false, true, false]);
+});
+
+test("a pfold is always open on a wide screen, and on a phone is a closed line until opened", () => {
+  const draw = () => run(`pfold("x", "the line", "the part", "sec-x")`);
+  assert.equal(draw(), `<details class="pfold" data-pf="x" id="sec-x" open><summary>the line</summary>the part</details>`);
+  ctx.matchMedia = () => ({ matches: true });
+  assert.doesNotMatch(draw(), / open>/);
+  run(`PFOLD.x = true`);
+  assert.match(draw(), / open>/, "opened on a phone stays open across a redraw");
+  run(`delete PFOLD.x`);
+  delete ctx.matchMedia;
+});
+
+test("every hand-written table header on Infra and Costs names a lead", () => {
+  for (const f of ["infra.js", "costs.js"]) for (const [h] of readFileSync(new URL(f, dir), "utf8").matchAll(/<table class="tbl"><tr><th.*?<\/tr>/g))
+    assert.match(h, /data-role="lead"/, `${f}: ${h}`);
+});
+
+test("an open session's action buttons are one fold, and a confirm or a result stays outside it", () => {
+  const acts = { hidden: true, innerHTML: "" }, real = doc.getElementById;
+  doc.getElementById = (id) => (id === "acts" ? acts : real(id));
+  run(`st.sel = { target: "t1", account: "a", actions: ["interrupt"] }; st.act = { confirm: null, busy: false, msg: "done", err: false }; renderActs()`);
+  assert.match(acts.innerHTML, /^<details class="pfold" data-pf="acts" open><summary>Actions<\/summary><div class="actrow"><button class="btn" data-act="interrupt"[^>]*>Interrupt<\/button><\/div><\/details><div class="msg">done<\/div>$/);
+  run(`st.opts = { describe: {}, accounts: [] }; st.act.confirm = { action: "interrupt", target: "t1" }; renderActs()`);
+  assert.doesNotMatch(acts.innerHTML, /pfold/, "a confirm is never folded away");
+  assert.match(acts.innerHTML, /data-go/);
+  run(`st.sel = null; st.act = { confirm: null, busy: false, msg: "", err: false }`);
+  doc.getElementById = real;
+});
+
 test("a table with no lead keeps its columns", () => {
   const row = trOf(cells(2)), t = tableOf(["", ""], [row]);
   ctx.subject = t;

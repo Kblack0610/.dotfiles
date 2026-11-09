@@ -86,16 +86,17 @@ function fleetCostSection(d) {
   const row = (r) => `<tr><td>${esc(r.name)}</td><td class="n">${esc(r.cost)}</td><td class="n">${esc(r.share)}</td><td class="muted">${esc(r.basis)}</td></tr>` +
     (r.detail ? `<tr><td></td><td colspan="3" class="muted wrap">${esc(r.detail)}</td></tr>` : "");
   return `${title} ${esc(f.usd)} <span class="muted">measured ${esc(f.measured)}, estimated ${esc(f.estimated)}, ${age}</span></h2>` +
-    `<div class="panel scroll"><div class="muted">${esc(f.coverage)}</div>` +
+    pfold("cost-fleet", `Who spent it <span class="muted">${f.rows.length} rows</span>`, `<div class="panel scroll"><div class="muted">${esc(f.coverage)}</div>` +
     `<table class="tbl"><tr><th data-role="lead">who</th><th class="n" data-role="glance">cost</th><th class="n" data-role="glance">% of fleet</th><th data-role="glance">measured or estimated</th></tr>${f.rows.map(row).join("")}</table>` +
     f.unpriced.map((u) => `<div class="warn">${esc(u)}</div>`).join("") +
     (f.days ? `<div class="muted">last days ${esc(f.days)}</div>` : "") +
-    `<div class="muted">${esc(f.foot)}</div></div>`;
+    `<div class="muted">${esc(f.foot)}</div></div>`);
 }
 
 // The Burn section (hub_core::burn, the hub's coststab.rs `burn`): the headline coloured by the
 // fleet's level, then the drip, when the accounts are back on pace and one row per source. Green
-// folds to its headline (dashboards rule 4); amber and red start open until the reader folds it.
+// folds to its headline (dashboards rule 4); amber and red start open until the reader folds it,
+// except on a phone, where the headline is the verdict and the tables wait for a tap.
 function burnPace(b) {
   const p = b.pace;
   if (p.on_pace) return "every source is on pace";
@@ -108,8 +109,9 @@ function burnPace(b) {
 // dollar budget, which has no pace line.
 const burnCell = (a, t, at) => (a.unpaced ? "-" : !(a.used > a.gone) || (t != null && t <= at) ? "on pace" : t == null ? "after reset" : when(t));
 
-// The Burn table's columns, the TUI's header in its order; true is a number column.
-const BURN_COLS = [["source"], ["kind"], ["live", true], ["bar"], ["used", true], ["gone", true], ["reserve", true], ["room"], ["burn/h", true], ["keeps/h", true],
+// The Burn table's columns, the TUI's header in its order; true is a number column, and the third
+// entry is the column's place in a phone's row.
+const BURN_COLS = [["source", false, ' data-role="lead"'], ["kind"], ["live", true], ["bar"], ["used", true, ' data-role="glance" data-named'], ["gone", true, ' data-role="glance" data-named'], ["reserve", true], ["room", false, ' data-role="glance"'], ["burn/h", true], ["keeps/h", true],
   ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["$24h", true]];
 // A key is a dollar budget: the columns that always say nothing for one are left out.
 const KEY_COLS = BURN_COLS.filter(([t]) => ["source", "live", "bar", "used", "reserve", "room", "resets", "$24h"].includes(t));
@@ -136,7 +138,7 @@ function burnRow(a, at, note, cols) {
   return `<tr>${cols.map(([t]) => cells[t]).join("")}</tr>`;
 }
 
-const burnTable = (b, cols, rows) => `<table class="tbl"><tr>${cols.map(([t, n]) => `<th${n ? ' class="n"' : ""}>${t}</th>`).join("")}</tr>` +
+const burnTable = (b, cols, rows) => `<table class="tbl"><tr>${cols.map(([t, n, phone]) => `<th${n ? ' class="n"' : ""}${phone || ""}>${t}</th>`).join("")}</tr>` +
   rows.map((a) => burnRow(a, b.at, b.stale, cols)).join("") + `</table>`;
 
 // The keys inside a pool, folded under its row. Amber starts open under its own fold key, because
@@ -153,7 +155,7 @@ function costsBurn(d) {
   if (!b || !b.accounts.length) return `<h2 class="sec" id="sec-burn">Burn</h2><div class="panel muted">no data from claude-acct</div>`;
   const cls = b.level === "bad" ? "bad" : b.level === "warn" ? "warn" : "ok";
   const held = b.drip.held ? ` <a class="warn" href="#sessions" title="${esc(b.drip.held)}">dispatch held -> Sessions</a>` : "";
-  const open = cost.open.burn != null ? cost.open.burn : b.level !== "ok";
+  const open = cost.open.burn != null ? cost.open.burn : b.level !== "ok" && !isPhone();
   return `<details class="csec" data-k="burn" id="sec-burn"${open ? " open" : ""}><summary><h2 class="sec">Burn <span class="burn ${cls}">${esc(b.head)}</span></h2></summary>` +
     `<div class="panel"><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
     `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
@@ -165,7 +167,7 @@ function costsBurn(d) {
 function tokensTable(title, rows) {
   const row = (r, i) => `<tr><td>${esc(r.name)}</td><td class="n">${r.calls.toLocaleString()}</td><td class="n">${kfmt(r.chars)} ch</td>` +
     `<td class="m">${meter(r.share, SLOTS[i] && !r.other ? SLOTS[i] : OTHER)}</td><td class="n">${(r.share * 100).toFixed(1)}%</td><td class="n">${kfmt(r.carried_tokens)}</td></tr>`;
-  return `<table class="tbl"><tr><th>${title}</th><th class="n">calls</th><th class="n">output</th><th>share</th><th class="n">% of output</th><th class="n">re-read</th></tr>${rows.map(row).join("")}</table>`;
+  return `<table class="tbl"><tr><th data-role="lead">${title}</th><th class="n" data-role="glance" data-named>calls</th><th class="n" data-role="glance" data-named>output</th><th>share</th><th class="n" data-role="glance" data-named>% of output</th><th class="n">re-read</th></tr>${rows.map(row).join("")}</table>`;
 }
 
 const TOK_WINDOWS = { day: "yesterday", week: "7d" };
@@ -213,7 +215,7 @@ function langfuseSection(d) {
   const models = f.gateway_models.map((m) => `${esc(m.model)} ${usd(m.cost_usd)}`).join(", ") + (f.gateway_other_models ? `, ${f.gateway_other_models} more` : "");
   const trunc = f.truncated ? `<span class="warn"> (classes partial: more errors than were paged)</span>` : "";
   return `<details class="csec" data-k="${key}" id="sec-langfuse"${open ? " open" : ""}><summary>${title}<span class="${t.stale ? "warn" : "muted"}">${head}${t.stale ? `, stale: newest snapshot ${esc(t.date)}` : ""}</span></h2></summary>` +
-    `<div class="panel scroll"><table class="tbl"><tr><th>slowest tools, by total time</th><th class="n">calls</th><th class="n">p50</th><th class="n">p95</th><th class="n">total</th></tr>${rows}</table>` +
+    `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">slowest tools, by total time</th><th class="n" data-role="glance" data-named>calls</th><th class="n">p50</th><th class="n" data-role="glance" data-named>p95</th><th class="n" data-role="glance" data-named>total</th></tr>${rows}</table>` +
     `<div class="muted">tool errors: ${f.tool_errors.toLocaleString()} of ${f.tool_executions.toLocaleString()} executions (${lfClasses(f.tool_error_classes)})${trunc}</div>` +
     `<div class="muted">gateway: ${f.gateway_calls.toLocaleString()} calls, ${f.gateway_errors.toLocaleString()} errors (${lfClasses(f.gateway_error_classes)}), ${kfmt(f.gateway_tokens)} tokens; dearest: ${models || "none"}</div>` +
     `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs">Fleet cost 24h</a></div></div></details>`;
@@ -236,7 +238,7 @@ function costsSections(d) {
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
-  let html = `${fleetCostSection(d)}${costsBurn(d)}${tokensSection(d)}${langfuseSection(d)}${costsSections(d)}<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`;
+  let html = `${fleetCostSection(d)}${costsBurn(d)}${tokensSection(d)}${langfuseSection(d)}${costsSections(d)}${pfold("cost-totals", `Spend <span class="muted">${(d.totals || []).map((t) => `${esc(t.window)} ${usd(t.usd)}`).join(", ")}</span>`, `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`)}`;
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
