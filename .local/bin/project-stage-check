@@ -17,8 +17,8 @@
 # each row instead. Exit 1 when any row FAILs, 2 on usage or an unknown project or system.
 # --file turns each FAIL row into a story on the project's agent board, under the open epic for
 # its target: `epic(stage): <stage> ...` for a stage (with no --stage, that epic's stage is the
-# target), `epic(<system>): ...` for a system. It never files the epic: only the human, the
-# session whose plan they just approved, or an answered ask does. A row already on either sheet
+# target), `epic(<system>): ...` for a system. It never files the epic (who does:
+# ~/.local/src/docs/lifecycle.md, "What an epic is"). A row already on either sheet
 # under the same title, open or closed or dropped, is never filed again. With no epic it prints
 # what it would file and writes nothing. Exit 0, 1 when a write failed, 2 as above.
 # --list prints the project's systems (which ones: ~/.local/src/docs/systems.md, "The layers"),

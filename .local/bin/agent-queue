@@ -785,7 +785,8 @@ project_of_cwd() {
 # the item closes on merge, or nothing. An item not promoted from the board is still a story on its
 # project's agent board, so a task shows under its feature the moment it is added: one `[/]` row
 # through `notes ptask` (the rows' one writer), `#of/<epic>` when the item names an epic of this
-# project (--epic, or its plan's `epic:` line), `#size/s` for a light item and `#size/m` for a
+# project (--epic, or its plan's `epic:` line), else the standing epic of its area's system, which
+# `notes ptask` links, `#size/s` for a light item and `#size/m` for a
 # heavy one, at the item's priority. Started, so dispatch never promotes it a second time. An open
 # row with the same text is linked instead of written twice. A project with no lab sheet or no row
 # code files nothing, and a failed write never stops the add: the item is the record, the row its credit.
