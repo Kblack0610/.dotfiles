@@ -1922,7 +1922,7 @@ unstart_orphans() {
 # (where a --pr-only run leaves it), CLOSED is failed; a state gh cannot read, or a bare pr: whose PR
 # lacks the item's stamp, leaves it for the next pass. No PR but a `report` (a doc+ask kind's
 # doc, a stack-review report) is done ok: that was the deliverable. A waiting item with neither
-# stays waiting with its note; otherwise neither is failed, the reason in note.
+# stays parked on its blocker, any other item with neither is failed, the reason in note.
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
@@ -1944,6 +1944,12 @@ settle_item() {
   fi
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait.
   [ "$state:$st" != OPEN:waiting ] || return 0
+  if [ "$st:$pr$report" = waiting: ]; then
+    [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
+    agent-queue set "$1" "note=session $2 ended; waiting without a PR" >/dev/null
+    logline "reaped $2: queue item $1 stays waiting without a PR"
+    return 0
+  fi
   dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
   if [ -n "$pr" ]; then
     case "$state" in
@@ -1968,10 +1974,6 @@ settle_item() {
   elif [ -n "$report" ]; then
     agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
     logline "reaped $2: session gone, queue item $1 done with its report $report"
-  elif [ "$st" = waiting ]; then
-    agent-queue move "$1" waiting --if "$st" >/dev/null || return 0
-    agent-queue set "$1" "note=$(jq -r --arg fallback "session $2 ended; waiting without a PR" '.note // $fallback' <<<"$it")" >/dev/null
-    logline "reaped $2: queue item $1 stays waiting without a PR"
   else
     agent-queue move "$1" "done" --status failed --if "$st" >/dev/null || return 0
     agent-queue set "$1" "note=session $2 ended before it closed the item" >/dev/null

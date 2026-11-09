@@ -3837,9 +3837,13 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
   assert_equal "$(qfield "$(qitem waiting no-note)" note)" 'session game-agent-2 ended; waiting without a PR'
   assert_not_called 'model-lane'
+  mtime=$(stat -c %y "$(qitem waiting blocked)")
+  dispatch_event() { echo "$*" >> "$NOTES_FIXTURE/events.log"; }
 
   run cmd_reap
   assert_success
+  assert [ ! -e "$NOTES_FIXTURE/events.log" ]
+  assert_equal "$(stat -c %y "$(qitem waiting blocked)")" "$mtime"
   assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
   assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
   assert_not_called 'model-lane'
