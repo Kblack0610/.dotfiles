@@ -463,18 +463,61 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   [ "$(ls -A "$HOME/.agent/parked")" = agent-1 ]
 }
 
-@test "park and move refuse a claude on the Lazer gateway: it is on no account, a resume would put it on one" {
+# on_gateway <claude pid>: that claude runs on the Lazer gateway, as claude-lazer exports it
+on_gateway() { printf 'ANTHROPIC_BASE_URL=https://llm.example\0ANTHROPIC_AUTH_TOKEN=sk-x\0' > "$CLAUDE_ACCT_PROC/$1/environ"; }
+
+# queue_stub <item>: agent-queue finds that item for the session, and logs each set to $FIX/queue.set
+queue_stub() {
+  printf '#!/usr/bin/env bash\ncase "$1" in mine) echo %s ;; set) echo "$*" >> "$FIX/queue.set" ;; esac\n' "$1" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+}
+
+@test "park refuses a claude on the Lazer gateway: it is on no account, a resume would put it on one" {
   session lab spill-1 %7 70 71 idle ""
-  printf 'ANTHROPIC_BASE_URL=https://llm.example\0' > "$CLAUDE_ACCT_PROC/71/environ"
-  for verb in park move; do
-    run "$ACCT" "$verb" spill-1 --server lab
-    assert_failure
-    assert_output --partial "claude-acct: $verb spill-1: it runs on the Lazer gateway, not an account"
-  done
+  on_gateway 71
+  run "$ACCT" park spill-1 --server lab
+  assert_failure
+  assert_output --partial "claude-acct: park spill-1: it runs on the Lazer gateway, not an account"
   [ -d "$CLAUDE_ACCT_PROC/71" ]
   [ ! -e "$(PARKED_LEDGER spill-1)" ]
   run tmux_calls
   refute_output --partial 'send-keys'
+}
+
+@test "move takes a claude off the Lazer gateway onto the best account, even main, with the gateway dropped from its resume" {
+  queue_stub ucp-816
+  # main is the best account, and a gateway claude has no CLAUDE_CONFIG_DIR: it must not read as already there
+  usage main 5 10
+  usage alt 20 30
+  session lab spill-1 %7 70 71 idle "" --model sonnet
+  on_gateway 71
+  run "$ACCT" move spill-1 --server lab
+  assert_success
+  assert_output --partial 'from gateway to main (5h 5%, 7d 10%)'
+  assert_output --partial 'claude-acct: moved spill-1 to main'
+  run cat "$FIX/started"
+  assert_output --partial 'env -u CLAUDE_CONFIG_DIR env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN claude --model sonnet --resume sid-1'
+  assert_output --partial 'moved\ from\ the\ Lazer\ gateway\ to\ main'
+  # its item stops holding the gateway source's slot
+  run cat "$FIX/queue.set"
+  assert_output 'set ucp-816 agent=claude account=main'
+}
+
+@test "move --to names the account for a gateway claude; a move off an account leaves its item alone" {
+  queue_stub ucp-772
+  session lab spill-2 %8 80 81 idle ""
+  on_gateway 81
+  run "$ACCT" move spill-2 --server lab --to alt
+  assert_success
+  assert_output --partial 'from gateway to alt'
+  run cat "$FIX/queue.set"
+  assert_output 'set ucp-772 agent=claude account=alt'
+  # Negative control: an account session's item is not relabelled
+  rm "$FIX/queue.set"
+  session lab agent-1 %5 100 101 idle ""
+  run "$ACCT" move agent-1 --server lab
+  assert_success
+  [ ! -e "$FIX/queue.set" ]
 }
 
 @test "park never refuses over accounts: already on the best one, or no usage data at all" {
