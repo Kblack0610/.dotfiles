@@ -10,8 +10,8 @@
 #                                   happened; nothing for a repo that is not one of the checkouts
 #
 # Stow serves the main checkouts, so a merged change is live only once its checkout moves, and a
-# file it adds or moves to the other repo only once it has a link: after any move, `dotfiles-deploy
-# --apply --missing` links every deploy path of both checkouts that resolves to nothing in $HOME (one
+# file it adds or moves to the other repo only once it has a link: after any move by --now, and on
+# every shell pass whether or not it moved one, `dotfiles-deploy --apply --missing` links every deploy path of both checkouts that resolves to nothing in $HOME (one
 # more line when it linked or failed). It only creates links where nothing resolves; a file in $HOME
 # is never replaced. Stow ignores .claude/skills, so `skill-deploy --quiet` runs beside it (one more
 # line when it changed a link or failed).
@@ -171,17 +171,14 @@ fi
 mkdir -p "$CACHE_DIR"
 echo "$now" >"$STAMP"
 
-moved=0
 for repo in "${REPOS[@]}"; do
   [ -d "$repo/.git" ] || continue
   line=$(pull "$repo")
-  [[ "$line" == *": fast-forwarded "* ]] || continue
-  moved=1
   # Only speak in the foreground: backgrounded from .zshrc it stays silent.
-  [ ! -t 1 ] || echo "$line"
+  [[ ! -t 1 || "$line" != *": fast-forwarded "* ]] || echo "$line"
 done
-if [ "$moved" = 1 ]; then
-  line=$(attach_all)
-  [[ ! -t 1 || -z "$line" ]] || echo "$line"
-fi
+# Every pass attaches, moved or not: a checkout another tool pulled moved without this script, and
+# its new files would otherwise never link.
+line=$(attach_all)
+[[ ! -t 1 || -z "$line" ]] || echo "$line"
 exit 0

@@ -102,6 +102,18 @@ head_of() { git -C "$1" rev-parse HEAD; }
   assert_output 2
 }
 
+@test "the shell pass links a file another tool's pull added, though it moves nothing itself" {
+  export DOTFILES_DEPLOY="$REPO_ROOT/.local/bin/dotfiles-deploy"
+  rm -rf "$PRIV"
+  add_upstream pub .local/bin/hand-pulled v1
+  git -C "$PUB" pull -q
+  run "$PULL"
+  assert_success
+  assert_equal "$(readlink -f "$HOME/.local/bin/hand-pulled")" "$(readlink -f "$PUB/.local/bin/hand-pulled")"
+  run grep -c 'fast-forwarded main' "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output 0
+}
+
 @test "a fast-forward that adds a SKILL.md links the skill, flat" {
   export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
   add_upstream pub .claude/skills/ops/new-skill/SKILL.md v1
