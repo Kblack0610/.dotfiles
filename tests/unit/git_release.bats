@@ -286,6 +286,25 @@ tag() { git -C "$REPO" tag "$1"; }
   assert_output ''
 }
 
+@test "git_first_tag: the oldest tag of the line that holds the commit, by creation; none yet is empty" {
+  # at <epoch> <tag>: an annotated tag made at that time, so creation order is not version order
+  at() { GIT_COMMITTER_DATE="@$1 +0000" git -C "$REPO" tag -a -m "$2" "$2"; }
+  commit a; at 1000 app-v1.0.0
+  commit b; sha=$(git -C "$REPO" rev-parse HEAD)
+  at 2000 other-v9.0.0
+  commit c; at 3000 app-v1.1.0-rc1
+  at 4000 app-v1.1.0
+  commit d; late=$(git -C "$REPO" rev-parse HEAD)
+  run git_first_tag "$REPO" app 1 '' "$sha"
+  assert_output 'app-v1.1.0-rc1 3000'
+  # NEGATIVE CONTROL: a sibling product's tag that holds it first is not this line's release
+  run git_first_tag "$REPO" app 1 '' "$sha"
+  refute_output --partial other-v9.0.0
+  run git_first_tag "$REPO" app 1 '' "$late"
+  assert_success
+  assert_output ''
+}
+
 @test "git_tag_changes: PR-numbered subjects between two tags, under a path filter" {
   commit base; tag v1.0.0
   commit "web change (#1)" apps/web/f.txt
