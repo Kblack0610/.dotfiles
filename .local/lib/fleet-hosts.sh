@@ -17,14 +17,64 @@
 _fh_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${FLEET_HOSTS_GROUP:=fleet_workers}"
 : "${FLEET_SSH_TIMEOUT:=5}"   # seconds an ssh to a worker or the state host may take to connect, and may go silent
+: "${FLEET_FETCH_SECS:=20}"   # seconds fleet_roster_fetch may take before the roster stays as last fetched
 
-# fleet_inventory -> the inventory file: FLEET_INVENTORY, else home-config's from the project map.
-fleet_inventory() {
-  if [ -n "${FLEET_INVENTORY:-}" ]; then printf '%s' "$FLEET_INVENTORY"; return; fi
+# fleet_inventory_repo -> home-config's checkout, from the project map.
+fleet_inventory_repo() {
   declare -F project_repo_path >/dev/null ||
     . "${PROJECT_NAME_LIB:-$_fh_lib/../../.config/shared-hooks/project-name.sh}" 2>/dev/null || return 1
   local hc; hc=$(project_repo_path home-config 2>/dev/null) && [ -n "$hc" ] || return 1
-  printf '%s/ansible/inventory.yml' "$hc"
+  printf '%s' "$hc"
+}
+
+# fleet_roster_ref <checkout> -> the remote-tracking ref its mainline (main, else master) follows,
+# such as forgejo/master, whatever branch the checkout itself is on.
+fleet_roster_ref() {
+  local b up
+  for b in main master; do
+    up=$(git -C "$1" rev-parse --abbrev-ref --symbolic-full-name "$b@{u}" 2>/dev/null) &&
+      [ -n "$up" ] && { printf '%s' "$up"; return 0; }
+  done
+  return 1
+}
+
+# fleet_inventory -> where the roster is read from: FLEET_INVENTORY, else
+# "<checkout> <ref>:ansible/inventory.yml".
+fleet_inventory() {
+  if [ -n "${FLEET_INVENTORY:-}" ]; then printf '%s' "$FLEET_INVENTORY"; return; fi
+  local hc ref; hc=$(fleet_inventory_repo) && ref=$(fleet_roster_ref "$hc") || return 1
+  printf '%s %s:ansible/inventory.yml' "$hc" "$ref"
+}
+
+# fleet_inventory_text -> the inventory's YAML. home-config's comes from its mainline's
+# remote-tracking ref, never its working tree: nothing pulls that checkout, so the tree lags what
+# merged on the forge. A checkout with no such ref or file reads as no roster, said on stderr, so
+# every session stays here.
+fleet_inventory_text() {
+  if [ -n "${FLEET_INVENTORY:-}" ]; then cat "$FLEET_INVENTORY" 2>/dev/null; return; fi
+  local hc ref
+  hc=$(fleet_inventory_repo) || return 1
+  ref=$(fleet_roster_ref "$hc") || {
+    echo "fleet-hosts: $hc has no main or master tracking a remote, so the fleet roster reads as empty" >&2
+    return 1
+  }
+  git -C "$hc" show "$ref:ansible/inventory.yml" 2>/dev/null || {
+    echo "fleet-hosts: $ref in $hc has no ansible/inventory.yml, so the fleet roster reads as empty" >&2
+    return 1
+  }
+}
+
+# fleet_roster_fetch: fetch that ref alone, so a roster change merged on the forge reaches the next
+# pass; the working tree never moves. It cannot prompt, and runs no gc in a checkout others share.
+# A failed fetch says so on stderr and returns 1; the roster stays as last fetched.
+fleet_roster_fetch() {
+  [ -z "${FLEET_INVENTORY:-}" ] || return 0
+  local hc ref; hc=$(fleet_inventory_repo) && ref=$(fleet_roster_ref "$hc") || return 0
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes' timeout "$FLEET_FETCH_SECS" \
+    git -C "$hc" -c gc.auto=0 fetch --quiet "${ref%%/*}" "${ref#*/}" 2>/dev/null || {
+    echo "fleet-hosts: fetching $ref in $hc failed, so the roster is as last fetched" >&2
+    return 1
+  }
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
@@ -39,11 +89,11 @@ fleet_inventory() {
 # runs fleet_host_run in one, calls fleet_hosts >/dev/null first, so the subshells inherit it.
 fleet_hosts() {
   if [ -z "${FLEET_HOSTS_JSON+x}" ]; then
-    local inv; inv=$(fleet_inventory) && [ -f "$inv" ] || inv=''
+    local inv; inv=$(fleet_inventory_text) || inv=''
     FLEET_HOSTS_JSON=''
     # A file that never names the group has no workers; the common case skips python.
-    grep -qs "^[[:space:]]*$FLEET_HOSTS_GROUP:" "$inv" || inv=''
-    [ -z "$inv" ] || FLEET_HOSTS_JSON=$(python3 -I - "$inv" "$FLEET_HOSTS_GROUP" <<'PY'
+    grep -qs "^[[:space:]]*$FLEET_HOSTS_GROUP:" <<<"$inv" || inv=''
+    [ -z "$inv" ] || FLEET_HOSTS_JSON=$(python3 -I - <(printf '%s\n' "$inv") "$FLEET_HOSTS_GROUP" <<'PY'
 import json, os, sys
 try:
     import yaml

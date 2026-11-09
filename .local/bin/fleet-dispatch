@@ -2298,6 +2298,7 @@ demand_write() {
 # cmd_hosts [--json] -- each worker in the roster, as a pass would read it now.
 cmd_hosts() {
   local h name rows=()
+  fleet_roster_fetch
   probe_hosts "$(live_runs)"
   while IFS= read -r h; do
     [ -n "$h" ] || continue
@@ -3158,6 +3159,7 @@ triage_pass() {
 
 cmd_run() {
   local why live room
+  fleet_roster_fetch
   fleet_hosts >/dev/null   # once, so each subshell of the pass inherits the roster
   DRY=0
   [ "${1:-}" = --dry-run ] && DRY=1
