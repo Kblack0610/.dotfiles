@@ -13,7 +13,8 @@
 # file it adds or moves to the other repo only once it has a link: after any move, `dotfiles-deploy
 # --apply --missing` links every deploy path of both checkouts that resolves to nothing in $HOME (one
 # more line when it linked or failed). It only creates links where nothing resolves; a file in $HOME
-# is never replaced.
+# is never replaced. Stow ignores .claude/skills, so `skill-deploy --quiet` runs beside it (one more
+# line when it changed a link or failed).
 # `git merge --ff-only` refuses rather than overwrite a dirty or untracked file, so local work is
 # never touched; a refused or diverged checkout stays put and says why (logged too). Fail-soft:
 # every path exits 0, so no network or repo state can break a shell start or a landing.
@@ -27,6 +28,7 @@ STAMP="$CACHE_DIR/last-pull"
 LOG="$CACHE_DIR/autopull.log"
 # The public checkout's own copy, so a pull that changed it runs the new one.
 DEPLOY="${DOTFILES_DEPLOY:-${REPOS[0]}/.local/bin/dotfiles-deploy}"
+SKILL_DEPLOY="${DOTFILES_SKILL_DEPLOY:-${REPOS[0]}/.local/bin/skill-deploy}"
 DEPLOY_SECS="${DOTFILES_AUTOPULL_DEPLOY_SECS:-120}"
 FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
 
@@ -52,6 +54,12 @@ say() {
   echo "$1"
 }
 
+# log_report <cmd> <rc> <output>: a failed attach step's report goes to the log
+log_report() {
+  log "$1 exited $2, its report:"
+  printf '%s\n' "$3" | tail -n 40 | sed 's/^/    /' >>"$LOG" 2>/dev/null
+}
+
 # attach_missing -> one line when it linked anything or failed, nothing otherwise. A move can add a
 # tracked file and stow never runs on pull, so link every deploy path (both checkouts) that resolves
 # to nothing. Runs once per pass, after every move. A failure's report goes to the log.
@@ -62,12 +70,34 @@ attach_missing() {
   rc=$?
   n=$(printf '%s\n' "$out" | grep -c '^  linked ')
   if [ "$rc" -ne 0 ]; then
-    log "dotfiles-deploy --apply --missing exited $rc, its report:"
-    printf '%s\n' "$out" | tail -n 40 | sed 's/^/    /' >>"$LOG" 2>/dev/null
+    log_report 'dotfiles-deploy --apply --missing' "$rc" "$out"
     say "~: linked $n missing file(s), then dotfiles-deploy --apply --missing failed (exit $rc); report in ${LOG/#"$HOME"/\~}"
   elif [ "$n" -gt 0 ]; then
     say "~: linked $n missing file(s) into \$HOME (dotfiles-deploy --apply --missing)"
   fi
+}
+
+# attach_skills -> one line when it changed a link or failed, nothing otherwise. Idempotent and quiet,
+# so it needs no check of what the move touched, and a skill a hand pull left unlinked heals too. A
+# failure's report, a CONFLICT skill-deploy will not resolve for us, goes to the log.
+attach_skills() {
+  local out rc n
+  [ -x "$SKILL_DEPLOY" ] || return 0
+  out=$(DOTFILES="${REPOS[0]}" DOTFILES_PRIVATE="${REPOS[1]}" capped "$DEPLOY_SECS" "$SKILL_DEPLOY" --quiet 2>&1)
+  rc=$?
+  n=$(printf '%s\n' "$out" | grep -cE '^(LINKED|RELINKED|REMOVED) ')
+  if [ "$rc" -ne 0 ]; then
+    log_report 'skill-deploy --quiet' "$rc" "$out"
+    say "~: updated $n skill link(s), then skill-deploy failed (exit $rc); report in ${LOG/#"$HOME"/\~}"
+  elif [ "$n" -gt 0 ]; then
+    say "~: updated $n skill link(s) in ~/.claude/skills (skill-deploy)"
+  fi
+}
+
+# attach_all: what every pass runs once, after every move
+attach_all() {
+  attach_missing
+  attach_skills
 }
 
 # pull <checkout> -> one line on stdout saying what happened; every outcome but "already current" is
@@ -123,7 +153,7 @@ if [ "${1:-}" = --now ]; then
     [ -d "$repo/.git" ] && [ "$(phys "$repo/.git")" = "$common" ] || continue
     line=$(pull "$repo")
     echo "$line"
-    [[ "$line" != *": fast-forwarded "* ]] || attach_missing
+    [[ "$line" != *": fast-forwarded "* ]] || attach_all
     exit 0
   done
   exit 0
@@ -149,7 +179,7 @@ for repo in "${REPOS[@]}"; do
   [ ! -t 1 ] || echo "$line"
 done
 if [ "$moved" = 1 ]; then
-  line=$(attach_missing)
+  line=$(attach_all)
   [[ ! -t 1 || -z "$line" ]] || echo "$line"
 fi
 exit 0

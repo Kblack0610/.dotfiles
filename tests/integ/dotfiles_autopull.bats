@@ -12,7 +12,7 @@ setup() {
   sandbox_init basic
   PULL="$REPO_ROOT/.local/bin/dotfiles-autopull"
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
-  unset DOTFILES_DIR DOTFILES_PRIVATE DOTFILES_AUTOPULL_INTERVAL
+  unset DOTFILES_DIR DOTFILES_PRIVATE DOTFILES_AUTOPULL_INTERVAL CLAUDE_SKILLS
   PUB="$HOME/.dotfiles" PRIV="$HOME/.dotfiles-private"
   pair pub "$PUB"
   pair priv "$PRIV"
@@ -100,6 +100,89 @@ head_of() { git -C "$1" rev-parse HEAD; }
   assert_output 1
   run grep -c 'fast-forwarded main' "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
   assert_output 2
+}
+
+@test "a fast-forward that adds a SKILL.md links the skill, flat" {
+  export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
+  add_upstream pub .claude/skills/ops/new-skill/SKILL.md v1
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'fast-forwarded main'
+  assert_line --index 1 '~: updated 1 skill link(s) in ~/.claude/skills (skill-deploy)'
+  assert_equal "$(readlink -f "$HOME/.claude/skills/new-skill")" "$(readlink -f "$PUB/.claude/skills/ops/new-skill")"
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'updated 1 skill link(s)'
+}
+
+@test "a fast-forward that moves a skill's category repoints its link" {
+  export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
+  add_upstream pub .claude/skills/ops/moved-skill/SKILL.md v1
+  run "$PULL" --now "$PUB"
+  assert_success
+  git -C "$SANDBOX/pub-up" mv .claude/skills/ops .claude/skills/infra
+  git -C "$SANDBOX/pub-up" commit -qm move && git -C "$SANDBOX/pub-up" push -q origin HEAD:main
+  run "$PULL" --now "$PUB"
+  assert_line --index 1 '~: updated 1 skill link(s) in ~/.claude/skills (skill-deploy)'
+  assert_equal "$(readlink -f "$HOME/.claude/skills/moved-skill")" "$(readlink -f "$PUB/.claude/skills/infra/moved-skill")"
+}
+
+@test "a fast-forward that deletes a skill removes its link" {
+  export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
+  add_upstream pub .claude/skills/ops/gone-skill/SKILL.md v1
+  run "$PULL" --now "$PUB"
+  assert_success
+  git -C "$SANDBOX/pub-up" rm -rq .claude/skills/ops
+  git -C "$SANDBOX/pub-up" commit -qm delete && git -C "$SANDBOX/pub-up" push -q origin HEAD:main
+  run "$PULL" --now "$PUB"
+  assert_line --index 1 '~: updated 1 skill link(s) in ~/.claude/skills (skill-deploy)'
+  [ ! -L "$HOME/.claude/skills/gone-skill" ] || fail 'the deleted skill kept its link'
+}
+
+@test "a fast-forward that changes no skill links adds no line, and one that does heals a skill a hand pull left unlinked" {
+  export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
+  add_upstream pub .claude/skills/ops/one/SKILL.md v1
+  run "$PULL" --now "$PUB"
+  assert_success
+  merge pub v2
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_output --regexp '^~/\.dotfiles: fast-forwarded main [0-9a-f]{8}\.\.[0-9a-f]{8}$'
+  add_upstream pub .claude/skills/ops/hand-pulled/SKILL.md v1
+  git -C "$PUB" pull -q
+  merge pub v3
+  run "$PULL" --now "$PUB"
+  assert_line --index 1 '~: updated 1 skill link(s) in ~/.claude/skills (skill-deploy)'
+  assert_equal "$(readlink -f "$HOME/.claude/skills/hand-pulled")" "$(readlink -f "$PUB/.claude/skills/ops/hand-pulled")"
+}
+
+@test "a skill-deploy conflict after a fast-forward is named on the line, logged, and the pull still succeeds" {
+  export DOTFILES_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy"
+  mkdir -p "$HOME/.claude/skills/in-the-way"
+  printf 'hand-made\n' >"$HOME/.claude/skills/in-the-way/SKILL.md"
+  add_upstream pub .claude/skills/ops/in-the-way/SKILL.md v1
+  add_upstream pub .claude/skills/ops/fine/SKILL.md v1
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'fast-forwarded main'
+  assert_line --index 1 --partial 'updated 1 skill link(s), then skill-deploy failed (exit 1); report in'
+  assert_equal "$(cat "$HOME/.claude/skills/in-the-way/SKILL.md")" hand-made
+  assert_equal "$(readlink -f "$HOME/.claude/skills/fine")" "$(readlink -f "$PUB/.claude/skills/ops/fine")"
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'skill-deploy --quiet exited 1, its report:'
+  assert_output --partial '    CONFLICT  in-the-way'
+}
+
+@test "the shell pass links the skills both checkouts added in one skill-deploy run" {
+  printf '#!/bin/sh\necho ran >>"$SANDBOX/skill-deploy.calls"\nexec "$REAL_SKILL_DEPLOY" "$@"\n' >"$SANDBOX/skill-stub" && chmod +x "$SANDBOX/skill-stub"
+  export SANDBOX REAL_SKILL_DEPLOY="$REPO_ROOT/.local/bin/skill-deploy" DOTFILES_SKILL_DEPLOY="$SANDBOX/skill-stub"
+  add_upstream pub .claude/skills/ops/pub-skill/SKILL.md v1
+  add_upstream priv .claude/skills/ops/priv-skill/SKILL.md v1
+  run "$PULL"
+  assert_success
+  assert_output ''
+  assert_equal "$(wc -l <"$SANDBOX/skill-deploy.calls")" 1
+  assert_equal "$(readlink -f "$HOME/.claude/skills/pub-skill")" "$(readlink -f "$PUB/.claude/skills/ops/pub-skill")"
+  assert_equal "$(readlink -f "$HOME/.claude/skills/priv-skill")" "$(readlink -f "$PRIV/.claude/skills/ops/priv-skill")"
 }
 
 @test "--now from the private repo fast-forwards ~/.dotfiles-private" {
