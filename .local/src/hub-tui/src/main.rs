@@ -596,6 +596,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         if e.paths.iter().any(|p| boards.is_proposal_file(p)) {
             let _ = files.send(Msg::ProposalFiles);
         }
+        if e.paths.iter().any(|p| boards.is_session_file(p)) {
+            let _ = files.send(Msg::SessionFiles);
+        }
     });
     // Kept alive until hub exits; dropping it ends the watch.
     let _watcher = match watcher {

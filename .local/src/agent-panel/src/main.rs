@@ -39,6 +39,10 @@ enum Cmd {
         /// hub-core `session_actions` acts on.
         #[arg(long)]
         parked: bool,
+        /// Add a fifth column, 1 when the agent needs the human this moment (a dialog or a
+        /// pending ask, what `next` jumps to), else 0: the tmux status line's count.
+        #[arg(long)]
+        needs: bool,
     },
     /// Exit 0 when the transcript's last word asks the human something (a question, a step for
     /// them to take, or an open dialog), else 1. The Stop check that makes a session file its ask.
@@ -123,7 +127,7 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         None => chooser::run_interactive(cli.query.as_deref()),
         Some(Cmd::Next) => chooser::run_next(),
-        Some(Cmd::List { json, parked }) => chooser::run_list(json, parked),
+        Some(Cmd::List { json, parked, needs }) => chooser::run_list(json, parked, needs),
         Some(Cmd::AsksHuman { transcript }) => {
             std::process::exit(if agent_panel::jsonl::asks_human_at(&transcript) { 0 } else { 1 })
         }

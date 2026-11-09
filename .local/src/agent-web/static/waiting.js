@@ -17,7 +17,9 @@ const refreshAsks = coalesce(async () => {
 
 const asking = () => st.agents.filter((a) => a.question);
 function renderBadge() {
-  const n = asking().length + st.asks.length;
+  // One session holding an ask and an open dialog is one thing to answer, as on Home.
+  const asked = new Set(asking().map((a) => a.session));
+  const n = asking().length + st.asks.filter((a) => !a.session || !asked.has(a.session)).length;
   const b = n ? `<span class="badge">${n}</span>` : "";
   for (const id of ["ask-badge", "menu-badge"]) $(id).innerHTML = b;
 }

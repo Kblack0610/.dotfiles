@@ -63,7 +63,12 @@ impl Agent {
     /// question asked only in the conversation is not a source: the Stop check makes the
     /// session file it.
     pub fn needs_attention(&self) -> bool {
-        self.glyph == '!' || self.ask.is_some()
+        self.at_dialog() || self.ask.is_some()
+    }
+
+    /// At a prompt or dialog in its own pane this moment (`!`), a plan to approve included.
+    pub fn at_dialog(&self) -> bool {
+        self.glyph == '!'
     }
 }
 
@@ -384,11 +389,15 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// A read with gaps still prints the rows it has, then names each gap on stderr and exits 3:
 /// a partial list must not pass for a whole one to a caller that reads a missing session as
 /// gone (fleet-dispatch reap, ar-916).
-pub fn run_list(json: bool, parked: bool) -> Result<()> {
+pub fn run_list(json: bool, parked: bool, needs: bool) -> Result<()> {
     let (agents, gaps) = if parked { collect_all_read() } else { collect_read() };
     for a in agents {
         if !json {
-            println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
+            print!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
+            if needs {
+                print!("\t{}", u8::from(a.needs_attention()));
+            }
+            println!();
             continue;
         }
         let (info, mtime) = match &a.jsonl {
