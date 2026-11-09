@@ -596,6 +596,8 @@ branch_runs() {
 # is PENDING, else a red is FAIL. A run decides by MAIN_STREAKS' conclusions, so a cancelled,
 # skipped or stale one decides nothing, as gate-line.py passes over a cancelled one. Whether an
 # older gate still covers the head is Checks' call (gate-line.py), so an older green adds nothing.
+# A workflow is its file (workflowPath), as in MAIN_STREAKS: its title follows run-name, so a newer
+# green `Tests (all)` supersedes an older red `Tests (affected)` (ar-1094).
 # Only a PASS or NONE can change, and a FAIL whose red jobs failed only in FLEET_GATE_LINE_STEPS, which
 # a gate running on the head itself makes PENDING: that red is the gate line waiting on it (ar-82, #1692
 # read CI red mid-gate). A gate still running on an older commit leaves it red: the head has none.
@@ -620,7 +622,7 @@ gate_ci() {
                      and (.status != "completed"
                           or ((.conclusion // "") | test("^(success|failure|timed_out|startup_failure)$")))))
                   | sort_by(.createdAt) | reverse | .[]
-                  | [.workflowName, .status, ((.conclusion // "") | if . == "" then "-" else . end), .headSha]
+                  | [.workflowPath, .status, ((.conclusion // "") | if . == "" then "-" else . end), .headSha]
                   | @tsv' <<<"$runs")  # "-": IFS tab would merge an empty field into the next
   if [ "$ci" = FAIL ]; then
     if [ "$pendhead" = 1 ] && gate_line_only "$d" "$jobs"; then echo PENDING; else echo FAIL; fi

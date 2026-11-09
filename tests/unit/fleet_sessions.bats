@@ -2481,6 +2481,17 @@ gate() { printf '{"workflowName":"%s","workflowPath":"%s.yml","event":"%s","stat
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
 
+  # a workflow is its file, not its run title (ar-1094): a newer green 'Tests (all)' of the same
+  # Tests.yml supersedes an older red 'Tests (affected)'; a red in another gate file still counts
+  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 1),$(gate 'Tests (all)' completed success "$oid" 5)]"
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  ledger feat/x "[$(gate 'Multi (affected)' completed failure "$oid" 1),$(gate 'Tests (all)' completed success "$oid" 5)]"
+  open_pr_gh '[{"conclusion":"SUCCESS"}]'
+  FLEET_GATE_WORKFLOWS='^(Tests|Multi)( |$)' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+
   # a cancelled run decides nothing, a pull_request run is the rollup's, and a run on a commit the
   # head does not hold (a reused slot branch's old PR) is not this PR's gate
   ledger feat/x "[$(gate 'Tests (affected)' completed success "$oid" 1),$(gate 'Tests (affected)' completed cancelled "$oid" 3),$(gate Checks completed failure "$oid" 4 pull_request),$(gate Shots completed failure 0000000000000000000000000000000000000000 5)]"
