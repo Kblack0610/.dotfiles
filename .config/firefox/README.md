@@ -69,9 +69,9 @@ A small extension that keeps the tab strip short. It starts in dry run: it logs 
 
 Only newly opened tabs are deduped, never navigation inside a tab, and a tab opened from its own site (Duplicate Tab, a link that opens a new tab) stays. Pinned, audible, active and non-web tabs are left alone. Hidden tabs (Simple Tab Groups) and `neverCloseContainers` are discarded but never closed, and a hidden tab is never the one a new tab lands in. A tab closes only after Karakeep has confirmed both the bookmark and the tag. A tick closes at most `maxSweepPerTick` tabs, oldest first.
 
-Ctrl+Alt+D or the toolbar button pauses dedupe. The badge shows `off` when paused, `!` after a failed save, and `dry` in dry run.
+Ctrl+Alt+D or the toolbar button pauses dedupe. The badge shows `off` when paused, `!` when something is wrong (its tooltip says what), and `dry` in dry run.
 
-Settings are JSON in the options page (`about:addons`, Tab Keeper, Preferences), which also shows the log. Keep the real values in `~/.dotfiles-private/.config/firefox/tab-keeper.config.json` and paste them in. The Karakeep API key is pasted once per machine and stays in that profile. `tab-sweep` is listed as `reserved` in home-config's Karakeep taxonomy, so the AI tagger cannot apply it and `retag --prune` keeps it.
+Settings and the Karakeep key come from the Firefox policy, so every machine that runs `install.sh` gets the same ones. The settings are `policies["3rdparty"].Extensions["tab-keeper@dotfiles.local"].config` in the private `policies.local.json`, which the extension reads through `browser.storage.managed`. Its `karakeepKey` is `@KARAKEEP_KEY@`, which `install.sh` fills from `rbw get karakeep_api_key` (unlock rbw first). To change a setting, edit the overlay, rerun `install.sh` and restart Firefox. The options page (`about:addons`, Tab Keeper, Preferences) shows the settings read only, the log, and a Grant Karakeep access button, which is the one click a new machine needs: Firefox has no policy that grants a host permission. The installed `policies.json` can be read by any local user, so a leaked key is rotated in Karakeep and rbw, then `install.sh` is rerun. `tab-sweep` is listed as `reserved` in home-config's Karakeep taxonomy, so the AI tagger cannot apply it and `retag --prune` keeps it.
 
 Release Firefox only loads signed add-ons. After a change, bump `version` in `manifest.json`, then sign it unlisted and copy the xpi to the private repo:
 
@@ -81,15 +81,18 @@ WEB_EXT_API_KEY=$(rbw get amo_jwt_issuer) WEB_EXT_API_SECRET=$(rbw get amo_jwt_s
 cp ~/.cache/tab-keeper/*.xpi ~/.dotfiles-private/.config/firefox/tab-keeper.xpi
 ```
 
-The private `policies.local.json` installs it from `file://@HOME@/.dotfiles-private/.config/firefox/tab-keeper.xpi`; `install.sh` fills in `@HOME@`.
+The private `policies.local.json` installs it from `file://@HOME@/.dotfiles-private/.config/firefox/tab-keeper.xpi`; `install.sh` fills in `@HOME@`. Firefox reinstalls a `file://` policy add-on on every start, so a new xpi lands at the next restart.
 
 `dryRun` holds back everything: dedupe, discard and the sweep only write to the log. Turning it off does not close tabs that are already duplicates, because only newly opened tabs are deduped, so close the existing extras by hand once.
 
 | Problem | Fix |
 |---|---|
-| Save says the settings are invalid JSON | A comma is missing or extra between keys, often after `"dryRun": false` when a line was edited |
 | Duplicates still open after turning `dryRun` off | They were open before; only new tabs are deduped. Close them by hand |
-| `!` on the badge | A Karakeep save failed and the tab stayed open. The log in the options page says why; check the key and that Karakeep is reachable |
+| `!`, "no settings in the Firefox policy" | `install.sh` has not run since the overlay gained the settings, or Firefox has not restarted. `about:policies` should list 3rdparty |
+| `!`, "policy settings: unknown setting" | A typo in the overlay's `config`. Tab Keeper runs in dry run until it is fixed, `install.sh` reruns and Firefox restarts |
+| `!`, "no Karakeep key" | rbw was locked when `install.sh` ran. `rbw unlock`, rerun it, restart Firefox |
+| `!`, "Karakeep access not granted" | Click Grant Karakeep access in the options page, once per machine |
+| `!`, "last save failed" | A Karakeep save failed and the tab stayed open. The log in the options page says why; check that Karakeep is reachable |
 
 Tests: `tests/unit/tab_keeper.bats` runs the rule tests in `tests/tab-keeper/`, and `tests/unit/firefox_install.bats` covers `install.sh`.
 
