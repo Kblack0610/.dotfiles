@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# keys - every key that is live, Hyprland, tmux and nvim in one searchable list (Super+A k,
-# Prefix+K).
+# keys - every key that is live, one layer per tab: Hyprland, tmux and nvim (Super+A k, Prefix+K).
 #
-#   keys                 the sheet: fzf, a row per key, the full command in the preview; type to
-#                        filter ("tmux prefix", "hypr Super+A", "nvim <leader>g"), Esc closes
-#   keys --print         the rows as TSV: layer, table or mode, key, what it does, command
+#   keys [layer]         the sheet, full screen: a row per key and what it is for, on the layer's
+#                        tab (all, hypr, tmux or nvim; default all). tab / shift-tab switch layer,
+#                        type to filter, ctrl-/ shows the bind's command, esc closes
+#   keys --print         every row as TSV: layer, table or mode, key, what it does, command
 #   keys --md            the rows as one markdown table, for a printed sheet
 #   keys preview <layer> <where> <key> <command>   one row's detail
 #
 # No list of its own: a key's meaning is its own bind (Hyprland bindd descriptions via
-# hypr-binds, tmux -N notes, nvim desc), read live.
+# hypr-binds, tmux -N notes, nvim desc), read live. The sheet shows the keys that carry one; a
+# bind with none is a tool's built-in default (tmux's mouse and copy-mode keys), still in --print.
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/../src/tmux/panel-lib.sh" || exit 1
@@ -134,25 +135,63 @@ preview() {
     esac
 }
 
+# The tabs, in order. A layer is a <name>_rows function above.
+LAYERS=(all hypr tmux nvim)
+
+layer_ok() { local l; for l in "${LAYERS[@]}"; do [ "$l" = "$1" ] && return 0; done; return 1; }
+
+# listed <layer>: the rows its tab shows, as layer, where, key, the line on screen, command. Only
+# keys with a description: one whose description is its own command has none.
+listed() {
+    if [ "$1" = all ]; then rows; else "$1_rows"; fi |
+        awk -F'\t' -v OFS='\t' -v all="$([ "$1" = all ] && echo 1)" -v k="$C_BOX" -v d="$C_DIM" -v o="$C_OFF" '
+            $5 != "" && $4 == $5 { next }
+            { key = ($1 == "nvim") ? $2 " " $3 : $3
+              print $1, $2, $3, (all ? d sprintf("%-5s", $1) o "  " : "") k sprintf("%-26s", key) o "  " $4, $5 }'
+}
+
+# tabs <layer>: the header, the tab bar with <layer> lit, then the keys.
+tabs() {
+    local l bar=''
+    for l in "${LAYERS[@]}"; do
+        if [ "$l" = "$1" ]; then bar+="${C_SEL}[ $l ]${C_OFF} "; else bar+="${C_DIM}  $l  ${C_OFF} "; fi
+    done
+    printf '%s\n%s' "$bar" "${C_DIM}tab / shift-tab layer   type to filter   ctrl-/ command   esc close${C_OFF}"
+}
+
+# switch next|prev: tab's fzf transform. The layer on screen is the prompt fzf exports.
+switch() {
+    local now="${FZF_PROMPT%% *}" i n=${#LAYERS[@]} to
+    for i in "${!LAYERS[@]}"; do [ "${LAYERS[i]}" = "$now" ] && break; done
+    [ "$1" = prev ] && to="${LAYERS[(i + n - 1) % n]}" || to="${LAYERS[(i + 1) % n]}"
+    printf 'change-prompt~%s > ~+change-header~%s~+reload~%q _list %s~+first\n' \
+        "$to" "$(tabs "$to")" "$SELF" "$to"
+}
+
 sheet() {
+    local layer="${1:-all}"
+    layer_ok "$layer" || { echo "keys: no layer '$layer' (${LAYERS[*]})" >&2; exit 2; }
     panel_need fzf
     panel_fzf_opts
     panel_fzf_table
-    panel_fzf_layout
-    rows | awk -F'\t' -v OFS='\t' '{ l = ($2 == "" ? $1 : $1 " " $2)
-                                     print $1, $2, $3, sprintf("%-18s %-28s %s", l, $3, $4), $5 }' |
-        fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" --with-nth=4 \
-            --prompt='keys > ' \
-            --header='type to filter (hypr, tmux prefix, nvim n <leader>)   esc close' \
+    panel_fzf_layout hidden
+    listed "$layer" |
+        fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" --with-nth=4 --no-wrap \
+            --prompt="$layer > " --header="$(tabs "$layer")" --header-first \
+            --bind="tab:transform:$(printf '%q' "$SELF") _switch next" \
+            --bind="shift-tab:transform:$(printf '%q' "$SELF") _switch prev" \
             "${PANEL_FZF_LAYOUT[@]}" \
             --preview="$(printf '%q' "$SELF") preview {1} {2} {3} {5}" >/dev/null
 }
 
 case "${1:-}" in
     "") sheet ;;
+    _list) listed "$2" ;;
+    _switch) switch "$2" ;;
     --print) rows ;;
     --md) rows | markdown ;;
     preview) shift; preview "$@" ;;
-    -h|--help) sed -n '2,11p' "$SELF" | sed 's/^# \{0,1\}//' ;;
-    *) echo "keys: unknown argument '$1' (try --help)" >&2; exit 2 ;;
+    -h|--help) sed -n '2,13p' "$SELF" | sed 's/^# \{0,1\}//' ;;
+    -*) echo "keys: unknown argument '$1' (try --help)" >&2; exit 2 ;;
+    *) sheet "$1" ;;
 esac

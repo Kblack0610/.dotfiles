@@ -139,3 +139,32 @@ live_socket() {
   assert_line '| Layer | Key | What it does |'
   assert_line '| hypr | `Super+D` | a \| b |'
 }
+
+@test "a tab lists one layer's described keys; all tags each row with its layer" {
+  live_socket hub
+  export NO_COLOR=1
+  run "$KEYS" _list tmux
+  assert_success
+  assert_line --regexp $'^tmux\tprefix\tPrefix K\t.*Every key\t$'
+  refute_output --partial 'kill-pane'
+  refute_output --partial 'hypr'
+  run "$KEYS" _list all
+  assert_line --regexp $'^hypr\t\tSuper\\+D\thypr +Super\\+D +app launcher\t'
+  assert_line --regexp $'^nvim\tn\t<leader>ff\tnvim +n <leader>ff .*Find files\t'
+  refute_output --partial 'killactive'
+}
+
+@test "tab steps to the next layer and wraps; shift-tab steps back" {
+  FZF_PROMPT='nvim > ' run "$KEYS" _switch next
+  assert_output --regexp '^change-prompt~all > ~.*reload~.*keys _list all~\+first$'
+  FZF_PROMPT='all > ' run "$KEYS" _switch prev
+  assert_output --regexp '^change-prompt~nvim > ~'
+  FZF_PROMPT='hypr > ' run "$KEYS" _switch next
+  assert_output --regexp '\[ tmux \]'
+}
+
+@test "an unknown layer is refused before fzf starts" {
+  run "$KEYS" vim
+  assert_failure 2
+  assert_output --partial "no layer 'vim'"
+}
