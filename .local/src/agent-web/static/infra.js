@@ -13,8 +13,6 @@ const DOMAINS = ["k3s", "machines", "ci", "prod", "llm", "agents", "spend", "pla
 const FAILED_OPEN = 25;
 // Each failed group's folded state, which outlives the re-render on every refresh.
 const ist = { data: null, err: null, open: {}, reds: null, redsErr: null };
-// Recent runs shown before the rest fold away.
-const RECENT_OPEN = 30;
 
 const refreshInfra = coalesce(async () => {
   // The red fixes come from fleet-bench, not Prometheus, so a failed read of either leaves the
@@ -29,7 +27,6 @@ const refreshInfra = coalesce(async () => {
 // always comes with its word.
 const STATUS = [["OK", "var(--b-done)"], ["WARN", "var(--b-stalled)"], ["RED", "var(--b-needs)"]];
 const statusOf = (v) => STATUS[v] || ["NO DATA", "var(--c-other)"];
-const statusColor = (v) => statusOf(v)[1];
 
 // cc: "cc:pool_busy" -> {unity: 4, ...} by the series' key label (pool, host, site, or
 // domain/component), or the bare value with no label.
@@ -114,8 +111,6 @@ function runnerIndex(inst) {
   for (const s of inst.withheld || []) (by[s.labels.name] ||= {}).held = true;
   return by;
 }
-// Online means it can take a job: running, or idle and not withheld (the cc:pool_slots rule).
-const isOnline = (r, ri) => r.labels.state === "running" || (r.labels.state === "idle" && !(ri[r.labels.name] || {}).held);
 
 // Each machine's CI slots, counted as cc:pool_slots counts them and as the hub board's
 // machine_slots does: a slot is a running runner, or an idle one the governor does not
@@ -268,7 +263,6 @@ function finishedTable(inst) {
 // Done today. Each row's `hour` label is the start of the hour it finished in, epoch seconds.
 // A conclusion that is none of these (skipped, neutral) counts in no column, as in finishedTable.
 const CI_OUTCOME = { success: "ok", failure: "bad", timed_out: "bad", cancelled: "can" };
-const OUTCOMES = [["ok", "passed", "var(--b-done)"], ["bad", "failed", "var(--b-needs)"], ["can", "cancelled", "var(--c-other)"]];
 const ciRows = (inst) => (inst.hourly || []).map((s) => ({ hour: +s.labels.hour, scope: s.labels.scope, out: CI_OUTCOME[s.labels.conclusion], n: s.value || 0 }));
 const localRows = (inst) => (inst.local_hourly || []).map((s) => ({ hour: +s.labels.hour, out: s.labels.result === "pass" ? "ok" : "bad", n: s.value || 0 }));
 
@@ -338,8 +332,8 @@ function doneToday(inst, t1) {
 
 // The CI section: what is running, waiting and failed in the last 24h, each only when it has
 // rows; all three empty is green and reads as the heading line. Then the 24h pass rates with the
-// green workflows as one line, and one fold for the day's tiles, the queues by pool and the
-// recent runs.
+// green workflows as one line, one fold for the day's tiles and the queues by pool, and a line
+// to the runs themselves: Releases' Builds section (hub_core::builds) lists every CI run.
 function ciSection(cc, inst, t1) {
   const run = runningTable(cc, inst), queued = queuedRuns(inst).length, failed = failedCount(inst), fin = finishedTable(inst);
   const green = !run.n && !queued && !failed;
@@ -350,27 +344,10 @@ function ciSection(cc, inst, t1) {
   // Workflows with a failure or a cancel get a row; the green ones are one line under them.
   if (fin.body) html += `<h3 class="sec">Finished 24h <span class="muted">${esc(fin.head)}</span></h3><div class="panel scroll">${fin.body}</div>`;
   const open = ist.open["ci-more"] ? " open" : "";
-  html += `<details class="sec-d" data-k="ci-more"${open}><summary class="muted fold">Done today, queues by pool, recent runs</summary>` +
+  html += `<details class="sec-d" data-k="ci-more"${open}><summary class="muted fold">Done today, queues by pool</summary>` +
     doneToday(inst, t1) +
-    `<h3 class="sec">Queues by pool</h3><div class="panel scroll">${queuesTable(cc)}</div>` +
-    `<h3 class="sec">Recent runs <span class="muted">every job, any source: Jobs below</span></h3>${recentTable(inst)}</details>`;
-  return html;
-}
-
-// The exporter's last runs per repo, newest first: one series per run, valued at when it ended.
-function recentTable(inst) {
-  const dur = Object.fromEntries((inst.recent_dur || []).map((s) => [s.labels.url, s.value]));
-  const runs = (inst.recent || []).filter((s) => s.value).sort((a, b) => b.value - a.value);
-  if (!runs.length) return `<div class="panel">No recent-run series (exporter down, or RUN_REPOS empty).</div>`;
-  const cls = { success: "", failure: "bad", timed_out: "bad", cancelled: "warn" };
-  const row = (s) => {
-    const l = s.labels;
-    return `<tr><td class="n">${clock(s.value * 1e3)}</td><td>${esc(l.repo)}</td><td class="wrap"><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.workflow)}</a></td><td>${esc(clip(l.branch || "", 28))}</td><td class="muted">${esc(l.event || "")}</td><td class="n">${secs(dur[l.url])}</td><td class="${cls[l.conclusion] ?? "muted"}">${esc(l.conclusion || "-")}</td></tr>`;
-  };
-  const head = `<tr><th class="n">ended</th><th>repo</th><th>workflow</th><th>branch</th><th>event</th><th class="n">took</th><th>result</th></tr>`;
-  const open = runs.slice(0, RECENT_OPEN), rest = runs.slice(RECENT_OPEN);
-  return `<div class="panel scroll"><table class="tbl">${head}${open.map(row).join("")}</table>` +
-    (rest.length ? `<details class="sec-d" data-k="recent-more"${ist.open["recent-more"] ? " open" : ""}><summary class="muted fold">+${rest.length} older</summary><table class="tbl">${rest.map(row).join("")}</table></details>` : "") + `</div>`;
+    `<h3 class="sec">Queues by pool</h3><div class="panel scroll">${queuesTable(cc)}</div></details>`;
+  return html + `<div class="cline">Runs: every CI run is on <a href="#releases">Releases, Builds</a></div>`;
 }
 
 // The Cloud runners card: each host the governor powers (its ci_governor_power_* series), with
@@ -500,8 +477,8 @@ $("infra").addEventListener("click", (e) => {
 });
 
 // Red fixes: each red the triage queued as a fix in the last week, from /api/reds, which
-// (hub_core::reds) orders the open ones worst first and words the summary; the settled ones
-// fold to a count. A failed read says so here, never an empty list that reads as all fixed.
+// (hub_core::reds) orders the open ones worst first and words the summary; the first LOG_ROWS
+// open ones show, then "+N more", and the settled ones fold to a count. A failed read says so here, never an empty list that reads as all fixed.
 const FIX_COLOR = { "came back": "var(--b-needs)", "still red": "var(--b-needs)", "no fix": "var(--b-needs)", "needs merge": "var(--b-stalled)",
   fixing: "var(--b-working)", queued: "var(--b-working)", fixed: "var(--b-done)", cleared: "var(--b-done)" };
 function fixRow(r) {
@@ -514,7 +491,8 @@ function fixesSection() {
   if (ist.redsErr) return head("read failed") + `<div class="panel down">${esc(ist.redsErr)}</div>`;
   const r = ist.reds;
   if (!r) return head("Loading...");
-  const open = r.open.length ? `<div class="panel">${r.open.map(fixRow).join("")}</div>` : "";
+  const open = r.open.length ? `<div class="panel">${r.open.slice(0, LOG_ROWS).map(fixRow).join("")}</div>` +
+    (r.open.length > LOG_ROWS ? `<div class="muted more">+${r.open.length - LOG_ROWS} more</div>` : "") : "";
   const settled = r.settled.length ? `<details class="sec-d" data-k="fixes-settled"${ist.open["fixes-settled"] ? " open" : ""}><summary class="muted fold">+${r.settled.length} settled</summary><div class="panel">${r.settled.map(fixRow).join("")}</div></details>` : "";
   return head(r.summary) + open + settled;
 }

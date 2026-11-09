@@ -182,6 +182,8 @@ impl crate::table::Row for Card {
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
     const FACETS: &'static [&'static str] = &["profile", "stage"];
+    const LEAD: &'static str = "project";
+    const GLANCE: &'static [&'static str] = &["stage", "open", "doing"];
 
     fn val(&self, col: &str) -> Val {
         let word = |s: &str| {

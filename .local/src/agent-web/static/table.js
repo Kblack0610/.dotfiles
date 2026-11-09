@@ -29,8 +29,18 @@ function tblSet(query, patch, pre = "") {
 // holding its bar and rows, "" outside one, so one delegated listener sends each patch to its own view.
 const tblOf = (e) => e.target?.closest?.("[data-tbl]")?.dataset.tbl || "";
 
+// The headers are hidden on a phone, so this dropdown sorts there instead (app.css shows it only
+// at phone width). Each option is `key|dir`; the sorted column also offers its opposite.
+function tblSort(t) {
+  if (!t.columns?.length) return "";
+  const opt = (v, label, on) => `<option value="${esc(v)}"${on ? " selected" : ""}>${esc(label)}</option>`;
+  const flip = (d) => (d === "asc" ? "desc" : "asc");
+  return `<select class="tsort" data-tsv title="sort">${opt("|", "default sort", !t.sort)}` + t.columns.map((c) =>
+    opt(`${c.key}|${c.sort || c.next_dir}`, `sort: ${c.key}`, !!c.sort) + (c.sort ? opt(`${c.key}|${flip(c.sort)}`, `sort: ${c.key} reversed`, false) : "")).join("") + `</select>`;
+}
+
 // One dropdown per facet, each option the whole query that picks its value.
-const tblFacets = (t) => t.facets.map((f) => `<select data-tq title="${esc(f.key)}"><option value="${esc(f.clear)}">every ${esc(f.key)}</option>` +
+const tblFacets = (t) => tblSort(t) + t.facets.map((f) => `<select data-tq title="${esc(f.key)}"><option value="${esc(f.clear)}">every ${esc(f.key)}</option>` +
   f.values.map((v) => `<option value="${esc(v.q)}"${v.value === f.on ? " selected" : ""}>${esc(v.value)} (${v.n})</option>`).join("") + `</select>`).join("");
 // One count chip, here and on the tabs that still filter their own lists.
 const chipBtn = (on, attr, val, label, n) =>
@@ -54,7 +64,7 @@ function tblHead(t, labels, pre = "t") {
     const [label, cls] = labels[c.key];
     const aria = c.sort ? ` aria-sort="${c.sort === "asc" ? "ascending" : "descending"}"` : "";
     const mark = c.sort ? (c.sort === "asc" ? " ^" : " v") : "";
-    return `<th${cls ? ` class="${cls}"` : ""}${aria}><button class="thsort" data-${pre}sort="${esc(c.next_sort)}" data-${pre}dir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
+    return `<th${cls ? ` class="${cls}"` : ""}${aria} data-role="${c.role || ""}" data-label="${esc(label)}"><button class="thsort" data-${pre}sort="${esc(c.next_sort)}" data-${pre}dir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
   }).join("") + "</tr>";
 }
 
@@ -66,6 +76,10 @@ function tblPatch(e) {
   const t = e.target;
   if (!t || !t.dataset) return null;
   if (e.type === "input" && t.dataset.tsearch != null) return { q: t.value };
+  if (e.type === "change" && t.dataset.tsv != null) {
+    const [sort, dir] = t.value.split("|");
+    return { sort, dir: dir === "asc" ? "asc" : "" };
+  }
   if (e.type === "change" && t.dataset.tq != null) return { q: t.value };
   if (e.type !== "click" || !t.closest) return null;
   const sort = t.closest("[data-tsort]");
@@ -74,6 +88,8 @@ function tblPatch(e) {
   if (chip) return { s: chip.dataset.ts };
   return null;
 }
+
+const tblDropdown = (el) => el?.dataset?.tq !== undefined || el?.dataset?.tsv !== undefined;
 
 // One table of a tab on the shared table, the skeleton every such tab draws with. `o` names:
 //   tab    the tab whose URL query (st.views[tab]) holds the view; it is drawn only while open
@@ -112,7 +128,7 @@ function tblTab(o) {
   t.repaint = () => {
     const v = table(), f = document.activeElement;
     if (!v || !$(id + "-body")) return false;
-    if (f?.id !== id + "-q" && (f?.dataset?.tq === undefined || !f.closest?.(`#${id}-facets`))) return false;
+    if (f?.id !== id + "-q" && (!tblDropdown(f) || !f.closest?.(`#${id}-facets`))) return false;
     if (f.id === id + "-q") paint($(id + "-facets"), tblFacets(v));
     if ($(id + "-chips")) paint($(id + "-chips"), tblChips(v));
     paint($(id + "-body"), o.body(t));
@@ -159,8 +175,55 @@ function tblTab(o) {
     if (e.type === "click" && e.target.dataset?.all) { t.all = true; t.render(); return; }
     const v = tblPatch(e);
     if (!v) return;
-    if (e.type === "change" && e.target.dataset.tq !== undefined) e.target.blur?.();
+    if (e.type === "change" && tblDropdown(e.target)) e.target.blur?.();
     t.view(v);
   });
   return t;
+}
+
+// A phone row: lead, glance, the rest on a tap. tblHead wrote each column's role on its header; each
+// draw is plain innerHTML, so every table the page gains is stamped from its own headers. A row with
+// another cell count (a detail, a colspan) is left as it is, and a table with no lead keeps its columns.
+const TBL_OPENS = "tr.jr, tr.wr, tr.qr, tr.prop, tr.click, tr[data-open], tr[data-row]";
+const tblExpanded = new Set();
+
+function tblStamp(table) {
+  const [head, ...rows] = table.rows, heads = [...(head?.cells || [])];
+  if (!heads.some((h) => h.dataset.role === "lead")) return;
+  table.classList.add("tphone");
+  head.dataset.phone = "head";
+  for (const tr of rows) {
+    if (tr.cells.length !== heads.length) continue;
+    tr.dataset.phone = "row";
+    [...tr.cells].forEach((td, i) => {
+      // A control is never hidden: a row's detail need not repeat its buttons.
+      td.dataset.role = heads[i].dataset.role || (td.querySelector("button, select, input") ? "glance" : "rest");
+      td.dataset.label = heads[i].dataset.label || "";
+    });
+    if (tblExpanded.has(tr.textContent)) tr.classList.add("tx");
+  }
+}
+
+function tblStampAdded(records) {
+  const tables = new Set();
+  for (const r of records) for (const n of r.addedNodes) {
+    if (n.nodeType !== 1) continue;
+    const own = n.closest("table.tbl");
+    if (own) tables.add(own);
+    n.querySelectorAll("table.tbl").forEach((t) => tables.add(t));
+  }
+  tables.forEach(tblStamp);
+}
+
+// A row with nothing to open shows its hidden cells in place, and stays open across a redraw.
+function tblTap(e) {
+  const tr = e.target.closest?.("tr[data-phone=row]");
+  if (!tr || tr.matches(TBL_OPENS) || e.target.closest("a, button, select, input, summary")) return;
+  if (tr.classList.toggle("tx")) tblExpanded.add(tr.textContent); else tblExpanded.delete(tr.textContent);
+}
+
+if (typeof MutationObserver !== "undefined") {
+  const main = $("main");
+  new MutationObserver(tblStampAdded).observe(main, { childList: true, subtree: true });
+  main.addEventListener("click", tblTap);
 }

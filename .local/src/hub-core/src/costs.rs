@@ -25,7 +25,7 @@ use crate::burn::{self, Burn};
 use crate::queue;
 use crate::sections::{self, Sections};
 use crate::session_actions::Runner;
-use crate::table::{Row, Summary, Val, View};
+use crate::table::{self, Row, Summary, Val, View};
 
 const DAY: i64 = 24 * 3600;
 
@@ -755,6 +755,9 @@ impl Row for Line {
     }
 }
 
+/// Under a cut's first column on a phone: what the row cost.
+pub const CUT_GLANCE: &[&str] = &["cost", "share", "tokens"];
+
 /// The columns a cut shows, in order; both surfaces draw these and no others.
 pub fn columns(cut: &str) -> &'static [&'static str] {
     match cut {
@@ -1182,6 +1185,10 @@ pub fn board(
             .columns
             .into_iter()
             .filter(|col| cols.contains(&col.key))
+            .map(|col| table::Column {
+                role: table::role_of(col.key, cols[0], CUT_GLANCE),
+                ..col
+            })
             .collect(),
         facets: filter
             .facets
