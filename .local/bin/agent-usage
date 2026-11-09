@@ -9,6 +9,7 @@
 #   agent-usage wakes [--since 24h] [--project S] [--json]   API calls per wake-up, by what woke the agent
 #   agent-usage burn [--days 7|--since T] [--before DATE] [--top N] [--sort cost|turns|context] [--json]   where the window's tokens went, by session too (usage-cleanup)
 #   agent-usage tokens snapshot|line|json|check [--langfuse|--gateway-errors] [--date D]  the nightly token-usage record per day
+#   agent-usage fleet-cost [--days 1] [--before DATE] [--json]    the whole fleet's measured and estimated dollars
 #   agent-usage spend check <window> <max-usd>                    fleet spend over a window vs a ceiling (the claude-spend-* watches)
 #   agent-usage langfuse --since T --until T                      tool latency, tool and gateway errors from Langfuse
 #
@@ -644,7 +645,7 @@ cmd_langfuse() {
 
 # --- dispatch --------------------------------------------------------------
 
-usage() { sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # Sourced (by the test suite) rather than run: every function is defined, nothing runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
@@ -658,6 +659,7 @@ case "$sub" in
   backfill)  cmd_backfill "$@" ;;
   wakes)     cmd_wakes "$@" ;;
   burn)      cmd_burn "$@" ;;
+  fleet-cost) cmd_burn --fleet-cost --days 1 "$@" ;;
   tokens)    cmd_tokens "$@" ;;
   spend)     cmd_spend "$@" ;;
   langfuse)  cmd_langfuse "$@" ;;

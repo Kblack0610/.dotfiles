@@ -24,6 +24,7 @@ setup() {
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
   export BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
+  export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json"   # nor the real estimator
   export BENCH_RELEASES_CMD=false BENCH_RELEASED_CMD=false   # nor the real release-state: request_to_live_h reads ?
   # nor the real roadmaps, the whole queue or the real plans (fleet-bench epics)
   export BENCH_ROADMAP_CMD=false BENCH_ALL_ITEMS_CMD=true BENCH_PLAN_DIRS="$SANDBOX/no-plans"
@@ -236,6 +237,27 @@ PROM
   run sample_at 0
   assert_success
   [ ! -e "$PROM_TEXTFILE_DIR" ]
+}
+
+@test "sample writes the fleet estimate, skips it inside its interval, and a failed run keeps the last one" {
+  brow a lab/game-agent-1:1 WORKING > "$SNAP"
+  BENCH_FLEET_COST_CMD="echo {\"total\":{\"usd\":1}}" run sample_at 0
+  assert_success
+  run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
+  assert_output 1
+  BENCH_FLEET_COST_CMD="echo {\"total\":{\"usd\":2}}" sample_at 600
+  run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
+  assert_output 1
+  touch -d '1 hour ago' "$BENCH_FLEET_COST_FILE"
+  run sample_at 1200   # BENCH_FLEET_COST_CMD=false from setup
+  assert_success
+  assert_output --partial 'fleet-cost: the estimate failed; the last one stays'
+  run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
+  assert_output 1
+  [ ! -e "$BENCH_FLEET_COST_FILE.tmp" ]
+  BENCH_FLEET_COST_CMD="echo {\"total\":{\"usd\":2}}" sample_at 1800
+  run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
+  assert_output 2
 }
 
 @test "ETA comes from the session's own measured phases once two phase starts were sampled" {
@@ -2493,7 +2515,7 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -3521,7 +3543,8 @@ esac'
   assert_equal "$(jq -c '.models[] | [.model, .landed, .ci_prs, .ci_red_per_pr, .first_pass_share, .points, .points_per_pr]' <<<"$output")" \
     '["opus",3,2,1.5,1,14,4.67]'
   run "$SUBJECT" models
-  assert_line '| opus | claude | 3 | 3 | 1 | 0 | 0 | 0 | $0 | $0 | list | 1.5 | 1 | 14 | 4.67 |'
+  # these sessions have no cost_usd: an unpriced PR reads -, never $0 at a list price
+  assert_line '| opus | claude | 3 | 3 | 1 | 0 | 0 | 0 | $0 | - | - | 1.5 | 1 | 14 | 4.67 |'
 }
 
 # merge_repo <dir> <epoch>...: a clone of a local remote holding one commit per epoch

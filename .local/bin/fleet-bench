@@ -136,7 +136,7 @@
 # BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
-# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H.
+# FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN.
 
 set -uo pipefail
 
@@ -246,6 +246,9 @@ set -uo pipefail
 : "${BENCH_INBOX_CMD:=inbox_lines}"                # how many lines wait untriaged
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
 : "${BENCH_LEAD_DAYS:=28}"            # request_to_live_h: days of done items read back, so a merge released this week counts
+: "${BENCH_FLEET_COST_CMD:=agent-usage fleet-cost --json}"
+: "${BENCH_FLEET_COST_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/fleet-cost.json}"
+: "${BENCH_FLEET_COST_EVERY_MIN:=30}"
 : "${BENCH_RELEASES_CMD:=release-state show --json}"   # request_to_live_h: a project with a row goes live in a tag, one without on its merge
 : "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
@@ -598,6 +601,7 @@ cmd_sample() {
     publish_window "$t"
     findings_run "$t"
     epics_step "$t"
+    fleet_cost_step
     report_outcome NOOP "no live session"
     return 0
   fi
@@ -615,7 +619,22 @@ cmd_sample() {
   publish_window "$t"
   findings_run "$t"
   epics_step "$t"
+  fleet_cost_step
   report_outcome WORKED "$n sessions, $e estimates, $s scores"
+}
+
+# fleet_cost_step: the whole fleet's estimate, rewritten at most every BENCH_FLEET_COST_EVERY_MIN. A failed
+# run keeps the last file, whose as_of then reads stale on the Costs tab.
+fleet_cost_step() {
+  [ -z "$(find "$BENCH_FLEET_COST_FILE" -mmin "-$BENCH_FLEET_COST_EVERY_MIN" 2>/dev/null)" ] || return 0
+  mkdir -p "$(dirname "$BENCH_FLEET_COST_FILE")"
+  local tmp="$BENCH_FLEET_COST_FILE.tmp"
+  if $BENCH_FLEET_COST_CMD > "$tmp" 2>/dev/null && jq -e .total "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$BENCH_FLEET_COST_FILE"
+  else
+    rm -f "$tmp"
+    say "fleet-cost: the estimate failed; the last one stays"
+  fi
 }
 
 # epics_step <now>: freeze the epic baselines and write the scores this sample owes. A failure is
@@ -1610,7 +1629,7 @@ ledger_counts() {
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting queue_net_24h"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -1746,6 +1765,7 @@ chain_counts() {
   elif lead=$(lead_time_json "$t"); then jq -r '"request_to_live_h=\(.p50 // "?")"' <<<"$lead"
   else echo "request_to_live_h=?"; fi
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
+  echo "estimated_token_share=$(jq -r '.coverage.estimated_token_share // "?"' "$BENCH_FLEET_COST_FILE" 2>/dev/null || echo '?')"
   local orphans dups
   # the newest night only: a runner that stopped must read ?, never an older night's count as now
   dups=$(ls -d "$BENCH_DOCS_CLEANUP_DIR"/*/ 2>/dev/null | tail -1)
@@ -2356,7 +2376,7 @@ models_json() {
         | ($done | map(select(.m == $m and .h == $h and .c == $c and .l == $l))) as $it
         | ($it | map(select(landed)) | length) as $landed
         | ($it | map(sids[]) | unique | map($o[.] // empty)) as $sess
-        | ($it | map({landed: landed, source: (if metered then "gateway" elif any(sids[]; $o[.] != null) then "list" else null end)})) as $priced_items
+        | ($it | map({landed: landed, source: (if metered then "gateway" elif any(sids[]; $o[.].cost_usd != null) then "list" else null end)})) as $priced_items
         | ($rs | map(select(($cl | not) and .ran == $m and .h == $h and (($ln | not) or .lane == $l)))) as $r
         | ($r | map(select(.outcome)) | length) as $rated
         | ($r | map(select(.outcome == "redo")) | length) as $redo
