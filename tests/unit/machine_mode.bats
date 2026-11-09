@@ -341,21 +341,28 @@ hours_fixture() {
 # The release lane: `release-lane` writes only "<host>.reserve" {"until": <epoch>}, which the governor
 # reads as a pin to 0 until then (home-config governor.py read_pins).
 reservation() { jq -r --arg k "$1.reserve" '.data[$k] | fromjson | .until' "$FX/applied.json"; }
+# lane_prom <host>...: the governor reports on these hosts.
+lane_prom() {
+  jq -n '{status: "success", data: {result: [$ARGS.positional[] | {metric: {__name__: "ci_governor_registered", host: .}, value: [0, "2"]}]}}' \
+    --args "$@" > "$FX/prom.json"
+}
 
 @test "release-lane writes the host's own reserve key with its end, and keeps every other key" {
+  lane_prom razer-laptop "$HOST"
   jq -n --arg h "$HOST" '{data: {"razer-laptop": "{\"slots\":1,\"action\":\"off\",\"until\":5}", ($h): "{\"slots\":2}"}}' > "$FX/cm.json"
   before="$(date +%s)"
   run "$MM" release-lane razer-laptop --until "6 hours"
   assert_success
   assert_output --partial "razer-laptop: reserved for release jobs until"
-  until="$(reservation razer-laptop)"
-  ((until >= before + 21600 && until <= before + 21610))
+  end="$(reservation razer-laptop)"
+  ((end >= before + 21600 && end <= before + 21610))
   assert_equal "$(jq -r '.data["razer-laptop"]' "$FX/applied.json")" '{"slots":1,"action":"off","until":5}'
   assert_equal "$(pin)" '{"slots":2}'
   [ ! -e "$STATE" ]
 }
 
 @test "release-lane works on a machine with no pool runners, since it pins another host" {
+  lane_prom razer-laptop
   export MACHINE_MODE_RUNNER_UNITS="$FX/none-*.service"
   run "$MM" release-lane razer-laptop --until "2 hours"
   assert_success
@@ -363,8 +370,9 @@ reservation() { jq -r --arg k "$1.reserve" '.data[$k] | fromjson | .until' "$FX/
 }
 
 @test "release-lane refuses a past, unreadable or over-a-day end, and a missing --until, writing nothing" {
+  lane_prom razer-laptop
   for args in "razer-laptop --until yesterday" "razer-laptop --until notatime" "razer-laptop --until 30hours" \
-      "razer-laptop" "razer-laptop --until"; do
+      "razer-laptop" "razer-laptop --until" "Razer_Laptop --until 2hours"; do
     # shellcheck disable=SC2086
     run "$MM" release-lane $args
     assert_failure
@@ -372,21 +380,41 @@ reservation() { jq -r --arg k "$1.reserve" '.data[$k] | fromjson | .until' "$FX/
   run "$MM" release-lane razer-laptop --until "2 days"
   assert_failure
   assert_output --partial "more than 24h ahead"
+  run "$MM" release-lane razer-laptop --until "1 hour ago"
+  assert_output --partial "say 'tomorrow"
   [ ! -e "$FX/applied.json" ]
 }
 
-@test "clear ends the reservation now, and the list marks it ended" {
+@test "release-lane refuses a host the governor does not report, and goes on with a warning when Prometheus is down" {
+  lane_prom razer-laptop
+  run "$MM" release-lane razer-laptpo --until "2 hours"
+  assert_failure
+  assert_output --partial "the governor runs no host 'razer-laptpo'"
+  [ ! -e "$FX/applied.json" ]
+  CURL_FAIL=1 run "$MM" release-lane razer-laptop --until "2 hours"
+  assert_success
+  assert_output --partial "warning: cannot read Prometheus"
+  [ -n "$(reservation razer-laptop)" ]
+}
+
+@test "the list shows each reservation in local time and marks an ended one; clear removes the key" {
+  lane_prom razer-laptop
   "$MM" release-lane razer-laptop --until "3 hours"
-  cp "$FX/applied.json" "$FX/cm.json"
+  jq --argjson past "$(( $(date +%s) - 60 ))" '.data["mac-studio.reserve"] = ({until: $past} | tojson)' "$FX/applied.json" > "$FX/cm.json"
   run "$MM" release-lane
   assert_success
-  assert_output --regexp '^razer-laptop: until [0-9T:-]+Z$'
+  assert_line --regexp '^razer-laptop: until [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} [A-Z+0-9-]+$'
+  assert_line --regexp '^mac-studio: until .*, ended$'
   run "$MM" release-lane --clear razer-laptop
   assert_success
-  ((  $(reservation razer-laptop) <= $(date +%s) ))
-  cp "$FX/applied.json" "$FX/cm.json"
-  run "$MM" release-lane
-  assert_output --partial ", ended"
+  assert_output --partial "reservation ended"
+  assert_equal "$(jq -r '.data | has("razer-laptop.reserve")' "$FX/applied.json")" false
+  assert_equal "$(jq -r '.data | has("mac-studio.reserve")' "$FX/applied.json")" true
+  cp "$FX/applied.json" "$FX/cm.json"; rm "$FX/applied.json"
+  run "$MM" release-lane --clear razer-laptop
+  assert_success
+  assert_output "razer-laptop: no reservation"
+  [ ! -e "$FX/applied.json" ]
 }
 
 @test "an unreachable cluster or no kube context fails the reservation" {
