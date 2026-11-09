@@ -221,12 +221,17 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until 'screen_has "1 ask waiting" && screen_lacks "answering"'
 }
 
-# plan_row: a session the state document has waiting on its plan dialog, and the card and
-# options agent-panel reads off that pane.
-plan_row() {
+# stale_rows <json rows>: what the fleet state document says, a pass behind the live list.
+stale_rows() {
   mkdir -p "$XDG_STATE_HOME/fleet"
-  printf '{"sessions":[{"target":"hub/demo:2","bucket":"NEEDS","reason":"plan awaiting approval","idle_min":90,"doing":"ExitPlanMode","topic":"Stop issues","cwd":"/nowhere/demo"}]}\n' \
-    >"$XDG_STATE_HOME/fleet/state.json"
+  printf '{"sessions":[%s]}\n' "$1" >"$XDG_STATE_HOME/fleet/state.json"
+}
+
+# plan_row: a session agent-panel has waiting on its plan dialog, and the card and options it
+# reads off that pane. The state document has never heard of it.
+plan_row() {
+  printf '{"target":"hub/demo:2","status":"waiting","idle_since":%s,"doing":"ExitPlanMode","summary":"Stop issues","cwd":"/nowhere/demo"}\n' \
+    "$(($(date +%s) - 5400))" >"$NOTES_FIXTURE/agent-panel.list.json"
   printf 'plan waiting for your approval\nhub/demo:2  demo\n\n 1  Yes, and switch to BYPASS PERMISSIONS\n 2  Yes, manually approve edits\n 3  Tell Claude what to change  (t types it)\n' \
     >"$NOTES_FIXTURE/agent-panel.dialog"
   printf '1\t0\tYes, and switch to BYPASS PERMISSIONS\n2\t0\tYes, manually approve edits\n3\t1\tTell Claude what to change\n' \
@@ -245,6 +250,21 @@ plan_row() {
   tmux_keys Enter
   wait_until 'screen_has "sent 2"'
   grep -qx 'agent-panel answer hub/demo:2 2 --expect Yes, manually approve edits --' "$NOTES_FIXTURE/calls.log"
+  # The stub still says waiting, as a status file can for a moment after the pane moved on.
+  wait_until 'screen_has "3 asks waiting"'
+}
+
+@test "a state document a pass behind cannot list a dialog that is not open now" {
+  plan_row
+  stale_rows '{"target":"hub/old:1","bucket":"NEEDS","activity":"waiting","reason":"plan awaiting approval","doing":"ExitPlanMode"},{"target":"hub/old:2","bucket":"NEEDS","activity":"waiting","reason":"plan awaiting approval","doing":"ExitPlanMode"}'
+  TM_WIDTH=144 TM_HEIGHT=33 open_panel
+  wait_until 'screen_has "3 asks . 1 plan waiting"'
+}
+
+@test "a worker host's dialog comes from the state document, no local read can see it" {
+  stale_rows '{"target":"mini@hub/far:1","bucket":"NEEDS","activity":"waiting","reason":"plan awaiting approval","doing":"ExitPlanMode","cwd":"/nowhere/far"}'
+  TM_WIDTH=144 TM_HEIGHT=33 open_panel
+  wait_until 'screen_has "3 asks . 1 plan waiting"'
 }
 
 @test "a plan dialog that closed before enter: the panel says not sent and stays open" {
