@@ -426,15 +426,11 @@ fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
 /// resolved), the dispatch log for the drip, and the cached headroom for why it is held. A
 /// source that fails is named in `errors` and the rest still show.
 fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<String>) -> Burn {
-    let (mut series, mut rate) = (vec![], None);
+    let mut series = vec![];
     if let Some(b) = base {
         match crate::prom::instant(b, burn::ACCOUNTS) {
             Ok(s) => series = s,
             Err(e) => errors.push(format!("claude-acct series: {e}")),
-        }
-        match crate::prom::instant(b, burn::RATE_Q) {
-            Ok(s) => rate = s.first().and_then(|s| s.value),
-            Err(e) => errors.push(format!("session rate: {e}")),
         }
     }
     // The tail is bounded (LOG_TAIL), which covers a day of starts; a longer day undercounts.
@@ -444,12 +440,7 @@ fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<Strin
             errors.push(format!("dispatch log: {e}"));
             String::new()
         });
-    burn::build(
-        &series,
-        rate,
-        burn::drip(&log, now, held(&paths.headroom)),
-        now,
-    )
+    burn::build(&series, burn::drip(&log, now, held(&paths.headroom)), now)
 }
 
 /// The hold reason from the last pass's headroom, only when it names a kind: "nothing runnable"

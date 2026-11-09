@@ -2,8 +2,9 @@
 //! account, the Codex plan, the gateway keys and the Lazer pool), how many sessions are going,
 //! whether that is over what the windows can carry, the dispatch drip, and when each source is
 //! back on pace. `claude-acct` computes every figure for every source and publishes it in its
-//! textfile (`claude_account_*{kind}`, and the fleet sum `claude_fleet_*`); this only reads and
-//! words them, so the hub TUI and agent-web print the same section and no second formula exists.
+//! textfile (`claude_account_*{kind}`, and the fleet sum `claude_fleet_*`); this reads them,
+//! divides for the OVER ratio and the sessions carried, and words them, so the hub TUI and
+//! agent-web print the same section and no second formula exists.
 //! The drip is the `started` lines of fleet-dispatch's `log.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,9 +12,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::prom::Series;
-
-/// The fleet's measured points of weekly limit one live session burns an hour (a 6h average).
-pub const RATE_Q: &str = "claude_fleet_session_rate_points_per_hour";
 
 /// Where the dispatch hold is explained (the Sessions header), as `SPEND_BADGE` names Costs.
 pub const HOLD_BADGE: &str = "4 Sessions";
@@ -436,7 +434,7 @@ fn account(name: &str, read: &Accounts, stale: bool) -> Account {
 }
 
 /// The section from claude-acct's series (fresh ones only; none is "no data") and the drip.
-pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn {
+pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
     let read = Accounts::read(series);
     let stale = read.stale();
     let accounts = ordered(read.by.keys().map(|n| account(n, &read, stale)).collect());
@@ -450,7 +448,8 @@ pub fn build(series: &[Series], rate: Option<f64>, drip: Drip, at: i64) -> Burn 
         _ => None,
     };
     let (burn, sustain) = summed.unwrap_or((0.0, 0.0));
-    let rate = rate.filter(|r| *r > 0.0);
+    // the measured points of weekly limit one live session burns an hour (a 6h average)
+    let rate = sum("session_rate_points_per_hour").filter(|r| *r > 0.0);
     let fleet = Fleet {
         live: sum("live_sessions").unwrap_or(0.0) as u32,
         burn,
@@ -625,6 +624,7 @@ mod tests {
         out.push(fleet("live_sessions", 39.0));
         out.push(fleet("burn_points_per_hour", 4.52));
         out.push(fleet("sustain_points_per_hour", 1.37));
+        out.push(fleet("session_rate_points_per_hour", 0.116));
         out.push(age(120.0));
         out
     }
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn the_fixture_sums_to_the_fleet_line_and_is_over() {
-        let b = build(&fixture(), Some(4.52 / 39.0), quiet(), NOW);
+        let b = build(&fixture(), quiet(), NOW);
         assert_eq!(b.fleet.live, 39);
         assert!((b.fleet.burn - 4.52).abs() < 1e-9);
         assert!((b.fleet.sustain - 1.37).abs() < 1e-9);
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn back_on_pace_says_when_idle_gets_there_and_when_burn_never_does() {
-        let b = build(&fixture(), Some(0.1), quiet(), NOW);
+        let b = build(&fixture(), quiet(), NOW);
         let t = |t: i64| format!("t{}", t - NOW);
         assert_eq!(
             b.pace_text(&t),
@@ -679,7 +679,7 @@ mod tests {
             "on_pace_burn_timestamp_seconds",
             (NOW + 60) as f64,
         ));
-        assert!(build(&s, None, quiet(), NOW)
+        assert!(build(&s, quiet(), NOW)
             .pace_text(&t)
             .starts_with("at this burn: alt t60;"));
     }
@@ -692,10 +692,10 @@ mod tests {
                 x.value = Some(x.value.unwrap() / 10.0);
             }
         }
-        assert_eq!(build(&s, None, quiet(), NOW).level, "ok");
+        assert_eq!(build(&s, quiet(), NOW).level, "ok");
         // alt alone burns above what its week carries; the fleet still fits.
         s.push(series("alt", "burn_points_per_hour", 0.5));
-        let b = build(&s, None, quiet(), NOW);
+        let b = build(&s, quiet(), NOW);
         assert_eq!(b.level, "warn", "{b:?}");
     }
 
@@ -708,7 +708,7 @@ mod tests {
         s.push(series("extra", "live_sessions", 5.0));
         s.push(series("extra", "burn_points_per_hour", 9.0));
         s.push(series("extra", "sustain_points_per_hour", 9.0));
-        let b = build(&s, None, quiet(), NOW);
+        let b = build(&s, quiet(), NOW);
         assert!(b.accounts.iter().any(|a| a.name == "extra"), "it is a row");
         assert_eq!(b.fleet.live, 39);
         assert!((b.fleet.burn - 4.52).abs() < 1e-9, "{:?}", b.fleet);
@@ -721,7 +721,7 @@ mod tests {
         // the fleet is amber, and nothing is re-summed.
         let mut s = fixture();
         s.retain(|x| !x.label("__name__").starts_with("claude_fleet_burn"));
-        let b = build(&s, None, quiet(), NOW);
+        let b = build(&s, quiet(), NOW);
         assert_eq!(b.accounts.len(), 3);
         assert_eq!(b.level, "warn", "{b:?}");
         assert_eq!((b.fleet.burn, b.fleet.sustain), (0.0, 0.0));
@@ -730,13 +730,13 @@ mod tests {
 
     #[test]
     fn accounts_that_cannot_be_read_are_not_a_green_fleet() {
-        let b = build(&[series("old", "read_ok", 0.0)], None, Drip::default(), NOW);
+        let b = build(&[series("old", "read_ok", 0.0)], Drip::default(), NOW);
         assert_eq!(b.level, "warn", "{b:?}");
     }
 
     #[test]
     fn no_series_is_no_data() {
-        let b = build(&[], None, Drip::default(), NOW);
+        let b = build(&[], Drip::default(), NOW);
         assert_eq!(b.level, "none");
         assert!(b.accounts.is_empty());
     }
@@ -755,7 +755,7 @@ mod tests {
             }
         }
         assert_eq!(
-            build(&s, None, quiet(), NOW).pace_text(&|t| t.to_string()),
+            build(&s, quiet(), NOW).pace_text(&|t| t.to_string()),
             "every source is on pace"
         );
     }
@@ -811,7 +811,7 @@ mod tests {
             all.push(reason(n, why));
         }
         all.push(reason("c", "five_hour"));
-        let b = build(&all, None, Drip::default(), NOW);
+        let b = build(&all, Drip::default(), NOW);
         let room = |n: &str| {
             b.accounts
                 .iter()
@@ -829,16 +829,21 @@ mod tests {
 
     #[test]
     fn an_account_with_no_published_verdict_has_none_rather_than_a_derived_one() {
-        let b = build(&fixture(), None, Drip::default(), NOW);
+        let b = build(&fixture(), Drip::default(), NOW);
         assert!(b.accounts.iter().all(|a| a.room.is_none()));
     }
 
     #[test]
     fn a_textfile_over_an_hour_old_is_stale_not_a_green_fleet() {
-        let b = build(&aged(7300.0), None, Drip::default(), NOW);
+        let b = build(&aged(7300.0), Drip::default(), NOW);
         assert!(b.accounts.iter().all(|a| a.state == "stale"));
         assert_eq!(b.level, "warn");
-        assert!(build(&fixture(), None, Drip::default(), NOW)
+        // its fleet sum is an hour old: not counted as the burn now
+        assert_eq!(
+            (b.fleet.burn, b.fleet.sustain, b.fleet.over),
+            (0.0, 0.0, None)
+        );
+        assert!(build(&fixture(), Drip::default(), NOW)
             .accounts
             .iter()
             .all(|a| a.state == "ok"));
@@ -894,7 +899,7 @@ mod tests {
 
     #[test]
     fn every_source_is_a_row_with_its_kind_dollars_reserve_and_pool() {
-        let b = build(&sources(), None, Drip::default(), NOW);
+        let b = build(&sources(), Drip::default(), NOW);
         let row = |n: &str| b.accounts.iter().find(|a| a.name == n).unwrap().clone();
         assert_eq!(b.accounts.len(), 6);
         assert_eq!(
@@ -943,7 +948,7 @@ mod tests {
 
     #[test]
     fn the_sources_read_claude_codex_then_the_pool_with_its_keys_after_it() {
-        let b = build(&sources(), None, Drip::default(), NOW);
+        let b = build(&sources(), Drip::default(), NOW);
         let names: Vec<&str> = b.accounts.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1013,7 +1018,7 @@ mod tests {
 
     #[test]
     fn codex_and_a_dollar_budget_add_nothing_to_the_fleet_line_or_the_pace() {
-        let b = build(&sources(), Some(0.116), Drip::default(), NOW);
+        let b = build(&sources(), Drip::default(), NOW);
         // the fixture's published 4.52 against 1.37: Codex's 0.71 is another budget, which
         // claude-acct leaves out of the sum (tests/unit/claude_acct.bats); the keys carry no pace
         assert!((b.fleet.burn - 4.52).abs() < 1e-9);
@@ -1026,7 +1031,7 @@ mod tests {
             .into_iter()
             .filter(|s| s.label("kind").starts_with("litellm") || s.label("account").is_empty())
             .collect();
-        let k = build(&only_keys, None, Drip::default(), NOW);
+        let k = build(&only_keys, Drip::default(), NOW);
         assert!(
             k.pace.on_pace,
             "dollar budgets alone are never behind a pace line"

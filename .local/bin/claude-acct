@@ -704,7 +704,7 @@ on_pace_word() {
 # `rate` is the points one live session burns an hour.
 FLEET_JQ='def fleet: [.[] | select(.kind == "claude")] as $c
     | [$c[] | select(.state == "ok" and .week_used != null and .paced)] as $a
-    | {live: ([$c[].live] | add // 0), rows: $a, rate: (.[0].rate // null),
+    | {live: ([$c[].live] | add // 0), rows: $a, rate: ($c[0].rate // null),
        burn: (if $a == [] then null else [$a[].burn] | add end),
        keeps: (if $a == [] then null else [$a[].sustain] | add end)};'
 

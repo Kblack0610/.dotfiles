@@ -1053,7 +1053,7 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
             crate::prom::base()
                 .and_then(|b| crate::prom::instant(&b, crate::burn::ACCOUNTS))
                 .and_then(|series| {
-                    let b = crate::burn::build(&series, None, crate::burn::Drip::default(), now);
+                    let b = crate::burn::build(&series, crate::burn::Drip::default(), now);
                     match b.stale {
                         Some(note) => Err(note.to_string()),
                         None => Ok(b.accounts),
