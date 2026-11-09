@@ -183,6 +183,27 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .qprio { font-weight: 600; } .qprio.urgent { color: var(--b-needs); } .qprio.high { color: var(--b-stalled); } .qprio.low { color: var(--muted); }
 .qbad { color: var(--b-needs); font-weight: 600; }
 .flow { margin: 0 0 10px; overflow-wrap: anywhere; } .flow .fchip { text-decoration: none; margin: 0 4px 4px 0; } .flow a.fchip:hover { text-decoration: underline; } .fnote { font-size: var(--fs-sm); } .qwarn { color: var(--b-stalled); font-weight: 600; }
+/* The pipeline line: one point per step on a rail; a phone stacks them, the detail under its step. */
+.rail { display: flex; flex-wrap: wrap; }
+.rnode { position: relative; flex: 1 1 0; min-width: 0; padding: 18px 2px 4px; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; display: flex; flex-direction: column; align-items: center; }
+.rnode::before { content: ""; position: absolute; top: 8px; left: 0; right: 0; height: 2px; background: var(--line); }
+.rnode:first-of-type::before { left: 50%; } .rnode:last-of-type::before { right: 50%; }
+.rdot { position: absolute; top: 3px; left: 50%; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--muted); }
+.rnode.hot .rdot { background: var(--b-stalled); } .rnode.stopped .rdot { background: var(--b-needs); }
+.rnode.sel .rdot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); }
+.rcount { font-size: var(--fs-md); font-weight: 650; } .rnode.hot .rcount { color: var(--b-stalled); } .rnode.stopped .rcount { color: var(--b-needs); }
+.rlabel { font-size: var(--fs-sm); } .rnode.sel .rlabel { font-weight: 650; } .rsub { font: var(--fs-xs) var(--mono); color: var(--muted); }
+.rdetail { order: 99; flex-basis: 100%; padding: 6px 2px; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.rstop { color: var(--b-needs); font-weight: 600; } .rphead { font-weight: 600; margin-top: 4px; }
+.rprob { display: block; font: var(--fs-xs) var(--mono); color: inherit; text-decoration: none; padding: 1px 0; } a.rprob:hover { text-decoration: underline; }
+@media (max-width: 640px) {
+  .rail { flex-direction: column; flex-wrap: nowrap; }
+  .rnode { flex-direction: row; gap: 10px; padding: 4px 2px 4px 22px; flex: none; }
+  .rnode::before { top: 0; bottom: 0; left: 7px; right: auto; width: 2px; height: auto; }
+  .rnode:first-of-type::before { left: 7px; top: 50%; } .rnode:last-of-type::before { right: auto; bottom: 50%; }
+  .rdot { top: calc(50% - 6px); left: 8px; }
+  .rdetail { order: 0; padding-left: 22px; }
+}
 .qhold { font-size: 12px; color: var(--b-stalled); margin-bottom: 6px; }
 .badge-line { margin: 6px 0; }
 .more { padding: 4px 8px; }
