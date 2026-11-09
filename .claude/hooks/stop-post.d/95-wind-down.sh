@@ -3,7 +3,7 @@
 #
 # Runs last, so every other post script has finished before the window dies. Logic:
 #   1. Loop guard (stop_hook_active) — exit 0 on the second call this turn.
-#   2. Look for a spin-down sentinel for this project; none -> exit 0.
+#   2. Look for this session's spin-down sentinel; none -> exit 0.
 #   3. CI gate: if the content-check phase FAILED, DEFER (leave sentinel, exit 0)
 #      so we never nuke the window over broken/unfinished work. It spins down on
 #      the next clean Stop. PASS / SKIPPED -> proceed.
@@ -21,12 +21,10 @@ fi
 
 # --- project + sentinel ---
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PWD:-.}}"
-. "$HOME/.config/shared-hooks/project-name.sh"
-PROJECT_NAME=$(resolve_project_name "$PROJECT_DIR")
 
-# Prefer THIS session's sentinel (keyed by the Stop payload's session_id) so
-# concurrent Claude windows in the same project never fire each other's teardown.
-# Only fall back to the legacy shared name when there is no session id at all.
+# THIS session's sentinel is keyed by the Stop payload's session_id alone, so concurrent
+# Claude windows never fire each other's teardown and a session that armed from a cwd outside
+# its project is still found. Only with no session id at all is the project-only name used.
 SID=""
 if [ -n "$STDIN_JSON" ] && command -v jq >/dev/null 2>&1; then
   SID=$(echo "$STDIN_JSON" | jq -r '.session_id // empty' 2>/dev/null)
@@ -36,9 +34,10 @@ fi
 # 2026-10-28, back to July. A day is long past any real deferral, so reap those here.
 find "$HOME/.agent/spin-down" -maxdepth 1 \( -name '*.request' -o -name '*.fired' \) -mmin +1440 -delete 2>/dev/null || true
 if [ -n "$SID" ]; then
-  SENTINEL="$HOME/.agent/spin-down/${PROJECT_NAME}__${SID}.request"
+  SENTINEL="$HOME/.agent/spin-down/${SID}.request"
 else
-  SENTINEL="$HOME/.agent/spin-down/${PROJECT_NAME}.request"
+  . "$HOME/.config/shared-hooks/project-name.sh"
+  SENTINEL="$HOME/.agent/spin-down/$(resolve_project_name "$PROJECT_DIR").request"
 fi
 
 [ -f "$SENTINEL" ] || exit 0
