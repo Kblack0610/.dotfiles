@@ -41,13 +41,16 @@ jobs:
             /.claude/
             /tests/skill-lint.baseline
       # The linter comes from the public repo: its own commit when that repo is the caller,
-      # so a PR is tested with the linter it changes, and main for everyone else.
+      # so a PR is tested with the linter it changes, and main for everyone else. .claude/hooks
+      # holds hand_methods.py, which owns what a valid metadata.replaces row is (BADMETA).
       - uses: actions/checkout@v4
         with:
           repository: Kblack0610/.dotfiles
           ref: ${{ github.repository == 'Kblack0610/.dotfiles' && github.sha || 'main' }}
           path: .skill-lint
-          sparse-checkout: .local/bin
+          sparse-checkout: |
+            .local/bin
+            .claude/hooks
       # Exits 2 if it finds nothing at all, so a path change that silently empties the
       # input list fails the job instead of reporting success. allow-empty is the one exception.
       - name: Lint skills, commands and agents
