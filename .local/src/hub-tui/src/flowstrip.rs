@@ -117,9 +117,9 @@ mod tests {
             "      inbox, board: reading   o graph"
         );
         let mut bad = Strip::build(None);
-        bad.set_pipeline(&Err("CC_PROM_URL is not set".into()));
+        bad.set_pipeline(&Err("snapshot cannot be read".into()));
         let l = text(&bad, false, false, 140);
-        assert_eq!(l[1], "      inbox, board: CC_PROM_URL is not set");
+        assert_eq!(l[1], "      inbox, board: snapshot cannot be read");
         let mut none = Strip::build(None);
         none.set_pipeline(&Ok(None));
         assert_eq!(

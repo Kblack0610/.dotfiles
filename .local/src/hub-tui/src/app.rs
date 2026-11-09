@@ -2135,7 +2135,11 @@ impl App {
             KeyCode::Char('G') | KeyCode::End => self.scroll = usize::MAX / 2,
             _ => {}
         }
-        if !typing && !k.modifiers.contains(KeyModifiers::CONTROL) {
+        let line_key = matches!(
+            k.code,
+            KeyCode::Char('[' | ']' | '{' | '}') | KeyCode::Esc | KeyCode::Enter
+        );
+        if line_key && !typing && !k.modifiers.contains(KeyModifiers::CONTROL) {
             if let Some(q) = &self.queue {
                 let rail =
                     hub_core::flow::Rail::build(Some(q), self.pipeline.as_ref(), jobs::now());

@@ -126,10 +126,7 @@ fn live_waits(state: &mut Value, (agents, gaps): (Vec<Agent>, Gaps)) {
         return;
     };
     for a in &agents {
-        match sessions
-            .iter_mut()
-            .find(|s| s["target"] == a.target.as_str())
-        {
+        match sessions.iter_mut().find(|s| s["target"] == a.target.as_str()) {
             Some(s) if a.at_dialog() && s["bucket"] != "NEEDS" => {
                 s["bucket"] = "NEEDS".into();
                 s["reason"] = AT_PROMPT.into();
@@ -1060,11 +1057,7 @@ mod tests {
         let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
         assert_eq!(s["asks"], json!([]));
         assert_eq!(s["unreadable"], json!(["agent-ask"]));
-        std::fs::write(
-            &f,
-            r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#,
-        )
-        .unwrap();
+        std::fs::write(&f, r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#).unwrap();
         let answered = (vec![live("hub/a:1", '~', None)], vec![]);
         let s = state_with(&f, &Fixed(Ok(tsv.into())), &signals, 0, answered);
         assert_eq!(s["sessions"][0]["bucket"], "WORKING");

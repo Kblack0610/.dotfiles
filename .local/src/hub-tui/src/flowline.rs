@@ -64,9 +64,11 @@ impl LineView {
                 }
             }
             KeyCode::Char('}') if shown > 0 => {
+                self.node = Some(node.key.to_string());
                 self.problem = Some(self.problem.map_or(0, |p| (p + 1).min(shown - 1)));
             }
             KeyCode::Char('{') if shown > 0 => {
+                self.node = Some(node.key.to_string());
                 self.problem = Some(self.problem.map_or(0, |p| p.saturating_sub(1)));
             }
             KeyCode::Esc if self.problem.is_some() => self.problem = None,
@@ -117,6 +119,9 @@ fn header(r: &Rail, graph: bool, p: Palette) -> Vec<Line<'static>> {
             (format!("  as of {t}"), p.dim())
         };
         spans.push(Span::styled(text, st));
+    }
+    if r.stale && r.as_of.is_none() {
+        spans.push(Span::styled("  age unknown", p.bad()));
     }
     if r.reading {
         spans.push(Span::styled("  reading", p.dim()));
@@ -351,6 +356,12 @@ mod tests {
         assert_eq!(v.key(KeyCode::Char('}'), &r), Took::No, "queued has none");
         assert_eq!(v.key(KeyCode::Char(']'), &r), Took::Moved);
         assert_eq!(r.nodes[v.at(&r)].key, "running");
+        let mut moved = rail();
+        let mut held = LineView { node: None, problem: None };
+        moved.worst = 3;
+        held.key(KeyCode::Char('}'), &moved);
+        moved.worst = 0;
+        assert_eq!(moved.nodes[held.at(&moved)].key, "running", "a marked problem holds its step");
         assert_eq!(v.key(KeyCode::Enter, &r), Took::No, "the table's Enter");
         v.key(KeyCode::Char('}'), &r);
         assert!(text(&r, &v, 80).iter().any(|l| l.starts_with("> 01:16")));
@@ -384,6 +395,8 @@ mod tests {
         let mut r = rail();
         (r.stale, r.as_of) = (true, Some("11-04 12:40".into()));
         assert!(text(&r, &LineView::default(), 80)[0].contains("as of 11-04 12:40 (stale)"));
+        (r.stale, r.as_of) = (true, None);
+        assert!(text(&r, &LineView::default(), 80)[0].contains("age unknown"));
         r.error = Some("snapshot cannot be read".into());
         r.absent = true;
         r.nodes[1].count = None;

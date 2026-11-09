@@ -56,7 +56,8 @@ function railHtml(r, picked, grafana) {
   const found = r.nodes.findIndex((n) => n.key === picked);
   const at = found < 0 ? r.worst : found;
   const pts = r.nodes.map((n, i) => railNode(n, i === at) + (i === at ? railDetail(n) : "")).join("");
-  const age = r.as_of ? `<span class="${r.stale ? "rstop" : ""}">as of ${esc(r.as_of)}${r.stale ? " (stale)" : ""}</span>` : (r.reading ? "reading" : "");
+  const age = r.as_of ? `<span class="${r.stale ? "rstop" : ""}">as of ${esc(r.as_of)}${r.stale ? " (stale)" : ""}</span>`
+    : r.stale ? `<span class="rstop">age unknown</span>` : r.reading ? "reading" : "";
   const trouble = r.error ? `inbox, board: ${r.error}` : r.absent ? "inbox, board: no snapshot" : "";
   const graph = grafana ? ` <a class="glink" href="${esc(grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "";
   return `<div class="flow"><div class="rail">${pts}</div>` +

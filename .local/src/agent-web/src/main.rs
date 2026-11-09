@@ -1170,7 +1170,7 @@ async fn infra_board(State(s): State<Shared>) -> Response {
 }
 
 /// The pipeline line (hub_core::flow::Rail) over the live queue and fleet-bench's snapshot.
-async fn flow_strip(State(_): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
+async fn flow_strip() -> ApiResult<Json<serde_json::Value>> {
     tokio::task::spawn_blocking(move || {
         let queue = hub_core::queue::Queue::read(&actions::System);
         let read = hub_core::pipeline::read();
