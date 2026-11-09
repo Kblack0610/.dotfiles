@@ -3,7 +3,7 @@
 #
 #   fleet-dispatch run [--dry-run]   one pass: start the queue items the gates allow, else fill from the board and start those
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
-#   fleet-dispatch suggest [--json]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held
+#   fleet-dispatch suggest [--json|--write]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held; --write stores them for the hub fold
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item (night)
@@ -140,6 +140,7 @@ LOG="$DIR/log.md"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
 IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
+CANDIDATES="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/candidates.jsonl"   # the last real pass's `suggest --json`, which the hub Candidates fold reads (hub_core::queue::candidates); derived, so out of the autocommitted ~/.agent
 
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session from a
 # worker, whatever workers.json says: the human's decision of 2026-10-27, after a dispatched session
@@ -1089,7 +1090,8 @@ plan_skips() {
 # `verdict`, the latest under this policy for this text, or `unjudged`; `held`, whether an active
 # queue item holds its area; and `blocked`, every counted reason it would not start (nobody_why,
 # size, the judge's skip, a held area), with `active` on a row no worker takes when its repo moved
-# in the last day. Display only: it never judges, claims or queues.
+# in the last day. Display only: it never judges, claims or queues. `--write` stores it for the hub
+# Candidates fold (candidates_write); each real `run` does that.
 cmd_suggest() {
   local profs cands
   profs=$(notes projects --stats --json 2>/dev/null | jq -r '[.[].profile] | unique | join(" ")' 2>/dev/null)
@@ -1113,6 +1115,26 @@ cmd_suggest() {
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"\(if .auto then "auto" else "man " end)  \(.verdict | .[0:8] | . + " " * (8 - length))  \(.project) \(.key)  [\(.why)]\(if (.blocked | length) > 0 then "  blocked: \(.blocked | join("; "))" else "" end)"'
     fi
+}
+
+# candidates_write -- `suggest --write`: the snapshot the hub Candidates fold reads, so no view pays a
+# live suggest (55s on 1,600 rows, 2026-11-09). Written whole or not at all: a failed or empty read
+# (notes down reads as no rows) leaves the last one standing, and the fold's `as of` shows its age.
+candidates_write() {
+  mkdir -p "${CANDIDATES%/*}"
+  if cmd_suggest --json > "$CANDIDATES.$$" 2>/dev/null && [ -s "$CANDIDATES.$$" ]; then
+    mv -f "$CANDIDATES.$$" "$CANDIDATES"
+  else
+    rm -f "$CANDIDATES.$$"; say "suggest: no rows read, the candidates snapshot is left as it was"; return 1
+  fi
+}
+
+# candidates_drop <project> <lane> <key> -- take a promoted row out of the snapshot now, so the fold
+# does not offer it again until the next pass rewrites the file.
+candidates_drop() {
+  [ -s "$CANDIDATES" ] || return 0
+  jq -c --arg p "$1" --arg l "$2" --arg k "$3" 'select(.project != $p or .lane != $l or .key != $k)' \
+    "$CANDIDATES" > "$CANDIDATES.$$" 2>/dev/null && mv -f "$CANDIDATES.$$" "$CANDIDATES" || rm -f "$CANDIDATES.$$"
 }
 
 # latest verdict per row, as JSON lines. An `error` record does not replace an earlier verdict: a call
@@ -3368,6 +3390,7 @@ promote() {
   fi
   # The `<state> <slug> -> <file>` line, not the first: a warning on add's stderr may come before it.
   slug=$(awk '$3 == "->" { print $2; exit }' <<<"$out"); PROMOTED=$slug
+  candidates_drop "$project" "$lane" "$key"
   agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} >/dev/null
   logline "filled queue item $slug from $project $lane row${tags:+ ($tags)}: $id"
   echo "queued $project: $id"
@@ -3548,9 +3571,12 @@ main() {
       shift; cmd_run "$@"; local rc=$?
       # After the pass, so it counts what the pass left: stats reads this, never the gates itself.
       [ "$DRY" = 1 ] || { cmd_headroom --json > "$HEADROOM.$$" 2>/dev/null && mv -f "$HEADROOM.$$" "$HEADROOM" || rm -f "$HEADROOM.$$"; }
+      # The candidates snapshot too, but only from the pass that holds the lock: a skipped pass would
+      # read every board a second time beside the one running.
+      [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || candidates_write || true
       return "$rc" ;;
     candidates) cmd_candidates ;;
-    suggest) shift; cmd_suggest "$@" ;;
+    suggest) shift; if [ "${1:-}" = --write ]; then candidates_write; else cmd_suggest "$@"; fi ;;
     fill) shift; cmd_fill "$@" ;;
     promote) shift; cmd_promote "$@" ;;
     report) cmd_report ;;
