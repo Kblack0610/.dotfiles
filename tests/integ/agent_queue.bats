@@ -339,7 +339,11 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move first done --status failed
   run "$AQ" next
   assert_failure
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first closed failed, releases only if first is re-queued and closes ok: cancel the item or set it after another"
   "$AQ" add --project game --slug first --repeat "again"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first"
   "$AQ" move first done --status ok
   [ "$("$AQ" next --json | jq -r .slug)" = second ]
 }
