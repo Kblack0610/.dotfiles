@@ -14,11 +14,13 @@ PKG=$(cat package.json 2>/dev/null)
 if [ -f "turbo.json" ] || echo "$PKG" | grep -q '"turbo"'; then
   TURBO_FILTER=""
   if [ -d "apps" ] && git rev-parse --git-dir >/dev/null 2>&1; then
-    BASE_BRANCH="origin/dev"
-    git show-ref --verify --quiet refs/remotes/origin/dev || BASE_BRANCH="origin/main"
+    # The remote's default branch is the PR base (develop in bnb platform, main elsewhere).
+    BASE_BRANCH=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
     CHANGED_APPS=$(git diff --name-only "$BASE_BRANCH"...HEAD 2>/dev/null | grep "^apps/" | cut -d'/' -f2 | sort -u)
     if [ -n "$CHANGED_APPS" ]; then
       for app in $CHANGED_APPS; do
+        # An app the branch deleted (or a file such as apps/CLAUDE.md) is not a turbo filter.
+        [ -d "apps/$app" ] || continue
         TURBO_FILTER="$TURBO_FILTER --filter=./apps/$app..."
       done
       echo "Scoping checks to changed apps: $CHANGED_APPS" >&2
