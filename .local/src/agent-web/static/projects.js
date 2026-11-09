@@ -3,8 +3,8 @@
 // the view, hub_core::projects, the rows the hub TUI's Projects tab draws) with its open
 // version's progress by size, its pace and ETA, and its queue, in flight first. A click opens
 // the project: its card, the opened record, its page (/api/projects/{name}/page, hub_core::page,
-// read only then), then that project's rows with every row action board.js has; All rows shows
-// every project's rows. The numbers are counted, never judged: every line is hub_core's, word
+// read only then), then that project's rows with every row action board.js has; every project's
+// rows are the Board tab. The numbers are counted, never judged: every line is hub_core's, word
 // for word. Two tables, one at a time, share st.views.projects: this one owns it when nothing is
 // open, the rows when a project is.
 
@@ -107,14 +107,11 @@ async function pReadPage(name) {
   if (st.tab === "projects" && pst.open) renderProjects();
 }
 
-// The list's head: how many the view keeps and how many fly, what progress counts, and the way
-// to every project's rows.
+// The list's head: how many the view keeps and how many fly, and what progress counts.
 function pHead(t) {
   const flying = t.states.find((c) => c.name === "in flight").n;
-  const open = bst.feed ? bst.feed.table.total : null;
   return `<div class="muted qstats">${t.shown === t.total ? t.total : `${t.shown} of ${t.total}`} projects, ${flying} in flight; ` +
-    `progress is the open version's rows by size (#size/s 1, m 3, l 8) ` +
-    `<button class="btn sm" data-open="all">${open == null ? "All rows" : `All rows ${open}`}</button></div>`;
+    `progress is the open version's rows by size (#size/s 1, m 3, l 8)</div>`;
 }
 
 // The list, then what no card claims.
@@ -132,24 +129,22 @@ function pList() {
 }
 
 // `#projects/<name>` (a `#p:<name>` link on Daily) or `#projects/<profile>/<name>` opens that
-// project's rows, once the cards say which project the name is; `#projects/all` opens All.
+// project's rows, once the cards say which project the name is.
 function pDeep() {
   const want = st.arg;
   if (!want) return;
-  if (want === "all") { if (pst.open !== "all") pOpen("all"); return; }
   const c = pst.data && pst.data.cards.find((x) => pKey(x) === want || x.name === want);
   if (c && pst.open !== pKey(c)) pOpen(pKey(c));
 }
 
-// The rows view: the card (or the All heading) on top, then board.js's rows and controls. The
-// rows are read for this project, under the view already in the URL.
+// The rows view: the card on top, then board.js's rows and controls. The rows are read for this
+// project, under the view already in the URL.
 function pOpen(key) {
   pst.open = key;
-  if (key !== "all") {
-    bst.draft.key = key;
-    const c = pst.data && pst.data.cards.find((x) => pKey(x) === key);
-    if (c) { delete pst.page[c.name]; pReadPage(c.name); }
-  }
+  bst.scope = key;
+  bst.draft.key = key;
+  const c = pst.data && pst.data.cards.find((x) => pKey(x) === key);
+  if (c) { delete pst.page[c.name]; pReadPage(c.name); }
   bst.feed = null; bst.sel = null; bst.form = null; bst.msg = ""; bst.all = false; bst.controlsKey = "";
   $("projects").scrollTop = 0;
   renderProjects();
@@ -173,16 +168,16 @@ function renderProjects() {
   cardsEl.hidden = !!pst.open;
   rowsEl.hidden = !pst.open;
   if (!pst.open) { pst.render(); return; }
-  const c = pst.open !== "all" && pst.data && pst.data.cards.find((x) => pKey(x) === pst.open);
+  const c = pst.data && pst.data.cards.find((x) => pKey(x) === pst.open);
   paint($("p-head"), `<div class="opts"><button class="btn sm" id="p-back">Back to projects</button></div>` +
-    (c ? pOpened(c) : `<h2 class="sec">All projects</h2>`), pst.folds);
+    (c ? pOpened(c) : ""), pst.folds);
   renderBoard();
 }
 
 $("projects").addEventListener("click", (e) => {
   if (e.target.id === "p-back") { pGo(null); return; }
   const o = e.target.closest("[data-open]");
-  if (o && !e.target.closest("#board")) pGo(o.dataset.open);
+  if (o && !e.target.closest("#b-root")) pGo(o.dataset.open);
 });
 $("p-cards").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.target.matches?.("tr[data-open]")) pGo(e.target.dataset.open);
@@ -193,7 +188,7 @@ $("projects").addEventListener("toggle", (e) => {
 
 TABS.projects = {
   // Back on the tab, what was open stays open and the URL names it again.
-  show() { if (pst.open && !st.arg) st.arg = pst.open; pDeep(); renderProjects(); refreshProjects(); refreshBoard(); },
+  show() { bMount("p-rows"); if (pst.open && !st.arg) st.arg = pst.open; pDeep(); renderProjects(); refreshProjects(); refreshBoard(); },
   onEvent(ev) {
     if (st.tab !== "projects") return;
     if (["watch", "queue", "resync"].includes(ev.kind)) refreshProjects();
