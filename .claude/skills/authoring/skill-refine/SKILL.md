@@ -101,7 +101,7 @@ Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAU
 1. Name the evidence: which sessions/lessons show the repetition.
 2. Confirm scope and name with the user. **Never auto-create a skill file.**
 3. Copy `~/.dotfiles/.claude/skills/SKILL-TEMPLATE.md` to `.claude/skills/{category}/{name}/SKILL.md`. `dotfiles-land` decides which repo.
-4. Run `skill-deploy` - never hand-write the symlink. A skill that is not linked is invisible. Its description is its index entry; CLAUDE.md names it only when it collides with or replaces an existing skill (`update-rules`, "A new skill and CLAUDE.md"), and a skill it replaces is deleted in the same PR.
+4. Landing it links it: `dotfiles-autopull` runs `skill-deploy` after every fast-forward. Never hand-write the symlink. Its description is its index entry; CLAUDE.md names it only when it collides with or replaces an existing skill (`update-rules`, "A new skill and CLAUDE.md"), and a skill it replaces is deleted in the same PR.
 5. `skill-drift --lint .` before opening the PR. CI runs the same command, so a miss here is a red PR rather than a bad skill.
 
 ## Hard rules

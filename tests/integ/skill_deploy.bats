@@ -120,6 +120,15 @@ mkskill() {
 # .dotfiles-private/.claude/skills/<name>/ that no longer existed, because the
 # skill was now at <category>/<name>/. skill-deploy refused all of them.
 
+@test "a dangling link is repointed when its whole category was renamed" {
+  mkskill "$PUB" infra/renamed
+  ln -s ../../.dotfiles/.claude/skills/ops/renamed "$SKILLS/renamed"
+  run "$SKILL_DEPLOY"
+  assert_success
+  assert_output --partial "RELINKED"
+  assert [ -f "$SKILLS/renamed/SKILL.md" ]
+}
+
 @test "a dangling link into a repo is repointed when the source moved" {
   mkskill "$PUB" ops/moved
   ln -s "$PUB/.claude/skills/moved" "$SKILLS/moved"   # the old flat path
