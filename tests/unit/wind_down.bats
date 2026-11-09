@@ -71,8 +71,18 @@ mk_sentinel() { SENTINEL="$BATS_TEST_TMPDIR/s.request"; cat > "$SENTINEL"; }
   CLAUDE_CODE_SESSION_ID=bbb wd arm
   assert_equal "$(ls "$SPIN_DIR"/*.request | wc -l)" '2'
   run ls "$SPIN_DIR"
-  assert_output --partial '__aaa.request'
-  assert_output --partial '__bbb.request'
+  assert_output --partial 'aaa.request'
+  assert_output --partial 'bbb.request'
+  refute_output --partial '__'
+}
+
+@test "the sentinel name does not depend on the cwd arm runs from" {
+  # 2026-11-08: arm ran from a cwd outside the project and wrote "_unscoped__<sid>.request"
+  # while the Stop hook looked for "<project>__<sid>.request"; the window never closed.
+  CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_PROJECT_DIR=/nowhere/outside wd arm
+  assert_success
+  [ -f "$SPIN_DIR/$SID_A.request" ] || fail "sentinel is not <sid>.request: $(ls "$SPIN_DIR")"
+  assert_equal "$(ls "$SPIN_DIR"/*.request | wc -l)" '1'
 }
 
 @test "arm outside tmux refuses and arms nothing" {
@@ -365,10 +375,21 @@ EOF
 
 SID_A="11111111-2222-3333-4444-555555555555"
 
+@test "armed from a cwd outside the project, the Stop hook in the project still finds it" {
+  # The 2026-11-08 failure end to end: arm resolves one project, the hook another.
+  CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_PROJECT_DIR=/nowhere/outside wd arm
+  assert_success
+  run env -u CLAUDE_CODE_SESSION_ID CLAUDE_PROJECT_DIR="$REPO_ROOT" \
+    bash "$REPO_ROOT/.claude/hooks/stop-post.d/95-wind-down.sh" <<<"{\"session_id\":\"$SID_A\"}"
+  assert_success
+  [ ! -e "$SPIN_DIR/$SID_A.request" ] || fail "the hook did not consume the sentinel: $(ls "$SPIN_DIR")"
+  [ -e "$SPIN_DIR/$SID_A.fired" ] || fail "the hook did not fire it: $(ls "$SPIN_DIR")"
+}
+
 @test "arm records the Claude session id, and an empty one outside Claude" {
   CLAUDE_CODE_SESSION_ID="$SID_A" wd arm
   assert_success
-  run grep '^sid=' "$SPIN_DIR"/*__"$SID_A".request
+  run grep '^sid=' "$SPIN_DIR/$SID_A.request"
   assert_output "sid=$SID_A"
 
   rm -f "$SPIN_DIR"/*.request
@@ -422,23 +443,24 @@ SID_B=66666666-7777-8888-9999-aaaaaaaaaaaa
 
 disarm() { run bash -c 'printf "%s" "$2" | env -u CLAUDE_CODE_SESSION_ID bash "$1" disarm' _ "$WIND_DOWN" "$1"; }
 
-@test "disarm removes this session's sentinel whatever project it was armed under" {
+@test "disarm removes this session's sentinel, keyed by sid alone or by an older project prefix" {
   mkdir -p "$SPIN_DIR"
-  touch "$SPIN_DIR/dotfiles__$SID_A.request" "$SPIN_DIR/elsewhere__$SID_A.request"
+  touch "$SPIN_DIR/$SID_A.request" "$SPIN_DIR/dotfiles__$SID_A.request" "$SPIN_DIR/elsewhere__$SID_A.request"
   disarm "{\"session_id\":\"$SID_A\"}"
   assert_success
   assert_output --partial 'wind-down disarmed'
+  [ ! -e "$SPIN_DIR/$SID_A.request" ] || fail "own sentinel survived"
   [ ! -e "$SPIN_DIR/dotfiles__$SID_A.request" ] || fail "own sentinel survived"
   [ ! -e "$SPIN_DIR/elsewhere__$SID_A.request" ] || fail "sentinel armed from another dir survived"
 }
 
 @test "disarm leaves another session's sentinel and the legacy project-only one" {
   mkdir -p "$SPIN_DIR"
-  touch "$SPIN_DIR/dotfiles__$SID_B.request" "$SPIN_DIR/dotfiles.request"
+  touch "$SPIN_DIR/$SID_B.request" "$SPIN_DIR/dotfiles.request"
   disarm "{\"session_id\":\"$SID_A\"}"
   assert_success
   assert_output ''
-  [ -e "$SPIN_DIR/dotfiles__$SID_B.request" ] || fail "removed another session's sentinel"
+  [ -e "$SPIN_DIR/$SID_B.request" ] || fail "removed another session's sentinel"
   [ -e "$SPIN_DIR/dotfiles.request" ] || fail "removed the legacy sentinel"
 }
 
@@ -450,19 +472,19 @@ disarm() { run bash -c 'printf "%s" "$2" | env -u CLAUDE_CODE_SESSION_ID bash "$
 
 @test "disarm with a malformed session id removes nothing" {
   mkdir -p "$SPIN_DIR"
-  touch "$SPIN_DIR/dotfiles__x.request" "$SPIN_DIR/dotfiles__$SID_A.request"
+  touch "$SPIN_DIR/x.request" "$SPIN_DIR/$SID_A.request"
   disarm '{"session_id":"*"}'
   assert_success
-  [ -e "$SPIN_DIR/dotfiles__x.request" ] || fail "a glob id reached rm"
-  [ -e "$SPIN_DIR/dotfiles__$SID_A.request" ] || fail "a glob id reached rm"
+  [ -e "$SPIN_DIR/x.request" ] || fail "a glob id reached rm"
+  [ -e "$SPIN_DIR/$SID_A.request" ] || fail "a glob id reached rm"
 }
 
 @test "disarm falls back to CLAUDE_CODE_SESSION_ID when stdin has no payload" {
   mkdir -p "$SPIN_DIR"
-  touch "$SPIN_DIR/dotfiles__$SID_A.request"
+  touch "$SPIN_DIR/$SID_A.request"
   run env CLAUDE_CODE_SESSION_ID="$SID_A" bash "$WIND_DOWN" disarm </dev/null
   assert_success
-  [ ! -e "$SPIN_DIR/dotfiles__$SID_A.request" ] || fail "env fallback did not disarm"
+  [ ! -e "$SPIN_DIR/$SID_A.request" ] || fail "env fallback did not disarm"
 }
 
 # ── dispatch ─────────────────────────────────────────────────────────────────

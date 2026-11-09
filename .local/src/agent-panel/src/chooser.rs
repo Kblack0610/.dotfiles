@@ -601,7 +601,7 @@ fn extract_target(row: &str) -> Option<String> {
 }
 
 /// Read the preview map file for a target row:
-/// `target \t jsonl \t project \t summary \t repo_full \t ask`.
+/// `target \t project \t summary \t repo_full \t ask ...` (`render::Facts::line`).
 /// The preview facts the map file holds for `target`; empty when it holds none.
 fn lookup(map_file: &Path, target: &str) -> render::Facts {
     fs::read_to_string(map_file)
@@ -692,7 +692,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("agent-panel-map-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let map = dir.join("map");
-        fs::write(&map, "hub/a:1\t\tdotfiles\tsum\tdotfiles-x\tJSVBgC\nhub/b:1\t\tnotes\t\t\t\n").unwrap();
+        fs::write(&map, "hub/a:1\tdotfiles\tsum\tdotfiles-x\tJSVBgC\nhub/b:1\tnotes\t\t\t\n").unwrap();
         assert_eq!(lookup(&map, "hub/a:1").ask, "JSVBgC");
         assert_eq!(lookup(&map, "hub/b:1").ask, "");
         assert_eq!(lookup(&map, "hub/none:1").ask, "");

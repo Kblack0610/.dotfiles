@@ -512,12 +512,20 @@ on_host() {
   if [ -n "$h" ]; then fleet_host_run "$h" "$@"; else "$@"; fi
 }
 
-# The env prefix that starts claude on the account claude-acct pick chooses
-# (the same choice `cl` makes); empty for the main account or when claude-acct is missing. A run
-# pass has already chosen from `claude-acct room --json` (acct_room), and passes that account in RUN_ACCOUNT.
-# Accounts share ~/.claude/projects, so a resumed session works from either one.
+# The env prefix that starts claude on the account claude-acct names: the one `room` picks (the best
+# with room, under its weekly pace), else `pick`, since a hand start is never refused. A run pass has
+# already chosen from `claude-acct room --json` (acct_room) and passes that account in RUN_ACCOUNT.
+# Empty for the main account or when claude-acct is missing. Accounts share ~/.claude/projects, so
+# a resumed session works from either one.
 account_dir() {
-  if [ "${RUN_ACCOUNT+set}" = set ]; then printf '%s' "$RUN_ACCOUNT"; else claude-acct pick || true; fi
+  if [ "${RUN_ACCOUNT+set}" = set ]; then printf '%s' "$RUN_ACCOUNT"; return; fi
+  local rows
+  rows=$(claude-acct room --json 2>/dev/null)
+  if jq -e '.pick != null' <<<"$rows" >/dev/null 2>&1; then
+    jq -r '.pick as $p | .accounts[] | select(.name == $p) | .dir' <<<"$rows"; return
+  fi
+  say "start: no account has room ($(jq -r '.why // "no answer"' <<<"$rows" 2>/dev/null || echo "no answer")); a hand start goes ahead on pick's"
+  claude-acct pick || true
 }
 # account_env [dir]: the prefix for that account (the chosen one when no argument). Main unsets
 # the dir: a pane gets the tmux server's environment, which may carry an alt account.
@@ -1623,7 +1631,7 @@ conversation_live() {
 
 # wound_down <id> -- it asked to close: armed, or fired since its window last showed in a record.
 # wind-down.sh disarm clears both on the next prompt, so a conversation taken up again is reopened.
-wound_down() { compgen -G "$HOME/.agent/spin-down/*__$1.[rf]*" >/dev/null; }
+wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compgen -G "$HOME/.agent/spin-down/*__$1.[rf]*" >/dev/null; }
 
 # restore_world <lost record> <dry run 0|1> -- reopen each conversation as a window of the session
 # it was in, through start, with the running or waiting queue item that lists its Claude session
