@@ -717,8 +717,8 @@ mod tests {
 
     #[test]
     fn rows_with_no_published_sum_are_not_a_green_fleet() {
-        // claude-acct writes no burn or sustain when it summed no account (and an older one wrote
-        // none at all): the rows are listed, the fleet is amber, and nothing is re-summed.
+        // claude-acct writes no burn or sustain when it summed no account: the rows are listed,
+        // the fleet is amber, and nothing is re-summed.
         let mut s = fixture();
         s.retain(|x| !x.label("__name__").starts_with("claude_fleet_burn"));
         let b = build(&s, None, quiet(), NOW);

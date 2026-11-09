@@ -888,11 +888,11 @@ mod tests {
             ("burn_points_per_hour", 4.52),
             ("sustain_points_per_hour", 1.37),
         ] {
-            let mut s = series("", k, v);
-            s.labels.remove("account");
-            s.labels
-                .insert("__name__".into(), format!("claude_fleet_{k}"));
-            all.push(s);
+            all.push(hub_core::prom::Series {
+                labels: [("__name__".to_string(), format!("claude_fleet_{k}"))].into(),
+                value: Some(v),
+                points: vec![],
+            });
         }
         let drip = hub_core::burn::Drip {
             hour: 15,
