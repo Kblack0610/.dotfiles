@@ -725,6 +725,39 @@ EOF
   assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:42 commit:fedcba987654'
 }
 
+# repo_map -> a registry where o/r's checkout is the project `tools` and `level` is a game inside repo `game`
+repo_map() {
+  export PROJECT_MAP_FILE="$SANDBOX/map.json"
+  jq -n '{paths: {"/x/r": "tools", "/x/game": "game"}, trackers: {level: {repo: "game", path: "Assets/Level"}, tools: {}}}' >"$PROJECT_MAP_FILE"
+}
+
+@test "an item taken from the session refuses a PR in another repo, before anything is touched" {
+  repo_map
+  ITEM_PROJECT=level item store 'board:level:store page' agent
+  AGENT_QUEUE_ITEM=store run "$LAND" 42
+  assert_failure 2
+  assert_output --partial '#42 is in o/r (tools), and store, taken from $AGENT_QUEUE_ITEM, is a level item in game'
+  assert_output --partial 'Pass --item store if this PR is that item'
+  run grep -c 'pr edit\|pr checks\|pr merge\|^notes' "$LOG"
+  assert_output 0
+  run agent-queue show store --json
+  assert_equal "$(jq -r '.state + " " + (.pr // "")' <<<"$output")" 'running '
+}
+
+@test "the same PR lands on that item when --item names it, and an item in the PR's repo needs no --item" {
+  repo_map
+  ITEM_PROJECT=level item store 'board:level:store page' agent
+  AGENT_QUEUE_ITEM=other run "$LAND" 42 --item store
+  assert_success
+  assert_output --partial 'item: store done with pr:o/r#42'
+  ITEM_PROJECT=tools item tool 'board:tools:tool fix' agent
+  printf 'https://github.com/o/r/pull/43\n' >"$NOTES_FIXTURE/url"
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  AGENT_QUEUE_ITEM=tool run "$LAND" 43
+  assert_success
+  assert_output --partial 'item: tool done with pr:o/r#43'
+}
+
 @test "an agent-lane board item closes its row with --agent" {
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run

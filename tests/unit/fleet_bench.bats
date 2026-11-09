@@ -644,6 +644,108 @@ merged_pr() {
   assert_output '[7,8,9]'
 }
 
+# stub_forgejo: session-outcomes names git.example.test/o/audio#12, merged an hour ago; its API
+# answers with head.ref as a merged PR's deleted branch reads, and the ledger files its runs under
+# #12: one red, one green, and one before the PR opened, which is out of the count
+stub_forgejo() {
+  export BENCH_SO_LIB="$REPO_ROOT/.local/lib/session-outcomes.sh" SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test
+  export RBW_FIXTURE="$SANDBOX/rbw"; mkdir -p "$RBW_FIXTURE"
+  printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
+  cat > "$SANDBOX/bin/curl-fj" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/fj.argv"
+cat >> "$BATS_TEST_TMPDIR/fj.stdin"
+[ ! -e "$BATS_TEST_TMPDIR/fj.fail" ] || { echo "curl: (22) The requested URL returned error: 502" >&2; exit 22; }
+url=${*: -1}
+jq --argjson n "${url##*/pulls/}" '.number = $n' "$BATS_TEST_TMPDIR/fj.pr"
+STUB
+  chmod +x "$SANDBOX/bin/curl-fj"
+  jq -cn --arg c "$(iso $((T0 - 7200)))" --arg m "$(iso $((T0 - 3600)))" \
+    '{created_at: $c, merged_at: $m, additions: 3, deletions: 4, merge_commit_sha: "abc",
+      head: {ref: "refs/pull/12/head", label: "fix/x"}}' > "$BATS_TEST_TMPDIR/fj.pr"
+  jq -cn --arg a "$(iso $((T0 - 9000)))" --arg b "$(iso $((T0 - 6000)))" --arg c "$(iso $((T0 - 5000)))" \
+    '[{conclusion: "failure", createdAt: $a}, {conclusion: "failure", createdAt: $b}, {conclusion: "success", createdAt: $c}]' > "$GHD/runs-#12.json"
+  forgejo_outcome s1 12
+}
+
+# forgejo_outcome <session> <number>: session-outcomes lists the Forgejo PR as merged an hour ago
+forgejo_outcome() {
+  jq -cn --arg s "$1" --argjson n "$2" --arg at "$(iso $((T0 - 3600)))" \
+    '{session_id: $s, prs: [{repo: "git.example.test/o/audio", number: $n, state: "MERGED", merged_at: $at}]}' \
+    >> "$HOME/.agent/outcomes/game/2026-10.jsonl"
+}
+
+@test "review: a Forgejo PR is read through its API, not gh; its runs come from the ledger under #N, and the row keeps the outcomes' name" {
+  stub_review
+  stub_forgejo
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  assert_output --partial '1 PRs counted, 1 CI reds'
+  run jq -c '[.repo, .number, .session_id, .ci_runs, .ci_red, .additions, .deletions]' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '["git.example.test/o/audio",12,"s1",2,1,3,4]'
+  grep -q -- "^schedules-sync runs forgejo:o/audio --branch #12 --until $(iso $((T0 - 3600)))$" "$GHD/calls.log"
+  run grep -c '^gh ' "$GHD/calls.log"
+  assert_output 0
+  grep -q 'https://git.example.test/api/v1/repos/o/audio/pulls/12' "$BATS_TEST_TMPDIR/fj.argv"
+  # the token goes in on stdin, never argv
+  grep -q sekret-token "$BATS_TEST_TMPDIR/fj.stdin"
+  run grep -c sekret-token "$BATS_TEST_TMPDIR/fj.argv"
+  assert_output 0
+  # counted once: the outcomes' name is the row's key, so the next review has nothing to do
+  BENCH_NOW=$((T0 + 60)) run "$SUBJECT" review
+  assert_success
+  run outcome
+  assert_output NOOP
+  [ "$(wc -l < "$FLEET_BENCH_DIR/pr-ci.jsonl")" -eq 1 ]
+}
+
+@test "review: two Forgejo PRs read the token once, and a token that cannot be read is asked for once" {
+  stub_review
+  stub_forgejo
+  forgejo_outcome s2 13
+  cp "$GHD/runs-#12.json" "$GHD/runs-#13.json"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  assert_output --partial '2 PRs counted, 2 CI reds'
+  run grep -c '^rbw get' "$RBW_FIXTURE/calls.log"
+  assert_output 1
+  rm "$FLEET_BENCH_DIR/pr-ci.jsonl" "$RBW_FIXTURE/forgejo_repo_admin" "$RBW_FIXTURE/calls.log"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_failure
+  assert_output --partial 'no token (rbw forgejo_repo_admin)'
+  run grep -c '^rbw get' "$RBW_FIXTURE/calls.log"
+  assert_output 1
+}
+
+@test "review: a Forgejo PR whose API read fails is FAILED, and the next run counts it" {
+  stub_review
+  stub_forgejo
+  touch "$BATS_TEST_TMPDIR/fj.fail"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_failure
+  assert_output --partial 'cannot count git.example.test/o/audio#12'
+  [ ! -s "$FLEET_BENCH_DIR/pr-ci.jsonl" ]
+  run outcome
+  assert_output FAILED
+  rm "$BATS_TEST_TMPDIR/fj.fail"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  assert_output --partial '1 PRs counted, 1 CI reds'
+}
+
+@test "review: a Forgejo host not listed gets no call, and a Forgejo repo the ledger does not sync is left out" {
+  stub_review
+  stub_forgejo
+  SO_FORGEJO_HOSTS=git.other.test BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_failure
+  assert_output --partial 'git.example.test is not in SO_FORGEJO_HOSTS'
+  [ ! -e "$BATS_TEST_TMPDIR/fj.argv" ]
+  touch "$GHD/unsynced"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  assert_output --partial '1 PRs left out: their repos are not in the run ledger (day-log-ci)'
+}
+
 # sections_map: o/r has sections, its gate is the Tests workflow
 sections_map() {
   export BENCH_PROJECT_MAP="$SANDBOX/project-map.json"
@@ -1885,7 +1987,7 @@ hold_setup() {
   cat >> "$SCHEDULES_SYNC" <<'SS'
 [ -e "$D/down" ] && exit 1
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
-jq -c 'map({id, event, workflow: .name, status, conclusion, sha: .head_sha, created_at})' "$D/runs"
+jq -c 'map({id, event, workflow: .name, path: "shell.yml", status, conclusion, sha: .head_sha, created_at})' "$D/runs"
 SS
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SANDBOX/bin/gh"
   cat >> "$SANDBOX/bin/gh" <<'GH'
@@ -1903,7 +2005,7 @@ GH
 # ci <id> <conclusion> <sha> <offset>: one run of main, appended
 ci() {
   jq -c --argjson i "$1" --arg c "$2" --arg s "$3" --arg at "$(date -u -d "@$((T0 + $4))" +%FT%TZ)" \
-    '. + [{id: $i, event: ($ENV.CI_EVENT // "push"), name: "shell tests", status: "completed", conclusion: $c, head_sha: $s, created_at: $at}]' \
+    '. + [{id: $i, event: ($ENV.CI_EVENT // "push"), name: ($ENV.CI_NAME // "shell tests"), status: "completed", conclusion: $c, head_sha: $s, created_at: $at}]' \
     "$GHD/runs" > "$GHD/runs.new" && mv "$GHD/runs.new" "$GHD/runs"
 }
 
@@ -1939,6 +2041,18 @@ failed() {
   cleanup late -3700 6 bbb22222 .local/bin/other
   echo 'run tool' > "$GHD/tool.bats"
   ci 1 success aaa11111 -80001; ci 2 failure bbb22222 -3600
+  failed 2 unit/tool.bats
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'cleanup merge first (PR 5 at aaa11111)'
+}
+
+@test "hold: a merge's own run counts under another title, since a workflow is its file (ar-1048)" {
+  # NEGATIVE CONTROL: matched by title, its run is not found, so the merge dates from its later close and reads as after the red.
+  hold_setup
+  cleanup first -1000 5 aaa11111 .local/bin/tool
+  echo 'run tool' > "$GHD/tool.bats"
+  CI_NAME='shell (old)' ci 1 success aaa11111 -3000
+  ci 2 failure bbb22222 -2000
   failed 2 unit/tool.bats
   run "$SUBJECT" triage --dry-run
   assert_output --partial 'cleanup merge first (PR 5 at aaa11111)'
@@ -2209,6 +2323,14 @@ chain_fixture() {
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$PJSON" > "$SANDBOX/bin/projects-stub"
   chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/board-stub" "$SANDBOX/bin/projects-stub"
   printf 'PASS  map is valid JSON\nWARN  one stale anchor\n' > "$BENCH_DOCTOR_LAST"
+}
+
+@test "chain: a Forgejo row (host/owner/repo) is covered by the item that names owner/repo#N" {
+  chain_fixture
+  jq -c 'if .number == 7 then .repo = "git.example.test/O/R" else . end' "$FLEET_BENCH_DIR/pr-ci.jsonl" > "$SANDBOX/ci" && mv "$SANDBOX/ci" "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  run "$SUBJECT" chain --check
+  assert_success
+  assert_output ''
 }
 
 @test "chain: a clean work chain has every link at its bound, and --check passes" {
@@ -3173,8 +3295,8 @@ esac'
   } > "$ITEMS"
   mkdir -p "$FLEET_BENCH_DIR"
   # a names o/r#1 twice and it counts once; o/r#1 ran no gate and had 2 red CI runs, so it is not in first pass; o/r#2's gate was green
-  # despite a red CI run; c's bare ref "9" joins nothing (o/r#9's 5 reds stay out)
-  ci_row '{repo: "o/r", number: 1, ci_red: 2}'
+  # despite a red CI run; c's bare ref "9" joins nothing (o/r#9's 5 reds stay out); a Forgejo row carries its host, and an item never does
+  ci_row '{repo: "git.example.test/o/r", number: 1, ci_red: 2}'
   ci_row '{repo: "o/r", number: 2, ci_red: 1, gate_runs: 2, gate_red: 0}'
   ci_row '{repo: "o/r", number: 9, ci_red: 5}'
   run "$SUBJECT" models --json

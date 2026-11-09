@@ -34,7 +34,7 @@ Not for how dispatch picks and starts sessions (`fleet-dispatch`), or an account
 ## States and moves
 
 - queued -> running when a session starts on it; running -> waiting while its session waits on the human or owns a pending ask (`fleet-dispatch reap` does this); -> done when closed.
-- `agent-queue move <slug> <state>`; `done` needs `--status ok|failed|cancelled`, and `done --status ok` on an item with `pr:` refuses until it has `merged:` (agent-land, or reap on merge, writes it). `--if <state>` makes the move conditional and exits 3 when the item is elsewhere. `cancel <slug>`, `bump <slug> <priority>`, `set <slug> key=value` (for example `pr=<N>`). `reopen <slug> [--to running|waiting] [--why text]` puts back an item a false close finished (a reap that read a live session as gone) and starts its board row again; it reopens only a `failed` close, and exits 1 when the row will not start.
+- `agent-queue move <slug> <state>`; `done` needs `--status ok|failed|cancelled`, and `done --status ok` on an item with `pr:` refuses until it has `merged:` (agent-land, or reap on merge, writes it). `--if <state>` makes the move conditional and exits 3 when the item is elsewhere. `cancel <slug>`, `bump <slug> <priority>`, `set <slug> key=value` (for example `pr=<N>`). `reopen <slug> [--to running|waiting] [--why text]` puts back an item a false close finished (a reap that read a live session as gone) and starts its board row again; it reopens a `failed` close as it is, and an `ok` close only with `--unland <owner>/<repo>#<N>`, the PR it closed on that was not its work: that PR comes off `pr:` and `merged:`, and its row reopens through `notes ptask reopen` before it starts. It exits 1 when the row will not reopen or start.
 - `agent-land` normally does the closing. Use `move ... done` by hand only for work with no PR.
 
 ## Why an item is not starting
@@ -47,7 +47,7 @@ Not for how dispatch picks and starts sessions (`fleet-dispatch`), or an account
 ## Land and close
 
 1. `agent-land <pr>` runs fetch, item-line, checks, merge, proof, item, board, plan. Add `--item <slug>` when the session records more than one item, `--plan <file> --phase "<text>"` to tick a plan phase, `--dry-run` to see the steps. Run it from a checkout of the PR's repo: the number is read in `--repo <owner>/<repo>`, else the repo of the item's own `pr:`, else this checkout's, and a PR outside this checkout's origin, or a merged one that is not the item's, is refused.
-2. The item is `--item`, then `$AGENT_QUEUE_ITEM`, then `agent-queue mine`. With none it refuses before any gh call; add one with `agent-queue add --running`.
+2. The item is `--item`, then `$AGENT_QUEUE_ITEM`, then `agent-queue mine`. With none it refuses before any gh call; add one with `agent-queue add --running`. An item taken from the session, not named by `--item`, takes only a PR in its project's repo: a side PR in another repo is refused before anything is touched, so name its item (`--partial` while the item's own PR is still to land).
 3. Exit 0 landed, 1 a step failed (fix it and re-run; an already merged PR skips checks and merge, so the re-run finishes the record step), 2 usage (more than one item without `--item`, or the removed `--project` and `--title`), 3 behind origin base or a catch-up conflict (merge the base, re-run).
 4. A `night` item stops at the open PR: `agent-queue set <slug> pr=<owner>/<repo>#<N>`, then `agent-queue move <slug> waiting`. `fleet-dispatch reap` records `merged:` and closes it once the PR merges.
 

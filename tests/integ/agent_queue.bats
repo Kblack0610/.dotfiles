@@ -339,9 +339,23 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" move first done --status failed
   run "$AQ" next
   assert_failure
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first closed failed, dead: cancel it or set after=<slug>"
   "$AQ" add --project game --slug first --repeat "again"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first"
   "$AQ" move first done --status ok
   [ "$("$AQ" next --json | jq -r .slug)" = second ]
+}
+
+@test "an after: on an item closed cancelled says the hold is dead, through show as well as list" {
+  "$AQ" add --project game --slug first "a"
+  "$AQ" add --project game --slug second --after first "b"
+  "$AQ" move first done --status cancelled
+  run bash -c "'$AQ' show second --json | jq -r .hold"
+  assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
 }
 
 @test "night and at: tags hold until their time, other tags are labels" {
@@ -600,6 +614,52 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "closed ok, not failed"
   run "$AQ" reopen nosuch
   assert_failure; assert_output --partial "no finished item"
+}
+
+# ar-1031: agent-land closed shape-city-steam-console and its row on dotfiles-private#652, a side PR.
+@test "reopen --unland takes a false ok close's PR off the item and reopens its row; a PR it does not record is refused" {
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  "$AQ" add --project game --running --slug store "store page" >/dev/null
+  "$AQ" set store "row=game:gm-9" "profile=bnb" "pr=o/game#5 o/tools#652" "merged=aaa bbb" "closing_pr=o/tools#652" >/dev/null
+  "$AQ" move store done --status ok >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" reopen store --unland o/tools
+  assert_failure; assert_output --partial "--unland takes <owner>/<repo>#<N>"
+  run "$AQ" reopen store --unland o/tools#7
+  assert_failure; assert_output --partial "store records pr:o/game#5 o/tools#652, not o/tools#7"
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-store.md)" ] || fail "a refused reopen moved the item"
+  run "$AQ" reopen store --unland O/Tools#652 --why "a skill fix, not the store page"
+  assert_success; assert_output --partial "store: done -> running (reopened, was ok)"
+  f="$(item running store)"
+  [ "$(field "$f" pr)" = "o/game#5" ] || fail "pr: $(field "$f" pr)"
+  [ "$(field "$f" merged)" = aaa ] || fail "merged: $(field "$f" merged)"
+  [ -z "$(field "$f" closing_pr)" ] || fail "closing_pr: survived"
+  [ "$(field "$f" note)" = "reopened from done (ok, unlanded O/Tools#652): a skill fix, not the store page" ] || fail "note: $(field "$f" note)"
+  run grep ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask game --agent reopen gm-9 --why closed on O/Tools#652, not its work: a skill fix, not the store page
+notes --profile bnb ptask game --agent start gm-9"
+  # A failed close takes no --unland: nothing landed to take off.
+  "$AQ" move store done --status failed >/dev/null
+  run "$AQ" reopen store --unland o/game#5
+  assert_failure; assert_output --partial "--unland undoes an ok close, and store closed failed"
+  # pr: and merged: out of step name no commit by index: refused, nothing changed.
+  "$AQ" add --project game --running --slug skew "skew" >/dev/null
+  "$AQ" set skew "pr=o/game#6 o/tools#653" "merged=ccc" >/dev/null
+  "$AQ" move skew done --status ok >/dev/null
+  run "$AQ" reopen skew --unland o/tools#653
+  assert_failure; assert_output --partial "skew records 2 pr: and 1 merged: entries, not in step"
+  # A bare ref is the PR by its number; a row reopen that fails (the row was never closed) still starts it.
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\n[[ " $* " != *" reopen "* ]]\n' > "$SANDBOX/bin/notes"
+  "$AQ" add --project game --running --slug bare "bare" >/dev/null
+  "$AQ" set bare "row=game:gm-10" "pr=654 o/game#7" "merged=ddd eee" >/dev/null
+  "$AQ" move bare done --status ok >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" reopen bare --unland o/tools#654
+  assert_success; assert_output --partial "board row gm-10 on game was not reopened"
+  assert_output --partial "bare: board row gm-10 started again"
+  f="$(item running bare)"
+  [ "$(field "$f" pr)" = "o/game#7" ] && [ "$(field "$f" merged)" = eee ] || fail "pr: $(field "$f" pr) merged: $(field "$f" merged)"
 }
 
 @test "a pr: tag holds an item until gh says the PR merged, and after still holds with it" {
