@@ -280,13 +280,26 @@ DOC
   assert_equal "$(jq -c '[.[] | [.id, .source, (.aliases | length)]]' <<<"$output")" '[["docs","doc",0],["netcode","doc",2],["dispatch","own",1]]'
 }
 
-@test "systems: an own entry can opt a project into a doc system of another type, and --list takes no --file" {
+@test "systems: an own entry cannot pull in another type's system or reuse an alias, --list needs no checkout, and takes no --file" {
   write_systems_doc
-  jq '.trackers.shooter.systems = {payments: {aliases: ["iap"]}}' \
-    "$PROJECT_MAP_FILE" > "$HOME/map.tmp" && mv "$HOME/map.tmp" "$PROJECT_MAP_FILE"
+  setmap() { jq ".trackers.shooter.systems = $1" "$PROJECT_MAP_FILE" > "$HOME/map.tmp" && mv "$HOME/map.tmp" "$PROJECT_MAP_FILE"; }
+  setmap '{payments: {aliases: ["iap"]}}'
+  run "$CHECK" shooter --list
+  assert_failure 2
+  assert_output --partial 'payments does not apply to a game project'
+  setmap '{netcode: {aliases: ["queue"]}, dispatch: {is: "The queue", aliases: ["queue"]}}'
+  run "$CHECK" shooter --list
+  assert_failure 2
+  assert_output --partial 'an alias names two systems or is itself a system id: queue'
+  setmap '{dispatch: {is: "The queue", aliases: ["docs"]}}'
+  run "$CHECK" shooter --list
+  assert_failure 2
+  assert_output --partial 'is itself a system id: docs'
+  setmap '{dispatch: {is: "The queue", aliases: ["queue"]}}'
+  mv "$REPO" "$HOME/gone"
   run "$CHECK" shooter --list
   assert_success
-  assert_line --index 2 "$(printf 'payments\tdoc\tiap\tPurchases')"
+  assert_line --index 2 "$(printf 'dispatch\town\tqueue\tThe queue')"
   run "$CHECK" shooter --list --file
   assert_failure 2
   assert_output --partial '--list takes only --json'

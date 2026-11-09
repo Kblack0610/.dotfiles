@@ -303,7 +303,7 @@ def iso: strflocaltime("%Y-%m-%dT%H:%M:%S%z");
 def hm: if . == null then "-" else strflocaltime("%a %H:%M") end;
 def round1: . * 10 | round / 10;
 def round2: . * 100 | round / 100;
-def ownerless: select((.state == "running" or .state == "waiting") and (.session // "") == "" and (.sessions // "") == "");
+def ownerless: select((.state == "running" or .state == "review" or .state == "waiting") and (.session // "") == "" and (.sessions // "") == "");
 def ep: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | fromdateiso8601? // null) end;   # a queue or gh time
 def tagged($t): (" " + (.tags // "") + " ") | contains(" \($t) ");
 def hold_key: "fix(hold): \(.name) went red";
@@ -1651,7 +1651,7 @@ ledger_counts() {
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_waiting queue_net_24h estimated_token_share"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -1803,13 +1803,13 @@ chain_counts() {
   reds_counts "$1"
   pipeline_json "$t" | jq -r 'def n: if . == null then "?" else . end;
     "chain_drift=\(.drift | n)",
-    (.steps[] | select(.step | IN("backlog", "queued", "running", "waiting")) | "step_age_p90_\(.step)=\(.age_p90_min | n)"),
+    (.steps[] | select(.step | IN("backlog", "queued", "running", "review", "waiting")) | "step_age_p90_\(.step)=\(.age_p90_min | n)"),
     (.steps[] | select(.step == "queued") | "queue_net_24h=\(if .in_24h == null or .out_24h == null then "?" else .in_24h - .out_24h end)")'
 }
 
 # The work chain's steps, in order: an untriaged line, an open agent-board row, a queue item
-# queued, running or waiting, and done.
-PIPELINE_STEPS="inbox backlog queued running waiting done"
+# queued, running, on its PR (review) or waiting on the human, and done.
+PIPELINE_STEPS="inbox backlog queued running review waiting done"
 
 # inbox_lines -> how many lines wait untriaged: the outbox plus every project's `## Inbox`
 inbox_lines() {
@@ -1853,7 +1853,8 @@ pipeline_json() {
        backlog: (if $b == null or $a == null then null
                  else $b | map(select(.lane == "agent" and .state == "open" and ($live["\(.project):\(.id)"] | not)))
                    | {n: length, ages: map((.since // "") + "T00:00:00Z" | epoch | mins)} end),
-       queued: held("queued"; "queued"), running: held("running"; "started"), waiting: held("waiting"; "waiting"),
+       queued: held("queued"; "queued"), running: held("running"; "started"), review: held("review"; "review"),
+       waiting: held("waiting"; "waiting"),
        done: (if $d == null then null else {n: ($d | map(select((.finished | epoch) > $t - 86400)) | length), ages: []} end)} as $now
     | ($r.steps // [] | INDEX(.step)) as $flow
     | [$steps | split(" ")[] | . as $s | $now[$s] as $w | ($flow[$s] // {}) as $f
@@ -3309,7 +3310,7 @@ triage_human() {
 # an item that closed cancelled, failed, or merged with its red still here did not hold.
 cause_tries() {
   jq --arg c " cause:$2 " '[.[] | select((" " + (.tags // "") + " ") | contains($c))]
-    | if any(.[]; .state == "queued" or .state == "running" or .state == "waiting"
+    | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
                 or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled"))
       then -1 else length end' <<<"$1"
 }
@@ -3604,7 +3605,7 @@ reds_json() {
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (
          if .state == "queued" then "queued"
-         elif .state == "running" or .state == "waiting" then "fixing"
+         elif .state == "running" or .state == "review" or .state == "waiting" then "fixing"
          elif .merged != null then
            (if $red | not then "fixed"
             elif $r.area == "watch" and $fin != null and ($w[$r.name] // 0) > $fin then "came back"
@@ -4176,6 +4177,7 @@ forecast_json() {
                  live: (if .state == "running" then $onsch[(.session // "") | if test(":") then sub(":"; "/") else "lab/" + . end] else null end),
                  after: (if ($h | startswith("after ")) and $active[$par] != null then $par else null end),
                  why: (if .state == "waiting" then "waiting on you"
+                       elif .state == "review" then "on a PR"
                        elif ($h | startswith("after ")) and $active[$par] == null then "after \($par), which did not finish ok"
                        elif $h != "" and ($h | startswith("after ") | not) then "held: \($h)"
                        else null end)})) as $e
@@ -4185,6 +4187,7 @@ forecast_json() {
                          p50: $a.placed[.slug].end, slow: $b.placed[.slug].end})) as $rows
           | {count: ($it | length), running: ($it | map(select(.state == "running")) | length),
              queued: ($it | map(select(.state == "queued")) | length),
+             review: ($it | map(select(.state == "review")) | length),
              waiting: ($it | map(select(.state == "waiting")) | length),
              slots: $K, slots_known: ($slots != ""), on_schedule: ($e | map(select(.live != null)) | length),
              phases: ($rows | map(.phases) | add // 0),
@@ -4234,7 +4237,7 @@ cmd_forecast() {
     (if .items == null then "  agent queue: unreadable"
      elif .items.count == 0 then "  agent queue: empty"
      else .items as $i
-       | "  agent queue: \($i.count) items (\($i.running) running, \($i.queued) queued, \($i.waiting) waiting on you), \($i.phases) phases on \($i.slots) dispatch slots"
+       | "  agent queue: \($i.count) items (\($i.running) running, \($i.queued) queued, \($i.review) on a PR, \($i.waiting) waiting on you), \($i.phases) phases on \($i.slots) dispatch slots"
          + (if ($i.schedule | length) > 0 then ": all done by \($i.finish_p50 | hm), slow \($i.finish_slow | hm)" else "" end)
          + (if $i.on_schedule > 0 then " (\($i.on_schedule) running already counted above)" else "" end),
          (if ($i.not_scheduled | length) > 0

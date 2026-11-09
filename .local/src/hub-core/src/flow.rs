@@ -1,9 +1,9 @@
 //! The flow strip: where work sits between a captured thought and a landed PR, as one row of
-//! chips (`inbox | board | queued (ready) | running | needs you | done 24h | drain`). Home leads
+//! chips (`inbox | board | queued (ready) | running | on a PR | needs you | done 24h | drain`). Home leads
 //! with it on both surfaces and the Queue tab shows the same one, from this one builder, so the
 //! hub TUI and agent-web cannot word or count it differently.
 //!
-//! Where each number comes from: the queue's own chips (queued, running, needs you) are the live
+//! Where each number comes from: the queue's own chips (queued, running, on a PR, needs you) are the live
 //! queue, the same count the table under a chip shows (done 24h is agent-queue's rolling count,
 //! and its chip opens the Queue's done chip, which lists today's finished items); inbox and board are fleet-bench's
 //! snapshot (`pipeline`), the only owner of those two; done 24h and the drain are
@@ -120,6 +120,12 @@ impl Strip {
                     queue_to("running"),
                 ),
                 chip(
+                    "review",
+                    "on a PR",
+                    n(State::Review).map(|c| c.to_string()),
+                    queue_to("on a PR"),
+                ),
+                chip(
                     "needs",
                     "needs you",
                     n(State::Waiting).map(|c| c.to_string()),
@@ -177,7 +183,7 @@ impl Strip {
     }
 }
 
-/// The record names the board `backlog` and the human's turn `waiting`.
+/// The record names the board `backlog`, the human's turn `waiting` and a parked PR `review`.
 fn chip_key(step: &str) -> &str {
     match step {
         "backlog" => "board",
@@ -330,16 +336,16 @@ fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>) -> Node {
     }
 }
 
-/// Why the waiting items wait, most common first. None when none is waiting.
-fn why_waiting(queue: &Queue) -> Option<String> {
+/// Why the items in `state` sit there, most common first. None when none does.
+fn why(queue: &Queue, state: State, head: &str) -> Option<String> {
     let mut by = std::collections::BTreeMap::new();
-    for i in queue.in_state(State::Waiting) {
+    for i in queue.in_state(state) {
         *by.entry(i.waits_on()).or_insert(0_usize) += 1;
     }
     let mut by: Vec<_> = by.into_iter().collect();
     by.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     let parts: Vec<String> = by.iter().map(|(why, n)| format!("{n} {why}")).collect();
-    (!parts.is_empty()).then(|| format!("Why waiting: {}", parts.join(", ")))
+    (!parts.is_empty()).then(|| format!("{head}: {}", parts.join(", ")))
 }
 
 fn worst_of(nodes: &[Node], p: Option<&Pipeline>) -> usize {
@@ -377,9 +383,12 @@ impl Rail {
             .map(|c| node(c, step_of(p, c.key), drain))
             .collect();
         if let Some(q) = queue.filter(|q| q.list_read()) {
-            let needs = nodes.iter_mut().find(|n| n.key == "needs");
-            if let Some(n) = needs {
-                n.facts.extend(why_waiting(q));
+            for n in nodes.iter_mut() {
+                match n.key {
+                    "needs" => n.facts.extend(why(q, State::Waiting, "Why waiting")),
+                    "review" => n.facts.extend(why(q, State::Review, "Why on a PR")),
+                    _ => {}
+                }
             }
         }
         let most = nodes
@@ -431,6 +440,7 @@ mod tests {
                 item("b", State::Queued),
                 item("c", State::Queued),
                 item("d", State::Waiting),
+                item("e", State::Review),
             ],
             stats: Some(Stats {
                 sitting: Some(Sitting {
@@ -455,7 +465,7 @@ mod tests {
         st.set_pipeline(&Ok(Some(pipe(0.5))));
         assert_eq!(
             st.line(),
-            "inbox 4 | board 312 | queued 2 (1 ready) | running 1 | needs you 1 | done 24h 280 | drain 6h +41/-52 shrinking"
+            "inbox 4 | board 312 | queued 2 (1 ready) | running 1 | on a PR 1 | needs you 1 | done 24h 280 | drain 6h +41/-52 shrinking"
         );
         let to: Vec<_> = st
             .chips
@@ -469,6 +479,7 @@ mod tests {
                 Some(("board", "")),
                 Some(("queue", "up next")),
                 Some(("queue", "running")),
+                Some(("queue", "on a PR")),
                 Some(("queue", "needs you")),
                 Some(("queue", "done")),
                 Some(("queue", "")),
@@ -498,7 +509,7 @@ mod tests {
         let mut st = Strip::build(None);
         assert_eq!(
             st.line(),
-            "inbox - | board - | queued - | running - | needs you - | done 24h - | drain -"
+            "inbox - | board - | queued - | running - | on a PR - | needs you - | done 24h - | drain -"
         );
         // No snapshot: the queue's chips stand and inbox and board stay `-`.
         let mut q = Strip::build(Some(&queue()));
@@ -558,7 +569,7 @@ mod tests {
         let keys: Vec<_> = r.nodes.iter().map(|n| n.key).collect();
         assert_eq!(
             keys,
-            ["inbox", "board", "queued", "running", "needs", "done"]
+            ["inbox", "board", "queued", "running", "review", "needs", "done"]
         );
         let q = node_at(&r, "queued");
         assert_eq!(
@@ -629,11 +640,11 @@ mod tests {
     }
 
     #[test]
-    fn needs_you_says_why_its_items_wait() {
-        let item = |slug: &str, set: fn(&mut Item)| {
+    fn needs_you_counts_the_humans_turn_and_a_parked_pr_is_on_a_pr() {
+        let item = |slug: &str, state, set: fn(&mut Item)| {
             let mut i = Item {
                 slug: slug.into(),
-                state: State::Waiting,
+                state,
                 ..Item::default()
             };
             set(&mut i);
@@ -641,14 +652,14 @@ mod tests {
         };
         let q = Queue {
             items: vec![
-                item("a", |i| i.pr = Some("o/r#1".into())),
-                item("b", |i| i.pr = Some("o/r#2".into())),
-                item("c", |i| {
+                item("a", State::Review, |i| i.pr = Some("o/r#1".into())),
+                item("b", State::Review, |i| i.pr = Some("o/r#2".into())),
+                item("c", State::Review, |i| {
                     i.pr = Some("o/r#3".into());
                     i.partial = Some("yes".into());
                 }),
-                item("d", |_| {}),
-                item("e", |i| {
+                item("d", State::Waiting, |_| {}),
+                item("e", State::Waiting, |i| {
                     i.pr = Some("o/r#4".into());
                     i.extra.insert("ask".into(), "at-9".into());
                 }),
@@ -656,12 +667,17 @@ mod tests {
             ..Queue::default()
         };
         let r = Rail::build(Some(&q), None, 0);
+        let needs = node_at(&r, "needs");
+        assert_eq!(needs.count.as_deref(), Some("2"), "only the human's turn");
         assert_eq!(
-            node_at(&r, "needs").facts.last().map(String::as_str),
-            Some(concat!(
-                "Why waiting: 2 on a PR, 1 no reason recorded, ",
-                "1 on a final landing, 1 on an ask or report"
-            ))
+            needs.facts.last().map(String::as_str),
+            Some("Why waiting: 1 on an ask or report, 1 on its session's question")
+        );
+        let review = node_at(&r, "review");
+        assert_eq!(review.count.as_deref(), Some("3"));
+        assert_eq!(
+            review.facts.last().map(String::as_str),
+            Some("Why on a PR: 2 on its merge, 1 on a final landing")
         );
     }
 
@@ -672,7 +688,7 @@ mod tests {
             ..Queue::default()
         };
         let r = Rail::build(Some(&q), None, 0);
-        for key in ["queued", "running", "needs"] {
+        for key in ["queued", "running", "review", "needs"] {
             assert_eq!(node_at(&r, key).count, None, "{key}");
         }
         assert!(!node_at(&r, "needs")

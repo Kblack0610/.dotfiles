@@ -172,7 +172,7 @@ REPO="${REPO/#\~/$HOME}"
 # README, docs and CHANGELOG there; the predicates run from that root.
 sub="$(project_field "$NAME" path)"
 ROOT="${REPO:+$REPO${sub:+/$sub}}"
-[ -z "$ROOT" ] || [ -d "$ROOT" ] || { echo "project-stage-check: $ROOT is not checked out here" >&2; exit 2; }
+[ -n "$LIST" ] || [ -z "$ROOT" ] || [ -d "$ROOT" ] || { echo "project-stage-check: $ROOT is not checked out here" >&2; exit 2; }
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }
 [ -z "$FILE" ] || file_gaps
 
@@ -276,11 +276,12 @@ list_systems() {
   # A malformed entry exits 2 with its key named: an empty list would read as "no own systems".
   own="$(jq -c --arg n "$NAME" '
     def word: type == "string" and test("^[a-z][a-z0-9-]*$");
+    def id: type == "string" and test("^[a-z][a-z-]*$");
     def entry: type == "object" and ((.aliases // []) | type == "array" and all(.[]; word))
       and ((.is // "") | type == "string");
     (.trackers[$n].systems // {}) as $s
     | if ($s | type) != "object" then error("\($n): systems is not an object") else . end
-    | [$s | to_entries[] | select((.key | word | not) or (.value | entry | not)) | .key] as $bad
+    | [$s | to_entries[] | select((.key | id | not) or (.value | entry | not)) | .key] as $bad
     | if $bad == [] then $s
       else error("\($n): bad systems entries: \($bad | join(", ")); want {\"<id>\": {\"is\": \"<line>\", \"aliases\": [\"<word>\"]}}, ids and aliases lowercase") end
   ' "$(project_map_file)")" || { echo "project-stage-check: cannot read the systems of \"$NAME\" from $(project_map_file)" >&2; exit 2; }
@@ -289,7 +290,14 @@ list_systems() {
     | ($doc | map(.id)) as $ids
     | [$own | keys[] | select(. as $k | ($ids | index($k) | not) and ($own[$k].is // "") == "")] as $nois
     | if $nois != [] then error("own systems need an \"is\" line: \($nois | join(", "))") else . end
-    | [$doc[] | select(.id as $i | .applies | index("base") or index($type) or ($own[$i] != null))
+    | ([$doc[] | select(.applies | index("base") or index($type)) | .id]) as $applies
+    | [$own | keys[] | select(. as $k | ($ids | index($k)) and ($applies | index($k) | not))] as $off
+    | if $off != [] then error("\($off | join(", ")) does not apply to a \($type) project, so it cannot take aliases") else . end
+    | ([$applies[], ($own | keys[] | select(. as $k | $ids | index($k) | not))]) as $mine
+    | [$own | to_entries[] | .key as $k | (.value.aliases // [])[] | {a: ., k: $k}] as $pairs
+    | [$pairs | group_by(.a)[] | select(length > 1 or (.[0].a as $a | $mine | index($a))) | .[0].a] as $clash
+    | if $clash != [] then error("an alias names two systems or is itself a system id: \($clash | join(", "))") else . end
+    | [$doc[] | select(.id as $i | $applies | index($i))
         | {id, source: "doc", aliases: ($own[.id].aliases // []), is}]
       + [$own | to_entries[] | select(.key as $k | $ids | index($k) | not)
         | {id: .key, source: "own", aliases: (.value.aliases // []), is: .value.is}]

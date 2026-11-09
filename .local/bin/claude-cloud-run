@@ -5,7 +5,7 @@
 # `claude --cloud` creates a session on Anthropic's VM (no compute charge, it draws on the plan) and
 # has no stop or list API. The session's PR is the only signal it gives, so after the create this
 # polls GitHub for the PR whose body carries the line "Item: <slug>", records it on the item, and
-# parks the item `waiting` for the merge (fleet-dispatch reap closes it on merge proof, as a night
+# parks the item in `review` for the merge (fleet-dispatch reap closes it on merge proof, as a night
 # item). CLOUD_TIMEOUT_MIN flags a session that opened no PR: this exits 1, reap reads that as
 # failed, and the cloud session itself keeps running. A create that fails also exits 1, at once.
 set -uo pipefail
@@ -57,6 +57,6 @@ while :; do
   fi
   sleep "$CLOUD_POLL_SEC"
 done
-agent-queue set "$slug" "pr=$repo#$pr" >/dev/null && agent-queue move "$slug" waiting >/dev/null ||
+agent-queue set "$slug" "pr=$repo#$pr" >/dev/null && agent-queue move "$slug" review >/dev/null ||
   { echo "claude-cloud-run: could not record PR $repo#$pr on $slug" >&2; exit 1; }
 echo "claude-cloud-run: $repo#$pr is open; $slug waits for its merge"
