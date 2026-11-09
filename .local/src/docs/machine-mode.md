@@ -76,6 +76,18 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 - Other builds agents start are not capped. They already run at a low priority.
 - `open` means the two runners on 12 of the 24 threads, as it always has. A third slot waits on a day of load data.
 
+## Release lane
+
+A release cut keeps a pool host's slots for its own build jobs, for a set time:
+
+```bash
+machine-mode release-lane razer-laptop --until 13:00   # keep them until 13:00 (date -d; at most 24h ahead)
+machine-mode release-lane --clear razer-laptop         # end it now
+machine-mode release-lane                              # list them; an ended one says so
+```
+
+It writes only the `<host>.reserve` key, `{"until": <epoch>}`, in the same ConfigMap. The governor holds that host at 0 until then, and ignores the key after, so a forgotten one ends by itself. It works from any machine with `CC_KUBE_CONTEXT`, pool runners or not, and does not change this machine's mode. When and why a cut uses it: the playground's `docs/operations/steam.md#the-release-lane` and the `release` skill.
+
 ## Troubleshooting
 
 | What you see | Why | What to do |

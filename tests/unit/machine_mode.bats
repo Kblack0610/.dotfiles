@@ -337,3 +337,62 @@ hours_fixture() {
   assert_failure
   assert_equal "$(out)" FAILED
 }
+
+# The release lane: `release-lane` writes only "<host>.reserve" {"until": <epoch>}, which the governor
+# reads as a pin to 0 until then (home-config governor.py read_pins).
+reservation() { jq -r --arg k "$1.reserve" '.data[$k] | fromjson | .until' "$FX/applied.json"; }
+
+@test "release-lane writes the host's own reserve key with its end, and keeps every other key" {
+  jq -n --arg h "$HOST" '{data: {"razer-laptop": "{\"slots\":1,\"action\":\"off\",\"until\":5}", ($h): "{\"slots\":2}"}}' > "$FX/cm.json"
+  before="$(date +%s)"
+  run "$MM" release-lane razer-laptop --until "6 hours"
+  assert_success
+  assert_output --partial "razer-laptop: reserved for release jobs until"
+  until="$(reservation razer-laptop)"
+  ((until >= before + 21600 && until <= before + 21610))
+  assert_equal "$(jq -r '.data["razer-laptop"]' "$FX/applied.json")" '{"slots":1,"action":"off","until":5}'
+  assert_equal "$(pin)" '{"slots":2}'
+  [ ! -e "$STATE" ]
+}
+
+@test "release-lane works on a machine with no pool runners, since it pins another host" {
+  export MACHINE_MODE_RUNNER_UNITS="$FX/none-*.service"
+  run "$MM" release-lane razer-laptop --until "2 hours"
+  assert_success
+  [ -n "$(reservation razer-laptop)" ]
+}
+
+@test "release-lane refuses a past, unreadable or over-a-day end, and a missing --until, writing nothing" {
+  for args in "razer-laptop --until yesterday" "razer-laptop --until notatime" "razer-laptop --until 30hours" \
+      "razer-laptop" "razer-laptop --until"; do
+    # shellcheck disable=SC2086
+    run "$MM" release-lane $args
+    assert_failure
+  done
+  run "$MM" release-lane razer-laptop --until "2 days"
+  assert_failure
+  assert_output --partial "more than 24h ahead"
+  [ ! -e "$FX/applied.json" ]
+}
+
+@test "clear ends the reservation now, and the list marks it ended" {
+  "$MM" release-lane razer-laptop --until "3 hours"
+  cp "$FX/applied.json" "$FX/cm.json"
+  run "$MM" release-lane
+  assert_success
+  assert_output --regexp '^razer-laptop: until [0-9T:-]+Z$'
+  run "$MM" release-lane --clear razer-laptop
+  assert_success
+  ((  $(reservation razer-laptop) <= $(date +%s) ))
+  cp "$FX/applied.json" "$FX/cm.json"
+  run "$MM" release-lane
+  assert_output --partial ", ended"
+}
+
+@test "an unreachable cluster or no kube context fails the reservation" {
+  KUBE_FAIL=1 run "$MM" release-lane razer-laptop --until "2 hours"
+  assert_failure
+  CC_KUBE_CONTEXT= run "$MM" release-lane razer-laptop --until "2 hours"
+  assert_failure
+  assert_output --partial "CC_KUBE_CONTEXT is not set"
+}
