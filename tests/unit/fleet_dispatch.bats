@@ -3965,6 +3965,80 @@ OUT
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
 }
 
+# fix_ended <head> <ci> -- the fix-crash item's PR now reads OPEN at <head> with checks <ci>, and the
+# item is back in review/ with a session that is gone, as a fix-ci session leaves it when it ends.
+fix_ended() {
+  printf 'OPEN - %s %s\n' "$1" "$2" > "$NOTES_FIXTURE/pr.state"
+  [ "$(agent-queue show fix-crash --json | jq -r .state)" = review ] && return 0
+  agent-queue move fix-crash running >/dev/null
+  agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
+  agent-queue move fix-crash review >/dev/null
+}
+
+# 2026-11-09: 16 of 20 PRs parked in review were red and nothing restarted them.
+@test "reap: a red PR parked in review gets a fix-ci owner twice per head, then one human-sheet row; a new head starts again" {
+  local h1=1111111111111111111111111111111111111111 h2=2222222222222222222222222222222222222222
+  pr_item OPEN
+  run cmd_reap
+  assert_output --partial 'review queue item fix-crash'
+  # checks still running or green: it stays parked, no owner
+  for ci in PENDING PASS NONE; do
+    fix_ended "$h1" "$ci"
+    run cmd_reap
+    assert_success
+    assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  done
+  fix_ended "$h1" FAIL
+  agent-queue set fix-crash mode=plan >/dev/null
+  run cmd_reap
+  assert_success
+  assert_output --partial "fix-ci queue item fix-crash (PR o/game#12 red at ${h1:0:12}, try 1 of 2)"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_tries, .mode] | join("|")')" "queued|1 $h1|oneshot"
+  # its brief is the fix, on the PR's own branch, and it never merges
+  run item_brief "$(agent-queue show fix-crash --json)"
+  assert_line --index 0 '/my:fix-ci o/game#12'
+  assert_output --partial 'gh pr checkout 12 -R o/game'
+  assert_output --partial 'fix-ci try 1 of 2'
+  assert_output --partial 'run agent-queue move fix-crash review'
+  refute_output --partial 'agent-land'
+  echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
+  run item_brief "$(agent-queue show fix-crash --json)" opencode
+  assert_line --index 0 'Read ~/.claude/commands/my/fix-ci.md and follow it for PR o/game#12.'
+  # the fix session pushed and it is red again: the second try
+  fix_ended "$h2" FAIL
+  run cmd_reap
+  assert_output --partial 'try 2 of 2'
+  # spent: one row on the project's human sheet and one page, the item left parked on its PR
+  fix_ended "$h2" FAIL
+  run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries)'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human] | join("|")')" "review|$h2"
+  assert_called "notes --profile bnb ptask game add fix(ci): PR o/game#12 is red at ${h2:0:12} after 2 fix-ci tries"
+  run cmd_reap
+  refute_output --partial 'fix-crash'
+  assert_equal "$(grep -c 'ptask game add fix(ci)' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c "agent-notify .*PR o/game#12 red" "$NOTES_FIXTURE/calls.log")" 1
+  # the human pushed a new head and it is red: the count starts again
+  fix_ended "$h1" FAIL
+  run cmd_reap
+  assert_output --partial 'try 1 of 2'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
+}
+
+@test "reap: a red PR in review waits for admission, and an item with no session recorded never reads as gone" {
+  pr_item OPEN
+  run cmd_reap
+  fix_ended 1111111111111111111111111111111111111111 FAIL
+  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_tries // ""] | join("|")')" "review|"
+  grep -q 'fix-crash: PR o/game#12 red at 111111111111, fix-ci held by admission' "$FLEET_DISPATCH_DIR"/log.md || fail "the hold was not logged"
+  # no session recorded (a cloud run): settle_sessionless keeps it parked, never requeued
+  sed -i '/^session: /d; /^sessions: /d' "$(qitem review fix-crash)"
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+}
+
 # 2026-11-07: ar-255 sat waiting on its open PR, its lane got a new Claude, and reap read that one
 # as the item's: back to running, and fleet-sessions held the new session STALLED on it.
 @test "reap: a recycled lane is not the session of an item that records its own ids" {
