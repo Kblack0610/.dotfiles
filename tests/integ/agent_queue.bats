@@ -747,6 +747,25 @@ notes --profile bnb ptask game --agent start gm-9"
   assert_output "nightly:game (test.yml due 02:00)"
 }
 
+@test "a nightly: hold with a dated at: stays released after midnight once that night finished (22:00 slot)" {
+  # 2026-11-08 PST: soak.yml at 06:00 UTC is 22:00 local, the day's last slot; it finished 23:48.
+  # Judged by today, the next morning every slot of 11-09 held again (nightly-validate-20261108).
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json"
+  jq -n '{repos: [{repo: "Org/game", synced_at: "2026-11-09T16:15:00Z", workflows: [
+    {path: ".github/workflows/soak.yml", crons: ["0 6 * * *"], timeout_min: 300,
+     runs: [{id: 3, created_at: "2026-11-09T06:21:00Z", status: "completed"}]},
+    {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
+     runs: [{id: 1, created_at: "2026-11-08T10:01:00Z", status: "completed"},
+            {id: 2, created_at: "2026-11-09T10:01:00Z", status: "in_progress"}]}]}]}' > "$SCHEDULES_STATE"
+  "$AQ" add --project game --slug validate --tags "at:2026-11-08T00:00 nightly:game" "a"
+  [ "$(AGENT_QUEUE_NOW=2026-11-09T08:20 "$AQ" next --json | jq -r .slug)" = validate ]
+  # NEGATIVE CONTROL: with no at: date the same hold reads today (11-09) and still waits on soak.
+  "$AQ" cancel validate
+  "$AQ" add --project game --slug today --tags "nightly:game" "b"
+  AGENT_QUEUE_NOW=2026-11-09T08:20 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"today\") | .hold'"
+  assert_output "nightly:game (soak.yml due 22:00)"
+}
+
 @test "bump changes priority and with it the order" {
   "$AQ" add --project game --slug a "a"
   "$AQ" add --project game --slug b "b"
