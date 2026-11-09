@@ -141,13 +141,16 @@ LAYERS=(all hypr tmux nvim)
 layer_ok() { local l; for l in "${LAYERS[@]}"; do [ "$l" = "$1" ] && return 0; done; return 1; }
 
 # listed <layer>: the rows its tab shows, as layer, where, key, the line on screen, command. Only
-# keys with a description: one whose description is its own command has none.
+# keys with a description: one whose description is its own command has none. The sheet reads
+# the binds once into $KEYS_ROWS, so a tab press is one awk, not another hyprctl, tmux and nvim.
 listed() {
-    if [ "$1" = all ]; then rows; else "$1_rows"; fi |
-        awk -F'\t' -v OFS='\t' -v all="$([ "$1" = all ] && echo 1)" -v k="$C_BOX" -v d="$C_DIM" -v o="$C_OFF" '
+    { if [ -n "${KEYS_ROWS:-}" ]; then cat "$KEYS_ROWS"; else rows; fi } |
+        awk -F'\t' -v OFS='\t' -v layer="$1" -v k="$C_BOX" -v d="$C_DIM" -v o="$C_OFF" '
+            layer != "all" && $1 != layer { next }
             $5 != "" && $4 == $5 { next }
             { key = ($1 == "nvim") ? $2 " " $3 : $3
-              print $1, $2, $3, (all ? d sprintf("%-5s", $1) o "  " : "") k sprintf("%-26s", key) o "  " $4, $5 }'
+              tag = (layer == "all") ? d sprintf("%-5s", $1) o "  " : ""
+              print $1, $2, $3, tag k sprintf("%-26s", key) o "  " $4, $5 }'
 }
 
 # tabs <layer>: the header, the tab bar with <layer> lit, then the keys.
@@ -172,11 +175,15 @@ sheet() {
     local layer="${1:-all}"
     layer_ok "$layer" || { echo "keys: no layer '$layer' (${LAYERS[*]})" >&2; exit 2; }
     panel_need fzf
+    KEYS_ROWS="$(mktemp "${TMPDIR:-/tmp}/keys.XXXXXX")" || exit 1
+    trap 'rm -f "$KEYS_ROWS"' EXIT
+    export KEYS_ROWS
+    rows > "$KEYS_ROWS"
     panel_fzf_opts
     panel_fzf_table
     panel_fzf_layout hidden
     listed "$layer" |
-        fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" --with-nth=4 --no-wrap \
+        fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" --with-nth=4 \
             --prompt="$layer > " --header="$(tabs "$layer")" --header-first \
             --bind="tab:transform:$(printf '%q' "$SELF") _switch next" \
             --bind="shift-tab:transform:$(printf '%q' "$SELF") _switch prev" \
