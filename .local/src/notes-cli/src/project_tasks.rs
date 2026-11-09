@@ -1985,7 +1985,7 @@ pub(crate) fn sweep_file(
 /// What a sweep of `content`, a sheet under `dir`, is measured against: today, the `[sheet]`
 /// shape and the open version, read from `content` itself so an editor buffer's unsaved
 /// `Version:` bump counts (an agent board's comes from the human sheet).
-fn sweep_ctx(dir: &Path, content: &str, rewrite: bool) -> project_sweep::Ctx {
+pub(crate) fn sweep_ctx(dir: &Path, content: &str, rewrite: bool) -> project_sweep::Ctx {
     project_sweep::Ctx {
         today: chrono::Local::now().date_naive(),
         shape: crate::config::sheet_shape(),
