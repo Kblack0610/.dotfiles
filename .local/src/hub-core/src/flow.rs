@@ -6,13 +6,16 @@
 //! Where each number comes from: the queue's own chips (queued, running, needs you) are the live
 //! queue, the same count the table under a chip shows (done 24h is agent-queue's rolling count,
 //! and its chip opens the Queue's done chip, which lists today's finished items); inbox and board are fleet-bench's
-//! `agent_chain_*` gauges (`pipeline`), the only owner of those two; done 24h and the drain are
+//! snapshot (`pipeline`), the only owner of those two; done 24h and the drain are
 //! agent-queue's `stats.recent`. A number its source did not give reads `-`, never 0. A step
 //! past its age bound is the one amber chip (`hot`).
+//!
+//! The Queue tab leads with the same chips as a `Rail`: one point per step with that step's age,
+//! why it is stuck and what went wrong there, from this one builder for both surfaces.
 
 use serde::Serialize;
 
-use crate::pipeline::Pipeline;
+use crate::pipeline::{Pipeline, Problem, Step};
 use crate::queue::{Queue, Recent, State};
 
 /// The tab a chip opens and, for the Queue, the state chip it filters to (`""` for none).
@@ -45,11 +48,11 @@ pub struct Strip {
     pub chips: Vec<Chip>,
     /// `bottleneck: waiting, age p90 9h (bound 4h)`, when a step is past its bound.
     pub bottleneck: Option<String>,
-    /// When fleet-bench last wrote the gauges the inbox and board chips read.
+    /// When fleet-bench last wrote the snapshot the inbox and board chips read.
     pub as_of: Option<String>,
-    /// Why the gauges could not be read, if they could not.
+    /// Why the snapshot could not be read, if it could not.
     pub error: Option<String>,
-    /// The read answered but fleet-bench has written no gauges, so inbox and board are `-`.
+    /// The read answered but fleet-bench has written no snapshot, so inbox and board are `-`.
     pub absent: bool,
 }
 
@@ -134,8 +137,8 @@ impl Strip {
         }
     }
 
-    /// The gauges' read: the inbox and board counts, the one amber step, the bottleneck line and
-    /// the stamp. Absent gauges or a failed read leave those chips `-`; the failure is kept.
+    /// The snapshot's read: the inbox and board counts, the one amber step, the bottleneck line
+    /// and the stamp. No snapshot or a failed read leaves those chips `-`; the failure is kept.
     pub fn set_pipeline(&mut self, read: &Result<Option<Pipeline>, String>) {
         let p = match read {
             Ok(Some(p)) => p,
@@ -148,13 +151,7 @@ impl Strip {
                 return;
             }
         };
-        let wip = |step: &str| {
-            p.wip
-                .iter()
-                .find(|(s, _)| s == step)
-                .and_then(|(_, n)| *n)
-                .map(|n| n.to_string())
-        };
+        let wip = |step: &str| p.step(step).and_then(|s| s.wip).map(|n| n.to_string());
         for c in &mut self.chips {
             match c.key {
                 "inbox" => c.value = wip("inbox"),
@@ -162,12 +159,7 @@ impl Strip {
                 _ => {}
             }
         }
-        // The gauges name the board `backlog` and the human's turn `waiting`.
-        let hot = p.bottleneck.as_ref().map(|b| match b.step.as_str() {
-            "backlog" => "board",
-            "waiting" => "needs",
-            s => s,
-        });
+        let hot = p.bottleneck.as_ref().map(|b| chip_key(&b.step));
         for c in &mut self.chips {
             c.hot = hot == Some(c.key);
         }
@@ -185,24 +177,237 @@ impl Strip {
     }
 }
 
+/// The record names the board `backlog` and the human's turn `waiting`.
+fn chip_key(step: &str) -> &str {
+    match step {
+        "backlog" => "board",
+        "waiting" => "needs",
+        s => s,
+    }
+}
+
+fn step_of<'a>(p: Option<&'a Pipeline>, key: &str) -> Option<&'a Step> {
+    p?.steps.iter().find(|s| chip_key(&s.step) == key)
+}
+
+/// How old the snapshot may be before the line says so: three missed 10-minute ticks.
+const STALE_SECS: i64 = 30 * 60;
+
+/// Past this an age reads in days: `2.8d` says more than `67h`.
+const DAYS_FROM_MIN: f64 = 48.0 * 60.0;
+
+fn age(m: f64) -> String {
+    if m >= DAYS_FROM_MIN {
+        format!("{:.1}d", m / (24.0 * 60.0))
+    } else {
+        crate::queue::dur(Some(m.round() as i64))
+    }
+}
+
+/// One thing that went wrong at a step, worded once for both surfaces.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Trouble {
+    /// `01:16  ucp-412  failed  session ended before it closed the item`.
+    pub text: String,
+    /// The Queue item it opens; None for an inbox line, which has no item.
+    pub item: Option<String>,
+}
+
+impl From<&Problem> for Trouble {
+    fn from(p: &Problem) -> Trouble {
+        let time = p.ts.get(11..16).unwrap_or("-");
+        let times = if p.n > 1 {
+            format!(" {}x", p.n)
+        } else {
+            String::new()
+        };
+        let why = if p.why.is_empty() {
+            "no cause recorded"
+        } else {
+            &p.why
+        };
+        Trouble {
+            text: format!("{time}  {}  {}{times}  {why}", p.subject, p.kind),
+            item: matches!(p.kind.as_str(), "failed" | "reaped").then(|| p.subject.clone()),
+        }
+    }
+}
+
+/// One point on the line.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Node {
+    pub key: &'static str,
+    pub label: &'static str,
+    /// The live count; None reads `-`.
+    pub count: Option<String>,
+    /// `p90 2.8d`, `ok` for an empty step, `24h` on done.
+    pub sub: String,
+    /// Past its age bound: amber.
+    pub hot: bool,
+    /// Nothing can leave it right now: red.
+    pub stopped: bool,
+    pub to: Option<Target>,
+    /// Why nothing can leave it.
+    pub stop: Option<String>,
+    /// The detail lines: counts against the bound, then the drain on queued.
+    pub facts: Vec<String>,
+    pub problems_n: usize,
+    /// The newest problems, newest first.
+    pub problems: Vec<Trouble>,
+    /// What this step's record does not hold yet, so an empty list is not read as a clean bill.
+    pub gap: Option<&'static str>,
+    /// The step with the most problems, when it is another one.
+    pub elsewhere: Option<String>,
+}
+
+/// The line: every step but the drain, which rides in queued's detail.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Rail {
+    pub nodes: Vec<Node>,
+    /// The node that starts open: one that is stopped, else the furthest past its bound, else
+    /// the one with the most problems.
+    pub worst: usize,
+    pub as_of: Option<String>,
+    /// The snapshot is past `STALE_SECS` old, or says nothing of its age.
+    pub stale: bool,
+    /// The snapshot has not been read yet.
+    pub reading: bool,
+    pub error: Option<String>,
+    pub absent: bool,
+}
+
+fn gap_of(key: &str) -> Option<&'static str> {
+    match key {
+        "inbox" => Some("failed sweeps: not recorded"),
+        "needs" => Some("why an item waits: not recorded"),
+        "done" => Some("land failures: not recorded"),
+        _ => None,
+    }
+}
+
+fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>) -> Node {
+    let (count, ready) = match c.value.as_deref() {
+        Some(v) => match v.split_once(" (") {
+            Some((n, r)) => (Some(n.to_string()), Some(r.trim_end_matches(')'))),
+            None => (Some(v.to_string()), None),
+        },
+        None => (None, None),
+    };
+    let sub = match (c.key, s.and_then(|s| s.age_p90_min), s.and_then(|s| s.wip)) {
+        ("done", ..) => "24h".to_string(),
+        (_, Some(a), _) => format!("p90 {}", age(a)),
+        (_, None, Some(0)) => "ok".to_string(),
+        _ => "-".to_string(),
+    };
+    let ratio = s.and_then(|s| s.ratio);
+    let mut line: Vec<String> = vec![];
+    if c.key != "done" {
+        line.extend(count.as_ref().map(|n| format!("{n} items")));
+    }
+    line.extend(ready.map(str::to_string));
+    if let Some(s) = s {
+        line.extend(s.oldest_min.map(|m| format!("oldest {}", age(m))));
+        if let (Some(b), Some(r)) = (s.bound, ratio) {
+            line.push(format!("bound {} ({r:.1}x)", age(b)));
+        }
+        if let (Some(i), Some(o)) = (s.in_24h, s.out_24h) {
+            line.push(format!("24h +{i}/-{o}"));
+        }
+    }
+    let mut facts = vec![];
+    if !line.is_empty() {
+        facts.push(line.join(", "));
+    }
+    if c.key == "queued" {
+        facts.extend(drain.map(|d| format!("drain {d}")));
+    }
+    let stop = s.and_then(|s| s.blocked.clone());
+    Node {
+        key: c.key,
+        label: c.label,
+        count,
+        sub,
+        hot: ratio.is_some_and(|r| r > 1.0),
+        stopped: stop.is_some(),
+        to: c.to,
+        stop,
+        facts,
+        problems_n: s.and_then(|s| s.problems_n).unwrap_or(0),
+        problems: s.map_or(vec![], |s| s.problems.iter().map(Trouble::from).collect()),
+        gap: gap_of(c.key),
+        elsewhere: None,
+    }
+}
+
+fn worst_of(nodes: &[Node], p: Option<&Pipeline>) -> usize {
+    let ratio = |n: &Node| step_of(p, n.key).and_then(|s| s.ratio).unwrap_or(0.0);
+    let at = nodes.iter().position(|n| n.stopped).or_else(|| {
+        let past = nodes.iter().enumerate().filter(|(_, n)| n.hot);
+        past.max_by(|a, b| ratio(a.1).total_cmp(&ratio(b.1)))
+            .map(|(i, _)| i)
+    });
+    at.or_else(|| {
+        let some = nodes.iter().enumerate().filter(|(_, n)| n.problems_n > 0);
+        some.max_by_key(|(_, n)| n.problems_n).map(|(i, _)| i)
+    })
+    .unwrap_or(0)
+}
+
+impl Rail {
+    /// The line from the live queue and the snapshot's read; `read` is None until it answers.
+    pub fn build(
+        queue: Option<&Queue>,
+        read: Option<&Result<Option<Pipeline>, String>>,
+        now: i64,
+    ) -> Rail {
+        let mut strip = Strip::build(queue);
+        if let Some(r) = read {
+            strip.set_pipeline(r);
+        }
+        let p = read.and_then(|r| r.as_ref().ok()).and_then(|o| o.as_ref());
+        let drain = strip.chips.iter().find(|c| c.key == "drain");
+        let drain = drain.and_then(|c| c.value.as_deref());
+        let mut nodes: Vec<Node> = strip
+            .chips
+            .iter()
+            .filter(|c| c.key != "drain")
+            .map(|c| node(c, step_of(p, c.key), drain))
+            .collect();
+        let most = nodes
+            .iter()
+            .filter(|n| n.problems_n > 0)
+            .max_by_key(|n| n.problems_n)
+            .map(|n| (n.key, n.label, n.problems_n));
+        if let Some((key, label, n)) = most {
+            for o in nodes.iter_mut().filter(|o| o.key != key) {
+                o.elsewhere = Some(format!("Problems at {label}, 24h: {n}"));
+            }
+        }
+        Rail {
+            worst: worst_of(&nodes, p),
+            nodes,
+            as_of: strip.as_of,
+            stale: p.is_some_and(|p| p.as_of.is_none_or(|t| now - t > STALE_SECS)),
+            reading: read.is_none(),
+            error: strip.error,
+            absent: strip.absent,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::from_series;
-    use crate::prom::Series;
+    use crate::pipeline::tests::snapshot;
     use crate::queue::{Item, Sitting, Stats};
 
-    fn s(step: &str, v: f64) -> Series {
-        Series {
-            labels: [("step".to_string(), step.to_string())].into(),
-            value: Some(v),
-            points: vec![],
-        }
-    }
-
     fn pipe(ratio: f64) -> Pipeline {
-        let wip = [("inbox", 4.0), ("backlog", 312.0), ("queued", 3.0)].map(|(k, v)| s(k, v));
-        from_series(&wip, &[s("waiting", 540.0)], &[s("waiting", ratio)]).unwrap()
+        snapshot(&[
+            ("inbox", 4, 1.0, 0.1),
+            ("backlog", 312, 1.0, 0.1),
+            ("queued", 3, 1.0, 0.1),
+            ("waiting", 2, 540.0, ratio),
+        ])
     }
 
     fn queue() -> Queue {
@@ -264,14 +469,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_step_past_its_bound_is_hot_and_the_gauges_name_it() {
+    fn only_the_step_past_its_bound_is_hot_and_the_snapshot_names_it() {
         let mut st = Strip::build(Some(&queue()));
         st.set_pipeline(&Ok(Some(pipe(2.25))));
         let hot: Vec<_> = st.chips.iter().filter(|c| c.hot).map(|c| c.key).collect();
         assert_eq!(
             hot,
             ["needs"],
-            "the gauge's `waiting` is the needs-you chip"
+            "the record's `waiting` is the needs-you chip"
         );
         assert_eq!(
             st.bottleneck.as_deref(),
@@ -286,7 +491,7 @@ mod tests {
             st.line(),
             "inbox - | board - | queued - | running - | needs you - | done 24h - | drain -"
         );
-        // Gauges absent: the queue's chips stand and inbox and board stay `-`.
+        // No snapshot: the queue's chips stand and inbox and board stay `-`.
         let mut q = Strip::build(Some(&queue()));
         q.set_pipeline(&Ok(None));
         assert!(q.absent);
@@ -305,6 +510,120 @@ mod tests {
             l.contains("queued 2 |") && l.ends_with("done 24h - | drain -"),
             "{l}"
         );
+    }
+
+    fn stuck() -> Pipeline {
+        let mut p = pipe(2.25);
+        let q = p.steps.iter_mut().find(|s| s.step == "queued").unwrap();
+        (q.blocked, q.oldest_min, q.in_24h, q.out_24h) = (
+            Some("Dispatch stopped".into()),
+            Some(5472.0),
+            Some(110),
+            Some(220),
+        );
+        (q.age_p90_min, q.bound, q.ratio) = (Some(4080.0), Some(720.0), Some(5.67));
+        let i = p.steps.iter_mut().find(|s| s.step == "inbox").unwrap();
+        i.problems_n = Some(3);
+        for (n, why, kind) in [(1, "", "failed"), (4, "no project", "refused")] {
+            i.problems.push(Problem {
+                ts: "2026-11-09T01:16:00-08:00".into(),
+                subject: "ucp-412".into(),
+                kind: kind.into(),
+                why: why.into(),
+                n,
+            });
+        }
+        p
+    }
+
+    fn node_at<'a>(r: &'a Rail, key: &str) -> &'a Node {
+        r.nodes.iter().find(|n| n.key == key).unwrap()
+    }
+
+    #[test]
+    fn the_rail_is_the_mockup_a_point_per_step_with_the_drain_folded_into_queued() {
+        let now = 1_794_010_893;
+        let mut p = stuck();
+        p.as_of = Some(now - 60);
+        let r = Rail::build(Some(&queue()), Some(&Ok(Some(p))), now);
+        let keys: Vec<_> = r.nodes.iter().map(|n| n.key).collect();
+        assert_eq!(
+            keys,
+            ["inbox", "board", "queued", "running", "needs", "done"]
+        );
+        let q = node_at(&r, "queued");
+        assert_eq!(
+            (q.count.as_deref(), q.sub.as_str()),
+            (Some("2"), "p90 2.8d")
+        );
+        assert_eq!(q.stop.as_deref(), Some("Dispatch stopped"));
+        assert_eq!(
+            q.facts,
+            [
+                "2 items, 1 ready, oldest 3.8d, bound 12h (5.7x), 24h +110/-220",
+                "drain 6h +41/-52 shrinking"
+            ]
+        );
+        assert_eq!(keys[r.worst], "queued", "a stopped step starts open");
+        assert!(!r.stale);
+        assert_eq!(node_at(&r, "done").sub, "24h");
+        assert_eq!(node_at(&r, "done").count.as_deref(), Some("280"));
+    }
+
+    #[test]
+    fn a_problem_says_when_what_and_why_and_only_an_item_opens() {
+        let r = Rail::build(Some(&queue()), Some(&Ok(Some(stuck()))), 0);
+        let i = node_at(&r, "inbox");
+        assert_eq!(i.problems_n, 3);
+        assert_eq!(
+            i.problems[0].text,
+            "01:16  ucp-412  failed  no cause recorded"
+        );
+        assert_eq!(i.problems[0].item.as_deref(), Some("ucp-412"));
+        assert_eq!(i.problems[1].text, "01:16  ucp-412  refused 4x  no project");
+        assert_eq!(i.problems[1].item, None);
+        assert_eq!(i.elsewhere, None);
+        assert_eq!(
+            node_at(&r, "running").elsewhere.as_deref(),
+            Some("Problems at inbox, 24h: 3")
+        );
+    }
+
+    #[test]
+    fn amber_is_past_the_bound_and_red_is_stopped_and_a_problem_alone_is_neither() {
+        let r = Rail::build(Some(&queue()), Some(&Ok(Some(stuck()))), 0);
+        let (q, n, i) = (
+            node_at(&r, "queued"),
+            node_at(&r, "needs"),
+            node_at(&r, "inbox"),
+        );
+        assert!(q.stopped && q.hot && n.hot && !n.stopped);
+        assert!(!i.hot && !i.stopped && i.problems_n > 0);
+        let calm = Rail::build(Some(&queue()), Some(&Ok(Some(pipe(0.5)))), 0);
+        assert_eq!(calm.worst, 0, "nothing wrong opens the first step");
+    }
+
+    #[test]
+    fn negative_control_a_stale_absent_or_broken_snapshot_says_so_and_never_zero() {
+        let now = 1_794_010_893;
+        let mut p = pipe(0.5);
+        p.as_of = Some(now - STALE_SECS - 1);
+        assert!(Rail::build(None, Some(&Ok(Some(p.clone()))), now).stale);
+        p.as_of = None;
+        assert!(Rail::build(None, Some(&Ok(Some(p))), now).stale);
+        let bad = Rail::build(Some(&queue()), Some(&Err("broken".into())), now);
+        assert_eq!(bad.error.as_deref(), Some("broken"));
+        assert_eq!(node_at(&bad, "inbox").count, None);
+        assert_eq!(node_at(&bad, "queued").count.as_deref(), Some("2"));
+        assert!(Rail::build(None, Some(&Ok(None)), now).absent);
+        assert!(Rail::build(None, None, now).reading);
+        for key in ["inbox", "needs", "done"] {
+            let r = Rail::build(None, None, now);
+            assert!(
+                node_at(&r, key).gap.is_some(),
+                "{key} must not read as clean"
+            );
+        }
     }
 
     #[test]

@@ -126,7 +126,10 @@ fn live_waits(state: &mut Value, (agents, gaps): (Vec<Agent>, Gaps)) {
         return;
     };
     for a in &agents {
-        match sessions.iter_mut().find(|s| s["target"] == a.target.as_str()) {
+        match sessions
+            .iter_mut()
+            .find(|s| s["target"] == a.target.as_str())
+        {
             Some(s) if a.at_dialog() && s["bucket"] != "NEEDS" => {
                 s["bucket"] = "NEEDS".into();
                 s["reason"] = AT_PROMPT.into();
@@ -211,6 +214,15 @@ pub fn dispatch_state_dir() -> PathBuf {
 /// The ranked Candidates snapshot `fleet-dispatch suggest --write` keeps.
 pub fn candidates_file() -> PathBuf {
     dispatch_state_dir().join("candidates.jsonl")
+}
+
+/// The JSON `fleet-bench` writes each tick for the pipeline line (its `PIPELINE_SNAPSHOT`).
+pub fn pipeline_snapshot() -> PathBuf {
+    env("PIPELINE_SNAPSHOT").unwrap_or_else(|| {
+        env("XDG_STATE_HOME")
+            .unwrap_or_else(|| home().join(".local/state"))
+            .join("agentctl/pipeline/pipeline.json")
+    })
 }
 
 /// `day-log`'s records, one `<YYYY-MM-DD>.json` per local day (its `DAYLOG_DIR`).
@@ -1048,7 +1060,11 @@ mod tests {
         let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
         assert_eq!(s["asks"], json!([]));
         assert_eq!(s["unreadable"], json!(["agent-ask"]));
-        std::fs::write(&f, r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#).unwrap();
+        std::fs::write(
+            &f,
+            r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#,
+        )
+        .unwrap();
         let answered = (vec![live("hub/a:1", '~', None)], vec![]);
         let s = state_with(&f, &Fixed(Ok(tsv.into())), &signals, 0, answered);
         assert_eq!(s["sessions"][0]["bucket"], "WORKING");

@@ -26,7 +26,6 @@ mod infra;
 mod jobs;
 mod outbox;
 mod outcomes;
-mod pipeline;
 mod projects;
 mod proposals;
 mod queue;
@@ -88,7 +87,6 @@ struct AppState {
     work: worklog::Cache,
     schedules: schedules::Cache,
     session_table: sessions::Cache,
-    pipeline: pipeline::Cache,
     briefing: briefing::Cache,
 }
 
@@ -117,7 +115,6 @@ async fn main() -> Result<()> {
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
-        pipeline: pipeline::Cache::default(),
         briefing: briefing::Cache::default(),
     });
 
@@ -1139,7 +1136,6 @@ async fn home_board(
     Query(q): Query<HomeQuery>,
 ) -> ApiResult<Json<HomeShown>> {
     let infra = s.infra.infra().await;
-    let gauges = s.pipeline.get().await;
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
         let queue = hub_core::queue::Queue::read(&actions::System);
@@ -1147,7 +1143,7 @@ async fn home_board(
         let open = hub_core::proposals::read(&actions::System);
         let mut home = hub_core::home::build(&state, Some(&queue), Some(&board), Some(&infra));
         home.set_proposals(&open);
-        home.set_pipeline(&gauges);
+        home.set_pipeline(&hub_core::pipeline::read());
         home_shown(home, &q)
     })
     .await
@@ -1173,15 +1169,14 @@ async fn infra_board(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
-/// The flow strip (hub_core::flow) over the live queue and the cached gauges: the Queue tab's
-/// copy of what Home's `/api/home` carries as `flow`.
-async fn flow_strip(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
-    let gauges = s.pipeline.get().await;
+/// The pipeline line (hub_core::flow::Rail) over the live queue and fleet-bench's snapshot.
+async fn flow_strip(State(_): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
     tokio::task::spawn_blocking(move || {
         let queue = hub_core::queue::Queue::read(&actions::System);
-        let mut flow = hub_core::flow::Strip::build(Some(&queue));
-        flow.set_pipeline(&gauges);
-        serde_json::json!({ "flow": flow, "grafana": hub_core::infra::grafana() })
+        let read = hub_core::pipeline::read();
+        let line =
+            hub_core::flow::Rail::build(Some(&queue), Some(&read), chrono::Utc::now().timestamp());
+        serde_json::json!({ "line": line, "grafana": hub_core::infra::grafana() })
     })
     .await
     .map(Json)
