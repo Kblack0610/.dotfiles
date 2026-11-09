@@ -14,7 +14,7 @@ Carries one task the whole way: work, validation, PR, merge, queue record, wind-
 
 ## Scope and triggers
 
-Stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI) and wind-down (only the session note and teardown).
+Takes one task from description to landed and wound down with no check-ins; `--pr-only` stops once the PR is open. It stops only at the autopilot hard gates (destructive, release, money, secrets, external sends) or after two failed fix attempts on a red gate. Differs from /my:autopilot (decision posture only, no delivery steps), /kb:implement (opens a PR and stops, assumes PR CI) and wind-down (only the session note and teardown).
 
 - The user hands over one well-scoped task and wants it landed without being asked anything.
 - The user wants the session to close itself once the work is merged.
@@ -48,13 +48,16 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    - A red gate: back to step 3, commit, push, and start the same command.
    - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes and lands on the same gate). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
    - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording.
-   - A sheet row the human wrote for this work, work that can only run after a set time or a night's data, or work blocked on another queue item: read `references/landing.md`, never wait on it in this session.
+   - A sheet row the human wrote for this work: also `notes ptask <project> done "<row>" --proof pr:<N>`.
+   - Work that can only run after a set time, a day of data or a night's log: land what is done and queue the rest, never `sleep`; read `references/landing.md` "Work that can only run later".
+   - Work blocked on another queue item (one that fixes its red, or a PR that must land first): do not wait in this session; read `references/landing.md` "Blocked on another queue item".
    - Then do any post-land step the project's CLAUDE.md names (unity-core-playground has none). Wind-down releases the worktree.
-   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<owner>/<repo>#<N>; agent-queue move <slug> waiting` (`done --status ok` refuses an item whose PR has not merged). The item and any board row wait for the human's merge; `fleet-dispatch reap` then closes both on merge proof (reap reads only GitHub; Forgejo: `references/landing.md`).
+   - **`--pr-only`**: drop the `agent-land` part and stop at the gate's result. Record the open PR on the item: `agent-queue set <slug> pr=<owner>/<repo>#<N>; agent-queue move <slug> waiting` (`done --status ok` refuses an item whose PR has not merged). The item and any board row wait for the human's merge; `fleet-dispatch reap` then closes both on merge proof (reap reads only GitHub; a Forgejo repo: `references/landing.md` "Forgejo repo").
 
 7. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
    - **`--pr-only`**: the open PR is the end the human asked for, so invoke it without `auto`; step 0's finished check would read the open PR as unlanded and refuse.
-   - **Blocked mode** (a red gate you cannot fix, or a hard gate with nothing else left to build): file it with `agent-ask post` and do NOT arm the teardown; read `references/landing.md` "Blocked mode".
+   - **Blocked on another queue item**: invoke it without `auto`, as `--pr-only` does (`references/landing.md` "Blocked on another queue item").
+   - **Blocked mode** (a red gate you cannot fix and no queue item fixes, or a hard gate with nothing else left to build): file it with `agent-ask post` and do NOT arm the teardown; read `references/landing.md` "Blocked mode".
 
 ## Do NOT
 
