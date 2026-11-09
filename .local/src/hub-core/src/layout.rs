@@ -7,6 +7,9 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tab {
     pub id: &'static str,
+    /// The sidebar heading agent-web files it under. Each group is one run of `TABS`, so a heading
+    /// never splits the order or moves a digit.
+    pub group: &'static str,
     pub title: &'static str,
     pub question: &'static str,
     pub sections: &'static [&'static str],
@@ -16,6 +19,7 @@ pub const TABS: [Tab; 11] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
+        group: "Now",
         title: "Home",
         question: "What needs me, and is everything OK?",
         sections: &["needs", "proposals", "running", "spend", "vitals", "health"],
@@ -25,30 +29,35 @@ pub const TABS: [Tab; 11] = [
     // The day's briefing is drawn as one of the note's sections.
     Tab {
         id: "daily",
+        group: "Now",
         title: "Daily",
         question: "What is my day?",
         sections: &["nav", "lanes", "briefing", "rollup", "sections", "outbox"],
     },
     Tab {
         id: "queue",
+        group: "Work",
         title: "Queue",
         question: "What will agents do next?",
         sections: &["flow", "table", "candidates"],
     },
     Tab {
         id: "projects",
+        group: "Work",
         title: "Projects",
         question: "Where is each project, and its tasks?",
         sections: &["cards", "rows"],
     },
     Tab {
         id: "sessions",
+        group: "Work",
         title: "Sessions",
         question: "What is each agent doing?",
         sections: &["shepherd", "sessions", "detail"],
     },
     Tab {
         id: "infra",
+        group: "Ops",
         title: "Infra",
         question: "Is the machinery healthy?",
         sections: &[
@@ -57,6 +66,7 @@ pub const TABS: [Tab; 11] = [
     },
     Tab {
         id: "log",
+        group: "Ops",
         title: "Log",
         question: "What happened?",
         sections: &[
@@ -65,6 +75,7 @@ pub const TABS: [Tab; 11] = [
     },
     Tab {
         id: "fleet",
+        group: "Ops",
         title: "Fleet",
         question: "Who is working, and on what?",
         sections: &["workers"],
@@ -72,6 +83,7 @@ pub const TABS: [Tab; 11] = [
     // After the older tabs, so they keep their digits.
     Tab {
         id: "schedules",
+        group: "Ops",
         title: "Schedules",
         question: "What runs on its own, and why?",
         sections: &["table", "detail"],
@@ -80,6 +92,7 @@ pub const TABS: [Tab; 11] = [
     // here, cut seven ways; they keep a one-line badge that links in.
     Tab {
         id: "costs",
+        group: "Spend, ship",
         title: "Costs",
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
@@ -89,6 +102,7 @@ pub const TABS: [Tab; 11] = [
     // Builds section (CI runs, its own reader; release-state has no CI collector).
     Tab {
         id: "releases",
+        group: "Spend, ship",
         title: "Releases",
         question: "What is building, and what is live where?",
         sections: &["table", "detail", "builds"],
@@ -180,6 +194,17 @@ pub fn section(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_group_is_one_run_of_the_tabs() {
+        let mut seen: Vec<&str> = Vec::new();
+        for t in &TABS {
+            if seen.last() != Some(&t.group) {
+                assert!(!seen.contains(&t.group), "{} splits {}", t.id, t.group);
+                seen.push(t.group);
+            }
+        }
+    }
 
     #[test]
     fn ids_are_unique_and_a_retired_name_is_never_a_live_id() {

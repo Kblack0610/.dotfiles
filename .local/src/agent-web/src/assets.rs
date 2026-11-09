@@ -15,6 +15,8 @@ const INDEX: &str = include_str!("index.html");
 pub const LOGIN: &str = include_str!("login.html");
 /// Where the page and app.css name the asset version.
 const VERSION_MARK: &str = "{{v}}";
+/// Where the page takes its tab list.
+const NAV_MARK: &str = "{{nav}}";
 
 const JS: &str = "text/javascript; charset=utf-8";
 const CSS: &str = "text/css; charset=utf-8";
@@ -41,6 +43,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
+    ("nav.js", JS, include_bytes!("../static/nav.js")),
     ("costs.js", JS, include_bytes!("../static/costs.js")),
     ("sessions.js", JS, include_bytes!("../static/sessions.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
@@ -81,7 +84,8 @@ struct Built {
 fn built() -> &'static Built {
     static BUILT: OnceLock<Built> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let mut h = fnv(FNV_OFFSET, INDEX.as_bytes());
+        let page = INDEX.replace(NAV_MARK, &nav_html());
+        let mut h = fnv(FNV_OFFSET, page.as_bytes());
         for (name, _, body) in FILES {
             h = fnv(fnv(h, name.as_bytes()), body);
         }
@@ -99,11 +103,36 @@ fn built() -> &'static Built {
             })
             .collect();
         Built {
-            index: INDEX.replace(VERSION_MARK, &version),
+            index: page.replace(VERSION_MARK, &version),
             version,
             files,
         }
     })
+}
+
+/// The sidebar's tabs under their group headings, from `hub_core::layout`. Three tabs carry a
+/// count that their own script fills in.
+fn nav_html() -> String {
+    let mut html = String::new();
+    let mut group = "";
+    for t in &hub_core::layout::TABS {
+        if t.group != group {
+            group = t.group;
+            html += &format!("<div class=\"navg\">{group}</div>\n");
+        }
+        let on = if t.id == "home" { " class=\"on\"" } else { "" };
+        let badge = match t.id {
+            "home" => "<span id=\"ask-badge\"></span>",
+            "queue" => "<span id=\"queue-badge\"></span>",
+            "sessions" => "<span id=\"wait-badge\"></span>",
+            _ => "",
+        };
+        html += &format!(
+            "<button id=\"tab-{}\"{on}>{}{badge}</button>\n",
+            t.id, t.title
+        );
+    }
+    html
 }
 
 /// FNV-1a, 64-bit: stable across builds and Rust versions, unlike `DefaultHasher`, so the
@@ -324,6 +353,28 @@ mod tests {
         for k in hub_core::home::NeedKind::ALL {
             let line = format!("  {}: \"{}\",", k.slug(), k.label());
             assert!(WAITING_JS.contains(&line), "{line} is not in waiting.js");
+        }
+    }
+
+    #[test]
+    fn the_nav_is_the_layout() {
+        // docs/dashboards.md rule 8: every tab, in the layout's order, under its own heading.
+        let page = index();
+        assert!(!page.contains(NAV_MARK), "the nav mark was not filled");
+        let mut at = 0;
+        let mut group = "";
+        for t in &hub_core::layout::TABS {
+            if t.group != group {
+                group = t.group;
+                let head = format!(">{group}</div>");
+                at += page[at..]
+                    .find(&head)
+                    .unwrap_or_else(|| panic!("{head} missing or out of order"));
+            }
+            let id = format!("id=\"tab-{}\"", t.id);
+            at += page[at..]
+                .find(&id)
+                .unwrap_or_else(|| panic!("{id} missing or out of order"));
         }
     }
 

@@ -92,3 +92,8 @@ setup() {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/table.test.mjs"
   assert_success
 }
+
+@test "agent-web nav.js, the sidebar's outline: node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/nav.test.mjs"
+  assert_success
+}

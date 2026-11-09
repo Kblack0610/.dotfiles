@@ -107,8 +107,8 @@ function propBody(h) {
 
 function propSection(h) {
   const t = h.proposals_table;
-  if (!t.total) return `<h2 class="sec">Proposals</h2><div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
-  return `<h2 class="sec">Proposals <span class="muted">${esc(h.proposals_head)}</span></h2>` +
+  if (!t.total) return `<h2 class="sec" id="sec-proposals">Proposals</h2><div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
+  return `<h2 class="sec" id="sec-proposals">Proposals <span class="muted">${esc(h.proposals_head)}</span></h2>` +
     tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${propBody(h)}</div>`;
 }
 
@@ -200,7 +200,7 @@ function healthHtml(chips) {
     ` <span class="muted">${chips.length - bad.length} green</span>`;
 }
 
-const sec = (title, n, body, extra = "") => `<h2 class="sec">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}${extra}</h2>${body}`;
+const sec = (title, n, body, extra = "") => `<h2 class="sec" id="sec-${title.split(" ")[0].toLowerCase()}">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}${extra}</h2>${body}`;
 const needsHead = (t) => sec("Needs you", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`, "");
 
 // Since last night: the briefing's areas that are not ok, each linking to the tab that owns
@@ -216,7 +216,7 @@ function nightRow(r) {
 
 function nightSection() {
   const n = hst.night;
-  const head = (extra) => `<h2 class="sec">Since last night${extra ? ` <span class="muted">${extra}</span>` : ""}</h2>`;
+  const head = (extra) => `<h2 class="sec" id="sec-night">Since last night${extra ? ` <span class="muted">${extra}</span>` : ""}</h2>`;
   if (!n) return head("") + `<div class="${hst.nightErr ? "cline warn" : "empty"}">${esc(hst.nightErr || "Reading...")}</div>`;
   const errs = [hst.nightErr, ...n.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
   const ok = n.ok_line ? `<div class="cline muted">${esc(n.ok_line)}</div>` : "";

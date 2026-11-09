@@ -37,7 +37,12 @@ header h1 { font-size: 16px; margin: 0; }
 .menu .bars { top: 16px; } .menu .bars::before { left: 0; top: -5px; } .menu .bars::after { left: 0; top: 5px; }
 .menu #menu-badge { position: absolute; top: -6px; right: -8px; margin: 0; }
 .cur { font-weight: 600; color: var(--muted); }
-.tabs { display: flex; gap: 4px; margin-left: auto; overflow-x: auto; scrollbar-width: none; }
+.tabs { display: flex; flex-direction: column; gap: 1px; }
+.navg { font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 8px 2px; }
+.outl { display: flex; flex-direction: column; margin: 1px 0 4px 10px; border-left: 1px solid var(--line); }
+.outl:empty { display: none; }
+.tabs .outl button { border: 0; padding: 3px 10px; font-size: var(--fs-sm); color: var(--muted); text-align: left; }
+.tabs .outl button:hover { color: var(--ink); }
 .tabs button { flex: none; }
 .tabs button, .seg button { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
 .tabs button.on, .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -369,17 +374,29 @@ span.warn { color: var(--b-stalled); }
 /* Releases: a long changelog scrolls inside the opened row. */
 .rel-cl { max-height: 320px; overflow: auto; margin-top: 4px; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
-@media (max-width: 760px) {
-  /* The Queue table keeps state, in, project and title; the detail has the rest. */
-  .tbl th.qx, .tbl td.qx { display: none; }
-  .board { padding: 12px; }
-  header { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
+/* Below the sidebar's width the same list is a dropdown the menu button opens (app.js menuOpen). */
+@media (max-width: 899px) {
+  header { position: relative; }
   .menu, .cur { display: inline-block; }
   .tabs { display: none; }
   header.open .tabs { display: flex; flex-direction: column; align-items: stretch; gap: 2px; position: absolute; z-index: 20; top: 100%; left: 0; right: 0; margin: 0; padding: 8px 12px 12px; background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: 0 8px 20px rgba(0, 0, 0, .18); }
   header.open .tabs button { text-align: left; padding: 11px 12px; font-size: var(--fs-lg); border-color: transparent; }
   header.open .tabs button.on { border-color: var(--accent); }
   header.open .tabs form { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
+  header.open .tabs { max-height: calc(100dvh - 56px); overflow-y: auto; }
+}
+/* The sidebar (docs/dashboards.md, Sidebar): the tab list as a column under the header. */
+@media (min-width: 900px) {
+  .tabs { position: fixed; z-index: 10; top: calc(49px + env(safe-area-inset-top, 0px)); bottom: 0; left: 0; width: 184px; padding: 4px 8px 10px; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); }
+  .tabs button { text-align: left; border-color: transparent; }
+  .tabs form { margin-top: auto; padding-top: 10px; }
+  main { margin-left: 184px; }
+}
+@media (max-width: 760px) {
+  /* The Queue table keeps state, in, project and title; the detail has the rest. */
+  .tbl th.qx, .tbl td.qx { display: none; }
+  .board { padding: 12px; }
+  header { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }
   .thsort { display: inline-block; padding: 10px 2px; }
