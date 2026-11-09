@@ -1330,9 +1330,10 @@ game_ready() {
 
 @test "promote: a row whose item finished ok under another slug is not queued again" {
   project game beta "$SANDBOX/repos/game"
-  row game agent 'landed three' '- [ ] landed three <!-- id:gm-9 -->'
   agent-queue add --project game --from "board:game:gm-9" --slug game-gm-9 "x" >/dev/null
   agent-queue move game-gm-9 done --status ok >/dev/null
+  # Written after the close, which now closes its row: a row left open before it did.
+  row game agent 'landed three' '- [ ] landed three <!-- id:gm-9 -->'
   run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-9"}')" "" task
   assert_failure
   assert_output --partial 'gm-9 already finished ok on its own item game-gm-9'
