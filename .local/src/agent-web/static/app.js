@@ -382,7 +382,12 @@ function showLive(ev) {
 }
 
 function dispatch(ev) {
-  if (ev.kind === "sessions" || ev.kind === "resync") { refreshAgents(); if (st.view === "screen") loadScreen(); }
+  if (ev.kind === "sessions" || ev.kind === "resync") {
+    refreshAgents();
+    if (st.view === "screen") loadScreen();
+    // NEEDS YOU reads who is waiting live, so a dialog opened or answered changes it now.
+    if (st.tab === "home") refreshHome();
+  }
   if (ev.kind === "asks" || ev.kind === "resync") refreshAsks();
   if ((ev.kind === "transcript" && st.sel && ev.session === st.sel.session) || ev.kind === "resync") {
     if (st.view === "screen") loadScreen(); else loadNewer();

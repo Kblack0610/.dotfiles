@@ -101,17 +101,25 @@ session() {
   printf '{"target":"%s","bucket":"%s","reason":"%s","idle_min":%s,"doing":"%s","topic":"%s","said":"the last thing it said","cwd":"/nowhere/demo"}' "$@"
 }
 
+# live_agent <target> <status> <idle min> <doing> <summary>: one line of `agent-panel list --json`.
+live_agent() {
+  printf '{"target":"%s","status":"%s","idle_since":%s,"doing":"%s","summary":"%s","cwd":"/nowhere/demo"}\n' \
+    "$1" "$2" "$(($(date +%s) - $3 * 60))" "$4" "$5"
+}
+
 @test "every session with a dialog open is a row after the asks, plans included, so the count matches the chip's" {
   local id
   id="$(ask demo agent-1 'a=the first|b=the second' 'filed question?')"
-  fleet_doc "$(session lab/demo-agent-4:1 NEEDS 'waiting on a prompt or permission' 30 AskUserQuestion 'Trading plan')" \
-    "$(session hub/demo:2 NEEDS 'plan awaiting approval' 90 ExitPlanMode 'Stop issues')" \
-    "$(session hub/demo:3 NEEDS 'waiting on a prompt or permission' 10 Bash 'Needs a permission')" \
-    "$(session lab/demo-agent-5:1 NEEDS '1 pending ask(s)' 5 Bash 'Has an ask')" \
-    "$(session lab/demo-agent-6:1 WORKING busy 0 Edit 'Busy')"
+  {
+    live_agent lab/demo-agent-4:1 waiting 30 AskUserQuestion 'Trading plan'
+    live_agent hub/demo:2 waiting 90 ExitPlanMode 'Stop issues'
+    live_agent hub/demo:3 waiting 10 Bash 'Needs a permission'
+    live_agent lab/demo-agent-5:1 busy 5 Bash 'Has an ask'
+    live_agent lab/demo-agent-6:1 busy 0 Edit 'Busy'
+  } >"$NOTES_FIXTURE/agent-panel.list.json"
   run rows
   assert_success
-  # The ask first, then the dialogs oldest first; an ask's NEEDS and a WORKING session add nothing.
+  # The ask first, then the dialogs oldest first; a busy session adds nothing, ask or no ask.
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$id @hub/demo:2 @lab/demo-agent-4:1 @hub/demo:3 "
   assert_line --index 1 --partial 'demo:2'
   assert_line --index 1 --partial 'plan waiting for approval~'

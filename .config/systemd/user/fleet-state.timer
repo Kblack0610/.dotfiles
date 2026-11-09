@@ -2,7 +2,8 @@
 Description=Refresh the fleet state document every minute (the hub Fleet tab)
 
 # git, gh and the transcripts have no change event to await, so this samples; fleet-state.path
-# adds a pass on each ask change. A pass costs ~12s of gh and git, so a minute keeps it under 10%.
+# adds a pass on each ask change. A pass is git and gh per session, which runs for much of that
+# minute, so whatever must not lag (who is waiting on the human) is read live, not from this pass.
 [Timer]
 OnBootSec=1min
 OnUnitActiveSec=1min

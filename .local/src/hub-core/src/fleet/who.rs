@@ -49,8 +49,10 @@ pub struct Who {
     pub state: String,
     /// When it started its present state, unix seconds.
     pub since: Option<i64>,
-    /// A runner's Claude Code cost over the last 24h (`Worker::cost_24h`); None for a session.
+    /// A runner's cost over the last 24h (`Worker::cost_24h`); None for a session.
     pub cost_24h: Option<f64>,
+    /// Part of `cost_24h` is estimated from tokens: drawn as `~` (`fleet_cost::FLEET_LEGEND`).
+    pub cost_estimated: bool,
     /// What a session is doing now, fleet-sessions' `activity_line` (testing, editing, waiting on
     /// <workflow> Nm, red on <workflow>, gating, its status); blank for a runner.
     pub activity: String,
@@ -195,6 +197,7 @@ fn runner(w: &Worker, at: i64) -> Who {
             .or(call.map(|c| c.at))
             .or(w.last.as_ref().and_then(|o| o.at)),
         cost_24h: w.cost_24h,
+        cost_estimated: w.cost_estimated,
         activity: String::new(),
         purpose: w.description.clone(),
         doing,
@@ -276,6 +279,7 @@ fn session(sess: &Value, at: i64) -> Option<Who> {
         state,
         since: sess["age_min"].as_i64().map(|m| at - m * 60),
         cost_24h: None,
+        cost_estimated: false,
         activity: s(sess, "activity_line").to_string(),
         // fleet-sessions' topic is what it is on; its queue item's slug is under it.
         purpose: s(sess, "topic").to_string(),

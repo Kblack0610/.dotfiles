@@ -200,6 +200,8 @@ pub struct BoardFiles {
     pub asks: PathBuf,
     /// agent-propose's store: a proposal filed or decided re-reads Home's section.
     pub proposals: PathBuf,
+    /// Claude's session files: a dialog opening or answered changes NEEDS YOU at once.
+    pub sessions: PathBuf,
     pub shepherd: PathBuf,
     pub daylog: PathBuf,
     /// The nightly token snapshots behind Costs' Where the tokens go.
@@ -218,6 +220,7 @@ impl BoardFiles {
             state: boards::fleet_state(),
             asks: boards::asks_dir(),
             proposals: boards::proposals_dir(),
+            sessions: boards::claude_sessions_dir(),
             shepherd: boards::shepherd_dir(),
             daylog: boards::daylog_dir(),
             tokens: boards::token_usage_dir(),
@@ -233,6 +236,10 @@ impl BoardFiles {
     pub fn rundowns(&self) -> PathBuf {
         self.shepherd.join("rundowns")
     }
+    pub fn is_session_file(&self, p: &Path) -> bool {
+        p.parent() == Some(self.sessions.as_path()) && p.extension().is_some_and(|e| e == "json")
+    }
+
     pub fn is_proposal_file(&self, p: &Path) -> bool {
         hub_core::boards::is_proposal_file(&self.proposals, p)
     }
@@ -293,6 +300,8 @@ pub enum Msg {
     Tick,
     /// agent-propose wrote a record.
     ProposalFiles,
+    /// A Claude session's status changed; only Home's NEEDS YOU reads it live.
+    SessionFiles,
     Proposals(Box<Result<Vec<Proposal>, String>>),
     /// Home's Since last night (hub_core::briefing::night).
     Night(Box<hub_core::briefing::Night>),
@@ -666,6 +675,7 @@ impl App {
             (self.queue_dir.clone(), true),
             (self.files.asks.clone(), true),
             (self.files.proposals.clone(), false),
+            (self.files.sessions.clone(), false),
             (self.files.tokens.clone(), false),
             (self.files.releases.clone(), false),
         ];
@@ -1416,6 +1426,8 @@ impl App {
             Msg::BuildFile => {}
             Msg::BoardFiles => self.read_boards(),
             Msg::ProposalFiles => self.read_proposals(),
+            Msg::SessionFiles if self.tab == Tab::Home => self.read_boards(),
+            Msg::SessionFiles => {}
             Msg::Tab(t, q) => {
                 self.go(t);
                 self.open_query(q);
