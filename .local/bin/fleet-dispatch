@@ -2058,14 +2058,13 @@ settle_item() {
 # of 20 were red on 2026-11-09. It goes back to queued/ (--if review) as a oneshot stamped
 # `fix_tries: <n> <head>`, so item_brief starts it on /my:fix-ci and the next pass starts it behind every gate a queued item
 # waits on (agent-hold, the weekly pace, load, the run gate); while agent-queue admission holds
-# automated adds it waits in review/. DISPATCH_FIX_TRIES tries, then one human-sheet row on the
-# item's project and a page, as fleet-bench triage_human does once TRIAGE_FIX_TRIES are spent,
+# automated adds it waits in review/. DISPATCH_FIX_TRIES tries, then one human-sheet row and a page, as fleet-bench triage_human does once TRIAGE_FIX_TRIES are spent,
 # stamped `fix_human: <head>`; a head that moves after that row (the human pushed) starts the count
 # again. A session reap cannot witness (`unrecorded`, a cloud run) is never read as gone here.
 fix_red_pr() {
-  local slug=$1 it=$3 head=$4 tries human pr project prof clear=()
+  local slug=$1 it=$3 head=$4 tries human pr project prof note held row sheet where clear=()
   [ "$5" = FAIL ] && [ -n "$head" ] && [ "$2" != unrecorded ] || return 0
-  IFS=$'\x1f' read -r tries human pr project prof < <(jq -r '[.fix_tries // "", .fix_human // "", .pr, .project // "", .profile // ""] | join("\u001f")' <<<"$it")
+  IFS=$'\x1f' read -r tries human pr project prof note < <(jq -r '[.fix_tries // "", .fix_human // "", .pr, .project // "", .profile // "", .note // ""] | join("\u001f")' <<<"$it")
   tries=${tries%% *}
   [[ "$tries" =~ ^[0-9]+$ ]] || tries=0
   if [ -n "$human" ]; then
@@ -2073,8 +2072,12 @@ fix_red_pr() {
     tries=0 clear=(fix_human=)
   fi
   if [ "$tries" -lt "$DISPATCH_FIX_TRIES" ]; then
-    jq -e .admits >/dev/null 2>&1 < <(agent-queue admission --json 2>/dev/null) ||
-      { logline "queue item $slug: PR $pr red at ${head:0:12}, fix-ci held by admission"; return 0; }
+    held="PR $pr red at ${head:0:12}; fix-ci held by admission"
+    if ! jq -e .admits >/dev/null 2>&1 < <(agent-queue admission --json 2>/dev/null); then
+      # Said once, on the item and in the log, not on every pass of the hold.
+      [ "$note" = "$held" ] || { agent-queue set "$slug" "note=$held" >/dev/null; logline "queue item $slug: $held"; }
+      return 0
+    fi
     agent-queue set "$slug" "fix_tries=$((tries + 1)) $head" mode=oneshot "${clear[@]}" \
       "note=PR $pr red at ${head:0:12}; fix-ci try $((tries + 1)) of $DISPATCH_FIX_TRIES" >/dev/null || return 0
     agent-queue move "$slug" queued --if review >/dev/null || return 0
@@ -2083,12 +2086,18 @@ fix_red_pr() {
     echo "fix-ci queue item $slug (PR $pr red at ${head:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
     return 0
   fi
-  np "$prof" ptask "$project" add "fix(ci): PR $pr is red at ${head:0:12} after $tries fix-ci tries; fix it or close it (queue item $slug) #size/s" >/dev/null 2>&1 ||
-    { logline "queue item $slug: filing the human row for red PR $pr on the $project sheet failed"; return 0; }
-  agent-queue set "$slug" "fix_human=$head" "note=PR $pr red at ${head:0:12} after $tries fix-ci tries; on the $project sheet" >/dev/null
-  agent-notify -t 'Needs you' "$project sheet: PR $pr red after $tries fix-ci tries" >/dev/null 2>&1
-  logline "queue item $slug: PR $pr red at ${head:0:12} after $tries fix-ci tries, filed on the $project sheet"
-  echo "human row for queue item $slug (PR $pr red after $tries fix-ci tries)"
+  # The sheet of the board the item came from (a dotfiles item's row is on agent-runtime), else its
+  # project's. The stamp goes first, so a failed write never files the row twice; a sheet that
+  # refuses the row still gets the page, once.
+  sheet=$project row=$(item_row "$it")
+  [ -z "$row" ] || IFS=$'\x1f' read -r prof sheet _ <<<"$row"
+  agent-queue set "$slug" "fix_human=$head" >/dev/null || return 0
+  if np "$prof" ptask "$sheet" add "fix(ci): PR $pr is red at ${head:0:12} after $tries fix-ci tries; fix it or close it (queue item $slug) #size/s" >/dev/null 2>&1
+  then where="on the $sheet sheet"; else where="not filed: the $sheet sheet refused the row"; fi
+  agent-queue set "$slug" "note=PR $pr red at ${head:0:12} after $tries fix-ci tries; $where" >/dev/null
+  agent-notify -t 'Needs you' "PR $pr red after $tries fix-ci tries ($where)" >/dev/null 2>&1
+  logline "queue item $slug: PR $pr red at ${head:0:12} after $tries fix-ci tries, $where"
+  echo "human row for queue item $slug (PR $pr red after $tries fix-ci tries, $where)"
 }
 
 # settle_sessionless <slug> <started> -- a started item recording no session, tmux or Claude: nothing

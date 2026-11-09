@@ -4011,7 +4011,7 @@ fix_ended() {
   # spent: one row on the project's human sheet and one page, the item left parked on its PR
   fix_ended "$h2" FAIL
   run cmd_reap
-  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries)'
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, on the game sheet)'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human] | join("|")')" "review|$h2"
   assert_called "notes --profile bnb ptask game add fix(ci): PR o/game#12 is red at ${h2:0:12} after 2 fix-ci tries"
   run cmd_reap
@@ -4032,7 +4032,8 @@ fix_ended() {
   AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
   assert_success
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_tries // ""] | join("|")')" "review|"
-  grep -q 'fix-crash: PR o/game#12 red at 111111111111, fix-ci held by admission' "$FLEET_DISPATCH_DIR"/log.md || fail "the hold was not logged"
+  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  assert_equal "$(grep -c 'fix-crash: PR o/game#12 red at 111111111111; fix-ci held by admission' "$FLEET_DISPATCH_DIR"/log.md)" 1
   # no session recorded (a cloud run): settle_sessionless keeps it parked, never requeued
   sed -i '/^session: /d; /^sessions: /d' "$(qitem review fix-crash)"
   run cmd_reap
@@ -4247,7 +4248,7 @@ landed_item() {
 bare_pr() {
   landed_item MERGED 12
   jq -n --arg o "$OID" --arg b "$1" '{state: "MERGED", mergeCommit: {oid: $o}, body: $b}' > "$NOTES_FIXTURE/pr.json"
-  stub gh 'printf "gh %s in %s\n" "$*" "$PWD" >> "$NOTES_FIXTURE/calls.log"; jq -r "${@: -1}" "$NOTES_FIXTURE/pr.json"'
+  stub gh 'printf "gh %s in %s\n" "$(tr "\n" " " <<<"$*")" "$PWD" >> "$NOTES_FIXTURE/calls.log"; jq -r "${@: -1}" "$NOTES_FIXTURE/pr.json"'
 }
 
 @test "reap: a bare pr: reads the project's checkout and counts a PR whose body has the item's stamp" {
