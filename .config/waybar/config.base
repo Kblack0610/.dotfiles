@@ -101,7 +101,7 @@
                 ""
             ]
         },
-        "on-click": "pavucontrol"
+        "on-click": "kitty --class floating-term -e wiremix"
     },
     // The `modules.sh gate <id>` prefix below is what makes these toggleable at
     // runtime: while a module is off the gate prints nothing and waybar drops it.
