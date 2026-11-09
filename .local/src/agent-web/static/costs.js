@@ -96,7 +96,8 @@ function fleetCostSection(d) {
 // The Burn section (hub_core::burn, the hub's coststab.rs `burn`): the headline coloured by the
 // fleet's level, then the drip, when the accounts are back on pace and one row per source. Green
 // folds to its headline (dashboards rule 4); amber and red start open until the reader folds it,
-// except on a phone, where the headline is the verdict and the tables wait for a tap.
+// except on a phone, where the headline is the verdict and the tables wait for a tap. A phone has
+// its own fold key, because paint remembers every fold it saw and its closed one would stick.
 function burnPace(b) {
   const p = b.pace;
   if (p.on_pace) return "every source is on pace";
@@ -155,8 +156,8 @@ function costsBurn(d) {
   if (!b || !b.accounts.length) return `<h2 class="sec" id="sec-burn">Burn</h2><div class="panel muted">no data from claude-acct</div>`;
   const cls = b.level === "bad" ? "bad" : b.level === "warn" ? "warn" : "ok";
   const held = b.drip.held ? ` <a class="warn" href="#sessions" title="${esc(b.drip.held)}">dispatch held -> Sessions</a>` : "";
-  const open = cost.open.burn != null ? cost.open.burn : b.level !== "ok" && !isPhone();
-  return `<details class="csec" data-k="burn" id="sec-burn"${open ? " open" : ""}><summary><h2 class="sec">Burn <span class="burn ${cls}">${esc(b.head)}</span></h2></summary>` +
+  const key = isPhone() ? "burn-phone" : "burn", open = cost.open[key] ?? (b.level !== "ok" && !isPhone());
+  return `<details class="csec" data-k="${key}" id="sec-burn"${open ? " open" : ""}><summary><h2 class="sec">Burn <span class="burn ${cls}">${esc(b.head)}</span></h2></summary>` +
     `<div class="panel"><div><span class="muted">DRIP</span> ${esc(b.drip_line)}${held}</div>` +
     `<div><span class="muted">BACK ON PACE</span> ${burnPace(b)}</div></div>` +
     `<div class="panel scroll">${burnTable(b, BURN_COLS, b.accounts.filter((a) => !a.nested))}</div>` + burnKeys(b) +

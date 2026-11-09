@@ -524,7 +524,7 @@ function renderInfra() {
   const asks = (cc["cc:asks_open"] || {})[""];
   const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
   let html = `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += pfold("infra-health", domainLine(cc), `${domainTiles(cc)}<div class="sp"></div>${kpis(cc)}`, "sec-health");
+  html += pfold("infra-health", domainLine(cc), `<div id="sec-health">${domainTiles(cc)}<div class="sp"></div>${kpis(cc)}</div>`);
   html += red.length
     ? `<h2 class="sec" id="sec-red">Red now <span class="muted">${red.length}</span></h2><div class="panel down">${red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`
     : `<h2 class="sec" id="sec-red">Red now <span class="muted">nothing: every rostered runner is online or powered off by the governor</span></h2>`;

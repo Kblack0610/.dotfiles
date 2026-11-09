@@ -130,17 +130,27 @@ test("a hand-written table's labels come from its header text, and a named glanc
   run("tblStamp(subject)");
   assert.deepEqual(row.cells.map((c) => c.dataset.label), ["host", "temp", "where"]);
   assert.deepEqual(row.cells.map((c) => "named" in c.dataset), [false, true, false]);
+  hs[2].dataset.label = "";
+  run("tblStamp(subject)");
+  assert.equal(row.cells[2].dataset.label, "", "a label left blank on purpose stays blank");
 });
 
 test("a pfold is always open on a wide screen, and on a phone is a closed line until opened", () => {
-  const draw = () => run(`pfold("x", "the line", "the part", "sec-x")`);
-  assert.equal(draw(), `<details class="pfold" data-pf="x" id="sec-x" open><summary>the line</summary>the part</details>`);
+  const draw = () => run(`pfold("x", "the line", "the part")`);
+  assert.equal(draw(), `<details class="pfold" data-pf="x" open><summary>the line</summary>the part</details>`);
   ctx.matchMedia = () => ({ matches: true });
   assert.doesNotMatch(draw(), / open>/);
   run(`PFOLD.x = true`);
   assert.match(draw(), / open>/, "opened on a phone stays open across a redraw");
   run(`delete PFOLD.x`);
+  const drawn = { dataset: { pf: "x" }, open: true }, real = doc.querySelectorAll;
+  doc.querySelectorAll = (sel) => (sel === "details.pfold" ? [drawn] : real(sel));
+  run(`pfoldFit()`);
+  assert.equal(drawn.open, false, "narrowing closes a fold already drawn");
   delete ctx.matchMedia;
+  run(`pfoldFit()`);
+  assert.equal(drawn.open, true, "widening opens one, whose summary a wide screen hides");
+  doc.querySelectorAll = real;
 });
 
 test("every hand-written table header on Infra and Costs names a lead", () => {

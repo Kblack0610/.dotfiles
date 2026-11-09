@@ -408,7 +408,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .pfold[open] > summary::before, details.csec[open] > summary::before { content: "-"; }
   details.csec > summary { display: flex; align-items: baseline; gap: 6px; }
   details.csec > summary::-webkit-details-marker { display: none; }
-  /* A red's or a fix's own words are why the row is there: they wrap, and what follows goes under. */
+  /* A feed row's own words are why it is there: they wrap, and what follows goes under. */
   .pr { flex-wrap: wrap; }
   .pr .pt { flex: 1 1 60%; white-space: normal; overflow-wrap: anywhere; }
   .pfold[open] > summary { margin-bottom: 8px; }

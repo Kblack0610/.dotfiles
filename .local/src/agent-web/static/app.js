@@ -76,8 +76,7 @@ api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs();
 
 // A fold opened on a phone stays open across redraws. Only then: a wide screen has them all open.
 document.addEventListener("toggle", (e) => { if (e.target.matches?.("details.pfold") && isPhone()) PFOLD[e.target.dataset.pf] = e.target.open; }, true);
-// Turning a phone crosses the width, and a pfold is drawn for one side of it.
-if (typeof matchMedia === "function") matchMedia(PHONE_WIDTH).addEventListener("change", () => { TABS[st.tab]?.show(); renderActs(); });
+if (typeof matchMedia === "function") matchMedia(PHONE_WIDTH).addEventListener("change", pfoldFit);
 
 function renderActs() {
   const a = st.sel, box = $("acts");
