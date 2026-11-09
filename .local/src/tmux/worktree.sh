@@ -261,6 +261,45 @@ wt_pr_merged_at_head() {
       'any(.[]; .state == "MERGED" and .headRefName == $b and .headRefOid == $h)' >/dev/null 2>&1
 }
 
+# wt_submodule_list <path> -- `<name><TAB><path>` for each submodule in <path>'s .gitmodules.
+wt_submodule_list() {
+  local key sub
+  git -C "$1" config -z -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null |
+    while IFS=$'\n' read -r -d '' key sub; do
+      key=${key#submodule.}
+      printf '%s\t%s\n' "${key%.path}" "$sub"
+    done
+}
+
+# wt_heal_submodule_urls <path> -- restore from .gitmodules any submodule URL that names a
+# module store under a .git dir. That config is shared by every worktree, a store is one
+# clone's private state and never a remote, and git refuses a local path for a submodule clone,
+# so one such value broke every clone in the repo (2026-11-08, unity-core-playground). Any other
+# URL, a deliberate local mirror included, is left alone.
+wt_heal_submodule_urls() {
+  local name sub url
+  while IFS=$'\t' read -r name sub; do
+    url=$(git -C "$1" config --get "submodule.$name.url") || continue
+    case "$url" in */.git/*modules/*) ;; *) continue ;; esac
+    panel_warn "$sub had the URL $url in the shared git config; restoring the one in .gitmodules"
+    git -C "$1" submodule sync --quiet -- "$sub" >&2 || panel_warn "could not restore the URL of $sub"
+  done < <(wt_submodule_list "$1")
+}
+
+# wt_empty_submodules <path> -- the submodules git was asked to fill (a URL in the config) that
+# have no checkout in <path>. A module with no index was cloned but never checked out: the
+# clone landed and the pinned commit was not in it.
+wt_empty_submodules() {
+  local name sub
+  while IFS=$'\t' read -r name sub; do
+    git -C "$1" config --get "submodule.$name.url" >/dev/null 2>&1 || continue
+    # The .git test first: without one, git -C answers for the enclosing worktree.
+    [ -e "$1/$sub/.git" ] &&
+      [ -e "$(git -C "$1/$sub" rev-parse --path-format=absolute --git-path index 2>/dev/null)" ] ||
+      printf '%s\n' "$sub"
+  done < <(wt_submodule_list "$1")
+}
+
 # wt_submodule_worktrees <path> -- print the first linked worktree of any initialised
 # submodule of <path>; nothing, and rc 1, when there are none. A worktree cut from a
 # submodule (`git -C External/unity-core worktree add ~/.worktrees/unity-core-x`) keeps its
@@ -748,8 +787,10 @@ wt_recycle() {
   main=$(wt_main_repo "$path") || return 1
   git -C "$path" switch --quiet -C "$branch" "$base" >&2 || return 1
   # Bring the already-initialised submodules to what <base> records; wt_dirty_count waved
-  # through a stale one as idle, so this is where it stops being stale. A failure (offline,
-  # commit not fetchable) leaves the tree usable, just behind, so it warns rather than aborts.
+  # through a stale one as idle, so this is where it stops being stale. A failure that leaves a
+  # checkout behind (offline, commit not fetchable) leaves the tree usable, so it warns. One
+  # that leaves a submodule EMPTY does not: a session started on that tree has no engine to
+  # build against, so the recycle fails and `new` starts nothing.
   #
   # NEVER smudge LFS here. A submodule's LFS store lives in ITS gitdir, one per worktree, so a
   # plain update re-downloads everything that store lacks: on unity-core-playground that was
@@ -763,7 +804,8 @@ wt_recycle() {
   # (asset-library: 28k LFS files, 20s+); given paths it is 0.07s. wt_reap_reason already
   # proved the tree clean, so an unmoved file holds nothing its last checkout did not fill in.
   # A module with no recorded HEAD (initialised by this update) gets the full checkout.
-  local heads
+  local heads empty=''
+  wt_heal_submodule_urls "$path"
   heads=$(git -C "$path" submodule foreach --quiet --recursive \
     'printf "%s %s\n" "$displaypath" "$(git rev-parse HEAD)"' 2>/dev/null)
   # Take each new submodule commit from the MAIN checkout's copy first. wt_prepare's fetch
@@ -780,8 +822,10 @@ wt_recycle() {
       [ -z "$(git rev-list -n 1 "$sha1" --not --all 2>/dev/null)" ] && exit 0
     [ -e "$WT_MAIN/$displaypath/.git" ] || exit 0
     git fetch --quiet --no-tags "$WT_MAIN/$displaypath" "+$sha1:refs/wt/main" >/dev/null 2>&1 || true' >&2
-  GIT_LFS_SKIP_SMUDGE=1 git -C "$path" submodule update --recursive --quiet >&2 ||
-    panel_warn "submodules in $path are not at $base; run git submodule update there"
+  if ! GIT_LFS_SKIP_SMUDGE=1 git -C "$path" submodule update --recursive --quiet >&2; then
+    empty=$(wt_empty_submodules "$path")
+    [ -n "$empty" ] || panel_warn "submodules in $path are not at $base; run git submodule update there"
+  fi
   if panel_have git-lfs; then
     WT_SUB_HEADS="$heads" git -C "$path" submodule foreach --quiet --recursive '
       old=$(printf "%s\n" "$WT_SUB_HEADS" | while IFS= read -r l; do
@@ -797,6 +841,7 @@ wt_recycle() {
     git -C "$main" branch -d "$old" >/dev/null 2>&1 ||
       panel_warn "kept branch $old: git will not safely delete it"
   fi
+  [ -z "$empty" ] || panel_fail "$path has empty submodules: ${empty//$'\n'/, } (see the git error above)" || return 1
   return 0
 }
 
@@ -1000,6 +1045,8 @@ wt_prepare() {
     # -B, not -b: a leftover agent-N branch reaching here was proven merged by wt_next_slot.
     git -C "$main" worktree add "$path" -B "agent-$n" "$base" >&2 ||
       panel_fail "git worktree add failed: $path" || return 1
+    # A fresh tree leaves its submodules to the repo's own setup, which needs a working URL.
+    wt_heal_submodule_urls "$path"
   fi
   wt_hold "$path"
 }
