@@ -26,13 +26,6 @@ const PROJECTS: usize = 3;
 /// How many in-flight projects the projects section lists under its head; the widget is full at
 /// 4x4, so the rest fold into the head's count.
 const CARDS: usize = 2;
-/// KPI names that do not read as words once the underscores go.
-const KPI_LABELS: [(&str, &str); 3] = [
-    ("ci_red_per_pr", "CI reds per PR"),
-    ("board_open", "open board rows"),
-    ("ask_answered_pct", "asks answered %"),
-];
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Row {
     pub level: Level,
@@ -67,12 +60,6 @@ fn row(level: Level, head: &'static str, text: impl Into<String>) -> Row {
         head,
         text: text.into(),
     }
-}
-
-/// A number with no trailing zeros: 372, 0.5, 0.86.
-fn plain(x: f64) -> String {
-    let s = format!("{x:.2}");
-    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// `n word` for each count above zero, joined: "22 asks, 6 sessions".
@@ -160,7 +147,7 @@ fn etas(state: &Value, now: i64) -> Option<String> {
 }
 
 /// The value of `name` for `kpi` (and `window`, when it has one) in the bench series.
-fn kpi(infra: &Infra, name: &str, kpi: &str, window: &str) -> Option<f64> {
+pub(crate) fn kpi(infra: &Infra, name: &str, kpi: &str, window: &str) -> Option<f64> {
     infra
         .get("bench")
         .iter()
@@ -168,34 +155,6 @@ fn kpi(infra: &Infra, name: &str, kpi: &str, window: &str) -> Option<f64> {
             s.label("__name__") == name && s.label("kpi") == kpi && s.label("window") == window
         })
         .and_then(|s| s.value)
-}
-
-/// "off target: CI reds per PR 0.86 (limit 0.5), +4 more": the first KPI past its limit in words,
-/// and how many more; the full list is on Home and Costs. fleet-bench judges, this only words it.
-fn over_limit(infra: &Infra) -> Option<String> {
-    let mut said: Vec<String> = infra
-        .get("bench")
-        .iter()
-        .filter(|s| s.label("__name__") == "agent_bench_kpi_past" && s.value == Some(1.0))
-        .filter_map(|s| {
-            let k = s.label("kpi");
-            let label = KPI_LABELS
-                .iter()
-                .find(|(name, _)| *name == k)
-                .map_or_else(|| k.replace('_', " "), |(_, l)| l.to_string());
-            let value = kpi(infra, "agent_bench_kpi", k, "7d")?;
-            let limit = kpi(infra, "agent_bench_kpi_limit", k, "")?;
-            Some(format!("{label} {} (limit {})", plain(value), plain(limit)))
-        })
-        .collect();
-    said.sort();
-    let first = said.first()?;
-    let more = said.len() - 1;
-    Some(if more > 0 {
-        format!("off target: {first}, +{more} more")
-    } else {
-        format!("off target: {first}")
-    })
 }
 
 fn agents(i: &Inputs) -> Vec<Row> {
@@ -220,8 +179,11 @@ fn agents(i: &Inputs) -> Vec<Row> {
     if let Some(line) = etas(i.state, i.now) {
         out.push(row(Level::Ok, "agents", line));
     }
-    if let Some(line) = infra.and_then(over_limit) {
-        out.push(row(Level::Warn, "agents", line));
+    // One line; the rows are on Home (dashboards rule 2). fleet-bench judges, vitals words it. With
+    // no gauges there is nothing to flag here: Home says it has no reading.
+    let vitals = infra.and_then(crate::vitals::read);
+    if let Some(v) = vitals.filter(|v| !v.all_ok && !v.rows.is_empty()) {
+        out.push(row(Level::Warn, "agents", format!("Vitals: {}", v.line)));
     }
     out
 }
@@ -497,6 +459,16 @@ mod tests {
             ),
             metric("agent_bench_kpi_past", json!({"kpi": "ci_red_per_pr"}), "1"),
             metric(
+                "agent_bench_vital",
+                json!({"question": "output", "kpi": "revert_rate"}),
+                "0",
+            ),
+            metric(
+                "agent_bench_vital",
+                json!({"question": "flow", "kpi": "board_open"}),
+                "1",
+            ),
+            metric(
                 "agent_bench_kpi",
                 json!({"kpi": "board_open", "window": "7d"}),
                 "372",
@@ -618,7 +590,7 @@ mod tests {
             [
                 "Agents: 8 working, 1 stalled".to_string(),
                 format!("2 late (worst 2h), next done {next}"),
-                "off target: CI reds per PR 0.86 (limit 0.5), +1 more".to_string(),
+                "Vitals: 1 of 2 off target: Flow".to_string(),
             ]
         );
         // Merged PRs and their cost read with the queue, the delivery section.
@@ -658,24 +630,6 @@ mod tests {
                 "37 done today, oldest ready waited 37h",
                 "85 PRs merged today",
             ]
-        );
-    }
-
-    #[test]
-    fn over_limit_stays_one_line_however_many_kpis_are_past() {
-        let mut bench = bench();
-        bench.extend([
-            metric(
-                "agent_bench_kpi",
-                json!({"kpi": "zz_extra", "window": "7d"}),
-                "9",
-            ),
-            metric("agent_bench_kpi_limit", json!({"kpi": "zz_extra"}), "1"),
-            metric("agent_bench_kpi_past", json!({"kpi": "zz_extra"}), "1"),
-        ]);
-        assert_eq!(
-            over_limit(&infra(vec![("bench", bench)])).as_deref(),
-            Some("off target: CI reds per PR 0.86 (limit 0.5), +2 more")
         );
     }
 
@@ -895,8 +849,5 @@ mod tests {
         assert_eq!(age(5 * 3600), "5h");
         assert_eq!(age(47 * 3600), "47h");
         assert_eq!(age(3 * 86400), "3d");
-        assert_eq!(plain(372.0), "372");
-        assert_eq!(plain(0.5), "0.5");
-        assert_eq!(plain(0.863), "0.86");
     }
 }

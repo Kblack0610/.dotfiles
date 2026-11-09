@@ -17,6 +17,10 @@ const LOCAL_FRESH: &str =
 
 /// The board's queries, by name. All but `OPTIONAL` must answer or the tab shows the
 /// error instead of numbers: a board blanks rather than leave stale values up.
+/// fleet-bench's gauges, in one query so `vitals::fetch` can ask for them alone.
+pub const BENCH_QUERY: &str =
+    r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|vital)"}"#;
+
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
         ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_cores_.+"}"#.into()),
@@ -59,8 +63,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // What is red right now, one row per item: the home-config `cc:red_now` recording rule,
         // which the dashboard's "What is red" table and the waybar day chip also read.
         ("red", "cc:red_now".into()),
-        // fleet-bench's window and KPIs, as it judged them: the phone's agent lines.
-        ("bench", r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past)"}"#.into()),
+        // fleet-bench's window and KPIs, as it judged them, and which of them are the vitals: the
+        // phone's agent lines and Home's Vitals.
+        ("bench", BENCH_QUERY.into()),
     ]
 }
 pub const OPTIONAL: &[&str] = &[

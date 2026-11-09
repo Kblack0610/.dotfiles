@@ -318,13 +318,16 @@ agents() {
 }
 
 # ── bench: where each session is and when it should finish (fleet-bench, model-free) ─
-# Reads the sampler's files; never samples itself, so the popup stays as fast as the rest.
+# Reads the sampler's files and one Prometheus query with a short guard, so the popup stays as
+# fast as the rest. No sampling here.
 bench() {
   head_row 'bench · ETAs from measured phase times'
   command -v fleet-bench >/dev/null 2>&1 || { hint_row 'fleet-bench not on PATH'; return 0; }
   local line any=0
   line="$(fleet-bench headline 2>/dev/null)"
   [ -n "$line" ] && hint_row "$line"
+  line="$(PROM_TIMEOUT=2 hub vitals 2>/dev/null | head -n 1)"
+  [ -n "$line" ] && hint_row "vitals: $line"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     any=1

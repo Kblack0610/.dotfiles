@@ -18,7 +18,7 @@ pub const TABS: [Tab; 11] = [
         id: "home",
         title: "Home",
         question: "What needs me, and is everything OK?",
-        sections: &["needs", "proposals", "running", "spend", "health"],
+        sections: &["needs", "proposals", "running", "spend", "vitals", "health"],
     },
     // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
     // (the doc and Handled today) opens from that nav, so it is a section here, not a tab of its own.
