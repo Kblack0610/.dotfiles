@@ -37,6 +37,8 @@ LIB="$HERE/../lib"
 . "$LIB/md-render.sh"
 # shellcheck source=/dev/null
 . "$LIB/inbox-epics.sh"
+# shellcheck source=../lib/chain-event.sh
+. "$LIB/chain-event.sh"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
@@ -570,6 +572,11 @@ sweep() {
   [ $((FILED + ROUTED + ANSWERED)) -gt 0 ] && verdict=WORKED
   [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; SUMMARY="budget: $SUMMARY"; }
   [ "$rc" = 1 ] && verdict=FAILED
+  if [ "$rc" != 0 ]; then
+    # A stopped sweep leaves its lines waiting: the pipeline line's inbox node reads it from the record.
+    local why; why="$(proof_reasons)"
+    chain_event intake sweep-stopped outbox "inbox sweep" --why "${why:-$SUMMARY}"
+  fi
   proof_report "$NAME" "$verdict" "$SUMMARY"
   agentctl report --name "$NAME" "detail=$SUMMARY" next= >/dev/null 2>&1 || true
   return "$rc"
