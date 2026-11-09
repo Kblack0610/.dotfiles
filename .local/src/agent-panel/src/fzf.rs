@@ -106,10 +106,6 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, query: Option<&str>, 
         preview_cmd,
     ];
     args.extend(layout.iter().cloned());
-    // On top of the shared layout (fzf merges --preview-window options, and change-preview-window
-    // inherits them): the preview is the agent's pane, so it opens at the bottom like the pane
-    // does, keeps the status line pinned while scrolling up, and wraps at words.
-    args.push("--preview-window=follow,~1,wrap-word".into());
     args.extend([
         "--bind".into(),
         match_bind,

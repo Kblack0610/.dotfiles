@@ -282,12 +282,15 @@ impl Facts {
 pub fn preview(target: &str, f: &Facts, now: u64) {
     let width = crate::md::width();
     let pane = crate::tmux::capture_pane(target, true, -SCROLLBACK);
-    println!("{}", status_line(target, f, now, width));
-    print!("{}", clean_pane(&pane, width));
+    // A session waiting at a prompt (the row's `!`, which reads the hook state) or showing a
+    // dialog `dialog::parse` knows needs the human, and its pane's foot is that prompt: keep it.
+    let dialog = f.status == "waiting" || crate::dialog::parse(&strip_ansi(&pane)).is_some();
+    println!("{}", status_line(target, f, now, width, dialog));
+    print!("{}", clean_pane(&pane, width, dialog));
 }
 
 /// The pinned first line: who and where the agent is, then its pane title, cut to one row.
-fn status_line(target: &str, f: &Facts, now: u64, width: usize) -> String {
+fn status_line(target: &str, f: &Facts, now: u64, width: usize, dialog: bool) -> String {
     let place = if !f.repo_full.is_empty() { &f.repo_full } else { &f.project };
     let mut status = vec![target.to_string()];
     status.extend([place.clone(), f.status.clone()].into_iter().filter(|x| !x.is_empty()));
@@ -303,7 +306,7 @@ fn status_line(target: &str, f: &Facts, now: u64, width: usize) -> String {
         status.push(f.account.clone());
     }
     let mut parts = Vec::new();
-    if !f.ask.is_empty() {
+    if !f.ask.is_empty() || dialog {
         // The one coloured word: it asks for the human (dashboards.md rule 5); Prefix+y has the card.
         parts.push((YELLOW, "needs you".to_string()));
     }
@@ -325,21 +328,25 @@ fn status_line(target: &str, f: &Facts, now: u64, width: usize) -> String {
 }
 
 /// A coloured `capture-pane -e` capture, cleaned to read inside a preview `width` wide: Claude
-/// Code's input box and the status bar under it cut, trailing spaces trimmed, runs of blank lines
-/// one, and full-width rules shortened to the width so they do not wrap onto a second row.
-pub fn clean_pane(capture: &str, width: usize) -> String {
+/// Code's input box and the status bar under it cut (never while `dialog` is open, whose options
+/// also start with the prompt glyph), trailing spaces trimmed, runs of blank lines one, and
+/// full-width rules shortened to the width so they do not wrap onto a second row.
+pub fn clean_pane(capture: &str, width: usize, dialog: bool) -> String {
     let mut lines: Vec<&str> = capture.lines().collect();
     let plain: Vec<String> = lines.iter().map(|l| strip_ansi(l)).collect();
     let rule = |l: &str| {
         let t = l.trim();
         t.chars().count() >= 10 && t.chars().all(|c| c == '\u{2500}')
     };
-    // The input box is the last two rules, a few lines apart with the prompt between them; cut
-    // at the upper one. Two rules of the agent's own output have no prompt between them.
+    // The input box is the last two rules, a few lines apart with the prompt between them, and
+    // only the status bar under it; cut at the upper one. Two rules of the agent's own output have
+    // no prompt between them, and an old box in the scrollback has the newer output under it.
+    let foot = plain.iter().rposition(|l| !l.trim().is_empty()).map_or(0, |i| i + 1);
     let rules: Vec<usize> = plain.iter().enumerate().filter(|(_, l)| rule(l)).map(|(i, _)| i).collect();
     if let [.., upper, lower] = rules[..] {
         let prompt = plain[upper + 1..lower].iter().any(|l| l.trim_start().starts_with('\u{276f}'));
-        if lower - upper <= INPUT_BOX_LINES && prompt {
+        let at_foot = foot - lower <= STATUS_BAR_LINES + 1;
+        if !dialog && at_foot && lower - upper <= INPUT_BOX_LINES && prompt {
             lines.truncate(upper);
         }
     }
@@ -403,8 +410,11 @@ fn trim_end_ansi(line: &str) -> &str {
                 while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
                     i += 1;
                 }
+                i += 1;
+            } else {
+                // A two-character escape: skip the whole character after ESC, never into it.
+                i += line.get(i..).and_then(|r| r.chars().next()).map_or(1, char::len_utf8);
             }
-            i += 1;
             continue;
         }
         let c = line[i..].chars().next().unwrap_or(' ');
@@ -418,6 +428,8 @@ fn trim_end_ansi(line: &str) -> &str {
 
 /// How far back the preview reads the pane: enough to scroll a long turn, bounded for speed.
 const SCROLLBACK: i32 = 2000;
+/// The most lines Claude Code draws under its input box (status bar, mode line, hints).
+const STATUS_BAR_LINES: usize = 4;
 /// The most lines Claude Code's input box spans between its two rules (a long typed prompt).
 const INPUT_BOX_LINES: usize = 10;
 
@@ -612,12 +624,17 @@ earlier line
 
     #[test]
     fn the_pane_drops_the_input_box_and_status_bar_and_keeps_the_rest() {
-        assert_eq!(clean_pane(PANE, 40), "earlier line\n  \u{23bf}  picked 27\n\u{b7} Flowing\u{2026} (11m 16s)\n");
+        assert_eq!(clean_pane(PANE, 40, false), "earlier line\n  \u{23bf}  picked 27\n\u{b7} Flowing\u{2026} (11m 16s)\n");
         // Negative control: a pane with no input box (a shell) keeps its foot.
-        assert_eq!(clean_pane("$ ls\nfile\n\n", 40), "$ ls\nfile\n");
+        assert_eq!(clean_pane("$ ls\nfile\n\n", 40, false), "$ ls\nfile\n");
         // Negative control: two rules of the agent's own output, no prompt between, cut nothing.
         let rule = "\u{2500}".repeat(10);
-        assert_eq!(plain(&clean_pane(&format!("a\n{rule}\nb\n{rule}\nc"), 40)).lines().count(), 5);
+        assert_eq!(plain(&clean_pane(&format!("a\n{rule}\nb\n{rule}\nc"), 40, false)).lines().count(), 5);
+        // An open dialog is kept whole: its options start with the prompt glyph too.
+        assert!(clean_pane(PANE, 40, true).contains('\u{276f}'));
+        // An old input box in the scrollback, with newer output under it, cuts nothing.
+        let old = format!("{PANE}later output\nmore\nand more\nstill more\nthe newest line\n");
+        assert!(clean_pane(&old, 40, false).ends_with("the newest line\n"), "{:?}", clean_pane(&old, 40, false));
     }
 
     #[test]
@@ -626,7 +643,7 @@ earlier line
         let coloured = format!(
             "\n\n\x1b[1mtitle\x1b[0m   \x1b[0m  \n\n\n\nbody\n\x1b[2m{r}\x1b[0m\n\x1b[2m{r}\x1b[0m\n\x1b[2m{r}\x1b[0m\n\x1b[1m\u{276f}\x1b[0m \n\x1b[2m{r}\x1b[0m\nstatus bar\n"
         );
-        let got = clean_pane(&coloured, 40);
+        let got = clean_pane(&coloured, 40, false);
         // Leading blanks gone, the blank run one line, trailing spaces gone, the colour closed.
         assert!(got.starts_with("\x1b[1mtitle\x1b[0m\n\nbody\n"), "{got:?}");
         // The agent's own rule is shortened to the width; the input box and status bar are gone.
@@ -640,6 +657,9 @@ earlier line
         assert_eq!(trim_end_ansi("ab \x1b[0m  "), "ab");
         assert_eq!(trim_end_ansi("\x1b[31m\u{276f} x\x1b[0m"), "\x1b[31m\u{276f} x");
         assert_eq!(strip_ansi("\x1b[38;5;214mok\x1b[0m"), "ok");
+        // A two-character escape before a multibyte character skips the whole character.
+        assert_eq!(trim_end_ansi("a\x1b\u{2500} b"), "a\x1b\u{2500} b");
+        assert_eq!(trim_end_ansi("a\x1b\u{2500} "), "a");
     }
 
     fn facts() -> Facts {
@@ -663,13 +683,15 @@ earlier line
     #[test]
     fn the_status_line_is_one_row_with_needs_you_first() {
         let asking = Facts { ask: "a1".into(), ..facts() };
-        let line = status_line("hub/s:1", &asking, 3600, 200);
+        let line = status_line("hub/s:1", &asking, 3600, 200, false);
         assert_eq!(plain(&line), "needs you  hub/s:1  dotfiles  waiting  open 1h  doing it");
         assert!(line.starts_with(&format!("{YELLOW}needs you{RESET}")));
-        assert!(plain(&status_line("hub/s:1", &asking, 3600, 20)).chars().count() <= 20);
+        assert!(plain(&status_line("hub/s:1", &asking, 3600, 20, false)).chars().count() <= 20);
         // Negative control: nothing asked, no amber and no needs word.
-        let line = status_line("hub/s:1", &facts(), 3600, 200);
+        let line = status_line("hub/s:1", &facts(), 3600, 200, false);
         assert!(!line.contains(YELLOW) && !line.contains("needs you"), "{line:?}");
+        // An open dialog needs the human with no ask posted.
+        assert!(plain(&status_line("hub/s:1", &facts(), 3600, 200, true)).starts_with("needs you"));
     }
 
     #[test]
