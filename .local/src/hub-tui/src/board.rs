@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use hub_core::infra::Infra;
+use hub_core::layout::FOLD_ROWS;
 use hub_core::prom::Series;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -15,9 +16,6 @@ use crate::fmt::{clock, dur, pct, Palette};
 /// A job running longer than this shows its time amber: playground ci.md calls a gate that
 /// runs past about an hour a bug to fix, not a wait.
 pub const LONG_RUN_SECS: f64 = 3600.0;
-/// Queue groups the Home lists before it counts the rest.
-/// Recent runs the CI page lists before it counts the rest (Grafana keeps them all).
-pub const RECENT_ROWS: usize = 60;
 
 /// A label as a cell shows it: - when the series has none.
 fn lab<'a>(s: &'a Series, k: &str) -> &'a str {
@@ -775,74 +773,18 @@ impl<'a> Board<'a> {
         out
     }
 
-    /// Runs as the exporter last listed them, newest first: when each ended, how long it took.
-    pub fn recent(&self, w: usize) -> Vec<Line<'static>> {
-        let took: HashMap<&str, f64> = self
-            .infra
-            .get("recent_dur")
-            .iter()
-            .filter_map(|s| Some((s.label("url"), s.value?)))
-            .collect();
-        let mut runs: Vec<&Series> = self
-            .infra
-            .get("recent")
-            .iter()
-            .filter(|s| s.value.is_some_and(|v| v > 0.0))
-            .collect();
-        if runs.is_empty() {
-            return vec![self.heading(
-                "RECENT RUNS",
-                "  no recent-run series (exporter down, or RUN_REPOS empty)".into(),
-            )];
-        }
-        runs.sort_by(|a, b| b.value.unwrap_or(0.0).total_cmp(&a.value.unwrap_or(0.0)));
-        let total = runs.len();
-        let rows = runs
-            .iter()
-            .take(RECENT_ROWS)
-            .map(|s| {
-                let style = match s.label("conclusion") {
-                    "failure" | "timed_out" => self.p.bad(),
-                    "cancelled" => self.p.warn(),
-                    _ => Default::default(),
-                };
-                vec![
-                    clock(s.value.unwrap_or(0.0) as i64, self.now).into(),
-                    lab(s, "repo").into(),
-                    lab(s, "workflow").into(),
-                    took.get(s.label("url"))
-                        .map_or("-".into(), |d| dur(*d))
-                        .into(),
-                    cell(lab(s, "conclusion"), style),
-                    lab(s, "event").into(),
-                    lab(s, "branch").into(),
-                ]
-            })
-            .collect();
-        let mut out =
-            vec![self.heading("RECENT RUNS", format!("  {total} listed by the exporter"))];
-        out.extend(
-            Table {
-                header: vec![
-                    "ENDED", "REPO", "WORKFLOW", "TOOK", "RESULT", "EVENT", "BRANCH",
-                ],
-                rows,
-                keep: vec![0, 1, 2, 4, 3, 5],
-                flex: Some(6),
-                flexmin: 12,
-                right: vec![3],
-                cap: vec![(1, 21), (2, 28)],
-                ..Default::default()
-            }
-            .fit(w, self.p.head()),
-        );
-        if total > RECENT_ROWS {
-            out.push(self.dim(format!(
-                "  +{} older (Grafana kb-ci-runners: Recent runs)",
-                total - RECENT_ROWS
-            )));
-        }
-        out
+    /// The CI runs themselves are Releases' Builds section (`hub_core::builds`); CI points there,
+    /// and Releases names its own window so no number is repeated here.
+    pub fn runs_badge(&self) -> Line<'static> {
+        let key =
+            hub_core::layout::bar_digit("releases").map_or(String::new(), |d| format!("{d} "));
+        Line::from(vec![
+            Span::styled("RUNS", self.p.head()),
+            Span::styled(
+                format!("  every CI run: {key}Releases, Builds"),
+                self.p.dim(),
+            ),
+        ])
     }
     /// The governor's per-host series as name -> host -> (labels' key value, value).
     fn by_host(&self, q: &str, prefix: &str) -> BTreeMap<String, HashMap<String, &Series>> {
@@ -1063,8 +1005,9 @@ pub fn extra_hosts() -> Vec<String> {
 
 /// RED FIXES, under RED NOW: each red the triage queued as a fix in the last week
 /// (`hub_core::reds`, which orders the open rows worst first and words the summary), the open
-/// rows one a line and the settled ones folded to a count. The app reads it on its own, so a
-/// failed read is this section's error alone, never an empty list that reads as all fixed.
+/// rows one a line up to `FOLD_ROWS` then "+N more", and the settled ones folded to a count. The
+/// app reads it on its own, so a failed read is this section's error alone, never an empty list
+/// that reads as all fixed.
 pub fn fixes(
     reds: Option<&Result<hub_core::reds::Reds, String>>,
     p: Palette,
@@ -1088,7 +1031,7 @@ pub fn fixes(
         Some(Ok(r)) => r,
     };
     let mut out = vec![clip_line(head(r.summary.clone(), Style::default()), w)];
-    for f in &r.open {
+    for f in r.open.iter().take(FOLD_ROWS) {
         let style = match f.outcome.as_str() {
             "came back" | "still red" | "no fix" => p.bad(),
             "needs merge" => p.warn(),
@@ -1111,6 +1054,12 @@ pub fn fixes(
                 Span::styled(f.age(now), p.dim()),
             ]),
             w,
+        ));
+    }
+    if r.open.len() > FOLD_ROWS {
+        out.push(Line::styled(
+            format!("  +{} more", r.open.len() - FOLD_ROWS),
+            p.dim(),
         ));
     }
     if !r.settled.is_empty() {
@@ -1174,7 +1123,7 @@ pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) ->
     ci.push(blank());
     ci.extend(b.queues(w));
     ci.push(blank());
-    ci.extend(b.recent(w));
+    ci.push(b.runs_badge());
     let sections = vec![
         ("health", health),
         ("red", b.down(w)),
@@ -1527,7 +1476,7 @@ pub(crate) mod tests {
         // Exceptions lead: what runs and waits before the day's results and the queues.
         let at = |w: &str| ci.find(w).unwrap_or_else(|| panic!("no {w} in {ci}"));
         assert!(at("RUNNING") < at("QUEUED") && at("QUEUED") < at("FINISHED 24H"));
-        assert!(at("FINISHED 24H") < at("QUEUES") && at("QUEUES") < at("RECENT RUNS"));
+        assert!(at("FINISHED 24H") < at("QUEUES") && at("QUEUES") < at("RUNS  every"));
     }
 
     #[test]
@@ -2005,34 +1954,31 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn recent_runs_list_newest_first_with_how_long_each_took() {
-        let mut i = fixture();
-        let run = |url: &str, wf: &str, c: &str| {
-            json!({"url": url, "repo": "platform", "workflow": wf,
-            "branch": "develop", "event": "push", "conclusion": c})
-        };
-        i.instant.insert(
-            "recent",
-            series(vec![
-                (run("u1", "Checks", "success"), "100"),
-                (run("u2", "E2E", "failure"), "200"),
-            ]),
+    fn ci_lists_no_runs_and_points_at_releases_builds() {
+        let ci = tab(&fixture(), "ci", 160);
+        assert_eq!(
+            ci.lines().last(),
+            Some("RUNS  every CI run: 0 Releases, Builds"),
+            "{ci}"
         );
-        i.instant
-            .insert("recent_dur", series(vec![(json!({"url": "u2"}), "372")]));
-        let out = text(&i, 160);
-        let e2e = out.find("E2E  ").unwrap_or(usize::MAX);
-        let checks = out.find("Checks").unwrap();
-        assert!(e2e < checks, "newest first:\n{out}");
-        assert!(
-            out.lines()
-                .any(|l| squash(l).ends_with("platform E2E 6m failure push develop")),
-            "{out}"
-        );
-        assert!(
-            out.lines()
-                .any(|l| squash(l).ends_with("platform Checks - success push develop")),
-            "{out}"
-        );
+        assert!(!ci.contains("RECENT RUNS"), "the runs are Releases': {ci}");
+    }
+
+    #[test]
+    fn red_fixes_caps_the_open_rows_at_fold_rows() {
+        let open = FOLD_ROWS + 2;
+        let rows = (0..open)
+            .map(|n| {
+                serde_json::from_str(&format!(
+                    r#"{{"slug":"ar-{n}","red":"watch w{n}","outcome":"queued"}}"#
+                ))
+                .unwrap()
+            })
+            .collect();
+        let reds = hub_core::reds::split(rows);
+        let out = fixes(Some(&Ok(reds)), Palette { no_color: true }, 0, 160);
+        let s: Vec<String> = out.iter().map(plain).collect();
+        assert_eq!(s.len(), 1 + FOLD_ROWS + 1, "{s:?}");
+        assert_eq!(s.last().map(String::as_str), Some("  +2 more"));
     }
 }
