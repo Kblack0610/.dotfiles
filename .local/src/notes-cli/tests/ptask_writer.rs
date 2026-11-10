@@ -595,8 +595,15 @@ fn closing_an_epics_last_leaf_leaves_the_epic_open_and_files_no_row() {
         &h,
         &["add", "fix(ui): pause menu is slow #size/s #of/dm-1"],
     ));
+    ok(&agent(
+        &h,
+        &["add", "feat(ui): a resume button #size/s #of/dm-1"],
+    ));
     let before = h.sheet();
+    // A close that leaves a leaf open, then the last one: neither writes the human sheet.
     ok(&agent(&h, &["done", "dm-2", "--proof", "pr:1"]));
+    assert_eq!(h.sheet(), before, "a leaf still open");
+    ok(&agent(&h, &["done", "dm-3", "--proof", "pr:2"]));
     let sheet = h.sheet();
     assert_eq!(sheet, before, "the human sheet is untouched");
     assert!(!sheet.contains("verify dm-1"), "{sheet}");

@@ -3569,20 +3569,20 @@ reconcile_plans() {
 # be a leaf there, and its close would queue a verify of that epic in turn.
 reconcile_epics() {
   [ "$DISPATCH_EPIC_VERIFY" = 1 ] || return 0
-  local landed held prof project id done_ title slug out rc
+  local landed prof project id done_ title slug out rc
   landed=$(notes projects --stats --json 2>/dev/null | jq -r '.[] | select(.automation != false) | . as $p
     | (.epics // [])[] | select(.open == 0 and .done > 0)
     | [($p.profile // ""), $p.name, .id, .done, (.title | gsub("[\t\n]"; " "))] | join("\u001f")') || return 0
   [ -n "$landed" ] || return 0
-  held=$(agent-queue list --json --state all 2>/dev/null | jq -r .slug) || return 0
   while IFS=$'\x1f' read -r prof project id done_ title; do
     slug="verify-$id-$done_"
-    grep -qxF -- "$slug" <<<"$held" && continue
+    # One lookup per landed epic, active or done: the whole queue is seconds to read every pass.
+    [ -z "$(agent-queue show "$slug" --json 2>/dev/null)" ] || continue
     out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" \
       --title "check(epics): verify $id $title" --priority high --tags verify --from auto:epics 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       logline "queued $slug: every leaf of epic $id on $project has landed"
-    elif [ "$rc" -ne "$AQ_EX_HELD" ]; then
+    elif [ "$rc" -ne "$AQ_EX_HELD" ] && [ "$rc" -ne "$AQ_EX_FINISHED" ]; then
       say "could not queue the verify of epic $id on $project: ${out##*$'\n'}"
     fi
   done <<<"$landed"
