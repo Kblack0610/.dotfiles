@@ -26,6 +26,8 @@
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource> | --ask <id>   a started item back in the queue, held on that agent-hold or ask
+#   settle-ask <id>    fail each queued item that ask can no longer release (cancelled, or answered another option);
+#       agent-ask runs it on every cancel and human answer, and the item's board row stays open
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
@@ -1639,6 +1641,31 @@ cmd_requeue() {
   cmd_move "$slug" queued
 }
 
+# settle-ask <id> -- fail every queued item held on that ask that it can no longer release, now that
+# the human answered or cancelled it: cancelled, or answered with an option its tag does not name
+# (ask_pending decides). agent-ask runs this on each cancel and human answer. The board row stays
+# open and `note:` names the ask, so re-gating it is one add. On 2026-11-10 three items sat behind
+# vmToL3 (answered a, gate wanted b) and VOEW9i (cancelled) and tripped queue-starved; dead_holds in
+# fleet-dispatch reports what this missed.
+cmd_settle_ask() {
+  local id="${1:?usage: agent-queue settle-ask <id>}" f tag why slug note
+  [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "not an ask id: $id"
+  lock
+  local AQ_LOCKED=1
+  while IFS= read -r f; do
+    for tag in $(fm_get "$f" tags); do
+      [ "${tag%%=*}" = "ask:$id" ] || continue
+      why="$(ask_pending "${tag#ask:}")"
+      # A judge or shepherd answer ("answered by judge, not the human") is not dead: the human can still answer.
+      case "$why" in "answered by "*) continue ;; cancelled | "answered "*", not "*) ;; *) continue ;; esac
+      slug="$(fm_get "$f" slug)" note="$(fm_get "$f" note)"
+      header_set "$f" note "dead hold: $tag ($why)${note:+; $note}"
+      cmd_move "$slug" done --status failed
+      break
+    done
+  done < <(items_in "$AQ_DIR/queued")
+}
+
 # reopen <slug> [--to running|waiting] [--why <text>] -- put back an item a false close finished,
 # such as a reap that read a live session as gone (ar-900, 2026-11-07: the shepherd had to move the
 # file under the lock by hand). The latest done item with the slug goes to running (or waiting) with
@@ -1900,6 +1927,7 @@ command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
+  settle-ask) shift; cmd_settle_ask "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac
