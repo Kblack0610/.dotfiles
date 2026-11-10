@@ -32,7 +32,7 @@ Not for what is waiting on the human across the fleet (`fleet-bench`), or moving
 2. The rules `post` enforces: one line ending in `?`, at most 150 characters (`AGENT_ASK_QUESTION_MAX`); every option is `slug=meaning`; `--why` needs `--recommend`, and the recommendation must be one of the options. `--kind` is question, gate or approval. `--resume '<cmd>'` is the command that continues the work once answered.
 3. One pending ask per Claude session. A second `post` exits 2. Cancel the first with `agent-ask cancel <id> superseded` and fold both decisions into one question.
 4. End the turn on the card `post` prints. Do not poll. `--wait` exists and polls every 5 seconds, but async is the path.
-5. The judge runs inside `post` (30 second limit, `AGENT_ASK_JUDGE_TIMEOUT`). If it answers, the text goes to your stderr: "Answered by the judge ... Proceed; the human can override". Read it and proceed. Only the types in `LIVE_RULES` (in `~/.config/agentctl/agents/ask-judge.conf`) are answered live; gates and approvals never are. If the judge is over its day budget the ask simply stays with the human.
+5. The judge runs inside `post` (30 second limit, `AGENT_ASK_JUDGE_TIMEOUT`). If it answers, the text goes to your stderr: "Answered by the judge ... Proceed; the human can override". Read it and proceed. Only the types in `DELAY_RULES` (in `~/.config/agentctl/agents/ask-judge.conf`) are answered live; gates and approvals never are. If the judge is over its day budget the ask simply stays with the human.
 
 ## Read an answer
 
@@ -44,7 +44,7 @@ Not for what is waiting on the human across the fleet (`fleet-bench`), or moving
 1. Answered but nothing moved: `agent-ask show <id>`. An empty `resumed_at` on an answered ask with a `resume` is the signal. `agent-ask resumable` lists them. `ask-resume --dry-run <id>` shows what it would run; `ask-resume <id>` runs it, `ask-resume --all` drains the list. It marks the ask resumed before it runs, so a crashed run is not retried; read the log.
 2. An answered ask with no `resume` becomes a board row instead. Read the answer yourself and carry on.
 3. Pending with the session gone: nothing expires an ask. `agent-ask target --reopen <id>` points it at a live session; or `agent-ask cancel <id> '<reason>'` if the question is dead.
-4. The judge answered wrongly: tell the human, who overrides with `agent-ask answer <id> ...`. A policy or `LIVE_RULES` change is re-applied to the pending queue by `agent-ask sweep --all`.
+4. The judge answered wrongly: tell the human, who overrides with `agent-ask answer <id> ...`. A policy or `DELAY_RULES` change is re-applied to the pending queue by `agent-ask sweep --all`.
 5. `ask-judge` or `ask-resume` calls failing on a cap: `fleet-runners`, "budget".
 
 ## The Stop check
@@ -54,5 +54,6 @@ Not for what is waiting on the human across the fleet (`fleet-bench`), or moving
 ## Do NOT
 
 - Do not answer an ask on the human's behalf, or file one to get approval you already have.
+- Do not ask the human for a credential to a service we run: mint it through its admin path into SOPS, by its row in home-config `docs/credentials.md`; a service with no row yet gets its steps written into its README and a row. Ask only for an outside account (GitHub, stores, brokers, SaaS) or the human's own login.
 - Do not edit files under `~/.agent/asks/` by hand; use the verbs.
 - Do not run `answer`, `ask-resume` or `sweep` as an experiment: answering is starting a session. `AGENT_ASK_NO_RESUME` and `AGENT_ASK_NO_JUDGE` are for test sandboxes only.
