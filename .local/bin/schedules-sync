@@ -111,7 +111,11 @@ CRON_NAMES.update({n: i + 1 for i, n in enumerate(
 
 
 class GhError(Exception):
-    pass
+    """str() is the short cause sync.json keeps; `detail` is the raw text the journal gets."""
+
+    def __init__(self, msg, detail=None):
+        super().__init__(msg)
+        self.detail = detail or msg
 
 
 def now():
@@ -141,21 +145,22 @@ def wait_s(a, b):
     return int((tb - ta).total_seconds()) if ta and tb else None
 
 
-def gh_why(path, text, head=""):
-    """A failed gh call as one short line someone can act on; the raw text stays in gh's own logs.
-
-    A cause that fails every repo the same way (rate limit, auth, no access) reads the same for
-    each, so the dashboards can fold them into one line; anything else keeps the path."""
-    low = text.lower()
-    if "rate limit" in low:
-        reset = next((h.split(":", 1)[1].strip() for h in head.split("\n")
-                      if h.lower().startswith("x-ratelimit-reset:")), "")
-        at = f", resets {datetime.fromtimestamp(int(reset)).strftime('%H:%M')}" if reset.isdigit() else ""
-        return f"GitHub API rate limit hit{at}"
-    if "http 401" in low or "bad credentials" in low or "gh auth login" in low:
-        return "gh is not logged in: run gh auth login"
-    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "no output")
-    return f"gh api {path}: {first.removeprefix('gh: ').split('. If you reach out')[0][:160]}"
+def gh_fail(path, text):
+    """A failed gh call as a GhError: one short cause, the same on every repo it hits, so the
+    dashboards fold them into one line; the raw text and the path go to the journal."""
+    raw = text.strip()
+    low = raw.lower()
+    try:
+        first = str(json.loads(raw).get("message") or "")
+    except (ValueError, AttributeError):
+        first = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
+    if "rate limit" in low and "exceeded" in low:
+        why = "GitHub API rate limit hit"
+    elif "http 401" in low or "bad credentials" in low or "gh auth login" in low:
+        why = "gh is not logged in: run gh auth login"
+    else:
+        why = first.removeprefix("gh: ").split(". If you reach out")[0][:160] or "gh failed with no output"
+    return GhError(why, f"gh api {path}: {raw}")
 
 
 def gh(path, missing=None):
@@ -172,7 +177,7 @@ def gh(path, missing=None):
         return body
     if missing is not None and isinstance(body, dict) and str(body.get("status")) == "404":
         return missing
-    raise GhError(gh_why(path, p.stderr or p.stdout))
+    raise gh_fail(path, p.stderr or p.stdout)
 
 
 def gh_page(path, etag=None):
@@ -193,7 +198,7 @@ def gh_page(path, etag=None):
         body = None
     if p.returncode == 0 and body is not None:
         return body, tag
-    raise GhError(gh_why(path, p.stderr or raw, head))
+    raise gh_fail(path, p.stderr or raw)
 
 
 FJ_TOKEN = []
@@ -729,7 +734,7 @@ def main(argv):
             entry.update(synced_at=iso(t), error=None)
         except GhError as e:
             bad += 1
-            print(f"schedules-sync: {repo}: {e}", file=sys.stderr)
+            print(f"schedules-sync: {repo}: {e.detail}", file=sys.stderr)
             entry["error"] = str(e)
             if forge == "github":
                 kept = dict(p or {"repo": repo, "base": base, "synced_at": None, "workflows": []})

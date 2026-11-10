@@ -374,7 +374,7 @@ fn synced(text: &str) -> Result<(i64, Vec<String>), String> {
             _ => {
                 let names: Vec<&str> = repos
                     .iter()
-                    .map(|k| k.rsplit('/').next().unwrap_or(k))
+                    .map(|k| k.split_once(':').map_or(*k, |(_, r)| r))
                     .collect();
                 format!("{e} ({} repos: {})", repos.len(), names.join(", "))
             }
@@ -598,14 +598,14 @@ mod tests {
             r#"{"generated_at":"2026-11-08T14:16:22Z","repos":{
                 "github:o/a":{"error":"GitHub API rate limit hit"},
                 "github:p/b":{"error":"GitHub API rate limit hit"},
-                "github:o/c":{"error":"gh api x: HTTP 502"}}}"#,
+                "github:o/c":{"error":"HTTP 502"}}}"#,
         )
         .unwrap();
         assert_eq!(
             errors,
             [
-                "GitHub API rate limit hit (2 repos: a, b)",
-                "github:o/c: gh api x: HTTP 502"
+                "GitHub API rate limit hit (2 repos: o/a, p/b)",
+                "github:o/c: HTTP 502"
             ]
         );
     }

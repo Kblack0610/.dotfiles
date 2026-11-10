@@ -397,6 +397,19 @@ pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
   assert_output '{"github:o/game":"GitHub API rate limit hit","github:o/empty":"GitHub API rate limit hit"}'
 }
 
+@test "a logged-out gh is stored as the fix to run, and a JSON error body as its message" {
+  game_files
+  printf 'gh: Bad credentials (HTTP 401)\n' > "$GHD/fail-o_game"
+  run "$SUBJECT"
+  assert_failure 1
+  run jq -c '.repos | map_values(.error)' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output '{"github:o/game":"gh is not logged in: run gh auth login","github:o/empty":null}'
+  printf '{\n  "message": "Server Error"\n}\n' > "$GHD/fail-o_game"
+  run "$SUBJECT"
+  run jq -r '.repos["github:o/game"].error' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output 'Server Error'
+}
+
 @test "ledger: a run that aged past 30 days is pruned by a rewrite" {
   game_files
   runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
