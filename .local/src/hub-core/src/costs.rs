@@ -155,9 +155,6 @@ pub struct Snapshot {
     pub totals: Option<SnapshotTotals>,
     #[serde(skip)]
     pub errors: usize,
-    /// The whole fleet's cost that day (`fleet_cost.total.usd`); None before the estimator ran.
-    #[serde(skip)]
-    pub fleet_usd: Option<f64>,
     /// What Langfuse saw that day; None when its reader failed, `langfuse_error` says why.
     #[serde(skip)]
     pub langfuse: Option<crate::tokens::Langfuse>,
@@ -221,6 +218,8 @@ pub struct Costs {
     pub snapshots: Vec<Snapshot>,
     /// The whole fleet's 24h cost; `why` says so when its file could not be read.
     pub fleet_cost: FleetCost,
+    /// The History section: the fleet's dollars per day, month and year from every snapshot.
+    pub history: crate::spend_history::History,
     /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
     pub burn: Burn,
     /// `fleet-bench sections --json`; empty when it failed (named in `errors`).
@@ -315,14 +314,16 @@ fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
     }
     c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize, &mut c.errors);
     c.tokens = crate::tokens::from_snapshots(&c.snapshots, now);
-    let past: Vec<(String, f64)> = c
-        .snapshots
-        .iter()
-        // $0 is a day with no rate to fit (nothing billed that Prometheus kept): unknown, not free.
-        .filter_map(|s| Some((s.date.clone(), s.fleet_usd.filter(|u| *u > 0.0)?)))
-        .collect();
+    let today = chrono::DateTime::from_timestamp(now, 0)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .unwrap_or_default();
+    c.history = crate::spend_history::build(&crate::spend_history::read(&paths.tokens), &today);
     c.fleet_cost = match crate::fleet_cost::load(&paths.fleet_cost) {
-        Ok(f) => crate::fleet_cost::build(&f, &past, now),
+        Ok(f) => crate::fleet_cost::build(&f, now),
         Err(e) => crate::fleet_cost::missing(e),
     };
 }
@@ -404,7 +405,6 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
         commands: serde_json::from_value(v["by_command"].clone()).unwrap_or_default(),
         totals: serde_json::from_value(v["totals"].clone()).ok(),
         errors: v["errors"].as_array().map_or(0, Vec::len),
-        fleet_usd: v["fleet_cost"]["total"]["usd"].as_f64(),
         langfuse: crate::tokens::langfuse(&v["langfuse"]),
         langfuse_error: v["errors"]
             .as_array()
@@ -965,6 +965,7 @@ pub struct Board {
     pub windows: Vec<&'static str>,
     pub totals: Vec<Total>,
     pub fleet_cost: FleetCost,
+    pub history: crate::spend_history::History,
     pub totals_note: &'static str,
     pub direct: Direct,
     pub burn: Burn,
@@ -1108,6 +1109,7 @@ pub fn board(
             .filter(|t| t.window != "24h")
             .collect(),
         fleet_cost: c.fleet_cost.clone(),
+        history: c.history.clone(),
         totals_note: TOTALS_NOTE,
         direct: direct(&c.sessions, c.at),
         burn: c.burn.clone(),
@@ -1614,7 +1616,7 @@ not json
     }
 
     #[test]
-    fn the_fleet_block_reads_its_file_and_the_snapshots_past_days() {
+    fn the_fleet_block_reads_its_file_and_history_reads_the_snapshots() {
         let d = std::env::temp_dir().join(format!("hub-costs-fleet-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
@@ -1654,8 +1656,10 @@ not json
             (f.why.clone(), f.usd.as_str(), f.as_of),
             (None, "about $5.00", Some(NOW))
         );
+        let days: Vec<_> = c.history.rows.iter().filter(|r| r.kind == "day").collect();
         assert_eq!(
-            f.days, "01-14 $738",
+            (days.len(), days[0].period.as_str(), days[0].total.as_str()),
+            (1, "01-14", "$738"),
             "a day with no fitted rate is not a $0 day"
         );
         std::fs::remove_dir_all(&d).unwrap();

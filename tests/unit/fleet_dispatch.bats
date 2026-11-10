@@ -5331,6 +5331,33 @@ board_item() {
   assert_equal "$(jq -c '.under_low_water' <<<"$output")" 0
 }
 
+@test "stats: moves that follow a session, a start or the session's own park are not a flap; reap making one move twice is" {
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  t() { date -d "-$1 minutes" '+%Y-%m-%d %H:%M'; }
+  {
+    # 11-10: a hand session asked, was answered, asked again, was answered: reap followed it each time.
+    printf -- '- %s reaped game-agent-3: queue item asked running -> waiting\n' "$(t 50)"
+    printf -- '- %s reaped game-agent-3: queue item asked waiting -> running\n' "$(t 40)"
+    printf -- '- %s reaped game-agent-3: queue item asked running -> waiting\n' "$(t 30)"
+    printf -- '- %s reaped game-agent-3: queue item asked waiting -> running\n' "$(t 20)"
+    # Something put it back in running between reap's two moves to waiting.
+    printf -- '- %s reaped game-agent-5: queue item undone running -> waiting\n' "$(t 45)"
+    printf -- '- %s reaped game-agent-5: queue item undone running -> waiting\n' "$(t 35)"
+    printf -- '- %s reaped game-agent-5: queue item undone waiting -> running\n' "$(t 25)"
+    # A redispatch start sets running, and the session parking itself in review is its own move.
+    printf -- '- %s reaped game-agent-6: queue item restarted running -> waiting\n' "$(t 48)"
+    printf -- '- %s started game-agent-7 on lab (redispatch) for game: queue item restarted, resume 1\n' "$(t 44)"
+    printf -- '- %s reaped game-agent-7: queue item restarted running -> waiting\n' "$(t 38)"
+    printf -- '- %s reaped game-agent-7: queue item restarted waiting -> running\n' "$(t 33)"
+    printf -- '- %s reaped game-agent-8: queue item parked waiting -> running\n' "$(t 42)"
+    printf -- '- %s reaped game-agent-8: queue item parked review -> waiting\n' "$(t 32)"
+    printf -- '- %s reaped game-agent-8: queue item parked waiting -> review\n' "$(t 22)"
+  } > "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '[.reaped_1h, .flapping_items, .flapping]' <<<"$output")" '[13,1,["undone"]]'
+}
+
 @test "stats: runnable work and its age, reap moves in the last hour, flapping items" {
   local old new t
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
@@ -6081,6 +6108,9 @@ launch_settings() { eval "printf %s $(grep -m1 -e '--settings' "$NOTES_FIXTURE/c
   assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it'
   assert_called 'Run agent-land in the foreground'
   assert_not_called '/one-shot Fix'
+  # the brief runs final-pass and skips only the steps a headless run has no way to do
+  assert_called 'Run final-pass (~/.claude/skills/final-pass/SKILL.md) on the diff before the PR opens; skip only its /simplify call.'
+  assert_not_called 'Skip wind-down (this run ends when you stop) and any step'
   f=$(qitem running fix-menu)
   assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'codex sol codex'
 }
