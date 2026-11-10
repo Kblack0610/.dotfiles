@@ -8,6 +8,44 @@ use std::process::{Command, Output};
 
 struct Home(PathBuf);
 
+#[test]
+fn sweep_keeps_footers_out_of_tasks_and_reports() {
+    let h = Home::new("sweep-footers");
+    let path = h.0.join("notes/projects/current/demo/README.md");
+    fs::write(
+        &path,
+        "# demo\nVersion: v0.1.0\n\n## Tasks\n- [ ] fix(ui): repair menu #low #v0.0.1 <!-- id:dm-1 -->\n\n---\n### Done\n",
+    )
+    .unwrap();
+
+    for args in [
+        vec!["ptask", "demo", "sweep", "--dry-run"],
+        vec!["ptask", "demo", "sweep"],
+    ] {
+        let output = h.run(&args);
+        ok(&output);
+        let report = String::from_utf8(output.stdout).unwrap();
+        assert!(report.contains("#v0.0.1 closed"), "{report}");
+        assert!(!report.contains("---"), "{report}");
+        assert!(!report.contains("### Done"), "{report}");
+    }
+
+    let swept = h.sheet();
+    assert_eq!(swept.matches("---").count(), 1, "{swept}");
+    assert_eq!(swept.matches("### Done").count(), 1, "{swept}");
+    assert_eq!(swept.matches("- [ ]").count(), 2, "{swept}");
+    assert!(
+        swept.contains("- [ ] fix(ui): repair menu #low <!-- id:dm-1 -->"),
+        "{swept}"
+    );
+    let output = h.run(&["ptask", "demo", "sweep"]);
+    ok(&output);
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("already swept"));
+    assert_eq!(h.sheet(), swept);
+}
+
 impl Drop for Home {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
