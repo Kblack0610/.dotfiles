@@ -7,23 +7,29 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
-  # kubectl answers from $SANDBOX/reports.json; a missing file is an unreachable cluster
+  # kubectl logs its arguments and answers from $SANDBOX/<resource>.json; a missing file is an
+  # unreachable cluster
   cat > "$SANDBOX/bin/kubectl" <<KUBECTL
 #!/usr/bin/env bash
-cat "$SANDBOX/reports.json" 2>/dev/null
+echo "\$*" >> "$SANDBOX/kubectl.log"
+for a; do case "\$a" in vulnerabilityreports|replicasets) cat "$SANDBOX/\$a.json" 2>/dev/null; exit; esac; done
+exit 1
 KUBECTL
   chmod +x "$SANDBOX/bin/kubectl"
+  echo '{"items":[]}' > "$SANDBOX/replicasets.json"
 }
 
-# report <repository> <tag> <vulnerability json objects...>
+# report <repository> <tag> <vulnerability json objects...>; OWNER="<kind> <ns> <name>" labels it
 report() {
   local repo="$1" tag="$2"; shift 2
+  local kind ns name
+  read -r kind ns name <<<"${OWNER:-Deployment default app}"
   local IFS=,
-  printf '{"report":{"registry":{"server":"ghcr.io"},"artifact":{"repository":"%s","tag":"%s"},"vulnerabilities":[%s]}}' "$repo" "$tag" "$*"
+  printf '{"metadata":{"labels":{"trivy-operator.resource.kind":"%s","trivy-operator.resource.namespace":"%s","trivy-operator.resource.name":"%s"}},"report":{"registry":{"server":"ghcr.io"},"artifact":{"repository":"%s","tag":"%s","digest":"sha256:d"},"vulnerabilities":[%s]}}' "$kind" "$ns" "$name" "$repo" "$tag" "$*"
 }
 # vuln <id> <severity> <fixedVersion, empty for none>
 vuln() { printf '{"vulnerabilityID":"%s","severity":"%s","fixedVersion":"%s"}' "$1" "$2" "$3"; }
-reports() { local IFS=,; printf '{"items":[%s]}' "$*" > "$SANDBOX/reports.json"; }
+reports() { local IFS=,; printf '{"items":[%s]}' "$*" > "$SANDBOX/vulnerabilityreports.json"; }
 
 @test "only criticals with a fix count; high and no-fix ones do not" {
   reports "$(report app/a 1.0 "$(vuln CVE-1 CRITICAL 1.1)" "$(vuln CVE-2 CRITICAL '')" "$(vuln CVE-3 HIGH 2.0)")"
@@ -61,12 +67,36 @@ Fixable critical CVEs on home-k3s: 3 in 2 images; 0 more have no fix'
   run "$REPO_ROOT/.local/bin/trivy-criticals" --max 0
   assert_failure 2
   assert_output 'Trivy vulnerability reports on home-k3s could not be read'
-  echo 'not json' > "$SANDBOX/reports.json"
+  echo 'not json' > "$SANDBOX/vulnerabilityreports.json"
   run "$REPO_ROOT/.local/bin/trivy-criticals" --max 0
   assert_failure 2
 }
 
-@test "a bound that is not a count is a usage error" {
+@test "a bound that is not a count, or a flag with no value, is a usage error" {
   run "$REPO_ROOT/.local/bin/trivy-criticals" --max lots
   assert_failure 64
+  run "$REPO_ROOT/.local/bin/trivy-criticals" --max
+  assert_failure 64
+}
+
+@test "a ReplicaSet scaled to 0 runs nothing and does not count" {
+  echo '{"items":[{"metadata":{"namespace":"ns","name":"old"},"spec":{"replicas":0}},{"metadata":{"namespace":"ns","name":"live"},"spec":{"replicas":1}}]}' > "$SANDBOX/replicasets.json"
+  reports "$(OWNER='ReplicaSet ns old' report app/a 1.0 "$(vuln CVE-1 CRITICAL 1.1)")" \
+          "$(OWNER='ReplicaSet ns live' report app/a 2.0 "$(vuln CVE-4 CRITICAL 3)")" \
+          "$(OWNER='CronJob ns old' report app/c 1.0 "$(vuln CVE-5 CRITICAL 3)")"
+  run "$REPO_ROOT/.local/bin/trivy-criticals"
+  assert_success
+  assert_output '   1 fixable  ghcr.io/app/a:2.0
+   1 fixable  ghcr.io/app/c:1.0
+Fixable critical CVEs on home-k3s: 2 in 2 images; 0 more have no fix'
+}
+
+@test "--context picks the cluster, and an image with no tag is named by its digest" {
+  reports '{"report":{"registry":{"server":"ghcr.io"},"artifact":{"repository":"app/a","digest":"sha256:d"},"vulnerabilities":[{"vulnerabilityID":"CVE-1","severity":"CRITICAL","fixedVersion":"1"}]}}'
+  run "$REPO_ROOT/.local/bin/trivy-criticals" --context other
+  assert_success
+  assert_line --index 0 '   1 fixable  ghcr.io/app/a@sha256:d'
+  assert_line --index 1 'Fixable critical CVEs on other: 1 in 1 images; 0 more have no fix'
+  run grep -c -- '--context other .* get vulnerabilityreports -A -o json' "$SANDBOX/kubectl.log"
+  assert_output 1
 }

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # trivy-criticals - how many critical CVEs that have a fix run on home-k3s, image by image?
 #
-# trivy-operator scans every running image into a VulnerabilityReport. Most images carry some
+# trivy-operator scans each workload's images into a VulnerabilityReport. Most images carry some
 # critical, and a critical with no fixed version is not work anyone can do, so only CVEs that
 # Trivy gives a fixedVersion count; the others are counted apart and never trip. One image
 # running in several workloads counts once, and a CVE found in several packages of one image
-# counts once (fixable when any of them has a fix). The sentinel `home-k3s-trivy-criticals`
+# counts once (fixable when any of them has a fix). An image is its tag, not its digest, because
+# a bump moves the tag and one tag has a digest per architecture. A ReplicaSet scaled to 0 (an
+# old revision kept for rollback) still has a report but runs nothing, so it is left out. The sentinel `home-k3s-trivy-criticals`
 # watch runs this with --max as a ratchet bound: it only goes down, as bumps land.
 #
 # Usage:
@@ -17,8 +19,10 @@ set -uo pipefail
 ctx=home-k3s max=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --context) ctx="${2:?--context needs a value}"; shift 2 ;;
-    --max) max="${2:?--max needs a value}"; shift 2 ;;
+    --context|--max)
+      [ $# -ge 2 ] || { echo "trivy-criticals: $1 needs a value" >&2; exit 64; }
+      if [ "$1" = --context ]; then ctx="$2"; else max="$2"; fi
+      shift 2 ;;
     -h|--help) sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     *) echo "trivy-criticals: unknown argument: $1" >&2; exit 64 ;;
   esac
@@ -26,9 +30,15 @@ done
 [[ -z $max || $max =~ ^[0-9]+$ ]] || { echo "trivy-criticals: --max takes a count" >&2; exit 64; }
 unreadable() { echo "Trivy vulnerability reports on $ctx could not be read"; exit 2; }
 
-if ! reports="$(kubectl --context "$ctx" --request-timeout=60s get vulnerabilityreports -A -o json)" \
-   || ! out="$(jq -r '
+k() { kubectl --context "$ctx" --request-timeout=60s get "$1" -A -o json; }
+if ! reports="$(k vulnerabilityreports)" \
+   || ! idle="$(k replicasets | jq -c '[.items[] | select((.spec.replicas // 0) == 0)
+        | .metadata.namespace + "/" + .metadata.name]')" \
+   || ! out="$(jq -r --argjson idle "$idle" '
       [ .items[]
+        | (.metadata.labels // {}) as $l
+        | select($l["trivy-operator.resource.kind"] != "ReplicaSet"
+                 or ($idle | index($l["trivy-operator.resource.namespace"] + "/" + $l["trivy-operator.resource.name"]) | not))
         | .report as $r
         | (($r.registry.server // "") | if . == "" then "" else . + "/" end)
           + $r.artifact.repository
@@ -39,7 +49,7 @@ if ! reports="$(kubectl --context "$ctx" --request-timeout=60s get vulnerability
       | (map(select(.fix)) | group_by(.img) | map({img: .[0].img, n: length}) | sort_by(-.n, .img)) as $per
       | ($per[] | "\(.n)\t\(.img)"),
         "TOTAL\t\($per | map(.n) | add // 0)\t\($per | length)\t\(map(select(.fix | not)) | length)"
-    ' <<<"$reports" 2>/dev/null)"; then
+    ' <<<"$reports")"; then
   unreadable
 fi
 
