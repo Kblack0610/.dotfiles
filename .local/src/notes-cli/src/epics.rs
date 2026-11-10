@@ -59,7 +59,7 @@ pub(crate) fn proves_outcome(stamp: &str) -> bool {
 }
 
 /// What closed a row: its marker without the stamps every row carries.
-fn proof_of(line: &str) -> String {
+pub(crate) fn proof_of(line: &str) -> String {
     let marker = md::marker_of(line).unwrap_or_default();
     let stamps = ["id:", "filed:", "done:", "carried", "ask:"];
     marker
