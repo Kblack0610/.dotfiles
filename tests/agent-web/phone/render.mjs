@@ -2,8 +2,11 @@
 // Renders every agent-web table tab at phone width and records whether a phone can read it.
 // No server and no auth: the page is assets::index() (dumped by an ignored Rust test), the
 // static files are the checkout's, and /api/* is fixtures.mjs, all through Playwright routing.
-//   node tests/agent-web/phone/render.mjs [--out dir] [--control]
+//   node tests/agent-web/phone/render.mjs [--out dir] [--control] [--no-kit]
 // --control forces body min-width 900px and fails unless every tab reports the overflow.
+// The nav check (web-kit's <kb-shell>): at phone width the menu button shows, the list is hidden,
+// a tap opens every group and tab, Escape closes it; at a desktop width the sidebar shows.
+// --no-kit answers kb-shell.js with a 404 and fails unless the nav check reports no menu button.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -19,6 +22,9 @@ const SCRATCH = join(homedir(), ".cache/agent-web-phone");
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const WEB = join(ROOT, ".local/src/agent-web");
 const STATIC = join(WEB, "static");
+const KIT = join(ROOT, ".local/src/web-kit");
+const WIDE = { width: 1280, height: 800 };
+const NAV = { menu: "kb-shell .kb-menu", nav: "kb-shell .kb-nav", group: ".kb-nav .kb-group", item: ".kb-nav > [id^=tab-]", cur: "kb-shell .kb-cur", script: "kb-shell.js" };
 const CONTROL_CSS = "body { min-width: 900px !important; }";
 
 // Each tab's first data row; a tab with several tables names the one the brief measures.
@@ -39,8 +45,9 @@ const TABS = [
 
 const args = process.argv.slice(2);
 const control = args.includes("--control");
+const noKit = args.includes("--no-kit");
 const outAt = args.indexOf("--out");
-const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, control ? "control" : "out");
+const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, control ? "control" : noKit ? "no-kit" : "out");
 
 // The versions npx pins do not match the cached browser, so both are named outright.
 function playwright() {
@@ -85,11 +92,13 @@ const JS = "text/javascript; charset=utf-8";
 const TYPES = { ".css": "text/css; charset=utf-8", ".js": JS, ".woff2": "font/woff2", ".html": "text/html; charset=utf-8" };
 const NOSNIFF = { "x-content-type-options": "nosniff", "referrer-policy": "same-origin" };
 
+// agent-web serves its own static files and web-kit's under one flat /static/ (assets.rs FILES).
 function staticFile(name) {
-  const path = join(STATIC, name.endsWith(".woff2") ? "fonts" : "", name);
+  if (noKit && name === NAV.script) return { status: 404, contentType: "text/plain", body: "no-kit control", headers: NOSNIFF };
+  const path = [join(STATIC, name), join(KIT, name)].find(existsSync) || join(STATIC, name);
   if (!existsSync(path)) return { status: 404, contentType: "text/plain", body: `no ${name}`, headers: NOSNIFF };
   const raw = readFileSync(path);
-  const body = name === "app.css" ? raw.toString("utf8").replaceAll("{{v}}", "harness") : raw;
+  const body = name.endsWith(".css") ? raw.toString("utf8").replaceAll("{{v}}", "harness") : raw;
   return { status: 200, contentType: TYPES[extname(name)], body, headers: NOSNIFF };
 }
 
@@ -165,6 +174,59 @@ async function renderTab(browser, spec, page0) {
   return { ...result, errors: seen.errors, unfixtured: [...seen.unfixtured] };
 }
 
+// The shell at phone width, closed then open then Escaped, and at a desktop width. Each failed
+// expectation is one error line; screenshots go beside the tabs' (nav-*.png).
+async function navCheck(browser, page0) {
+  const errors = [];
+  const expect = (ok, what) => { if (!ok) errors.push(what); };
+  const shown = (page, sel) => page.locator(sel).first().isVisible().catch(() => false);
+  for (const [name, viewport, phone] of [["phone", VIEWPORT, true], ["wide", WIDE, false]]) {
+    const context = await browser.newContext({ viewport, deviceScaleFactor: 2, hasTouch: phone, isMobile: phone, locale: "en-US", timezoneId: "America/Los_Angeles" });
+    const page = await context.newPage();
+    const seen = { errors: [], unfixtured: new Set() };
+    await context.clock.setFixedTime(new Date(NOW * 1000));
+    await page.addInitScript(() => { window.EventSource = class { constructor() { this.readyState = 1; } addEventListener() {} close() {} }; });
+    await wire(context, page, page0, seen);
+    try {
+      await page.goto(`${ORIGIN}/#home`, { waitUntil: "load" });
+      await page.waitForLoadState("networkidle");
+      await page.evaluate(async () => { await document.fonts.ready; });
+      const items = await page.locator(NAV.item).count();
+      const groups = await page.locator(NAV.group).count();
+      expect(items >= 2 && groups >= 1, `${name}: ${items} tabs and ${groups} group headings in the nav`);
+      if (phone) {
+        expect(await shown(page, NAV.menu), `${name}: no menu button`);
+        expect(!(await shown(page, NAV.nav)), `${name}: the tab list shows before the menu is opened`);
+        const cur = (await page.locator(NAV.cur).first().textContent().catch(() => "")) || "";
+        expect(cur.trim() === "Home", `${name}: current tab label is "${cur.trim()}", not Home`);
+        await page.screenshot({ path: join(out, `nav-${name}-closed.png`) });
+        if (await shown(page, NAV.menu)) {
+          await page.locator(NAV.menu).first().click();
+          expect(await shown(page, NAV.nav), `${name}: the menu did not open the tab list`);
+          const visible = await page.locator(NAV.item).evaluateAll((es) => es.filter((e) => e.getBoundingClientRect().height > 0).length);
+          expect(visible === items, `${name}: ${visible} of ${items} tabs visible in the open menu`);
+          const groupsShown = await page.locator(NAV.group).evaluateAll((es) => es.filter((e) => e.getBoundingClientRect().height > 0).length);
+          expect(groupsShown === groups, `${name}: ${groupsShown} of ${groups} group headings visible in the open menu`);
+          await page.screenshot({ path: join(out, `nav-${name}-open.png`) });
+          await page.keyboard.press("Escape");
+          expect(!(await shown(page, NAV.nav)), `${name}: Escape did not close the menu`);
+        }
+      } else {
+        expect(await shown(page, NAV.nav), `${name}: the sidebar is not shown`);
+        expect(!(await shown(page, NAV.menu)), `${name}: the menu button shows on a wide screen`);
+        await page.screenshot({ path: join(out, `nav-${name}.png`) });
+      }
+      const over = await page.evaluate((w) => document.documentElement.scrollWidth - w, viewport.width);
+      expect(over <= 0, `${name}: the page scrolls sideways by ${over}px`);
+    } catch (e) {
+      errors.push(`${name}: ${e.message.split("\n")[0]}`);
+    }
+    errors.push(...seen.errors.filter((e) => !noKit).map((e) => `${name}: ${e}`));
+    await context.close();
+  }
+  return errors;
+}
+
 function print(results) {
   const cols = ["tab", "pageOverflowX", "firstRowTop", "tableOverflowX", "leadVisible", "leadMethod"];
   const cells = [cols, ...results.map((r) => cols.map((c) => String(r[c])))];
@@ -181,8 +243,17 @@ async function main() {
   const page = dumpIndex();
   const browser = await playwright().chromium.launch({ headless: true, executablePath: chromium() });
   const results = [];
-  for (const spec of TABS) results.push(await renderTab(browser, spec, page));
+  const navErrors = await navCheck(browser, page);
+  if (!noKit) for (const spec of TABS) results.push(await renderTab(browser, spec, page));
   await browser.close();
+  for (const e of navErrors) console.log(`NAV ${e}`);
+  if (noKit) {
+    if (!navErrors.some((e) => e.includes("no menu button"))) { console.log("FAIL: --no-kit control: the nav check did not report the missing menu button"); process.exit(1); }
+    console.log("no-kit control ok: the nav check reported the missing menu button");
+    return;
+  }
+  if (navErrors.length) { console.log(`FAIL: nav check, ${navErrors.length} error(s)`); process.exit(1); }
+  console.log("nav ok: phone menu opens and closes, wide sidebar shows");
   writeFileSync(join(out, "numbers.json"), JSON.stringify(results, null, 2) + "\n");
   print(results);
   console.log(`screenshots and numbers.json: ${out}`);
