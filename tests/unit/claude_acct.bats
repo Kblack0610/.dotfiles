@@ -1732,6 +1732,37 @@ pro_rollout() {
   [[ "$stderr" == *'UNDERUSE_HOURS is not set to a number'* ]] || fail "$stderr"
 }
 
+@test "check pace: a source marked alert=off (a test pool) never trips it, and dispatch still keeps to its room" {
+  src_setup
+  week main 30 84
+  rollout 1 0 84
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  # the key deep in its reserve
+  budget sk-res key 19.5 20
+  sed -i 's/parent=lazer max_live=2$/parent=lazer max_live=2 alert=off/' "$CLAUDE_ACCT_SOURCES"
+  run --separate-stderr "$ACCT" check pace
+  assert_success
+  assert_output 'every source on pace (5 sources)'
+  [[ -z "$stderr" ]] || fail "$stderr"
+  run --separate-stderr "$ACCT" room --json
+  assert_success
+  [[ "$(jq -r '.sources[] | select(.name == "res") | "\(.room.reason) \(.alert)"' <<< "$output")" == "reserve false" ]] || fail "$output"
+  # a key that cannot be read still trips: muting low is not muting broken
+  rm "$SANDBOX/gw/sk-res.json"
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output 'unread: res'
+  budget sk-res key 19.5 20
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  # a value other than on or off is named, and the source trips again
+  sed -i 's/alert=off$/alert=maybe/' "$CLAUDE_ACCT_SOURCES"
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  [[ "$stderr" == *"res: unknown option 'alert=maybe'"* ]] || fail "$stderr"
+}
+
 @test "check pace: no source at all is nothing read, never a quiet green" {
   src_setup
   : > "$CLAUDE_ACCT_CONFIG"

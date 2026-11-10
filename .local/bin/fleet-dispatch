@@ -150,6 +150,7 @@ CODEX_SESSIONS="${DISPATCH_CODEX_SESSIONS:-$HOME/.codex/sessions}"             #
 DISPATCH_PROC="${DISPATCH_PROC:-/proc}"                                          # where codex_run_live reads a run's environment
 CODEX_ROLLOUT_JQ="${DISPATCH_CODEX_ROLLOUT_JQ:-$HOME/.local/lib/codex-rollout.jq}"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
+MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench's canary matrix: its `excluded` kinds are the work route() keeps off a headless harness
 IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 CANDIDATES="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/candidates.jsonl"   # the last real pass's `suggest --json`, which the hub Candidates fold reads (hub_core::queue::candidates); derived, so out of the autocommitted ~/.agent
@@ -846,6 +847,28 @@ cmd_item_tier() {
   local it
   it=$(agent-queue show "${1:?item-tier: needs a slug}" --json 2>/dev/null) && [ -n "$it" ] || { say "item-tier: no queue item $1"; return 1; }
   item_tier "$it"
+}
+
+# excluded_kind <item json> -> the first `excluded` kind of MATRIX whose `match` (a case-insensitive ERE)
+# hits the item's headline (item_headline) or one of its tags written `#tag`, counting only an entry
+# whose `stack`, when it names one, holds the item's project (fleet-bench's scoping of an excluded cell).
+# rc 1 when none does; rc 2, failing closed, when MATRIX or the item is unreadable or a `match` is not a
+# valid ERE. The one list fleet-bench prints as the matrix's excluded cells, so what it calls excluded is
+# what route() refuses.
+excluded_kind() {
+  local text tags rows kind re rc
+  tags=$(jq -r '.tags // "" | if type == "array" then join(" ") else . end | split(" ") | map(select(. != "") | "#" + .) | join(" ")' <<<"$1") || return 2
+  text="$(item_headline "$1") $tags"
+  rows=$(jq -r --arg p "$(jq -r '.project // ""' <<<"$1")" '.stacks as $s | .excluded[]? | select(.kind and .match)
+      | select(.stack == null or (($s[.stack].projects // []) | index($p)))
+      | "\(.kind)\t\(.match)"' "$MATRIX" 2>/dev/null) || return 2
+  while IFS=$'\t' read -r kind re; do
+    [ -n "$kind" ] || continue
+    grep -qiE -- "$re" <<<"$text"; rc=$?
+    [ "$rc" = 0 ] && { echo "$kind"; return 0; }
+    [ "$rc" = 1 ] || return 2
+  done <<<"$rows"
+  return 1
 }
 
 # lane_cached <slug> -> the verdict a pass recorded today for an item no source could take;
@@ -1822,8 +1845,8 @@ ask_decisions() {
 # item_brief <item json> [harness] -> the prompt a queue item's session starts on: plan mode gets
 # the task as typed, oneshot runs it through its kind's entry skill (kinds.json `entry`, by the
 # item's type or its title's prefix; /one-shot when the kind names none), --pr-only for a `night`
-# item and for a tier-3 one, not a red, on a headless harness, which cannot run the red-fix gate's
-# review (route). A kind whose `exit` is doc+ask or proof opens no PR, so its brief ends on that close
+# item and for a tier-3 one, not a red, on a headless harness (pinned there: route sends it no routed
+# one), which cannot run the red-fix gate's review. A kind whose `exit` is doc+ask or proof opens no PR, so its brief ends on that close
 # instead of agent-land (doc_ask_brief, proof_brief). A headless harness (opencode, codex) has no
 # slash commands or human at the pane, so it reads the skill and closes differently, and a plan item
 # on one plans first (plan_stage). A start that resumes the item's last run (resume_thread) gets
@@ -2777,14 +2800,14 @@ item_pinned() {
 # lose it): claude's is the rank of the account acct_room picked (its rc in the caller's ACCT_RC), every
 # other's the rank of its source in ACCT_ROWS. Claude needs an account with room. Another harness needs
 # its source's room, this machine (a fleet worker and a sandbox profile run claude only), an item it can
-# hold (takes_plan: a headless one that cannot resume takes no plan item) and, when routed rather than pinned, a tier within the
-# unattended ceiling: a red goes past it, only to a harness that can run the red-fix gate, and any
-# other item only to a headless one, whose brief then stops at the PR for a review the harness cannot
-# run (item_brief): an idle codex plan does the work, and the merge still waits (ar-1014). A `metered`
+# hold (takes_plan: a headless one that cannot resume takes no plan item), on a headless one never an
+# excluded kind of work (excluded_kind: deploy, prod, secrets and the rest, pinned or not, and none at
+# all while that list is unreadable), and, when routed rather than pinned, a tier within the unattended
+# ceiling: only a red goes past it, and only to a harness that can run the red-fix gate. A `metered`
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
 # pick, only while no account has room, and only tier-1 work, so an unscored lane never spends on spare work.
 route() {
-  local it="$1" verdict="$2" cands h m src tier pinned=0 overflow why=()
+  local it="$1" verdict="$2" cands h m src tier pinned=0 overflow excl='' erc='' hl why=()
   ROUTE_HARNESS='' ROUTE_MODEL='' ROUTE_WHY=''
   item_pinned "$it" && pinned=1
   if [ "$pinned" = 1 ]; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
@@ -2796,18 +2819,22 @@ route() {
       [ "${ACCT_RC:-1}" = 0 ] && { ROUTE_HARNESS=claude; return 0; }
       why+=("claude: no account has room"); continue
     fi
-    src=$(harness_source "$h")
+    src=$(harness_source "$h") hl=0
+    headless "$h" && hl=1
+    [ "$hl" = 0 ] || [ -n "$erc" ] || { excl=$(excluded_kind "$it"); erc=$?; }   # once, and only for a headless one
     overflow=0; [ "$pinned" = 0 ] && harness_flag "$h" metered && overflow=1
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
     elif ! takes_plan "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless and cannot resume, and this is a plan item")
+    elif [ "$hl" = 1 ] && [ "$erc" = 0 ]; then why+=("$h: runs headless, and this is $excl work (excluded in $MATRIX)")
+    elif [ "$hl" = 1 ] && [ "$erc" = 2 ]; then why+=("$h: runs headless, and the exclusion list $MATRIX is unreadable or has a bad match")
     elif [ "$overflow" = 1 ] && ! jq -e --arg c "$h:$m" '.trial == $c or any(.promoted[]?; . == $c)' <<<"${verdict:-null}" >/dev/null 2>&1; then
       why+=("$h: pay-per-use, so it takes only a class it was promoted for or its trial pick")
     elif [ "$overflow" = 1 ] && [ "${ACCT_RC:-1}" = 0 ]; then why+=("$h: pay-per-use, and an account has room")
     elif [ "$overflow" = 1 ] && [ "$tier" -gt 1 ]; then why+=("$h: pay-per-use takes tier-1 work only, and this is tier $tier")
-    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it" && ! headless "$h"; then why+=("$h: tier $tier is past the unattended ceiling")
+    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it"; then why+=("$h: tier $tier is past the unattended ceiling")
     elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && is_red "$it" && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
       why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room --json"' <<<"$ACCT_ROWS")")

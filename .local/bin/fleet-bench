@@ -4819,7 +4819,7 @@ MATRIX_JQ='
      | (if $md == "interactive" then $hand else $live | map(select(.modes | index($md))) end) as $rs | cell($rs) as $c
      | excluded(null; null; $md) as $ex
      | {mode: $md} + $c + {status: status($c; $ex; 1), why: ($ex.why // null)}],
-   excluded: [$m.excluded[]? | select((.kind // null) as $x | ($m.kinds | index($x)) | not) | select(.stack == null)]}'
+   excluded: [$m.excluded[]? | select((.kind // null) as $x | ($m.kinds | index($x)) | not) | select(.stack == null or .kind != null)]}'
 
 # The matrix json's renderers share these: a cell's mark with its passes of runs, and the empty count.
 MATRIX_FMT_JQ='def mark: {proven: "P", failing: "F", excluded: "X", "no work": "-", empty: "."}[.status]

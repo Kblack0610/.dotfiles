@@ -5459,6 +5459,14 @@ harness_ready() {
       codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
       "claude-cloud": {launcher: "claude-cloud", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
+  # The kinds route() keeps off a headless harness, at the path the script reads by default.
+  mkdir -p "$HOME/.config/fleet-bench"
+  jq -n '{kinds: ["fix"], stacks: {shell: {projects: ["game"]}, unity: {projects: ["arena"]}}, modes: [],
+    excluded: [{kind: "deploy", match: "\\b(deploy(s|ed|ing|ment)?|kubectl)\\b", why: "human-gated"},
+      {kind: "secrets", match: "\\b(secrets?|rbw|sops)\\b", why: "secrets"},
+      {kind: "prod", match: "\\b(prod|production)\\b", why: "prod"},
+      {kind: "unity-editor", stack: "unity", match: "(^|[[:space:]])#requested\\b|\\b(editor|play ?mode)\\b", why: "needs the editor"},
+      {mode: "lane-sandbox", why: "no match, so never read by route"}]}' > "$HOME/.config/fleet-bench/matrix.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   stub tmux 'exit 0'
@@ -6188,24 +6196,66 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'started queue item fix-next on codex (sol)'
 }
 
-@test "a routed tier-3 item goes only to a headless harness, on a brief that stops at the PR; the Sonnet item behind it routes" {
+@test "a routed tier-3 item goes to no other harness past the ceiling; pinned to a headless one, its brief stops at the PR" {
   route_ready
-  srcs codex:reserve:1 reserve:ok:20
+  srcs codex:ok:5 reserve:ok:20
   agent-queue add --project game --slug ci-first --priority urgent "ci: the runner retries a dead batch" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'queue item ci-first has no source with room it may run on: codex: codex: inside its reserve; claude: no account has room; lazer-reserve: tier 3 is past the unattended ceiling'
-  [ -n "$(qitem queued ci-first)" ] || fail "a tier 3 item went to a harness that would land it"
+  assert_output --partial 'queue item ci-first has no source with room it may run on: codex: tier 3 is past the unattended ceiling; claude: no account has room; lazer-reserve: tier 3 is past the unattended ceiling'
+  [ -n "$(qitem queued ci-first)" ] || fail "a routed tier 3 item went to a headless harness"
   [ -n "$(qitem running fix-menu)" ] || fail "the Sonnet item behind it did not route"
-  # With codex back in room, it takes the item PR-only: the merge waits on a review codex cannot run.
-  srcs codex:ok:5
+  # Pinned to codex by the human, it starts PR-only: the merge waits on a review codex cannot run.
+  agent-queue set ci-first agent=codex model=sol >/dev/null
   : > "$NOTES_FIXTURE/calls.log"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item ci-first on codex (sol), routed by model-lane'
+  assert_output --partial 'started queue item ci-first on codex (sol), the harness it is pinned to'
   assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it with --pr-only'
   assert_called 'agent-queue move ci-first review'
   assert_not_called 'Run agent-land in the foreground'
   assert_not_called 'merges only behind the red-fix gate'
+}
+
+@test "route keeps an excluded kind of work off a headless harness, pinned or not, and fails closed on an unreadable list" {
+  route_ready
+  HARNESSES=$DISPATCH_HARNESSES MATRIX=$HOME/.config/fleet-bench/matrix.json   # the sourced script read both before route_ready set them
+  local it v ACCT_RC=1 ACCT_DIR='' DISPATCH_SANDBOX_PROFILE='' PLACE_HOST=''
+  v='{"candidates":[{"harness":"claude","model":"sonnet","fit":0},{"harness":"codex","model":"sol","fit":0}]}'
+  ACCT_ROWS='{"accounts":[],"sources":[{"name":"codex","rank":1,"room":{"ok":true,"why":"it has room"}}]}'
+  refused() { ! route "$1" "$v" || fail "routed to $ROUTE_HARNESS: $1"; assert_equal "$ROUTE_WHY" "$2"; }
+  refused '{"slug":"x","project":"game","mode":"oneshot","title":"deploy the new ingress"}' \
+    "codex: runs headless, and this is deploy work (excluded in $MATRIX); claude: no account has room"
+  refused '{"slug":"x","project":"game","mode":"oneshot","title":"rotate the SOPS key"}' \
+    "codex: runs headless, and this is secrets work (excluded in $MATRIX); claude: no account has room"
+  # A Unity stack item the human requested needs the editor; the tag counts as #requested.
+  refused '{"slug":"x","project":"arena","mode":"oneshot","title":"the ball sticks to the wall","tags":"requested"}' \
+    "codex: runs headless, and this is unity-editor work (excluded in $MATRIX); claude: no account has room"
+  # Pinned is no way around it.
+  refused '{"slug":"x","project":"game","mode":"oneshot","title":"fix prod dns","agent":"codex","model":"sol"}' \
+    "codex: runs headless, and this is prod work (excluded in $MATRIX)"
+  # An item with no title is read by its task's first line, the headline every log uses.
+  refused '{"slug":"x","project":"game","mode":"oneshot","task":"\n  kubectl apply the ingress\nmore"}' \
+    "codex: runs headless, and this is deploy work (excluded in $MATRIX); claude: no account has room"
+  # Negative controls: a near miss (product, not prod), the same tag off the Unity stack, and plain work route to codex.
+  for it in '{"slug":"x","project":"game","mode":"oneshot","title":"fix the product page"}' \
+    '{"slug":"x","project":"game","mode":"oneshot","title":"open the editor pane","tags":"requested"}' \
+    '{"slug":"x","project":"arena","mode":"oneshot","title":"fix the menu sides"}'; do
+    route "$it" "$v" || fail "refused ($ROUTE_WHY): $it"
+    assert_equal "$ROUTE_HARNESS $ROUTE_MODEL" 'codex sol'
+  done
+  # Claude takes excluded work as before.
+  ACCT_RC=0
+  route '{"slug":"x","project":"game","mode":"oneshot","title":"deploy the new ingress"}' "$v" || fail "claude refused: $ROUTE_WHY"
+  assert_equal "$ROUTE_HARNESS" claude
+  # An unreadable list keeps every headless harness off, never open.
+  ACCT_RC=1 MATRIX="$SANDBOX/no-matrix.json"
+  refused '{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu sides"}' \
+    "codex: runs headless, and the exclusion list $SANDBOX/no-matrix.json is unreadable or has a bad match; claude: no account has room"
+  # So does a `match` that is not a valid ERE: grep's error is not a miss.
+  jq '.excluded[0].match = "(deploy"' "$HOME/.config/fleet-bench/matrix.json" > "$SANDBOX/bad-match.json"
+  MATRIX="$SANDBOX/bad-match.json"
+  refused '{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu sides"}' \
+    "codex: runs headless, and the exclusion list $SANDBOX/bad-match.json is unreadable or has a bad match; claude: no account has room"
 }
 
 @test "a red past the ceiling routes only to a harness that can hold the red-fix gate" {

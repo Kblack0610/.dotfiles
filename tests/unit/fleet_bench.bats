@@ -5295,7 +5295,8 @@ STUB
   export BENCH_MATRIX="$SANDBOX/matrix.json" BENCH_DONE_ITEMS_CMD=done-stub ITEMS="$SANDBOX/done.jsonl"
   jq -n '{kinds: ["fix", "docs", "ci", "perf"], stacks: {shell: {projects: ["game"]}, rust: {projects: [], scopes: ["panel"]}},
     modes: ["oneshot", "ask-resume", "forgejo", "interactive", "fan-out", "lane-sandbox"],
-    excluded: [{kind: "ci", why: "ci needs a runner"}, {mode: "lane-sandbox", why: "no sandbox profile"}, {kind: "release", why: "human-gated"}]}' > "$BENCH_MATRIX"
+    excluded: [{kind: "ci", why: "ci needs a runner"}, {mode: "lane-sandbox", why: "no sandbox profile"}, {kind: "release", why: "human-gated"},
+      {kind: "editor", stack: "rust", why: "needs the editor"}]}' > "$BENCH_MATRIX"
   printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$ITEMS" "$ITEMS" > "$SANDBOX/bin/done-stub"; chmod +x "$SANDBOX/bin/done-stub"
   mkdir -p "$SANDBOX/fj/.forgejo/workflows" "$FLEET_BENCH_DIR"; touch "$SANDBOX/fj/.forgejo/workflows/mirror-to-github.yml"
   jq --arg d "$SANDBOX/fj" '.paths[$d] = "fj"' "$BENCH_PROJECT_MAP" > "$BENCH_PROJECT_MAP.t" && mv "$BENCH_PROJECT_MAP.t" "$BENCH_PROJECT_MAP"
@@ -5321,7 +5322,7 @@ STUB
   assert_output '[["fix","shell","proven",1,0],["fix","rust","failing",0,1],["docs","shell","empty",0,0],["docs","rust","empty",0,0],["ci","shell","excluded",0,0],["ci","rust","excluded",0,0],["perf","shell","no work",0,0],["perf","rust","no work",0,0]]'
   run "$SUBJECT" canary matrix --json
   run jq -c '[.modes[] | [.mode, .status, .pass, .fail, .evidence]], .excluded' <<<"$output"
-  assert_output $'[["oneshot","proven",1,1,"d"],["ask-resume","failing",0,1,"b"],["forgejo","proven",1,0,"d"],["interactive","proven",1,0,"x5"],["fan-out","failing",0,1,"b"],["lane-sandbox","excluded",0,0,null]]\n[{"mode":"lane-sandbox","why":"no sandbox profile"},{"kind":"release","why":"human-gated"}]'
+  assert_output $'[["oneshot","proven",1,1,"d"],["ask-resume","failing",0,1,"b"],["forgejo","proven",1,0,"d"],["interactive","proven",1,0,"x5"],["fan-out","failing",0,1,"b"],["lane-sandbox","excluded",0,0,null]]\n[{"mode":"lane-sandbox","why":"no sandbox profile"},{"kind":"release","why":"human-gated"},{"kind":"editor","stack":"rust","why":"needs the editor"}]'
   run "$SUBJECT" canary matrix
   assert_success
   assert_line $'kind\tshell\trust'
