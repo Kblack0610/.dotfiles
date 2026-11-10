@@ -2808,3 +2808,45 @@ main_change() {
   [ "$(jq -r .main_red <<<"$session")" = true ]
   [ "$(jq -r '.owners | length' <<<"$main")" = 0 ]
 }
+
+@test "dirty_paths bounds index reader threads in worktrees and submodules without hiding dirt" {
+  local d="$HOME/.worktrees/status" sub="$SANDBOX/sub" trace="$SANDBOX/status-trace"
+  mkdir -p "$d" "$sub"
+  git init -q "$sub"
+  echo original > "$sub/inside"
+  git -C "$sub" add inside
+  git -C "$sub" -c user.email=t@t -c user.name=t commit -qm init
+  git init -q "$d"
+  git -C "$d" -c protocol.file.allow=always submodule add -q "$sub" module
+  echo original > "$d/tracked"
+  git -C "$d" add tracked
+  git -C "$d" -c user.email=t@t -c user.name=t commit -qm init
+  git -C "$d" config index.threads 8
+  git -C "$d/module" config index.threads 8
+  git -C "$d" config core.preloadIndex true
+  git -C "$d/module" config core.preloadIndex true
+  echo changed > "$d/tracked"
+  echo new > "$d/untracked"
+  echo changed > "$d/module/inside"
+
+  GIT_TRACE2_EVENT="$trace" GIT_TRACE2_CONFIG_PARAMS=index.threads,core.preloadIndex run dirty_paths "$d" ''
+  assert_success
+  assert_output $'module\ntracked\nuntracked'
+  # Git's own trace proves the override reaches recursive status, not only the parent.
+  jq -es '[.[] | select(.event == "def_param" and .param == "index.threads" and .scope == "command" and .value == "1") | .sid] | unique | length >= 2' "$trace"
+  jq -es '[.[] | select(.event == "def_param" and .param == "core.preloadindex" and .scope == "command" and .value == "false") | .sid] | unique | length >= 2' "$trace"
+  jq -es 'all(.[] | select(.event == "def_param" and .param == "index.threads" and .scope == "command"); .value == "1") and any(.[]; .event == "def_param" and .param == "index.threads" and .scope == "command")' "$trace"
+  jq -es 'any(.[]; .event == "def_param" and .param == "core.preloadindex" and .scope == "command" and .value == "false")' "$trace"
+  [ "$(git -C "$d" config index.threads)" = 8 ]
+  [ "$(git -C "$d/module" config index.threads)" = 8 ]
+
+  # Shared checkouts keep filtering by the session's edited paths, with the same thread bound.
+  mv "$d" "$SANDBOX/shared"
+  d="$SANDBOX/shared"
+  : > "$trace"
+  GIT_TRACE2_EVENT="$trace" GIT_TRACE2_CONFIG_PARAMS=index.threads,core.preloadIndex run dirty_paths "$d" "$d/tracked"
+  assert_success
+  assert_output tracked
+  jq -es 'any(.[]; .event == "def_param" and .param == "index.threads" and .scope == "command" and .value == "1")' "$trace"
+  jq -es 'any(.[]; .event == "def_param" and .param == "core.preloadindex" and .scope == "command" and .value == "false")' "$trace"
+}
