@@ -685,6 +685,25 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_output --partial 'a refused line'
 }
 
+@test "outbox: a record line whose near is not a string keeps every other refusal; an empty record says nothing about parsing" {
+  sheet '' ''
+  outbox '- [ ] the scratch menu flickers\n- [ ] a refused line\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the menu flickers #size/s"], "project": "scratch"}'
+  mkdir -p "$HOME/.local/state/notes"
+  : >"$HOME/.local/state/notes/ingest.jsonl"
+  run "$TRIAGE" --dry-run
+  assert_success
+  refute_output --partial 'did not parse'
+  { jq -cn '{ts: "2026-11-09T20:00:00-05:00", action: "left", from: "outbox", to: "", text: "an old line", why: "x", near: 7, stage: "intake"}'
+    jq -cn --arg ts "$(date --iso-8601=seconds)" '{ts: $ts, action: "refused", from: "outbox", to: "", text: "a refused line", why: "x", stage: "intake"}'
+  } >"$HOME/.local/state/notes/ingest.jsonl"
+  run "$TRIAGE"
+  assert_success
+  refute_output --partial 'did not parse'
+  run cat "$NOTES_FIXTURE/prompt.txt"
+  refute_output --partial 'a refused line'
+}
+
 @test "--watch: a sweep at start and one after a burst of saves, and inotifywait ending ends the runner" {
   sheet '' ''
   outbox ''

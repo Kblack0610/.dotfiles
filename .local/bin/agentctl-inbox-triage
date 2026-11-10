@@ -890,16 +890,17 @@ pass() {
   # (they left the outbox with their rows), from its newest left record that names them.
   rec='{"seen": {}, "near": {}}'
   # shellcheck disable=SC2016 # jq source, not shell
-  [ -s "$RECORD" ] && rec="$(jq -cn --argjson since "$since" '
+  if [ -s "$RECORD" ]; then rec="$(jq -cn --argjson since "$since" '
     def epoch: (.ts // "") as $t | try (
       ($t[0:19] + "Z" | fromdateiso8601)
       - (($t | capture("(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2})$")? // {s: "+", h: "0", m: "0"})
          | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))) catch 0;
     [inputs | select((.action == "refused" or .action == "left") and (.text | type) == "string")] as $r
     | {seen: ([$r[] | select(.action == "refused" or epoch >= $since) | {key: ((.from // "") + "\t" + .text), value: true}] | from_entries),
-       near: ([$r[] | select(.action == "left" and .from == "outbox" and (.near // "") != "")
+       near: ([$r[] | select(.action == "left" and .from == "outbox" and (.near | type) == "string" and .near != "")
                | {key: .text, value: (.near | split(",") | map(select(. != "")))}] | from_entries)}' "$RECORD")" \
     || { say "the ingest record did not parse; every line is asked as new"; rec='{"seen": {}, "near": {}}'; }
+  fi
   seen="$(jq -c .seen <<<"$rec")" near="$(jq -c .near <<<"$rec")"
   local fresh='select($seen[.from + "\t" + .text] | not)'
   # An outbox line the human was asked about waits for the answer while `asked` is its newest
