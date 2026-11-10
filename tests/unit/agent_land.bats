@@ -1034,7 +1034,8 @@ repo_map() {
   grep -qE -- '- \[x\] stop the load crash .*id:gm-1' "$sheet" || fail "the edited row did not close: $(cat "$sheet")"
 }
 
-@test "end to end: a hand item's story is filed started under its epic by add and closed by agent-land" {
+# real_notes_board -- the built notes, and a game project with one epic (gm-1): sets $dir. Skips with no NOTES_BIN.
+real_notes_board() {
   [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
   ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
   dir="$HOME/.notes/lab/projects/current/game"
@@ -1046,6 +1047,10 @@ repo_map() {
   export AGENT_QUEUE_PROJECT_MAP="$PROJECT_MAP_FILE"
   unset NOTES_PROFILE
   jq -n '{paths: {"/x/game": "game"}, trackers: {game: {code: "gm", lab: "personal"}}}' >"$PROJECT_MAP_FILE"
+}
+
+@test "end to end: a hand item's story is filed started under its epic by add and closed by agent-land" {
+  real_notes_board
 
   run agent-queue add --running --project game --epic gm-1 --slug title "feat(menu): the title screen"
   assert_success
@@ -1058,6 +1063,28 @@ repo_map() {
   assert_output --partial 'board: closed "gm-2" with pr:42'
   grep -qE -- '^- \[x\] feat\(menu\): the title screen .*gm-2' "$dir/agent/README.md" ||
     fail "the story did not close: $(cat "$dir/agent/README.md")"
+}
+
+@test "end to end: --row links a filed row, files no second one, and agent-land closes it" {
+  real_notes_board
+  notes --profile personal ptask game --agent add -- 'fix(menu): the back button #size/s' >/dev/null
+  run agent-queue add --running --project game --row gm-2 --slug back "work the filed row"
+  assert_success
+  grep -qE -- '^- \[/\] fix\(menu\): the back button .*id:gm-2' "$dir/agent/README.md" ||
+    fail "the row was not started: $(cat "$dir/agent/README.md")"
+  run "$LAND" 42 --item back
+  assert_success
+  assert_output --partial 'board: closed "gm-2" with pr:42'
+  grep -qE -- '^- \[x\] fix\(menu\): the back button .*gm-2' "$dir/agent/README.md" ||
+    fail "the linked row did not close: $(cat "$dir/agent/README.md")"
+  [ "$(grep -c 'back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed"
+
+  # NEGATIVE CONTROL: the row is closed now, so the real notes refuses it and nothing is written.
+  run agent-queue add --running --project game --row gm-2 --slug again "work it twice"
+  assert_failure
+  assert_output --partial '--row gm-2: not an open row on the game agent board'
+  run agent-queue show again --json
+  assert_failure
 }
 
 @test "the PR's changed files credit the item to the game whose path owns the most" {
