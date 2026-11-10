@@ -21,7 +21,7 @@ Benchmark the agent fleet from counted facts: where every live session is in its
 ## Where to look
 
 - `~/.notes/lab/projects/current/agent-runtime/docs/bench/latest.md`: the daily scorecard, one row per session over the last 24h (phase now, phases ticked, hours working, hours waiting on you, hours stalled, nudges, peak context, then PRs merged, CI reds, reverts and cost). One dated file per day sits beside it. It syncs with notes, so it reads on the phone.
-- The morning briefing (`agentctl-briefing`, 06:45) writes the scorecard, puts the headline and its path in `briefing.md`, and carries the pending-asks line in its one page.
+- The morning briefing (`agentctl-briefing`, 06:45) writes the scorecard, puts the headline and its path in `agents.md` (the agent briefing; `briefing.md` is the human overview), and carries the pending-asks line in its one page.
 - `~/.notes/lab/projects/current/agent-runtime/docs/bench/asks.md`: every pending ask in hub Home's order, the ones blocking a live session first, rewritten by the 06:45 briefing. New asks page from `hub needs --page` (title `Needs you`), not from here.
 - `fleet-bench report`: every live session (phase done/total, bucket, ETA, what the ETA is based on), then how accurate past ETAs were, then the last agentctl outcome of `fleet-bench`, `fleet-review` and `briefing`.
 - `fleet-bench eta`: one line per live session, or `--json` for scripts. The shepherd's "where are we" summary takes its ETAs from here.

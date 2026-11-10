@@ -307,7 +307,7 @@ Everything that reads or writes the vault on its own, and what sets it off. Chan
 | The triage sweep, when a `#plan` row waits | `agentctl@inbox-plan` | Adds `goal:`, `approach:` and `check:` lines to the row, sets its size, splits it when it is more than one PR |
 | Any file under `~/.notes` changes | `notes-watch`, 3s after the last change, then `notes-sync`; `git-sync-notes.timer` runs the same sync every 5 minutes | Commits, pulls and pushes the vault. `notes-mqtt` and `notes-ntfy` start a pull when another machine pushes |
 | :00 and :30 every hour | `agentctl@comms` | Mail triage; its surface file feeds `status/comms.md` |
-| 06:45 and 18:45 | `agentctl@briefing` | `journal/refs/<date>/briefing.md`, which Morning shows; the evening asks page |
+| 06:45 and 18:45 | `agentctl@briefing` | `journal/refs/<date>/briefing.md`, which Morning shows, and `agents.md`, the agent-system detail; the evening asks page |
 | 23:00 | `agentctl@nightly-sync` | Reads recent notes into mem0; writes nothing in the vault |
 | 00:30 | `agentctl@knowledge-engine` | Compiles the daily notes into `~/.notes/knowledge/` |
 | 01:00 | `journal-daily-summarize` | `notes summarize`: yesterday's note gets its summary |

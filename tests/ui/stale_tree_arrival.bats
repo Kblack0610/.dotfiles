@@ -13,7 +13,7 @@ setup() {
   tmux_passthrough_shim
 
   SRV="batstree$$"
-  grep -E '^%hidden DROP_TREE=|^set-hook .*DROP_TREE' "$REPO_ROOT/.tmux.conf" > "$HOME/tree.conf"
+  grep -E '^%hidden DROP_TREE(_WINDOW)?=|^set-hook .*DROP_TREE' "$REPO_ROOT/.tmux.conf" > "$HOME/tree.conf"
   t new-session -d -s one
   t new-window -t one
   t new-session -d -s two
@@ -67,6 +67,17 @@ leave_tree_on_one() {
   t choose-tree -t one:1.0 -Zw
   t switch-client -c "$CLIENT" -t one:1
   wait_until '[ -z "$(mode one:1.0)" ]'
+}
+
+@test "S-Down in the tree swaps the window it is on and keeps the tree open" {
+  t source-file "$HOME/tree.conf"
+  attach_client
+  pane="$(t display-message -p -t one:0.0 '#{pane_id}')"
+  win="$(t display-message -p -t one:0 '#{window_id}')"
+  t choose-tree -t one:0.0 -Zw
+  printf '\033[1;2B' >&9
+  wait_until '[ "$(t display-message -p -t one:1 "#{window_id}")" = "$win" ]'
+  [ "$(mode "$pane")" = tree-mode ]
 }
 
 @test "copy mode on the pane landed on is kept" {
