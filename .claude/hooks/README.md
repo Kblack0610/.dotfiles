@@ -47,7 +47,7 @@ Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinat
 Current post-checks, in order:
 - `80-session-register.sh`: records the session in the session registry.
 - `85-sync-plans.sh`: copies the plans this session wrote from `~/.claude/plans/` into `~/.agent/plans/<proj>/`.
-- `86-focus-reconcile.sh`: at the end of a turn that changed something, checks the work was tracked: an agent-queue item (`$AGENT_QUEUE_ITEM`, or an `agent-queue add|move|set` or `agent-land` call), a board write, or a Focus item in progress.
+- `86-focus-reconcile.sh`: at the end of a turn that changed something, checks the work was tracked: an agent-queue item (`$AGENT_QUEUE_ITEM`, or an `agent-queue add|move|set` or `agent-land` call), or a board write. A `[/]` checkbox, on Focus or the board, is not tracking: a started row is tracked by its queue item.
 - `87-regen-anchor.sh`: regenerates the project anchor's auto block.
 - `88-ask-filed.sh`: when an attended session ends its turn asking the human something and owns no pending ask, blocks once with the instruction to file it with `agent-ask post`.
 - `90-session-spend.sh`: when an attended session that is not a queue session passes `CLAUDE_SESSION_ALERT_USD` ($60) of OTel cost in Prometheus, pages once at 1x, 2x, 4x and so on. Alert only: always exits 0 and prints nothing.
