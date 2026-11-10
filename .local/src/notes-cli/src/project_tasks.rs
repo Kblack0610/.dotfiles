@@ -2227,7 +2227,26 @@ pub(crate) fn sweep_ctx(dir: &Path, content: &str, rewrite: bool) -> project_swe
         shape: crate::config::sheet_shape(),
         open: version_in(dir, content),
         rewrite,
+        systems: epic_systems(dir, content, crate::standing::SYSTEMS_BIN),
     }
+}
+
+/// The systems `### Epics` is ordered by, read only when there is an order to keep: two or more
+/// open epic rows. The dir's name is the project the list is keyed by; a project with no list
+/// orders its epics by area word alone.
+fn epic_systems(dir: &Path, content: &str, bin: &str) -> Vec<crate::standing::System> {
+    let epics = content
+        .lines()
+        .filter(|l| md::is_open_task(l) && crate::epics::is_epic(l))
+        .count();
+    if epics < 2 {
+        return vec![];
+    }
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    crate::standing::list(bin, &name).unwrap_or_default()
 }
 
 /// Which sweep a sheet gets. `Write` ends every `ptask` write: rows move, none is rewritten.
@@ -2795,6 +2814,7 @@ Version: v1.13.0
             shape: crate::config::SheetShape::default(),
             open: ROADMAP_CUR,
             rewrite: true,
+            systems: vec![],
         };
         let swept = project_sweep::sweep_sheet(&new, &ctx).map_or(new.clone(), |(c, _)| c);
         assert!(

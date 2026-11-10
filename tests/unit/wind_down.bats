@@ -386,6 +386,21 @@ SID_A="11111111-2222-3333-4444-555555555555"
   [ -e "$SPIN_DIR/$SID_A.fired" ] || fail "the hook did not fire it: $(ls "$SPIN_DIR")"
 }
 
+@test "an inherited FAIL result of another session does not defer; this session's own does" {
+  # The outer Stop hook exports its CI_RESULT_FILE to the suite it runs (2026-11-09).
+  printf 'status=FAIL\n' > "$BATS_TEST_TMPDIR/ci-result-outer.txt"
+  printf 'status=FAIL\n' > "$BATS_TEST_TMPDIR/ci-result-$SID_A.txt"
+  CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_PROJECT_DIR="$REPO_ROOT" wd arm
+  run env CI_RESULT_FILE="$BATS_TEST_TMPDIR/ci-result-$SID_A.txt" CLAUDE_PROJECT_DIR="$REPO_ROOT" \
+    bash "$REPO_ROOT/.claude/hooks/stop-post.d/95-wind-down.sh" <<<"{\"session_id\":\"$SID_A\"}"
+  assert_output --partial 'wind-down deferred'
+  [ -e "$SPIN_DIR/$SID_A.request" ] || fail "its own FAIL did not keep the request"
+  run env CI_RESULT_FILE="$BATS_TEST_TMPDIR/ci-result-outer.txt" CLAUDE_PROJECT_DIR="$REPO_ROOT" \
+    bash "$REPO_ROOT/.claude/hooks/stop-post.d/95-wind-down.sh" <<<"{\"session_id\":\"$SID_A\"}"
+  refute_output --partial 'wind-down deferred'
+  [ -e "$SPIN_DIR/$SID_A.fired" ] || fail "another session's FAIL held it: $(ls "$SPIN_DIR")"
+}
+
 @test "arm records the Claude session id, and an empty one outside Claude" {
   CLAUDE_CODE_SESSION_ID="$SID_A" wd arm
   assert_success

@@ -186,7 +186,7 @@ The sweep lays out `## Tasks` in sections, top to bottom. A section heading show
 
 | Section | Rows |
 |---|---|
-| `### Epics` | human sheet only: open `epic(` rows |
+| `### Epics` | human sheet only: open `epic(` rows, `#new` ones first, then by system in `project-stage-check <p> --list` order (an area no system names after those, by its word), rank within each; no percent is ever written here |
 | `### Now` | rows whose queue item runs: `[/]` with `run:` in the marker |
 | `### Next up` | rows whose queue item waits its turn: `[/]` with no `run:`, every one of them, so the queue's depth shows |
 | `### Backlog` | open `[ ]` rows, with no queue item |
