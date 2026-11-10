@@ -28,6 +28,9 @@ teardown() { ui_teardown; }
 ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
 status_of() { sed -n 's/^status: //p' "$(ask_file "$1")"; }
 open_panel() { tmux_start "$REPO_ROOT/.local/src/tmux/questions.sh"; }
+# live_session <claude session id>: that session runs now (agent-ask live-sessions), so its ask is
+# LIVE and sorts above the dead ones.
+live_session() { mkdir -p "$HOME/.claude/sessions"; printf '{"pid":%d,"sessionId":"%s"}\n' "$$" "$1" >"$HOME/.claude/sessions/$$.json"; }
 # keep_screen <name>: the capture the PR body shows (dashboards.md rule 14).
 keep_screen() { mkdir -p "$REPO_ROOT/tests/artifacts"; screen >"$REPO_ROOT/tests/artifacts/questions_$1.screen"; }
 
@@ -69,6 +72,7 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
 @test "at 144x33 the whole card, story and all, fits beside the list" {
   mkdir -p "$HOME/.claude/projects/p" "$HOME/.agent/sessions/delta"
   : > "$HOME/.claude/projects/p/sid-u.jsonl"
+  live_session sid-u
   printf '{"session_id":"sid-u","title":"runner-pool-tonight"}\n' > "$HOME/.agent/sessions/delta/sessions.jsonl"
   jq -cn --arg req "$(printf 'please sort out the runner pool for tonight %.0s' $(seq 1 12))" '{first: $req, prompt: "which goes first?",
     said: ["step 1 done.\nstep 2 done.\nstep 3 done.\nstep 4 done.\nstep 5 done.\nstep 6 done.\nstep 7 done.\n\nSweep or rebuild first?\n\n1. sweep\n2. rebuild"]}' \
@@ -93,11 +97,15 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
 @test "at 144x33 a row names its session under the question, the selected name reads, pgdn scrolls the card" {
   mkdir -p "$HOME/.agent/sessions/delta"
   printf '{"session_id":"sid-r","title":"runner-pool-tonight"}\n' >"$HOME/.agent/sessions/delta/sessions.jsonl"
+  live_session sid-r
+  CLAUDE_CODE_SESSION_ID=sid-gone "$AGENT_ASK" post --project delta --session delta-agent-7 --options 'a=the first|b=the second' 'Gone?' >/dev/null
   local id; id="$(CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" post --project delta --session delta-agent-4 --options 'a=the first|b=the second' \
     --context "$(printf 'Context sentence %d of a card longer than the screen. ' $(seq 1 60))" 'Which goes first?')"
   sed -i 's/^created: .*/created: 2026-10-30T10:00:00-0800/' "$(ask_file "$id")"
   TM_WIDTH=144 TM_HEIGHT=33 open_panel
-  wait_until 'side_by_side && screen_has "dead delta:4" && screen_has "runner-pool-tonight"'
+  wait_until 'side_by_side && screen_has "LIVE delta:4" && screen_has "runner-pool-tonight"'
+  # Negative control: the ask whose session has ended reads dead, below the live ones.
+  screen_has 'dead delta:7'
   screen_has 'pgup/pgdn scroll card'
   keep_screen rows_144x33
   # The selected row is the oldest, delta:4: its name is drawn in bright white (97).
@@ -283,6 +291,7 @@ plan_row() {
 
 @test "g goes to the asking session and closes the panel" {
   sed -i 's/^claude_session: .*/claude_session: sid-old/' "$(ask_file "$OLD")"
+  live_session sid-old
   printf '%s\n' '{"session_id":"sid-old","target":"hub/alpha:3"}' >"$NOTES_FIXTURE/agent-panel.list"
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
