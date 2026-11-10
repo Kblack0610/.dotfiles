@@ -453,6 +453,16 @@ fleet_state() {
   assert_output '1'
 }
 
+@test "a stranded favourite keeps its star" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s loose
+  "${REAL_TMUX}" -L "$SRV_A" set-option -t loose @fav 1
+  fleet_state
+  run bash -c "'$TMX' rows | awk -F'\t' '\$2==\"loose\" {print \$4}'"
+  assert_output --regexp $'^\u2605 .*loose.*stranded'
+}
+
 @test "a declared session with no agent is not stranded" {
   manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"

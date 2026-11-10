@@ -371,7 +371,9 @@ resolve_session() {
 cmd_fav() {
     split_target "$@"
     local verb="${ARGV_REST[0]:-toggle}" sid name
+    [ ${#ARGV_REST[@]} -le 1 ] || die "usage: fav [toggle|on|off|ls] [-t <session>]"
     if [ "$verb" = ls ]; then
+        [ -z "$TARGET_ARG" ] || die "fav ls lists every favourite and takes no -t"
         tmux list-sessions -f '#{@fav}' -F '#{session_name}' 2>/dev/null
         return 0
     fi
@@ -384,7 +386,9 @@ cmd_fav() {
         off) tmux set-option -u -t "$sid" @fav 2>/dev/null || true ;;
         *)   die "usage: fav [toggle|on|off|ls] [-t <session>]" ;;
     esac
+    # Doubled #, so display-message shows the name instead of expanding a format in it.
     name=$(tmux display-message -p -t "$sid" '#{session_name}' 2>/dev/null)
+    name="${name//#/##}"
     if [ "$verb" = on ]; then tmux display-message "favourite: $name" 2>/dev/null || true
     else tmux display-message "not a favourite: $name" 2>/dev/null || true; fi
     tmux refresh-client -S 2>/dev/null || true

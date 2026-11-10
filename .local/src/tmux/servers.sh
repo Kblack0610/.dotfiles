@@ -663,8 +663,9 @@ FLEET_STATE_MAX_AGE=300
 # The widest a row may be: the hub runs in an 80-column tmux pane (dashboards rule 11).
 ROW_WIDTH=80
 SESSION_NAME_WIDTH=30
-# A favourite session's mark (tags.sh fav): two cells, the width of the indent it replaces.
-FAV_MARK=$'\u2605 '
+# A favourite session's mark (tags.sh fav), a star and a space: two cells, the width of the
+# indent it replaces. Written as UTF-8 bytes, since $'\u...' depends on the caller's locale.
+FAV_MARK=$'\xe2\x98\x85 '
 
 declare -A FLEET=() FLEET_SESSIONS=()
 FLEET_EPOCH=0
@@ -826,6 +827,7 @@ _all_rows() {
         && [ "$created" -le "$FLEET_EPOCH" ] && [ -z "${declared["$sess"]:-}" ]; then
         _mid "$sess" "$SESSION_NAME_WIDTH"; _idle_text "$(( (now - activity) / 60 ))"
         printf -v disp '  %s  %-*s %s  idle %s  stranded' "$s" "$SESSION_NAME_WIDTH" "$_MID" "$what" "$_IDLE"
+        [ "$fav" = "1" ] && disp="$FAV_MARK${disp:2}"
         _row "$s" "$sess" '' "$disp"; stranded+=("$_ROW")
         continue
       fi

@@ -58,9 +58,13 @@ tmux-tags gather --tag group:work --into work   # a tag is a group
 
 `wind-down.sh` refuses to kill a window tagged `pinned` or `important`.
 
+Tags are **server-lifetime only** - they do not survive `tmux kill-server` or a
+reboot. That is deliberate; for windows that should come back tagged, declare
+them in the session manager's config and have the window tag itself on startup.
+
 ### Favourite sessions
 
-`Prefix+t f` favourites the session you are in, and pressing it again unfavourites it. A favourite is the session option `@fav`, so it lasts until the server stops, like a window tag. It is marked in four places:
+`Prefix+t f` favourites the session you are in, and pressing it again unfavourites it. A favourite is the session option `@fav`, server-lifetime like a tag. It is a mark only: wind-down protects `pinned` and `important` windows, not favourites. It is marked in four places:
 
 - the status bar: a yellow star before the agent counts
 - `Prefix+H` (`tmx pick`): a star in front of the session's row
@@ -72,10 +76,6 @@ tmux-tags fav                 # toggle the current session
 tmux-tags fav on -t dotfiles  # or on / off for a named session
 tmux-tags fav ls              # favourite sessions, one per line
 ```
-
-Tags are **server-lifetime only** - they do not survive `tmux kill-server` or a
-reboot. That is deliberate; for windows that should come back tagged, declare
-them in the session manager's config and have the window tag itself on startup.
 
 ## Servers (`Prefix+H`, `tmx`)
 

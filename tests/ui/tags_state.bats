@@ -252,4 +252,18 @@ teardown() { ui_teardown; }
   run "$TAGS" fav sideways -t "${WIN[0]}"
   assert_failure
   assert_output --partial 'usage: fav'
+  run "$TAGS" fav on off -t "${WIN[0]}"
+  assert_failure
+  run "$TAGS" fav ls -t "${WIN[0]}"
+  assert_failure
+  run "$TAGS" fav ls
+  assert_output ''
+}
+
+@test "fav works on a session whose name holds a #" {
+  _tm rename-session -t "${WIN[0]}" 'a#b'
+  run "$TAGS" fav on -t "${WIN[0]}"
+  assert_success
+  run "$TAGS" fav ls
+  assert_output 'a#b'
 }
