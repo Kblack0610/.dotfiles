@@ -95,7 +95,7 @@ footer_links = ["schedule"]
 # [comms]
 # state_dir    = "~/.local/state/notes-comms"   # dedup ledger + surface files (runtime)
 # llm_base_url = "https://<your-llm-gateway>/v1" # OpenAI-compatible gateway (e.g. LiteLLM)
-# llm_model    = "fast"                         # tier-2 classify model (a reasoning model: needs a large max_tokens)
+# llm_model    = "fast"                         # tier-2 classify alias (a reasoning model; the comms skill sets its token budget)
 # llm_key_rbw  = "litellm_comms_triage_key"     # rbw ITEM NAME, not the key itself
 #
 # Inbox shape -- how much you are willing to look at, and when mail gives up:
@@ -110,7 +110,7 @@ footer_links = ["schedule"]
 # when a backend is swapped. Tier-2 sends each ambiguous message's subject, sender and a
 # snippet through the gateway, so scope the key (key allowlist, budget cap) to the alias
 # in llm_model. A key allowlist governs what the CALLER may ask for, not where the router
-# fallbacks send it.
+# fallbacks send it: check the alias's fallbacks before pointing mail at it.
 #
 # One [[comms.account]] per mailbox. rbw_entry defaults to gmail_oauth_<name>.
 # [[comms.account]]
