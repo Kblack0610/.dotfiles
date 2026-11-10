@@ -1,5 +1,5 @@
 [Unit]
-Description=Run System Health Check 3x Daily
+Description=Save workstation health snapshots to detect resource pressure and failed services
 
 [Timer]
 OnCalendar=*-*-* 06:00:00
