@@ -92,11 +92,20 @@ spent() {
 @test "a capped reply with no result key, as the claude CLI writes it, still exits CALLS_RC_CAPPED" {
   # The real reply on 2026-11-10 carried no `result` key: it read as non-JSON, lost its subtype,
   # and exited 1, so inbox-triage never halved its batch and every retry hit the same cap.
-  sed -i 's/"result":"OK"/"subtype":"error_max_budget_usd","is_error":true,"errors":["Reached maximum budget ($1)"]/' "$SANDBOX/bin/claude"
+  sed -i 's/"result":"OK"/"subtype":"error_max_budget_usd","is_error":true,"errors":["Reached maximum budget"]/' "$SANDBOX/bin/claude"
+  grep -q error_max_budget_usd "$SANDBOX/bin/claude"
   run "$RUN" --agent judge -p x
   assert_failure 76
+  assert_output "Reached maximum budget"
   assert_equal "$(tail -n 1 "$CALLS" | jq -r .subtype)" error_max_budget_usd
   assert_equal "$(tail -n 1 "$CALLS" | jq -r .cost_usd)" 0.25
+  # The negative control: another error subtype keeps its text and subtype, and is not a cap.
+  sed -i 's/error_max_budget_usd/error_during_execution/' "$SANDBOX/bin/claude"
+  run "$RUN" --agent judge -p x
+  refute_output --partial '"subtype"'
+  assert_output "Reached maximum budget"
+  [ "$status" -ne 76 ]
+  assert_equal "$(tail -n 1 "$CALLS" | jq -r .subtype)" error_during_execution
 }
 
 @test "budget_batch halves on a cap to a floor of 1, grows a quarter after a clean full batch, and never passes max" {
