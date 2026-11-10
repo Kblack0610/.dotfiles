@@ -620,6 +620,64 @@ ledger() {
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
+@test "self_wait finds a tail --pid on its own parent under the claude, and nothing else (ar-1118)" {
+  # 2026-11-09 agent-51: a shell waited 100m on tail --pid=<its own pid> while the row read WORKING.
+  # root stands in for the session's claude; `; :` keeps bash from exec-ing tail in its place.
+  setsid bash -c 'bash -c "tail --pid=\$\$ -f /dev/null; :"; :' >/dev/null 2>&1 3>&- &
+  local root=$! tl=""
+  LIVE_PIDS="-$root"   # teardown kills the group, pass or fail
+  # the process is the event: wait until /proc shows tail's exec, not for a delay
+  until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
+    kill -0 "$root" || fail 'the stand-in exited before tail started'
+    tl="$(pgrep -P "$(pgrep -P "$root" -n bash || echo 0)" -x tail || :)"   # none yet is exit 1, not a failure
+  done
+  run self_wait "$root"
+  assert_output 'hung'
+  # negative controls: no claude pid, an unrelated one, junk
+  run self_wait
+  assert_output ''
+  run self_wait junk
+  assert_output ''
+  sleep 60 3>&- &
+  LIVE_PIDS="$LIVE_PIDS $!"
+  run self_wait "$!"
+  assert_output ''
+}
+
+@test "self_wait leaves a tail --pid on another process alone (ar-1118)" {
+  setsid bash -c 'sleep 60 & bash -c "tail --pid=\$1 -f /dev/null; :" _ "$!"; :' >/dev/null 2>&1 3>&- &
+  local root=$! tl=""
+  LIVE_PIDS="-$root"
+  until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
+    kill -0 "$root" || fail 'the stand-in exited before tail started'
+    tl="$(pgrep -P "$(pgrep -P "$root" -n bash || echo 0)" -x tail || :)"   # none yet is exit 1, not a failure
+  done
+  run self_wait "$root"
+  assert_output ''
+}
+
+@test "a shell waiting on itself reads STALLED, not WORKING, and is a blocker on the row (ar-1118)" {
+  FLEET_IDLE_MIN=20 FLEET_SHELL_STALE_MIN=120
+  # an open green PR, 25m idle: a real gate would read WORKING shell
+  run b shell 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - gate
+  assert_output 'WORKING shell'
+  run b shell 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - hung
+  assert_output 'STALLED PR #875 green, not merged, background shell is waiting on itself (tail --pid of its own parent)'
+  # just ended a turn: not yet
+  run b shell 0 0 0 19 1 0 0 875 OPEN PASS 1 - 2/3 next - hung
+  assert_output 'WORKING shell'
+  run work_blockers '' shell 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - hung
+  assert_output --partial 'background shell is waiting on itself'
+  # negative controls: any other job names no such blocker, nor does a session that is not in a shell
+  run work_blockers '' shell 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - gate
+  refute_output --partial 'waiting on itself'
+  run work_blockers '' idle 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - hung
+  refute_output --partial 'waiting on itself'
+  # a finished plan is DONE and told to stop its shell: not a blocker
+  run work_blockers '' shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 3/3 - - hung
+  assert_output ''
+}
+
 @test "a finished plan is DONE past FLEET_IDLE_MIN even with a background shell" {
   # 2026-10-27: hub/dotfiles:1 sat 5/5 for over an hour as WORKING shell, never told to wind down.
   run b shell 0 0 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -

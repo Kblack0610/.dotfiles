@@ -179,6 +179,9 @@ session_bucket() {
       # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
       if [ "$5" -ge "$FLEET_IDLE_MIN" ] && [ "$job" != agent ] && session_finished "$@"; then
         note=", background shell still running"
+      elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && [ "$job" = hung ]; then
+        # 2026-11-09 agent-51 read WORKING for 100m on a shell waiting for its own parent to exit.
+        note=", background shell is waiting on itself (tail --pid of its own parent)"
       elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && { [ "$job" = jobs ] || [ "$job" = none ]; }; then
         # Only a gate, a test or a subagent is work worth waiting 120m on. Anything else is a sleep
         # loop, a watch on a file or a job the transcript no longer shows; on 2026-11-03 13 of 24
@@ -235,6 +238,33 @@ live_wait() {
       done
     done < "$conf"
   done
+}
+
+# self_wait <claude pid>: `hung` when a process under that claude is a `tail --pid=N` whose N is its
+# own parent, else nothing. The parent waits for tail to end and tail waits for the parent to end, so
+# nothing ever moves. 2026-11-09 agent-51's `pgrep -f 'agent-land 2089'` matched its own shell and
+# sat in that wait for 100m while the row read WORKING. A tail that watches any other pid is a real
+# wait. No event names a deadlock, so this reads one `ps`, only for a shell row past FLEET_IDLE_MIN.
+self_wait() {
+  local root="${1:-0}"
+  [[ "$root" =~ ^[0-9]+$ ]] && [ "$root" -gt 1 ] || return 0
+  ps -e -o pid=,ppid=,args= | awk -v r="$root" '
+    { p = $1; up[p] = $2; $1 = $2 = ""; args[p] = $0 }
+    END {
+      for (p in up) {
+        x = up[p]; n = 0
+        while (x > 1 && x != r && (x in up) && n++ < 64) x = up[x]
+        if (x != r) continue
+        k = split(args[p], a, " ")
+        if (a[1] !~ /(^|\/)tail$/) continue
+        for (i = 2; i <= k; i++) {
+          w = ""
+          if (a[i] ~ /^--pid=[0-9]+$/) w = substr(a[i], 7)
+          else if (a[i] == "--pid" && i < k) w = a[i + 1]
+          if (w != "" && w == up[p]) { print "hung"; exit }
+        }
+      }
+    }'
 }
 
 # bucket_facts: session_bucket past the session status, from the same arguments.
@@ -321,6 +351,9 @@ work_blockers() {
   fi
   fi
   for id in "${b[@]}"; do out="${out:+$out; }$id"; done
+  # A finished session is told to stop its shell; any other one is held up by it.
+  [ -n "$out" ] && [ "$1" = shell ] && [ "${17:--}" = hung ] && [ "$5" -ge "$FLEET_IDLE_MIN" ] \
+    && out="$out; background shell is waiting on itself (tail --pid of its own parent)"
   printf '%s' "$out"
 }
 
@@ -1204,7 +1237,7 @@ collect() {
     if [ "$plan" = 1 ] && { [ "$status" != waiting ] || [[ "$doing" != ExitPlanMode* ]]; }; then plan=0; fi
     # A gate or test running in the worktree is a wait whatever the transcript's open job says.
     if [ "$host" = - ] && [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ]; }; then
-      live="$(live_wait "$cwd" "$cpid")"; ojob="${live:-$ojob}"
+      live="$(live_wait "$cwd" "$cpid")"; [ -n "$live" ] || live="$(self_wait "$cpid")"; ojob="${live:-$ojob}"
     fi
     prs="$(session_prs "$transcript")"
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
