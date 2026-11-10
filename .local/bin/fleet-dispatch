@@ -5,6 +5,7 @@
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch suggest [--json|--write]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held; --write stores them for the hub fold
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
+#   fleet-dispatch verdicts          the same as JSON lines, each with plan: true for a skip by a DISPATCH_PLAN_RULES rule
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item (night)
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
@@ -2021,8 +2022,9 @@ item_end() {
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
-# A Codex run that ends without closing also records why (item_end, --end): this is the only writer of
-# end_reason, and the reason is named in the note.
+# A Codex run that ends without closing also records why (item_end, --end): this is the only live writer of
+# end_reason, and the reason is named in the note. One with no PR that ended at the plan's usage limit is
+# requeued, not failed.
 settle_item() {
   local st it pr report info state='' oid head='' ci='' end=() why=''; st=$(item_state "$1")
   # set_end -- why this run ended, asked only by the branches that record it.
@@ -2080,6 +2082,16 @@ settle_item() {
     logline "reaped $2: session gone, queue item $1 done with its report $report"
   else
     set_end
+    # The plan turned the run away at its usage limit: nothing about the item failed, so it goes back
+    # to queued/ and its next start waits on the source's room, which claude-acct holds reached from
+    # the refusal until the window resets (ar-1120). Salvaging a mid-run limit's work is codex-parity P6.
+    if [ "$why" = limit ]; then
+      agent-queue move "$1" queued ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
+      agent-queue set "$1" "note=session $2 hit the plan's usage limit; requeued (end_reason: limit)" >/dev/null
+      logline "reaped $2: session gone, queue item $1 requeued: end_reason limit"
+      echo "requeued queue item $1 ($2 hit the plan's usage limit)"
+      return 0
+    fi
     agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
     agent-queue set "$1" "note=session $2 ended before it closed the item${why:+ (end_reason: $why)}" >/dev/null
     logline "reaped $2: session gone, queue item $1 failed: no PR${why:+, end_reason $why}"
@@ -3724,6 +3736,13 @@ cmd_report() {
     sort | awk -F'\t' '{ printf "%-9s %-2s t%-2s %-16s %-6s %-12s %s\n           %s\n", $1, $2, $3, $4, $5, $6, substr($7, 1, 90), $8 }'
 }
 
+# cmd_verdicts -- latest_verdicts, each with plan: true when it is a skip by one of
+# DISPATCH_PLAN_RULES (a row plan_skips sends for a split); fleet-bench's next_up_blocked reads it
+cmd_verdicts() {
+  latest_verdicts | jq -c --arg rules "$DISPATCH_PLAN_RULES" \
+    '($rules | split(" ") | map(select(. != ""))) as $r | . + {plan: (.verdict == "skip" and ((.rule // "") | IN($r[])))}'
+}
+
 main() {
   case "${1:-}" in
     run)
@@ -3739,6 +3758,7 @@ main() {
     fill) shift; cmd_fill "$@" ;;
     promote) shift; cmd_promote "$@" ;;
     report) cmd_report ;;
+    verdicts) cmd_verdicts ;;
     reap) cmd_reap ;;
     starved) cmd_starved ;;
     stats) cmd_stats ;;

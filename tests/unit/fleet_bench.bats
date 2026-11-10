@@ -22,6 +22,7 @@ setup() {
   export BENCH_NEEDS_CMD='echo {"needs":[],"errors":[]}'   # nor the real hub: no needs unless a test serves them
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
+  export BENCH_VERDICTS_CMD=false   # nor the real dispatch judge
   export BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
   export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
@@ -178,7 +179,6 @@ agent_bench_kpi{kpi="human_answered_per_day",window="7d"} 0
 agent_bench_kpi{kpi="human_answered_per_day",window="28d"} 0
 agent_bench_kpi{kpi="runners_bad",window="7d"} 0
 agent_bench_kpi{kpi="failed_unexplained",window="7d"} 0
-agent_bench_kpi{kpi="board_open",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark",window="7d"} 0
 agent_bench_kpi{kpi="loop_dark_7d",window="7d"} 0
 agent_bench_kpi{kpi="ownerless_running",window="7d"} 0
@@ -1138,7 +1138,7 @@ asks_order() { bash -c '. "$1"; ask_rows | jq -r "map(.id) | join(\" \")"' _ "$S
 # keeps a fake agent board as `ptask list` TSV and logs every call
 kpi_setup() {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
-  export LEDGER_CONF_DIR="$SANDBOX/confs" LEDGER_SRC="$SANDBOX/src" LEDGER_BOARDS="$SANDBOX/none.md"
+  export LEDGER_CONF_DIR="$SANDBOX/confs" LEDGER_SRC="$SANDBOX/src"
   export BENCH_NOW=$T0
   export BENCH_SO_LIB="$REPO_ROOT/.local/lib/session-outcomes.sh" SO_LESSONS_DIR="$SANDBOX/lessons"
   mkdir -p "$BENCH_OUTCOMES_DIR/game" "$BENCH_OUTCOMES_DIR/_runner" "$LEDGER_CONF_DIR" "$LEDGER_SRC"
@@ -1768,8 +1768,7 @@ log_triage_setup() {
 
 @test "triage: a fault arriving while board_open is past board_open_max is still filed and queued as a red" {
   log_triage_setup
-  printf '%s\n' '- [ ] a #low' '- [ ] b #low' > "$SANDBOX/agent.md"
-  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  agent_feed open open
   echo board_open_max=1 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_failure
@@ -2629,15 +2628,28 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   assert_line '| revert_rate | 0.25 | 0.2 | - | - |'
 }
 
+# agent_feed <state>...: a board feed (notes board --json) with one agent-lane row per state,
+# served by board-stub
+agent_feed() {
+  BJSON="$SANDBOX/board.json"
+  printf '%s\n' "$@" | jq -Rnc '{rows: [inputs | {project: "game", lane: "agent", state: .}]}' > "$BJSON"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$BJSON" > "$SANDBOX/bin/board-stub"
+  chmod +x "$SANDBOX/bin/board-stub"
+  export BENCH_BOARD_CMD=board-stub
+}
+
 # chain_fixture: a work chain where every link holds. Two PRs merged this week, each named by an
 # item (the owner's case differs on one); every started agent row has an active item; the one done
 # item's row is closed; the running item has a session; the one agent row in a project with an
-# open epic is filed under it, and that epic still has an open leaf; the doctor passed.
+# open epic is filed under it, and that epic still has an open leaf; the doctor passed; no row
+# waits on a split, an urgent start or a playtest, and the only closed rows past the Done window are
+# in a project with automation off.
 chain_fixture() {
   kpi_setup
   mkdir -p "$FLEET_BENCH_DIR"
   printf '%s\n' ledger_coverage_min=0.95 untracked_merged_prs_max=0 board_orphan_started_max=0 merged_open_rows_max=0 \
-    ownerless_running_max=0 epic_linked_share_min=0.5 landed_unverified_max=0 doctor_fail_max=0 >> "$KPI_THRESHOLDS"
+    ownerless_running_max=0 epic_linked_share_min=0.5 landed_unverified_max=0 doctor_fail_max=0 \
+    orphan_request_rows_max=0 next_up_blocked_max=0 stale_urgent_d_max=3 playtest_waiting_d_max=7 done_inline_old_max=0 >> "$KPI_THRESHOLDS"
   ci_row '{repo: "O/R", number: 7, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 0}'
   ci_row '{repo: "o/other", number: 9, session_id: "h2", merged_epoch: ($t - 172800), ci_red: 0}'
   ci_row '{repo: "o/r", number: 1, session_id: "h3", merged_epoch: ($t - 864000), ci_red: 0}'
@@ -2650,7 +2662,15 @@ chain_fixture() {
   BJSON="$SANDBOX/board.json" PJSON="$SANDBOX/projects.json"
   jq -cn '{rows: [{project: "game", lane: "agent", state: "doing", id: "g-1", type: "fix", tags: ["of/g-0"]},
                    {project: "game", lane: "human", state: "open", id: "g-0", type: "epic", tags: []},
-                   {project: "tools", lane: "agent", state: "open", id: "t-1", type: "fix", tags: []}]}' > "$BJSON"
+                   {project: "tools", lane: "agent", state: "open", id: "t-1", type: "fix", tags: []}],
+            projects: [{project: "game", done_old: 0}, {project: "tools", done_old: 0},
+                       {project: "off", automation: false, done_old: 5}]}' > "$BJSON"
+  # the dispatch judge skipped t-1 for its size a day before T0, under one hour short of next_up_blocked
+  VERDICTS="$SANDBOX/verdicts.jsonl"
+  jq -cn --arg at "$(date -d "@$((T0 - 82800))" +%FT%T%:z)" '{project: "tools", lane: "agent", key: "t-1", verdict: "skip", rule: "too-big", plan: true, at: $at}' > "$VERDICTS"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$VERDICTS" > "$SANDBOX/bin/verdicts-stub"
+  chmod +x "$SANDBOX/bin/verdicts-stub"
+  export BENCH_VERDICTS_CMD=verdicts-stub
   jq -cn '[{name: "game", epics: [{id: "g-0", open: 1, done: 2}]}, {name: "tools", epics: []}]' > "$PJSON"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$BJSON" > "$SANDBOX/bin/board-stub"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$PJSON" > "$SANDBOX/bin/projects-stub"
@@ -2674,7 +2694,7 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -2719,6 +2739,68 @@ chain_fixture() {
   # the doctor failed a check
   printf 'PASS  map is valid JSON\nFAIL  line 4: an epic belongs on the human sheet\n' > "$BENCH_DOCTOR_LAST"
   check 'doctor_fail 1 (max 0)'
+  # an open row whose #of/ parent is no open row
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "g-8", parent: "g-9", tags: ["of/g-9"]}]' "$BJSON.ok" > "$BJSON"
+  check 'orphan_request_rows 1 (max 0)'
+  # an open row a merged item names as its subject while it worked another row
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "ga-3", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  item fin3 done high board:game:g-4 '{"title":"ga-3: the fix","merged":"def456"}' >> "$DONE"
+  run "$SUBJECT" chain
+  assert_line 'orphan_request_rows: game:ga-3 (fin3 landed it)'
+  check 'orphan_request_rows 1 (max 0)'
+  # negative control: an id the title only mentions is no subject
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "ga-3", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  item fin3 done high board:game:g-4 '{"title":"fix: the part after ga-3","merged":"def456"}' >> "$DONE"
+  run "$SUBJECT" chain --check
+  assert_success
+  restore
+  # an empty title falls through to the task's first line, as agent-queue named_row does
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "ga-3", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  item fin3 done high board:game:g-4 '{"title":"","task":"ga-3: the fix\nthe rest","merged":"def456"}' >> "$DONE"
+  run "$SUBJECT" chain
+  assert_line 'orphan_request_rows: game:ga-3 (fin3 landed it)'
+  restore
+  # a parent is looked up in the row's own project: t-1 is open on tools, not on game
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "g-8", parent: "t-1", tags: ["of/t-1"]}]' "$BJSON.ok" > "$BJSON"
+  check 'orphan_request_rows 1 (max 0)'
+  # the judge skipped an open row for a split over 24h ago, and nothing split it
+  jq -cn --arg at "$(date -d "@$((T0 - 90000))" +%FT%T%:z)" '{project: "tools", lane: "agent", key: "t-1", verdict: "skip", rule: "too-big", plan: true, at: $at}' > "$VERDICTS"
+  run "$SUBJECT" chain
+  assert_line --partial 'next_up_blocked: skipped for a split over 24h ago, oldest first: tools:t-1 (too-big '
+  check 'next_up_blocked 1 (max 0)'
+  # negative control: a skip that waits on the human is no split dispatch could take
+  jq -cn --arg at "$(date -d "@$((T0 - 90000))" +%FT%T%:z)" '{project: "tools", lane: "agent", key: "t-1", verdict: "skip", rule: "needs-person", plan: false, at: $at}' > "$VERDICTS"
+  run "$SUBJECT" chain --check
+  assert_success
+  # and verdicts that cannot be read are ?, never 0
+  BENCH_VERDICTS_CMD=false run "$SUBJECT" chain --json
+  run jq -c '.next_up_blocked["7d"]' <<<"$output"
+  assert_output 'null'
+  # a triaged #urgent agent row filed five days ago and not yet started
+  jq -c --arg d "$(date -u -d "@$((T0 - 5 * 86400))" +%F)" '.rows += [{project: "tools", lane: "agent", state: "open", id: "t-2", priority: "urgent", since: $d, tags: []},
+     {project: "tools", lane: "agent", state: "open", id: "t-3", priority: "urgent", untriaged: true, since: "2026-01-01", tags: []}]' "$BJSON.ok" > "$BJSON"
+  run "$SUBJECT" chain
+  assert_line --partial 'stale_urgent_d: oldest is tools:t-2, filed '
+  check 'stale_urgent_d 5 (max 3)'
+  # a playtest check written ten days ago and never ticked, dated by git blame
+  local lab="$SANDBOX/lab/game"
+  mkdir -p "$lab"
+  printf '%s\n' '## Arena' '- [ ] the goal lights up' > "$lab/playtest.md"
+  git -C "$lab" init -q
+  git -C "$lab" add playtest.md
+  GIT_AUTHOR_DATE="@$((T0 - 10 * 86400)) +0000" git -C "$lab" -c user.name=t -c user.email=t@t.test commit -qm checks
+  jq -c --arg s "$lab/playtest.md" '.rows += [{project: "game", lane: "playtest", state: "open", game: "Arena", sheet: $s, line: 2, tags: []}]' "$BJSON.ok" > "$BJSON"
+  run "$SUBJECT" chain
+  assert_line 'playtest_waiting_d: oldest open check per game: game Arena 10d'
+  check 'playtest_waiting_d 10 (max 7)'
+  # closed rows past the Done window in a project the sweep manages
+  jq -c '.projects[0].done_old = 2' "$BJSON.ok" > "$BJSON"
+  check 'done_inline_old 2 (max 0)'
+  # and a feed from a notes that predates done_old reads ?, never 0
+  jq -c 'del(.projects[].done_old)' "$BJSON.ok" > "$BJSON"
+  run "$SUBJECT" chain --json
+  run jq -c '.done_inline_old["7d"]' <<<"$output"
+  assert_output 'null'
 }
 
 # lead_fixture: on the clean chain, five items the human asked for and two that do not count. game
@@ -3025,8 +3107,7 @@ pipeline_fixture() {
 @test "improve: board_open past board_open_max is never picked; the watch alerts instead" {
   kpi_setup; kpi_fixture
   printf '%s\n' revert_rate_max=1 interrupts_per_day_max=5 board_open_max=1 > "$KPI_THRESHOLDS"
-  printf '%s\n' '- [ ] a #low' '- [ ] b #low' '- [ ] c #low' > "$SANDBOX/agent.md"
-  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  agent_feed open open open
   run "$SUBJECT" kpi --check '^board_open$'
   assert_failure 1
   run "$SUBJECT" improve --json
@@ -3163,8 +3244,9 @@ check_fixture() {
 
 @test "room: past board_open_max says full, and the upsert still files every row" {
   kpi_setup
-  printf '%s\n' '- [ ] a #low' '- [/] b #low' '- [ ] c #low' '- [x] done #low' > "$SANDBOX/agent.md"
-  export LEDGER_BOARDS="$SANDBOX/agent.md"
+  agent_feed open doing open
+  # a human-lane row and one in a project with automation off are not the agent board's
+  jq -c '.rows += [{project: "game", lane: "human", state: "open"}, {project: "off", lane: "agent", state: "open", automation: false}]' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
   echo board_open_max=2 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_failure
@@ -3182,6 +3264,10 @@ check_fixture() {
   run "$SUBJECT" room
   assert_success
   assert_output 'room: board_open 3 of board_open_max 10'
+  # and a feed that cannot be read says so, never full
+  BENCH_BOARD_CMD=false run "$SUBJECT" room
+  assert_success
+  assert_output 'room: board_open ?, the board feed is unreadable'
 }
 
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {
@@ -4337,6 +4423,30 @@ qstats_fixture() {
   # c and d: no outcomes row, so unrecorded (negative control); e: a stamped model= wins;
   # f: a stamped full id is the same opus row; g: zero costs and <synthetic> are skipped, so sonnet
   assert_equal "$(jq -c '[.models[] | select(.done > 0) | [.model, .done]]' <<<"$output")" '[["haiku",1],["opus",2],["sonnet",2],["unrecorded",2]]'
+}
+
+@test "models: a run model-lane voided is not rated, a line that does not parse voids nothing, and its item keeps the lane it logged under" {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  mkdir -p "$BENCH_OUTCOMES_DIR"
+  echo '{"slug":"a","model":"sol","agent":"codex","status":"failed","end_reason":"limit","lane_run":"r2"}' > "$ITEMS"
+  now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
+  {
+    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"harness\":\"codex\",\"ran\":\"sol\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"harness\":\"codex\",\"ran\":\"sol\",\"outcome\":\"failed\"}"
+  } > "$BENCH_LANE_LOG"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_success
+  assert_equal "$(jq -c '[.models[] | [.harness, .runs, .rated, .redo]]' <<<"$output")" '[["codex",2,2,1]]'
+  printf '%s\n' '{"id":"r1", "half-writ' '{"id":"r2","end_reason":"limit","ts":"2026-11-09T00:00:00+00:00"}' > "$SANDBOX/voids.jsonl"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_success
+  assert_equal "$(jq -c '[.models[] | [.harness, .runs, .rated, .redo, .failed, .unrated]]' <<<"$output")" '[["codex",1,1,1,0,1]]'
+  run env BENCH_NOW=$T0 "$SUBJECT" models --by lane --json
+  assert_success
+  assert_equal "$(jq -c '[.models[] | [.lane, .done, .runs]]' <<<"$output")" '[["opus",1,1]]'
 }
 
 @test "models: landed rate, redo rate, reverts and cost per PR by the model an item started on" {

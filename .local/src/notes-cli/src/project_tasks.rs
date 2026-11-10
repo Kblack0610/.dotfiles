@@ -117,6 +117,9 @@ pub(crate) struct OpenRows {
     pub rows: Vec<OpenRow>,
     /// Lines waiting in the sheet's `## Inbox`.
     pub inbox: usize,
+    /// Closed rows past the Done window: the ones the next sweep rolls into `versions/`
+    /// ([`project_sweep::old_done`]).
+    pub done_old: usize,
 }
 
 /// One open row: its 1-based line, the line itself, and the lines indented under it.
@@ -137,6 +140,13 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
     let path = task_sheet(dir)?;
     let content = fs::read_to_string(&path).ok()?;
     let cur = version_in(dir, &content);
+    let ctx = project_sweep::Ctx {
+        today: chrono::Local::now().date_naive(),
+        shape: crate::config::sheet_shape(),
+        open: cur,
+        rewrite: false,
+        systems: Vec::new(),
+    };
     let lines: Vec<&str> = content.lines().collect();
     let rows = sheet::current_rows(&content, cur)
         .into_iter()
@@ -151,6 +161,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         sheet: path,
         rows,
         inbox: sheet::inbox_lines(&content).len(),
+        done_old: project_sweep::old_done(&content, &ctx).len(),
     })
 }
 
