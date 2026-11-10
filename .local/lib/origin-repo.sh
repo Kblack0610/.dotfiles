@@ -12,15 +12,10 @@
 # origin, or when [host] is given and the origin's host is not it (case-insensitive). <dir> is
 # required: `git -C ""` reads the current directory, which would answer for the wrong checkout.
 origin_repo() {
-  local url host
+  local url
   [ -n "${1:-}" ] || return 1
   url=$(git -C "$1" remote get-url origin 2>/dev/null) && [ -n "$url" ] || return 1
-  if [ -n "${2:-}" ]; then
-    # The authority, then past any user:password@ (an @ may be in the password), then before a port
-    # or the scp form's `:path`.
-    host=${url#*://} host=${host%%/*} host=${host##*@} host=${host%%:*}
-    [ "${host,,}" = "${2,,}" ] || return 1
-  fi
+  [ -z "${2:-}" ] || [ "$(url_host "$url")" = "${2,,}" ] || return 1
   sed -E 's#/+$##; s#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#' <<<"$url"
 }
 
@@ -29,7 +24,15 @@ origin_repo() {
 origin_off_github() {
   local url
   url=$(git -C "$1" remote get-url origin 2>/dev/null) && [[ "$url" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// || "$url" =~ ^[^/]+: ]] \
-    && ! origin_repo "$1" github.com >/dev/null
+    && [ "$(url_host "$url")" != github.com ]
+}
+
+# url_host <url> -> the host of a remote URL, lower-cased: the authority, then past any
+# user:password@ (an @ may be in the password), then before a port or the scp form's `:path`.
+url_host() {
+  local host=${1#*://}
+  host=${host%%/*} host=${host##*@} host=${host%%:*}
+  printf '%s\n' "${host,,}"
 }
 
 # forge_canonical <checkout> -- exit 0 when the repo's canonical forge is Forgejo: it commits the

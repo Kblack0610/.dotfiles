@@ -557,10 +557,10 @@ repo_slug() {
   printf '%s' "$url" | tr -c 'A-Za-z0-9' _
 }
 
-# unreadable <name>: this pass could not read <name>. The state document names it, and the row
-# collect is building is blind ($CACHE/blind_row), so tick keeps that row's last cells (keep_blind).
-unreadable() { echo "$1" >> "$CACHE/unreadable"; blind_row; }
-# blind_row: the row collect is building read a source that failed, this call or earlier in the pass.
+# unreadable <name>: this pass could not read <name>, so the state document names it.
+unreadable() { echo "$1" >> "$CACHE/unreadable"; }
+# blind_row: the row collect is building read a source that failed, on this call or earlier in the
+# pass, so tick keeps that row's last cells (keep_blind). Every read of a failed source calls it.
 blind_row() { : > "$CACHE/blind_row"; }
 
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids".
@@ -569,11 +569,13 @@ blind_row() { : > "$CACHE/blind_row"; }
 prs_for() {
   local dir="$1" key
   key="$CACHE/$(repo_slug "$dir")" || return 0
-  ! origin_off_github "$dir" || return 0
-  [ -f "$key" ] || (cd "$dir" && gh pr list --state all --limit 100 \
+  if [ -f "$key" ]; then :
+  elif origin_off_github "$dir"; then : > "$key"
+  elif ! (cd "$dir" && gh pr list --state all --limit 100 \
       --json number,state,headRefName,headRefOid,statusCheckRollup \
-      -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid, red] | @tsv' 2>/dev/null) > "$key" \
-    || { : > "$key.failed"; unreadable "gh pr list ($(basename "$dir"))"; }
+      -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid, red] | @tsv' 2>/dev/null) > "$key"; then
+    : > "$key.failed"; unreadable "gh pr list ($(basename "$dir"))"
+  fi
   [ ! -f "$key.failed" ] || blind_row
   cat "$key"
 }
@@ -657,7 +659,7 @@ gate_line_only() {
       steps="$(cd "$d" && gh api "repos/{owner}/{repo}/actions/jobs/$id" \
         -q '[.steps[] | select((.conclusion // "skipped") | test("^(success|skipped)$") | not) | .name]
             | if length == 0 then "-" else .[] end' 2>/dev/null)" && [ -n "$steps" ] \
-        || { unreadable "gh api actions/jobs/$id ($(basename "$d"))"; return 1; }
+        || { unreadable "gh api actions/jobs/$id ($(basename "$d"))"; blind_row; return 1; }
       mkdir -p "$MAIN_CACHE"
       printf '%s\n' "$steps" > "$file.$$" && mv "$file.$$" "$file"
     fi
