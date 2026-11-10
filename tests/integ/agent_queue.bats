@@ -1295,6 +1295,67 @@ EOF
   ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
 }
 
+@test "add --plan: (independent) waits on --after alone, (after N) on phase N's item, unmarked lines keep the chain" {
+  cat > "$SANDBOX/marked.md" <<'EOF'
+## Phases
+
+- [x] 1. Landed thing
+- [ ] 2. Second thing
+- [ ] 3. Third thing (independent): runs beside 2
+- [ ] 4. Fourth thing (after 2)
+- [ ] 5. Fifth thing (with 4)
+- [ ] 6. Sixth thing
+- [ ] 7. Seventh thing (after 5)
+- [ ] 8. Eighth thing (after 1)
+EOF
+  "$AQ" add --project game --slug base "the work before the plan" >/dev/null
+  run "$AQ" add --plan "$SANDBOX/marked.md" --project game --after base --dry-run
+  assert_success
+  assert_line --index 0 --regexp '^would queue marked-p2	phases 2	after base$'
+  assert_line --index 2 --regexp '^would queue marked-p3	phases 3	after base$'
+  assert_line --index 4 --regexp '^would queue marked-p4	phases 4 5	after marked-p2$'
+  # NEGATIVE CONTROL: an unmarked line still waits on the item before it, here the independent one.
+  assert_line --index 6 --regexp '^would queue marked-p6	phases 6	after marked-p4$'
+  # (after 5) is phase 5's item, which is 4's; (after 1) names a landed phase, so --after alone.
+  assert_line --index 8 --regexp '^would queue marked-p7	phases 7	after marked-p4$'
+  assert_line --index 10 --regexp '^would queue marked-p8	phases 8	after base$'
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/marked.md" --project game
+  assert_success
+  f="$(item queued marked-p3)"
+  [ "$(field "$f" after)" = "" ]
+  [ "$(field "$f" title)" = "marked P3: Third thing: runs beside 2" ]
+  [ "$(field "$(item queued marked-p4)" after)" = marked-p2 ]
+  [ "$(field "$(item queued marked-p4)" title)" = "marked P4+5: Fourth thing; Fifth thing" ]
+  [ "$(field "$(item queued marked-p8)" after)" = "" ]
+  # A marker that cannot be honoured is refused whole, naming the line; nothing is queued.
+  bad() {
+    printf '## Phases\n\n- [-] 1. Deferred\n- [ ] 2. Two\n- [ ] 3. %s\n' "$1" > "$SANDBOX/bad.md"
+    run "$AQ" add --plan "$SANDBOX/bad.md" --project game --slug bad --dry-run
+    assert_failure
+    assert_output "agent-queue: --plan $SANDBOX/bad.md: could not read its Phases checklist: phase 3: $2"
+  }
+  bad "Three (after 3)" "(after 3) names no earlier phase"
+  bad "Three (after 1)" "(after 1) waits on a deferred phase; undefer it or drop the marker"
+  bad "Three (independent) (after 2)" "(independent) and (after 2) contradict"
+  bad "Three (with 2) (independent)" "a (with 2) line takes the wait of phase 2's item; mark that line"
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 7 ]
+}
+
+@test "bump to urgent names an after: hold and the set that lifts it, and never lifts it" {
+  "$AQ" add --project game --slug first "first"
+  "$AQ" add --project game --slug second --after first "second"
+  run "$AQ" bump second urgent
+  assert_success
+  assert_output --partial "second -> urgent"
+  assert_output --partial "second is held after first: it starts when that lands; agent-queue set second after= runs it now"
+  [ "$(field "$(item queued second)" after)" = first ]
+  # NEGATIVE CONTROL: no after:, or a bump below urgent, says nothing more.
+  run "$AQ" bump first urgent
+  assert_output "first -> urgent"
+  run "$AQ" bump second high
+  assert_output "second -> high"
+}
+
 @test "add --plan writes nothing when a slug is taken, and refuses what it cannot expand" {
   plan_fixture
   "$AQ" add --project game --slug my-plan-p6 "already queued by hand" >/dev/null
