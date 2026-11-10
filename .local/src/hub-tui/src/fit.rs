@@ -1,6 +1,6 @@
 //! Fit a table to a width: columns take their content's width and drop from the least
-//! important end until the rest fit, the flex column (always the last) takes what is left, and
-//! every line is clipped with `~`.
+//! important end until the rest fit, the flex column takes what is left, and every line is
+//! clipped with `~` (or, with `fit_wrapped`, the flex column wraps under itself).
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -145,11 +145,11 @@ impl Table {
         };
         // The flex column need not be the last: the columns before it set where its wrapped
         // lines start, and with columns after it, it pads to its room so they line up.
-        let span = |cols: &mut dyn Iterator<Item = usize>| -> usize {
+        let span = |cols: std::ops::Range<usize>| -> usize {
             cols.filter(|&j| on[j]).map(|j| wid[j] + GAP).sum()
         };
-        let indent = span(&mut (0..f));
-        let after = span(&mut (f + 1..self.header.len()));
+        let indent = span(0..f);
+        let after = span(f + 1..self.header.len());
         let room = w.saturating_sub(indent + after).max(1);
         let pad = |t: String| {
             if after > 0 {
@@ -168,7 +168,13 @@ impl Table {
         for r in &self.rows {
             starts.push(out.len());
             let c = r.get(f).cloned().unwrap_or_default();
-            let words: Vec<&str> = c.text.split_whitespace().collect();
+            // A word wider than the room (a path, a URL) breaks inside itself, so it never
+            // pushes the columns after it out of line.
+            let words: Vec<String> = c
+                .text
+                .split_whitespace()
+                .flat_map(|word| chunks(word, room))
+                .collect();
             let mut parts = wrap(&words, " ", room).into_iter();
             let first = parts.next().unwrap_or_default();
             out.push(clip_line(self.line(r, &on, &wid, Some(pad(first))), w));
@@ -267,6 +273,23 @@ impl Table {
     }
 }
 
+/// `s` cut into pieces of at most `n` columns.
+fn chunks(s: &str, n: usize) -> Vec<String> {
+    let mut out = vec![];
+    let mut rest = s;
+    while len(rest) > n {
+        let mut head = take_cols(rest, n);
+        if head.is_empty() {
+            // A wide character in a one-column room: it goes alone, so the loop always moves.
+            head = rest.chars().next().map(String::from).unwrap_or_default();
+        }
+        rest = &rest[head.len()..];
+        out.push(head);
+    }
+    out.push(rest.to_string());
+    out
+}
+
 /// Drop trailing blanks.
 fn trim_end(mut spans: Vec<Span<'static>>) -> Line<'static> {
     while let Some(last) = spans.last_mut() {
@@ -321,6 +344,7 @@ mod tests {
         let out: Vec<String> = t.fit(0, Style::new()).iter().map(plain).collect();
         assert_eq!(out, ["JOB       FOR", "🔨 Build   6m", "Checks     9m"]);
         assert_eq!(plain(&clip_line(Line::raw("🔨 Build xyz"), 6)), "🔨 Bu~");
+        assert_eq!(chunks("🔨🔨a", 1), ["🔨", "🔨", "a"]);
     }
 
     fn t(rows: &[&[&str]]) -> Table {
@@ -453,6 +477,19 @@ mod tests {
                 "1  one two    x-1",
                 "   three",
                 "   four"
+            ]
+        );
+        let mut long = tb;
+        long.rows[0][1] = "see /a/very/long/path".into();
+        let (lines, _) = long.fit_wrapped(17, Style::new());
+        let got: Vec<String> = lines.iter().map(plain).collect();
+        assert_eq!(
+            got,
+            [
+                "N  NOTE       ID",
+                "1  see        x-1",
+                "   /a/very/l",
+                "   ong/path"
             ]
         );
     }
