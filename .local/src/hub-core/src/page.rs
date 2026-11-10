@@ -20,6 +20,9 @@ use crate::session_actions::Runner;
 /// Plans with no epic the Needs you list names one by one; the rest are one "+N more" line.
 pub const PLANS_SHOWN: usize = 5;
 
+/// Next stage's head at the top of the ladder.
+pub const NO_NEXT: &str = "no stage after this one";
+
 /// One task under an epic, as opening the epic lists it: `[x] db-131  feat: skin palette  s  pr 412`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Leaf {
@@ -518,7 +521,7 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
                 vec![]
             }
         };
-    p.next_says = "no stage after this one".into();
+    p.next_says = NO_NEXT.into();
     if let Some(next) = next_on(&ladder, stage) {
         p.next_says = format!("{next}  not read");
         match stage_json::<StageOut>(
@@ -613,35 +616,19 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize, today: chrono::Naiv
     out.push(match (&c.version, c.percent) {
         (None, _) => "No open version.".to_string(),
         (Some(v), None) => format!("{v} has no rows."),
-        (Some(v), Some(pc)) => {
-            let eta = match c.eta_days {
-                Some(0) => "nothing open".to_string(),
-                Some(d) => format!(
-                    "ETA ~{}",
-                    (today + chrono::Days::new(u64::from(d))).format("%m-%d")
-                ),
-                None => "no ETA (no closes in 28d)".to_string(),
-            };
-            format!("{v} is {pc}% done, {eta}.")
-        }
+        (Some(v), Some(pc)) => format!(
+            "{v} is {pc}% done, {}.",
+            crate::projects::eta_words(c, today)
+        ),
     });
     if let Some(g) = &p.gate {
         out.push(format!(
-            "{} gate: {} of {} met.",
-            capital(&g.stage),
-            g.met,
-            g.total
+            "Gate to {}: {} of {} met.",
+            g.stage, g.met, g.total
         ));
     }
     out.push(format!("Playtests waiting: {playtest_open}."));
     out.join(" ")
-}
-
-fn capital(s: &str) -> String {
-    let mut c = s.chars();
-    c.next()
-        .map(|f| f.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
 }
 
 /// `hub projects --status NAME`: the STATUS line's numbers for one lab project. A source the line
@@ -654,7 +641,7 @@ pub fn status(runner: &dyn Runner, name: &str, now: i64) -> Result<String, Strin
         .find(|s| s.name == name)
         .ok_or_else(|| format!("notes projects lists no project {name}"))?;
     let p = read(runner, name, &s.stage, now);
-    let next_unread = p.gate.is_none() && p.next_says != "no stage after this one";
+    let next_unread = p.gate.is_none() && p.next_says != NO_NEXT;
     if p.flow_line.is_none() || next_unread {
         return Err(p.errors.join("; "));
     }
@@ -665,9 +652,7 @@ pub fn status(runner: &dyn Runner, name: &str, now: i64) -> Result<String, Strin
         .find(|f| f.project == name && f.profile == s.profile)
         .map(|f| f.playtest_open)
         .ok_or_else(|| format!("notes board --json lists no project {name}"))?;
-    let today = chrono::DateTime::from_timestamp(now, 0)
-        .map(|t| t.with_timezone(&chrono::Local).date_naive())
-        .ok_or_else(|| format!("no date for {now}"))?;
+    let today = crate::sheet_view::today_of(&feed);
     Ok(status_line(&p, &Card::from_stats(s), playtest_open, today))
 }
 
@@ -982,18 +967,11 @@ mod tests {
     #[test]
     fn the_status_line_says_every_number_the_readers_counted_and_nothing_else() {
         let line = status(&status_fake(), "game", NOW).unwrap();
-        let today = chrono::DateTime::from_timestamp(NOW, 0)
-            .unwrap()
-            .with_timezone(&chrono::Local)
-            .date_naive();
-        let eta = (today + chrono::Days::new(4)).format("%m-%d");
         assert_eq!(
             line,
-            format!(
-                "Waves: ui on \"Menus\" 25% (1 more open); no system on \"Odd\". v0.2.0 is 60% \
-                 done, ETA ~{eta}. Beta gate: 4 of 12 met. Playtests waiting: 3."
-            ),
-            "the playtests are this profile's, the ETA is the card's 4 days"
+            "Waves: ui on \"Menus\" 25% (1 more open); no system on \"Odd\". v0.2.0 is 60% done, \
+             ETA ~11-13. Gate to beta: 4 of 12 met. Playtests waiting: 3.",
+            "the playtests are this profile's, the ETA is the card's 4 days from the feed's day"
         );
         assert!(line.is_ascii() && !line.contains("  "), "{line}");
     }

@@ -289,6 +289,18 @@ pub struct Projects {
     pub errors: Vec<String>,
 }
 
+/// The version ETA as a day: `ETA ~11-21`, `nothing open`, or `no ETA (no closes in 28d)`.
+pub fn eta_words(c: &Card, today: chrono::NaiveDate) -> String {
+    match c.eta_days {
+        Some(0) => "nothing open".to_string(),
+        Some(d) => format!(
+            "ETA ~{}",
+            (today + chrono::Days::new(u64::from(d))).format("%m-%d")
+        ),
+        None => "no ETA (no closes in 28d)".to_string(),
+    }
+}
+
 /// `done / (done + open)` by weight, rounded down so 100 means nothing is left.
 pub fn percent(p: &Progress) -> Option<u32> {
     let total = p.done_weight + p.open_weight;

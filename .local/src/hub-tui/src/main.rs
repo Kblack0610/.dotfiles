@@ -77,7 +77,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   projects --status NAME
           the numbers of the project's lab STATUS line, which write-lab-status.sh appends: each
           system's current wave and its percent, the version and its ETA, the next stage's gate
-          and the playtests waiting. Exits 1 when a source it says could not be read
+          and the playtests waiting. Exits non-zero when a source it says could not be read
   board   the task feed as {today, heads, hints, rows, done, errors}: each open row with its
           forecast day and queue state, one head line per project and the words beside each
           sheet row (what nvim draws as virtual text over a project sheet)
@@ -120,19 +120,15 @@ fn main() {
         if let [flag, name] = rest.as_slice() {
             let sys = hub_core::session_actions::System;
             let now = hub_core::jobs::now();
-            match flag.as_str() {
-                "--page" => match hub_core::page::named(&sys, name, now) {
-                    Ok(p) => println!("{}", hub_core::page::to_json(&p)),
-                    Err(e) => die(&format!("hub projects --page: {e}")),
-                },
-                "--status" => match hub_core::page::status(&sys, name, now) {
-                    Ok(line) => println!("{line}"),
-                    Err(e) => {
-                        eprintln!("hub projects --status: {e}");
-                        std::process::exit(1)
-                    }
-                },
+            let out = match flag.as_str() {
+                "--page" => hub_core::page::named(&sys, name, now)
+                    .map(|p| hub_core::page::to_json(&p).to_string()),
+                "--status" => hub_core::page::status(&sys, name, now),
                 _ => die(USAGE),
+            };
+            match out {
+                Ok(s) => println!("{s}"),
+                Err(e) => die(&format!("hub projects {flag}: {e}")),
             }
             return;
         }
