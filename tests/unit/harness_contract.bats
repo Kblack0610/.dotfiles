@@ -3,7 +3,8 @@
 # whether a later run can take up its session (`resume`) and which facts its runs report (`reports`:
 # end_reason, tokens, cost, hard_errors, tests, effort). A false names its reason in `why_not`; a true
 # is proved here by the reader that fact comes from, run on this harness's fixture under
-# tests/fixtures/harness-contract/, giving a value. A launcher with no reader proves no true.
+# tests/fixtures/harness-contract/, giving a value that is not null, zero or empty. A launcher with no
+# reader proves no true, and harnesses on one launcher state the same facts.
 # The real map is checked where the private overlay is (the Stop fast tier); public CI skips that one
 # test, and the fixture map and negative controls below run everywhere.
 
@@ -22,9 +23,9 @@ KEYS="end_reason tokens cost hard_errors tests effort"
 
 # reader <launcher> <map> -> the facts that launcher's reader gives on its fixture, as one JSON object
 # with a key per contract fact it proves (null when the reader gave none); {} for a launcher with no reader.
-# Read once per launcher and map: several harnesses share a launcher (glm and opencode).
+# Read once per launcher, map and fixture dir: several harnesses share a launcher (glm and opencode).
 reader() {
-  local w="$BATS_TEST_TMPDIR/reader/$1/$(basename "$2")"
+  local w="$BATS_TEST_TMPDIR/reader/$1/$(printf '%s\n' "$2" "$FIX" | md5sum | cut -c1-12)"
   [ -f "$w.json" ] || { mkdir -p "$w"; read_facts "$1" "$2" "$w" > "$w.json"; }
   cat "$w.json"
 }
@@ -57,6 +58,10 @@ read_facts() {
   esac
 }
 
+# A fact is proved by a value that shows the reader read it: the fixtures hold one of each, so a zero,
+# an empty string or an all-zero count object is a reader that read nothing.
+PROVED='def read: if type == "object" then any(.[]; read) else . != null and . != 0 and . != "" and . != false end; .[$k] | read'
+
 # problems <map> -> one line per broken clause of the contract; nothing when the map keeps it.
 problems() {
   local map="$1" h l facts k v
@@ -66,7 +71,7 @@ problems() {
     for k in resume $KEYS; do
       v=$(jq -c --arg h "$h" --arg k "$k" '.harnesses[$h] | if $k == "resume" then .resume else .reports[$k] end' "$map")
       case "$v" in
-        true) [ "$(jq -c --arg k "$k" '.[$k] // null' <<<"$facts")" != null ] || echo "$h $k: true, but the $l reader gives no value on its fixture" ;;
+        true) jq -e --arg k "$k" "$PROVED" <<<"$facts" >/dev/null || echo "$h $k: true, but the $l reader gives no value on its fixture" ;;
         false) jq -e --arg h "$h" --arg k "$k" '.harnesses[$h].why_not[$k] | type == "string" and test("\\S")' "$map" >/dev/null || echo "$h $k: false with no why_not" ;;
         *) echo "$h $k: not stated (${v})" ;;
       esac
@@ -74,6 +79,10 @@ problems() {
     jq -r --arg h "$h" --arg keys "$KEYS" '.harnesses[$h] as $e | (($e.reports // {}) | (keys - ($keys | split(" ")))[] | "\($h) reports.\(.): not a contract fact"),
       (($e.why_not // {}) | keys[] | select((if . == "resume" then $e.resume else $e.reports[.] end) != false) | "\($h) why_not.\(.): the fact is not false")' "$map"
   done
+  # Harnesses on one launcher read their facts from one reader, so they state the same ones.
+  jq -r '.harnesses | to_entries | sort_by(.key) | group_by(.value.launcher // .key)[] | select(length > 1)
+    | (.[0] | {key, f: {resume: .value.resume, reports: .value.reports}}) as $a | .[1:][]
+    | select({resume: .value.resume, reports: .value.reports} != $a.f) | "\(.key): states other facts than \($a.key) on the same launcher"' "$map"
 }
 
 # fixture_map -> a map with one harness of each reader kept, to doctor in the negative controls.
@@ -83,6 +92,8 @@ fixture_map() {
             prices: {"gpt-6.1-sol": {input: 2, cached_input: 0.1, output: 10}}},
     glm: {launcher: "opencode", resume: false, reports: {end_reason: false, tokens: true, cost: true, hard_errors: false, tests: false, effort: false},
           why_not: {resume: "r", end_reason: "e", hard_errors: "h", tests: "t", effort: "f"}},
+    "lazer-reserve": {launcher: "claude-lazer", resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
+                     why_not: {resume: "r", end_reason: "e", cost: "c", effort: "f"}},
     "claude-lazer": {resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
                      why_not: {resume: "r", end_reason: "e", cost: "c", effort: "f"}}}}' > "$SANDBOX/harnesses.json"
 }
@@ -110,27 +121,30 @@ fixture_map() {
   assert_equal "$(reader claude-lazer "$SANDBOX/harnesses.json" | jq -c '[.tokens, .hard_errors.tool_errors, .tests]')" '[35,1,1]'
 }
 
-@test "negative controls: a false with no why, a true no reader proves, an unstated fact, a stray key and a stale why each fail" {
+@test "negative controls: a false with no why, a true no reader proves, an unstated fact, a stray key, a stale why and launcher siblings that disagree each fail" {
   fixture_map
   jq '.harnesses.glm.why_not |= del(.tests, .effort)
       | .harnesses.glm.reports.effort = true
-      | .harnesses["claude-lazer"].reports |= del(.cost) | .harnesses["claude-lazer"].why_not |= del(.cost)
+      | .harnesses.codex.reports |= del(.effort)
       | .harnesses.codex.reports.vibes = true
       | .harnesses.codex.why_not = {tokens: "stale"}
+      | .harnesses["lazer-reserve"].reports.cost = true | .harnesses["lazer-reserve"].why_not |= del(.cost)
       | .harnesses.cloud = {resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: false, tests: false, effort: false},
                             why_not: {resume: "r", end_reason: "e", cost: "c", hard_errors: "h", tests: "t", effort: "f"}}' \
     "$SANDBOX/harnesses.json" > "$SANDBOX/bad.json"
   run problems "$SANDBOX/bad.json"
   assert_line 'glm tests: false with no why_not'
   assert_line 'glm effort: true, but the opencode reader gives no value on its fixture'
-  assert_line 'claude-lazer cost: not stated (null)'
+  assert_line 'codex effort: not stated (null)'
   assert_line 'codex reports.vibes: not a contract fact'
   assert_line 'codex why_not.tokens: the fact is not false'
   assert_line 'cloud tokens: true, but the cloud reader gives no value on its fixture'
-  assert_equal "${#lines[@]}" 6
+  assert_line 'lazer-reserve cost: true, but the claude-lazer reader gives no value on its fixture'
+  assert_line 'lazer-reserve: states other facts than claude-lazer on the same launcher'
+  assert_equal "${#lines[@]}" 8
 }
 
-@test "negative control: a codex fixture with no turn and no token count proves no end_reason, tokens or cost" {
+@test "negative control: a codex fixture with no turn, no token count and no tool run proves no end_reason, tokens, cost, hard_errors or tests" {
   fixture_map
   FIX="$BATS_TEST_TMPDIR/fix"; mkdir -p "$FIX"; cp "$REPO_ROOT/tests/fixtures/harness-contract/"* "$FIX/"
   jq -c 'select(.type == "session_meta" or .type == "turn_context")' "$REPO_ROOT/tests/fixtures/harness-contract/codex-rollout.jsonl" > "$FIX/codex-rollout.jsonl"
@@ -138,4 +152,6 @@ fixture_map() {
   assert_line 'codex end_reason: true, but the codex reader gives no value on its fixture'
   assert_line 'codex tokens: true, but the codex reader gives no value on its fixture'
   assert_line 'codex cost: true, but the codex reader gives no value on its fixture'
+  assert_line 'codex hard_errors: true, but the codex reader gives no value on its fixture'
+  assert_line 'codex tests: true, but the codex reader gives no value on its fixture'
 }
