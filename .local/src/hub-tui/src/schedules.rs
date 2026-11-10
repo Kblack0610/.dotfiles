@@ -10,10 +10,10 @@ use crate::datatable::DataTable;
 use crate::fit::{cell, wrap, Cell, Table};
 use crate::fmt::{clock, Palette};
 
-/// `Schedule::COLUMNS` in capitals, in its order, the sort mark placed by that index. `repo` and
-/// `next` sort and filter without a column: the name says the one, the pane the other.
-const HEADER: [&str; 7] = [
-    "KIND", "NAME", "SCHEDULE", "LAST", "RESULT", "STREAK", "TRIAGE",
+/// `Schedule::COLUMNS` in capitals, in its order, the sort mark placed by that index. `repo`
+/// sorts and filters without a column: the name says it.
+const HEADER: [&str; 8] = [
+    "KIND", "NAME", "SCHEDULE", "NEXT", "LAST", "RESULT", "STREAK", "TRIAGE",
 ];
 /// The width of the pane's labels, as the longest one.
 const LABEL: usize = 14;
@@ -93,12 +93,12 @@ impl SchedulesView {
         let mut out = Table {
             header: HEADER.to_vec(),
             rows: cells,
-            keep: vec![1, 4, 5, 2, 3, 0],
-            flex: Some(6),
+            keep: vec![1, 5, 6, 2, 4, 3, 0],
+            flex: Some(7),
             flexmin: 14,
             flexkeep: true,
-            right: vec![3],
-            cap: vec![(1, name), (2, fit(SCHEDULE_FIT)), (4, 8)],
+            right: vec![3, 4],
+            cap: vec![(1, name), (2, fit(SCHEDULE_FIT)), (5, 8)],
             mark,
         }
         .fit(w, p.head());
@@ -144,6 +144,8 @@ fn row(r: &Schedule, p: Palette, now: i64, name: usize) -> Vec<Cell> {
             },
         ),
         r.schedule.clone().into(),
+        // The time alone when it starts today, else the day too.
+        r.next.map_or("-".into(), |t| clock(t, now)).into(),
         // The day alone for an older run; the pane has its time.
         r.last
             .map_or("-".into(), |t| {
@@ -236,7 +238,7 @@ mod tests {
         let lower: Vec<String> = HEADER.iter().map(|h| h.to_lowercase()).collect();
         let all = Schedule::COLUMNS;
         assert_eq!(lower, all[..HEADER.len()]);
-        assert_eq!(all[HEADER.len()..], ["repo", "next"]);
+        assert_eq!(all[HEADER.len()..], ["repo"]);
     }
 
     #[test]
@@ -265,6 +267,21 @@ mod tests {
     }
 
     #[test]
+    fn next_is_drawn_when_it_fits_with_its_time() {
+        let mut s = sample();
+        s.at = 1_800_000_000;
+        s.rows[0].next = Some(s.at + 600);
+        let t = SchedulesView::default().table(&s, Palette::default(), 120, false);
+        let head = text(&t[0]);
+        assert!(head.contains("NEXT"), "{head}");
+        assert!(
+            text(&t[1]).contains(&clock(s.at + 600, s.at)),
+            "{}",
+            text(&t[1])
+        );
+    }
+
+    #[test]
     fn a_short_name_gives_up_the_repo_and_keeps_the_workflow() {
         assert_eq!(short("app / Tests", 24), "app / Tests");
         assert_eq!(
@@ -278,7 +295,7 @@ mod tests {
     #[test]
     fn a_sort_on_a_column_with_no_header_still_draws() {
         let mut v = SchedulesView::default();
-        v.table.view.sort = "next".into();
+        v.table.view.sort = "repo".into();
         let t = v.table(&sample(), Palette::default(), 80, false);
         assert_eq!(t.len(), 3);
     }

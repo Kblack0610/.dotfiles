@@ -262,8 +262,7 @@ mod tests {
 
     #[test]
     fn the_schedules_headers_are_hub_cores_columns() {
-        // Rule 8, less `repo` and `next`: the name says the one, a row's detail the other, and
-        // both still sort and filter.
+        // Rule 8, less `repo`: the name says it, and it still sorts and filters.
         use hub_core::table::Row;
         let js = include_str!("../static/schedules.js");
         let at = js.find("const SCHED_COLS = {").expect("no SCHED_COLS");
@@ -274,8 +273,8 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         let all = hub_core::schedules::Schedule::COLUMNS;
-        assert_eq!(keys, all[..all.len() - 2]);
-        assert_eq!(all[all.len() - 2..], ["repo", "next"]);
+        assert_eq!(keys, all[..all.len() - 1]);
+        assert_eq!(all[all.len() - 1..], ["repo"]);
     }
 
     #[test]
@@ -429,6 +428,43 @@ mod tests {
                 assert!(
                     retired.chunks(2).any(|p| p[0] == *old && p[1] == *new),
                     "{old} missing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inner_tabs_are_the_layout() {
+        // Rule 8 for inner tabs: app.js's INNER_TABS is hub_core::layout's groups, as JSON.
+        let mut want = serde_json::Map::new();
+        for t in hub_core::layout::TABS
+            .iter()
+            .filter(|t| !t.inner.is_empty())
+        {
+            let tabs: Vec<serde_json::Value> = t
+                .inner
+                .iter()
+                .map(|i| serde_json::json!([i.id, i.title, i.sections]))
+                .collect();
+            want.insert(
+                t.id.to_string(),
+                serde_json::json!({ "pinned": t.pinned, "tabs": tabs }),
+            );
+        }
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const INNER_TABS = "))
+            .expect("app.js has INNER_TABS");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("INNER_TABS is JSON");
+        assert_eq!(got, serde_json::Value::Object(want));
+        // Every section a group names is one the page draws a board section for.
+        let costs = include_str!("../static/costs.js");
+        for i in hub_core::layout::resolve("costs").expect("costs").inner {
+            for s in i.sections {
+                assert!(
+                    costs.contains(&format!("\"{s}\"")) || costs.contains(&format!("sec-{s}")),
+                    "costs.js never draws {s}"
                 );
             }
         }

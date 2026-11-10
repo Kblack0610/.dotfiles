@@ -1081,7 +1081,8 @@ pub(crate) fn row_parse_tsv(line: &str) -> String {
 }
 
 /// The types a filer (a script, a prompt, `propose`) may give a row: every [`ROW_TYPES`]
-/// entry but `epic`, which is the human's to file. `notes row types` prints them.
+/// entry but `epic`: an epic is filed only through its own path (the triager's `epic_new`, the
+/// standing epic `notes ptask` files, or the human), never as a plain row. `notes row types` prints them.
 pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
     ROW_TYPES.iter().copied().filter(|t| *t != "epic")
 }
