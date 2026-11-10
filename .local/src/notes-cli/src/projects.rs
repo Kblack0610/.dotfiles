@@ -1019,6 +1019,11 @@ fn split_row_prefix(text: &str) -> Option<&str> {
     row_prefix(text).map(|(_, _, title)| title)
 }
 
+/// Does `text` open with a well-formed `type(area): ` (README "The task row")?
+pub(crate) fn is_typed(text: &str) -> bool {
+    row_type_area(&format!("- [ ] {text}")).is_some()
+}
+
 /// A row line's `(type, area)`, when its text (hashtags aside) opens with a well-formed
 /// `type(area): `.
 pub(crate) fn row_type_area(line: &str) -> Option<(String, String)> {

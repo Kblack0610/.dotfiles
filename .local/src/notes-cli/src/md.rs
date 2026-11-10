@@ -897,7 +897,7 @@ pub fn project_tag(line: &str) -> Option<String> {
 }
 
 /// The project a single `#p:<name>` word names, trailing punctuation off.
-fn project_tag_word(w: &str) -> Option<String> {
+pub(crate) fn project_tag_word(w: &str) -> Option<String> {
     let rest = w.get(..3).filter(|p| p.eq_ignore_ascii_case("#p:"))?;
     let name = w[rest.len()..].trim_end_matches(['.', ',', ';', ':', '-']);
     (!name.is_empty()).then(|| name.to_lowercase())
@@ -917,6 +917,12 @@ pub fn agent_tag(line: &str) -> bool {
 
 fn is_agent_word(w: &str) -> bool {
     w.eq_ignore_ascii_case("#agent")
+}
+
+/// Is `tag` (with or without its `#`) one of the priority words?
+pub fn is_priority(tag: &str) -> bool {
+    let t = tag.trim_start_matches('#').to_lowercase();
+    PRIORITIES.iter().any(|(w, _, _)| *w == t)
 }
 
 /// `line` without its `#agent` tag, the rest as it was.

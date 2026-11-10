@@ -9,6 +9,10 @@
 //! exactly the sweep moves the line with no model, and when it matches none (a typo, a shortened
 //! name) `notes outbox move` exits 3 and the sweep hands the line to the model with the word as a hint.
 //!
+//! A pasted list is split first (`sheet::split_lists`, run by `notes outbox split` at the start of
+//! each sweep): a line with two or more checkboxes directly under it becomes one line per item, so
+//! each ask routes alone, and its heading's words, `#p:`, `#agent`, `#plan` and priority go on each.
+//!
 //! A `#ask` word marks a question: the sweep answers it with one read-only model call and
 //! `notes outbox answer` takes the line out of the outbox and writes the question and answer to
 //! today's `inbox/<date>.md`, so it never reaches a project's inbox or becomes a row.
@@ -178,6 +182,19 @@ pub fn put(p: &Profile, log: &Logger, base: &str, text: &str) -> Result<i32> {
 /// The lines waiting in the outbox, oldest first.
 pub(crate) fn lines(p: &Profile) -> Result<Vec<sheet::InboxLine>> {
     Ok(sheet::lines_in(&read(p)?, HEADING))
+}
+
+/// Turn the lists waiting in the outbox into one line per ask (`sheet::split_lists`), the first
+/// step of a triage sweep. Does not touch the inbox flag: the sweep that runs this reads after it.
+pub fn split(p: &Profile) -> Result<i32> {
+    let _lock = lock(p)?;
+    let content = read(p)?;
+    let (out, lists) = sheet::split_lists(&content, HEADING);
+    if out != content {
+        md::write_atomic(&p.outbox, &out)?;
+    }
+    ingest::record_splits(p, "outbox", &lists);
+    Ok(0)
 }
 
 /// `notes outbox add <text>`: append `- [ ] <text>` to the outbox and wake the sweep.

@@ -419,7 +419,7 @@ fn add_via(
     }
     refuse_epic_on_board(lane, &[text])?;
     if lane == Lane::Agent {
-        if !is_typed(text) {
+        if !projects::is_typed(text) {
             bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
         }
         if projects::size_of(&format!("- [ ] {text}")).is_none() {
@@ -428,7 +428,7 @@ fn add_via(
     }
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
-    if lane == Lane::Human && !is_typed(text) {
+    if lane == Lane::Human && !projects::is_typed(text) {
         let mut line = format!("- [ ] {text}");
         if let Some(v) = to {
             line = md::add_tag(&line, &projects::fmt_version(v));
@@ -574,18 +574,13 @@ pub(crate) fn inbox_changed(p: &Profile) {
 /// The tag a human's want carries on the agent board, put there by the writer.
 const WANT_TAG: &str = "#requested";
 
-/// Does `text` open with a well-formed `type(area): ` (README "The task row")?
-fn is_typed(text: &str) -> bool {
-    projects::row_type_area(&format!("- [ ] {text}")).is_some()
-}
-
 /// `new` plus each tag of `old` (`#requested`, `#tier/3`) whose name, the part before `/`, `new`
 /// does not set: the row's own tags outlive a rewrite of its words. Issue and PR refs
 /// (`#1469`) are words, not tags, so they stay in the `was:` line only. The priority levels
 /// share one name, so a new `#low` replaces the old `#high` rather than joining it.
 fn carry_tags(old: &str, new: &str) -> String {
     let name = |t: &str| {
-        if is_priority(t) {
+        if md::is_priority(t) {
             return "priority".to_string();
         }
         t.split('/').next().unwrap_or(t).to_string()
@@ -661,6 +656,20 @@ pub(crate) fn filed_on(line: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Turn the lists waiting in this sheet's `## Inbox` into one line per ask
+/// (`sheet::split_lists`), the first step of a triage sweep.
+pub fn inbox_split(p: &Profile, name: &str, lane: Lane) -> Result<i32> {
+    let Some((path, content)) = sheet_and_content(p, name, lane)? else {
+        return Ok(0);
+    };
+    let (out, lists) = sheet::split_lists(&content, sheet::INBOX);
+    if out != content {
+        write_sheet(&path, &out)?;
+    }
+    crate::ingest::record_splits(p, name, &lists);
+    Ok(0)
+}
+
 /// `notes ptask <name> inbox [--json]` - the lines waiting in `## Inbox`, oldest first:
 /// TSV `path<TAB>line<TAB>text`, or one JSON array of `{line, raw, text, details, typed}`,
 /// `typed` when the text already reads `type(area): title`.
@@ -675,7 +684,7 @@ pub fn inbox(p: &Profile, name: &str, json: bool, lane: Lane) -> Result<i32> {
             .map(|l| {
                 serde_json::json!({
                     "line": l.line, "raw": l.raw, "text": l.text, "details": l.details,
-                    "typed": is_typed(&l.text),
+                    "typed": projects::is_typed(&l.text),
                 })
             })
             .collect();
@@ -804,7 +813,7 @@ fn file_via(
             let texts: Vec<String> = if let Some(l) = &linked {
                 l.clone()
             } else if as_is {
-                if !is_typed(&line.text) {
+                if !projects::is_typed(&line.text) {
                     bail!("'{}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>", line.text);
                 }
                 vec![line.text.clone()]
@@ -812,7 +821,7 @@ fn file_via(
                 texts.clone()
             };
             let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
-            if let Some(bad) = texts.iter().find(|t| !is_typed(t)) {
+            if let Some(bad) = texts.iter().find(|t| !projects::is_typed(t)) {
                 bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
             }
             let to = to.as_deref().map(parse_to).transpose()?;
@@ -1622,18 +1631,13 @@ pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
         .into_iter()
         .chain(remove.iter().map(String::as_str))
         .fold(line.to_string(), |l, t| md::drop_tag(&l, t));
-    if add.iter().any(|a| is_priority(a)) {
+    if add.iter().any(|a| md::is_priority(a)) {
         l = md::strip_priority_tag(&l);
     }
     add.iter().fold(l, |l, t| md::add_tag(&l, t))
 }
 
 /// Is `tag` (`#high`, or bare `high`) one of the priority levels?
-fn is_priority(tag: &str) -> bool {
-    let t = tag.trim_start_matches('#').to_lowercase();
-    md::PRIORITIES.iter().any(|(w, _, _)| *w == t)
-}
-
 /// The row's `#size/<s>` tag, read from its text before the marker comment.
 pub(crate) fn size_tag(line: &str) -> Option<&str> {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
@@ -1798,7 +1802,7 @@ pub fn retext(
         let Some(t) = text.filter(|t| !t.is_empty()) else {
             bail!("--was rewrites a row, so it needs --text \"<type(area): title>\"");
         };
-        if !is_typed(t) {
+        if !projects::is_typed(t) {
             bail!(
                 "'{t}' is not `type(area): title` (README \"The task row\"), so nothing was edited"
             );
