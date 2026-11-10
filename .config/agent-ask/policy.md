@@ -14,8 +14,8 @@ For each criterion, quote the words of the ask that show it, then say whether it
 
 Any one of these, on any decision, makes the ask the human's.
 
-- (knowledge) The ask needs something the agent cannot get: a fact only the human holds, such as their schedule, a private observation or a preference not written anywhere, or an act only the human can do, such as a physical device, a playtest, a login or an account. What an agent could read, run or look up is not knowledge.
-- (external) Acting on the answer reaches outside the repos and cannot simply be undone: production data or infrastructure, DNS, secrets, signing keys, store listings, releases, tags, deploys, pushing past a red check, money, paid services, usage limits, security, privacy, health information, compliance, legal. Opening or landing a PR in the human's own repo is not external: landing is standing authorization and a squash merge reverts.
+- (knowledge) The ask needs something the agent cannot get: a fact only the human holds, such as their schedule, a private observation or a preference not written anywhere, or an act only the human can do, such as a physical device, a playtest, a login or an account. What an agent could read, run or look up is not knowledge, and neither is a credential for a service we run: the agent mints it through that service's admin path.
+- (external) Acting on the answer reaches outside the repos and cannot simply be undone: production data or infrastructure, DNS, secrets, signing keys, store listings, releases, tags, deploys, pushing past a red check, money, paid services, usage limits, security, privacy, health information, compliance, legal. Opening or landing a PR in the human's own repo is not external: landing is standing authorization and a squash merge reverts. Nor is minting a scoped credential for a service we run, through its admin path, into SOPS: that admin path revokes it. What the credential may spend or reach, such as a budget or which models or repos, is still external.
 - (taste) It turns on how something looks, feels, plays or reads: visuals, game feel, wording and names a user sees. Which work comes next, what to keep and what to drop is not taste unless that is what it turns on. Approving as written an agent's own plan, mockup or definitions is not taste either, when that approval is reversible.
 - (unclear-ask) The ask cannot be judged as written: its options are bare labels with no meanings, or the question does not say what is being decided. This counts against the ask, not against you.
 - (against-precedent) A listed past disagreement covers this same decision, so the human would likely go against this recommendation again. Quote its id and the words that match. A disagreement on a different decision does not count, however close its topic.
@@ -43,7 +43,7 @@ Answer this one too. It is what a reader sees behind a yes, and it never sends a
 
 Pick the one that fits the whole ask, or the main decision of a bundle. A type says what kind of question this is, not who answers it: any type can still be the human's. Use `other` when none fits. Never stretch one, because the count of `other` is how a missing type is found.
 
-- `proceed_or_hold`: go, hold, start, continue or park a planned phase or work already scoped.
+- `proceed_or_hold`: go, hold, start, continue or park a planned phase or work already scoped, including minting a credential for a service we run through its admin path.
 - `product_taste`: user-facing behaviour, UX, visuals, game design, keybindings, dashboard layout, a product or brand decision.
 - `agent_policy`: a rule, budget, cap, tool or skill loading, or process-gate setting for the agent harness.
 - `ci_capacity_ops`: a CI gate, the runner pool, machine load, flaky-test quarantine, killing and draining jobs.
@@ -52,7 +52,7 @@ Pick the one that fits the whole ask, or the main decision of a bundle. A type s
 - `ship_deploy`: merge, land, tag, deploy, rebuild or restart something already built.
 - `human_physical_action`: the human must run a command, click, download, install or sign in.
 - `engineering_design`: pick an internal technical approach or tool.
-- `credential_or_account`: create, store or use secrets, keys, tokens or external-account access.
+- `credential_or_account`: an account, key or login at a service we do not run (GitHub, Steam, app stores, banks and brokers, SaaS), or the human's own login. Never a credential for a service we run ourselves (self-hosted on our cluster, such as Forgejo, mem0 or LiteLLM): that is `proceed_or_hold`.
 - `accept_recommendations`: accept all listed recommendations, or go through them one by one.
 - `session_status`: close, keep, defer or wind down a session, window or ticket.
 - `other`: none of these.
