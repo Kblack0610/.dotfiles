@@ -155,5 +155,5 @@ Baseline before any of this: REAPER had only the stock Cockos ReaPlugs, no `~/.v
 
 ## Related
 
-- Macs (`m1`, `mac-studio`) are the no-friction fallback for Archetype: macOS is a first-class Neural DSP target, REAPER.app is already installed on `mac-studio`, no bridge and no XEmbed problem. Checked 2026-07-26: neither Mac has any third-party audio plugin installed.
+- The Mac (`m1`) is the no-friction fallback for Archetype: macOS is a first-class Neural DSP target, no bridge and no XEmbed problem. Checked 2026-07-26: `m1` had no third-party audio plugin installed.
 - History: "make a song in reaper" sat in the journal backlog from 2026-03-29 and was closed 2026-04-29 with the song actually made in GarageBand, so REAPER on Linux has not yet produced anything. This setup is the attempt to change that.
