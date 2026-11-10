@@ -124,6 +124,9 @@ sandbox_init() {
   # item would otherwise be read as the test's own: an attended post renders into the pane,
   # and an item satisfies the focus gate.
   unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM
+  # pre-stop-checks.sh exports its result file to the Stop hooks it runs, this suite among them:
+  # a FAIL there made 95-wind-down.sh defer inside wind_down.bats, a red only the Stop hook saw.
+  unset CI_RESULT_FILE
 
   # A suite run from a dispatched session (agentctl-run) also inherits CLAUDE_HEADLESS=1, which
   # switches the focus gate off, and AGENTCTL_MODEL, which outranks the conf MODEL and the
