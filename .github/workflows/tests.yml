@@ -17,8 +17,8 @@ name: shell tests
 #          so a crate could stop compiling and the only symptom would be a tool quietly
 #          behaving like an older version.
 #   lint   shellcheck + shfmt + house rules, in the pinned image.
-#   report the fast and ui tiers' JUnit, drawn as one "bats results" check with a row per
-#          file and every failed test, so a red reads without opening the logs.
+#   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
+#          and every failed test, so a red reads without opening the logs.
 on:
   # `push` is restricted to main on purpose. With `branches: ['**']` every job runs TWICE on
   # a PR branch -- once for the push event, once for the pull_request event -- which doubles
@@ -157,19 +157,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Draws only: the tier jobs are the gate, so a failed test fails them, not this check.
-  # The token is read-only by default; this job alone may write the check it creates. A fork
-  # PR's token cannot write checks at all, so the job skips there instead of going red.
+  # Draws only: the tier jobs are the gate, so a failed test fails them, not this job. The
+  # reporter writes the job summary (use-actions-summary, its default), so it needs no write
+  # token and runs on fork PRs too.
   report:
     name: test report
     needs: [fast, ui]
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
-      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
