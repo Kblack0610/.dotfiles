@@ -152,6 +152,16 @@ load_queue_asks() {
   QUEUE_ASKS=" $(cut -f2 <<<"$QUEUE_HOLDS" | tr '\n' ' ') "
 }
 
+# settle_queue <id>: once the human answered or cancelled this ask, the queue fails each item it can
+# no longer release (agent-queue settle-ask), so none waits for good behind it (2026-11-10: three
+# items behind vmToL3 and VOEW9i). Its failure must not fail the answer or the cancel.
+settle_queue() {
+  queue_waits "$1" || return 0
+  $AGENT_ASK_QUEUE_CMD settle-ask "$1" >&2 || echo "agent-ask: items held on $1 not settled: agent-queue settle-ask $1" >&2
+  unset QUEUE_ASKS QUEUE_HOLDS
+  return 0
+}
+
 # queue_holders <id>: the active items held behind this ask, `<slug><TAB><releasing options>` each.
 queue_holders() {
   load_queue_asks
@@ -637,6 +647,7 @@ record_answer() {
     write_fields "$f" status answered answer "$answer" answered_at "$(now_iso)" answered_by "$by"
   ) 9>"$(dirname "$f")/.lock" || return 1
   queue_changed
+  [ "$by" != human ] || settle_queue "$(field "$f" id)"
 }
 
 # start_resume <id>: answering IS starting (see header). ask-resume marks before it runs and
@@ -1265,6 +1276,7 @@ close_ask() {
   [ $# -gt 0 ] && set_field "$f" closed_reason "$(oneline "$*")"
   queue_changed
   echo "$to $id" >&2
+  settle_queue "$id"
 }
 
 cmd_cancel() { close_ask cancelled "$@"; }

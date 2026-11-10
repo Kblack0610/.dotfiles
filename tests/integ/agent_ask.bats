@@ -190,6 +190,29 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   refute_output --partial 'board'
 }
 
+# 2026-11-10: three items sat for days behind vmToL3 (answered a, the gate wanted b) and VOEW9i
+# (cancelled), and queue-starved tripped on them.
+@test "answer and cancel fail the queued items the ask can no longer release, and only those" {
+  local opts='go=run it now|later=run it later' a b
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  a="$("$AGENT_ASK" post --project demo --options "$opts" 'start it?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-go --tags "ask:$a=go" "runs on go" >/dev/null
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-later --tags "ask:$a=later" "runs on later" >/dev/null
+  "$AGENT_ASK" answer "$a" go 2>/dev/null
+  run "$AGENT_ASK_QUEUE_CMD" show on-later
+  assert_line 'status: failed'
+  assert_line "note: dead hold: ask:$a=later (answered go, not later)"
+  # The answer released this one, so it stays queued for dispatch to start.
+  run "$AGENT_ASK_QUEUE_CMD" show on-go
+  assert_line 'state: queued'
+  b="$("$AGENT_ASK" post --project demo --options "$opts" 'and the next?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-b --tags "ask:$b=go" "runs on go" >/dev/null
+  "$AGENT_ASK" cancel "$b" 2>/dev/null
+  run "$AGENT_ASK_QUEUE_CMD" show on-b
+  assert_line 'status: failed'
+  assert_line "note: dead hold: ask:$b=go (cancelled)"
+}
+
 @test "decision: the human's answer with its meaning, and nothing before that or from the judge" {
   local id
   id="$("$AGENT_ASK" post --project demo --options 'a=take it|b=leave it' 'which one?')"
