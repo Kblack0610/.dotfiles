@@ -1100,7 +1100,9 @@ impl App {
             let tx = self.tx.clone();
             let runner = self.runner.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::Tasks(Box::new(hub_core::tasks::feed(runner.as_ref()))));
+                let _ = tx.send(Msg::Tasks(Box::new(hub_core::sheet_view::feed(
+                    runner.as_ref(),
+                ))));
             });
         }
     }
@@ -4797,14 +4799,14 @@ mod tests {
         a.handle(key('F'));
         let s = screen(&mut a, 140, 30);
         assert!(
-            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "OPEN ROWS  3 of 3 open rows"),
+            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "ROWS  4 of 4 rows"),
             "{s}"
         );
         assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");
         assert!(s.lines().last().unwrap().contains("t/T tag"), "{s}");
         // The selected row in full sits under the rows, above the keys.
         assert!(
-            at_line(&s, "OPEN ROWS") < at_line(&s, "no id  bnb/demo  human  v0.1.0  open  urgent"),
+            at_line(&s, "ROWS  ") < at_line(&s, "no id  bnb/demo  human  v0.1.0  open  urgent"),
             "{s}"
         );
         assert!(

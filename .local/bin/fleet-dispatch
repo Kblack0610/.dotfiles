@@ -192,12 +192,13 @@ prio_of() {
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): cleanup of an AI system
-# (cleanup_row), then the project's priority,
-# then the row's due date (overdue, today, within 3 days, later or none), then what the human asked
-# for (#requested, as fill_night ranks it), then worker
-# order, then the row's priority, then its kind (kinds.json `rank`: a bug first), then stage, then
-# oldest first.
-# rank_fields adds the counted inputs and a `why` naming them, so the order explains itself; no model scores anything. Dates are this year's MMDD:
+# (cleanup_row), then the project's #prio, then the row's feed rank (`frank`, the `rank` of
+# `notes board --json`: due date, priority, #requested, then oldest, notes-cli src/rank.rs, so the
+# order within a project is the board's own and dispatch derives none of it; a row the feed does not
+# rank goes after every ranked one), then worker order, then its kind (kinds.json `rank`: a bug
+# first), then stage.
+# rank_fields adds the counted inputs and a `why` naming them, so the order explains itself; `why` only
+# explains the feed's rank, it does not decide it. Dates are this year's MMDD:
 # a due date half a year back is next year's, a created date in the future is last year's.
 # shellcheck disable=SC2016
 RANK_JQ='
@@ -223,7 +224,7 @@ def rank_fields($today; $pprio):
                 (.klabel // "" | select(. != "")),
                 .stage,
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
-def rank: sort_by((.cleanup // 1), (.pprio // 2), (.due // 3), (.req // 1), (.wrank // 0), .prio, (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), -(.age // 0));
+def rank: sort_by((.cleanup // 1), (.pprio // 2), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -439,18 +440,20 @@ def eff_size($d): if (.row_size // "") != "" then .row_size else ($d.size // "")
 # detail_sig <details json> -> the dsig of a row's details; "none" for a row with none
 detail_sig() { if [ "$1" = '""' ]; then echo none; else printf '%s' "$1" | sig; fi; }
 
-# load_extras -- fill the caller's `local -A DET PLN PAR` from one board read, by "<project>\t<lane>\t<id>":
-# DET the row's "<planned 0|1>\t<details json>", PLN 1 when the row is tagged #plan; PAR by id alone
-# (a child may sit on another project's board), 1 for a parent: an open row names it in `#of/`.
+# load_extras -- fill the caller's `local -A DET PLN PAR RNK` from one board read, by "<project>\t<lane>\t<id>":
+# DET the row's "<planned 0|1>\t<details json>", PLN 1 when the row is tagged #plan, RNK its feed `rank`
+# (RANK_JQ's `frank`); PAR by id alone (a child may sit on another project's board), 1 for a parent:
+# an open row names it in `#of/`.
 load_extras() {
-  local board p l i t g d
+  local board p l i r t g d
   board=$(notes board --json 2>/dev/null)
-  while IFS=$'\t' read -r p l i t g d; do
+  while IFS=$'\t' read -r p l i r t g d; do
     DET["$p"$'\t'"$l"$'\t'"$i"]="$g"$'\t'"$d"
     [ "$t" = 1 ] && PLN["$p"$'\t'"$l"$'\t'"$i"]=1
+    [ "$r" = - ] || RNK["$p"$'\t'"$l"$'\t'"$i"]=$r
   done < <(jq -r --argjson n "$DISPATCH_DETAIL_CHARS" "$ROW_JQ"'
     .rows[]? | select(.id != null)
-    | "\(.project)\t\(.lane)\t\(.id)\t\(if plan_tagged then 1 else 0 end)\t\(if planned then 1 else 0 end)\t\(details_json($n))"' <<<"$board")
+    | "\(.project)\t\(.lane)\t\(.id)\t\(.rank // "-")\t\(if plan_tagged then 1 else 0 end)\t\(if planned then 1 else 0 end)\t\(details_json($n))"' <<<"$board")
   while read -r i; do
     [ -n "$i" ] && PAR[$i]=1
   done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | .[3:]' <<<"$board")
@@ -884,7 +887,7 @@ judged_keys() {
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
   local x planned dj dsig plan off kind board
-  local -A DET=() PLN=() PAR=()
+  local -A DET=() PLN=() PAR=() RNK=()
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
   table=$(workers)
@@ -935,10 +938,10 @@ cmd_candidates() {
             --arg worker "$worker" --argjson wrank "$rank" --arg today "$today" --arg pprio "$pprio" \
             --argjson cleanup "$(cleanup_row "$name" "$text")" --arg nobody "$nobody" --argjson active "$active" \
             --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
-            --arg rsize "$(row_size "$text")" --arg off "$off" \
+            --arg rsize "$(row_size "$text")" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
-              worker: $worker, wrank: $wrank, cleanup: $cleanup, details: $details, dsig: $dsig, planned: ($planned == 1),
+              worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, details: $details, dsig: $dsig, planned: ($planned == 1),
               kind: $kind, krank: $krank, klabel: $klabel, row_size: $rsize}
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
@@ -3568,7 +3571,7 @@ cmd_fill() {
 # first (cleanup rows leave for t3_cleanup_picks, so kinds.json is the one cleanup rank).
 night_rows() {
   local judged="$1" name sheet stage repo key text body t line n x planned dj dsig board
-  local -A DET=() PLN=() PAR=()
+  local -A DET=() PLN=() PAR=() RNK=()
   load_extras
   load_kinds
   load_focus
@@ -3602,9 +3605,9 @@ night_rows() {
         --arg body "$body" --arg repo "$repo" --arg line "$line" --argjson prio "$(prio_rank "$text")" \
         --arg priority "$(row_priority "$text" "$name")" --argjson order "$n" --arg obs "$DISPATCH_NIGHT_OBSERVER" \
         --arg profile "$DISPATCH_NIGHT_PROFILE" --arg rsize "$(row_size "$text")" --arg pprio "$(prio_of "$sheet")" \
-        --argjson cleanup "$(cleanup_row "$name" "$text")" \
+        --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson frank "${RNK["$name"$'\t'agent$'\t'"$key"]:-null}" \
         '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
-          text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, row_size: $rsize,
+          text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, frank: $frank, row_size: $rsize,
           cleanup: $cleanup, project_prio: $pprio,
           details: $details, dsig: $dsig, planned: ($planned == 1),
           rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}'

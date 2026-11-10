@@ -35,9 +35,10 @@ impl Rank {
     /// (one project's two lanes, the queue's candidates) by one integer and derives nothing.
     pub(crate) fn key(&self) -> u64 {
         // Days since 1970 fit in six digits until the year 4707.
-        let day = (self.created - NaiveDate::default()).num_days().clamp(0, 999_999) as u64;
-        let head = (u64::from(self.due) * md::PRIORITIES.len() as u64 + u64::from(self.prio))
-            * 2
+        let day = (self.created - NaiveDate::default())
+            .num_days()
+            .clamp(0, 999_999) as u64;
+        let head = (u64::from(self.due) * md::PRIORITIES.len() as u64 + u64::from(self.prio)) * 2
             + u64::from(self.req);
         head * 1_000_000 + day
     }

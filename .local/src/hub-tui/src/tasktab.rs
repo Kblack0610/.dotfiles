@@ -1,8 +1,11 @@
-//! The rows under the Projects tab (projtab.rs): one project's open rows, or every project's
-//! (the All entry), as `notes board --json` prints them, read through `hub_core::tasks`, the
-//! same feed and writes as agent-web's Projects tab. They are one table on `DataTable`, whose
-//! text wraps so a row shows whole; All names each profile's open Focus count, whose rows are
-//! the Daily tab's (focustab.rs).
+//! The rows under the Projects tab (projtab.rs): one project's rows, or every project's (the
+//! All entry), as `notes board --json` prints them, read through `hub_core::sheet_view::feed`,
+//! the same feed and writes as agent-web's Projects tab. They are one table on `DataTable`, in
+//! the sheet's order: each section (Epics, Now, Next up, Backlog, then Done, newest first)
+//! named on its first row, with a WHEN column (`Row::when`: the queue state and forecast day,
+//! or a closed row's day and PR); a closed row is read-only. The text wraps so a row shows
+//! whole; All names each profile's open Focus count, whose rows are the Daily tab's
+//! (focustab.rs).
 //!
 //! j/k pick a row, `/` searches (`lane:agent`, `-tag:ai`), `f` steps the chip, `S` flips the sort,
 //! Esc clears the view. A row's own keys come first: a, s, d/D, x/X, m, e, t/T, + and - add,
@@ -55,8 +58,9 @@ pub struct Prompt {
 }
 
 /// The table's columns, in `tasks::Row`'s COLUMNS order so the sort mark lands on its header.
-const HEADER: [&str; 10] = [
-    "PRIORITY", "PROJECT", "LANE", "STATE", "ID", "VERSION", "SIZE", "TIER", "SINCE", "TEXT",
+const HEADER: [&str; 12] = [
+    "SECTION", "PRIORITY", "PROJECT", "LANE", "STATE", "ID", "VERSION", "SIZE", "TIER", "SINCE",
+    "WHEN", "TEXT",
 ];
 
 #[derive(Debug, Default)]
@@ -77,9 +81,10 @@ fn group(r: &Row) -> String {
     format!("{}/{}", r.profile, r.project.as_deref().unwrap_or_default())
 }
 
-/// The open rows of the project in view, before the search and the chip.
+/// The rows of the project in view, before the search and the chip: open by section and rank,
+/// then the closed ones by day.
 fn scoped<'a>(f: &'a Feed, v: &TaskView) -> Vec<&'a Row> {
-    f.open_rows(
+    f.board_rows(
         v.project
             .as_ref()
             .map(|(profile, project)| (profile.as_str(), project.as_str())),
@@ -130,6 +135,7 @@ impl TaskView {
             Some(r) if r.lane == "playtest" && !playtest_ok => {
                 "a playtest check has no state, version or edit: d done, x drop"
             }
+            Some(r) if r.state == "done" => "a closed row: o opens it on its sheet",
             Some(r) => {
                 self.said = None;
                 return Some(r.clone());
@@ -370,7 +376,7 @@ fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     ])
 }
 
-fn row(r: &Row, p: Palette) -> Vec<Cell> {
+fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
     let prio = match r.priority.as_str() {
         "urgent" => p.bad(),
         "high" => p.warn(),
@@ -386,7 +392,9 @@ fn row(r: &Row, p: Palette) -> Vec<Cell> {
         text += "  #requested";
     }
     let or_dash = |s: Option<&str>| s.unwrap_or("-").to_string().into();
+    let when = r.when();
     vec![
+        cell(section, p.head()),
         cell(r.priority.clone(), prio),
         or_dash(r.project.as_deref()),
         r.lane.clone().into(),
@@ -396,6 +404,7 @@ fn row(r: &Row, p: Palette) -> Vec<Cell> {
         or_dash(r.size.as_deref()),
         r.tier.map_or("-".to_string(), |t| t.to_string()).into(),
         or_dash(r.since.as_deref().map(|d| d.get(5..).unwrap_or(d))),
+        or_dash((!when.is_empty()).then_some(when.as_str())),
         text.into(),
     ]
 }
@@ -408,11 +417,11 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
         clip_line(
             heading(
                 if v.project.is_some() {
-                    "OPEN ROWS"
+                    "ROWS"
                 } else {
                     "ALL PROJECTS"
                 },
-                format!("  {} of {} open rows", rows.len(), all.len()),
+                format!("  {} of {} rows", rows.len(), all.len()),
                 p,
             ),
             w,
@@ -435,19 +444,32 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             w,
         ));
     }
+    for e in &f.errors {
+        out.push(clip_line(
+            Line::styled(format!("no forecast or queue state: {e}"), p.warn()),
+            w,
+        ));
+    }
     out.push(Line::raw(""));
     if rows.is_empty() {
-        out.push(Line::styled("No open rows match.", p.dim()));
+        out.push(Line::styled("No rows match.", p.dim()));
         return (out, None);
     }
     let (mut t, starts) = Table {
         header: HEADER.to_vec(),
-        rows: rows.iter().map(|r| row(r, p)).collect(),
-        keep: vec![0, 3, 2, 1, 5, 4, 6, 8, 7],
-        flex: Some(9),
+        rows: rows
+            .iter()
+            .zip(tasks::section_labels(
+                &rows.iter().map(|r| **r).collect::<Vec<_>>(),
+                !v.table.view.sort.is_empty(),
+            ))
+            .map(|(r, s)| row(r, s, p))
+            .collect(),
+        keep: vec![0, 10, 1, 4, 3, 2, 6, 5, 7, 9, 8],
+        flex: Some(11),
         flexmin: 20,
         flexkeep: true,
-        cap: vec![(5, 16)],
+        cap: vec![(6, 16), (10, 18)],
         mark: v.table.mark::<Row>(),
         ..Default::default()
     }
@@ -573,6 +595,13 @@ pub(crate) mod tests {
 
     pub fn fixture() -> Feed {
         let row = |profile: &str, project: Option<&str>, lane: &str, prio: &str, text: &str| Row {
+            section: Some(match prio {
+                "urgent" => "now",
+                "high" => "next",
+                _ => "backlog",
+            })
+            .filter(|_| lane != "playtest")
+            .map(String::from),
             profile: profile.into(),
             project: project.map(String::from),
             lane: lane.into(),
@@ -605,10 +634,18 @@ pub(crate) mod tests {
                 row("bnb", Some("demo"), "agent", "high", "sweep the logs"),
                 row("bnb", Some("demo"), "playtest", "high", "jump feels late"),
             ],
+            done: vec![Row {
+                state: "done".into(),
+                section: Some("done".into()),
+                closed: Some("2026-11-03".into()),
+                prs: vec!["63".into()],
+                ..row("bnb", Some("demo"), "agent", "high", "ship the title")
+            }],
             focus: vec![tasks::FocusOpen {
                 profile: "bnb".into(),
                 open: 1,
             }],
+            ..Default::default()
         }
     }
 
@@ -636,16 +673,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_rows_are_one_table_most_urgent_first_under_the_focus_count() {
+    fn the_rows_are_one_table_in_the_sheets_sections_under_the_focus_count() {
         let f = fixture();
-        let v = TaskView::default();
+        let mut v = TaskView::default();
         let s = text(&f, &v, 120);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
-        assert!(s.contains("ALL PROJECTS  4 of 4 open rows"), "{s}");
+        assert!(s.contains("ALL PROJECTS  5 of 5 rows"), "{s}");
         assert!(
-            s.contains("all 4  in progress 0  filed today 0  urgent 1"),
+            s.contains("all 5  in progress 0  filed today 0  urgent 1"),
             "{s}"
         );
+        // Each section is named once, over its first row, then the closed rows with day and PR.
+        assert!(at("NOW (1)") < at("NEXT UP (1)") && at("BACKLOG (1)") < at("DONE (1)"));
+        assert!(s.contains("11-03  pr 63"), "{s}");
         assert!(at("FOCUS  bnb 1 open, in the daily note") < at("PRIORITY"));
         assert!(
             at("PROJECT") < at("LANE") && at("SINCE") < at("TEXT"),
@@ -659,13 +699,18 @@ pub(crate) mod tests {
             [
                 "fix the menu",
                 "sweep the logs",
+                "water the beds",
                 "jump feels late",
-                "water the beds"
+                "ship the title"
             ]
         );
         let (_, line) = page(&f, &v, Palette { no_color: true }, 120);
         // heading, chips, status, focus count, blank, table header, then the first row.
         assert_eq!(line, Some(6));
+        // A closed row is read-only here.
+        v.table.sel = 4;
+        assert_eq!(v.key(key('s'), Some(&f), 10), Ask::Done);
+        assert!(matches!(&v.said, Some(Err(e)) if e.contains("closed row")));
         let one = TaskView {
             project: Some(("bnb".into(), "demo".into())),
             ..Default::default()
@@ -687,13 +732,16 @@ pub(crate) mod tests {
         assert_eq!(enter(&mut v, &f), Ask::Done);
         assert_eq!(shown(&f, &v).len(), 1);
         v.key(KeyEvent::from(KeyCode::Esc), Some(&f), 10);
-        assert_eq!(shown(&f, &v).len(), 4, "Esc clears the view");
+        assert_eq!(shown(&f, &v).len(), 5, "Esc clears the view");
 
         v.key(key('/'), Some(&f), 10);
         typed(&mut v, &f, "lane:agent");
         enter(&mut v, &f);
         assert_eq!(shown(&f, &v)[0].text, "sweep the logs");
-        assert!(text(&f, &v, 120).contains("1 of 4 open rows"));
+        assert!(
+            text(&f, &v, 120).contains("2 of 5 rows"),
+            "the open and the closed agent row"
+        );
         v.key(KeyEvent::from(KeyCode::Esc), Some(&f), 10);
 
         // f steps the chips, c the sort column, S its direction; s is still Start.
@@ -701,12 +749,14 @@ pub(crate) mod tests {
         assert_eq!(v.table.view.state, "in progress");
         v.key(KeyEvent::from(KeyCode::Esc), Some(&f), 10);
         v.key(key('c'), Some(&f), 10);
-        assert_eq!(v.table.view.sort, "priority");
+        assert_eq!(v.table.view.sort, "section");
         for _ in 0..=HEADER.len() {
             v.key(key('c'), Some(&f), 10);
             assert!(!["profile", "tag"].contains(&v.table.view.sort.as_str()));
         }
-        assert_eq!(v.table.view.sort, "priority", "c comes back round");
+        assert_eq!(v.table.view.sort, "section", "c comes back round");
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "priority");
         assert!(text(&f, &v, 120).contains("PRIORITY v"));
         v.key(key('S'), Some(&f), 10);
         assert_eq!(shown(&f, &v)[0].text, "water the beds");
@@ -719,7 +769,7 @@ pub(crate) mod tests {
         );
 
         v.table.view.q = "nothing like it".into();
-        assert!(text(&f, &v, 120).contains("No open rows match."));
+        assert!(text(&f, &v, 120).contains("No rows match."));
     }
 
     #[test]
@@ -889,7 +939,7 @@ pub(crate) mod tests {
         );
 
         // The playtest row refuses the version keys and a move before anything runs.
-        for _ in 0..2 {
+        for _ in 0..3 {
             v.key(key('j'), Some(&f), 10);
         }
         assert_eq!(v.selected(&f).unwrap().lane, "playtest");
@@ -903,7 +953,7 @@ pub(crate) mod tests {
     fn add_goes_to_the_selected_rows_project_and_lane() {
         let f = fixture();
         let mut v = TaskView::default();
-        for _ in 0..2 {
+        for _ in 0..3 {
             v.key(key('j'), Some(&f), 10);
         }
         assert_eq!(v.selected(&f).unwrap().lane, "playtest");
@@ -958,9 +1008,9 @@ pub(crate) mod tests {
             project: Some(("bnb".into(), "demo".into())),
             ..Default::default()
         };
-        assert_eq!(shown(&f, &v).len(), 3, "only bnb/demo's rows");
+        assert_eq!(shown(&f, &v).len(), 4, "only bnb/demo's rows");
         let s = text(&f, &v, 60);
-        assert!(s.contains("OPEN ROWS  3 of 3 open rows"), "{s}");
+        assert!(s.contains("ROWS  4 of 4 rows"), "{s}");
         assert!(!s.contains('~'), "nothing is clipped:\n{s}");
         assert!(
             s.contains("the menu") && s.contains("map"),

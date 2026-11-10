@@ -1,8 +1,8 @@
-//! The task board: every project's open rows as `notes board --json` prints them, for agent-web's
-//! Board tab and the hub TUI's. `notes` is the sheets' only writer, so this module never opens a
-//! sheet: it reads the feed through a `Runner` and writes with `notes ptask ... --exact`, which
-//! matches the row's raw line byte for byte and writes nothing when the row changed since the
-//! read (design: notes-cli README, "The task feed").
+//! The task board: every project's rows, open and closed, as `notes board --json` prints them,
+//! for agent-web's Board tab and the hub TUI's. `notes` is the sheets' only writer, so this
+//! module never opens a sheet: it reads the feed through a `Runner` and writes with
+//! `notes ptask ... --exact`, which matches the row's raw line byte for byte and writes nothing
+//! when the row changed since the read (design: notes-cli README, "The task feed").
 
 use serde::{Deserialize, Serialize};
 
@@ -62,9 +62,101 @@ pub struct Row {
     pub sheet: String,
     pub line: usize,
     pub raw: String,
+    /// The sheet section the sweep lays it out in (`epics`, `now`, `next`, `backlog`, `done`);
+    /// None on a playtest row. With `rank` it is the one order a view draws (notes-cli rank.rs).
+    pub section: Option<String>,
+    /// Smaller is sooner; comparable across sheets.
+    pub rank: u64,
+    /// `#dueMMDD` as `YYYY-MM-DD`.
+    pub due: Option<String>,
+    /// The id its `#of/<id>` names.
+    pub parent: Option<String>,
+    /// The `#size/` weight, 1 unsized.
+    pub weight: u32,
+    /// The day a closed row closed.
+    pub closed: Option<String>,
+    /// The PRs its marker names.
+    pub prs: Vec<String>,
+    /// `YYYY-MM-DD` the row should close at the project's 28-day close rate, after every row
+    /// ranked ahead of it (`projects::forecast`). Never in the sheet.
+    pub forecast: Option<String>,
+    /// The state of the queue item whose `row:` names it (`queued`, `running`, `waiting`,
+    /// `review`), set by `queue_states`.
+    pub queue: Option<String>,
+}
+
+/// The sections in sheet order, then a row in none (a playtest check).
+pub const SECTIONS: [&str; 5] = ["epics", "now", "next", "backlog", "done"];
+
+/// A section's place in [`SECTIONS`]; past the end for a row in none.
+pub fn section_order(section: Option<&str>) -> usize {
+    section
+        .and_then(|s| SECTIONS.iter().position(|x| *x == s))
+        .unwrap_or(SECTIONS.len())
+}
+
+/// The heading a surface draws over a section, the sheet's own words.
+pub fn section_title(section: Option<&str>) -> &'static str {
+    match section {
+        Some("epics") => "EPICS",
+        Some("now") => "NOW",
+        Some("next") => "NEXT UP",
+        Some("backlog") => "BACKLOG",
+        Some("done") => "DONE",
+        _ => "PLAYTEST",
+    }
+}
+
+/// Each row's section cell on a board: `NEXT UP (10)` over the first row of a section and blank
+/// under it, the way the sheet reads, while the rows are in the sheet's order; under any other
+/// sort each row names its own. The hub and agent-web both draw these.
+pub fn section_labels(rows: &[&Row], sorted: bool) -> Vec<String> {
+    fn of(r: &Row) -> Option<&str> {
+        r.section.as_deref()
+    }
+    rows.iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let title = section_title(r.section.as_deref());
+            if sorted {
+                return title.to_string();
+            }
+            if i > 0 && of(rows[i - 1]) == of(r) {
+                return String::new();
+            }
+            let n = rows[i..].iter().take_while(|x| of(x) == of(r)).count();
+            format!("{title} ({n})")
+        })
+        .collect()
 }
 
 impl Row {
+    /// What a board draws beside the row, the same words on every surface: a closed row's day
+    /// and PRs (`11-07 pr 63`), else its queue item's state and its forecast day (`queued
+    /// ~11-12`).
+    pub fn when(&self) -> String {
+        self.when_with(self.forecast.as_deref())
+    }
+
+    /// [`Row::when`] with `forecast` in place of the row's own, for a view that draws the day
+    /// on fewer rows than the board does.
+    pub fn when_with(&self, forecast: Option<&str>) -> String {
+        use crate::text::short_day;
+        let words: Vec<String> = if self.state == "done" {
+            let prs = (!self.prs.is_empty()).then(|| format!("pr {}", self.prs.join(" ")));
+            self.closed
+                .as_deref()
+                .map(|d| short_day(d).to_string())
+                .into_iter()
+                .chain(prs)
+                .collect()
+        } else {
+            let at = forecast.map(|f| format!("~{}", short_day(f)));
+            self.queue.clone().into_iter().chain(at).collect()
+        };
+        words.join("  ")
+    }
+
     /// Started (`[/]`).
     pub fn doing(&self) -> bool {
         self.state == "doing"
@@ -89,12 +181,12 @@ impl Row {
 /// are query keys, not drawn; `tag:` takes any of a row's tags.
 impl crate::table::Row for Row {
     const COLUMNS: &'static [&'static str] = &[
-        "priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "text",
-        "profile", "tag",
+        "section", "priority", "project", "lane", "state", "id", "version", "size", "tier",
+        "since", "when", "text", "profile", "tag",
     ];
     const STATES: &'static [&'static str] =
         &["all", "in progress", "filed today", "urgent", "requested"];
-    const FACETS: &'static [&'static str] = &["project", "lane", "priority"];
+    const FACETS: &'static [&'static str] = &["section", "project", "lane", "priority"];
     const LEAD: &'static str = "text";
     const GLANCE: &'static [&'static str] = &["priority", "project", "state"];
 
@@ -102,6 +194,7 @@ impl crate::table::Row for Row {
         let text = |s: &str| Val::Text(s.to_string());
         let some = |s: Option<&str>| s.map_or(Val::None, text);
         match col {
+            "section" => text(self.section.as_deref().unwrap_or("playtest")),
             "priority" => text(&self.priority),
             "project" => some(self.project.as_deref()),
             "lane" => text(&self.lane),
@@ -111,6 +204,10 @@ impl crate::table::Row for Row {
             "size" => some(self.size.as_deref()),
             "tier" => self.tier.map_or(Val::None, |t| Val::Num(f64::from(t))),
             "since" => some(self.since.as_deref()),
+            "when" => match self.when() {
+                w if w.is_empty() => Val::None,
+                w => Val::Text(w),
+            },
             "text" => text(&self.text),
             "profile" => text(&self.profile),
             "tag" if self.tags.is_empty() => Val::None,
@@ -149,6 +246,15 @@ impl crate::table::Row for Row {
                 .map_or(Val::None, |i| Val::Num(i as f64))
         };
         match col {
+            // The sheet's order: the section, then the feed's rank within it.
+            "section" => {
+                Val::Num(section_order(self.section.as_deref()) as f64 * 1e15 + self.rank as f64)
+            }
+            "when" => self
+                .forecast
+                .as_deref()
+                .or(self.closed.as_deref())
+                .map_or(Val::None, |d| Val::Text(d.to_string())),
             "priority" => at(&["low", "high", "urgent"], &self.priority),
             "size" => self
                 .size
@@ -196,31 +302,71 @@ pub struct Feed {
     pub projects: Vec<Project>,
     /// Every project's open rows; never a `focus` row.
     pub rows: Vec<Row>,
+    /// Closed rows, newest first (the feed's `done`).
+    pub done: Vec<Row>,
     /// Each profile with open Focus rows, in feed order.
     pub focus: Vec<FocusOpen>,
+    /// What a board read could not join on (`sheet_view::feed`: the stats, the queue), so a
+    /// row with no forecast or queue state says why.
+    pub errors: Vec<String>,
+}
+
+/// Is `r` in `scope`, a (profile, project), or is there no scope?
+fn in_scope(r: &Row, scope: Option<(&str, &str)>) -> bool {
+    scope.is_none_or(|(profile, project)| {
+        r.profile == profile && r.project.as_deref() == Some(project)
+    })
 }
 
 impl Feed {
     /// The open rows of one project as (profile, project), or of every project: the rows table
-    /// before any view, most urgent first, the feed's order within a priority.
+    /// before any view, in the sheet's order: by section, then the feed's rank. Neither is
+    /// derived here; notes-cli's sweep and rank own both.
     pub fn open_rows(&self, scope: Option<(&str, &str)>) -> Vec<&Row> {
         let mut rows: Vec<&Row> = self
             .rows
             .iter()
-            .filter(|r| r.state != "done")
-            .filter(|r| {
-                scope.is_none_or(|(profile, project)| {
-                    r.profile == profile && r.project.as_deref() == Some(project)
-                })
-            })
+            .filter(|r| r.state != "done" && in_scope(r, scope))
             .collect();
-        rows.sort_by_key(|r| {
-            PRIORITIES
-                .iter()
-                .position(|p| *p == r.priority)
-                .unwrap_or(PRIORITIES.len())
-        });
+        rows.sort_by_key(|r| (section_order(r.section.as_deref()), r.rank));
         rows
+    }
+
+    /// The board's rows: the open ones as `open_rows` orders them, then the closed ones newest
+    /// first, each day's by project, so Done reads as the days' work.
+    pub fn board_rows(&self, scope: Option<(&str, &str)>) -> Vec<&Row> {
+        let mut done: Vec<&Row> = self.done.iter().filter(|r| in_scope(r, scope)).collect();
+        done.sort_by(|a, b| {
+            b.closed
+                .cmp(&a.closed)
+                .then_with(|| a.project.cmp(&b.project))
+        });
+        let mut rows = self.open_rows(scope);
+        rows.extend(done);
+        rows
+    }
+
+    /// Put each active queue item's state on the rows its `row:` (`<project>:<id>`) names.
+    pub fn queue_states(&mut self, items: &[crate::queue::Item]) {
+        let mut by: std::collections::HashMap<(&str, &str), &'static str> =
+            std::collections::HashMap::new();
+        for i in items {
+            let word = match i.state {
+                crate::queue::State::Queued => "queued",
+                crate::queue::State::Running => "running",
+                crate::queue::State::Waiting => "waiting",
+                crate::queue::State::Review => "review",
+                crate::queue::State::Done => continue,
+            };
+            if let Some((p, id)) = i.row.as_deref().and_then(|r| r.split_once(':')) {
+                by.insert((p, id), word);
+            }
+        }
+        for r in &mut self.rows {
+            if let (Some(p), Some(id)) = (r.project.as_deref(), r.id.as_deref()) {
+                r.queue = by.get(&(p, id)).map(|w| (*w).to_string());
+            }
+        }
     }
 }
 
@@ -583,6 +729,14 @@ mod tests {
         f.rows[3].size = Some("s".into());
         f.rows[3].requested = true;
         f.rows[3].filed_today = true;
+        for (r, (section, rank)) in
+            f.rows
+                .iter_mut()
+                .zip([("backlog", 1), ("now", 9), ("next", 1), ("next", 5)])
+        {
+            r.section = Some(section.into());
+            r.rank = rank;
+        }
         f
     }
 
@@ -591,10 +745,32 @@ mod tests {
     }
 
     #[test]
-    fn open_rows_are_scoped_most_urgent_first_and_leave_out_done() {
+    fn a_row_shows_the_state_of_the_active_item_that_names_it() {
+        let mut f = rows();
+        f.rows[0].id = Some("de-1".into());
+        f.rows[1].id = Some("de-2".into());
+        f.rows[2].id = Some("de-1".into());
+        let item = |row: &str, state| crate::queue::Item {
+            row: Some(row.into()),
+            state,
+            ..Default::default()
+        };
+        f.queue_states(&[
+            item("demo:de-1", crate::queue::State::Running),
+            item("demo:de-2", crate::queue::State::Done),
+        ]);
+        let got: Vec<Option<&str>> = f.rows.iter().map(|r| r.queue.as_deref()).collect();
+        // A done item says nothing, and the same id in another project is another row.
+        assert_eq!(got, [Some("running"), None, None, None]);
+    }
+
+    #[test]
+    fn open_rows_follow_the_sheet_sections_then_rank_and_leave_out_done() {
         let mut f = rows();
         let all: Vec<&str> = f.open_rows(None).iter().map(|r| r.text.as_str()).collect();
-        assert_eq!(all, ["water", "wire the bar #size/m", "ship", "tidy"]);
+        // Now before Next up before Backlog, then the feed's rank; the old priority sort put the
+        // urgent "water" first.
+        assert_eq!(all, ["wire the bar #size/m", "water", "ship", "tidy"]);
         assert_eq!(f.open_rows(Some(("bnb", "garden"))).len(), 1);
         assert!(f.open_rows(Some(("personal", "garden"))).is_empty());
         f.rows[0].state = "done".into();

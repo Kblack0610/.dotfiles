@@ -885,17 +885,13 @@ fn done_for_dir(
         take(&o, &content, project_tasks::done_rows_of(&content, cur));
     }
     let notes = days
-        .and_then(|_| fs::read_dir(dir.join("agent/versions")).ok())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "md"));
-    for note in notes {
+        .map(|_| crate::projects::version_notes(&crate::projects::agent_dir(dir).join("versions")))
+        .unwrap_or_default();
+    for (v, note) in notes {
         let Ok(content) = fs::read_to_string(&note) else {
             continue;
         };
-        let version = note.file_stem().map(|v| v.to_string_lossy().into_owned());
+        let version = Some(crate::projects::fmt_version(v));
         let lines: Vec<&str> = content.lines().collect();
         for lane in [Lane::Human, Lane::Agent] {
             let Some(span) = md::section_span(&lines, project_tasks::archive_section(lane)) else {
@@ -904,7 +900,11 @@ fn done_for_dir(
             let o = Origin {
                 profile,
                 project: Some(project),
-                lane: if lane == Lane::Human { "human" } else { "agent" },
+                lane: if lane == Lane::Human {
+                    "human"
+                } else {
+                    "agent"
+                },
                 version: version.as_deref(),
                 game: None,
                 sheet: &note,
@@ -1399,10 +1399,8 @@ mod tests {
         );
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
         let (_, rows) = feed_for_dir("bnb", "demo", &dir, today);
-        let got: Vec<(Option<&str>, Option<&str>)> = rows
-            .iter()
-            .map(|r| (r.id.as_deref(), r.section))
-            .collect();
+        let got: Vec<(Option<&str>, Option<&str>)> =
+            rows.iter().map(|r| (r.id.as_deref(), r.section)).collect();
         assert_eq!(
             got,
             [
