@@ -56,7 +56,9 @@ pub const DEFAULT_WINDOW_SECS: i64 = 12 * 3600;
 /// Landed yesterday names at most this many changes, then one line for the fleet's own.
 pub const LANDED_SHOWN: usize = 8;
 /// Overnight names at most this many of each kind (mail, failed work, red watches).
-pub const OVERNIGHT_EACH: usize = 4;
+pub const OVERNIGHT_EACH: usize = 3;
+/// Builds and releases names at most this many changes, then one line for the rest.
+pub const BUILDS_SHOWN: usize = 12;
 /// The day-log area (`.config/day-log/groups`, `@<repo> <area>`) that is the fleet's own tooling.
 const FLEET_AREA: &str = "Fleet tooling";
 /// The queue projects that are the fleet's own, so a failed item there is the agent briefing's.
@@ -722,11 +724,23 @@ fn costs(i: &Inputs) -> Area {
     }
 }
 
-/// A task title without its trailing "(id)": the id goes last, and in the overview not at all.
+/// A task title without its trailing "(id)" or "(#123)": the id goes last, and in the overview
+/// not at all. Only an id-shaped token goes; "(again)" or "(beta)" is the title's own.
 fn plain_title(t: &str) -> &str {
     let t = t.trim();
+    let id_shaped = |w: &str| {
+        let digits = |d: &str| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit());
+        w.strip_prefix('#').is_some_and(digits)
+            || w.rsplit_once('-').is_some_and(|(head, n)| {
+                !head.is_empty()
+                    && head
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    && digits(n)
+            })
+    };
     match t.rfind(" (") {
-        Some(at) if t.ends_with(')') && !t[at + 2..t.len() - 1].contains(' ') => &t[..at],
+        Some(at) if t.ends_with(')') && id_shaped(&t[at + 2..t.len() - 1]) => &t[..at],
         _ => t,
     }
 }
@@ -737,11 +751,13 @@ fn is_fix(title: &str) -> bool {
         .any(|p| title.starts_with(p))
 }
 
-/// One merged PR of yesterday, with how it ranks: 0 urgent, 1 high, 2 a fix, 3 the rest.
+/// One merged PR of yesterday, with how it ranks: 0 urgent, 1 high, 2 a fix, 3 the rest. `fix`
+/// is separate from the rank, so an urgent fix still counts as one.
 struct Change<'a> {
     title: &'a str,
     area: &'a str,
     rank: u8,
+    fix: bool,
 }
 
 /// Yesterday's merged PRs, each ranked by the queue item that carried it (the day log's `by` is
@@ -760,16 +776,18 @@ fn changes<'a>(i: &'a Inputs, rec: &'a Value) -> Vec<Change<'a>> {
         .map(|r| {
             let title = r["title"].as_str().unwrap_or_default();
             let item = r["by"].as_str().and_then(carrier);
+            let fix = is_fix(title) || item.is_some_and(|it| it.kind.as_deref() == Some("fix"));
             let rank = match item.map(|it| it.priority.as_str()) {
                 Some("urgent") => 0,
                 Some("high") => 1,
-                _ if is_fix(title) || item.is_some_and(|it| it.kind.as_deref() == Some("fix")) => 2,
+                _ if fix => 2,
                 _ => 3,
             };
             Change {
                 title: plain_title(title),
                 area: r["area"].as_str().unwrap_or_default(),
                 rank,
+                fix,
             }
         })
         .collect()
@@ -790,13 +808,7 @@ fn landed(i: &Inputs) -> (Vec<String>, Option<String>) {
         "Yesterday {}, {} urgent, {}.",
         plural(all.len(), "PR", "PRs"),
         all.iter().filter(|c| c.rank == 0).count(),
-        plural(
-            all.iter()
-                .filter(|c| c.rank == 2 || is_fix(c.title))
-                .count(),
-            "fix",
-            "fixes"
-        )
+        plural(all.iter().filter(|c| c.fix).count(), "fix", "fixes")
     );
     let (fleet, mut product): (Vec<&Change>, Vec<&Change>) =
         all.iter().partition(|c| c.area == FLEET_AREA);
@@ -881,6 +893,7 @@ fn builds(i: &Inputs) -> Vec<String> {
         }
     }
     let mut green = vec![];
+    let mut reds = vec![];
     if let Some((rec, _)) = yesterday_and_avg(i, merged) {
         if let Some(repos) = rec["ci"]["repos"].as_object() {
             for (repo, v) in repos {
@@ -897,13 +910,22 @@ fn builds(i: &Inputs) -> Vec<String> {
                         continue;
                     }
                     if g < runs {
-                        out.push(format!("{name} nightly {wf} is red ({g} of {runs} green)."));
+                        reds.push(format!("{name} nightly {wf} is red ({g} of {runs} green)."));
                     } else {
                         green.push(format!("{name} {wf}"));
                     }
                 }
             }
         }
+    }
+    out.extend(reds);
+    // The section's cap leaves room for the green line, so a busy day folds instead of failing lint.
+    if out.len() > BUILDS_SHOWN {
+        let more = out.len() - BUILDS_SHOWN;
+        out.truncate(BUILDS_SHOWN);
+        out.push(format!(
+            "and {more} more build changes: see the agents briefing."
+        ));
     }
     if !green.is_empty() {
         out.push(cap(
@@ -939,6 +961,14 @@ fn overnight(i: &Inputs) -> Vec<String> {
         .map(|n| cap(&need_line(n, i.now), ITEM_MAX))
         .collect();
     capped(mail, "critical mail threads", &mut out);
+    // A source that could not be read is said so, never folded into "Nothing broke overnight".
+    let mut unread = vec![];
+    if i.done.is_none() {
+        unread.push("Not read: finished work could not be read.".to_string());
+    }
+    if i.releases.is_none() {
+        unread.push("Not read: release-state could not be read.".to_string());
+    }
     let failed = i
         .done
         .iter()
@@ -961,7 +991,7 @@ fn overnight(i: &Inputs) -> Vec<String> {
         .flat_map(|r| {
             r.telemetry
                 .iter()
-                .filter(|w| w.state != "OK")
+                .filter(|w| matches!(w.state.as_str(), "TRIP" | "ERROR"))
                 .map(move |w| (r, w))
         })
         .map(|(r, w)| {
@@ -980,6 +1010,7 @@ fn overnight(i: &Inputs) -> Vec<String> {
         })
         .collect();
     capped(watches, "product watches still red", &mut out);
+    out.extend(unread);
     if out.is_empty() {
         out.push("Nothing broke overnight.".into());
     }
@@ -2130,7 +2161,70 @@ mod tests {
     }
 
     #[test]
-    fn overnight_folds_a_flood_of_one_kind_after_four() {
+    fn plain_title_drops_only_an_id_shaped_suffix() {
+        assert_eq!(plain_title("fix(orb): login (orb-1)"), "fix(orb): login");
+        assert_eq!(plain_title("feat(x): y (#123)"), "feat(x): y");
+        assert_eq!(
+            plain_title("fix(orb): null (again)"),
+            "fix(orb): null (again)"
+        );
+        assert_eq!(
+            plain_title("feat(x): retries (beta)"),
+            "feat(x): retries (beta)"
+        );
+    }
+
+    #[test]
+    fn an_urgent_fix_still_counts_in_the_headline_fixes() {
+        let mut i = with_merged(vec![pr("Orbit login loop", "Games", Some("orb-fix"))]);
+        let mut it = item("orb-fix", "orbit:orb-1", "urgent");
+        it.kind = Some("fix".into());
+        i.landed_items = Some(vec![it]);
+        let (_, summary) = landed(&i);
+        assert_eq!(summary.as_deref(), Some("Yesterday 1 PR, 1 urgent, 1 fix."));
+    }
+
+    #[test]
+    fn overnight_never_calls_an_unread_source_quiet_and_skips_a_pending_watch() {
+        let mut i = green();
+        i.done = None;
+        i.releases = None;
+        let o = build(&i).overnight;
+        assert!(o.iter().all(|l| l.starts_with("Not read:")), "{o:?}");
+        assert_eq!(o.len(), 2, "{o:?}");
+        // negative control: a pending or missing watch is not a tripped one
+        let mut j = green();
+        let mut r = release("orbit", "prod", None);
+        r.telemetry = ["pending", "missing"]
+            .iter()
+            .map(|st| crate::releases::Watch {
+                watch: "w".into(),
+                state: (*st).into(),
+                ..Default::default()
+            })
+            .collect();
+        j.releases = Some(vec![r]);
+        assert_eq!(build(&j).overnight, ["Nothing broke overnight."]);
+    }
+
+    #[test]
+    fn a_busy_day_of_builds_folds_inside_the_section_cap() {
+        let mut i = green();
+        i.releases = Some(
+            (0..20)
+                .map(|k| release(&format!("p{k}"), "prod", Some(("v1", "ok", NOW - 60))))
+                .collect(),
+        );
+        let b = build(&i).builds;
+        assert_eq!(b.len(), BUILDS_SHOWN + 1, "{b:?}");
+        assert!(
+            b[BUILDS_SHOWN].starts_with("and 8 more build changes"),
+            "{b:?}"
+        );
+    }
+
+    #[test]
+    fn overnight_folds_a_flood_of_one_kind_after_three() {
         let mut i = green();
         i.home.needs = (0..7)
             .map(|k| need(Kind::Mail, &format!("m{k}"), "Alarm"))
@@ -2138,6 +2232,6 @@ mod tests {
         i.releases = Some(vec![]);
         let o = build(&i).overnight;
         assert_eq!(o.len(), OVERNIGHT_EACH + 1, "{o:?}");
-        assert_eq!(o[OVERNIGHT_EACH], "and 3 more critical mail threads.");
+        assert_eq!(o[OVERNIGHT_EACH], "and 4 more critical mail threads.");
     }
 }
