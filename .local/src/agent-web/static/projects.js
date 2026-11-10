@@ -9,12 +9,13 @@
 // open, the rows when a project is.
 
 // page: the opened card's page by project name, {data} or {err}; folds: which of its folds are open;
-// viewed: the view pst.data was read under.
+// viewed: the view pst.data was read under; leaf: the task a click asked for, {id, feed}, until a
+// newer read than feed answers it (pLeaf).
 // The read is the tab's own (refreshProjects): with something open it reads every card.
 const pst = tblTab({
   tab: "projects", id: "projects", el: "p-cards", refresh: () => refreshProjects(),
   shown: () => st.tab === "projects" && !pst.open, wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
-  state: { open: null, unlinked: false, page: {}, folds: {}, viewed: "" },
+  state: { open: null, unlinked: false, page: {}, folds: {}, viewed: "", leaf: null },
   head: (t) => pHead(t.data.table) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
   body: () => pList(),
 });
@@ -70,9 +71,24 @@ const pTimeline = (t) => pLines(t.notes, "muted") + t.lines.map((l) => {
   return `<div class="ptl${l.level === "ok" ? "" : ` ${esc(l.level)}`}">${text}</div>`;
 }).join("") + older(t.older);
 
-// The opened card, over its rows: the card, its goal and Flow, what needs the human (always
-// shown), then Build by system, Next stage, Shipped, Timeline, In flight and the Agent note as folds
-// whose heads carry their counts, the TUI's opened card word for word.
+// Build by system, always shown: one fold per system with an epic, its head carrying its percent,
+// each epic a fold of its own over its tasks. An open task is a link that opens its row below
+// (pLeaf); a done one is only a line.
+const pLeafLine = (l) => l.done ? `<div class="pleaf muted">${esc(l.line)}</div>`
+  : `<div class="pleaf"><a href="#" data-leaf="${esc(l.id)}">${esc(l.line)}</a></div>`;
+const pSystems = (pg) => `<h2 class="sec">Build by system <span class="muted">${esc(pg.systems_says)}</span></h2>` +
+  `<div class="card pcard">${pg.systems.map((s) => {
+    const head = `<b>${esc(s.head)}</b>`;
+    if (!s.epics.length && !s.closed) return `<div class="psys">${head}</div>`;
+    return cfold(`pg:sys:${s.id}`, head, s.epics.map((e) =>
+      cfold(`pg:ep:${e.id}`, `<span class="pep${e.behind ? " qlate" : ""}">${esc(e.line)}</span>`,
+        e.leaves.length ? e.leaves.map(pLeafLine).join("") : `<div class="pleaf muted">no tasks yet</div>`, pst.folds)).join("") +
+      (s.closed ? `<div class="pep muted">${esc(s.closed)}</div>` : ""), pst.folds);
+  }).join("")}</div>`;
+
+// The opened card, over its rows: the card, its goal and Flow, Build by system and what needs the
+// human (both always shown), then Next stage, Shipped, Timeline, In flight and the Agent note as
+// folds whose heads carry their counts, the TUI's opened card word for word.
 function pOpened(c) {
   let html = `<div class="card qitem pcard">` + pTop(c, [cchip("", esc(c.stage || "no stage"))]) +
     `<div class="pgoal">${c.goal ? esc(c.goal) : `<span class="muted">no goal set</span>`}</div>`;
@@ -83,12 +99,9 @@ function pOpened(c) {
   if (pg.flow_line) html += `<div class="cline">flow: ${esc(pg.flow_line)}</div>`;
   if (pg.releases) html += `<div class="cline">releases: <a class="${pg.releases.level === "ok" ? "" : pg.releases.level}" href="#releases?q=${encodeURIComponent("project:" + c.name)}">${esc(pg.releases.says)}</a></div>`;
   html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("") + `</div>`;
+  html += pSystems(pg);
   html += `<h2 class="sec">Needs you <span class="muted">${pg.needs.length || "nothing"}</span></h2>`;
   if (pg.needs.length) html += `<div class="card">${pLines(pg.needs, "qlate")}</div>`;
-  html += pFold("systems", "Build by system", pg.systems_says,
-    pg.systems.map((s) => `<div><b>${esc(s.head)}</b></div>` +
-      s.epics.map((e) => `<div class="pep${e.behind ? " qlate" : ""}">${esc(e.line)}</div>`).join("") +
-      (s.closed ? `<div class="pep muted">${esc(s.closed)}</div>` : "")).join(""));
   html += pFold("next", "Next stage", pg.next_says,
     pg.next_rows.map((r) => `<div${r.result === "FAIL" ? ` class="qlate"` : ""}><b>${esc(r.result)}</b> ${esc(r.requirement)} <span class="muted">(${esc(r.stage)})</span></div>`).join(""));
   html += pFold("shipped", "Shipped", pg.shipped_says, pLines(pg.shipped));
@@ -168,13 +181,27 @@ function renderProjects() {
   rowsEl.hidden = !pst.open;
   if (!pst.open) { pst.render(); return; }
   const c = pst.data && pst.data.cards.find((x) => pKey(x) === pst.open);
+  if (pst.leaf && bst.feed && bst.feed !== pst.leaf.feed) {
+    const r = bst.feed.rows.find((x) => x.id === pst.leaf.id);
+    if (r) bst.sel = bSel(r);
+    pst.leaf = null;
+  }
   paint($("p-head"), `<div class="opts"><button class="btn sm" id="p-back">Back to projects</button></div>` +
     (c ? pOpened(c) : ""), pst.folds);
   renderBoard();
 }
 
+// A task under an epic: the rows filter to its id, and the read that answers opens its row.
+function pLeaf(id) {
+  pst.leaf = { id, feed: bst.feed };
+  setQuery(tblSet(st.views.projects, { q: "id:" + id }));
+  refreshBoard();
+}
+
 $("projects").addEventListener("click", (e) => {
   if (e.target.id === "p-back") { pGo(null); return; }
+  const leaf = e.target.closest("[data-leaf]");
+  if (leaf) { e.preventDefault(); pLeaf(leaf.dataset.leaf); return; }
   const o = e.target.closest("[data-open]");
   if (o && !e.target.closest("#b-root")) pGo(o.dataset.open);
 });
