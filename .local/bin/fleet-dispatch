@@ -1383,7 +1383,7 @@ gateway_launch() {
         cmd="$cmd run -m $(printf '%q' "$id")"
       fi
       cmd="$cmd --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check"
-      [ -n "$thread" ] || cmd="$cmd --color never"   # codex exec resume takes no --color
+      [ -n "$thread" ] || cmd="$cmd --color never"   # a resume takes no --color
       cmd="$cmd $(printf '%q' "$brief")"
       ;;
     claude-cloud)
