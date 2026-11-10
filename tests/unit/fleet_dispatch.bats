@@ -2910,6 +2910,7 @@ ledger() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'preempt waits: l2: busy mid-turn'
+  refute_output --partial 'no runner session to park'
   assert_not_called 'wt new'
   assert_equal "$(outcome)" NOOP
   [ -n "$(qitem queued now-one)" ] || fail "the urgent item left the queue"
