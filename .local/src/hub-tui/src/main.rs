@@ -575,9 +575,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         for l in &lines {
             let _ = writeln!(out, "{}", plain(l));
         }
-        return i32::from(!s.errors.is_empty());
+        // The exit code is the shown tab's read: Builds' ledger, else the releases snapshot.
+        let errors = if on == "builds" { &b.errors } else { &s.errors };
+        return i32::from(!errors.is_empty());
     }
-
     if tab == Some(Tab::Schedules) {
         let paths = hub_core::fleet::Paths::from_env();
         let s = hub_core::schedules::read(&paths, &hub_core::session_actions::System);

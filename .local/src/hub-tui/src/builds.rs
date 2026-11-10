@@ -1,7 +1,7 @@
-//! The Releases page's Builds section: the CI runs of the last 30 days from
+//! The Releases page's Builds inner tab: the CI runs of the last 30 days from
 //! `hub_core::builds::read`, on the shared data table (`datatable`), with the selected run's
-//! failed-job log under it, read when the row is opened. `b` moves the keys between the channels
-//! and this table; `t` opens each workflow's usual run time in the same pane.
+//! failed-job log under it, read when the row is opened. `t` opens each workflow's usual run time
+//! in the same pane.
 
 use hub_core::builds::{self, Builds, Run, RunKey, RunTime};
 use hub_core::releases::Level;

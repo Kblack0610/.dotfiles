@@ -2839,8 +2839,8 @@ impl App {
         true
     }
 
-    /// The Releases keys: `b` hands them to the Builds table and back, otherwise they drive the
-    /// apps. Enter opens the app's pane, `F` unfolds its other envs, `[` and `]` read an older or
+    /// The Releases keys: Left/Right switch the inner tab, whose own table takes the rest; on
+    /// Apps, Enter opens the app's pane, `F` unfolds its other envs, `[` and `]` read an older or
     /// newer tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
         let typing = self.rv.builds.table.typing.is_some() || self.rv.table.typing.is_some();
@@ -3605,23 +3605,24 @@ impl App {
             self.p,
             w,
         )];
+        // A tab with no table yet (Builds unread, Tests) windows none: another's scroll stays.
         let (head, table, sel) = match (on, &self.builds) {
             ("apps", _) => (
                 self.rv.status(s, self.p, now),
                 self.rv.table(s, self.p, w, true),
-                &mut self.rv.table,
+                Some(&mut self.rv.table),
             ),
             ("builds", Some(b)) => (
                 self.rv.builds.status(b, self.p, now),
                 self.rv.builds.table(b, self.p, w, true, now),
-                &mut self.rv.builds.table,
+                Some(&mut self.rv.builds.table),
             ),
             ("builds", None) => (
                 vec![Line::styled("Reading builds...", self.p.dim())],
                 vec![],
-                &mut self.rv.builds.table,
+                None,
             ),
-            _ => (releases::tests_note(self.p, w), vec![], &mut self.rv.table),
+            _ => (releases::tests_note(self.p, w), vec![], None),
         };
         // The rows under the table's header line.
         let h = (list.height as usize)
@@ -3629,7 +3630,9 @@ impl App {
             .max(1);
         self.page = h.saturating_sub(1).max(1);
         lines.extend(head);
-        lines.extend(sel.window(table, h));
+        if let Some(sel) = sel {
+            lines.extend(sel.window(table, h));
+        }
         f.render_widget(Paragraph::new(lines), list);
         let Some(area) = pane else { return };
         if let (true, Some(top), Some(b)) = (log, self.rv.builds.times, &self.builds) {

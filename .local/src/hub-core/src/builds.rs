@@ -293,10 +293,10 @@ pub struct Builds {
 }
 
 impl Builds {
-    /// A run went red in the last `RECENT_SECS`: the Builds inner tab's count on Releases. Older
-    /// reds are history, as `Counts::level` says.
+    /// A run went red in the last `RECENT_SECS`, or the ledger did not read: the Builds inner
+    /// tab's count on Releases. Older reds are history, as `Counts::level` says.
     pub fn needs_look(&self) -> bool {
-        self.counts.level() == Level::Bad
+        !self.errors.is_empty() || self.counts.level() == Level::Bad
     }
 
     pub fn summary(&self) -> String {
@@ -739,12 +739,18 @@ mod tests {
             (1, Level::Ok),
             "an old red is history"
         );
-        // A recent red is what puts a count on Releases' Builds inner tab; an old one does not.
+        // A recent red or an unread ledger puts a count on Releases' Builds inner tab; an old
+        // red does not.
         let builds = |counts| Builds {
             counts,
             ..Default::default()
         };
         assert!(builds(c).needs_look() && !builds(later).needs_look());
+        let unread = Builds {
+            errors: vec!["runs.jsonl: unreadable".into()],
+            ..Default::default()
+        };
+        assert!(unread.needs_look());
         assert_eq!(rows.iter().find(|r| r.id == 3).unwrap().state, "other");
     }
 

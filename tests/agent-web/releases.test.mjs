@@ -416,8 +416,9 @@ const shownIn = (h, id) => !new RegExp(`data-in="${id}" hidden`).test(h) && new 
 const relOn = (arg) => { run(`st.arg = ${JSON.stringify(arg)}; st.section = null`); showBuilds(); Object.assign(run("tst"), { data: tdata(), err: null }); run("relst.render()"); return box.innerHTML; };
 
 test("Releases opens on Apps, and a URL naming Builds or Tests opens that one with the others hidden", () => {
-  for (const [hash, arg] of [["#releases", "apps"], ["#releases/builds", "builds"], ["#releases/tests", "tests"], ["#releases/detail", "apps"], ["#releases?q=project:binks", "apps"]]) {
-    assert.equal(ctx.route(hash).arg || "apps", arg, hash);
+  // An empty arg is the first inner tab (Apps); a section id is the inner tab holding it.
+  for (const [hash, arg] of [["#releases", ""], ["#releases/builds", "builds"], ["#releases/tests", "tests"], ["#releases/detail", "apps"], ["#releases/table", "apps"], ["#releases?q=project:binks", ""]]) {
+    assert.equal(ctx.route(hash).arg, arg, hash);
   }
   const apps = relOn("");
   assert.ok(shownIn(apps, "apps") && !shownIn(apps, "builds") && !shownIn(apps, "tests"));
