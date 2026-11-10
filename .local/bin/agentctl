@@ -81,7 +81,7 @@ load_agent() {
         set -e
         # A conf without one of its keys must not inherit the caller's: Sentinel exports its
         # own AUTOSTART=yes, which made every KIND=call conf read as invalid.
-        unset NAME KIND COMMAND LANE DESCRIPTION EFFECT SKILL MODEL ROLE ROUTE SCHEDULE AUTOSTART ENABLED CRITICAL RANDOM_DELAY RESTART INBOX
+        unset NAME KIND COMMAND LANE DESCRIPTION EFFECT SKILL MODEL ROLE ROUTE PRIORITY SCHEDULE AUTOSTART ENABLED CRITICAL RANDOM_DELAY RESTART INBOX
         # shellcheck disable=SC1090
         source "$conf"
         : "${NAME:?missing NAME}"
@@ -116,6 +116,14 @@ load_agent() {
             none|draft|shadow|acts) ;;
             *) printf 'invalid EFFECT=%s (none|draft|shadow|acts)\n' "$EFFECT" >&2; exit 1 ;;
         esac
+        # A runner that launches a model says how much it matters when money is short, so the
+        # Costs view can show every consumer against the budget it spends from (README, PRIORITY).
+        if [ -n "${ROLE:-}" ]; then
+            case "${PRIORITY:-}" in
+                must|low|off) ;;
+                *) printf 'invalid PRIORITY=%s on a conf with a ROLE (must|low|off)\n' "${PRIORITY:-}" >&2; exit 1 ;;
+            esac
+        fi
         : "${SCHEDULE:=}"
         : "${AUTOSTART:=no}"
         : "${ENABLED:=yes}"
@@ -174,6 +182,7 @@ load_agent() {
         printf 'ROLE=%s\n' "${ROLE:-}"
         printf 'MODEL=%s\n' "${MODEL:-}"
         printf 'ROUTE=%s\n' "${ROUTE:-}"
+        printf 'PRIORITY=%s\n' "${PRIORITY:-}"
         printf 'SKILL=%s\n' "${SKILL:-}"
         printf 'SKILL_FOUND=%s\n' "$SKILL_FOUND"
     )
@@ -462,8 +471,8 @@ kv_get() { awk -v k="$1" 'substr($0,1,length(k)+1) == k"=" {print substr($0, len
 # so it prints the same on any machine. PIPELINES.md points here instead of copying it.
 cmd_list_md() {
     local name conf lane kind sched trigger model effect role route skill
-    printf '| Runner | Lane | Trigger | Role | Skill | Model | Effect | Purpose |\n'
-    printf '|---|---|---|---|---|---|---|---|\n'
+    printf '| Runner | Lane | Trigger | Role | Priority | Skill | Model | Effect | Purpose |\n'
+    printf '|---|---|---|---|---|---|---|---|---|\n'
     local -a names=() invalid=()
     mapfile -t names < <(list_agent_names)
     declare -A confs=()
@@ -487,8 +496,8 @@ cmd_list_md() {
             if [ "$effect" = none ]; then model=-
             elif [ -z "$model" ]; then model='not in conf'; fi
             [ -n "$route" ] && model="$model via $route"
-            printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
-                "${role:--}" "${skill:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
+            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
+                "${role:--}" "$(kv_get PRIORITY <<<"$conf" | sed 's/^$/-/')" "${skill:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
         done
     done
     [ "${#invalid[@]}" -eq 0 ] || printf '\nInvalid (see `agentctl list`): %s\n' "${invalid[*]}"
