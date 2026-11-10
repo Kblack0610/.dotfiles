@@ -5252,7 +5252,7 @@ board_item() {
   assert_equal "$(jq -c '.under_low_water' <<<"$output")" 0
 }
 
-@test "stats: moves that follow a session asking and being answered are not a flap; one that undoes another writer is" {
+@test "stats: moves that follow a session, a start or the session's own park are not a flap; reap making one move twice is" {
   mkdir -p "$FLEET_DISPATCH_DIR"
   t() { date -d "-$1 minutes" '+%Y-%m-%d %H:%M'; }
   {
@@ -5265,10 +5265,18 @@ board_item() {
     printf -- '- %s reaped game-agent-5: queue item undone running -> waiting\n' "$(t 45)"
     printf -- '- %s reaped game-agent-5: queue item undone running -> waiting\n' "$(t 35)"
     printf -- '- %s reaped game-agent-5: queue item undone waiting -> running\n' "$(t 25)"
+    # A redispatch start sets running, and the session parking itself in review is its own move.
+    printf -- '- %s reaped game-agent-6: queue item restarted running -> waiting\n' "$(t 48)"
+    printf -- '- %s started game-agent-7 on lab (redispatch) for game: queue item restarted, resume 1\n' "$(t 44)"
+    printf -- '- %s reaped game-agent-7: queue item restarted running -> waiting\n' "$(t 38)"
+    printf -- '- %s reaped game-agent-7: queue item restarted waiting -> running\n' "$(t 33)"
+    printf -- '- %s reaped game-agent-8: queue item parked waiting -> running\n' "$(t 42)"
+    printf -- '- %s reaped game-agent-8: queue item parked review -> waiting\n' "$(t 32)"
+    printf -- '- %s reaped game-agent-8: queue item parked waiting -> review\n' "$(t 22)"
   } > "$FLEET_DISPATCH_DIR/log.md"
   run cmd_stats
   assert_success
-  assert_equal "$(jq -c '[.reaped_1h, .flapping_items, .flapping]' <<<"$output")" '[7,1,["undone"]]'
+  assert_equal "$(jq -c '[.reaped_1h, .flapping_items, .flapping]' <<<"$output")" '[13,1,["undone"]]'
 }
 
 @test "stats: runnable work and its age, reap moves in the last hour, flapping items" {
