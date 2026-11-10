@@ -1604,7 +1604,7 @@ cmd_requeue() {
 # vmToL3 (answered a, gate wanted b) and VOEW9i (cancelled) and tripped queue-starved; dead_holds in
 # fleet-dispatch reports what this missed.
 cmd_settle_ask() {
-  local id="${1:?usage: agent-queue settle-ask <id>}" f tag why slug
+  local id="${1:?usage: agent-queue settle-ask <id>}" f tag why slug note
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "not an ask id: $id"
   lock
   local AQ_LOCKED=1
@@ -1612,9 +1612,10 @@ cmd_settle_ask() {
     for tag in $(fm_get "$f" tags); do
       [ "${tag%%=*}" = "ask:$id" ] || continue
       why="$(ask_pending "${tag#ask:}")"
-      case "$why" in cancelled | "answered "*", not "*) ;; *) continue ;; esac
-      slug="$(fm_get "$f" slug)"
-      header_set "$f" note "dead hold: $tag ($why)"
+      # A judge or shepherd answer ("answered by judge, not the human") is not dead: the human can still answer.
+      case "$why" in "answered by "*) continue ;; cancelled | "answered "*", not "*) ;; *) continue ;; esac
+      slug="$(fm_get "$f" slug)" note="$(fm_get "$f" note)"
+      header_set "$f" note "dead hold: $tag ($why)${note:+; $note}"
       cmd_move "$slug" done --status failed
       break
     done

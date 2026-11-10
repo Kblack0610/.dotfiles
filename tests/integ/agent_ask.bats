@@ -193,7 +193,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 # 2026-11-10: three items sat for days behind vmToL3 (answered a, the gate wanted b) and VOEW9i
 # (cancelled), and queue-starved tripped on them.
 @test "answer and cancel fail the queued items the ask can no longer release, and only those" {
-  local opts='go=run it now|later=run it later' a b
+  local opts='go=run it now|later=run it later' a b c
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'start it?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-go --tags "ask:$a=go" "runs on go" >/dev/null
@@ -211,6 +211,13 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run "$AGENT_ASK_QUEUE_CMD" show on-b
   assert_line 'status: failed'
   assert_line "note: dead hold: ask:$b=go (cancelled)"
+  # A judge answer is not the human's, who can still answer: the item stays queued.
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'and after that?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-c --tags "ask:$c=go" "runs on go" >/dev/null
+  sed -i 's/^status: .*/status: answered/; s/^answer: .*/answer: later/; s/^answered_by: .*/answered_by: judge/' "$HOME/.agent/asks/demo/$c.md"
+  "$AGENT_ASK_QUEUE_CMD" settle-ask "$c"
+  run "$AGENT_ASK_QUEUE_CMD" show on-c
+  assert_line 'state: queued'
 }
 
 @test "decision: the human's answer with its meaning, and nothing before that or from the judge" {
