@@ -98,6 +98,17 @@ cost() { "$AU" fleet-cost --json | jq -c "$1 | walk(if type == \"number\" then .
   assert_output '[12,24,{"claude-few-1":"2026-11-01"},false]'
 }
 
+@test "a fit tried and rejected is not overridden by a carried rate, and a snapshot of the wrong shape is skipped" {
+  echo '{"fleet_cost":{"rates":{"claude-noisy-1":{"input":1,"output":5,"cache_read":0,"cache_write":0}}}}' > "$TOKENS_DIR/2026-11-05.json"
+  echo '{"fleet_cost":{"rates":[1,2]}}' > "$TOKENS_DIR/2026-11-06.json"
+  echo '{"fleet_cost":{"rates":{"claude-few-1":null,"claude-never-1":"x"}}}' > "$TOKENS_DIR/2026-11-07.json"
+  turn noisy claude-noisy-1 1000000 1000000 0 0
+  turn never claude-never-1 1000000 1000000 0 0
+  run cost '[.total.estimated, .rates_from, (.unpriced | keys)]'
+  assert_success
+  assert_output '[0,{},["claude-never-1","claude-noisy-1"]]'
+}
+
 @test "the gateway's own model names are its metered dollars, not an estimate" {
   turn lazer gw-sonnet 1000000 1000000 0 0
   run cost '[.other_harness.gateway.usd, .other_harness.gateway.sessions, .total.estimated, (.unpriced | length)]'
