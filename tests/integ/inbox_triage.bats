@@ -567,6 +567,20 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_output --partial '#go'
 }
 
+@test "outbox: a plan only the model asked for gets #go, so only the person's own #plan holds the row for review" {
+  sheet '' ''
+  outbox '- [ ] other needs a logo\n- [ ] other needs a font #plan\n'
+  answer '{"n": 1, "action": "file", "rows": ["feat(brand): a logo #size/m"], "project": "other", "plan": true}' \
+    '{"n": 2, "action": "file", "rows": ["feat(brand): a font #size/s"], "project": "other", "plan": true}'
+  run "$TRIAGE"
+  assert_success
+  grep -qE 'feat\(brand\): a logo #size/m #plan #go .*id:ot-' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+  # negative control: the person's own #plan, with no #go, is theirs to review
+  run grep 'a font' "$PROJ/other/README.md"
+  assert_output --partial '#plan'
+  refute_output --partial '#go'
+}
+
 @test "outbox: the routing prompt names the homes and the shared-code rule, as --backlog does" {
   echo '{"trackers": {"scratch": {"code": "sc"}, "other": {"code": "ot", "repo": "scratch"}}}' >"$PROJECT_MAP_FILE"
   sheet '' ''
