@@ -682,6 +682,7 @@ pub(crate) mod tests {
                         ],
                     }],
                     closed: "+1 closed, 1 verified".into(),
+                    wave: None,
                 },
                 hub_core::page::System {
                     id: "ci".into(),
@@ -691,6 +692,7 @@ pub(crate) mod tests {
             ],
             systems_says: "2 systems, 1 open epics (2 rows with no epic)".into(),
             next_says: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet".into(),
+            gate: None,
             next_rows: vec![hub_core::page::Requirement {
                 stage: "beta".into(),
                 result: "FAIL".into(),

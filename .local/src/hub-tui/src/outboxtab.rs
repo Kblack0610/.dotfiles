@@ -52,7 +52,7 @@ pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
         out.push(Line::styled("Nothing yet today.", p.dim()));
     }
     for s in &v.handled {
-        let style = if matches!(s.action.as_str(), "left" | "refused") {
+        let style = if matches!(s.action.as_str(), "left" | "asked" | "refused") {
             p.warn()
         } else {
             ratatui::style::Style::default()

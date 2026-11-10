@@ -14,10 +14,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::epics::{self, Chain, Epic};
+use crate::projects::Card;
 use crate::session_actions::Runner;
 
 /// Plans with no epic the Needs you list names one by one; the rest are one "+N more" line.
 pub const PLANS_SHOWN: usize = 5;
+
+/// Next stage's head at the top of the ladder.
+pub const NO_NEXT: &str = "no stage after this one";
 
 /// One task under an epic, as opening the epic lists it: `[x] db-131  feat: skin palette  s  pr 412`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -39,6 +43,25 @@ pub struct EpicLine {
     pub leaves: Vec<Leaf>,
 }
 
+/// A system's current wave (`lifecycle.md`, "What an epic is"): its first open feature epic in
+/// sheet order, and how many more feature epics it has open.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Wave {
+    pub id: String,
+    pub title: String,
+    /// The epic's own weighted done share; None when its leaves carry no weight.
+    pub percent: Option<u32>,
+    pub more: usize,
+}
+
+/// The next stage's gate as numbers: what `next_says` says, for a reader that composes its own.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Gate {
+    pub stage: String,
+    pub met: u32,
+    pub total: u32,
+}
+
 /// A system: its progress and criteria, then its open epics; closed ones are a count.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct System {
@@ -51,6 +74,8 @@ pub struct System {
     /// open version; None with no epic to count.
     pub percent: Option<u32>,
     pub epics: Vec<EpicLine>,
+    /// None when it has no open feature epic: no epic, or only its standing one.
+    pub wave: Option<Wave>,
     /// `+3 closed, 2 verified`, empty when none closed.
     pub closed: String,
 }
@@ -77,6 +102,8 @@ pub struct Page {
     /// Next stage's head: `beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet`, or
     /// `no stage after this one` at the top.
     pub next_says: String,
+    /// None at the top stage or when the check could not be read.
+    pub gate: Option<Gate>,
     pub next_rows: Vec<Requirement>,
     /// Shipped's head: `2 versions`, `1 version` or `none yet`.
     pub shipped_says: String,
@@ -328,6 +355,13 @@ pub fn systems(c: &Chain, criteria: &[Criteria], in_open: &[String], now: i64) -
                         .collect(),
                 })
                 .collect();
+            let mut open_features = es.iter().filter(|e| e.state == "open" && !is_standing(e));
+            s.wave = open_features.next().map(|e| Wave {
+                id: e.id.clone(),
+                title: e.title.clone(),
+                percent: weighted([*e]),
+                more: open_features.count(),
+            });
             let closed = es.iter().filter(|e| e.state != "open").count();
             if closed > 0 {
                 let verified = es
@@ -482,7 +516,16 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
                 vec![]
             }
         };
-    p.next_says = "no stage after this one".into();
+    // NO_NEXT only for the ladder's last stage: an unread ladder, or a stage it lacks, is unread.
+    p.next_says = if ladder.iter().any(|s| s == stage) {
+        NO_NEXT.into()
+    } else {
+        if !ladder.is_empty() {
+            p.errors
+                .push(format!("notes projects --stages: no stage {stage}"));
+        }
+        "next stage  not read".into()
+    };
     if let Some(next) = next_on(&ladder, stage) {
         p.next_says = format!("{next}  not read");
         match stage_json::<StageOut>(
@@ -491,6 +534,11 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
         ) {
             Ok(o) => {
                 p.next_says = stage_line(&o);
+                p.gate = Some(Gate {
+                    stage: o.stage.clone(),
+                    met: o.met,
+                    total: o.total,
+                });
                 p.next_rows = o
                     .requirements
                     .into_iter()
@@ -524,12 +572,92 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
 /// The page for a name alone, as `hub projects --page` and agent-web read it: its stage from
 /// `notes projects --stats --json`. A name no lab project has is an error, never an empty page.
 pub fn named(runner: &dyn Runner, name: &str, now: i64) -> Result<Page, String> {
-    let stats = crate::projects::stats(runner)?;
-    let s = stats
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| format!("notes projects lists no project {name}"))?;
+    let s = stats_of(runner, name)?;
     Ok(read(runner, name, &s.stage, now))
+}
+
+/// The `notes projects --stats --json` row of `name`; a name no lab project has is an error.
+fn stats_of(runner: &dyn Runner, name: &str) -> Result<crate::projects::Stats, String> {
+    crate::projects::stats(runner)?
+        .into_iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| format!("notes projects lists no project {name}"))
+}
+
+/// The numbers of a project's lab STATUS line (`lab-status`), one sentence each: each system's
+/// current wave and its percent, the systems with only upkeep open, the open version and its
+/// ETA, the next stage's gate and the playtests waiting. Every number is one this page or the
+/// card already counts; only the words are here, and the model writing the status adds none.
+pub fn status_line(p: &Page, c: &Card, playtest_open: usize, today: chrono::NaiveDate) -> String {
+    let waves: Vec<String> = p
+        .systems
+        .iter()
+        .filter_map(|s| {
+            let w = s.wave.as_ref()?;
+            let name = if s.id.is_empty() { "no system" } else { &s.id };
+            let mut t = format!("{name} on \"{}\"", w.title);
+            if let Some(pc) = w.percent {
+                t += &format!(" {pc}%");
+            }
+            if w.more > 0 {
+                t += &format!(" ({} more open)", w.more);
+            }
+            Some(t)
+        })
+        .collect();
+    let mut out = vec![if waves.is_empty() {
+        "Waves: none open.".to_string()
+    } else {
+        format!("Waves: {}.", waves.join("; "))
+    }];
+    let upkeep = p
+        .systems
+        .iter()
+        .filter(|s| s.wave.is_none() && !s.epics.is_empty())
+        .count();
+    if upkeep > 0 {
+        out.push(format!(
+            "Upkeep only: {upkeep} system{}.",
+            if upkeep == 1 { "" } else { "s" }
+        ));
+    }
+    out.push(match (&c.version, c.percent) {
+        (None, _) => "No open version.".to_string(),
+        (Some(v), None) => format!("{v} has no rows."),
+        (Some(v), Some(pc)) => format!(
+            "{v} is {pc}% done, {}.",
+            crate::projects::eta_words(c, today)
+        ),
+    });
+    if let Some(g) = &p.gate {
+        out.push(format!(
+            "Gate to {}: {} of {} met.",
+            g.stage, g.met, g.total
+        ));
+    }
+    out.push(format!("Playtests waiting: {playtest_open}."));
+    out.join(" ")
+}
+
+/// `hub projects --status NAME`: the STATUS line's numbers for one lab project. A source the line
+/// says (the chain, the next stage's check, the board feed) that could not be read is an error,
+/// never a line that leaves it out.
+pub fn status(runner: &dyn Runner, name: &str, now: i64) -> Result<String, String> {
+    let s = stats_of(runner, name)?;
+    let p = read(runner, name, &s.stage, now);
+    let next_unread = p.gate.is_none() && p.next_says != NO_NEXT;
+    if p.flow_line.is_none() || next_unread {
+        return Err(p.errors.join("; "));
+    }
+    let feed = crate::tasks::feed(runner)?;
+    let playtest_open = feed
+        .projects
+        .iter()
+        .find(|f| f.project == name && f.profile == s.profile)
+        .map(|f| f.playtest_open)
+        .ok_or_else(|| format!("notes board --json lists no project {name}"))?;
+    let today = crate::sheet_view::today_of(&feed);
+    Ok(status_line(&p, &Card::from_stats(&s), playtest_open, today))
 }
 
 pub fn to_json(p: &Page) -> Value {
@@ -791,6 +919,132 @@ mod tests {
         assert!(p.next_says.starts_with("beta"), "{p:?}");
         let e = named(&f, "nosuch", NOW).unwrap_err();
         assert!(e.contains("no project nosuch"), "{e}");
+    }
+
+    #[test]
+    fn each_system_s_wave_is_its_first_open_feature_epic_never_its_standing_one() {
+        let p = read(&fake(0), "game", "alpha", NOW);
+        let waves: Vec<Option<(&str, Option<u32>, usize)>> = p
+            .systems
+            .iter()
+            .map(|s| s.wave.as_ref().map(|w| (w.id.as_str(), w.percent, w.more)))
+            .collect();
+        assert_eq!(
+            waves,
+            vec![Some(("gm-1", Some(25), 1)), None, Some(("gm-9", None, 0))],
+            "ui's wave is Menus with Saves still open and its standing epic not counted; ci has \
+             no epic; an epic with no weight has no percent, never 0%"
+        );
+        assert_eq!(
+            p.gate,
+            Some(Gate {
+                stage: "beta".into(),
+                met: 4,
+                total: 12
+            })
+        );
+    }
+
+    fn status_fake() -> Fake {
+        let mut f = fake(0);
+        f.answers.insert(
+            0,
+            (
+                "notes projects --stats",
+                0,
+                r#"[{"profile":"lab","name":"game","stage":"alpha","version":"v0.2.0",
+                    "progress":{"open":4,"done":6,"open_weight":4,"done_weight":6,"closed_weight_28d":28}}]"#
+                    .into(),
+            ),
+        );
+        f.answers.push((
+            "notes board --json",
+            0,
+            r#"{"today":"2026-11-09","projects":[
+                {"profile":"other","project":"game","playtest_open":9},
+                {"profile":"lab","project":"game","playtest_open":3}]}"#
+                .into(),
+        ));
+        f
+    }
+
+    #[test]
+    fn the_status_line_says_every_number_the_readers_counted_and_nothing_else() {
+        let line = status(&status_fake(), "game", NOW).unwrap();
+        assert_eq!(
+            line,
+            "Waves: ui on \"Menus\" 25% (1 more open); no system on \"Odd\". v0.2.0 is 60% done, \
+             ETA ~11-13. Gate to beta: 4 of 12 met. Playtests waiting: 3.",
+            "the playtests are this profile's, the ETA is the card's 4 days from the feed's day"
+        );
+        assert!(line.is_ascii() && !line.contains("  "), "{line}");
+    }
+
+    #[test]
+    fn upkeep_only_systems_are_a_count_and_a_version_with_no_closes_has_no_eta() {
+        let sys = |id: &str, wave: Option<Wave>, epics: usize| System {
+            id: id.into(),
+            wave,
+            epics: vec![EpicLine::default(); epics],
+            ..Default::default()
+        };
+        let p = Page {
+            systems: vec![sys("ci", None, 1), sys("docs", None, 2), sys("ui", None, 0)],
+            ..Default::default()
+        };
+        let mut c = Card {
+            version: Some("v0.1.0".into()),
+            percent: Some(40),
+            eta_days: None,
+            ..Default::default()
+        };
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        assert_eq!(
+            status_line(&p, &c, 0, today),
+            "Waves: none open. Upkeep only: 2 systems. v0.1.0 is 40% done, no ETA (no closes in \
+             28d). Playtests waiting: 0.",
+            "a system with no open epic is neither a wave nor upkeep; the top stage has no gate"
+        );
+        c.eta_days = Some(0);
+        c.percent = Some(100);
+        assert!(status_line(&p, &c, 0, today).contains("v0.1.0 is 100% done, nothing open."));
+        c.percent = None;
+        assert!(status_line(&p, &c, 0, today).contains(" v0.1.0 has no rows. "));
+        c.version = None;
+        assert!(status_line(&p, &c, 0, today).contains(" No open version. "));
+    }
+
+    #[test]
+    fn a_status_whose_sources_failed_is_an_error_not_a_line_that_leaves_them_out() {
+        let mut f = status_fake();
+        f.answers.retain(|(k, ..)| !k.starts_with("fleet-bench"));
+        let e = status(&f, "game", NOW).unwrap_err();
+        assert!(e.contains("fleet-bench"), "{e}");
+        let mut f = status_fake();
+        f.answers
+            .retain(|(k, ..)| !k.starts_with("project-stage-check game --stage"));
+        assert!(status(&f, "game", NOW).is_err(), "an unread gate");
+        for ladder in [None, Some("draft dev\n")] {
+            let mut f = status_fake();
+            f.answers.retain(|(k, ..)| *k != "notes projects --stages");
+            if let Some(l) = ladder {
+                f.answers.push(("notes projects --stages", 0, l.into()));
+            }
+            let e = status(&f, "game", NOW).unwrap_err();
+            assert!(
+                e.contains("--stages"),
+                "an unread ladder is no top stage: {e}"
+            );
+        }
+        let mut f = status_fake();
+        f.answers.retain(|(k, ..)| !k.starts_with("notes board"));
+        assert!(status(&f, "game", NOW).is_err(), "an unread feed");
+        // NEGATIVE CONTROL: a source the line does not say (the timeline) failing still gives it.
+        let mut f = status_fake();
+        f.answers
+            .retain(|(k, ..)| !k.starts_with("project-timeline"));
+        assert!(status(&f, "game", NOW).is_ok());
+        assert!(status(&status_fake(), "nosuch", NOW).is_err());
     }
 
     #[test]
