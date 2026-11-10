@@ -1001,7 +1001,17 @@ cmd_add() {
   case "$from" in
     board:* | canary) ;;
     *) if [ -n "$row" ]; then
-         story="$(link_row "$row" "$project")" || exit 1
+         # A row moved to another sheet keeps its id, so its code can name the sheet it left; the
+         # sheet the caller named is the other one it can be open on (apo-108 on dodginballs,
+         # 2026-11-10). Neither: the code sheet's refusal, as before.
+         local linked
+         if linked="$(link_row "$row" "$project" 2>&1)"; then
+           story="$linked"
+         elif [ "$project" != "$resolved" ] && story="$(link_row "$row" "$resolved" 2>/dev/null)"; then
+           project="$resolved"
+         else
+           printf '%s\n' "$linked" >&2; exit 1
+         fi
        else
          story="$(prior_story "$slug" "$project")"
          if [ -z "$story" ] && [ -n "$named" ] && story="$(link_row "$named" "$named_project" 2>/dev/null)"; then
