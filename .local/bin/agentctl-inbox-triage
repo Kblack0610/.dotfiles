@@ -228,10 +228,11 @@ file_line() {
   fi
 }
 
-# move_out <project> <raw> <text> <why> [tagged]: one outbox line into <project>'s inbox, <why> how the
-# project was picked (kept on the `moved` event), MOVED_RAW set to the
-# line as the inbox now holds it. A name that is no project (the CLI exits 3) is recorded as refused and the line stays in the outbox, unless the
-# line was `tagged` with it: then it is the caller's to route, so nothing is recorded or counted.
+# move_out <project> <raw> <text> <why> [tagged]: one outbox line into <project>'s inbox, with <why>
+# (how the project was picked) on its `moved` event, and MOVED_RAW set to the line as the inbox
+# now holds it. A name that is no project (the CLI exits 3) is recorded as refused and the line
+# stays in the outbox, unless the line was `tagged` with it: then it is the caller's to route, so
+# nothing is recorded or counted.
 move_out() {
   local p="$1" raw="$2" text="$3" why="$4" tagged="${5:-}" out err rc errf
   MOVED_RAW="$raw"
@@ -1014,8 +1015,9 @@ sweep() {
   [ "$handled" -gt 0 ] && verdict=WORKED
   [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; SUMMARY="budget: $SUMMARY"; }
   [ "$rc" = 1 ] && verdict=FAILED
-  # A sweep that handled a line says so in the record, so its moves and filings read as one run.
-  [ "$rc" = 0 ] && [ $((handled + KEPT + FAILED)) -gt 0 ] \
+  # A sweep that handled a line says so in the record, stopped or not, so its moves and filings
+  # read as one run.
+  [ $((handled + KEPT + FAILED)) -gt 0 ] \
     && chain_event intake sweep outbox "inbox sweep" --why "$SUMMARY"
   if [ "$rc" != 0 ]; then
     # A stopped sweep leaves its lines waiting: the pipeline line's inbox node reads it from the record.

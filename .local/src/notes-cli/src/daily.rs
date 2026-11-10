@@ -1289,9 +1289,9 @@ fn few(text: &str) -> String {
     out
 }
 
-/// A session's new row on a human sheet: intake that did not come through the sweep, so the
-/// page tells it under Handled today. The human's own adds and the agent lane's follow-ups
-/// stay under Sheet actions.
+/// A session's or a runner's new row on a human sheet: intake that did not come through the
+/// sweep, so the page tells it under Handled today. The human's own adds and the agent lane's
+/// follow-ups stay under Sheet actions.
 fn session_intake(e: &crate::ingest::Event) -> bool {
     e.action == "added" && e.lane == "human" && e.id.is_some() && e.by != "human"
 }
