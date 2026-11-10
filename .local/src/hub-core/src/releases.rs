@@ -352,6 +352,32 @@ impl Row for App {
         }
     }
 
+    /// A bare word searches every channel too: its versions, word, deps, place and watches,
+    /// so a dep or a version an opened app would show still finds it.
+    fn text(&self) -> String {
+        let mut parts = vec![
+            self.project.clone(),
+            self.live_text.clone(),
+            self.status_text.clone(),
+            self.channels_text.clone(),
+            self.last_deploy_text.clone(),
+        ];
+        for r in &self.channels {
+            parts.extend([
+                r.channel.clone(),
+                r.id.clone(),
+                r.pinned_text.clone(),
+                r.live_text.clone(),
+                r.status.clone(),
+                r.status_text.clone(),
+                r.deps_text.clone(),
+                r.place.clone().unwrap_or_default(),
+            ]);
+            parts.extend(r.telemetry.iter().map(|t| t.watch.clone()));
+        }
+        parts.join("\n").to_lowercase()
+    }
+
     fn in_state(&self, state: &str) -> bool {
         match state {
             "attention" => !self.green(),
@@ -465,14 +491,27 @@ fn app(project: &str, mut channels: Vec<Release>) -> App {
         let key = |r: &Release| (r.unread(), r.level, rank(&r.status));
         (env_rank(&a.channel), key(a), &a.id).cmp(&(env_rank(&b.channel), key(b), &b.id))
     });
+    // Only a channel that was read speaks for what is live: an unread one's pin is not.
     let value = |r: &Release| r.live.value.clone().or_else(|| r.pinned.value.clone());
-    let head = channels.iter().find(|r| value(r).is_some());
-    let live_text = head.map_or("-".into(), |r| {
-        let v = value(r).unwrap_or_default();
-        if r.implicit {
-            v
+    let head = channels.iter().find(|r| !r.unread() && value(r).is_some());
+    let live_text = head.map_or("-".into(), |h| {
+        // Every distinct version read in the headline env, so a web and an api that differ
+        // both show.
+        let mut vs: Vec<String> = vec![];
+        for v in channels
+            .iter()
+            .filter(|r| r.channel == h.channel && !r.unread())
+            .filter_map(value)
+        {
+            if !vs.contains(&v) {
+                vs.push(v);
+            }
+        }
+        let vs = vs.join(", ");
+        if h.implicit {
+            vs
         } else {
-            format!("{v} {}", r.channel)
+            format!("{vs} {}", h.channel)
         }
     });
     let lead_env = head
@@ -489,14 +528,17 @@ fn app(project: &str, mut channels: Vec<Release>) -> App {
         .min_by_key(|s| rank(s))
         .unwrap_or("unknown")
         .to_string();
+    // A tripped watch or failed deploy on an unread channel still says; nothing read is at
+    // least amber.
+    let says = channels
+        .iter()
+        .map(Release::says_for_app)
+        .min()
+        .unwrap_or_default();
     let level = if read.is_empty() {
-        Level::Warn
+        says.min(Level::Warn)
     } else {
-        channels
-            .iter()
-            .map(Release::says_for_app)
-            .min()
-            .unwrap_or_default()
+        says
     };
     let unread = channels.len() - read.len();
     let last = channels
@@ -505,24 +547,14 @@ fn app(project: &str, mut channels: Vec<Release>) -> App {
         .filter_map(|r| r.deploys.last.as_ref().map(|d| (d.at, r)))
         .max_by_key(|(at, _)| *at)
         .map(|(_, r)| r);
-    let mut others: Vec<String> = vec![];
-    for r in &channels[lead..] {
-        if others
-            .last()
-            .is_some_and(|o| o.starts_with(&format!("{} ", r.channel)))
-        {
-            continue;
-        }
-        let env: Vec<&Release> = channels[lead..]
-            .iter()
-            .filter(|x| x.channel == r.channel)
-            .collect();
-        others.push(format!(
-            "{} {}",
-            r.channel,
-            counts(env.iter().map(|x| x.status.as_str()))
-        ));
-    }
+    // The sort keeps an env's channels together, so each run of one env is one entry.
+    let others: Vec<String> = channels[lead..]
+        .chunk_by(|a, b| a.channel == b.channel)
+        .map(|env| {
+            let words = counts(env.iter().map(|x| x.status.as_str()));
+            format!("{} {words}", env[0].channel)
+        })
+        .collect();
     App {
         project: project.to_string(),
         status_text: shown(&status).to_string(),
@@ -1080,7 +1112,50 @@ mod tests {
         v = r.apps;
         assert_eq!((v[0].project.as_str(), v[0].level), ("app", Level::Bad));
         assert_eq!(v[0].status_text, "drift");
-        assert_eq!(v[0].live_text, "v2 prod", "the worst prod channel leads");
+        assert_eq!(
+            v[0].live_text, "v2, v1 prod",
+            "every prod version read shows, the worst channel's first"
+        );
+    }
+
+    #[test]
+    fn an_unread_channels_pin_does_not_speak_for_what_is_live() {
+        let mut pinned = chan("app", "app-web-prod", "prod", None, "unknown");
+        pinned["pinned"] = serde_json::json!({"value": "v1.19.0", "source": "manifest"});
+        let beta = chan("app", "app-ios", "beta", Some("1.19.0 (7)"), "released");
+        let a = &read(&snapshot(vec![pinned.clone(), beta])).apps[0];
+        assert_eq!(a.live_text, "1.19.0 (7) beta");
+        let a = &read(&snapshot(vec![pinned])).apps[0];
+        assert_eq!(
+            (a.live_text.as_str(), a.status_text.as_str()),
+            ("-", "not read")
+        );
+    }
+
+    #[test]
+    fn a_tripped_watch_on_an_app_with_nothing_read_is_red_not_amber() {
+        let mut c = chan("game", "game-steam-default", "prod", None, "unknown");
+        c["telemetry"] = serde_json::json!([{"watch": "game-probe", "state": "TRIP", "since": 1}]);
+        let a = &read(&snapshot(vec![c])).apps[0];
+        assert_eq!((a.status_text.as_str(), a.level), ("not read", Level::Bad));
+    }
+
+    #[test]
+    fn a_bare_word_finds_an_app_by_what_only_its_channels_say() {
+        let mut c = chan("app", "app-web-prod", "prod", Some("v1.2.2"), "ok");
+        c["deps"] = serde_json::json!(["unity-core"]);
+        c["telemetry"] = serde_json::json!([{"watch": "app-probe", "state": "OK"}]);
+        let beta = chan("app", "app-api-beta", "beta", Some("v9.9.9"), "ok");
+        let r = read(&snapshot(vec![c, beta]));
+        for word in ["unity-core", "app-probe", "v9.9.9", "unknown-word"] {
+            let q = View {
+                q: word.into(),
+                state: "all".into(),
+                ..Default::default()
+            };
+            let n = q.apply(&r.apps).len();
+            assert_eq!(n, usize::from(word != "unknown-word"), "{word}");
+        }
     }
 
     #[test]

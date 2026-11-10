@@ -803,6 +803,8 @@ impl App {
             .selected_release()
             .is_some_and(|r| r.project != self.rv.cl.project);
         if self.rv.open && other {
+            // Another app's pane starts folded and at its top.
+            self.rv.others = false;
             self.read_changelog(None);
         }
     }
@@ -3592,7 +3594,7 @@ impl App {
             ),
         };
         // The focused section gets two thirds of what the heads leave, but a short list of
-        // channels never holds back rows the builds could use.
+        // apps never holds back rows the builds could use.
         let rest = (list.height as usize).saturating_sub(status.len() + bstatus.len());
         let share = if self.rv.builds.focus {
             rest * 2 / 3
@@ -5611,6 +5613,23 @@ mod tests {
             "release-state changelog --json alpha v3",
         ];
         assert_eq!(log, cl, "one read each, for the app the row is on");
+    }
+
+    #[test]
+    fn f_unfolds_the_other_envs_and_another_app_starts_folded() {
+        let (mut a, _rel, rx) = with_releases();
+        press(&mut a, KeyCode::Char('F'));
+        assert!(!a.rv.others, "a closed pane has no fold to open");
+        press(&mut a, KeyCode::Enter);
+        answer(&mut a, &rx);
+        press(&mut a, KeyCode::Char('F'));
+        assert!(a.rv.others);
+        press(&mut a, KeyCode::Char('j'));
+        assert!(!a.rv.others, "beta's pane starts folded");
+        answer(&mut a, &rx);
+        press(&mut a, KeyCode::Char('F'));
+        press(&mut a, KeyCode::Enter);
+        assert!(!a.rv.open && !a.rv.others, "closing folds it too");
     }
 
     #[test]

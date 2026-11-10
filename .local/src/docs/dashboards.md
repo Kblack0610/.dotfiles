@@ -134,7 +134,7 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 | `outbox` (agent-web `#outbox`, `hub --tab outbox`) | Daily, showing the outbox (`#daily/outbox`) | #1075 |
 | `focus` (agent-web `#focus`, `#focus/<note>`; `hub --tab focus`) | Daily (`#daily`, `#daily/<note>`) | #1075 |
 | `numbers` (Home's Numbers heading; `hub tab numbers`, `hub --tab numbers`, agent-web `#numbers`) | Home: the session counts are the head of Running, the spend is the SPEND line linking Costs | ar-911 |
-| `green` (the Releases state chip, `s=green` in a saved view) | `ok`; an unknown chip falls back to `all` | this PR |
+| `green` (the Releases state chip, `s=green` in a saved view) | `ok`; an unknown chip falls back to `all` | #1756 |
 
 ### Log
 
