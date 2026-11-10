@@ -803,7 +803,7 @@ ask_stub() {
 }
 
 @test "--backlog --link: each unparented row gets the model's system and epic, else its standing epic; a linked row or an epic is not asked" {
-  export INBOX_LINK_CMD=model-stub
+  export INBOX_PRIORITY_CMD=model-stub
   systems ui:menu docs
   sheet '' '- [ ] epic(ui): a pause menu mid-match <!-- id:sc-1 -->\n- [ ] fix(sound): resume flickers #size/s <!-- id:sc-2 -->\n- [ ] feat(menu): a quit button #size/s <!-- id:sc-3 -->\n- [ ] fix(ui): the logo blurs #size/s <!-- id:sc-4 -->\n- [ ] fix(ui): the menu lags #size/s #of/sc-1 <!-- id:sc-5 -->\n- [ ] fix(net): the lobby drops #size/s <!-- id:sc-6 -->\n'
   # rows reach the model in sheet order: sc-2, sc-3, sc-4, sc-6
@@ -826,7 +826,7 @@ ask_stub() {
 }
 
 @test "--backlog --link --dry-run writes nothing and keeps its answers; a second dry run and the apply reuse them with no model call" {
-  export INBOX_LINK_CMD=model-stub INBOX_LINK_DIR="$NOTES_FIXTURE/link"
+  export INBOX_PRIORITY_CMD=model-stub; link="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage"
   systems ui
   sheet '' '- [ ] fix(sound): resume flickers #size/s <!-- id:sc-2 -->\n- [ ] fix(ui): pause menu #size/m <!-- id:sc-3 -->\n'
   answer '{"n": 1, "system": "ui"}' '{"n": 2, "system": "ui", "epic": "epic(ui): a pause menu mid-match"}'
@@ -836,19 +836,19 @@ ask_stub() {
   assert_output --partial 'would run: notes ptask scratch --exact edit --link --text fix\(ui\):\ resume\ flickers\ #size/s'
   assert_output --partial 'link: feature 1, standing 1, new epics 1'
   assert_equal "$(cat "$SHEET")" "$before"
-  [ "$(wc -l <"$NOTES_FIXTURE/link/link-scratch.jsonl")" = 2 ]
+  [ "$(wc -l <"$link/link-scratch.jsonl")" = 2 ]
   # A second dry run (one stopped at its budget, say) resumes: its answers come from the cache.
   : >"$NOTES_FIXTURE/model.log"
   run "$TRIAGE" --backlog --link --dry-run --project scratch
   assert_success
   assert_output --partial 'link: feature 1, standing 1, new epics 1'
   [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the second dry run asked the model again"
-  [ "$(wc -l <"$NOTES_FIXTURE/link/link-scratch.jsonl")" = 2 ]
+  [ "$(wc -l <"$link/link-scratch.jsonl")" = 2 ]
   answer '{"n": 1, "system": "docs"}'
   run "$TRIAGE" --backlog --link --project scratch
   assert_success
   [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model again"
-  [ ! -e "$NOTES_FIXTURE/link/link-scratch.jsonl" ] || fail "the apply left its cache"
+  [ ! -e "$link/link-scratch.jsonl" ] || fail "the apply left its cache"
   run tasks
   assert_output --regexp 'fix\(ui\): resume flickers #size/s #of/sc-4 <!-- id:sc-2 -->'
   assert_output --regexp 'epic\(ui\): a pause menu mid-match .*#new.*id:sc-5'
@@ -857,7 +857,7 @@ ask_stub() {
 
 # A backlog past the 128 KB one argument holds: the rows and the cache must not go to jq as arguments.
 @test "--backlog --link replays its cache for a backlog past 128 KB" {
-  export INBOX_LINK_CMD=model-stub INBOX_LINK_DIR="$NOTES_FIXTURE/link"
+  export INBOX_PRIORITY_CMD=model-stub; link="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage"
   systems ui
   long="$(printf 'x%.0s' {1..70000})"
   sheet '' "- [ ] fix(ui): pause menu $long #size/s <!-- id:sc-2 -->\n"

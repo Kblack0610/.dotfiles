@@ -27,7 +27,6 @@ NAME="${AGENTCTL_NAME:-inbox-triage}"
 TYPES=""   # the row types from `notes row types`, read once a pass
 : "${INBOX_TRIAGE_CMD:=agentctl-run --agent inbox-triage}"
 : "${INBOX_PRIORITY_CMD:=agentctl-run --agent inbox-priority}"  # --priority: a classify call, so Sonnet (its own conf)
-: "${INBOX_LINK_CMD:=$INBOX_PRIORITY_CMD}"  # --link: a classify call too, on the same conf and budget
 : "${INBOX_ASK_CMD:=agentctl-run --agent inbox-triage --role observe --max-turns 8}"  # a #ask answer: the observe role may look things up and write nothing
 : "${INBOX_TRIAGE_PASSES:=3}"
 : "${INBOX_TRIAGE_MAX:=40}"   # the most lines one model call carries (route and --backlog); budget_batch sizes each call under it
@@ -56,7 +55,8 @@ DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=
 REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0
 OUT=""
 FLAG=""; RECORD=""; OUTBOX=""
-PAUSED="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/PAUSED"
+STATE="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}"
+PAUSED="$STATE/PAUSED"
 say() { printf 'inbox-triage: %s\n' "$*" >&2; }
 # clean <width>: model text as one printable ASCII line, punctuation folded rather than dropped.
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
@@ -587,12 +587,12 @@ LINK_JQ='def s: (. // "") | tostring | gsub("[[:cntrl:]]"; " ");
 # link_cache <project>: the answers a --link --dry-run got, one `{lane, raw, system, of, epic}`
 # per line. The apply reuses each whose row is still byte for byte the same, so it writes what
 # the dry run printed and asks the model only about rows changed since; it removes the file after.
-link_cache() { printf '%s/link-%s.jsonl' "${INBOX_LINK_DIR:-${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage}" "$1"; }
+link_cache() { printf '%s/inbox-triage/link-%s.jsonl' "$STATE" "$1"; }
 
 # system_named <word> <systems tsv>: the id of the system the word names, by its id or an alias.
 system_named() {
   [ -n "$1" ] || return 0
-  awk -F'\t' -v a="$1" '$1 == a { print $1; exit } { n = split($3, w, ","); for (i = 1; i <= n; i++) if (w[i] == a) { print $1; exit } }' <<<"$2"
+  awk -F'\t' -v a="${1,,}" 'tolower($1) == a { print $1; exit } { n = split(tolower($3), w, ","); for (i = 1; i <= n; i++) if (w[i] == a) { print $1; exit } }' <<<"$2"
 }
 
 # link_row <project> <lane> <raw> <system> <of> <new epic> <epics> <systems tsv>: one row under
@@ -653,7 +653,7 @@ $(systems_of "$p")
 $(epics_of "$p" "$epics" | grep -viE ' to standard$')
 ## Rows (n. [id] text)
 $listing"
-  ask "$prompt" "${#raws[@]}" "$p ($lane) link" "$INBOX_LINK_CMD" sized || return
+  ask "$prompt" "${#raws[@]}" "$p ($lane) link" "$INBOX_PRIORITY_CMD" sized || return
   answered "$p ($lane) link" || return 1
   cache="$(link_cache "$p")"
   local -a seen=()
