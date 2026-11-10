@@ -32,6 +32,7 @@ TYPES=""   # the row types from `notes row types`, read once a pass
 : "${INBOX_TRIAGE_PASSES:=3}"
 : "${INBOX_TRIAGE_MAX:=40}"   # the most lines one model call carries (route and --backlog); budget_batch sizes each call under it
 : "${INBOX_SWEEP_QUIET:=30}"  # --watch: seconds with no save before a sweep runs
+: "${NEAR_GAP:=30}"            # an outbox line asked again: records this many seconds from its left one are its sweep (one sweep writes its records in seconds; the model call between sweeps takes longer)
 : "${INBOX_RETRY_S:=900}"      # --watch: wait before a failed sweep runs again by itself; doubles each failure
 : "${INBOX_RETRY_MAX_S:=7200}" # --watch: the longest that wait grows to
 
@@ -144,6 +145,13 @@ $details" 1 ask "$INBOX_ASK_CMD"; rc=$?
 # One model answer line -> n, action, id, project, lane, plan (1 or empty), why, rows (joined
 # by RS), split by US.
 # shellcheck disable=SC2016 # jq source, not shell
+# A record's ts in epoch seconds, its offset applied; 0 when it does not parse.
+# shellcheck disable=SC2016 # jq source, not shell
+EPOCH_JQ='def epoch: (.ts // "") as $t | try (
+  ($t[0:19] + "Z" | fromdateiso8601)
+  - (($t | capture("(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2})$")? // {s: "+", h: "0", m: "0"})
+     | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))) catch 0;'
+
 ANSWER_JQ='def s: (. // "") | tostring | gsub("[[:cntrl:]]"; " ");
   fromjson? | select(type == "object" and (.n | type) == "number")
   | [(.n | floor | tostring), (.action | s), (.id | s),
@@ -265,7 +273,7 @@ route() {
   mapfile -d '' -t froms < <(jq -j '.[] | .from, "\u0000"' <<<"$lines")
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$lines")
   mapfile -d '' -t texts < <(jq -j '.[] | .text, "\u0000"' <<<"$lines")
-  batch="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.from)] \(.value.text)" + (if (.value.hint // "") != "" then " (tagged #p:\(.value.hint), which is no project; it may name one of the projects above)" else "" end), (.value.details[]? | "   " + .)' <<<"$lines")"
+  batch="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.from)] \(.value.text)" + (if (.value.hint // "") != "" then " (tagged #p:\(.value.hint), which is no project; it may name one of the projects above)" else "" end) + (if (.value.near // []) != [] then " (asked before: the lines written beside it went to \(.value.near | join(" and ")))" else "" end), (.value.details[]? | "   " + .)' <<<"$lines")"
   # Every open row of a project a line waits in, for dups. An outbox line can go anywhere, so
   # with one in the batch each other project shows its newest rows too, which is what it is for.
   open="$(jq -r --argjson src "$srcs" --argjson wide "$wide" '
@@ -288,7 +296,7 @@ For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-ST
 {\"n\": 3, \"action\": \"skip\", \"why\": \"<a few words>\"}
 {\"n\": 4, \"action\": \"file\", \"rows\": [\"feat(ui): a pause menu with resume and quit #size/m\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": true, \"epic\": \"epic(ui): a pause menu the player can open mid-match\"}
 {\"n\": 5, \"action\": \"dup\", \"line\": 4}
-file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other in one place (two [outbox] lines, or two lines of one inbox) were written together, so read each with its neighbours there: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
+file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other in one place (two [outbox] lines, or two lines of one inbox) were written together, so read each with its neighbours there: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share. A line marked asked before has had its neighbours filed already, so the projects that mark names are its neighbours' projects. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
 dup: only when an open row below already asks for the same thing (its id), or a line above in this list that you file does (its n as line).
 skip: the line is not a task (a thought, a note to self, a question that only asks for information), you cannot tell what it asks, or for an [outbox] line neither it nor its neighbours point at a project. A question that reports a fault or asks for a change (didn't it reset?, can we have X?) is a task. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
 A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. $(new_epic_rule)
@@ -789,22 +797,31 @@ agent_run_rule() {
 
 # One sweep's pass: lists split, the outbox, then every inbox.
 pass() {
-  local ob board all seen rc=0 mrc p lines from raw text size r details
+  local ob board all seen near rc=0 mrc p lines from raw text size r details
   split_waiting || rc=1
   ob="$(notes outbox list --json 2>/dev/null)" || { say "notes outbox list failed"; proof_why "notes outbox list failed"; return 1; }
   # What the record says was left or refused, by where it waited and its words. A line the model
   # left before this script last changed is asked once more, so a better router reaches what an
   # older one passed over; a refusal is the CLI's, so it holds until the words change.
-  seen='{}'
+  seen='{}' near='{}'
   local since; since="$(stat -c %Y "$(readlink -f "${BASH_SOURCE[0]}")" 2>/dev/null || echo 0)"
   # shellcheck disable=SC2016 # jq source, not shell
-  [ -s "$RECORD" ] && seen="$(jq -cn --argjson since "$since" '
-    def epoch: (.ts // "") as $t | try (
-      ($t[0:19] + "Z" | fromdateiso8601)
-      - (($t | capture("(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2})$")? // {s: "+", h: "0", m: "0"})
-         | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))) catch 0;
+  [ -s "$RECORD" ] && seen="$(jq -cn --argjson since "$since" "$EPOCH_JQ"'
     [inputs | select(.action == "refused" or (.action == "left" and epoch >= $since))
     | {key: (.from + "\t" + .text), value: true}] | from_entries' "$RECORD" 2>/dev/null || echo '{}')"
+  # An outbox line asked again has lost the lines written beside it, which left the outbox when
+  # they were filed. Where the nearest of them went, above and below it in the sweep that left it
+  # (records within NEAR_GAP seconds), stands in for them. The first sweep that saw them wins.
+  # shellcheck disable=SC2016 # jq source, not shell
+  [ -s "$RECORD" ] && near="$(jq -cn --argjson gap "$NEAR_GAP" "$EPOCH_JQ"'
+    [inputs | select(.from == "outbox" and (.action == "moved" or .action == "left")) | {action, text, to, t: epoch}] as $r
+    | reduce range(0; $r | length) as $i ({};
+        $r[$i] as $l
+        | if $l.action != "left" or (.[$l.text] // [] | length) > 0 then . else
+            ([$r[:$i][] | select(.action == "moved" and $l.t - .t <= $gap)] | last | .to) as $up
+            | ([$r[$i + 1:][] | select(.action == "moved" and .t - $l.t <= $gap)] | first | .to) as $down
+            | .[$l.text] = ([$up, $down] | map(select(. != null and . != "")))
+          end)' "$RECORD" 2>/dev/null || echo '{}')"
   local fresh='select($seen[.from + "\t" + .text] | not)'
   # A `#ask` line is a question, not work: it is answered and leaves the outbox, and goes no further.
   while IFS=$'\x1f' read -r -d '' raw text details; do
@@ -835,9 +852,9 @@ pass() {
   done < <(jq -j --argjson seen "$seen" --arg re "$ID_LINE_RE" --argjson missed "$missed" ".[] | select(((.project | not) or (.raw as \$r | \$missed | index(\$r) != null)) and (.text | test(\$re)))
     | {from: \"outbox\", raw, text} | $fresh | (.text | capture(\$re).id), \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
   all='[]'
-  [ -z "$ONLY" ] && all="$(jq -c --arg re "$ID_LINE_RE" --argjson missed "$missed" '[.[]
+  [ -z "$ONLY" ] && all="$(jq -c --arg re "$ID_LINE_RE" --argjson missed "$missed" --argjson near "$near" '[.[]
     | select(((.project | not) or (.raw as $r | $missed | index($r) != null)) and (.text | test($re) | not))
-    | {from: "outbox", raw, text, details, typed: false, hint: (.project // "")}]' <<<"$ob")"
+    | {from: "outbox", raw, text, details, typed: false, hint: (.project // ""), near: ($near[.text] // [] | unique)}]' <<<"$ob")"
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true

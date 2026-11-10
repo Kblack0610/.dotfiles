@@ -611,6 +611,34 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q 'fix(ui): the menu flickers' "$SHEET" || fail "$(cat "$SHEET")"
 }
 
+@test "outbox: a line asked again names where the lines beside it in its sweep went; one from another sweep is not named" {
+  sheet '' ''
+  outbox '- [ ] the menu flickers\n'
+  mkdir -p "$HOME/.local/state/notes"
+  rec() { jq -cn --arg ts "$1" --arg a "$2" --arg to "$3" --arg text "$4" '{ts: $ts, action: $a, from: "outbox", to: $to, text: $text, why: "", stage: "intake"}'; }
+  { rec '2000-01-01T00:00:00.1-08:00' moved other 'an earlier paste'
+    rec '2000-01-01T01:00:00.1-08:00' moved scratch 'the scratch lobby is slow'
+    rec '2000-01-01T01:00:01.1-08:00' left '' 'the menu flickers'
+    rec '2000-01-01T02:00:00.1-08:00' moved other 'a later paste'
+  } >"$HOME/.local/state/notes/ingest.jsonl"
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the menu flickers #size/s"], "project": "scratch"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 1 from the outbox, filed 1'
+  run grep -F '1. [outbox] the menu flickers' "$NOTES_FIXTURE/prompt.txt"
+  assert_output '1. [outbox] the menu flickers (asked before: the lines written beside it went to scratch)'
+}
+
+@test "outbox: a line never left carries no asked-before mark (negative control)" {
+  sheet '' ''
+  outbox '- [ ] the scratch menu flickers\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the menu flickers #size/s"], "project": "scratch"}'
+  run "$TRIAGE"
+  assert_success
+  run cat "$NOTES_FIXTURE/prompt.txt"
+  refute_output --partial '(asked before:'
+}
+
 @test "outbox: a left record with a bad ts is only asked again itself; a refusal beside it still holds" {
   sheet '' ''
   outbox '- [ ] the scratch menu flickers\n- [ ] a refused line\n'
