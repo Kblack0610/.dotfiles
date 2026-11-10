@@ -17,7 +17,8 @@
 # #high rows. --backlog --link puts each open typed row with no #of/ under an epic, one Sonnet
 # call per batch on the same lane: the model names the row's system and, when one fits, an open
 # feature epic or a new #new one; a row with neither goes under its system's standing epic
-# (`notes ptask edit --link`). A --dry-run keeps its answers, so the apply writes what it printed.
+# (`notes ptask edit --link`). A --dry-run keeps its answers, so the apply writes what it printed
+# and a dry run stopped at its budget picks up where it stopped.
 # How it all fits: notes-cli README, "Intake".
 
 set -uo pipefail
@@ -673,7 +674,7 @@ $listing"
 # project with the most first. A project with no system list is passed over: there is no
 # standing epic to fall back on.
 link_pass() {
-  local board epics rows p lane tsv cache mine cached total off size r rc=0 raw sys of epic
+  local board epics rows p lane tsv cache kept mine cached total off size r rc=0 raw sys of epic
   board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
   board="$(managed_board <<<"$board")"
   epics="$(epics_open "$board")"
@@ -687,17 +688,18 @@ link_pass() {
     tsv="$(project-stage-check "$p" --list 2>/dev/null)"
     [ -n "$tsv" ] || { say "$p: no system list, passed over"; continue; }
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
-    cache="$(link_cache "$p")" cached='{}'
+    cache="$(link_cache "$p")" cached='{}' kept=''
     mkdir -p "$(dirname "$cache")"
-    if [ "$DRY" = 1 ]; then
-      : >"$cache"
-    elif [ -s "$cache" ]; then
-      # The dry run's answers for rows still as they were; the rest go to the model below.
+    # Answers already given for rows still as they were: the apply writes what the dry run
+    # printed, and a dry run stopped at its budget resumes. Only the rest go to the model below.
+    [ -s "$cache" ] && kept="$(jq -cn --argjson rows "$rows" --arg p "$p" '($rows | map(select(.project == $p) | "\(.lane)\u0000\(.raw)") | INDEX(.)) as $live
+      | inputs | select($live["\(.lane)\u0000\(.raw)"])' "$cache")"
+    [ "$DRY" = 1 ] && printf '%s' "${kept:+$kept$'\n'}" >"$cache"
+    if [ -n "$kept" ]; then
       while IFS=$'\x1f' read -r lane raw sys of epic; do
         link_row "$p" "$lane" "$raw" "$sys" "$of" "$epic" "$epics" "$tsv"
-      done < <(jq -rn --argjson rows "$rows" --arg p "$p" '($rows | map(select(.project == $p) | "\(.lane)\u0000\(.raw)") | INDEX(.)) as $live
-        | inputs | select($live["\(.lane)\u0000\(.raw)"]) | [.lane, .raw, .system, .of, .epic] | join("\u001f")' "$cache")
-      cached="$(jq -c '"\(.lane)\u0000\(.raw)"' "$cache" | jq -sc 'INDEX(.)')"
+      done < <(jq -r '[.lane, .raw, .system, .of, .epic] | join("\u001f")' <<<"$kept")
+      cached="$(jq -c '"\(.lane)\u0000\(.raw)"' <<<"$kept" | jq -sc 'INDEX(.)')"
     fi
     for lane in human agent; do
       # shellcheck disable=SC2016 # jq source, not shell
