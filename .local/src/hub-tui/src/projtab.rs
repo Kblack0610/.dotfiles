@@ -113,10 +113,14 @@ impl ProjView {
 
     /// `Z`: open the open system's next epic, its tasks listed and the rows below narrowed to its
     /// open ones (every row key works on them); after the last one fold it. With no system open
-    /// it opens the first one's.
+    /// it opens the first one with an open epic.
     pub fn step_epic(&mut self, tv: &mut TaskView, pg: &Page) {
         if self.sys.is_none() {
-            self.step_system(tv, pg);
+            self.sys = pg
+                .systems
+                .iter()
+                .find(|s| !s.epics.is_empty())
+                .map(|s| s.id.clone());
         }
         let Some(sys) = pg.systems.iter().find(|s| Some(&s.id) == self.sys.as_ref()) else {
             return;
@@ -827,6 +831,22 @@ pub(crate) mod tests {
         assert_eq!(
             (pv.sys.as_ref(), pv.epic.as_ref(), tv.only.as_ref()),
             (None, None, None)
+        );
+
+        // Z skips a system that has only closed epics to count: there is nothing to narrow to.
+        let mut closed_first = a_page();
+        closed_first.systems.insert(
+            0,
+            hub_core::page::System {
+                id: "save".into(),
+                closed: "+2 closed, 2 verified".into(),
+                ..Default::default()
+            },
+        );
+        pv.step_epic(&mut tv, &closed_first);
+        assert_eq!(
+            (pv.sys.as_deref(), pv.epic.as_deref()),
+            (Some("ui"), Some("gm-1"))
         );
     }
 

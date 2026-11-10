@@ -158,6 +158,7 @@ function pOpen(key) {
   const c = pst.data && pst.data.cards.find((x) => pKey(x) === key);
   if (c) { delete pst.page[c.name]; pReadPage(c.name); }
   bst.feed = null; bst.sel = null; bst.form = null; bst.msg = ""; bst.all = false; bst.controlsKey = "";
+  pst.leaf = null;
   $("projects").scrollTop = 0;
   renderProjects();
   refreshBoard();
@@ -169,7 +170,7 @@ function pGo(key) {
   st.arg = key === null ? "" : key;
   setQuery("");
   if (key === null) {
-    pst.open = null; bst.feed = null;
+    pst.open = null; bst.feed = null; pst.leaf = null;
     if (pst.viewed) pst.data = null;
     renderProjects(); refreshProjects(); refreshBoard();
   } else pOpen(key);
@@ -182,9 +183,9 @@ function renderProjects() {
   if (!pst.open) { pst.render(); return; }
   const c = pst.data && pst.data.cards.find((x) => pKey(x) === pst.open);
   if (pst.leaf && bst.feed && bst.feed !== pst.leaf.feed) {
+    // Only the read that has the row answers: one already in flight when the click came may not.
     const r = bst.feed.rows.find((x) => x.id === pst.leaf.id);
-    if (r) bst.sel = bSel(r);
-    pst.leaf = null;
+    if (r) { bst.sel = bSel(r); pst.leaf = null; }
   }
   paint($("p-head"), `<div class="opts"><button class="btn sm" id="p-back">Back to projects</button></div>` +
     (c ? pOpened(c) : ""), pst.folds);

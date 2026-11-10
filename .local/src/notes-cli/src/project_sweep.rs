@@ -46,7 +46,7 @@ fn epic_order(line: &str, systems: &[crate::standing::System]) -> (bool, usize, 
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
     let new = head.split_whitespace().any(|w| w == "#new");
     let area = projects::row_type_area(line)
-        .map(|(_, a)| a)
+        .map(|(_, a)| a.to_lowercase())
         .unwrap_or_default();
     let at = crate::standing::system_of(systems, &area)
         .and_then(|id| systems.iter().position(|s| s.id == id))

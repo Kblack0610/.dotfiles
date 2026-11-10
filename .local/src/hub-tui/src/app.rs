@@ -1685,7 +1685,15 @@ impl App {
             }
             Msg::ProjPage(pg) => {
                 if self.tv.project.as_ref().map(|(_, n)| n) == Some(&pg.project) {
+                    // The narrowed rows can shrink: keep the selected row, else clamp.
+                    let was = match &self.tasks {
+                        Some(Ok(f)) => self.tv.selected(f).cloned(),
+                        _ => None,
+                    };
                     self.pv.narrow(&mut self.tv, &pg);
+                    if let Some(Ok(f)) = &self.tasks {
+                        self.tv.reselect(was, f);
+                    }
                 }
                 self.proj_page = Some(*pg);
                 if self.proj_page_read.done() {

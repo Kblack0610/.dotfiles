@@ -219,6 +219,9 @@ test("a task under an epic filters the rows to its id and opens its row", async 
     assert.match(read().rows, /<tr class="jr sel" data-row="0">.*wire the pause key/s);
     assert.doesNotMatch(read().rows, /fix the menu/, "the rows are the task's alone");
     assert.equal(vm.runInContext("pst.leaf", ctx), null, "the answer settles it");
+    // A read that lacks the row (one in flight before the click) leaves the click waiting.
+    vm.runInContext('pst.leaf = { id: "de-404", feed: null }; renderProjects()', ctx);
+    assert.equal(vm.runInContext("pst.leaf && pst.leaf.id", ctx), "de-404");
   } finally { rows.pop(); }
 });
 
