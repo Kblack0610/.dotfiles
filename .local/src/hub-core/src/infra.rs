@@ -3,10 +3,11 @@
 //! `apps/monitoring/prometheus-rules-command-center.yaml`) and the runner-exporter series, as
 //! Grafana's kb-command-center does, so none of them judges anything itself.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
+use crate::ci::{self, Ci};
 use crate::home::{Chip, Level, ALWAYS, DOMAINS};
 
 use crate::prom::{self, Series, W};
@@ -48,6 +49,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // The governor's powered standby hosts (aws-burst-1): state and why, run hours today
         // against the day cap, and the override in force. The Cloud runners card.
         ("power", r#"{__name__=~"ci_governor_power_.+"}"#.into()),
+        // What a workflow's job usually takes: the exporter's median and p90 over a day of finished
+        // jobs, for the CI runners table's USUAL column.
+        ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
         // The governor itself: per host its verdict and action, admitted slots and whether it
         // acts for real; its queue and health; and the AWS budget's month it reads hourly.
         ("governor", r#"{__name__=~"ci_governor_(up|ok|dry_run|queue|live|admitted|decision|budget_.+)"}"#.into()),
@@ -75,6 +79,7 @@ pub const OPTIONAL: &[&str] = &[
     "withheld",
     "power",
     "governor",
+    "job_usual",
 ];
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -91,6 +96,8 @@ pub struct Infra {
     pub instant: BTreeMap<&'static str, Vec<Series>>,
     /// `runners_down()` as `gather` found it, for the browser, which only draws it.
     pub down: Vec<Series>,
+    /// The CI runners board, built once here for both surfaces (`ci::build`).
+    pub ci: Ci,
 }
 
 /// Grafana's base URL from `CC_GRAFANA_URL`, for any board's dashboard link.
@@ -144,6 +151,7 @@ pub fn gather() -> Infra {
     }
     judge(&mut out, errors);
     out.down = out.runners_down().into_iter().cloned().collect();
+    out.ci = ci::build(&out);
     out
 }
 
@@ -170,27 +178,31 @@ impl Infra {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// The runners that are down: offline or missing, unless the governor has powered their host
-    /// off, or is starting or stopping it (`ci_governor_power_state` at 1 in a state other than
-    /// `running`), when offline is what it should be. A host the governor does not manage has no
-    /// such series, so its runners are judged as any other. RED NOW on both surfaces and the
-    /// phone's CI line read this, so none of them judges a runner itself. By host, then name.
-    pub fn runners_down(&self) -> Vec<&Series> {
-        let powered_off: HashSet<&str> = self
-            .get("power")
+    /// The hosts the governor has powered off, or is starting or stopping (`ci_governor_power_state`
+    /// at 1 in a state other than `running`), with that state: offline is what their runners
+    /// should be. A host the governor does not manage has no such series.
+    pub fn powered_off(&self) -> HashMap<&str, &str> {
+        self.get("power")
             .iter()
             .filter(|s| {
                 s.label("__name__") == "ci_governor_power_state"
                     && s.value == Some(1.0)
                     && s.label("state") != "running"
             })
-            .map(|s| s.label("host"))
-            .collect();
+            .map(|s| (s.label("host"), s.label("state")))
+            .collect()
+    }
+
+    /// The runners that are down: offline or missing, unless the governor has powered their host
+    /// off (`powered_off`). RED NOW on both surfaces and the phone's CI line read this, so none
+    /// of them judges a runner itself. By host, then name.
+    pub fn runners_down(&self) -> Vec<&Series> {
+        let off = self.powered_off();
         let mut down: Vec<&Series> = self
             .get("runners")
             .iter()
             .filter(|s| matches!(s.label("state"), "offline" | "missing"))
-            .filter(|s| !powered_off.contains(s.label("host")))
+            .filter(|s| !off.contains_key(s.label("host")))
             .collect();
         down.sort_by_key(|s| (s.label("host"), s.label("name")));
         down
@@ -354,7 +366,8 @@ mod tests {
                 "runner_cores",
                 "withheld",
                 "power",
-                "governor"
+                "governor",
+                "job_usual"
             ]
         );
     }

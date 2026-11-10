@@ -136,7 +136,7 @@
 # State is ~/.agent/bench/*.jsonl. Every number is counted, never a model's grade.
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
-# BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
+# BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT.
@@ -168,6 +168,7 @@ set -uo pipefail
 : "${BENCH_CAL_MIN:=0.25}"           # clamp on that factor: a few odd runs cannot shrink an ETA to nothing
 : "${BENCH_CAL_MAX:=4}"              # nor stretch it to days
 : "${BENCH_SESSIONS_CMD:=fleet-sessions --write}" # also refreshes the fleet state document
+: "${BENCH_CI_MATCH_CMD:=hub ci --pool-match}"   # given the wait (s) a job must have waited; hub_core::ci's pool match rows
 : "${BENCH_NEEDS_CMD:=hub needs --json}"   # hub Home's ranked NEEDS YOU (hub_core::home::needs)
 : "${BENCH_ASKS_ALL_CMD:=agent-ask list --all}"   # every ask, for the ask KPIs
 : "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover
@@ -3902,39 +3903,15 @@ finding_limits() {
   jq -cn --argjson d "$FINDING_DEFAULTS" --argjson f "$file" '$d + ($f | with_entries(select(.value != null)))'
 }
 
-# prom_match_rows <epoch> -> cc:pool_match_{slots,busy} per pool and cc:pool_match_labels "<pool>/<label sets>":
+# prom_match_rows -> cc:pool_match_{slots,busy,runners} per pool and cc:pool_match_labels "<pool>/<label sets>":
 # the slots that can take the jobs the pool has long waited on. A job runs only on a runner holding all
 # its labels (GitHub compares them without case), so a pool's total busy/slots says nothing about a
 # job that fits two of its ten runners (2026-11-05: razer-laptop-unity-pool-1/2 were the only ones that
-# matched while mac-studio slots sat idle). A slot is a runner running or idle and not withheld, as
-# cc:pool_slots counts it; cc:pool_match_runners counts the runners in any state, so no slot because they are
-# down reads differently from no runner with the labels. Empty when nothing waits long, or no runner is read:
-# the rule then falls back to the pool's own totals.
+# matched while mac-studio slots sat idle). The join is hub_core::ci, the one copy the hub and agent-web
+# draw too; this only asks it. Empty when nothing waits long or it is unread: the rule then falls back
+# to the pool's own totals. It reads Prometheus now, which is the newest sample the one reader of this asks for.
 prom_match_rows() {
-  local minwait
-  minwait=$(finding_limits | jq -r .finding_pool_wait_s)
-  prom_q "{__name__=~\"github_actions_job_waiting|github_runner_state|github_runner_withheld\"}" "$1" 2>/dev/null |
-    jq -r --argjson minwait "$minwait" '
-      def lbl: (.metric.labels // "") | ascii_downcase | split(",") | map(select(. != ""));
-      .data.result as $r
-      | ([$r[] | select(.metric.__name__ == "github_runner_withheld" and (.value[1] | tonumber) == 1) | .metric.name]) as $withheld
-      # One row per runner, a running one winning when two exporter pods disagree during a rollout.
-      | ([$r[] | select(.metric.__name__ == "github_runner_state") | {name: .metric.name, state: .metric.state, labels: lbl}]
-         | group_by(.name) | map(sort_by(.state != "running") | first)) as $runners
-      | select($runners | length > 0)
-      | ([$r[] | select(.metric.__name__ == "github_actions_job_waiting" and .metric.stuck != "true"
-                        and (.value[1] | tonumber) >= $minwait and .metric.pool != null)
-          | {pool: .metric.pool, labels: lbl} | select(.labels | length > 0)]
-         | group_by(.pool)[]) as $jobs
-      | ($jobs[0].pool) as $pool
-      | ($jobs | map(.labels | sort) | unique) as $sets
-      | [$runners[] | select(.labels as $have | any($sets[]; all(.[]; . as $x | $have | index($x))))] as $fit
-      | [$fit[] | select(.state == "running" or (.state == "idle" and (.name as $n | $withheld | index($n) | not)))] as $m
-      | ["cc:pool_match_slots", $pool, ($m | length)],
-        ["cc:pool_match_busy", $pool, ($m | map(select(.state == "running")) | length)],
-        ["cc:pool_match_runners", $pool, ($fit | length)],
-        ["cc:pool_match_labels", "\($pool)/\($sets | map(join(",")) | join(" | "))", 1]
-      | @tsv' 2>/dev/null
+  $BENCH_CI_MATCH_CMD "$(finding_limits | jq -r .finding_pool_wait_s)" 2>/dev/null
 }
 
 # prom_rows <epoch> [match] -> metric, label, value (tab-separated) at that moment; rc 1 when unreadable.
@@ -3952,7 +3929,7 @@ prom_rows() {
     # that feeds it. Unread, a starved pool names no repos, and whoever reads it must assume all.
     out+=$'\n'$(prom_q "count by (pool, repo) ($W (github_actions_job_waiting{stuck!=\"true\"}))" "$t" |
       jq -r '.data.result[] | select(.metric.pool and .metric.repo) | ["cc:pool_waiting_repo", "\(.metric.pool)/\(.metric.repo)", (.value[1] | tonumber)] | @tsv' 2>/dev/null)
-    [ -n "${2:-}" ] && out+=$'\n'$(prom_match_rows "$t")
+    [ -n "${2:-}" ] && out+=$'\n'$(prom_match_rows)
     out=$(grep . <<<"$out")
   fi
   [ -n "$out" ] && printf '%s\n' "$out"

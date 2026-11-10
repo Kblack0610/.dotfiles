@@ -6,8 +6,6 @@
 // Prometheus has no push to a browser, so the open tab re-reads on the board's cadence
 // (REFRESH_SECS=60): the rules evaluate every minute, and faster only redraws the same numbers.
 const INFRA_REFRESH_MS = 60e3;
-// A job running past this shows amber: playground ci.md calls a gate past about an hour a bug.
-const LONG_RUN_SECS = 3600;
 const DOMAINS = ["k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "queue", "home", "other"];
 // A day's failures start folded per group past this many rows, as the Log tab folds a busy day.
 const FAILED_OPEN = 25;
@@ -180,50 +178,28 @@ function machinesTable(cc, inst) {
   }).join("")}</table>`;
 }
 
-// The CI section's running jobs, grouped by machine (the most jobs first, each group longest
-// first): the group row carries the machine and its busy/slots, so pool and host columns go.
-// A job using more than half its machine's cores shows amber: one job starving the rest.
-function runningTable(cc, inst) {
-  const ri = runnerIndex(inst), hostCores = cc["cc:host_cores"] || {};
-  const prBy = {};
-  for (const r of [...(inst.runners || []), ...(inst.waiting || [])]) if (r.labels.pr && r.labels.pr !== "") prBy[`${r.labels.repo}/${r.labels.branch}`] = r.labels.pr;
-  const by = {};
-  for (const r of (inst.runners || []).filter((r) => r.labels.state === "running")) {
-    const l = r.labels;
-    (by[l.host || "-"] ||= []).push({ v: r.value, name: l.name, repo: l.repo, pr: l.pr, job: l.job_name, detail: l.title && l.title !== l.workflow ? l.title : l.branch });
-  }
-  // A machine that is not a runner runs its gates locally: the PR from a runner or queue row on
-  // the same branch.
-  for (const r of inst.gates || []) {
-    const l = r.labels, repo = l.repo || l.worktree;
-    (by[l.host || "-"] ||= []).push({ v: r.value, repo, pr: prBy[`${repo}/${l.branch}`], job: `${l.platform} (local)`, detail: l.branch });
-  }
-  const groups = Object.entries(by).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
-  const jobs = groups.reduce((x, [, js]) => x + js.length, 0);
-  if (!jobs) return { n: 0, head: "nothing", body: '<div class="empty">Nothing running.</div>' };
-  const ci = Object.fromEntries(machineSlots(cc, inst).map((m) => [m.host, m]));
-  const body = `<table class="tbl"><tr><th data-role="glance">PR</th><th data-role="glance">job</th><th class="n" data-role="glance" data-named>for</th><th class="n">cores</th><th data-role="lead">PR title or branch</th></tr>${groups.map(([host, js]) =>
-    `<tr class="hgrp"><td colspan="5">${esc(host)} <span class="muted">${ci[host] ? `${whereCell(ci[host])}, ${busyCell(ci[host])} busy` : ""}</span></td></tr>${js.sort((a, b) => (b.v || 0) - (a.v || 0)).map((r) => {
-      const c = ri[r.name] || {}, n = hostCores[host];
-      const cores = c.busy == null ? "-" : `${c.busy.toFixed(1)}/${c.allowed ?? n ?? "?"}`;
-      return `<tr><td>${esc(r.repo || "-")}${r.pr ? "#" + esc(r.pr) : ""}</td><td>${esc(r.job || "-")}</td><td class="n${r.v > LONG_RUN_SECS ? " warn" : ""}">${secs(r.v)}</td><td class="n${c.busy > n / 2 ? " warn" : ""}"${c.allowed ? ` title="pinned to ${c.allowed} CPUs of ${n ?? "?"}"` : ""}>${cores}</td><td class="wrap">${esc(r.detail || "-")}</td></tr>`;
-    }).join("")}`).join("")}</table>`;
-  return { n: jobs, head: `${jobs} job${jobs === 1 ? "" : "s"}`, body };
+// The CI runners tables, drawn from hub_core::ci (the `ci` field of the read, the one join the
+// TUI and fleet-bench share): every machine's slots with the job each runs, how long against its
+// usual, then the queued jobs with what each needs and the hosts that can take it. A late job
+// (past an hour or its usual p90) shows amber.
+const ciRef = (x) => (x.pr ? `${x.repo}#${x.pr}` : x.branch || x.repo || "");
+const slotState = (st) => (st === "off" ? "bad" : st === "withheld" ? "warn" : st === "busy" ? "" : "muted");
+function runnersTable(ci) {
+  if (!ci.rows.length) return "";
+  return `<table class="tbl"><tr><th data-role="lead">host</th><th>slot</th><th data-role="glance" data-named>state</th><th class="n" data-role="glance" data-named>ran</th><th class="n">usual</th><th data-role="glance">job</th></tr>${ci.rows.map((r) => {
+    const job = r.state === "busy" ? `${esc(r.job || "-")} <span class="muted">${esc(ciRef(r))}</span>` : `<span class="muted">${esc(r.note || "")}</span>`;
+    return `<tr><td>${esc(r.host)}</td><td>${esc(r.slot)}</td><td class="${slotState(r.state)}">${esc(r.state)}</td><td class="n${r.late ? " warn" : ""}">${secs(r.ran)}${r.late ? "!" : ""}</td><td class="n muted">${secs(r.usual)}</td><td class="wrap">${job}</td></tr>`;
+  }).join("")}</table>`;
 }
-
-const queuedRuns = (inst) => (inst.waiting || []).filter((r) => r.labels.stuck !== "true");
-function queuedTable(inst) {
-  const groups = {};
-  for (const r of queuedRuns(inst)) {
-    const k = [r.labels.pool, r.labels.repo, r.labels.pr, r.labels.branch].join("\t");
-    const g = (groups[k] ||= { l: r.labels, n: 0, old: 0 });
-    g.n++; g.old = Math.max(g.old, r.value || 0);
-  }
-  const rows = Object.values(groups).sort((a, b) => b.old - a.old);
-  if (!rows.length) return '<div class="empty">Nothing waiting.</div>';
-  return `<table class="tbl"><tr><th>pool</th><th data-role="glance">repo</th><th data-role="glance">PR</th><th class="n">jobs</th><th class="n" data-role="glance" data-named>waiting</th><th data-role="lead">branch</th></tr>${rows.map((g) =>
-    `<tr><td>${esc(g.l.pool || "-")}</td><td>${esc(g.l.repo || "-")}</td><td>${g.l.pr ? "#" + esc(g.l.pr) : "-"}</td><td class="n">${g.n}</td><td class="n">${secs(g.old)}</td><td class="wrap">${esc(g.l.branch || "-")}</td></tr>`).join("")}</table>`;
+function queuedTable(ci) {
+  if (!ci.queue.length) return "";
+  const stuck = (q) => !q.can.length && q.needs.length;
+  return `<table class="tbl"><tr><th data-role="lead">queued</th><th class="n" data-role="glance" data-named>wait</th><th>needs</th><th data-role="glance" data-named>can run on</th></tr>${ci.queue.map((q) => {
+    const can = q.can.length ? q.can.map((f) => `${esc(f.host)} <span class="muted">${esc(f.state)}</span>`).join(", ") : q.needs.length ? "nobody" : "-";
+    return `<tr${stuck(q) ? ' class="bad"' : ""}><td>${esc(q.job || "-")} <span class="muted">${esc(ciRef(q))}${q.n > 1 ? ` x${q.n}` : ""}</span></td><td class="n">${secs(q.wait)}</td><td class="muted">${esc(q.needs.join(", "))}</td><td class="wrap">${can}</td></tr>`;
+  }).join("")}</table>`;
 }
+const ciHead = (ci) => `${ci.hosts} hosts, ${ci.slots} slots, ${ci.busy} busy, ${ci.queued} queued${ci.queued ? ` (oldest ${secs(ci.oldest)})` : ""}`;
 
 // What is red: cc:red_now, the dashboard's table (watches, runners, nodes, feed, Sentinel) plus the
 // board's DOWN line (the down runners hub_core::infra::runners_down judged, stuck runs, the
@@ -342,16 +318,18 @@ function doneToday(inst, t1) {
   return `<h3 class="sec">Done today</h3>${tiles}<div class="muted fold">${note}</div>`;
 }
 
-// The CI section: what is running, waiting and failed in the last 24h, each only when it has
-// rows; all three empty is green and reads as the heading line. Then the 24h pass rates with the
-// green workflows as one line, one fold for the day's tiles and the queues by pool, and a line
-// to the runs themselves: Releases' Builds section (hub_core::builds) lists every CI run.
-function ciSection(cc, inst, t1) {
-  const run = runningTable(cc, inst), queued = queuedRuns(inst).length, failed = failedCount(inst), fin = finishedTable(inst);
-  const green = !run.n && !queued && !failed;
-  let html = `<h2 class="sec" id="sec-ci">CI <span class="muted">${green ? `green: nothing running, waiting or failed in 24h; ${esc(fin.head)}` : `running ${run.n}, queued ${queued}, failed 24h ${failed}`}</span></h2>`;
-  if (run.n) html += `<h3 class="sec">Running <span class="muted">${esc(run.head)}</span></h3><div class="panel scroll">${run.body}</div>`;
-  if (queued) html += `<h3 class="sec">Queued</h3><div class="panel scroll">${queuedTable(inst)}</div>`;
+// The CI runners section: the machines and queue of hub_core::ci, then the 24h pass rates with
+// the green workflows as one line, one fold for the day's tiles and the queues by pool, and a
+// line to the runs themselves: Releases' Builds section (hub_core::builds) lists every CI run.
+function ciSection(cc, inst, t1, ci) {
+  const failed = failedCount(inst), fin = finishedTable(inst);
+  const green = !ci.busy && !ci.queued && !failed;
+  let html = `<h2 class="sec" id="sec-ci">CI runners <span class="muted">${esc(ciHead(ci))}${failed ? `, failed 24h ${failed}` : green ? `; green: nothing queued or failed in 24h; ${esc(fin.head)}` : ""}</span></h2>`;
+  // A queued job no online runner can take: hub_core::ci words the line, once for both surfaces.
+  if (ci.red.length) html += `<div class="panel down">${ci.red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`;
+  const run = runnersTable(ci);
+  if (run) html += `<div class="panel scroll">${run}</div>`;
+  if (ci.queue.length) html += `<h3 class="sec">Queued</h3><div class="panel scroll">${queuedTable(ci)}</div>`;
   if (failed) html += `<h3 class="sec">Failed, last 24h</h3>${failedList(inst)}`;
   // Workflows with a failure or a cancel get a row; the green ones are one line under them.
   if (fin.body) html += `<h3 class="sec">Finished 24h <span class="muted">${esc(fin.head)}</span></h3><div class="panel scroll">${fin.body}</div>`;
@@ -530,7 +508,7 @@ function renderInfra() {
     : `<h2 class="sec" id="sec-red">Red now <span class="muted">nothing: every rostered runner is online or powered off by the governor</span></h2>`;
   html += fixesSection();
   html += `<h2 class="sec" id="sec-machines">Machines</h2><div class="panel scroll">${machinesTable(cc, inst)}</div>`;
-  html += ciSection(cc, inst, t1);
+  html += ciSection(cc, inst, t1, d.ci);
   paint(el, html, ist.open);
   paint(tail, cloudCard(inst) + governorPanel(inst));
   seekSection();

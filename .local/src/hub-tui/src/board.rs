@@ -13,22 +13,11 @@ use ratatui::text::{Line, Span};
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::{clock, dur, pct, Palette};
 
-/// A job running longer than this shows its time amber: playground ci.md calls a gate that
-/// runs past about an hour a bug to fix, not a wait.
-pub const LONG_RUN_SECS: f64 = 3600.0;
-
 /// A label as a cell shows it: - when the series has none.
 fn lab<'a>(s: &'a Series, k: &str) -> &'a str {
     match s.label(k) {
         "" => "-",
         v => v,
-    }
-}
-
-fn pr_of(s: &Series) -> String {
-    match s.label("pr") {
-        "" => "-".into(),
-        p => format!("#{p}"),
     }
 }
 
@@ -77,8 +66,6 @@ pub struct Board<'a> {
     runners: Vec<&'a Series>,
     /// Machines listed even with no runner, first (`CC_HOSTS`).
     extra_hosts: Vec<String>,
-    /// `<repo>/<branch>` -> the PR a runner or queued job carries for it.
-    pr_by_branch: HashMap<String, String>,
 }
 
 impl<'a> Board<'a> {
@@ -110,15 +97,6 @@ impl<'a> Board<'a> {
                 .map(|k| s.label(k).to_string())
         };
         runners.sort_by_key(|s| order(s));
-        let mut pr_by_branch = HashMap::new();
-        for s in runners.iter().copied().chain(infra.get("waiting")) {
-            if !s.label("pr").is_empty() {
-                pr_by_branch.insert(
-                    format!("{}/{}", lab(s, "repo"), lab(s, "branch")),
-                    format!("#{}", s.label("pr")),
-                );
-            }
-        }
         Board {
             infra,
             p,
@@ -126,7 +104,6 @@ impl<'a> Board<'a> {
             v,
             runners,
             extra_hosts,
-            pr_by_branch,
         }
     }
 
@@ -448,180 +425,130 @@ impl<'a> Board<'a> {
         .fit(w, self.p.head())
     }
 
-    /// Every busy runner and local gate, grouped by machine (busiest machine first, its
-    /// busy/slots on the group's first row), each job longest first: repo#PR, job, how long,
-    /// and the PR title or branch. Pool and host need no column: the machine row names both.
-    pub fn running(&self, w: usize) -> Vec<Line<'static>> {
-        // host -> (seconds, repo#PR, job, branch - title)
-        let mut by: BTreeMap<String, Vec<(f64, [String; 3])>> = BTreeMap::new();
-        let pr_cell = |repo: &str, pr: &str| match pr {
-            "" | "-" => repo.to_string(),
-            p => format!("{repo}{p}"),
+    /// The CI runners table: every machine's slots with the job each runs and how long against
+    /// its usual, then the queued jobs with what each needs and the hosts that can take it
+    /// (`hub_core::ci`). A job no online runner can take leads in red, naming the missing
+    /// label. Narrowing drops USUAL, SLOT, then the job, so host, state and time stay.
+    pub fn ci_runners(&self, w: usize) -> Vec<Line<'static>> {
+        let ci = &self.infra.ci;
+        let secs = |v: i64| dur(v as f64);
+        let failed = self.failed_24h();
+        let mut head = vec![
+            Span::styled("CI RUNNERS", self.p.head()),
+            Span::raw(format!("  {}", ci.head(secs))),
+        ];
+        if failed > 0.0 {
+            head.push(Span::styled(
+                format!("  failed 24h {failed:.0}"),
+                self.p.bad(),
+            ));
+        } else if ci.busy + ci.queued == 0 {
+            head.push(Span::styled(
+                "  green: nothing queued or failed in 24h",
+                self.p.good(),
+            ));
+        }
+        let mut out = vec![clip_line(Line::from(head), w)];
+        for line in &ci.red {
+            out.push(clip_line(
+                Line::styled(format!("! {line}"), self.p.bad()),
+                w,
+            ));
+        }
+        let refer = |repo: &str, pr: &str, branch: &str| match (pr, branch) {
+            ("", "") => repo.to_string(),
+            ("", b) => b.to_string(),
+            (p, _) => format!("{repo}#{p}"),
         };
-        for s in &self.runners {
-            if s.label("state") != "running" {
-                continue;
-            }
-            let title = s.label("title");
-            let detail = if !title.is_empty() && title != s.label("workflow") {
-                title.to_string()
-            } else {
-                lab(s, "branch").to_string()
-            };
-            by.entry(lab(s, "host").into()).or_default().push((
-                s.value.unwrap_or(0.0),
-                [
-                    pr_cell(lab(s, "repo"), &pr_of(s)),
-                    lab(s, "job_name").into(),
-                    detail,
-                ],
-            ));
-        }
-        // A machine that is not a runner runs its gates locally: the PR from a runner or queue
-        // row on the same branch, and the worktree only when the repo is unknown.
-        for g in self.infra.get("gates") {
-            let repo = match g.label("repo") {
-                "" => lab(g, "worktree"),
-                r => r,
-            };
-            let branch = lab(g, "branch");
-            let pr = self
-                .pr_by_branch
-                .get(&format!("{repo}/{branch}"))
-                .cloned()
-                .unwrap_or_default();
-            by.entry(lab(g, "host").into()).or_default().push((
-                g.value.unwrap_or(0.0),
-                [
-                    pr_cell(repo, &pr),
-                    format!("{} (local)", lab(g, "platform")),
-                    branch.into(),
-                ],
-            ));
-        }
-        if by.is_empty() {
-            return vec![self.heading("RUNNING", "  nothing".into())];
-        }
-        let busy: HashMap<String, String> = self
-            .machine_slots()
-            .into_iter()
-            .map(|m| (m.host.clone(), m.busy_cell()))
-            .collect();
-        let jobs: usize = by.values().map(Vec::len).sum();
-        let mut groups: Vec<_> = by.into_iter().collect();
-        groups.sort_by(|a: &(String, Vec<_>), b| {
-            b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0))
-        });
         let mut rows = vec![];
-        for (host, mut js) in groups {
-            js.sort_by(|a, b| b.0.total_cmp(&a.0));
-            for (n, (secs, [pr, job, detail])) in js.into_iter().enumerate() {
-                let (t, style) = if secs.trunc() > 0.0 {
-                    if secs > LONG_RUN_SECS {
-                        (format!("{}!", dur(secs)), self.p.warn())
+        for r in &ci.rows {
+            let (state, style) = match r.state.as_str() {
+                "idle" | "standby" => (r.state.clone(), self.p.dim()),
+                "withheld" => (r.state.clone(), self.p.warn()),
+                "off" => ("off".into(), self.p.bad()),
+                s => (s.to_string(), Style::default()),
+            };
+            let job = if r.state == "busy" {
+                format!("{}  {}", r.job, refer(&r.repo, &r.pr, &r.branch))
+            } else {
+                r.note.clone()
+            };
+            let ran = match (r.ran, r.late) {
+                (Some(t), true) => cell(format!("{}!", secs(t)), self.p.warn()),
+                (Some(t), false) => secs(t).into(),
+                _ => "-".into(),
+            };
+            rows.push(vec![
+                r.host.clone().into(),
+                r.slot.clone().into(),
+                cell(state, style),
+                ran,
+                r.usual.map_or("-".into(), secs).into(),
+                job.into(),
+            ]);
+        }
+        if !rows.is_empty() {
+            out.extend(
+                Table {
+                    header: vec!["HOST", "SLOT", "STATE", "RAN", "USUAL", "JOB"],
+                    rows,
+                    keep: vec![0, 2, 3, 5, 1, 4],
+                    flex: Some(5),
+                    flexmin: 12,
+                    right: vec![3, 4],
+                    ..Default::default()
+                }
+                .fit(w, self.p.head()),
+            );
+        }
+        if !ci.queue.is_empty() {
+            out.push(Line::raw(""));
+            let rows = ci
+                .queue
+                .iter()
+                .map(|q| {
+                    let s = if q.stuck() {
+                        self.p.bad()
                     } else {
-                        (dur(secs), Default::default())
+                        Style::default()
+                    };
+                    let mut name = refer(&q.repo, &q.pr, &q.branch);
+                    if q.n > 1 {
+                        name += &format!(" x{}", q.n);
                     }
-                } else {
-                    ("-".into(), Default::default())
-                };
-                let (h, b) = if n == 0 {
-                    (host.clone(), busy.get(&host).cloned().unwrap_or("-".into()))
-                } else {
-                    (String::new(), String::new())
-                };
-                rows.push(vec![
-                    h.into(),
-                    b.into(),
-                    pr.into(),
-                    job.into(),
-                    cell(t, style),
-                    detail.into(),
-                ]);
-            }
+                    let can = if q.can.is_empty() && q.needs.is_empty() {
+                        "-".to_string()
+                    } else if q.can.is_empty() {
+                        "nobody".to_string()
+                    } else {
+                        q.can
+                            .iter()
+                            .map(|f| format!("{} ({})", f.host, f.state))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    vec![
+                        cell(format!("{} {name}", q.job), s),
+                        cell(secs(q.wait), s),
+                        cell(q.needs.join(", "), s),
+                        cell(can, s),
+                    ]
+                })
+                .collect();
+            out.extend(
+                Table {
+                    header: vec!["QUEUED", "WAIT", "NEEDS", "CAN RUN ON"],
+                    rows,
+                    keep: vec![0, 1, 3, 2],
+                    flex: Some(3),
+                    flexmin: 14,
+                    right: vec![1],
+                    cap: vec![(0, 44)],
+                    ..Default::default()
+                }
+                .fit(w, self.p.head()),
+            );
         }
-        let mut out = vec![self.heading("RUNNING", format!("  {jobs} jobs"))];
-        out.extend(
-            Table {
-                header: vec!["MACHINE", "BUSY", "PR", "JOB", "FOR", "PR TITLE OR BRANCH"],
-                rows,
-                // Narrowing drops BUSY, then JOB, then the title, so machine, repo#PR and FOR stay.
-                keep: vec![0, 2, 4, 3, 1],
-                flex: Some(5),
-                flexmin: 12,
-                right: vec![1, 4],
-                cap: vec![(2, 27), (3, 18)],
-                ..Default::default()
-            }
-            .fit(w, self.p.head()),
-        );
-        out
-    }
-
-    /// Waiting jobs grouped by pool, repo, PR and branch, oldest first. A stuck run (queued
-    /// with no jobs) is RED NOW's, so it cannot pass for the queue's age.
-    pub fn queued(&self, w: usize) -> Vec<Line<'static>> {
-        let mut groups: BTreeMap<[String; 4], (u32, f64)> = BTreeMap::new();
-        let (mut n, mut oldest) = (0, 0.0f64);
-        for s in self.infra.get("waiting") {
-            if s.label("stuck") == "true" {
-                continue;
-            }
-            let val = s.value.unwrap_or(0.0).trunc();
-            n += 1;
-            oldest = oldest.max(val);
-            let e = groups
-                .entry([
-                    lab(s, "pool").into(),
-                    lab(s, "repo").into(),
-                    pr_of(s),
-                    lab(s, "branch").into(),
-                ])
-                .or_default();
-            e.0 += 1;
-            e.1 = e.1.max(val);
-        }
-        if n == 0 {
-            return vec![self.heading("QUEUED", "  nothing waiting".into())];
-        }
-        let mut out = vec![clip_line(
-            self.heading(
-                "QUEUED",
-                format!(
-                    "  {n} jobs in {} groups, oldest waiting {}",
-                    groups.len(),
-                    dur(oldest)
-                ),
-            ),
-            w,
-        )];
-        let mut g: Vec<_> = groups.into_iter().collect();
-        g.sort_by(|a, b| b.1 .1.total_cmp(&a.1 .1));
-        let rows = g
-            .into_iter()
-            .map(|([pool, repo, pr, branch], (c, old))| {
-                vec![
-                    pool.into(),
-                    repo.into(),
-                    pr.into(),
-                    c.to_string().into(),
-                    dur(old).into(),
-                    branch.into(),
-                ]
-            })
-            .collect();
-        out.extend(
-            Table {
-                header: vec!["POOL", "REPO", "PR", "JOBS", "WAITING", "BRANCH"],
-                rows,
-                keep: vec![0, 1, 2, 3, 4],
-                flex: Some(5),
-                flexmin: 12,
-                right: vec![3, 4],
-                ..Default::default()
-            }
-            .fit(w, self.p.head()),
-        );
         out
     }
 
@@ -946,43 +873,14 @@ impl<'a> Board<'a> {
         out
     }
 
-    /// The CI section's own line: what runs, waits and failed in the last day, green at zero.
-    fn ci_head(&self, w: usize) -> Line<'static> {
-        let running = self
-            .runners
-            .iter()
-            .filter(|s| s.label("state") == "running")
-            .count()
-            + self.infra.get("gates").len();
-        let queued = self
-            .infra
-            .get("waiting")
-            .iter()
-            .filter(|s| s.label("stuck") != "true")
-            .count();
-        let failed: f64 = self
-            .infra
+    /// Runs that failed or timed out in the last day.
+    fn failed_24h(&self) -> f64 {
+        self.infra
             .get("finished")
             .iter()
             .filter(|s| matches!(s.label("conclusion"), "failure" | "timed_out"))
             .filter_map(|s| s.value)
-            .sum();
-        let rest = if running + queued == 0 && failed == 0.0 {
-            Span::styled(
-                "  green: nothing running, queued or failed in 24h",
-                self.p.good(),
-            )
-        } else {
-            Span::styled(
-                format!("  running {running}  queued {queued}  failed 24h {failed:.0}"),
-                if failed > 0.0 {
-                    self.p.bad()
-                } else {
-                    self.p.dim()
-                },
-            )
-        };
-        clip_line(Line::from(vec![Span::styled("CI", self.p.head()), rest]), w)
+            .sum()
     }
 }
 
@@ -1108,17 +1006,8 @@ pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) ->
     let blank = || Line::raw("");
     let mut health = vec![crate::hometab::health_line(&infra.health(), p, w)];
     health.extend(b.numbers(w));
-    let mut ci = vec![b.ci_head(w)];
-    let running = b.running(w);
-    if running.len() > 1 {
-        ci.extend(running);
-        ci.push(blank());
-    }
-    let queued = b.queued(w);
-    if queued.len() > 1 {
-        ci.extend(queued);
-        ci.push(blank());
-    }
+    let mut ci = b.ci_runners(w);
+    ci.push(blank());
     ci.extend(b.finished(w));
     ci.push(blank());
     ci.extend(b.queues(w));
@@ -1136,6 +1025,11 @@ pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) ->
         .into_iter()
         .map(|(n, ls)| (n, ls.into_iter().map(|l| clip_line(l, w)).collect()))
         .collect()
+}
+
+/// The CI RUNNERS section alone, plain: what `hub ci` prints.
+pub fn ci_runners(infra: &Infra, p: Palette, w: usize) -> Vec<Line<'static>> {
+    Board::new(infra, p, 0, vec![]).ci_runners(w)
 }
 
 #[cfg(test)]
@@ -1370,9 +1264,16 @@ pub(crate) mod tests {
         }
     }
 
+    /// The fixture with its CI join built, as `gather` leaves it.
+    pub(crate) fn built(i: &Infra) -> Infra {
+        let mut j = i.clone();
+        j.ci = hub_core::ci::build(&j);
+        j
+    }
+
     /// The whole Infra page as plain text.
     fn text(i: &Infra, w: usize) -> String {
-        infra(i, Palette { no_color: true }, 0, w, &hosts())
+        infra(&built(i), Palette { no_color: true }, 0, w, &hosts())
             .into_iter()
             .flat_map(|(_, ls)| ls)
             .map(|l| plain(&l))
@@ -1398,14 +1299,14 @@ pub(crate) mod tests {
 
     /// The whole Infra page's styled lines at 160 columns.
     fn all_lines(i: &Infra, p: Palette) -> Vec<Line<'static>> {
-        infra(i, p, 0, 160, &hosts())
+        infra(&built(i), p, 0, 160, &hosts())
             .into_iter()
             .flat_map(|s| s.1)
             .collect()
     }
     /// One Infra section (`hub_core::layout` name) as plain text.
     fn tab(i: &Infra, name: &str, w: usize) -> String {
-        infra(i, Palette { no_color: true }, 0, w, &hosts())
+        infra(&built(i), Palette { no_color: true }, 0, w, &hosts())
             .into_iter()
             .find(|s| s.0 == name)
             .map(|(_, ls)| ls.iter().map(plain).collect::<Vec<_>>().join("\n"))
@@ -1433,28 +1334,32 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_ci_tab_lists_each_job_under_its_machine_with_repo_pr_job_time_and_title() {
+    fn the_ci_runners_section_lists_each_slot_with_its_job_time_and_the_queue_beside_it() {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI  running 3  queued 4  failed 24h 91\nRUNNING  3 jobs"),
+            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 queued (oldest 2h28m)  failed 24h 91\nHOST"),
             "{ci}"
         );
-        // The machine and its busy/slots head the group; the title stands in for the branch.
+        // A late job carries the bang; the machine row stands where it ran.
         assert_line(
             &ci,
-            "razer-laptop 3/4 unity-core-playground#1110 PlayMode 4 1h33m! feat/automatch-phase",
+            "razer-laptop 4 busy 1h33m! - PlayMode 4 unity-core-playground#1110",
         );
         assert_line(
             &ci,
-            "unity-core-playground#412 PlayMode 2 36m Apociseum third arena",
+            "razer-laptop 1 busy 36m - PlayMode 2 unity-core-playground#412",
         );
-        // No PR shows the repo alone, and a title that only repeats the workflow is not shown.
-        assert_line(&ci, "platform E2E 5m develop");
+        // No PR shows the branch; an idle slot and an offline host say so.
+        assert_line(&ci, "razer-laptop 2 busy 5m - E2E develop");
+        assert_line(&ci, "razer-laptop 3 idle - -");
+        assert_line(&ci, "mac-mini 1 off - -");
+        // The queue names each job's wait, what it needs and who can take it.
+        assert_line(&ci, "QUEUED WAIT NEEDS CAN RUN ON");
     }
 
     #[test]
-    fn infra_sections_come_in_layout_order_and_ci_leads_with_its_counts() {
+    fn infra_sections_come_in_layout_order_and_ci_runners_leads_with_its_counts() {
         let i = fixture();
         let names: Vec<_> = infra(&i, Palette { no_color: true }, 0, 160, &hosts())
             .into_iter()
@@ -1471,11 +1376,14 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
-        assert!(ci.starts_with("CI  running 3  queued 4"), "{ci}");
+        assert!(
+            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 queued"),
+            "{ci}"
+        );
         assert!(has(&ci, "failed 24h"), "{ci}");
-        // Exceptions lead: what runs and waits before the day's results and the queues.
+        // Exceptions lead: the machines and the queue before the day's results and the pools.
         let at = |w: &str| ci.find(w).unwrap_or_else(|| panic!("no {w} in {ci}"));
-        assert!(at("RUNNING") < at("QUEUED") && at("QUEUED") < at("FINISHED 24H"));
+        assert!(at("HOST") < at("QUEUED") && at("QUEUED") < at("FINISHED 24H"));
         assert!(at("FINISHED 24H") < at("QUEUES") && at("QUEUES") < at("RUNS  every"));
     }
 
@@ -1530,8 +1438,11 @@ pub(crate) mod tests {
             i.instant.insert(q, vec![]);
         }
         let ci = tab(&i, "ci", 160);
-        assert_line(&ci, "CI green: nothing running, queued or failed in 24h");
-        assert!(!ci.contains("RUNNING") && !ci.contains("QUEUED"), "{ci}");
+        assert_line(
+            &ci,
+            "CI RUNNERS 0 hosts, 0 slots, 0 busy, 0 queued green: nothing queued or failed in 24h",
+        );
+        assert!(!ci.contains("HOST") && !ci.contains("QUEUED"), "{ci}");
     }
 
     #[test]
@@ -1655,7 +1566,7 @@ pub(crate) mod tests {
         let out = text(&i, 160);
         assert_line(
             &out,
-            "razer-laptop 3/4 unity-core-playground#1110 PlayMode 4 1h33m! feat/automatch-phase",
+            "razer-laptop 4 busy 1h33m! - PlayMode 4 unity-core-playground#1110",
         );
         assert!(!out.contains("36m!"));
         let p = Palette::default();
@@ -1672,7 +1583,7 @@ pub(crate) mod tests {
     fn a_stuck_run_is_down_and_out_of_the_queue_and_its_oldest_wait() {
         let out = text(&fixture(), 160);
         assert!(has(&out, "stuck run: platform develop, 45d17h, no jobs"));
-        assert!(has(&out, "QUEUED 4 jobs in 2 groups, oldest waiting 2h28m"));
+        assert!(has(&out, "4 queued (oldest 2h28m)"), "{out}");
         assert!(
             has(&out, "RED NOW watch mac_studio_mlx, mini-1 offline"),
             "red_now items lead, then an offline runner by name"
@@ -1717,11 +1628,9 @@ pub(crate) mod tests {
     #[test]
     fn the_queue_groups_by_pool_repo_pr_and_branch_with_count_and_oldest_wait() {
         let out = text(&fixture(), 160);
-        assert_line(
-            &out,
-            "unity unity-core-playground #412 3 2h28m feat/apociseum-third",
-        );
-        assert_line(&out, "light platform - 1 1m develop");
+        // The queue rows carry the PR or branch, the count of identical jobs and the oldest wait.
+        assert_line(&out, "- unity-core-playground#412 x3 2h28m -");
+        assert_line(&out, "- develop 1m -");
     }
 
     #[test]
@@ -1823,8 +1732,9 @@ pub(crate) mod tests {
     fn a_narrow_terminal_keeps_each_runs_machine_repo_and_pr_and_nothing_wraps() {
         let out = text(&fixture(), 60);
         assert!(
-            out.lines()
-                .any(|l| squash(l) == "razer-laptop unity-core-playground#1110 PlayMode 4 1h33m!"),
+            out.lines().any(
+                |l| squash(l).starts_with("razer-laptop busy 1h33m! PlayMode 4 unity-core-pla")
+            ),
             "{out}"
         );
         let long: Vec<&str> = out.lines().filter(|l| l.chars().count() > 60).collect();
@@ -1919,13 +1829,10 @@ pub(crate) mod tests {
         let out = text(&i, 160);
         assert_line(
             &out,
-            "workstation - unity-core-playground#412 PlayMode (local) 36m feat/apociseum-third",
+            "workstation - busy 36m - PlayMode (local) unity-core-playground#412",
         );
-        // No repo label (an older fleet-assess): the worktree stands in, and no PR is guessed.
-        assert_line(
-            &out,
-            "unity-core-playground-agen~ EditMode (local) 45s fix/x",
-        );
+        // No repo label (an older fleet-assess): the branch stands in, and no PR is guessed.
+        assert_line(&out, "workstation - busy 45s - EditMode (local) fix/x");
         // Without published local slots the machine counts its gates and invents no capacity.
         assert_line(&out, "workstation local - - - - - - 2 gates");
         assert!(!out.lines().any(|l| l.starts_with("unity-local ")));

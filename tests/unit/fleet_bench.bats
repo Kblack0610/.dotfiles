@@ -3657,29 +3657,26 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   assert_output capacity
 }
 
-@test "findings: the live reader matches waiting jobs to runners by labels, withheld and offline slots out" {
-  stub_prom 'cat <<JSON
-{"status":"success","data":{"result":[
- {"metric":{"__name__":"github_actions_job_waiting","pool":"unity","stuck":"false","labels":"self-hosted,Linux,unity-full"},"value":[1,"7200"]},
- {"metric":{"__name__":"github_actions_job_waiting","pool":"unity","stuck":"false","labels":"self-hosted,linux,unity-full"},"value":[1,"7000"]},
- {"metric":{"__name__":"github_actions_job_waiting","pool":"unity","stuck":"false","labels":"self-hosted,macOS"},"value":[1,"60"]},
- {"metric":{"__name__":"github_runner_state","name":"razer-1","state":"running","labels":"self-hosted,linux,unity-full"},"value":[1,"5"]},
- {"metric":{"__name__":"github_runner_state","name":"razer-1","state":"running","labels":"self-hosted,linux,unity-full","pod":"b"},"value":[1,"5"]},
- {"metric":{"__name__":"github_runner_state","name":"razer-2","state":"idle","labels":"self-hosted,linux,unity-full"},"value":[1,"0"]},
- {"metric":{"__name__":"github_runner_state","name":"razer-3","state":"idle","labels":"self-hosted,linux,unity-full"},"value":[1,"0"]},
- {"metric":{"__name__":"github_runner_state","name":"razer-4","state":"offline","labels":"self-hosted,linux,unity-full"},"value":[1,"0"]},
- {"metric":{"__name__":"github_runner_state","name":"mac-1","state":"idle","labels":"macOS,unity-full"},"value":[1,"0"]},
- {"metric":{"__name__":"github_runner_state","name":"cachy-1","state":"idle","labels":"self-hosted,linux"},"value":[1,"0"]},
- {"metric":{"__name__":"github_runner_withheld","name":"razer-3"},"value":[1,"1"]}
-]}}
-JSON'
+@test "findings: the live reader asks hub ci for the match rows, with the wait a job must have had" {
+  # The label join is hub_core::ci's (its Rust test pool_match_counts_the_runners_that_fit...); this seam
+  # only passes finding_pool_wait_s and keeps the rows.
+  cat > "$SANDBOX/bin/ci-match-stub" <<'SH'
+#!/bin/bash
+printf 'wait=%s\n' "$1" >> "$SANDBOX/ci-match.args"
+printf 'cc:pool_match_slots\tunity\t2\ncc:pool_match_busy\tunity\t1\ncc:pool_match_runners\tunity\t4\n'
+printf 'cc:pool_match_labels\tunity/linux,self-hosted,unity-full\t1\n'
+SH
+  chmod +x "$SANDBOX/bin/ci-match-stub"
+  export SANDBOX BENCH_CI_MATCH_CMD=ci-match-stub   # on PATH: the sandbox path has a space
   source "$SUBJECT"
-  run prom_match_rows "$T0"
+  run prom_match_rows
   assert_success
   assert_line "cc:pool_match_slots	unity	2"
   assert_line "cc:pool_match_busy	unity	1"
   assert_line "cc:pool_match_runners	unity	4"
   assert_line "cc:pool_match_labels	unity/linux,self-hosted,unity-full	1"
+  run cat "$SANDBOX/ci-match.args"
+  assert_output "wait=3600"
 }
 
 @test "findings: starved goes to the human once it has lasted the hour, and keeps its fact" {
@@ -3801,7 +3798,7 @@ EOF
   run grep -c "time=$((T0 - 1200))" "$SANDBOX/curl.log"
   assert_output 2   # the finding metrics, and the repos waiting in each pool
   run grep -c "time=$T0\$" "$SANDBOX/curl.log"
-  assert_output 3   # and for the newest sample alone, the runners that fit the waiting jobs
+  assert_output 2   # and for the newest sample alone: nothing more, the match rows come from hub ci
   BENCH_NOW=$T0 run "$SUBJECT" findings --json
   assert_output --partial '"host-overload"'
   refute_output --partial '"scope":"prom"'
