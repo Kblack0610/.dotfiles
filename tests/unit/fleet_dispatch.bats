@@ -466,6 +466,15 @@ ptask game --agent tag --add plan ga-7'
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
 }
 
+@test "plan_skips: a requested row gets #go beside #plan, so inbox-plan does not hold it for the person's review" {
+  plan_fixture
+  jq -c 'if .id == "ga-7" then .requested = true else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  plan_skips
+  run grep -o 'ptask game --agent tag --add plan.* ga-[0-9]*' "$NOTES_FIXTURE/calls.log"
+  assert_output 'ptask game --agent tag --add plan ga-1
+ptask game --agent tag --add plan --add go ga-7'
+}
+
 @test "verdicts: the latest verdict per row, plan true on a skip by a DISPATCH_PLAN_RULES rule (fleet-bench next_up_blocked)" {
   plan_fixture
   run cmd_verdicts
