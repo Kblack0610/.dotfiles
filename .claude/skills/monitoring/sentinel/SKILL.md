@@ -145,6 +145,15 @@ watch-companion-loop status
 The `list` table plus daemon health (`agentctl status sentinel`) and the tail of `activity.log`.
 Answers "what are you watching / is Sentinel running". Read-only.
 
+## Verb: `recheck <name>` / `recheck --tripped`
+
+```sh
+watch-companion-loop recheck <name>...   # probe now, whatever the interval
+watch-companion-loop recheck --tripped   # every TRIP or ERROR watch
+```
+
+The same pass as the daemon's (state, evidence, recovery page), so a red clears the minute the work that fixed it is live. It prints each watch's state after.
+
 ## Verb: `stop` / `remove <name>`
 
 `rm ~/.agent/watches/<name>.yaml` and its `~/.local/state/watch-companion/<name>.*` state. The
