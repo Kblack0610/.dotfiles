@@ -876,3 +876,104 @@ ask_stub() {
   assert_output --partial '--priority goes with --backlog'
   [ ! -e "$NOTES_FIXTURE/model.log" ]
 }
+
+@test "--backlog --link: each unparented row gets the model's system and epic, else its standing epic; a linked row or an epic is not asked" {
+  export INBOX_PRIORITY_CMD=model-stub
+  systems ui:menu docs
+  sheet '' '- [ ] epic(ui): a pause menu mid-match <!-- id:sc-1 -->\n- [ ] fix(sound): resume flickers #size/s <!-- id:sc-2 -->\n- [ ] feat(menu): a quit button #size/s <!-- id:sc-3 -->\n- [ ] fix(ui): the logo blurs #size/s <!-- id:sc-4 -->\n- [ ] fix(ui): the menu lags #size/s #of/sc-1 <!-- id:sc-5 -->\n- [ ] fix(net): the lobby drops #size/s <!-- id:sc-6 -->\n'
+  # rows reach the model in sheet order: sc-2, sc-3, sc-4, sc-6
+  answer '{"n": 1, "system": "ui"}' '{"n": 2, "system": "docs", "of": "sc-1"}' '{"n": 3, "system": "ui", "of": "sc-99"}' '{"n": 4, "system": "netcode"}'
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  assert_output --partial 'link: feature 1, standing 2, new epics 0, left 1, refused 0'
+  grep -qx 'scratch: ui, docs (also: menu=ui)' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  refute grep -q 'menu lags\|^[0-9]*\. \[sc-1\]' "$NOTES_FIXTURE/prompt.txt"
+  run tasks
+  # a free area becomes the system id and goes under the filed standing epic
+  assert_output --regexp 'fix\(ui\): resume flickers #size/s #of/sc-7 <!-- id:sc-2 -->'
+  assert_output --regexp 'epic\(ui\): ui to standard .*id:sc-7'
+  # an alias area stays, and the open epic named is its parent
+  assert_output --regexp 'feat\(menu\): a quit button #size/s #of/sc-1 <!-- id:sc-3 -->'
+  # an epic id the board does not have falls back to the standing epic
+  assert_output --regexp 'fix\(ui\): the logo blurs #size/s #of/sc-7 <!-- id:sc-4 -->'
+  # NEGATIVE CONTROL: a system the project lacks leaves the row as it was
+  assert_output --regexp '\[ \] fix\(net\): the lobby drops #size/s <!-- id:sc-6 -->'
+}
+
+@test "--backlog --link --dry-run writes nothing and keeps its answers; a second dry run and the apply reuse them with no model call" {
+  export INBOX_PRIORITY_CMD=model-stub; link="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage"
+  systems ui
+  sheet '' '- [ ] fix(sound): resume flickers #size/s <!-- id:sc-2 -->\n- [ ] fix(ui): pause menu #size/m <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "system": "ui"}' '{"n": 2, "system": "ui", "epic": "epic(ui): a pause menu mid-match"}'
+  before="$(cat "$SHEET")"
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  assert_output --partial 'would run: notes ptask scratch --exact edit --link --text fix\(ui\):\ resume\ flickers\ #size/s'
+  assert_output --partial 'link: feature 1, standing 1, new epics 1'
+  assert_equal "$(cat "$SHEET")" "$before"
+  [ "$(wc -l <"$link/link-scratch.jsonl")" = 2 ]
+  # A second dry run (one stopped at its budget, say) resumes: its answers come from the cache.
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  assert_output --partial 'link: feature 1, standing 1, new epics 1'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the second dry run asked the model again"
+  [ "$(wc -l <"$link/link-scratch.jsonl")" = 2 ]
+  answer '{"n": 1, "system": "docs"}'
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model again"
+  [ ! -e "$link/link-scratch.jsonl" ] || fail "the apply left its cache"
+  run tasks
+  assert_output --regexp 'fix\(ui\): resume flickers #size/s #of/sc-4 <!-- id:sc-2 -->'
+  assert_output --regexp 'epic\(ui\): a pause menu mid-match .*#new.*id:sc-5'
+  assert_output --regexp 'fix\(ui\): pause menu #size/m #of/sc-5 <!-- id:sc-3 -->'
+}
+
+@test "--backlog --link counts a new epic once, a bad epic not at all, and leaves child rows and a tag-first row as they are" {
+  export INBOX_PRIORITY_CMD=model-stub
+  systems ui
+  sheet '' '- [ ] feat(ui): pause menu #size/s <!-- id:sc-3 -->\n  - [ ] fix(ui): sub task <!-- id:sc-4 -->\n- [ ] fix(ui): resume button #size/s <!-- id:sc-5 -->\n- [ ] fix(ui): quit lags #size/s <!-- id:sc-6 -->\n- [ ] #high fix(sound): resume flickers <!-- id:sc-2 -->\n'
+  answer '{"n": 1, "system": "ui", "epic": "epic(ui): a pause menu mid-match"}' '{"n": 2, "system": "ui", "epic": "epic(ui): a pause menu mid-match"}' \
+    '{"n": 3, "system": "ui", "epic": "a pause menu"}' '{"n": 4, "system": "ui"}'
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  assert_output --partial 'link: feature 2, standing 1, new epics 1'
+  refute grep -q 'sub task' "$NOTES_FIXTURE/prompt.txt"
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  assert_output --partial 'link: feature 2, standing 1, new epics 1'
+  run tasks
+  [ "$(grep -c 'epic(ui): a pause menu mid-match' <<<"$output")" = 1 ] || fail "$output"
+  assert_output --partial '  - [ ] fix(ui): sub task <!-- id:sc-4 -->'
+  assert_output --partial '- [ ] #high fix(sound): resume flickers <!-- id:sc-2 -->'
+  assert_output --regexp 'fix\(ui\): quit lags #size/s #of/sc-[0-9]+ <!-- id:sc-6 -->'
+}
+
+# A backlog past the 128 KB one argument holds: the rows and the cache must not go to jq as arguments.
+@test "--backlog --link replays its cache for a backlog past 128 KB" {
+  export INBOX_PRIORITY_CMD=model-stub; link="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage"
+  systems ui
+  long="$(printf 'x%.0s' {1..70000})"
+  sheet '' "- [ ] fix(ui): pause menu $long #size/s <!-- id:sc-2 -->\n"
+  answer '{"n": 1, "system": "ui"}'
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  refute_output --partial 'Argument list too long'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model again"
+  run tasks
+  assert_output --regexp 'fix\(ui\): pause menu x+ #size/s #of/sc-3 <!-- id:sc-2 -->'
+}
+
+# NEGATIVE CONTROL: --link alone would run the inbox sweep's model call; it is refused.
+@test "--link without --backlog, or with --priority, is refused and asks no model" {
+  run "$TRIAGE" --link
+  assert_failure 2
+  assert_output --partial '--link goes with --backlog'
+  run "$TRIAGE" --backlog --priority --link
+  assert_failure 2
+  [ ! -e "$NOTES_FIXTURE/model.log" ]
+}
