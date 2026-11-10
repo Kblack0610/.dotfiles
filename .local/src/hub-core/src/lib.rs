@@ -10,6 +10,7 @@ pub mod builds;
 pub mod burn;
 pub mod capacity;
 pub mod costs;
+pub mod deliverables;
 pub mod epics;
 pub mod fleet;
 pub mod fleet_cost;

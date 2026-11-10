@@ -16,9 +16,36 @@ const pst = tblTab({
   tab: "projects", id: "projects", el: "p-cards", refresh: () => refreshProjects(),
   shown: () => st.tab === "projects" && !pst.open, wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
   state: { open: null, unlinked: false, page: {}, folds: {}, viewed: "", leaf: null },
-  head: (t) => pHead(t.data.table) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
+  head: (t) => `<h2 class="sec" id="sec-projects">Projects</h2>` + pHead(t.data.table) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
   body: () => pList(),
 });
+
+// Deliverables: one row per open feature epic across every project (/api/deliverables,
+// hub_core::deliverables, the rows and words the hub TUI draws), above the project list. Its view
+// keys are d-prefixed (dq, ds, dsort, ddir) because the list below keeps the plain ones. A row
+// opens its project's card with that epic's system and the epic open (pClick).
+const D_COLS = { project: ["project"], epic: ["epic"], sys: ["sys"], done: ["done", "n"], eta: ["eta", "n"], track: ["track"] };
+const dst = tblTab({
+  tab: "projects", id: "p-del", el: "p-deliv", pre: "d", api: "/api/deliverables", hint: "search, or sys:ui track:behind -project:x",
+  shown: () => st.tab === "projects" && !pst.open, wait: "Reading fleet-bench epics (about 10s when cold)...",
+  draw: (html) => paint($("p-deliv"), `<div data-tbl="d">${html}</div>`),
+  head: (t) => `<h2 class="sec" id="sec-deliverables">${esc(t.data.says)}</h2>`,
+  body: (t) => dBody(t.data),
+});
+
+const dLine = (r) => `<tr class="jr" tabindex="0" data-open="${esc(r.profile + "/" + r.project)}" data-epic="${esc(r.id)}" data-sys="${esc(r.system)}">` +
+  `<td>${esc(r.project)}</td><td class="wrap" title="${esc(r.id)}">${esc(r.title)}</td><td>${pDash(r.system)}</td>` +
+  `<td class="n" title="${r.done} of ${r.total} rows done; the percent is by size">${esc(r.done_says)}</td>` +
+  `<td class="n">${pDash(r.eta_day)}</td><td${r.track === "behind" ? ` class="warn"` : ""}>${pDash(r.track)}</td></tr>`;
+
+// The rows (or why there are none), then the coverage line.
+function dBody(d) {
+  const t = d.table;
+  return (d.rows.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, D_COLS)}${d.rows.map(dLine).join("")}</table></div>`
+    : `<div class="card muted">${t.total ? "No deliverable matches." : "No open feature epics."}</div>`) +
+    `<div class="muted qstats">${esc(d.coverage_says)}; ${esc(d.legend)}</div>`;
+}
 
 // With something open, or a deep link on its way, the URL's view is the rows', so every card is
 // read: pDeep and the opened card need theirs whatever the list was showing. An answer for what
@@ -178,9 +205,9 @@ function pGo(key) {
 
 function renderProjects() {
   const cardsEl = $("p-cards"), rowsEl = $("p-rows");
-  cardsEl.hidden = !!pst.open;
+  cardsEl.hidden = $("p-deliv").hidden = !!pst.open;
   rowsEl.hidden = !pst.open;
-  if (!pst.open) { pst.render(); return; }
+  if (!pst.open) { pst.render(); dst.render(); return; }
   const c = pst.data && pst.data.cards.find((x) => pKey(x) === pst.open);
   if (pst.leaf && bst.feed && bst.feed !== pst.leaf.feed) {
     // Only the read that has the row answers: one already in flight when the click came may not.
@@ -204,10 +231,16 @@ $("projects").addEventListener("click", (e) => {
   const leaf = e.target.closest("[data-leaf]");
   if (leaf) { e.preventDefault(); pLeaf(leaf.dataset.leaf); return; }
   const o = e.target.closest("[data-open]");
-  if (o && !e.target.closest("#b-root")) pGo(o.dataset.open);
+  if (o && !e.target.closest("#b-root")) pOpenAt(o);
 });
-$("p-cards").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && e.target.matches?.("tr[data-open]")) pGo(e.target.dataset.open);
+// A row's project opens; a deliverable's row carries its epic and system too, and they open in
+// the card's Build by system (the folds pg:sys:<system> and pg:ep:<epic>).
+function pOpenAt(o) {
+  if (o.dataset.epic) { pst.folds["pg:sys:" + o.dataset.sys] = true; pst.folds["pg:ep:" + o.dataset.epic] = true; }
+  pGo(o.dataset.open);
+}
+for (const id of ["p-deliv", "p-cards"]) $(id).addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.matches?.("tr[data-open]")) pOpenAt(e.target);
 });
 $("projects").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k === "unlinked") pst.unlinked = e.target.open;
@@ -215,10 +248,10 @@ $("projects").addEventListener("toggle", (e) => {
 
 TABS.projects = {
   // Back on the tab, what was open stays open and the URL names it again.
-  show() { bMount("p-rows"); if (pst.open && !st.arg) st.arg = pst.open; pDeep(); renderProjects(); refreshProjects(); refreshBoard(); },
+  show() { bMount("p-rows"); if (pst.open && !st.arg) st.arg = pst.open; pDeep(); renderProjects(); refreshProjects(); refreshBoard(); dst.refresh(); },
   onEvent(ev) {
     if (st.tab !== "projects") return;
-    if (["watch", "queue", "resync"].includes(ev.kind)) refreshProjects();
+    if (["watch", "queue", "resync"].includes(ev.kind)) { refreshProjects(); dst.refresh(); }
     if (ev.kind === "resync") refreshBoard();
   },
 };

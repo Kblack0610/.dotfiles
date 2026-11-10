@@ -339,3 +339,71 @@ test("rows past the cap wait behind a button, and a view with nothing says so", 
   vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
   assert.match(read().rows, /No row matches\./);
 });
+
+// The Summary hub_core::table sends beside the Deliverables rows.
+const deliv = (o = {}) => {
+  const rows = [
+    { project: "demo", profile: "bnb", id: "de-9", title: "Menus <fast>", system: "ui", done: 3, total: 4, percent: 75, done_says: "75% 3/4", eta: 1794537535, eta_day: "11-13", track: "behind" },
+    { project: "garden", profile: "personal", id: "ga-1", title: "Water", system: "save", done: 2, total: 2, percent: 100, done_says: "100% 2/2", eta: null, eta_day: "", track: "verify" },
+  ];
+  return {
+    rows, says: "Deliverables (2 open, 1 ready to verify, 0 on track, 1 behind)",
+    coverage_says: "Coverage: 74 linked / 79 open rows (94%); no feature epic: home-config", legend: "percent is by size, then rows done/all",
+    table: {
+      q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2,
+      states: [{ name: "all", n: 2 }, { name: "behind", n: 1 }, { name: "on track", n: 0 }, { name: "verify", n: 1 }],
+      columns: ["project", "epic", "sys", "done", "eta", "track"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
+      facets: [{ key: "sys", on: "", clear: "", values: [{ value: "ui", n: 1, q: "sys:ui" }] }],
+    },
+    ...o,
+  };
+};
+const drawDeliv = async (d) => {
+  ctx.answers = { "/api/deliverables": d, "/api/projects": list() };
+  vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; pst.open = null; dst.data = null; dst.err = null; dst.refresh();`, ctx);
+  await settle(); await settle();
+  return box("p-deliv").innerHTML;
+};
+
+test("Deliverables is a table over the project list: the head, one row per epic, then the coverage line", async () => {
+  const html = await drawDeliv(deliv());
+  assert.match(html, /^<div data-tbl="d">.*id="sec-deliverables">Deliverables \(2 open, 1 ready to verify, 0 on track, 1 behind\)<\/h2>/s);
+  assert.match(html, /id="p-del-q".*id="p-del-chips"/s);
+  assert.match(html, />all <.*>behind <.*>on track <.*>verify </s);
+  assert.match(html, /data-tsort="project".*data-tsort="epic".*data-tsort="sys".*data-tsort="done".*data-tsort="eta".*data-tsort="track"/s);
+  assert.match(html, /home-config; percent is by size, then rows done\/all/);
+  assert.match(html, /<tr class="jr" tabindex="0" data-open="bnb\/demo" data-epic="de-9" data-sys="ui"><td>demo<\/td><td class="wrap" title="de-9">Menus &lt;fast&gt;<\/td><td>ui<\/td><td class="n" title="3 of 4 rows done; the percent is by size">75% 3\/4<\/td><td class="n">11-13<\/td><td class="warn">behind<\/td><\/tr>/);
+  assert.match(html, /<td>save<\/td>.*<td class="n">-<\/td><td>verify<\/td>/s, "no ETA is a dash and only behind is amber");
+  assert.match(html, /Coverage: 74 linked \/ 79 open rows \(94%\); no feature epic: home-config/);
+});
+
+test("the Deliverables view keys are d-prefixed, so the project list keeps the plain ones", async () => {
+  await drawDeliv(deliv());
+  ctx.answers = { "/api/deliverables?dq=sys%3Aui": deliv({ rows: [deliv().rows[0]] }) };
+  ctx.sent = [];
+  const target = { dataset: { tsearch: "" }, value: "sys:ui", closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "d" } } : null) };
+  for (const f of box("p-deliv").on.input) f({ type: "input", target });
+  assert.equal(vm.runInContext(`st.views.projects`, ctx), "dq=sys%3Aui");
+  await settle(); await settle();
+  assert.ok(ctx.sent.some((s) => s.u === "/api/deliverables?dq=sys%3Aui"));
+  assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/projects?")), "the list's view is not the deliverables'");
+});
+
+test("a Deliverables row opens its project's card with its system and epic folds open", async () => {
+  await drawDeliv(deliv());
+  ctx.answers = { "/api/projects": list(), "/api/projects/demo/page": "not read here" };
+  const o = { dataset: { open: "bnb/demo", epic: "de-9", sys: "ui" } };
+  const target = { id: "", dataset: {}, closest: (sel) => (sel === "[data-open]" ? o : null) };
+  for (const f of box("projects").on.click) f({ type: "click", target });
+  assert.equal(vm.runInContext(`pst.open`, ctx), "bnb/demo");
+  assert.equal(vm.runInContext(`pst.folds["pg:sys:ui"] + "|" + pst.folds["pg:ep:de-9"]`, ctx), "true|true");
+});
+
+test("a failed Deliverables read says so and never shows an empty table", async () => {
+  ctx.answers = { "/api/deliverables": "fleet-bench: not found", "/api/projects": list() };
+  vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; pst.open = null; dst.data = null; dst.err = null; dst.refresh();`, ctx);
+  await settle(); await settle();
+  const html = box("p-deliv").innerHTML;
+  assert.match(html, /class="card err".*fleet-bench: not found/);
+  assert.doesNotMatch(html, /<table/);
+});
