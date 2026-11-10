@@ -16,8 +16,6 @@
 #                                       jump target; fails saying why (ended, or no session).
 #                                       --reopen starts an ended one again first
 #   agent-ask live-sessions             the Claude session ids running now, one per line
-#   agent-ask routes                    "<id><TAB><route>" for every pending ask: restarts <item>,
-#                                       resume, to session or dead end (what its answer does)
 #   agent-ask titles                    Claude session ids on stdin -> "<id><TAB><title>" for
 #                                       each one the session registry has a title for
 #   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
@@ -863,6 +861,7 @@ cmd_target() {
   [ -n "$sid" ] || { echo "no session is waiting on this ask; answer it here" >&2; return 1; }
   row="$(live_row "$sid")"
   if [ -z "$row" ]; then
+    session_resumable "$sid" || { echo "no Claude conversation $sid to reopen; answer it here" >&2; return 1; }
     [ "$reopen" = 1 ] || { echo "session ended; target --reopen starts it again (claude --resume $sid)" >&2; return 1; }
     reopen_session "$f" "$sid"
     return
@@ -896,6 +895,11 @@ reopen_session() {
 # session_transcript <claude session>: its transcript file. Accounts share the transcripts, so
 # any copy will do.
 session_transcript() { ls "$HOME"/.claude*/projects/*/"$1".jsonl 2>/dev/null | head -1; }
+
+# session_resumable <session id>: claude --resume can open it, because it has a Claude
+# transcript. A headless run that owns an ask under another harness's id (a Codex thread) has
+# none, so nothing offers to reopen it and its answer is given on the card.
+session_resumable() { [ -n "$(session_transcript "$1")" ]; }
 
 # session_cwd <claude session>: the directory the conversation started in, from the first
 # transcript line that records one.
@@ -985,7 +989,7 @@ session_alive() {
 }
 
 # live_sessions: every Claude session id with a running process, one per line; the questions
-# panel marks the rest gone. Same source as session_alive.
+# panel marks the rest dead. Same source as session_alive.
 # session_titles: Claude session ids on stdin -> "<id><TAB><title>", the newest titled registry
 # row per id. The card's request line and the questions panel's rows both read it here.
 session_titles() {
@@ -1005,26 +1009,6 @@ live_sessions() {
   done
   [ "${#live[@]}" -gt 0 ] || return 0
   grep -ho '"sessionId":"[^"]*"' "${live[@]}" | cut -d'"' -f4 | sort -u
-}
-
-# cmd_routes: `<id><TAB><route word>` for every pending ask, one pass for all of them: the ask
-# list (the questions panel draws 200 of them inside a second), one read of the queue and one of
-# the live sessions. The same first-match order as answer_route below, which says it in prose on the card.
-cmd_routes() {
-  load_queue_asks
-  cmd_list --all --pending | awk -F'\t' -v live=" $(live_sessions | tr '\n' ' ') " -v holds="$(tr '\n' ';' <<<"$QUEUE_HOLDS")" '
-    BEGIN {
-      n = split(holds, H, ";")
-      for (i = 1; i <= n; i++) { split(H[i], f, "\t"); if (f[2] != "" && !(f[2] in item)) item[f[2]] = f[1] }
-    }
-    {
-      sid = $16
-      if ($1 in item) w = "restarts " item[$1]
-      else if ($26 != "") w = "resume"
-      else if (sid != "" && index(live, " " sid " ")) w = "to session"
-      else w = "dead end"
-      print $1 "\t" w
-    }'
 }
 
 # answer_route <ask file>: where the answer to a pending ask goes, first match wins: the queue items
@@ -1054,7 +1038,7 @@ answer_route() {
   else
     echo "  ${who}the answer becomes a row on the ${ASK[project]:-} board"
   fi
-  [ -z "$sid" ] || [ -n "$alive" ] || echo "  g reopens the session"
+  [ -z "$sid" ] || [ -n "$alive" ] || ! session_resumable "$sid" || echo "  g reopens the session"
 }
 
 # render_story <file>: what a panel's card adds under render_ask, one labelled block per line
@@ -1612,7 +1596,6 @@ case "$sub" in
   target) cmd_target "$@" ;;
   live-sessions) live_sessions ;;
   titles) session_titles ;;
-  routes) cmd_routes ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
   recommend)    cmd_recommend "$@" ;;

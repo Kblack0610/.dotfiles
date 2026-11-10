@@ -15,8 +15,15 @@ const schst = tblTab({
 
 const schedKey = (r) => `${r.kind}|${r.name}`;
 
-const SCHED_COLS = { kind: ["kind"], name: ["name"], schedule: ["schedule"], last: ["last", "n"], result: ["result"], streak: ["streak"], triage: ["triage"] };
+const SCHED_COLS = { kind: ["kind"], name: ["name"], schedule: ["schedule"], next: ["next", "n"], last: ["last", "n"], result: ["result"], streak: ["streak"], triage: ["triage"] };
 
+
+// A start as the time alone when it is today, else the day too: the TUI's clock().
+function nextStart(t) {
+  if (!t) return "-";
+  const d = new Date(t * 1e3), p = (n) => String(n).padStart(2, "0"), hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  return d.toDateString() === new Date().toDateString() ? hm : `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`;
+}
 
 function scheduleRow(r) {
   const cls = r.ok === false ? "bad" : r.ok === true ? "" : "muted";
@@ -24,7 +31,7 @@ function scheduleRow(r) {
   const none = r.purpose ? "" : ` <span class="warn" title="this schedule does not say why it exists">no purpose</span>`;
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(schedKey(r))}">` +
     `<td class="muted">${esc(r.kind)}</td><td class="wrap">${esc(r.name)}${none}</td><td>${esc(r.schedule)}</td>` +
-    `<td class="n">${r.last ? when(r.last) : "-"}</td><td class="${cls}">${esc(r.result || "-")}</td>` +
+    `<td class="n">${nextStart(r.next)}</td><td class="n">${r.last ? when(r.last) : "-"}</td><td class="${cls}">${esc(r.result || "-")}</td>` +
     `<td class="${r.streak < 0 ? "bad" : ""}">${esc(r.streak_word)}</td><td class="wrap muted">${esc(r.triage)}</td></tr>`;
   return open ? row + scheduleDetail(r) : row;
 }
@@ -43,7 +50,7 @@ function scheduleDetail(r) {
   const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${v}</div>` : "");
   const list = (xs) => xs.map(esc).join("; ");
   const why = r.purpose ? esc(r.purpose) : `<span class="warn">no purpose written: it says what it is, not why it runs</span>`;
-  return `<tr class="wdet"><td colspan="7"><div class="sdet"><div class="muted">${esc(r.status)}</div>` +
+  return `<tr class="wdet"><td colspan="8"><div class="sdet"><div class="muted">${esc(r.status)}</div>` +
     line("Why it exists", why) + line("Inside", esc(r.inside)) + line("Before", esc(r.before)) +
     line("After", list(r.after)) + line("Open triage", list(r.open)) +
     line("Runs", r.runs.length ? scheduleRuns(r.runs) : "") + `</div></td></tr>`;

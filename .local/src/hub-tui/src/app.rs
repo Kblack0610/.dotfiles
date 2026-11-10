@@ -16,7 +16,7 @@ use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths};
 use hub_core::outcomes::{self, Ranked};
 use hub_core::proposals::{self, Proposal};
 use hub_core::queue::{Candidate, Candidates, Queue};
-use hub_core::releases::{Changelog, Release, Releases};
+use hub_core::releases::{App as ReleaseApp, Changelog, Releases};
 use hub_core::schedules::{Schedule, Schedules};
 use hub_core::session_actions::{self as actions, Action, Runner, Snapshot};
 use hub_core::tasks::Feed;
@@ -775,7 +775,7 @@ impl App {
         }
     }
 
-    /// Read the changelog of the selected channel's project, at `tag` or its newest release, in a
+    /// Read the changelog of the selected app, at `tag` or its newest release, in a
     /// worker. One read at a time: while it runs a new ask waits, and `sync_changelog` makes it
     /// when the answer lands.
     fn read_changelog(&mut self, tag: Option<String>) {
@@ -796,13 +796,15 @@ impl App {
         });
     }
 
-    /// With the pane open, the changelog is the selected channel's project's: read it when the
+    /// With the pane open, the changelog is the selected app's: read it when the
     /// selection came to rest on another (a key, a re-sort, a new snapshot, an answer that landed).
     fn sync_changelog(&mut self) {
         let other = self
             .selected_release()
             .is_some_and(|r| r.project != self.rv.cl.project);
         if self.rv.open && other {
+            // Another app's pane starts folded and at its top.
+            self.rv.others = false;
             self.read_changelog(None);
         }
     }
@@ -1767,8 +1769,13 @@ impl App {
             let c = self.costs.as_ref();
             let t = c.and_then(|c| c.tokens.as_ref());
             let keys = c.and_then(|c| c.burn.keys.as_ref());
+            let was = self.cv.inner;
             if let Some(seek) = self.cv.fold(k.code, t, keys) {
                 self.seek = seek;
+                // Another inner tab is another page: it opens at its top, not at this offset.
+                if self.cv.inner != was {
+                    self.scroll = 0;
+                }
                 return;
             }
             if self.cv.key(k.code) {
@@ -2722,12 +2729,12 @@ impl App {
         true
     }
 
-    fn selected_release(&self) -> Option<&Release> {
+    fn selected_release(&self) -> Option<&ReleaseApp> {
         let s = self.releases.as_ref()?;
         self.rv.shown(s).get(self.rv.table.sel).copied()
     }
 
-    /// The Releases tab, on one project's channels: where a Projects card's badge leads.
+    /// The Releases tab, on one project's app: where a Projects card's badge leads.
     fn open_releases(&mut self, project: &str) {
         self.rv.open_view(format!("project:{project}"));
         self.go(Tab::Releases);
@@ -2831,7 +2838,8 @@ impl App {
     }
 
     /// The Releases keys: `b` hands them to the Builds table and back, otherwise they drive the
-    /// channels. Enter opens the channel's pane, `[` and `]` read an older or newer tag's changelog in it.
+    /// apps. Enter opens the app's pane, `F` unfolds its other envs, `[` and `]` read an older or
+    /// newer tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
         let typing = self.rv.builds.table.typing.is_some() || self.rv.table.typing.is_some();
         // `t` opens each workflow's usual run time in the Builds pane, from either table.
@@ -2845,14 +2853,14 @@ impl App {
         }
         if !typing && k.code == KeyCode::Char('b') {
             self.rv.builds.focus = !self.rv.builds.focus;
-            // The keys that close the channel pane are the channels': it must not outlive them.
+            // The keys that close the app pane are the apps': it must not outlive them.
             self.rv.open = false;
             return true;
         }
         if self.rv.builds.focus {
             return self.builds_key(k);
         }
-        if self.rv.table.key::<Release>(k.code) != Took::No {
+        if self.rv.table.key::<ReleaseApp>(k.code) != Took::No {
             self.sync_changelog();
             return true;
         }
@@ -2874,8 +2882,10 @@ impl App {
         match k.code {
             KeyCode::Char('J') if rv.open => rv.down += 1,
             KeyCode::Char('K') if rv.open => rv.down = rv.down.saturating_sub(1),
+            KeyCode::Char('F') if rv.open => rv.others = !rv.others,
             KeyCode::Enter => {
                 rv.open = !rv.open;
+                rv.others = false;
                 // Opening asks for the newest release again, whatever was read before.
                 rv.cl.project.clear();
             }
@@ -3079,10 +3089,10 @@ impl App {
                 "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open run  b channels  q quit".into()
             }
             Tab::Releases if self.rv.builds.focus => format!(
-                "Enter log  t run times  / query  f state  s sort  S asc/desc  x clear  o open run  b channels  r refresh  {tabs} tabs  q quit"
+                "Enter log  t run times  / query  f state  s sort  S asc/desc  x clear  o open run  b apps  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Releases if self.rv.open => {
-                "Esc close  J/K scroll pane  [ ] older/newer tag  j/k move  q quit".into()
+                "Esc close  F other envs  J/K scroll pane  [ ] older/newer tag  j/k move  q quit".into()
             },
             Tab::Releases => format!(
                 "Enter open  / query  f state  s sort  S asc/desc  x clear  b builds  t run times  r refresh  {tabs} tabs  q quit"
@@ -3110,7 +3120,7 @@ impl App {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Costs => format!(
-                "b/B cut  w window  / query  s sort  S asc/desc  K keys  y spend  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  b/B cut  w window  / query  s sort  S asc/desc  K keys  y spend  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
                 "type a query (kind:session state:failed -who:x), Enter applies, Esc drops it".into()
@@ -3576,7 +3586,6 @@ impl App {
         let w = list.width as usize;
         let status = self.rv.status(s, self.p, now);
         let table = self.rv.table(s, self.p, w, !self.rv.builds.focus);
-        let foot = self.rv.foot(s, self.p, w);
         let (bstatus, btable) = match &self.builds {
             Some(b) => (
                 self.rv.builds.status(b, self.p, now),
@@ -3590,8 +3599,8 @@ impl App {
             ),
         };
         // The focused section gets two thirds of what the heads leave, but a short list of
-        // channels never holds back rows the builds could use.
-        let rest = (list.height as usize).saturating_sub(status.len() + foot.len() + bstatus.len());
+        // apps never holds back rows the builds could use.
+        let rest = (list.height as usize).saturating_sub(status.len() + bstatus.len());
         let share = if self.rv.builds.focus {
             rest * 2 / 3
         } else {
@@ -3608,7 +3617,6 @@ impl App {
         };
         let mut lines = status;
         lines.extend(self.rv.table.window(table, ch));
-        lines.extend(foot);
         lines.extend(bstatus);
         lines.extend(self.rv.builds.table.window(btable, bh));
         f.render_widget(Paragraph::new(lines), list);
@@ -3628,7 +3636,7 @@ impl App {
                 .read
                 .as_ref()
                 .filter(|_| self.rv.cl.project == r.project);
-            let lines = releases::detail(r, self.p, now, area.width as usize, cl);
+            let lines = releases::detail(r, self.rv.others, self.p, now, area.width as usize, cl);
             let max = lines.len().saturating_sub(area.height as usize);
             self.rv.down = self.rv.down.min(max);
             let shown: Vec<Line> = lines.into_iter().skip(self.rv.down).collect();
@@ -5584,7 +5592,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_reads_the_changelog_of_the_selected_channels_project_and_brackets_walk_its_tags() {
+    fn enter_reads_the_changelog_of_the_selected_app_and_brackets_walk_its_tags() {
         let (mut a, rel, rx) = with_releases();
         press(&mut a, KeyCode::Char(']'));
         assert!(rx.try_recv().is_err(), "a closed pane reads nothing");
@@ -5609,7 +5617,24 @@ mod tests {
             "release-state changelog --json alpha v2",
             "release-state changelog --json alpha v3",
         ];
-        assert_eq!(log, cl, "one read each, for the project the row is on");
+        assert_eq!(log, cl, "one read each, for the app the row is on");
+    }
+
+    #[test]
+    fn f_unfolds_the_other_envs_and_another_app_starts_folded() {
+        let (mut a, _rel, rx) = with_releases();
+        press(&mut a, KeyCode::Char('F'));
+        assert!(!a.rv.others, "a closed pane has no fold to open");
+        press(&mut a, KeyCode::Enter);
+        answer(&mut a, &rx);
+        press(&mut a, KeyCode::Char('F'));
+        assert!(a.rv.others);
+        press(&mut a, KeyCode::Char('j'));
+        assert!(!a.rv.others, "beta's pane starts folded");
+        answer(&mut a, &rx);
+        press(&mut a, KeyCode::Char('F'));
+        press(&mut a, KeyCode::Enter);
+        assert!(!a.rv.open && !a.rv.others, "closing folds it too");
     }
 
     #[test]
@@ -5670,10 +5695,7 @@ mod tests {
         assert_eq!(a.tab, Tab::Releases);
         assert_eq!(a.rv.table.view.q, "project:garden");
         assert!(a.rv.table.view.state.is_empty() && a.rv.table.view.sort.is_empty());
-        assert!(
-            !a.rv.open,
-            "the promise is this project's channels, unfiltered"
-        );
+        assert!(!a.rv.open, "the promise is this project's app, unfiltered");
     }
 
     #[test]
@@ -5714,9 +5736,30 @@ mod tests {
     }
 
     #[test]
+    fn left_and_right_switch_costs_inner_tabs_and_hub_tab_names_one() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = costs_app(true);
+        assert_eq!(a.cv.inner, "limits");
+        a.handle(k(KeyCode::Right));
+        assert_eq!(a.cv.inner, "spend");
+        assert!(screen(&mut a, 100, 60).contains("window:"));
+        a.handle(k(KeyCode::Left));
+        a.handle(k(KeyCode::Left));
+        assert_eq!(a.cv.inner, "models");
+        // `hub --tab 'costs burn'` and the moved `fleet tokens` land on the holding inner tab
+        let (t, q) = crate::tabreq::parse("costs burn").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!((a.cv.inner, a.seek), ("limits", Some("burn")));
+        let (t, q) = crate::tabreq::parse("fleet tokens").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!((a.cv.inner, a.seek), ("models", Some("tokens")));
+    }
+
+    #[test]
     fn u_opens_the_tokens_fold_on_costs_and_goes_to_it_and_big_u_switches_its_window() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(true);
+        a.cv.inner = "models";
         let s = screen(&mut a, 100, 60);
         assert!(
             s.contains("+ WHERE THE TOKENS GO") && s.contains("u opens it"),
@@ -5742,6 +5785,7 @@ mod tests {
     fn l_opens_the_langfuse_fold_on_costs_and_typing_keeps_u_and_l_as_text() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(true);
+        a.cv.inner = "models";
         a.handle(k(KeyCode::Char('l')));
         assert_eq!(
             a.cv.langfuse,
@@ -5762,6 +5806,7 @@ mod tests {
     fn u_and_l_wait_for_a_snapshot_so_the_first_one_lands_folded() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(false);
+        a.cv.inner = "models";
         a.handle(k(KeyCode::Char('u')));
         a.handle(k(KeyCode::Char('U')));
         a.handle(k(KeyCode::Char('l')));
@@ -5872,7 +5917,7 @@ mod tests {
 
     fn infra_app() -> App {
         let mut a = app(Tab::Home);
-        a.infra = Some(board::tests::fixture());
+        a.infra = Some(board::tests::built(&board::tests::fixture()));
         a.jobs = Some(Jobs {
             at: 0,
             window_secs: 86400,
@@ -5935,14 +5980,14 @@ mod tests {
         a.handle(Msg::Tab(t, q));
         let s = screen(&mut a, 160, 30);
         assert_eq!(a.tab, Tab::Infra);
-        assert!(top(&s).starts_with("CI  running 3"), "{s}");
+        assert!(top(&s).starts_with("CI RUNNERS  2 hosts"), "{s}");
         // Machines the same way, and n/N step between the section headings from there.
         let (t, q) = crate::tabreq::parse("machines").unwrap();
         a.handle(Msg::Tab(t, q));
         let s = screen(&mut a, 160, 30);
         assert!(top(&s).starts_with("MACHINE "), "{s}");
         a.handle(key('n'));
-        assert!(top(&screen(&mut a, 160, 30)).starts_with("CI  running"));
+        assert!(top(&screen(&mut a, 160, 30)).starts_with("CI RUNNERS"));
         a.handle(key('N'));
         assert!(top(&screen(&mut a, 160, 30)).starts_with("MACHINE "));
     }
@@ -5963,7 +6008,7 @@ mod tests {
             "HEALTH",
             "RED NOW",
             "MACHINE ",
-            "CI  running",
+            "CI RUNNERS",
             "JOBS",
             "CLOUD RUNNERS",
             "GOVERNOR",

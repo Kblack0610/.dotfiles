@@ -45,6 +45,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub phone --json
        hub vitals [--json]
        hub needs --json | --page
+       hub ci [--json | --pool-match SECS]
        hub briefing --json | --md [--agents-md FILE] [--since WHEN]
        hub projects --json
        hub projects --page NAME | --status NAME
@@ -61,6 +62,9 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           no card has opens every project's rows searched for it, as `/` would); fleet takes
           a runner: `hub tab fleet inbox-triage` opens its page
   tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
+  ci      the CI runners board: one line per slot and queued job (hub_core::ci); --json gives it
+          whole; --pool-match SECS gives fleet-bench the runners that fit the jobs waiting SECS
+          or longer, as metric<TAB>label<TAB>value rows. Exits 1 when Prometheus failed
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
@@ -161,6 +165,10 @@ fn main() {
         it.next();
         std::process::exit(briefing(it.cloned().collect()));
     }
+    if it.peek().map(|a| a.as_str()) == Some("ci") {
+        it.next();
+        std::process::exit(ci(it.cloned().collect()));
+    }
     if it.peek().map(|a| a.as_str()) == Some("needs") {
         it.next();
         std::process::exit(needs(it.cloned().collect()));
@@ -257,6 +265,46 @@ fn needs(args: Vec<String>) -> i32 {
             1
         }
     }
+}
+
+/// `hub ci`: the CI runners board as text, JSON, or fleet-bench's pool-match rows.
+fn ci(args: Vec<String>) -> i32 {
+    enum Mode {
+        Text,
+        Json,
+        PoolMatch(i64),
+    }
+    let mode = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        [] => Mode::Text,
+        ["--json"] => Mode::Json,
+        ["--pool-match", secs] => match secs.parse() {
+            Ok(secs) => Mode::PoolMatch(secs),
+            Err(_) => die(USAGE),
+        },
+        _ => die(USAGE),
+    };
+    let infra = hub_core::infra::gather();
+    if !infra.ok {
+        eprintln!(
+            "hub ci: {}",
+            infra
+                .error
+                .as_deref()
+                .unwrap_or("Prometheus did not answer")
+        );
+        return 1;
+    }
+    match mode {
+        Mode::Text => {
+            let p = fmt::Palette { no_color: true };
+            for l in board::ci_runners(&infra, p, 120) {
+                println!("{}", plain(&l));
+            }
+        }
+        Mode::Json => println!("{}", serde_json::to_string(&infra.ci).unwrap_or_default()),
+        Mode::PoolMatch(secs) => print!("{}", hub_core::ci::pool_match_rows(&infra, secs)),
+    }
+    0
 }
 
 /// `hub briefing`: hub-core's briefing over the window from `--since`.
@@ -506,7 +554,6 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             a.rv.status(&s, a.p, now)
                 .iter()
                 .chain(&a.rv.table(&s, a.p, w, false))
-                .chain(&a.rv.foot(&s, a.p, w))
         {
             let _ = writeln!(out, "{}", plain(l));
         }

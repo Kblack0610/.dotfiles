@@ -969,6 +969,10 @@ pub struct Board {
     pub totals_note: &'static str,
     pub direct: Direct,
     pub burn: Burn,
+    /// The sections that need a look (layout section ids), which an inner tab's label counts so
+    /// a red behind an unselected one still shows: Burn off `ok`, a stale token snapshot, and
+    /// Langfuse with no figures or stale.
+    pub amber: Vec<&'static str>,
     /// Where the tokens go and what Langfuse sees: the newest week and day of snapshots, whatever
     /// the window (the snapshots are nightly).
     pub tokens: Option<crate::tokens::Tokens>,
@@ -989,6 +993,23 @@ pub struct Board {
     pub table: Summary,
     /// The trends board, `DASHBOARD` on the Grafana the hub links to.
     pub grafana: Option<String>,
+}
+
+/// The sections of the tab that need a look (`Board::amber`).
+fn amber(c: &Costs) -> Vec<&'static str> {
+    let mut out = vec![];
+    if matches!(c.burn.level, "warn" | "bad") {
+        out.push("burn");
+    }
+    if let Some(t) = &c.tokens {
+        if t.stale {
+            out.push("tokens");
+        }
+        if t.stale || t.langfuse.figures.is_none() {
+            out.push("langfuse");
+        }
+    }
+    out
 }
 
 /// A cut or window the tab knows, else its default, so a stale link still opens.
@@ -1113,6 +1134,7 @@ pub fn board(
         totals_note: TOTALS_NOTE,
         direct: direct(&c.sessions, c.at),
         burn: c.burn.clone(),
+        amber: amber(c),
         tokens: c.tokens.clone(),
         sections: sections::board(&c.sections, sec.0, sec.1),
         sources: sources(c),
@@ -1187,6 +1209,20 @@ mod tests {
         );
         assert!(b.tokens.is_some() && b.errors.len() == 1);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_amber_sections_are_the_ones_that_need_a_look() {
+        let amber_of =
+            |c: &Costs| board(c, DEFAULT_CUT, DEFAULT_WINDOW, "", "", "desc", ("", "desc")).amber;
+        let mut c = Costs::default();
+        assert!(amber_of(&c).is_empty(), "nothing read is not amber");
+        c.burn.level = "ok";
+        assert!(amber_of(&c).is_empty());
+        c.burn.level = "warn";
+        assert_eq!(amber_of(&c), ["burn"]);
+        c.burn.level = "bad";
+        assert_eq!(amber_of(&c), ["burn"]);
     }
 
     #[test]
