@@ -2944,7 +2944,7 @@ codex_run() {
     pid=$((pid + 1)); pids="$pids $pid"
     mkdir -p "$DISPATCH_PROC/$pid"; printf 'HOME=/x\0AGENT_QUEUE_ITEM=%s\0' "$slug" > "$DISPATCH_PROC/$pid/environ"
   done
-  stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex run\" ] || exit 2; for p in $pids; do echo \$p; done"
+  stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex (run|resume)\" ] || exit 2; for p in $pids; do echo \$p; done"
 }
 
 @test "reap: a Codex item whose tmux session a Claude item took over settles once its run is gone, on two reaps (ar-1087)" {
@@ -2972,11 +2972,11 @@ codex_run() {
   [ -n "$(qitem running cxblind)" ] || fail "reaped a Codex item on a pgrep that could not read"
   # a listed run whose environment will not read cannot tell either; one that exited (no dir) is skipped
   mkdir -p "$DISPATCH_PROC/4999"; printf 'AGENT_QUEUE_ITEM=x\0' > "$DISPATCH_PROC/4999/environ"; chmod 000 "$DISPATCH_PROC/4999/environ"
-  stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex run\" ] || exit 2; echo 4998; echo 4999"
+  stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex (run|resume)\" ] || exit 2; echo 4998; echo 4999"
   cmd_reap >/dev/null; cmd_reap >/dev/null
   [ -n "$(qitem running cxblind)" ] || fail "reaped a Codex item on an environment that would not read"
   chmod 600 "$DISPATCH_PROC/4999/environ"
-  stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex run\" ] || exit 2; echo 4998"
+  stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex (run|resume)\" ] || exit 2; echo 4998"
   cmd_reap >/dev/null; cmd_reap >/dev/null
   [ -z "$(qitem running cxblind)" ] || fail "a run that exited after pgrep listed it kept its item live"
 }
@@ -4348,7 +4348,7 @@ codex_end_item() {
   mkdir -p "$d" "$HOME/.local/lib"
   cp "$REPO_ROOT/.local/lib/codex-rollout.jq" "$HOME/.local/lib/"
   CODEX_SESSIONS="$HOME/.codex/sessions"; CODEX_ROLLOUT_JQ="$HOME/.local/lib/codex-rollout.jq"
-  jq -n '{harnesses: {codex: {source: "codex", headless: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
+  jq -n '{harnesses: {codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
   HARNESSES="$SANDBOX/harnesses.json"
   jq -cn --argjson e "$2" --arg first "$(date -u -d @1794200000 +%FT%T.000Z)" --arg last "$(date -u -d "@$((1794200000 + ${3:-60}))" +%FT%T.000Z)" \
     '{timestamp: $first, type: "event_msg", payload: {type: "task_started"}},
@@ -5356,7 +5356,7 @@ harness_ready() {
       "claude-lazer": {source: "eval", timeout_min: 180, models: {sonnet: "sonnet"}},
       opencode: {source: "eval", headless: true, config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
       glm: {launcher: "opencode", source: "glm", headless: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
-      codex: {source: "codex", headless: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
+      codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
       "claude-cloud": {launcher: "claude-cloud", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
@@ -5779,28 +5779,140 @@ cloud_run_ready() {
   grep -q 'opened no PR in 0 min' "$f" || fail "the item is not flagged"
 }
 
-@test "codex refuses a spent plan and a plan item, and the item stays queued" {
+@test "codex refuses a spent plan, and the item stays queued" {
   harness_ready
   src_shut codex 'codex: its week is spent'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
   assert_failure
   assert_output --partial 'codex has no room: codex: its week is spent'
-  rm "$NOTES_FIXTURE/src.codex"
-  agent-queue add --project game --slug planned --mode plan --priority high "Think" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item planned --harness codex --model sol
-  assert_failure
-  assert_output --partial 'codex runs to its end and cannot wait on a plan'
   assert_not_called 'wt new'
   [ -n "$(qitem queued fix-menu)" ] || fail "a refused item left the queue"
 }
 
-@test "resume refuses an item that ran on a gateway harness" {
+# P6: a headless harness that resumes runs a plan item's plan stage: the plan goes to the human as an
+# approval ask, and the answer resumes the thread. One that does not resume is still refused.
+@test "codex runs a plan item's plan stage, posted as an approval ask and requeued behind it; without resume it is refused" {
+  harness_ready
+  agent-queue add --project game --slug planned --mode plan --priority high "Think it through" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item planned --harness codex --model sol
+  assert_success
+  assert_called 'agent-codex run -m gpt-6.1-sol'
+  assert_called 'This is a plan item: plan first, and change nothing in any repo until the human approves the plan. Write it to ~/.claude/plans/planned.md'
+  assert_called 'agent-ask post --kind approval'
+  assert_called 'agent-queue requeue planned --ask <id> and stop: the answer resumes this run'
+  assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it'
+  [ -n "$(qitem running planned)" ] || fail "the plan item did not start"
+  # A decided plan item that cannot resume (no rollout) builds on the decision, never plans again.
+  : > "$NOTES_FIXTURE/calls.log"
+  stub agent-ask '[ "$1" = decision ] && echo "Approve the plan for decided? -> approve"; exit 0'
+  agent-queue add --project game --slug decided --mode plan --priority high "Think it through" >/dev/null
+  sed -i '1a tags: ask:pl1' "$(qitem queued decided)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item decided --harness codex --model sol
+  assert_success
+  assert_called 'whose plan, ~/.claude/plans/decided.md, the human has decided on below: build it if they approved it'
+  assert_not_called 'plan first'
+  # Negative control: the same map without resume refuses it, as glm and opencode are.
+  jq '.harnesses.codex |= del(.resume)' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  agent-queue add --project game --slug planned2 --mode plan --priority high "Think again" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item planned2 --harness codex --model sol
+  assert_failure
+  assert_output --partial 'codex runs to its end and cannot wait on a plan'
+  [ -n "$(qitem queued planned2)" ] || fail "a refused plan item left the queue"
+}
+
+# codex_ran <slug> <thread> [salvage] -- a queued item whose last run, on codex, claimed that thread,
+# whose rollout is on disk; salvage: is set when given.
+codex_ran() {
+  local d="$HOME/.codex/sessions/2026/11/09"
+  mkdir -p "$d"; : > "$d/rollout-2026-11-09T07-33-20-$2.jsonl"
+  export DISPATCH_CODEX_SESSIONS="$HOME/.codex/sessions"
+  agent-queue set "$1" agent=codex model=sol ${3:+"salvage=$3"} >/dev/null
+  agent-queue claim "$1" --sid "$2" >/dev/null
+}
+
+@test "a queued codex item whose last run hit the limit resumes its thread on its salvage branch, with a brief that says so" {
+  harness_ready
+  codex_ran fix-menu th-1 "salvage/fix-menu@0123456789abcdef0123456789abcdef01234567"
+  agent-queue set fix-menu end_reason=limit >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
+  assert_success
+  assert_called 'timeout 120m agent-codex resume --salvage salvage/fix-menu@0123456789abcdef0123456789abcdef01234567 th-1 -m gpt-6.1-sol --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check '
+  assert_not_called '--color never'
+  assert_called "usage limit, and the plan has room again"
+  assert_called 'holds the work your last run left, checked out at 0123456789abcdef0123456789abcdef01234567 (on salvage/fix-menu on origin)'
+  assert_called 'agent-queue requeue fix-menu --ask <id>'
+  assert_not_called 'Read ~/.claude/skills/one-shot/SKILL.md'
+  f=$(qitem running fix-menu)
+  [ -z "$(qfield "$f" end_reason)" ] || fail "a new run kept the last run's end_reason"
+}
+
+@test "an answered ask resumes the codex thread with the decision; a PR, a canary or a lost rollout starts cold" {
+  harness_ready
+  stub agent-ask '[ "$1" = decision ] && echo "Ship it? -> a: ship it"; exit 0'
+  codex_ran fix-menu th-2
+  sed -i '1a tags: ask:abc' "$(qitem queued fix-menu)"   # requeued behind ask abc, now answered
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
+  assert_success
+  assert_called 'agent-codex resume th-2 -m gpt-6.1-sol'
+  assert_called 'The human already decided this in ask abc, so follow it: Ship it? -> a: ship it'
+  assert_called 'stopped before the item closed, and this run takes it up'
+  assert_called 'Your last run left no work the trunk lacks: start from the current directory'
+  # Negative controls: an item with a PR goes to fix-ci, a canary is scored fresh, a lost rollout has nothing to resume.
+  for k in pr canary lost; do
+    : > "$NOTES_FIXTURE/calls.log"
+    agent-queue add --project game --slug "c-$k" --priority high "Fix the $k" >/dev/null
+    codex_ran "c-$k" "th-$k"
+    case $k in
+      pr) agent-queue set c-pr pr=acme/game#7 >/dev/null ;;
+      canary) agent-queue set c-canary tags=canary >/dev/null ;;
+      lost) rm "$HOME"/.codex/sessions/2026/11/09/*-th-lost.jsonl ;;
+    esac
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item "c-$k" --harness codex --model sol
+    assert_success
+    assert_called 'agent-codex run -m gpt-6.1-sol'
+    assert_not_called 'agent-codex resume'
+  done
+}
+
+@test "an item another harness ran, or ran last, is never resumed on codex; a claude start of salvaged work is told where it is" {
+  harness_ready
+  codex_ran fix-menu th-3 "salvage/fix-menu@abc123"
+  agent-queue set fix-menu agent=opencode >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
+  assert_success
+  assert_called 'agent-codex run -m gpt-6.1-sol'
+  assert_not_called 'agent-codex resume'
+  assert_called 'An earlier run of this item left its unfinished work on branch salvage/fix-menu at abc123 on origin: start from it'
+}
+
+@test "start --resume takes up a codex item's last thread in --cwd; a stale id, a live run and a harness that cannot resume are refused" {
+  harness_ready
+  started_item cx lab:game-agent-1
+  codex_ran cx th-4
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cx --resume th-old --session cx-again --cwd "$SANDBOX/repos/game"
+  assert_failure
+  assert_output --partial 'th-old is not the last codex thread of cx'
+  codex_run cx
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item cx --resume th-4 --session cx-again --cwd "$SANDBOX/repos/game"
+  assert_failure
+  assert_output --partial 'the codex run of cx is still live'
+  stub pgrep 'exit 1'
+  stub tmux 'echo "tmux $*" >> "$NOTES_FIXTURE/calls.log"; case " $* " in *" has-session "*) exit 1 ;; esac; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --resume th-4 --session cx-again --cwd "$SANDBOX/repos/game"
+  assert_success
+  assert_called 'new-session -d -s cx-again'
+  assert_called 'agent-codex resume th-4 -m gpt-6.1-sol'
+  assert_not_called 'claude --resume'
+  assert_equal "$(qfield "$(qitem running cx)" session)" lab:cx-again
+}
+
+@test "resume refuses an item that ran on a gateway harness that cannot resume" {
   harness_ready
   started_item gw-run lab:game-agent-1
   sed -i 's/^agent: claude/agent: opencode/' "$(qitem running gw-run)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item gw-run --resume abc
   assert_failure
-  assert_output --partial '--resume is for claude'
+  assert_output --partial 'ran on opencode, which cannot resume; --resume is for claude or a harness that resumes'
 }
 
 @test "reap settles a claude-lazer item whose claude exited, like claude's; an opencode one waits for its session to end" {
@@ -5950,13 +6062,19 @@ case "$1" in log) echo run-9 ;; classify)
   assert_not_called 'agent-codex'
 }
 
-@test "a plan item is never sent to a headless harness; the same item in oneshot mode is" {
+@test "a plan item goes to a headless harness only when it resumes; the same item in oneshot mode always may" {
   route_ready
   srcs codex:ok:1 reserve:ok:20
+  jq '.harnesses.codex |= del(.resume)' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
   agent-queue set fix-menu mode=plan >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-menu on lazer-reserve (sonnet)'
   assert_not_called 'agent-codex'
+  # With resume, codex takes a plan item: it posts the plan and is resumed on the answer.
+  jq '.harnesses.codex.resume = true' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
+  agent-queue add --project game --slug plan-next --mode plan --priority urgent "Plan the next menu" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item plan-next on codex (sol)'
   # Negative control: a oneshot item takes codex, the lower rank.
   agent-queue add --project game --slug fix-next --priority high "Fix the next menu" >/dev/null
   export DISPATCH_PER_PASS=3   # gm-1 may wait ahead of it
