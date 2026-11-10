@@ -714,12 +714,16 @@ mod tests {
                 "queued",
                 json!({"plan": p, "phases": "10", "title": "P9 live stage, gated"}),
             ),
-            // An old-shape title with no plan field reads the same way, its file name kept
-            // when no such plan exists.
+            // An old-shape title with no plan field is renamed only when its plan file exists.
             item(
                 "hand",
                 "queued",
                 json!({"title": "other-plan P2: kept as written"}),
+            ),
+            item(
+                "multi",
+                "queued",
+                json!({"plan": p, "phases": "4 5", "title": "P4 Fourth; P5 Fifth"}),
             ),
             item(
                 "legacy-row",
@@ -743,9 +747,13 @@ mod tests {
             row("own-p10").what,
             "Systems you can see P9: live stage, gated"
         );
+        assert_eq!(
+            row("multi").what,
+            "Systems you can see P4+5: P4 Fourth; P5 Fifth",
+            "a leading label names one of an item's two phases, so the place stands"
+        );
         assert_eq!(row("hand").what, "other-plan P2: kept as written");
-        // No plan field, a title in the old shape: its own label still wins.
-        assert_eq!(row("legacy-row").what, "ghost-plan-file P9: live stage");
+        assert_eq!(row("legacy-row").what, "ghost-plan-file P10: P9 live stage");
         std::fs::remove_dir_all(&dir).ok();
     }
 

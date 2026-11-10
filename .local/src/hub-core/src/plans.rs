@@ -26,10 +26,14 @@ const SUBJECT_MIN: usize = 16;
 /// `; `, ` (`, ` - `, or `: ` after a subject of `SUBJECT_MIN`), capped at `NAME_MAX`. None
 /// when the top of the file has no heading.
 pub fn name_of(text: &str) -> Option<String> {
+    let mut fenced = false;
     let head = text
         .lines()
         .take(HEAD_LINES)
-        .find_map(|l| l.strip_prefix("# "))?
+        .find_map(|l| {
+            fenced ^= l.trim_start().starts_with("```");
+            l.strip_prefix("# ").filter(|_| !fenced)
+        })?
         .trim();
     let colon = head
         .find(": ")
@@ -84,17 +88,19 @@ pub fn legacy(title: &str) -> Option<(&str, &str, &str)> {
         && nums
             .split('+')
             .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-    (base.contains('-') && !base.contains(':') && numbered).then_some((
-        base,
-        tag,
-        words.trim_start(),
-    ))
+    let plain = base.contains('-') && !base.contains([':', '/']);
+    (plain && numbered).then_some((base, tag, words.trim_start()))
 }
 
 /// The plan's name, else its file name when it cannot be read or has no heading.
 pub fn name(path: &str) -> String {
-    std::fs::read_to_string(Path::new(path))
+    use std::io::BufRead;
+    std::fs::File::open(Path::new(path))
         .ok()
+        .map(|f| {
+            let lines = std::io::BufReader::new(f).lines().take(HEAD_LINES);
+            lines.map_while(Result::ok).collect::<Vec<_>>().join("\n")
+        })
         .and_then(|t| name_of(&t))
         .unwrap_or_else(|| base(path).to_string())
 }
@@ -154,6 +160,11 @@ mod tests {
             Some("Codex on par: full integration")
         );
         assert_eq!(n("## Phases\n- [ ] one"), None);
+        assert_eq!(
+            n("```sh\n# run this first\n```\n# Real title, more").as_deref(),
+            Some("Real title"),
+            "a comment in a fence is not the heading"
+        );
         assert_eq!(n("# , oops"), None);
         assert_eq!(name("/nonexistent/quiet-ocean.md"), "quiet-ocean");
     }
@@ -168,6 +179,7 @@ mod tests {
             "DodginBalls: school days",
             "quiet-ocean P: x",
             "sc-bar-26: bots P2: x",
+            "../x-y P2: z",
             "quiet-ocean P4 x",
             "solo P2: x",
         ] {

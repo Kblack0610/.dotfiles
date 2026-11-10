@@ -1063,8 +1063,7 @@ unity_weight() {
 # order, each `after:` the one before (the first after --after), carrying `plan:` and
 # `phases:` (its checklist numbers). A phase line with `(with N)` joins phase N's item when
 # phase N is open too, for phases that share a branch; the item runs where its first phase is.
-# Its title is the phase's own words: views name the plan and phase from `plan:` and `phases:`
-# (hub_core::plans). Every slug is checked before any item is written.
+# Every slug is checked before any item is written.
 add_plan() {
   [ -f "$planf" ] || die "--plan $planf: no such file"
   planf="$(realpath "$planf")"
@@ -1095,14 +1094,14 @@ add_plan() {
   prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
   [ -n "$prefix" ] || die "could not derive a slug prefix; pass --slug"
   local rows
-  rows="$(jq -r --arg pre "$prefix" --arg plan "$planf" '.[]
+  rows="$(jq -r --arg pre "$prefix" --arg plan "$planf" --arg pname "$(basename "$planf" .md)" '.[]
     | (.phases | length > 1) as $many
     | [($pre + "-p\(.phases[0])"), (.phases | join(" ")),
        ("\(if $many then "Phases \(.phases | join(" and "))" else "Phase \(.phases[0])" end) of the plan \($plan): \(.titles | join("; ")). "
         + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
         + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
         + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
-       .full]
+       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)"]
     | @tsv' <<<"$groups")"
   local s ph text prev="$after"
   while IFS=$'\t' read -r s ph text _; do
