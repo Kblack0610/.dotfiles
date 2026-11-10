@@ -564,13 +564,13 @@ unreadable() { echo "$1" >> "$CACHE/unreadable"; }
 blind_row() { : > "$CACHE/blind_row"; }
 
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids".
-# A clone on another forge (origin_off_github: the Forgejo submodule External/asset-library) has no
-# gh PRs, never an unreadable source: gh can never answer for it (ar-1116 named it every pass).
+# A clone on a Forgejo host (so_forgejo_hosts: the submodule External/asset-library) has no gh PRs,
+# never an unreadable source: gh can never answer for it (ar-1116 named it every pass).
 prs_for() {
-  local dir="$1" key
+  local dir="$1" key host
   key="$CACHE/$(repo_slug "$dir")" || return 0
   if [ -f "$key" ]; then :
-  elif origin_off_github "$dir"; then : > "$key"
+  elif host="$(origin_host "$dir")" && [ -n "$host" ] && [[ " $(so_forgejo_hosts) " == *" $host "* ]]; then : > "$key"
   elif ! (cd "$dir" && gh pr list --state all --limit 100 \
       --json number,state,headRefName,headRefOid,statusCheckRollup \
       -q "$CI_JQ"' .[] | [.headRefName, .number, .state, ci, .headRefOid, red] | @tsv' 2>/dev/null) > "$key"; then
@@ -597,7 +597,10 @@ branch_runs() {
         *) : > "$all"; unreadable "run ledger ($(basename "$d"))" ;;
       esac
     fi
-    if [ -s "$all" ]; then jq -c --arg b "$b" 'map(select(.headBranch == $b))' "$all" > "$one"; else : > "$one"; fi
+    if [ -s "$all" ]; then
+      jq -c --arg b "$b" 'map(select(.headBranch == $b))' "$all" > "$one" 2>/dev/null \
+        || { : > "$one"; unreadable "run ledger ($(basename "$d"))"; }
+    else : > "$one"; fi
   fi
   [ -s "$one" ] || { blind_row; return 1; }
   cat "$one"
@@ -1151,7 +1154,7 @@ remote_panel_lines() {
     # Exit 3 is a read with a gap (agent-panel README): keep its rows, and name it so tick does
     # not log the sessions it missed as gone.
     rc=0; out="$(fleet_host_run "$name" agent-panel list --json 2>/dev/null)" || rc=$?
-    [ "$rc" -eq 3 ] && { echo "agent-panel@$name" >> "$CACHE/unreadable"; echo + >> "$CACHE/blind"; }
+    [ "$rc" -eq 3 ] && { unreadable "agent-panel@$name"; echo + >> "$CACHE/blind"; }
     [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || continue
     jq -c --arg h "$name" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
   done < <(fleet_hosts | jq -r .name)
@@ -1187,13 +1190,18 @@ collect() {
     | (.session | sub(":"; "/")) + "\t\(.project): \(.slug[:60])"' 2>/dev/null)"
   # A pass that could not read a source says so in $CACHE/unreadable, and marks the rows it feeds
   # in $CACHE/blind (keep_blind), so tick never logs a blink (a session "gone", a PR "-") as a change.
-  # The local agent-panel feeds every row, parked ones included (parked_lines reads it): "*".
+  # The local agent-panel feeds every row, parked ones included (parked_lines reads it): a failure
+  # that printed nothing is "*"; exit 3 with rows is a gap, "+", like a remote one.
   # Exit 3 (a read with a gap) still prints the rows it read; they are kept, and the pass is named.
   # AGENT_PANEL_CODEX: a Codex run in a pane is a row too (busy, its thread id as session_id, so
   # item_of joins it by sessions: like a Claude). The env form, not --codex: a binary not yet
   # rebuilt ignores it instead of refusing the flag and reading as every session gone.
-  panel="$(AGENT_PANEL_CODEX=1 "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" \
-    || { echo agent-panel >> "$CACHE/unreadable"; echo '*' >> "$CACHE/blind"; }
+  local prc=0
+  panel="$(AGENT_PANEL_CODEX=1 "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || prc=$?
+  if [ "$prc" -ne 0 ]; then
+    unreadable agent-panel
+    if [ "$prc" -eq 3 ] && [ -n "$panel" ]; then echo + >> "$CACHE/blind"; else echo '*' >> "$CACHE/blind"; fi
+  fi
   local PENDING_ASKS
   PENDING_ASKS="$(pending_asks)"
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do
@@ -1554,7 +1562,9 @@ tick() {
     flock 9
     # What a source could not read did not change: those rows keep their last good cells.
     if [ -f "$LEDGER/watch.state" ]; then
-      [ ! -s "$CACHE/blind" ] || { keep_blind "$LEDGER/watch.state" "$cur" "$CACHE/blind" > "$cur.kept" && mv "$cur.kept" "$cur"; }
+      # keep_blind failing keeps the whole last state: a blink must never become the baseline.
+      [ ! -s "$CACHE/blind" ] || { keep_blind "$LEDGER/watch.state" "$cur" "$CACHE/blind" > "$cur.kept" && mv "$cur.kept" "$cur"; } \
+        || cp "$LEDGER/watch.state" "$cur"
       new="$(transitions "$LEDGER/watch.state" "$cur")"
       [ -n "$new" ] && sed "s/^/$now  /" <<<"$new" >> "$LEDGER/watch.log"
     fi
@@ -1644,7 +1654,7 @@ write_state() {
   [ -n "$json" ] && printf '%s\n' "$json"
   dir="$(dirname "$STATE_FILE")"
   mkdir -p "$dir" || return 1
-  asks="$(agent-ask list --all --pending 2>/dev/null)" || echo agent-ask >> "$CACHE/unreadable"
+  asks="$(agent-ask list --all --pending 2>/dev/null)" || unreadable agent-ask
   # A hold that has stopped every dispatch pass (hub Home's Stopped row); rc 1 is "stopped", not a failure.
   stopped="$(fleet-dispatch stopped --json 2>/dev/null)"
   tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1

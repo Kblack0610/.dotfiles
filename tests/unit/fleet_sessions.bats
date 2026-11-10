@@ -2295,10 +2295,22 @@ SH
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
   [ "$(grep -c 's2:1  quality - -> reviewing$' "$FLEET_SHEPHERD_DIR/watch.log")" = 1 ]
   [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 2 ]
+
+  # agent-panel exit 3 lists s1 only: s1's change is logged, s2 is a gap, not gone
+  printf '#!/usr/bin/env bash\necho %q\nexit 3\n' "$line1" > "$SANDBOX/bin/agent-panel"
+  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 -quality:simplifying >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -c .unreadable "$doc")" = '["agent-panel"]' ]
+  run cat "$FLEET_SHEPHERD_DIR/watch.log"
+  assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality simplifying -> -$'
+  refute_line --partial 's2:1  gone'
+  grep -qP '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state"
 }
 
 @test "end to end: a clone on another forge asks gh nothing and is never an unreadable source (ar-1116)" {
   landed_fixture
+  export SO_FORGEJO_HOSTS='git.example.lan git.example.test'
   git -C "$SANDBOX/wt" remote set-url origin https://git.example.lan/o/asset-library.git
   printf '#!/usr/bin/env bash\necho "$PWD $*" >> %q\nexit 1\n' "$SANDBOX/gh.calls" > "$SANDBOX/bin/gh"
   local doc="$XDG_STATE_HOME/fleet/state.json"
@@ -2308,8 +2320,9 @@ SH
   [ "$(jq -r '.sessions[0].pr' "$doc")" = - ]
   run grep -c 'pr list' "$SANDBOX/gh.calls"
   [ "${output:-0}" = 0 ]
-  # NEGATIVE CONTROL: the same clone on GitHub asks gh, which fails, and is named
-  git -C "$SANDBOX/wt" remote set-url origin https://github.com/o/asset-library.git
+  # NEGATIVE CONTROL: the same clone on a host not listed as Forgejo (GitHub, or an ssh alias of it)
+  # asks gh, which fails, and is named
+  git -C "$SANDBOX/wt" remote set-url origin git@github.com-work:o/asset-library.git
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
   jq -e '.unreadable | index("gh pr list (wt)")' "$doc" >/dev/null
 }

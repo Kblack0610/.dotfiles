@@ -19,12 +19,12 @@ origin_repo() {
   sed -E 's#/+$##; s#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#' <<<"$url"
 }
 
-# origin_off_github <dir> -- exit 0 when <dir>'s origin names a host that is not github.com (a Forgejo
-# clone such as External/asset-library), so gh can never read its PRs. A path origin names no host.
-origin_off_github() {
+# origin_host <dir> -> the host of <dir>'s origin remote, lower-cased (url_host); nothing for a
+# path origin, and rc 1 with no origin.
+origin_host() {
   local url
-  url=$(git -C "$1" remote get-url origin 2>/dev/null) && [[ "$url" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// || "$url" =~ ^[^/]+: ]] \
-    && [ "$(url_host "$url")" != github.com ]
+  url=$(git -C "$1" remote get-url origin 2>/dev/null) && [ -n "$url" ] || return 1
+  url_host "$url"
 }
 
 # url_host <url> -> the host of a remote URL, lower-cased: the authority, then past any
