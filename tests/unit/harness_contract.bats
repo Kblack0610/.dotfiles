@@ -117,7 +117,8 @@ fixture_map() {
 @test "each reader gives its facts on its fixture: codex all six and resume, opencode tokens and cost, claude transcripts tokens, errors and tests" {
   fixture_map
   assert_equal "$(reader codex "$SANDBOX/harnesses.json" | jq -c '[.resume, .end_reason, .tokens, .cost, .hard_errors.tool_errors, .tests, .effort]')" '["cx-contract","limit",240,0.00061,1,2,"medium"]'
-  assert_equal "$(reader opencode "$SANDBOX/harnesses.json")" '{"tokens":480,"cost":0.042}'
+  # cost in thousandths: jq 1.6 prints the stored 0.042 as 0.0420000000000000026.
+  assert_equal "$(reader opencode "$SANDBOX/harnesses.json" | jq -c '[.tokens, (.cost * 1000 | round)]')" '[480,42]'
   assert_equal "$(reader claude-lazer "$SANDBOX/harnesses.json" | jq -c '[.tokens, .hard_errors.tool_errors, .tests]')" '[35,1,1]'
 }
 
