@@ -116,8 +116,8 @@ load_agent() {
             none|draft|shadow|acts) ;;
             *) printf 'invalid EFFECT=%s (none|draft|shadow|acts)\n' "$EFFECT" >&2; exit 1 ;;
         esac
-        # A runner that launches a model says how much it matters when money is short, so the
-        # Costs view can show every consumer against the budget it spends from (README, PRIORITY).
+        # A runner that launches a model declares how much it matters when money is short
+        # (README, PRIORITY); list --md shows it. The budget it spends from is its route's.
         if [ -n "${ROLE:-}" ]; then
             case "${PRIORITY:-}" in
                 must|low|off) ;;
@@ -470,7 +470,7 @@ kv_get() { awk -v k="$1" 'substr($0,1,length(k)+1) == k"=" {print substr($0, len
 # cmd_list_md - the runner catalog as one markdown table, from the confs alone (no systemd),
 # so it prints the same on any machine. PIPELINES.md points here instead of copying it.
 cmd_list_md() {
-    local name conf lane kind sched trigger model effect role route skill
+    local name conf lane kind sched trigger model effect role priority route skill
     printf '| Runner | Lane | Trigger | Role | Priority | Skill | Model | Effect | Purpose |\n'
     printf '|---|---|---|---|---|---|---|---|---|\n'
     local -a names=() invalid=()
@@ -484,7 +484,7 @@ cmd_list_md() {
             conf=${confs[$name]:-}
             [ -n "$conf" ] && [ "$(kv_get LANE <<<"$conf")" = "$lane" ] || continue
             kind=$(kv_get KIND <<<"$conf"); sched=$(kv_get SCHEDULE <<<"$conf")
-            effect=$(kv_get EFFECT <<<"$conf"); role=$(kv_get ROLE <<<"$conf")
+            effect=$(kv_get EFFECT <<<"$conf"); role=$(kv_get ROLE <<<"$conf"); priority=$(kv_get PRIORITY <<<"$conf")
             skill=$(kv_get SKILL <<<"$conf")
             [ "$(kv_get SKILL_FOUND <<<"$conf")" = no ] && skill="$skill (not found)"
             model=$(kv_get MODEL <<<"$conf"); route=$(kv_get ROUTE <<<"$conf")
@@ -497,7 +497,7 @@ cmd_list_md() {
             elif [ -z "$model" ]; then model='not in conf'; fi
             [ -n "$route" ] && model="$model via $route"
             printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
-                "${role:--}" "$(kv_get PRIORITY <<<"$conf" | sed 's/^$/-/')" "${skill:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
+                "${role:--}" "${priority:--}" "${skill:--}" "$model" "$effect" "$(kv_get DESCRIPTION <<<"$conf" | sed 's/|/\\|/g')"
         done
     done
     [ "${#invalid[@]}" -eq 0 ] || printf '\nInvalid (see `agentctl list`): %s\n' "${invalid[*]}"
