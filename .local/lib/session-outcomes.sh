@@ -328,8 +328,9 @@ so_forgejo_pr() {
 # so pr-ci.sh CI_JQ reads them unchanged: a Forgejo status is pending, success, warning, error or
 # failure, and warning is a pass (Forgejo's combined state does not fail on it). After so_forgejo_auth.
 so_forgejo_checks() {
-  so_forgejo_get "$1" "commits/$2/status" |
-    jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end)}]'
+  local st
+  st="$(so_forgejo_get "$1" "commits/$2/status")" || return 1
+  jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end)}]' <<<"$st"
 }
 
 # so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of the checkout's first remote on a host so_forgejo_hosts

@@ -2151,12 +2151,15 @@ PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"), 
 # prints it; fails when its forge cannot be read. A checkout whose canonical forge is Forgejo
 # (forge_canonical; home-config) is read from that forge's API in gh's shape (so_forgejo_pr,
 # so_forgejo_checks): gh sees only its GitHub mirror, which has no PRs, and fix-traefik's reap logged
-# "could not read" on every pass for two days (270 lines, 2026-11-08 to 11-10). Else gh reads the repo
-# the ref names, or a bare number from the checkout.
+# "could not read" on every pass for two days (270 lines, 2026-11-08 to 11-10). There <fields> is
+# fixed: <jq> sees only what so_forgejo_pr gives plus statusCheckRollup. The PR is the number on the
+# checkout's own Forgejo remote: the ref names the GitHub mirror, whose owner may differ. Else gh reads
+# the repo the ref names, or a bare number from the checkout.
 pr_view() {
   local n=${1##*#} repo pr ci
   if forge_canonical "$2"; then
-    repo=$(so_forgejo_repo "$2") && pr=$(so_forgejo_pr "$repo" "$n" 2>/dev/null) &&
+    # Authed in this shell, so the token is read once and both reads below carry it (each $(...) is a subshell).
+    repo=$(so_forgejo_repo "$2") && so_forgejo_auth "$repo" && pr=$(so_forgejo_pr "$repo" "$n" 2>/dev/null) &&
       ci=$(so_forgejo_checks "$repo" "$(jq -r .headRefOid <<<"$pr")" 2>/dev/null) || return 1
     jq -r --argjson ci "$ci" ".statusCheckRollup = \$ci | $4" <<<"$pr"
   elif [[ "$1" == */*#* ]]; then gh pr view "$n" -R "${1%#*}" --json "$3" -q "$4" 2>/dev/null
@@ -2178,7 +2181,7 @@ item_pr_state() {
 
 # land_orphan <slug> -- a started row whose item ended ok before its PR merged (closed by hand
 # before agent-queue refused that): the row goes by that PR, not by the orphan timer. A merged:
-# commit, or a PR gh reads as MERGED (then recorded), goes to close_row; OPEN leaves it started for the
+# commit, or a PR its forge reads as MERGED (item_pr_state, then recorded), goes to close_row; OPEN leaves it started for the
 # merge. Returns 1 when no PR holds the row, so the timer decides: no PR, closed unmerged, or unreadable.
 land_orphan() {
   local it oid info state
@@ -2340,7 +2343,7 @@ settle_item() {
   if [ -n "$pr" ]; then
     case "$state" in
     MERGED)
-      [ -n "$oid" ] || { logline "reaped $2: queue item $1 left: PR $pr merged with no merge commit gh could read"; return 0; }
+      [ -n "$oid" ] || { logline "reaped $2: queue item $1 left: PR $pr merged with no merge commit its forge could read"; return 0; }
       agent-queue set "$1" "merged=$oid" >/dev/null || return 0
       agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
       logline "reaped $2: session gone, queue item $1 done, PR $pr merged"

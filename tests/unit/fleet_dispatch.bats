@@ -4477,7 +4477,7 @@ fj_item() {
   export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test
   printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
   stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
-  stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"
+  stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"; printf "%s %s\n" "$url" "$(cat)" >> "$NOTES_FIXTURE/fj.auth"
 case "$url" in */pulls/12) cat "$NOTES_FIXTURE/fj.pr" ;; */commits/*/status) cat "$NOTES_FIXTURE/fj.status" ;; *) exit 22 ;; esac'
   fj_pr "$1" "${3:-}"
   jq -cn --arg s "$2" '{state: $s, statuses: [{status: $s}, {status: "success"}]}' > "$NOTES_FIXTURE/fj.status"
@@ -4504,6 +4504,12 @@ fj_pr() {
   grep -qx 'https://git.example.test/api/v1/repos/o/game/pulls/12' "$NOTES_FIXTURE/fj.urls" || fail "Forgejo not asked"
   run grep -c sekret-token "$NOTES_FIXTURE/fj.urls"
   assert_output 0
+  # every read, the checks too, carries the token on stdin, and rbw is asked once
+  run grep -vc 'header = "Authorization: token sekret-token"' "$NOTES_FIXTURE/fj.auth"
+  assert_output 0
+  grep -q '/commits/1111111111111111111111111111111111111111/status' "$NOTES_FIXTURE/fj.auth" || fail "checks not read"
+  run grep -c 'rbw get forgejo_repo_admin' "$RBW_FIXTURE/calls.log"
+  assert_output 1
 }
 
 @test "reap: a Forgejo PR open parks its item in review, then its red check gets a fix-ci owner; closed fails it" {
