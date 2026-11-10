@@ -466,6 +466,17 @@ ptask game --agent tag --add plan ga-7'
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
 }
 
+@test "verdicts: the latest verdict per row, plan true on a skip by a DISPATCH_PLAN_RULES rule (fleet-bench next_up_blocked)" {
+  plan_fixture
+  run cmd_verdicts
+  assert_success
+  assert_equal "$(jq -r 'select(.plan) | .key' <<<"$output" | sort | paste -sd,)" 'ga-1,ga-3,ga-5,ga-7,gh-1'
+  # negative controls: a design skip and a dispatch are no split's to make
+  assert_equal "$(jq -r 'select(.plan | not) | .key' <<<"$output" | sort | paste -sd,)" 'ga-2,ga-4'
+  DISPATCH_PLAN_RULES=bundle run cmd_verdicts
+  assert_equal "$(jq -r 'select(.plan) | .key' <<<"$output" | paste -sd,)" 'ga-7'
+}
+
 @test "plan_skips: a too-big skip queues one split per row: a second pass, a planned row and a stale verdict queue none" {
   printf '%s\n' '- (too-big) an L row' >> "$DISPATCH_POLICY"
   project game beta "$SANDBOX/repos/game"

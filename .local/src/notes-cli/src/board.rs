@@ -651,6 +651,9 @@ struct FeedProject {
     playtest_open: usize,
     /// Lines waiting in the sheet's `## Inbox` for the triager.
     inbox: usize,
+    /// Closed rows past the Done window on both sheets, which the next sweep rolls off:
+    /// `fleet-bench chain`'s `done_inline_old`.
+    done_old: usize,
     /// The profile's `automation` key (see [`FeedRow::automation`]).
     automation: bool,
 }
@@ -778,6 +781,7 @@ fn feed_for_dir(
     let mut version = None;
     let mut counts = [0usize; 3];
     let mut inbox = 0;
+    let mut done_old = 0;
     for (i, (lane, name)) in [(Lane::Human, "human"), (Lane::Agent, "agent")]
         .into_iter()
         .enumerate()
@@ -790,6 +794,7 @@ fn feed_for_dir(
             inbox = w.inbox;
         }
         counts[i] = w.rows.len();
+        done_old += w.done_old;
         let o = Origin {
             profile,
             project: Some(project),
@@ -828,6 +833,7 @@ fn feed_for_dir(
         agent_open: counts[1],
         playtest_open: counts[2],
         inbox,
+        done_old,
         automation: true,
     };
     (proj, rows)
@@ -1262,6 +1268,31 @@ mod tests {
         let rows = agent_rows_for_dir("d", &dir);
         assert_eq!(rows, vec!["d\ta thing".to_string()]);
         assert_eq!(rows[0].split('\t').count(), 2, "{rows:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // done_old is the sweep's own roll-off rule read without a write: a row closed inside the
+    // window stays, one closed past it, or with no `done:` date, counts on either sheet.
+    #[test]
+    fn the_feed_counts_the_done_rows_the_next_sweep_rolls_off() {
+        let now = chrono::Local::now().date_naive().format("%Y-%m-%d");
+        let dir = sheet(
+            "feed-done-old",
+            &format!(
+                "# demo\nVersion: v0.3.0\n\n## Tasks\n- [ ] open one\n\n### Done\n\
+                 - [x] closed today <!-- done:{now} -->\n- [x] closed long ago <!-- done:2020-01-01 -->\n"
+            ),
+        );
+        write_agent_sheet(
+            &dir,
+            "# demo - agent board\nVersion: v0.3.0\n\n## Tasks\n- [x] undated close\n",
+        );
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        let (proj, _) = feed_for_dir("bnb", "demo", &dir, today);
+        assert_eq!(
+            proj.done_old, 2,
+            "the 2020 row and the undated one, not today's"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
