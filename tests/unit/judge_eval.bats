@@ -194,6 +194,26 @@ ask_fixture() {
   assert_line '[["row three","failed"],["row two","done/failed"]]'
 }
 
+@test "dispatch-judge: an unrated end, or a failed line a later cleared released, is not wrong" {
+  local at; at="$(date -Iseconds)"
+  v() { jq -cn --arg v "$1" --arg k "$2" --arg at "${3:-$at}" '{verdict: $v, project: "p", key: $k, at: $at, rule: "fits", judge_call: "d1"}'; }
+  {
+    v dispatch 'row one'; v dispatch 'row two'; v dispatch 'row three'
+    v failed 'row two' "$(date -d '+1 min' -Iseconds)"; v cleared 'row two' "$(date -d '+2 min' -Iseconds)"
+  } > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  {
+    echo '{"from":"board:p:row one","state":"done","status":"failed","end_reason":"limit"}'
+    echo '{"from":"board:p:row two","state":"queued","status":""}'
+    echo '{"from":"board:p:row three","state":"done","status":"failed","end_reason":"timeout"}'
+  } > "$QUEUE"
+  run "$JUDGE_EVAL" dispatch-judge --json
+  assert_success
+  run jq -c '.agents[0] | [.total | .tp, .fp, .pending], (.misses | map([.id, .answer]) | sort)' <<<"$output"
+  # negative control: row three's timeout is the model's, so it stays wrong
+  assert_line '[0,1,2]'
+  assert_line '[["row three","done/failed"]]'
+}
+
 @test "kpi --json: the five fleet-bench KPIs over 7 and 28 days, every prompt" {
   ask_fixture
   printf '{"verdict":"error","project":"p","key":"k","at":"%s"}\n' "$(date -Iseconds)" > "$FLEET_DISPATCH_DIR/verdicts.jsonl"

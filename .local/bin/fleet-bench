@@ -313,8 +313,9 @@ def round2: . * 100 | round / 100;
 def ownerless: select((.state == "running" or .state == "review" or .state == "waiting") and (.session // "") == "" and (.sessions // "") == "");
 def ep: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | fromdateiso8601? // null) end;   # a queue or gh time
 def tagged($t): (" " + (.tags // "") + " ") | contains(" \($t) ");
-# An end that says nothing about the model (UNRATED_ENDS in agent-queue) is no evidence for or against it.
-def unrated: (.end_reason // "") | IN("refused", "limit", "provider", "cut");
+# An end that says nothing about the model is no evidence for or against it: agent-queue owns the list.
+def unrated: (.end_reason // "") | IN('"$("$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-queue" unrated | jq -Rsc 'split("
+") | map(select(length > 0))')"'[]);
 def hold_key: "fix(hold): \(.name) went red";
 # an epic (notes projects rollup) whose every leaf has closed: ready to verify
 def leaves_landed: .open == 0 and .done > 0;

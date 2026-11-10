@@ -1389,6 +1389,51 @@ game_ready() {
   refute_output --partial 'un-started'
 }
 
+@test "a board item that ends on a usage limit hands its row back recorded cleared, and the row is not held" {
+  game_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
+  grep -qF -- '- [/] fix crash on load' "$NOTES_FIXTURE/rows.game.human" || fail "row not started"
+  agent-queue move gm-1 done --status failed --end limit
+  run cmd_reap
+  assert_success
+  assert_output --partial 'un-started game: gm-1'
+  grep -qF -- '- [ ] fix crash on load' "$NOTES_FIXTURE/rows.game.human" || fail "row not un-started"
+  assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r '"\(.verdict) \(.reason)"')" 'cleared queue item ended failed (end_reason: limit)'
+  # its dispatch verdict still names the line it judged; no failed hold ("*") is left on the key
+  assert_equal "$(judged_keys | awk -F'\t' '$4 == "*"')" ''
+  # the started row now carries its id, so it goes back to the judge as a candidate
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
+  assert_output --partial 'unjudged  game (beta) human: gm-1'
+}
+
+@test "a row whose failed hold a later cleared releases is picked again on its dispatch verdict" {
+  game_ready
+  f() { jq -cn --arg v "$1" '{project: "game", lane: "human", key: "fix crash on load", verdict: $v, reason: "t", at: "2026-11-10T00:00:00Z"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  f failed
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
+  refute_output --partial 'ready'   # negative control: a failed hold keeps it
+  f cleared
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
+  assert_output --partial 'ready'
+}
+
+@test "agent-queue unrated: the ends that say nothing about the model, one list for every reader" {
+  run agent-queue unrated limit
+  assert_success
+  run agent-queue unrated timeout   # negative control: a timeout rates the model
+  assert_failure
+  assert_equal "$(agent-queue unrated | paste -sd' ')" 'refused limit provider cut'
+}
+
+@test "judged_keys: of a row's failed and cleared verdicts the newest wins" {
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  v() { jq -cn --arg k "$1" --arg v "$2" '{project: "game", lane: "human", key: $k, verdict: $v, reason: "t", at: "2026-11-10T00:00:00Z"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
+  v a failed; v a cleared       # released
+  v b cleared; v b failed       # a real failure after a release holds again
+  v c failed                    # negative control: a plain failed end still holds
+  assert_equal "$(judged_keys | cut -f3,4 | paste -sd' ')" "$(printf 'b\t* c\t*')"
+}
+
 @test "run claims a row at the top of a board too big for one pipe buffer" {
   game_ready
   # A real board: grep -q stops at the first line while notes is still writing the rest.

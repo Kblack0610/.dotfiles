@@ -907,13 +907,17 @@ row_priority() {
 # judged_keys -> "<project>\t<lane>\t<key>\t<line sig>\t<details sig>" for each verdict in force: made
 # under the current policy, or a dispatch or skip whose rule the policy still has (policy_sig),
 # checked against the row by held. A `failed` record holds for the key whatever
-# changed ("*"), so a row whose session died is not picked again on its own; a verdict with no dsig
-# holds whatever the details (ROW_JQ holds). An `error` holds nothing: the row is judged again.
+# changed ("*"), so a row whose session died is not picked again on its own, until a later `cleared`
+# for the same key releases it: of a key's failed and cleared records the newest wins. A verdict with
+# no dsig holds whatever the details (ROW_JQ holds). An `error` or `cleared` holds nothing.
 judged_keys() {
   [ -f "$VERDICTS" ] || return 0
-  jq -r --arg sig "$(policy_sig)" --argjson rules "$(policy_rules)" "$ROW_JQ"'
-    if .verdict == "failed" then [.project, .lane, .key, "*", "*"]
-    elif .verdict == "error" then empty
+  jq -rs --arg sig "$(policy_sig)" --argjson rules "$(policy_rules)" "$ROW_JQ"'
+    def k: "\(.project)\u001f\(.lane)\u001f\(.key)";
+    (reduce (.[] | select(.verdict == "failed" or .verdict == "cleared")) as $v ({}; .[$v | k] = $v.verdict)) as $last
+    | .[]
+    | if .verdict == "failed" then (if $last[k] == "failed" then [.project, .lane, .key, "*", "*"] else empty end)
+    elif .verdict == "error" or .verdict == "cleared" then empty
     elif .policy == $sig or usable($rules) then [.project, .lane, .key, (.line // ""), (.dsig // "*")]
     else empty end | @tsv' "$VERDICTS" 2>/dev/null
 }
@@ -1203,10 +1207,15 @@ candidates_drop() {
 
 # latest verdict per row, as JSON lines. An `error` record does not replace an earlier verdict: a call
 # that failed or named no rule says nothing about the row, so its stale-but-usable verdict stays
-# and the row is judged again (judged_keys reads the file itself and skips errors).
+# and the row is judged again (judged_keys reads the file itself and skips errors). A `cleared`
+# record says nothing about the row either; it releases the `failed` records before it, so the
+# row's judged verdict stands again (judged_keys: the newest of failed and cleared wins).
 latest_verdicts() {
   [ -f "$VERDICTS" ] || return 0
-  jq -sc 'group_by([.project, .lane, .key]) | map((map(select(.verdict != "error")) | last) // last) | .[]' "$VERDICTS" 2>/dev/null
+  jq -sc 'group_by([.project, .lane, .key]) | map(
+      (map(select(.verdict == "failed" or .verdict == "cleared")) | last | .verdict) as $fc
+      | (map(select(.verdict != "error" and .verdict != "cleared" and (.verdict != "failed" or $fc == "failed"))) | last) // last
+    ) | .[]' "$VERDICTS" 2>/dev/null
 }
 
 # picks <candidates> <room> -> the rows to launch: the row's latest verdict is a dispatch made
@@ -2035,7 +2044,9 @@ close_row() {
 
 # settle_row <slug> -- an item with a row that ended failed or cancelled hands it back: un-start it
 # and record `failed`, so it is not promoted again until its text
-# changes. Idempotent: a row no longer started is left alone (done by its session, or settled).
+# changes. A run that ended for a cause outside the model (`agent-queue unrated`: a usage limit, a
+# provider fault, a refusal, a cut) records `cleared` instead: nothing about the row failed, so it
+# stays a candidate. Idempotent: a row no longer started is left alone (done by its session, or settled).
 settle_row() {
   local it row prof project lane key flag=()
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
@@ -2046,8 +2057,11 @@ settle_row() {
   [ "$lane" = agent ] && flag=(--agent)
   [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || return 0
   np "$prof" ptask "$project" "${flag[@]}" unstart "$key" >/dev/null 2>&1
+  local end v=failed; end=$(jq -r '.end_reason // ""' <<<"$it")
+  [ -z "$end" ] || ! agent-queue unrated "$end" || v=cleared
   jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" --arg st "$(jq -r .status <<<"$it")" \
-    '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "queue item ended \($st)", at: $at}' >> "$VERDICTS"
+    --arg v "$v" --arg e "$end" \
+    '{project: $p, lane: $l, key: $k, verdict: $v, reason: "queue item ended \($st)\(if $e != "" then " (end_reason: \($e))" else "" end)", at: $at}' >> "$VERDICTS"
   logline "settled queue item $1: $project $lane row un-started: $key"
   dispatch_event settled "$project" "row un-started: item ended $(jq -r .status <<<"$it")" --item "$1" --id "$key"
   echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it"))"
