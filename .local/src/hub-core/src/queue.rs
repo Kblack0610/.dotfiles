@@ -299,6 +299,45 @@ impl Item {
         }
     }
 
+    /// The plan file and phase numbers (`4 5`) of an item `agent-queue add --plan` queued.
+    pub fn plan(&self) -> Option<(&str, &str)> {
+        Some((self.extra_str("plan")?, self.extra_str("phases")?))
+    }
+
+    /// `<plan name> P5: <phase words>`, a plan item's title as the Log's Work row says it: the
+    /// plan by its heading (`plans::name`) in place of the file name `agent-queue add --plan`
+    /// titles it with. A one-phase item takes the label its words lead with (`P9 live stage`)
+    /// over its checklist place. An item with no `plan:` whose title has that shape (one
+    /// promoted from a board row) is named the same way when its plan file exists. None for
+    /// any other item.
+    pub fn plan_title(&self, names: &mut crate::plans::Names) -> Option<String> {
+        use crate::plans::{base, legacy, own_label, path};
+        let title = self.title.trim();
+        let (plan, tag, words, one) = match (self.plan(), legacy(title)) {
+            (Some((plan, phases)), old) => {
+                let words = old
+                    .filter(|(b, ..)| *b == base(plan))
+                    .map_or(title, |(.., w)| w);
+                let phases: Vec<&str> = phases.split_whitespace().collect();
+                let tag = format!("P{}", phases.join("+"));
+                (plan.to_string(), tag, words, phases.len() == 1)
+            }
+            (None, Some((b, tag, words))) if std::path::Path::new(&path(b)).is_file() => {
+                (path(b), tag.to_string(), words, !tag.contains('+'))
+            }
+            _ => return None,
+        };
+        let (label, words) = one
+            .then(|| own_label(words))
+            .flatten()
+            .unwrap_or((tag, words));
+        Some(format!(
+            "{} {label}: {}",
+            names.get(&plan),
+            cap(words, TITLE_MAX)
+        ))
+    }
+
     /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
     /// (a clock step, a re-run predecessor) counts 0, never a negative span.
     pub fn timing(&self, now: chrono::DateTime<chrono::Utc>) -> Timing {
