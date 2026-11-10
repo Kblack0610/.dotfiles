@@ -723,8 +723,15 @@ STUB
   assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00; alt is within its weekly pace but its 13 live sessions use the rest of its week before the reset, runs out Tue 02:48 at this rate'
   # an account over its pace is not named again: the closest already says what pace refuses
   rm -rf "${CLAUDE_ACCT_PROC:?}"/*
+  # its 5h window alone: named, with no week clock, which is not what refuses it
+  week alt 15 104
+  printf '%s' "$(jq -c '.five_hour = {utilization: 97}' "$XDG_CACHE_HOME/claude-acct/alt.json")" > "$XDG_CACHE_HOME/claude-acct/alt.json"
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00; alt is within its weekly pace but its 5h window at 97%'
   week alt 80 104
   run --separate-stderr "$ACCT" room
+  assert_failure 1
   assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00'
 }
 

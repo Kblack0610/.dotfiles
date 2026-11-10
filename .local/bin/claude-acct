@@ -887,11 +887,11 @@ cmd_room() {
     rows=$(jq '[.[] | select(.kind == "claude")]' <<< "$all")
     # One read: the best account with room, whether one is unread, and the account a refused start
     # would fall back to (pick's best) with its own why and clock (tail: the RUNS-OUT or RESETS column
-    # of status, from the same row). \x1f, not a tab: read collapses
-    # a run of tabs, so an empty field would shift the rest. `within` names every other account
-    # refused while within its weekly pace (its live sessions, its 5h window or max_live alone): the
-    # closest is ranked first and a committed account ranks behind every paced one, so at 01:24
-    # 2026-11-10 the line named bnb over its pace and never said why max4, 17% used, was refused.
+    # of status, from the same row). `within` adds, in rank order, every other account refused while
+    # within its weekly pace (its live sessions, 5h window or max_live alone): a committed account
+    # ranks behind every paced one, so naming the closest alone hid why a mostly unused week was
+    # refused. Only a committed one carries the week clock, which is what refuses it. \x1f, not a
+    # tab: read collapses a run of tabs, so an empty field would shift the rest.
     IFS=$'\x1f' read -r pick pdir pline unread closest cwhy within < <(jq -r '
         def tail: if .run_out != null then ", runs out \(.run_out | strflocaltime("%a %H:%M")) at this rate"
                   elif .resets != null then ", lasts to its reset \(.resets | strflocaltime("%a %H:%M"))" else "" end;
@@ -901,8 +901,10 @@ cmd_room() {
            ($p // {} | "\(.name) (\(.week_used // "?")% of its week, \(.week_gone // "?" | if type == "number" then floor else . end)% gone)"),
            any(.[]; .state == "unread"), ($c.name // ""), ($c // {} | if .room == null then "" else .room.why + tail end),
            ([.[] | select(.state != "unread" and .name != $c.name and (.room.ok | not)
-                          and (.room.reasons - ["committed", "five_hour", "max_live"]) == [])
-             | "; \(.name) is within its weekly pace but \(.room.why)\(tail)"] | join(""))]
+                          and (.room.reasons - ["committed", "five_hour", "max_live"]) == [])]
+            | sort_by(.rank)
+            | map("; \(.name) is within its weekly pace but \(.room.why)\(if .room.reason == "committed" then tail else "" end)")
+            | join(""))]
         | map(tostring) | join("\u001f")' <<< "$rows")
     if [[ -n "$pick" ]]; then :
     elif [[ "$unread" == true ]]; then why="no account has room and one cannot be read"
