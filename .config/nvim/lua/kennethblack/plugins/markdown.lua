@@ -602,7 +602,10 @@ return {
       -- as a day is a daily note: any other doc can have a `## Focus` heading over prose. One
       -- dispatcher so the keymaps and the save hook cannot disagree about which sweep a buffer gets.
       local function sweep_buffer(lines, inherit)
-        if find_heading(lines, TASKS_PAT) and find_heading(lines, "^##%s+Inbox%s*$") then
+        -- A project's playtest.md has the same one writer: `notes sheet-sweep` groups its checks
+        -- by PR and dates a box ticked here, so it keeps the Done window.
+        local is_playtest = vim.api.nvim_buf_get_name(0):match "/playtest%.md$"
+        if is_playtest or (find_heading(lines, TASKS_PAT) and find_heading(lines, "^##%s+Inbox%s*$")) then
           return sweep_tasks(lines, inherit)
         end
         local daily = require("notes.datetag").note_date(vim.api.nvim_buf_get_name(0))

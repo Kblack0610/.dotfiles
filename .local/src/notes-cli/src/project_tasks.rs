@@ -406,7 +406,7 @@ pub fn add(
 /// [`add`] with the systems command named (a test points it at a stub), or None once the row
 /// has its link, so the second pass never looks it up again.
 #[allow(clippy::too_many_arguments)]
-fn add_via(
+pub(crate) fn add_via(
     p: &Profile,
     log: &Logger,
     name: &str,
@@ -2069,6 +2069,9 @@ pub fn sheet_sweep(path: &Path, stdin: bool, layout_only: bool, dry_run: bool) -
     } else {
         fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?
     };
+    if is_playtest_path(path) {
+        return crate::playtest::sheet_sweep(path, &content, stdin, layout_only, dry_run);
+    }
     if !is_sheet_path(path) || !crate::config::managed_path(path) {
         if stdin {
             print!("{content}");
@@ -2115,6 +2118,21 @@ pub fn sweep_all(log: &Logger, dry_run: bool) -> Result<i32> {
             let Some(dir) = summary.parent() else {
                 continue;
             };
+            match sweep_playtest(dir, dry_run) {
+                Ok(None) => {}
+                Ok(Some((file, report, n))) => {
+                    println!("{}", file.display());
+                    for r in &report {
+                        println!("  {r}");
+                    }
+                    changed += 1;
+                    archived += n;
+                }
+                Err(e) => {
+                    eprintln!("{}: {e:#}", crate::playtest::path(dir).display());
+                    failed += 1;
+                }
+            }
             let sheets = [task_sheet(dir), task_sheet(&dir.join("agent"))];
             for sheet in sheets.into_iter().flatten() {
                 match sweep_one(&sheet, dry_run) {
@@ -2151,6 +2169,27 @@ pub fn sweep_all(log: &Logger, dry_run: bool) -> Result<i32> {
     Ok(0)
 }
 
+/// Sweep `dir`'s playtest.md in place (unless `dry_run`): the file, its report and how many
+/// ticked checks rolled off; `None` when it has none or nothing changed.
+fn sweep_playtest(dir: &Path, dry_run: bool) -> Result<Option<(PathBuf, Vec<String>, usize)>> {
+    let file = crate::playtest::path(dir);
+    let Ok(content) = fs::read_to_string(&file) else {
+        return Ok(None);
+    };
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let Some(laid) = crate::playtest::tidy(dir, &name, &content, dry_run)? else {
+        return Ok(None);
+    };
+    if !dry_run {
+        md::write_atomic(&file, &laid.content)?;
+    }
+    let n = laid.old.iter().map(|(_, r)| r.len()).sum();
+    Ok(Some((file, crate::playtest::report(dir, &laid), n)))
+}
+
 /// Sweep the sheet at `sheet` in place (unless `dry_run`): what it did, `None` for nothing.
 fn sweep_one(sheet: &Path, dry_run: bool) -> Result<Option<Tidied>> {
     let content = fs::read_to_string(sheet).with_context(|| format!("read {}", sheet.display()))?;
@@ -2169,6 +2208,16 @@ fn is_sheet_path(path: &Path) -> bool {
         .file_name()
         .is_some_and(|n| n == "README.md" || n == "tasks.md");
     named
+        && !path
+            .parent()
+            .into_iter()
+            .flat_map(Path::components)
+            .any(|c| c.as_os_str() == "versions" || c.as_os_str() == "docs")
+}
+
+/// A project's `playtest.md`, outside `versions/` and `docs/` as [`is_sheet_path`] holds a sheet.
+fn is_playtest_path(path: &Path) -> bool {
+    path.file_name().is_some_and(|n| n == "playtest.md")
         && !path
             .parent()
             .into_iter()
@@ -2472,8 +2521,29 @@ fn archive_rows(
     ranges: &[std::ops::Range<usize>],
     section: &str,
 ) -> Result<String> {
-    let ver = projects::version_or_default(cur);
     let lines: Vec<&str> = content.lines().collect();
+    let blocks: Vec<Vec<String>> = ranges
+        .iter()
+        .map(|r| lines[r.clone()].iter().map(|l| (*l).to_string()).collect())
+        .collect();
+    archive_blocks(dir, name, cur, section, &blocks)?;
+    Ok(cut_rows(content, ranges))
+}
+
+/// Append closed row `blocks` (each a row and the lines indented under it) to `## <section>` of
+/// the version note for `cur`, creating the note as needed. The one writer of rolled-off rows,
+/// for the sheets and `playtest.md` alike.
+pub(crate) fn archive_blocks(
+    dir: &Path,
+    name: &str,
+    cur: Option<V>,
+    section: &str,
+    blocks: &[Vec<String>],
+) -> Result<()> {
+    if blocks.is_empty() {
+        return Ok(());
+    }
+    let ver = projects::version_or_default(cur);
     let note = projects::ensure_agent_note(dir, name, &ver)?;
     let prior = fs::read_to_string(&note)?;
     // A row already in the note is not written twice: an editor buffer undone past its save,
@@ -2488,15 +2558,16 @@ fn archive_rows(
                 .collect()
         })
         .unwrap_or_default();
-    let rows: Vec<String> = ranges
+    let rows: Vec<String> = blocks
         .iter()
-        .filter(|r| md::row_id(lines[r.start]).is_none_or(|id| !have.contains(&id)))
-        .flat_map(|r| lines[r.clone()].iter().map(|l| (*l).to_string()))
+        .filter(|b| md::row_id(&b[0]).is_none_or(|id| !have.contains(&id)))
+        .flatten()
+        .cloned()
         .collect();
     if !rows.is_empty() {
         md::write_atomic(&note, &append_done_rows(&prior, section, &rows))?;
     }
-    Ok(cut_rows(content, ranges))
+    Ok(())
 }
 
 /// `content` without the lines at `ranges`.

@@ -322,11 +322,23 @@ pub(crate) fn old_done(content: &str, ctx: &Ctx) -> Vec<std::ops::Range<usize>> 
 /// editor, which no CLI verb dated. A close already undated in the saved file is an old one,
 /// not this edit's, and keeps its bytes (the sweep rolls it off as undated).
 pub(crate) fn stamp_undated(content: &str, saved: &str, today: NaiveDate) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    match md::section_span(&lines, sheet::TASKS) {
+        Some(span) => stamp_undated_in(content, saved, today, span),
+        None => content.to_string(),
+    }
+}
+
+/// [`stamp_undated`] over the lines in `span` (0-based), for a file whose rows are not under
+/// `## Tasks` (`playtest.md`).
+pub(crate) fn stamp_undated_in(
+    content: &str,
+    saved: &str,
+    today: NaiveDate,
+    span: std::ops::Range<usize>,
+) -> String {
     let before: std::collections::HashSet<&str> = saved.lines().map(str::trim_end).collect();
     let lines: Vec<&str> = content.lines().collect();
-    let Some(span) = md::section_span(&lines, sheet::TASKS) else {
-        return content.to_string();
-    };
     let token = crate::project_tasks::done_token(today);
     let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
     for r in crate::project_tasks::done_rows(content) {
