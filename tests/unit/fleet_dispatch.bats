@@ -1088,7 +1088,7 @@ kinds_match() {
   it='{"slug": "rel", "mode": "oneshot", "project": "game", "title": "release(steam): cut all 3pm, upload beta", "task": "release(steam): cut all 3pm, upload beta", "row": "game:ar-7", "lane": "agent"}'
   run item_brief "$it"
   assert_line --index 0 '/release release(steam): cut all 3pm, upload beta'
-  assert_output --partial 'a release row: it ends on the live proof its skill names, never a PR or agent-land'
+  assert_output --partial 'a release row: it ends on live proof, never a PR or agent-land'
   assert_output --partial 'agent-queue set rel note="<proof>"; notes ptask game --agent done "ar-7" --proof "<proof>"; agent-queue move rel done --status ok'
   assert_output --partial 'If a step needs a decision from the human'
   refute_output --partial 'Merge with agent-land'
@@ -3114,6 +3114,85 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   run reconcile_plans
   assert_success
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+}
+
+# epics_fixture <json> -- what `notes projects --stats --json` prints: the stateful notes stub answers
+# every other call.
+epics_fixture() {
+  [ -f "$SANDBOX/bin/notes.rows" ] || mv "$SANDBOX/bin/notes" "$SANDBOX/bin/notes.rows"
+  printf '%s\n' "$1" > "$NOTES_FIXTURE/stats.json"
+  stub notes '[[ " $* " == *" projects --stats --json "* ]] && { cat "$NOTES_FIXTURE/stats.json"; exit 0; }; exec notes.rows "$@"'
+}
+
+@test "reap queues one verify item per epic whose leaves have all landed, once per landing round" {
+  project game beta "$SANDBOX/repos/game"
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [
+      {"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 3},
+      {"id": "gm-6", "title": "still building", "system": "ui", "open": 1, "done": 2},
+      {"id": "gm-7", "title": "childless", "system": "", "open": 0, "done": 0}]},
+    {"name": "game", "profile": "work", "automation": false, "epics": [{"id": "gm-8", "title": "off", "open": 0, "done": 1}]}]'
+  run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-3'
+  it=$(agent-queue show verify-gm-5-3 --json)
+  assert_equal "$(jq -r '[.title, .tags, .from, .priority, .project] | join("|")' <<<"$it")" 'check(epics): verify gm-5 ranked matches|verify|auto:epics|high|game'
+  run jq -r .task <<<"$it"
+  assert_output --partial 'Verify epic gm-5 on game: "ranked matches".'
+  assert_output --partial 'notes --profile bnb ptask game done gm-5 --proof "<evidence>"'
+  assert_output --partial 'post one agent-ask'
+  # once: the next pass, and one after the item was cancelled, add nothing
+  reconcile_epics
+  agent-queue cancel verify-gm-5-3 >/dev/null
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  # a gap row landing raises the done count: the next round gets its own check
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 4}]}]'
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-4'
+}
+
+@test "reap queues no verify item when it is off or the epics or the queue cannot be read" {
+  project game beta "$SANDBOX/repos/game"
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "open": 0, "done": 3}]}]'
+  DISPATCH_EPIC_VERIFY=0 run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  epics_fixture 'not json'
+  run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  # negative control: the same fixture readable queues it
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "open": 0, "done": 3}]}]'
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-3'
+}
+
+@test "item_brief: a verify item starts on its own task and closes on proof, never a PR, whatever its title parses as" {
+  project game beta "$SANDBOX/repos/game"
+  it='{"slug": "verify-gm-5-3", "mode": "oneshot", "project": "agent-runtime", "title": "check(ui): verify gm-5 ranked matches", "task": "Verify epic gm-5 on game.", "type": "check", "tags": "verify", "row": "game:gm-9", "lane": "agent"}'
+  run item_brief "$it"
+  assert_line --index 0 'Verify epic gm-5 on game.'
+  assert_output --partial 'a verify row: it ends on live proof, never a PR or agent-land'
+  assert_output --partial 'agent-queue set verify-gm-5-3 note="<proof>"; notes ptask game --agent done "gm-9" --proof "<proof>"; agent-queue move verify-gm-5-3 done --status ok'
+  refute_output --partial '/one-shot'
+  refute_output --partial 'red-fix gate'
+  refute_output --partial 'already opened'
+  echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
+  run item_brief "$it" opencode
+  assert_line --index 0 'Verify epic gm-5 on game.'
+  refute_output --partial 'SKILL.md'
+  # negative control: without the tag the same check item is a /one-shot that lands a PR
+  run item_brief "${it/\"tags\": \"verify\", /}"
+  assert_line --index 0 --partial '/one-shot'
+}
+
+@test "pr_line: an item with no PR names none, so its session is never told to check out PR null" {
+  run pr_line '{"slug": "a", "pr": null}'
+  assert_output ''
+  run pr_line '{"slug": "a"}'
+  assert_output ''
+  run pr_line '{"slug": "a", "pr": "o/game#12"}'
+  assert_output --partial 'already opened o/game#12'
 }
 
 @test "reap fails a board item whose session ended without closing it, un-starts its row, records failed" {
