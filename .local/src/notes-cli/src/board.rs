@@ -29,6 +29,7 @@ use crate::config::{self, Profile};
 use crate::daily;
 use crate::logging::Logger;
 use crate::md;
+use crate::project_sweep;
 use crate::project_tasks;
 use crate::sheet::{self, V};
 use anyhow::{Context, Result};
@@ -570,7 +571,8 @@ pub fn print_version(version: &str, projects: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-/// One open row of the task feed: `notes board --json`, the one shape every board UI reads.
+/// One row of the task feed: `notes board --json`, the one shape every board UI reads. Open
+/// rows are the feed's `rows`, closed ones its `done`.
 ///
 /// A VIEW over the sheets, never a store: each field is read off the line on each call, and
 /// `raw` is the line itself, which a UI hands back to `notes ptask --exact` to act on it.
@@ -618,6 +620,23 @@ struct FeedRow {
     /// The line carries no priority tag: `priority` is the rank's default, and
     /// `agentctl-inbox-triage --backlog --priority` gives it a real one.
     untriaged: bool,
+    /// The sheet section the sweep lays the row out in: `epics`, `now`, `next`, `backlog`, or
+    /// `done` for a closed row ([`project_sweep::section_of`]). `None` on a Focus or playtest
+    /// row, which no sheet section holds.
+    section: Option<&'static str>,
+    /// [`crate::rank`] as one number, smaller sooner: within a section, the sheet's order.
+    /// Comparable across sheets, so a reader sorts by it instead of deriving its own order.
+    rank: u64,
+    /// `#dueMMDD` as `YYYY-MM-DD`.
+    due: Option<String>,
+    /// The id the row's `#of/<id>` names: its epic or story.
+    parent: Option<String>,
+    /// The `#size/` weight ([`crate::epics::WEIGHTS`], 1 unsized): what a forecast sums.
+    weight: u32,
+    /// `done:YYYY-MM-DD`: the day a closed row closed. `None` on an open row.
+    closed: Option<String>,
+    /// The PRs the marker names (`pr:<n>`).
+    prs: Vec<String>,
 }
 
 /// One project in the feed, rows or not: a UI needs every project to offer `add` on it.
@@ -641,6 +660,9 @@ struct Feed {
     today: String,
     projects: Vec<FeedProject>,
     rows: Vec<FeedRow>,
+    /// Closed rows, newest first: each sheet's `### Done`, and with `--done-days N` the rows
+    /// rolled into `agent/versions/` too, closed in the last N days. Never dropped rows.
+    done: Vec<FeedRow>,
 }
 
 /// Where a feed row was read: everything about it that is not on the line.
@@ -651,6 +673,9 @@ struct Origin<'a> {
     version: Option<&'a str>,
     game: Option<&'a str>,
     sheet: &'a std::path::Path,
+    /// A project sheet's row, which the sweep lays out in a section; false for Focus and
+    /// playtest rows.
+    sheet_row: bool,
 }
 
 /// The feed row for one open task `line`. Priority is the line's tag, else the rank's default
@@ -699,7 +724,9 @@ fn feed_row(
         lane: o.lane,
         version: o.version.map(str::to_string),
         game: o.game.map(str::to_string),
-        state: if line.trim_start().starts_with("- [/]") {
+        state: if md::is_checked(line) {
+            "done"
+        } else if line.trim_start().starts_with("- [/]") {
             "doing"
         } else {
             "open"
@@ -723,6 +750,19 @@ fn feed_row(
         details,
         automation: true,
         untriaged: tagged.is_none(),
+        section: o.sheet_row.then(|| {
+            if md::is_checked(line) {
+                "done"
+            } else {
+                project_sweep::section_of(line).name()
+            }
+        }),
+        rank: crate::rank::of(line, today).key(),
+        due: md::find_due(line, today).map(|d| d.format("%Y-%m-%d").to_string()),
+        parent: crate::epics::parent_of(line),
+        weight: crate::projects::size_weight(line),
+        closed: project_tasks::done_on(line).map(|d| d.format("%Y-%m-%d").to_string()),
+        prs: md::pr_refs(line),
     }
 }
 
@@ -757,6 +797,7 @@ fn feed_for_dir(
             version: Some(&w.version),
             game: None,
             sheet: &w.sheet,
+            sheet_row: true,
         };
         for r in w.rows {
             rows.push(feed_row(&o, (r.line, &r.text), r.details, today));
@@ -773,6 +814,7 @@ fn feed_for_dir(
                 version: None,
                 game: Some(&game),
                 sheet: &file,
+                sheet_row: false,
             };
             rows.push(feed_row(&o, (n, l), Vec::new(), today));
         }
@@ -791,6 +833,94 @@ fn feed_for_dir(
     (proj, rows)
 }
 
+/// The closed rows of one project dir, both lanes, newest first: each sheet's `### Done` rows
+/// of the open version, and with `days`, also the rows rolled into `agent/versions/*.md`, all
+/// closed in the last `days` days. Dropped rows never: Done is finished work.
+fn done_for_dir(
+    profile: &str,
+    project: &str,
+    dir: &std::path::Path,
+    today: chrono::NaiveDate,
+    days: Option<i64>,
+) -> Vec<FeedRow> {
+    let recent = |line: &str| {
+        days.is_none_or(|n| {
+            project_tasks::done_on(line).is_some_and(|d| (0..n).contains(&(today - d).num_days()))
+        })
+    };
+    let mut out = Vec::new();
+    let mut take = |o: &Origin, content: &str, ranges: Vec<std::ops::Range<usize>>| {
+        let lines: Vec<&str> = content.lines().collect();
+        for r in ranges {
+            let line = lines[r.start];
+            if md::is_dropped(line) || !recent(line) {
+                continue;
+            }
+            let details = lines[r.start + 1..r.end]
+                .iter()
+                .map(|l| l.trim().to_string())
+                .collect();
+            out.push(feed_row(o, (r.start + 1, line), details, today));
+        }
+    };
+    for (lane, name) in [(Lane::Human, "human"), (Lane::Agent, "agent")] {
+        let ldir = lane.dir(dir);
+        let Some(path) = project_tasks::task_sheet(&ldir) else {
+            continue;
+        };
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let cur = project_tasks::open_version_for(&ldir);
+        let version = crate::projects::version_or_default(cur);
+        let o = Origin {
+            profile,
+            project: Some(project),
+            lane: name,
+            version: Some(&version),
+            game: None,
+            sheet: &path,
+            sheet_row: true,
+        };
+        take(&o, &content, project_tasks::done_rows_of(&content, cur));
+    }
+    let notes = days
+        .map(|_| crate::projects::version_notes(&crate::projects::agent_dir(dir).join("versions")))
+        .unwrap_or_default();
+    for (v, note) in notes {
+        let Ok(content) = fs::read_to_string(&note) else {
+            continue;
+        };
+        let version = Some(crate::projects::fmt_version(v));
+        let lines: Vec<&str> = content.lines().collect();
+        for lane in [Lane::Human, Lane::Agent] {
+            let Some(span) = md::section_span(&lines, project_tasks::archive_section(lane)) else {
+                continue;
+            };
+            let o = Origin {
+                profile,
+                project: Some(project),
+                lane: if lane == Lane::Human {
+                    "human"
+                } else {
+                    "agent"
+                },
+                version: version.as_deref(),
+                game: None,
+                sheet: &note,
+                sheet_row: true,
+            };
+            let ranges = project_tasks::done_rows(&content)
+                .into_iter()
+                .filter(|r| span.contains(&r.start))
+                .collect();
+            take(&o, &content, ranges);
+        }
+    }
+    out.sort_by_key(|r| std::cmp::Reverse(r.closed.clone()));
+    out
+}
+
 /// A profile's open Focus rows from today's daily note, lane `focus`, no project. Read-only
 /// here: `notes focus` stays their one writer.
 fn focus_rows(profile: &str, note: &std::path::Path, today: chrono::NaiveDate) -> Vec<FeedRow> {
@@ -804,6 +934,7 @@ fn focus_rows(profile: &str, note: &std::path::Path, today: chrono::NaiveDate) -
         version: None,
         game: None,
         sheet: note,
+        sheet_row: false,
     };
     crate::focus::open_focus_positions(&content)
         .into_iter()
@@ -816,12 +947,13 @@ fn focus_rows(profile: &str, note: &std::path::Path, today: chrono::NaiveDate) -
 ///
 /// READ-ONLY and exit 0 like `--agent`: the web and hub boards poll it. Every profile is
 /// listed in full whatever the board layout folds, because a UI filters for itself.
-pub fn print_json() -> Result<i32> {
+pub fn print_json(done_days: Option<i64>) -> Result<i32> {
     let today = Local::now().date_naive();
     let mut feed = Feed {
         today: today.format("%Y-%m-%d").to_string(),
         projects: Vec::new(),
         rows: Vec::new(),
+        done: Vec::new(),
     };
     let layout = config::board_layout().unwrap_or_default();
     for name in layout.sort(config::all_profile_names()?) {
@@ -836,12 +968,19 @@ pub fn print_json() -> Result<i32> {
                 continue;
             };
             let (mut fp, mut rows) = feed_for_dir(&name, &proj, dir, today);
+            let mut done = done_for_dir(&name, &proj, dir, today, done_days);
             fp.automation = automation;
-            rows.iter_mut().for_each(|r| r.automation = automation);
+            for r in rows.iter_mut().chain(done.iter_mut()) {
+                r.automation = automation;
+            }
             feed.projects.push(fp);
             feed.rows.extend(rows);
+            feed.done.extend(done);
         }
     }
+    // Newest close first across every project; equal days keep feed order.
+    feed.done
+        .sort_by_key(|r| std::cmp::Reverse(r.closed.clone()));
     println!("{}", serde_json::to_string(&feed)?);
     Ok(0)
 }
@@ -1232,9 +1371,106 @@ mod tests {
             "raw",
             "automation",
             "untriaged",
+            "section",
+            "rank",
+            "due",
+            "parent",
+            "weight",
+            "closed",
+            "prs",
         ] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The feed says where the sweep lays each row out and in what order, so a view groups and
+    // sorts by `section` and `rank` instead of deriving its own (plan phase 2).
+    #[test]
+    fn each_row_carries_its_sheet_section_rank_due_and_parent() {
+        let dir = sheet(
+            "feedsections",
+            "# demo\nVersion: v0.3.0\n\n## Tasks\n\
+             - [ ] epic(look): the look #high <!-- id:dm-1 -->\n\
+             - [/] running #high <!-- id:dm-2 run:1109 -->\n\
+             - [/] queued #low <!-- id:dm-3 -->\n\
+             - [ ] child #urgent #of/dm-1 #due1110 #size/m <!-- id:dm-4 -->\n\
+             - [ ] plain #low <!-- id:dm-5 -->\n",
+        );
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let (_, rows) = feed_for_dir("bnb", "demo", &dir, today);
+        let got: Vec<(Option<&str>, Option<&str>)> =
+            rows.iter().map(|r| (r.id.as_deref(), r.section)).collect();
+        assert_eq!(
+            got,
+            [
+                (Some("dm-1"), Some("epics")),
+                (Some("dm-2"), Some("now")),
+                (Some("dm-3"), Some("next")),
+                (Some("dm-4"), Some("backlog")),
+                (Some("dm-5"), Some("backlog")),
+            ]
+        );
+        let child = &rows[3];
+        assert_eq!(child.due.as_deref(), Some("2026-11-10"));
+        assert_eq!(child.parent.as_deref(), Some("dm-1"));
+        assert_eq!(child.weight, 3);
+        assert!(
+            child.rank < rows[4].rank,
+            "due tomorrow and #urgent rank ahead of a plain #low"
+        );
+        assert_eq!(child.rank, crate::rank::of(&child.raw, today).key());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Done lists finished work, newest first: the sheets' `### Done` by default, and with a
+    // window the rows rolled into `agent/versions/` too. A dropped row is not finished work.
+    #[test]
+    fn done_reads_the_sheets_and_with_a_window_the_rolled_rows() {
+        let dir = sheet(
+            "feeddone",
+            "# demo\nVersion: v0.3.0\n\n## Tasks\n- [ ] open\n\n---\n### Done\n\
+             - [x] shipped <!-- id:dm-1 done:2026-11-08 pr:63 -->\n\
+             - [x] gone <!-- id:dm-2 done:2026-11-08 dropped: no -->\n",
+        );
+        write_agent_sheet(
+            &dir,
+            "# demo - agent board\n\n## Tasks\n- [ ] \n\n---\n### Done\n\
+             - [x] agent fix <!-- id:dm-3 done:2026-11-09 pr:70 -->\n",
+        );
+        std::fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        std::fs::write(
+            dir.join("agent/versions/v0.3.0.md"),
+            "# v0.3.0\n\n## Done rows\n\
+             - [x] rolled <!-- id:dm-4 done:2026-11-01 pr:50 -->\n\
+             - [x] ancient <!-- id:dm-5 done:2026-09-01 pr:9 -->\n\n\
+             ## Sheet done rows\n- [x] human rolled <!-- id:dm-6 done:2026-11-02 -->\n",
+        )
+        .unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let ids = |rows: Vec<FeedRow>| -> Vec<(String, &'static str)> {
+            rows.into_iter()
+                .map(|r| (r.id.unwrap_or_default(), r.lane))
+                .collect()
+        };
+        let sheet_only = done_for_dir("bnb", "demo", &dir, today, None);
+        assert_eq!(sheet_only[0].section, Some("done"));
+        assert_eq!(sheet_only[0].state, "done");
+        assert_eq!(sheet_only[0].prs, ["70"]);
+        assert_eq!(
+            ids(sheet_only),
+            [("dm-3".into(), "agent"), ("dm-1".into(), "human")]
+        );
+        assert_eq!(
+            ids(done_for_dir("bnb", "demo", &dir, today, Some(14))),
+            [
+                ("dm-3".into(), "agent"),
+                ("dm-1".into(), "human"),
+                ("dm-6".into(), "human"),
+                ("dm-4".into(), "agent"),
+            ],
+            "the window reads the rolled rows and leaves the ancient one out"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -51,7 +51,8 @@ EOF
     -c "luafile $BATS_TEST_TMPDIR/t.lua" -c 'qa!' 2>&1
 }
 
-# An old undated close already in the saved file is no new tick: it rolls off undated.
+# No queue item is behind these rows, so they are Backlog (#1648). An old undated close
+# already in the saved file is no new tick: it rolls off undated.
 @test "save lays the sheet out in sections and dates a hand-ticked row" {
   run save "$BIN:$PATH"
   assert_success
@@ -63,7 +64,7 @@ Version: v0.1.0
 ## Inbox
 
 ## Tasks
-### Next up
+### Backlog
 - [ ] fire #urgent
 - [ ] someday #low
 - [ ] 
@@ -86,7 +87,7 @@ Version: v0.1.0
 @test "a layout-only pass sorts without retagging" {
   run "$BIN/notes" sheet-sweep "$SHEET" --stdin --layout-only < <(printf '# demo\nVersion: v0.1.0\n\n## Tasks\n- [ ] untagged\n- [ ] fire #urgent\n')
   assert_success
-  assert_output --partial $'### Next up\n- [ ] fire #urgent\n- [ ] untagged\n'
+  assert_output --partial $'### Backlog\n- [ ] fire #urgent\n- [ ] untagged\n'
 }
 
 # A frozen version note is no sheet: sweeping one changes nothing and files nothing.

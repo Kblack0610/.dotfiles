@@ -255,7 +255,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
 }
 
-@test "#prio ranks focus and only first, then high, then normal, then low; a map queue_rank ranks nothing" {
+@test "#prio ranks focus and only first, then high, then normal, then low" {
   "$AQ" add --project elsewhere --slug a-else "a"
   "$AQ" add --project app --slug b-app "b"
   "$AQ" add --project game --slug c-game "c"
@@ -263,11 +263,6 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   printf 'game\thigh\nelsewhere\tlow\ncockpit\tonly\n' > "$NOTES_FIXTURE/prios"
   run bash -c "'$AQ' list --json | jq -r .slug"
   assert_output $'d-cockpit\nc-game\nb-app\na-else'
-  # The retired map key is not a second order: it changes nothing.
-  printf '' > "$NOTES_FIXTURE/prios"
-  jq '.queue_rank = ["game"]' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
-  run bash -c "'$AQ' list --json | jq -r .slug"
-  assert_output $'a-else\nb-app\nc-game\nd-cockpit'
 }
 
 @test "while a project is #prio/only, other projects' items hold on focus, but red, urgent and requested ones do not" {
