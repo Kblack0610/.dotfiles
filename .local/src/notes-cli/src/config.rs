@@ -137,8 +137,11 @@ impl ReleaseShape {
         let defaults = ReleaseShape::default();
         [stage, "draft"]
             .iter()
-            .find_map(|s| self.cadence_days.get(*s).or(defaults.cadence_days.get(*s)))
-            .copied()
+            .find_map(|s| {
+                // a cadence under a day would make every closed row due on every pass
+                let set = self.cadence_days.get(*s).copied().filter(|d| *d >= 1);
+                set.or(defaults.cadence_days.get(*s).copied())
+            })
             .unwrap_or(7)
     }
 }
@@ -1182,6 +1185,13 @@ mod tests {
             raw.release.cadence("beta"),
             7,
             "an unlisted stage keeps its default"
+        );
+        let raw: RawConfig =
+            toml::from_str("[release]\ncadence_days = { alpha = 0, beta = -3 }\n").unwrap();
+        assert_eq!(
+            (raw.release.cadence("alpha"), raw.release.cadence("beta")),
+            (7, 7),
+            "a cadence under a day is ignored, or every pass would cut"
         );
     }
 

@@ -2943,15 +2943,16 @@ pub(crate) struct ReleaseDue {
     pub bump: &'static str,
 }
 
-/// The day of `dir`'s last cut: the newest `rolled:` stamp across its `versions/` notes, a
-/// note without one (frozen before stamps) dated by its mtime.
+/// The day of `dir`'s last cut: the newest `rolled:` stamp across its `versions/` notes. Only
+/// when no note carries one (all frozen before stamps) is the newest note's mtime the date: a
+/// rewrite drags an mtime forward, so it never outranks a stamp.
 fn last_cut(dir: &Path) -> Option<chrono::NaiveDate> {
-    version_notes(&dir.join("versions"))
-        .into_iter()
+    let notes = version_notes(&dir.join("versions"));
+    let stamped = notes
+        .iter()
         .filter_map(|(_, path)| {
-            let text = fs::read_to_string(&path).ok()?;
-            let stamped = text
-                .match_indices("<!-- rolled:")
+            let text = fs::read_to_string(path).ok()?;
+            text.match_indices("<!-- rolled:")
                 .filter_map(|(i, m)| {
                     let rest = text[i + m.len()..].trim_start();
                     let end = rest
@@ -2959,16 +2960,20 @@ fn last_cut(dir: &Path) -> Option<chrono::NaiveDate> {
                         .unwrap_or(rest.len());
                     rest[..end].parse::<i64>().ok()
                 })
-                .max();
-            let epoch = stamped.or_else(|| {
-                let m = fs::metadata(&path).ok()?.modified().ok()?;
+                .max()
+        })
+        .max();
+    let epoch = stamped.or_else(|| {
+        notes
+            .iter()
+            .filter_map(|(_, path)| {
+                let m = fs::metadata(path).ok()?.modified().ok()?;
                 let d = m.duration_since(std::time::UNIX_EPOCH).ok()?;
                 i64::try_from(d.as_secs()).ok()
-            })?;
-            chrono::DateTime::from_timestamp(epoch, 0)
-                .map(|t| t.with_timezone(&chrono::Local).date_naive())
-        })
-        .max()
+            })
+            .max()
+    })?;
+    chrono::DateTime::from_timestamp(epoch, 0).map(|t| t.with_timezone(&chrono::Local).date_naive())
 }
 
 fn release_due(
@@ -6333,6 +6338,20 @@ mod shape_tests {
             (Some("2026-11-08"), true, "patch")
         );
         assert!(!r.backlog, "one window behind is a cut");
+        // an older note frozen before stamps, rewritten today: its mtime never outranks a stamp
+        fs::write(dir.join("versions/v0.1.0.md"), "## Tasks\n- [x] old\n").unwrap();
+        let r = release_due(&dir, 7, 4, &ix, Some((0, 2, 1)), day("2026-11-08"));
+        assert_eq!(r.last_cut.as_deref(), Some("2026-11-01"), "a rewrite moves no cut");
+        // NEGATIVE CONTROL: with no stamp anywhere, the newest mtime is the date
+        fs::remove_file(dir.join("versions/v0.2.0.md")).unwrap();
+        let today = chrono::Local::now().date_naive();
+        let r = release_due(&dir, 7, 4, &ix, Some((0, 2, 1)), today);
+        assert_eq!(r.last_cut, Some(today.format("%Y-%m-%d").to_string()));
+        fs::write(
+            dir.join("versions/v0.2.0.md"),
+            format!("## Tasks\n- [x] a\n<!-- rolled: {cut} -->\n"),
+        )
+        .unwrap();
         let late = release_due(&dir, 7, 4, &ix, None, day("2026-11-15"));
         assert!(
             late.due && late.backlog,

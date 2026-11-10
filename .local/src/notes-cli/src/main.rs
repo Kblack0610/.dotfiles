@@ -272,7 +272,8 @@ enum Cmd {
         #[arg(long)]
         archived: bool,
         /// Close a project's open version: its closed rows freeze into versions/ and
-        /// `Version:` moves to the next one. Refused for a project below beta
+        /// `Version:` moves to the next one, at any stage. With no level the bump is derived:
+        /// minor when a feature epic closed on proof in the version, else patch
         #[arg(long, value_name = "NAME")]
         release: Option<String>,
         /// Consolidate a project onto the one version layout: fold changelog/ and loose
