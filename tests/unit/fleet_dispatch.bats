@@ -2947,6 +2947,21 @@ ledger() {
   assert_called 'claude-acct park lab/game-agent-run1 --why preempt --for now-one'
 }
 
+@test "preempt: with only urgent runner sessions live, nothing is parked and the pass says no runner session" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_MAX_LIVE=1
+  started_item u1 lab:game-agent-u1 run area-u1
+  sed -i 's/^priority: high/priority: urgent/' "$AGENT_QUEUE_DIR"/running/*-u1.md
+  echo game-agent-u1 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  park_stub
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'preempt: no runner session to park for urgent now-one'
+  assert_not_called 'claude-acct park'
+  [ -n "$(qitem queued now-one)" ] || fail "the urgent item started past the run units"
+}
+
 @test "preempt: DISPATCH_PREEMPT=0 parks nothing, and a dry run names the victim without parking it" {
   six_of_six_units
   agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
