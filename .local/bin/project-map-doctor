@@ -82,6 +82,20 @@ while IFS= read -r line; do
 done < <(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.repo != null) | "\(.key)\t\(.value.repo)"' "$MAP_FILE" 2>/dev/null)
 [ "$n" -gt 0 ] && pass "all $n repo relations resolve" || skip "no repo relations to check"
 
+# --- 3b. every `board` names a project with a sheet ---------------------------------
+# A no-sheet repo files its queue rows on the board it names (agent-queue project_board). One
+# naming a project with no lab or code files nothing, as silently as having no board at all.
+n=0
+while IFS=$'\t' read -r name board ok; do
+  [ -n "$name" ] || continue
+  n=$((n + 1))
+  [ "$ok" = 1 ] || fail "trackers.$name has board \"$board\", which names no project with a lab and a code"
+done < <(jq -r '(.trackers // {}) as $t | $t | to_entries[] | select(.value | type == "object") | select(.value.board != null)
+  | .value.board as $b | [.key, ($b | tostring),
+    (if ($b | type) == "string" and (($t[$b] | objects | .lab) // "") != "" and (($t[$b] | objects | .code) // "") != "" then 1 else 0 end)]
+  | @tsv' "$MAP_FILE" 2>/dev/null)
+[ "$n" -gt 0 ] && pass "all $n board relations name a sheet" || skip "no board relations to check"
+
 # --- 4. aliases point at real projects, and never shadow one ------------------------
 n=0
 while IFS= read -r line; do
