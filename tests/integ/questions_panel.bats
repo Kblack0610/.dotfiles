@@ -48,12 +48,12 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   ask demo hub 'a=the first|b=the second' 'no agent number?' >/dev/null
   run rows
   assert_success
-  assert_line --regexp $'\tucp:60 +[0-9]+m  long project[?]$'
-  assert_line --regexp $'\tdemo:1 +[0-9]+m  short project[?]$'
-  assert_line --regexp $'\tdemo   +[0-9]+m  no agent number[?]$'
+  assert_line --regexp $'\tucp:60 +[0-9]+m  long project[?]~ +dead end$'
+  assert_line --regexp $'\tdemo:1 +[0-9]+m  short project[?]~ +dead end$'
+  assert_line --regexp $'\tdemo   +[0-9]+m  no agent number[?]~ +dead end$'
 }
 
-@test "a row's second line says what the session is, and ended once it has, under the question" {
+@test "a row's second line says where its answer goes, and what the session is, under the question" {
   mkdir -p "$HOME/.claude/sessions" "$HOME/.agent/sessions/demo"
   printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
   printf '%s\n' '{"session_id":"sid-1","title":"live-work"}' '{"session_id":"sid-9","title":""}' \
@@ -66,10 +66,10 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   run rows
   assert_success
   # The second line starts under the question: name column (4) + age (3) + three spaces.
-  assert_line --regexp "^$live	demo +[0-9]+m  live[?]~ {10}live-work\$"
-  assert_line --regexp "^$ended	demo +[0-9]+m  ended[?]~ {10}ended [.] tidy-the-board\$"
-  assert_line --regexp "^$untitled	demo +[0-9]+m  untitled[?]~ {10}ended\$"
-  assert_line --regexp "^$loose	demo +[0-9]+m  headless[?]\$"
+  assert_line --regexp "^$live	demo +[0-9]+m  live[?]~ {10}to session [.] live-work\$"
+  assert_line --regexp "^$ended	demo +[0-9]+m  ended[?]~ {10}dead end [.] tidy-the-board\$"
+  assert_line --regexp "^$untitled	demo +[0-9]+m  untitled[?]~ {10}dead end\$"
+  assert_line --regexp "^$loose	demo +[0-9]+m  headless[?]~ {10}dead end\$"
 }
 
 # The selected row is drawn on colour 8, the grey of the dim colour (and of some themes'
@@ -133,6 +133,34 @@ live_agent() {
   assert_equal "$(waiting 3 11 2 0)" '3 asks . 11 plans . 2 questions waiting'
   assert_equal "$(waiting 0 1 0 0)" '1 plan waiting'
   assert_equal "$(waiting 0 0 0 0)" 'no questions waiting'
+}
+
+@test "count is the number of rows, so the status bar and the panel read one number" {
+  ask demo agent-1 'a=the first|b=the second' 'one?' >/dev/null
+  ask demo agent-2 'a=the first|b=the second' 'two?' >/dev/null
+  {
+    live_agent lab/demo-agent-4:1 waiting 30 AskUserQuestion 'Trading plan'
+    live_agent hub/demo:2 waiting 90 ExitPlanMode 'Stop issues'
+    live_agent lab/demo-agent-6:1 busy 0 Edit 'Busy'
+  } >"$NOTES_FIXTURE/agent-panel.list.json"
+  # agent-panel list prints a `!` glyph for a waiting status; the fixture serves both forms.
+  printf 'lab/demo-agent-4:1\t!\tdemo\tx\nhub/demo:2\t!\tdemo\tx\nlab/demo-agent-6:1\t~\tdemo\tx\n' >"$NOTES_FIXTURE/agent-panel.list"
+  . "$Q"
+  run "$Q" count
+  assert_success
+  assert_output 4
+  assert_equal "$("$Q" rows | rows_count | awk '{ print $1 + $2 + $3 + $4 }')" 4
+  assert_equal "$("$AGENT_ASK" count --all)" 2
+  # An answered or cancelled ask leaves both counts; the dialog just answered does too.
+  QUESTIONS_ANSWERED=hub/demo:2 run "$Q" count
+  assert_output 3
+}
+
+@test "count is 0 with nothing waiting, and a busy session adds nothing (negative control)" {
+  printf 'lab/demo-agent-6:1\t~\tdemo\tx\n' >"$NOTES_FIXTURE/agent-panel.list"
+  run "$Q" count
+  assert_success
+  assert_output 0
 }
 
 @test "with no state document, or no question at all, a dialog row never appears" {

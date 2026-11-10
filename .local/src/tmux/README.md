@@ -457,7 +457,7 @@ Under zsh, write `${c}` rather than `$c` before a colon in a refspec: `$c:r` is 
 ## Status Line Integration
 
 `claude-status.sh` runs every 3 seconds to display agent status:
-- `!n` = needs attention (n agents)
+- `!n` = n questions waiting on you: the Prefix y panel's count (pending asks plus open dialogs, fleet-wide), so the bar and the panel header agree
 - `~n` = working (n agents)
 - `✓n` = idle between turns (n agents). This is the live `activity`, not the delivery `bucket`: a session that is idle here can still be NEEDS or STALLED in `fleet-sessions` (vocabulary: `.local/src/docs/fleet-states.md`)
 - `·n` = Claude panes found but none classified
