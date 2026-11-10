@@ -555,7 +555,6 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             a.rv.status(&s, a.p, now)
                 .iter()
                 .chain(&a.rv.table(&s, a.p, w, false))
-                .chain(&a.rv.foot(&s, a.p, w))
         {
             let _ = writeln!(out, "{}", plain(l));
         }

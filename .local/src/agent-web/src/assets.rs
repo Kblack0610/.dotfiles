@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn the_releases_headers_are_hub_cores_columns() {
-        // Rule 8, less `id` and `where`: the channel says the one, a row's detail the other.
+        // Rule 8, less `channel` and `id`: they only filter, an opened app lists its channels.
         use hub_core::table::Row;
         let js = include_str!("../static/releases.js");
         let at = js.find("const REL_COLS = {").expect("no REL_COLS");
@@ -295,9 +295,9 @@ mod tests {
             .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
-        let all = hub_core::releases::Release::COLUMNS;
+        let all = hub_core::releases::App::COLUMNS;
         assert_eq!(keys, all[..all.len() - 2]);
-        assert_eq!(all[all.len() - 2..], ["id", "where"]);
+        assert_eq!(all[all.len() - 2..], ["channel", "id"]);
     }
 
     #[test]
