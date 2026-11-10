@@ -528,6 +528,25 @@ PROM
   assert_output --partial '- CI game: 2 red of 10 runs, 1 on main, gate wall p50 40 min, 3.5 runner-hours, 1 branches re-gated'
 }
 
+@test "nightly: ci-cost runs from the base branch's scripts/ tree, so a file it loads beside it is there" {
+  ci_clone
+  local origin="$SANDBOX/origin"
+  mkdir -p "$origin/scripts/test"
+  echo 'POOL = 3.5' > "$origin/scripts/test/train.py"
+  cat > "$origin/scripts/ci-cost.py" <<'EOF'
+import os
+exec(open(os.path.join(os.path.dirname(__file__), "test", "train.py")).read())
+print('{"hours":{"pool":%s}}' % POOL)
+EOF
+  git -C "$origin" add -A
+  git -C "$origin" -c user.name=t -c user.email=t@t commit -qm 'ci-cost loads a sibling'
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  run "$SUBJECT" nightly
+  assert_success
+  run rec -c '[.ci.repos["O/game"].cost.hours.pool, .ci.unreadable]' 2026-10-27
+  assert_output '[3.5,[]]'
+}
+
 @test "nightly: the prom lines cover CI, usage, flow and the week" {
   ci_clone
   mkdir -p "$PROM_TEXTFILE_DIR"

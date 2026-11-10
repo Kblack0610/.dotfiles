@@ -173,10 +173,11 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    targets the same way. The check exits 0 early for a detached HEAD or when the branch IS the
    main branch, and uses `@{upstream}..HEAD` whenever an upstream exists.
 
-   Prefer, in order: (a) **switch the slot back to its own conventional branch** - a
-   `platform-agent-N` worktree belongs on branch `agent-N`, which usually already exists with an
-   upstream and zero unpushed commits, so `git checkout agent-N` clears the gate and preserves
-   the junk branch untouched; (b) land the commits properly if they are real work; (c) reset the
+   Prefer, in order: (a) **switch the slot back to the branch `wt` cut it on** - a
+   `platform-agent-N` worktree starts on `agent-N-<stamp>` (a name no other cut used), which
+   tracks the trunk with zero unpushed commits (`git branch --list 'agent-N-*'` finds it), so
+   checking it out clears the gate and preserves the junk branch untouched; when `wt gc` already
+   pruned it, use (c); (b) land the commits properly if they are real work; (c) reset the
    junk branch onto the local main ref. Never push a throwaway branch to origin just to buy a
    tracking ref. Verify by RUNNING the check - `bash ~/.claude/hooks/stop-checks.d/10-git-workflow.sh;
    echo $?` - rather than reasoning about whether it now passes.
@@ -221,7 +222,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
 
    **Only release the worktree this session is in.** Never reap one another live session is
    rooted in (a prior incident removing `platform-agent-3` broke a live session); if another
-   tmux session is attached there, leave it on its own `agent-N` branch (step 4a). Every
+   tmux session is attached there, leave it on its own branch (step 4a). Every
    worktree lives under `~/.worktrees/<repo>-<slug>`; the legacy `~/dev/<repo>-*` siblings and
    `<repo>/.claude/worktrees/` were retired 2026-09-18.
 7. **Report the landing state** in your closing message: branch + PR link for what shipped, an
