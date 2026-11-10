@@ -1296,7 +1296,8 @@ cx_rollouts() {
 # cx_item_rollouts -- the item format 0.164 writes for a run the fleet starts: UserMessage and
 # CommandExecution items with exit codes, token_usage_record per response, a turn that ended in a
 # usage limit. A root with a failing test, a passing one, a gh poll, a commit that printed
-# "3 files changed" and a PR create, plus a subagent that ran one failing command.
+# "3 files changed" and a PR create, a grep whose output looks like a commit, a FileChange item with its
+# apply_patch call (one edit, not two), plus a subagent that ran one failing command.
 cx_item_rollouts() {
   export SO_CODEX_SESSIONS="$SANDBOX/.codex/sessions" SO_PROJECT_LIB="$SANDBOX/project-name.sh"
   echo 'resolve_project_name() { basename "$1"; }' > "$SO_PROJECT_LIB"
@@ -1313,8 +1314,11 @@ cx_item_rollouts() {
     cmd("bats tests/unit/menu.bats"; "not ok 1"; 1),
     cmd("bats tests/unit/menu.bats"; "ok 1"; 0),
     cmd("gh pr checks 12"; "pass"; 0),
-    cmd("git add -A && git commit -m x"; "[b abc] x\n 3 files changed, 9 insertions(+)"; 0),
+    cmd("git add -A && git commit -m x"; "[b 1a2b3c4] x\n 3 files changed, 9 insertions(+)"; 0),
     cmd("gh pr create --fill"; "https://github.com/o/r/pull/12\n"; 0),
+    cmd("rg \"git commit\" notes.md"; "[b 1234567] x\n 50 files changed"; 0),
+    {timestamp: $t1, type: "event_msg", payload: {type: "item_completed", item: {type: "FileChange", changes: {"a.txt": {}}}}},
+    {timestamp: $t1, type: "response_item", payload: {type: "function_call", name: "apply_patch", call_id: "p1"}},
     {timestamp: $t1, type: "token_usage_record", payload: {response_id: "r1"}},
     {timestamp: $t1, type: "token_usage_record", payload: {response_id: "r2"}},
     {timestamp: $t1, type: "token_usage_record", payload: {response_id: "r2"}},
@@ -1338,8 +1342,8 @@ cx_item_rollouts() {
   r() { cat "$SO_OUT"/proj/*.jsonl | jq -rs "map(select(.session_id == \"cx-item\")) | last | $1"; }
   assert_equal "$(r '[.title, .effort, .error, .account, .transcript, .edits] | join("|")')" 'fix the menu #size/s|high|usage_limit_exceeded|.codex|true|3'
   assert_equal "$(r '.hard_errors | [.api_error, .denied, .tool_errors] | tostring')" '[1,null,2]'
-  assert_equal "$(r '.activity | [.tool_calls, .test_runs, .test_failures, .ci_polls, .api_messages, .tokens] | tostring')" '[6,3,2,1,2,255]'
-  assert_equal "$(r '[.delivery.peak_context, .time_use.work_min, .time_use.test_min] | tostring')" '[1500,10,null]'
+  assert_equal "$(r '.activity | [.tool_calls, .test_runs, .test_failures, .ci_polls, .api_messages, .tokens] | tostring')" '[8,3,2,1,2,255]'
+  assert_equal "$(r '[.delivery.peak_context, .time_use.work_min, .time_use.test_min] | tostring')" '[900,10,null]'
   assert_equal "$(r '[.prs[].number] | tostring')" '[12]'
   assert_equal "$(r '[.activity.tokens_after_last_edit, .activity.compactions, .corrections] | tostring')" '[null,null,null]'
 }

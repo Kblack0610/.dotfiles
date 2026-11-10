@@ -239,7 +239,7 @@ cmd_run() {
       so_transcript_metrics "$tr" "$sigs" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
       "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null\n' > "$work/t.$sid.json"
       so_session_links "$tr" "${tr%.jsonl}/subagents" | jq -Rcn --arg s "$sid" '{($s): [inputs]}' >> "$work/links.jsonl"
-    elif jq -e '.metrics' <<<"$row" >/dev/null 2>&1; then
+    elif jq -e '.harness == "codex" and .metrics' <<<"$row" >/dev/null 2>&1; then
       jq -c '.metrics' <<<"$row" > "$work/m.$sid.json"
       jq -c '.metrics.time_use' <<<"$row" > "$work/t.$sid.json"
     else
@@ -703,7 +703,7 @@ cmd_worst() {
                + why
                + " | \(.cost_usd | usd)"
                + " | \(.activity.test_runs // "-") | \(.activity.ci_polls // "-") | "
-               + (.activity as $a | if (.edits // 0) > 0 and ($a.tokens // 0) > 0
+               + (.activity as $a | if (.edits // 0) > 0 and ($a.tokens // 0) > 0 and $a.tokens_after_last_edit != null
                   then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) + " |"))
         | join("\n")
       end'
@@ -830,7 +830,7 @@ cmd_card() {
           "  Activity  " + (if .activity == null then "no transcript" else
             "\($a.tool_calls) tool calls, \($a.test_runs) test runs, \($a.ci_polls) CI polls"
             + (if $a.compactions then ", \($a.compactions.auto + $a.compactions.manual) compactions (\($a.compactions.auto) auto)" else "" end)
-            + (if (.edits // 0) > 0 and ($a.tokens // 0) > 0 then ", \($a.tokens_after_last_edit * 100 / $a.tokens | round)% of tokens after the last edit" else "" end) end),
+            + (if (.edits // 0) > 0 and ($a.tokens // 0) > 0 and $a.tokens_after_last_edit != null then ", \($a.tokens_after_last_edit * 100 / $a.tokens | round)% of tokens after the last edit" else "" end) end),
           "  Uses      " + (if .uses == null then "-" else
             ([ (.uses.skills | if length > 0 then "skills: " + ranked(tostring) else empty end),
                (.uses.subagents | if length > 0 then "agents: " + ranked(tostring) else empty end),

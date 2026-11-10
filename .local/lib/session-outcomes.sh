@@ -238,8 +238,10 @@ so_codex_rows() {
   if [ -r "$prices" ]; then
     pj="$(jq -c '.harnesses.codex.prices // {}' "$prices" 2>/dev/null)" || { echo "so_codex_rows: unreadable $prices, no Codex cost" >&2; pj='{}'; }
   fi
+  local prog
+  prog="$(cat "$SO_LIB/codex-session.jq")" && [ -n "$prog" ] || { echo "so_codex_rows: $SO_LIB/codex-session.jq missing or empty" >&2; return 1; }
   find "$dir" -name 'rollout-*.jsonl' -type f | while IFS= read -r f; do
-    jq -cs --argjson prices "$pj" --arg file "$f" "$SO_PR_JQ$(cat "$SO_LIB/codex-session.jq")" "$f" || echo "so_codex_rows: unreadable $f" >&2
+    jq -cs --argjson prices "$pj" --arg file "$f" "$SO_PR_JQ$prog" "$f" || echo "so_codex_rows: unreadable $f" >&2
   done > "$work/cx.rows.jsonl"
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
@@ -259,7 +261,6 @@ so_codex_rows() {
         .[$c.parent] |= (.edits += $c.edits | .tokens = add_tok(.tokens; $c.tokens)
                          | .cost_by_model = add_tok(.cost_by_model; $c.cost_by_model) | .unpriced = (.unpriced or $c.unpriced)
                          | .models = (.models + $c.models | unique) | .prs = (.prs + $c.prs | unique)
-                         | .peak_context = ([.peak_context, $c.peak_context] | map(select(. != null)) | max)
                          | sum_into($c)
                          | .updated = ([.updated, $c.updated] | max)))
     | .[] | .project = $p[0][.cwd]

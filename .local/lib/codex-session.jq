@@ -12,7 +12,6 @@
 def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 def shell_cmd: if type == "array" then (if length >= 3 and (.[1] | test("^-[a-z]*c$")) then .[2] else join(" ") end) else tostring end;
 def commit_cmd: test("(^|[\\n;&|(])\\s*(\\w+=\\S*\\s+)*git\\s+(-C\\s+\\S+\\s+)?commit\\b");
-def nadd(a; b): if a == null and b == null then null else (a // 0) + (b // 0) end;
 def first_text: (.content // [] | map(.text // empty) | join("\n"));
 def title_of:
   split("\n") | map(select(test("\\S"))) as $l
@@ -48,13 +47,13 @@ def title_of:
            | {cmd: (.input // ""), out: ($out[.call_id] // ""), exit: null}) ] end) as $cmds
 | ($cmds | any(.[]; .exit != null)) as $exits
 | ([$items[] | select(.type == "FileChange") | .changes // {} | keys[]] | unique | length) as $filechanges
-| ($r | map(select(.name == "apply_patch")) | length) as $patches
-| ([$cmds[] | select(.cmd | commit_cmd) | .out | [scan("([0-9]+) files? changed") | .[0] | tonumber] | add // empty]) as $commits
+| (if $filechanges > 0 then 0 else ($r | map(select(.name == "apply_patch")) | length) end) as $patches
+| ([$cmds[] | select(.cmd | commit_cmd) | .out | [scan("^\\[[^\\]\\n]+ [0-9a-f]{7,}\\][^\\n]*\\n\\s*([0-9]+) files? changed") | .[0] | tonumber] | add // empty]) as $commits
 | ([$ev[] | select(.type == "task_complete" and .error != null)]) as $errs
 | (if ($t | length) == 0 then 0 else $t | max end) as $tmax
 | (reduce ($evt[] | select(.payload.type | IN("task_started", "task_complete", "turn_aborted"))) as $e ({open: null, s: 0};
      ($e.timestamp | ts) as $at
-     | if $e.payload.type == "task_started" then .open = $at
+     | if $e.payload.type == "task_started" then (if .open != null then .s += ($at - .open) else . end) | (.open = $at)
        elif .open != null then (.s += ($at - .open)) | (.open = null) else . end)
    | if .open != null then .s += ($tmax - .open) else . end | .s) as $turn_s
 | ([$cmds[] | select(.cmd | test(test_run))]) as $tests
