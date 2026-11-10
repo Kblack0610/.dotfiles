@@ -12,7 +12,7 @@ use crate::{epics, md, projects};
 pub(crate) const SYSTEMS_BIN: &str = "project-stage-check";
 
 /// One system of a project: its id and the area words that also name it.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct System {
     pub id: String,
     pub aliases: Vec<String>,
@@ -23,29 +23,44 @@ pub(crate) struct System {
 /// written, unlinked, since the lookup lives in the dotfiles and a machine without them still
 /// has to add a row.
 pub(crate) fn systems(bin: &str, name: &str) -> Option<Vec<System>> {
+    list(bin, name)
+        .map_err(|why| eprintln!("(no standing-epic link: {why})"))
+        .ok()
+}
+
+/// [`systems`] with the reason returned, not printed: the sweep orders `### Epics` by this list
+/// and a project with none (no lab dir, no map entry) is a plain case there, not a fault. Read
+/// once per process: one `ptask add` links the row and sweeps the sheet, maybe twice.
+pub(crate) fn list(bin: &str, name: &str) -> Result<Vec<System>, String> {
+    type Memo = std::collections::HashMap<(String, String), Result<Vec<System>, String>>;
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    let key = (bin.to_string(), name.to_string());
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(got) = memo.lock().unwrap().get(&key) {
+        return got.clone();
+    }
+    let got = read(bin, name);
+    memo.lock().unwrap().insert(key, got.clone());
+    got
+}
+
+fn read(bin: &str, name: &str) -> Result<Vec<System>, String> {
     let out = match std::process::Command::new(bin)
         .args([name, "--list", "--json"])
         .output()
     {
         Ok(o) if o.status.success() => o.stdout,
         Ok(o) => {
-            eprintln!(
-                "(no standing-epic link: {bin} {name} --list exited {}: {})",
+            return Err(format!(
+                "{bin} {name} --list exited {}: {}",
                 o.status,
                 String::from_utf8_lossy(&o.stderr).trim()
-            );
-            return None;
+            ))
         }
-        Err(e) => {
-            eprintln!("(no standing-epic link: {bin}: {e})");
-            return None;
-        }
+        Err(e) => return Err(format!("{bin}: {e}")),
     };
-    let parsed = parse(&String::from_utf8_lossy(&out));
-    if parsed.is_none() {
-        eprintln!("(no standing-epic link: {bin} {name} --list --json printed no system list)");
-    }
-    parsed
+    parse(&String::from_utf8_lossy(&out))
+        .ok_or_else(|| format!("{bin} {name} --list --json printed no system list"))
 }
 
 /// The `--list --json` array as systems; None when it is not one.
