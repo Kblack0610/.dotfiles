@@ -21,21 +21,22 @@ Not for a standing watch that should outlive the night: that is `sentinel`. Not 
 
 ## The record
 
-One file per night: `~/.agent/night-shift/<YYYY-MM-DD>.md`, dated by the evening the shift started. `start` writes the `## Bedtime` section and `morning` appends `## Morning`. Night watches are named `night-<slug>` and carry `source: night-shift`, which is how `status` and `morning` find them.
+One file per night: `~/.agent/night-shift/<YYYY-MM-DD>.md`, dated by the day `start` ran. `start` writes the `## Bedtime` section and `morning` appends `## Morning` to the newest file (`ls -t ~/.agent/night-shift/*.md | head -1`), which is last night's whatever the date is now. A second `start` on the same night adds focus to the existing file and keeps its first start time. Night watches are named `night-<slug>` and carry `source: night-shift`, which is how `status` and `morning` find them.
 
 ## Verb: `start [focus...]`
 
 1. **Baseline.** Run these and write the counts and names under `## Bedtime` with the start time (`date -Iseconds`):
-   - `watch-companion-loop tripped`: the watches already red. They are not news in the morning unless they change.
+   - `watch-companion-loop list | awk '$1=="TRIP"{print $2}'`: every watch already red, at any severity (`tripped` lists only high and urgent). They are not news in the morning unless they change.
    - `agentctl status sentinel` must read `active (running)`. If it does not, tell the human now, before they sleep. The shift has nothing to run on.
-   - `agent-queue list`: how many items are running and in review, by project.
+   - `agent-queue list | awk '{print $1}' | sort | uniq -c`: items per state (column 1 is the state, column 4 the project).
    - For each focus repo, `gh pr list -R <owner/repo> --json number,title,labels` for the PRs in flight.
 2. **Arm the focus.** For each thing the human named:
-   - Check first: `grep -il '<repo or subject>' ~/.agent/watches/*.yaml`. When a standing watch already asks the question, list it under the focus and write nothing. Two watches on one question page twice.
+   - Check first: `grep -il '<repo or subject>' ~/.agent/watches/*.yaml | grep -v '/night-'`, then read the `what:` of each hit. Only a watch whose `what:` asks the same question covers the focus; one that only names the repo does not. When one does, list it under the focus and write nothing. Two watches on one question page twice.
    - Otherwise write `~/.agent/watches/night-<slug>.yaml` per `sentinel` (Verb: `watch`). Prefer a `command` probe when the question has an exit code. Use `probe: agent` when the question is whether something is flowing: `interval: 90m`, `agent_max_turns: 8`, and one read-only `signal:` per fact the check needs (gh, git, log tails). That gives about six check-ins a night, each a short Sonnet pass on the observe lane.
    - Every night watch gets `severity: normal`, so nothing buzzes the phone overnight; the human reads it in the morning. Set `high` only when the human said to wake them for it.
    - Set `expiry:` to an ISO time the next morning (default 09:00 local). It is removed on its own if `morning` never runs.
-   - Validate with `sentinel-manifest validate --strict <file>`, then `watch-companion-loop list night-<slug>`.
+   - Also required: `what`, `why`, `where`, `action` (`--strict` refuses a manifest without them), `created: $(date -Iseconds)` (expiry and the age column count from it), `source: night-shift`, and `subject`, `trip`, `next` for a readable page.
+   - Validate with `sentinel-manifest validate --strict <file>`, then `watch-companion-loop list night-<slug>`. An agent watch runs its first check-in within a minute, so read its first verdict before the human sleeps: `awk '$2=="night-<slug>"' ~/.local/state/agentctl/sentinel/activity.log | tail -1`.
 3. **Tell the human** in three lines: what is armed and how often it checks, which standing watches cover the rest, and that only high and urgent standing watches can page them overnight.
 
 ## Verb: `status`
@@ -44,16 +45,16 @@ One file per night: `~/.agent/night-shift/<YYYY-MM-DD>.md`, dated by the evening
 
 ## Verb: `morning`
 
-Read the start time `S` from tonight's `## Bedtime`. Then:
+Read the start time `S` from the newest file's `## Bedtime`; with no file there was no shift, so say so and stop. Then:
 
-Log lines read `[<ts>] <watch> <prev> -> <new> <detail>`, so awk on fields works where grep flavours differ (here `grep` is ugrep).
+Log lines read `[<ts>] <watch> <prev> -> <new> <detail>`, so awk on fields works where grep flavours differ (here `grep` is ugrep). For an agent watch the state is OK for a verdict starting HEALTHY and TRIP for anything else, and the detail after the dash is the verdict text.
 
-1. **Check-ins.** `awk -v s="[$S" '$0 >= s && $2 ~ /^night-/' ~/.local/state/agentctl/sentinel/activity.log`: every verdict each night watch gave, in order. A focus that went SUSPECT, then HEALTHY again, is reported with both times.
+1. **Check-ins.** `awk -v s="[$S" '$0 >= s && $2 ~ /^night-/' ~/.local/state/agentctl/sentinel/activity.log`: every verdict each night watch gave, in order, including the `TRIP -> TRIP` passes step 2 drops. Report each focus as its runs of state with times ("SUSPECT 21:42 to 00:45, then HEALTHY") and quote the last non-HEALTHY verdict.
 2. **What changed.** `awk -v s="[$S" '$0 >= s && $4 == "->" && $3 != $5 && $6 != "pending"'` on the same log: every watch that tripped, errored or recovered overnight. Compare `watch-companion-loop tripped` now with the bedtime list: new, cleared, still red.
-3. **Pages.** `agent-notify list` since `S`: what reached the phone and what was held.
-4. **Merges.** For each focus repo, `gh pr list -R <owner/repo> --state merged --search "merged:>=<S>" --json number,title,mergedAt`. For the whole fleet's day, `day-log` is the owner.
+3. **Pages.** `agent-notify list` since `S`: what reached the phone and what was held. A low `watch expired and was removed` page for a night watch is expected and needs no line in the report.
+4. **Merges.** For each focus repo, `gh pr list -R <owner/repo> --state merged --limit 100 --search "merged:>=$(date -u -d "$S" +%Y-%m-%dT%H:%M:%SZ)" --json number,title,mergedAt` (UTC, since search reads the offset form unreliably). For the whole fleet's day, `day-log` is the owner.
 5. **Write it** under `## Morning` in the `comms-standard` status shape: one line that answers "did the night go as intended", then Focus (one line per focus: outcome, PR numbers, times), New reds, Cleared, Needs you. Lint with `comms-lint --channel rundown -`, then say the same in chat.
-6. **Clean up.** Remove each `night-*` watch per `sentinel` (Verb: `stop`). A red the report names gets a board row or queue item through its owner (`fix-red`, the session on it), never a fix from here.
+6. **Clean up.** Remove each `night-*` watch still present per `sentinel` (Verb: `stop`); one that already expired is gone, and its log lines are still the record. A red the report names gets a board row or queue item through its owner (`fix-red`, the session on it), never a fix from here.
 
 ## Do NOT
 
