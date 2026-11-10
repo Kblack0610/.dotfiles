@@ -1424,7 +1424,10 @@ fn ask_verify(p: &Profile, log: &Logger, name: &str, closed_row: &str) {
     };
     let text = format!("check({area}): verify {} {} #high", e.id, e.title);
     if let Err(err) = add_via(p, log, name, &text, &[], None, None, Lane::Human, None) {
-        eprintln!("{} has every leaf done; its verify row was not filed: {err}", e.id);
+        eprintln!(
+            "{} has every leaf done; its verify row was not filed: {err}",
+            e.id
+        );
     }
 }
 

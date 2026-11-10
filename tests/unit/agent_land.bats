@@ -1145,6 +1145,24 @@ real_notes_board() {
   assert_failure
 }
 
+@test "end to end: a title naming a filed row works it, and the plan's rows: close with the last phase" {
+  real_notes_board
+  notes --profile personal ptask game --agent add -- 'fix(menu): the back button #size/s' >/dev/null
+  printf '%s\n' '- [ ] feat(menu): a settings page the human asked for #size/s <!-- id:gm-9 -->' >>"$dir/README.md"
+  run agent-queue add --running --project game --slug back "gm-2: fix the back button"
+  assert_success
+  assert_output --partial 'back works row gm-2, which its title names'
+  [ "$(grep -c 'back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed: $(cat "$dir/agent/README.md")"
+  printf '%s\n' '# plan' 'rows: gm-9' '' '## Phases' '' '- [ ] 1. the back button' >"$PLAN"
+  run "$LAND" 42 --item back --plan "$PLAN" --phase "1. the back button"
+  assert_success
+  assert_output --partial 'board: closed "gm-2" with pr:42'
+  assert_line 'rows: closed gm-9 on game'
+  grep -qE -- '^- \[x\] feat\(menu\): a settings page .*gm-9' "$dir/README.md" ||
+    fail "the plan's row did not close: $(cat "$dir/README.md")"
+  grep -qE -- '^- \[ \] epic\(menu\): live menus' "$dir/README.md" || fail "the epic closed: $(cat "$dir/README.md")"
+}
+
 @test "the PR's changed files credit the item to the game whose path owns the most" {
   export AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
   jq -n '{paths: {"/x/game": "game"}, trackers: {"arena": {repo: "game", path: "Assets/Arena"},
