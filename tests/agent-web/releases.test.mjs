@@ -17,11 +17,13 @@ const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
 const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
-const parts = { "rel-head": part(), "rel-facets": part(), "rel-chips": part(), "rel-body": part(), "rel-tail": part(), "bld-head": part(), "bld-facets": part(), "bld-chips": part(), "bld-body": part() };
+const parts = { "rel-head": part(), "rel-facets": part(), "rel-chips": part(), "rel-body": part(), "rel-tail": part(), "bld-head": part(), "bld-facets": part(), "bld-chips": part(), "bld-body": part(), "tst-head": part(), "tst-facets": part(), "tst-chips": part(), "tst-body": part() };
 const doc = { body: el(), getElementById: (id) => (id === "releases" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, activeElement: null, hidden: false };
 const asked = [];
 let body = {};
 let builds = {};
+let tests = {};
+let cases = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -35,7 +37,8 @@ const ctx = vm.createContext({
   fetch: async (url) => {
     asked.push(url);
     const text = url.startsWith("/api/builds/log");
-    return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => (url.startsWith("/api/builds") ? builds : body), text: async () => "FAIL: step 3 exited 1" };
+    const json = url.startsWith("/api/tests/cases") ? cases : url.startsWith("/api/tests") ? tests : url.startsWith("/api/builds") ? builds : body;
+    return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
 for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "jobs.js", "schedules.js", "releases.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx);
@@ -258,12 +261,91 @@ test("a builds event re-reads the builds alone, and only while the tab is open",
   asked.length = 0;
   run("TABS.releases").onEvent({ kind: "builds" });
   await settled();
-  assert.deepEqual(asked, ["/api/builds"]);
+  assert.deepEqual(asked, ["/api/builds", "/api/tests"]);
   run("st.tab = 'home'");
   asked.length = 0;
   run("TABS.releases").onEvent({ kind: "builds" });
   await settled();
   assert.equal(asked.length, 0);
+});
+
+const tcol = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
+const suite = (o) => ({ tier: "unit", suite: "a.bats", tests: 4, passed: 2, failed: 1, skipped: 1, time: 1.25, state: "failed", level: "bad", ...o });
+const pickRun = (id, o = {}) => ({ repo: "o/binks", id, attempt: 1, branch: "main", sha: "abc1234", title: "t", state: "red", level: "bad", started: NOW() - 600, prs: [], url: `https://github.com/o/binks/actions/runs/${id}`, ...o });
+const tdata = (o = {}) => ({
+  at: NOW() - 60, stale_after: 1800, runs: [pickRun(9), pickRun(8, { state: "green", branch: "feat/x" })], run: pickRun(9),
+  summary: "main abc1234: 5 tests in 2 suites: 1 failed, 1 skipped, 3 passed", totals: { suites: 2, tests: 5, passed: 3, failed: 1, skipped: 1, failed_suites: 1, time: 2 },
+  rows: [suite(), suite({ tier: "ui", suite: "c.bats", tests: 1, passed: 1, failed: 0, skipped: 0, state: "passed", level: "ok", time: 70 })], more: 0, fold: null, note: null, errors: [],
+  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "failed", n: 1 }, { name: "skipped", n: 0 }, { name: "passed", n: 1 }], columns: ["state", "tier", "suite", "tests", "failed", "skipped", "time"].map(tcol), facets: [] },
+  ...o,
+});
+const showTests = (d = tdata()) => { show(); Object.assign(run("tst"), { data: d, err: null, sel: null, cases: null, res: "" }); run("relst.render()"); };
+const srow = (key) => ({ dataset: { skey: key }, closest: (sel) => (sel === "tr.sr" ? { dataset: { skey: key } } : null) });
+
+test("the Tests section sits under Builds with the run's totals, its picker and each suite", () => {
+  showBuilds();
+  showTests();
+  const b = box.innerHTML;
+  assert.match(b, /<div data-tbl="t"><div id="tst-head"><h2 class="sec" id="sec-tests">Tests <span class="muted">main abc1234: 5 tests in 2 suites: 1 failed/);
+  assert.ok(b.indexOf("sec-tests") > b.indexOf("sec-builds"), "after the Builds section");
+  assert.match(b, /<select data-twin="run" aria-label="CI run"><option value="9" selected>main abc1234 red, [^<]* ago<\/option><option value="8">feat\/x abc1234 green/);
+  assert.match(b, /<td class="bad">failed<\/td><td>unit<\/td><td class="wrap">a.bats<\/td><td class="n">4<\/td><td class="n bad">1<\/td><td class="n muted">1<\/td><td class="n">1.25s<\/td>/);
+  assert.match(b, /<td class="n muted">0<\/td><td class="n">1m<\/td>/);
+});
+
+test("a green run is one line that lists its suites through the passed chip", () => {
+  showTests(tdata({ rows: [], fold: "All green: 5 tests in 2 suites: 0 failed, 1 skipped, 4 passed" }));
+  assert.match(box.innerHTML, /<button class="btn sm" data-ts="passed"[^>]*>All green: 5 tests in 2 suites/);
+  assert.doesNotMatch(box.innerHTML, /<tr class="sr/);
+});
+
+test("a run with no artifacts says why, and no run at all says so", () => {
+  showTests(tdata({ rows: [], note: "this run uploaded no junit-* artifact", summary: "main abc1234: no results", table: { ...tdata().table, total: 0, shown: 0 } }));
+  assert.match(box.innerHTML, /<div class="panel muted">this run uploaded no junit-\* artifact/);
+  showTests(tdata({ run: null, runs: [], rows: [], summary: "no finished run of the tests workflow in the ledger" }));
+  assert.match(box.innerHTML, /No finished run of the tests workflow in the ledger\./);
+  assert.doesNotMatch(box.innerHTML, /<select data-twin="run"/);
+});
+
+test("opening a suite reads its tests then, failed first with a result filter, and again closes it", async () => {
+  showTests();
+  cases = { more: 0, cases: [{ name: "fails here", result: "failed", time: 0.2, message: "line 2: [ 1 -gt 2 ] failed" }, { name: "skipped one", result: "skipped", time: 0, message: "not on CI" }, { name: "passes", result: "passed", time: 0.1, message: "" }] };
+  asked.length = 0;
+  fire("click", { type: "click", target: srow("unit|a.bats") });
+  await settled();
+  assert.deepEqual(asked, ["/api/tests/cases?run=9&tier=unit&suite=a.bats"]);
+  let b = box.innerHTML;
+  assert.match(b, /<span class="bad">failed<\/span> fails here <span class="muted">0.20s<\/span><pre class="joblog">line 2: \[ 1 -gt 2 \] failed<\/pre>/);
+  assert.match(b, /data-cres="failed">failed <span class="n">1<\/span>/);
+  fire("click", { type: "click", target: { closest: (sel) => (sel === "[data-cres]" ? { dataset: { cres: "skipped" } } : null) } });
+  b = box.innerHTML;
+  assert.match(b, /skipped one/);
+  assert.doesNotMatch(b, /fails here|passes/);
+  fire("click", { type: "click", target: srow("unit|a.bats") });
+  assert.doesNotMatch(box.innerHTML, /skipped one/);
+});
+
+test("an opened suite is let go when the table is read for another run", async () => {
+  showTests();
+  run("tst.sel = 'unit|a.bats'; tst.cases = { key: 'unit|a.bats', run: 9, data: { cases: [], more: 0 } }");
+  tests = tdata({ run: pickRun(8, { state: "green" }) });
+  await run("tst.refresh()");
+  assert.equal(run("tst.sel"), null);
+  assert.equal(run("tst.cases"), null);
+  tests = {};
+});
+
+test("the Tests table sorts under its own keys and the run picker names the run in the URL", async () => {
+  showTests();
+  run("st.tab = 'releases'; st.views.releases = 'bq=x&tq=tier%3Aui&tsort=time&trun=8'");
+  assert.equal(run("tblParams(st.views.releases, TESTS_PRE).toString()"), "tq=tier%3Aui&tsort=time");
+  const pick = run("tblPatch")({ type: "change", target: { dataset: { twin: "run" }, value: "8" } });
+  assert.deepEqual({ ...pick }, { run: "8" });
+  assert.equal(run("tblSet('q=1', { run: '8' }, 't')"), "q=1&trun=8");
+  asked.length = 0;
+  await run("tst.refresh()");
+  assert.deepEqual(asked, ["/api/tests?tq=tier%3Aui&tsort=time&trun=8"]);
+  run("st.views.releases = ''");
 });
 
 test("a new snapshot re-reads only while the tab is open", async () => {

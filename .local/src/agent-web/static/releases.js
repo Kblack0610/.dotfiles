@@ -7,7 +7,7 @@
 const RELEASES_AGE_MS = 60e3;
 const relst = tblTab({
   tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or project:binks channel:prod status:drift",
-  head: (t) => releasesHead(t.data), body: (t) => releasesBody(t.data), tail: () => releaseBuilds(),
+  head: (t) => releasesHead(t.data), body: (t) => releasesBody(t.data), tail: () => releaseBuilds() + releaseTests(),
 });
 
 const relKey = (r) => `${r.project}|${r.id}`;
@@ -113,7 +113,7 @@ const bld = tblTab({
 });
 // A refresh must not take the focus from either search box: the section repaints when it holds it.
 const relRepaint = relst.repaint;
-relst.repaint = () => relRepaint() || bld.repaint();
+relst.repaint = () => relRepaint() || bld.repaint() || tst.repaint();
 
 const BLD_COLS = { started: ["started", "n"], state: ["state"], repo: ["repo"], workflow: ["workflow"], branch: ["branch"], took: ["took", "n"], owner: ["owner"] };
 const bldKey = (r) => `${r.forge}|${r.repo}|${r.id}|${r.attempt}`;
@@ -183,6 +183,109 @@ $("releases").addEventListener("click", (e) => {
   if (r) openBuild(key, r);
 });
 
+// The Tests section under Builds: the suites of one finished tests.yml run from /api/tests
+// (hub_core::junit), the newest unless the picker names another. Its own view keys are tq, ts,
+// tsort and tdir, and the run is trun. A suite's tests are read when its row opens, never before.
+const TESTS_PRE = "t";
+const TESTS_HINT = "search, or tier:unit state:failed suite:fleet, or a test's name";
+const TEST_RESULTS = ["all", "failed", "skipped", "passed"];
+const tst = tblTab({
+  tab: "releases", id: "tst", pre: TESTS_PRE, el: "releases", api: "/api/tests", hint: TESTS_HINT, state: { cases: null, res: "" },
+  params: (p) => { const run = new URLSearchParams(st.views.releases || "").get("trun"); if (run) p.set("trun", run); },
+  head: (t) => testsHead(t.data), body: (t) => testsBody(t.data),
+  render: () => relst.render(),
+  // An opened suite belongs to the run it was read from: another run shows none open.
+  got: (t) => { if (t.cases && t.cases.run !== (t.data.run && t.data.run.id)) { t.sel = null; t.cases = null; t.res = ""; } },
+});
+
+const TST_COLS = { state: ["state"], tier: ["tier"], suite: ["suite"], tests: ["tests", "n"], failed: ["failed", "n"], skipped: ["skipped", "n"], time: ["time", "n"] };
+const tstKey = (r) => `${r.tier}|${r.suite}`;
+const testTime = (s) => (s >= 60 ? secs(s) : s > 0 ? `${s.toFixed(s < 10 ? 2 : 0)}s` : "-");
+const testClass = (result) => (result === "failed" ? "bad" : "");
+
+function suiteRow(r) {
+  const open = tstKey(r) === tst.sel;
+  const row = `<tr class="sr${open ? " sel" : ""}" data-skey="${esc(tstKey(r))}">` +
+    `<td class="${relClass(r.level)}">${esc(r.state)}</td><td>${esc(r.tier)}</td><td class="wrap">${esc(r.suite)}</td>` +
+    `<td class="n">${r.tests}</td><td class="n ${r.failed ? "bad" : "muted"}">${r.failed}</td><td class="n muted">${r.skipped}</td><td class="n">${testTime(r.time)}</td></tr>`;
+  return open ? row + suiteDetail(r) : row;
+}
+
+// The opened suite's tests, failed first, with the result chips filtering them in place.
+function suiteDetail(r) {
+  const c = tst.cases && tst.cases.key === tstKey(r) ? tst.cases : null;
+  let inner = `<span class="muted">reading...</span>`;
+  if (c && c.err) inner = `<span class="warn">${esc(c.err)}</span>`;
+  else if (c && c.data) {
+    const all = c.data.cases, n = (x) => (x === "all" ? all.length : all.filter((t) => t.result === x).length);
+    const chips = TEST_RESULTS.map((x) => chipBtn(x === "all" ? !tst.res : tst.res === x, "data-cres", x === "all" ? "" : x, x, n(x))).join("");
+    const list = all.filter((t) => !tst.res || t.result === tst.res);
+    const lines = list.map((t) => `<div class="cline"><span class="${testClass(t.result)}">${esc(t.result)}</span> ${esc(t.name)} <span class="muted">${testTime(t.time)}</span>` +
+      (t.message ? `<pre class="joblog">${esc(t.message)}</pre>` : "") + `</div>`).join("");
+    inner = `<div class="seg fseg">${chips}</div>` + (lines || `<div class="muted">No ${esc(tst.res)} tests.</div>`) +
+      (c.data.more > 0 ? `<div class="muted">${c.data.more} more not shown; search for a test's name to find it.</div>` : "");
+  }
+  return `<tr class="wdet"><td colspan="7"><div class="sdet"><div class="muted">${esc(r.tier)} ${esc(r.suite)}</div>${inner}</div></td></tr>`;
+}
+
+function testsBody(d) {
+  const t = d.table, rows = d.rows || [];
+  if (!d.run) return `<div class="panel">No finished run of the tests workflow in the ledger.</div>`;
+  const note = d.note ? `<div class="panel muted">${esc(d.note)}</div>` : "";
+  if (d.fold) return `<div class="panel"><button class="btn sm" data-ts="passed" title="list the passing suites">${esc(d.fold)}</button></div>`;
+  if (!rows.length) return note || `<div class="panel">${t && t.total ? "No suites match." : "No suites in this run."}</div>`;
+  return note + `<div class="panel scroll"><table class="tbl">${tblHead(t, TST_COLS)}${rows.map(suiteRow).join("")}</table>` +
+    (d.more > 0 ? `<div class="muted">${d.more} more not shown; narrow the search to list them.</div>` : "") + `</div>`;
+}
+
+// The run picker: the finished runs of the workflow, each by branch, commit, result and age.
+function testsPicker(d) {
+  if (!d.run) return "";
+  const many = new Set(d.runs.map((r) => r.repo)).size > 1;
+  const opts = d.runs.map((r) => `<option value="${r.id}"${r.id === d.run.id ? " selected" : ""}>${esc(`${many ? r.repo + " " : ""}${r.branch} ${r.sha} ${r.state}, ${ago(r.started)} ago`)}</option>`).join("");
+  const link = /^https:/.test(d.run.url || "") ? ` <a href="${esc(d.run.url)}" target="_blank" rel="noopener">Open run</a>` : "";
+  return `<div class="cline"><select data-twin="run" aria-label="CI run">${opts}</select>${link}</div>`;
+}
+
+function testsHead(d) {
+  let html = `<h2 class="sec" id="sec-tests">Tests <span class="muted">${esc(d.summary || "")}</span></h2>` + testsPicker(d);
+  if (tst.err) html += `<div class="panel down">${esc(tst.err)}</div>`;
+  if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  return html;
+}
+
+// The Builds block's tail: the Tests block, once it has been read. The first look at a run waits
+// on GitHub for its artifacts, so the heading shows before the rows do.
+function releaseTests() {
+  if (!tst.data) return tst.err ? `<div class="panel down">${esc(tst.err)}</div>` : `<h2 class="sec" id="sec-tests">Tests <span class="muted">reading...</span></h2>`;
+  if (!tst.data.run) return `<div id="tst-head">${testsHead(tst.data)}</div><div id="tst-body">${testsBody(tst.data)}</div>`;
+  return `<div data-tbl="${TESTS_PRE}"><div id="tst-head">${testsHead(tst.data)}</div>${tblBar("tst", tst.data.table, TESTS_HINT)}` +
+    `<div id="tst-body">${testsBody(tst.data)}</div></div>`;
+}
+
+// A suite's tests, read when its row opens.
+async function openSuite(key, r) {
+  tst.sel = key;
+  tst.res = "";
+  const c = tst.cases = { key, run: tst.data.run.id };
+  relst.render();
+  const q = new URLSearchParams({ run: c.run, tier: r.tier, suite: r.suite });
+  try { c.data = await api("/api/tests/cases?" + q); } catch (e) { c.err = e.message; }
+  if (st.tab === "releases" && tst.cases === c) relst.render();
+}
+
+$("releases").addEventListener("click", (e) => {
+  const t = e.target, chip = t.closest("[data-cres]");
+  if (chip) { tst.res = chip.dataset.cres; relst.render(); return; }
+  if (t.closest("a") || t.closest(".wdet") || t.closest("button")) return;
+  const tr = t.closest("tr.sr");
+  if (!tr) return;
+  const key = tr.dataset.skey;
+  if (tst.sel === key) { tst.sel = null; tst.cases = null; relst.render(); return; }
+  const r = (tst.data.rows || []).find((x) => tstKey(x) === key);
+  if (r) openSuite(key, r);
+});
+
 $("releases").addEventListener("click", (e) => {
   const t = e.target;
   if (t.closest("a") || t.closest(".wdet") || t.closest("button")) return;
@@ -200,9 +303,10 @@ $("releases").addEventListener("change", (e) => {
 
 const relFeed = pushed("releases", ["releases"], relst.refresh);
 const bldFeed = pushed("releases", ["builds"], bld.refresh);
+const tstFeed = pushed("releases", ["builds"], tst.refresh);
 const ageReleases = poll("releases", () => relst.render(), RELEASES_AGE_MS);
 TABS.releases = {
   // Always read: a link from a Projects card arrives here with a new view in the URL.
-  show() { relFeed.show(true); bldFeed.show(true); ageReleases(); },
-  onEvent(ev) { relFeed.onEvent(ev); bldFeed.onEvent(ev); },
+  show() { relFeed.show(true); bldFeed.show(true); tstFeed.show(true); ageReleases(); },
+  onEvent(ev) { relFeed.onEvent(ev); bldFeed.onEvent(ev); tstFeed.onEvent(ev); },
 };
