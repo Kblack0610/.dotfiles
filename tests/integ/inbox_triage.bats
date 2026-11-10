@@ -550,6 +550,80 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial 'other (in scratch)'
   assert_output --partial "the shared code under them, belongs on the repo's project"
   assert_output --partial 'a host or the cluster belongs on home-config'
+  assert_output --partial 'read each with its neighbours'
+  assert_output --partial '"action": "dup", "line": 4'
+}
+
+@test "outbox: a repeat of a line above joins the row that line filed, even when its answer comes first" {
+  sheet '' ''
+  outbox '- [ ] the bench can be picked up\n- [ ] make the bench not throwable\n'
+  answer '{"n": 2, "action": "dup", "line": 1}' \
+    '{"n": 1, "action": "file", "rows": ["fix(room): the bench cannot be picked up or thrown #size/s"], "project": "scratch"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 2 from the outbox, filed 2, left 0, refused 0'
+  [ "$(grep -c 'id:sc-' "$SHEET")" = 1 ] || fail "one row expected: $(cat "$SHEET")"
+  grep -qx '  was: the bench can be picked up' "$SHEET" || fail "$(cat "$SHEET")"
+  grep -qx '  was: make the bench not throwable' "$SHEET" || fail "the repeat did not join the row: $(cat "$SHEET")"
+  run jq -r '[.action, .from, .to, .id // "", .text] | join(" ")' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'dup scratch scratch sc-1 make the bench not throwable'
+}
+
+@test "outbox: a repeat joins its row on the lane the CLI filed it on, and the person's own id: words never name the row" {
+  sheet '' '- [ ] fix(ui): an old row <!-- id:sc-9 -->\n'
+  outbox '- [ ] the scratch build breaks, see id:sc-9 #agent\n- [ ] scratch build still broken\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(build): the build breaks #size/s"], "project": "scratch", "lane": "human"}' \
+    '{"n": 2, "action": "dup", "line": 1}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 2 from the outbox, filed 2, left 0, refused 0'
+  grep -qx '  was: scratch build still broken' "$PROJ/scratch/agent/README.md" || fail "$(cat "$PROJ/scratch/agent/README.md")"
+  run grep -c 'was:' "$SHEET"
+  assert_output 0
+}
+
+@test "outbox: a repeat of a line that filed no row is left, saying so (negative control)" {
+  sheet '' ''
+  outbox '- [ ] a thought\n- [ ] the same thought\n'
+  answer '{"n": 1, "action": "skip", "why": "a thought"}' '{"n": 2, "action": "dup", "line": 1}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 0 from the outbox, filed 0, left 2'
+  run jq -r 'select(.action == "left") | .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'dup of line 1, which filed no row'
+}
+
+@test "outbox: a line left before the triager last changed is asked again; one left since is not" {
+  sheet '' ''
+  outbox '- [ ] the scratch menu flickers\n'
+  mkdir -p "$HOME/.local/state/notes"
+  rec() { jq -cn --arg ts "$1" '{ts: $ts, action: "left", from: "outbox", to: "", text: "the scratch menu flickers", why: "unclear which project", stage: "intake"}' >"$HOME/.local/state/notes/ingest.jsonl"; }
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the menu flickers #size/s"], "project": "scratch"}'
+  rec "$(date -d '+1 day' --iso-8601=seconds)"
+  run "$TRIAGE"
+  assert_success
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "a line left after the triager changed was asked again"
+  grep -q 'the scratch menu flickers' "$HOME/.notes/outbox.md" || fail "the line moved"
+  rec '2000-01-01T00:00:00.5-08:00'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 1 from the outbox, filed 1'
+  grep -q 'fix(ui): the menu flickers' "$SHEET" || fail "$(cat "$SHEET")"
+}
+
+@test "outbox: a left record with a bad ts is only asked again itself; a refusal beside it still holds" {
+  sheet '' ''
+  outbox '- [ ] the scratch menu flickers\n- [ ] a refused line\n'
+  mkdir -p "$HOME/.local/state/notes"
+  { jq -cn '{ts: "2026-13-45 not a time at all", action: "left", from: "outbox", to: "", text: "the scratch menu flickers", why: "x", stage: "intake"}'
+    jq -cn --arg ts "$(date --iso-8601=seconds)" '{ts: $ts, action: "refused", from: "outbox", to: "", text: "a refused line", why: "x", stage: "intake"}'
+  } >"$HOME/.local/state/notes/ingest.jsonl"
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the menu flickers #size/s"], "project": "scratch"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 1 from the outbox, filed 1, left 0'
+  run cat "$NOTES_FIXTURE/prompt.txt"
+  refute_output --partial 'a refused line'
 }
 
 @test "--watch: a sweep at start and one after a burst of saves, and inotifywait ending ends the runner" {
@@ -800,5 +874,106 @@ ask_stub() {
   run "$TRIAGE" --priority
   assert_failure 2
   assert_output --partial '--priority goes with --backlog'
+  [ ! -e "$NOTES_FIXTURE/model.log" ]
+}
+
+@test "--backlog --link: each unparented row gets the model's system and epic, else its standing epic; a linked row or an epic is not asked" {
+  export INBOX_PRIORITY_CMD=model-stub
+  systems ui:menu docs
+  sheet '' '- [ ] epic(ui): a pause menu mid-match <!-- id:sc-1 -->\n- [ ] fix(sound): resume flickers #size/s <!-- id:sc-2 -->\n- [ ] feat(menu): a quit button #size/s <!-- id:sc-3 -->\n- [ ] fix(ui): the logo blurs #size/s <!-- id:sc-4 -->\n- [ ] fix(ui): the menu lags #size/s #of/sc-1 <!-- id:sc-5 -->\n- [ ] fix(net): the lobby drops #size/s <!-- id:sc-6 -->\n'
+  # rows reach the model in sheet order: sc-2, sc-3, sc-4, sc-6
+  answer '{"n": 1, "system": "ui"}' '{"n": 2, "system": "docs", "of": "sc-1"}' '{"n": 3, "system": "ui", "of": "sc-99"}' '{"n": 4, "system": "netcode"}'
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  assert_output --partial 'link: feature 1, standing 2, new epics 0, left 1, refused 0'
+  grep -qx 'scratch: ui, docs (also: menu=ui)' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  refute grep -q 'menu lags\|^[0-9]*\. \[sc-1\]' "$NOTES_FIXTURE/prompt.txt"
+  run tasks
+  # a free area becomes the system id and goes under the filed standing epic
+  assert_output --regexp 'fix\(ui\): resume flickers #size/s #of/sc-7 <!-- id:sc-2 -->'
+  assert_output --regexp 'epic\(ui\): ui to standard .*id:sc-7'
+  # an alias area stays, and the open epic named is its parent
+  assert_output --regexp 'feat\(menu\): a quit button #size/s #of/sc-1 <!-- id:sc-3 -->'
+  # an epic id the board does not have falls back to the standing epic
+  assert_output --regexp 'fix\(ui\): the logo blurs #size/s #of/sc-7 <!-- id:sc-4 -->'
+  # NEGATIVE CONTROL: a system the project lacks leaves the row as it was
+  assert_output --regexp '\[ \] fix\(net\): the lobby drops #size/s <!-- id:sc-6 -->'
+}
+
+@test "--backlog --link --dry-run writes nothing and keeps its answers; a second dry run and the apply reuse them with no model call" {
+  export INBOX_PRIORITY_CMD=model-stub; link="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage"
+  systems ui
+  sheet '' '- [ ] fix(sound): resume flickers #size/s <!-- id:sc-2 -->\n- [ ] fix(ui): pause menu #size/m <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "system": "ui"}' '{"n": 2, "system": "ui", "epic": "epic(ui): a pause menu mid-match"}'
+  before="$(cat "$SHEET")"
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  assert_output --partial 'would run: notes ptask scratch --exact edit --link --text fix\(ui\):\ resume\ flickers\ #size/s'
+  assert_output --partial 'link: feature 1, standing 1, new epics 1'
+  assert_equal "$(cat "$SHEET")" "$before"
+  [ "$(wc -l <"$link/link-scratch.jsonl")" = 2 ]
+  # A second dry run (one stopped at its budget, say) resumes: its answers come from the cache.
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  assert_output --partial 'link: feature 1, standing 1, new epics 1'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the second dry run asked the model again"
+  [ "$(wc -l <"$link/link-scratch.jsonl")" = 2 ]
+  answer '{"n": 1, "system": "docs"}'
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model again"
+  [ ! -e "$link/link-scratch.jsonl" ] || fail "the apply left its cache"
+  run tasks
+  assert_output --regexp 'fix\(ui\): resume flickers #size/s #of/sc-4 <!-- id:sc-2 -->'
+  assert_output --regexp 'epic\(ui\): a pause menu mid-match .*#new.*id:sc-5'
+  assert_output --regexp 'fix\(ui\): pause menu #size/m #of/sc-5 <!-- id:sc-3 -->'
+}
+
+@test "--backlog --link counts a new epic once, a bad epic not at all, and leaves child rows and a tag-first row as they are" {
+  export INBOX_PRIORITY_CMD=model-stub
+  systems ui
+  sheet '' '- [ ] feat(ui): pause menu #size/s <!-- id:sc-3 -->\n  - [ ] fix(ui): sub task <!-- id:sc-4 -->\n- [ ] fix(ui): resume button #size/s <!-- id:sc-5 -->\n- [ ] fix(ui): quit lags #size/s <!-- id:sc-6 -->\n- [ ] #high fix(sound): resume flickers <!-- id:sc-2 -->\n'
+  answer '{"n": 1, "system": "ui", "epic": "epic(ui): a pause menu mid-match"}' '{"n": 2, "system": "ui", "epic": "epic(ui): a pause menu mid-match"}' \
+    '{"n": 3, "system": "ui", "epic": "a pause menu"}' '{"n": 4, "system": "ui"}'
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  assert_output --partial 'link: feature 2, standing 1, new epics 1'
+  refute grep -q 'sub task' "$NOTES_FIXTURE/prompt.txt"
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  assert_output --partial 'link: feature 2, standing 1, new epics 1'
+  run tasks
+  [ "$(grep -c 'epic(ui): a pause menu mid-match' <<<"$output")" = 1 ] || fail "$output"
+  assert_output --partial '  - [ ] fix(ui): sub task <!-- id:sc-4 -->'
+  assert_output --partial '- [ ] #high fix(sound): resume flickers <!-- id:sc-2 -->'
+  assert_output --regexp 'fix\(ui\): quit lags #size/s #of/sc-[0-9]+ <!-- id:sc-6 -->'
+}
+
+# A backlog past the 128 KB one argument holds: the rows and the cache must not go to jq as arguments.
+@test "--backlog --link replays its cache for a backlog past 128 KB" {
+  export INBOX_PRIORITY_CMD=model-stub; link="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage"
+  systems ui
+  long="$(printf 'x%.0s' {1..70000})"
+  sheet '' "- [ ] fix(ui): pause menu $long #size/s <!-- id:sc-2 -->\n"
+  answer '{"n": 1, "system": "ui"}'
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  refute_output --partial 'Argument list too long'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model again"
+  run tasks
+  assert_output --regexp 'fix\(ui\): pause menu x+ #size/s #of/sc-3 <!-- id:sc-2 -->'
+}
+
+# NEGATIVE CONTROL: --link alone would run the inbox sweep's model call; it is refused.
+@test "--link without --backlog, or with --priority, is refused and asks no model" {
+  run "$TRIAGE" --link
+  assert_failure 2
+  assert_output --partial '--link goes with --backlog'
+  run "$TRIAGE" --backlog --priority --link
+  assert_failure 2
   [ ! -e "$NOTES_FIXTURE/model.log" ]
 }
