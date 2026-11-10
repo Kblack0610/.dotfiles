@@ -515,6 +515,8 @@ fn closing_an_epics_last_leaf_files_one_verify_row_on_the_human_sheet() {
     // Ticking the ask finishes nothing again, so it is never filed twice.
     let id = ids(&sheet).into_iter().find(|i| i != "dm-1").unwrap();
     ok(&h.run(&["ptask", "demo", "done", &id, "--proof", "looked: it opens in 40ms"]));
+    // A re-close of the finished leaf (a re-run landing) matches no open row, so it files none.
+    let _ = agent(&h, &["done", "dm-3", "--proof", "pr:2"]);
     assert_eq!(
         h.sheet().matches("verify dm-1").count(),
         1,

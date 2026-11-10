@@ -1909,9 +1909,9 @@ notes --profile bnb ptask level --agent start lv-9'
   [ -z "$(item queued no-board)" ]
 }
 
-@test "a title naming one open row works that row; a closed row, two ids or an --epic file a story as before" {
+@test "a title whose subject is one open row works that row; a mention, a closed row, two ids or an --epic file a story as before" {
   story_notes
-  run "$AQ" add --running --project game --slug named "fix(menu): close lv-2 for good"
+  run "$AQ" add --running --project game --slug named "fix(menu): close it for good (lv-2)"
   assert_success
   assert_output --partial "named works row lv-2, which its title names"
   [ "$(field "$(item running named)" row)" = level:lv-2 ]
@@ -1919,11 +1919,13 @@ notes --profile bnb ptask level --agent start lv-9'
   assert_output 0
   # NEGATIVE CONTROLS: each of these files its own story (the stub mints lv-9).
   touch "$NOTES_FIXTURE/closed.lv-7"
-  "$AQ" add --project level --slug shut "fix(menu): lv-7 again"
+  "$AQ" add --project level --slug said "fix(menu): redo the layout after lv-3 lands"
+  [ "$(field "$(item queued said)" row)" = level:lv-9 ]
+  "$AQ" add --project level --slug shut "lv-7: fix the menu again"
   [ "$(field "$(item queued shut)" row)" = level:lv-9 ]
-  "$AQ" add --project level --slug two "fix(menu): lv-3 beside lv-4"
+  "$AQ" add --project level --slug two "lv-3: fix(menu) beside (lv-4)"
   [ "$(field "$(item queued two)" row)" = level:lv-9 ]
-  "$AQ" add --project level --epic lv-5 --slug epic "feat(menu): lv-3 under its epic"
+  "$AQ" add --project level --epic lv-5 --slug epic "feat(menu): under its epic (lv-3)"
   [ "$(field "$(item queued epic)" row)" = level:lv-9 ]
   run grep -c ' start lv-3' "$NOTES_FIXTURE/calls.log"
   assert_output 0

@@ -7,7 +7,7 @@
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
 #       the notes writer. Without it the row carries no stamp, as a session's own add does not.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
-#       --epic or --want, a title naming exactly one open row id works that row too (named_row).
+#       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. A slug that already
 #       finished ok is refused unless --repeat says this is new work under it: see finished_ok.
 #       An automated add waits while the queue is a day of drain deep: see admit (exit AQ_EX_HELD).
@@ -847,13 +847,16 @@ link_row() {
   printf '%s\t%s\n' "$lab" "$id"
 }
 
-# named_row <title> -> the one row id (`ucp-134`) the title names, else nothing and rc 1: none, or
-# two that differ. An item added for a row already filed then works that row (link_row, when it is
-# open and no live item has it) instead of filing a second one beside it, so the row the human
-# reads closes when the work lands (ucp-134 stayed open after its epic shipped, 2026-11-04).
+# named_row <title> -> the one row id (`ucp-134`) the title names as its subject, else nothing and
+# rc 1: none, or two that differ. A subject is the first word (`ucp-134: ...`) or an id in brackets
+# (`... (ucp-134)`, `[ucp-134]`); an id in the sentence (`after ar-40 lands`) only mentions a row.
+# An item added for a row already filed then works that row (link_row, when it is open and no live
+# item has it) instead of filing a second one beside it, so the row the human reads closes when
+# the work lands (ucp-134 stayed open after its epic shipped, 2026-11-04).
 named_row() {
   local ids
-  ids="$(tr -cs 'A-Za-z0-9-' '\n' <<<"$1" | grep -xiE '[a-z]{2,4}-[0-9]+' | tr 'A-Z' 'a-z' | sort -u)"
+  ids="$({ grep -oiE '^[[:space:]]*[a-z]{2,4}-[0-9]+([:[:space:]]|$)' <<<"$1"; grep -oiE '[([][a-z]{2,4}-[0-9]+[])]' <<<"$1"; } |
+    tr -cd 'A-Za-z0-9\n-' | tr 'A-Z' 'a-z' | sort -u)"
   [ -n "$ids" ] && [ "$(grep -c . <<<"$ids")" = 1 ] && printf '%s\n' "$ids"
 }
 

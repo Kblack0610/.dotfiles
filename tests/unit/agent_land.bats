@@ -675,6 +675,22 @@ notes --profile bnb ptask game done ucp-134 --proof pr:42 commit:fedcba987654
 EOF2
 }
 
+@test "the plan's rows: a deferred phase leaves them open; --dry-run names them only on the last phase" {
+  printf '%s\n' 'rows: ucp-134' '## Phases' '- [ ] 1. first' '- [ ] 2. last' >"$PLAN"
+  jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "1. first" --dry-run
+  refute_output --partial 'rows:'
+  sed -i 's/^- \[ \] 1. first/- [x] 1. first (#41)/' "$PLAN"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last" --dry-run
+  assert_line 'rows: close ucp-134 with pr:42, the plan'"'"'s last phase'
+  sed -i 's/^- \[x\] 1. first (#41)/- [-] 1. first: deferred, ar-2/' "$PLAN"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last"
+  assert_success
+  assert_line 'rows: left open, the plan deferred a phase: ucp-134'
+  run grep -c 'done ucp-134' "$LOG"
+  assert_output 0
+}
+
 @test "the plan's rows: a board step that fails is a line with the command, and the landing still finishes" {
   printf '%s\n' 'rows: ucp-134' '## Phases' '- [ ] 6. agent-land' >"$PLAN"
   jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
