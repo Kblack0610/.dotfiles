@@ -1,9 +1,9 @@
 //! The Releases page's Builds section: the CI runs of the last 30 days from
 //! `hub_core::builds::read`, on the shared data table (`datatable`), with the selected run's
 //! failed-job log under it, read when the row is opened. `b` moves the keys between the channels
-//! and this table.
+//! and this table; `t` opens each workflow's usual run time in the same pane.
 
-use hub_core::builds::{self, Builds, Run, RunKey};
+use hub_core::builds::{self, Builds, Run, RunKey, RunTime};
 use hub_core::releases::Level;
 use ratatui::text::{Line, Span};
 
@@ -14,8 +14,8 @@ use crate::jobs::LogPane;
 
 /// `Run::COLUMNS` in capitals, in its order, the sort mark placed by that index. `forge`, `event`
 /// and `title` filter without a column: the log pane's heading says what they would.
-const HEADER: [&str; 7] = [
-    "STARTED", "STATE", "REPO", "WORKFLOW", "BRANCH", "TOOK", "OWNER",
+const HEADER: [&str; 9] = [
+    "STARTED", "STATE", "REPO", "WORKFLOW", "BRANCH", "TOOK", "USUAL", "ETA", "OWNER",
 ];
 
 #[derive(Default)]
@@ -26,6 +26,8 @@ pub struct BuildsView {
     pub focus: bool,
     /// The opened run's log, read in a worker. `Esc` closes it.
     pub log: Option<LogPane>,
+    /// The Run times table holds the pane, scrolled to this line. `t` toggles it, `Esc` closes it.
+    pub times: Option<usize>,
 }
 
 use crate::releases::level;
@@ -100,11 +102,11 @@ impl BuildsView {
         let mut out = Table {
             header: HEADER.to_vec(),
             rows: rows.iter().map(|r| run_row(r, p, now)).collect(),
-            keep: vec![1, 2, 3, 0, 5, 6, 4],
+            keep: vec![1, 2, 3, 0, 5, 7, 6, 8, 4],
             flex: Some(4),
             flexmin: 10,
-            right: vec![5],
-            cap: vec![(2, 24), (3, 28), (6, 16)],
+            right: vec![5, 6, 7],
+            cap: vec![(2, 24), (3, 28), (8, 16)],
             mark: self.table.mark::<Run>().filter(|(i, _)| *i < HEADER.len()),
             ..Default::default()
         }
@@ -125,6 +127,60 @@ pub fn log_title(r: &Run) -> String {
     )
 }
 
+const TIMES_HEADER: [&str; 7] = [
+    "REPO", "WORKFLOW", "RUNS", "USUAL", "P90", "LONGEST", "PASS",
+];
+
+/// The Run times pane: each workflow's usual time over the window, `h` lines from line `top`.
+pub fn times(b: &Builds, p: Palette, w: usize, h: usize, top: usize) -> Vec<Line<'static>> {
+    let mut out = vec![Line::from(vec![
+        Span::styled("Run times  ", p.head()),
+        Span::styled(
+            format!(
+                "{} workflows, {} days, finished runs (cancelled left out); median under {} runs is -",
+                b.times.len(),
+                builds::KEEP_DAYS,
+                builds::USUAL_MIN
+            ),
+            p.dim(),
+        ),
+    ])];
+    if b.times.is_empty() {
+        out.push(Line::styled("no finished runs in the ledger", p.dim()));
+        return out;
+    }
+    let mut table = Table {
+        header: TIMES_HEADER.to_vec(),
+        rows: b.times.iter().map(time_row).collect(),
+        keep: vec![1, 3, 4, 0, 2, 6, 5],
+        flex: Some(1),
+        flexmin: 12,
+        right: vec![2, 3, 4, 5, 6],
+        cap: vec![(0, 24)],
+        ..Default::default()
+    }
+    .fit(w, p.head());
+    let head = table.remove(0);
+    let body = h.saturating_sub(out.len() + 1);
+    let top = top.min(table.len().saturating_sub(body));
+    out.push(head);
+    out.extend(table.into_iter().skip(top).take(body));
+    out
+}
+
+fn time_row(t: &RunTime) -> Vec<Cell> {
+    let d = |s: Option<i64>| s.map_or("-".to_string(), |s| dur(s as f64));
+    vec![
+        t.short_repo().to_string().into(),
+        t.workflow.clone().into(),
+        t.runs.to_string().into(),
+        d(t.usual.map(|u| u.median)).into(),
+        d(t.usual.map(|u| u.p90)).into(),
+        d(Some(t.longest)).into(),
+        format!("{}%", t.pass).into(),
+    ]
+}
+
 fn run_row(r: &Run, p: Palette, now: i64) -> Vec<Cell> {
     let state = match r.level {
         Level::Ok => r.state.clone().into(),
@@ -142,6 +198,12 @@ fn run_row(r: &Run, p: Palette, now: i64) -> Vec<Cell> {
         r.workflow.clone().into(),
         r.branch.clone().into(),
         took.into(),
+        r.usual
+            .map_or("-".into(), |u| {
+                format!("{}/{}", dur(u.median as f64), dur(u.p90 as f64))
+            })
+            .into(),
+        r.eta.map_or("-".into(), |t| clock(t, now)).into(),
         if r.owner.is_empty() {
             "-".into()
         } else {
@@ -193,6 +255,7 @@ pub mod tests {
                 recent_red: 1,
             },
             rows,
+            times: vec![],
             errors: vec![],
         }
     }
@@ -250,6 +313,62 @@ pub mod tests {
         v.table.view.q = "repo:nothing".into();
         let out = lines(&v, &b);
         assert!(out[0].contains("no run matches"), "{out:?}");
+    }
+
+    #[test]
+    fn a_row_shows_its_usual_time_and_a_running_one_its_eta() {
+        let mut b = fixture();
+        b.rows[0].usual = Some(builds::Usual {
+            median: 2640,
+            p90: 4740,
+        });
+        b.rows[0].state = "running".into();
+        b.rows[0].eta = Some(1300 + 3600);
+        let out = lines(&BuildsView::default(), &b);
+        assert!(
+            out[0].contains("USUAL") && out[0].contains("ETA"),
+            "{out:?}"
+        );
+        let row = out.iter().find(|r| r.contains("running")).unwrap();
+        assert!(row.contains("44m/1h19m"), "{row}");
+        assert!(row.contains(&clock(4900, 1300)), "{row}");
+    }
+
+    #[test]
+    fn the_run_times_pane_lists_each_workflow_and_scrolls() {
+        let mut b = fixture();
+        b.times = (0..30)
+            .map(|i| RunTime {
+                repo: "o/ucp".into(),
+                workflow: format!("wf{i}"),
+                runs: 100 - i,
+                usual: (i < 29).then_some(builds::Usual {
+                    median: 2640,
+                    p90: 4740,
+                }),
+                longest: 29880,
+                pass: 69,
+                ..Default::default()
+            })
+            .collect();
+        let p = Palette { no_color: true };
+        let out: Vec<String> = times(&b, p, 100, 10, 0).iter().map(plain).collect();
+        assert_eq!(out.len(), 10, "{out:?}");
+        assert!(out[0].contains("30 workflows"), "{out:?}");
+        assert!(out[1].starts_with("REPO"), "{out:?}");
+        assert!(
+            out[2].contains("wf0")
+                && out[2].contains("44m")
+                && out[2].contains("8h18m")
+                && out[2].contains("69%"),
+            "{out:?}"
+        );
+        let end: Vec<String> = times(&b, p, 100, 10, 99).iter().map(plain).collect();
+        let last = end.last().unwrap();
+        assert!(
+            last.contains("wf29") && last.contains(" - "),
+            "the scroll stops at the end, under 3 runs reads -: {end:?}"
+        );
     }
 
     #[test]

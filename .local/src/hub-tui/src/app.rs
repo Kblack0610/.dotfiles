@@ -2748,6 +2748,7 @@ impl App {
             return;
         };
         let (title, key, url) = (bv::log_title(r), r.key(), r.url.clone());
+        self.rv.builds.times = None;
         self.log_gen += 1;
         let gen = self.log_gen;
         self.rv.builds.log = Some(LogPane {
@@ -2787,7 +2788,22 @@ impl App {
         match k.code {
             c @ (KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('J' | 'K'))
                 if bv.log.as_mut().is_some_and(|l| l.scroll(c, n)) => {}
+            c @ (KeyCode::PageDown | KeyCode::PageUp | KeyCode::Char('J' | 'K'))
+                if bv.times.is_some() =>
+            {
+                let top = bv.times.unwrap_or_default();
+                let step = if matches!(c, KeyCode::Char('J' | 'K')) {
+                    1
+                } else {
+                    n
+                };
+                bv.times = Some(match c {
+                    KeyCode::PageDown | KeyCode::Char('J') => top + step,
+                    _ => top.saturating_sub(step),
+                });
+            }
             KeyCode::Enter => self.open_build_log(),
+            KeyCode::Esc if bv.times.is_some() => bv.times = None,
             KeyCode::Esc => {
                 if bv.log.is_some() {
                     bv.log = None;
@@ -2812,10 +2828,17 @@ impl App {
     /// The Releases keys: `b` hands them to the Builds table and back, otherwise they drive the
     /// channels. Enter opens the channel's pane, `[` and `]` read an older or newer tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
-        if self.rv.builds.table.typing.is_none()
-            && self.rv.table.typing.is_none()
-            && k.code == KeyCode::Char('b')
-        {
+        let typing = self.rv.builds.table.typing.is_some() || self.rv.table.typing.is_some();
+        // `t` opens each workflow's usual run time in the Builds pane, from either table.
+        if !typing && k.code == KeyCode::Char('t') {
+            let bv = &mut self.rv.builds;
+            bv.times = if bv.times.is_some() { None } else { Some(0) };
+            bv.log = None;
+            bv.focus = true;
+            self.rv.open = false;
+            return true;
+        }
+        if !typing && k.code == KeyCode::Char('b') {
             self.rv.builds.focus = !self.rv.builds.focus;
             // The keys that close the channel pane are the channels': it must not outlive them.
             self.rv.open = false;
@@ -3044,17 +3067,20 @@ impl App {
                 "Enter log  / query  f state  s sort  S asc/desc  x clear  h history  o open url  Esc back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Releases if self.rv.table.typing.is_some() || self.rv.builds.table.typing.is_some() => QUERY_HINT.into(),
+            Tab::Releases if self.rv.builds.focus && self.rv.builds.times.is_some() => {
+                "Esc/t close run times  J/K PgUp/PgDn scroll  j/k move  Enter log  b channels  q quit".into()
+            }
             Tab::Releases if self.rv.builds.focus && self.rv.builds.log.is_some() => {
                 "Esc close log  J/K PgUp/PgDn scroll log  j/k move  o open run  b channels  q quit".into()
             }
             Tab::Releases if self.rv.builds.focus => format!(
-                "Enter log  / query  f state  s sort  S asc/desc  x clear  o open run  b channels  r refresh  {tabs} tabs  q quit"
+                "Enter log  t run times  / query  f state  s sort  S asc/desc  x clear  o open run  b channels  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Releases if self.rv.open => {
                 "Esc close  J/K scroll pane  [ ] older/newer tag  j/k move  q quit".into()
             },
             Tab::Releases => format!(
-                "Enter open  / query  f state  s sort  S asc/desc  x clear  b builds  r refresh  {tabs} tabs  q quit"
+                "Enter open  / query  f state  s sort  S asc/desc  x clear  b builds  t run times  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Schedules if self.sv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
@@ -3532,7 +3558,8 @@ impl App {
             return;
         };
         // Under the list, one pane: the focused section's own (the channel's, or the run's log).
-        let log = self.rv.builds.focus && self.rv.builds.log.is_some();
+        let log = self.rv.builds.focus
+            && (self.rv.builds.log.is_some() || self.rv.builds.times.is_some());
         let (list, pane) = if self.rv.open || log {
             let [a, b] = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .areas(area);
@@ -3581,7 +3608,10 @@ impl App {
         lines.extend(self.rv.builds.table.window(btable, bh));
         f.render_widget(Paragraph::new(lines), list);
         let Some(area) = pane else { return };
-        if log {
+        if let (true, Some(top), Some(b)) = (log, self.rv.builds.times, &self.builds) {
+            let (w, h) = (area.width as usize, area.height as usize);
+            f.render_widget(Paragraph::new(bv::times(b, self.p, w, h, top)), area);
+        } else if log {
             if let Some(l) = &mut self.rv.builds.log {
                 let lines = log_lines(l, area.width as usize, area.height as usize, self.p);
                 f.render_widget(Paragraph::new(lines), area);

@@ -5,8 +5,11 @@
 
 // Only the "2m ago" changes between snapshots, so this redraws without reading.
 const RELEASES_AGE_MS = 60e3;
+// Which folds on the tab are open (the Run times fold), so a repaint keeps them as they were.
+const REL_OPEN = {};
 const relst = tblTab({
   tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or project:binks channel:prod status:drift",
+  open: () => REL_OPEN,
   head: (t) => releasesHead(t.data), body: (t) => releasesBody(t.data), tail: () => releaseBuilds() + releaseTests(),
 });
 
@@ -115,7 +118,10 @@ const bld = tblTab({
 const relRepaint = relst.repaint;
 relst.repaint = () => relRepaint() || bld.repaint() || tst.repaint();
 
-const BLD_COLS = { started: ["started", "n"], state: ["state"], repo: ["repo"], workflow: ["workflow"], branch: ["branch"], took: ["took", "n"], owner: ["owner"] };
+const BLD_COLS = { started: ["started", "n"], state: ["state"], repo: ["repo"], workflow: ["workflow"], branch: ["branch"], took: ["took", "n"], usual: ["usual", "n"], eta: ["eta", "n"], owner: ["owner"] };
+// A workflow's usual time as "median/p90", "-" below the runs a median needs.
+const usualText = (u) => (u ? `${secs(u.median)}/${secs(u.p90)}` : "-");
+$("releases").addEventListener("toggle", (e) => { if (e.target.dataset?.k) REL_OPEN[e.target.dataset.k] = e.target.open; }, true);
 const bldKey = (r) => `${r.forge}|${r.repo}|${r.id}|${r.attempt}`;
 
 function buildRow(r) {
@@ -124,6 +130,7 @@ function buildRow(r) {
   const row = `<tr class="br${open ? " sel" : ""}" data-bkey="${esc(bldKey(r))}">` +
     `<td class="n">${when(r.started)}</td><td class="${relClass(r.level)}">${esc(r.state)}</td><td>${esc(r.repo)}</td>` +
     `<td class="wrap">${esc(r.workflow)}</td><td class="wrap muted">${esc(r.branch)}</td><td class="n">${wait}</td>` +
+    `<td class="n muted">${usualText(r.usual)}</td><td class="n">${r.eta ? when(r.eta) : "-"}</td>` +
     `<td class="muted">${esc(r.owner || "-")}</td></tr>`;
   return open ? row + buildDetail(r) : row;
 }
@@ -133,7 +140,7 @@ function buildDetail(r) {
   const prs = (r.prs || []).map((n) => `#${n}`).join(" ");
   const log = bld.log && bld.log.key === bldKey(r) ? `<pre class="joblog">${esc(bld.log.text)}</pre>` : "";
   const link = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Open run</a>` : "";
-  return `<tr class="wdet"><td colspan="7"><div class="sdet"><div class="muted">${esc(r.title || r.workflow)}</div>` +
+  return `<tr class="wdet"><td colspan="9"><div class="sdet"><div class="muted">${esc(r.title || r.workflow)}</div>` +
     line("Run", `${esc(r.forge)} ${esc(r.repo)} #${r.id}${r.attempt > 1 ? " attempt " + r.attempt : ""} ${link}`) +
     line("Event", esc(r.event)) + line("Branch", esc(r.branch)) + line("Owner", esc(r.owner || "")) + line("PRs", esc(prs)) + log + `</div></td></tr>`;
 }
@@ -143,6 +150,18 @@ function buildsBody(d) {
   if (!rows.length) return `<div class="panel">${t && t.total ? "No runs match." : "No runs in the ledger."}</div>`;
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, BLD_COLS)}${rows.map(buildRow).join("")}</table>` +
     (d.more > 0 ? `<div class="muted">${d.more} older not shown; narrow the search to list them.</div>` : "") + `</div>`;
+}
+
+// The Run times fold: each workflow's usual time over the window, from the same read.
+function buildTimes(d) {
+  const t = d.times || [];
+  if (!t.length) return "";
+  const row = (w) => `<tr><td>${esc(w.repo.split("/").pop())}</td><td class="wrap">${esc(w.workflow)}</td><td class="n">${w.runs}</td>` +
+    `<td class="n">${w.usual ? secs(w.usual.median) : "-"}</td><td class="n">${w.usual ? secs(w.usual.p90) : "-"}</td>` +
+    `<td class="n">${secs(w.longest)}</td><td class="n">${w.pass}%</td><td class="n">${w.running || ""}</td></tr>`;
+  const head = "<tr><th>repo</th><th>workflow</th><th>runs</th><th>usual</th><th>p90</th><th>longest</th><th>pass</th><th>running</th></tr>";
+  return cfold("bld-times", `<b>Run times</b> <span class="muted">${t.length} workflows, 30 days, finished runs (cancelled left out); usual is the median, - under 3 runs</span>`,
+    `<div class="panel scroll"><table class="tbl">${head}${t.map(row).join("")}</table></div>`, REL_OPEN);
 }
 
 function buildsHead(d) {
@@ -158,7 +177,7 @@ function buildsHead(d) {
 function releaseBuilds() {
   if (!bld.data) return bld.err ? `<div class="panel down">${esc(bld.err)}</div>` : "";
   if (!bld.data.table) return `<div id="bld-head">${buildsHead(bld.data)}</div>`;
-  return `<div data-tbl="${BUILDS_PRE}"><div id="bld-head">${buildsHead(bld.data)}</div>${tblBar("bld", bld.data.table, BUILDS_HINT)}` +
+  return `<div data-tbl="${BUILDS_PRE}"><div id="bld-head">${buildsHead(bld.data)}</div>${buildTimes(bld.data)}${tblBar("bld", bld.data.table, BUILDS_HINT)}` +
     `<div id="bld-body">${buildsBody(bld.data)}</div></div>`;
 }
 

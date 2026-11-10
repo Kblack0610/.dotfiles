@@ -9,6 +9,7 @@
 //! | the runs            | `$SCHEDULES_RUNS_LEDGER`, else `<state>/ci/runs.jsonl`          |
 //! | when it last synced | `sync.json` beside it: its `generated_at` and a `error` per repo |
 //! | the owner session   | fleet-sessions' `state.json`: the live session on the branch    |
+//! | the usual run time  | computed on read from the same runs (`time`), nothing stored     |
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -96,6 +97,45 @@ pub struct Run {
     /// How long it ran; a queued run's wait; a running one's time so far.
     #[serde(skip_deserializing)]
     pub took: Option<i64>,
+    /// What its workflow usually takes (`time`); none below `USUAL_MIN` finished runs.
+    #[serde(skip_deserializing)]
+    pub usual: Option<Usual>,
+    /// A running run's expected end: its start plus the usual median, unix seconds.
+    #[serde(skip_deserializing)]
+    pub eta: Option<i64>,
+}
+
+/// A workflow's median and 90th-percentile run time in seconds, over its finished runs.
+#[derive(Serialize, Debug, Default, Clone, Copy, PartialEq)]
+pub struct Usual {
+    pub median: i64,
+    pub p90: i64,
+}
+
+/// Below this many finished runs a workflow has no usual time and its runs no ETA: a guess
+/// drawn as a number reads as a fact.
+pub const USUAL_MIN: usize = 3;
+
+/// One workflow's run times over the window: the Builds section's Run times fold.
+#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+pub struct RunTime {
+    pub forge: String,
+    pub repo: String,
+    /// The name its runs are timed under (`timed_as`).
+    pub workflow: String,
+    /// Finished runs counted: success, failure and timeout.
+    pub runs: usize,
+    pub usual: Option<Usual>,
+    pub longest: i64,
+    /// Successes among the runs counted, a whole percent.
+    pub pass: u32,
+    pub running: usize,
+}
+
+impl RunTime {
+    pub fn short_repo(&self) -> &str {
+        self.repo.rsplit('/').next().unwrap_or(&self.repo)
+    }
 }
 
 impl Run {
@@ -133,8 +173,8 @@ impl Row for Run {
     // `forge`, `event`, `title`, `sha` and `url` filter without a column on the page: the first two
     // are dropdowns, the third is the open row's heading.
     const COLUMNS: &'static [&'static str] = &[
-        "started", "state", "repo", "workflow", "branch", "took", "owner", "forge", "event",
-        "title",
+        "started", "state", "repo", "workflow", "branch", "took", "usual", "eta", "owner", "forge",
+        "event", "title",
     ];
     const STATES: &'static [&'static str] = &["all", "running", "queued", "red", "green"];
     const FACETS: &'static [&'static str] = &["repo", "forge", "event", "state"];
@@ -155,6 +195,8 @@ impl Row for Run {
             "event" => text(&self.event),
             "state" => text(&self.state),
             "took" => self.took.map_or(Val::None, |n| Val::Num(n as f64)),
+            "usual" => self.usual.map_or(Val::None, |u| Val::Num(u.median as f64)),
+            "eta" => self.eta.map_or(Val::None, |n| Val::Num(n as f64)),
             "owner" => text(&self.owner),
             "title" => text(&self.title),
             _ => Val::None,
@@ -240,6 +282,8 @@ pub struct Builds {
     pub at: i64,
     pub counts: Counts,
     pub rows: Vec<Run>,
+    /// Each workflow's run times, by repo, the most-run first.
+    pub times: Vec<RunTime>,
     /// Why the ledger or a repo could not be read: a red line, never a silent blank.
     pub errors: Vec<String>,
 }
@@ -409,7 +453,124 @@ pub fn read(paths: &Paths, now: i64) -> Builds {
         }
         Err(e) => out.errors.push(format!("owner session: {e}")),
     }
+    out.times = time(&mut out.rows);
     out.counts = Counts::of(&out.rows, now);
+    out
+}
+
+/// The name a run is timed under: Dependabot's per-update names fold to one per ecosystem, and a
+/// run id or sha in a name drops with the `of` before it (`Tests (delta of 42614501160)` is
+/// `Tests (delta)`), so one workflow's runs pool.
+pub fn timed_as(workflow: &str, path: &str) -> String {
+    if path.starts_with("dynamic/dependabot/") {
+        let eco = workflow.split_whitespace().next().unwrap_or_default();
+        return format!("Dependabot ({eco})");
+    }
+    let mut out: Vec<String> = Vec::new();
+    for word in workflow.split_whitespace() {
+        let core = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let id = core.len() >= 7
+            && core.chars().all(|c| c.is_ascii_hexdigit())
+            && core.chars().any(|c| c.is_ascii_digit());
+        if !id {
+            out.push(word.to_string());
+            continue;
+        }
+        if out.last().is_some_and(|w| w == "of") {
+            out.pop();
+        }
+        let tail = &word[word
+            .trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+            .len()..];
+        match out.last_mut() {
+            Some(w) => w.push_str(tail),
+            None if !tail.is_empty() => out.push(tail.to_string()),
+            None => {}
+        }
+    }
+    out.join(" ")
+}
+
+/// The value at quantile `q` of sorted `v`, nearest rank.
+fn rank(v: &[i64], q: f64) -> i64 {
+    v[((q * v.len() as f64).ceil() as usize).clamp(1, v.len()) - 1]
+}
+
+/// Each workflow's run times from `rows`, and each row's usual time and, running, its ETA. Only
+/// a finished success, failure or timeout counts: a cancelled or skipped run stopped early and
+/// would pull the median down. A running run past its workflow's p90 turns amber.
+pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
+    type Key = (String, String, String);
+    let key = |r: &Run| {
+        (
+            r.forge.clone(),
+            r.repo.clone(),
+            timed_as(&r.workflow, &r.path),
+        )
+    };
+    let mut by: HashMap<Key, (Vec<i64>, usize, usize)> = HashMap::new();
+    for r in rows.iter() {
+        let (took, green, running) = by.entry(key(r)).or_default();
+        *running += usize::from(r.state == "running");
+        let counted = matches!(
+            r.conclusion.as_deref(),
+            Some("success" | "failure" | "timed_out")
+        ) && r.done()
+            && r.started_at.is_some();
+        if let (true, Some(t)) = (counted, r.took) {
+            took.push(t);
+            *green += usize::from(r.state == "green");
+        }
+    }
+    let mut out: Vec<RunTime> = by
+        .into_iter()
+        .filter(|(_, (took, _, _))| !took.is_empty())
+        .map(|((forge, repo, workflow), (mut took, green, running))| {
+            took.sort_unstable();
+            let usual = (took.len() >= USUAL_MIN).then(|| Usual {
+                median: rank(&took, 0.5),
+                p90: rank(&took, 0.9),
+            });
+            RunTime {
+                forge,
+                repo,
+                workflow,
+                runs: took.len(),
+                usual,
+                longest: took[took.len() - 1],
+                pass: (green * 100 / took.len()) as u32,
+                running,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        (a.short_repo(), std::cmp::Reverse(a.runs), &a.workflow).cmp(&(
+            b.short_repo(),
+            std::cmp::Reverse(b.runs),
+            &b.workflow,
+        ))
+    });
+    let usual: HashMap<Key, Usual> = out
+        .iter()
+        .filter_map(|t| {
+            Some((
+                (t.forge.clone(), t.repo.clone(), t.workflow.clone()),
+                t.usual?,
+            ))
+        })
+        .collect();
+    for r in rows.iter_mut() {
+        r.usual = usual.get(&key(r)).copied();
+        if r.state != "running" {
+            continue;
+        }
+        if let Some(u) = r.usual {
+            r.eta = Some(r.started + u.median);
+            if r.took.is_some_and(|t| t > u.p90) {
+                r.level = Level::Warn;
+            }
+        }
+    }
     out
 }
 
@@ -653,6 +814,126 @@ mod tests {
             got.contains("Attempt 1 was re-run") && got.contains("/attempts/1"),
             "{got}"
         );
+    }
+
+    /// A finished run of `workflow` that took `secs`, begun an hour before `NOW`.
+    fn timed(id: u64, workflow: &str, conclusion: &str, secs: i64) -> String {
+        let start = NOW - 3600 - id as i64;
+        serde_json::json!({
+            "forge": "github", "repo": "Org/app", "id": id, "attempt": 1,
+            "workflow": workflow, "path": ".github/workflows/test.yml", "branch": "b",
+            "status": "completed", "conclusion": conclusion, "created_at": iso(start),
+            "started_at": iso(start), "ended_at": iso(start + secs),
+        })
+        .to_string()
+    }
+
+    fn running(id: u64, workflow: &str, age: i64) -> String {
+        serde_json::json!({
+            "forge": "github", "repo": "Org/app", "id": id, "attempt": 1,
+            "workflow": workflow, "path": ".github/workflows/test.yml", "branch": "b",
+            "status": "in_progress", "created_at": iso(NOW - age), "started_at": iso(NOW - age),
+        })
+        .to_string()
+    }
+
+    fn timed_rows(lines: &[String]) -> (Vec<Run>, Vec<RunTime>) {
+        let (mut rows, bad) = parse(&lines.join("\n"), NOW);
+        assert_eq!(bad, 0);
+        let times = time(&mut rows);
+        (rows, times)
+    }
+
+    #[test]
+    fn a_workflow_is_timed_by_median_and_p90_of_its_finished_runs_only() {
+        let mut lines: Vec<String> = (1..=10)
+            .map(|i| {
+                timed(
+                    i,
+                    "Tests (affected)",
+                    if i <= 7 { "success" } else { "failure" },
+                    i as i64 * 60,
+                )
+            })
+            .collect();
+        // Cancelled and skipped runs stop early: counted, they would pull the median to a minute.
+        for i in 11..=20 {
+            lines.push(timed(i, "Tests (affected)", "cancelled", 5));
+        }
+        lines.push(timed(21, "Tests (affected)", "skipped", 1));
+        let (_, times) = timed_rows(&lines);
+        assert_eq!(times.len(), 1);
+        let t = &times[0];
+        assert_eq!(t.runs, 10, "cancelled and skipped are left out");
+        assert_eq!(
+            t.usual,
+            Some(Usual {
+                median: 300,
+                p90: 540
+            })
+        );
+        assert_eq!((t.longest, t.pass), (600, 70));
+    }
+
+    #[test]
+    fn a_run_id_in_the_name_and_dependabots_updates_pool_under_one_name() {
+        assert_eq!(
+            timed_as("Tests (delta of 42614501160)", "x"),
+            "Tests (delta)"
+        );
+        assert_eq!(timed_as("Tests (delta of 3f2a9c1d)", "x"), "Tests (delta)");
+        assert_eq!(timed_as("Multi (named)", "x"), "Multi (named)");
+        assert_eq!(timed_as("Release builds", "x"), "Release builds");
+        assert_eq!(
+            timed_as(
+                "github_actions in / for actions/checkout - Update #1687367140",
+                "dynamic/dependabot/dependabot-updates"
+            ),
+            "Dependabot (github_actions)"
+        );
+        let lines = [
+            timed(1, "Tests (delta of 42614501160)", "success", 60),
+            timed(2, "Tests (delta of 42718497697)", "success", 120),
+            timed(3, "Tests (delta of 42862038016)", "failure", 180),
+        ];
+        let (_, times) = timed_rows(&lines);
+        assert_eq!(times.len(), 1);
+        assert_eq!(
+            (times[0].workflow.as_str(), times[0].runs),
+            ("Tests (delta)", 3)
+        );
+    }
+
+    #[test]
+    fn a_running_run_gets_an_eta_and_turns_amber_past_its_p90() {
+        let mut lines: Vec<String> = (1..=10)
+            .map(|i| timed(i, "Tests", "success", i as i64 * 60))
+            .collect();
+        lines.push(running(30, "Tests", 120));
+        lines.push(running(31, "Tests", 900));
+        let (rows, _) = timed_rows(&lines);
+        let on_time = rows.iter().find(|r| r.id == 30).unwrap();
+        assert_eq!(on_time.eta, Some(NOW - 120 + 300));
+        assert_eq!(on_time.level, Level::Ok);
+        let late = rows.iter().find(|r| r.id == 31).unwrap();
+        assert_eq!(late.level, Level::Warn, "900s is past the 540s p90");
+        let done = rows.iter().find(|r| r.id == 1).unwrap();
+        assert_eq!((done.usual.map(|u| u.median), done.eta), (Some(300), None));
+    }
+
+    #[test]
+    fn below_three_finished_runs_there_is_no_usual_and_no_eta() {
+        let lines = [
+            timed(1, "Soak", "success", 600),
+            timed(2, "Soak", "success", 700),
+            running(3, "Soak", 60),
+        ];
+        let (rows, times) = timed_rows(&lines);
+        assert_eq!(
+            (times[0].runs, times[0].usual, times[0].running),
+            (2, None, 1)
+        );
+        assert!(rows.iter().all(|r| r.usual.is_none() && r.eta.is_none()));
     }
 
     #[test]
