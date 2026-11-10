@@ -465,14 +465,15 @@ mod tests {
             serde_json::from_str(line.trim_end_matches(';')).expect("INNER_TABS is JSON");
         assert_eq!(got, serde_json::Value::Object(want));
         // Every section a group names is one the page wraps in its inner tab's group, so a
-        // section never shows under every inner tab or under none.
+        // section never shows under every inner tab or under none. Releases is checked per
+        // inner tab below: its table and detail share one group.
         let pages = [
             ("costs", include_str!("../static/costs.js").to_string()),
             ("infra", include_str!("../static/infra.js").to_string()),
         ];
         for t in hub_core::layout::TABS
             .iter()
-            .filter(|t| !t.inner.is_empty())
+            .filter(|t| !t.inner.is_empty() && t.id != "releases")
         {
             let (_, js) = pages
                 .iter()
@@ -487,6 +488,20 @@ mod tests {
                     t.id
                 );
             }
+        }
+        // Every Releases inner tab has a group on the page: releases.js wraps one of its sections.
+        let releases = include_str!("../static/releases.js");
+        for i in hub_core::layout::resolve("releases")
+            .expect("releases")
+            .inner
+        {
+            assert!(
+                i.sections
+                    .iter()
+                    .any(|s| releases.contains(&format!("innerWrap(\"releases\", \"{s}\""))),
+                "releases.js never draws the {} inner tab",
+                i.id
+            );
         }
     }
 

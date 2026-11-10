@@ -410,3 +410,35 @@ test("showing the tab reads the view in the URL, which a Projects badge links to
   run("st.views.releases = ''");
 });
 
+
+// Inner tabs: Apps (the table and an opened app), Builds and Tests, over hub_core::layout's groups.
+const shownIn = (h, id) => !new RegExp(`data-in="${id}" hidden`).test(h) && new RegExp(`data-in="${id}"`).test(h);
+const relOn = (arg) => { run(`st.arg = ${JSON.stringify(arg)}; st.section = null`); showBuilds(); Object.assign(run("tst"), { data: tdata(), err: null }); run("relst.render()"); return box.innerHTML; };
+
+test("Releases opens on Apps, and a URL naming Builds or Tests opens that one with the others hidden", () => {
+  // An empty arg is the first inner tab (Apps); a section id is the inner tab holding it.
+  for (const [hash, arg] of [["#releases", ""], ["#releases/builds", "builds"], ["#releases/tests", "tests"], ["#releases/detail", "apps"], ["#releases/table", "apps"], ["#releases?q=project:binks", ""]]) {
+    assert.equal(ctx.route(hash).arg, arg, hash);
+  }
+  const apps = relOn("");
+  assert.ok(shownIn(apps, "apps") && !shownIn(apps, "builds") && !shownIn(apps, "tests"));
+  assert.match(apps, /data-itab="apps" class="on" aria-selected="true"/);
+  const b = relOn("builds");
+  assert.ok(shownIn(b, "builds") && !shownIn(b, "apps") && !shownIn(b, "tests"));
+  const t = relOn("tests");
+  assert.ok(shownIn(t, "tests") && !shownIn(t, "builds"));
+  run("st.arg = ''");
+});
+
+test("a count shows beside an inner tab needing a look: a bad app, a recent red build, a failed suite", () => {
+  const h = relOn("");
+  assert.doesNotMatch(h, />Apps <span class="pill/);
+  assert.match(h, />Tests <span class="pill warn">1<\/span>/);
+  assert.doesNotMatch(h, />Builds <span class="pill/, "a build without look set counts nothing");
+  Object.assign(relst.data, { look: true });
+  Object.assign(run("bld").data, { look: true });
+  run("relst.render()");
+  assert.match(box.innerHTML, />Apps <span class="pill warn">1<\/span>/);
+  assert.match(box.innerHTML, />Builds <span class="pill warn">1<\/span>/);
+  run("st.arg = ''");
+});

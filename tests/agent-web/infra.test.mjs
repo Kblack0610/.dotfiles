@@ -82,7 +82,7 @@ test("CI lists no runs: one line links to Releases, whose Builds section has the
   Object.assign(ist, { open: {} });
   const h = run("ciSection({}, {}, Date.now(), { hosts: 0, slots: 0, busy: 0, queued: 0, oldest: 0, rows: [], queue: [], red: [] })");
   assert.ok(!h.includes("Recent runs"), "the runs are Releases'");
-  assert.match(h, /<div class="cline">Runs: every CI run is on <a href="#releases">Releases, Builds<\/a><\/div>$/);
+  assert.match(h, /<div class="cline">Runs: every CI run is on <a href="#releases\/builds">Releases, Builds<\/a><\/div>$/);
 });
 
 const slot = (o) => ({ host: "razer", slot: "1", state: "busy", job: "PlayMode", repo: "unity", pr: "412", branch: "feat", ran: 7000, usual: 600, late: true, note: "", ...o });

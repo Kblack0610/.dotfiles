@@ -192,8 +192,26 @@ pub const TABS: [Tab; 12] = [
         title: "Releases",
         question: "What is building, and what is live where?",
         sections: &["table", "detail", "builds", "tests"],
+        // Three questions: what is live where (the apps and an opened one), what CI is doing, and
+        // how the last test run went.
         pinned: &[],
-        inner: &[],
+        inner: &[
+            Inner {
+                id: "apps",
+                title: "Apps",
+                sections: &["table", "detail"],
+            },
+            Inner {
+                id: "builds",
+                title: "Builds",
+                sections: &["builds"],
+            },
+            Inner {
+                id: "tests",
+                title: "Tests",
+                sections: &["tests"],
+            },
+        ],
     },
 ];
 
@@ -299,15 +317,6 @@ pub fn inner_tab(tab: &Tab, name: Option<&str>) -> Option<&'static Inner> {
         .find(|i| i.sections.contains(&n.as_str()))
         .or_else(|| tab.inner.iter().find(|i| i.id == n))
         .or_else(|| tab.inner.first())
-}
-
-/// The inner tab a word names strictly: its id, or a section id for the one holding it. None for
-/// a pinned, unknown or empty word, so a caller can keep the inner tab it shows.
-pub fn inner_named(tab: &Tab, word: &str) -> Option<&'static Inner> {
-    let w = word.trim().to_ascii_lowercase();
-    tab.inner
-        .iter()
-        .find(|i| i.id == w || i.sections.contains(&w.as_str()))
 }
 
 /// How many of an inner tab's sections are in `flagged` (the ones needing a look), the count its
@@ -492,16 +501,7 @@ mod tests {
         assert_eq!(at(Some("governor")), Some("machines"));
         assert_eq!(at(Some("jobs")), Some("jobs"));
         // a retired tab name that became a section lands on the inner tab holding it
-        assert_eq!(
-            section("ci")
-                .and_then(|s| inner_named(infra, s))
-                .map(|i| i.id),
-            Some("machines")
-        );
-        // strict: a pinned or unknown word names none, so the caller keeps its inner tab
-        assert_eq!(inner_named(infra, "red"), None);
-        assert_eq!(inner_named(infra, "nope"), None);
-        assert_eq!(inner_named(infra, " Cloud ").map(|i| i.id), Some("cloud"));
+        assert_eq!(at(section("ci")), Some("machines"));
     }
 
     #[test]
@@ -564,6 +564,14 @@ mod tests {
         assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("models"));
         // a tab with no inner tabs has none
         assert_eq!(inner_tab(resolve("queue").unwrap(), Some("table")), None);
+        // Releases: the apps and an opened one, Builds, Tests; old `#releases/builds` links land
+        let rel = resolve("releases").unwrap();
+        let at = |w: Option<&str>| inner_tab(rel, w).map(|i| i.id);
+        assert_eq!(at(None), Some("apps"));
+        assert_eq!(at(Some("detail")), Some("apps"));
+        assert_eq!(at(Some("builds")), Some("builds"));
+        assert_eq!(at(Some("tests")), Some("tests"));
+        assert_eq!(at(Some("project:binks")), Some("apps"));
     }
 
     #[test]
