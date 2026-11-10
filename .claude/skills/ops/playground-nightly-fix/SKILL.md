@@ -14,7 +14,7 @@ The loop that takes unity-core-playground's red nightly to green and proves it. 
 
 ## Scope and triggers
 
-- When a scheduled `test.yml`, `multi.yml` or `soak.yml` run on main is red, or Home's NEEDS YOU shows a Nightly row.
+- When a full run of a nightly workflow (`test.yml`, `multi.yml`, `slim-tour.yml`, `hd.yml`, `soak.yml`) on main is red, the `playground-nightly` watch trips, or Home's NEEDS YOU shows a Nightly row.
 - When a validation item from an earlier pass fires.
 
 Not for one PR's gate red (`/my:fix-ci`) or for CI time (`ci-cost`).
