@@ -637,14 +637,14 @@ codex_gone() {
   ! codex_run_live "$1"
 }
 
-# codex_run_live <slug> -- exit 0 while a process running `agent-codex run` (the launch line's timeout,
+# codex_run_live <slug> -- exit 0 while a process running `agent-codex run` or `resume` (the launch line's timeout,
 # or agent-codex itself) has AGENT_QUEUE_ITEM=<slug> in its environment. Only the launcher's own
 # processes count: a daemon a Codex command started inherits the variable and may outlive the run. Only
 # this user's processes are read (pgrep -u), and one that exited since pgrep listed it is skipped. A
 # pgrep that fails, or a live process whose environment will not read, cannot tell, and cannot-tell is live.
 codex_run_live() {
   local pids p
-  pids=$(pgrep -u "$(id -u)" -f 'agent-codex run' 2>/dev/null); [ $? -le 1 ] || return 0
+  pids=$(pgrep -u "$(id -u)" -f 'agent-codex (run|resume)' 2>/dev/null); [ $? -le 1 ] || return 0
   for p in $pids; do
     [ -e "$DISPATCH_PROC/$p" ] || continue
     [ -r "$DISPATCH_PROC/$p/environ" ] || return 0
@@ -1332,7 +1332,7 @@ harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESS
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -1350,7 +1350,7 @@ gateway_launch() {
   fi
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")
-  ! headless "$harness" || [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: $harness runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
+  takes_plan "$harness" || [ "$(jq -r .mode <<<"$it")" != plan ] || { say "start: $harness runs to its end and cannot wait on a plan; $slug is a plan item"; return 2; }
   case "$(harness_launcher "$harness")" in
     claude-lazer)
       launch_mode "$(jq -r 'if .mode == "plan" then "plan" else "bypassPermissions" end' <<<"$it")"
@@ -1371,9 +1371,20 @@ gateway_launch() {
       # agent-codex claims the thread id on the item when codex names it. Codex runs only the hooks
       # it has trusted, and a hooks.json the sync rewrote is trusted no more: the bypass makes a fleet
       # run fire ~/.codex/hooks.json as written (the guards, and the Stop check that it closed its item).
+      # An item whose last run's thread can be taken up resumes it (resume_thread), here, on the
+      # salvage branch that run pushed when it left work (agent-codex checks it out, or refuses).
       cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") env -u LITELLM_MASTER_KEY -u OPENAI_API_KEY -u CODEX_API_KEY"
-      cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m agent-codex run -m $(printf '%q' "$id")"
-      cmd="$cmd --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --color never $(printf '%q' "$brief")"
+      cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m agent-codex"
+      read -r thread _ < <(resume_thread "$it" "$harness") || thread=''
+      if [ -n "$thread" ]; then
+        salvage=$(jq -r '.salvage // empty' <<<"$it")
+        cmd="$cmd resume ${salvage:+--salvage $(printf '%q' "$salvage") }$thread -m $(printf '%q' "$id")"
+      else
+        cmd="$cmd run -m $(printf '%q' "$id")"
+      fi
+      cmd="$cmd --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check"
+      [ -n "$thread" ] || cmd="$cmd --color never"   # a resume takes no --color
+      cmd="$cmd $(printf '%q' "$brief")"
       ;;
     claude-cloud)
       # A Claude cloud session: a fresh GitHub clone on Anthropic's VM, billed to the plan, with none of
@@ -1410,7 +1421,31 @@ cloud_routed() {
 
 # headless <harness> -- the harness runs to its end with no slash commands or human at the pane: its
 # `headless` in the map. Codex fires the hooks in ~/.codex/hooks.json; opencode fires none.
-headless() { jq -e --arg h "$1" '.harnesses[$h].headless == true' "$HARNESSES" >/dev/null 2>&1; }
+headless() { harness_flag "$1" headless; }
+
+# resumes <harness> -- a later run can take up an earlier run's thread: its `resume` in the map (codex,
+# through agent-codex resume). opencode and glm do not, so they stay refused plan items and --resume.
+resumes() { harness_flag "$1" resume; }
+
+# harness_flag <harness> <key> -- that key is true in the harness's map entry.
+harness_flag() { jq -e --arg h "$1" --arg k "$2" '.harnesses[$h][$k] == true' "$HARNESSES" >/dev/null 2>&1; }
+
+# is_canary <item json> -- the item is a fleet-bench canary: it replays a merged PR and is scored fresh.
+is_canary() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" canary "* ]]; }
+
+# takes_plan <harness> -- it can run a plan item: a pane that waits on the human at its plan, or a
+# headless run that resumes, which posts the plan as an ask and is resumed on the answer (item_brief).
+takes_plan() { ! headless "$1" || resumes "$1"; }
+
+# resume_thread <item json> <harness> -> "<thread id> <rollout file>" when a start of the item on that
+# harness takes up its last run's thread instead of starting cold: the harness resumes, the last run was
+# on it, its rollout is on disk, and the item has no PR (fix_ci_brief owns a PR's red) and is no canary,
+# which is scored fresh. The cases it covers: a requeue at the usage limit, an answered ask, a plan's approval.
+resume_thread() {
+  resumes "$2" && [ "$(jq -r '.agent // "claude"' <<<"$1")" = "$2" ] || return 0
+  [ -z "$(jq -r '.pr // ""' <<<"$1")" ] && ! is_canary "$1" || return 0
+  item_rollout "$1"
+}
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on
@@ -1429,7 +1464,8 @@ headless() { jq -e --arg h "$1" '.harnesses[$h].headless == true' "$HARNESSES" >
 #   --brief FILE --row KEY  claim the open row (an id in any case), promote it into a queue item with the brief as
 #                           its task, and start that item as --item does. --mode plan makes it a plan item:
 #                           the session opens in plan mode and waits on the human's approval.
-#   --resume ID             a new session --session NAME in --cwd DIR running claude --resume.
+#   --resume ID             a new session --session NAME in --cwd DIR running claude --resume, or, for an
+#                           item on a harness that resumes (codex), agent-codex resume on its last thread.
 #                           The sheet is not touched: the row was claimed before the reboot.
 #                           --item SLUG re-attaches the started item that session was working;
 #                           without it, the running or waiting item that lists ID (`agent-queue mine --sid`).
@@ -1439,7 +1475,7 @@ headless() { jq -e --arg h "$1" '.harnesses[$h].headless == true' "$HARNESSES" >
 #                           a plan item, else bypass.
 cmd_start() {
   local project='' prof='' lane=human key='' server='' model='' brief_file='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' qmode='' brief cmd label origin acct mode rec size
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' rh='' qmode='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -1523,7 +1559,14 @@ cmd_start() {
     st=$(jq -r .state <<<"$it")
     if [ -n "$resume" ]; then
       case "$st" in running | waiting | review) ;; *) say "start: $item is $st; --resume re-attaches an item already started"; return 1 ;; esac
-      [ "$(jq -r '.agent // "claude"' <<<"$it")" = claude ] || { say "start: $item ran on $(jq -r .agent <<<"$it"); --resume is for claude"; return 2; }
+      rh=$(jq -r '.agent // "claude"' <<<"$it")
+      if [ "$rh" = claude ]; then rh=''
+      else
+        # A harness that resumes takes up its last thread, the one id resume_thread names.
+        resumes "$rh" || { say "start: $item ran on $rh, which cannot resume; --resume is for claude or a harness that resumes"; return 2; }
+        [ "$(resume_thread "$it" "$rh" | cut -d' ' -f1)" = "$resume" ] || { say "start: $resume is not the last $rh thread of $item with a rollout, and no PR on the item; nothing to resume"; return 1; }
+        ! codex_run_live "$item" || { say "start: the $rh run of $item is still live; end it before resuming it"; return 1; }
+      fi
     else
       [ -z "$key$session" ] || { say "start: --item is a launch of its own: no --row or --session"; return 2; }
       [ "$st" = queued ] || { say "start: $item is $st, not queued"; return 1; }
@@ -1545,9 +1588,14 @@ cmd_start() {
       joined=1
     fi
     origin=${START_ORIGIN:-resume}
-    launch_mode "$(resume_mode "$resume" "$(jq -r '.mode // empty' <<<"${it:-null}")")"
-    lane_sandbox "$cwd" || return 1
-    cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
+    if [ -n "$rh" ]; then
+      [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: $item runs on $rh, which cannot enforce lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
+      gateway_launch "$rh" "$(jq -r '.model // empty' <<<"$it")" "$it" "$(item_brief "$it" "$rh")" || return
+    else
+      launch_mode "$(resume_mode "$resume" "$(jq -r '.mode // empty' <<<"${it:-null}")")"
+      lane_sandbox "$cwd" || return 1
+      cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")"
+    fi
     if [ -n "$joined" ]; then
       target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
         { say "could not open window $window in $session on $server"; return 1; }
@@ -1762,14 +1810,16 @@ ask_decisions() {
 # item and for a tier-3 one, not a red, on a headless harness, which cannot run the red-fix gate's
 # review (route). A kind whose `exit` is doc+ask or proof opens no PR, so its brief ends on that close
 # instead of agent-land (doc_ask_brief, proof_brief). A headless harness (opencode, codex) has no
-# slash commands or human at the pane, so it reads the skill and closes differently. A repo whose
-# canonical forge is Forgejo (forge_canonical) cannot run agent-land, so its brief names one-shot's
-# Forgejo landing instead.
+# slash commands or human at the pane, so it reads the skill and closes differently, and a plan item
+# on one plans first (plan_stage). A start that resumes the item's last run (resume_thread) gets
+# resume_brief instead, and one that does not, of an item with salvaged work, is told where it is
+# (salvage_line). A repo whose canonical forge is Forgejo (forge_canonical) cannot run agent-land, so
+# its brief names one-shot's Forgejo landing instead.
 # A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief.
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
-  if [[ "$tags" == *" canary "* ]]; then jq -r .task <<<"$it"; return 0; fi
+  if is_canary "$it"; then jq -r .task <<<"$it"; return 0; fi
   if [ "$harness" = claude-cloud ]; then
     key=$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")
     jq -r .task <<<"$it"
@@ -1781,6 +1831,7 @@ item_brief() {
     echo "If a step needs a decision from the human, put the question in the PR body, build the rest with that step off, and end the session."
     return 0
   fi
+  if [ -n "$(resume_thread "$it" "$harness")" ]; then resume_brief "$it"; return; fi
   if [ -n "$(jq -r 'select((.pr // "") != "") | .fix_tries // ""' <<<"$it")" ]; then fix_ci_brief "$it" "$harness"; return; fi
   if [[ "$tags" == *" night "* ]] || { headless "$harness" && [[ "$tags" != *" red "* ]] && [ "$(item_tier "$it")" = 3 ]; }; then
     pr_only=' --pr-only'
@@ -1792,6 +1843,7 @@ item_brief() {
   # A kind that opens no PR has no PR to stop at, and no tier-3 merge gate to name.
   case "$exit_" in doc+ask | proof) nopr=1 pr_only='' ;; esac
   if headless "$harness"; then
+    [ "$mode" != plan ] || plan_stage "$slug" "$tags"
     printf 'Read ~/.claude/skills/%s/SKILL.md and follow it%s for this task:\n' "${entry#/}" "${pr_only:+ with$pr_only}"
   elif [ "$mode" != plan ]; then
     printf '%s%s ' "$entry" "$pr_only"
@@ -1799,6 +1851,7 @@ item_brief() {
   jq -r .task <<<"$it"
   echo
   ask_decisions "$tags"
+  salvage_line "$it"
   [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
   [[ "$tags" == *" red "* || -n "$pr_only" || -n "$nopr" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Before agent-land, run the bats files the Stop hook picks for the files you changed and put the result in the PR body."
   row=$(item_row "$it")
@@ -1836,6 +1889,51 @@ item_brief() {
     return
   fi
   ask_rule
+}
+
+# plan_stage <slug> <tags> -- what a headless plan item does first: write the plan, post it as an
+# approval ask, requeue behind it and stop. The answer resumes the run (resume_thread) with the decision
+# in its brief, where a Claude plan item waits in its pane at the plan. A start that cannot resume, after
+# the human decided, builds on that decision instead of planning again.
+plan_stage() {
+  if [ -n "$(ask_decisions "$2")" ]; then
+    echo "This is a plan item whose plan, ~/.claude/plans/$1.md, the human has decided on below: build it if they approved it, or revise it and post it for approval again if they asked for changes."
+    echo
+    return 0
+  fi
+  echo "This is a plan item: plan first, and change nothing in any repo until the human approves the plan. Write it to ~/.claude/plans/$1.md, then post it: agent-ask post --kind approval --options 'approve=build the plan as written|revise=change the plan first' --recommend approve --why \"<one sentence>\" --context \"The plan is ~/.claude/plans/$1.md\" \"Approve the plan for $1?\". Then run agent-queue requeue $1 --ask <id> and stop: the answer resumes this run, and you build only once it approves."
+  echo "Once the plan is approved, build it as below."
+  echo
+}
+
+# salvage_line <item json> -- an earlier run of the item pushed its unfinished work (agent-codex,
+# `salvage:`) and this start does not resume that run: the new session starts from that work.
+salvage_line() {
+  local sv; sv=$(jq -r '.salvage // empty' <<<"$1")
+  [ -n "$sv" ] || return 0
+  echo "An earlier run of this item left its unfinished work on branch ${sv%@*} at ${sv##*@} on origin: start from it, not from the trunk (git fetch origin ${sv%@*} && git reset --keep ${sv##*@}, on this worktree's branch). If a PR is already open from ${sv%@*}, push to that branch instead of opening a second one."
+}
+
+# resume_brief <item json> -- the prompt a resumed run (resume_thread) continues on: its thread already
+# holds the first brief, so this says why it stopped, what the human decided since, where its work is
+# now (agent-codex checked it out at the salvage sha, or there is none) and how to stop again.
+resume_brief() {
+  local slug sv mode end tags
+  IFS=$'\x1f' read -r slug sv mode end tags < <(jq -r '[.slug, .salvage // "", .mode // "", .end_reason // "", .tags // ""] | join("\u001f")' <<<"$1")
+  if [ "$end" = limit ]; then
+    echo "Your last run on queue item $slug stopped at the plan's usage limit, and the plan has room again."
+  else
+    echo "Your last run on queue item $slug stopped before the item closed, and this run takes it up."
+  fi
+  ask_decisions " $tags "
+  [ "$mode" != plan ] || echo "If the human approved your plan, build it now. If they asked for changes, revise the plan and post it for approval again, the same way."
+  if [ -n "$sv" ]; then
+    echo "The current directory holds the work your last run left, checked out at ${sv##*@} (on ${sv%@*} on origin): build on it here. If a PR is already open from ${sv%@*}, push to that branch instead of opening a second one."
+  else
+    echo "Your last run left no work the trunk lacks: start from the current directory."
+  fi
+  echo "Carry on with the task from where you stopped, under the brief you were first given: what it said about the PR, the item and closing still holds."
+  no_human "$slug"
 }
 
 # fix_ci_brief <item json> <harness> -- the brief of an item fix_red_pr requeued: its work is already
@@ -2046,16 +2144,22 @@ unstart_orphans() {
 # found: no evidence is not a reason, and such an end rates as before. The item's `sessions:` hold the
 # thread ids agent-codex claimed; the launcher's timeout tells a timeout from a cut.
 item_end() {
-  local agent id f='' t
+  local agent f t
   agent=$(jq -r '.agent // "claude"' <<<"$1")
-  [ "$(harness_launcher "$agent")" = codex ] || return 0
-  for id in $(jq -r '(.sessions // "") | split(" ") | reverse | .[]' <<<"$1"); do
-    f=$(find "$CODEX_SESSIONS" -name "rollout-*-$id.jsonl" -type f 2>/dev/null | head -n 1)
-    [ -z "$f" ] || break
-  done
-  [ -n "$f" ] || return 0
+  read -r _ f < <(item_rollout "$1") && [ -n "$f" ] || return 0
   t=$(jq -r --arg h "$agent" '(.harnesses[$h].timeout_min // 0) * 60' "$HARNESSES" 2>/dev/null) || t=0
   jq -rs --argjson timeout_s "${t:-0}" -f "$CODEX_ROLLOUT_JQ" "$f" 2>/dev/null
+}
+
+# item_rollout <item json> -> "<thread id> <rollout file>" of the newest thread its last run, on a Codex
+# launcher, claimed in `sessions:` whose rollout is on disk; nothing for another launcher or no rollout.
+item_rollout() {
+  local id f
+  [ "$(harness_launcher "$(jq -r '.agent // "claude"' <<<"$1")")" = codex ] || return 0
+  for id in $(jq -r '(.sessions // "") | split(" ") | reverse | .[]' <<<"$1"); do
+    f=$(find "$CODEX_SESSIONS" -name "rollout-*-$id.jsonl" -type f 2>/dev/null | head -n 1)
+    [ -z "$f" ] || { echo "$id $f"; return 0; }
+  done
 }
 
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
@@ -2130,7 +2234,8 @@ settle_item() {
     set_end
     # The plan turned the run away at its usage limit: nothing about the item failed, so it goes back
     # to queued/ and its next start waits on the source's room, which claude-acct holds reached from
-    # the refusal until the window resets (ar-1120). Salvaging a mid-run limit's work is codex-parity P6.
+    # the refusal until the window resets (ar-1120). agent-codex pushed any work it left to salvage/<slug>
+    # when it exited, and the next start resumes its thread there (resume_thread).
     if [ "$why" = limit ]; then
       agent-queue move "$1" queued ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
       agent-queue set "$1" "note=session $2 hit the plan's usage limit; requeued (end_reason: limit)" >/dev/null
@@ -2645,7 +2750,7 @@ item_pinned() {
 # lose it): claude's is the rank of the account acct_room picked (its rc in the caller's ACCT_RC), every
 # other's the rank of its source in ACCT_ROWS. Claude needs an account with room. Another harness needs
 # its source's room, this machine (a fleet worker and a sandbox profile run claude only), an item it can
-# hold (a headless one takes no plan item) and, when routed rather than pinned, a tier within the
+# hold (takes_plan: a headless one that cannot resume takes no plan item) and, when routed rather than pinned, a tier within the
 # unattended ceiling: a red goes past it, only to a harness that can run the red-fix gate, and any
 # other item only to a headless one, whose brief then stops at the PR for a review the harness cannot
 # run (item_brief): an idle codex plan does the work, and the merge still waits (ar-1014).
@@ -2667,7 +2772,7 @@ route() {
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
-    elif headless "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless, and this is a plan item")
+    elif ! takes_plan "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless and cannot resume, and this is a plan item")
     elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it" && ! headless "$h"; then why+=("$h: tier $tier is past the unattended ceiling")
     elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && is_red "$it" && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
