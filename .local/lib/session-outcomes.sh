@@ -312,15 +312,39 @@ so_forgejo_pr_list() {
 }
 
 # so_forgejo_pr HOST/OWNER/REPO NUMBER - one PR in the `gh pr view --json
-# headRefName,createdAt,mergedAt,additions,deletions,mergeCommit` shape. headRefName is `#N`, the
+# state,headRefName,headRefOid,body,createdAt,mergedAt,additions,deletions,mergeCommit` shape. headRefName is `#N`, the
 # branch the run ledger files a Forgejo PR's runs under (schedules-sync forgejo_rows); the API's
 # head.ref reads refs/pull/N/head once the branch is deleted. Why it failed goes to stderr.
 so_forgejo_pr() {
   local repo="$1" n="$2" pr
   so_forgejo_auth "$repo" || { printf '%s\n' "$SO_FORGEJO_ERR" >&2; return 1; }
   pr="$(so_forgejo_get "$repo" "pulls/$n")" || return 1
-  jq -c '{headRefName: "#\(.number)", createdAt: .created_at, mergedAt: .merged_at, additions, deletions,
-          mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
+  jq -c '{state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
+          headRefName: "#\(.number)", headRefOid: .head.sha, body, createdAt: .created_at, mergedAt: .merged_at,
+          additions, deletions, mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
+}
+
+# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state}],
+# so pr-ci.sh CI_JQ reads them unchanged: a Forgejo status is pending, success, warning, error or
+# failure, and warning is a pass (Forgejo's combined state does not fail on it). After so_forgejo_auth.
+so_forgejo_checks() {
+  so_forgejo_get "$1" "commits/$2/status" |
+    jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end)}]'
+}
+
+# so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of the checkout's first remote on a host so_forgejo_hosts
+# lists (home-config's is `forgejo`, its origin the GitHub mirror); rc 1 when none is.
+so_forgejo_repo() {
+  local name url host hosts
+  hosts=" $(so_forgejo_hosts) "
+  for name in $(git -C "$1" remote 2>/dev/null); do
+    url="$(git -C "$1" remote get-url "$name" 2>/dev/null)" || continue
+    host="$(url_host "$url")"
+    [ -n "$host" ] && [[ "$hosts" == *" $host "* ]] || continue
+    printf '%s/%s\n' "$host" "$(url_repo "$url")"
+    return 0
+  done
+  return 1
 }
 
 # so_forgejo_auth HOST/OWNER/REPO - may the token go to this repo's host, and is it read? Sets
