@@ -235,12 +235,15 @@ Closing: every close says how. `ptask done --proof <ref>` for something checkabl
 
 ### The task feed
 
-`notes board --json` prints one object, `{"today": "YYYY-MM-DD", "projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
+`notes board --json` prints one object, `{"today": "YYYY-MM-DD", "projects": [...], "rows": [...], "done": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
 
 - A project is `{profile, project, dir, version, open, agent_open, playtest_open, inbox, automation}`, `inbox` the lines waiting in the sheet's `## Inbox`. A project with no rows is still listed, so a UI can offer `add` on it.
-- A row is one open task, from the sheet's open version (`lane: "human"`), the agent sheet's open version (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, version, game, state, priority, tier, worker, requested, id, type, area, size, text, tags, marker, since, filed, sheet, line, raw, details, automation, untriaged}`.
+- A row is one open task, from the sheet's open version (`lane: "human"`), the agent sheet's open version (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, version, game, state, priority, tier, worker, requested, id, type, area, size, text, tags, marker, since, filed, sheet, line, raw, details, automation, untriaged, section, rank, due, parent, weight, closed, prs}`.
 - A focus row has `project: null`: Focus belongs to the profile. The feed only reads it; `notes focus` stays its writer.
 - `state` is `open` or `doing` (`[/]`).
+- `section` is where the sweep lays the row out: `epics`, `now`, `next` or `backlog`, and `done` for a closed row; null on a focus or playtest row. `rank` is the sweep's order as one integer, smaller sooner and comparable across sheets, so a view groups by `section` and sorts by `rank` and draws the sheet's order without deriving its own.
+- `due` is the `#dueMMDD` as `YYYY-MM-DD`, `parent` the id its `#of/<id>` names, `weight` its `#size/` weight (1 unsized), what a forecast sums. `closed` is a closed row's `done:` day and `prs` the `pr:` tokens of its marker.
+- `done` holds the closed rows, newest first and never a dropped one: each sheet's `### Done` as the sweep left it. `--done-days N` widens it to every row closed in the last N days, the rows already rolled into `agent/versions/` included.
 - `priority` is `urgent`, `high` or `low`. An untagged row reads `high`, the rank it sorts at, with `untriaged: true`, which `agentctl-inbox-triage --backlog --priority` reads.
 - `automation` is false on every row and project of a profile with `automation = false`.
 - `tier` is the `#tier/N` tag (1 to 3, as `fleet-dispatch` reads it), `worker` the `#worker/<name>` tag, `requested` true for a `#requested` row, and `version` the open version every row on the feed belongs to.

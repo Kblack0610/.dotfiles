@@ -938,6 +938,85 @@ return {
         end,
       })
 
+      -- The board's words beside a project sheet, as virtual text that is never written to the
+      -- file: `hub board --json` (hub_core::sheet_view) gives each project's head line (version,
+      -- stage, done share, ETA, playtests waiting) and each row's words (its queue state, its
+      -- forecast day on Next up, an epic's leaf rollup). Read async when a sheet is read and after
+      -- each save, so the lines match the file; no `hub`, or a failed read, draws nothing.
+      local board_ns = vim.api.nvim_create_namespace "board_hints"
+      local function draw_board(buf, data)
+        if not vim.api.nvim_buf_is_valid(buf) or vim.bo[buf].modified then
+          return
+        end
+        vim.api.nvim_buf_clear_namespace(buf, board_ns, 0, -1)
+        local path = vim.api.nvim_buf_get_name(buf)
+        local n = vim.api.nvim_buf_line_count(buf)
+        for _, h in ipairs(data.heads or {}) do
+          if path == h.dir .. "/README.md" or path == h.dir .. "/agent/README.md" then
+            local head = { { h.project .. "  " .. h.text, "Comment" } }
+            vim.api.nvim_buf_set_extmark(buf, board_ns, 0, 0, { virt_lines = { head }, virt_lines_above = true })
+          end
+        end
+        for _, h in ipairs(data.hints or {}) do
+          if h.sheet == path and h.line >= 1 and h.line <= n then
+            vim.api.nvim_buf_set_extmark(buf, board_ns, h.line - 1, 0, { virt_text = { { "  " .. h.text, "Comment" } } })
+          end
+        end
+      end
+      -- One read at a time, drawn on every README waiting for it; a save during a read reads
+      -- again after it, so the lines match the saved file. `sheets` (the head dirs of the last
+      -- read that had any) keeps a README outside every project from starting one.
+      local waiting, again, sheets = nil, false, nil
+      local function is_sheet(path)
+        for _, d in ipairs(sheets or {}) do
+          if path == d .. "/README.md" or path == d .. "/agent/README.md" then
+            return true
+          end
+        end
+        return sheets == nil
+      end
+      local function read_board(args)
+        local path = vim.api.nvim_buf_get_name(args.buf)
+        if vim.fn.fnamemodify(path, ":t") ~= "README.md" or vim.fn.executable "hub" == 0 or not is_sheet(path) then
+          return
+        end
+        if waiting then
+          waiting[args.buf] = true
+          again = again or args.event == "BufWritePost"
+          return
+        end
+        waiting = { [args.buf] = true }
+        vim.system({ "hub", "board", "--json" }, { text = true }, function(res)
+          local ok, data = pcall(vim.json.decode, res.code == 0 and res.stdout or "")
+          vim.schedule(function()
+            local bufs, rerun = waiting, again
+            waiting, again = nil, false
+            if rerun then
+              for buf in pairs(bufs) do
+                read_board { buf = buf, event = "reread" }
+              end
+              return
+            end
+            if not ok or type(data) ~= "table" then
+              return
+            end
+            if data.heads and #data.heads > 0 then
+              sheets = {}
+              for _, h in ipairs(data.heads) do
+                table.insert(sheets, h.dir)
+              end
+            end
+            for buf in pairs(bufs) do
+              draw_board(buf, data)
+            end
+          end)
+        end)
+      end
+      -- FileType, not BufReadPost: this config loads on the first markdown FileType, after that
+      -- buffer's read, and lazy re-fires FileType for it.
+      vim.api.nvim_create_autocmd("FileType", { pattern = "markdown", callback = read_board })
+      vim.api.nvim_create_autocmd("BufWritePost", { pattern = "README.md", callback = read_board })
+
       -- Color the priority tags. matchadd is window-local, so (re)apply it once
       -- per window showing a markdown buffer; a window flag prevents duplicates.
       -- BufWinEnter fires whenever the buffer is displayed in a window (open,

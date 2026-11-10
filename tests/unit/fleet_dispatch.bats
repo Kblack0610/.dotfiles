@@ -214,14 +214,25 @@ project() {
 
 row() { printf '%s\t%s\n' "$3" "$4" >> "$NOTES_FIXTURE/rows.$1.$2"; }
 
-# board_row <project> <lane> <id> <tags json> <details json> -- that fixture row as `notes board
-# --json` gives it (its raw line from rows.<project>.<lane>), with tags and details
+# board_row <project> <lane> <id> <tags json> <details json> [rank] -- that fixture row as `notes board
+# --json` gives it (its raw line from rows.<project>.<lane>), with tags, details and its feed rank (null by default)
 board_row() {
-  jq -cn --arg p "$1" --arg l "$2" --arg i "$3" --argjson t "$4" --argjson d "$5" \
+  jq -cn --arg p "$1" --arg l "$2" --arg i "$3" --argjson t "$4" --argjson d "$5" --argjson r "${6:-null}" \
     --arg raw "$(awk -F'\t' -v k="$3" '$1 == k { print $2; exit }' "$NOTES_FIXTURE/rows.$1.$2")" \
-    '{profile: "bnb", project: $p, lane: $l, id: $i, state: "open", tags: $t, details: $d, raw: $raw, text: $raw}' \
+    '{profile: "bnb", project: $p, lane: $l, id: $i, state: "open", tags: $t, details: $d, raw: $raw, text: $raw, rank: $r}' \
     >> "$NOTES_FIXTURE/board.rows"
 }
+
+# fk <due 0-3> <prio 0 urgent|1 high|2 low> <req 0|1> [created YYYY-MM-DD] -> the feed `rank` notes-cli
+# prints for such a row (src/rank.rs Rank::key), so a fixture states what the board would say
+fk() {
+  local day=0
+  [ -z "${4:-}" ] || day=$(( $(date -ud "$4" +%s) / 86400 ))
+  echo $(( (($1 * 3 + $2) * 2 + $3) * 1000000 + day ))
+}
+
+# ranked <project> <lane> <id> <rank> -- the feed row of a fixture row, with that rank
+ranked() { board_row "$1" "$2" "$3" '[]' '[]' "$4"; }
 
 # A tagged row the fleet worker may take.
 T='#worker/fleet #tier/1'
@@ -569,9 +580,9 @@ board_workers() {
 
 # --- picks -------------------------------------------------------------------------------
 
-@test "picks: only S or M, clear, agent-only dispatch verdicts, several per project, urgent then prod first" {
-  c() { jq -cn --arg p "$1" --arg s "$2" --arg k "$3" --argjson pr "$4" \
-        '{profile: "bnb", project: $p, stage: $s, lane: "human", key: $k, prio: $pr, tier: 1, line: ""}'; }
+@test "picks: only S or M, clear, agent-only dispatch verdicts, several per project, sooner feed rank then prod first" {
+  c() { jq -cn --arg p "$1" --arg s "$2" --arg k "$3" --argjson fr "$4" \
+        '{profile: "bnb", project: $p, stage: $s, lane: "human", key: $k, frank: $fr, tier: 1, line: ""}'; }
   cands=$(c alpha1 alpha a 0; c beta1 beta b 1; c beta1 beta b2 1; c prod1 prod p 1; c skipme prod s 0; c big prod L 0)
   verdict alpha1 human a dispatch
   verdict beta1 human b dispatch
@@ -591,10 +602,10 @@ board_workers() {
   assert_equal "$(jq -r .key <<<"$output")" k
 }
 
-# c_area <key> <prio>: a candidate on project game
-c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "game", stage: "beta", lane: "agent", key: $k, prio: $pr, tier: 2, line: ""}'; }
+# c_area <key> <feed rank>: a candidate on project game
+c_area() { jq -cn --arg k "$1" --argjson fr "$2" '{profile: "bnb", project: "game", stage: "beta", lane: "agent", key: $k, frank: $fr, tier: 2, line: ""}'; }
 
-@test "picks: never two on one area in a pass, the more urgent wins, whatever the case" {
+@test "picks: never two on one area in a pass, the sooner feed rank wins, whatever the case" {
   cands=$(c_area low 3; c_area top 0; c_area other 3)
   verdict game agent low dispatch S 1 wilds
   verdict game agent top dispatch S 1 Wilds
@@ -627,9 +638,9 @@ c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "gam
   assert_output ''
 }
 
-@test "picks: an ask outranks a more urgent row of a later worker" {
-  c() { jq -cn --arg k "$1" --argjson w "$2" --argjson pr "$3" '{project: "game", stage: "beta", lane: "agent", key: $k, wrank: $w, prio: $pr, tier: 2, line: ""}'; }
-  cands=$(c urgent 2 0; c theask 0 3)
+@test "picks: at one feed rank, an ask outranks a row of a later worker" {
+  c() { jq -cn --arg k "$1" --argjson w "$2" --argjson fr "$3" '{project: "game", stage: "beta", lane: "agent", key: $k, wrank: $w, frank: $fr, tier: 2, line: ""}'; }
+  cands=$(c urgent 2 5; c theask 0 5)
   verdict game agent urgent dispatch
   verdict game agent theask dispatch
   run picks "$cands" 1
@@ -715,12 +726,14 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   row app agent 'app docs' "- [ ] docs(app): explain the sweep #urgent"
   row app agent 'app split' "- [ ] refactor(app): split the loader #urgent"
   row app agent 'app delete' "- [ ] refactor(app): delete the old loader #low"
+  for k in 'game fix' 'app feat' 'app docs' 'app split'; do ranked "${k%% *}" agent "$k" "$(fk 3 0 1)"; done
+  for k in 'app fix' 'app stale' 'app delete'; do ranked app agent "$k" "$(fk 3 2 1)"; done
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'app fix app stale app delete game fix app feat app docs app split'
   assert_equal "$(jq -r 'select(.key == "app fix") | .why' <<<"$output")" 'cleanup, personal, #low, bug, beta'
   assert_equal "$(jq -r 'select(.key == "game fix") | .cleanup' <<<"$output")" 1
-  # Empty scope turns it off: back to row priority.
+  # Empty scope turns it off: back to the feed rank.
   DISPATCH_CLEANUP_PROJECTS="" run cmd_suggest --json
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'game fix app feat app docs app split app fix app stale app delete'
 }
@@ -733,15 +746,19 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   assert_equal "$(row_priority '- [ ] chore(app): prune the cache #low')" low
 }
 
-@test "rank: cleanup goes first, then due and #requested rows; a lookalike tag is not #requested" {
-  c() { jq -cn --arg k "$1" --argjson pr "$2" --argjson cl "$3" --arg t "$4" \
-    "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, cleanup: $cl, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05"; "")'; }
-  cands=$(c urgent 0 1 '#urgent'; c cleanup 1 0 '#low'; c asked 3 1 '#low #requested'; c due 1 1 '#high #due1105'
-    c lookalike 1 1 '#requested-ish')
+@test "rank: cleanup goes first, then the feed rank; why names due and #requested, and a lookalike tag is not #requested" {
+  c() { jq -cn --arg k "$1" --argjson fr "$2" --argjson cl "$3" --arg t "$4" --argjson pr "$5" \
+    "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, frank: $fr, cleanup: $cl, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05"; "")'; }
+  cands=$(c urgent "$(fk 3 0 1)" 1 '#urgent' 0; c cleanup "$(fk 3 2 1)" 0 '#low' 3; c asked "$(fk 3 2 0)" 1 '#low #requested' 3
+    c due "$(fk 1 1 1)" 1 '#high #due1105' 1; c lookalike "$(fk 3 1 1)" 1 '#requested-ish' 1)
   run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
-  assert_output 'cleanup due asked urgent lookalike'
+  assert_output 'cleanup due urgent lookalike asked'
   run jq -sr "$RANK_JQ"'rank[] | select(.key == "asked") | .why' <<<"$cands"
   assert_output 'requested, #low, beta'
+  run jq -sr "$RANK_JQ"'rank[] | select(.key == "due") | .why' <<<"$cands"
+  assert_output 'due today, #high, beta'
+  run jq -sr "$RANK_JQ"'rank[] | select(.key == "lookalike") | .why' <<<"$cands"
+  assert_output '#high, beta'
   run jq -sr "$RANK_JQ"'rank[] | select(.key == "cleanup") | .why' <<<"$cands"
   assert_output --regexp '^cleanup, '
 }
@@ -756,7 +773,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   assert_output ''
 }
 
-@test "rank: project priority, then due date, then worker, row priority, stage and age, each named in why" {
+@test "rank: project priority, then the feed rank (due, priority, age), each named in why" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
   sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/game/README.md"
@@ -767,6 +784,11 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   row game agent 'game low' "- [ ] game low #low $T #c1101"
   row game agent 'game high new' "- [ ] game high new #high $T #c1104"
   row game agent 'game high' "- [ ] game high #high $T #c1020"
+  ranked app agent 'app urgent' "$(fk 3 0 1)"
+  ranked app agent 'app due' "$(fk 1 1 1)"
+  ranked game agent 'game low' "$(fk 3 2 1 2026-11-01)"
+  ranked game agent 'game high new' "$(fk 3 1 1 2026-11-04)"
+  ranked game agent 'game high' "$(fk 3 1 1 2026-10-20)"
   run cmd_candidates
   assert_success
   run jq -sr "$RANK_JQ"'rank[] | "\(.key): \(.why)"' <<<"$output"
@@ -777,15 +799,15 @@ app due: due today, fleet, #high, alpha
 app urgent: fleet, #urgent, alpha"
 }
 
-@test "rank: with no project priority, due or created date, the order is worker, row priority, stage" {
+@test "rank: at one feed rank, the order is worker, then stage; the row's own tags decide nothing" {
   c() { jq -cn --arg k "$1" --argjson w "$2" --argjson pr "$3" --arg st "$4" \
-    "$RANK_JQ"'{key: $k, wrank: $w, prio: $pr, stage: $st, text: "- [ ] \($k)"} | rank_fields("2026-11-05"; "")'; }
+    "$RANK_JQ"'{key: $k, wrank: $w, prio: $pr, frank: 21000000, stage: $st, text: "- [ ] \($k)"} | rank_fields("2026-11-05"; "")'; }
   cands=$(c alpha-urgent 1 0 alpha; c prod-high 1 1 prod; c beta-high 1 1 beta; c asked 0 2 alpha)
   run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
-  assert_output 'asked alpha-urgent prod-high beta-high'
-  # A low project's urgent row waits behind a normal project's normal row.
+  assert_output 'asked prod-high beta-high alpha-urgent'
+  # A low project's sooner row waits behind a normal project's later row: #prio comes first.
   run jq -sr "$RANK_JQ"'[.[] | rank_fields("2026-11-05"; if .k == "l" then "low" else "" end)] | rank | map(.k) | join(" ")' \
-    <<<'{"k":"l","wrank":0,"prio":0,"stage":"prod"} {"k":"n","wrank":1,"prio":2,"stage":"alpha"}'
+    <<<'{"k":"l","wrank":0,"frank":19000000,"stage":"prod"} {"k":"n","wrank":1,"frank":23000000,"stage":"alpha"}'
   assert_output 'n l'
 }
 
@@ -817,29 +839,56 @@ kinds_match() {
   assert_failure
 }
 
-@test "rank: a fix row goes before a feat row of the same priority, and why calls it a bug" {
+@test "rank: at one feed rank a fix row goes before a feat row, and why calls it a bug" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
-  row game agent 'game feat' "- [ ] feat(game): a new mode #high $T #c1020"
+  row game agent 'game feat' "- [ ] feat(game): a new mode #high $T #c1104"
   row game agent 'game fix' "- [ ] fix(game): the score is wrong #high $T #c1104"
   row game agent 'game urgent feat' "- [ ] feat(game): the menu #urgent $T #c1104"
+  ranked game agent 'game feat' "$(fk 3 1 1 2026-11-04)"
+  ranked game agent 'game fix' "$(fk 3 1 1 2026-11-04)"
+  ranked game agent 'game urgent feat' "$(fk 3 0 1 2026-11-04)"
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game urgent feat,game fix,game feat'
   assert_equal "$(jq -r 'select(.key == "game fix") | .why' <<<"$output")" 'fleet, #high, bug, beta, 1d old'
-  assert_equal "$(jq -r 'select(.key == "game feat") | .why' <<<"$output")" 'fleet, #high, beta, 16d old'
+  assert_equal "$(jq -r 'select(.key == "game feat") | .why' <<<"$output")" 'fleet, #high, beta, 1d old'
 }
 
-@test "rank: a row with no priority tag ranks as #high, by age among them" {
+@test "rank: a row with no priority tag, which the feed ranks as #high, reads as #high in why and priority" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
   row game agent 'game high' "- [ ] game high #high $T #c1104"
   row game agent 'game bare' "- [ ] game bare $T #c1001"
   row game agent 'game low' "- [ ] game low #low $T #c0901"
+  ranked game agent 'game high' "$(fk 3 1 1 2026-11-04)"
+  ranked game agent 'game bare' "$(fk 3 1 1 2026-10-01)"
+  ranked game agent 'game low' "$(fk 3 2 1 2026-09-01)"
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game bare,game high,game low'
   assert_equal "$(jq -r 'select(.key == "game bare") | "\(.why) \(.priority)"' <<<"$output")" 'fleet, #high, beta, 35d old high'
+}
+
+@test "rank: within a project the feed's rank decides, even against the row's own tags; a row the feed does not rank goes last" {
+  export DISPATCH_TODAY=2026-11-05
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'game low' "- [ ] game low #low $T #c1104"
+  row game agent 'game urgent' "- [ ] game urgent #urgent #due1105 $T #c1001"
+  row game agent 'game unranked' "- [ ] game unranked #urgent #due1101 $T #c0901"
+  # The feed puts the #low row first: dispatch reads that, it does not re-derive one from the tags.
+  ranked game agent 'game low' 5
+  ranked game agent 'game urgent' 7
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r '"\(.key)=\(.frank)"' <<<"$output" | paste -sd,)" 'game low=5,game urgent=7,game unranked=null'
+  # Negative control: swap the feed's ranks and the order follows them, text unchanged.
+  : > "$NOTES_FIXTURE/board.rows"
+  ranked game agent 'game low' 7
+  ranked game agent 'game urgent' 5
+  ranked game agent 'game unranked' 6
+  run cmd_suggest --json
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game urgent,game unranked,game low'
 }
 
 @test "candidates: a kind that is off, off in the project or not at the stage, and a parent row, never reach the judge; suggest says why" {
@@ -1141,19 +1190,19 @@ EOF
   [ ! -e "$cwd" ]
 }
 
-@test "judge sends rows in rank order when the batch is capped: prod before alpha at one priority, an urgent alpha first" {
+@test "judge sends rows in rank order when the batch is capped: prod before alpha at one feed rank, a sooner alpha first" {
   stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
     printf "%s\n" "{\"verdicts\":[{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\",\"rule\":\"unclear\"}]}"'
-  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":2}
-{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":2}'
+  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","frank":21000000}
+{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","frank":21000000}'
   assert_success
   run grep -c '"project":"p"' "$NOTES_FIXTURE/prompt"
   assert_output 1
   run grep -c '"project":"a"' "$NOTES_FIXTURE/prompt"
   assert_output 0
-  # The same cap picks the picks order, not a second one: row priority comes before stage.
-  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":0}
-{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":2}'
+  # The same cap picks the picks order, not a second one: the feed rank comes before stage.
+  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","frank":19000000}
+{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","frank":21000000}'
   run grep -c '"project":"a"' "$NOTES_FIXTURE/prompt"
   assert_output 1
 }

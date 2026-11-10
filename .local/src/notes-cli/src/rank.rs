@@ -29,6 +29,21 @@ pub(crate) struct Rank {
     pub created: NaiveDate,
 }
 
+impl Rank {
+    /// The rank as one number, smaller sooner, in the same order as the struct: what
+    /// `notes board --json` prints in `rank`, so a reader sorts rows from different sheets
+    /// (one project's two lanes, the queue's candidates) by one integer and derives nothing.
+    pub(crate) fn key(&self) -> u64 {
+        // Days since 1970 fit in six digits until the year 4707.
+        let day = (self.created - NaiveDate::default())
+            .num_days()
+            .clamp(0, 999_999) as u64;
+        let head = (u64::from(self.due) * md::PRIORITIES.len() as u64 + u64::from(self.prio)) * 2
+            + u64::from(self.req);
+        head * 1_000_000 + day
+    }
+}
+
 /// The rank of `line` on `today`.
 pub(crate) fn of(line: &str, today: NaiveDate) -> Rank {
     let due = match md::find_due(line, today).map(|d| (d - today).num_days()) {
@@ -100,6 +115,26 @@ mod tests {
             of("- [ ] bare", d(TODAY)).prio,
             of("- [ ] tagged #high", d(TODAY)).prio
         );
+    }
+
+    #[test]
+    fn the_key_sorts_exactly_as_the_rank_does() {
+        let rows = [
+            "- [ ] old low #low #c0901",
+            "- [ ] asked high #high #requested #c1105",
+            "- [ ] plain high #high #c1001",
+            "- [ ] fire #urgent #c1108",
+            "- [ ] overdue low #low #due1101",
+            "- [ ] due today #low #due1109",
+            "- [ ] due far #low #due1230",
+            "- [ ] bare",
+        ];
+        let mut by_rank: Vec<&str> = rows.to_vec();
+        by_rank.sort_by_key(|l| of(l, d(TODAY)));
+        let mut by_key: Vec<&str> = rows.to_vec();
+        by_key.sort_by_key(|l| of(l, d(TODAY)).key());
+        assert_eq!(by_rank, by_key);
+        assert!(of(rows[4], d(TODAY)).key() < of(rows[3], d(TODAY)).key());
     }
 
     #[test]

@@ -54,14 +54,14 @@ const listTable = (kept, total = kept.length, o = {}) => ({
 });
 const list = (cards = [card()], o = {}) => ({ cards, unlinked: [], errors: [], table: listTable(cards), ...o });
 const rows = [
-  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", text: "fix the menu", raw: "- [ ] fix the menu", sheet: "a.md", tags: [] },
-  { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", text: "water the beds", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
+  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", label: "NEXT UP (1)", when: "", text: "fix the menu", raw: "- [ ] fix the menu", sheet: "a.md", tags: [] },
+  { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", section: "backlog", label: "BACKLOG (1)", when: "queued  ~11-12", text: "water the beds", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
 ];
 // The Summary hub_core::table sends beside the rows, for these rows.
 const tableOf = (q, total, kept) => ({
   q, state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "urgent", n: 0 }],
-  columns: ["priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "text", "profile", "tag"]
+  columns: ["section", "priority", "project", "lane", "state", "id", "version", "size", "tier", "since", "when", "text", "profile", "tag"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
   facets: [{ key: "lane", on: "", clear: "", values: [{ value: "agent", n: 1, q: "lane:agent" }] }],
 });
@@ -236,10 +236,10 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   const { head, rows: shown } = await drawn(list(), "bnb/demo");
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"), "the server scopes the rows");
   assert.match(head, /Back to projects.*>demo<.*v0\.1\.0 25%/s);
-  assert.match(shown, /1 of 1 open rows/);
+  assert.match(shown, /1 of 1 rows/);
   assert.match(shown, /data-tsort="priority".*data-tsort="text"/s);
   assert.doesNotMatch(shown, /data-tsort="profile"|data-tsort="tag"/, "a query key with no column of its own is not drawn");
-  assert.match(shown, /<tr class="jr" data-row="0"><td><span class="qprio high">high<\/span><\/td><td>demo<\/td>.*fix the menu/s);
+  assert.match(shown, /<tr class="jr" data-row="0"><td><b>NEXT UP \(1\)<\/b><\/td><td><span class="qprio high">high<\/span><\/td><td>demo<\/td>.*fix the menu/s);
   assert.doesNotMatch(shown, /water the beds/, "another project's row is not sent");
   assert.doesNotMatch(shown, /href="#daily"/, "one project's rows have no Daily count");
   assert.match(read().rows, /id="board-q".*id="board-chips"/s);
@@ -248,14 +248,14 @@ test("opening a card asks for its rows alone and draws them as the shared table"
 test("a row opens under itself with its actions, and a second click shuts it", async () => {
   await drawn(list(), "bnb/demo");
   click("b-root", {}, "0");
-  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="10">.*data-tag="0">Tags\.\.\./s);
+  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="12">.*data-tag="0">Tags\.\.\./s);
   click("b-root", {}, "0");
   assert.doesNotMatch(read().rows, /bopen/);
 });
 
 test("a row action after the server filtered names the row on screen, not its place in the sheet", async () => {
   await onBoard("q=water");
-  assert.match(read().rows, /1 of 2 open rows/);
+  assert.match(read().rows, /1 of 2 rows/);
   ctx.sent = [];
   click("b-root", { start: "0" });
   await settle(); await settle();
@@ -297,7 +297,7 @@ test("a click into a project or Back clears the query; a deep link keeps its own
 
 test("Board reads every project's rows under its own view, and leaves them behind", async () => {
   ctx.sent = [];
-  assert.match((await onBoard("q=water")).rows, /1 of 2 open rows/);
+  assert.match((await onBoard("q=water")).rows, /1 of 2 rows/);
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "no scope, the Board's own query");
   ctx.sent = [];
   vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; TABS.projects.show();`, ctx);

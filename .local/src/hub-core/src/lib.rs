@@ -36,6 +36,7 @@ pub mod sections;
 pub mod session_actions;
 pub mod session_page;
 pub mod session_table;
+pub mod sheet_view;
 pub mod signals;
 pub mod table;
 pub mod tasks;
