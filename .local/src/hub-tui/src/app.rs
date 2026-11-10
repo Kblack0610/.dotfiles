@@ -1767,8 +1767,13 @@ impl App {
             let c = self.costs.as_ref();
             let t = c.and_then(|c| c.tokens.as_ref());
             let keys = c.and_then(|c| c.burn.keys.as_ref());
+            let was = self.cv.inner;
             if let Some(seek) = self.cv.fold(k.code, t, keys) {
                 self.seek = seek;
+                // Another inner tab is another page: it opens at its top, not at this offset.
+                if self.cv.inner != was {
+                    self.scroll = 0;
+                }
                 return;
             }
             if self.cv.key(k.code) {

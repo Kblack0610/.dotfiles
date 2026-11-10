@@ -566,3 +566,15 @@ test("switching an inner tab flips the groups in place, with no repaint", () => 
   assert.deepEqual(groups.map((g) => g.hidden), [true, true, false]);
   assert.equal(run("st.arg"), "models");
 });
+
+test("a tab button brings back the inner tab that tab last showed; a link without one opens the first", () => {
+  run("lastInner.costs = 'models'");
+  run("setTab('costs')");
+  assert.equal(run("st.arg"), "models");
+  run("setTab('costs', '')");
+  assert.equal(run("st.arg"), "", "a link to #costs names no inner tab");
+  run("setTab('costs')");
+  assert.equal(run("st.arg"), "", "and that is what the button brings back");
+  run("setTab('fleet')");
+  assert.equal(run("st.arg"), "", "a tab with no inner tabs keeps no memory");
+});

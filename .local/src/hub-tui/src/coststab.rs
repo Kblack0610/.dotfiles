@@ -148,7 +148,7 @@ impl CostsView {
                 _ if word == "spend" => self.history_open = true,
                 _ if word == "tokens" => self.tokens.open = Some(true),
                 _ if word == "langfuse" => self.langfuse = Some(true),
-                _ if named.is_some() => {}
+                _ if named.is_some() || tab().pinned.contains(&v) => {}
                 _ if costs::CUTS.contains(&v) => self.by = costs::cut(v),
                 _ if costs::WINDOWS.iter().any(|w| w.0 == v) => self.window = costs::window(v).0,
                 _ => q.push(word.to_string()),
@@ -1435,6 +1435,9 @@ mod tests {
             (Some(true), ""),
             "a section is no query"
         );
+        // The pinned section is a Costs section too: no query, and the inner tab stays put.
+        v.open("fleet");
+        assert_eq!((v.q.as_str(), v.inner), ("", "limits"), "fleet is no query");
         // The pinned section, then each inner tab's: together every Costs section has its
         // anchor, in the layout's order.
         let mut names: Vec<&str> = vec![];

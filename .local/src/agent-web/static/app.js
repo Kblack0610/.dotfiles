@@ -316,15 +316,19 @@ function innerOf(tab, name) {
   const g = INNER_TABS[tab];
   if (!g) return null;
   const n = String(name || "").trim().toLowerCase();
-  return g.tabs.find((t) => t[2].includes(n)) || g.tabs.find((t) => t[0] === n) || g.tabs[0];
+  return homeOf(tab, n) || g.tabs.find((t) => t[0] === n) || g.tabs[0];
 }
+// The inner tab holding a section id, if any; the one lookup every caller shares.
+const homeOf = (tab, section) => (INNER_TABS[tab] ? INNER_TABS[tab].tabs.find((t) => t[2].includes(section)) : undefined);
+// The inner tab each tab last showed, so a tab button brings it back as it was.
+const lastInner = {};
 // A route's inner tab: `#costs/models` keeps its arg; a section (an old link, or a moved one) becomes
 // its inner tab's arg with the section left to scroll to; anything else is the first inner tab.
 function innerRoute(r) {
   const g = INNER_TABS[r.tab];
   if (!g) return r;
   const want = (r.section || r.arg || "").toLowerCase();
-  const hit = g.tabs.find((t) => t[2].includes(want));
+  const hit = homeOf(r.tab, want);
   if (hit) return { ...r, arg: hit[0], section: r.section || (hit[0] === want ? undefined : want) };
   return { ...r, arg: g.tabs.some((t) => t[0] === want) ? want : "" };
 }
@@ -337,7 +341,7 @@ const tabAnchors = () => [...($(st.tab)?.querySelectorAll('[id^="sec-"]') || [])
 // it paints; the first paint that has the section clears it.
 function seekSection() {
   // A section on another inner tab switches to it first, so the anchor is on screen.
-  const home = st.section && INNER_TABS[st.tab] && INNER_TABS[st.tab].tabs.find((t) => t[2].includes(st.section));
+  const home = st.section && homeOf(st.tab, st.section);
   if (home && home[0] !== innerOf(st.tab, st.arg)[0]) innerGo(st.tab, home[0]);
   const e = st.section && tabAnchors().find((x) => x.id === "sec-" + st.section);
   if (!e) return;
@@ -365,7 +369,7 @@ function route(hash) {
 // Show inner tab `id` of `tab` in place: the URL follows (no history entry, like a tab button),
 // the groups' visibility and the strip's marks flip without a repaint.
 function innerGo(tab, id) {
-  st.arg = id;
+  st.arg = lastInner[tab] = id;
   showUrl();
   const board = $(tab);
   if (!board) return;
@@ -389,7 +393,7 @@ function innerStrip(tab, flagged) {
 // A section's html in its inner tab's group, hidden while another inner tab is open; a pinned
 // section, or a tab with no strip, is left as it is.
 function innerWrap(tab, section, html) {
-  const home = INNER_TABS[tab] && INNER_TABS[tab].tabs.find((t) => t[2].includes(section));
+  const home = homeOf(tab, section);
   if (!home || !html) return html;
   return `<div data-in="${home[0]}"${home[0] === innerOf(tab, st.arg)[0] ? "" : " hidden"}>${html}</div>`;
 }
@@ -413,7 +417,9 @@ document.addEventListener("keydown", (e) => {
 // in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns.
 function setTab(t, arg, query) {
   st.tab = t;
-  st.arg = arg || "";
+  // A tab button (no arg) brings back the inner tab that tab last showed.
+  st.arg = arg || (arg === undefined && lastInner[t]) || "";
+  if (INNER_TABS[t]) lastInner[t] = st.arg;
   st.views[t] = query ?? st.views[t] ?? "";
   for (const n of TAB_NAMES) {
     $("tab-" + n).classList.toggle("on", t === n);
