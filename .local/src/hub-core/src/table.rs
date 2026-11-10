@@ -300,7 +300,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::actions::Action>(),
         phone_table::<crate::fleet::who::Who>(),
         phone_table::<crate::schedules::Schedule>(),
-        phone_table::<crate::releases::Release>(),
+        phone_table::<crate::releases::App>(),
         phone_table::<crate::builds::Run>(),
         phone_table::<crate::sections::Section>(),
         phone_table::<crate::worklog::Work>(),
