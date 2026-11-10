@@ -1458,9 +1458,9 @@ gw_accts() {
   "$SH" check >/dev/null
   run "$SH" skip 'nudge DONE: a f-...' 'shortened'
   assert_failure 2
-  assert_output --partial "nearest is 'nudge DONE: a f-a'"
+  assert_output --partial "nearest due: 'nudge DONE: a f-a'"
   [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
-  ! grep -qs skipped "$FLEET_SHEPHERD_DIR/log.md"
+  if grep -qs skipped "$FLEET_SHEPHERD_DIR/log.md"; then false; fi
   # Negative control: the line as check printed it is accepted and stays out of the next check.
   run "$SH" skip 'nudge DONE: a f-a' 'the human has it'
   assert_success
@@ -1468,12 +1468,30 @@ gw_accts() {
   assert_failure 1
 }
 
-@test "skip with nothing due says so and stores nothing" {
+@test "skip with nothing due, or an empty line, says so and stores nothing; a line due since the last check is accepted" {
   doc "[]"
-  "$SH" check >/dev/null || true
   run "$SH" skip 'nudge DONE: a f-a' 'why'
   assert_failure 2
-  assert_output --partial 'nothing is due'
+  assert_output --partial 'nothing is due now'
+  run "$SH" skip 'unhandled: ' 'why'
+  assert_failure 2
+  assert_output --partial 'is empty'
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+  # no check has seen this line: it is due now, so it is a due line
+  doc "[$(row a DONE false false)]"
+  run "$SH" skip 'nudge DONE: a f-a' 'why'
+  assert_success
+}
+
+@test "skip names every due line tied for nearest, and matches an elided line by both its ends" {
+  doc "[$(row a DONE false false),$(row b DONE false false)]"
+  "$SH" check >/dev/null
+  run "$SH" skip 'nudge DONE: zzz' 'why'
+  assert_failure 2
+  assert_output --partial "nudge DONE: a f-a'; 'nudge DONE: b f-b"
+  run "$SH" skip 'nudge DONE: ...f-b' 'why'
+  assert_failure 2
+  assert_output --partial "nearest due: 'nudge DONE: b f-b'"
   [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
 }
 
