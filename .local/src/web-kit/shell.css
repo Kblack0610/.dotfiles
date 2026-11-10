@@ -10,7 +10,6 @@ kb-shell { display: flex; align-items: center; gap: 12px; padding: 10px 16px; pa
 .kb-bars, .kb-bars::before, .kb-bars::after { position: absolute; left: 10px; width: 16px; height: 2px; background: currentColor; border-radius: 1px; content: ""; }
 .kb-bars { top: 16px; } .kb-bars::before { left: 0; top: -5px; } .kb-bars::after { left: 0; top: 5px; }
 .kb-menu .kb-menu-badge { position: absolute; top: -6px; right: -8px; margin: 0; }
-kb-shell:not(:defined) .kb-menu-badge { display: none; }
 .kb-cur { font-weight: 600; color: var(--muted); }
 .kb-nav { display: flex; flex-direction: column; gap: 1px; }
 .kb-group { font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 8px 2px; }

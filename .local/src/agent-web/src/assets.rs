@@ -13,7 +13,8 @@ use axum::response::{IntoResponse, Response};
 
 const INDEX: &str = include_str!("index.html");
 pub const LOGIN: &str = include_str!("login.html");
-/// Where the page and app.css name the asset version.
+/// Where the page and every CSS file name the asset version: web-kit's tokens.css versions the
+/// fonts with it (`css_names_the_fonts_at_the_current_version`).
 const VERSION_MARK: &str = "{{v}}";
 /// Where the page takes its tab list.
 const NAV_MARK: &str = "{{nav}}";
@@ -23,7 +24,8 @@ const CSS: &str = "text/css; charset=utf-8";
 const WOFF2: &str = "font/woff2";
 
 /// `(name, content type, body)`. tokens.css, shell.css, kb-shell.js and the fonts are web-kit's
-/// (`../../web-kit`, shared with every kblab site), served flat beside agent-web's own. ui.js is the shared helpers, md.js the markdown renderer,
+/// (`../../web-kit`, shared with every kblab site), served flat beside agent-web's own.
+/// ui.js is the shared helpers, md.js the markdown renderer,
 /// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[

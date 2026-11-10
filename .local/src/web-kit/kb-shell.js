@@ -35,9 +35,10 @@ class KbShell extends HTMLElement {
     this.#cur = document.createElement("span");
     this.#cur.className = "kb-cur";
     (this.querySelector(".kb-brand") || menu).after(this.#cur);
-    // A pick closes the menu; so does a tap outside the bar or Escape.
+    // A pick closes the menu; so does a tap outside the bar, Escape, or a tab change made
+    // elsewhere (a hash route, a back gesture), which moves aria-current.
     this.#nav.addEventListener("click", (e) => { if (e.target.closest("a, button")) this.toggle(false); });
-    this.#watch = new MutationObserver(() => this.#label());
+    this.#watch = new MutationObserver(() => { this.#label(); this.toggle(false); });
     this.#watch.observe(this.#nav, { subtree: true, attributes: true, attributeFilter: ["aria-current"] });
     this.#label();
   }

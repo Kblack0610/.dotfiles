@@ -243,7 +243,8 @@ async function main() {
   const page = dumpIndex();
   const browser = await playwright().chromium.launch({ headless: true, executablePath: chromium() });
   const results = [];
-  const navErrors = await navCheck(browser, page);
+  // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
+  const navErrors = control ? [] : await navCheck(browser, page);
   if (!noKit) for (const spec of TABS) results.push(await renderTab(browser, spec, page));
   await browser.close();
   for (const e of navErrors) console.log(`NAV ${e}`);
@@ -253,7 +254,7 @@ async function main() {
     return;
   }
   if (navErrors.length) { console.log(`FAIL: nav check, ${navErrors.length} error(s)`); process.exit(1); }
-  console.log("nav ok: phone menu opens and closes, wide sidebar shows");
+  if (!control) console.log("nav ok: phone menu opens and closes, wide sidebar shows");
   writeFileSync(join(out, "numbers.json"), JSON.stringify(results, null, 2) + "\n");
   print(results);
   console.log(`screenshots and numbers.json: ${out}`);
