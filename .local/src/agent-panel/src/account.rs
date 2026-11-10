@@ -80,7 +80,7 @@ pub fn norm_dir(dir: &str, home: &Path) -> String {
 }
 
 /// The value of `var` in process `pid`'s environment; empty when unset or unreadable.
-fn env_of(proc_root: &Path, pid: u32, var: &str) -> String {
+pub fn env_of(proc_root: &Path, pid: u32, var: &str) -> String {
     let raw = fs::read(proc_root.join(pid.to_string()).join("environ")).unwrap_or_default();
     let key = format!("{var}=");
     raw.split(|b| *b == 0)

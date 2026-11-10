@@ -222,6 +222,20 @@ project_release_version() {
   printf 'v%s' "$(git_tag_version "$tag")"
 }
 
+# project_version_owner <project> [shipped] -> what owns its version number (stages.md, "Versions"):
+#   tag    a release tag ships it, and the sheet follows the tag (agentctl-wave-roll)
+#   build  a game with no tag yet: it waits for its own `<game>-vX.Y.Z` family, never the
+#          sheet counter, so a cadence cut cannot mint a number its builds will not carry
+#   sheet  nothing ships a build: the sheet's counter, cut on its stage's cadence
+# [shipped] is project_release_version's answer when the caller has it, so tags are read once.
+project_version_owner() {
+  local shipped
+  if [ $# -ge 2 ]; then shipped="$2"; else shipped="$(project_release_version "$1")"; fi
+  if [ -n "$shipped" ]; then echo tag
+  elif [ "$(project_field "$1" type)" = game ]; then echo build
+  else echo sheet; fi
+}
+
 # project_lab_names <repo> -> every project belonging to that repo, one per line.
 #
 # The INVERSE of project_repo_name, and the join the session preflight needs: a
