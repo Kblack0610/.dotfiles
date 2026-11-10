@@ -446,7 +446,7 @@ gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
 git fetch -q origin
 git rev-list --count HEAD..origin/main
-gh pr checks 42 --watch --fail-fast
+gh pr checks 42 --watch --fail-fast -i 30
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
@@ -671,11 +671,16 @@ EOF
 @test "no checks reported while an Actions run is queued: it keeps waiting past the bound" {
   printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
   printf '1\n1\n1\n' >"$NOTES_FIXTURE/runs.queued"
+  printf '#!/bin/sh\necho "sleep $1" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/sleep"
+  chmod +x "$SANDBOX/bin/sleep"
   AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship
   assert_success
   # 3 polls see a queued run (the bound never counts), then 2 more see none
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 5
+  # a queued run is re-read a minute apart, not at the no-checks cadence (ar-1345)
+  run grep '^sleep' "$LOG"
+  assert_output $'sleep 60\nsleep 60\nsleep 60\nsleep 0'
 }
 
 @test "--plan ticks exactly the named phase" {
