@@ -624,11 +624,12 @@ ledger() {
   # 2026-11-09 agent-51: a shell waited 100m on tail --pid=<its own pid> while the row read WORKING.
   # root stands in for the session's claude; `; :` keeps bash from exec-ing tail in its place.
   setsid bash -c 'bash -c "tail --pid=\$\$ -f /dev/null; :"; :' >/dev/null 2>&1 3>&- &
-  local root=$! tl=""
+  local root=$! tl="" spins=0
   LIVE_PIDS="-$root"   # teardown kills the group, pass or fail
   # the process is the event: wait until /proc shows tail's exec, not for a delay
   until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
     kill -0 "$root" || fail 'the stand-in exited before tail started'
+    [ $((++spins)) -lt 20000 ] || fail 'tail never started'
     tl="$(pgrep -P "$(pgrep -P "$root" -n bash || echo 0)" -x tail || :)"   # none yet is exit 1, not a failure
   done
   run self_wait "$root"
@@ -644,19 +645,34 @@ ledger() {
   assert_output ''
 }
 
-@test "self_wait leaves a tail --pid on another process alone (ar-1118)" {
-  setsid bash -c 'sleep 60 & bash -c "tail --pid=\$1 -f /dev/null; :" _ "$!"; :' >/dev/null 2>&1 3>&- &
-  local root=$! tl=""
+@test "self_wait finds a tail the shell exec-ed, waiting on its own pid (ar-1118)" {
+  printf 'exec tail --pid=$$ -f /dev/null\n' > "$SANDBOX/waits.sh"
+  setsid bash -c 'bash "$1"; :' _ "$SANDBOX/waits.sh" >/dev/null 2>&1 3>&- &
+  local root=$! tl="" spins=0
   LIVE_PIDS="-$root"
   until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
     kill -0 "$root" || fail 'the stand-in exited before tail started'
+    [ $((++spins)) -lt 20000 ] || fail 'tail never started'
+    tl="$(pgrep -P "$root" -x tail || :)"
+  done
+  run self_wait "$root"
+  assert_output 'hung'
+}
+
+@test "self_wait leaves a tail --pid on another process alone (ar-1118)" {
+  setsid bash -c 'sleep 60 & bash -c "tail --pid=\$1 -f /dev/null; :" _ "$!"; :' >/dev/null 2>&1 3>&- &
+  local root=$! tl="" spins=0
+  LIVE_PIDS="-$root"
+  until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
+    kill -0 "$root" || fail 'the stand-in exited before tail started'
+    [ $((++spins)) -lt 20000 ] || fail 'tail never started'
     tl="$(pgrep -P "$(pgrep -P "$root" -n bash || echo 0)" -x tail || :)"   # none yet is exit 1, not a failure
   done
   run self_wait "$root"
   assert_output ''
 }
 
-@test "a shell waiting on itself reads STALLED, not WORKING, and is a blocker on the row (ar-1118)" {
+@test "a shell waiting on itself is not WORKING, and is a blocker on the row (ar-1118)" {
   FLEET_IDLE_MIN=20 FLEET_SHELL_STALE_MIN=120
   # an open green PR, 25m idle: a real gate would read WORKING shell
   run b shell 0 0 0 25 1 0 0 875 OPEN PASS 1 - 2/3 next - gate

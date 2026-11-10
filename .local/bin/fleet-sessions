@@ -62,6 +62,7 @@ set -uo pipefail
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
+: "${HUNG_REASON:=background shell is waiting on itself (tail --pid of its own parent)}"
 : "${FLEET_DIRTY_NAMES:=3}" # a dirty-file reason names this many paths, then "+N more"
 : "${FLEET_ITEM_DAYS:=7}" # days of done queue items read to see that a session's item moved on
 : "${FLEET_SUSPECTS_MAX:=3}" # a red workflow names its PRs as suspects only up to this many; past
@@ -117,7 +118,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
-#                <open job: gate|test|agent|human|jobs|none|- (agent-panel's open_job, or a live gate/test process in the worktree or under its claude: live_wait; - unknown)> \
+#                <open job: gate|test|agent|human|jobs|none|hung|- (agent-panel's open_job, or a live gate/test process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
 #                 none open and every state known (a closed one was replaced or dropped), or -;
@@ -181,7 +182,7 @@ session_bucket() {
         note=", background shell still running"
       elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && [ "$job" = hung ]; then
         # 2026-11-09 agent-51 read WORKING for 100m on a shell waiting for its own parent to exit.
-        note=", background shell is waiting on itself (tail --pid of its own parent)"
+        note=", $HUNG_REASON"
       elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && { [ "$job" = jobs ] || [ "$job" = none ]; }; then
         # Only a gate, a test or a subagent is work worth waiting 120m on. Anything else is a sleep
         # loop, a watch on a file or a job the transcript no longer shows; on 2026-11-03 13 of 24
@@ -241,8 +242,10 @@ live_wait() {
 }
 
 # self_wait <claude pid>: `hung` when a process under that claude is a `tail --pid=N` whose N is its
-# own parent, else nothing. The parent waits for tail to end and tail waits for the parent to end, so
-# nothing ever moves. 2026-11-09 agent-51's `pgrep -f 'agent-land 2089'` matched its own shell and
+# own parent (or on itself, when bash exec-ed tail in its place), else nothing. The parent waits for
+# tail to end and tail waits for the parent to end, so nothing ever moves. Not checked: that the
+# parent is blocked on the tail, so a `tail --pid=$$ -f log &` beside real work also reads hung once
+# its row is idle past FLEET_IDLE_MIN with no live gate or test; the session is the one to say so. 2026-11-09 agent-51's `pgrep -f 'agent-land 2089'` matched its own shell and
 # sat in that wait for 100m while the row read WORKING. A tail that watches any other pid is a real
 # wait. No event names a deadlock, so this reads one `ps`, only for a shell row past FLEET_IDLE_MIN.
 self_wait() {
@@ -261,7 +264,7 @@ self_wait() {
           w = ""
           if (a[i] ~ /^--pid=[0-9]+$/) w = substr(a[i], 7)
           else if (a[i] == "--pid" && i < k) w = a[i + 1]
-          if (w != "" && w == up[p]) { print "hung"; exit }
+          if (w != "" && w != r && (w == up[p] || w == p)) { print "hung"; exit }
         }
       }
     }'
@@ -353,7 +356,7 @@ work_blockers() {
   for id in "${b[@]}"; do out="${out:+$out; }$id"; done
   # A finished session is told to stop its shell; any other one is held up by it.
   [ -n "$out" ] && [ "$1" = shell ] && [ "${17:--}" = hung ] && [ "$5" -ge "$FLEET_IDLE_MIN" ] \
-    && out="$out; background shell is waiting on itself (tail --pid of its own parent)"
+    && out="$out; $HUNG_REASON"
   printf '%s' "$out"
 }
 
@@ -1236,8 +1239,14 @@ collect() {
     # outlives the dialog (a rejected plan leaves it), so it counts only together with waiting.
     if [ "$plan" = 1 ] && { [ "$status" != waiting ] || [[ "$doing" != ExitPlanMode* ]]; }; then plan=0; fi
     # A gate or test running in the worktree is a wait whatever the transcript's open job says.
+    live=""
     if [ "$host" = - ] && [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ]; }; then
-      live="$(live_wait "$cwd" "$cpid")"; [ -n "$live" ] || live="$(self_wait "$cpid")"; ojob="${live:-$ojob}"
+      live="$(live_wait "$cwd" "$cpid")"; ojob="${live:-$ojob}"
+    fi
+    # A shell waiting on itself is hung whatever the transcript's open job says: its command line may
+    # read as a gate. A live gate or test process found above outranks it.
+    if [ "$host" = - ] && [ "$status" = shell ] && [ "$ojob" != agent ] && [ -z "$live" ]; then
+      live="$(self_wait "$cpid")"; ojob="${live:-$ojob}"
     fi
     prs="$(session_prs "$transcript")"
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
