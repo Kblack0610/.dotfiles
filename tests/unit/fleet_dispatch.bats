@@ -1038,6 +1038,25 @@ kinds_match() {
   assert_line --index 0 'Read ~/.claude/skills/fix-skill/SKILL.md and follow it for this task:'
 }
 
+@test "item_brief: a repo whose canonical forge is Forgejo lands by one-shot's Forgejo section, never agent-land" {
+  project game beta "$SANDBOX/repos/game"
+  mkdir -p "$SANDBOX/repos/game/.forgejo/workflows"; : > "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
+  it='{"slug": "hc", "mode": "oneshot", "project": "game", "title": "fix(game): x", "task": "fix(game): x"}'
+  run item_brief "$it"
+  assert_output --partial 'landing.md "Forgejo repo" says, recording the PR and merged: on hc.'
+  refute_output --partial 'Merge with agent-land'
+  # headless on Forgejo: no agent-land line, and recording the PR is not tied to gh
+  echo '{"harnesses": {"codex": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
+  run item_brief "$it" codex
+  assert_output --partial 'Right after the PR opens, run: agent-queue set hc pr='
+  refute_output --partial 'Run agent-land in the foreground'
+  # a GitHub-canonical repo still merges with agent-land (negative control)
+  rm "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
+  run item_brief "$it"
+  assert_output --partial 'Merge with agent-land <N>'
+  refute_output --partial 'Forgejo'
+}
+
 @test "item_brief: a doc+ask kind ends on a doc in the lab docs and an ask recorded on the item, never a PR" {
   export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
   project game beta "$SANDBOX/repos/game"
@@ -1046,7 +1065,7 @@ kinds_match() {
   assert_line --index 0 '/deep-research-code research(game): which engine'
   assert_output --partial 'a research row: it ends on a doc and an ask, never a PR'
   assert_output --partial 'agent-queue set r report=<doc path> ask=<ask id>; notes ptask game --agent done "ar-9" --proof doc:<doc path>; agent-queue move r done --status ok'
-  refute_output --partial 'agent-land'
+  refute_output --partial 'Run agent-land in the foreground'
   refute_output --partial 'Item: r'
   # a code kind still lands a PR (negative control)
   run item_brief '{"slug": "f", "mode": "oneshot", "project": "game", "title": "fix(game): x", "task": "fix(game): x"}'
@@ -1079,7 +1098,7 @@ kinds_match() {
   run item_brief '{"slug": "rel", "mode": "oneshot", "project": "game", "title": "release(steam): x", "task": "release(steam): x"}' opencode
   assert_line --index 0 'Read ~/.claude/skills/release/SKILL.md and follow it for this task:'
   assert_output --partial 'agent-queue move rel done --status ok.'
-  assert_output --partial 'nobody watches this run'
+  assert_output --partial 'agent-queue requeue rel --ask <id>, and stop: the answer starts this item again'
   refute_output --partial 'wind-down'
   refute_output --partial 'leaving this window open'
   # a release board row never dispatches on its own: the human starts it, or /release queues it
@@ -2894,7 +2913,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
 
 # 2026-11-05: about a fifth of running items were dead: a shell kept the tmux session after claude
 # exited, or a hub-window item had no session of its own, and reap read both as live forever.
-@test "reap settles an item whose claude exited though its tmux session lives; a parked pane, another agent and a fresh start are kept" {
+@test "reap settles an item whose claude exited though its tmux session lives; a parked pane, a live Codex run and a fresh start are kept" {
   project game beta "$SANDBOX/repos/game"
   started_item gone lab:game-agent-1
   started_item parked lab:game-agent-2
@@ -2907,12 +2926,59 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   mkdir -p "$HOME/.agent/parked"; : > "$HOME/.agent/parked/game-agent-2:1"
   stub agent-panel 'echo "{\"target\":\"lab/game-agent-5:1\",\"status\":\"busy\",\"session_id\":\"s5\"}"'
   stub agent-ask 'exit 0'
+  codex_run codex   # its Codex run is live (codex_gone has its own test)
   export DISPATCH_REAP_CONFIRM=0   # the second witness has its own test
   cmd_reap >/dev/null
   run cmd_reap
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gone.md 2>/dev/null)" ] || fail "an item whose claude exited stayed active"
   for k in parked codex fresh kept; do [ -n "$(qitem running "$k")" ] || fail "reaped $k"; done
+}
+
+# codex_run <slug>... -- each a live `agent-codex run` process with AGENT_QUEUE_ITEM=<slug>, as pgrep and
+# /proc show it to codex_run_live.
+codex_run() {
+  local slug pid=4000 pids=''
+  export DISPATCH_PROC="$SANDBOX/proc"
+  for slug in "$@"; do
+    pid=$((pid + 1)); pids="$pids $pid"
+    mkdir -p "$DISPATCH_PROC/$pid"; printf 'HOME=/x\0AGENT_QUEUE_ITEM=%s\0' "$slug" > "$DISPATCH_PROC/$pid/environ"
+  done
+  stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex run\" ] || exit 2; for p in $pids; do echo \$p; done"
+}
+
+@test "reap: a Codex item whose tmux session a Claude item took over settles once its run is gone, on two reaps (ar-1087)" {
+  project game beta "$SANDBOX/repos/game"
+  started_item cxgone lab:game-agent-7 && started_item cxlive lab:game-agent-8 && started_item claudeitem lab:game-agent-7
+  sed -i 's/^agent: claude/agent: codex/' "$AGENT_QUEUE_DIR"/running/*-cxgone.md "$AGENT_QUEUE_DIR"/running/*-cxlive.md
+  printf 'game-agent-%s\n' 7 8 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-7:1\",\"status\":\"busy\",\"session_id\":\"c7\"}"'
+  stub agent-ask 'exit 0'
+  codex_run cxlive claudeitem   # a process that is not the launcher's would not be listed; the slug decides
+  cmd_reap >/dev/null
+  [ -n "$(qitem running cxgone)" ] || fail "one reap is one witness, and it settled"
+  grep -q "queue item cxgone's Codex run is not live" "$FLEET_DISPATCH_DIR/log.md" || fail "no miss logged: $(cat "$FLEET_DISPATCH_DIR/log.md")"
+  echo $(( $(date +%s) - DISPATCH_REAP_CONFIRM - 1 )) > "$FLEET_DISPATCH_DIR/reap-miss/cxgone"
+  run cmd_reap
+  assert_success
+  [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cxgone.md 2>/dev/null)" ] || fail "a Codex item whose run is gone stayed active"
+  for k in cxlive claudeitem; do [ -n "$(qitem running "$k")" ] || fail "reaped $k"; done
+  # pgrep failing cannot tell, and cannot-tell is live (negative control)
+  started_item cxblind lab:game-agent-8
+  sed -i 's/^agent: claude/agent: codex/' "$AGENT_QUEUE_DIR"/running/*-cxblind.md
+  stub pgrep 'exit 3'
+  export DISPATCH_REAP_CONFIRM=0
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(qitem running cxblind)" ] || fail "reaped a Codex item on a pgrep that could not read"
+  # a listed run whose environment will not read cannot tell either; one that exited (no dir) is skipped
+  mkdir -p "$DISPATCH_PROC/4999"; printf 'AGENT_QUEUE_ITEM=x\0' > "$DISPATCH_PROC/4999/environ"; chmod 000 "$DISPATCH_PROC/4999/environ"
+  stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex run\" ] || exit 2; echo 4998; echo 4999"
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -n "$(qitem running cxblind)" ] || fail "reaped a Codex item on an environment that would not read"
+  chmod 600 "$DISPATCH_PROC/4999/environ"
+  stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex run\" ] || exit 2; echo 4998"
+  cmd_reap >/dev/null; cmd_reap >/dev/null
+  [ -z "$(qitem running cxblind)" ] || fail "a run that exited after pgrep listed it kept its item live"
 }
 
 @test "reap settles a hub-window item once none of its Claude sessions is live, and keeps one whose session is" {
@@ -3806,7 +3872,7 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   run cat "$NOTES_FIXTURE/cmds.log"
   assert_output --regexp 'bypassPermissions Canary\\ eval\\ c:\\ run\\ fleet-bench\\ canary\\ start\\ c$'
   refute_output --partial '/one-shot'
-  refute_output --partial 'agent-land'
+  refute_output --partial 'Run agent-land in the foreground'
   refute_output --partial 'PR body'
 }
 
@@ -4137,7 +4203,7 @@ fix_ended() {
   assert_output --partial 'gh pr checkout 12 -R o/game'
   assert_output --partial 'fix-ci try 1 of 2'
   assert_output --partial 'run agent-queue move fix-crash review'
-  refute_output --partial 'agent-land'
+  refute_output --partial 'Run agent-land in the foreground'
   echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
   run item_brief "$(agent-queue show fix-crash --json)" opencode
   assert_line --index 0 'Read ~/.claude/commands/my/fix-ci.md and follow it for PR o/game#12.'
@@ -5549,7 +5615,7 @@ launch_settings() { eval "printf %s $(grep -m1 -e '--settings' "$NOTES_FIXTURE/c
   assert_success
   assert_called 'claude-acct room --source codex'
   assert_not_called 'curl'
-  assert_called 'AGENT_QUEUE_ITEM=fix-menu env -u LITELLM_MASTER_KEY -u OPENAI_API_KEY -u CODEX_API_KEY timeout 120m agent-codex run -m gpt-6.1-sol --dangerously-bypass-approvals-and-sandbox'
+  assert_called 'AGENT_QUEUE_ITEM=fix-menu env -u LITELLM_MASTER_KEY -u OPENAI_API_KEY -u CODEX_API_KEY timeout 120m agent-codex run -m gpt-6.1-sol --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust'
   assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it'
   assert_called 'Run agent-land in the foreground'
   assert_not_called '/one-shot Fix'

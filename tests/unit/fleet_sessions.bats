@@ -1239,6 +1239,27 @@ queue_item() {
   [ "$(jq -r .dispatch <<<"$output")" = null ]
 }
 
+@test "a Codex run's row (AGENT_PANEL_CODEX) reads WORKING busy and joins its queue item by thread id" {
+  landed_fixture
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  local row
+  row="{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"th-1\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$(date +%s),\"context_tokens\":0,\"plan_file\":\"\",\"transcript\":\"\",\"edited_files\":[],\"account\":\"codex\",\"harness\":\"codex\"}"
+  # agent-panel lists a Codex run only when asked, as the real one does
+  printf '#!/usr/bin/env bash\n[ "${AGENT_PANEL_CODEX:-}" = 1 ] && echo %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: cx-1\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: board:apociseum:ar-7\norigin: run\nagent: codex\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nsessions: th-0 th-1\n---\nfix it\n' \
+    > "$HOME/.agent/queue/running/20261103-100000-cx-1.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -c .item <<<"$output")" = '{"slug":"cx-1","is":"own","row":"apociseum:ar-7","origin":"run"}' ]
+  # negative control: a panel that lists no Codex run gives no row at all
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_output ''
+}
+
 @test "a session's row names its queue item, the board row and origin, by the same join as its bucket" {
   landed_fixture
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// One tmux pane, parsed from a tab-separated `list-panes -F` row.
+#[derive(Default)]
 pub struct Pane {
     pub server: String,
     pub session: String,

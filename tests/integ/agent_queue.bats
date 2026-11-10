@@ -559,6 +559,32 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$(item running forms)" tags)" = night ]
 }
 
+@test "requeue --ask puts a headless run that needs the human back behind its ask; the human's answer releases it" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  "$AQ" add --project game --running --slug codexrun "pick a palette" >/dev/null
+  "$AQ" set codexrun "lane_run=r-codex" >/dev/null
+  run "$AQ" requeue codexrun --ask q9
+  assert_failure; assert_output --partial "no agent-ask has that id"
+  run "$AQ" requeue codexrun --ask q9 --hold mac-desktop
+  assert_failure; assert_output --partial "usage"
+  ask q9 answered 'a' human
+  run "$AQ" requeue codexrun --ask q9
+  assert_failure; assert_output --partial "already answered"
+  [ -n "$(item running codexrun)" ]
+  ask q9 pending
+  run "$AQ" requeue codexrun --ask q9
+  assert_success; assert_output --partial "codexrun: running -> queued"
+  f="$(item queued codexrun)"
+  [ "$(field "$f" tags)" = "ask:q9" ]
+  [ -z "$(field "$f" lane_run)" ]
+  run "$AQ" next --json
+  assert_failure
+  ask q9 answered 'b, the dark one' human
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = codexrun ]
+}
+
 # ar-900: reap failed a live item on one agent-panel read, and the shepherd had to mv its file back by hand.
 @test "reopen puts a failed item back with its session and note and starts its row again; an active, ok or cancelled one is refused" {
   printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/notes"

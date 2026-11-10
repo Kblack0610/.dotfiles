@@ -9,30 +9,41 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-/// Child-pid → parent-pid for every live process.
+/// Child pid to parent pid for every live process, and each one's command name.
 pub struct ProcMap {
     ppid: HashMap<u32, u32>,
+    comm: HashMap<u32, String>,
 }
 
 impl ProcMap {
-    /// Capture the live process table via `ps -axo pid=,ppid=`.
+    /// Capture the live process table via `ps -axo pid=,ppid=,comm=`.
     pub fn capture() -> Result<Self> {
         let out = Command::new("ps")
-            .args(["-axo", "pid=,ppid="])
+            .args(["-axo", "pid=,ppid=,comm="])
             .output()
-            .context("failed to run `ps -axo pid=,ppid=`")?;
-        anyhow::ensure!(out.status.success(), "`ps -axo pid=,ppid=` exited {}", out.status);
-        let text = String::from_utf8_lossy(&out.stdout);
-        let mut ppid = HashMap::new();
+            .context("failed to run `ps -axo pid=,ppid=,comm=`")?;
+        anyhow::ensure!(out.status.success(), "`ps -axo pid=,ppid=,comm=` exited {}", out.status);
+        Ok(Self::parse(&String::from_utf8_lossy(&out.stdout)))
+    }
+
+    /// The `ps -axo pid=,ppid=,comm=` lines; comm is the rest of the line (macOS gives a path).
+    fn parse(text: &str) -> Self {
+        let (mut ppid, mut comm) = (HashMap::new(), HashMap::new());
+        // Columns are space-padded, so take each number off the front and keep the rest whole.
+        let field = |s: &str| {
+            let s = s.trim_start();
+            let end = s.find(char::is_whitespace).unwrap_or(s.len());
+            (s[..end].to_string(), s[end..].to_string())
+        };
         for line in text.lines() {
-            let mut it = line.split_whitespace();
-            if let (Some(p), Some(pp)) = (it.next(), it.next()) {
-                if let (Ok(p), Ok(pp)) = (p.parse::<u32>(), pp.parse::<u32>()) {
-                    ppid.insert(p, pp);
-                }
+            let (p, rest) = field(line);
+            let (pp, rest) = field(&rest);
+            if let (Ok(p), Ok(pp)) = (p.parse::<u32>(), pp.parse::<u32>()) {
+                ppid.insert(p, pp);
+                comm.insert(p, rest.trim().to_string());
             }
         }
-        Ok(Self { ppid })
+        Self { ppid, comm }
     }
 
     /// Is this pid a live process?
@@ -46,6 +57,25 @@ impl ProcMap {
             .skip(1)
             .take(20)
             .take_while(|&p| p > 1)
+    }
+
+    /// The outermost `codex` process below `pane_pid` (the pane's own process included), the
+    /// lowest pid of two such siblings so a refresh reads the same one, or None.
+    /// A Codex run in a pane is the fleet's other harness: it has no `~/.claude/sessions` file, so
+    /// the pane-to-Claude map never sees it.
+    pub fn codex_below(&self, pane_pid: u32) -> Option<u32> {
+        let is_codex = |p: &u32| {
+            self.comm
+                .get(p)
+                .is_some_and(|c| c.rsplit('/').next() == Some("codex"))
+        };
+        self.ppid
+            .keys()
+            .filter(|p| is_codex(p))
+            .filter(|&&p| p == pane_pid || self.ancestors(p).any(|a| a == pane_pid))
+            .filter(|&&p| !self.ancestors(p).any(|a| is_codex(&a)))
+            .min()
+            .copied()
     }
 
     /// Build a map from any ancestor pid → the Claude pid below it.
@@ -81,7 +111,31 @@ mod tests {
     fn map_from(edges: &[(u32, u32)]) -> ProcMap {
         ProcMap {
             ppid: edges.iter().copied().collect(),
+            comm: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn parses_ps_lines_with_their_command_names() {
+        let pm = ProcMap::parse("  100     1 tmux: server\n  200   100 zsh\n  300   200 /usr/bin/codex\n");
+        assert!(pm.is_live(300));
+        assert_eq!(pm.comm.get(&100).map(String::as_str), Some("tmux: server"));
+        assert_eq!(pm.codex_below(200), Some(300));
+    }
+
+    #[test]
+    fn codex_below_finds_the_outermost_codex_under_the_pane_only() {
+        // pane shell(200) -> timeout(210) -> bash(220) -> codex(300) -> codex(310, its helper)
+        // another pane shell(400) -> claude(500)
+        let pm = ProcMap::parse(
+            "200 100 zsh\n210 200 timeout\n220 210 bash\n300 220 codex\n310 300 codex\n400 100 zsh\n500 400 claude\n",
+        );
+        assert_eq!(pm.codex_below(200), Some(300));
+        assert_eq!(pm.codex_below(400), None);
+        assert_eq!(pm.codex_below(999), None);
+        // two sibling runs under one shell: the lower pid, whatever the table's order
+        let pm = ProcMap::parse("200 100 zsh\n320 200 codex\n300 200 codex\n");
+        assert_eq!(pm.codex_below(200), Some(300));
     }
 
     #[test]
