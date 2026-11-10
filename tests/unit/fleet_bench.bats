@@ -2648,7 +2648,7 @@ chain_fixture() {
   kpi_setup
   mkdir -p "$FLEET_BENCH_DIR"
   printf '%s\n' ledger_coverage_min=0.95 untracked_merged_prs_max=0 board_orphan_started_max=0 merged_open_rows_max=0 \
-    ownerless_running_max=0 epic_linked_share_min=0.5 landed_unverified_max=0 doctor_fail_max=0 \
+    ownerless_running_max=0 epic_linked_share_min=0.5 landed_unverified_max=0 release_overdue_max=0 version_tag_drift_max=0 doctor_fail_max=0 \
     orphan_request_rows_max=0 next_up_blocked_max=0 stale_urgent_d_max=3 playtest_waiting_d_max=7 done_inline_old_max=0 >> "$KPI_THRESHOLDS"
   ci_row '{repo: "O/R", number: 7, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 0}'
   ci_row '{repo: "o/other", number: 9, session_id: "h2", merged_epoch: ($t - 172800), ci_red: 0}'
@@ -2694,12 +2694,70 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
   # and request_to_live_h reads BENCH_LEAD_DAYS (28) back, so a merge released this week counts
   assert_output "$(printf -- '--since %s\n' "$(date -d "@$((T0 - 28 * 86400))" +%F)" "$(date -d "@$((T0 - 8 * 86400))" +%F)" "$(date -d "@$((T0 - 86400))" +%F)")"
+}
+
+@test "chain: the release link counts a sheet project a day past its cut and a sheet off its tag" {
+  chain_fixture
+  # tools ships v1.2.3 by tag; game has no tag, and a typed game waits for its own
+  export PROJECT_NAME_LIB="$SANDBOX/project-name.sh"
+  cat > "$PROJECT_NAME_LIB" <<LIB
+. "$REPO_ROOT/.config/shared-hooks/project-name.sh"
+project_release_version() { [ "\$1" != tools ] || cat "$SANDBOX/tag" 2>/dev/null; }
+project_field() { [ "\$1 \$2" != "game type" ] || cat "$SANDBOX/type" 2>/dev/null; return 0; }
+LIB
+  echo v1.2.3 > "$SANDBOX/tag"
+  cp "$PJSON" "$PJSON.ok"
+  rel() { # $1=game's due_on (- for not due) $2=tools' sheet version
+    jq -c --arg d "$1" --arg v "$2" '(.[] | select(.name == "game")) += {profile: "bnb", version: "v0.3.0",
+        release: (if $d == "-" then {due: false} else {due: true, due_on: $d} end)}
+      | (.[] | select(.name == "tools")) += {profile: "bnb", version: $v}' "$PJSON.ok" > "$PJSON"
+  }
+  yesterday=$(date -d "@$((T0 - 86400))" +%F) today=$(date -d "@$T0" +%F)
+  # due, and a pass has had all day to cut it
+  rel "$yesterday" v1.2.4
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'release_overdue 1 (max 0)'
+  run "$SUBJECT" chain
+  assert_line "release_overdue: bnb/game v0.3.0 due since $yesterday"
+  # a profile with automation = false is no fleet debt
+  jq -c '(.[] | select(.name == "game")).automation = false' "$PJSON" > "$PJSON.x" && mv "$PJSON.x" "$PJSON"
+  run "$SUBJECT" chain --check
+  assert_success
+  # due today, or not due: no count
+  rel "$today" v1.2.4
+  run "$SUBJECT" chain --check
+  assert_success
+  # a game with no tag of its own is not the sheet's to cut
+  echo game > "$SANDBOX/type"; rel "$yesterday" v1.2.4
+  run "$SUBJECT" chain --check
+  assert_success
+  rm "$SANDBOX/type"
+  # the sheet a minor ahead of its tag is drift; at the tag (roll pending) or one patch past it is not
+  rel - v1.3.0
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'version_tag_drift 1 (max 0)'
+  run "$SUBJECT" chain
+  assert_line 'version_tag_drift: bnb/tools sheet v1.3.0, tag v1.2.3'
+  for v in v1.2.3 v1.2.4; do
+    rel - "$v"
+    run "$SUBJECT" chain --check
+    assert_success
+  done
+  # a tag that is not vX.Y.Z counts as nothing
+  echo v0.0.1-dev-baseline > "$SANDBOX/tag"; rel - v1.3.0
+  run "$SUBJECT" chain --check
+  assert_success
+  # an unreadable project list reads ?, never 0
+  BENCH_PROJECTS_CMD=false run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '[.release_overdue["7d"], .version_tag_drift["7d"]]' <<<"$output")" '[null,null]'
 }
 
 @test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {

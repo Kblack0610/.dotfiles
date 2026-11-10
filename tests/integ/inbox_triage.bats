@@ -1036,3 +1036,140 @@ ask_stub() {
   assert_failure 2
   [ ! -e "$NOTES_FIXTURE/model.log" ]
 }
+
+# ask_setup: the real agent-ask against the sandbox's ask store, its judge and resume off, so a
+# test reads the posted ask and answers it by hand.
+ask_setup() {
+  ln -sf "$AGENT_ASK" "$SANDBOX/bin/agent-ask"
+  export AGENT_ASK_NO_JUDGE=1 AGENT_ASK_NO_RESUME=1
+}
+# the_ask: the one posted ask's file.
+the_ask() { find "$HOME/.agent/asks" -name '*.md' -type f; }
+# ask_about <words>: the id of the ask whose question holds <words>.
+ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)" .md; }
+
+@test "outbox: a line the router cannot place asks the human which project, as a gate, once" {
+  ask_setup
+  sheet '' ''
+  outbox '- [ ] the menu flickers after a match\n- [ ] the logo is too dark\n'
+  answer '{"n": 1, "action": "ask", "projects": ["other", "nowhere", "scratch"], "why": "a menu is in both"}' \
+    '{"n": 2, "action": "file", "rows": ["fix(brand): the logo is too dark #size/s"], "project": "other"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'asked you 1'
+  grep -q 'ask: an \[outbox\] line that is a task, but neither it nor its neighbours say which project' "$NOTES_FIXTURE/prompt.txt" || fail "the ask action never reached the model"
+  [ "$(the_ask | wc -l)" = 1 ] || fail "asks: $(the_ask)"
+  f="$(the_ask)"
+  grep -qx 'kind: gate' "$f" || fail "$(cat "$f")"
+  grep -qx 'question: Which project is this outbox line for: "the menu flickers after a match"?' "$f" || fail "$(cat "$f")"
+  # Only board projects, in the model's order, then drop.
+  grep -qx 'options: other|scratch|drop' "$f" || fail "$(cat "$f")"
+  grep -qx 'recommend: other' "$f" || fail "$(cat "$f")"
+  grep -qx 'resume: run:agentctl-inbox-triage --answer' "$f" || fail "$(cat "$f")"
+  grep -q '^context: Your outbox line: the menu flickers after a match. Written after it: the logo is too dark' "$f" || fail "$(cat "$f")"
+  grep -q 'the menu flickers after a match' "$HOME/.notes/outbox.md" || fail "the asked line left the outbox"
+  run jq -r 'select(.action == "asked") | [.from, .why, .text] | join(" ")' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_output "outbox $(basename "$f" .md) the menu flickers after a match"
+  # The next sweep neither routes it again nor asks again.
+  rm -f "$NOTES_FIXTURE/model.log"
+  run "$TRIAGE"
+  assert_success
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "an asked line was routed again: $(cat "$NOTES_FIXTURE/prompt.txt")"
+  [ "$(the_ask | wc -l)" = 1 ] || fail "asked twice"
+}
+
+@test "outbox: the answer moves the asked line to its project, and the next sweep files it" {
+  ask_setup
+  sheet '' ''
+  outbox '- [ ] the menu flickers after a match\n'
+  answer '{"n": 1, "action": "ask", "projects": ["other", "scratch"], "why": "a menu is in both"}'
+  run "$TRIAGE"
+  assert_success
+  id="$(basename "$(the_ask)" .md)"
+  run agent-ask answer "$id" scratch
+  assert_success
+  run "$TRIAGE" --answer "$id"
+  assert_success
+  grep -q 'the menu flickers after a match' "$HOME/.notes/outbox.md" && fail "the line is still in the outbox"
+  inbox | grep -q 'the menu flickers after a match' || fail "not in scratch's inbox: $(cat "$SHEET")"
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the menu flickers after a match #size/s"]}'
+  run "$TRIAGE"
+  assert_success
+  grep -qx '1. \[scratch\] the menu flickers after a match' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  tasks | grep -q 'fix(ui): the menu flickers after a match' || fail "$(cat "$SHEET")"
+}
+
+@test "outbox: a drop answer takes the asked line out and files nothing; an answer naming no project leaves it" {
+  ask_setup
+  sheet '' ''
+  outbox '- [ ] the menu flickers after a match\n- [ ] a note about lunch\n'
+  answer '{"n": 1, "action": "ask", "projects": ["other", "scratch"], "why": "a menu is in both"}' \
+    '{"n": 2, "action": "ask", "projects": ["scratch"], "why": "a guess"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'asked you 2'
+  menu="$(ask_about 'menu flickers')" lunch="$(ask_about lunch)"
+  agent-ask answer "$menu" drop
+  run "$TRIAGE" --answer "$menu"
+  assert_success
+  grep -q 'menu flickers' "$HOME/.notes/outbox.md" && fail "a dropped line stayed"
+  jq -e 'select(.action == "dropped" and .text == "the menu flickers after a match")' "$HOME/.local/state/notes/ingest.jsonl" >/dev/null || fail "no dropped record"
+  agent-ask answer "$lunch" nowhere
+  run "$TRIAGE" --answer "$lunch"
+  assert_success
+  grep -q 'a note about lunch' "$HOME/.notes/outbox.md" || fail "a line with no project left the outbox"
+  jq -e 'select(.action == "left" and (.why | test("names no project")))' "$HOME/.local/state/notes/ingest.jsonl" >/dev/null || fail "not left with why"
+  [ "$(grep -c 'id:' "$SHEET" "$PROJ/other/README.md" | awk -F: '{s += $2} END {print s}')" = 0 ] || fail "a row was filed"
+}
+
+@test "outbox: a line with a clear project asks nothing, and a project's inbox line never asks (negative control)" {
+  ask_setup
+  sheet '- the gun sound is off\n' ''
+  outbox '- [ ] other needs a brand kit\n'
+  answer '{"n": 1, "action": "file", "rows": ["feat(brand): a brand kit #size/l"], "project": "other"}' \
+    '{"n": 2, "action": "ask", "projects": ["other"], "why": "unsure"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'asked you 0'
+  [ -z "$(the_ask 2>/dev/null)" ] || fail "an ask was posted: $(the_ask)"
+  inbox | grep -q 'the gun sound is off' || fail "the inbox line moved"
+}
+
+@test "outbox: over the per-sweep cap a line is held unrecorded, and the next sweep asks it" {
+  ask_setup
+  sheet '' ''
+  outbox '- [ ] one thing\n- [ ] two thing\n'
+  answer '{"n": 1, "action": "ask", "projects": ["other"], "why": "w"}' '{"n": 2, "action": "ask", "projects": ["scratch"], "why": "w"}'
+  INBOX_ASK_PROJECT_MAX=1 run "$TRIAGE"
+  assert_success
+  assert_output --partial 'asked you 1'
+  [ "$(the_ask | wc -l)" = 1 ] || fail "asks: $(the_ask)"
+  [ "$(grep -c '"text":"two thing"' "$HOME/.local/state/notes/ingest.jsonl")" = 0 ] || fail "the held line was recorded: $(cat "$HOME/.local/state/notes/ingest.jsonl")"
+  answer '{"n": 1, "action": "ask", "projects": ["scratch"], "why": "w"}'
+  INBOX_ASK_PROJECT_MAX=1 run "$TRIAGE"
+  assert_success
+  grep -qx '1. \[outbox\] two thing' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  [ "$(the_ask | wc -l)" = 2 ] || fail "asks: $(the_ask)"
+}
+
+@test "outbox: --answer reads a project through punctuation and case, moves nothing under --dry-run, and needs an id" {
+  ask_setup
+  sheet '' ''
+  outbox '- [ ] the menu flickers after a match\n'
+  answer '{"n": 1, "action": "ask", "projects": ["other", "scratch"], "why": "w"}'
+  run "$TRIAGE"
+  id="$(basename "$(the_ask)" .md)"
+  run "$TRIAGE" --dry-run --answer "$id"
+  assert_failure
+  assert_output --partial 'no answer yet'
+  agent-ask answer "$id" 'Scratch, the menu one'
+  run "$TRIAGE" --dry-run --answer "$id"
+  assert_success
+  assert_output --partial 'would move [outbox -> scratch]'
+  grep -q 'menu flickers' "$HOME/.notes/outbox.md" || fail "a dry run moved the line"
+  run "$TRIAGE" --answer
+  assert_failure 2
+  run "$TRIAGE" --answer "$id"
+  assert_success
+  inbox | grep -q 'the menu flickers after a match' || fail "$(cat "$SHEET")"
+}

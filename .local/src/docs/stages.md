@@ -15,8 +15,8 @@ The deploy pipeline is built at the dev -> alpha gate. An alpha project already 
 | --- | --- | --- | --- | --- |
 | `draft` | A concept with its type standard and target load named, already scaffolded on the shared stack | the human | CI only | Hidden behind `d` in the `Prefix+p` popup; fleet-dispatch skips it |
 | `dev` | Built to its type standard, CI green, the core loop or flow being built | the human and agents | CI artifacts | fleet-dispatch starts agent sessions on its rows |
-| `alpha` | Works start to finish and deploys itself to a private target on every merge | the human and the team | home-k3s preview, Play internal, Steam `development`, TestFlight internal, Forgejo registry, Quest sideload | One working list, no releases |
-| `beta` | Versioned releases to outside testers, rollback proven, load tested | testers | TestFlight external, Play closed, Steam `beta`, a public preview URL | `projects --release` allowed; `agentctl-wave-roll` rolls it; STATUS goes STALE after 14 days |
+| `alpha` | Works start to finish and deploys itself to a private target on every merge | the human and the team | home-k3s preview, Play internal, Steam `development`, TestFlight internal, Forgejo registry, Quest sideload | Releases on its cadence (see Versions) |
+| `beta` | Versioned releases to outside testers, rollback proven, load tested | testers | TestFlight external, Play closed, Steam `beta`, a public preview URL | As alpha; STATUS goes STALE after 14 days |
 | `prod` | Public, watched, with runbooks | the public | stores, Steam `default`, the prod cluster | As beta, plus the doctor FAILs it without a shipped tag |
 
 A project with no stage sorts between dev and draft and is dispatched like a draft. The doctor WARNs on it.
@@ -86,9 +86,9 @@ Each doc comes from an existing skill. There are no doc types beyond these.
 A version is one release: what reached the project's users or target in one cut. Its number follows from what is in it, so nobody picks it.
 
 - Minor: the release holds a feature epic closed on proof (`lifecycle.md`, "What an epic is"). Patch: anything else, fixes, stories toward open epics, standing-epic work. Major: only the human; a project starts at 0.x and v1.0.0 is its first public release (the `prod` stage), a project already past 1.0 keeps its line, and a later major is a break the human names (a save or API break, a relaunch).
-- Cadence comes from the stage: every 7 days at draft, dev, alpha and beta, every 14 at prod. A window with no closed rows cuts nothing. Releases below beta start with `systems-versions-p5` (see Tooling today).
+- Cadence comes from the stage: every 7 days at draft, dev, alpha and beta, every 14 at prod, as `[release] cadence_days` in the notes config. A window with no closed rows cuts nothing.
 - A project that ships builds is versioned by its git tag and the sheet follows (`project_release_version`, `.config/shared-hooks/project-name.sh`). A game in the playground has its own tag family, `<game>-vX.Y.Z`, registered as its `tagGlob`. A project with no build (agent-runtime, home-config) uses the sheet's counter and has no tag.
-- Tooling today: `projects --release` bumps a patch unless told otherwise and refuses below beta, and the playground tags game builds `v<engine>-<game><N>`. Queue item `systems-versions-p5` (ar-1245) makes them follow this section, and `systems-versions-p6` (ar-1246) backfills one version per week of past work.
+- Tooling: `projects --release` derives the bump from the closed rows at any stage (`--patch`, `--minor`, `--major` override it). `agentctl-wave-roll` rolls a tagged project's sheet when its tag ships, and cuts a sheet-counter project once its cadence has passed with done rows, the `release` facts in `projects --stats --json`. A game with no `<game>-vX.Y.Z` tag yet is cut by neither: the playground still tags builds `v<engine>-<game><N>` until queue item `systems-versions-p5-playground` moves it to the game tag. A project a whole cadence past its due date waits for `systems-versions-p6` (ar-1246), which backfills one version per week. `fleet-bench chain` counts `release_overdue` and `version_tag_drift`.
 
 ## What stays with the human
 

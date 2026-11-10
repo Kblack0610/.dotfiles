@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # notes-roll - roll a project to its next version, headless, with everything a roll owes.
 #
-#   notes-roll <profile> <project> [patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]
+#   notes-roll <profile> <project> [auto|patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]
 #
 # Wraps `notes projects --release` with the tag guard (a shipping app never freezes an
 # untagged version), the agent changelog appended to the frozen note, and the
 # notes-version-summary refresh (best-effort).
 #
-# Defaults to PATCH. `vX.Y.Z` opens that exact version
+# Defaults to AUTO: notes derives the bump from what the version holds, minor when a feature
+# epic closed on proof in it, else patch (`stages.md`, "Versions"); a level given overrides it,
+# and a major is only ever asked for. `vX.Y.Z` opens that exact version
 # next; `carry` aims the version's open tasks at the next instead of refusing on them (what a
 # release tag closing its version does). `renumber` (with `vX.Y.Z`) opens a version BELOW
 # the open one, for a sheet whose number ran ahead of the app's tags: the open number can
@@ -32,7 +34,7 @@ SELF="$(realpath "$0")"
 declare -F project_repo_name >/dev/null 2>&1 \
   || project_repo_name() { printf '%s' "${1:-}"; }
 
-USAGE="usage: notes-roll <profile> <project> [patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]"
+USAGE="usage: notes-roll <profile> <project> [auto|patch|minor|major|vX.Y.Z] [carry|renumber|carry,renumber]"
 RENUMBER_TO=""  # set by roll_now: the version a --renumber roll opens
 
 # canon_namespaces <project> -> every ~/.agent namespace this project's sessions can be
@@ -115,7 +117,7 @@ roll_tag_guard() { # $1=profile $2=project
 
 # The roll itself plus everything that has to happen after it: the agent changelog, then
 # the LLM summaries. NO PROMPT - the bump level arrives as flags.
-roll_do() { # $1=profile $2=project $3=flags ('' | --minor | --major | --next vX.Y.Z, plus --carry)
+roll_do() { # $1=profile $2=project $3=flags ('' | --patch | --minor | --major | --next vX.Y.Z, plus --carry)
   local profile="$1" name="$2" flag="${3:-}" out frozen
   roll_tag_guard "$profile" "$name" || return 1
   # shellcheck disable=SC2086  # $flag is zero or more flag words, deliberately unquoted
@@ -159,14 +161,15 @@ roll_do() { # $1=profile $2=project $3=flags ('' | --minor | --major | --next vX
 }
 
 roll_now() { # $1=profile $2=project [$3=level] [$4=carry]
-  local profile="${1:-}" name="${2:-}" level="${3:-patch}" mode="${4:-}" flag
+  local profile="${1:-}" name="${2:-}" level="${3:-auto}" mode="${4:-}" flag
   [ -n "$profile" ] && [ -n "$name" ] || { echo "$USAGE" >&2; return 2; }
   case "$level" in
-    patch) flag='' ;;
+    auto) flag='' ;;
+    patch) flag='--patch' ;;
     minor) flag='--minor' ;;
     major) flag='--major' ;;
     v[0-9]*.[0-9]*.[0-9]*) flag="--next $level" ;;
-    *) echo "notes-roll: unknown level '$level' (patch|minor|major|vX.Y.Z)" >&2; return 2 ;;
+    *) echo "notes-roll: unknown level '$level' (auto|patch|minor|major|vX.Y.Z)" >&2; return 2 ;;
   esac
   case "$mode" in
     '') ;;
@@ -188,5 +191,5 @@ roll_now() { # $1=profile $2=project [$3=level] [$4=carry]
 case "${1:-}" in
   -h | --help) echo "$USAGE"; exit 0 ;;
 esac
-roll_now "${1:-}" "${2:-}" "${3:-patch}" "${4:-}"
+roll_now "${1:-}" "${2:-}" "${3:-auto}" "${4:-}"
 exit $?

@@ -38,14 +38,7 @@ pub fn head_line(c: &Card, playtest_open: usize, today: chrono::NaiveDate) -> St
     if let Some(p) = c.percent {
         s += &format!("  {p}%");
     }
-    s += &match c.eta_days {
-        Some(0) => "  nothing open".to_string(),
-        Some(d) => format!(
-            "  ETA ~{}",
-            (today + chrono::Days::new(u64::from(d))).format("%m-%d")
-        ),
-        None => "  no ETA (no closes in 28d)".to_string(),
-    };
+    s += &format!("  {}", projects::eta_words(c, today));
     if playtest_open > 0 {
         s += &format!("  playtest {playtest_open} waiting");
     }
@@ -133,7 +126,7 @@ pub fn heads(feed: &Feed, cards: &[Card], today: chrono::NaiveDate) -> Vec<Head>
 }
 
 /// The day a feed was read, what its forecasts count from.
-fn today_of(feed: &Feed) -> chrono::NaiveDate {
+pub(crate) fn today_of(feed: &Feed) -> chrono::NaiveDate {
     chrono::NaiveDate::parse_from_str(&feed.today, "%Y-%m-%d")
         .unwrap_or_else(|_| chrono::Local::now().date_naive())
 }
