@@ -1725,7 +1725,8 @@ case " $* " in
   rc=$(cat "$NOTES_FIXTURE/story.rc" 2>/dev/null || echo 0)
   if [ "$rc" = 0 ]; then printf -- '- [ ] %s #c1105 <!-- id:lv-9 -->\n' "${@: -1}"; else cat "$NOTES_FIXTURE/story.out" >&2; fi
   exit "$rc" ;;
-*' start '*) [ ! -e "$NOTES_FIXTURE/closed.${@: -1}" ] || { echo "no open task matches" >&2; exit 1; } ;;
+*' start '*) [ ! -e "$NOTES_FIXTURE/closed.${@: -1}" ] && [ ! -e "$NOTES_FIXTURE/closed.$4.${@: -1}" ] ||
+  { echo "no open task matches" >&2; exit 1; } ;;
 *' done '*) [ ! -e "$NOTES_FIXTURE/done.rc" ] || { echo "no open task matches" >&2; exit 1; } ;;
 *' run '*) [ ! -e "$NOTES_FIXTURE/run.rc" ] || { echo "no open task matches" >&2; exit 1; } ;;
 *' list '*) [ ! -e "$NOTES_FIXTURE/list.rc" ] || exit 1; cat "$NOTES_FIXTURE/list.out" 2>/dev/null ;;
@@ -1993,18 +1994,24 @@ notes --profile bnb ptask level --agent start lv-9'
   [ -z "$(item queued no-board)" ]
 }
 
-@test "--row on a game keeps that game: a row moved from another game keeps its id and links where it is" {
+@test "--row links a row moved to the caller's game, which its code no longer names; open on neither is refused" {
   story_notes
+  # ar-9 was moved from arena to level: it keeps its id, so the code sheet (arena) no longer has it.
+  touch "$NOTES_FIXTURE/closed.arena.ar-9"
   run "$AQ" add --project level --row ar-9 --slug moved "x"
   assert_success
   assert_line "story ar-9 on the level agent board"
   f="$(item queued moved)"
   [ "$(field "$f" project)" = level ]
   [ "$(field "$f" row)" = level:ar-9 ]
-  # Negative control: the checkout's own project still credits the game the row code names.
-  run "$AQ" add --project game --row ar-8 --slug by-code "y"
+  # Negative control: a row still on its code's sheet links there, whichever game the caller named.
+  run "$AQ" add --project level --row ar-8 --slug by-code "y"
   assert_success
-  [ "$(field "$(item queued by-code)" project)" = arena ]
+  [ "$(field "$(item queued by-code)" row)" = arena:ar-8 ]
+  touch "$NOTES_FIXTURE/closed.arena.ar-7" "$NOTES_FIXTURE/closed.level.ar-7"
+  run "$AQ" add --project level --row ar-7 --slug nowhere "z"
+  assert_failure; assert_output --partial "--row ar-7: not an open row on the arena agent board"
+  [ -z "$(item queued nowhere)" ]
 }
 
 @test "a title whose subject is one open row works that row; a mention, a closed row, two ids or an --epic file a story as before" {
