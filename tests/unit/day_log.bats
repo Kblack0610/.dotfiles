@@ -572,6 +572,7 @@ EOF
   echo 1 > "$SANDBOX/cif-rc"
   run "$SUBJECT" nightly
   assert_failure 1
+  assert_output --partial 'day-log-snapshots: ci: O/game ci-failures'   # the runner's stderr log says why
   run rec -r '.unreadable[]' 2026-10-27
   assert_output --partial 'ci O/game ci-failures'
   [ -s "$DAYLOG_DIR/weeks/2026-10-27.json" ]
@@ -582,6 +583,7 @@ EOF
   jq '.partial = true' "$SANDBOX/cif" > "$SANDBOX/cif2"; mv "$SANDBOX/cif2" "$SANDBOX/cif"
   run "$SUBJECT" nightly
   assert_failure 1
+  assert_output --partial 'day-log-snapshots: ci: O/game ci-failures: partial'
   run rec -c '.ci.repos["O/game"].runs' 2026-10-27
   assert_output '10'
   run rec -r '.unreadable[]' 2026-10-27
