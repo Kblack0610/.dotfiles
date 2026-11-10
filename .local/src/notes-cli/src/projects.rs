@@ -1613,7 +1613,7 @@ pub(crate) fn open_version(dir: &Path) -> Option<(u32, u32, u32)> {
 }
 
 /// The next version after `cur` (or the v0.0.1 seed when the project has none).
-fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
+pub(crate) fn next_version(cur: Option<(u32, u32, u32)>, level: Bump) -> (u32, u32, u32) {
     match cur {
         None => (0, 0, 1), // every lab project starts here
         Some((a, b, c)) => match level {
@@ -1944,13 +1944,7 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
         frozen.push('\n');
     }
 
-    // The stage tag (`#alpha`, `#prod`) rides on the `Version:` line and is a fact about the
-    // project, not the version, so it survives the release. Dropping it demoted a `#prod` app
-    // to untagged on every release.
-    let stage = head_lines(content)
-        .find_map(|l| l.trim_start().strip_prefix("Version:"))
-        .and_then(|rest| rest.trim().split_once(char::is_whitespace))
-        .map_or_else(String::new, |(_, tags)| format!(" {}", tags.trim()));
+    let version = version_line(content, next);
     let head_len = head_lines(content).count();
     let mut sheet: Vec<String> = Vec::with_capacity(lines.len());
     for (i, l) in lines.iter().enumerate() {
@@ -1959,7 +1953,7 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
         }
         let head = l.trim_start();
         if i < head_len && head.starts_with("Version:") {
-            sheet.push(format!("Version: {next_s}{stage}"));
+            sheet.push(version.clone());
         } else {
             sheet.push(l.trim_end().to_string());
         }
@@ -1967,10 +1961,21 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
     (frozen, format!("{}\n", sheet.join("\n")))
 }
 
+/// The head `Version:` line naming `v`, with the sheet's stage tag (`#alpha`, `#prod`) kept:
+/// the tag is a fact about the project, not the version, and dropping it demoted a `#prod`
+/// app to untagged on every release.
+pub(crate) fn version_line(content: &str, v: V) -> String {
+    let stage = head_lines(content)
+        .find_map(|l| l.trim_start().strip_prefix("Version:"))
+        .and_then(|rest| rest.trim().split_once(char::is_whitespace))
+        .map_or_else(String::new, |(_, tags)| format!(" {}", tags.trim()));
+    format!("Version: {}{stage}", fmt_version(v))
+}
+
 /// The `## PRs` section a frozen note ends in: every PR named on the version's closed rows of
 /// both lanes, in row order and without repeats. A dropped row shipped nothing, so its PRs are
 /// left out. Empty when no row names one.
-fn prs_section<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
+pub(crate) fn prs_section<'a>(rows: impl IntoIterator<Item = &'a str>) -> String {
     let mut prs: Vec<String> = Vec::new();
     for r in rows.into_iter().filter(|r| !md::is_dropped(r)) {
         for pr in md::pr_refs(r) {
@@ -2929,7 +2934,7 @@ struct ProjectStats {
 pub(crate) struct ReleaseDue {
     pub cadence_days: i64,
     /// The day of the last cut, `YYYY-MM-DD`. `None` for a project never cut: its history is
-    /// rebuilt first (`systems-versions-p6`), so a cadence cut never folds it into one version.
+    /// rebuilt first (`projects --backfill`), so a cadence cut never folds it into one version.
     pub last_cut: Option<String>,
     /// `last_cut` plus the cadence; `None` when never cut.
     pub due_on: Option<String>,
@@ -2937,7 +2942,7 @@ pub(crate) struct ReleaseDue {
     pub due: bool,
     /// Due and a whole cadence past `due_on`: the open version holds more than one window of
     /// work, which a cadence cut would fold into one version. `agentctl-wave-roll` leaves it
-    /// to the backfill that splits it by week (`systems-versions-p6`) or a hand `notes-roll`.
+    /// to `projects --backfill`, which splits it by week, or a hand `notes-roll`.
     pub backlog: bool,
     /// The bump the cut takes, `minor` or `patch` ([`derived_bump`]).
     pub bump: &'static str,
