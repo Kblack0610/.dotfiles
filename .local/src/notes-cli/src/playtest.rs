@@ -8,13 +8,19 @@
 //!
 //! Rows sit under `## <game>` headings and are read through the same `md` section helpers and
 //! open-task predicate as the sheet, so `list`, `done`, `rm` and the board count agree.
+//!
+//! Every write ends with the same kind of sweep a sheet gets ([`lay_out`]): within a game the
+//! open checks are grouped by the PR they came from under `### PR <n>`, newest first, and the
+//! ticked ones sit in `### Done` for the sheet's Done window, then roll into the version note.
 
 use crate::config::Profile;
 use crate::logging::Logger;
 use crate::md;
 use crate::project_tasks::{self, Pick};
 use crate::projects;
+use crate::sweep::Block;
 use anyhow::{bail, Result};
+use chrono::NaiveDate;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -41,6 +47,11 @@ pub enum Op {
     Drop {
         stamp: String,
         pick: Pick,
+    },
+    /// File the one human sheet row a playtest pass of a cut build is: its open checks, counted.
+    Pass {
+        build: String,
+        game: Option<String>,
     },
 }
 
@@ -80,7 +91,60 @@ pub fn run(p: &Profile, log: &Logger, name: &str, op: Op) -> Result<i32> {
         Op::Drop { stamp, pick } => edit_in(log, &dir, &project, &pick, "dropped", |l| {
             Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
         }),
+        Op::Pass { build, game } => pass_in(p, log, name, &dir, &build, game.as_deref()),
     }
+}
+
+/// `pass`: one `check(playtest): play [<game> ]build <build>, N checks in playtest.md #high` row
+/// on the human sheet, N the open checks (of `game`, when given). The checks stay in
+/// playtest.md; the row is the one thing on the human's list that says a build waits to be
+/// played. The sheet's twin rule makes it idempotent: the same build again is exit 3.
+fn pass_in(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    dir: &Path,
+    build: &str,
+    game: Option<&str>,
+) -> Result<i32> {
+    // Both land in a sheet row's text, where `#` is a tag and `<!--` opens its marker.
+    let plain = |flag: &str, v: &str| -> Result<String> {
+        let v = checked(flag, v)?;
+        if v.contains('#') || v.contains("<!--") || v.contains("-->") {
+            bail!("{flag} takes no `#` and no `<!--`/`-->`: it is written into a sheet row");
+        }
+        Ok(v.to_string())
+    };
+    let build = plain("--build", build)?;
+    let game = game.map(|g| plain("--game", g)).transpose()?;
+    let game = game.as_deref();
+    let content = fs::read_to_string(path(dir)).unwrap_or_default();
+    let n = open_rows(&content)
+        .iter()
+        .filter(|(_, g, _)| game.is_none_or(|w| g.eq_ignore_ascii_case(w)))
+        .count();
+    if n == 0 {
+        println!(
+            "no open playtest checks{} in {name}: nothing to play, no row filed",
+            game.map_or(String::new(), |g| format!(" under ## {g}"))
+        );
+        return Ok(0);
+    }
+    let what = game.map_or(String::new(), |g| format!("{g} "));
+    let s = if n == 1 { "" } else { "s" };
+    let text =
+        format!("check(playtest): play {what}build {build}, {n} check{s} in playtest.md #high");
+    project_tasks::add_via(
+        p,
+        log,
+        name,
+        &text,
+        &[],
+        None,
+        None,
+        crate::agent_sheet::Lane::Human,
+        None,
+    )
 }
 
 /// The head a new playtest.md starts with: the title and the one rule every row follows.
@@ -201,7 +265,7 @@ fn add_in(
     } else {
         header(project)
     };
-    md::write_atomic(&file, &insert_row(&content, game, &row))?;
+    write_swept(dir, project, &insert_row(&content, game, &row))?;
     log.info(
         "ptask",
         &format!("playtest added to {} ({project})", file.display()),
@@ -220,8 +284,11 @@ fn done_in(
     unverified: Option<&str>,
 ) -> Result<i32> {
     let stamp = project_tasks::proof_stamp(proof, unverified)?;
+    // `done:` first, as the sheet's `done` stamps it: the day the Done window counts from.
+    let on = project_tasks::done_token(chrono::Local::now().date_naive());
     edit_in(log, dir, project, pick, "done", |l| {
-        Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
+        let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
+        Some(md::add_marker(&ticked, &stamp))
     })
 }
 
@@ -246,7 +313,7 @@ where
         .and_then(|(_, g, _)| md::edit_first_in_section(&content, g, |l| pick.hits(l), f));
     match hit {
         Some((new, matched)) => {
-            md::write_atomic(&file, &new)?;
+            write_swept(dir, project, &new)?;
             log.info(
                 "ptask",
                 &format!("playtest {verb} in {} ({project})", file.display()),
@@ -259,6 +326,294 @@ where
             Ok(1)
         }
     }
+}
+
+/// A heading or rule this sweep writes, so a re-sweep drops it and lays it out afresh, and an
+/// authored line anywhere else stays as prose.
+fn is_scaffold(line: &str) -> bool {
+    let t = line.trim();
+    t.eq_ignore_ascii_case("### Done")
+        || t.eq_ignore_ascii_case(NO_PR)
+        || t.strip_prefix("### PR ")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The group heading for checks that name no PR.
+const NO_PR: &str = "### No PR";
+
+/// The PR a check came from, its build: the `pr:` token of its marker.
+fn build_of(row: &str) -> Option<u64> {
+    md::marker_token(row, "pr:").and_then(|n| n.parse().ok())
+}
+
+/// One `## <game>` section taken apart: authored prose lines, then the open and the ticked
+/// check blocks, each a row and the lines indented under it.
+#[derive(Default)]
+struct Game {
+    name: String,
+    prose: Vec<String>,
+    open: Vec<Block>,
+    done: Vec<Block>,
+}
+
+/// The file taken apart: the lines above the first `## `, and each game in file order. A game
+/// heading that repeats folds into its first occurrence, the one every verb already acts in.
+fn parse(content: &str) -> (Vec<String>, Vec<Game>) {
+    let mut head: Vec<String> = Vec::new();
+    let mut games: Vec<Game> = Vec::new();
+    let mut cur: Option<usize> = None;
+    // Where an indented line goes: the block the last top-level row opened.
+    let mut last: Option<bool> = None;
+    for l in content.lines() {
+        if let Some(h) = l.strip_prefix("## ") {
+            let h = h.trim();
+            cur = Some(
+                match games.iter().position(|g| g.name.eq_ignore_ascii_case(h)) {
+                    Some(i) => i,
+                    None => {
+                        games.push(Game {
+                            name: h.to_string(),
+                            ..Game::default()
+                        });
+                        games.len() - 1
+                    }
+                },
+            );
+            last = None;
+            continue;
+        }
+        let Some(gi) = cur else {
+            head.push(l.to_string());
+            continue;
+        };
+        let g = &mut games[gi];
+        if l.trim().is_empty() || md::is_empty_unchecked(l) || is_scaffold(l) {
+            if !l.trim().is_empty() {
+                last = None;
+            }
+            continue;
+        }
+        if l.starts_with(char::is_whitespace) {
+            let into = match last {
+                Some(true) => g.done.last_mut(),
+                Some(false) => g.open.last_mut(),
+                None => None,
+            };
+            if let Some(b) = into {
+                b.push(l.to_string());
+                continue;
+            }
+        }
+        if md::is_task(l) && !l.starts_with(char::is_whitespace) {
+            let done = md::is_checked(l);
+            if done { &mut g.done } else { &mut g.open }.push(vec![l.to_string()]);
+            last = Some(done);
+        } else {
+            g.prose.push(l.to_string());
+            last = None;
+        }
+    }
+    while head.last().is_some_and(|l| l.trim().is_empty()) {
+        head.pop();
+    }
+    (head, games)
+}
+
+/// What a sweep of playtest.md made: the file, and the ticked checks it rolled off, by game.
+pub(crate) struct Laid {
+    pub content: String,
+    pub old: Vec<(String, Vec<Block>)>,
+}
+
+/// Pure core: lay `content` out. In each game, the open checks grouped under `### PR <n>`,
+/// newest PR first and file order within one, the checks with no PR last under `### No PR`;
+/// then `### Done`, the ticked checks the sheet's Done window keeps
+/// ([`crate::project_sweep::kept_done`]), newest first; the rest leave for [`Laid::old`]. With no
+/// `shape` (a re-sort) every ticked check stays, the undated last. A file with no `## ` heading
+/// comes back as it is.
+pub(crate) fn lay_out(
+    content: &str,
+    today: NaiveDate,
+    shape: Option<&crate::config::SheetShape>,
+) -> Laid {
+    let (head, games) = parse(content);
+    if games.is_empty() {
+        return Laid {
+            content: content.to_string(),
+            old: Vec::new(),
+        };
+    }
+    let mut out: Vec<String> = head;
+    let mut old: Vec<(String, Vec<Block>)> = Vec::new();
+    for mut g in games {
+        if !out.is_empty() {
+            out.push(String::new());
+        }
+        out.push(format!("## {}", g.name));
+        out.append(&mut g.prose);
+        g.open
+            .sort_by_key(|b| build_of(&b[0]).map_or((1, 0), |n| (0, u64::MAX - n)));
+        let mut at: Option<Option<u64>> = None;
+        for b in g.open {
+            let build = build_of(&b[0]);
+            if at != Some(build) {
+                if at.is_some() {
+                    out.push(String::new());
+                }
+                out.push(build.map_or(NO_PR.to_string(), |n| format!("### PR {n}")));
+                at = Some(build);
+            }
+            out.extend(b);
+        }
+        let kept = shape.map(|s| {
+            let firsts: Vec<&str> = g.done.iter().map(|b| b[0].as_str()).collect();
+            crate::project_sweep::kept_done(&firsts, today, s)
+        });
+        let (mut keep, mut gone): (Vec<Block>, Vec<Block>) = (Vec::new(), Vec::new());
+        for (i, b) in g.done.into_iter().enumerate() {
+            if kept.as_ref().is_none_or(|k| k.contains(&i)) {
+                keep.push(b);
+            } else {
+                gone.push(b);
+            }
+        }
+        // Stable, so one day's checks keep file order.
+        keep.sort_by_key(|b| std::cmp::Reverse(project_tasks::done_on(&b[0])));
+        if !keep.is_empty() {
+            if at.is_some() {
+                out.push(String::new());
+            }
+            out.push("### Done".to_string());
+            out.extend(keep.into_iter().flatten());
+        }
+        if !gone.is_empty() {
+            old.push((g.name, gone));
+        }
+    }
+    Laid {
+        content: format!("{}\n", out.join("\n")),
+        old,
+    }
+}
+
+/// The section of the version note a game's rolled-off checks go under.
+fn archive_section(game: &str) -> String {
+    format!("Playtest done: {game}")
+}
+
+/// Lay out `content`, a project's playtest.md under `dir`, rolling old ticked checks into the
+/// version note of the human sheet's open version (unless `dry_run`). A profile with
+/// `automation = false` is left as written. `None` when nothing would change.
+pub(crate) fn tidy(
+    dir: &Path,
+    project: &str,
+    content: &str,
+    dry_run: bool,
+) -> Result<Option<Laid>> {
+    if !crate::config::managed_path(&path(dir)) {
+        return Ok(None);
+    }
+    let laid = lay_out(
+        content,
+        chrono::Local::now().date_naive(),
+        Some(&crate::config::sheet_shape()),
+    );
+    if laid.content == content {
+        return Ok(None);
+    }
+    if !dry_run && !laid.old.is_empty() {
+        let cur = project_tasks::open_version_for(dir);
+        for (game, rows) in &laid.old {
+            project_tasks::archive_blocks(dir, project, cur, &archive_section(game), rows)?;
+        }
+    }
+    Ok(Some(laid))
+}
+
+/// Write `content` as `dir`'s playtest.md, swept first: how every verb here writes, so no write
+/// leaves the file out of shape.
+fn write_swept(dir: &Path, project: &str, content: &str) -> Result<()> {
+    let laid = tidy(dir, project, content, false)?;
+    md::write_atomic(
+        &path(dir),
+        laid.as_ref().map_or(content, |l| l.content.as_str()),
+    )
+}
+
+/// The report lines of one sweep: how many checks rolled off, and where to.
+pub(crate) fn report(dir: &Path, laid: &Laid) -> Vec<String> {
+    let ver = projects::version_or_default(project_tasks::open_version_for(dir));
+    laid.old
+        .iter()
+        .map(|(game, rows)| {
+            format!(
+                "{} ticked check(s) -> {} ## {}",
+                rows.len(),
+                projects::agent_note_path(dir, &ver).display(),
+                archive_section(game)
+            )
+        })
+        .collect()
+}
+
+/// `notes sheet-sweep <dir>/playtest.md`: the save hook (`stdin`, which also dates a box
+/// ticked by hand in this edit), the explicit sweep, or with `layout_only` the re-sort alone.
+pub(crate) fn sheet_sweep(
+    file: &Path,
+    content: &str,
+    stdin: bool,
+    layout_only: bool,
+    dry_run: bool,
+) -> Result<i32> {
+    // Only a project's playtest.md, the one beside a task sheet: no other folder gets a
+    // version note.
+    let dir = file.parent().unwrap_or(Path::new("."));
+    if !crate::config::managed_path(file) || project_tasks::task_sheet(dir).is_none() {
+        if stdin {
+            print!("{content}");
+        }
+        return Ok(0);
+    }
+    let project = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if layout_only {
+        // Nothing rolls off a re-sort.
+        let laid = lay_out(content, chrono::Local::now().date_naive(), None);
+        print!("{}", laid.content);
+        return Ok(0);
+    }
+    let content = if stdin {
+        let saved = fs::read_to_string(file).unwrap_or_default();
+        let n = content.lines().count();
+        crate::project_sweep::stamp_undated_in(
+            content,
+            &saved,
+            chrono::Local::now().date_naive(),
+            0..n,
+        )
+    } else {
+        content.to_string()
+    };
+    let laid = tidy(dir, &project, &content, dry_run)?;
+    if stdin {
+        print!(
+            "{}",
+            laid.as_ref()
+                .map_or(content.as_str(), |l| l.content.as_str())
+        );
+        return Ok(0);
+    }
+    if let Some(l) = laid {
+        for r in report(dir, &l) {
+            println!("{r}");
+        }
+        if !dry_run {
+            md::write_atomic(file, &l.content)?;
+        }
+    }
+    Ok(0)
 }
 
 /// A row in the form `add --pr` wrote before the PR moved into the marker comment,
@@ -360,12 +715,108 @@ mod tests {
             .unwrap(),
             0
         );
+        // Only the twice row is still open; the two ticks, undated by a bare edit, rolled off.
         let got = fs::read_to_string(path(&dir)).unwrap();
         assert!(
-            got.contains("- [x] menu: back exits\n- [ ] menu: back exits twice\n- [x] lobby"),
+            got.ends_with("## G\n### No PR\n- [ ] menu: back exits twice\n"),
             "{got}"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn shape(done_days: i64, done_max: usize) -> crate::config::SheetShape {
+        crate::config::SheetShape {
+            done_days,
+            done_max,
+        }
+    }
+
+    fn day(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn lay_out_groups_open_checks_by_pr_newest_first_and_keeps_the_head() {
+        let before = "# Playtest\n\nThe rule.\n\n## G\nplay these first\n- [ ] a <!-- pr:3 -->\n\
+                      - [ ] b\n- [ ] c <!-- pr:30 -->\n  a detail under c\n- [ ] d <!-- pr:3 -->\n\n\
+                      ## H\n- [ ] e <!-- pr:1 -->\n\n## g\n- [ ] f <!-- pr:30 -->\n";
+        let laid = lay_out(before, day("2026-11-09"), Some(&shape(7, 30)));
+        assert_eq!(
+            laid.content,
+            "# Playtest\n\nThe rule.\n\n## G\nplay these first\n### PR 30\n- [ ] c <!-- pr:30 -->\n\
+             \x20 a detail under c\n- [ ] f <!-- pr:30 -->\n\n### PR 3\n- [ ] a <!-- pr:3 -->\n\
+             - [ ] d <!-- pr:3 -->\n\n### No PR\n- [ ] b\n\n## H\n### PR 1\n- [ ] e <!-- pr:1 -->\n"
+        );
+        assert!(laid.old.is_empty());
+        let again = lay_out(&laid.content, day("2026-11-09"), Some(&shape(7, 30)));
+        assert_eq!(
+            again.content, laid.content,
+            "a second sweep changes nothing"
+        );
+        // An authored rule is the human's prose, never scaffold the sweep deletes.
+        let ruled = lay_out("# P\n\n## G\n---\n- [ ] a\n", day("2026-11-09"), None);
+        assert_eq!(ruled.content, "# P\n\n## G\n---\n### No PR\n- [ ] a\n");
+        // A file with no game heading is left as it is.
+        let bare = "# Playtest\n\nnothing yet\n";
+        assert_eq!(
+            lay_out(bare, day("2026-11-09"), Some(&shape(7, 30))).content,
+            bare
+        );
+    }
+
+    #[test]
+    fn ticked_checks_keep_the_window_and_the_rest_roll_off() {
+        let before = "# Playtest\n\n## G\n- [ ] open <!-- pr:2 -->\n\
+                      - [x] old <!-- done:2026-10-01 pr:1 -->\n\
+                      - [x] fresh <!-- done:2026-11-08 x -->\n\
+                      - [x] newest <!-- done:2026-11-09 x -->\n\
+                      - [x] undated <!-- x -->\n\
+                      - [x] dropped <!-- done:2026-11-09 dropped: stale -->\n";
+        let laid = lay_out(before, day("2026-11-09"), Some(&shape(7, 30)));
+        assert_eq!(
+            laid.content,
+            "# Playtest\n\n## G\n### PR 2\n- [ ] open <!-- pr:2 -->\n\n### Done\n\
+             - [x] newest <!-- done:2026-11-09 x -->\n- [x] fresh <!-- done:2026-11-08 x -->\n"
+        );
+        let gone: Vec<&str> = laid.old[0].1.iter().map(|b| b[0].as_str()).collect();
+        assert_eq!(laid.old[0].0, "G");
+        assert_eq!(gone.len(), 3, "{gone:?}");
+        assert!(gone
+            .iter()
+            .all(|l| !l.contains("fresh") && !l.contains("newest")));
+        // A re-sort (no shape) rolls nothing off, the undated last.
+        let all = lay_out(before, day("2026-11-09"), None);
+        assert!(all.old.is_empty());
+        assert!(
+            all.content.ends_with("- [x] undated <!-- x -->\n"),
+            "{}",
+            all.content
+        );
+        assert!(all.content.contains("- [x] old"), "{}", all.content);
+        // done_max keeps only the newest.
+        let laid = lay_out(before, day("2026-11-09"), Some(&shape(7, 1)));
+        assert!(laid.content.contains("newest") && !laid.content.contains("fresh"));
+        assert_eq!(laid.old[0].1.len(), 4);
+    }
+
+    #[test]
+    fn a_tick_made_by_hand_is_dated_by_the_save_and_kept() {
+        let saved = "# Playtest\n\n## G\n- [ ] a <!-- pr:2 -->\n";
+        let edited = "# Playtest\n\n## G\n- [x] a <!-- pr:2 -->\n";
+        let n = edited.lines().count();
+        let stamped =
+            crate::project_sweep::stamp_undated_in(edited, saved, day("2026-11-09"), 0..n);
+        assert!(
+            stamped.contains("- [x] a <!-- pr:2 done:2026-11-09 -->"),
+            "{stamped}"
+        );
+        let laid = lay_out(&stamped, day("2026-11-09"), Some(&shape(7, 30)));
+        assert!(
+            laid.content.contains("### Done\n- [x] a"),
+            "{}",
+            laid.content
+        );
+        assert!(laid.old.is_empty());
     }
 
     #[test]
@@ -447,7 +898,7 @@ mod tests {
             "{got}"
         );
         assert!(
-            got.ends_with("\n\n## General\n- [ ] arena: spawn 4 bots, none clip\n"),
+            got.ends_with("\n\n## General\n### No PR\n- [ ] arena: spawn 4 bots, none clip\n"),
             "{got}"
         );
 
@@ -474,12 +925,12 @@ mod tests {
         assert_eq!(got.matches("## General").count(), 1, "{got}");
         assert!(
             got.contains(
-                "## General\n- [ ] arena: spawn 4 bots, none clip\n- [ ] lobby: two pads join\n"
+                "## General\n### No PR\n- [ ] arena: spawn 4 bots, none clip\n- [ ] lobby: two pads join\n"
             ),
             "{got}"
         );
         assert!(
-            got.contains("## Dodgeball\n- [ ] menu: back exits <!-- pr:812 -->\n"),
+            got.contains("## Dodgeball\n### PR 812\n- [ ] menu: back exits <!-- pr:812 -->\n"),
             "{got}"
         );
         let _ = fs::remove_dir_all(&dir);
@@ -567,8 +1018,11 @@ One row is one thing to play and check off.
             0
         );
         let got = fs::read_to_string(path(&dir)).unwrap();
+        let today = chrono::Local::now().date_naive();
         assert!(
-            got.contains("- [x] arena: ball never clips the wall <!-- unverified: played it -->"),
+            got.contains(&format!(
+                "### Done\n- [x] arena: ball never clips the wall <!-- done:{today} unverified: played it -->"
+            )),
             "{got}"
         );
         assert_eq!(open_count(&dir), 1);
@@ -590,7 +1044,13 @@ One row is one thing to play and check off.
         );
         let got = fs::read_to_string(path(&dir)).unwrap();
         assert!(!got.contains("lobby"), "{got}");
-        assert!(got.contains("- [x] title: logo fades"), "{got}");
+        // The write sweeps: the undated tick rolls into the version note.
+        assert!(!got.contains("title: logo fades"), "{got}");
+        let note = fs::read_to_string(dir.join("agent/versions/v0.0.1.md")).unwrap();
+        assert!(
+            note.contains("## Playtest done: General\n- [x] title: logo fades"),
+            "{note}"
+        );
         assert!(got.contains("arena: ball never clips"), "{got}");
         // checked rows are not open, so `rm` cannot reach them
         assert_eq!(
