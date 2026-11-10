@@ -530,7 +530,7 @@ pub fn from_queue(items: &[Item]) -> Vec<Action> {
 
 /// The ingest record's intake steps Log lists: a capture, a split, a move, a filing or the
 /// reason a line stayed, and a sweep's summary. Row and queue writes have their own sources.
-const INTAKE: [&str; 11] = [
+const INTAKE: [&str; 12] = [
     "added",
     "split",
     "moved",
@@ -538,6 +538,7 @@ const INTAKE: [&str; 11] = [
     "dup",
     "planned",
     "left",
+    "asked",
     "refused",
     "answered",
     "sweep",

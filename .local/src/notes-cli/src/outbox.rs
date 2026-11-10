@@ -344,6 +344,24 @@ pub fn answer(p: &Profile, log: &Logger, raw: &str, answer: &str) -> Result<i32>
     Ok(0)
 }
 
+/// `notes outbox drop -- <raw>`: take the outbox line that is `raw` byte for byte out of the
+/// outbox and file nothing, recorded as `dropped`. The person's own answer to "which project is
+/// this about?" is the only caller: a line nobody asked about is never dropped.
+pub fn drop_line(p: &Profile, log: &Logger, raw: &str) -> Result<i32> {
+    let _lock = lock(p)?;
+    let content = read(p)?;
+    let Some((rest, line)) = sheet::take_in(&content, HEADING, |l| l.raw == raw) else {
+        eprintln!("no outbox line is '{raw}'");
+        return Ok(1);
+    };
+    md::write_atomic(&p.outbox, &rest)?;
+    let text = md::without_project_tag(&line.text);
+    ingest::record(p, &Event::new("dropped", "outbox", "", &text));
+    log.info("outbox", "dropped a line");
+    println!("dropped {text}");
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,6 +607,22 @@ mod tests {
             fs::read_to_string(&p.outbox).unwrap(),
             "# Outbox\n\n## Outbox\n- b\n\n## Notes\nkeep me\n"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn drop_takes_only_the_named_line_out_and_records_it() {
+        let (root, p, log) = vault("drop");
+        add(&p, &log, "keep me").unwrap();
+        add(&p, &log, "drop me #p:demo").unwrap();
+        assert_eq!(drop_line(&p, &log, "- [ ] drop me #p:demo").unwrap(), 0);
+        let left: Vec<String> = lines(&p).unwrap().into_iter().map(|l| l.text).collect();
+        assert_eq!(left, vec!["keep me".to_string()]);
+        let rec = fs::read_to_string(ingest::path(&p)).unwrap_or_default();
+        assert!(rec.contains("\"dropped\"") && rec.contains("drop me"), "{rec}");
+        // A line that is not there drops nothing (negative control).
+        assert_eq!(drop_line(&p, &log, "- [ ] drop me #p:demo").unwrap(), 1);
+        assert_eq!(lines(&p).unwrap().len(), 1);
         let _ = fs::remove_dir_all(&root);
     }
 }

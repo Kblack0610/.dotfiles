@@ -1020,6 +1020,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
     let acked = crate::inbox_ack::acked(p);
     let mut reviewed: Vec<String> = Vec::new();
     let (mut filed, mut joined, mut planned, mut left, mut refused, mut added) = (0, 0, 0, 0, 0, 0);
+    let mut asked = 0;
     for (i, ev) in events.iter().enumerate() {
         let at = ev.ts.get(11..16).unwrap_or("--:--");
         let id = ev.id.as_deref().unwrap_or_default();
@@ -1086,17 +1087,23 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
                     format!("{at} planned {}: {}", link(id, &ev.from, ""), few(&ev.text)),
                 )
             }
-            action @ ("left" | "refused") => {
-                if action == "refused" {
-                    refused += 1;
-                } else {
-                    left += 1;
+            action @ ("left" | "asked" | "refused") => {
+                match action {
+                    "refused" => refused += 1,
+                    "asked" => asked += 1,
+                    _ => left += 1,
                 }
                 let why = ev.why.as_deref().unwrap_or("no reason given");
-                detail.push(("why".into(), why.to_string()));
+                if action == "asked" {
+                    // `why` is the ask's id: answer it there and the line files itself.
+                    detail.push(("answer".into(), format!("agent-ask card {why}")));
+                } else {
+                    detail.push(("why".into(), why.to_string()));
+                }
+                let said = if action == "asked" { "asked you" } else { action };
                 (
                     true,
-                    format!("{at} {action} ({}): {}", name(&ev.from, ""), ev.text),
+                    format!("{at} {said} ({}): {}", name(&ev.from, ""), ev.text),
                 )
             }
             _ => continue,
@@ -1124,7 +1131,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
         events.iter().any(|e| {
             e.from == "outbox"
                 && e.text == l.text
-                && matches!(e.action.as_str(), "left" | "refused")
+                && matches!(e.action.as_str(), "left" | "asked" | "refused")
         })
     };
     for (i, l) in waiting.iter().filter(|l| !shown(l)).enumerate() {
@@ -1174,7 +1181,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
     status::Page {
         feed: status::Feed::Inbox,
         stat: Some(format!(
-            "{today}: {filed} filed, {joined} joined, {planned} planned, {added} added by sessions, {left} left, {refused} refused, {} in the outbox, {captured} captured{}",
+            "{today}: {filed} filed, {joined} joined, {planned} planned, {added} added by sessions, {left} left, {asked} asked you, {refused} refused, {} in the outbox, {captured} captured{}",
             waiting.len(),
             if scored > 0 {
                 format!("; triage kept {kept} of {scored} as filed ({KEPT_DAYS}d)")
@@ -1298,13 +1305,15 @@ const SHEET_ACTIONS_SHOWN: usize = 40;
 /// session's new row on a human sheet, is not told twice here.
 fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
     // A stopped sweep wrote no sheet, and the pipeline line is where it is read.
-    const INTAKE: [&str; 9] = [
+    const INTAKE: [&str; 11] = [
         "split",
         "moved",
         "filed",
         "dup",
         "planned",
         "left",
+        "asked",
+        "dropped",
         "refused",
         "answered",
         "sweep-stopped",
@@ -2977,7 +2986,7 @@ mod tests {
 "
         );
         assert!(page.stat.unwrap().ends_with(
-            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 left, 1 refused, 2 in the outbox, 0 captured; triage kept 1 of 2 as filed (7d)"
+            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 left, 0 asked you, 1 refused, 2 in the outbox, 0 captured; triage kept 1 of 2 as filed (7d)"
         ));
         assert!(
             out.contains("\nfiled: made a new row - joined:"),
