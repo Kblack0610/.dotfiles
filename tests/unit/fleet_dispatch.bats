@@ -466,6 +466,36 @@ ptask game --agent tag --add plan ga-7'
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
 }
 
+@test "plan_skips: a too-big skip queues one split per row: a second pass, a planned row and a stale verdict queue none" {
+  printf '%s\n' '- (too-big) an L row' >> "$DISPATCH_POLICY"
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-20 "- [ ] feat(game): the whole store $T <!-- id:ga-20 -->"
+  : > "$NOTES_FIXTURE/board.rows"
+  board_row game agent ga-20 '[]' '[]'
+  verdict game agent ga-20 skip L
+  jq -c '.rule = "too-big"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 1
+  run grep -c 'tag --add plan ga-20' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  # the board now carries the tag: the same verdict queues nothing more
+  : > "$NOTES_FIXTURE/board.rows"; board_row game agent ga-20 '["plan"]' '[]'
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 0
+  # inbox-plan wrote its goal and dropped the tag: still none
+  : > "$NOTES_FIXTURE/board.rows"; board_row game agent ga-20 '[]' '["goal: split into stories"]'
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 0
+  # negative control on the signature: the row was edited after its verdict, so it waits for a new one
+  sed -i 's/the whole store/the whole store and more/' "$NOTES_FIXTURE/rows.game.agent"
+  : > "$NOTES_FIXTURE/board.rows"; board_row game agent ga-20 '[]' '[]'
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 0
+  run grep -c 'tag --add plan ga-20' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+}
+
 @test "plan_skips: a cleanup row read as not clear or size L under a tier-3 skip goes to inbox-plan; a feature, a clear M row, or a human-only skip does not" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_CLEANUP_PROJECTS=game

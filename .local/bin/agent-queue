@@ -6,8 +6,9 @@
 #       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
 #       the notes writer. Without it the row carries no stamp, as a session's own add does not.
-#       --row names the open agent board row this item works on: see link_row. Any other item not
-#       from the board files its own story row: see file_story. A slug that already
+#       --row names the open agent board row this item works on: see link_row. With no --row,
+#       --epic or --want, a title whose subject is one open row id works that row too (named_row).
+#       Any other item not from the board files its own story row: see file_story. A slug that already
 #       finished ok is refused unless --repeat says this is new work under it: see finished_ok.
 #       An automated add waits while the queue is a day of drain deep: see admit (exit AQ_EX_HELD).
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug] [--slug prefix] [--repeat]
@@ -848,6 +849,19 @@ link_row() {
   printf '%s\t%s\n' "$lab" "$id"
 }
 
+# named_row <title> -> the one row id (`ucp-134`) the title names as its subject, else nothing and
+# rc 1: none, or two that differ. A subject is the first word (`ucp-134: ...`) or an id in brackets
+# (`... (ucp-134)`, `[ucp-134]`); an id in the sentence (`after ar-40 lands`) only mentions a row.
+# An item added for a row already filed then works that row (link_row, when it is open and no live
+# item has it) instead of filing a second one beside it, so the row the human reads closes when
+# the work lands (ucp-134 stayed open after its epic shipped, 2026-11-04).
+named_row() {
+  local ids
+  ids="$({ grep -oiE '^[[:space:]]*[a-z]{2,4}-[0-9]+([:[:space:]]|$)' <<<"$1"; grep -oiE '[([][a-z]{2,4}-[0-9]+[])]' <<<"$1"; } |
+    tr -cd 'A-Za-z0-9\n-' | tr 'A-Z' 'a-z' | sort -u)"
+  [ -n "$ids" ] && [ "$(grep -c . <<<"$ids")" = 1 ] && printf '%s\n' "$ids"
+}
+
 # prior_story <slug> <project> -> "<profile><TAB><id>" of the row this slug's last item recorded, when
 # that row is still open on this project's board (started now if it was not), else nothing. A re-queue
 # keeps its row by its id, not by its words: on 2026-11-06 two re-queued trader phases got second rows
@@ -931,6 +945,12 @@ cmd_add() {
   resolved="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
   [ -n "$epic" ] || epic="$(plan_epic "${AQ_ITEM_PLAN:-}")"
   project="$(project_credit "$resolved" "$from" "${row:-$epic}")"
+  # A title naming one row (named_row) is linked at the story step, after admission, on the
+  # board of the project that row's code credits; a link that fails keeps this project.
+  local named='' named_project=''
+  if [ -z "$row$epic$want" ] && named="$(named_row "${title:-$(head -1 <<<"$text")}")"; then
+    named_project="$(project_credit "$resolved" "$from" "$named")"
+  fi
   [ -n "$weight" ] || { weight_of "$project" "$mode" "${AQ_ITEM_PHASES:-}"; weight="$WEIGHT"; }
   local slug_from_text=''
   [ -n "$slug" ] || slug_from_text=1
@@ -979,6 +999,10 @@ cmd_add() {
          story="$(link_row "$row" "$project")" || exit 1
        else
          story="$(prior_story "$slug" "$project")"
+         if [ -z "$story" ] && [ -n "$named" ] && story="$(link_row "$named" "$named_project" 2>/dev/null)"; then
+           project="$named_project"
+           echo "agent-queue: $slug works row $named, which its title names; it closes that row when it lands" >&2
+         fi
          [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic" "$want")"
        fi ;;
   esac

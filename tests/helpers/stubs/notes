@@ -15,6 +15,7 @@
 #   path.<profile>.<kind>       the root `notes --profile P path <kind>` prints
 #   stages                      the ladder `notes projects --stages` prints
 #   prios                       name  prio, what `notes projects --prios` prints
+#   board.json                  what `notes board --json` prints
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -103,6 +104,8 @@ case "${1:-}" in
       types) if [ -f "$FIX/row.types" ]; then cat "$FIX/row.types"; else echo "feat fix chore"; fi ;;
     esac
     ;;
+  # `notes board --json`: the board.json fixture (every open row, both lanes, every profile)
+  board) emit board.json ;;
   today)
     : ;;                           # bootstrap no-op
   *)

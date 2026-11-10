@@ -40,6 +40,14 @@ PLAN_ITEMS_JQ='def names_plan($p): ($p | split("/") | last) as $b
 # plan_epic <plan file> -> the `<code>-<N>` of the plan's lowercase `epic:` line, or nothing.
 plan_epic() { _epic_line epic "$1"; }
 
+# plan_rows <plan file> -> each `<code>-<N>` on the plan's lowercase `rows:` line, one a line: the
+# open rows the plan answers (a request row like ucp-134), which agent-land closes once the plan's
+# last phase lands, so the row the human filed closes with the work and not by hand.
+plan_rows() {
+  [ -f "$1" ] || return 0
+  sed -nE 's/^rows: *(.*)$/\1/p' "$1" | head -1 | tr -cs 'A-Za-z0-9-' '\n' | { grep -xiE '[a-z0-9]+-[0-9]+' || true; } | tr 'A-Z' 'a-z' | sort -u
+}
+
 # brief_epic <brief file> -> the `<code>-<N>` of the brief's `Epic:` head line, or nothing.
 brief_epic() { _epic_line Epic "$1"; }
 
