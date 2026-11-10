@@ -5252,6 +5252,25 @@ board_item() {
   assert_equal "$(jq -c '.under_low_water' <<<"$output")" 0
 }
 
+@test "stats: moves that follow a session asking and being answered are not a flap; one that undoes another writer is" {
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  t() { date -d "-$1 minutes" '+%Y-%m-%d %H:%M'; }
+  {
+    # 11-10: a hand session asked, was answered, asked again, was answered: reap followed it each time.
+    printf -- '- %s reaped game-agent-3: queue item asked running -> waiting\n' "$(t 50)"
+    printf -- '- %s reaped game-agent-3: queue item asked waiting -> running\n' "$(t 40)"
+    printf -- '- %s reaped game-agent-3: queue item asked running -> waiting\n' "$(t 30)"
+    printf -- '- %s reaped game-agent-3: queue item asked waiting -> running\n' "$(t 20)"
+    # Something put it back in running between reap's two moves to waiting.
+    printf -- '- %s reaped game-agent-5: queue item undone running -> waiting\n' "$(t 45)"
+    printf -- '- %s reaped game-agent-5: queue item undone running -> waiting\n' "$(t 35)"
+    printf -- '- %s reaped game-agent-5: queue item undone waiting -> running\n' "$(t 25)"
+  } > "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '[.reaped_1h, .flapping_items, .flapping]' <<<"$output")" '[7,1,["undone"]]'
+}
+
 @test "stats: runnable work and its age, reap moves in the last hour, flapping items" {
   local old new t
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ); new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
