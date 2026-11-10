@@ -1,0 +1,26 @@
+{
+  "id": "acct-live-no-fork",
+  "project": "dotfiles",
+  "stack": "shell",
+  "pr": "Kblack0610/.dotfiles#1522",
+  "base": "d1329d17eb6656ed85017c047a5734e75e8fb5a8",
+  "merge": "59acad5d9b7e5ade4a229b77d28c6cfdc8ce16c1",
+  "task": "perf(claude-acct): pick reads /proc with builtins, so a judge call's startup fits its 30s guard (ar-1007)",
+  "accept": [
+    "live_of forks no tool per process"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/claude_acct.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(live_of forks no tool per process)$",
+      "tests/unit/claude_acct.bats"
+    ]
+  }
+}

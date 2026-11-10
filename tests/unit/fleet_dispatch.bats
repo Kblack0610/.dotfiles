@@ -5637,11 +5637,17 @@ launch_settings() { eval "printf %s $(grep -m1 -e '--settings' "$NOTES_FIXTURE/c
 # A plan-billed harness: claude-acct room --source codex says whether the ChatGPT plan has use left.
 @test "--harness codex runs agent-codex on the plan login, gated by room and not the gateway, with a headless brief" {
   harness_ready
+  # An item's effort (a canary lane's) reaches codex as a config override; agent-queue takes only a word.
+  run agent-queue set fix-menu 'effort=high;x'
+  assert_failure
+  assert_output --partial 'effort is a word'
+  agent-queue set fix-menu effort=high >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
   assert_success
   assert_called 'claude-acct room --source codex'
   assert_not_called 'curl'
   assert_called 'AGENT_QUEUE_ITEM=fix-menu env -u LITELLM_MASTER_KEY -u OPENAI_API_KEY -u CODEX_API_KEY timeout 120m agent-codex run -m gpt-6.1-sol --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust'
+  assert_called '--skip-git-repo-check -c model_reasoning_effort=high'
   assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it'
   assert_called 'Run agent-land in the foreground'
   assert_not_called '/one-shot Fix'
