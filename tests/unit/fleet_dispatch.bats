@@ -466,6 +466,15 @@ ptask game --agent tag --add plan ga-7'
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
 }
 
+@test "plan_skips: a requested row gets #go beside #plan, so inbox-plan does not hold it for the person's review" {
+  plan_fixture
+  jq -c 'if .id == "ga-7" then .requested = true else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  plan_skips
+  run grep -o 'ptask game --agent tag --add plan.* ga-[0-9]*' "$NOTES_FIXTURE/calls.log"
+  assert_output 'ptask game --agent tag --add plan ga-1
+ptask game --agent tag --add plan --add go ga-7'
+}
+
 @test "verdicts: the latest verdict per row, plan true on a skip by a DISPATCH_PLAN_RULES rule (fleet-bench next_up_blocked)" {
   plan_fixture
   run cmd_verdicts
@@ -3035,7 +3044,7 @@ approved_plan() {
     '{epoch: $e, plan: $p, project: "game", session: $s, cwd: "/x"}' >> "$PLAN_LEDGER"
 }
 
-@test "reap queues the open phases of an approved plan whose session is gone, as night items, and starts nothing" {
+@test "reap queues the open phases of an approved plan whose session is gone, as low night items, and starts nothing" {
   stub agent-ask 'echo other-session'
   approved_plan orphan gone-session
   run reconcile_plans
@@ -3044,6 +3053,7 @@ approved_plan() {
   assert_equal "$(jq -r .slug <<<"$output" | paste -sd,)" 'orphan-p2,orphan-p3'
   assert_equal "$(jq -r .tags <<<"$output" | sort -u)" 'night'
   assert_equal "$(jq -r .from <<<"$output" | sort -u)" 'auto:plans'
+  assert_equal "$(jq -r .priority <<<"$output" | sort -u)" 'low'
   grep -q 'orphan.md for the night' "$FLEET_DISPATCH_DIR/log.md"
 }
 
@@ -4466,6 +4476,85 @@ OUT
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
 }
 
+# fj_item <state> <status> [merge sha] -- pr_item's fix-crash on a checkout whose canonical forge is
+# Forgejo, as home-config is: it commits the mirror workflow, its `forgejo` remote is on a listed host
+# and origin is the GitHub mirror, where gh finds no PR. Forgejo's API answers PR 12 as <state> (open,
+# closed, merged) at head h1, with one check of <status> beside a green one.
+fj_item() {
+  pr_item OPEN
+  mkdir -p "$SANDBOX/repos/game/.forgejo/workflows"; : > "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
+  git -C "$SANDBOX/repos/game" remote add forgejo https://git.example.test/o/game.git
+  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test
+  printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
+  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
+  stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"; printf "%s %s\n" "$url" "$(cat)" >> "$NOTES_FIXTURE/fj.auth"
+case "$url" in */pulls/12) cat "$NOTES_FIXTURE/fj.pr" ;; */commits/*/status) cat "$NOTES_FIXTURE/fj.status" ;; *) exit 22 ;; esac'
+  fj_pr "$1" "${3:-}"
+  jq -cn --arg s "$2" '{state: $s, statuses: [{status: $s}, {status: "success"}]}' > "$NOTES_FIXTURE/fj.status"
+}
+# fj_pr <state> [merge sha] [body] -- what Forgejo's API says of PR 12
+fj_pr() {
+  jq -cn --arg st "$1" --arg m "${2:-$OID}" --arg b "${3:-Item: fix-crash}" '{number: 12, body: $b,
+    state: (if $st == "open" then "open" else "closed" end), merged: ($st == "merged"),
+    merge_commit_sha: (if $st == "merged" then $m else null end), head: {sha: "1111111111111111111111111111111111111111"}}' \
+    > "$NOTES_FIXTURE/fj.pr"
+}
+
+# 2026-11-08 to 11-10: fix-traefik's home-config PR was open on Forgejo, and every reap pass asked gh,
+# which sees only the GitHub mirror, and logged "could not read" (270 lines).
+@test "reap: a Forgejo-canonical repo's PR is read from its Forgejo API, never gh: merged closes the item and row" {
+  fj_item merged success
+  run cmd_reap
+  assert_success
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
+  run grep -c '^gh pr view' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  grep -qx 'https://git.example.test/api/v1/repos/o/game/pulls/12' "$NOTES_FIXTURE/fj.urls" || fail "Forgejo not asked"
+  run grep -c sekret-token "$NOTES_FIXTURE/fj.urls"
+  assert_output 0
+  # every read, the checks too, carries the token on stdin, and rbw is asked once
+  run grep -vc 'header = "Authorization: token sekret-token"' "$NOTES_FIXTURE/fj.auth"
+  assert_output 0
+  grep -q '/commits/1111111111111111111111111111111111111111/status' "$NOTES_FIXTURE/fj.auth" || fail "checks not read"
+  run grep -c 'rbw get forgejo_repo_admin' "$RBW_FIXTURE/calls.log"
+  assert_output 1
+}
+
+@test "reap: a Forgejo PR open parks its item in review, then its red check gets a fix-ci owner; closed fails it" {
+  fj_item open success
+  run cmd_reap
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
+  # a warning is a pass, as Forgejo's combined state reads it: still parked
+  jq -c '.statuses[0].status = "warning"' "$NOTES_FIXTURE/fj.status" > "$NOTES_FIXTURE/s" && mv "$NOTES_FIXTURE/s" "$NOTES_FIXTURE/fj.status"
+  run cmd_reap
+  refute_output --partial 'fix-ci'
+  jq -cn '{state: "failure", statuses: [{status: "failure"}, {status: "success"}]}' > "$NOTES_FIXTURE/fj.status"
+  run cmd_reap
+  assert_output --partial 'fix-ci queue item fix-crash (PR o/game#12 red at 111111111111, try 1 of 2)'
+  agent-queue move fix-crash running >/dev/null; agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
+  fj_pr closed
+  run cmd_reap
+  assert_output --partial 'failed queue item fix-crash (PR o/game#12 closed unmerged)'
+}
+
+@test "reap: a Forgejo PR on a host not listed is never asked (no token leaves) and the item is left; a bare pr: needs its Item stamp" {
+  fj_item merged success
+  SO_FORGEJO_HOSTS=git.other.test run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" running
+  [ ! -e "$NOTES_FIXTURE/fj.urls" ] || fail "an unlisted host was called"
+  grep -q 'queue item fix-crash left: could not read PR o/game#12' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
+  # a bare number is read from the project's checkout, and only a PR whose body stamps the item counts
+  agent-queue set fix-crash pr=12 >/dev/null
+  fj_pr merged "$OID" 'Item: other-item'
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" running
+  fj_pr merged
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" ok
+}
+
 # fix_ended <head> <ci> -- the fix-crash item's PR now reads OPEN at <head> with checks <ci>, and the
 # item is back in review/ with a session that is gone, as a fix-ci session leaves it when it ends.
 fix_ended() {
@@ -5240,6 +5329,33 @@ board_item() {
     '{"low_water":3,"under_low_water":1,"present_per_hour":1,"present_starts_1h":1}'
   DISPATCH_LOW_WATER=1 run cmd_stats
   assert_equal "$(jq -c '.under_low_water' <<<"$output")" 0
+}
+
+@test "stats: moves that follow a session, a start or the session's own park are not a flap; reap making one move twice is" {
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  t() { date -d "-$1 minutes" '+%Y-%m-%d %H:%M'; }
+  {
+    # 11-10: a hand session asked, was answered, asked again, was answered: reap followed it each time.
+    printf -- '- %s reaped game-agent-3: queue item asked running -> waiting\n' "$(t 50)"
+    printf -- '- %s reaped game-agent-3: queue item asked waiting -> running\n' "$(t 40)"
+    printf -- '- %s reaped game-agent-3: queue item asked running -> waiting\n' "$(t 30)"
+    printf -- '- %s reaped game-agent-3: queue item asked waiting -> running\n' "$(t 20)"
+    # Something put it back in running between reap's two moves to waiting.
+    printf -- '- %s reaped game-agent-5: queue item undone running -> waiting\n' "$(t 45)"
+    printf -- '- %s reaped game-agent-5: queue item undone running -> waiting\n' "$(t 35)"
+    printf -- '- %s reaped game-agent-5: queue item undone waiting -> running\n' "$(t 25)"
+    # A redispatch start sets running, and the session parking itself in review is its own move.
+    printf -- '- %s reaped game-agent-6: queue item restarted running -> waiting\n' "$(t 48)"
+    printf -- '- %s started game-agent-7 on lab (redispatch) for game: queue item restarted, resume 1\n' "$(t 44)"
+    printf -- '- %s reaped game-agent-7: queue item restarted running -> waiting\n' "$(t 38)"
+    printf -- '- %s reaped game-agent-7: queue item restarted waiting -> running\n' "$(t 33)"
+    printf -- '- %s reaped game-agent-8: queue item parked waiting -> running\n' "$(t 42)"
+    printf -- '- %s reaped game-agent-8: queue item parked review -> waiting\n' "$(t 32)"
+    printf -- '- %s reaped game-agent-8: queue item parked waiting -> review\n' "$(t 22)"
+  } > "$FLEET_DISPATCH_DIR/log.md"
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '[.reaped_1h, .flapping_items, .flapping]' <<<"$output")" '[13,1,["undone"]]'
 }
 
 @test "stats: runnable work and its age, reap moves in the last hour, flapping items" {
