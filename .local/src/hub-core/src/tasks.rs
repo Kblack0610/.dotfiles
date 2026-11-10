@@ -220,8 +220,9 @@ impl crate::table::Row for Row {
         match s {
             "in progress" => self.doing(),
             "filed today" => self.filed_today,
-            "urgent" => self.priority == "urgent",
-            "requested" => self.requested,
+            // Asks of work still open: a closed row is Done's, not the chip's.
+            "urgent" => self.state != "done" && self.priority == "urgent",
+            "requested" => self.state != "done" && self.requested,
             _ => false,
         }
     }
@@ -792,6 +793,17 @@ mod tests {
         assert_eq!(shown("", "filed today"), 1);
         assert_eq!(shown("", "urgent"), 1);
         assert_eq!(shown("", "requested"), 1);
+        // A closed row is Done's: the ask chips count open work only.
+        let closed: Vec<Row> = open
+            .iter()
+            .map(|r| Row {
+                state: "done".into(),
+                ..(*r).clone()
+            })
+            .collect();
+        let closed: Vec<&Row> = closed.iter().collect();
+        let on = |s: &str| View::new::<Row>("", s, "", "").apply(&closed).len();
+        assert_eq!((on("urgent"), on("requested")), (0, 0));
     }
 
     #[test]

@@ -963,9 +963,10 @@ return {
           end
         end
       end
-      -- One read at a time, drawn on every README waiting for it; `sheets` (the head dirs of the
-      -- last read) keeps a README outside every project from starting one, after the first.
-      local waiting, sheets = nil, nil
+      -- One read at a time, drawn on every README waiting for it; a save during a read reads
+      -- again after it, so the lines match the saved file. `sheets` (the head dirs of the last
+      -- read that had any) keeps a README outside every project from starting one.
+      local waiting, again, sheets = nil, false, nil
       local function is_sheet(path)
         for _, d in ipairs(sheets or {}) do
           if path == d .. "/README.md" or path == d .. "/agent/README.md" then
@@ -981,20 +982,29 @@ return {
         end
         if waiting then
           waiting[args.buf] = true
+          again = again or args.event == "BufWritePost"
           return
         end
         waiting = { [args.buf] = true }
         vim.system({ "hub", "board", "--json" }, { text = true }, function(res)
           local ok, data = pcall(vim.json.decode, res.code == 0 and res.stdout or "")
           vim.schedule(function()
-            local bufs = waiting
-            waiting = nil
+            local bufs, rerun = waiting, again
+            waiting, again = nil, false
+            if rerun then
+              for buf in pairs(bufs) do
+                read_board { buf = buf, event = "reread" }
+              end
+              return
+            end
             if not ok or type(data) ~= "table" then
               return
             end
-            sheets = {}
-            for _, h in ipairs(data.heads or {}) do
-              table.insert(sheets, h.dir)
+            if data.heads and #data.heads > 0 then
+              sheets = {}
+              for _, h in ipairs(data.heads) do
+                table.insert(sheets, h.dir)
+              end
             end
             for buf in pairs(bufs) do
               draw_board(buf, data)
