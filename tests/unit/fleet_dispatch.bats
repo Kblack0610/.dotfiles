@@ -466,6 +466,15 @@ ptask game --agent tag --add plan ga-7'
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
 }
 
+@test "plan_skips: a requested row gets #go beside #plan, so inbox-plan does not hold it for the person's review" {
+  plan_fixture
+  jq -c 'if .id == "ga-7" then .requested = true else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  plan_skips
+  run grep -o 'ptask game --agent tag --add plan.* ga-[0-9]*' "$NOTES_FIXTURE/calls.log"
+  assert_output 'ptask game --agent tag --add plan ga-1
+ptask game --agent tag --add plan --add go ga-7'
+}
+
 @test "verdicts: the latest verdict per row, plan true on a skip by a DISPATCH_PLAN_RULES rule (fleet-bench next_up_blocked)" {
   plan_fixture
   run cmd_verdicts
@@ -3035,7 +3044,7 @@ approved_plan() {
     '{epoch: $e, plan: $p, project: "game", session: $s, cwd: "/x"}' >> "$PLAN_LEDGER"
 }
 
-@test "reap queues the open phases of an approved plan whose session is gone, as night items, and starts nothing" {
+@test "reap queues the open phases of an approved plan whose session is gone, as low night items, and starts nothing" {
   stub agent-ask 'echo other-session'
   approved_plan orphan gone-session
   run reconcile_plans
@@ -3044,6 +3053,7 @@ approved_plan() {
   assert_equal "$(jq -r .slug <<<"$output" | paste -sd,)" 'orphan-p2,orphan-p3'
   assert_equal "$(jq -r .tags <<<"$output" | sort -u)" 'night'
   assert_equal "$(jq -r .from <<<"$output" | sort -u)" 'auto:plans'
+  assert_equal "$(jq -r .priority <<<"$output" | sort -u)" 'low'
   grep -q 'orphan.md for the night' "$FLEET_DISPATCH_DIR/log.md"
 }
 

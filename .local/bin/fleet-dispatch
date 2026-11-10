@@ -1141,9 +1141,12 @@ verdict_errors() {
 # 2026-11-06; a needs-person, release, prod-write or decide skip waits on the human, not a plan), that
 # inbox-plan never planned (no `goal:` detail), while fewer than DISPATCH_PLAN_BACKLOG #plan rows
 # are open, then kick inbox-plan. Its plan splits or rewrites the row, so the judge reads it again
-# with the plan. A design or question skip waits on the human, not a plan. Sets PLAN_TAGGED.
+# with the plan. A design or question skip waits on the human, not a plan. A #requested row also
+# gets #go: the judge asked for this plan, not the person, so inbox-plan plans it without holding it
+# for their review. Sets PLAN_TAGGED.
 plan_skips() {
-  local board rows room p prof id raw line dsig dj why size
+  local board rows room p prof id raw line dsig dj why size req
+  local -a add
   PLAN_TAGGED=0
   [ "$DISPATCH_PLAN_BACKLOG" -gt 0 ] || return 0
   board=$(notes board --json 2>/dev/null) || { say "plan_skips: notes board --json failed"; return 0; }
@@ -1160,10 +1163,10 @@ plan_skips() {
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
     | .rows[]? | select(.lane == "agent" and .id != null and (plan_tagged | not) and (planned | not))
     | $by["\(.project)\t\(.id)"] as $d | select($d != null)
-    | "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.why)\t\(.raw)"' <<<"$board")
+    | "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.why)\t\(.requested == true)\t\(.raw)"' <<<"$board")
   # raw last: read hands it the rest of the line; details_json is JSON, with no bare tab. No field
   # is empty: a tab is IFS whitespace, so read would fold an empty one into its neighbour
-  while IFS=$'\t' read -r prof p id line dsig dj why raw; do
+  while IFS=$'\t' read -r prof p id line dsig dj why req raw; do
     [ -n "$id" ] && [ "$room" -gt 0 ] || continue
     if [ "$why" != rule ]; then
       [ "$(cleanup_row "$p" "$raw")" = 0 ] || continue
@@ -1173,7 +1176,8 @@ plan_skips() {
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
     [ "$(printf '%s' "$raw" | sig)" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
-    if np "$prof" ptask "$p" --agent tag --add plan "$id" >/dev/null 2>&1; then
+    add=(--add plan); [ "$req" = true ] && add+=(--add go)
+    if np "$prof" ptask "$p" --agent tag "${add[@]}" "$id" >/dev/null 2>&1; then
       PLAN_TAGGED=$(( PLAN_TAGGED + 1 )); room=$(( room - 1 ))
     else say "plan_skips: could not tag $p $id"; fi
   done <<<"$rows"
@@ -3519,7 +3523,8 @@ cmd_reap() {
 # plan the queue has held before is its items' to finish, or a failing phase would re-queue every
 # pass. One still open after that shows in plans_unqueued. `- [-]` is how a human drops a phase.
 # They are an automated filer's (`from: auto:plans`), so a queue a day of drain deep holds them
-# (agent-queue admit), and the next pass tries again.
+# (agent-queue admit), and the next pass tries again. They queue at low priority: no one is driving a
+# plan its session left, so its phases rank below every high and urgent item.
 reconcile_plans() {
   [ "$DISPATCH_PLAN_RECONCILE" = 1 ] || return 0
   local orphans c plan project held out rc
@@ -3529,7 +3534,7 @@ reconcile_plans() {
   while IFS= read -r c; do
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
     grep -qxF -- "$plan" <<<"$held" && continue
-    out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --tags night --from auto:plans 2>&1); rc=$?
+    out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --priority low --tags night --from auto:plans 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       logline "queued the open phases of $(basename "$plan") for the night: its session is gone"
     elif [ "$rc" -ne "$AQ_EX_HELD" ]; then

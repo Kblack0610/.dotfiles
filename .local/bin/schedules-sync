@@ -111,7 +111,11 @@ CRON_NAMES.update({n: i + 1 for i, n in enumerate(
 
 
 class GhError(Exception):
-    pass
+    """str() is the short cause sync.json keeps; `detail` is the raw text the journal gets."""
+
+    def __init__(self, msg, detail=None):
+        super().__init__(msg)
+        self.detail = detail or msg
 
 
 def now():
@@ -141,6 +145,24 @@ def wait_s(a, b):
     return int((tb - ta).total_seconds()) if ta and tb else None
 
 
+def gh_fail(path, text):
+    """A failed gh call as a GhError: one short cause, the same on every repo it hits, so the
+    dashboards fold them into one line; the raw text and the path go to the journal."""
+    raw = text.strip()
+    low = raw.lower()
+    try:
+        first = str(json.loads(raw).get("message") or "")
+    except (ValueError, AttributeError):
+        first = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
+    if "rate limit" in low and "exceeded" in low:
+        why = "GitHub API rate limit hit"
+    elif "http 401" in low or "bad credentials" in low or "gh auth login" in low:
+        why = "gh is not logged in: run gh auth login"
+    else:
+        why = first.removeprefix("gh: ").split(". If you reach out")[0][:160] or "gh failed with no output"
+    return GhError(why, f"gh api {path}: {raw}")
+
+
 def gh(path, missing=None):
     """gh api <path> as JSON. A 404 returns `missing` when one is given, else it is an error."""
     try:
@@ -155,7 +177,7 @@ def gh(path, missing=None):
         return body
     if missing is not None and isinstance(body, dict) and str(body.get("status")) == "404":
         return missing
-    raise GhError(f"gh api {path}: {(p.stderr or p.stdout).strip()[:200]}")
+    raise gh_fail(path, p.stderr or p.stdout)
 
 
 def gh_page(path, etag=None):
@@ -176,7 +198,7 @@ def gh_page(path, etag=None):
         body = None
     if p.returncode == 0 and body is not None:
         return body, tag
-    raise GhError(f"gh api {path}: {(p.stderr or raw).strip()[:200]}")
+    raise gh_fail(path, p.stderr or raw)
 
 
 FJ_TOKEN = []
@@ -712,7 +734,7 @@ def main(argv):
             entry.update(synced_at=iso(t), error=None)
         except GhError as e:
             bad += 1
-            print(f"schedules-sync: {repo}: {e}", file=sys.stderr)
+            print(f"schedules-sync: {repo}: {e.detail}", file=sys.stderr)
             entry["error"] = str(e)
             if forge == "github":
                 kept = dict(p or {"repo": repo, "base": base, "synced_at": None, "workflows": []})
