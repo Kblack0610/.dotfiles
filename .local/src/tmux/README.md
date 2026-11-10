@@ -17,7 +17,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `servers.sh` (`tmx`) | `Prefix+H` / `C-h` / `N` | Server layer: one tree of every world, session and window (collapsed to the worlds); toggle hub <-> lab; today's daily |
 | `scratch.sh` | `Prefix+A` / `Prefix+F` in it | One scratch Claude in a full-screen popup to paste into; `F` inside sends the conversation to its own lab session and takes you there |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). `ctrl-n` starts a new Claude in a fresh worktree of the selected agent's repo (`wt new --claude`); `--query` opens it already filtered. Cross-platform binary; see `../agent-panel/`. |
-| `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them; also on PATH as `tmux-tags` |
+| `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them, and favourite a session (`Prefix+t f`); also on PATH as `tmux-tags` |
 | `muxpoon` (submodule, `../muxpoon/`) | `Prefix+a` / `M-1`..`M-4` / `Prefix+e` | Window slots, its own public repo: `Prefix+a` pins this window to the next slot (again unpins), so two windows of one session take two slots. `M-1`..`M-4` jump to a slot on any server, and a slot whose window has closed lands on its session; `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. `.tmux.conf` keeps the list in `~/.local/state/tmx/harpoon`, and it survives a kill-server. Also on PATH as `muxpoon`. |
 | `projects.sh` | `Prefix+p` | Full screen, like `Prefix+g`. Every profile's projects, main ones first (drafts behind `d`), each with its stage, open count and urgent count. The selected project's card and open rows show on the right (`hub --once --tab 'projects <profile>/<name>'`); `ctrl-/` moves the preview below, hides it, brings it back. `1`-`9`, Enter or `o` opens that project's rows under its card on the hub Projects tab (`hub tab projects <profile>/<name>`), where its tasks are added, moved, edited, rewaved and closed. `e` opens the sheet in the hub notes nvim (`tmx open hub <sheet>`). `a`, `g` and `c` reach the repo the project lives in (`project_repo_path`, project-map.json): its agents (`agent-panel --query`), its session (`sessionizer.sh <repo>`), or a new Claude in a fresh worktree (`wt new --claude`); a notes-only project says it has no repo. `n` new, `s` stage, `x` archive. `/` searches. Also nvim `<leader>np`. |
 | `fleet.sh` | `Prefix+C-g` | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). It is the place to act (start, stop or restart a runner, answer an ask, open a journal); the hub board shows the same runners, watches and asks read-only, so it stays. |
@@ -61,6 +61,21 @@ tmux-tags gather --tag group:work --into work   # a tag is a group
 Tags are **server-lifetime only** - they do not survive `tmux kill-server` or a
 reboot. That is deliberate; for windows that should come back tagged, declare
 them in the session manager's config and have the window tag itself on startup.
+
+### Favourite sessions
+
+`Prefix+t f` favourites the session you are in, and pressing it again unfavourites it. A favourite is the session option `@fav`, server-lifetime like a tag. It is a mark only: wind-down protects `pinned` and `important` windows, not favourites. It is marked in four places:
+
+- the status bar: a yellow star before the agent counts
+- `Prefix+H` (`tmx pick`): a star in front of the session's row
+- `Prefix+w`: `[fav]` after the session's window count
+- `Prefix+g` (agent-panel): `fav` in the tag column of every agent in the session
+
+```sh
+tmux-tags fav                 # toggle the current session
+tmux-tags fav on -t dotfiles  # or on / off for a named session
+tmux-tags fav ls              # favourite sessions, one per line
+```
 
 ## Servers (`Prefix+H`, `tmx`)
 
