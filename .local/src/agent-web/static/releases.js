@@ -3,6 +3,8 @@
 // /api/releases (hub_core::releases). The table is the shared one (table.js): the server filters
 // and sorts by the view in the URL. An opened app lists its headline env's channels, the other
 // envs in a fold under them, then its changelog. A new snapshot pushes the `releases` event.
+// The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): Apps (the head, the
+// table and an opened app), Builds, Tests, the strip above them.
 
 // Only the "2m ago" changes between snapshots, so this redraws without reading.
 const RELEASES_AGE_MS = 60e3;
@@ -11,8 +13,14 @@ const REL_OPEN = {};
 const relst = tblTab({
   tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or project:binks channel:prod status:drift",
   open: () => REL_OPEN,
-  head: (t) => releasesHead(t.data), body: (t) => releasesBody(t.data), tail: () => releaseBuilds() + releaseTests(),
+  head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
+  body: (t) => releasesBody(t.data),
+  wrap: (html) => innerWrap("releases", "table", html),
+  tail: () => innerWrap("releases", "builds", releaseBuilds()) + innerWrap("releases", "tests", releaseTests()),
 });
+// The sections needing a look, the strip's counts: each read says its own (Releases::needs_look,
+// Builds::needs_look, a failed suite in the run on show).
+const relFlagged = () => [relst.data?.look && "table", bld.data?.look && "builds", tst.data?.totals?.failed_suites > 0 && "tests"].filter(Boolean);
 
 const relKey = (a) => a.project;
 const relClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn" : "");
@@ -128,7 +136,7 @@ function releasesHead(d) {
   return html;
 }
 
-// The Builds section under the channels: CI runs of the last 30 days from /api/builds
+// The Builds inner tab: CI runs of the last 30 days from /api/builds
 // (hub_core::builds), its own table with its own view keys (bq, bs, bsort, bdir). It draws inside
 // this tab's page, so its render is the tab's and its refresh reads only its own rows.
 const BUILDS_PRE = "b";
@@ -229,7 +237,7 @@ $("releases").addEventListener("click", (e) => {
   if (r) openBuild(key, r);
 });
 
-// The Tests section under Builds: the suites of one finished tests.yml run from /api/tests
+// The Tests inner tab: the suites of one finished tests.yml run from /api/tests
 // (hub_core::junit), the newest unless the picker names another. Its own view keys are tq, ts,
 // tsort and tdir, and the run is trun. A suite's tests are read when its row opens, never before.
 const TESTS_PRE = "t";

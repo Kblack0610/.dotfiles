@@ -336,7 +336,7 @@ function ciSection(cc, inst, t1, ci) {
   html += `<details class="sec-d" data-k="ci-more"${open}><summary class="muted fold">Done today, queues by pool</summary>` +
     doneToday(inst, t1) +
     `<h3 class="sec">Queues by pool</h3><div class="panel scroll">${queuesTable(cc)}</div></details>`;
-  return html + `<div class="cline">Runs: every CI run is on <a href="#releases">Releases, Builds</a></div>`;
+  return html + `<div class="cline">Runs: every CI run is on <a href="#releases/builds">Releases, Builds</a></div>`;
 }
 
 // The Cloud runners card: each host the governor powers (its ci_governor_power_* series), with

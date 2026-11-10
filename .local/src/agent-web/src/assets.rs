@@ -474,6 +474,20 @@ mod tests {
                 );
             }
         }
+        // Every Releases inner tab has a group on the page: releases.js wraps one of its sections.
+        let releases = include_str!("../static/releases.js");
+        for i in hub_core::layout::resolve("releases")
+            .expect("releases")
+            .inner
+        {
+            assert!(
+                i.sections
+                    .iter()
+                    .any(|s| releases.contains(&format!("innerWrap(\"releases\", \"{s}\""))),
+                "releases.js never draws the {} inner tab",
+                i.id
+            );
+        }
     }
 
     #[test]

@@ -1,14 +1,17 @@
 //! The Releases page: every app from `hub_core::releases::read` on the shared data table
 //! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear), one row each with what is live
 //! where it matters most. The opened app's pane lists its headline env's channels, its other envs
-//! under a fold (`F`), then its changelog.
+//! under a fold (`F`), then its changelog. The page is the layout's inner tabs (Apps, Builds,
+//! Tests, `hub_core::layout`), switched with Left/Right.
 
+use hub_core::builds::Builds;
+use hub_core::layout;
 use hub_core::releases::{App, Changelog, Deploy, Level, Release, Releases, STALE_SECS};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
-use crate::fit::{cell, clip_line, Cell, Table};
+use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::{clock, Palette};
 use crate::projtab::wrapped;
 
@@ -55,8 +58,38 @@ pub struct ReleasesView {
     /// The opened app's other envs are unfolded (`F`).
     pub others: bool,
     pub cl: ChangelogRead,
-    /// The Builds section under the apps, which `b` hands the keys to.
+    /// The Builds inner tab's table and pane.
     pub builds: crate::builds::BuildsView,
+    /// The inner tab picked (a `layout::Inner` id of Releases); empty until one is.
+    pub inner: &'static str,
+}
+
+/// Releases' layout entry: its inner tabs.
+pub fn tab() -> &'static layout::Tab {
+    layout::resolve("releases").expect("releases is a tab")
+}
+
+/// The Releases sections that need a look, for the counts on their inner tabs: a bad app and a
+/// red build of the last day. The TUI reads no tests run, so Tests carries no count here.
+pub fn flagged(s: &Releases, b: Option<&Builds>) -> Vec<&'static str> {
+    let mut out = vec![];
+    if s.needs_look() {
+        out.push("table");
+    }
+    if b.is_some_and(Builds::needs_look) {
+        out.push("builds");
+    }
+    out
+}
+
+/// What the Tests inner tab says: the suites are read by agent-web alone.
+pub fn tests_note(p: Palette, w: usize) -> Vec<Line<'static>> {
+    let text = "The suites of the newest tests.yml run are on agent-web, Releases, Tests. The TUI does not read them.";
+    let words: Vec<&str> = text.split_whitespace().collect();
+    wrap(&words, " ", w.max(20))
+        .into_iter()
+        .map(|l| clip_line(Line::styled(l, p.dim()), w))
+        .collect()
 }
 
 /// The row a selection stands for, so a new snapshot keeps the same app selected.
@@ -84,6 +117,20 @@ impl ReleasesView {
         self.table.sel = 0;
         self.open = false;
         self.down = 0;
+        self.inner = "";
+    }
+
+    /// The inner tab shown: the one picked, or the first.
+    pub fn on(&self) -> &'static str {
+        layout::inner_tab(tab(), Some(self.inner)).map_or("", |i| i.id)
+    }
+
+    /// Show inner tab `id`. The app pane is the Apps tab's: it closes when another is shown.
+    pub fn show(&mut self, id: &'static str) {
+        self.inner = id;
+        if self.on() != "apps" {
+            self.open = false;
+        }
     }
 
     /// The tag `by` places along the picker from the one on show (positive is older), if any.

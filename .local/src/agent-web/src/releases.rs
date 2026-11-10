@@ -22,6 +22,8 @@ struct Shown<'a> {
     stale_after: i64,
     rows: Vec<&'a App>,
     errors: &'a [String],
+    /// `Releases::needs_look`: the count on the Apps inner tab.
+    look: bool,
     table: Summary,
 }
 
@@ -36,6 +38,7 @@ fn render(s: &Releases, q: &Query) -> String {
         stale_after: STALE_SECS,
         rows,
         errors: &s.errors,
+        look: s.needs_look(),
         table,
     };
     serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
