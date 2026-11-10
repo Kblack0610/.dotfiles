@@ -178,6 +178,11 @@ enum Cmd {
         /// profiles. READ-ONLY. The feed the board UIs read; the row shape is in the README
         #[arg(long, conflicts_with = "agent")]
         json: bool,
+        /// With --json: the feed's `done` lists the rows closed in the last N days, the
+        /// ones already rolled into `agent/versions/` included. Without it, `done` is each
+        /// sheet's `### Done` as the sweep left it
+        #[arg(long, value_name = "N", requires = "json")]
+        done_days: Option<i64>,
         /// Print the agent-lane rows as `<project>\t<text>` instead of writing the board.
         /// READ-ONLY: this path never touches board.md. Exits 0 even with no rows —
         /// "nothing queued for the agent" is a valid answer, not an error, and the
@@ -1331,6 +1336,7 @@ fn main() -> Result<()> {
         }
         Cmd::Board {
             json,
+            done_days,
             agent,
             version,
             projects,
@@ -1338,7 +1344,7 @@ fn main() -> Result<()> {
             if let Some(v) = version {
                 board::print_version(&v, &projects)?
             } else if json {
-                board::print_json()?
+                board::print_json(done_days)?
             } else if agent {
                 board::print_agent(&projects)?
             } else {
