@@ -163,6 +163,32 @@ creds() {
   assert_output ''
 }
 
+@test "link points at the real file, one hop, so a settings write cannot replace the stow link" {
+  # Claude Code follows one symlink before it renames a temp file over the target,
+  # so a two-hop chain turns the middle (stow) link into a plain copy.
+  mkdir -p "$HOME/.dotfiles/.claude"
+  echo '{}' > "$HOME/.dotfiles/.claude/settings.json"
+  ln -s ../.dotfiles/.claude/settings.json "$HOME/.claude/settings.json"
+  ln -s "$HOME/.claude/settings.json" "$ALT/settings.json"   # the old two-hop link
+  run "$ACCT" link
+  assert_success
+  [[ "$(readlink "$ALT/settings.json")" == "$(readlink -f "$HOME/.dotfiles/.claude/settings.json")" ]]
+  # an old link is replaced in place, never parked
+  [[ ! -e "$ALT/.pre-share-$(date +%F)" ]]
+  run "$ACCT" link
+  assert_output ''
+}
+
+@test "link parks an account's link to somewhere else, never overwrites it" {
+  mkdir -p "$HOME/.claude/sessions" "$SANDBOX/elsewhere"
+  echo alt > "$SANDBOX/elsewhere/200.json"
+  ln -s "$SANDBOX/elsewhere" "$ALT/sessions"
+  run "$ACCT" link
+  assert_success
+  [[ "$(readlink "$ALT/sessions")" == "$(readlink -f "$HOME/.claude/sessions")" ]]
+  [[ "$(readlink "$ALT/.pre-share-$(date +%F)/sessions")" == "$SANDBOX/elsewhere" ]]
+}
+
 @test "link merges an account's live sessions into the shared registry" {
   mkdir -p "$HOME/.claude/sessions" "$ALT/sessions"
   echo main > "$HOME/.claude/sessions/100.json"
@@ -709,6 +735,30 @@ STUB
   run --separate-stderr "$ACCT" room
   assert_failure 1
   assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 96% of its week used, inside the last 5% kept for the human, lasts to its reset Fri 10:00'
+}
+
+@test "room: with none, an account refused while within its weekly pace is named too, not only the closest" {
+  # 2026-11-10 01:24: the line named bnb, over its pace, and never max4, 15% used with 38% of its week
+  # gone, refused because its 13 live sessions at the fleet's 0.072 an hour emptied it before the reset.
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC CLAUDE_ACCT_SESSION_RATE=0.072
+  week main 77 65    # 61% gone, 11 points past the line, no live sessions: the closest
+  week alt 15 104    # 38% gone, under its line
+  live "$ALT" 13
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00; alt is within its weekly pace but its 13 live sessions use the rest of its week before the reset, runs out Tue 02:48 at this rate'
+  # an account over its pace is not named again: the closest already says what pace refuses
+  rm -rf "${CLAUDE_ACCT_PROC:?}"/*
+  # its 5h window alone: named, with no week clock, which is not what refuses it
+  week alt 15 104
+  printf '%s' "$(jq -c '.five_hour = {utilization: 97}' "$XDG_CACHE_HOME/claude-acct/alt.json")" > "$XDG_CACHE_HOME/claude-acct/alt.json"
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00; alt is within its weekly pace but its 5h window at 97%'
+  week alt 80 104
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00'
 }
 
 @test "room: the slack is the edge of the pace line" {
