@@ -1534,6 +1534,30 @@ pro_rollout() {
   [ "$(field codex .week_used <<<"$output")" = 70 ]
 }
 
+@test "sources: a codex refusal dated after the cached reading is read at once; a newer reading or an older refusal waits for the TTL" {
+  src_setup
+  rollout 40 10 84
+  run --separate-stderr "$ACCT" room --source codex
+  assert_success
+  # codex_log drops the cache, so each step puts the 40% one back, dated by $NOW rather than the
+  # wall clock; from here a fresh read refuses (the week reads 100%), so only the cache says room
+  local cache="$XDG_CACHE_HOME/claude-acct/codex.json" d="$BATS_TEST_TMPDIR/codex/2026/11"
+  cp "$cache" "$BATS_TEST_TMPDIR/codex-cache"
+  keep_cache() { cp "$BATS_TEST_TMPDIR/codex-cache" "$cache"; touch -d "@$((NOW - 60))" "$cache"; }
+  sed -i 's/"used_percent":40/"used_percent":100/' "$d/rollout-a.jsonl"; touch -d "@$NOW" "$d/rollout-a.jsonl"
+  keep_cache
+  CLAUDE_ACCT_TTL=999999999 run --separate-stderr "$ACCT" room --source codex
+  assert_success
+  # a file written since the cache whose refusal is older than it keeps the cache
+  codex_refused "$d/rollout-c.jsonl" $((NOW - 120)); touch -d "@$NOW" "$d/rollout-c.jsonl"; keep_cache
+  CLAUDE_ACCT_TTL=999999999 run --separate-stderr "$ACCT" room --source codex
+  assert_success
+  # a refusal after it does not: the next start reads the source again and is refused
+  codex_refused "$d/rollout-d.jsonl" $((NOW + 1)); keep_cache
+  CLAUDE_ACCT_TTL=999999999 run --separate-stderr "$ACCT" room --source codex
+  assert_failure 1
+}
+
 @test "sources: a key at its cap has no room" {
   src_setup
   budget sk-lazer key 10 100

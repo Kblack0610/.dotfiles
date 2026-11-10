@@ -206,6 +206,16 @@ fetch() {
 # 10000-10200 minutes the week (rollouts log 10080 and 10081); any other length, or none, makes the
 # source unread, so it blocks instead of being paced on a guess.
 # A window whose reset has passed reads as unused, with no reset until a rollout says when.
+# codex_refusal < rollout paths, one a line -> the epoch of the newest usage_limit_exceeded refusal in
+# them, null when none, "undated" when one carries no time. The one reader of a refusal's record.
+codex_refusal() {
+    { xargs -r -d '\n' grep -h -F '"usage_limit_exceeded"' -- || true; } |
+        jq -nR '[inputs | fromjson? | objects
+                 | select(((.payload.error? | objects | .codex_error_info) // null) == "usage_limit_exceeded")
+                 | .payload.completed_at // (.timestamp // "" | .[:19] + "Z" | fromdateiso8601?) // "undated"]
+                | if any(.[]; . == "undated") then "undated" else max end'
+}
+
 read_codex() {
     local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" found mt f reading refused
     [[ -d "$1" ]] || { echo "claude-acct: codex: no sessions dir $1" >&2; return 1; }
@@ -228,11 +238,7 @@ read_codex() {
                 . as $m | $l | select(startswith("@") | not) | fromjson? | objects | (.timestamp // "") as $ts
                 | .payload.rate_limits? | objects | select((.limit_id // "codex") == "codex")
                 | select(.primary or .secondary) | {r: ., at: (($ts | stamp) // $m)})) // null') || return 1
-    refused=$({ cut -d' ' -f2- <<< "$found" | xargs -d '\n' grep -h -F '"usage_limit_exceeded"' -- || true; } |
-        jq -nR '[inputs | fromjson? | objects
-                 | select(((.payload.error? | objects | .codex_error_info) // null) == "usage_limit_exceeded")
-                 | .payload.completed_at // (.timestamp // "" | .[:19] + "Z" | fromdateiso8601?) // "undated"]
-                | if any(.[]; . == "undated") then "undated" else max end') || return 1
+    refused=$(cut -d' ' -f2- <<< "$found" | codex_refusal) || return 1
     [[ "$refused" == '"undated"' ]] && { echo "claude-acct: codex: a refusal with no time under $1" >&2; return 1; }
     jq -cn --argjson now "$now" --argjson read "$reading" --argjson refused "$refused" --arg dir "$1" '
         def win(w): if w == null then null
@@ -307,10 +313,24 @@ budget_usage() {
              five_hour: null, paced: false, usd_used: .spend, usd_max: .max_budget}'
 }
 
-# fetch_source <name> <kind> <ref> -> the usage JSON of one source, cached for TTL like fetch
+# codex_refused_since <sessions dir> <cache file> -> rc 0 when a refusal (codex_refusal) is dated after
+# the cache, or cannot be dated: the cached reading predates it, and the next start must see the source
+# reached (ar-1120: six starts in two minutes on 2026-11-08 behind a cached reading). Only rollouts
+# written since the cache are searched; an older refusal in one of them keeps the cache.
+codex_refused_since() {
+    local t
+    t=$(find "$1" -name 'rollout-*.jsonl' -newer "$2" 2>/dev/null | codex_refusal) || return 0
+    [[ "$t" != null ]] || return 1
+    [[ "$t" =~ ^[0-9]+$ ]] || return 0
+    (( t >= $(stat -c %Y "$2") ))
+}
+
+# fetch_source <name> <kind> <ref> -> the usage JSON of one source, cached for TTL like fetch, except
+# that a codex refusal written since the cache makes it stale (codex_refused_since)
 fetch_source() {
     local name="$1" kind="$2" ref="$3" cache="$CACHE/$1.json" out tmp info refused
-    if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then cat "$cache"; return 0; fi
+    if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )) &&
+        ! { [[ "$kind" == codex ]] && codex_refused_since "$ref" "$cache"; }; then cat "$cache"; return 0; fi
     case "$kind" in
         codex) out=$(read_codex "$ref") ;;
         litellm-key|litellm-team)
