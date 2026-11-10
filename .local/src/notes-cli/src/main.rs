@@ -7,6 +7,7 @@
 
 mod agent_sheet;
 mod archive;
+mod backfill;
 mod backlog;
 mod board;
 mod clickup;
@@ -276,6 +277,18 @@ enum Cmd {
         /// minor when a feature epic closed on proof in the version, else patch
         #[arg(long, value_name = "NAME")]
         release: Option<String>,
+        /// Split the open version's closed record (its agent note) into one version per ISO
+        /// week before this one, numbered by the release rule, and open the next patch. A
+        /// project with no frozen version starts at a v0.1.0 baseline. Needs --weekly
+        #[arg(long, value_name = "NAME", requires = "weekly")]
+        backfill: Option<String>,
+        /// With --backfill: one version per week (the only split there is)
+        #[arg(long, requires = "backfill")]
+        weekly: bool,
+        /// With --backfill: a repo whose commits before the first week the baseline counts by
+        /// system. Repeatable
+        #[arg(long, value_name = "PATH", requires = "backfill")]
+        repo: Vec<std::path::PathBuf>,
         /// Consolidate a project onto the one version layout: fold changelog/ and loose
         /// root vX.Y.Z.md notes into versions/ and backfill each version's agent note.
         /// Works on archived projects too. Never overwrites; idempotent.
@@ -303,7 +316,7 @@ enum Cmd {
         /// Backlog / Done, rolling closed rows past the `[sheet]` window into versions notes
         #[arg(long)]
         sweep: bool,
-        /// With --retire-ai-tag, --migrate-rows or --sweep: report what would change and write nothing
+        /// With --retire-ai-tag, --migrate-rows, --sweep or --backfill: report what would change and write nothing
         #[arg(long)]
         dry_run: bool,
         /// With --release: step the patch (v0.1.2 -> v0.1.3). With no level the bump is
@@ -1538,6 +1551,9 @@ fn main() -> Result<()> {
             restore,
             archived,
             release,
+            backfill,
+            weekly: _,
+            repo,
             migrate,
             move_project,
             to_profile,
@@ -1579,6 +1595,12 @@ fn main() -> Result<()> {
             if let Some(n) = retire_ai_tag {
                 let which = if n.is_empty() { None } else { Some(n.as_str()) };
                 projects::retire_ai_tag(&prof, &log, which, dry_run)?;
+                std::process::exit(0);
+            }
+            if let Some(n) = backfill {
+                if backfill::backfill(&prof, &log, &n, &repo, dry_run)? {
+                    lab_refresh::kick();
+                }
                 std::process::exit(0);
             }
             if sweep {
