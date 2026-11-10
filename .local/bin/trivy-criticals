@@ -40,9 +40,10 @@ if ! reports="$(k vulnerabilityreports)" \
         | select($l["trivy-operator.resource.kind"] != "ReplicaSet"
                  or ($idle | index($l["trivy-operator.resource.namespace"] + "/" + $l["trivy-operator.resource.name"]) | not))
         | .report as $r
-        | (($r.registry.server // "") | if . == "" then "" else . + "/" end)
-          + $r.artifact.repository
-          + (if ($r.artifact.tag // "") != "" then ":" + $r.artifact.tag else "@" + ($r.artifact.digest // "") end) as $img
+        | ( (($r.registry.server // "") | if . == "" then "" else . + "/" end)
+            + $r.artifact.repository
+            + (if ($r.artifact.tag // "") != "" then ":" + $r.artifact.tag else "@" + ($r.artifact.digest // "") end)
+          ) as $img
         | $r.vulnerabilities[]? | select(.severity == "CRITICAL")
         | {img: $img, id: .vulnerabilityID, fix: ((.fixedVersion // "") != "")} ]
       | group_by([.img, .id]) | map({img: .[0].img, fix: any(.[]; .fix)})
