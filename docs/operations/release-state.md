@@ -73,7 +73,7 @@ Each store has its own read-only credential in rbw, read once per refresh and on
 | Status | Meaning |
 |---|---|
 | `drift` | Pinned and live differ. `drift_since` carries across refreshes, so `check` waits out a rollout in progress |
-| `unknown` | A probe failed (fetch, kubectl, health); the row says which in `pinned.error` or `live.error` |
+| `unknown` | A probe failed (fetch, kubectl, health); the row says which in `pinned.error` or `live.error`. The Releases tab draws it `not read` and counts it in the app's CHANNELS and the gap line, but it never sets the app's word |
 | `floating` | Pinned or live is `latest`, so no version can be named |
 | `ok` | Live equals pinned, or the served SHA is the pinned tag's commit |
 | `released` | Nothing to compare: a tag-only row (the newest tag, no live source), or a store channel with no recorded upload (the store's value, pin `-`) |
@@ -81,7 +81,7 @@ Each store has its own read-only credential in rbw, read once per refresh and on
 
 ## Changelog for a version
 
-`changelog` takes any tag of the project's own line (the monorepo `name-v*` ladder or `v*`; a name that is not one of its tags is refused). The previous tag is the highest tag of the line that is an ancestor of the tag, skipping prereleases when the tag is a stable release. The source is the first `CHANGELOG.md` found at the tag, then at `origin/<branch>`, under the registry `path`, and the repo root too when the project is its repo or has no `path` (a monorepo product never reads a root file that may be another product's), holding a heading with the version (`## [1.1.0] - date`; `1.1.0` does not match `1.1.01`). With none, the text is the merged PRs in `prev..tag`, filtered to the registry `path`, the newest 100, with a last line saying older ones are not shown. The Releases tab shows it in an opened row: agent-web has a tag picker, the TUI has `[` (older) and `]` (newer).
+`changelog` takes any tag of the project's own line (the monorepo `name-v*` ladder or `v*`; a name that is not one of its tags is refused). The previous tag is the highest tag of the line that is an ancestor of the tag, skipping prereleases when the tag is a stable release. The source is the first `CHANGELOG.md` found at the tag, then at `origin/<branch>`, under the registry `path`, and the repo root too when the project is its repo or has no `path` (a monorepo product never reads a root file that may be another product's), holding a heading with the version (`## [1.1.0] - date`; `1.1.0` does not match `1.1.01`). With none, the text is the merged PRs in `prev..tag`, filtered to the registry `path`, the newest 100, with a last line saying older ones are not shown. The Releases tab shows it in an opened app: agent-web has a tag picker, the TUI has `[` (older) and `]` (newer).
 
 ## Troubleshooting
 
