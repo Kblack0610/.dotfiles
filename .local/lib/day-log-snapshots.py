@@ -30,6 +30,7 @@ A delta needs as many days with the metric in both weeks: fewer would read as a 
 """
 import argparse
 import datetime as dt
+import io
 import json
 import os
 import re
@@ -38,6 +39,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -335,17 +337,21 @@ def ci_failures(repo, base, start, end):
 
 
 def ci_cost(clone, base, day, start, end):
-    """scripts/ci-cost.py as the base branch has it, so a stale checkout never measures. The cache only
-    serves a retry of the same day, so a finished read removes it."""
+    """scripts/ci-cost.py as the base branch has it, so a stale checkout never measures. It runs from that
+    branch's whole scripts/ tree, because it loads files beside it (test/train.py). The cache only serves a
+    retry of the same day, so a finished read removes it."""
     subprocess.run(["git", "-C", clone, "fetch", "-q", "origin", base], capture_output=True)
-    script = subprocess.run(["git", "-C", clone, "show", f"origin/{base}:scripts/ci-cost.py"], capture_output=True, text=True)
-    if script.returncode:
-        return None, script.stderr.strip() or f"no scripts/ci-cost.py on origin/{base}"
+    tree = subprocess.run(["git", "-C", clone, "archive", f"origin/{base}", "scripts"], capture_output=True)
+    if tree.returncode:
+        return None, tree.stderr.decode(errors="replace").strip() or f"no scripts/ on origin/{base}"
     cache = Path(ENV.get("DAYLOG_CI_CACHE", Path.home() / ".cache" / "day-log" / "ci-cost")) / day
-    with tempfile.NamedTemporaryFile("w", suffix=".py") as f:
-        f.write(script.stdout)
-        f.flush()
-        got, err = run_json([sys.executable, f.name, *window_args(start, end), "--cache", str(cache), "--repo-dir", clone])
+    with tempfile.TemporaryDirectory() as tmp:
+        with tarfile.open(fileobj=io.BytesIO(tree.stdout)) as t:
+            t.extractall(tmp, filter="data")
+        script = Path(tmp) / "scripts" / "ci-cost.py"
+        if not script.is_file():
+            return None, f"no scripts/ci-cost.py on origin/{base}"
+        got, err = run_json([sys.executable, str(script), *window_args(start, end), "--cache", str(cache), "--repo-dir", clone])
     if got is not None:
         shutil.rmtree(cache, ignore_errors=True)
     return got, err
