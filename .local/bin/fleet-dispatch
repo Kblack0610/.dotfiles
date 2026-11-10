@@ -2022,7 +2022,7 @@ item_end() {
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
-# A Codex run that ends without closing also records why (item_end, --end): this is the only writer of
+# A Codex run that ends without closing also records why (item_end, --end): this is the only live writer of
 # end_reason, and the reason is named in the note.
 settle_item() {
   local st it pr report info state='' oid head='' ci='' end=() why=''; st=$(item_state "$1")
