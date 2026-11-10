@@ -517,6 +517,9 @@ pub struct App {
     pub infra_jobs: bool,
     /// Infra's inner tab shown (a `hub_core::layout::Inner` id of Infra).
     pub infra_inner: &'static str,
+    /// Infra shows every inner tab's sections under the strip: the printed page (`hub --once`),
+    /// which has no keys to switch with.
+    pub infra_all: bool,
     /// Lines scrolled down on every page but Jobs.
     pub scroll: usize,
     pub quit: bool,
@@ -632,6 +635,7 @@ impl App {
             seek: None,
             infra_jobs: false,
             infra_inner: hub_core::layout::inner_tab(infra_tab(), None).map_or("", |i| i.id),
+            infra_all: false,
             scroll: 0,
             quit: false,
             popup: false,
@@ -3409,8 +3413,13 @@ impl App {
             // hub_core::layout order with a blank line between them.
             (_, _, Some(i)) => {
                 let tab = infra_tab();
-                let shown = hub_core::layout::inner_tab(tab, Some(self.infra_inner))
-                    .map_or(&[][..], |i| i.sections);
+                // The layout lists the pinned sections first, then each inner tab's in turn.
+                let shown = if self.infra_all {
+                    &tab.sections[tab.pinned.len()..]
+                } else {
+                    hub_core::layout::inner_tab(tab, Some(self.infra_inner))
+                        .map_or(&[][..], |i| i.sections)
+                };
                 let mut secs = board::infra(i, self.p, now, w, &self.hosts);
                 // Red fixes and Jobs are read on their own, and built only on the inner tab that
                 // shows them: the jobs table walks every job in the window on each draw.
@@ -6040,6 +6049,27 @@ mod tests {
         assert!(top(&screen(&mut a, 160, 30)).starts_with("CI RUNNERS"));
         a.handle(key('N'));
         assert!(top(&screen(&mut a, 160, 30)).starts_with("MACHINE "));
+    }
+
+    #[test]
+    fn printed_infra_shows_every_inner_tab_under_the_strip() {
+        let mut a = infra_app();
+        a.handle(key('5'));
+        a.infra_all = true;
+        let s = screen(&mut a, 160, 400);
+        let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
+        for w in [
+            "[Reds]",
+            "RED FIXES",
+            "CI RUNNERS",
+            "GOVERNOR",
+            "Enter opens",
+            "CLOUD RUNNERS",
+        ]
+        .windows(2)
+        {
+            assert!(at(w[0]) < at(w[1]), "{} after {}: {s}", w[1], w[0]);
+        }
     }
 
     #[test]
