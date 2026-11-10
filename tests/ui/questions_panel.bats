@@ -88,7 +88,7 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
 }
 
 # The rows read beside the card (human, 2026-11-05): what each session is, under its question,
-# and where its answer goes; the selected row's name in fzf's selected white, not a colour that
+# and whether it is LIVE or dead; the selected row's name in fzf's selected white, not a colour that
 # vanishes on the selection bar; and a key that scrolls a card longer than the screen.
 @test "at 144x33 a row names its session under the question, the selected name reads, pgdn scrolls the card" {
   mkdir -p "$HOME/.agent/sessions/delta"
@@ -97,7 +97,7 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
     --context "$(printf 'Context sentence %d of a card longer than the screen. ' $(seq 1 60))" 'Which goes first?')"
   sed -i 's/^created: .*/created: 2026-10-30T10:00:00-0800/' "$(ask_file "$id")"
   TM_WIDTH=144 TM_HEIGHT=33 open_panel
-  wait_until 'side_by_side && screen_has "dead end . runner-pool-tonight"'
+  wait_until 'side_by_side && screen_has "dead delta:4" && screen_has "runner-pool-tonight"'
   screen_has 'pgup/pgdn scroll card'
   keep_screen rows_144x33
   # The selected row is the oldest, delta:4: its name is drawn in bright white (97).
