@@ -174,6 +174,25 @@ pub struct Card {
 }
 
 impl Card {
+    /// The card's own numbers, before the feed and the queue join in: the one Stats -> Card
+    /// mapping, which `build` and `page::status` share.
+    pub fn from_stats(s: &Stats) -> Card {
+        Card {
+            profile: s.profile.clone(),
+            name: s.name.clone(),
+            stage: s.stage.clone(),
+            prio: s.prio.clone(),
+            version: s.version.clone(),
+            goal: s.goal.clone(),
+            progress: s.progress,
+            percent: percent(&s.progress),
+            eta_days: eta_days(&s.progress),
+            status: s.status.clone(),
+            status_date: s.status_date.clone(),
+            ..Card::default()
+        }
+    }
+
     pub fn in_flight(&self) -> bool {
         !self.running.is_empty() || self.waiting > 0
     }
@@ -354,23 +373,7 @@ pub fn build(
 ) -> Projects {
     let mut out = Projects::default();
     let labs: Vec<&str> = stats.iter().map(|s| s.name.as_str()).collect();
-    let mut cards: Vec<Card> = stats
-        .iter()
-        .map(|s| Card {
-            profile: s.profile.clone(),
-            name: s.name.clone(),
-            stage: s.stage.clone(),
-            prio: s.prio.clone(),
-            version: s.version.clone(),
-            goal: s.goal.clone(),
-            progress: s.progress,
-            percent: percent(&s.progress),
-            eta_days: eta_days(&s.progress),
-            status: s.status.clone(),
-            status_date: s.status_date.clone(),
-            ..Card::default()
-        })
-        .collect();
+    let mut cards: Vec<Card> = stats.iter().map(Card::from_stats).collect();
     let at = |cards: &mut Vec<Card>, name: &str| cards.iter().position(|c| c.name == name);
     if let Some(f) = feed {
         for p in &f.projects {
