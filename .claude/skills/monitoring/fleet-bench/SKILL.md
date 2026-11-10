@@ -116,7 +116,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `ask_wait_p90_min` | p90 minutes from `created` to answered or closed, still-open asks counted to now; cancelled asks left out. Replaced `asks_stale`, which stays a ledger count |
 | `runners_bad` (now) | switched-on runner confs whose `last-outcome` is FAILED or STALLED (also in `ledger`) |
 | `failed_unexplained` (now) | FAILED, STALLED or BLOCKED lines of the last 24h in any runner's `activity.log` that end `why: unrecorded`: a failure path with no `proof_why` (also in `ledger`) |
-| `board_open` (now) | the ledger's `board_open`: open and started agent-lane rows in `notes board --json`, every profile, a project with automation off left out; `?` when the feed cannot be read |
+| `board_open` (now) | the ledger's `board_open`: open and started agent-lane rows in `notes board --json` for the active profile (`notes config`, or `BENCH_PROFILE`), a project with automation off left out; `?` when the feed or the profile cannot be read |
 | `loop_dark` (now) | finding episodes of the last 7d still firing that reached class human with no response but a page (`loop`) |
 | `loop_dark_7d` (now) | the same episodes whether or not they still fire: `loop_dark` is the alert and reads 0 once an episode clears, this is the count |
 | `points_per_pr` (now) | Claude weekly points over Claude landed PRs, from `sources` over `BENCH_QUEUE_DAYS`; a source with unread points stays out, none read is `?` |

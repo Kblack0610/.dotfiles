@@ -384,6 +384,16 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
   assert_output --regexp '(bash|sh|zsh)'       # what is running
 }
 
+@test "a favourite session's row leads with a star, and a plain one keeps its indent" {
+  manifest "$SRV_A" "one $MDIR" "two $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" set-option -t one @fav 1
+  run bash -c "'$TMX' rows | awk -F'\t' '\$2==\"one\" && \$3==\"\" {print \$4}'"
+  assert_output --regexp $'^\u2605 one '
+  run bash -c "'$TMX' rows | awk -F'\t' '\$2==\"two\" && \$3==\"\" {print \$4}'"
+  assert_output --regexp '^  two '
+}
+
 @test "rows offers the server itself, so one list also replaces the server picker" {
   # A server row is the only row with BOTH the session and window fields empty; that is
   # what tells pick to treat it as a world rather than a session.
@@ -441,6 +451,16 @@ fleet_state() {
   assert_line --index 1 --partial 'loose'
   run bash -c "'$TMX' rows | awk -F'\t' '\$2==\"loose\"' | wc -l"
   assert_output '1'
+}
+
+@test "a stranded favourite keeps its star" {
+  manifest "$SRV_A" "one $MDIR"
+  "$TMX" ensure "$SRV_A"
+  "${REAL_TMUX}" -L "$SRV_A" new-session -d -s loose
+  "${REAL_TMUX}" -L "$SRV_A" set-option -t loose @fav 1
+  fleet_state
+  run bash -c "'$TMX' rows | awk -F'\t' '\$2==\"loose\" {print \$4}'"
+  assert_output --regexp $'^\u2605 .*loose.*stranded'
 }
 
 @test "a declared session with no agent is not stranded" {
