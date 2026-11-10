@@ -2736,6 +2736,49 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
   [ -n "$(qitem running small-one)" ] || fail "the light item did not start"
 }
 
+# 5 of 6 run units held by two heavy and one light live session, as the tests around it do.
+five_of_six_units() {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_MAX_LIVE=6
+  local s
+  for s in h1 h2 l1; do started_item "$s" "lab:game-agent-$s" run "area-$s"; done
+  sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/running/*-h1.md "$AGENT_QUEUE_DIR"/running/*-h2.md
+  printf 'game-agent-h1\ngame-agent-h2\ngame-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+}
+
+@test "an urgent heavy item that does not fit holds the free unit: a lower light item does not take it (ar-1348)" {
+  five_of_six_units
+  agent-queue add --project game --slug big-urgent --priority urgent --weight heavy "big urgent"
+  agent-queue add --project game --slug small-high --priority high --weight light "small high"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'wait for urgent big-urgent'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+  [ -n "$(qitem queued small-high)" ] || fail "the light item started past the urgent heavy one"
+  [ -n "$(qitem queued big-urgent)" ] || fail "the urgent heavy item left the queue"
+}
+
+@test "an urgent light item behind an urgent heavy one that does not fit still starts" {
+  five_of_six_units
+  agent-queue add --project game --slug big-urgent --priority urgent --weight heavy "big urgent"
+  agent-queue add --project game --slug small-urgent --priority urgent --weight light "small urgent"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  [ -n "$(qitem running small-urgent)" ] || fail "the urgent light item did not start"
+  [ -n "$(qitem queued big-urgent)" ] || fail "the heavy item started past the unit budget"
+}
+
+@test "an urgent heavy item that can never fit the run units holds nothing back" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_MAX_LIVE=1
+  agent-queue add --project game --slug big-urgent --priority urgent --weight heavy "big urgent"
+  agent-queue add --project game --slug small-high --priority high --weight light "small high"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  [ -n "$(qitem running small-high)" ] || fail "the light item waited for an urgent item that cannot fit"
+}
+
 @test "a heavy item alone at 5 of 6 run units is a full fleet: NOOP, not BLOCKED" {
   project game beta "$SANDBOX/repos/game"
   local s
