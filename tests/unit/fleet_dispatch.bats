@@ -3035,7 +3035,7 @@ approved_plan() {
     '{epoch: $e, plan: $p, project: "game", session: $s, cwd: "/x"}' >> "$PLAN_LEDGER"
 }
 
-@test "reap queues the open phases of an approved plan whose session is gone, as night items, and starts nothing" {
+@test "reap queues the open phases of an approved plan whose session is gone, as low night items, and starts nothing" {
   stub agent-ask 'echo other-session'
   approved_plan orphan gone-session
   run reconcile_plans
@@ -3044,6 +3044,7 @@ approved_plan() {
   assert_equal "$(jq -r .slug <<<"$output" | paste -sd,)" 'orphan-p2,orphan-p3'
   assert_equal "$(jq -r .tags <<<"$output" | sort -u)" 'night'
   assert_equal "$(jq -r .from <<<"$output" | sort -u)" 'auto:plans'
+  assert_equal "$(jq -r .priority <<<"$output" | sort -u)" 'low'
   grep -q 'orphan.md for the night' "$FLEET_DISPATCH_DIR/log.md"
 }
 
