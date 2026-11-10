@@ -1,41 +1,40 @@
-//! The Releases tab: every channel, what is pinned there and what is live, from hub-core's
+//! The Releases tab: every app with what is live where, its channels on open, from hub-core's
 //! `releases`. The list is filtered and sorted here by `hub_core::table`, so the page only draws.
 //! No read cache: the read is one small file, and a new snapshot pushes the `releases` event.
 
 use axum::extract::Query as UrlQuery;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use hub_core::releases::{self, fold, Release, Releases, STALE_SECS};
+use hub_core::releases::{self, App, Releases, STALE_SECS};
 use hub_core::session_actions::{Runner, System};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 
 use crate::schedules::Query;
 
-/// The read with the view applied: the rows drawn, the green ones folded, the controls.
+/// The read with the view applied: the apps drawn, the channels it could not read, the controls.
 #[derive(Serialize)]
 struct Shown<'a> {
     at: i64,
     question: &'a str,
     summary: &'a str,
+    gaps: &'a str,
     stale_after: i64,
-    rows: Vec<&'a Release>,
-    fold: Option<String>,
+    rows: Vec<&'a App>,
     errors: &'a [String],
     table: Summary,
 }
 
 fn render(s: &Releases, q: &Query) -> String {
-    let view = View::new::<Release>(&q.q, &q.s, &q.sort, &q.dir);
-    let (rows, table) = view.summary(&s.rows);
-    let (rows, fold) = fold(&view, rows);
+    let view = View::new::<App>(&q.q, &q.s, &q.sort, &q.dir);
+    let (rows, table) = view.summary(&s.apps);
     let out = Shown {
         at: s.at,
         question: &s.question,
         summary: &s.summary,
+        gaps: &s.gaps,
         stale_after: STALE_SECS,
         rows,
-        fold,
         errors: &s.errors,
         table,
     };
@@ -68,9 +67,13 @@ pub struct ChangelogQuery {
 fn changelog_body(runner: &dyn Runner, q: &ChangelogQuery) -> Result<String, (StatusCode, String)> {
     let tag = Some(q.tag.as_str()).filter(|t| !t.is_empty());
     if !releases::askable(&q.project, tag) {
-        return Err((StatusCode::BAD_REQUEST, "a project and a tag name are required".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "a project and a tag name are required".into(),
+        ));
     }
-    let c = releases::changelog(runner, &q.project, tag).map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
+    let c =
+        releases::changelog(runner, &q.project, tag).map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
     serde_json::to_string(&c).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
@@ -103,10 +106,15 @@ mod tests {
 
     #[test]
     fn a_changelog_body_is_the_collectors_answer_and_its_failure_is_said() {
-        let ok = Says(Ok(r#"{"project":"p","tag":"p-v1","tags":["p-v1"],"text":"- a"}"#.into()));
+        let ok = Says(Ok(
+            r#"{"project":"p","tag":"p-v1","tags":["p-v1"],"text":"- a"}"#.into(),
+        ));
         let v: serde_json::Value =
             serde_json::from_str(&changelog_body(&ok, &ask("p", "")).unwrap()).unwrap();
-        assert_eq!((v["tag"].as_str(), v["tags"][0].as_str()), (Some("p-v1"), Some("p-v1")));
+        assert_eq!(
+            (v["tag"].as_str(), v["tags"][0].as_str()),
+            (Some("p-v1"), Some("p-v1"))
+        );
         let no = Says(Err("release-state: x is not a release tag of p".into()));
         let (status, words) = changelog_body(&no, &ask("p", "x")).unwrap_err();
         assert!(status == StatusCode::BAD_GATEWAY && words.contains("not a release tag"));
@@ -116,10 +124,9 @@ mod tests {
         }
     }
 
-    fn rel(id: &str, level: releases::Level) -> Release {
-        Release {
-            project: "app".into(),
-            id: id.into(),
+    fn app(project: &str, level: releases::Level) -> App {
+        App {
+            project: project.into(),
             status: "ok".into(),
             level,
             ..Default::default()
@@ -130,12 +137,13 @@ mod tests {
         Releases {
             at: 300,
             question: "What is live where?".into(),
-            summary: "2 channels: 1 drift, 1 ok".into(),
-            rows: vec![
-                rel("app-prod", releases::Level::Bad),
-                rel("app-preview", releases::Level::Ok),
+            summary: "2 apps: 1 drift, 1 ok".into(),
+            gaps: "1 channel not read: steam 403 (1)".into(),
+            apps: vec![
+                app("game", releases::Level::Bad),
+                app("site", releases::Level::Ok),
             ],
-            errors: vec![],
+            ..Default::default()
         }
     }
 
@@ -144,24 +152,34 @@ mod tests {
     }
 
     #[test]
-    fn the_plain_view_folds_green_and_the_table_still_counts_every_row() {
+    fn the_plain_view_lists_every_app_and_says_what_it_could_not_read() {
         let v = body(Query::default());
-        assert_eq!(v["rows"].as_array().unwrap().len(), 1);
-        assert_eq!(v["rows"][0]["id"], "app-prod");
-        assert!(v["fold"].as_str().unwrap().starts_with("1 channel green"));
+        let rows: Vec<&str> = v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["project"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            ["game", "site"],
+            "nothing folded: the green app shows too"
+        );
+        assert!(v.get("fold").is_none());
+        assert_eq!(v["gaps"], "1 channel not read: steam 403 (1)");
         assert_eq!(v["table"]["total"], 2);
         assert_eq!(v["question"], "What is live where?");
         assert_eq!(v["stale_after"], STALE_SECS);
     }
 
     #[test]
-    fn a_chip_lists_what_the_fold_hid() {
+    fn a_chip_keeps_the_apps_under_it() {
         let v = body(Query {
-            s: "green".into(),
+            s: "ok".into(),
             ..Default::default()
         });
-        assert_eq!(v["rows"][0]["id"], "app-preview");
-        assert!(v["fold"].is_null());
+        assert_eq!(v["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(v["rows"][0]["project"], "site");
     }
 
     #[test]
