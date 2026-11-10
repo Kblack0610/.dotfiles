@@ -151,6 +151,7 @@ fn problem(e: &Event) -> Option<(&'static str, &'static str, String)> {
         "reaped" if why == "item was running" => Some(("running", "reaped", e.text.clone())),
         "refused" => Some(("inbox", "refused", why)),
         "left" => Some(("inbox", "left", why)),
+        "asked" => Some(("inbox", "asked you", why)),
         "sweep-stopped" => Some(("inbox", "sweep stopped", why)),
         "land-failed" => Some(("done", "land failed", why)),
         _ => None,

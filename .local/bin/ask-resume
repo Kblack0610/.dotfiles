@@ -9,6 +9,10 @@
 # Without this, an answer is only a field on disk: an agent posts a gate, you answer
 # `approve`, and nothing turns that answer back into an action.
 #
+# A `resume` is a prompt for the ask-resume agent, or `run: <command>`: a script that posts an
+# ask and consumes its own answer, which runs as `<command> <id>` with no model call (the inbox
+# sweep's "which project is this line about?" asks).
+#
 # `agent-ask answer` calls it with an id, so answering IS starting from any surface.
 # `--all` is the manual backstop for an answer recorded with AGENT_ASK_NO_RESUME or
 # whose resume could not start.
@@ -43,7 +47,10 @@ command -v agent-ask >/dev/null 2>&1 || { echo "ask-resume: agent-ask not on PAT
 # whatever gateway its caller happened to export.
 run_resume() { # $1=id $2=project $3=command
   local id="$1" project="$2" cmd="$3"
-  if [ "$DRY" = 1 ]; then echo "would run: agentctl-run --agent ask-resume -p '$cmd'   (ask $id)"; return 0; fi
+  if [ "$DRY" = 1 ]; then
+    if [[ "$cmd" == run:* ]]; then echo "would run: ${cmd#run:} $id   (ask $id)"; else echo "would run: agentctl-run --agent ask-resume -p '$cmd'   (ask $id)"; fi
+    return 0
+  fi
   command -v agentctl-run >/dev/null 2>&1 || { echo "ask-resume: agentctl-run not on PATH" >&2; return 1; }
   agent-ask mark-resumed "$id" >/dev/null 2>&1
   echo "ask-resume: $id ($project) -> $cmd" >&2
@@ -53,6 +60,11 @@ run_resume() { # $1=id $2=project $3=command
   # under one the run gets its own scope. systemd sets INVOCATION_ID for a unit's processes.
   local detach=(setsid -f)
   [ -z "${INVOCATION_ID:-}" ] || detach=(systemd-run --user --scope --quiet setsid -f)
+  if [[ "$cmd" == run:* ]]; then
+    # shellcheck disable=SC2016 # $0 and $1 are the inner shell's: the label and the ask id
+    "${detach[@]}" bash -c "${cmd#run:}"' "$1"' ask-resume "$id" >>"$log/${project}.log" 2>&1 </dev/null
+    return 0
+  fi
   "${detach[@]}" agentctl-run --agent ask-resume -p "$cmd" \
     --max-turns "${ASK_RESUME_MAX_TURNS:-60}" \
     >>"$log/${project}.log" 2>&1 </dev/null
