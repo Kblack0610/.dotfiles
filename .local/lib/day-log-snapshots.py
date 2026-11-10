@@ -346,8 +346,11 @@ def ci_cost(clone, base, day, start, end):
         return None, tree.stderr.decode(errors="replace").strip() or f"no scripts/ on origin/{base}"
     cache = Path(ENV.get("DAYLOG_CI_CACHE", Path.home() / ".cache" / "day-log" / "ci-cost")) / day
     with tempfile.TemporaryDirectory() as tmp:
-        with tarfile.open(fileobj=io.BytesIO(tree.stdout)) as t:
-            t.extractall(tmp, filter="data")
+        try:
+            with tarfile.open(fileobj=io.BytesIO(tree.stdout)) as t:
+                t.extractall(tmp, filter="data")
+        except (tarfile.TarError, OSError) as e:
+            return None, f"scripts/ on origin/{base}: {e}"
         script = Path(tmp) / "scripts" / "ci-cost.py"
         if not script.is_file():
             return None, f"no scripts/ci-cost.py on origin/{base}"
