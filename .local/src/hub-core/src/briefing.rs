@@ -143,6 +143,9 @@ pub struct Inputs {
     pub sources: Option<Vec<Account>>,
     /// comms' one-line inbox summary.
     pub mail_stats: Option<String>,
+    /// What the app stores made yesterday (`store-sales`); None when it could not run, or for
+    /// a caller that renders no Money section.
+    pub sales: Option<Vec<crate::money::Source>>,
     pub errors: Vec<String>,
 }
 
@@ -1017,7 +1020,8 @@ fn overnight(i: &Inputs) -> Vec<String> {
     out
 }
 
-/// Money: what yesterday cost. Revenue has no reader yet; it is said, never shown as $0.
+/// Money: what yesterday cost, then one line per store of what it made. A store that could not
+/// be read says so, never $0; games and trader have no reader yet.
 fn money_lines(i: &Inputs) -> Vec<String> {
     let mut out = vec![];
     match yesterday_and_avg(i, spent) {
@@ -1030,7 +1034,15 @@ fn money_lines(i: &Inputs) -> Vec<String> {
         }
         _ => out.push("Spend not read: no day-log record for yesterday.".into()),
     }
-    out.push("Made: not read yet, no store or broker is connected.".into());
+    match &i.sales {
+        Some(sources) => out.extend(
+            sources
+                .iter()
+                .map(|s| cap(&crate::money::line(s), ITEM_MAX)),
+        ),
+        None => out.push("App stores: not read, store-sales could not run.".into()),
+    }
+    out.push("Games and trader: not read yet, no reader is connected.".into());
     out
 }
 
@@ -1424,11 +1436,31 @@ fn env_dir(k: &str, home: &Path, d: &str) -> PathBuf {
 
 /// Every input, read now for the window from `since`.
 pub fn gather(since: i64, now: i64) -> Inputs {
-    gather_from(since, now, || {
+    // Only the briefing reads the stores (Home's "Since last night" renders no Money section),
+    // beside the other reads so their network waits overlap.
+    let day = date_before(now, 1);
+    let sales =
+        std::thread::spawn(move || crate::money::apps(&crate::session_actions::System, &day));
+    let mut i = gather_from(since, now, || {
         let (state, queue, board, infra) = home::gather(true);
         let home = home::build(&state, Some(&queue), Some(&board), infra.as_ref());
         (state, queue, home)
-    })
+    });
+    match sales
+        .join()
+        .unwrap_or_else(|_| Err("store-sales: panicked".into()))
+    {
+        Ok(sources) => {
+            i.errors.extend(
+                sources
+                    .iter()
+                    .filter_map(|s| s.error.as_ref().map(|e| format!("{}: {e}", s.name))),
+            );
+            i.sales = Some(sources);
+        }
+        Err(e) => i.errors.push(e),
+    }
+    i
 }
 
 /// Home's "Since last night" for a caller that has read Home already (agent-web caches its
@@ -1541,6 +1573,7 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
         mail_stats: std::fs::read_to_string(comms.join("stats-summary.txt"))
             .ok()
             .filter(|s| !s.trim().is_empty()),
+        sales: None,
         errors,
         home,
     }
@@ -2019,7 +2052,43 @@ mod tests {
         assert_eq!(b.landed, ["Not read: no day-log record for yesterday."]);
         assert!(b.money[0].starts_with("Spend not read"), "{:?}", b.money);
         assert!(!b.overview.contains("Yesterday"), "{}", b.overview);
-        assert!(b.money.iter().any(|l| l.starts_with("Made: not read yet")));
+        assert!(b
+            .money
+            .iter()
+            .any(|l| l.starts_with("App stores: not read")));
+    }
+
+    #[test]
+    fn money_says_one_line_per_store_and_an_unread_one_is_not_zero() {
+        use crate::money::{Amount, Source};
+        let mut i = green();
+        i.sales = Some(vec![
+            Source {
+                name: "App Store".into(),
+                basis: "proceeds".into(),
+                made: Some(vec![Amount {
+                    currency: "USD".into(),
+                    amount: 7.0,
+                }]),
+                sales: 2,
+                titles: vec!["Shape City".into()],
+                error: None,
+            },
+            Source {
+                name: "Google Play".into(),
+                basis: "charged".into(),
+                error: Some("no rbw entry store_sales_play".into()),
+                ..Default::default()
+            },
+        ]);
+        let m = build(&i).money;
+        assert_eq!(m[1], "App Store: $7.00 proceeds from 2 sales (Shape City).");
+        // negative control: the store with no credential is not read, never $0
+        assert_eq!(
+            m[2],
+            "Google Play: not read, no rbw entry store_sales_play."
+        );
+        assert_eq!(m.len(), 4, "{m:?}");
     }
 
     fn release(project: &str, channel: &str, last: Option<(&str, &str, i64)>) -> Release {

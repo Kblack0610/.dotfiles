@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# store-sales - what each app store made on one day, as one JSON document on stdout.
+#
+#   store-sales [YYYY-MM-DD]   the day (default yesterday, local time)
+#
+# One source per store: App Store (Sales and Trends daily summary, Apple's proceeds after its cut)
+# and Google Play (the month's sales report in the developer bucket, the charged amount before
+# Google's cut). A source that could not be read carries `error` and no `made`, never a 0. The
+# briefing's Money section reads it (hub-core briefing.rs). Credentials and statuses:
+# docs/operations/store-sales.md.
+set -uo pipefail
+
+# shellcheck source=../lib/store-auth.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
+
+# Timeout guard on every external call, in seconds.
+PROBE_TIMEOUT="${STORE_SALES_TIMEOUT:-15}"
+# The read-only sales credentials: one rbw entry per store. Never the release keys.
+RBW_ASC=store_sales_asc
+RBW_PLAY=store_sales_play
+ASC_API=https://api.appstoreconnect.apple.com/v1
+GCS_API=https://storage.googleapis.com/storage/v1
+GCS_SCOPE=https://www.googleapis.com/auth/devstorage.read_only
+# The Sales and Trends report version the summary is asked in.
+ASC_REPORT_VERSION=1_1
+
+die() { echo "store-sales: $*" >&2; exit 2; }
+usage() { sed -n '4,4p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+
+for t in jq curl openssl python3 gzip unzip; do
+  command -v "$t" >/dev/null 2>&1 || die "$t is not installed"
+done
+
+case "${1:-}" in
+  -h|--help|help) usage 0 ;;
+  "") DAY="$(date -d yesterday +%F)" ;;
+  *) [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && date -d "$1" >/dev/null 2>&1 || usage; DAY="$1" ;;
+esac
+
+TMP="$(mktemp -d)" || die "cannot make a scratch dir"
+trap 'rm -rf "$TMP"' EXIT
+
+# The report parser: <asc|play> <day> <file> -> {made: [{currency, amount}], sales, titles}.
+# made sums by currency (an App Store refund subtracts; Play counts charges only, its refunds land
+# in the monthly earnings report); a currency that nets to 0 drops out; sales counts paid units;
+# titles are by units sold.
+PARSE='
+import csv, io, json, sys
+from collections import Counter, defaultdict
+kind, day, path = sys.argv[1:4]
+made, units = defaultdict(float), Counter()
+def num(s):
+    try: return float((s or "").replace(",", ""))
+    except ValueError: return 0.0
+text = open(path, encoding="utf-8-sig", errors="replace").read()
+if kind == "asc":
+    for r in csv.DictReader(io.StringIO(text), delimiter="\t", quoting=csv.QUOTE_NONE):
+        n, each = num(r.get("Units")), num(r.get("Developer Proceeds"))
+        if each == 0:
+            continue
+        made[r.get("Currency of Proceeds") or "?"] += n * each
+        units[r.get("Title") or "?"] += n
+else:
+    for r in csv.DictReader(io.StringIO(text)):
+        if r.get("Order Charged Date") != day or r.get("Financial Status") != "Charged":
+            continue
+        made[r.get("Currency of Sale") or "?"] += num(r.get("Charged Amount"))
+        units[r.get("Product Title") or "?"] += 1
+print(json.dumps({
+    "made": [{"currency": c, "amount": round(a, 2)} for c, a in sorted(made.items()) if round(a, 2)],
+    "sales": int(sum(v for v in units.values() if v > 0)),
+    "titles": [t for t, v in units.most_common() if v > 0],
+}))
+'
+
+# failed <name> <basis> <why>
+failed() { jq -nc --arg n "$1" --arg b "$2" --arg e "$3" '{name: $n, basis: $b, error: $e}'; }
+# parsed <name> <basis> <kind> <file>
+parsed() {
+  local out
+  out="$(python3 -I -c "$PARSE" "$3" "$DAY" "$4" 2>/dev/null)" || { failed "$1" "$2" "report did not parse"; return; }
+  jq -c --arg n "$1" --arg b "$2" '{name: $n, basis: $b} + .' <<<"$out"
+}
+# api_error <file> -> Apple's or Google's error text, else empty.
+api_error() { jq -r '[.errors[]?.detail, .error.message?] | map(select(. != null)) | first // empty' "$1" 2>/dev/null; }
+# http_failed <name> <basis> <code> <file> -> "HTTP <code>", with the API's own text when it gave one.
+http_failed() { local d; d="$(api_error "$4")"; failed "$1" "$2" "HTTP $3${d:+: $d}"; }
+
+app_store() {
+  local name="App Store" basis=proceeds vendor code
+  store_asc_jwt "$RBW_ASC" || { failed "$name" "$basis" "$STORE_WHY"; return; }
+  vendor="$(secret_field "$STORE_RAW" vendor_number)"
+  [ -n "$vendor" ] || { failed "$name" "$basis" "rbw entry $RBW_ASC has no vendor_number"; return; }
+  code="$(store_fetch "$ASC_API/salesReports?filter[frequency]=DAILY&filter[reportDate]=$DAY&filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[vendorNumber]=$vendor&filter[version]=$ASC_REPORT_VERSION" "$STORE_TOKEN" "$TMP/asc.gz")" \
+    || { failed "$name" "$basis" "sales report request failed"; return; }
+  case "$code" in
+    200) gzip -dc "$TMP/asc.gz" > "$TMP/asc.tsv" 2>/dev/null || { failed "$name" "$basis" "report is not gzip"; return; }
+         parsed "$name" "$basis" asc "$TMP/asc.tsv" ;;
+    # Apple answers a day with no sales 404 "There were no sales for the date specified."; any
+    # other 404 (the report is not out yet) is not read.
+    404) if api_error "$TMP/asc.gz" | grep -qi 'no sales'; then
+           jq -nc --arg n "$name" --arg b "$basis" '{name: $n, basis: $b, made: [], sales: 0, titles: []}'
+         else http_failed "$name" "$basis" 404 "$TMP/asc.gz"; fi ;;
+    *) http_failed "$name" "$basis" "$code" "$TMP/asc.gz" ;;
+  esac
+}
+
+google_play() {
+  local name="Google Play" basis=charged bucket obj code
+  store_google_token "$RBW_PLAY" "$GCS_SCOPE" || { failed "$name" "$basis" "$STORE_WHY"; return; }
+  bucket="$(secret_field "$STORE_RAW" bucket)"
+  [ -n "$bucket" ] || { failed "$name" "$basis" "rbw entry $RBW_PLAY has no bucket"; return; }
+  obj="sales/salesreport_$(date -d "$DAY" +%Y%m).zip"
+  code="$(store_fetch "$GCS_API/b/$bucket/o/${obj//\//%2F}?alt=media" "$STORE_TOKEN" "$TMP/play.zip")" \
+    || { failed "$name" "$basis" "sales report request failed"; return; }
+  case "$code" in
+    200) unzip -p "$TMP/play.zip" > "$TMP/play.csv" 2>/dev/null || { failed "$name" "$basis" "report is not a zip"; return; }
+         parsed "$name" "$basis" play "$TMP/play.csv" ;;
+    404) failed "$name" "$basis" "no $obj in the bucket yet" ;;
+    *) http_failed "$name" "$basis" "$code" "$TMP/play.zip" ;;
+  esac
+}
+
+if store_rbw_ready; then
+  # The stores run side by side, each into its own file, so the wait is the slower one.
+  app_store > "$TMP/asc.json" & google_play > "$TMP/play.json" & wait
+  sources="$(cat "$TMP/asc.json" "$TMP/play.json")"
+else
+  sources="$(failed "App Store" proceeds "$STORE_WHY"; failed "Google Play" charged "$STORE_WHY")"
+fi
+jq -s --arg d "$DAY" --argjson now "$(now_epoch)" '{date: $d, generated_epoch: $now, sources: .}' <<<"$sources"

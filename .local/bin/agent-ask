@@ -16,8 +16,6 @@
 #                                       jump target; fails saying why (ended, or no session).
 #                                       --reopen starts an ended one again first
 #   agent-ask live-sessions             the Claude session ids running now, one per line
-#   agent-ask routes                    "<id><TAB><route>" for every pending ask: restarts <item>,
-#                                       resume, to session or dead end (what its answer does)
 #   agent-ask titles                    Claude session ids on stdin -> "<id><TAB><title>" for
 #                                       each one the session registry has a title for
 #   agent-ask list [project|--all] [--pending|--answered] [--since <n>d]
@@ -985,7 +983,7 @@ session_alive() {
 }
 
 # live_sessions: every Claude session id with a running process, one per line; the questions
-# panel marks the rest gone. Same source as session_alive.
+# panel marks the rest dead. Same source as session_alive.
 # session_titles: Claude session ids on stdin -> "<id><TAB><title>", the newest titled registry
 # row per id. The card's request line and the questions panel's rows both read it here.
 session_titles() {
@@ -1005,26 +1003,6 @@ live_sessions() {
   done
   [ "${#live[@]}" -gt 0 ] || return 0
   grep -ho '"sessionId":"[^"]*"' "${live[@]}" | cut -d'"' -f4 | sort -u
-}
-
-# cmd_routes: `<id><TAB><route word>` for every pending ask, one pass for all of them: the ask
-# list (the questions panel draws 200 of them inside a second), one read of the queue and one of
-# the live sessions. The same first-match order as answer_route below, which says it in prose on the card.
-cmd_routes() {
-  load_queue_asks
-  cmd_list --all --pending | awk -F'\t' -v live=" $(live_sessions | tr '\n' ' ') " -v holds="$(tr '\n' ';' <<<"$QUEUE_HOLDS")" '
-    BEGIN {
-      n = split(holds, H, ";")
-      for (i = 1; i <= n; i++) { split(H[i], f, "\t"); if (f[2] != "" && !(f[2] in item)) item[f[2]] = f[1] }
-    }
-    {
-      sid = $16
-      if ($1 in item) w = "restarts " item[$1]
-      else if ($26 != "") w = "resume"
-      else if (sid != "" && index(live, " " sid " ")) w = "to session"
-      else w = "dead end"
-      print $1 "\t" w
-    }'
 }
 
 # answer_route <ask file>: where the answer to a pending ask goes, first match wins: the queue items
@@ -1612,7 +1590,6 @@ case "$sub" in
   target) cmd_target "$@" ;;
   live-sessions) live_sessions ;;
   titles) session_titles ;;
-  routes) cmd_routes ;;
   answer) cmd_answer "$@" ;;
   cancel) cmd_cancel "$@" ;;
   recommend)    cmd_recommend "$@" ;;

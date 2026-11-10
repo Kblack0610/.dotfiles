@@ -421,12 +421,12 @@ function setTab(t, arg, query) {
   st.arg = arg || (arg === undefined && lastInner[t]) || "";
   if (INNER_TABS[t]) lastInner[t] = st.arg;
   st.views[t] = query ?? st.views[t] ?? "";
+  // The open tab carries aria-current; web-kit's <kb-shell> marks it and names it on the bar.
   for (const n of TAB_NAMES) {
-    $("tab-" + n).classList.toggle("on", t === n);
+    if (t === n) $("tab-" + n).setAttribute("aria-current", "page");
+    else $("tab-" + n).removeAttribute("aria-current");
     if (n !== "sessions") $(n).hidden = t !== n;
   }
-  $("cur-tab").textContent = $("tab-" + t).firstChild.textContent;
-  menuOpen(false);
   $("detail").hidden = t !== "sessions";
   if (TABS[t]) TABS[t].show();
   showUrl();
@@ -442,16 +442,6 @@ function setQuery(q) {
   showUrl();
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
-
-// Under 760px the tabs fold behind the menu button (app.css); a pick, Escape or a tap outside
-// closes it. The button carries the Needs you count, so a closed menu still says something waits.
-function menuOpen(on) {
-  $("top").classList.toggle("open", on);
-  $("menu").setAttribute("aria-expanded", on ? "true" : "false");
-}
-$("menu").onclick = (e) => { e.stopPropagation(); menuOpen(!$("top").classList.contains("open")); };
-document.addEventListener("click", (e) => { if (!e.target.closest || !e.target.closest("#top")) menuOpen(false); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") menuOpen(false); });
 
 function showLive(ev) {
   // The server could not watch some paths (the user's inotify limit, usually); it retries.
