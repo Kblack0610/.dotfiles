@@ -2442,7 +2442,8 @@ load_findings() {
 }
 
 # pick_item <item json lines> -- PICKED is the first item that has a place and no firing finding
-# holds; rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
+# holds, except that the first urgent item waiting only on run units keeps the free ones: a later
+# item that would use them waits too. Rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
 # The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
 # go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
 # PLACE_HOST. PICK_FULL is 1 when units alone held them all. On a floor pass the items are only the
@@ -2450,7 +2451,7 @@ load_findings() {
 # 2026-11-07 "starved pool:unity ... every queue item waits" stood for 2 unity items of an idle
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
-  local items="$1" it why need free host mwhy='' mread=0 fhit=0 held=() waits="every queue item waits"
+  local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved=''
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"; fi
   PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST=''
@@ -2459,13 +2460,20 @@ pick_item() {
   while IFS= read -r it; do
     [ -n "$it" ] || continue
     need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
-    host='' why=''
+    host='' why='' uwait=0
     if [ "$need" -le "$free" ] && { [ ${#HOST_PROBE[@]} -eq 0 ] || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then :
     elif host=$(place_host "$it"); then :
-    elif [ "$need" -gt "$free" ]; then why="$([ "$need" -gt 1 ] && echo heavy || echo light) needs $need run units, $free free"
+    elif [ "$need" -gt "$free" ]; then uwait=1; why="$([ "$need" -gt 1 ] && echo heavy || echo light) needs $need run units, $free free"
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0
     fi
     if [ -z "$why" ]; then why=$(held_by "$it" "$FIRING"); [ -z "$why" ] || { PICK_FULL=0; fhit=1; }; fi
+    # The first urgent item that waits only on units, and could fit them all, keeps the free ones: a
+    # later item that would use them waits too, or a stream of light items starves a heavy one.
+    if [ -n "$reserved" ] && [ -z "$why" ] && [ -z "$host" ] && [ "$(jq -r .priority <<<"$it")" != urgent ]; then
+      why="the $free free run units wait for urgent $reserved"
+    elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$DISPATCH_MAX_LIVE" ] && [ "$(jq -r .priority <<<"$it")" = urgent ] && [ -z "$(held_by "$it" "$FIRING")" ]; then
+      reserved=$(jq -r .slug <<<"$it")
+    fi
     if [ -z "$why" ]; then PICKED=$it PLACE_HOST=$host; return 0; fi
     [ "$DRY" = 0 ] || say "queue item $(jq -r .slug <<<"$it") waits: $why"
     held+=("$(jq -r .slug <<<"$it") ($why)")
