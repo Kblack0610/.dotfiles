@@ -32,10 +32,10 @@ case "$1" in
 esac
 EOF
   # usage-stub: rollup rows; `tokens line --date D` serves $SANDBOX/tokens-D and `tokens json --date D`
-  # $SANDBOX/tokjson-D, failing like no snapshot without it; `tokens snapshot` is a no-op
+  # $SANDBOX/tokjson-D, failing like no snapshot without it; `tokens snapshot` exits $SANDBOX/snap-rc, else 0
   cat > "$SANDBOX/bin/usage-stub" <<EOF
 #!/usr/bin/env bash
-[ "\$1 \$2" = "tokens snapshot" ] && exit 0
+[ "\$1 \$2" = "tokens snapshot" ] && exit "\$(cat "$SANDBOX/snap-rc" 2>/dev/null || echo 0)"
 [ "\$1 \$2" = "tokens json" ] && exec cat "$SANDBOX/tokjson-\$4" 2>/dev/null
 [ "\$1" = tokens ] && exec cat "$SANDBOX/tokens-\$4" 2>/dev/null
 printf "game\\t3\\t10\\t2000000\\t12.5\\t0\\n"
@@ -498,6 +498,18 @@ PROM
   assert_output 'null'
 }
 
+@test "agents: a Codex outcome row's null counts read as 0, not a TypeError that loses the section" {
+  mkdir -p "$DAYLOG_OUTCOMES_DIR/game"
+  in_day=$(date -d '2026-10-27 12:00' +%s)
+  {
+    jq -cn --argjson t "$in_day" '{session_id: "a", updated_epoch: $t, prs: [], hard_errors: {denied: 2, tool_errors: 1}}'
+    jq -cn --argjson t "$in_day" '{session_id: "b", updated_epoch: $t, prs: [], cost_usd: null, hard_errors: {denied: null, tool_errors: null}, time_use: {gate_min: null}}'
+  } > "$DAYLOG_OUTCOMES_DIR/game/2026-10.jsonl"
+  "$SUBJECT" snapshot --date 2026-10-27 >/dev/null
+  run rec -c '[.agents.outcomes.sessions, .agents.outcomes.hard_errors, [.unreadable[] | select(startswith("outcomes"))]]' 2026-10-27
+  assert_output '[2,3,[]]'
+}
+
 @test "agents: asks open and their age while the day is live; a past day keeps its last gather" {
   echo '{"sessions":[],"main":[],"asks":[{"id":"a1","project":"game","kind":"choice","question":"q","created":"2026-10-28T20:00:00Z"},{"id":"a2","project":"game","kind":"choice","question":"q","created":"2026-10-28T22:00:00Z"}]}' > "$DAYLOG_STATE"
   "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
@@ -572,6 +584,7 @@ EOF
   echo 1 > "$SANDBOX/cif-rc"
   run "$SUBJECT" nightly
   assert_failure 1
+  assert_output --partial 'day-log: nightly 2026-10-27 failed: ci'
   assert_output --partial 'day-log-snapshots: ci: O/game ci-failures'   # the runner's stderr log says why
   run rec -r '.unreadable[]' 2026-10-27
   assert_output --partial 'ci O/game ci-failures'
@@ -691,6 +704,17 @@ EOF
   AGENTCTL_NAME=token-usage AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SUBJECT" nightly
   assert_failure 1
   assert_equal "$(cat "$SANDBOX/astate/token-usage/last-outcome")" FAILED
+  run tail -n 1 "$SANDBOX/astate/token-usage/activity.log"
+  assert_output --partial 'why: day-log nightly 2026-10-27 rc=1, failed: ci'
+}
+
+@test "nightly names every step that failed, in run order" {
+  echo 1 > "$SANDBOX/cif-rc"; echo 1 > "$SANDBOX/snap-rc"
+  AGENTCTL_NAME=token-usage AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SUBJECT" nightly
+  assert_failure 1
+  assert_output --partial 'day-log: nightly 2026-10-27 failed: tokens ci'
+  run tail -n 1 "$SANDBOX/astate/token-usage/activity.log"
+  assert_output --partial 'rc=1, failed: tokens ci'
 }
 
 @test "nightly by hand writes no runner outcome" {

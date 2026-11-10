@@ -176,7 +176,7 @@ def outcomes(start, end):
         for key, minutes in (row.get("time_use") or {}).items():
             time_use[key] = round(time_use.get(key, 0) + (minutes or 0), 1)
     total = lambda rs, key: sum(r.get(key) or 0 for r in rs)
-    faults = lambda r: sum((r.get("hard_errors") or {}).values())
+    faults = lambda r: sum(n or 0 for n in (r.get("hard_errors") or {}).values())
     return {"sessions": len(rows), "no_pr": len(no_pr), "no_pr_with_edits": sum(1 for r in no_pr if r.get("edits")),
             "no_pr_cost_usd": round(total(no_pr, "cost_usd"), 2), "prs_merged": total(rows, "prs_merged"),
             "reverted_7d": total(rows, "reverted_7d"),
