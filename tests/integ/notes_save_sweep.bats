@@ -21,7 +21,6 @@ setup() {
 # 2026-11-04
 
 ## Focus
-
 ### Urgent
 - [ ] fire #c1104 #urgent
 
@@ -61,43 +60,43 @@ EOF
 buf() { mapfile -t BUF <<<"$output"; }
 
 @test "save files a finished task under Done and the cursor keeps its row" {
-  run save_run 9 4 'vim.cmd "silent write"'
+  run save_run 8 4 'vim.cmd "silent write"'
   assert_success
   buf
-  assert_equal "${BUF[0]% *}" "9 4 1"
-  assert_equal "${BUF[9]}" "- [ ] next task #c1104 #high"
-  assert_equal "${BUF[16]}" "- [x] finished task #c1104 #high"
-  assert_equal "${BUF[17]}" "- [x] old done #c1104"
+  assert_equal "${BUF[0]% *}" "8 4 1"
+  assert_equal "${BUF[8]}" "- [ ] next task #c1104 #high"
+  assert_equal "${BUF[15]}" "- [x] finished task #c1104 #high"
+  assert_equal "${BUF[16]}" "- [x] old done #c1104"
   run grep -c 'finished task' "$NOTE"
   assert_output 1
 }
 
 @test "save keeps the scroll as well as the row" {
-  run save_run 12 2 'vim.fn.winrestview { topline = 3, lnum = 12, col = 2 }; vim.cmd "silent write"'
+  run save_run 11 2 'vim.fn.winrestview { topline = 3, lnum = 11, col = 2 }; vim.cmd "silent write"'
   assert_success
   buf
-  assert_equal "${BUF[0]% *}" "12 2 3"
+  assert_equal "${BUF[0]% *}" "11 2 3"
 }
 
 @test "save clamps the cursor to the buffer when the sweep shortens it" {
   # three trailing blanks collapse to one, and the cursor sat on the last of them
   printf '\n\n\n' >> "$NOTE"
-  run save_run 20 0 'vim.cmd "silent write"'
+  run save_run 19 0 'vim.cmd "silent write"'
   assert_success
   buf
   local rows="${BUF[0]##* }"
-  assert [ "$rows" -lt 20 ]
+  assert [ "$rows" -lt 19 ]
   assert_equal "${BUF[0]}" "$rows 0 1 $rows"
 }
 
 @test "the priority cycle still follows its task to the new lane" {
   # <leader>tP on "next task" (#high) raises it to #urgent, and the cursor goes with it
-  run save_run 10 0 'vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<leader>tP", true, false, true), "x", false)'
+  run save_run 9 0 'vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<leader>tP", true, false, true), "x", false)'
   assert_success
   buf
   local row="${BUF[0]%% *}"
   assert_equal "${BUF[$row]}" "- [ ] next task #c1104 #urgent"
-  assert [ "$row" -lt 10 ]
+  assert [ "$row" -lt 9 ]
 }
 
 # The same input and expected text as the golden in focus_sweep.rs, so the two sweeps cannot
@@ -107,7 +106,7 @@ buf() { mapfile -t BUF <<<"$output"; }
   run save_run 1 0 'vim.cmd "silent write"'
   assert_success
   run sed 's/ #c1104//' "$NOTE"
-  assert_output "$(printf '%s' $'## Focus\n\n### Urgent\n- [ ] dropped #urgent\n- [ ] typed here #urgent\n\n### High\n- [ ] task #high\n\n### Low\n- [ ] plain top #low\n- [ ] bare bullet #low\n    its note\n- [ ] plain line #low\n\n---\n### Done\n\n## Notes\nafter\n')"
+  assert_output "$(printf '%s' $'## Focus\n### Urgent\n- [ ] dropped #urgent\n- [ ] typed here #urgent\n\n### High\n- [ ] task #high\n\n### Low\n- [ ] plain top #low\n- [ ] bare bullet #low\n    its note\n- [ ] plain line #low\n\n---\n### Done\n\n## Notes\nafter\n')"
 }
 
 @test "a note with an empty Focus opens on the bare lanes" {
@@ -115,7 +114,7 @@ buf() { mapfile -t BUF <<<"$output"; }
   run save_run 1 0 'vim.cmd "silent write"'
   assert_success
   run cat "$NOTE"
-  assert_output "$(printf '## Focus\n\n### Urgent\n\n### High\n\n### Low\n\n---\n### Done\n\n## Notes\n')"
+  assert_output "$(printf '## Focus\n### Urgent\n\n### High\n\n### Low\n\n---\n### Done\n\n## Notes\n')"
 }
 
 @test "a save stops at the rollup, whose rows are mirrored and not this note's" {
@@ -124,7 +123,7 @@ buf() { mapfile -t BUF <<<"$output"; }
   assert_success
   # No sed over the whole note: the mirrored row must come back without this note's created tag.
   run sed '/rollup:start/,$!s/ #c1104//' "$NOTE"
-  assert_output "$(printf '%s' $'## Focus\n\n### Urgent\n\n### High\n\n### Low\n- [ ] loose #low\n\n---\n### Done\n\n<!-- rollup:start -->\n### bnb\n- [ ] row\nraw text\n\n## Refs\n')"
+  assert_output "$(printf '%s' $'## Focus\n### Urgent\n\n### High\n\n### Low\n- [ ] loose #low\n\n---\n### Done\n\n<!-- rollup:start -->\n### bnb\n- [ ] row\nraw text\n\n## Refs\n')"
 }
 
 # Same input and expected text as focus_sweep.rs golden_tag_grammar_matches_the_nvim_buffer_sweep.
@@ -135,12 +134,12 @@ buf() { mapfile -t BUF <<<"$output"; }
   run save_run 1 0 'vim.cmd "silent write"'
   assert_success
   run sed 's/ #c1104//' "$NOTE"
-  assert_output "$(printf '%s' $'## Focus\n\n### Urgent\n\n### High\n- [ ] d `#urgent` #HIGH.\n\n### Low\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority #low\n- [ ] c foo#urgent #low\n\n---\n### Done\n\n## Notes\n')"
+  assert_output "$(printf '%s' $'## Focus\n### Urgent\n\n### High\n- [ ] d `#urgent` #HIGH.\n\n### Low\n- [ ] a #high-priority #low\n- [ ] b #size/m #high-priority #low\n- [ ] c foo#urgent #low\n\n---\n### Done\n\n## Notes\n')"
 }
 
 @test "the priority cycle leaves a longer tag that starts with a level alone" {
-  printf '%s' $'## Focus\n\n### Urgent\n\n### High\n- [ ] row #size/m #high-priority #c1104 #high\n\n### Low\n\n---\n### Done\n' > "$NOTE"
-  run save_run 6 0 'vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<leader>tP", true, false, true), "x", false)'
+  printf '%s' $'## Focus\n### Urgent\n\n### High\n- [ ] row #size/m #high-priority #c1104 #high\n\n### Low\n\n---\n### Done\n' > "$NOTE"
+  run save_run 5 0 'vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<leader>tP", true, false, true), "x", false)'
   assert_success
   buf
   local row="${BUF[0]%% *}"

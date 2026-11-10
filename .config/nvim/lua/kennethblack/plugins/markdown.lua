@@ -423,7 +423,9 @@ return {
           out[#out + 1] = l
         end
         for i, lane in ipairs(LANES) do -- every lane header, even when empty (drop targets)
-          out[#out + 1] = ""
+          if #out > 0 then
+            out[#out + 1] = ""
+          end
           out[#out + 1] = lane[2]
           for _, l in ipairs(open[i]) do
             out[#out + 1] = l

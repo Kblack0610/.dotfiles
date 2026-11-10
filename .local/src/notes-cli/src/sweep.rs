@@ -72,7 +72,9 @@ fn rebuild(body: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     out.extend(b.open[LANES].drain(..));
     for (i, (_, _, heading)) in md::PRIORITIES.iter().enumerate() {
-        out.push(String::new());
+        if !out.is_empty() {
+            out.push(String::new());
+        }
         out.push((*heading).to_string());
         out.extend(b.open[i].drain(..));
     }
@@ -327,7 +329,7 @@ mod tests {
     #[test]
     fn golden_matches_the_nvim_buffer_sweep_with_markers_and_children() {
         let note = "## Focus\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] outlook integration #high\n      needs OAuth2 first\n### Urgent\n- [ ] dropped <!-- pr:307 -->\n\n## Notes\nafter\n";
-        let expected = "## Focus\n\n### Urgent\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] dropped #urgent <!-- pr:307 -->\n\n### High\n- [ ] outlook integration #high\n      needs OAuth2 first\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
+        let expected = "## Focus\n### Urgent\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] dropped #urgent <!-- pr:307 -->\n\n### High\n- [ ] outlook integration #high\n      needs OAuth2 first\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
         assert_eq!(focus(note), expected);
     }
 }
