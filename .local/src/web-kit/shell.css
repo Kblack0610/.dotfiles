@@ -1,0 +1,37 @@
+/* web-kit shell: <kb-shell>, a site's top bar and its tabs under group headings (README.md).
+   From 900px the tab list is a fixed sidebar beside .kb-main; narrower it is a dropdown the menu
+   button opens (kb-shell.js). Before the script runs, or if it never loads, a phone shows the
+   list as a wrapped strip under the bar, so the tabs are never out of reach. 900px is the one
+   nav breakpoint: change it here and nowhere else. Needs tokens.css. */
+kb-shell { display: flex; align-items: center; gap: 12px; padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0px)); border-bottom: 1px solid var(--line); background: var(--panel); }
+.kb-brand { font-size: var(--fs-lg); font-weight: 700; margin: 0; color: var(--ink); text-decoration: none; white-space: nowrap; }
+.kb-menu, .kb-cur { display: none; }
+.kb-menu { position: relative; flex: none; border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 6px; width: 38px; height: 34px; padding: 0; cursor: pointer; }
+.kb-bars, .kb-bars::before, .kb-bars::after { position: absolute; left: 10px; width: 16px; height: 2px; background: currentColor; border-radius: 1px; content: ""; }
+.kb-bars { top: 16px; } .kb-bars::before { left: 0; top: -5px; } .kb-bars::after { left: 0; top: 5px; }
+.kb-menu .kb-menu-badge { position: absolute; top: -6px; right: -8px; margin: 0; }
+.kb-cur { font-weight: 600; color: var(--muted); }
+.kb-nav { display: flex; flex-direction: column; gap: 1px; }
+.kb-group { font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 8px 2px; }
+.kb-nav > a, .kb-nav > button { flex: none; display: block; border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; text-decoration: none; }
+.kb-nav > [aria-current] { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+@media (max-width: 899px) {
+  kb-shell { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
+  kb-shell:defined .kb-menu, kb-shell:defined .kb-cur { display: inline-block; }
+  kb-shell:defined .kb-nav { display: none; }
+  /* No script: the list wraps under the bar, one row of chips. */
+  kb-shell:not(:defined) .kb-nav { flex-basis: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px; }
+  kb-shell:not(:defined) .kb-group { margin: 0 2px 0 8px; }
+  kb-shell[open] .kb-nav { display: flex; flex-direction: column; align-items: stretch; gap: 2px; position: absolute; z-index: 20; top: 100%; left: 0; right: 0; margin: 0; padding: 8px 12px 12px; background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: 0 8px 20px rgba(0, 0, 0, .18); max-height: calc(100dvh - 56px); overflow-y: auto; }
+  kb-shell[open] .kb-nav :is(a, button) { text-align: left; padding: 11px 12px; font-size: var(--fs-lg); border-color: transparent; }
+  kb-shell[open] .kb-nav > [aria-current] { border-color: var(--accent); }
+  kb-shell[open] .kb-foot { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
+}
+@media (min-width: 900px) {
+  kb-shell { box-sizing: border-box; min-height: calc(var(--head) + env(safe-area-inset-top, 0px)); }
+  .kb-nav { position: fixed; z-index: 10; top: calc(var(--head) + env(safe-area-inset-top, 0px)); bottom: 0; left: 0; width: 184px; padding: 4px 8px 10px; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line); }
+  .kb-nav > a, .kb-nav > button { text-align: left; border-color: transparent; }
+  .kb-foot { margin-top: auto; padding-top: 10px; }
+  .kb-main { margin-left: 184px; }
+}
