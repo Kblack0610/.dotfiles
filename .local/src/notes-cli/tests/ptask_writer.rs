@@ -485,6 +485,64 @@ fn a_line_filed_from_the_inbox_links_like_an_add() {
 }
 
 #[test]
+fn edit_link_puts_an_existing_row_under_its_systems_standing_epic() {
+    let h = Home::new("standing-edit");
+    ok(&agent(
+        &h,
+        &["add", "fix(sound): pause menu is slow #size/s"],
+    ));
+    ok(&agent(&h, &["add", "fix(sound): resume flickers #size/s"]));
+    h.systems(Some(SYSTEMS));
+    // NEGATIVE CONTROL: a plain edit to a system area writes no link.
+    ok(&agent(
+        &h,
+        &["edit", "dm-2", "--text", "fix(ui): resume flickers #size/s"],
+    ));
+    assert!(!h.board().contains("#of/"), "{}", h.board());
+    ok(&agent(
+        &h,
+        &[
+            "edit",
+            "dm-1",
+            "--link",
+            "--text",
+            "fix(menu): pause menu is slow #size/s",
+        ],
+    ));
+    let row = h
+        .board()
+        .lines()
+        .find(|l| l.contains("pause menu is slow"))
+        .map(str::to_string)
+        .unwrap();
+    assert!(
+        row.contains("fix(menu):") && row.contains("#of/dm-3") && row.contains("id:dm-1"),
+        "the row keeps its id and goes under the filed epic: {row}"
+    );
+    assert_eq!(h.sheet().matches("epic(ui): ui to standard").count(), 1);
+    // A free area word under --link is refused: nothing is edited and no second epic is filed.
+    let out = agent(
+        &h,
+        &[
+            "edit",
+            "dm-2",
+            "--link",
+            "--text",
+            "fix(sound): resume flickers again #size/s",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!h.board().contains("resume flickers again"), "{}", h.board());
+    // An edit that matches no row files no standing epic before it fails.
+    let out = agent(
+        &h,
+        &["edit", "no such row", "--link", "--text", "docs(docs): a setup guide #size/s"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(h.sheet().matches("to standard").count(), 1, "{}", h.sheet());
+}
+
+#[test]
 fn closing_an_epics_last_leaf_files_one_verify_row_on_the_human_sheet() {
     let h = Home::new("verify");
     ok(&h.run(&[
