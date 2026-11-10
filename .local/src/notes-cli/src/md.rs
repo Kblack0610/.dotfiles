@@ -792,8 +792,11 @@ fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
     let mut cleaned = String::with_capacity(line.len());
     let mut cursor = 0;
     for (s, e) in &spans {
-        cleaned.push_str(&line[cursor..*s]);
-        cursor = *e;
+        // A repeated tag (`#c1110 #c1110`) cuts the space the first cut already took, so
+        // its span starts before `cursor`: clamp it instead of slicing backwards.
+        let s = (*s).max(cursor);
+        cleaned.push_str(&line[cursor..s]);
+        cursor = (*e).max(s);
     }
     cleaned.push_str(&line[cursor..]);
     (cleaned.trim_end().to_string(), found)
@@ -2726,6 +2729,13 @@ after
             .unwrap()
             .iter()
             .any(|l| *l == "plain"));
+    }
+
+    #[test]
+    fn split_created_survives_a_repeated_tag() {
+        let (text, tag) = split_created("- [ ] ask (q?)#c1110 #c1110 #urgent");
+        assert_eq!(tag.as_deref(), Some("c1110"));
+        assert_eq!(text, "- [ ] ask (q?) #urgent");
     }
 
     #[test]
