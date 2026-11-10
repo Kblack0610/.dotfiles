@@ -149,7 +149,7 @@ fn checked_days(dir: &Path) -> HashMap<String, NaiveDate> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["log", "-p", "--reverse", "--format=@@T%at", "--"])
+        .args(["log", "-p", "-U0", "--no-color", "--reverse", "--format=@@T%at", "--"])
         .args(["agent/README.md", "README.md", "tasks.md"])
         .output();
     let Ok(out) = out else {
@@ -275,7 +275,6 @@ struct Plan {
     open: V,
     /// The rows that stay with the open version (this week's).
     left: Bucket,
-    total: usize,
 }
 
 /// Split `note`'s rows by week into versions. `cur` is the open version, `frozen` whether the
@@ -287,7 +286,6 @@ fn plan(
     commits: &dyn Fn(NaiveDate) -> Vec<(String, BTreeMap<String, usize>)>,
     today: NaiveDate,
 ) -> Plan {
-    let total = note_rows.rows();
     let this_week = monday(today);
     let mut weeks: BTreeMap<NaiveDate, Bucket> = BTreeMap::new();
     let mut undated = Bucket::default();
@@ -361,7 +359,6 @@ fn plan(
         cuts,
         open,
         left,
-        total,
     }
 }
 
@@ -597,27 +594,18 @@ fn epic_titles(dir: &Path) -> HashMap<String, String> {
 
 /// `content` with the head `Version:` line naming `open`, its tags kept.
 fn set_version(content: &str, open: V) -> String {
+    let line = projects::version_line(content, open);
     let mut in_head = true;
     let mut done = false;
-    let lines: Vec<String> = content
+    let lines: Vec<&str> = content
         .lines()
         .map(|l| {
             in_head &= !l.trim_start().starts_with("## ");
-            match l.trim_start().strip_prefix("Version:") {
-                Some(rest) if in_head && !done => {
-                    done = true;
-                    let tags = rest
-                        .trim()
-                        .split_once(char::is_whitespace)
-                        .map_or("", |(_, t)| t.trim());
-                    let v = projects::fmt_version(open);
-                    if tags.is_empty() {
-                        format!("Version: {v}")
-                    } else {
-                        format!("Version: {v} {tags}")
-                    }
-                }
-                _ => l.to_string(),
+            if in_head && !done && l.trim_start().starts_with("Version:") {
+                done = true;
+                &line
+            } else {
+                l
             }
         })
         .collect();
@@ -691,7 +679,7 @@ pub fn backfill(
         .unwrap_or_else(|| monday(today));
 
     let written: usize = plan.cuts.iter().map(|c| c.rows.rows()).sum::<usize>() + plan.left.rows();
-    if written != plan.total || plan.total != note.rows() {
+    if written != note.rows() {
         bail!(
             "rows do not add up: {written} placed of {} in {}; nothing written",
             note.rows(),
@@ -700,7 +688,7 @@ pub fn backfill(
     }
     println!(
         "{name}: {} rows in {} -> {} versions, {} rows stay open at {}",
-        plan.total,
+        written,
         note_path.display(),
         plan.cuts.len(),
         plan.left.rows(),
@@ -792,7 +780,7 @@ pub fn backfill(
     let msg = format!(
         "{name} backfilled {} versions, {cur_s} -> {open_s} ({} rows)",
         plan.cuts.len(),
-        plan.total - plan.left.rows()
+        written - plan.left.rows()
     );
     log.info("projects", &msg);
     println!("{msg}");
@@ -876,7 +864,7 @@ mod tests {
         );
         assert_eq!(p.left.rows(), 1);
         assert_eq!(p.open, (0, 1, 3));
-        assert_eq!(p.total, 5);
+        assert_eq!(p.cuts.iter().map(|c| c.rows.rows()).sum::<usize>(), 4);
     }
 
     #[test]

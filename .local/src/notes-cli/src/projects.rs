@@ -1944,13 +1944,7 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
         frozen.push('\n');
     }
 
-    // The stage tag (`#alpha`, `#prod`) rides on the `Version:` line and is a fact about the
-    // project, not the version, so it survives the release. Dropping it demoted a `#prod` app
-    // to untagged on every release.
-    let stage = head_lines(content)
-        .find_map(|l| l.trim_start().strip_prefix("Version:"))
-        .and_then(|rest| rest.trim().split_once(char::is_whitespace))
-        .map_or_else(String::new, |(_, tags)| format!(" {}", tags.trim()));
+    let version = version_line(content, next);
     let head_len = head_lines(content).count();
     let mut sheet: Vec<String> = Vec::with_capacity(lines.len());
     for (i, l) in lines.iter().enumerate() {
@@ -1959,12 +1953,23 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
         }
         let head = l.trim_start();
         if i < head_len && head.starts_with("Version:") {
-            sheet.push(format!("Version: {next_s}{stage}"));
+            sheet.push(version.clone());
         } else {
             sheet.push(l.trim_end().to_string());
         }
     }
     (frozen, format!("{}\n", sheet.join("\n")))
+}
+
+/// The head `Version:` line naming `v`, with the sheet's stage tag (`#alpha`, `#prod`) kept:
+/// the tag is a fact about the project, not the version, and dropping it demoted a `#prod`
+/// app to untagged on every release.
+pub(crate) fn version_line(content: &str, v: V) -> String {
+    let stage = head_lines(content)
+        .find_map(|l| l.trim_start().strip_prefix("Version:"))
+        .and_then(|rest| rest.trim().split_once(char::is_whitespace))
+        .map_or_else(String::new, |(_, tags)| format!(" {}", tags.trim()));
+    format!("Version: {}{stage}", fmt_version(v))
 }
 
 /// The `## PRs` section a frozen note ends in: every PR named on the version's closed rows of
