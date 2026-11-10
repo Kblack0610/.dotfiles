@@ -17,9 +17,9 @@
 #                        # prints every account's verdict (ok, reason, every refusal, why, points
 #                        # past the line, capped)
 #                        # exit 1 when none has room, 2 when none has room and one cannot be read
-#   claude-acct room --source <name>
+#   claude-acct room --source <name> [--json]
 #                        # the verdict of one source (a Claude account or a row of the sources file)
-#                        # as one sentence; exit 0 room, 1 refused, 2 unread, 3 no such source
+#                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source
 #   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
 #   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve (one marked alert=off only when unread)
 #   claude-acct check underuse [source...]
@@ -858,9 +858,10 @@ cmd_textfile() {
     return 1
 }
 
-# room_source <name> -> the verdict of one source (a Claude account or a row of the sources file) as
-# a sentence on stdout: "<name>: room, ..." and exit 0, or why not and exit 1 (2 when it cannot be
-# read, 3 when no such source). A refused `parent` says which pool.
+# room_source <name> [--json] -> the verdict of one source (a Claude account or a row of the sources
+# file) as a sentence on stdout: "<name>: room, ..." and exit 0, or why not and exit 1 (2 when it cannot
+# be read, 3 when no such source). A refused `parent` says which pool. --json prints the source's row
+# instead (its room.reasons: agentctl-run refuses a headless call on some reasons only), same exit.
 room_source() {
     local row parent
     parent=$(sources 2>/dev/null | awk -F'\037' -v n="$1" '$1 == n { print $6 }')
@@ -869,9 +870,11 @@ room_source() {
         echo "claude-acct: no source '$1' in $CONF or $SRC_CONF" >&2
         return 3
     fi
-    jq -r '"\(.name): " + (if .room.ok then "room, \(.week_used // 0 | floor)% of its window used"
+    if [[ "${2:-}" == --json ]]; then jq -c . <<< "$row"
+    else jq -r '"\(.name): " + (if .room.ok then "room, \(.week_used // 0 | floor)% of its window used"
         + (if .usd_max != null then " ($\(.usd_used * 100 | round / 100) of $\(.usd_max | floor))" else "" end)
         else .room.why end)' <<< "$row"
+    fi
     jq -e '.room.ok' <<< "$row" >/dev/null && return 0
     [[ "$(jq -r .room.reason <<< "$row")" == unread ]] && return 2
     return 1
@@ -888,8 +891,8 @@ cmd_room() {
     case "${1:-}" in
         "") ;;
         --json) json=1 ;;
-        --source) room_source "${2:?usage: claude-acct room --source <name>}"; return ;;
-        *) echo "usage: claude-acct room [--json | --source <name>]" >&2; return 3 ;;
+        --source) room_source "${2:?usage: claude-acct room --source <name> [--json]}" "${3:-}"; return ;;
+        *) echo "usage: claude-acct room [--json | --source <name> [--json]]" >&2; return 3 ;;
     esac
     # Only --json has a reader for the sources; the sentence is about the accounts alone.
     if (( json )); then all=$(all_json nospend | jq -s .); else all=$(usage_json nospend | jq -s .); fi
