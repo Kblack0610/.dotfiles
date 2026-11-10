@@ -51,9 +51,11 @@ calls_record() {
   trap - TERM INT HUP
   out="$(cat "$tmp")"; rm -f -- "$tmp"
   t1="$(date +%s%3N)"
-  # A non-JSON reply (a crash before the result object) is still the call's output.
+  # A non-JSON reply (a crash before the result object) is still the call's output. A result
+  # object with a subtype and no result key (claude's error_max_budget_usd) is a result too.
   if text="$(jq -cer 'if type != "object" then error
     elif has("result") or has("structured_output") then .structured_output // .result
+    elif has("subtype") then ""
     elif has("choices") or has("error") then .choices[0].message.content // ""
     else error end' <<<"$out" 2>/dev/null)"; then
     printf '%s\n' "$text"

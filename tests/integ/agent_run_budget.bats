@@ -89,6 +89,16 @@ spent() {
   assert_equal "$(tail -n 1 "$CALLS" | jq -r .subtype)" success
 }
 
+@test "a capped reply with no result key, as the claude CLI writes it, still exits CALLS_RC_CAPPED" {
+  # The real reply on 2026-11-10 carried no `result` key: it read as non-JSON, lost its subtype,
+  # and exited 1, so inbox-triage never halved its batch and every retry hit the same cap.
+  sed -i 's/"result":"OK"/"subtype":"error_max_budget_usd","is_error":true,"errors":["Reached maximum budget ($1)"]/' "$SANDBOX/bin/claude"
+  run "$RUN" --agent judge -p x
+  assert_failure 76
+  assert_equal "$(tail -n 1 "$CALLS" | jq -r .subtype)" error_max_budget_usd
+  assert_equal "$(tail -n 1 "$CALLS" | jq -r .cost_usd)" 0.25
+}
+
 @test "budget_batch halves on a cap to a floor of 1, grows a quarter after a clean full batch, and never passes max" {
   . "$REPO_ROOT/.local/src/agent-run/lib/budget.sh"
   assert_equal "$(budget_batch t 40)" 40
