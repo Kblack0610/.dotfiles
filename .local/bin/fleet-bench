@@ -177,7 +177,6 @@ set -uo pipefail
 : "${BENCH_SIZES_MIN:=10}"           # items with work_min a size needs before it is calibrated
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles/.claude/skills:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config:$HOME/.dotfiles-private/.claude/skills}"   # colon-separated
-: "${LEDGER_BOARDS:=$HOME/.notes/lab/projects/current/*/agent/README.md}"
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
 : "${RULES_REGISTER:=$HOME/.config/agentctl/rules.jsonl}"
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
@@ -258,6 +257,7 @@ set -uo pipefail
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_MAX_LIVE, the slots items run on
+: "${BENCH_VERDICTS_CMD:=fleet-dispatch verdicts}"   # the judge's latest verdict per row: next_up_blocked
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 : "${BENCH_ROADMAP_CMD:=notes projects --roadmap}"   # given <project> --json: open and closed epics, leaf rows
 : "${BENCH_ALL_ITEMS_CMD:=agent-queue list --json --state all}"   # every item, done included: an epic's items and PRs
@@ -333,6 +333,8 @@ def itemkey: "\(.repo // "" | split("/") | .[-2:] | join("/") | ascii_downcase)#
 # number names no repo, so it credits nothing: PR numbers repeat across repos.
 def prkeys: [.pr, .prs] | map(strings) | join(" ") | ascii_downcase
   | [scan("([a-z0-9_.-]+/[a-z0-9_.-]+)(?:#|/pulls?/)([0-9]+)") | "\(.[0])#\(.[1])"];
+# the "<project>:<id>" board row a queue item works: its row, else the board: it came from
+def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
 def claimed: (.session_id // "") != "";
 def ran_gate: (.gate_runs // 0) > 0;
 def first_try: .gate_red == 0;
@@ -1541,8 +1543,12 @@ scheduled_runner() {
   printf '%s\n' "${name:-$(basename "$1" .conf)}"
 }
 
-# board_open_count -> the open and started rows on every agent board (LEDGER_BOARDS)
-board_open_count() { compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat "$c"; done | grep -cE '^- \[[ /]\] '; }
+# board_open_count -> the open and started agent-lane rows on every managed board, every profile
+# (BENCH_BOARD_CMD; a project with automation off is left out), ? when the feed cannot be read
+board_open_count() {
+  $BENCH_BOARD_CMD 2>/dev/null | jq -er '.rows | if type == "array" then . else error("no rows") end
+    | map(select(.lane == "agent" and (.state == "open" or .state == "doing") and .automation != false)) | length' 2>/dev/null || echo '?'
+}
 
 # intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS. Information
 # only: nothing holds a filer on it. A full board means dispatch is not pulling, which the
@@ -1550,6 +1556,7 @@ board_open_count() { compgen -G "$LEDGER_BOARDS" | while IFS= read -r c; do cat 
 intake_room() {
   local n max
   n=$(board_open_count)
+  [ "$n" = '?' ] && { echo "room: board_open ?, the board feed is unreadable"; return 0; }
   max=$(sed -n 's/^board_open_max=//p' "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
   if [ -z "$max" ]; then echo "room: board_open $n, no board_open_max"; return 0; fi
   if awk -v n="$n" -v m="$max" 'BEGIN { exit !(n > m) }'; then
@@ -1639,6 +1646,8 @@ ledger_counts() {
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
+# orphan_request_rows, next_up_blocked, stale_urgent_d, playtest_waiting_d and done_inline_old: the
+# rows the board holds that no step will move, from board_links (which says what each counts).
 # request_to_live_h: the p50 hours from request to live (lead_time_json), ? until every
 # BENCH_LEAD_TRUST KPI holds its bound (lead_untrusted).
 # wants_unstamped: of the agent-lane rows the human's channels added over the last CHAIN_DAYS
@@ -1652,7 +1661,7 @@ ledger_counts() {
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -1717,8 +1726,80 @@ lead_untrusted() {
   done
 }
 
+# playtest_blame <board json> -> "<sheet>\t<line>\t<epoch>" for each line of every playtest sheet
+# with an open check on a managed board: the author time git blame gives the line, as a check
+# carries no date of its own (an uncommitted line reads now); "<sheet>\t?\t?" for a sheet git cannot blame
+playtest_blame() {
+  local s
+  jq -r '[.rows[]? | select(.lane == "playtest" and .state == "open" and .automation != false) | .sheet | strings] | unique[]' <<<"$1" |
+    while IFS= read -r s; do
+      git -C "${s%/*}" blame --line-porcelain -M -- "${s##*/}" 2>/dev/null | awk -v s="$s" '
+        substr($0, 1, 1) != "\t" && length($1) >= 40 && $1 ~ /^[0-9a-f]+$/ && NF >= 3 { l = $3 }
+        /^author-time / { print s "\t" l "\t" $2; n++ }
+        END { if (!n) print s "\t?\t?" }'
+    done
+}
+
+# board_links <now> -> one object naming the rows behind five chain KPIs, a field null when its
+# source cannot be read; nothing and rc 1 when the board feed (BENCH_BOARD_CMD) cannot be read.
+# Rows of a project with automation off are never counted.
+#   orphans (orphan_request_rows): open rows with an id whose #of/ parent is no open row, or that a
+#     done item with merge proof (the done items merged_open_rows reads) names as its subject while
+#     it worked another row. The subject is agent-queue named_row's, over the title, else the task's
+#     first line: its first word, or the one id in brackets. The item that worked the row itself is
+#     merged_open_rows; a merged PR reaches a row through its item.
+#   blocked (next_up_blocked): open agent rows the dispatch judge's latest verdict (BENCH_VERDICTS_CMD)
+#     skipped for a split (plan: a DISPATCH_PLAN_RULES rule) over 24h ago, and that split never ran
+#   urgent (stale_urgent_d): the oldest triaged #urgent agent row not yet started (open, or Next up:
+#     its item queued), in whole days since it was filed
+#   playtest (playtest_waiting_d): each game's oldest open playtest check, days since git blame dates it
+#   done_old (done_inline_old): closed rows past the Done window that the next sweep rolls off
+board_links() {
+  local t=$1 feed done verdicts blame
+  feed=$($BENCH_BOARD_CMD 2>/dev/null | jq -ce 'select(.rows | arrays)') || return 1
+  done=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$((t - (CHAIN_DAYS + 1) * 86400))" +%F)" 2>/dev/null | jq -sc .) || done=null
+  verdicts=$($BENCH_VERDICTS_CMD 2>/dev/null | jq -sc .) || verdicts=null
+  blame=$(playtest_blame "$feed" | jq -Rsc 'split("\n") | map(select(. != "") | split("\t"))')
+  jq -c --argjson t "$t" --slurpfile d <(printf '%s' "$done") --slurpfile v <(printf '%s' "$verdicts") \
+     --argjson blame "${blame:-[]}" "$JQ_LIB"'
+    def subject: [(capture("^\\s*(?<i>[a-z]{2,4}-[0-9]+)([:\\s]|$)"; "i") | .i), (scan("[(\\[]([a-z]{2,4}-[0-9]+)[)\\]]"; "i") | .[0])]
+      | map(ascii_downcase) | unique | if length == 1 then .[0] else null end;
+    def live: .state == "open" or .state == "doing";
+    $d[0] as $d | $v[0] as $v
+    | [.rows[] | select(.id != null and live)] as $live
+    | ($live | map({key: "\(.project):\(.id)", value: .}) | from_entries) as $open
+    | ($live | group_by(.id) | map({key: .[0].id, value: .}) | from_entries) as $byid
+    | [.rows[] | select(.automation != false)] as $rows
+    | {orphans: (if $d == null then null else
+         [($rows[] | select(.id != null and live and .parent != null and $open["\(.project):\(.parent)"] == null)
+             | {project, id, why: "its parent \(.parent) is closed"}),
+          ($d[] | select((.merged // "") != "")
+             | ((.title | select(. != "")) // (.task // "" | split("\n")[0]) // "" | subject) as $s | select($s != null) | $byid[$s][]? as $o
+             | select($o.automation != false and ([rowkey | strings] | index(["\($o.project):\($s)"]) == null))
+             | {project: $o.project, id: $s, why: "\(.slug) landed it"})]
+         | unique_by([.project, .id]) end),
+       blocked: (if $v == null then null else
+         ($v | map(select(.lane == "agent" and .plan == true))
+              | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
+         | [$rows[] | select(.lane == "agent" and .state == "open" and .id != null)
+             | $by["\(.project)\t\(.id)"] as $x | select($x != null)
+             | (($x.at // "") | try iso_epoch catch null) as $at | select($at != null and $at < $t - 86400)
+             | {project, id, rule: $x.rule, at: $x.at}] end),
+       urgent: ([$rows[] | select(.lane == "agent" and .priority == "urgent" and .untriaged != true
+                   and (.state == "open" or .section == "next") and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
+                 | {project, id, since, days: (($t - (.since + "T00:00:00Z" | fromdate)) / 86400 | floor)}]
+                | sort_by(-.days) | first),
+       playtest: (if any($blame[]; .[1] == "?") then null else
+         ($blame | map({key: "\(.[0])\t\(.[1])", value: (.[2] | tonumber)}) | from_entries) as $at
+         | [$rows[] | select(.lane == "playtest" and .state == "open") | $at["\(.sheet)\t\(.line)"] as $e | select($e != null)
+             | {project, game: (.game // "-"), days: (($t - $e) / 86400 | floor)}]
+         | group_by([.project, .game]) | map(max_by(.days)) | sort_by(-.days) end),
+       done_old: (.projects // null | if . == null then null
+         else map(select(.automation != false) | .done_old) | if any(. == null) then null else add // 0 end end)}' <<<"$feed"
+}
+
 # chain_notes <now> <chain json>: the lines under the chain table that say which rows sit behind
-# four of its numbers, the lead time's raw value while its trust KPIs hold it at ? among them
+# its numbers, the lead time's raw value while its trust KPIs hold it at ? among them
 chain_notes() {
   local t=$1 stats lead held
   $BENCH_ITEMS_CMD 2>/dev/null | jq -rs "$JQ_LIB"'
@@ -1727,6 +1808,11 @@ chain_notes() {
     [.rows[]? | select(.lane == "agent" and .requested and .state == "open" and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))]
     | sort_by(.since) | first // empty
     | "requested_unstarted_h: oldest is \(.project):\(.id), open since \(.since) (\(($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor)h)"' 2>/dev/null
+  board_links "$t" | jq -r 'def few: (.[0:8] | join(", ")) + (if length > 8 then ", \(length - 8) more" else "" end);
+    (.orphans // [] | select(. != []) | "orphan_request_rows: " + (map("\(.project):\(.id) (\(.why))") | few)),
+    (.blocked // [] | select(. != []) | sort_by(.at) | "next_up_blocked: skipped for a split over 24h ago, oldest first: " + (map("\(.project):\(.id) (\(.rule) \(.at[0:10]))") | few)),
+    (.urgent // empty | "stale_urgent_d: oldest is \(.project):\(.id), filed \(.since) (\(.days)d)"),
+    (.playtest // [] | select(. != []) | "playtest_waiting_d: oldest open check per game: " + (map("\(.project) \(.game) \(.days)d") | few))' 2>/dev/null
   held=$(lead_untrusted "$(jq -r 'to_entries[] | "\(.key)=\(.value["7d"] // "?")"' <<<"$2")" | paste -sd, - | sed 's/,/, /g')
   if lead=$(lead_time_json "$t"); then
     jq -r --argjson d "$CHAIN_DAYS" --argjson lead "$BENCH_LEAD_DAYS" --arg held "$held" '"request_to_live_h: p50 \(.p50 // "-")h over \(.hours | length) live in \($d)d"
@@ -1756,7 +1842,6 @@ chain_counts() {
   links=$(jq -rn --argjson t "$t" --argjson days "$CHAIN_DAYS" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
      --slurpfile b <(printf '%s' "$board") --slurpfile p <(printf '%s' "$projects") \
      --slurpfile c <(printf '%s' "$ci") "$JQ_LIB"'
-    def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
     def n($v): if $v == null then "?" else $v end;
     $a[0] as $a | $d[0] as $d | $b[0] as $b | $p[0] as $p | $c[0] as $c
     | (if $a == null or $d == null or $c == null then null
@@ -1787,6 +1872,14 @@ chain_counts() {
   if [ -n "$(lead_untrusted "$links")" ]; then echo "request_to_live_h=?"
   elif lead=$(lead_time_json "$t"); then jq -r '"request_to_live_h=\(.p50 // "?")"' <<<"$lead"
   else echo "request_to_live_h=?"; fi
+  local bl
+  if bl=$(board_links "$t"); then
+    jq -r '"orphan_request_rows=\(.orphans | if . == null then "?" else length end)",
+      "next_up_blocked=\(.blocked | if . == null then "?" else length end)",
+      "stale_urgent_d=\(.urgent.days // 0)",
+      "playtest_waiting_d=\(.playtest | if . == null then "?" else map(.days) | max // 0 end)",
+      "done_inline_old=\(.done_old // "?")"' <<<"$bl"
+  else printf '%s=?\n' orphan_request_rows next_up_blocked stale_urgent_d playtest_waiting_d done_inline_old; fi
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
   # older than four tries is an estimator that stopped, not today's share
   echo "estimated_token_share=$(jq -r --argjson oldest "$((t - BENCH_FLEET_COST_EVERY_MIN * 240))" 'if (.as_of_epoch // 0) < $oldest then "?" else .coverage.estimated_token_share // "?" end' "$BENCH_FLEET_COST_FILE" 2>/dev/null || echo '?')"
@@ -1842,11 +1935,10 @@ pipeline_json() {
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
   jq -cn --argjson t "$t" --arg steps "$PIPELINE_STEPS" --argjson lim "$lim" --argjson inbox "$inbox" --arg stopped "$stopped" \
      --slurpfile a <(printf '%s' "$items") --slurpfile d <(printf '%s' "$fin") \
-     --slurpfile b <(printf '%s' "$board") --slurpfile r <(printf '%s' "$rec") '
+     --slurpfile b <(printf '%s' "$board") --slurpfile r <(printf '%s' "$rec") "$JQ_LIB"'
     def epoch: strings | sub("\\.[0-9]+"; "") | fromdateiso8601? // empty;
     def mins: ($t - .) / 60 | floor;
     def pct($p): sort | if length == 0 then null else .[([length * $p / 100 | ceil, 1] | max) - 1] end;
-    def rowkey: .row // ((.from // "") | select(startswith("board:")) | ltrimstr("board:"));
     $a[0] as $a | $d[0] as $d | $b[0] as $b | $r[0] as $r
     | def held($s; $f): if $a == null then null else $a | map(select(.state == $s)) | {n: length, ages: map(.[$f] | epoch | mins)} end;
     ($a // [] | map(rowkey | strings) | INDEX(.)) as $live
