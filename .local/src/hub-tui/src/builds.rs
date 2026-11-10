@@ -1,7 +1,7 @@
-//! The Releases page's Builds section: the CI runs of the last 30 days from
+//! The Releases page's Builds inner tab: the CI runs of the last 30 days from
 //! `hub_core::builds::read`, on the shared data table (`datatable`), with the selected run's
-//! failed-job log under it, read when the row is opened. `b` moves the keys between the channels
-//! and this table; `t` opens each workflow's usual run time in the same pane.
+//! failed-job log under it, read when the row is opened. `t` opens each workflow's usual run time
+//! in the same pane.
 
 use hub_core::builds::{self, Builds, Run, RunKey, RunTime};
 use hub_core::releases::Level;
@@ -22,8 +22,6 @@ const HEADER: [&str; 9] = [
 pub struct BuildsView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,
-    /// Whether the keys drive this table rather than the channels above it.
-    pub focus: bool,
     /// The opened run's log, read in a worker. `Esc` closes it.
     pub log: Option<LogPane>,
     /// The Run times table holds the pane, scrolled to this line. `t` toggles it, `Esc` closes it.

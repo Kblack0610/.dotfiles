@@ -22,6 +22,7 @@ use ratatui::text::{Line, Span};
 
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::{clock, Palette};
+use crate::innertabs;
 use crate::tokens::{self, TokensView};
 
 pub struct CostsView {
@@ -56,12 +57,7 @@ fn tab() -> &'static layout::Tab {
 
 /// The inner tab a word names strictly: an inner id, or a section id for the one holding it.
 fn inner_named(word: &str) -> Option<&'static str> {
-    let w = word.trim().to_ascii_lowercase();
-    tab()
-        .inner
-        .iter()
-        .find(|i| i.id == w || i.sections.contains(&w.as_str()))
-        .map(|i| i.id)
+    innertabs::named(tab(), word)
 }
 
 impl Default for CostsView {
@@ -191,8 +187,7 @@ impl CostsView {
         }
         match code {
             KeyCode::Left | KeyCode::Right => {
-                let ids: Vec<&'static str> = tab().inner.iter().map(|i| i.id).collect();
-                self.inner = step(&ids, self.inner, code == KeyCode::Left);
+                self.inner = innertabs::step(tab(), self.inner, code == KeyCode::Left);
             }
             KeyCode::Char('/') => self.typing = Some(self.q.clone()),
             KeyCode::Char(c @ ('b' | 'B')) => {
@@ -318,7 +313,7 @@ impl CostsView {
         let b = self.board(c);
         let mut out = fleet(&b.fleet_cost, p, now, w);
         let mut at = vec![("fleet", 0)];
-        out.push(strip(self.inner, &b.amber, p, w));
+        out.push(innertabs::strip(tab(), self.inner, &b.amber, p, w));
         let shown = layout::inner_tab(tab(), Some(self.inner)).map_or(&[][..], |i| i.sections);
         for sec in shown {
             at.push((sec, out.len()));
@@ -415,30 +410,6 @@ impl CostsView {
         }
         out.push(Line::styled("trends: o opens Grafana", p.dim()));
     }
-}
-
-/// The inner tabs' strip: the open one in brackets, a count beside one with sections needing a
-/// look (`Board::amber`), and the keys that switch.
-fn strip(on: &str, amber: &[&str], p: Palette, w: usize) -> Line<'static> {
-    let mut s = vec![];
-    for i in tab().inner {
-        let n = layout::inner_count(i, amber);
-        let label = if n > 0 {
-            format!("{} {n}", i.title)
-        } else {
-            i.title.to_string()
-        };
-        let style = if n > 0 { p.warn() } else { p.head() };
-        s.push(if i.id == on {
-            Span::styled(format!("[{label}]"), style)
-        } else if n > 0 {
-            Span::styled(format!(" {label} "), p.warn())
-        } else {
-            Span::raw(format!(" {label} "))
-        });
-    }
-    s.push(Span::styled("  <- -> switch", p.dim()));
-    clip_line(Line::from(s), w)
 }
 
 /// The Burn section, first on the tab: the headline coloured by `level`, the drip and its hold

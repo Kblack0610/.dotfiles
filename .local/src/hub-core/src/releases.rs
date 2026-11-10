@@ -2,7 +2,7 @@
 //! worst status, its channels (what is pinned and what is live on each) opened under it, from
 //! `release-state show --json`. The collector owns the probes and the status words; this reader
 //! adds only what a row needs to draw: the grouping, the levels, the column text and the
-//! exceptions-first order. The Builds section under the apps is its own reader's.
+//! exceptions-first order. The Builds inner tab beside the apps is its own reader's.
 
 use std::collections::HashMap;
 
@@ -413,6 +413,12 @@ pub struct Releases {
 }
 
 impl Releases {
+    /// An app's word is bad (a drift, a tripped watch) or the snapshot could not be read: the
+    /// Apps inner tab's count (`layout::inner_count`), so it shows while another one is open.
+    pub fn needs_look(&self) -> bool {
+        !self.errors.is_empty() || self.apps.iter().any(|a| a.level == Level::Bad)
+    }
+
     /// The snapshot is older than the collector's cadence can explain.
     pub fn stale(&self, now: i64) -> bool {
         self.at > 0 && now - self.at > STALE_SECS
@@ -1109,6 +1115,8 @@ mod tests {
             chan("app", "app-api-prod", "prod", Some("v2"), "drift"),
             chan("zed", "zed-prod", "prod", None, "unknown"),
         ]));
+        // A bad app is what puts a count on the Apps inner tab; unread and floating ones do not.
+        assert!(r.needs_look() && !shipped().needs_look());
         v = r.apps;
         assert_eq!((v[0].project.as_str(), v[0].level), ("app", Level::Bad));
         assert_eq!(v[0].status_text, "drift");
