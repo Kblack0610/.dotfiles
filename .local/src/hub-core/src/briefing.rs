@@ -1,6 +1,9 @@
-//! The briefing: what needs the human, then one line per area (Infra, Sessions, Workers
-//! overnight, Nightly, Delivery, Costs), then the detail. `hub briefing --md` writes it for
-//! `agentctl-briefing`; `--json` is the same document for a surface.
+//! The briefing, two documents from one read. The overview (`markdown`, `hub briefing --md`) is
+//! the human's: headline, Needs you, what landed yesterday (products before fleet tooling), builds
+//! and releases, overnight, money, and one line to the second document. The agent briefing
+//! (`agents_markdown`, `--agents-md`) is what the briefing was before the split: Needs you, one
+//! line per area (Infra, Sessions, Workers overnight, Nightly, Delivery, Costs), then the detail.
+//! `agentctl-briefing` writes both; `--json` is the same document for a surface.
 //!
 //! It composes the readers that already exist and adds no ranking of its own: Needs you is
 //! Home's `needs` (the one ranking), folded by kind so nine asks take one line, not five. `build`
@@ -23,6 +26,7 @@ use crate::home::{self, Home, Kind, Need};
 use crate::jobs::{self, Job};
 use crate::queue::money;
 use crate::queue::{self, Item, Queue, State};
+use crate::releases::Release;
 use crate::text::{age, cap};
 
 /// Needs you holds at most this many items; past it, one less and a "more" line
@@ -49,6 +53,16 @@ pub const NIGHTLY_RUNNERS: [&str; 2] = ["dream", "nightly-sync"];
 const SELF: &str = "briefing";
 /// The window when `--since` is not given.
 pub const DEFAULT_WINDOW_SECS: i64 = 12 * 3600;
+/// Landed yesterday names at most this many changes, then one line for the fleet's own.
+pub const LANDED_SHOWN: usize = 8;
+/// Overnight names at most this many of each kind (mail, failed work, red watches).
+pub const OVERNIGHT_EACH: usize = 3;
+/// Builds and releases names at most this many changes, then one line for the rest.
+pub const BUILDS_SHOWN: usize = 12;
+/// The day-log area (`.config/day-log/groups`, `@<repo> <area>`) that is the fleet's own tooling.
+const FLEET_AREA: &str = "Fleet tooling";
+/// The queue projects that are the fleet's own, so a failed item there is the agent briefing's.
+const FLEET_PROJECTS: [&str; 3] = ["agent-runtime", "notes-cockpit", "dotfiles"];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -83,8 +97,16 @@ pub struct Area {
 pub struct Briefing {
     pub at: i64,
     pub since: i64,
+    /// The agent briefing's headline: needs, and yesterday's merges and spend.
     pub headline: String,
+    /// The overview's headline: needs, and what yesterday landed.
+    pub overview: String,
     pub needs: Vec<String>,
+    /// Overview sections, one markdown bullet body per line.
+    pub landed: Vec<String>,
+    pub builds: Vec<String>,
+    pub overnight: Vec<String>,
+    pub money: Vec<String>,
     pub areas: Vec<Area>,
     /// Markdown lines under `## Details`.
     pub details: Vec<String>,
@@ -112,6 +134,11 @@ pub struct Inputs {
     pub days: Vec<(String, Value)>,
     /// Queue items finished in the window.
     pub done: Option<Vec<Item>>,
+    /// Queue items finished since the start of yesterday: the priority and type each landed PR
+    /// is ranked by.
+    pub landed_items: Option<Vec<Item>>,
+    /// `release-state show --json`: what is live where, and what deployed.
+    pub releases: Option<Vec<Release>>,
     /// claude-acct's source rows (the Costs tab's Burn rows); None when unread or stale.
     pub sources: Option<Vec<Account>>,
     /// comms' one-line inbox summary.
@@ -697,14 +724,344 @@ fn costs(i: &Inputs) -> Area {
     }
 }
 
-fn headline(i: &Inputs, n: usize) -> String {
-    let when = day_clock(i.now);
+/// A task title without its trailing "(id)" or "(#123)": the id goes last, and in the overview
+/// not at all. Only an id-shaped token goes; "(again)" or "(beta)" is the title's own.
+fn plain_title(t: &str) -> &str {
+    let t = t.trim();
+    let id_shaped = |w: &str| {
+        let digits = |d: &str| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit());
+        w.strip_prefix('#').is_some_and(digits)
+            || w.rsplit_once('-').is_some_and(|(head, n)| {
+                !head.is_empty()
+                    && head
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    && digits(n)
+            })
+    };
+    match t.rfind(" (") {
+        Some(at) if t.ends_with(')') && id_shaped(&t[at + 2..t.len() - 1]) => &t[..at],
+        _ => t,
+    }
+}
+
+fn is_fix(title: &str) -> bool {
+    ["fix(", "fix:", "fix!"]
+        .iter()
+        .any(|p| title.starts_with(p))
+}
+
+/// One merged PR of yesterday, with how it ranks: 0 urgent, 1 high, 2 a fix, 3 the rest. `fix`
+/// is separate from the rank, so an urgent fix still counts as one.
+struct Change<'a> {
+    title: &'a str,
+    area: &'a str,
+    rank: u8,
+    fix: bool,
+}
+
+/// Yesterday's merged PRs, each ranked by the queue item that carried it (the day log's `by` is
+/// that item's slug or its board row id). The queue owns priority and type; nothing is copied.
+fn changes<'a>(i: &'a Inputs, rec: &'a Value) -> Vec<Change<'a>> {
+    let items: Vec<&Item> = i.landed_items.iter().flatten().collect();
+    let carrier = |id: &str| {
+        items.iter().copied().find(|it| {
+            it.slug == id || it.row.as_deref().and_then(|r| r.rsplit(':').next()) == Some(id)
+        })
+    };
+    rec["merged"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| {
+            let title = r["title"].as_str().unwrap_or_default();
+            let item = r["by"].as_str().and_then(carrier);
+            let fix = is_fix(title) || item.is_some_and(|it| it.kind.as_deref() == Some("fix"));
+            let rank = match item.map(|it| it.priority.as_str()) {
+                Some("urgent") => 0,
+                Some("high") => 1,
+                _ if fix => 2,
+                _ => 3,
+            };
+            Change {
+                title: plain_title(title),
+                area: r["area"].as_str().unwrap_or_default(),
+                rank,
+                fix,
+            }
+        })
+        .collect()
+}
+
+/// Landed yesterday: the product changes, urgent and high first, then fixes, then the rest in
+/// merge order; the fleet's own tooling is one count line. The second value is the headline's
+/// "Yesterday N PRs, U urgent, F fixes" when yesterday's record was read.
+fn landed(i: &Inputs) -> (Vec<String>, Option<String>) {
+    let Some((rec, _)) = yesterday_and_avg(i, merged) else {
+        return (
+            vec!["Not read: no day-log record for yesterday.".into()],
+            None,
+        );
+    };
+    let all = changes(i, rec);
+    let summary = format!(
+        "Yesterday {}, {} urgent, {}.",
+        plural(all.len(), "PR", "PRs"),
+        all.iter().filter(|c| c.rank == 0).count(),
+        plural(all.iter().filter(|c| c.fix).count(), "fix", "fixes")
+    );
+    let (fleet, mut product): (Vec<&Change>, Vec<&Change>) =
+        all.iter().partition(|c| c.area == FLEET_AREA);
+    product.sort_by_key(|c| c.rank);
+    let mut lines: Vec<String> = product
+        .iter()
+        .take(LANDED_SHOWN)
+        .map(|c| {
+            // The title leads and the area (and "urgent") go last: an id-shaped word up front
+            // reads as a machine name (comms-standard).
+            let tags: Vec<&str> = [
+                (!c.area.is_empty()).then_some(c.area),
+                (c.rank == 0).then_some("urgent"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let tags = if tags.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", tags.join(", "))
+            };
+            cap(&format!("{}{tags}", c.title), ITEM_MAX)
+        })
+        .collect();
+    if product.is_empty() {
+        lines.push("No product changes landed.".into());
+    } else if product.len() > LANDED_SHOWN {
+        lines.push(format!(
+            "and {} more product changes: see the shipped list.",
+            product.len() - LANDED_SHOWN
+        ));
+    }
+    if !fleet.is_empty() {
+        lines.push(format!(
+            "Fleet tooling: {}, {} urgent (see the agents briefing).",
+            plural(fleet.len(), "change", "changes"),
+            fleet.iter().filter(|c| c.rank == 0).count()
+        ));
+    }
+    (lines, Some(summary))
+}
+
+/// Builds and releases: channels whose newest deployment is in the window, channels whose live
+/// version is not what is pinned, and yesterday's product nightlies by name.
+fn builds(i: &Inputs) -> Vec<String> {
+    let mut out = vec![];
+    match &i.releases {
+        None => out.push("Not read: release-state could not be read.".into()),
+        Some(rows) => {
+            for r in rows {
+                if let Some(d) = r.deploys.last.as_ref().filter(|d| d.at >= i.since) {
+                    let what = match d.state.as_str() {
+                        "ok" => "deployed",
+                        "fail" => "failed to deploy",
+                        other => other,
+                    };
+                    out.push(cap(
+                        &format!(
+                            "{} {}: {} {what} at {}.",
+                            r.project,
+                            r.channel,
+                            d.version,
+                            clock(d.at)
+                        ),
+                        ITEM_MAX,
+                    ));
+                }
+                if r.status == "drift" {
+                    out.push(cap(
+                        &format!(
+                            "{} {}: live is {} but {} is pinned.",
+                            r.project,
+                            r.channel,
+                            r.live.value.as_deref().unwrap_or("unknown"),
+                            r.pinned.value.as_deref().unwrap_or("nothing")
+                        ),
+                        ITEM_MAX,
+                    ));
+                }
+            }
+        }
+    }
+    let mut green = vec![];
+    let mut reds = vec![];
+    if let Some((rec, _)) = yesterday_and_avg(i, merged) {
+        if let Some(repos) = rec["ci"]["repos"].as_object() {
+            for (repo, v) in repos {
+                let name = repo.rsplit('/').next().unwrap_or(repo);
+                if name.starts_with(".dotfiles") {
+                    continue;
+                }
+                for (wf, n) in v["cost"]["nightly"].as_object().into_iter().flatten() {
+                    let (g, runs) = (
+                        n["green"].as_u64().unwrap_or(0),
+                        n["runs"].as_u64().unwrap_or(0),
+                    );
+                    if runs == 0 {
+                        continue;
+                    }
+                    if g < runs {
+                        reds.push(format!("{name} nightly {wf} is red ({g} of {runs} green)."));
+                    } else {
+                        green.push(format!("{name} {wf}"));
+                    }
+                }
+            }
+        }
+    }
+    out.extend(reds);
+    // The section's cap leaves room for the green line, so a busy day folds instead of failing lint.
+    if out.len() > BUILDS_SHOWN {
+        let more = out.len() - BUILDS_SHOWN;
+        out.truncate(BUILDS_SHOWN);
+        out.push(format!(
+            "and {more} more build changes: see the agents briefing."
+        ));
+    }
+    if !green.is_empty() {
+        out.push(cap(
+            &format!("Nightlies green: {}.", names(&green, 4)),
+            ITEM_MAX,
+        ));
+    }
+    if out.is_empty() {
+        out.push(format!("No release changes since {}.", clock(i.since)));
+    }
+    out
+}
+
+/// Overnight: critical mail, product work that failed, and product watches still red. The
+/// fleet's own failures are the agent briefing's.
+fn overnight(i: &Inputs) -> Vec<String> {
+    // Each kind shows its first `OVERNIGHT_EACH`, then one line for the rest, so a night of
+    // eleven alarm mails does not push the failed work off the page.
+    fn capped(mut lines: Vec<String>, what: &str, out: &mut Vec<String>) {
+        let more = lines.len().saturating_sub(OVERNIGHT_EACH);
+        lines.truncate(OVERNIGHT_EACH);
+        out.extend(lines);
+        if more > 0 {
+            out.push(format!("and {more} more {what}."));
+        }
+    }
+    let mut out = vec![];
+    let mail = i
+        .home
+        .needs
+        .iter()
+        .filter(|n| n.kind == Kind::Mail)
+        .map(|n| cap(&need_line(n, i.now), ITEM_MAX))
+        .collect();
+    capped(mail, "critical mail threads", &mut out);
+    // A source that could not be read is said so, never folded into "Nothing broke overnight".
+    let mut unread = vec![];
+    if i.done.is_none() {
+        unread.push("Not read: finished work could not be read.".to_string());
+    }
+    if i.releases.is_none() {
+        unread.push("Not read: release-state could not be read.".to_string());
+    }
+    let failed = i
+        .done
+        .iter()
+        .flatten()
+        .filter(|it| {
+            it.status.as_deref() == Some("failed") && !FLEET_PROJECTS.contains(&it.project.as_str())
+        })
+        .map(|it| {
+            cap(
+                &format!("{}: {} failed.", it.project, plain_title(&it.title)),
+                ITEM_MAX,
+            )
+        })
+        .collect();
+    capped(failed, "failed work items", &mut out);
+    let watches = i
+        .releases
+        .iter()
+        .flatten()
+        .flat_map(|r| {
+            r.telemetry
+                .iter()
+                .filter(|w| matches!(w.state.as_str(), "TRIP" | "ERROR"))
+                .map(move |w| (r, w))
+        })
+        .map(|(r, w)| {
+            let what = if w.state == "ERROR" {
+                "cannot be checked"
+            } else {
+                "is tripped"
+            };
+            let since = w
+                .since
+                .map_or_else(String::new, |s| format!(" for {}", age(i.now - s)));
+            cap(
+                &format!("{}: watch {} {what}{since}.", r.project, w.watch),
+                ITEM_MAX,
+            )
+        })
+        .collect();
+    capped(watches, "product watches still red", &mut out);
+    out.extend(unread);
+    if out.is_empty() {
+        out.push("Nothing broke overnight.".into());
+    }
+    out
+}
+
+/// Money: what yesterday cost. Revenue has no reader yet; it is said, never shown as $0.
+fn money_lines(i: &Inputs) -> Vec<String> {
+    let mut out = vec![];
+    match yesterday_and_avg(i, spent) {
+        Some((rec, avg)) if spent(rec).is_some() => {
+            let mut s = format!("Spent yesterday {}", money(spent(rec).unwrap_or(0.0)));
+            if let Some(a) = avg {
+                s += &format!(" ({AVG_DAYS}-day avg {})", money(a));
+            }
+            out.push(s + ".");
+        }
+        _ => out.push("Spend not read: no day-log record for yesterday.".into()),
+    }
+    out.push("Made: not read yet, no store or broker is connected.".into());
+    out
+}
+
+/// The overview's one line to the agent briefing: how many areas are not ok, and the worst.
+fn agents_line(areas: &[Area]) -> String {
+    let off: Vec<&Area> = areas.iter().filter(|a| a.level != Level::Ok).collect();
+    let state = match off.iter().map(|a| a.level).max() {
+        None => format!("all {} areas ok", areas.len()),
+        Some(worst) => format!(
+            "{} of {} areas not ok, worst {}",
+            off.len(),
+            areas.len(),
+            worst.word()
+        ),
+    };
+    format!("Agent systems: {state}. Detail: [[agents]].")
+}
+
+/// "As of Tue 06:50: 4 things need you.", the sentence both documents open with and
+/// notes-cli's Morning block reads.
+fn as_of(i: &Inputs, n: usize) -> String {
     let needs = match n {
         0 => "nothing needs you".to_string(),
         1 => "1 thing needs you".to_string(),
         n => format!("{n} things need you"),
     };
-    let mut s = format!("As of {when}: {needs}.");
+    format!("As of {}: {needs}.", day_clock(i.now))
+}
+
+fn headline(i: &Inputs, n: usize) -> String {
+    let mut s = as_of(i, n);
     if let Some((rec, avg)) = yesterday_and_avg(i, spent) {
         let row = crate::boards::day_row("", rec);
         s += &format!(
@@ -819,11 +1176,20 @@ pub fn build(i: &Inputs) -> Briefing {
         delivery(i),
         costs(i),
     ];
+    let (landed, summary) = landed(i);
     Briefing {
         at: i.now,
         since: i.since,
         headline: headline(i, n),
+        overview: match summary {
+            Some(s) => format!("{} {s}", as_of(i, n)),
+            None => as_of(i, n),
+        },
         needs,
+        landed,
+        builds: builds(i),
+        overnight: overnight(i),
+        money: money_lines(i),
         details: details(i, &areas),
         areas,
         errors: i.home.errors.iter().chain(&i.errors).cloned().collect(),
@@ -831,27 +1197,55 @@ pub fn build(i: &Inputs) -> Briefing {
 }
 
 impl Briefing {
-    /// The file `agentctl-briefing` writes: headline, Needs you, Areas, then Details.
-    /// notes-cli's Morning block reads the `As of ` line and the `- ` items under Needs you.
-    pub fn markdown(&self) -> String {
-        let mut s = String::from("---\ngenerated: true\n---\n\n# Briefing\n\n");
-        s += &self.headline;
-        s += "\n\n";
+    /// `# Briefing`'s opening, shared by both documents: the headline, then what could not be read.
+    fn top(&self, title: &str, headline: &str, see: &str) -> String {
+        let mut s = format!("---\ngenerated: true\n---\n\n# {title}\n\n{headline}\n\n");
         if !self.errors.is_empty() {
-            let line = format!(
-                "Could not read {}, so this may be missing items: see Details.",
+            s += &format!(
+                "Could not read {}, so this may be missing items: see {see}.\n\n",
                 plural(self.errors.len(), "source", "sources")
             );
-            s += &line;
-            s += "\n\n";
         }
-        s += "## Needs you\n\n";
+        s
+    }
+
+    fn needs_md(&self) -> String {
+        let mut s = String::from("## Needs you\n\n");
         if self.needs.is_empty() {
             s += "- nothing\n";
         }
         for n in &self.needs {
             s += &format!("- {n}\n");
         }
+        s
+    }
+
+    /// The file `agentctl-briefing` writes as `briefing.md`: headline, Needs you, Landed
+    /// yesterday, Builds and releases, Overnight, Money, then one line to the agent briefing.
+    /// notes-cli's Morning block reads the `As of ` line and the `- ` items under Needs you.
+    pub fn markdown(&self) -> String {
+        let mut s = self.top("Briefing", &self.overview, "the agents briefing");
+        s += &self.needs_md();
+        for (title, lines) in [
+            ("Landed yesterday", &self.landed),
+            ("Builds and releases", &self.builds),
+            ("Overnight", &self.overnight),
+            ("Money", &self.money),
+        ] {
+            s += &format!("\n## {title}\n\n");
+            for l in lines {
+                s += &format!("- {l}\n");
+            }
+        }
+        s += &format!("\n## Agents\n\n{}\n", agents_line(&self.areas));
+        s
+    }
+
+    /// The file `agentctl-briefing` writes as `agents.md`: what the briefing was before the
+    /// split. Headline, Needs you, Areas, then Details.
+    pub fn agents_markdown(&self) -> String {
+        let mut s = self.top("Agent briefing", &self.headline, "Details");
+        s += &self.needs_md();
         s += "\n## Areas\n\n";
         for a in &self.areas {
             let line = format!("{}: {}, {}", a.name, a.level.word(), a.line);
@@ -1085,6 +1479,12 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
     let done = done
         .map_err(|e| errors.push(format!("agent-queue list --since: {e}")))
         .ok();
+    let landed_items = queue::list_since(&System, "done", &date_before(now, 1))
+        .map_err(|e| errors.push(format!("agent-queue list --since yesterday: {e}")))
+        .ok();
+    let rel = crate::releases::read(&System);
+    errors.extend(rel.errors.iter().cloned());
+    let releases = rel.errors.is_empty().then_some(rel.rows);
     let sources = sources
         .map_err(|e| errors.push(format!("claude-acct sources: {e}")))
         .ok();
@@ -1135,6 +1535,8 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
         calls,
         days,
         done,
+        landed_items,
+        releases,
         sources,
         mail_stats: std::fs::read_to_string(comms.join("stats-summary.txt"))
             .ok()
@@ -1250,7 +1652,7 @@ mod tests {
         assert_eq!(area(&b, "Nightly").line, "dream, nightly-sync, day-log ok");
         assert_eq!(area(&b, "Infra").line, "2 of 2 watches green");
         assert!(b.needs.is_empty());
-        let md = b.markdown();
+        let md = b.agents_markdown();
         assert!(md.contains("- nothing\n"), "{md}");
         assert!(
             md.contains("\n- Costs: ok, $810 yesterday (avg $800, +1%), runners $0.00 since"),
@@ -1295,7 +1697,7 @@ mod tests {
         );
         // A red from before the window is a count, not a page: the level stays.
         assert_eq!(inf.level, Level::Ok);
-        assert!(b.markdown().contains("| wave-roll | 1 | "));
+        assert!(b.agents_markdown().contains("| wave-roll | 1 | "));
 
         // Negative control: the same fixture without the failed runner reads ok.
         i.runs.as_mut().unwrap().retain(|j| j.name != "wave-roll");
@@ -1493,7 +1895,7 @@ mod tests {
         assert_eq!(area(&b, "Workers overnight").level, Level::Warn);
         assert_eq!(area(&b, "Infra").level, Level::Warn);
         assert_eq!(area(&b, "Nightly").level, Level::Warn);
-        let md = b.markdown();
+        let md = b.agents_markdown();
         assert!(md.contains("Could not read 1 source"), "{md}");
         assert!(md.contains("- watches: no such dir"), "{md}");
     }
@@ -1531,5 +1933,305 @@ mod tests {
             ["3 zombie process(es)", "user units failed: a, b"]
         );
         assert!(issues("# Health\n").is_empty());
+    }
+
+    // --- the overview ---
+
+    fn pr(title: &str, area: &str, by: Option<&str>) -> Value {
+        json!({"title": title, "area": area, "by": by, "repo": "r"})
+    }
+
+    fn item(slug: &str, row: &str, priority: &str) -> Item {
+        Item {
+            slug: slug.into(),
+            priority: priority.into(),
+            row: Some(row.into()),
+            ..Default::default()
+        }
+    }
+
+    /// `green()` with yesterday's record carrying `merged`.
+    fn with_merged(merged: Vec<Value>) -> Inputs {
+        let mut i = green();
+        let at = i.days.len() - 1;
+        i.days[at].1["merged"] = Value::Array(merged);
+        i
+    }
+
+    #[test]
+    fn an_urgent_fix_outranks_a_feature_and_the_fleets_own_tooling_is_one_count_line() {
+        let mut i = with_merged(vec![
+            pr("feat(shapecity): a new level (sc-1)", "Shape City", None),
+            pr("fix(orb): login loop (orb-9)", "orbit", None),
+            pr(
+                "feat(drone): drone stash (ucp-391)",
+                "Games",
+                Some("ucp-391"),
+            ),
+            pr(
+                "feat(tmux): favourite a session",
+                "Fleet tooling",
+                Some("ar-5"),
+            ),
+            pr("fix(hub): a panic", "Fleet tooling", Some("ar-6")),
+        ]);
+        i.landed_items = Some(vec![
+            item("drone-stash", "unity-core-playground:ucp-391", "urgent"),
+            item("tmux-fav", "agent-runtime:ar-5", "urgent"),
+        ]);
+        let b = build(&i);
+        assert_eq!(
+            b.landed,
+            [
+                "feat(drone): drone stash (Games, urgent)",
+                "fix(orb): login loop (orbit)",
+                "feat(shapecity): a new level (Shape City)",
+                "Fleet tooling: 2 changes, 1 urgent (see the agents briefing).",
+            ]
+        );
+        assert!(
+            b.overview.ends_with("Yesterday 5 PRs, 2 urgent, 2 fixes."),
+            "{}",
+            b.overview
+        );
+        // the ids go last and the PR title's own id never shows
+        assert!(!b.landed.iter().any(|l| l.contains("ucp-391")));
+    }
+
+    #[test]
+    fn landed_names_eight_then_counts_the_rest() {
+        let prs = (0..11)
+            .map(|k| pr(&format!("feat(x): change {k} (x-{k})"), "Games", None))
+            .collect();
+        let l = build(&with_merged(prs)).landed;
+        assert_eq!(l.len(), LANDED_SHOWN + 1);
+        assert_eq!(
+            l[LANDED_SHOWN],
+            "and 3 more product changes: see the shipped list."
+        );
+    }
+
+    #[test]
+    fn no_record_for_yesterday_says_so_in_landed_and_money() {
+        let mut i = green();
+        i.days.clear();
+        let b = build(&i);
+        assert_eq!(b.landed, ["Not read: no day-log record for yesterday."]);
+        assert!(b.money[0].starts_with("Spend not read"), "{:?}", b.money);
+        assert!(!b.overview.contains("Yesterday"), "{}", b.overview);
+        assert!(b.money.iter().any(|l| l.starts_with("Made: not read yet")));
+    }
+
+    fn release(project: &str, channel: &str, last: Option<(&str, &str, i64)>) -> Release {
+        let mut r = Release {
+            project: project.into(),
+            channel: channel.into(),
+            status: "ok".into(),
+            ..Default::default()
+        };
+        r.deploys.last = last.map(|(v, st, at)| crate::releases::Deploy {
+            version: v.into(),
+            state: st.into(),
+            at,
+            url: None,
+        });
+        r
+    }
+
+    #[test]
+    fn a_new_deploy_in_the_window_shows_under_builds_and_an_old_one_does_not() {
+        let mut i = green();
+        i.releases = Some(vec![
+            release("orbit", "prod", Some(("v1.19.0", "ok", NOW - 3600))),
+            release("binks", "prod", Some(("v1.0.2", "ok", SINCE - 86_400))),
+            release("shape-city", "beta", Some(("v0.5.0", "fail", NOW - 7200))),
+        ]);
+        let b = build(&i);
+        assert_eq!(b.builds.len(), 2, "{:?}", b.builds);
+        assert!(b.builds[0].starts_with("orbit prod: v1.19.0 deployed at "));
+        assert!(b.builds[1].starts_with("shape-city beta: v0.5.0 failed to deploy at "));
+        i.releases = Some(vec![]);
+        assert!(build(&i).builds[0].starts_with("No release changes since "));
+        // negative control: an unread release-state is said, never an empty all-clear
+        i.releases = None;
+        assert_eq!(
+            build(&i).builds,
+            ["Not read: release-state could not be read."]
+        );
+    }
+
+    #[test]
+    fn a_red_product_nightly_is_named_and_the_fleets_repos_are_left_out() {
+        let mut i = green();
+        let at = i.days.len() - 1;
+        i.days[at].1["ci"] = json!({"repos": {
+            "Acme/unity-core-playground": {"cost": {"nightly": {"Tests": {"green": 0, "runs": 1}, "Multi": {"green": 1, "runs": 1}}}},
+            "Kblack0610/.dotfiles": {"cost": {"nightly": {"Tests": {"green": 0, "runs": 1}}}},
+        }});
+        i.releases = Some(vec![]);
+        let b = build(&i);
+        assert_eq!(
+            b.builds,
+            [
+                "unity-core-playground nightly Tests is red (0 of 1 green).",
+                "Nightlies green: unity-core-playground Multi.",
+            ]
+        );
+    }
+
+    #[test]
+    fn overnight_names_critical_mail_failed_product_work_and_a_red_product_watch() {
+        let mut i = green();
+        i.home.needs = vec![need(Kind::Mail, "m1", "The prod load balancer alarm fired")];
+        let mut bad = item("orb-fix", "orbit:orb-1", "normal");
+        bad.project = "orbit".into();
+        bad.title = "fix(orb): login (orb-1)".into();
+        bad.status = Some("failed".into());
+        let mut fleet = bad.clone();
+        fleet.project = "agent-runtime".into();
+        i.done = Some(vec![bad, fleet]);
+        let mut r = release("orbit", "prod", None);
+        r.telemetry = vec![crate::releases::Watch {
+            watch: "orb-api-health".into(),
+            state: "TRIP".into(),
+            since: Some(NOW - 7200),
+            ..Default::default()
+        }];
+        i.releases = Some(vec![r]);
+        let o = build(&i).overnight;
+        assert_eq!(o.len(), 3, "{o:?}");
+        assert!(o[0].contains("load balancer"), "{o:?}");
+        assert_eq!(o[1], "orbit: fix(orb): login failed.");
+        assert!(
+            o[2].starts_with("orbit: watch orb-api-health is tripped for 2h"),
+            "{o:?}"
+        );
+        // negative control: a quiet night says so
+        let mut q = green();
+        q.releases = Some(vec![]);
+        assert_eq!(build(&q).overnight, ["Nothing broke overnight."]);
+    }
+
+    #[test]
+    fn the_overview_holds_its_sections_in_order_and_the_agents_document_keeps_the_areas() {
+        let mut i = with_merged(vec![pr("feat(x): y (x-1)", "Games", None)]);
+        i.releases = Some(vec![]);
+        let b = build(&i);
+        let md = b.markdown();
+        let at = |h: &str| md.find(h).unwrap_or_else(|| panic!("{h} missing in {md}"));
+        let order = [
+            "As of ",
+            "## Needs you",
+            "## Landed yesterday",
+            "## Builds and releases",
+            "## Overnight",
+            "## Money",
+            "## Agents",
+        ];
+        assert!(order.windows(2).all(|w| at(w[0]) < at(w[1])), "{md}");
+        assert!(
+            !md.contains("## Areas") && !md.contains("## Details"),
+            "{md}"
+        );
+        assert!(
+            md.contains("Agent systems: ") && md.contains(" Detail: [[agents]]."),
+            "{md}"
+        );
+        let a = b.agents_markdown();
+        assert!(a.contains("## Areas") && a.contains("## Details"), "{a}");
+        assert!(!a.contains("## Landed yesterday"), "{a}");
+        // both documents open with the sentence the Morning block reads
+        assert!(md.contains(&as_of(&i, 0)) && a.contains(&as_of(&i, 0)));
+    }
+
+    #[test]
+    fn the_agents_line_names_the_worst_area() {
+        let i = green();
+        assert_eq!(
+            agents_line(&build(&i).areas),
+            "Agent systems: all 6 areas ok. Detail: [[agents]]."
+        );
+        let mut i = green();
+        i.watches = Some(vec![watch("board-open", "TRIP", NOW - 3600)]);
+        let line = agents_line(&build(&i).areas);
+        assert!(
+            line.starts_with("Agent systems: 1 of 6 areas not ok, worst "),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn plain_title_drops_only_an_id_shaped_suffix() {
+        assert_eq!(plain_title("fix(orb): login (orb-1)"), "fix(orb): login");
+        assert_eq!(plain_title("feat(x): y (#123)"), "feat(x): y");
+        assert_eq!(
+            plain_title("fix(orb): null (again)"),
+            "fix(orb): null (again)"
+        );
+        assert_eq!(
+            plain_title("feat(x): retries (beta)"),
+            "feat(x): retries (beta)"
+        );
+    }
+
+    #[test]
+    fn an_urgent_fix_still_counts_in_the_headline_fixes() {
+        let mut i = with_merged(vec![pr("Orbit login loop", "Games", Some("orb-fix"))]);
+        let mut it = item("orb-fix", "orbit:orb-1", "urgent");
+        it.kind = Some("fix".into());
+        i.landed_items = Some(vec![it]);
+        let (_, summary) = landed(&i);
+        assert_eq!(summary.as_deref(), Some("Yesterday 1 PR, 1 urgent, 1 fix."));
+    }
+
+    #[test]
+    fn overnight_never_calls_an_unread_source_quiet_and_skips_a_pending_watch() {
+        let mut i = green();
+        i.done = None;
+        i.releases = None;
+        let o = build(&i).overnight;
+        assert!(o.iter().all(|l| l.starts_with("Not read:")), "{o:?}");
+        assert_eq!(o.len(), 2, "{o:?}");
+        // negative control: a pending or missing watch is not a tripped one
+        let mut j = green();
+        let mut r = release("orbit", "prod", None);
+        r.telemetry = ["pending", "missing"]
+            .iter()
+            .map(|st| crate::releases::Watch {
+                watch: "w".into(),
+                state: (*st).into(),
+                ..Default::default()
+            })
+            .collect();
+        j.releases = Some(vec![r]);
+        assert_eq!(build(&j).overnight, ["Nothing broke overnight."]);
+    }
+
+    #[test]
+    fn a_busy_day_of_builds_folds_inside_the_section_cap() {
+        let mut i = green();
+        i.releases = Some(
+            (0..20)
+                .map(|k| release(&format!("p{k}"), "prod", Some(("v1", "ok", NOW - 60))))
+                .collect(),
+        );
+        let b = build(&i).builds;
+        assert_eq!(b.len(), BUILDS_SHOWN + 1, "{b:?}");
+        assert!(
+            b[BUILDS_SHOWN].starts_with("and 8 more build changes"),
+            "{b:?}"
+        );
+    }
+
+    #[test]
+    fn overnight_folds_a_flood_of_one_kind_after_three() {
+        let mut i = green();
+        i.home.needs = (0..7)
+            .map(|k| need(Kind::Mail, &format!("m{k}"), "Alarm"))
+            .collect();
+        i.releases = Some(vec![]);
+        let o = build(&i).overnight;
+        assert_eq!(o.len(), OVERNIGHT_EACH + 1, "{o:?}");
+        assert_eq!(o[OVERNIGHT_EACH], "and 4 more critical mail threads.");
     }
 }
