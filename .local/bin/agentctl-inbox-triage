@@ -585,8 +585,9 @@ LINK_JQ='def s: (. // "") | tostring | gsub("[[:cntrl:]]"; " ");
   | [(.n | floor | tostring), (.system | s), (.of | s), (.epic | s)] | join("\u001f")'
 
 # link_cache <project>: the answers a --link --dry-run got, one `{lane, raw, system, of, epic}`
-# per line. The apply reuses each whose row is still byte for byte the same, so it writes what
-# the dry run printed and asks the model only about rows changed since; it removes the file after.
+# per line. The next run reuses each whose row is still byte for byte the same, so the apply
+# writes what the dry run printed and a dry run stopped at its budget resumes; only rows changed
+# since go to the model. The apply removes the file after.
 link_cache() { printf '%s/inbox-triage/link-%s.jsonl' "$STATE" "$1"; }
 
 # system_named <word> <systems tsv>: the id of the system the word names, by its id or an alias.
@@ -690,9 +691,7 @@ link_pass() {
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
     cache="$(link_cache "$p")" kept=''
     mkdir -p "$(dirname "$cache")"
-    # Answers already given for rows still as they were: the apply writes what the dry run
-    # printed, and a dry run stopped at its budget resumes. Only the rest go to the model below.
-    # The rows go in on stdin and the answers as a file: either can pass the 128 KB an argument holds.
+    # The cached answers for rows still as they were (link_cache). The rows go in on stdin and the answers as a file: either can pass the 128 KB an argument holds.
     # shellcheck disable=SC2016 # jq source, not shell
     [ -s "$cache" ] && kept="$(jq -c --arg p "$p" --slurpfile c "$cache" '(map(select(.project == $p) | "\(.lane)\u0000\(.raw)") | INDEX(.)) as $live
       | $c[] | select($live["\(.lane)\u0000\(.raw)"])' <<<"$rows")"
