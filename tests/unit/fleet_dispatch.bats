@@ -5355,7 +5355,7 @@ harness_ready() {
     harnesses: {
       "claude-lazer": {source: "eval", timeout_min: 180, models: {sonnet: "sonnet"}},
       opencode: {source: "eval", headless: true, config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
-      glm: {launcher: "opencode", source: "glm", headless: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
+      glm: {launcher: "opencode", source: "glm", headless: true, metered: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
       codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
       "claude-cloud": {launcher: "claude-cloud", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
@@ -5942,7 +5942,7 @@ codex_ran() {
 
 # Every account past its pace, lazer-reserve on its own key, and model-lane putting every task on
 # Sonnet ($LANE when set), whose candidates are claude and codex at one fit and lazer-reserve at the
-# next. Opus's are lanes.yaml's: claude, then codex and glm at the next fit. No source has room until
+# next. Opus's are lanes.yaml's: claude, then codex at the next fit. No source has room until
 # a test says which (srcs).
 route_ready() {
   harness_ready
@@ -5955,7 +5955,7 @@ route_ready() {
 }
 sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; l=${LANE:-sonnet}
 case "$1" in log) echo run-9 ;; classify)
-  if [ "$l" = opus ]; then c="[{\"harness\":\"claude\",\"model\":\"opus\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1},{\"harness\":\"glm\",\"model\":\"glm\",\"fit\":1}]"
+  if [ "$l" = opus ]; then c="[{\"harness\":\"claude\",\"model\":\"opus\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]"
   elif [ "$l" = sonnet ]; then c="[{\"harness\":\"claude\",\"model\":\"sonnet\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0},{\"harness\":\"lazer-reserve\",\"model\":\"sonnet\",\"fit\":1}]"
   else c="[{\"harness\":\"claude\",\"model\":\"$l\",\"fit\":0}]"; fi
   echo "{\"lane\":\"$l\",\"by\":\"rule\",\"model\":\"$l\",\"dispatch_model\":\"$l\",\"candidates\":$c}" ;; esac'; }
@@ -6028,12 +6028,12 @@ case "$1" in log) echo run-9 ;; classify)
   export LANE=opus
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'no account has room; alt is the closest, 4 points over its weekly pace, and no queue item has a source with room it may run on: fix-menu (claude: no account has room; codex: codex: inside its reserve; glm: no source glm in claude-acct room --json)'
+  assert_output --partial 'no account has room; alt is the closest, 4 points over its weekly pace, and no queue item has a source with room it may run on: fix-menu (claude: no account has room; codex: codex: inside its reserve)'
   assert_equal "$(outcome)" BLOCKED
   assert_not_called 'wt new'
   rm -f "$NOTES_FIXTURE/calls.log"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'fix-menu (claude: no account has room; codex: codex: inside its reserve; glm: no source glm in claude-acct room --json)'
+  assert_output --partial 'fix-menu (claude: no account has room; codex: codex: inside its reserve)'
   assert_not_called 'model-lane classify'
   [ -n "$(qitem queued fix-menu)" ] || fail "an Opus item left the queue"
   # Once an account has room, the cached verdict no longer skips it: it is classified afresh and starts.
@@ -6165,6 +6165,38 @@ case "$1" in log) echo run-9 ;; classify)
   PLACE_HOST='' DISPATCH_SANDBOX_PROFILE=lane
   ! route "$it" "$v" || fail "a sandboxed item routed to $ROUTE_HARNESS"
   assert_equal "$ROUTE_WHY" 'codex: cannot hold sandbox lane; claude: no account has room'
+}
+
+@test "a metered harness is overflow: only a promoted class or its trial pick, only with no account room, only tier 1" {
+  route_ready
+  HARNESSES=$DISPATCH_HARNESSES   # the sourced script read it before route_ready set it
+  local it='{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu"}' v ACCT_RC=1 ACCT_DIR='' DISPATCH_SANDBOX_PROFILE='' PLACE_HOST=''
+  ACCT_ROWS='{"accounts":[{"dir":"/home/u/.claude-personal","rank":1}],"sources":[{"name":"glm","rank":0.5,"room":{"ok":true,"why":"it has room"}}]}'
+  # A plain fallback fit: glm has room and ranks first, but no score put it there.
+  v='{"candidates":[{"harness":"claude","model":"opus","fit":0},{"harness":"glm","model":"glm","fit":1}]}'
+  ! route "$it" "$v" || fail "an unscored glm fallback took the item"
+  assert_equal "$ROUTE_WHY" 'claude: no account has room; glm: pay-per-use, so it takes only a class it was promoted for or its trial pick'
+  # Promoted for the class, with no account room: the overflow takes it.
+  v='{"promoted":["glm:glm"],"candidates":[{"harness":"glm","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":0}]}'
+  route "$it" "$v" || fail "a promoted glm with room did not take the item ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS $ROUTE_MODEL" 'glm glm'
+  # The trial pick counts the same.
+  v='{"trial":"glm:glm","candidates":[{"harness":"glm","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":1}]}'
+  route "$it" "$v" || fail "the glm trial pick did not take the item ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" glm
+  # Negative control: an account with room takes it, though glm ranks first at the same fit.
+  ACCT_RC=0
+  v='{"promoted":["glm:glm"],"candidates":[{"harness":"glm","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":0}]}'
+  route "$it" "$v" || fail "nothing set: claude with room did not take it ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" claude
+  # Past tier 1 it waits rather than spend.
+  ACCT_RC=1 it='{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu","tags":"tier2"}'
+  ! route "$it" "$v" || fail "a tier-2 item went to glm"
+  assert_equal "$ROUTE_WHY" 'glm: pay-per-use takes tier-1 work only, and this is tier 2; claude: no account has room'
+  # A pinned item (a canary) is the human's pairing: none of this applies.
+  it='{"slug":"x","project":"game","mode":"oneshot","title":"canary","agent":"glm","model":"glm","tags":"tier2"}'
+  route "$it" '' || fail "a pinned glm item was refused ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" glm
 }
 
 @test "routing never lifts another gate: load holds it" {
