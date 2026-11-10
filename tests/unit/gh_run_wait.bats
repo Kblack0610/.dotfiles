@@ -50,13 +50,19 @@ run_json() { printf '{"status":"%s","conclusion":"%s","url":"https://x/runs/42"}
   assert_success
 }
 
-@test "a failed first read exits 3 at once and names GH_REPO" {
+@test "a run that 404s just after its dispatch is waited on, not given up" {
+  replies fail "$(run_json queued)" "$(run_json completed success)"
+  run "$WAIT" 9
+  assert_success
+}
+
+@test "three failed reads before a good one exit 3 and name GH_REPO" {
   replies fail
   run "$WAIT" 9
   assert_failure 3
   assert_output --partial 'HTTP 502'
   assert_output --partial 'GH_REPO'
-  assert [ ! -e "$BATS_TEST_TMPDIR/sleep.log" ]
+  assert_equal "$(grep -c . "$BATS_TEST_TMPDIR/sleep.log")" 2
 }
 
 @test "after a good read, failed reads are retried, and fifteen in a row give up with exit 3" {
