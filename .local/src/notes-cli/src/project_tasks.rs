@@ -365,6 +365,9 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 /// On the human sheet, text with no `type(area): ` prefix is the human's own words, so it goes
 /// to `## Inbox` as typed (plus the `--to` tag), unstamped, for the triager to file
 /// ([`file`]). Nothing raw lands on the board. Agent-lane adds are typed by their writers.
+///
+/// A typed leaf with no `#of/` whose area is one of the project's systems goes under that
+/// system's standing epic ([`link_standing`]), filed after every refusal and before the row.
 #[allow(clippy::too_many_arguments)]
 pub fn add(
     p: &Profile,
@@ -376,20 +379,47 @@ pub fn add(
     want: Option<&str>,
     lane: Lane,
 ) -> Result<i32> {
+    add_via(
+        p,
+        log,
+        name,
+        text,
+        details,
+        to,
+        want,
+        lane,
+        Some(crate::standing::SYSTEMS_BIN),
+    )
+}
+
+/// [`add`] with the systems command named (a test points it at a stub), or None once the row
+/// has its link, so the second pass never looks it up again.
+#[allow(clippy::too_many_arguments)]
+fn add_via(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    text: &str,
+    details: &[String],
+    to_arg: Option<&str>,
+    want_arg: Option<&str>,
+    lane: Lane,
+    systems: Option<&str>,
+) -> Result<i32> {
     let text = text.trim();
     if text.is_empty() {
         bail!("nothing to add (provide task text)");
     }
-    let want = want.map(projects::want_channel).transpose()?;
+    let want = want_arg.map(projects::want_channel).transpose()?;
     let proj_dir = projects::project_dir(p, name)?;
-    let to = to.map(parse_to).transpose()?;
+    let to = to_arg.map(parse_to).transpose()?;
     let cur = open_version_for(&lane.dir(&proj_dir));
     if let Some(v) = to {
         refuse_behind(v, cur)?;
     }
     refuse_epic_on_board(lane, &[text])?;
     if lane == Lane::Agent {
-        if !is_typed(text) {
+        if !projects::is_typed(text) {
             bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
         }
         if projects::size_of(&format!("- [ ] {text}")).is_none() {
@@ -398,7 +428,7 @@ pub fn add(
     }
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
-    if lane == Lane::Human && !is_typed(text) {
+    if lane == Lane::Human && !projects::is_typed(text) {
         let mut line = format!("- [ ] {text}");
         if let Some(v) = to {
             line = md::add_tag(&line, &projects::fmt_version(v));
@@ -431,6 +461,13 @@ pub fn add(
     }
     if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
         bail!("{why}, so nothing was added");
+    }
+    if let Some(bin) = systems {
+        if let Some(linked) = link_standing(p, log, name, &proj_dir, &[text.to_string()], bin)? {
+            return add_via(
+                p, log, name, &linked[0], details, to_arg, want_arg, lane, None,
+            );
+        }
     }
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     write_sheet(&path, &new)?;
@@ -537,18 +574,13 @@ pub(crate) fn inbox_changed(p: &Profile) {
 /// The tag a human's want carries on the agent board, put there by the writer.
 const WANT_TAG: &str = "#requested";
 
-/// Does `text` open with a well-formed `type(area): ` (README "The task row")?
-fn is_typed(text: &str) -> bool {
-    projects::row_type_area(&format!("- [ ] {text}")).is_some()
-}
-
 /// `new` plus each tag of `old` (`#requested`, `#tier/3`) whose name, the part before `/`, `new`
 /// does not set: the row's own tags outlive a rewrite of its words. Issue and PR refs
 /// (`#1469`) are words, not tags, so they stay in the `was:` line only. The priority levels
 /// share one name, so a new `#low` replaces the old `#high` rather than joining it.
 fn carry_tags(old: &str, new: &str) -> String {
     let name = |t: &str| {
-        if is_priority(t) {
+        if md::is_priority(t) {
             return "priority".to_string();
         }
         t.split('/').next().unwrap_or(t).to_string()
@@ -624,6 +656,20 @@ pub(crate) fn filed_on(line: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Turn the lists waiting in this sheet's `## Inbox` into one line per ask
+/// (`sheet::split_lists`), the first step of a triage sweep.
+pub fn inbox_split(p: &Profile, name: &str, lane: Lane) -> Result<i32> {
+    let Some((path, content)) = sheet_and_content(p, name, lane)? else {
+        return Ok(0);
+    };
+    let (out, lists) = sheet::split_lists(&content, sheet::INBOX);
+    if out != content {
+        write_sheet(&path, &out)?;
+    }
+    crate::ingest::record_splits(p, name, &lists);
+    Ok(0)
+}
+
 /// `notes ptask <name> inbox [--json]` - the lines waiting in `## Inbox`, oldest first:
 /// TSV `path<TAB>line<TAB>text`, or one JSON array of `{line, raw, text, details, typed}`,
 /// `typed` when the text already reads `type(area): title`.
@@ -638,7 +684,7 @@ pub fn inbox(p: &Profile, name: &str, json: bool, lane: Lane) -> Result<i32> {
             .map(|l| {
                 serde_json::json!({
                     "line": l.line, "raw": l.raw, "text": l.text, "details": l.details,
-                    "typed": is_typed(&l.text),
+                    "typed": projects::is_typed(&l.text),
                 })
             })
             .collect();
@@ -694,7 +740,8 @@ fn inbox_hit(pick: &Pick, l: &sheet::InboxLine) -> bool {
 ///
 /// Every refusal comes before the first write. When the line moves to another sheet, that
 /// sheet is written first, so a failed second write leaves the line on both sheets (seen,
-/// filed twice) and never on neither.
+/// filed twice) and never on neither. The one write that may come before them is a standing
+/// epic a row links to ([`link_standing`]), filed once every refusal has passed.
 pub(crate) fn file(
     p: &Profile,
     log: &Logger,
@@ -702,6 +749,32 @@ pub(crate) fn file(
     pick: &Pick,
     how: &Filing,
     lane: Lane,
+) -> Result<i32> {
+    file_via(
+        p,
+        log,
+        name,
+        pick,
+        how,
+        lane,
+        Some(crate::standing::SYSTEMS_BIN),
+        None,
+    )
+}
+
+/// [`file`] with the systems command named (a test points it at a stub). The second pass,
+/// after [`link_standing`] wrote an epic, gets no command and the rows as `linked`, so it
+/// re-reads every sheet the epic may have changed and files them as they are.
+#[allow(clippy::too_many_arguments)]
+fn file_via(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    pick: &Pick,
+    how: &Filing,
+    lane: Lane,
+    systems: Option<&str>,
+    linked: Option<Vec<String>>,
 ) -> Result<i32> {
     let Some((src, content)) = sheet_and_content(p, name, lane)? else {
         bail!("'{name}' has no task sheet, so no inbox");
@@ -737,8 +810,10 @@ pub(crate) fn file(
             to,
             details: extra,
         } => {
-            let texts: Vec<String> = if as_is {
-                if !is_typed(&line.text) {
+            let texts: Vec<String> = if let Some(l) = &linked {
+                l.clone()
+            } else if as_is {
+                if !projects::is_typed(&line.text) {
                     bail!("'{}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>", line.text);
                 }
                 vec![line.text.clone()]
@@ -746,7 +821,7 @@ pub(crate) fn file(
                 texts.clone()
             };
             let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
-            if let Some(bad) = texts.iter().find(|t| !is_typed(t)) {
+            if let Some(bad) = texts.iter().find(|t| !projects::is_typed(t)) {
                 bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
             }
             let to = to.as_deref().map(parse_to).transpose()?;
@@ -776,6 +851,11 @@ pub(crate) fn file(
             }
             if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
                 bail!("{why}, so nothing was filed");
+            }
+            if let Some(bin) = systems {
+                if let Some(l) = link_standing(p, log, dest_name, &dest_proj, &texts, bin)? {
+                    return file_via(p, log, name, pick, how, lane, None, Some(l));
+                }
             }
             (md::insert_under_heading(&base, sheet::TASKS, &block), block)
         }
@@ -844,6 +924,91 @@ pub(crate) fn file(
         println!("  {l}");
     }
     Ok(0)
+}
+
+/// `texts` with each leaf that has no `#of/`, and whose area is one of `name`'s systems
+/// ([`crate::standing`]), tagged `#of/<id>` of that system's open standing epic. An epic the
+/// human sheet lacks is filed there first, stamped and id'd like any row, and reported on stderr
+/// (stdout is the row a caller reads its id from). None when no text changes: no leaf wants
+/// a link, the project has no row code (an epic needs an id), or the system list is not to be
+/// had, in which case the rows are written unlinked.
+fn link_standing(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    proj_dir: &Path,
+    texts: &[String],
+    bin: &str,
+) -> Result<Option<Vec<String>>> {
+    let areas: Vec<Option<String>> = texts
+        .iter()
+        .map(|t| crate::standing::wants_link(t))
+        .collect();
+    if areas.iter().all(Option::is_none)
+        || crate::registry::Registry::load()
+            .and_then(|r| r.code(name))
+            .is_none()
+    {
+        return Ok(None);
+    }
+    // The dir's name is the canonical project name, the one the systems list is keyed by.
+    let canon = proj_dir
+        .file_name()
+        .map_or(name.into(), |n| n.to_string_lossy());
+    let Some(systems) = crate::standing::systems(bin, &canon) else {
+        return Ok(None);
+    };
+    let mut out = texts.to_vec();
+    let mut changed = false;
+    for (text, area) in out.iter_mut().zip(&areas) {
+        let Some(system) = area
+            .as_deref()
+            .and_then(|a| crate::standing::system_of(&systems, a))
+        else {
+            continue;
+        };
+        let sheet = ensure_lane_sheet(p, proj_dir, name, Lane::Human)?;
+        let content = fs::read_to_string(&sheet)?;
+        let id = match crate::standing::find(&content, system) {
+            Some(id) => id,
+            None => {
+                let cur = version_in(proj_dir, &content);
+                let block = new_rows(
+                    name,
+                    proj_dir,
+                    &[crate::standing::title(system)],
+                    None,
+                    cur,
+                    &[],
+                    &[],
+                )?;
+                let id = md::row_id(&block[0]).context("a new standing epic got no id")?;
+                write_sheet(
+                    &sheet,
+                    &md::insert_under_heading(&content, sheet::TASKS, &block),
+                )?;
+                note_ids(proj_dir, &block)?;
+                log.info(
+                    "ptask",
+                    &format!("standing epic {id} filed on {} ({name})", sheet.display()),
+                );
+                crate::ingest::record(
+                    p,
+                    &crate::ingest::Event::row("added", name, "", Lane::Human.name(), &block[0]),
+                );
+                // No marker comment here: a caller merging stderr reads the first `id:` as its row's.
+                eprintln!(
+                    "standing epic {id} filed on {}: {}",
+                    sheet.display(),
+                    crate::standing::title(system)
+                );
+                id
+            }
+        };
+        *text = md::add_tag(text, &format!("#of/{id}"));
+        changed = true;
+    }
+    Ok(changed.then_some(out))
 }
 
 /// The next row id for a project: `<code>-<n>`, `n` one past the highest `id:<code>-N` on any
@@ -1466,18 +1631,13 @@ pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
         .into_iter()
         .chain(remove.iter().map(String::as_str))
         .fold(line.to_string(), |l, t| md::drop_tag(&l, t));
-    if add.iter().any(|a| is_priority(a)) {
+    if add.iter().any(|a| md::is_priority(a)) {
         l = md::strip_priority_tag(&l);
     }
     add.iter().fold(l, |l, t| md::add_tag(&l, t))
 }
 
 /// Is `tag` (`#high`, or bare `high`) one of the priority levels?
-fn is_priority(tag: &str) -> bool {
-    let t = tag.trim_start_matches('#').to_lowercase();
-    md::PRIORITIES.iter().any(|(w, _, _)| *w == t)
-}
-
 /// The row's `#size/<s>` tag, read from its text before the marker comment.
 pub(crate) fn size_tag(line: &str) -> Option<&str> {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
@@ -1642,7 +1802,7 @@ pub fn retext(
         let Some(t) = text.filter(|t| !t.is_empty()) else {
             bail!("--was rewrites a row, so it needs --text \"<type(area): title>\"");
         };
-        if !is_typed(t) {
+        if !projects::is_typed(t) {
             bail!(
                 "'{t}' is not `type(area): title` (README \"The task row\"), so nothing was edited"
             );

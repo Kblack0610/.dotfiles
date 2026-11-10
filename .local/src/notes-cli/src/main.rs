@@ -38,6 +38,7 @@ mod rank;
 mod registry;
 mod sheet;
 mod show;
+mod standing;
 mod status;
 mod steps;
 mod summarize;
@@ -722,6 +723,8 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
         text: Vec<String>,
     },
+    /// Turn each list waiting in `## Inbox` into one line per ask. A triage sweep's first step
+    Split,
     /// List the lines waiting in `## Inbox`, oldest first (TSV `path<TAB>line<TAB>text`)
     Inbox {
         /// One JSON array of `{line, raw, text, details}` instead
@@ -768,6 +771,8 @@ enum PtaskCmd {
 
 #[derive(Subcommand)]
 enum OutboxCmd {
+    /// Turn each list waiting in the outbox into one line per ask. A triage sweep's first step
+    Split,
     /// The lines waiting, oldest first (TSV `line<TAB>text`)
     List {
         /// One JSON array of `{line, raw, text, details, project}` instead
@@ -1251,6 +1256,7 @@ fn main() -> Result<()> {
                     project_tasks::unstart(&prof, &log, &name, &pick(&query)?, lane)?
                 }
                 Some(PtaskCmd::Inbox { json }) => project_tasks::inbox(&prof, &name, json, lane)?,
+                Some(PtaskCmd::Split) => project_tasks::inbox_split(&prof, &name, lane)?,
                 Some(PtaskCmd::Propose { text }) => {
                     println!("{}", propose::proposed_row(&text.join(" "), &name));
                     0
@@ -1354,6 +1360,7 @@ fn main() -> Result<()> {
         Cmd::Outbox { sub } => match sub {
             None => outbox::list(&prof, false)?,
             Some(OutboxCmd::List { json }) => outbox::list(&prof, json)?,
+            Some(OutboxCmd::Split) => outbox::split(&prof)?,
             Some(OutboxCmd::Show { json }) => outbox::show(&prof, json)?,
             Some(OutboxCmd::Put { base }) => {
                 let mut text = String::new();

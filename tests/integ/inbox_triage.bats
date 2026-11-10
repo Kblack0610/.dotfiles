@@ -30,6 +30,28 @@ setup() {
   # The planner's start, recorded: no unit ever starts from a test.
   printf '#!/usr/bin/env bash\necho "$*" >> "$NOTES_FIXTURE/systemctl.log"\n' >"$SANDBOX/bin/systemctl"
   chmod +x "$SANDBOX/bin/systemctl"
+  systems ''
+}
+
+# systems <id:aliases>...: the system list `project-stage-check scratch --list` prints (TSV, or
+# --json), the vocabulary the triager and `notes ptask` read; none given, it knows no project,
+# so a project-stage-check on the host never decides a test's rows.
+systems() {
+  local s id al tsv="" json=""
+  for s in "$@"; do
+    [ -n "$s" ] || continue
+    id="${s%%:*}" al="${s#*:}"; [ "$al" = "$s" ] && al=""
+    tsv+="$id"$'\t'doc$'\t'"$al"$'\t'"the $id"$'\n'
+    json+="${json:+,}{\"id\":\"$id\",\"source\":\"doc\",\"aliases\":$(jq -cn --arg a "$al" '$a | split(",") | map(select(. != ""))'),\"is\":\"the $id\"}"
+  done
+  printf '%s' "$tsv" >"$NOTES_FIXTURE/systems.tsv"
+  printf '[%s]' "$json" >"$NOTES_FIXTURE/systems.json"
+  cat >"$SANDBOX/bin/project-stage-check" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = scratch ] && [ "$2" = --list ] && [ -s "$NOTES_FIXTURE/systems.tsv" ] || { echo "unknown project $1" >&2; exit 2; }
+if [ "${3:-}" = --json ]; then cat "$NOTES_FIXTURE/systems.json"; else cat "$NOTES_FIXTURE/systems.tsv"; fi
+STUB
+  chmod +x "$SANDBOX/bin/project-stage-check"
 }
 
 # sheet <inbox lines> <task lines>: scratch's sheet.
@@ -167,6 +189,73 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_output --partial 'was:'
   run inbox
   refute_output --partial 'old cache'
+}
+
+@test "a pasted list splits into one line per ask, each routes alone, and the heading rides on each with no model" {
+  outbox '- [ ] the game asks #p:scratch\n    - [ ] chore(build): one #low\n    - [ ] chore(build): two #low #p:other\n'
+  run "$TRIAGE"
+  assert_success
+  [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "the model ran for typed lines"
+  run tasks
+  assert_output --partial 'chore(build): one'
+  assert_output --partial 'under: the game asks'
+  refute_output --partial 'two'
+  run grep -c 'chore(build): two' "$PROJ/other/README.md"
+  assert_output 1
+  run grep -c '"action":"split"' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_output 1
+}
+
+@test "a block indented as a whole in an inbox the board counts as empty is read, and a dry run writes nothing" {
+  sheet '    - [ ] chore(build): one #low\n    - [ ] chore(build): two #low\n' ''
+  before="$(cat "$SHEET")"
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_equal "$(cat "$SHEET")" "$before"
+  run "$TRIAGE"
+  assert_success
+  run tasks
+  assert_output --partial 'chore(build): one'
+  assert_output --partial 'chore(build): two'
+}
+
+@test "a list on a profile with automation = false is left exactly as written" {
+  printf '[profile.gig]\nroot = "~/.notes/gig"\nautomation = false\n' >>"$HOME/.config/notes/config.toml"
+  G="$HOME/.notes/gig/projects/current/hands-off"
+  mkdir -p "$G"
+  : >"$G/summary.md"
+  printf '# hands-off\n\nVersion: v0.1.0\n\n## Inbox\n- [ ] heading\n  - [ ] one\n  - [ ] two\n\n## Tasks\n' >"$G/README.md"
+  before="$(cat "$G/README.md")"
+  run notes board --json
+  assert_output --partial 'hands-off'
+  run "$TRIAGE"
+  assert_success
+  assert_equal "$(cat "$G/README.md")" "$before"
+}
+
+@test "a list under a typed line stays one item" {
+  sheet '- [ ] chore(build): one job #low\n  - [ ] step one\n  - [ ] step two\n' ''
+  run "$TRIAGE"
+  assert_success
+  [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "the model ran for a typed line"
+  [ "$(tasks | grep -c '^- \[ \] chore')" = 1 ] || fail "$(tasks)"
+  run tasks
+  assert_output --partial '  - [ ] step two'
+}
+
+@test "the lane rule names the projects an untagged agent worker takes, and only with such a worker" {
+  sheet '- the gun sound is off\n' ''
+  answer '{"n": 1, "action": "skip", "why": "test"}'
+  run "$TRIAGE"
+  refute_output --partial 'failed'
+  run grep -c 'agents do the work unattended' "$NOTES_FIXTURE/prompt.txt"
+  assert_output 0
+  echo '{"board": {"lane": "agent", "untagged": true, "projects": ["scratch"]}, "x": {"projects": ["other"]}}' >"$SANDBOX/w.json"
+  export DISPATCH_WORKERS="$SANDBOX/w.json"
+  rm -f "$HOME/.local/state/notes/ingest.jsonl"
+  run "$TRIAGE"
+  run grep -o 'lane is agent unless a step needs a person.*: scratch\.' "$NOTES_FIXTURE/prompt.txt"
+  assert_success
 }
 
 @test "a skipped line, an untyped row and a row the grammar flags all stay in the inbox" {
@@ -617,6 +706,55 @@ ask_stub() {
   [ "$(wc -l <"$NOTES_FIXTURE/ask.log")" = 1 ] || fail "asked more than once in a sweep"
   run "$TRIAGE"
   [ "$(wc -l <"$NOTES_FIXTURE/ask.log")" = 1 ] || fail "the refused question was asked again"
+}
+
+@test "the area comes from the project's systems and an unlinked row goes under its standing epic" {
+  systems ui:menu docs
+  sheet '- the pause menu feels slow\n- the gun sound is off\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the pause menu opens slowly #size/s"]}' \
+    '{"n": 2, "action": "file", "rows": ["fix(audio): the gun sound is off #size/s"]}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 2, left 0, refused 0'
+  grep -qx 'scratch: ui, docs (also: menu=ui)' "$NOTES_FIXTURE/prompt.txt" || fail "the systems never reached the model: $(cat "$NOTES_FIXTURE/prompt.txt")"
+  run tasks
+  assert_output --regexp 'epic\(ui\): ui to standard .*id:sc-1'
+  assert_output --regexp 'fix\(ui\): the pause menu opens slowly .*#of/sc-1'
+  # NEGATIVE CONTROL: an area that is no system stays unlinked.
+  assert_output --regexp 'fix\(audio\): the gun sound is off [^<]*<!-- id:'
+  refute_line --regexp 'gun sound is off .*#of/'
+  [ "$(grep -c 'to standard' "$SHEET")" = 1 ] || fail "$(cat "$SHEET")"
+}
+
+@test "a new capability files its epic #new first and the rows under it; a bad epic is dropped, never the rows" {
+  systems ui docs
+  sheet '- a pause menu i can open mid match\n- make the credits roll\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["feat(ui): a pause menu with resume and quit #size/m"], "epic": "epic(ui): a pause menu the player can open mid-match"}' \
+    '{"n": 2, "action": "file", "rows": ["feat(credits): roll the credits #size/s"], "epic": "epic(credits): credits that roll"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 2, left 0, refused 0'
+  grep -q '"epic": "epic(<system>)' "$NOTES_FIXTURE/prompt.txt" || fail "the new-epic rule never reached the model"
+  run tasks
+  assert_output --regexp 'epic\(ui\): a pause menu the player can open mid-match .*#new.*id:sc-1'
+  assert_output --regexp 'feat\(ui\): a pause menu with resume and quit .*#of/sc-1'
+  refute_output --partial 'ui to standard'
+  # credits is no system of scratch: no epic, the row filed as it came.
+  refute_output --partial 'epic(credits)'
+  assert_output --regexp 'feat\(credits\): roll the credits [^<]*<!-- id:'
+  refute_line --regexp 'roll the credits .*#of/'
+}
+
+@test "--backlog: a rewrite may carry a new epic, filed #new before the row goes under it" {
+  systems ui
+  sheet '' '- [ ] pause menu #low <!-- id:sc-1 -->\n'
+  answer '{"n": 1, "action": "rewrite", "row": "feat(ui): a pause menu with resume and quit #size/m", "epic": "epic(ui): a pause menu mid-match"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  grep -qx 'scratch: ui' "$NOTES_FIXTURE/prompt.txt" || fail "the systems never reached the model"
+  run tasks
+  assert_output --regexp 'epic\(ui\): a pause menu mid-match .*#new.*id:sc-2'
+  assert_output --regexp 'feat\(ui\): a pause menu with resume and quit .*#of/sc-2.*id:sc-1'
 }
 
 @test "--backlog --priority: each untagged row gets the model's priority through ptask tag, a tagged row is not asked, a bad answer writes nothing" {

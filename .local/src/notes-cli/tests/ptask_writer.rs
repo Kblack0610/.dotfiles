@@ -50,7 +50,30 @@ impl Home {
             r#"{"trackers": {"demo": {"type": "app", "code": "dm"}}}"#,
         )
         .unwrap();
-        Home(root)
+        let h = Home(root);
+        // The systems lookup knows no project unless a test gives it a list, so a
+        // project-stage-check on the caller's PATH never decides a row's parent here.
+        h.systems(None);
+        h
+    }
+
+    /// `project-stage-check` on this HOME's PATH: `--list --json` prints `json`, or exits 2 as
+    /// for an unknown project when `json` is None.
+    fn systems(&self, json: Option<&str>) {
+        let bin = self.0.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let body = match json {
+            Some(j) => format!("#!/bin/sh\ncat <<'JSON'\n{j}\nJSON\n"),
+            None => "#!/bin/sh\necho 'unknown project' >&2\nexit 2\n".to_string(),
+        };
+        let stub = bin.join("project-stage-check");
+        fs::write(&stub, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn sheet(&self) -> String {
+        fs::read_to_string(self.0.join("notes/projects/current/demo/README.md")).unwrap()
     }
 
     fn cmd(&self, args: &[&str]) -> Command {
@@ -60,6 +83,14 @@ impl Home {
             .env("NOTES_CONFIG", self.0.join("config.toml"))
             .env("NOTES_PROFILE", "personal")
             .env("PROJECT_MAP_FILE", self.0.join("map.json"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    self.0.join("bin").display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
             .env_remove("AGENT_QUEUE_ITEM");
         c
     }
@@ -323,4 +354,132 @@ fn an_id_is_never_reused_after_its_row_leaves() {
     got.sort();
     assert_eq!(got, ["dm-1", "dm-3"]);
     assert!(Path::new(&h.0.join("notes/projects/current/demo/.ids")).is_file());
+}
+
+/// The demo project's systems: `ui` (also `menu`) and `docs`.
+const SYSTEMS: &str = r#"[{"id":"ui","source":"doc","aliases":["menu"],"is":"x"},{"id":"docs","source":"doc","aliases":[],"is":"y"}]"#;
+
+#[test]
+fn an_unlinked_leaf_goes_under_its_systems_standing_epic_filed_once() {
+    let h = Home::new("standing");
+    h.systems(Some(SYSTEMS));
+    let first = agent(&h, &["add", "fix(ui): pause menu is slow #size/s"]);
+    ok(&first);
+    let sheet = h.sheet();
+    assert!(
+        sheet.contains("- [ ] epic(ui): ui to standard") && sheet.contains("id:dm-1"),
+        "the missing standing epic is filed on the human sheet: {sheet}"
+    );
+    let board = h.board();
+    assert!(
+        board.contains("fix(ui): pause menu is slow") && board.contains("#of/dm-1"),
+        "{board}"
+    );
+    assert_eq!(ids(&board), ["dm-2"], "the row's id follows the epic's");
+    // agent-queue merges stderr and reads the first `id:` as its row's: the epic's must not be it.
+    let merged = format!(
+        "{}{}",
+        String::from_utf8_lossy(&first.stderr),
+        String::from_utf8_lossy(&first.stdout)
+    );
+    let first_id = merged.lines().find_map(|l| l.split("id:").nth(1)).unwrap();
+    assert!(first_id.starts_with("dm-2"), "{merged}");
+
+    // An alias names the same system, and the epic is reused, never filed twice.
+    ok(&agent(&h, &["add", "feat(menu): a resume button #size/s"]));
+    ok(&h.run(&["ptask", "demo", "add", "docs(ui): the pause menu keys"]));
+    let sheet = h.sheet();
+    assert_eq!(
+        sheet.matches("epic(ui): ui to standard").count(),
+        1,
+        "{sheet}"
+    );
+    assert_eq!(
+        h.board().matches("#of/dm-1").count(),
+        2,
+        "both agent rows: {}",
+        h.board()
+    );
+    assert!(
+        sheet
+            .lines()
+            .any(|l| l.contains("the pause menu keys") && l.contains("#of/dm-1")),
+        "a human-sheet leaf links too: {sheet}"
+    );
+    assert_eq!(
+        h.events().iter().filter(|(a, _)| a == "added").count(),
+        4,
+        "one event for the epic and one per row"
+    );
+}
+
+#[test]
+fn a_free_area_a_parent_or_no_system_list_leaves_the_row_as_written() {
+    let h = Home::new("standing-neg");
+    // NEGATIVE CONTROL: no system list (the lookup exits 2), and the row is still written.
+    ok(&agent(&h, &["add", "fix(ui): pause menu is slow #size/s"]));
+    assert!(!h.board().contains("#of/"), "{}", h.board());
+    h.systems(Some(SYSTEMS));
+    ok(&agent(
+        &h,
+        &["add", "fix(audio): the gun sound plays late #size/s"],
+    ));
+    ok(&agent(
+        &h,
+        &["add", "fix(ui): resume flickers #size/s #of/dm-9"],
+    ));
+    let board = h.board();
+    assert!(
+        board
+            .lines()
+            .any(|l| l.contains("gun sound") && !l.contains("#of/")),
+        "a free area word is no system: {board}"
+    );
+    assert!(
+        board
+            .lines()
+            .any(|l| l.contains("resume flickers") && l.contains("#of/dm-9")),
+        "a row's own parent stands: {board}"
+    );
+    assert!(
+        !h.sheet().contains("to standard"),
+        "no epic was filed: {}",
+        h.sheet()
+    );
+}
+
+#[test]
+fn a_line_filed_from_the_inbox_links_like_an_add() {
+    let h = Home::new("standing-file");
+    h.systems(Some(SYSTEMS));
+    let readme = h.0.join("notes/projects/current/demo/README.md");
+    fs::write(
+        &readme,
+        "# demo\nVersion: v0.1.0\n\n## Inbox\n- the pause menu feels slow\n\n## Tasks\n",
+    )
+    .unwrap();
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "file",
+        "pause menu",
+        "--as",
+        "fix(ui): the pause menu opens slowly #size/s",
+    ]));
+    let sheet = h.sheet();
+    assert!(
+        !sheet.contains("- the pause menu feels slow"),
+        "taken off the inbox: {sheet}"
+    );
+    assert_eq!(
+        sheet.matches("epic(ui): ui to standard").count(),
+        1,
+        "{sheet}"
+    );
+    let row = sheet
+        .lines()
+        .find(|l| l.contains("the pause menu opens slowly"))
+        .unwrap_or_else(|| panic!("not filed: {sheet}"));
+    assert!(row.contains("#of/dm-1") && row.contains("id:dm-2"), "{row}");
+    assert!(sheet.contains("was: the pause menu feels slow"), "{sheet}");
 }
