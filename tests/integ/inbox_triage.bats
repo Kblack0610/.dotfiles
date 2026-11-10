@@ -551,7 +551,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial "the shared code under them, belongs on the repo's project"
   assert_output --partial 'a host or the cluster belongs on home-config'
   assert_output --partial 'read each with its neighbours'
-  assert_output --partial 'but a line that plainly fits another project'
+  assert_output --partial 'own is a second, separate answer'
   assert_output --partial 'A line marked asked before has had its neighbours filed already'
   assert_output --partial '"action": "dup", "line": 4'
 }
@@ -641,6 +641,23 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output '1. [outbox] the menu flickers (asked before: the lines written beside it went to other and scratch)'
   run jq -r 'select(.action == "left") | .near' "$HOME/.local/state/notes/ingest.jsonl"
   assert_output $'scratch,other\nother,scratch'
+}
+
+@test "outbox: a line goes where its own words point, over its neighbours' project; empty or unknown own leaves project (negative controls)" {
+  sheet '' ''
+  outbox '- [ ] the scratch lobby is slow\n- [ ] a central bank of money\n- [ ] the scratch font is small\n- [ ] the scratch menu is slow\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(net): the lobby is slow #size/s"], "project": "scratch", "own": "scratch"}' \
+    '{"n": 2, "action": "file", "rows": ["feat(bank): a central bank of money #size/m"], "project": "scratch", "own": "other"}' \
+    '{"n": 3, "action": "file", "rows": ["fix(ui): the font is small #size/s"], "project": "scratch", "own": ""}' \
+    '{"n": 4, "action": "file", "rows": ["fix(ui): the menu is slow #size/s"], "project": "scratch", "own": "nosuchproject"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial "line 2's own words point to other, its neighbours to scratch: filed on other"
+  grep -q 'feat(bank): a central bank of money' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+  run grep -c 'bank' "$SHEET"
+  assert_output 0
+  grep -q 'fix(ui): the font is small' "$SHEET" || fail "$(cat "$SHEET")"
+  grep -q 'fix(ui): the menu is slow' "$SHEET" || fail "$(cat "$SHEET")"
 }
 
 @test "outbox: a line never left carries no asked-before mark (negative control)" {

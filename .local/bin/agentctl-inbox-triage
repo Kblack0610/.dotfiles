@@ -141,14 +141,14 @@ $details" 1 ask "$INBOX_ASK_CMD"; rc=$?
   fi
 }
 
-# One model answer line -> n, action, id, project, lane, plan (1 or empty), why, rows (joined
-# by RS), split by US.
+# One model answer line -> n, action, id, line, project, lane, plan (1 or empty), why, epic, own,
+# rows (joined by RS), split by US.
 # shellcheck disable=SC2016 # jq source, not shell
 ANSWER_JQ='def s: (. // "") | tostring | gsub("[[:cntrl:]]"; " ");
   fromjson? | select(type == "object" and (.n | type) == "number")
   | [(.n | floor | tostring), (.action | s), (.id | s),
      (.line | if type == "number" then floor | tostring else "" end), (.project | s), (.lane | s),
-     (if .plan == true then "1" else "" end), (.why | s), (.epic | s),
+     (if .plan == true then "1" else "" end), (.why | s), (.epic | s), (.own | s),
      ([.rows[]? | strings | s] | join("\u001e"))] | join("\u001f")'
 
 # note <action> <from> <why> <text> [near]: a left or refused line in the ingest record, which keeps
@@ -287,12 +287,12 @@ route() {
 A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
-{\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": false}
+{\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"own\": \"<project>\", \"lane\": \"human\", \"plan\": false}
 {\"n\": 2, \"action\": \"dup\", \"id\": \"<id of the open row it repeats>\"}
 {\"n\": 3, \"action\": \"skip\", \"why\": \"<a few words>\"}
 {\"n\": 4, \"action\": \"file\", \"rows\": [\"feat(ui): a pause menu with resume and quit #size/m\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": true, \"epic\": \"epic(ui): a pause menu the player can open mid-match\"}
 {\"n\": 5, \"action\": \"dup\", \"line\": 4}
-file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other in one place (two [outbox] lines, or two lines of one inbox) were written together, so read each with its neighbours there: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share; but a line that plainly fits another project (its words match that project's systems or open rows, money and trading beside game asks) goes there, since a person's list can change subject mid-way. A line marked asked before has had its neighbours filed already, so the projects that mark names are its neighbours' projects. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
+file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other in one place (two [outbox] lines, or two lines of one inbox) were written together, so read each with its neighbours there: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share. own is a second, separate answer for an [outbox] line: the project its own words point to read alone, with its neighbours ignored (a project it names, or whose systems or open rows its words plainly match), or \"\" when its words alone point to none. Give it honestly even when it differs from project: a line whose own words point to a project is filed there, and its neighbours decide only when own is \"\". A line marked asked before has had its neighbours filed already, so the projects that mark names are its neighbours' projects. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
 dup: only when an open row below already asks for the same thing (its id), or a line above in this list that you file does (its n as line).
 skip: the line is not a task (a thought, a note to self, a question that only asks for information), you cannot tell what it asks, or for an [outbox] line neither it nor its neighbours point at a project. A question that reports a fault or asks for a change (didn't it reset?, can we have X?) is a task. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
 A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. $(new_epic_rule)
@@ -317,13 +317,22 @@ $open"
   # beside it is filed, with their projects (see pass).
   leave() { if [ "$from" = outbox ]; then left_why[$n]="$1"; else left "$from" "$text" "$1"; fi; }
   local filed_board=""
-  while IFS=$'\x1f' read -r n action id of dest lane plan why epic rows; do
+  local own
+  while IFS=$'\x1f' read -r n action id of dest lane plan why epic own rows; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
     raw="${raws[n - 1]}" from="${froms[n - 1]}" text="${texts[n - 1]}"
     [ -n "$raw" ] || continue
     raws[n - 1]=""   # one answer per line
     why="$(clean 100 <<<"$why")"
     dest="$(clean 60 <<<"$dest")"
+    # An outbox line goes where its own words point, read without its neighbours, whenever they
+    # point to a project on the board: the neighbours decide only a line whose words name none.
+    own="$(clean 60 <<<"$own")"
+    if [ "$from" = outbox ] && [ "$action" = file ] && [ -n "$own" ] && [ "$own" != "$dest" ] \
+      && jq -e --arg p "$own" 'any(.projects[]; .project == $p)' <<<"$board" >/dev/null; then
+      say "outbox: line $n's own words point to $own, its neighbours to ${dest:-none}: filed on $own"
+      dest="$own"
+    fi
     src="$from"
     case "$action" in
       file|dup)
