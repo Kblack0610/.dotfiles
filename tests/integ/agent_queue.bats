@@ -1888,7 +1888,7 @@ notes --profile bnb ptask level --agent start lv-9'
   [ "$(field "$f" profile)" = bnb ]
   [ "$(field "$f" from)" = human ]
   run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
-  assert_output 'notes --profile bnb ptask level --agent start lv-2'
+  assert_output "$(printf '%s\n' 'notes --profile bnb ptask level --agent start lv-2' 'notes --profile bnb ptask level --agent run lv-2')"
 }
 
 @test "--row refuses an id that is not an open row, a row a live item names and a project with no board, writing nothing" {
