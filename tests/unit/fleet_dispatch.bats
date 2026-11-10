@@ -1389,21 +1389,31 @@ game_ready() {
   refute_output --partial 'un-started'
 }
 
-@test "a board item that ends on a usage limit hands its row back recorded cleared, and the row is not held" {
+@test "a board item that ends on a usage limit hands its row back with no verdict, so the row is not held" {
   game_ready
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
   grep -qF -- '- [/] fix crash on load' "$NOTES_FIXTURE/rows.game.human" || fail "row not started"
   agent-queue move gm-1 done --status failed --end limit
   run cmd_reap
   assert_success
-  assert_output --partial 'un-started game: gm-1'
+  assert_output --partial 'un-started game: gm-1 (queue item gm-1 ended failed, limit)'
   grep -qF -- '- [ ] fix crash on load' "$NOTES_FIXTURE/rows.game.human" || fail "row not un-started"
-  assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r '"\(.verdict) \(.reason)"')" 'cleared queue item ended failed (end_reason: limit)'
-  # its dispatch verdict still names the line it judged; no failed hold ("*") is left on the key
+  assert_equal "$(jq -r .verdict "$FLEET_DISPATCH_DIR/verdicts.jsonl" | sort -u | paste -sd' ')" 'dispatch'
   assert_equal "$(judged_keys | awk -F'\t' '$4 == "*"')" ''
   # the started row now carries its id, so it goes back to the judge as a candidate
   run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run
   assert_output --partial 'unjudged  game (beta) human: gm-1'
+}
+
+@test "a usage-limit end leaves a hold an earlier real failure set" {
+  game_ready
+  jq -cn '{project: "game", lane: "human", key: "gm-1", verdict: "failed", reason: "queue item ended failed", at: "2026-11-10T00:00:00Z"}' \
+    >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
+  agent-queue move gm-1 done --status failed --end limit
+  run cmd_reap
+  assert_output --partial 'un-started game: gm-1'
+  assert_equal "$(judged_keys | awk -F'\t' '$4 == "*" { print $3 }')" 'gm-1'
 }
 
 @test "a row whose failed hold a later cleared releases is picked again on its dispatch verdict" {
@@ -1417,12 +1427,12 @@ game_ready() {
   assert_output --partial 'ready'
 }
 
-@test "agent-queue unrated: the ends that say nothing about the model, one list for every reader" {
-  run agent-queue unrated limit
-  assert_success
-  run agent-queue unrated timeout   # negative control: a timeout rates the model
-  assert_failure
-  assert_equal "$(agent-queue unrated | paste -sd' ')" 'refused limit provider cut'
+@test "end-reasons.sh: the ends that say nothing about the model, one list for every reader" {
+  . "$REPO_ROOT/.local/lib/end-reasons.sh"
+  unrated_end limit || fail "limit is unrated"
+  ! unrated_end timeout || fail "a timeout rates the model"   # negative control
+  ! unrated_end "" || fail "no end is not unrated"
+  assert_equal "$(unrated_json)" '["refused","limit","provider","cut"]'
 }
 
 @test "judged_keys: of a row's failed and cleared verdicts the newest wins" {
@@ -1431,7 +1441,9 @@ game_ready() {
   v a failed; v a cleared       # released
   v b cleared; v b failed       # a real failure after a release holds again
   v c failed                    # negative control: a plain failed end still holds
-  assert_equal "$(judged_keys | cut -f3,4 | paste -sd' ')" "$(printf 'b\t* c\t*')"
+  echo '{"project": "game", "lane": "hu' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"   # a torn append
+  v d failed                    # a line after it is still read
+  assert_equal "$(judged_keys | cut -f3,4 | paste -sd' ')" "$(printf 'b\t* c\t* d\t*')"
 }
 
 @test "run claims a row at the top of a board too big for one pipe buffer" {

@@ -108,6 +108,8 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # Scaled into names of their own, never back into the exported DISPATCH_* a child would scale again.
 # shellcheck source=../lib/machine-mode.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh"
+# shellcheck source=../lib/end-reasons.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
 LEVEL=$(machine_level)
 read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" \
   DISPATCH_NIGHT_MAX "$DISPATCH_NIGHT_MAX" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
@@ -908,13 +910,15 @@ row_priority() {
 # under the current policy, or a dispatch or skip whose rule the policy still has (policy_sig),
 # checked against the row by held. A `failed` record holds for the key whatever
 # changed ("*"), so a row whose session died is not picked again on its own, until a later `cleared`
-# for the same key releases it: of a key's failed and cleared records the newest wins. A verdict with
-# no dsig holds whatever the details (ROW_JQ holds). An `error` or `cleared` holds nothing.
+# (a reviewed repair append) for the same key releases it: of a key's failed and cleared records the
+# last in the file wins. A verdict with no dsig holds whatever the details (ROW_JQ holds). An `error`
+# or `cleared` holds nothing. A malformed line is skipped, never the end of the read.
 judged_keys() {
   [ -f "$VERDICTS" ] || return 0
-  jq -rs --arg sig "$(policy_sig)" --argjson rules "$(policy_rules)" "$ROW_JQ"'
+  jq -rRn --arg sig "$(policy_sig)" --argjson rules "$(policy_rules)" "$ROW_JQ"'
     def k: "\(.project)\u001f\(.lane)\u001f\(.key)";
-    (reduce (.[] | select(.verdict == "failed" or .verdict == "cleared")) as $v ({}; .[$v | k] = $v.verdict)) as $last
+    [inputs | fromjson? | objects]
+    | (reduce (.[] | select(.verdict == "failed" or .verdict == "cleared")) as $v ({}; .[$v | k] = $v.verdict)) as $last
     | .[]
     | if .verdict == "failed" then (if $last[k] == "failed" then [.project, .lane, .key, "*", "*"] else empty end)
     elif .verdict == "error" or .verdict == "cleared" then empty
@@ -1209,10 +1213,10 @@ candidates_drop() {
 # that failed or named no rule says nothing about the row, so its stale-but-usable verdict stays
 # and the row is judged again (judged_keys reads the file itself and skips errors). A `cleared`
 # record says nothing about the row either; it releases the `failed` records before it, so the
-# row's judged verdict stands again (judged_keys: the newest of failed and cleared wins).
+# row's judged verdict stands again (judged_keys: the last of failed and cleared wins).
 latest_verdicts() {
   [ -f "$VERDICTS" ] || return 0
-  jq -sc 'group_by([.project, .lane, .key]) | map(
+  jq -cRn '[inputs | fromjson? | objects] | group_by([.project, .lane, .key]) | map(
       (map(select(.verdict == "failed" or .verdict == "cleared")) | last | .verdict) as $fc
       | (map(select(.verdict != "error" and .verdict != "cleared" and (.verdict != "failed" or $fc == "failed"))) | last) // last
     ) | .[]' "$VERDICTS" 2>/dev/null
@@ -2044,9 +2048,9 @@ close_row() {
 
 # settle_row <slug> -- an item with a row that ended failed or cancelled hands it back: un-start it
 # and record `failed`, so it is not promoted again until its text
-# changes. A run that ended for a cause outside the model (`agent-queue unrated`: a usage limit, a
-# provider fault, a refusal, a cut) records `cleared` instead: nothing about the row failed, so it
-# stays a candidate. Idempotent: a row no longer started is left alone (done by its session, or settled).
+# changes. A run that ended for a cause outside the model (unrated_end: a usage limit, a provider
+# fault, a refusal, a cut) records nothing: nothing about the row failed, so it stays a candidate,
+# and a hold an earlier real failure left stands. Idempotent: a row no longer started is left alone.
 settle_row() {
   local it row prof project lane key flag=()
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
@@ -2057,14 +2061,13 @@ settle_row() {
   [ "$lane" = agent ] && flag=(--agent)
   [[ "$(row_line "$prof" "$project" "$lane" "$key")" == '- [/]'* ]] || return 0
   np "$prof" ptask "$project" "${flag[@]}" unstart "$key" >/dev/null 2>&1
-  local end v=failed; end=$(jq -r '.end_reason // ""' <<<"$it")
-  [ -z "$end" ] || ! agent-queue unrated "$end" || v=cleared
-  jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" --arg st "$(jq -r .status <<<"$it")" \
-    --arg v "$v" --arg e "$end" \
-    '{project: $p, lane: $l, key: $k, verdict: $v, reason: "queue item ended \($st)\(if $e != "" then " (end_reason: \($e))" else "" end)", at: $at}' >> "$VERDICTS"
+  local end; end=$(jq -r '.end_reason // ""' <<<"$it")
+  unrated_end "$end" ||
+    jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" --arg st "$(jq -r .status <<<"$it")" \
+      '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "queue item ended \($st)", at: $at}' >> "$VERDICTS"
   logline "settled queue item $1: $project $lane row un-started: $key"
   dispatch_event settled "$project" "row un-started: item ended $(jq -r .status <<<"$it")" --item "$1" --id "$key"
-  echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it"))"
+  echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it")${end:+, $end})"
 }
 
 # PR_STATE_JSON, PR_STATE_JQ -- what one gh read of an item's PR asks for, and the line it prints:

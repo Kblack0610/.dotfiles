@@ -18,8 +18,8 @@
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--if <state>]
-#       --end records why a run ended (end_reason:): refused, limit, provider, cut, timeout or stopped.
-#       The first four are not the model's doing, so the run's model-lane outcome is not filed.
+#       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
+#       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
@@ -30,8 +30,6 @@
 #       `notes ptask reopen`. Items `after:` it that the ok close released stay started.
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 #   admission [--json]    the backlog an automated add is admitted under, its limit, and the adds held in 7 days
-#   unrated [<end_reason>]   with a reason: exit 0 when that end says nothing about the model (UNRATED_ENDS), else 1;
-#       without one, print UNRATED_ENDS, one per line, for a reader that must not keep its own copy
 # A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
 # `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
@@ -59,6 +57,8 @@ PROJECT_MAP_FILE="$AQ_MAP"
 . "${PLAN_PHASES_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh}"
 # shellcheck source=../lib/machine-mode.sh
 . "${MACHINE_MODE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh}"
+# shellcheck source=../lib/end-reasons.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
 # The night window a `night` item may start in, local time, which may wrap midnight: the `night`
 # part of the system's clock hours (.config/machine-mode/hours), read when a night hold is checked.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-}"
@@ -1402,16 +1402,7 @@ cmd_credit_of() {
   credit_of "$1" || die "could not read $AQ_MAP"
 }
 
-# END_REASONS: why a run ended (end_reason:), set by fleet-dispatch's settle_item from the rollout
-# (codex-rollout.jq); a run that ended before settle_item recorded it gets the same reason by `set`,
-# beside its `model-lane void`, from that classifier's reviewed dry-run. The first four say nothing
-# about the model, so lane_outcome files no outcome for them; `timeout` and `stopped` rate as before.
-END_REASONS="refused limit provider cut timeout stopped"
-UNRATED_ENDS=" refused limit provider cut "
-cmd_unrated() {
-  [ $# -gt 0 ] || { printf '%s\n' $UNRATED_ENDS; return 0; }
-  case "$UNRATED_ENDS" in *" $1 "*) return 0 ;; *) return 1 ;; esac
-}
+# END_REASONS and UNRATED_ENDS: lib/end-reasons.sh.
 check_end() { case " $END_REASONS " in *" $1 "*) ;; *) die "end_reason is one of: $END_REASONS, not $1" ;; esac; }
 
 # move <slug> <state> [--status s] [--end reason] [--if <state>] -- --end records why the run ended
@@ -1693,7 +1684,7 @@ cmd_reopen() {
 lane_outcome() {
   local o=''
   [ -n "$1" ] || return 0
-  case "$UNRATED_ENDS" in *" ${5:-none} "*) return 0 ;; esac
+  ! unrated_end "${5:-}" || return 0
   case "$3:$4" in
     done:ok) o=ok ;;
     done:failed) o=failed ;;
@@ -1870,7 +1861,7 @@ if [ -n "${AGENT_STATE_HOST:-}" ]; then
 fi
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | bump | set | retask | attribute | move | requeue | reopen | stats | admission | unrated) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;

@@ -26,6 +26,8 @@ set -uo pipefail
 # lane; judge.sh comes with it (judge_ask_docs, the calls.jsonl path).
 # shellcheck source=agent-ask
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-ask"
+# shellcheck source=../lib/end-reasons.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
 
 : "${FLEET_DISPATCH_DIR:=$HOME/.agent/dispatch}"
 : "${JUDGE_EVAL_QUEUE_CMD:=agent-queue list --json --state all}"
@@ -87,7 +89,7 @@ eval_json() {
     --slurpfile I "$tmp/ingest" --argjson src "$src" --argjson settle "$((SETTLE_H * 3600))" \
     --argjson shas "$shas" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" \
-    --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$("$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-queue" unrated | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+    --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" \
     --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
     '$A[0] as $asks | $C[0] as $calls | $V[0] as $verdicts | $Q[0] as $queue | $P[0] as $picks | '"$JQ_EVAL" || rc=$?
   rm -rf "$tmp"
@@ -150,14 +152,15 @@ JQ_EVAL="$JQ_EPOCH"'
     | . + {unscorable: (if .outcome == "unscorable" then $why else null end)}] as $askrows
    # Dispatch: an error line is one verdict each (the row is judged again); otherwise the newest
    # verdict per row, labelled by its queue item: done ok landed, done otherwise or a later
-   # `failed` line did not. A run that ended for a cause outside the model (`agent-queue unrated`)
-   # labels nothing, and a `failed` line a later `cleared` released does not count.
+   # `failed` line did not. A run that ended for a cause outside the model (UNRATED_ENDS) labels
+   # nothing, and a `failed` line a later `cleared` released does not count (later in the file, as
+   # judged_keys in fleet-dispatch reads it; group_by keeps file order within a key).
    | ($verdicts | map(select(.verdict == "failed" or .verdict == "cleared"))
       | map({key: "\(.project)\u0000\(.key)", verdict, e: (.at | epoch)}) | group_by(.key)
-      | map(max_by(.e) | select(.verdict == "failed") | {(.key): .e}) | add // {}) as $failed
+      | map(last | select(.verdict == "failed") | {(.key): .e}) | add // {}) as $failed
    | ($queue | map(select((.from // "") | startswith("board:")))
       | map({key: (.from | ltrimstr("board:")),
-             value: (.state + "/" + (if (.end_reason // "") | IN($unrated[]) then "unrated" else .status // "" end))})
+             value: (.state + "/" + (if .status != "ok" and ((.end_reason // "") | IN($unrated[])) then "unrated" else .status // "" end))})
       | from_entries) as $item
    # Every start of a queue item, keyed by its board row; run is fleet-dispatch, resume a restore.
    | ($queue | map(select(.started != null) | {key: (.row // (.from | ltrimstr("board:"))), e: (.started | epoch), origin})) as $starts
