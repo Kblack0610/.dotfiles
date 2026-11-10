@@ -12,9 +12,11 @@
 #       finished ok is refused unless --repeat says this is new work under it: see finished_ok.
 #       An automated add waits while the queue is a day of drain deep: see admit (exit AQ_EX_HELD).
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug] [--slug prefix] [--repeat]
-#       one oneshot item per unchecked `## Phases` line, each after the one before
+#       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
+#       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item
 #   list [--json] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
+#       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--if <state>]
@@ -24,6 +26,8 @@
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource> | --ask <id>   a started item back in the queue, held on that agent-hold or ask
+#   settle-ask <id>    fail each queued item that ask can no longer release (cancelled, or answered another option);
+#       agent-ask runs it on every cancel and human answer, and the item's board row stays open
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
@@ -1075,7 +1079,10 @@ unity_weight() {
 # order, each `after:` the one before (the first after --after), carrying `plan:` and
 # `phases:` (its checklist numbers). A phase line with `(with N)` joins phase N's item when
 # phase N is open too, for phases that share a branch; the item runs where its first phase is.
-# Every slug is checked before any item is written.
+# A phase line declares its own wait: `(independent)` waits on --after alone, `(after N)` on
+# the item carrying earlier phase N (on --after alone when N landed; refused when N is
+# deferred). A `(with N)` line takes its item's wait, so a marker on it is refused. Every slug
+# is checked before any item is written.
 add_plan() {
   [ -f "$planf" ] || die "--plan $planf: no such file"
   planf="$(realpath "$planf")"
@@ -1090,17 +1097,35 @@ add_plan() {
   local groups
   groups="$(plan_phase_list "$planf" | jq -c '
     to_entries | map({n: (.key + 1), state: .value.state, name: .value.name,
-      with: ((.value.name | capture("\\(with (?<w>[0-9]+)\\)") | .w | tonumber) // null)}) as $all
+      with: ((.value.name | capture("\\(with (?<w>[0-9]+)\\)") | .w | tonumber) // null),
+      indep: (.value.name | test("\\(independent\\)")),
+      after: ((.value.name | capture("\\(after (?<a>[0-9]+)\\)") | .a | tonumber) // null)}) as $all
     | reduce ($all[] | select(.state == "open")) as $p ({of: {}, items: []};
         ($all[($p.with // 0) - 1]) as $w
+        | (if $p.indep and $p.after != null then error("phase \($p.n): (independent) and (after \($p.after)) contradict")
+           elif $p.after != null and ($p.after >= $p.n or $p.after < 1) then
+             error("phase \($p.n): (after \($p.after)) names no earlier phase")
+           elif $p.after != null and $all[$p.after - 1].state == "deferred" then
+             error("phase \($p.n): (after \($p.after)) waits on a deferred phase; undefer it or drop the marker")
+           else . end)
         | if $p.with != null and $p.with < $p.n and $p.with > 0 and $w.state == "open" then
-            .of[$p.n | tostring] = .of[$p.with | tostring]
+            (if $p.indep or $p.after != null then
+               error("phase \($p.n): a (with \($p.with)) line takes the wait of phase \($p.with)'"'"'s item; mark that line") else . end)
+            | .of[$p.n | tostring] = .of[$p.with | tostring]
             | .items[.of[$p.n | tostring]] += [$p]
-          else .of[$p.n | tostring] = (.items | length) | .items += [[$p]] end)
-    | .items | map({phases: map(.n), names: map(.name | sub(" ?\\(with [0-9]+\\)"; "") | sub("^[0-9]+[.)] "; ""))}
+          else
+            # dep: "chain" waits on the item before, "base" on --after alone (a landed phase is no
+            # wait), a number on the item whose first phase it is.
+            (if $p.indep then "base"
+             elif $p.after == null then "chain"
+             elif $all[$p.after - 1].state == "done" then "base"
+             else .items[.of[$p.after | tostring]][0].n end) as $dep
+            | .of[$p.n | tostring] = (.items | length) | .items += [[$p + {dep: $dep}]] end)
+    | .items | map({dep: .[0].dep, phases: map(.n),
+        names: map(.name | gsub(" ?\\((with|after) [0-9]+\\)"; "") | gsub(" ?\\(independent\\)"; "") | sub("^[0-9]+[.)] "; ""))}
       | .titles = (.names | map(sub("[.:] .*$"; "") | sub("[.:]$"; "") | .[0:80]))
-      | .full = (.names | map(sub("[.]$"; "")) | join("; ") | .[0:100]))')" ||
-    die "--plan $planf: could not read its Phases checklist"
+      | .full = (.names | map(sub("[.]$"; "")) | join("; ") | .[0:100]))' 2>&1)" ||
+    die "--plan $planf: could not read its Phases checklist: ${groups#jq: error (at *): }"
   [ "$(jq length <<<"$groups")" -gt 0 ] || die "--plan $planf: no unchecked phase in its ## Phases checklist"
   local prefix
   prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
@@ -1108,15 +1133,15 @@ add_plan() {
   local rows
   rows="$(jq -r --arg pre "$prefix" --arg plan "$planf" --arg pname "$(basename "$planf" .md)" '.[]
     | (.phases | length > 1) as $many
-    | [($pre + "-p\(.phases[0])"), (.phases | join(" ")),
+    | [($pre + "-p\(.phases[0])"), (.dep | tostring), (.phases | join(" ")),
        ("\(if $many then "Phases \(.phases | join(" and "))" else "Phase \(.phases[0])" end) of the plan \($plan): \(.titles | join("; ")). "
         + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
         + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
         + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
        "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)"]
     | @tsv' <<<"$groups")"
-  local s ph text prev="$after"
-  while IFS=$'\t' read -r s ph text _; do
+  local s dep ph text prev="$after" wait
+  while IFS=$'\t' read -r s dep ph text _; do
     [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"
   done <<<"$rows"
   if [ -n "$after" ] && [ -z "$(find_item "$after")" ] && [ -z "$(done_status "$after")" ]; then
@@ -1126,7 +1151,12 @@ add_plan() {
   # twice, and the next phase still goes after it (an ok after: releases at once).
   local n=0 total why skipped=0
   total="$(wc -l <<<"$rows")"
-  while IFS=$'\t' read -r s ph text ttl; do
+  while IFS=$'\t' read -r s dep ph text ttl; do
+    case "$dep" in
+      chain) wait="$prev" ;;
+      base) wait="$after" ;;
+      *) wait="$prefix-p$dep" ;;
+    esac
     why=''
     [ -n "$repeat" ] || why="$(finished_ok "$s")"
     if [ -n "$why" ]; then
@@ -1134,11 +1164,11 @@ add_plan() {
       skipped=$((skipped + 1)); prev="$s"; continue
     fi
     if [ -n "$dry" ]; then
-      printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${prev:--}" "$text"
+      printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${wait:--}" "$text"
     else
       AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" \
         cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
-          --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${prev:+--after "$prev"} ${repeat:+--repeat} -- "$text" ||
+          --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text" ||
         die "added $n of $total items from $planf; $s and the rest are not queued"
     fi
     n=$((n + 1)); prev="$s"
@@ -1294,6 +1324,15 @@ cmd_bump() {
   header_set "$f" priority "$prio"
   item_event item-set "$f" --why "priority=$prio"
   echo "$slug -> $prio"
+  # Priority never overrides an after: (a dependency claim), so an urgent item it holds says so.
+  local after hold
+  after="$(fm_get "$f" after)"
+  [ "$prio" = urgent ] && [ -n "$after" ] && [[ "$f" == */queued/* ]] || return 0
+  hold="$(hold_reason "$f")"
+  case "$hold" in
+    "after $after") echo "agent-queue: $slug is held after $after: it starts when that lands; agent-queue set $slug after= runs it now" >&2 ;;
+    after\ *) echo "agent-queue: $slug is held $hold" >&2 ;;
+  esac
 }
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
@@ -1602,6 +1641,31 @@ cmd_requeue() {
   cmd_move "$slug" queued
 }
 
+# settle-ask <id> -- fail every queued item held on that ask that it can no longer release, now that
+# the human answered or cancelled it: cancelled, or answered with an option its tag does not name
+# (ask_pending decides). agent-ask runs this on each cancel and human answer. The board row stays
+# open and `note:` names the ask, so re-gating it is one add. On 2026-11-10 three items sat behind
+# vmToL3 (answered a, gate wanted b) and VOEW9i (cancelled) and tripped queue-starved; dead_holds in
+# fleet-dispatch reports what this missed.
+cmd_settle_ask() {
+  local id="${1:?usage: agent-queue settle-ask <id>}" f tag why slug note
+  [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "not an ask id: $id"
+  lock
+  local AQ_LOCKED=1
+  while IFS= read -r f; do
+    for tag in $(fm_get "$f" tags); do
+      [ "${tag%%=*}" = "ask:$id" ] || continue
+      why="$(ask_pending "${tag#ask:}")"
+      # A judge or shepherd answer ("answered by judge, not the human") is not dead: the human can still answer.
+      case "$why" in "answered by "*) continue ;; cancelled | "answered "*", not "*) ;; *) continue ;; esac
+      slug="$(fm_get "$f" slug)" note="$(fm_get "$f" note)"
+      header_set "$f" note "dead hold: $tag ($why)${note:+; $note}"
+      cmd_move "$slug" done --status failed
+      break
+    done
+  done < <(items_in "$AQ_DIR/queued")
+}
+
 # reopen <slug> [--to running|waiting] [--why <text>] -- put back an item a false close finished,
 # such as a reap that read a live session as gone (ar-900, 2026-11-07: the shepherd had to move the
 # file under the lock by hand). The latest done item with the slug goes to running (or waiting) with
@@ -1863,6 +1927,7 @@ command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
+  settle-ask) shift; cmd_settle_ask "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac

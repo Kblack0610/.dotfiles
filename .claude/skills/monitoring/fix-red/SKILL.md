@@ -34,7 +34,7 @@ A watch's `action` field is the owner's own first step: do that before inventing
 
 ## 2. Reproduce
 
-Run the watch's `expect_cmd`, or the check that failed, by hand. Probes are read-only, so this is safe. Skip a probe that does anything else and say so.
+For a watch, run `watch-companion-loop recheck <name>` with the Bash timeout set past `SENTINEL_LOCK_WAIT` (it waits for a daemon pass to finish): it probes now, whatever the interval, and writes the state and evidence the badges read. Exit 75 means another pass held the lock, not a red: run it again. An ERROR state is the manifest failing to load, not the probe: fix the yaml first. For any other red, run the check that failed by hand. The probe is read-only; recheck writes only the watch's own state and may send its recovery page. Skip a probe that does anything else and say so.
 
 - Green now: the red is over. Find out what cleared it, and if nothing explains it, say it is transient in the proof. Close the item with no PR.
 - Still red: go on.
@@ -56,7 +56,7 @@ Never touch auth tokens, logs, sqlite or other runtime state, and never restart 
 
 ## 5. Prove it, review it, merge it
 
-Re-run the same probe or check from step 2 and put the before and after in the PR body. A fix that only takes effect after a merge or a deploy says what to re-run then.
+Re-run the same probe or check from step 2 and put the before and after in the PR body. A fix that only takes effect after a merge or a deploy says what to re-run then; for a watch that is `watch-companion-loop recheck <name>` once it is live (merged and pulled into the main checkout, since stow links point there), so the red clears that minute and not on the watch's interval.
 
 A red fix merges itself, at any hour, because a fix held at a PR keeps the fleet red too (`~/.config/fleet-dispatch/policy.md`). Nobody watches it merge, so it gets one more check than other work:
 
