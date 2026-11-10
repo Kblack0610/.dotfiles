@@ -165,7 +165,7 @@ fn list_server_panes(server: &str) -> Result<Vec<Pane>, String> {
 fn pane_format(now: u64, shepherd_home: (&str, &str)) -> String {
     "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t\
      #{&&:#{session_attached},#{window_active}}\t#{window_id}\t#{pane_title}\t\
-     #{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}\
+     #{?@fav,fav ,}#{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}\
      #{?#{||:#{e|<:NOW,#{@shepherd}},#{&&:#{==:#{session_name},HOME_SESSION},#{==:#{window_name},HOME_WINDOW}}},shepherd ,}\t#{@fleet_stage}\t#{@fleet_labels}"
         .replace("NOW", &now.to_string())
         .replace("HOME_SESSION", shepherd_home.0)
@@ -296,6 +296,13 @@ mod tests {
         assert_eq!(panes[0].tags, "pinned");
         assert_eq!((panes[0].stage.as_str(), panes[0].labels.as_str()), ("STALLED", "manual,x"));
         assert_eq!((panes[1].stage.as_str(), panes[1].labels.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn a_favourite_session_tags_every_pane_in_it() {
+        // @fav is a session option (tmux-tags fav); a pane format falls back to it.
+        let fmt = pane_format(0, ("hub", "shepherd"));
+        assert!(fmt.contains("\t#{?@fav,fav ,}#{?@tag_important,"), "{fmt}");
     }
 
     #[test]

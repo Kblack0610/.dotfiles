@@ -3110,7 +3110,7 @@ impl App {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Costs => format!(
-                "b/B cut  w window  / query  s sort  S asc/desc  K keys  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "b/B cut  w window  / query  s sort  S asc/desc  K keys  y spend  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
                 "type a query (kind:session state:failed -who:x), Enter applies, Esc drops it".into()

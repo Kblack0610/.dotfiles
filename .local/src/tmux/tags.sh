@@ -28,6 +28,13 @@
 #   protected <win>            exit 0 if the window is pinned/important
 #   vocab                      print the reserved tag vocabulary
 #
+# Session favourites - a SESSION user-option, @fav 1, not a window tag:
+#   fav [toggle|on|off] [-t <session>]  favourite this session      (Prefix+t f)
+#   fav ls                              favourite sessions, one per line
+# tmux formats fall back from pane to window to session options, so #{@fav}
+# reads true in every window and pane of the session: the status bar, the
+# Prefix+w tree, `tmx pick` and agent-panel all mark it from that one option.
+#
 # Group verbs - a tag is a group:
 #   gather --tag <t> --into <session>   move every tagged window into a session
 #   next --tag <t>                      cycle to the next window in the group
@@ -343,6 +350,50 @@ cmd_protected() {
     return 1
 }
 
+# ── session favourites ──────────────────────────────────────────────────────
+# The session of -t (a session name or $id, or any window or pane target), else
+# the caller's. Printed as $id, which a rename cannot move.
+resolve_session() {
+    local want="${1:-}" pane="${TMUX_PANE:-}" sid
+    if [ -n "$want" ]; then
+        sid=$(tmux display-message -p -t "$want" '#{session_id}' 2>/dev/null) && [ -n "$sid" ] \
+            && { printf '%s\n' "$sid"; return 0; }
+        die "no such session: $want"
+    fi
+    if [ -n "$pane" ]; then
+        tmux display-message -p -t "$pane" '#{session_id}' 2>/dev/null && return 0
+    fi
+    sid=$(tmux list-clients -F '#{session_id}' 2>/dev/null | head -1)
+    [ -n "$sid" ] && { printf '%s\n' "$sid"; return 0; }
+    die "not inside tmux and no attached client; pass -t <session>"
+}
+
+cmd_fav() {
+    split_target "$@"
+    local verb="${ARGV_REST[0]:-toggle}" sid name
+    [ ${#ARGV_REST[@]} -le 1 ] || die "usage: fav [toggle|on|off|ls] [-t <session>]"
+    if [ "$verb" = ls ]; then
+        [ -z "$TARGET_ARG" ] || die "fav ls lists every favourite and takes no -t"
+        tmux list-sessions -f '#{@fav}' -F '#{session_name}' 2>/dev/null
+        return 0
+    fi
+    sid=$(resolve_session "$TARGET_ARG") || exit 1
+    if [ "$verb" = toggle ]; then
+        if [ -n "$(tmux show-options -qv -t "$sid" @fav 2>/dev/null)" ]; then verb=off; else verb=on; fi
+    fi
+    case "$verb" in
+        on)  tmux set-option -t "$sid" @fav 1 2>/dev/null || die "could not favourite $sid" ;;
+        off) tmux set-option -u -t "$sid" @fav 2>/dev/null || true ;;
+        *)   die "usage: fav [toggle|on|off|ls] [-t <session>]" ;;
+    esac
+    # Doubled #, so display-message shows the name instead of expanding a format in it.
+    name=$(tmux display-message -p -t "$sid" '#{session_name}' 2>/dev/null)
+    name="${name//#/##}"
+    if [ "$verb" = on ]; then tmux display-message "favourite: $name" 2>/dev/null || true
+    else tmux display-message "not a favourite: $name" 2>/dev/null || true; fi
+    tmux refresh-client -S 2>/dev/null || true
+}
+
 # ── group verbs ──────────────────────────────────────────────────────────────
 # A tag is a group. These operate on every window carrying it.
 
@@ -518,6 +569,7 @@ case "$sub" in
     protected)  cmd_protected "$@" ;;
     gather)     cmd_gather "$@" ;;
     next)       cmd_next "$@" ;;
+    fav)        cmd_fav "$@" ;;
     kill)       cmd_kill "$@" ;;
     pick)       cmd_pick ;;
     _pickrows)  cmd_pickrows ;;
