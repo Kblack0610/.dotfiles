@@ -69,6 +69,7 @@ unset _k _v
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06)
 : "${DISPATCH_FIX_TRIES:=2}"   # fix-ci sessions a parked review item with a red PR gets before it goes to the human sheet (fix_red_pr), as fleet-bench TRIAGE_FIX_TRIES bounds a red cause. Provisional: the plan's cap (2026-11-09, 16 of 20 parked PRs red), medium confidence; revisit when a third try would have landed one, or two burn on gate churn
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
+: "${DISPATCH_PACE_HOLD:=1}"   # 0 lifts weekly pace alone for the standing start order; account capacity and machine gates still hold
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
 : "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats)
@@ -784,29 +785,30 @@ is_red() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" red "* ]]; }
 # acct_room -- the account a run start may take, from claude-acct's published answer: one
 # `claude-acct room --json` a step (ACCT_ROWS holds it, local to the caller that shares it; each
 # start asks afresh, since a start moves the burn). Its pick, the best account with room; while a
-# floor is open and there is none, the best refused for its pace alone (room.reasons == ["pace"]):
+# floor or the configured pace exemption is open and there is none, the best refused for its pace alone (room.reasons == ["pace"]):
 # the reserve, its 5h window and committed burn still refuse. Sets ACCT_DIR (empty for the main
 # account), ACCT_WHY (claude-acct's own refusal sentence, plus why an open floor lifted none) when none may, and ACCT_PAST_PACE=1 when
 # the start goes past an account's pace. rc 1 when none may, 2 when none may and an account cannot
 # be read, or claude-acct gave no answer.
 acct_room() {
-  local lift=false pick unread
+  local lift=false pick unread lift_name="the run floor"
   ACCT_DIR='' ACCT_WHY='' ACCT_PAST_PACE=0
   [ -n "${ACCT_ROWS:-}" ] || ACCT_ROWS=$(claude-acct room --json 2>/dev/null)
   if ! jq -e '.accounts | type == "array"' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
     ACCT_ROWS='' ACCT_WHY="claude-acct room --json gave no answer"; return 2
   fi
-  if floor_open || red_floor_open; then lift=true; fi
+  if [ "$DISPATCH_PACE_HOLD" = 0 ]; then lift=true; lift_name="DISPATCH_PACE_HOLD=0"
+  elif floor_open || red_floor_open; then lift=true; fi
   pick=$(jq -r --argjson lift "$lift" '[(.pick as $p | .accounts[] | select(.name == $p) | "0 \(.dir)"),
       (select($lift) | .accounts | sort_by(.rank)[] | select(.room.reasons == ["pace"]) | "1 \(.dir)")]
     | first // empty' <<<"$ACCT_ROWS")
   if [ -n "$pick" ]; then ACCT_PAST_PACE=${pick%% *} ACCT_DIR=${pick#* }; return 0; fi
-  # With a floor open and an account past its pace, say why the floor did not lift it.
-  IFS=$'\x1f' read -r unread ACCT_WHY < <(jq -r --argjson lift "$lift" '
+  # Say why an active pace exemption could not lift the other account refusals.
+  IFS=$'\x1f' read -r unread ACCT_WHY < <(jq -r --argjson lift "$lift" --arg lift_name "$lift_name" '
     [any(.accounts[]; .state == "unread"),
        (.why // "claude-acct gave no reason")
        + (if $lift and any(.accounts[].room.reasons[]?; . == "pace")
-          then "; the run floor lifts an account refused for its pace alone, and every one past its pace has another refusal" else "" end)]
+          then "; \($lift_name) lifts an account refused for its pace alone, and every one past its pace has another refusal" else "" end)]
     | map(tostring) | join("\u001f")' <<<"$ACCT_ROWS")
   [ "$unread" = true ] && return 2
   return 1
@@ -2835,7 +2837,10 @@ start_item() {
     elif project_floor_open; then floor=" on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"; keep=1
     elif floor_open; then
       floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
-      keep=$ACCT_PAST_PACE
+      [ "$DISPATCH_PACE_HOLD" = 0 ] || keep=$ACCT_PAST_PACE
+    fi
+    if [ "$DISPATCH_PACE_HOLD" = 0 ] && [ "$ACCT_PAST_PACE" = 1 ]; then
+      floor="$floor under DISPATCH_PACE_HOLD=0"
     fi
     START_ORIGIN=run START_VERDICT=$verdict RUN_ACCOUNT=$ACCT_DIR cmd_start --item "$slug" ${PLACE_HOST:+--host "$PLACE_HOST"}
   else

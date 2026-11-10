@@ -1565,6 +1565,51 @@ refuses() {
   refuses 'no account has room; main is the closest, 1 point over its weekly pace'
 }
 
+@test "standing pace order: the conf lifts weekly pace beyond the run floor and clears a stale hold" {
+  two_items
+  acct alt:pace:/home/u/.claude-personal
+  export DISPATCH_RUN_FLOOR=1 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=2
+  export DISPATCH_CONF="$SANDBOX/dispatch.conf"
+  printf 'DISPATCH_PACE_HOLD=0\n' > "$DISPATCH_CONF"
+  unset DISPATCH_PACE_HOLD
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  local d="$HOME/.local/state/agentctl/fleet-dispatch"
+  mkdir -p "$d"; echo 1 > "$d/held_since"; echo 'no account has room' > "$d/held_why"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-game on the run floor (DISPATCH_RUN_FLOOR=1) under DISPATCH_PACE_HOLD=0'
+  assert_output --partial 'started queue item fix-app under DISPATCH_PACE_HOLD=0'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  [ ! -e "$d/held_since" ] || fail 'the pace order left a stale hold standing'
+}
+
+@test "standing pace order: it preserves machine gates and other account refusals" {
+  game_ready
+  export DISPATCH_PACE_HOLD=0 DISPATCH_RUN_FLOOR=0 DISPATCH_RED_FLOOR=0
+  acct alt:pace:/home/u/.claude-personal
+  cpu 60 30 0 10
+  refuses 'real idle 10.0% is under 30%'
+  cpu 10 10 0 80
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  refuses 'load '
+  echo '0.10 1 1 1/1 1' > "$DISPATCH_LOADAVG"
+  for r in pace,five_hour pace,committed pace,reserve pace,capped unread; do
+    acct "alt:$r:/home/u/.claude-personal"
+    refuses 'account'
+  done
+}
+
+@test "standing pace order: room still wins over a better-ranked account past pace" {
+  two_items
+  export DISPATCH_PACE_HOLD=0 DISPATCH_RUN_FLOOR=0 DISPATCH_RED_FLOOR=0
+  acct main:pace alt:ok:/home/u/.claude-personal
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+  refute_output --partial 'under DISPATCH_PACE_HOLD=0'
+}
+
 # room_on_floor: the one account's verdict refuses it for its pace alone, so it has room only while
 # a floor lifts the pace reason.
 room_on_floor() {
