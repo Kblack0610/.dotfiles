@@ -144,6 +144,8 @@ VERDICTS="$DIR/verdicts.jsonl"
 AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finished ok (its finished_ok)
 AQ_EX_HELD=5       # agent-queue add's exit when admission held an automated add (its admit)
 LOG="$DIR/log.md"
+CODEX_SESSIONS="${DISPATCH_CODEX_SESSIONS:-$HOME/.codex/sessions}"             # Codex's rollouts, where item_end reads why a run ended
+CODEX_ROLLOUT_JQ="${DISPATCH_CODEX_ROLLOUT_JQ:-$HOME/.local/lib/codex-rollout.jq}"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
 IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
@@ -1993,6 +1995,23 @@ unstart_orphans() {
   printf '%s' "$seen" > "$DIR/orphans.tsv.new" && mv "$DIR/orphans.tsv.new" "$DIR/orphans.tsv"
 }
 
+# item_end <item json> -> why a Codex item's run ended (end_reason), from its rollout: the one
+# classifier is codex-rollout.jq. Nothing for an item on another harness, or one whose rollout cannot be
+# found: no evidence is not a reason, and such an end rates as before. The item's `sessions:` hold the
+# thread ids agent-codex claimed; the launcher's timeout tells a timeout from a cut.
+item_end() {
+  local agent id f='' t
+  agent=$(jq -r '.agent // "claude"' <<<"$1")
+  [ "$(harness_launcher "$agent")" = codex ] || return 0
+  for id in $(jq -r '(.sessions // "") | split(" ") | reverse | .[]' <<<"$1"); do
+    f=$(find "$CODEX_SESSIONS" -name "rollout-*-$id.jsonl" -type f 2>/dev/null | head -n 1)
+    [ -z "$f" ] || break
+  done
+  [ -n "$f" ] || return 0
+  t=$(jq -r --arg h "$agent" '(.harnesses[$h].timeout_min // 0) * 60' "$HARNESSES" 2>/dev/null) || t=0
+  jq -rs --argjson timeout_s "${t:-0}" -f "$CODEX_ROLLOUT_JQ" "$f" 2>/dev/null
+}
+
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
 # Still open, it goes by its PR's state (merged: when the item has one, else item_pr_state): MERGED records merged: and is done ok (and
 # a board row still started closes on merge proof, close_row), OPEN waits in review/ for the merge
@@ -2003,8 +2022,12 @@ unstart_orphans() {
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
+# A Codex run that ends without closing also records why (item_end, --end): this is the only writer of
+# end_reason, and the reason is named in the note.
 settle_item() {
-  local st it pr report info state='' oid head='' ci=''; st=$(item_state "$1")
+  local st it pr report info state='' oid head='' ci='' end=() why=''; st=$(item_state "$1")
+  # set_end -- why this run ended, asked only by the branches that record it.
+  set_end() { why=$(item_end "$it"); [ -z "$why" ] || end=(--end "$why"); }
   case "$st" in running | waiting | review | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(agent-queue show "$1" --json 2>/dev/null)
   # A partial merge proves only one repo landed. The next PR may not exist yet.
@@ -2040,13 +2063,15 @@ settle_item() {
       logline "reaped $2: session gone, queue item $1 done, PR $pr merged"
       close_row "$1" ;;
     OPEN)
-      agent-queue move "$1" "review" --if "$st" >/dev/null || return 0
-      agent-queue set "$1" "note=session $2 ended with PR $pr open" >/dev/null
+      set_end
+      agent-queue move "$1" "review" ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
+      agent-queue set "$1" "note=session $2 ended with PR $pr open${why:+ (end_reason: $why)}" >/dev/null
       logline "reaped $2: session gone, queue item $1 in review on its open PR $pr"
       echo "review queue item $1 (PR $pr open, $2 ended)" ;;
     CLOSED)
-      agent-queue move "$1" "done" --status failed --if "$st" >/dev/null || return 0
-      agent-queue set "$1" "note=PR $pr closed unmerged; session $2 ended" >/dev/null
+      set_end
+      agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
+      agent-queue set "$1" "note=PR $pr closed unmerged; session $2 ended${why:+ (end_reason: $why)}" >/dev/null
       logline "reaped $2: session gone, queue item $1 failed: PR $pr closed unmerged"
       echo "failed queue item $1 (PR $pr closed unmerged)" ;;
     *) logline "reaped $2: queue item $1 left: gh could not read PR $pr" ;;
@@ -2055,10 +2080,11 @@ settle_item() {
     agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
     logline "reaped $2: session gone, queue item $1 done with its report $report"
   else
-    agent-queue move "$1" "done" --status failed --if "$st" >/dev/null || return 0
-    agent-queue set "$1" "note=session $2 ended before it closed the item" >/dev/null
-    logline "reaped $2: session gone, queue item $1 failed: no PR"
-    echo "failed queue item $1 ($2 ended without closing it)"
+    set_end
+    agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
+    agent-queue set "$1" "note=session $2 ended before it closed the item${why:+ (end_reason: $why)}" >/dev/null
+    logline "reaped $2: session gone, queue item $1 failed: no PR${why:+, end_reason $why}"
+    echo "failed queue item $1 ($2 ended without closing it${why:+, end_reason $why})"
   fi
 }
 

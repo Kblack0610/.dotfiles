@@ -17,7 +17,9 @@
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
-#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--if <state>]
+#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--if <state>]
+#       --end records why a run ended (end_reason:): refused, limit, provider, cut, timeout or stopped.
+#       The first four are not the model's doing, so the run's model-lane outcome is not filed.
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
@@ -602,9 +604,10 @@ item_recs() {
 # its `after:` item when that came later, so a deliberate hold is not read as waiting; none while an
 # `after:` still holds it. The one rule for an item's wait: `stats` medians it, the hub shows it.
 # An item with no weight line gets weight_of's answer, so every reader sees a weight.
-# `row` is the "<project>:<key>" of the sheet row the item closes on merge: its `row:` (file_story,
-# link_row), else the board row it was promoted from (`from: board:`). The one definition
-# agent-land and fleet-dispatch read, whatever the item's origin.
+# `row` is the "<board>:<key>" of the sheet row the item closes on merge, the board being the item's
+# project or the one its `board` key names (project_board): its `row:` (file_story, link_row), else
+# the board row it was promoted from (`from: board:`). The one definition agent-land and
+# fleet-dispatch read, whatever the item's origin.
 ITEM_JQ='split("\u001d") as [$side, $recs]
   | ($side | split("\u001e")[:-1] | map(split("\u001f") | {key: .[0], value: {hold: .[1], weight: .[2], afin: .[3]}})
      | from_entries) as $by
@@ -786,27 +789,30 @@ project_of_cwd() {
   [ -f "$AQ_MAP" ] && jq -r --arg r "$top" '.paths[$r] // empty' "$AQ_MAP" 2>/dev/null
 }
 
-# project_board <project> -> "<profile><TAB><row code>" of the project's lab sheet; either is empty when it has none.
+# project_board <project> -> "<board><TAB><profile><TAB><row code>" of the lab sheet the project's rows
+# go on: the project named by its `board` key (a repo with no sheet of its own: dotfiles-private ->
+# agent-runtime), else its own. Profile and code are empty when that board has no sheet.
 project_board() {
-  jq -r --arg p "$1" '(.trackers[$p] | objects) // {} | [.lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
+  jq -r --arg p "$1" '((.trackers[$p] | objects | .board) // $p) as $b
+    | (.trackers[$b] | objects) // {} | [$b, .lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
 }
 
-# file_story <project> <title> <priority> <weight> <epic> <want> -> "<profile><TAB><id>" of the story row
+# file_story <project> <title> <priority> <weight> <epic> <want> -> "<board><TAB><profile><TAB><id>" of the story row
 # the item closes on merge, or nothing. An item not promoted from the board is still a story on its
 # project's agent board, so a task shows under its feature the moment it is added: one `[/]` row
 # through `notes ptask` (the rows' one writer), `#of/<epic>` when the item names an epic of this
 # project (--epic, or its plan's `epic:` line), else the standing epic of its area's system, which
-# `notes ptask` links, `#size/s` for a light item and `#size/m` for a
-# heavy one, at the item's priority. Started, so dispatch never promotes it a second time. An open
+# `notes ptask` links, `#size/s` for a light item and `#size/m` for a heavy one, at the item's
+# priority, on the board project_board names. Started, so dispatch never promotes it a second time. An open
 # row with the same text is linked instead of written twice. A project with no lab sheet or no row
 # code files nothing, and a failed write never stops the add: the item is the record, the row its credit.
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
 file_story() {
-  local project="$1" text="$2" prio="$3" size=s of="" lab code row out rc=0 id detail=() want=()
+  local project text="$2" prio="$3" size=s of="" lab code row out rc=0 id detail=() want=()
   [ -z "${6:-}" ] || want=(--want "$6")
   [ "$4" = heavy ] && size=m
   [ -f "$AQ_MAP" ] || return 0
-  IFS=$'\t' read -r lab code < <(project_board "$project")
+  IFS=$'\t' read -r project lab code < <(project_board "$1")
   [ -n "$lab" ] && [ -n "$code" ] || return 0
   command -v notes >/dev/null || { echo "agent-queue: no story row filed: no notes on PATH" >&2; return 0; }
   [ "${5%-*}" = "$code" ] && of=" #of/$5"
@@ -828,23 +834,23 @@ file_story() {
        if grep -q ': - \[ \] ' <<<"$out"; then notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1; fi ;;
     *) echo "agent-queue: no story row filed on $project: ${out##*$'\n'}" >&2; return 0 ;;
   esac
-  printf '%s\t%s\n' "$lab" "$id"
+  printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
 }
 
-# link_row <id> <project> -> "<profile><TAB><id>" of an open row on the project's agent board, started
+# link_row <id> <project> -> "<board><TAB><profile><TAB><id>" of an open row on the project's agent board, started
 # now, for an item that works a row already filed. Refused when the project has no board, the row is
 # not open there, or a live item already names it (two items cannot both close one row). `from:` stays
 # the item's origin: a board origin also means dispatch's presence gate and the judge's picks.
 link_row() {
-  local id="$1" project="$2" lab code taken out
-  IFS=$'\t' read -r lab code < <(project_board "$project")
-  [ -n "$lab" ] && [ -n "$code" ] || die "--row $id: $project has no agent board (no lab or code in $AQ_MAP)"
+  local id="$1" project lab code taken out
+  IFS=$'\t' read -r project lab code < <(project_board "$2")
+  [ -n "$lab" ] && [ -n "$code" ] || die "--row $id: $2 has no agent board (no lab or code in $AQ_MAP, nor a board key naming one)"
   taken="$(collect $ACTIVE | jq -r --arg r "$project:$id" 'first(.[] | select(.row == $r) | .slug) // empty')"
   [ -z "$taken" ] || die "--row $id: $taken already works that row; to take it over: agent-queue claim $taken"
   command -v notes >/dev/null || die "--row $id: no notes on PATH"
   out="$(notes --profile "$lab" ptask "$project" --agent start "$id" 2>&1)" ||
     die "--row $id: not an open row on the $project agent board: ${out##*$'\n'}"
-  printf '%s\t%s\n' "$lab" "$id"
+  printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
 }
 
 # named_row <title> -> the one row id (`ucp-134`) the title names as its subject, else nothing and
@@ -860,17 +866,18 @@ named_row() {
   [ -n "$ids" ] && [ "$(grep -c . <<<"$ids")" = 1 ] && printf '%s\n' "$ids"
 }
 
-# prior_story <slug> <project> -> "<profile><TAB><id>" of the row this slug's last item recorded, when
-# that row is still open on this project's board (started now if it was not), else nothing. A re-queue
+# prior_story <slug> <project> -> "<board><TAB><profile><TAB><id>" of the row this slug's last item recorded,
+# when that row is still open on this project's board (started now if it was not), else nothing. A re-queue
 # keeps its row by its id, not by its words: on 2026-11-06 two re-queued trader phases got second rows
 # (tr-76, tr-77) because the first ones were written before rows were typed, so no text matched.
 prior_story() {
-  local f row prof
+  local f row prof board
   f="$(latest_done "$1")"; [ -n "$f" ] || return 0
   row="$(fm_get "$f" row)"; prof="$(fm_get "$f" profile)"
-  [ "${row%%:*}" = "$2" ] && [ -n "$prof" ] && command -v notes >/dev/null || return 0
-  notes --profile "$prof" ptask "$2" --agent start "${row#*:}" >/dev/null 2>&1 || return 0
-  printf '%s\t%s\n' "$prof" "${row#*:}"
+  board="$(project_board "$2" | cut -f1)"
+  [ "${row%%:*}" = "$board" ] && [ -n "$prof" ] && command -v notes >/dev/null || return 0
+  notes --profile "$prof" ptask "$board" --agent start "${row#*:}" >/dev/null 2>&1 || return 0
+  printf '%s\t%s\t%s\n' "$board" "$prof" "${row#*:}"
 }
 
 # --- verbs ---
@@ -989,7 +996,7 @@ cmd_add() {
   # Only a session taking the item works it. One queueing it for later did not, and outcomes
   # would charge that session's cost and revert count to this item.
   [ -z "$running" ] || sid="$(claude_sid)" || sid=
-  local story=''
+  local story='' sboard='' sprof='' srow=''
   # A canary item is an eval of the fleet, not work on the project: fleet-bench canary is its record.
   case "$from" in
     board:* | canary) ;;
@@ -1004,6 +1011,7 @@ cmd_add() {
          [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic" "$want")"
        fi ;;
   esac
+  [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
@@ -1020,12 +1028,12 @@ cmd_add() {
     [ -n "$session" ] && printf 'session: %s\n' "$session"
     [ -n "$window" ] && printf 'window: %s\n' "$window"
     [ -n "$sid" ] && printf 'sessions: %s\n' "$sid"
-    [ -n "$story" ] && printf 'row: %s:%s\nlane: agent\nprofile: %s\n' "$project" "${story#*$'\t'}" "${story%%$'\t'*}"
+    [ -n "$story" ] && printf 'row: %s:%s\nlane: agent\nprofile: %s\n' "$sboard" "$srow" "$sprof"
     printf -- '---\n%s\n' "$text"
   } > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
   item_event item-added "$f" --to "$state"
   echo "$state $slug -> $f"
-  [ -z "$story" ] || echo "story ${story#*$'\t'} on the $project agent board${epic:+, under $epic}"
+  [ -z "$story" ] || echo "story $srow on the $sboard agent board${epic:+, under $epic}"
   [ -z "$running" ] || mark_row "$f" run
   [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
@@ -1260,6 +1268,7 @@ cmd_cancel() {
   fi
   header_set "$f" status cancelled
   header_set "$f" finished "$(now_utc)"
+  header_del "$f" end_reason
   dest="$(move_to "$f" "done")" || die "could not move $f"
   item_event item-cancelled "$dest" --to done
   echo "cancelled $slug -> $dest"
@@ -1277,7 +1286,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model size lane_run plan pr merged partial closing_pr fix_tries fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed "
+SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model size lane_run end_reason plan pr merged partial closing_pr fix_tries fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -1288,6 +1297,7 @@ cmd_set() {
     [ "$k" != "$kv" ] || die "not key=value: $kv"
     case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
     [ "$k" != tags ] || check_tags "${kv#*=}"
+    [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
     if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then
       die "unknown project: ${kv#*=} (not a canonical project in $AQ_MAP)"
     fi
@@ -1379,18 +1389,27 @@ cmd_credit_of() {
   credit_of "$1" || die "could not read $AQ_MAP"
 }
 
-# move <slug> <state> [--status s] [--if <state>] -- --if is the compare in a compare-and-set: the
+# END_REASONS: why a run ended (end_reason:), set only by fleet-dispatch's settle_item from the rollout
+# (codex-rollout.jq). The first four say nothing about the model, so lane_outcome files no outcome for
+# them; `timeout` and `stopped` rate as before.
+END_REASONS="refused limit provider cut timeout stopped"
+UNRATED_ENDS=" refused limit provider cut "
+check_end() { case " $END_REASONS " in *" $1 "*) ;; *) die "end_reason is one of: $END_REASONS, not $1" ;; esac; }
+
+# move <slug> <state> [--status s] [--end reason] [--if <state>] -- --end records why the run ended
+# (end_reason:); --if is the compare in a compare-and-set: the
 # move happens only while the item is still in the state the caller read, so a pass that read it a
 # moment ago never undoes a move made since (a requeue, the session's own close).
 cmd_move() {
-  local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
-  local status="" expect="" f from dest deps run tags
+  local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--end reason] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
+  local status="" end="" expect="" f from dest deps run tags
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --status) status="${2:?--status needs a value}"; shift 2 ;;
+      --end) end="${2:?--end needs a reason}"; check_end "$end"; shift 2 ;;
       --if) expect="${2:?--if needs a state}"; shift 2 ;;
-      *) die "usage: agent-queue move <slug> <state> [--status s] [--if state]" ;;
+      *) die "usage: agent-queue move <slug> <state> [--status s] [--end reason] [--if state]" ;;
     esac
   done
   case "$to" in queued | running | waiting | review | done) ;; *) die "state is queued, running, waiting, review or done, not $to" ;; esac
@@ -1424,6 +1443,8 @@ cmd_move() {
     # may run it here.
     queued) header_del "$f" session window started waiting review origin lane_run host ;;
     running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)"
+      # A new run has not ended yet: the last run's reason goes.
+      header_del "$f" end_reason
       # A hold: tag gates one start: once running, the item's own session may claim that resource,
       # and a tag left on would hold the item behind its own claim if it is ever requeued.
       tags="$(fm_get "$f" tags)"
@@ -1433,12 +1454,15 @@ cmd_move() {
       esac ;;
     waiting) header_set "$f" waiting "$(now_utc)" ;;
     review) header_set "$f" review "$(now_utc)" ;;
-    done) header_set "$f" status "$status"; header_set "$f" finished "$(now_utc)" ;;
+    # A run that landed or was cancelled has no end to report: a reason left from a wait on its PR goes.
+    done) header_set "$f" status "$status"; header_set "$f" finished "$(now_utc)"
+      case "$status" in ok | cancelled) header_del "$f" end_reason; end="" ;; esac ;;
   esac
+  [ -z "$end" ] || header_set "$f" end_reason "$end"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}"
   echo "$slug: $from -> $to"
-  lane_outcome "$run" "$from" "$to" "$status"
+  lane_outcome "$run" "$from" "$to" "$status" "$end"
   # The row's section follows the item: Now while it runs or waits on someone, Next up once back in
   # the queue. waiting and review keep the mark: the item started.
   case "$to" in running) mark_row "$dest" run ;; queued) mark_row "$dest" start ;; esac
@@ -1629,14 +1653,16 @@ cmd_reopen() {
   echo "$slug: board row ${row#*:} started again"
 }
 
-# lane_outcome <lane_run> <from> <to> <status> -- the model-lane run a dispatch start logged gets
+# lane_outcome <lane_run> <from> <to> <status> [end] -- the model-lane run a dispatch start logged gets
 # what became of it: done ok is ok, done failed is failed, and a started item put back in the queue
 # is redo. Every close goes through move (agent-land, the reap, a hand close), so this is the one
-# place outcomes are reported. A cancel says nothing about the model; a model-lane error never
+# place outcomes are reported. A run whose end says nothing about the model (UNRATED_ENDS) files no
+# outcome, on a close or a requeue. A cancel says nothing about the model; a model-lane error never
 # fails the move.
 lane_outcome() {
   local o=''
   [ -n "$1" ] || return 0
+  case "$UNRATED_ENDS" in *" ${5:-none} "*) return 0 ;; esac
   case "$3:$4" in
     done:ok) o=ok ;;
     done:failed) o=failed ;;
@@ -1782,6 +1808,7 @@ cmd_stats() {
          | from_entries end),
        by_project: ($done | group(.project)),
        by_source: ($done | group(source)),
+       by_end: ($done | map(select((.end_reason // "") != "")) | count_by(.end_reason)),
        done_by_tag: ([$done[] | (.tags // "" | split(" ") | map(select(. != ""))[]) as $t | {t: $t}] | count_by(.t))}')"
   if [ -n "$json" ]; then printf '%s\n' "$stats"; return 0; fi
   jq -r 'def dur: if . == null then "-" elif . >= 120 then "\(. / 60 | floor)h" else "\(.)m" end;
@@ -1798,7 +1825,8 @@ cmd_stats() {
     "to PR:   median \(.to_pr_minutes_median // "-") min from queued to finished with a PR",
     "per day: \(.per_day | to_entries | map("\(.key) \(.value)") | join(", "))",
     "project: \(.by_project | to_entries | map("\(.key) \(.value.done) (\(.value.prs) PR)") | join(", "))",
-    "source:  \(.by_source | to_entries | map("\(.key) \(.value.done) (\(.value.prs) PR)") | join(", "))"' <<<"$stats"
+    "source:  \(.by_source | to_entries | map("\(.key) \(.value.done) (\(.value.prs) PR)") | join(", "))",
+    (if .by_end == {} then empty else "ends:    \(.by_end | pairs)" end)' <<<"$stats"
 }
 
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0

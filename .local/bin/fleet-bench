@@ -2461,6 +2461,8 @@ queue_section() {
 # have a pr-ci row: ci_red_per_pr is its red CI runs per PR, first_pass_share the
 # share of those that ran a gate with no red gate run (the KPI of that name). points are the
 # window points (source_attr) of the landed items' sessions, per pointed item: one with a known share.
+# An item whose end_reason is refused, limit, provider or cut (the run ended for a cause outside the
+# model) is counted in unrated, and left out of landed_rate and failed.
 # by is a comma list of class and lane. lane is the model-lane lane the item's run logged under (the
 # run its lane_run= names; unrouted when it has none), so a lane's trial candidate is scored on its
 # own lane's landings; with lane alone, redo counts the runs of that lane. This is the evidence a
@@ -2479,6 +2481,8 @@ models_json() {
     | ($ci | INDEX(itemkey)) as $cix | ($sa[0] // {}) as $sp |
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     def landed: .status == "ok" and (.pr // "") != "";
+    # An end that says nothing about the model (UNRATED_ENDS in agent-queue) is no evidence for or against it.
+    def unrated: (.end_reason // "") | IN("refused", "limit", "provider", "cut");
     def metered: (.gateway_cost_usd // "") != "";
     def alias: capture("^claude-(?<f>[a-z]+)-").f // .;
     ($outcomes[0] // {}) as $o
@@ -2510,8 +2514,9 @@ models_json() {
         | [$li | map(prkeys[]) | unique[] | $cix[.] // empty] as $cr
         | ($li | map(sids[]) | unique | map($sp[.].points // empty)) as $pt
         | ($li | map(select(any(sids[]; $sp[.].points != null))) | length) as $pointed
-        | {model: $m, harness: $h, done: ($it | length), landed: $landed, landed_rate: ratio($landed; $it | length),
-           failed: ($it | map(select(.status == "failed")) | length),
+        | ($it | map(select(unrated)) | length) as $unrated
+        | {model: $m, harness: $h, done: ($it | length), landed: $landed, landed_rate: ratio($landed; ($it | length) - $unrated),
+           failed: ($it | map(select(.status == "failed" and (unrated | not))) | length), unrated: $unrated,
            runs: ($r | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
            cost_usd: ($cost * 100 | round / 100), priced: $priced, cost_per_pr: (if $priced > 0 then ($cost / $priced * 100 | round / 100) else null end),
@@ -2544,6 +2549,8 @@ models_section() {
     echo
     cols="${cols}Lane | "; lead="${lead}"'\(.lane) | ' ;;
   esac
+  echo "An item that ended for a cause outside the model (\`end_reason\` refused, limit, provider or cut: a quota end, a provider failure, a kill) counts in Done but not in Rate or Failed; \`models --json\` has it as \`unrated\`."
+  echo
   local redo_h="Redo | " redo_c='\(.redo) | ' hdr
   case ",$by," in *,class,*) redo_h="" redo_c="" ;; esac
   hdr="${cols}Model | Harness | Done | Landed | Rate | Failed | ${redo_h}Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR"
