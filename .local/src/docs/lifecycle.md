@@ -25,8 +25,10 @@ Work enters at any step. A small fix is a row and never needs a brief. The table
 
 Every artifact points at its epic: a plan's lowercase `epic: <id>` line, a brief's `Epic: <id>` head line, a row's `#of/<id>`, a queue item through its row. The reverse links are derived, never written down. `fleet-bench epics --json` is the one reader that derives them, with each epic's step, its ETA and how that ETA ran. `hub_core::epics` types it, and `hub_core::page` joins it with the stage check and the shipped versions into the opened card, read for one project only when its card is opened: `hub projects --page NAME`, agent-web `/api/projects/{name}/page`.
 
+A plan also names the board rows it answers on a lowercase `rows: <id>, <id>` line, a request row such as the human's `ucp-134`. When the plan's last phase lands, `agent-land --plan` closes each of them that is still open with the PR as proof, as it closes the item's own row; a row it cannot close is a line with the command, never a failed landing.
+
 ## Merged is not done
 
-An epic whose leaves have all landed is ready to verify, and nothing closes it automatically. Closing it takes proof of the outcome: a URL, a run, a screenshot, the human's word. `notes projects --roadmap <p> --json` lists each closed epic with that `proof`, and `verified` is false for one closed `--unverified`.
+An epic whose leaves have all landed is ready to verify, and nothing closes it automatically. Closing its last leaf with `notes ptask <p> done` files one `check(<system>): verify <epic id> <title> #high` row on the human sheet (with automation on for the profile), so the epic asks to be checked instead of waiting unseen; an open twin of that row files none. Closing it takes proof of the outcome: a URL, a run, a screenshot, the human's word. `notes projects --roadmap <p> --json` lists each closed epic with that `proof`, and `verified` is false for one closed `--unverified`.
 
 Who files an epic and who closes one: `~/.claude/skills/notes-system/SKILL.md`, "Project board".
