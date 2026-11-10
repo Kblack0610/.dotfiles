@@ -3208,6 +3208,30 @@ codex_run() {
   grep -qF 'AGENT_QUEUE_ITEM=gm-1' "$NOTES_FIXTURE/cmd" || fail "the session does not know its item"
 }
 
+@test "start --brief --mode plan queues a plan item and opens it in plan mode, once; --mode needs --brief" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'tidy the loader' '- [ ] tidy the loader'
+  printf 'Plan this row\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "%s\n" "$WT_NEW_CMD" > "$NOTES_FIXTURE/cmd"; echo "game-agent-1"'
+  # Setup turns add's own start off; on here, as live, so a second start would show.
+  AGENT_QUEUE_START=1 run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent \
+    --row 'tidy the loader' --brief "$SANDBOX/brief.md" --mode plan
+  assert_success
+  f=$(qitem running gm-1)
+  [ -n "$f" ] || fail "the row's item is not running"
+  assert_equal "$(qfield "$f" mode)" plan
+  grep -qF -- '--permission-mode plan' "$NOTES_FIXTURE/cmd" || fail "the session did not open in plan mode"
+  refute grep -qF '/one-shot' "$NOTES_FIXTURE/cmd"
+  # agent-queue add does not start the plan item itself: one wt new, one session.
+  assert_equal "$(grep -c '^new ' "$NOTES_FIXTURE/calls.log")" 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item gm-1 --mode plan
+  assert_failure 2
+  assert_output --partial '--mode sets the item --brief makes'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --row x --brief "$SANDBOX/brief.md" --mode later
+  assert_failure 2
+  assert_output --partial '--mode is oneshot or plan'
+}
+
 @test "start --row matches the row's id whatever its case, and queues the item under the lower-case id" {
   project game beta "$SANDBOX/repos/game"
   row game agent gm-1 '- [ ] tidy the loader <!-- id:gm-1 -->'

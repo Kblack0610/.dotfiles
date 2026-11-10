@@ -109,13 +109,14 @@ pub const TABS: [Tab; 12] = [
         ],
     },
     // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the
-    // Builds section (CI runs, its own reader; release-state has no CI collector).
+    // Builds section (CI runs, its own reader; release-state has no CI collector), then the Tests
+    // section (per-suite results of one tests.yml run, web first; the TUI follows).
     Tab {
         id: "releases",
         group: "Spend, ship",
         title: "Releases",
         question: "What is building, and what is live where?",
-        sections: &["table", "detail", "builds"],
+        sections: &["table", "detail", "builds", "tests"],
     },
 ];
 
