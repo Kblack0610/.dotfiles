@@ -39,10 +39,6 @@ enum Cmd {
         /// hub-core `session_actions` acts on.
         #[arg(long)]
         parked: bool,
-        /// Add a fifth column, 1 when the agent needs the human this moment (a dialog or a
-        /// pending ask, what `next` jumps to), else 0: the tmux status line's count.
-        #[arg(long)]
-        needs: bool,
         /// Add a row per Codex run in a pane (`"harness": "codex"`, always busy): fleet-sessions.
         /// Left out by default, since the other readers take every row for a Claude conversation.
         /// fleet-sessions sets the env form, which a binary older than the flag ignores.
@@ -143,7 +139,7 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         None => chooser::run_interactive(cli.query.as_deref()),
         Some(Cmd::Next) => chooser::run_next(),
-        Some(Cmd::List { json, parked, needs, codex }) => chooser::run_list(json, parked, needs, codex),
+        Some(Cmd::List { json, parked, codex }) => chooser::run_list(json, parked, codex),
         Some(Cmd::AsksHuman { transcript }) => {
             std::process::exit(if agent_panel::jsonl::asks_human_at(&transcript) { 0 } else { 1 })
         }

@@ -7,7 +7,7 @@
 #
 # Below the asks, one row per session the fleet state document has in NEEDS for a dialog open
 # in its own terminal (a plan to approve, an AskUserQuestion, a permission): agent-ask never
-# sees those, yet the agents chip counts them in its !N. A plan or question row is answered
+# sees those, yet the status bar counts them in its !N. A plan or question row is answered
 # here too: its card and options come from `agent-panel dialog`, which reads the live pane, and
 # a number then enter presses that option there through `agent-panel answer`, which refuses
 # when the dialog changed since the card was drawn. A dialog the parser does not know (a
@@ -18,6 +18,8 @@
 # Verbs:
 #   rows              pending questions, NUL-ended "<id><TAB><row>": this tmux session's first,
 #                     then oldest, then the sessions with a dialog open (id @<target>)
+#   count             how many rows rows prints, one number: the pending asks plus the open dialogs.
+#                     The agents status bar's !N, so the bar and this panel never disagree
 #   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler)
 #   card <id>         the card for one row (agent-ask card, or agent-panel dialog)
 #   --help, -h        this text
@@ -36,18 +38,18 @@ FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/flee
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
-# A row is "<slug>:<agent number>  <age>  <question>" and, under the question, what the
-# session is (its registry title) and "ended" once it has: short enough for the list column
-# beside the card (a third of the panel). Rows are NUL-ended, so fzf shows the two lines as one
+# A row is "<slug>:<agent number>  <age>  <question>" and, under the question, where its answer
+# goes (agent-ask routes: restarts <item>, resume, to session or dead end) and what the session
+# is (its registry title): short enough for the list column beside the card (a third of the
+# panel). Rows are NUL-ended, so fzf shows the two lines as one
 # item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
 # selected row still reads on fzf's selection bar.
-# prompt_list: the sessions with a dialog open now,
+# prompt_rows: the sessions with a dialog open now, and prompt_list those rows with the project added:
 # "<target>\t<project>\t<idle min>\t<doing>\t<topic>", the project resolved from the session's
 # directory the way an ask's is. Live from agent-panel, so a plan shows as soon as it waits and
 # goes when it is answered; QUESTIONS_ANSWERED is the one just answered, whose status file can
 # trail its pane by a moment. A worker's sessions come from the state document, a pass behind.
-prompt_list() {
-  local t cwd rest
+prompt_rows() {
   {
     agent-panel list --json 2>/dev/null | jq -r --argjson now "$(date +%s)" --arg done "${QUESTIONS_ANSWERED:-}" '
       select(.status == "waiting" and .target != $done)
@@ -57,19 +59,23 @@ prompt_list() {
       | [.target, (.cwd // ""), (.idle_min // 0),
          (.doing // "" | gsub("[\t\n]"; " ")), (.topic // "" | gsub("[\t\n]"; " "))] | @tsv' \
       "$FLEET_STATE_FILE" 2>/dev/null
-  } |
+  } | awk -F'\t' '$1 != ""'
+}
+prompt_list() {
+  local t cwd rest
+  prompt_rows |
     while IFS=$'\t' read -r t cwd rest; do
       printf '%s\t%s\t%s\n' "$t" "$( [ -n "$cwd" ] && resolve_project_name "$cwd" 2>/dev/null)" "$rest"
     done
 }
 
 cmd_rows() {
-  local list prompts here live epochs names name slugs="" titles
+  local list prompts here routes epochs names name slugs="" titles
   list="$("$QUESTIONS_ASK" list --all --pending)"
   prompts="$(prompt_list)"
   [ -n "$list$prompts" ] || return 0
   here="$(panel_in_tmux && tmux display-message -p '#{session_name}' 2>/dev/null)"
-  live="$("$QUESTIONS_ASK" live-sessions 2>/dev/null | tr '\n' ' ')"
+  routes="$("$QUESTIONS_ASK" routes 2>/dev/null)"
   titles="$(cut -f16 <<<"$list" | sort -u | "$QUESTIONS_ASK" titles 2>/dev/null)"
   # Every created stamp to epoch seconds in one date call; on a line date cannot read, the
   # ages go blank rather than shift onto the wrong rows.
@@ -81,7 +87,7 @@ cmd_rows() {
     awk -F'\t' 'NF { n = $2; if (n == "") { n = $1; sub(/^[^\/]*\//, "", n); sub(/(-agent-[0-9]+)?:[0-9]+$/, "", n) } print n }' <<<"$prompts"; } | sort -u)"
   while IFS= read -r name; do [ -n "$name" ] && slugs+="$name=$(project_slug "$name");"; done <<<"$names"
   { [ -n "$list" ] && paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs"); } |
-    awk -F'\t' -v here="$here" -v live=" $live" -v now="$(date +%s)" -v slugs=";$slugs" \
+    awk -F'\t' -v here="$here" -v now="$(date +%s)" -v slugs=";$slugs" \
       -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" '
       function age(e,   d) {
         if (e == "") return ""
@@ -94,11 +100,12 @@ cmd_rows() {
         i = index(slugs, ";" n "="); if (i == 0) return n
         r = substr(slugs, i + length(n) + 2); return substr(r, 1, index(r, ";") - 1)
       }
-      # The files are the registry titles, "<claude session>\t<title>", then the prompts
-      # (prompt_list), then the asks on stdin.
+      # The files are the registry titles, "<claude session>\t<title>", then each route,
+      # "<id>\t<route>", then the prompts (prompt_list), then the asks on stdin.
       FNR == 1 { part++ }
       part == 1 { T[$1] = $2; next }
-      part == 2 {
+      part == 2 { R[$1] = $2; next }
+      part == 3 {
         if ($1 == "") next
         s = $1; sub(/^[^\/]*\//, "", s); sub(/:[0-9]+$/, "", s)
         n = $2; if (n == "") { n = s; sub(/-agent-[0-9]+$/, "", n) }
@@ -123,7 +130,7 @@ cmd_rows() {
         W[NR] = who; if (length(who) > w) w = length(who)
         L[NR] = sprintf("%d\t%s\t%s\t", ($13 == here && here != "") ? 0 : 1, $NF, $1)
         A[NR] = age($NF); Q[NR] = $6
-        S[NR] = ($16 != "" && index(live, " " $16 " ") == 0) ? "ended" : ""
+        S[NR] = substr(R[$1], 1, 28)
         if (T[$16] != "") S[NR] = S[NR] (S[NR] != "" ? " . " : "") faint T[$16] off
       }
       # The name column is as wide as its longest name, up to 12. The second line starts under
@@ -135,8 +142,21 @@ cmd_rows() {
           if (S[i] != "") printf "\037%*s%s", w + 6, "", S[i]
           print ""
         }
-      }' <(printf '%s\n' "$titles") <(printf '%s\n' "$prompts") - |
+      }' <(printf '%s\n' "$titles") <(printf '%s\n' "$routes") <(printf '%s\n' "$prompts") - |
     sort -t "$PANEL_TAB" -k1,1n -k2,2n | cut -f3- | tr '\n\037' '\000\n'
+}
+# cmd_count: the number of rows cmd_rows would print: the same ask list, and the same dialogs read
+# without the transcripts (agent-panel's `!` glyph is its `waiting` status, which prompt_rows
+# selects; tests/integ/questions_panel.bats holds the two equal). A status bar ticks every 3 s,
+# so it gets no titles, routes or project names.
+cmd_count() {
+  local asks prompts
+  asks="$("$QUESTIONS_ASK" list --all --pending | grep -c .)" || true
+  prompts="$({
+    agent-panel list 2>/dev/null | awk -F'\t' -v done="${QUESTIONS_ANSWERED:-}" '$2 == "!" && $1 != done { print $1 }'
+    [ -r "$FLEET_STATE_FILE" ] && jq -r --arg done "${QUESTIONS_ANSWERED:-}" '.sessions[]? | select((.target | contains("@")) and .activity == "waiting" and .target != $done) | .target' "$FLEET_STATE_FILE" 2>/dev/null
+  } | grep -c .)" || true
+  echo $((${asks:-0} + ${prompts:-0}))
 }
 # rows_count: "<asks> <plans> <questions> <prompts>" in what cmd_rows printed (a row is
 # NUL-ended; a dialog's id starts with @ and its first line names its kind).
@@ -417,6 +437,7 @@ cmd_pick() {
 
 case "${1:-}" in
 rows) cmd_rows ;;
+count) cmd_count ;;
 key) shift; cmd_key "$@" ;;
 card) shift; cmd_card "$@" ;;
 '') cmd_pick ;;
