@@ -466,6 +466,47 @@ ptask game --agent tag --add plan ga-7'
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
 }
 
+@test "verdicts: the latest verdict per row, plan true on a skip by a DISPATCH_PLAN_RULES rule (fleet-bench next_up_blocked)" {
+  plan_fixture
+  run cmd_verdicts
+  assert_success
+  assert_equal "$(jq -r 'select(.plan) | .key' <<<"$output" | sort | paste -sd,)" 'ga-1,ga-3,ga-5,ga-7,gh-1'
+  # negative controls: a design skip and a dispatch are no split's to make
+  assert_equal "$(jq -r 'select(.plan | not) | .key' <<<"$output" | sort | paste -sd,)" 'ga-2,ga-4'
+  DISPATCH_PLAN_RULES=bundle run cmd_verdicts
+  assert_equal "$(jq -r 'select(.plan) | .key' <<<"$output" | paste -sd,)" 'ga-7'
+}
+
+@test "plan_skips: a too-big skip queues one split per row: a second pass, a planned row and a stale verdict queue none" {
+  printf '%s\n' '- (too-big) an L row' >> "$DISPATCH_POLICY"
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-20 "- [ ] feat(game): the whole store $T <!-- id:ga-20 -->"
+  : > "$NOTES_FIXTURE/board.rows"
+  board_row game agent ga-20 '[]' '[]'
+  verdict game agent ga-20 skip L
+  jq -c '.rule = "too-big"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 1
+  run grep -c 'tag --add plan ga-20' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  # the board now carries the tag: the same verdict queues nothing more
+  : > "$NOTES_FIXTURE/board.rows"; board_row game agent ga-20 '["plan"]' '[]'
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 0
+  # inbox-plan wrote its goal and dropped the tag: still none
+  : > "$NOTES_FIXTURE/board.rows"; board_row game agent ga-20 '[]' '["goal: split into stories"]'
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 0
+  # negative control on the signature: the row was edited after its verdict, so it waits for a new one
+  sed -i 's/the whole store/the whole store and more/' "$NOTES_FIXTURE/rows.game.agent"
+  : > "$NOTES_FIXTURE/board.rows"; board_row game agent ga-20 '[]' '[]'
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 0
+  run grep -c 'tag --add plan ga-20' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+}
+
 @test "plan_skips: a cleanup row read as not clear or size L under a tier-3 skip goes to inbox-plan; a feature, a clear M row, or a human-only skip does not" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_CLEANUP_PROJECTS=game
@@ -4207,6 +4248,86 @@ fix_ended() {
   assert_output --partial 'failed queue item fix-crash (PR o/game#12 closed unmerged)'
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
   grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row still started"
+}
+
+# codex_end_item <thread> <last turn event: json payload> [elapsed seconds] -- a Codex item on a gone session
+# with no PR, its thread's rollout ending in that event, and a model-lane run for it. The launcher's
+# timeout is 7200s. model-lane records its calls, so a test reads which outcome was filed.
+codex_end_item() {
+  local d="$HOME/.codex/sessions/2026/11/09"
+  mkdir -p "$d" "$HOME/.local/lib"
+  cp "$REPO_ROOT/.local/lib/codex-rollout.jq" "$HOME/.local/lib/"
+  CODEX_SESSIONS="$HOME/.codex/sessions"; CODEX_ROLLOUT_JQ="$HOME/.local/lib/codex-rollout.jq"
+  jq -n '{harnesses: {codex: {source: "codex", headless: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
+  jq -cn --argjson e "$2" --arg first "$(date -u -d @1794200000 +%FT%T.000Z)" --arg last "$(date -u -d "@$((1794200000 + ${3:-60}))" +%FT%T.000Z)" \
+    '{timestamp: $first, type: "event_msg", payload: {type: "task_started"}},
+     {timestamp: $last, type: "event_msg", payload: {type: "token_count"}},
+     (if $e == null then empty else {timestamp: $last, type: "event_msg", payload: $e} end)' > "$d/rollout-2026-11-09T07-33-20-$1.jsonl"
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+  project game beta "$SANDBOX/repos/game"
+  started_item cx lab:game-agent-1 run
+  agent-queue set cx agent=codex lane_run=r-cx >/dev/null; agent-queue claim cx --sid "$1" >/dev/null
+}
+
+@test "reap: a Codex run that hit its usage limit goes back to the queue with end_reason limit and model-lane gets no outcome" {
+  codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
+  run cmd_reap
+  assert_output --partial 'requeued queue item cx (game-agent-1 hit the plan'"'"'s usage limit)'
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md 2>/dev/null)" ] || fail "a limit end is not a failure"
+  f=$(ls "$AGENT_QUEUE_DIR"/queued/*-cx.md)
+  assert_equal "$(qfield "$f" end_reason) $(qfield "$f" session)" 'limit '
+  assert_equal "$(qfield "$f" note)" "session game-agent-1 hit the plan's usage limit; requeued (end_reason: limit)"
+  run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}
+
+@test "reap: a Codex run its login refused (unauthorized) still fails: a requeue would only meet the same refusal (negative control)" {
+  codex_end_item th-auth '{"type":"task_complete","error":{"codex_error_info":"unauthorized"}}'
+  run cmd_reap
+  assert_output --partial 'end_reason refused'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" status)" failed
+}
+
+@test "reap: a Codex run that ended its turn clean and never closed is stopped, still failed, and still reported to model-lane (negative control)" {
+  codex_end_item th-stop '{"type":"task_complete","error":null}'
+  run cmd_reap
+  assert_output --partial 'end_reason stopped'
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed stopped'
+  run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
+  assert_output 'model-lane outcome r-cx failed'
+}
+
+@test "reap: a Codex rollout cut mid-turn is a cut, or a timeout once the launcher's timeout has run; a provider error is provider; neither rates the model" {
+  codex_end_item th-cut 'null' 600
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" end_reason)" cut
+  rm -rf "$AGENT_QUEUE_DIR/done"
+  codex_end_item th-tmo 'null' 7100
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" end_reason)" timeout
+  rm -rf "$AGENT_QUEUE_DIR/done"
+  codex_end_item th-prov '{"type":"task_complete","error":{"codex_error_info":"server_overloaded"}}'
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" end_reason)" provider
+  rm -rf "$AGENT_QUEUE_DIR/done"
+  # a variant that carries data is an object keyed by the variant
+  codex_end_item th-obj '{"type":"task_complete","error":{"codex_error_info":{"http_connection_failed":{"http_status_code":502}}}}'
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" end_reason)" provider
+  run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
+  assert_output 'model-lane outcome r-cx failed'   # only the timeout rated: it is the run's own length
+}
+
+@test "reap: a Claude item, and a Codex item whose rollout is missing, record no end_reason" {
+  started_item cl lab:game-agent-2 run
+  agent-queue set cl lane_run=r-cl >/dev/null
+  codex_end_item th-none '{"type":"task_complete","error":null}'
+  rm -f "$HOME"/.codex/sessions/2026/11/09/*   # the thread the item names has no rollout
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cl.md)" end_reason)" ''
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" end_reason)" ''
 }
 
 @test "reap: an item moved while reap reads its PR is left as it is, no note written" {

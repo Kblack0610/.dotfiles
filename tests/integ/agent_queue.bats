@@ -821,6 +821,64 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -z "$(field "$(item queued rq)" lane_run)" ]
 }
 
+@test "move --end records why a run ended; a run that ended outside the model files no outcome, on a close or a requeue; timeout and stopped still rate" {
+  printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
+  chmod +x "$SANDBOX/bin/model-lane"
+  for s in lim prov cut ref req tmo stp; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
+  "$AQ" move lim done --status failed --end limit >/dev/null
+  "$AQ" move prov done --status failed --end provider >/dev/null
+  "$AQ" move cut done --status failed --end cut >/dev/null
+  "$AQ" move ref done --status failed --end refused >/dev/null
+  "$AQ" move req queued --end limit >/dev/null
+  "$AQ" move tmo done --status failed --end timeout >/dev/null
+  "$AQ" move stp done --status failed --end stopped >/dev/null   # negative control: a stop is the model's own end
+  run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
+  assert_output $'model-lane outcome r-tmo failed\nmodel-lane outcome r-stp failed'
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-lim.md)" end_reason)" = limit ]
+  [ "$(field "$(item queued req)" end_reason)" = limit ]
+  # A new run has not ended: the reason goes when the item runs again.
+  "$AQ" move req running >/dev/null
+  [ -z "$(field "$(item running req)" end_reason)" ]
+}
+
+@test "an item that waited with an end reason and then landed, or was cancelled, keeps none" {
+  "$AQ" add --project game --running --slug w "w" >/dev/null
+  "$AQ" move w waiting --end cut >/dev/null
+  [ "$(field "$(item waiting w)" end_reason)" = cut ]
+  "$AQ" move w done --status ok >/dev/null
+  [ -z "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-w.md)" end_reason)" ]
+  "$AQ" add --project game --running --slug x "x" >/dev/null
+  "$AQ" move x waiting --end limit >/dev/null
+  "$AQ" cancel x >/dev/null
+  [ -z "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-x.md)" end_reason)" ]
+}
+
+@test "an end reason is one of the known ones, in move and in set" {
+  "$AQ" add --project game --running --slug e "e" >/dev/null
+  run "$AQ" move e done --status failed --end tired
+  assert_failure
+  assert_output --partial 'end_reason is one of'
+  run "$AQ" set e end_reason=tired
+  assert_failure
+  run "$AQ" set e end_reason=limit
+  assert_success
+  [ "$(field "$(item running e)" end_reason)" = limit ]
+}
+
+@test "stats counts finished items by end reason, and leaves out the ones that name none" {
+  "$AQ" add --project game --running --slug a "a" >/dev/null
+  "$AQ" add --project game --running --slug b "b" >/dev/null
+  "$AQ" add --project game --running --slug c "c" >/dev/null
+  "$AQ" move a done --status failed --end limit >/dev/null
+  "$AQ" move b done --status failed --end limit >/dev/null
+  "$AQ" move c done --status failed >/dev/null
+  run "$AQ" stats --json
+  assert_success
+  assert_equal "$(jq -c .by_end <<<"$output")" '{"limit":2}'
+  run "$AQ" stats
+  assert_output --partial 'ends:    limit 2'
+}
+
 @test "done ok refuses an item with pr: and no merged:, and its after: item stays queued" {
   "$AQ" add --project game --running --slug p "p" >/dev/null
   "$AQ" add --project game --slug next --after p "next" >/dev/null
@@ -1909,6 +1967,28 @@ notes --profile bnb ptask level --agent start lv-9'
   [ -z "$(item queued no-board)" ]
 }
 
+@test "a title whose subject is one open row works that row; a mention, a closed row, two ids or an --epic file a story as before" {
+  story_notes
+  run "$AQ" add --running --project game --slug named "fix(menu): close it for good (lv-2)"
+  assert_success
+  assert_output --partial "named works row lv-2, which its title names"
+  [ "$(field "$(item running named)" row)" = level:lv-2 ]
+  run grep -c ' add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # NEGATIVE CONTROLS: each of these files its own story (the stub mints lv-9).
+  touch "$NOTES_FIXTURE/closed.lv-7"
+  "$AQ" add --project level --slug said "fix(menu): redo the layout after lv-3 lands"
+  [ "$(field "$(item queued said)" row)" = level:lv-9 ]
+  "$AQ" add --project level --slug shut "lv-7: fix the menu again"
+  [ "$(field "$(item queued shut)" row)" = level:lv-9 ]
+  "$AQ" add --project level --slug two "lv-3: fix(menu) beside (lv-4)"
+  [ "$(field "$(item queued two)" row)" = level:lv-9 ]
+  "$AQ" add --project level --epic lv-5 --slug epic "feat(menu): under its epic (lv-3)"
+  [ "$(field "$(item queued epic)" row)" = level:lv-9 ]
+  run grep -c ' start lv-3' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "--row takes one row id, on one item, with no story options" {
   story_notes
   : > "$NOTES_FIXTURE/calls.log"
@@ -1936,6 +2016,38 @@ notes --profile bnb ptask level --agent start lv-9'
   [ "$(jq -r '.row // "none"' <<<"$("$AQ" show no-lab --json)")" = none ]
   run "$AQ" add --project game --epic menus --slug bad "z"
   assert_failure; assert_output --partial "--epic is a row id"
+}
+
+# A repo with no sheet of its own names the board it files on (dotfiles-private -> agent-runtime): the
+# item stays on its own project and checkout, and its row lives on that board. NEGATIVE CONTROL: before
+# the board key, app filed nothing and --row on it was refused.
+@test "a project with no sheet files its story and links --row on the board its board key names" {
+  story_notes
+  jq '.trackers.app.board = "level"' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m.json" && mv "$SANDBOX/m.json" "$AGENT_QUEUE_PROJECT_MAP"
+  run "$AQ" add --project app --slug overlay "fix(hooks): the overlay's work"
+  assert_success
+  assert_line "story lv-9 on the level agent board"
+  f="$(item queued overlay)"
+  [ "$(field "$f" project)" = app ]
+  [ "$(field "$f" row)" = level:lv-9 ]
+  [ "$(field "$f" profile)" = bnb ]
+  run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
+  assert_line --index 1 "notes --profile bnb ptask level --agent add -- fix(hooks): the overlay's work #size/s #high"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --running --project app --row lv-2 --slug linked "x"
+  assert_success
+  assert_line "story lv-2 on the level agent board"
+  [ "$(field "$(item running linked)" row)" = level:lv-2 ]
+  [ "$(field "$(item running linked)" project)" = app ]
+  run "$AQ" add --project app --row lv-2 --slug twice "y"
+  assert_failure; assert_output --partial "--row lv-2: linked already works that row"
+  "$AQ" move linked done --status ok >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project app --slug linked --repeat "again"
+  assert_success
+  assert_line "story lv-2 on the level agent board"
+  run grep -c ' add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }
 
 @test "every item write appends one queue event naming the item, its row and its PR" {

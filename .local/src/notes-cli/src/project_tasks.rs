@@ -117,6 +117,9 @@ pub(crate) struct OpenRows {
     pub rows: Vec<OpenRow>,
     /// Lines waiting in the sheet's `## Inbox`.
     pub inbox: usize,
+    /// Closed rows past the Done window: the ones the next sweep rolls into `versions/`
+    /// ([`project_sweep::old_done`]).
+    pub done_old: usize,
 }
 
 /// One open row: its 1-based line, the line itself, and the lines indented under it.
@@ -137,6 +140,13 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
     let path = task_sheet(dir)?;
     let content = fs::read_to_string(&path).ok()?;
     let cur = version_in(dir, &content);
+    let ctx = project_sweep::Ctx {
+        today: chrono::Local::now().date_naive(),
+        shape: crate::config::sheet_shape(),
+        open: cur,
+        rewrite: false,
+        systems: Vec::new(),
+    };
     let lines: Vec<&str> = content.lines().collect();
     let rows = sheet::current_rows(&content, cur)
         .into_iter()
@@ -151,6 +161,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         sheet: path,
         rows,
         inbox: sheet::inbox_lines(&content).len(),
+        done_old: project_sweep::old_done(&content, &ctx).len(),
     })
 }
 
@@ -1387,11 +1398,48 @@ pub fn done(
         refuse_landed_as_proof(p, name, pick, lane, &stamp)?;
     }
     let on = done_token(day);
-    Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
+    let (code, row) = edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
         let ticked = md::add_marker(&closed(l), &on);
         Some(md::add_marker(&ticked, &stamp))
-    })?
-    .0)
+    })?;
+    if let (0, Some(row)) = (code, row) {
+        ask_verify(p, log, name, &row);
+    }
+    Ok(code)
+}
+
+/// After a close: when it was the last open leaf of an epic, file one
+/// `check(<system>): verify <epic> ...` row on the human sheet. Nothing closes an epic on its
+/// own (lifecycle.md): the human checks the outcome, and this row is how they hear it is
+/// theirs. It names the epic in words, never `#of/`, so it is no leaf of it, and ticking it
+/// cannot finish the epic again. An open twin is not filed twice. A profile with
+/// `automation = false` gets none. It never fails the close that triggered it.
+fn ask_verify(p: &Profile, log: &Logger, name: &str, closed_row: &str) {
+    let Some(id) = md::row_id(closed_row) else {
+        return;
+    };
+    if !crate::config::automation(&p.name) {
+        return;
+    }
+    let Ok(dir) = projects::project_dir(p, name) else {
+        return;
+    };
+    let ix = crate::epics::Index::of(&dir, open_version_for(&dir));
+    let Some(e) = ix.landed_epic_above(&id) else {
+        return;
+    };
+    let area = if e.system.is_empty() {
+        "epic"
+    } else {
+        e.system.as_str()
+    };
+    let text = format!("check({area}): verify {} {} #high", e.id, e.title);
+    if let Err(err) = add_via(p, log, name, &text, &[], None, None, Lane::Human, None) {
+        eprintln!(
+            "{} has every leaf done; its verify row was not filed: {err}",
+            e.id
+        );
+    }
 }
 
 /// The day a close is stamped with: `--on <day>`, else today. A future day is refused: a close
@@ -1783,6 +1831,10 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
 /// must be `type(area): title`, the old words go first among `details` as `was: <words>`, and
 /// the old text's own tags (`#requested`, `#tier/3`, `#size/m`) carry over unless the new text
 /// sets one of the same name ([`carry_tags`]).
+///
+/// `systems` (`--link`, the triager's backlog link pass) names the systems command, and the new
+/// text then gets the standing-epic default link `add` gives a row ([`link_standing`]); a leaf
+/// with no `#of/` that would stay unlinked is refused, exit 1, so a caller never counts it linked.
 #[allow(clippy::too_many_arguments)]
 pub fn retext(
     p: &Profile,
@@ -1793,6 +1845,7 @@ pub fn retext(
     append: Option<&str>,
     details: &[String],
     was: bool,
+    systems: Option<&str>,
     lane: Lane,
 ) -> Result<i32> {
     let (text, append) = (text.map(str::trim), append.map(str::trim));
@@ -1839,6 +1892,33 @@ pub fn retext(
         (Some(rewrite.as_str()), &with_was[..])
     } else {
         (text, details)
+    };
+    let linked;
+    let text = match (text, systems) {
+        (Some(t), Some(bin)) if !t.is_empty() => {
+            // The row is found first: filing a standing epic for an edit that then matches
+            // nothing would leave the epic behind with no row under it.
+            let found = sheet_and_content(p, name, lane)?.and_then(|(_, content)| {
+                md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), |l| Some(l.into()))
+            });
+            if found.is_none() {
+                eprintln!("no open task matches '{pick}' in {name}");
+                return Ok(1);
+            }
+            let proj_dir = projects::project_dir(p, name)?;
+            linked = link_standing(p, log, name, &proj_dir, &[t.to_string()], bin)?;
+            match &linked {
+                Some(l) => Some(l[0].as_str()),
+                None if crate::standing::wants_link(t).is_some() => {
+                    eprintln!(
+                        "--link: '{t}' names no system of {name} (or {name} has no systems list), so nothing was edited"
+                    );
+                    return Ok(1);
+                }
+                None => Some(t),
+            }
+        }
+        _ => text,
     };
     let has_details = details.iter().any(|d| !d.trim().is_empty());
     if text.or(append).is_none_or(str::is_empty) && !has_details {
@@ -3469,6 +3549,7 @@ mod inbox_tests {
             None,
             &[],
             false,
+            None,
             Lane::Human,
         )
         .unwrap();
@@ -3482,6 +3563,7 @@ mod inbox_tests {
             None,
             &details,
             false,
+            None,
             Lane::Human,
         )
         .unwrap();
@@ -3991,6 +4073,7 @@ mod inbox_tests {
                 None,
                 &[],
                 true,
+                None,
                 Lane::Human,
             )
         };

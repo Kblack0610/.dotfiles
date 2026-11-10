@@ -483,3 +483,118 @@ fn a_line_filed_from_the_inbox_links_like_an_add() {
     assert!(row.contains("#of/dm-1") && row.contains("id:dm-2"), "{row}");
     assert!(sheet.contains("was: the pause menu feels slow"), "{sheet}");
 }
+
+#[test]
+fn edit_link_puts_an_existing_row_under_its_systems_standing_epic() {
+    let h = Home::new("standing-edit");
+    ok(&agent(
+        &h,
+        &["add", "fix(sound): pause menu is slow #size/s"],
+    ));
+    ok(&agent(&h, &["add", "fix(sound): resume flickers #size/s"]));
+    h.systems(Some(SYSTEMS));
+    // NEGATIVE CONTROL: a plain edit to a system area writes no link.
+    ok(&agent(
+        &h,
+        &["edit", "dm-2", "--text", "fix(ui): resume flickers #size/s"],
+    ));
+    assert!(!h.board().contains("#of/"), "{}", h.board());
+    ok(&agent(
+        &h,
+        &[
+            "edit",
+            "dm-1",
+            "--link",
+            "--text",
+            "fix(menu): pause menu is slow #size/s",
+        ],
+    ));
+    let row = h
+        .board()
+        .lines()
+        .find(|l| l.contains("pause menu is slow"))
+        .map(str::to_string)
+        .unwrap();
+    assert!(
+        row.contains("fix(menu):") && row.contains("#of/dm-3") && row.contains("id:dm-1"),
+        "the row keeps its id and goes under the filed epic: {row}"
+    );
+    assert_eq!(h.sheet().matches("epic(ui): ui to standard").count(), 1);
+    // A free area word under --link is refused: nothing is edited and no second epic is filed.
+    let out = agent(
+        &h,
+        &[
+            "edit",
+            "dm-2",
+            "--link",
+            "--text",
+            "fix(sound): resume flickers again #size/s",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!h.board().contains("resume flickers again"), "{}", h.board());
+    // An edit that matches no row files no standing epic before it fails.
+    let out = agent(
+        &h,
+        &["edit", "no such row", "--link", "--text", "docs(docs): a setup guide #size/s"],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(h.sheet().matches("to standard").count(), 1, "{}", h.sheet());
+}
+
+#[test]
+fn closing_an_epics_last_leaf_files_one_verify_row_on_the_human_sheet() {
+    let h = Home::new("verify");
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "add",
+        "epic(ui): the pause menu feels instant",
+    ]));
+    assert!(h.sheet().contains("id:dm-1"), "{}", h.sheet());
+    ok(&agent(
+        &h,
+        &["add", "fix(ui): pause menu is slow #size/s #of/dm-1"],
+    ));
+    ok(&agent(
+        &h,
+        &["add", "feat(ui): a resume button #size/s #of/dm-1"],
+    ));
+    let verify = |h: &Home| {
+        h.sheet()
+            .lines()
+            .filter(|l| l.contains("check(ui): verify dm-1 the pause menu feels instant"))
+            .count()
+    };
+    // NEGATIVE CONTROL: a close that leaves a leaf open asks nothing.
+    ok(&agent(&h, &["done", "dm-2", "--proof", "pr:1"]));
+    assert_eq!(verify(&h), 0, "{}", h.sheet());
+
+    ok(&agent(&h, &["done", "dm-3", "--proof", "pr:2"]));
+    assert_eq!(verify(&h), 1, "{}", h.sheet());
+    let sheet = h.sheet();
+    let row = sheet.lines().find(|l| l.contains("verify dm-1")).unwrap();
+    assert!(row.starts_with("- [ ] ") && row.contains("#high"), "{row}");
+    assert!(
+        !row.contains("#of/"),
+        "the ask is no leaf of the epic: {row}"
+    );
+    assert!(
+        sheet.contains("- [ ] epic(ui): the pause menu feels instant"),
+        "nothing closes the epic: {sheet}"
+    );
+
+    // Ticking the ask finishes nothing again, so it is never filed twice.
+    let id = ids(&sheet).into_iter().find(|i| i != "dm-1").unwrap();
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "done",
+        &id,
+        "--proof",
+        "looked: it opens in 40ms",
+    ]));
+    // A re-close of the finished leaf (a re-run landing) matches no open row, so it files none.
+    let _ = agent(&h, &["done", "dm-3", "--proof", "pr:2"]);
+    assert_eq!(h.sheet().matches("verify dm-1").count(), 1, "{}", h.sheet());
+}
