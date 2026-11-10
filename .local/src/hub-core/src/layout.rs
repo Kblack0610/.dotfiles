@@ -105,7 +105,7 @@ pub const TABS: [Tab; 12] = [
         question:
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
         sections: &[
-            "fleet", "burn", "tokens", "langfuse", "sections", "totals", "table",
+            "fleet", "history", "burn", "tokens", "langfuse", "sections", "totals", "table",
         ],
     },
     // Last, so no digit shifts: the channels (`hub_core::releases`) and each opened row, then the

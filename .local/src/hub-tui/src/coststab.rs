@@ -5,12 +5,13 @@
 //! pool. Under it the token folds
 //! (tokens.rs): `u` opens where the tokens go, `U` its window, `l` what Langfuse sees. The
 //! Sections block is folded to its headline: `e` opens it, `t` steps its sort column and `T`
-//! flips it.
+//! flips it. History (the fleet's dollars per day, month and year) is folded too: `y` opens it.
 
 use hub_core::burn::{self, Account, Burn, Keys};
 use hub_core::costs::{self, Board, Costs};
 use hub_core::fleet_cost::FleetCost;
 use hub_core::sections::{self, Block};
+use hub_core::spend_history::History;
 use hub_core::table::Val;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::style::Style;
@@ -30,6 +31,8 @@ pub struct CostsView {
     pub typing: Option<String>,
     /// The Sections block is open (it starts as its headline).
     pub sections_open: bool,
+    /// The History section is open (it starts as its headline).
+    pub history_open: bool,
     /// One of the Sections columns, or empty for fleet-bench's order (the most gate hours first).
     pub ssort: String,
     pub sasc: bool,
@@ -51,6 +54,7 @@ impl Default for CostsView {
             asc: false,
             typing: None,
             sections_open: false,
+            history_open: false,
             ssort: String::new(),
             sasc: false,
             tokens: TokensView::default(),
@@ -116,6 +120,7 @@ impl CostsView {
                 "ssort" => self.ssort = v.to_string(),
                 "sdir" => self.sasc = v == "asc",
                 _ if word == "sections" => self.sections_open = true,
+                _ if word == "history" => self.history_open = true,
                 _ if word == "tokens" => self.tokens.open = Some(true),
                 _ if word == "langfuse" => self.langfuse = Some(true),
                 _ if hub_core::layout::resolve("costs")
@@ -172,11 +177,13 @@ impl CostsView {
             KeyCode::Char('T') => self.sasc = !self.sasc,
             KeyCode::Char('x') => {
                 let (by, window, open) = (self.by, self.window, self.sections_open);
+                let history_open = self.history_open;
                 let (tokens, langfuse) = (self.tokens, self.langfuse);
                 *self = CostsView {
                     by,
                     window,
                     sections_open: open,
+                    history_open,
                     tokens,
                     langfuse,
                     ..CostsView::default()
@@ -201,6 +208,10 @@ impl CostsView {
     ) -> Option<Option<&'static str>> {
         if self.typing.is_some() {
             return None;
+        }
+        if code == KeyCode::Char('y') {
+            self.history_open = !self.history_open;
+            return Some(self.history_open.then_some("history"));
         }
         if code == KeyCode::Char('K') {
             self.keys = Some(!keys_open(keys?, self.keys));
@@ -250,7 +261,9 @@ impl CostsView {
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let b = self.board(c);
         let mut out = fleet(&b.fleet_cost, p, now, w);
-        let mut at = vec![("fleet", 0), ("burn", out.len())];
+        let mut at = vec![("fleet", 0), ("history", out.len())];
+        out.extend(history(&b.history, self.history_open, p, w));
+        at.push(("burn", out.len()));
         out.extend(burn(&b.burn, self.keys, p, w));
         at.push(("tokens", out.len()));
         out.extend(tokens::tokens(b.tokens.as_ref(), self.tokens, p, now, w));
@@ -612,6 +625,69 @@ fn sections(b: &Block, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// The History section: its headline always, and when open the year, month and day rows that
+/// `hub_core::spend_history` built, then what the figures are.
+fn history(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mark = if open { "-" } else { "+" };
+    let title = Span::styled(format!("{mark} SPEND HISTORY  "), p.head());
+    if let Some(why) = &h.why {
+        return vec![
+            clip_line(Line::from(vec![title, Span::styled(why.clone(), p.dim())]), w),
+            Line::raw(""),
+        ];
+    }
+    let mut head = vec![title, Span::raw(h.head.clone())];
+    if h.stale {
+        head.push(Span::styled("  STALE: no snapshot for yesterday", p.warn()));
+    }
+    if !open {
+        head.push(Span::styled("   y opens", p.dim()));
+    }
+    let mut out = vec![clip_line(Line::from(head), w)];
+    if !open {
+        out.push(Line::raw(""));
+        return out;
+    }
+    let rows = h
+        .rows
+        .iter()
+        .map(|r| {
+            [&r.period, &r.total, &r.days.to_string(), &r.per_day, &r.vs_prev, &r.est]
+                .iter()
+                .map(|c| cell(c.to_string(), Style::new()))
+                .collect()
+        })
+        .collect();
+    out.extend(
+        Table {
+            header: vec!["period", "total", "days", "$/day", "vs prev", "est."],
+            rows,
+            keep: vec![0, 1, 3, 4, 5, 2],
+            right: (1..6).collect(),
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    if h.older > 0 {
+        out.push(Line::styled(format!("+{} older days", h.older), p.dim()));
+    }
+    if h.missing > 0 {
+        out.push(clip_line(
+            Line::styled(
+                format!("{} days in the range have no figure and are not counted", h.missing),
+                p.warn(),
+            ),
+            w,
+        ));
+    }
+    let note: Vec<&str> = h.note.split(' ').collect();
+    for l in wrap(&note, " ", w) {
+        out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
+    out.push(Line::raw(""));
+    out
+}
+
 /// The whole fleet's 24h cost: `hub_core::fleet_cost` builds every row and word, this draws them.
 fn fleet(f: &FleetCost, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let title = Span::styled("FLEET COST 24H  ", p.head());
@@ -665,12 +741,6 @@ fn fleet(f: &FleetCost, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         for l in wrap(&words, " ", w.saturating_sub(2)) {
             out.push(clip_line(Line::styled(format!("  {l}"), p.warn()), w));
         }
-    }
-    if !f.days.is_empty() {
-        out.push(clip_line(
-            Line::styled(format!("last days  {}", f.days), p.dim()),
-            w,
-        ));
     }
     let foot: Vec<&str> = f.foot.split(' ').collect();
     for l in wrap(&foot, " ", w) {
@@ -962,10 +1032,46 @@ mod tests {
                 ),
             ],
             unpriced: vec!["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions".into()],
-            days: "11-07 $1,295  11-08 $738".into(),
             foot: hub_core::fleet_cost::FOOT,
             ..FleetCost::default()
         }
+    }
+
+    #[test]
+    fn history_is_a_headline_until_y_opens_its_rows_within_80_columns() {
+        use hub_core::spend_history::{build, Day};
+        let day = |d: &str, usd: f64| Day { date: d.into(), usd, estimated: usd / 4.0 };
+        let c = Costs {
+            history: build(
+                &[day("2026-10-30", 1102.0), day("2026-10-31", 1102.0), day("2026-11-01", 1579.0)],
+                "2026-11-02",
+            ),
+            ..burning()
+        };
+        let page = |v: &CostsView| {
+            v.lines(&c, Palette::default(), 1_000_000, 80)
+                .0
+                .iter()
+                .map(crate::fit::plain)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut v = CostsView::default();
+        let shut = page(&v);
+        assert!(
+            shut.contains("+ SPEND HISTORY  Nov $1,579/day vs Oct $1,102/day (+43%)"),
+            "{shut}"
+        );
+        assert!(!shut.contains("vs prev"), "folded: {shut}");
+        assert_eq!(v.fold(KeyCode::Char('y'), None, None), Some(Some("history")));
+        let open = page(&v);
+        assert!(open.lines().all(|l| l.chars().count() <= 80), "{open}");
+        assert!(open.contains("- SPEND HISTORY"), "{open}");
+        assert!(open.contains("vs prev"), "{open}");
+        let row = |p: &str| open.lines().find(|l| l.trim_start().starts_with(p)).unwrap().split_whitespace().collect::<Vec<_>>();
+        assert_eq!(row("2026-11"), ["2026-11", "$1,579", "1", "$1,579", "+43%", "25%"]);
+        assert_eq!(row("2026 "), ["2026", "$3,783", "3", "$1,261", "-", "25%"]);
+        assert_eq!(row("10-31"), ["10-31", "$1,102", "1", "$1,102", "+0%", "25%"]);
     }
 
     #[test]

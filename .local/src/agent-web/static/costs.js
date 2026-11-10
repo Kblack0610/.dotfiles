@@ -89,8 +89,25 @@ function fleetCostSection(d) {
     pfold("cost-fleet", `Who spent it <span class="muted">${f.rows.length} rows</span>`, `<div class="panel scroll"><div class="muted">${esc(f.coverage)}</div>` +
     `<table class="tbl"><tr><th data-role="lead">who</th><th class="n" data-role="glance">cost</th><th class="n" data-role="glance">% of fleet</th><th data-role="glance">measured or estimated</th></tr>${f.rows.map(row).join("")}</table>` +
     f.unpriced.map((u) => `<div class="warn">${esc(u)}</div>`).join("") +
-    (f.days ? `<div class="muted">last days ${esc(f.days)}</div>` : "") +
     `<div class="muted">${esc(f.foot)}</div></div>`);
+}
+
+// The History section (hub_core::spend_history, the TUI's coststab.rs `history`): the fleet's
+// dollars per year, month and day from every token snapshot. Folded to its headline until opened.
+function historySection(d) {
+  const h = d.history;
+  if (!h) return "";
+  const title = `<h2 class="sec">Spend history`;
+  if (h.why) return `<div id="sec-history">${title} <span class="muted">${esc(h.why)}</span></h2></div>`;
+  const stale = h.stale ? ` <span class="warn">stale: no snapshot for yesterday</span>` : "";
+  const row = (r) => `<tr class="${r.kind === "day" ? "" : "allrow"}"><td>${esc(r.period)}</td><td class="n">${esc(r.total)}</td><td class="n">${r.days}</td>` +
+    `<td class="n">${esc(r.per_day)}</td><td class="n">${esc(r.vs_prev)}</td><td class="n">${esc(r.est)}</td></tr>`;
+  const days = h.rows.filter((r) => r.kind === "day").length;
+  return `<details class="csec" data-k="history" id="sec-history"${cost.open.history ? " open" : ""}><summary>${title} <span class="muted">${esc(h.head)}</span>${stale}</h2></summary>` +
+    `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">period</th><th class="n">total</th><th class="n">days</th><th class="n" data-role="glance" data-named>$/day</th><th class="n" data-role="glance" data-named>vs prev</th><th class="n" data-role="glance" data-named>est.</th></tr>` +
+    h.rows.map(row).join("") + `</table>${h.older ? older(h.older) : ""}` +
+    (h.missing ? `<div class="warn">${h.missing} days in the range have no figure and are not counted</div>` : "") +
+    `</div><div class="muted fold">${esc(h.note)}</div></details>`;
 }
 
 // The Burn section (hub_core::burn, the hub's coststab.rs `burn`): the headline coloured by the
@@ -239,7 +256,7 @@ function costsSections(d) {
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
-  let html = `${fleetCostSection(d)}${costsBurn(d)}${tokensSection(d)}${langfuseSection(d)}${costsSections(d)}${pfold("cost-totals", `Spend <span class="muted">${(d.totals || []).map((t) => `${esc(t.window)} ${usd(t.usd)}`).join(", ")}</span>`, `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`)}`;
+  let html = `${fleetCostSection(d)}${historySection(d)}${costsBurn(d)}${tokensSection(d)}${langfuseSection(d)}${costsSections(d)}${pfold("cost-totals", `Spend <span class="muted">${(d.totals || []).map((t) => `${esc(t.window)} ${usd(t.usd)}`).join(", ")}</span>`, `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`)}`;
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
