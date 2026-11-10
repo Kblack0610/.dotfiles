@@ -4476,6 +4476,85 @@ OUT
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
 }
 
+# fj_item <state> <status> [merge sha] -- pr_item's fix-crash on a checkout whose canonical forge is
+# Forgejo, as home-config is: it commits the mirror workflow, its `forgejo` remote is on a listed host
+# and origin is the GitHub mirror, where gh finds no PR. Forgejo's API answers PR 12 as <state> (open,
+# closed, merged) at head h1, with one check of <status> beside a green one.
+fj_item() {
+  pr_item OPEN
+  mkdir -p "$SANDBOX/repos/game/.forgejo/workflows"; : > "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
+  git -C "$SANDBOX/repos/game" remote add forgejo https://git.example.test/o/game.git
+  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test
+  printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
+  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
+  stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"; printf "%s %s\n" "$url" "$(cat)" >> "$NOTES_FIXTURE/fj.auth"
+case "$url" in */pulls/12) cat "$NOTES_FIXTURE/fj.pr" ;; */commits/*/status) cat "$NOTES_FIXTURE/fj.status" ;; *) exit 22 ;; esac'
+  fj_pr "$1" "${3:-}"
+  jq -cn --arg s "$2" '{state: $s, statuses: [{status: $s}, {status: "success"}]}' > "$NOTES_FIXTURE/fj.status"
+}
+# fj_pr <state> [merge sha] [body] -- what Forgejo's API says of PR 12
+fj_pr() {
+  jq -cn --arg st "$1" --arg m "${2:-$OID}" --arg b "${3:-Item: fix-crash}" '{number: 12, body: $b,
+    state: (if $st == "open" then "open" else "closed" end), merged: ($st == "merged"),
+    merge_commit_sha: (if $st == "merged" then $m else null end), head: {sha: "1111111111111111111111111111111111111111"}}' \
+    > "$NOTES_FIXTURE/fj.pr"
+}
+
+# 2026-11-08 to 11-10: fix-traefik's home-config PR was open on Forgejo, and every reap pass asked gh,
+# which sees only the GitHub mirror, and logged "could not read" (270 lines).
+@test "reap: a Forgejo-canonical repo's PR is read from its Forgejo API, never gh: merged closes the item and row" {
+  fj_item merged success
+  run cmd_reap
+  assert_success
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
+  run grep -c '^gh pr view' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  grep -qx 'https://git.example.test/api/v1/repos/o/game/pulls/12' "$NOTES_FIXTURE/fj.urls" || fail "Forgejo not asked"
+  run grep -c sekret-token "$NOTES_FIXTURE/fj.urls"
+  assert_output 0
+  # every read, the checks too, carries the token on stdin, and rbw is asked once
+  run grep -vc 'header = "Authorization: token sekret-token"' "$NOTES_FIXTURE/fj.auth"
+  assert_output 0
+  grep -q '/commits/1111111111111111111111111111111111111111/status' "$NOTES_FIXTURE/fj.auth" || fail "checks not read"
+  run grep -c 'rbw get forgejo_repo_admin' "$RBW_FIXTURE/calls.log"
+  assert_output 1
+}
+
+@test "reap: a Forgejo PR open parks its item in review, then its red check gets a fix-ci owner; closed fails it" {
+  fj_item open success
+  run cmd_reap
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
+  # a warning is a pass, as Forgejo's combined state reads it: still parked
+  jq -c '.statuses[0].status = "warning"' "$NOTES_FIXTURE/fj.status" > "$NOTES_FIXTURE/s" && mv "$NOTES_FIXTURE/s" "$NOTES_FIXTURE/fj.status"
+  run cmd_reap
+  refute_output --partial 'fix-ci'
+  jq -cn '{state: "failure", statuses: [{status: "failure"}, {status: "success"}]}' > "$NOTES_FIXTURE/fj.status"
+  run cmd_reap
+  assert_output --partial 'fix-ci queue item fix-crash (PR o/game#12 red at 111111111111, try 1 of 2)'
+  agent-queue move fix-crash running >/dev/null; agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
+  fj_pr closed
+  run cmd_reap
+  assert_output --partial 'failed queue item fix-crash (PR o/game#12 closed unmerged)'
+}
+
+@test "reap: a Forgejo PR on a host not listed is never asked (no token leaves) and the item is left; a bare pr: needs its Item stamp" {
+  fj_item merged success
+  SO_FORGEJO_HOSTS=git.other.test run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" running
+  [ ! -e "$NOTES_FIXTURE/fj.urls" ] || fail "an unlisted host was called"
+  grep -q 'queue item fix-crash left: could not read PR o/game#12' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
+  # a bare number is read from the project's checkout, and only a PR whose body stamps the item counts
+  agent-queue set fix-crash pr=12 >/dev/null
+  fj_pr merged "$OID" 'Item: other-item'
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" running
+  fj_pr merged
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" ok
+}
+
 # fix_ended <head> <ci> -- the fix-crash item's PR now reads OPEN at <head> with checks <ci>, and the
 # item is back in review/ with a session that is gone, as a fix-ci session leaves it when it ends.
 fix_ended() {
