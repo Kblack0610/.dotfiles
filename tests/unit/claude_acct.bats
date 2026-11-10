@@ -1611,7 +1611,8 @@ pro_rollout() {
 @test "sources: two rows on one Codex plan split it by reserve, and room --source --json prints the row" {
   src_setup
   printf 'codex-core codex %s/codex reserve=5\n' "$SRC" >> "$SANDBOX/sources"
-  sed -i "s|^codex   codex         $SRC/codex  reserve=5|codex   codex         $SRC/codex  reserve=30|" "$SANDBOX/sources"
+  sed -i '/^codex /s/reserve=5/reserve=30/' "$SANDBOX/sources"
+  grep -q '^codex .*reserve=30' "$SANDBOX/sources" || fail "fixture: the codex row did not take reserve=30"
   rollout 75 10 84
   run --separate-stderr "$ACCT" room --source codex --json
   assert_failure 1

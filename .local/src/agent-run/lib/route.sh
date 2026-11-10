@@ -232,8 +232,8 @@ route_account() {
 }
 
 # route_source_room -- the claude-acct source a native ChatGPT (Codex) run spends from: SOURCE
-# when the caller names one (the agent conf: codex-core for priority-must work, which runs on to
-# 95% of the plan), else codex (dispatch sessions, which stop at 70%). A headless call has no
+# when the caller names one (the agent conf: codex-core for priority-must work), else codex
+# (dispatch sessions); their reserves are in ~/.config/claude-acct/sources. A headless call has no
 # other gate: Codex bills a plan, so dollar caps never bind it. It refuses only on what holds the
 # source itself (capped, its reserve, its 5h window, its parent pool); pace, live sessions and
 # max_live are dispatch's to weigh, not a single small call's. An unread source is let through,
