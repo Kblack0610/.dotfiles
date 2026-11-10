@@ -24,6 +24,18 @@
 #
 # Built and run by tests/docker.sh; `make -C tests test-ui` is the entry point.
 
+# The linters are pinned, and that is not fussiness: a new shellcheck release finds new
+# things, so an unpinned lint gate goes red on a repo nobody touched. Bumping these is a
+# deliberate, reviewable diff -- which is also when the severity ratchet gets revisited.
+# They come from each project's official image, which is a static binary at /bin for amd64
+# and arm64, pulled from the same registry as the base image below. Not the GitHub release
+# asset: on 2026-11-09 the shellcheck v0.11.0 asset answered 504 to every retry for over two
+# minutes and failed the lint job and the ui tier (run 42566089360).
+ARG SHELLCHECK_REF=v0.11.0
+ARG SHFMT_REF=v3.13.1
+FROM koalaman/shellcheck:${SHELLCHECK_REF} AS shellcheck
+FROM mvdan/shfmt:${SHFMT_REF} AS shfmt
+
 FROM debian:trixie-slim
 
 # Pinned so a CI run and a laptop run agree, and so a distro bump cannot silently change
@@ -33,11 +45,6 @@ FROM debian:trixie-slim
 ARG TMUX_REF=3.8
 ARG TMUX_STOCK=
 ARG FZF_REF=0.74.1
-# The linters are pinned too, and that is not fussiness: a new shellcheck release finds new
-# things, so an unpinned lint gate goes red on a repo nobody touched. Bumping these is a
-# deliberate, reviewable diff -- which is also when the severity ratchet gets revisited.
-ARG SHELLCHECK_REF=v0.11.0
-ARG SHFMT_REF=v3.13.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -52,9 +59,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-yaml sqlite3 nodejs openssl xxd \
     && rm -rf /var/lib/apt/lists/*
 
-# Every download below (tmux, fzf, shellcheck, shfmt) goes to GitHub's release CDN, which answers a
-# 504 now and then, and the image is rebuilt on every CI run with no layer cache, so one 504 failed
-# the ui tier and the lint job together. curl reads this file, so the
+# The tmux and fzf downloads below go to GitHub's release CDN, which answers a 504 now and then,
+# and the image is rebuilt on every CI run with no layer cache, so one 504 failed the ui tier and
+# the lint job together. curl reads this file, so the
 # retry lives in one place and each download keeps its plain `curl -fsSL`.
 RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 
@@ -100,23 +107,10 @@ RUN arch="$(dpkg --print-architecture)" \
     && fzf --version
 
 # shellcheck + shfmt, so `tests/docker.sh lint` runs the exact gate CI runs without anyone
-# having to install a linter. shellcheck ships a static binary; shfmt is a single Go binary.
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64) sc_arch=x86_64; sh_arch=amd64 ;; \
-         arm64) sc_arch=aarch64; sh_arch=arm64 ;; \
-         *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
-       esac \
-    && curl -fsSL -o /tmp/sc.tar.xz \
-      "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_REF}/shellcheck-${SHELLCHECK_REF}.linux.${sc_arch}.tar.xz" \
-    && tar xf /tmp/sc.tar.xz -C /tmp \
-    && install -m 0755 "/tmp/shellcheck-${SHELLCHECK_REF}/shellcheck" /usr/local/bin/shellcheck \
-    && curl -fsSL -o /usr/local/bin/shfmt \
-      "https://github.com/mvdan/sh/releases/download/${SHFMT_REF}/shfmt_${SHFMT_REF}_linux_${sh_arch}" \
-    && chmod 0755 /usr/local/bin/shfmt \
-    && rm -rf /tmp/sc.tar.xz "/tmp/shellcheck-${SHELLCHECK_REF}" \
-    && shellcheck --version | grep version: \
-    && shfmt --version
+# having to install a linter.
+COPY --from=shellcheck /bin/shellcheck /usr/local/bin/shellcheck
+COPY --from=shfmt /bin/shfmt /usr/local/bin/shfmt
+RUN shellcheck --version | grep version: && shfmt --version
 
 # THE MARKER. tmux_harness.bash's require_disposable_host() checks for this together with
 # /.dockerenv, and hard-fails the test otherwise. Both are needed: the env var alone could
