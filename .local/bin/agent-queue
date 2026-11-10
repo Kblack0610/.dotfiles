@@ -1389,9 +1389,10 @@ cmd_credit_of() {
   credit_of "$1" || die "could not read $AQ_MAP"
 }
 
-# END_REASONS: why a run ended (end_reason:), set only by fleet-dispatch's settle_item from the rollout
-# (codex-rollout.jq). The first four say nothing about the model, so lane_outcome files no outcome for
-# them; `timeout` and `stopped` rate as before.
+# END_REASONS: why a run ended (end_reason:), set by fleet-dispatch's settle_item from the rollout
+# (codex-rollout.jq); a run that ended before settle_item recorded it gets the same reason by `set`,
+# beside its `model-lane void`, from that classifier's reviewed dry-run. The first four say nothing
+# about the model, so lane_outcome files no outcome for them; `timeout` and `stopped` rate as before.
 END_REASONS="refused limit provider cut timeout stopped"
 UNRATED_ENDS=" refused limit provider cut "
 check_end() { case " $END_REASONS " in *" $1 "*) ;; *) die "end_reason is one of: $END_REASONS, not $1" ;; esac; }

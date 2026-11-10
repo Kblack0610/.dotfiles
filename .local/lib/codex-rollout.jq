@@ -1,5 +1,5 @@
 # codex-rollout.jq -- why a Codex run ended, read from its rollout. The one classifier: settle_item
-# (fleet-dispatch) is the only caller, and its answer is the item's end_reason.
+# (fleet-dispatch) is the one automated caller, and its answer is the item's end_reason.
 #
 #   jq -rs --argjson timeout_s <launcher timeout, 0 for none> -f codex-rollout.jq rollout-*.jsonl
 #
