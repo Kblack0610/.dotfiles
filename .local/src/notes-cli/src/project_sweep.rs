@@ -190,14 +190,13 @@ fn sections(body: &[&str], ctx: &Ctx) -> Vec<String> {
     open.sort_by_key(|b| (sheet::is_later(&b[0], ctx.open), rank::of(&b[0], ctx.today)));
     let (epic_rows, open): (Vec<Block>, Vec<Block>) =
         open.into_iter().partition(|b| epics::is_epic(&b[0]));
-    let (now, open): (Vec<Block>, Vec<Block>) = open.into_iter().partition(|b| is_started(&b[0]));
-    let take = open
-        .iter()
-        .take(ctx.shape.next_up)
-        .take_while(|b| !sheet::is_later(&b[0], ctx.open))
-        .count();
-    let mut open = open;
-    let backlog = open.split_off(take);
+    // The sections follow the queue (human, 2026-11-09): Now is the rows whose item runs
+    // (`run:`), Next up every queued row, uncapped, and Backlog the rows no item is behind.
+    let (started, backlog): (Vec<Block>, Vec<Block>) =
+        open.into_iter().partition(|b| is_started(&b[0]));
+    let (now, open): (Vec<Block>, Vec<Block>) = started
+        .into_iter()
+        .partition(|b| crate::project_tasks::is_running(&b[0]));
     let mut done = tb.done;
     // Newest close first, undated last; equal days keep file order.
     done.sort_by_key(|b| std::cmp::Reverse(crate::project_tasks::done_on(&b[0])));
@@ -307,11 +306,10 @@ Version: v0.12.1
 
     const TODAY: &str = "2026-11-09";
 
-    fn ctx_with(next_up: usize, done_days: i64, done_max: usize) -> Ctx {
+    fn ctx_with(done_days: i64, done_max: usize) -> Ctx {
         Ctx {
             today: NaiveDate::parse_from_str(TODAY, "%Y-%m-%d").unwrap(),
             shape: SheetShape {
-                next_up,
                 done_days,
                 done_max,
             },
@@ -321,7 +319,7 @@ Version: v0.12.1
     }
 
     fn ctx() -> Ctx {
-        ctx_with(10, 7, 30)
+        ctx_with(7, 30)
     }
 
     fn sweep(c: &str) -> String {
@@ -376,7 +374,7 @@ Version: v0.12.1
     fn untagged_rows_stay_untagged_and_a_later_tag_stays_put() {
         let out = sweep(SHEET);
         assert!(out.contains("- [ ] live one #high\n"), "{out}");
-        assert!(out.contains("- [ ] next one #high #v0.12.2\n"), "{out}");
+        assert!(out.contains("- [ ] next one #v0.12.2\n"), "{out}");
         assert!(out.contains("- [x] done one <!-- pr:307"), "{out}");
     }
 
@@ -385,33 +383,43 @@ Version: v0.12.1
     fn the_sheet_is_laid_out_in_its_sections() {
         let s = "# d\nVersion: v0.12.1\n\n## Tasks\n\
 - [ ] low one #low\n- [x] old close <!-- done:2026-11-05 -->\n\
-- [/] running #high\n- [ ] epic(look): the look #high\n\
+- [/] queued #low\n- [/] running #high <!-- run:1109 -->\n- [ ] epic(look): the look #high\n\
 - [ ] fire #urgent\n- [ ] later one #v0.12.2\n- [x] new close <!-- done:2026-11-08 -->\n";
-        let out = sweep_sheet(s, &ctx_with(2, 7, 30)).unwrap().0;
+        let out = sweep_sheet(s, &ctx()).unwrap().0;
         assert_eq!(
             out,
             "# d\nVersion: v0.12.1\n\n## Tasks\n\
 ### Epics\n- [ ] epic(look): the look #high\n\n\
-### Now\n- [/] running #high\n\n\
-### Next up\n- [ ] fire #urgent\n- [ ] low one #low\n\n\
-### Backlog\n- [ ] later one #high #v0.12.2\n\
+### Now\n- [/] running #high <!-- run:1109 -->\n\n\
+### Next up\n- [/] queued #low\n\n\
+### Backlog\n- [ ] fire #urgent\n- [ ] low one #low\n- [ ] later one #v0.12.2\n\
 - [ ] \n\n---\n### Done\n\
 - [x] new close <!-- done:2026-11-08 -->\n- [x] old close <!-- done:2026-11-05 -->\n"
         );
     }
 
-    // Rank: due beats priority, priority beats age, and Next up stops at N.
+    // Rank: due beats priority, priority beats age, within each section. Next up is every
+    // queued row, however many: there is no cap.
     #[test]
-    fn next_up_is_the_top_n_by_rank() {
+    fn each_section_is_sorted_by_rank_and_next_up_is_the_whole_queue() {
         let s = "# d\nVersion: v0.12.1\n\n## Tasks\n\
 - [ ] old high #high #c1001\n- [ ] new high #high #c1101\n\
-- [ ] due low #low #due1110\n- [ ] plain urgent #urgent\n";
-        let out = sweep_sheet(s, &ctx_with(3, 7, 30)).unwrap().0;
+- [ ] due low #low #due1110\n- [ ] plain urgent #urgent\n\
+- [/] q low #low\n- [/] q urgent #urgent\n- [/] q high #high\n";
+        let out = sweep(s);
         let (next, backlog) = (pos(&out, "### Next up"), pos(&out, "### Backlog"));
-        let order = ["due low", "plain urgent", "old high", "new high"];
-        let at: Vec<usize> = order.iter().map(|n| pos(&out, n)).collect();
-        assert!(at.windows(2).all(|w| w[0] < w[1]), "ranked:\n{out}");
-        assert!(next < at[0] && at[2] < backlog && backlog < at[3], "{out}");
+        let queued = ["q urgent", "q high", "q low"];
+        let rest = ["due low", "plain urgent", "old high", "new high"];
+        for order in [&queued[..], &rest[..]] {
+            let at: Vec<usize> = order.iter().map(|n| pos(&out, n)).collect();
+            assert!(at.windows(2).all(|w| w[0] < w[1]), "ranked:\n{out}");
+        }
+        assert!(
+            next < pos(&out, "q urgent") && pos(&out, "q low") < backlog,
+            "{out}"
+        );
+        assert!(backlog < pos(&out, "due low"), "{out}");
+        assert!(!out.contains("### Now"), "nothing runs:\n{out}");
     }
 
     // A row aimed past the open version is never next, however urgent its tags.
@@ -428,11 +436,12 @@ Version: v0.12.1
     #[test]
     fn a_hand_placed_row_is_moved_to_its_rank() {
         let s = "# d\nVersion: v0.12.1\n\n## Tasks\n\
-### Next up\n- [ ] lowly #low\n\n### Backlog\n- [ ] fire #urgent\n\
+### Now\n- [/] queued only #low\n\n### Next up\n- [ ] lowly #low\n\n### Backlog\n- [ ] fire #urgent\n\
 - [ ] \n\n---\n### Done\n";
         let out = sweep(s);
-        assert_eq!(out.matches("### Next up").count(), 1, "{out}");
-        assert!(!out.contains("### Backlog"), "no empty heading:\n{out}");
+        assert_eq!(out.matches("### Backlog").count(), 1, "{out}");
+        assert!(!out.contains("### Now"), "a queued row is not Now:\n{out}");
+        assert!(pos(&out, "### Next up") < pos(&out, "queued only"), "{out}");
         assert!(pos(&out, "fire") < pos(&out, "lowly"), "{out}");
         assert!(sweep_sheet(&out, &ctx()).is_none(), "settles:\n{out}");
     }
@@ -458,7 +467,10 @@ Version: v0.12.1
     fn a_tag_naming_a_closed_version_is_dropped() {
         let stale = "# d\nVersion: v0.12.1\n\n## Tasks\n- [ ] stale #v0.11.0\n";
         let (out, report) = sweep_sheet(stale, &ctx()).unwrap();
-        assert!(out.contains("- [ ] stale #high\n"), "{out}");
+        assert!(
+            out.contains("- [ ] stale\n"),
+            "untagged stays untagged:\n{out}"
+        );
         assert!(
             report.iter().any(|r| r.contains("#v0.11.0 closed")),
             "{report:?}"
@@ -508,7 +520,7 @@ Version: v0.12.1
             ..ctx()
         };
         let moved = sweep_sheet(sheet, &write).expect("the layout changes").0;
-        assert!(moved.contains("### Next up\n"), "{moved}");
+        assert!(moved.contains("### Backlog\n"), "{moved}");
         for row in &rows {
             assert!(
                 moved.lines().any(|l| l == *row),
@@ -529,7 +541,7 @@ Version: v0.12.1
         let (out, _) = sweep_sheet(board, &ctx()).expect("a board sweeps");
         assert_eq!(
             out,
-            "# d\n\n## Tasks\n### Next up\n- [ ] a #high #v0.0.9\n- [ ] \n\n---\n### Done\n"
+            "# d\n\n## Tasks\n### Backlog\n- [ ] a #v0.0.9\n- [ ] \n\n---\n### Done\n"
         );
     }
 
@@ -606,7 +618,7 @@ Version: v0.12.1
             assert!(!r.iter().any(|t| t.starts_with(kept)), "{kept}: {r:?}");
         }
         // the cap keeps the newest
-        let capped = rolled(s, &ctx_with(10, 7, 1));
+        let capped = rolled(s, &ctx_with(7, 1));
         assert!(capped.iter().any(|t| t.starts_with("fresh")), "{capped:?}");
         assert!(!capped.iter().any(|t| t.starts_with("today")), "{capped:?}");
     }

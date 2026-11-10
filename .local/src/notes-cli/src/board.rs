@@ -612,6 +612,12 @@ struct FeedRow {
     /// The lines indented under the row (`goal:`, `check:`, children), trimmed; empty for a
     /// Focus or playtest row.
     details: Vec<String>,
+    /// False when the row's profile has `automation = false`: board automation (dispatch,
+    /// triage) skips it, and the UIs still show it.
+    automation: bool,
+    /// The line carries no priority tag: `priority` is the rank's default, and
+    /// `agentctl-inbox-triage --backlog --priority` gives it a real one.
+    untriaged: bool,
 }
 
 /// One project in the feed, rows or not: a UI needs every project to offer `add` on it.
@@ -626,6 +632,8 @@ struct FeedProject {
     playtest_open: usize,
     /// Lines waiting in the sheet's `## Inbox` for the triager.
     inbox: usize,
+    /// The profile's `automation` key (see [`FeedRow::automation`]).
+    automation: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -645,8 +653,8 @@ struct Origin<'a> {
     sheet: &'a std::path::Path,
 }
 
-/// The feed row for one open task `line`. Priority is the line's tag, else the default every
-/// task carries (`md::default_priority`). `tags` are the hashtags no other field already
+/// The feed row for one open task `line`. Priority is the line's tag, else the rank's default
+/// (`md::default_priority`) with `untriaged` set, so a reader orders it and triage still finds it. `tags` are the hashtags no other field already
 /// carries: not the priority, tier, worker, requested, size, release tag or created tag
 /// (`since`).
 fn feed_row(
@@ -655,7 +663,8 @@ fn feed_row(
     details: Vec<String>,
     today: chrono::NaiveDate,
 ) -> FeedRow {
-    let prio = md::task_priority(line).unwrap_or(md::default_priority());
+    let tagged = md::task_priority(line);
+    let prio = tagged.unwrap_or(md::default_priority());
     let priority = md::PRIORITIES
         .iter()
         .find(|(_, tag, _)| *tag == prio)
@@ -712,6 +721,8 @@ fn feed_row(
         line: line_no,
         raw: line.trim_end().to_string(),
         details,
+        automation: true,
+        untriaged: tagged.is_none(),
     }
 }
 
@@ -775,6 +786,7 @@ fn feed_for_dir(
         agent_open: counts[1],
         playtest_open: counts[2],
         inbox,
+        automation: true,
     };
     (proj, rows)
 }
@@ -818,11 +830,14 @@ pub fn print_json() -> Result<i32> {
         };
         feed.rows
             .extend(focus_rows(&name, &daily::today_path(&p), today));
+        let automation = config::automation(&name);
         for (proj, summary) in daily::discover_project_dirs(&p) {
             let Some(dir) = summary.parent() else {
                 continue;
             };
-            let (fp, rows) = feed_for_dir(&name, &proj, dir, today);
+            let (mut fp, mut rows) = feed_for_dir(&name, &proj, dir, today);
+            fp.automation = automation;
+            rows.iter_mut().for_each(|r| r.automation = automation);
             feed.projects.push(fp);
             feed.rows.extend(rows);
         }
@@ -1215,6 +1230,8 @@ mod tests {
             "sheet",
             "line",
             "raw",
+            "automation",
+            "untriaged",
         ] {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
