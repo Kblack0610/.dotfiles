@@ -22,6 +22,8 @@ const ctx = vm.createContext({
   URLSearchParams,
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
 });
+// watch.js loads before log.js in the page; its target helper is all the Sessions table uses.
+vm.runInContext('const shortTarget = (t) => String(t).split("/").pop();', ctx);
 for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const pr = (repo, project, number, at, o = {}) => ({ repo, project, number, title: `t${number}`, url: `https://x/${number}`, merged_at: at, area: "hub", group: "web", ...o });
@@ -88,4 +90,17 @@ test("what waits on you is a count linking to Home, not a second list of it", ()
   assert.match(html, /<a href="#" data-asks><span class="chip sm"[^>]*>2 waiting on you<\/span> answer on Home<\/a>/);
   assert.doesNotMatch(html, /Ship it/);
   assert.doesNotMatch(draw(rec()), /waiting on you/);
+});
+
+test("a session row leads with what its plan is called, and a phone sees phase, PRs and cost", () => {
+  const bench = { sessions: [
+    { target: "lab/unity-core-playground-agent-21:1", plan: "ucp-145", name: "ucp-145: first premium sets", phase: "5/6", prs_merged: 2, cost_usd: 3 },
+    { target: "hub/dotfiles:4", phase: "1/1" },
+  ] };
+  const html = between(draw(rec({ bench })), "Sessions");
+  const heads = [...html.matchAll(/<th([^>]*)>([^<]*)<\/th>/g)].map((m) => [m[2], (m[1].match(/data-role="(\w+)"/) || [])[1] || "rest"]);
+  assert.deepEqual(heads.filter(([, r]) => r !== "rest").map(([l, r]) => `${l}:${r}`), ["what:lead", "phase:glance", "PRs:glance", "cost:glance"]);
+  const rows = [...html.matchAll(/<tr><td[^>]*>([^<]*)<\/td>/g)].map((m) => m[1]);
+  assert.deepEqual(rows, ["ucp-145: first premium sets", "dotfiles:4"], "a session with no plan says its target");
+  assert.match(html, /<td class="muted" title="lab\/unity-core-playground-agent-21:1">unity-..-playground-agent-21:1<\/td>/);
 });
