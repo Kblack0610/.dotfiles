@@ -9,6 +9,7 @@
 //! | `notify`       | `agent-notify`                     | every page, with its priority             |
 //! | `runs`         | agentctl (`runs.jsonl`)            | runner runs that FAILED or STALLED        |
 //! | `queue`        | `agent-queue` (through `queue::list`) | items queued and finished              |
+//! | `ingest`       | the notes CLI (`ingest.jsonl`)     | what intake did with each line, and why   |
 //!
 //! Queue starts are not read from the queue: the dispatch log already records them.
 
@@ -127,6 +128,8 @@ pub struct Paths {
     pub dispatch_log: PathBuf,
     pub notify_log: PathBuf,
     pub runs: PathBuf,
+    /// The notes ingest record: intake's moves, filings and the reasons for them.
+    pub ingest: PathBuf,
 }
 
 impl Paths {
@@ -141,6 +144,9 @@ impl Paths {
             dispatch_log: crate::boards::dispatch_dir().join("log.md"),
             notify_log,
             runs: crate::jobs::Paths::from_env().agentctl.join("runs.jsonl"),
+            ingest: crate::fleet::Paths::from_env()
+                .notes_state
+                .join("ingest.jsonl"),
         }
     }
 }
@@ -204,11 +210,12 @@ pub fn window_in<Tz: TimeZone>(paths: &Paths, since: i64, items: &[Item], tz: &T
             String::new()
         })
     };
-    let (shepherd, dispatch, notify, runs) = (
+    let (shepherd, dispatch, notify, runs, ingest) = (
         read(&paths.shepherd_log),
         read(&paths.dispatch_log),
         read(&paths.notify_log),
         read(&paths.runs),
+        read(&paths.ingest),
     );
     let (failed, bad) = failed_runs(&runs);
     if bad > 0 {
@@ -222,7 +229,7 @@ pub fn window_in<Tz: TimeZone>(paths: &Paths, since: i64, items: &[Item], tz: &T
         parse_dispatch(&dispatch, tz),
         parse_notify(&notify),
     );
-    let mut all: Vec<Action> = [sa, da, na, failed, from_queue(items)]
+    let mut all: Vec<Action> = [sa, da, na, failed, from_queue(items), parse_ingest(&ingest)]
         .into_iter()
         .flatten()
         .filter(|a| a.at >= since)
@@ -519,6 +526,75 @@ pub fn from_queue(items: &[Item]) -> Vec<Action> {
         }
     }
     out
+}
+
+/// The ingest record's intake steps Log lists: a capture, a split, a move, a filing or the
+/// reason a line stayed, and a sweep's summary. Row and queue writes have their own sources.
+const INTAKE: [&str; 11] = [
+    "added",
+    "split",
+    "moved",
+    "filed",
+    "dup",
+    "planned",
+    "left",
+    "refused",
+    "answered",
+    "sweep",
+    "sweep-stopped",
+];
+
+/// One intake event of the ingest record, the fields Log shows.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct Intake {
+    ts: String,
+    action: String,
+    from: String,
+    to: String,
+    text: String,
+    id: Option<String>,
+    why: Option<String>,
+    row: Option<String>,
+    by: String,
+    stage: Option<String>,
+}
+
+/// Intake's steps from the ingest record, its writer as the actor (`inbox-triage`, a session,
+/// `human`) and its `why` (how the sweep decided, or why a line stayed) in the text. A line that
+/// is no intake step is passed over before it is parsed: the record is mostly row and queue writes.
+pub fn parse_ingest(text: &str) -> Vec<Action> {
+    text.lines()
+        .filter(|l| !l.contains(r#""stage":""#) || l.contains(r#""stage":"intake""#))
+        .filter_map(|l| serde_json::from_str::<Intake>(l).ok())
+        .filter(|e| e.stage.as_deref().is_none_or(|s| s == "intake"))
+        .filter(|e| INTAKE.contains(&e.action.as_str()))
+        // A row put on the outbox is a capture; one added anywhere else is a row write.
+        .filter(|e| e.action != "added" || e.from == "outbox")
+        .filter_map(|e| {
+            let at = DateTime::parse_from_rfc3339(&e.ts).ok()?.timestamp();
+            let place = match e.to.as_str() {
+                t if t.is_empty() || t == e.from => e.from.clone(),
+                t => format!("{} -> {t}", e.from),
+            };
+            let id = e.id.as_deref().map(|i| format!(" {i}")).unwrap_or_default();
+            let row = e
+                .row
+                .as_deref()
+                .filter(|r| *r != e.text)
+                .map(|r| format!(" => {r}"))
+                .unwrap_or_default();
+            let why = e
+                .why
+                .as_deref()
+                .filter(|w| !w.is_empty())
+                .map(|w| format!(" (why: {w})"))
+                .unwrap_or_default();
+            let actor = if e.by.is_empty() { "intake" } else { &e.by };
+            let text = format!("{place}{id}: {}{row}{why}", e.text);
+            Some(Action::new(at, actor, &e.action, &text, "ingest"))
+        })
+        .collect()
 }
 
 /// Verbs a digest lists one by one, not only counts.
@@ -855,7 +931,44 @@ not json
             dispatch_log: d.join("dispatch.md"),
             notify_log: d.join("notify"),
             runs: d.join("runs.jsonl"),
+            ingest: d.join("ingest.jsonl"),
         }
+    }
+
+    #[test]
+    fn intake_steps_carry_their_writer_and_why_and_row_and_queue_writes_are_left_out() {
+        let rec = r#"{"ts":"2026-11-09T20:49:29-08:00","action":"moved","from":"outbox","to":"apo","lane":"","text":"bigger text","by":"inbox-triage","stage":"intake","why":"model: names the dialog"}
+{"ts":"2026-11-09T20:49:30-08:00","action":"filed","from":"apo","to":"apo","lane":"agent","text":"bigger text","id":"apo-128","row":"feat(ui): larger text","by":"inbox-triage","stage":"intake","why":"model: names the dialog"}
+{"ts":"2026-11-09T20:50:00-08:00","action":"left","from":"outbox","to":"","lane":"","text":"a thought","stage":"intake","why":"not a task"}
+{"ts":"2026-11-09T20:51:00-08:00","action":"added","from":"outbox","to":"","lane":"","text":"a capture","by":"dd2bc7aa","stage":"intake"}
+{"ts":"2026-11-09T20:51:00-08:00","action":"added","from":"apo","to":"","lane":"agent","text":"a row","by":"dd2bc7aa","stage":"backlog"}
+{"ts":"2026-11-09T20:52:00-08:00","action":"item-added","from":"apo","to":"running","text":"an item","stage":"queue"}
+{"ts":"2026-11-09T20:53:00-08:00","action":"sweep","from":"outbox","to":"","lane":"","text":"inbox sweep","by":"inbox-triage","stage":"intake","why":"moved 1 from the outbox, filed 1"}
+not json"#;
+        let a = parse_ingest(rec);
+        let got: Vec<String> = a
+            .iter()
+            .map(|a| format!("{} {} {}", a.actor, a.verb, a.text))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "inbox-triage moved outbox -> apo: bigger text (why: model: names the dialog)",
+                "inbox-triage filed apo apo-128: bigger text => feat(ui): larger text (why: model: names the dialog)",
+                "intake left outbox: a thought (why: not a task)",
+                "dd2bc7aa added outbox: a capture",
+                "inbox-triage sweep outbox: inbox sweep (why: moved 1 from the outbox, filed 1)",
+            ]
+        );
+        assert!(a.iter().all(|a| a.source == "ingest"));
+        assert_eq!(a[0].at, 1_794_286_169);
+        // Through gather, beside the other ledgers, in the window.
+        let d = dir("ingest");
+        let p = paths(&d);
+        std::fs::write(&p.ingest, rec).unwrap();
+        let g = gather_in(&p, a[2].at, &[], &pst());
+        assert_eq!(verbs(&g.actions), ["sweep", "added", "left"]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

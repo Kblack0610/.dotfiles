@@ -34,7 +34,12 @@ pub struct Step {
     pub lane: String,
     pub text: String,
     pub id: Option<String>,
+    /// How the sweep decided it, or why the line stayed.
     pub why: Option<String>,
+    /// The first row's words as filed.
+    pub row: Option<String>,
+    /// Who wrote it: `inbox-triage`, a session, a queue item, `human`.
+    pub by: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]

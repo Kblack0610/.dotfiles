@@ -187,15 +187,16 @@ file_line() {
   fi
 }
 
-# move_out <project> <raw> <text> [tagged]: one outbox line into <project>'s inbox, MOVED_RAW set to the
+# move_out <project> <raw> <text> <why> [tagged]: one outbox line into <project>'s inbox, <why> how the
+# project was picked (kept on the `moved` event), MOVED_RAW set to the
 # line as the inbox now holds it. A name that is no project (the CLI exits 3) is recorded as refused and the line stays in the outbox, unless the
 # line was `tagged` with it: then it is the caller's to route, so nothing is recorded or counted.
 move_out() {
-  local p="$1" raw="$2" text="$3" tagged="${4:-}" out err rc errf
+  local p="$1" raw="$2" text="$3" why="$4" tagged="${5:-}" out err rc errf
   MOVED_RAW="$raw"
   if [ "$DRY" = 1 ]; then printf 'would move [outbox -> %s] %s\n' "$p" "$raw"; ROUTED=$((ROUTED + 1)); return 0; fi
   errf="$(mktemp)"
-  if out="$(notes outbox move --project "$p" -- "$raw" 2>"$errf")"; then
+  if out="$(notes outbox move --project "$p" --why "$why" -- "$raw" 2>"$errf")"; then
     rm -f -- "$errf"
     printf '%s\n' "$out"
     # The line as the inbox holds it now: the `#p:` word is gone, so this is what to file.
@@ -223,9 +224,9 @@ answer() {
     | [.project, .lane, (.type // "-")] | join("\u001f")) // ""' <<<"$4")"
   [ -n "$row" ] || { left outbox "$text" "no open row $id"; return 0; }
   IFS=$'\x1f' read -r p lane ty <<<"$row"
-  move_out "$p" "$raw" "$text" || return 1
+  move_out "$p" "$raw" "$text" "id answer: $id" || return 1
   raw="$MOVED_RAW"
-  file_line "$p" "$raw" "$text" --dup "$id" --lane "$lane" || return 1
+  file_line "$p" "$raw" "$text" --dup "$id" --lane "$lane" --why "id answer: $id" || return 1
   [ "$ty" = decide ] || return 0
   pt "$p" "$lane" done "$id" --proof "ingest:$(date +%F)"
 }
@@ -283,12 +284,13 @@ route() {
 A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low; omit when unclear) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
-{\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": false}
-{\"n\": 2, \"action\": \"dup\", \"id\": \"<id of the open row it repeats>\"}
+{\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": false, \"why\": \"<a few words>\"}
+{\"n\": 2, \"action\": \"dup\", \"id\": \"<id of the open row it repeats>\", \"why\": \"<a few words>\"}
 {\"n\": 3, \"action\": \"skip\", \"why\": \"<a few words>\"}
 {\"n\": 4, \"action\": \"file\", \"rows\": [\"feat(ui): a pause menu with resume and quit #size/m\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": true, \"epic\": \"epic(ui): a pause menu the player can open mid-match\"}
 {\"n\": 5, \"action\": \"dup\", \"line\": 4}
 file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, always; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other in one place (two [outbox] lines, or two lines of one inbox) were written together, so read each with its neighbours there: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
+why: a few words on a file or a dup too, kept in the ingest record so a misrouted line can be traced: for file what in the line or its neighbours names the project, for dup what it repeats.
 dup: only when an open row below already asks for the same thing (its id), or a line above in this list that you file does (its n as line).
 skip: the line is not a task (a thought, a note to self, a question that only asks for information), you cannot tell what it asks, or for an [outbox] line neither it nor its neighbours point at a project. A question that reports a fault or asks for a change (didn't it reset?, can we have X?) is a task. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
 A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. $(new_epic_rule)
@@ -354,7 +356,7 @@ $open"
         fi
         if [ "$from" = outbox ]; then
           [ -n "$dest" ] || { left outbox "$text" "no project"; continue; }
-          move_out "$dest" "$raw" "$text" || continue
+          move_out "$dest" "$raw" "$text" "model: ${why:-no why}" || continue
           raw="$MOVED_RAW"
           src="$dest"
         elif [ -n "$dest" ] && [ "$dest" != "$from" ]; then
@@ -367,7 +369,7 @@ $open"
           fi
           for r in "${asv[@]}"; do args+=(--as "$r"); done
         fi
-        file_line "$src" "$raw" "$text" "${args[@]}" || continue
+        file_line "$src" "$raw" "$text" "${args[@]}" --why "model: ${why:-no why}" || continue
         if [ "$action" = file ]; then
           [ "$DRY" = 1 ] && FILED_ID="<the row of line $n>"
           line_id[$n]="$FILED_ID" line_dest[$n]="${dest:-$from}"
@@ -819,7 +821,7 @@ pass() {
   # as a hint, like a line with no tag.
   local missed='[]'
   while IFS=$'\x1f' read -r -d '' p raw text; do
-    move_out "$p" "$raw" "$text" tagged; mrc=$?
+    move_out "$p" "$raw" "$text" "#p: tag" tagged; mrc=$?
     if [ "$mrc" = "$EX_NO_PROJECT" ]; then
       say "outbox: #p:$p names no project, left for the model: $raw"
       missed="$(jq -c --arg raw "$raw" '. + [$raw]' <<<"$missed")"
@@ -849,7 +851,7 @@ pass() {
   # Typed already (the CLI reads the row grammar, so this script holds no copy of it): `file`
   # with no --as files it as written.
   while IFS=$'\x1f' read -r -d '' from raw text; do
-    file_line "$from" "$raw" "$text" --want "$(want_channel "$from")"
+    file_line "$from" "$raw" "$text" --want "$(want_channel "$from")" --why "typed"
   done < <(jq -j '.[] | select(.typed) | .from, "\u001f", .raw, "\u001f", .text, "\u0000"' <<<"$all")
   size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
   all="$(jq -c --argjson max "$size" '[.[] | select(.typed | not)] | {take: .[:$max], over: (.[$max:] | length)}' <<<"$all")"
@@ -900,6 +902,9 @@ sweep() {
   [ $((FILED + ROUTED + ANSWERED)) -gt 0 ] && verdict=WORKED
   [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; SUMMARY="budget: $SUMMARY"; }
   [ "$rc" = 1 ] && verdict=FAILED
+  # A sweep that handled a line says so in the record, so its moves and filings read as one run.
+  [ "$rc" = 0 ] && [ $((FILED + ROUTED + ANSWERED + KEPT + FAILED)) -gt 0 ] \
+    && chain_event intake sweep outbox "inbox sweep" --why "$SUMMARY"
   if [ "$rc" != 0 ]; then
     # A stopped sweep leaves its lines waiting: the pipeline line's inbox node reads it from the record.
     local why; why="$(proof_reasons)"

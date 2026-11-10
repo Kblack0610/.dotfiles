@@ -34,7 +34,9 @@ pub struct Event {
     /// The row id it was filed as, or the open row it joined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Why it stayed, for `left` and `refused`; a `split`'s line count.
+    /// Why it stayed, for `left` and `refused`; how the sweep decided a `moved`, `filed` or
+    /// `dup` (`#p: tag`, `id answer`, `typed`, or `model: <its why>`); a `split`'s line count; a
+    /// `sweep`'s counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// For `filed`: the first row's words as filed ([`row_words`]), which [`kept`] compares
@@ -79,14 +81,18 @@ pub const CHAIN_STAGES: [&str; 3] = ["queue", "dispatch", "land"];
 impl Event {
     pub fn new(action: &str, from: &str, to: &str, text: &str) -> Self {
         let env = |k: &str| std::env::var(k).ok();
-        let (item, session) = (env("AGENT_QUEUE_ITEM"), env("CLAUDE_CODE_SESSION_ID"));
+        let (item, session, runner) = (
+            env("AGENT_QUEUE_ITEM"),
+            env("CLAUDE_CODE_SESSION_ID"),
+            env("AGENTCTL_NAME"),
+        );
         Event {
             ts: chrono::Local::now().to_rfc3339(),
             action: action.into(),
             from: from.into(),
             to: to.into(),
             text: text.trim().into(),
-            by: by(item.as_deref(), session.as_deref()),
+            by: by(item.as_deref(), session.as_deref(), runner.as_deref()),
             stage: Some("intake".into()),
             item: set(item.as_deref()),
             session_id: set(session.as_deref()),
@@ -134,10 +140,13 @@ impl Event {
     }
 }
 
-/// Who a write belongs to: the queue item, else the session's first 8 characters, else `human`.
-fn by(item: Option<&str>, session: Option<&str>) -> String {
+/// Who a write belongs to: the queue item, else the session's first 8 characters, else the
+/// agentctl runner it runs under (`AGENTCTL_NAME`, so a sweep's filing is `inbox-triage`), else
+/// `human`.
+fn by(item: Option<&str>, session: Option<&str>, runner: Option<&str>) -> String {
     set(item)
         .or_else(|| set(session).map(|s| s.chars().take(8).collect()))
+        .or_else(|| set(runner))
         .unwrap_or_else(|| "human".into())
 }
 
@@ -353,6 +362,70 @@ pub fn log(
     Ok(0)
 }
 
+/// `notes log --trace`: one line's whole path, capture to merge. The seeds are the events whose
+/// words hold `words` (any case) or whose row id is `words`; the trace is every event of the
+/// rows they were filed as or joined, and of the queue items those rows became, oldest first.
+pub fn trace(p: &Profile, words: &str, json: bool) -> anyhow::Result<i32> {
+    let events = all(p);
+    let hits = traced(&events, words);
+    for e in &hits {
+        if json {
+            println!("{}", serde_json::to_string(e)?);
+        } else {
+            println!("{}", log_line(e));
+        }
+    }
+    if hits.is_empty() {
+        eprintln!("no event in the record matches '{words}' (it keeps {KEEP_DAYS} days)");
+        return Ok(1);
+    }
+    Ok(0)
+}
+
+fn traced<'a>(events: &'a [Event], words: &str) -> Vec<&'a Event> {
+    use std::collections::HashSet;
+    let want = words.trim().to_lowercase();
+    if want.is_empty() {
+        return vec![];
+    }
+    let says = |e: &Event| {
+        e.text.to_lowercase().contains(&want)
+            || e.row
+                .as_deref()
+                .is_some_and(|r| r.to_lowercase().contains(&want))
+    };
+    let mut ids: HashSet<&str> = events
+        .iter()
+        .filter(|e| says(e) || e.id.as_deref() == Some(&want[..]))
+        .filter_map(|e| e.id.as_deref())
+        .collect();
+    if events.iter().any(|e| e.id.as_deref() == Some(&want[..])) {
+        ids.insert(&want[..]);
+    }
+    let of_ids = |e: &&Event| e.id.as_deref().is_some_and(|i| ids.contains(i));
+    let items: HashSet<&str> = events
+        .iter()
+        .filter(of_ids)
+        .filter_map(|e| e.item.as_deref())
+        .collect();
+    // The words the rows were filed from, so an id's trace starts at the capture (its `moved`).
+    let lines: HashSet<&str> = events
+        .iter()
+        .filter(of_ids)
+        .filter(|e| matches!(e.action.as_str(), "filed" | "dup"))
+        .map(|e| e.text.as_str())
+        .collect();
+    events
+        .iter()
+        .filter(|e| {
+            says(e)
+                || of_ids(e)
+                || (e.is_intake() && lines.contains(e.text.as_str()))
+                || e.item.as_deref().is_some_and(|i| items.contains(i))
+        })
+        .collect()
+}
+
 /// A row's words as [`kept`] compares them: its text without the hashtags, so the planner's
 /// tag edits (`#plan` off, a size) leave a filing kept, and a new type, area or title does not.
 pub fn row_words(line: &str) -> String {
@@ -453,11 +526,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_write_belongs_to_the_queue_item_then_the_session_then_the_human() {
-        assert_eq!(by(Some("fix-menu"), Some("6e736295-7629")), "fix-menu");
-        assert_eq!(by(None, Some("6e736295-7629")), "6e736295");
-        assert_eq!(by(Some(" "), None), "human");
-        assert_eq!(by(None, None), "human");
+    fn a_trace_follows_a_line_to_its_row_and_the_item_it_became() {
+        let ev = |action: &str, text: &str, id: Option<&str>, item: Option<&str>| Event {
+            id: id.map(str::to_string),
+            item: item.map(str::to_string),
+            ..Event::new(action, "outbox", "demo", text)
+        };
+        let record = vec![
+            ev("moved", "The menu Flickers", None, None),
+            ev("filed", "The menu Flickers", Some("de-4"), None),
+            ev("filed", "an unrelated line", Some("de-5"), None),
+            ev("started", "fix(ui): no flicker", Some("de-4"), None),
+            ev("item-added", "no flicker", Some("de-4"), Some("fix-menu")),
+            ev("merged", "PR 12", None, Some("fix-menu")),
+            ev("merged", "PR 13", None, Some("other")),
+        ];
+        let actions = |words: &str| -> Vec<String> {
+            traced(&record, words)
+                .iter()
+                .map(|e| format!("{} {}", e.action, e.text))
+                .collect()
+        };
+        let path = [
+            "moved The menu Flickers",
+            "filed The menu Flickers",
+            "started fix(ui): no flicker",
+            "item-added no flicker",
+            "merged PR 12",
+        ];
+        assert_eq!(actions("menu flickers"), path);
+        assert_eq!(actions("de-4"), path);
+        assert!(actions("  ").is_empty());
+        assert!(actions("nothing like it").is_empty());
+    }
+
+    #[test]
+    fn a_write_belongs_to_the_queue_item_then_the_session_then_the_runner_then_the_human() {
+        let r = Some("inbox-triage");
+        assert_eq!(by(Some("fix-menu"), Some("6e736295-7629"), r), "fix-menu");
+        assert_eq!(by(None, Some("6e736295-7629"), r), "6e736295");
+        assert_eq!(by(None, None, r), "inbox-triage");
+        assert_eq!(by(Some(" "), None, Some("")), "human");
+        assert_eq!(by(None, None, None), "human");
     }
 
     #[test]

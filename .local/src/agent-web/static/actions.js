@@ -59,8 +59,8 @@ function actionsBody(d) {
 }
 
 // The shepherd's log and agent-notify's push "actions"; the dispatch log and the run ledger
-// arrive as "fleet", the queue as "queue".
-const actionsFeed = pushed("log", ["actions", "fleet", "queue"], ast.refresh);
+// arrive as "fleet", the queue as "queue", the ingest record as "outbox".
+const actionsFeed = pushed("log", ["actions", "fleet", "queue", "outbox"], ast.refresh);
 LOG_PARTS.push({
   show() {
     // A view this page has not read asks the server, and when it came by a link opens its section.

@@ -171,10 +171,10 @@ function runnerExtras(x) {
     case "ingest": {
       const kinds = Object.keys(x.counts_7d).sort();
       const tiles = kinds.map((k) => tile(k.toUpperCase(), x.counts_7d[k], "var(--c1)", `in 7d${x.partial ? "+" : ""}`)).join("");
-      const rows = x.steps.map((t) => `<tr><td class="n">${when(t.ts)}</td><td>${esc(t.action)}</td><td class="muted">${esc(t.from)}${t.to ? ` -&gt; ${esc(t.to)}` : ""}</td><td class="wrap">${cut(t.text)}</td></tr>`).join("");
-      return `<h2 class="sec">Intake <span class="muted">what it filed from the inbox, from the ingest record</span></h2>` +
+      const rows = x.steps.map((t) => `<tr><td class="n">${when(t.ts)}</td><td>${esc(t.action)}${t.id ? ` <span class="muted">${esc(t.id)}</span>` : ""}</td><td class="muted">${esc(t.from)}${t.to && t.to !== t.from ? ` -&gt; ${esc(t.to)}` : ""}</td><td class="muted">${esc(t.by || "-")}</td><td class="wrap">${cut(t.text)}${t.row && t.row !== t.text ? `<div class="muted">=&gt; ${cut(t.row)}</div>` : ""}</td><td class="wrap muted">${cut(t.why || "")}</td></tr>`).join("");
+      return `<h2 class="sec">Intake <span class="muted">what it did with each line and why, from the ingest record; every step on <a href="#log">Log</a>, one line's path in <code>notes log --trace &lt;words&gt;</code></span></h2>` +
         (tiles ? `<div class="tiles">${tiles}</div>` : "") +
-        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>action</th><th>from -&gt; to</th><th>line</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>`;
+        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n">when</th><th>action</th><th>from -&gt; to</th><th>by</th><th>line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>`;
     }
     case "sentinel-watches": {
       const cls = (w) => (w.state === "TRIP" || w.state === "ERROR" ? "bad" : w.state === "OK" ? "" : "muted");
@@ -280,5 +280,7 @@ TABS.fleet = {
   },
   onEvent(ev) {
     if (st.tab === "fleet" && (ev.kind === "fleet" || ev.kind === "asks" || ev.kind === "sessions" || ev.kind === "resync")) (st.arg ? refreshRunner() : fst.refresh());
+    // The ingest record pushes as the outbox's kind; only a runner page reads it.
+    else if (st.tab === "fleet" && st.arg && ev.kind === "outbox") refreshRunner();
   },
 };

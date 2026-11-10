@@ -454,6 +454,11 @@ enum Cmd {
         /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes
         #[arg(long, conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item"])]
         steps: bool,
+        /// One line's whole path, from the record's 30 days: the events whose words hold WORDS
+        /// (or whose row is the id WORDS), then every event of the rows it was filed as and of
+        /// the queue items they became, to the merge. For "where did my line go?"
+        #[arg(long, value_name = "WORDS", conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item", "steps"])]
+        trace: Option<String>,
         /// One JSON event per line (one object per step with --steps)
         #[arg(long)]
         json: bool,
@@ -777,6 +782,9 @@ enum PtaskCmd {
         /// The channel the line came in by (as `add --want`): each row gets `#requested`
         #[arg(long, value_name = "CHANNEL", conflicts_with = "dup")]
         want: Option<String>,
+        /// How the filing was decided, kept on its ingest event (`notes log` shows it)
+        #[arg(long, value_name = "WHY")]
+        why: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -819,6 +827,9 @@ enum OutboxCmd {
     Move {
         #[arg(long, value_name = "PROJECT")]
         project: String,
+        /// How the project was picked, kept on the `moved` event (`notes log` shows it)
+        #[arg(long, value_name = "WHY")]
+        why: Option<String>,
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
     },
@@ -847,7 +858,7 @@ struct RecordArgs {
     #[arg(long, value_parser = [
         "left", "refused", "planned", "item-added", "item-moved", "item-set",
         "item-claimed", "item-cancelled", "started", "reaped", "settled", "merged",
-        "parked", "unparked", "land-failed", "sweep-stopped",
+        "parked", "unparked", "land-failed", "sweep", "sweep-stopped",
     ])]
     action: String,
     /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
@@ -1290,6 +1301,7 @@ fn main() -> Result<()> {
                     to,
                     detail,
                     want,
+                    why,
                     query,
                 }) => {
                     let to_lane = match to_lane.as_str() {
@@ -1301,6 +1313,7 @@ fn main() -> Result<()> {
                         project,
                         lane: to_lane,
                         want: want.as_deref().map(projects::want_channel).transpose()?,
+                        why,
                         how: match dup {
                             Some(id) => project_tasks::How::Dup(id),
                             None => project_tasks::How::Rows {
@@ -1392,8 +1405,8 @@ fn main() -> Result<()> {
                 outbox::put(&prof, &log, &base, &text)?
             }
             Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
-            Some(OutboxCmd::Move { project, raw }) => {
-                outbox::move_line(&prof, &log, &project, &raw.join(" "))?
+            Some(OutboxCmd::Move { project, why, raw }) => {
+                outbox::move_line(&prof, &log, &project, why.as_deref(), &raw.join(" "))?
             }
             Some(OutboxCmd::Answer { raw }) => {
                 let mut text = String::new();
@@ -1404,6 +1417,11 @@ fn main() -> Result<()> {
         Cmd::Log {
             steps: true, json, ..
         } => steps::print(&prof, json)?,
+        Cmd::Log {
+            trace: Some(words),
+            json,
+            ..
+        } => ingest::trace(&prof, &words, json)?,
         Cmd::Log {
             day,
             days,
