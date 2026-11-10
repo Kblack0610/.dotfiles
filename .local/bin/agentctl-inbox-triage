@@ -383,9 +383,13 @@ $open"
         else
           IFS=$'\x1e' read -r -a rowv <<<"$rows"
           asv=()
+          # The person's own #plan and #go are theirs, not the model's to drop: #plan plans the row
+          # first, and #go lets a requested row's plan run with no review (agentctl-inbox-plan).
+          [[ " ${text,,} " == *" #plan "* ]] && plan=1
           for r in "${rowv[@]}"; do
             r="$(epic_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics")"
             if [ -n "$plan" ] && [ "${#asv[@]}" = 0 ] && [[ " $r " != *" #plan "* ]]; then r="$r #plan"; fi
+            if [ -n "$plan" ] && [ "${#asv[@]}" = 0 ] && [[ " ${text,,} " == *" #go "* && " $r " != *" #go "* ]]; then r="$r #go"; fi
             [ -n "$r" ] && asv+=("$r")
           done
           [ "${#asv[@]}" -gt 0 ] || { left "$from" "$text" "no row"; continue; }
