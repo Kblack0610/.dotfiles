@@ -34,6 +34,8 @@ struct Shown<'a> {
     stale_after: i64,
     rows: Vec<&'a Run>,
     more: usize,
+    /// Each workflow's usual run time: the Run times fold, whatever the view.
+    times: &'a [builds::RunTime],
     errors: &'a [String],
     table: Summary,
 }
@@ -48,6 +50,7 @@ fn render(b: &Builds, q: &Query) -> String {
         stale_after: STALE_SECS,
         rows,
         more,
+        times: &b.times,
         errors: &b.errors,
         table,
     };
@@ -110,6 +113,12 @@ mod tests {
                 ..Default::default()
             },
             rows,
+            times: vec![builds::RunTime {
+                repo: "Org/app".into(),
+                workflow: "Tests".into(),
+                runs: 3,
+                ..Default::default()
+            }],
             errors: vec![],
         }
     }
@@ -129,6 +138,10 @@ mod tests {
             "3 runs in 30 days: 1 running, 0 queued, 1 red"
         );
         assert_eq!(v["stale_after"], STALE_SECS);
+        assert_eq!(
+            v["times"][0]["workflow"], "Tests",
+            "the Run times fold rides the same read"
+        );
     }
 
     #[test]
