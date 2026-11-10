@@ -521,7 +521,16 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
                 vec![]
             }
         };
-    p.next_says = NO_NEXT.into();
+    // NO_NEXT only for the ladder's last stage: an unread ladder, or a stage it lacks, is unread.
+    p.next_says = if ladder.iter().any(|s| s == stage) {
+        NO_NEXT.into()
+    } else {
+        if !ladder.is_empty() {
+            p.errors
+                .push(format!("notes projects --stages: no stage {stage}"));
+        }
+        "next stage  not read".into()
+    };
     if let Some(next) = next_on(&ladder, stage) {
         p.next_says = format!("{next}  not read");
         match stage_json::<StageOut>(
@@ -568,12 +577,16 @@ pub fn read(runner: &dyn Runner, name: &str, stage: &str, now: i64) -> Page {
 /// The page for a name alone, as `hub projects --page` and agent-web read it: its stage from
 /// `notes projects --stats --json`. A name no lab project has is an error, never an empty page.
 pub fn named(runner: &dyn Runner, name: &str, now: i64) -> Result<Page, String> {
-    let stats = crate::projects::stats(runner)?;
-    let s = stats
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| format!("notes projects lists no project {name}"))?;
+    let s = stats_of(runner, name)?;
     Ok(read(runner, name, &s.stage, now))
+}
+
+/// The `notes projects --stats --json` row of `name`; a name no lab project has is an error.
+fn stats_of(runner: &dyn Runner, name: &str) -> Result<crate::projects::Stats, String> {
+    crate::projects::stats(runner)?
+        .into_iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| format!("notes projects lists no project {name}"))
 }
 
 /// The numbers of a project's lab STATUS line (`lab-status`), one sentence each: each system's
@@ -635,11 +648,7 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize, today: chrono::Naiv
 /// says (the chain, the next stage's check, the board feed) that could not be read is an error,
 /// never a line that leaves it out.
 pub fn status(runner: &dyn Runner, name: &str, now: i64) -> Result<String, String> {
-    let stats = crate::projects::stats(runner)?;
-    let s = stats
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| format!("notes projects lists no project {name}"))?;
+    let s = stats_of(runner, name)?;
     let p = read(runner, name, &s.stage, now);
     let next_unread = p.gate.is_none() && p.next_says != NO_NEXT;
     if p.flow_line.is_none() || next_unread {
@@ -653,7 +662,7 @@ pub fn status(runner: &dyn Runner, name: &str, now: i64) -> Result<String, Strin
         .map(|f| f.playtest_open)
         .ok_or_else(|| format!("notes board --json lists no project {name}"))?;
     let today = crate::sheet_view::today_of(&feed);
-    Ok(status_line(&p, &Card::from_stats(s), playtest_open, today))
+    Ok(status_line(&p, &Card::from_stats(&s), playtest_open, today))
 }
 
 pub fn to_json(p: &Page) -> Value {
@@ -1002,7 +1011,8 @@ mod tests {
             "a system with no open epic is neither a wave nor upkeep; the top stage has no gate"
         );
         c.eta_days = Some(0);
-        assert!(status_line(&p, &c, 0, today).contains("v0.1.0 is 40% done, nothing open."));
+        c.percent = Some(100);
+        assert!(status_line(&p, &c, 0, today).contains("v0.1.0 is 100% done, nothing open."));
         c.percent = None;
         assert!(status_line(&p, &c, 0, today).contains(" v0.1.0 has no rows. "));
         c.version = None;
@@ -1019,6 +1029,18 @@ mod tests {
         f.answers
             .retain(|(k, ..)| !k.starts_with("project-stage-check game --stage"));
         assert!(status(&f, "game", NOW).is_err(), "an unread gate");
+        for ladder in [None, Some("draft dev\n")] {
+            let mut f = status_fake();
+            f.answers.retain(|(k, ..)| *k != "notes projects --stages");
+            if let Some(l) = ladder {
+                f.answers.push(("notes projects --stages", 0, l.into()));
+            }
+            let e = status(&f, "game", NOW).unwrap_err();
+            assert!(
+                e.contains("--stages"),
+                "an unread ladder is no top stage: {e}"
+            );
+        }
         let mut f = status_fake();
         f.answers.retain(|(k, ..)| !k.starts_with("notes board"));
         assert!(status(&f, "game", NOW).is_err(), "an unread feed");
