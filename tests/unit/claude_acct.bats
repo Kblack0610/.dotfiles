@@ -1608,6 +1608,19 @@ pro_rollout() {
   assert_failure 1
 }
 
+@test "sources: two rows on one Codex plan split it by reserve, and room --source --json prints the row" {
+  src_setup
+  printf 'codex-core codex %s/codex reserve=5\n' "$SRC" >> "$SANDBOX/sources"
+  sed -i '/^codex /s/reserve=5/reserve=30/' "$SANDBOX/sources"
+  grep -q '^codex .*reserve=30' "$SANDBOX/sources" || fail "fixture: the codex row did not take reserve=30"
+  rollout 75 10 84
+  run --separate-stderr "$ACCT" room --source codex --json
+  assert_failure 1
+  jq -e '.name == "codex" and (.room.reasons | index("reserve"))' <<<"$output" >/dev/null || fail "codex at 75% is not held by its 30% reserve: $output"
+  run --separate-stderr "$ACCT" room --source codex-core --json
+  jq -e '.name == "codex-core" and (.room.reasons | index("reserve") | not)' <<<"$output" >/dev/null || fail "codex-core at 75% is held by a reserve: $output"
+}
+
 @test "sources: a key at its cap has no room" {
   src_setup
   budget sk-lazer key 10 100
