@@ -1961,7 +1961,7 @@ item_brief() {
   if headless "$harness"; then
     echo "Right after the PR opens, run: agent-queue set $slug pr=<owner/repo#N>. A run cut off with a PR open then waits for the human instead of reading failed."
     [ -n "$pr_only$forgejo" ] || echo "Run agent-land in the foreground: a background command dies when this run exits."
-    echo "Skip wind-down (this run ends when you stop) and any step that needs a Claude slash command, and name what you skipped in the PR body."
+    echo "Run final-pass (~/.claude/skills/final-pass/SKILL.md) on the diff before the PR opens; skip only its /simplify call. Skip wind-down (this run ends when you stop) and any other step that needs a Claude slash command, and name each step you skipped in the PR body."
     no_human "$slug"
     return
   fi

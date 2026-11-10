@@ -463,7 +463,7 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
       { name: "lazer-reserve", usd: null, cost: "-", share: "-", basis: "1 session, no price known", detail: null },
     ],
     unpriced: ["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions"],
-    days: "11-07 $1,295  11-08 $738", foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens." };
+    foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens." };
   const h = show(board({ fleet_cost }));
   assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn"), "the whole figure is the first answer");
   assert.match(h, /Fleet cost 24h about \$849 <span class="muted">measured \$310, estimated \$538, as of /);
@@ -472,7 +472,6 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
   assert.match(h, /colspan="3" class="muted wrap">ask-judge \$6\.40, briefing \$2\.90/, "every runner is reachable");
   assert.match(h, /<tr><td>lazer-reserve<\/td><td class="n">-<\/td>/, "nothing priced is unknown, never $0");
   assert.match(h, /not in the total/);
-  assert.match(h, /last days 11-07 \$1,295/);
   assert.match(h, /<th data-role="lead">who<\/th>/, "the table folds to a phone row");
   assert.doesNotMatch(h.slice(h.indexOf('id="sec-fleet"'), h.indexOf("</tr>", h.indexOf('id="sec-fleet"'))), /<th(?![^>]*data-role)/, "no column waits for a tap, so estimated stays on screen");
   assert.match(show(board({ fleet_cost: { ...fleet_cost, stale: true } })), /class="warn">stale, as of /);
@@ -480,4 +479,25 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
   const none = show(board({ fleet_cost: { why: "nothing read: no file", rows: [] } }));
   assert.match(none, /id="sec-fleet">Fleet cost 24h<\/h2><div class="panel"><span class="warn">nothing read: no file/);
   assert.doesNotMatch(none, /% of fleet/);
+});
+
+test("spend history folds to its headline under the fleet figure and lists year, month and day rows", () => {
+  const p = (kind, period, total, days, per_day, vs_prev, est) => ({ kind, period, total, days, per_day, vs_prev, est });
+  const history = { why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-09 $1,312 vs 7d median $1,120 (+17%)",
+    rows: [p("year", "2026", "$61,300", 54, "$1,135", "-", "38%"), p("month", "2026-11", "$14,210", 9, "$1,579", "+43%", "21%"),
+      p("day", "11-09", "$1,312", 1, "$1,312", "+69%", "21%")],
+    older: 3, missing: 2, stale: false, note: "est. is the share priced from tokens" };
+  const h = show(board({ history }));
+  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-spend") && h.indexOf("sec-spend") < h.indexOf("sec-burn"), "history sits under the fleet figure");
+  assert.match(h, /<details class="csec" data-k="spend" id="sec-spend"><summary><h2 class="sec">Spend history <span class="muted">Nov \$1,579\/day vs Oct/);
+  assert.match(h, /<tr class="allrow"><td>2026-11<\/td><td class="n">\$14,210<\/td><td class="n">9<\/td><td class="n">\$1,579<\/td><td class="n">\+43%<\/td><td class="n">21%<\/td><\/tr>/);
+  assert.match(h, /<tr class=""><td>11-09<\/td>/);
+  assert.match(h, /\+3 older/);
+  assert.match(h, /2 days in the range have no figure and are not counted/);
+  assert.match(h, /<th data-role="lead">period<\/th>/, "the table folds to a phone row");
+  assert.match(show(board({ history: { ...history, stale: true } })), /class="warn">stale: no snapshot for yesterday/);
+  // negative control: no snapshot says so, never a $0 table
+  const none = show(board({ history: { why: "no snapshot with a fleet figure yet", rows: [] } }));
+  assert.match(none, /id="sec-spend"><h2 class="sec">Spend history <span class="muted">no snapshot with a fleet figure yet/);
+  assert.doesNotMatch(none, /vs prev/);
 });

@@ -236,10 +236,31 @@ EOS
   chmod +x "$HOOK_DIR/stop-post.d/$1.sh"
 }
 
-# run_session <sid> -- one Stop from session <sid>.
+# run_session <sid> [args] -- one Stop from session <sid>.
 run_session() {
+  local sid=$1; shift
   STATUS=0
-  bash "$HOOK" <<< "{\"stop_hook_active\":false,\"session_id\":\"$1\"}" >"$OUTF" 2>"$ERRF" || STATUS=$?
+  bash "$HOOK" "$@" <<< "{\"stop_hook_active\":false,\"session_id\":\"$sid\"}" >"$OUTF" 2>"$ERRF" || STATUS=$?
+}
+
+@test "--checks-only (Codex): a failing check still blocks, and no post script runs on any branch" {
+  dirty
+  check red 2
+  post 50-seen
+  run_session aaa --checks-only
+  assert_equal "$STATUS" 2
+  run stderr
+  assert_output --partial 'red-output-line-1'
+  [ ! -e "$HOME/post.seen" ]
+  # the no-session-changes branch skips post too
+  snapshot qa
+  run_session qa --checks-only
+  assert_equal "$STATUS" 0
+  [ ! -e "$HOME/post.seen" ]
+  # without the flag the same Stop runs post (negative control)
+  run_session aaa
+  assert_equal "$STATUS" 2
+  [ -e "$HOME/post.seen" ]
 }
 
 @test "two sessions in one project keep separate CI results, and post scripts are handed their own" {
