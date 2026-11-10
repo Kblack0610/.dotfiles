@@ -4,16 +4,25 @@
 #   agent-codex run [codex exec args...]   codex exec --json in this pane: claims the thread on
 #                                          $AGENT_QUEUE_ITEM when it starts (the outcome join),
 #                                          prints messages and commands as they finish
+#   agent-codex resume [--salvage BRANCH@SHA] THREAD [codex exec resume args...] [PROMPT]
+#                                          the same for `codex exec resume`: that thread goes on,
+#                                          here, once --salvage's branch is checked out at its SHA
 #
-# Whether the ChatGPT plan has room is `claude-acct room --source codex`, the one reader of it.
+# A run that ends with its item still open and no PR on it (a canary excepted) saves its work: uncommitted changes are
+# committed (the repo's hooks run) and HEAD goes to salvage/<slug> on origin, recorded on the item
+# as `salvage: <branch>@<sha>`, so a resume in another worktree starts from it (fleet-dispatch
+# codex_resume). Whether the ChatGPT plan has room is `claude-acct room --source codex`, the one
+# reader of it.
 set -euo pipefail
 
 CODEX_BIN="${CODEX_BIN:-codex}"
 
-cmd_run() {
+# stream <codex exec args...> -- codex exec with them (--json among them), its events printed as they
+# finish; rc is codex's.
+stream() {
   local item="${AGENT_QUEUE_ITEM:-}" rc
   set +e
-  "$CODEX_BIN" exec --json "$@" </dev/null 2>&1 | while IFS= read -r line; do
+  "$CODEX_BIN" exec "$@" </dev/null 2>&1 | while IFS= read -r line; do
     case "$line" in
       '{"type":"thread.started"'*)
         tid=$(jq -r .thread_id <<<"$line")
@@ -34,7 +43,53 @@ cmd_run() {
   return "$rc"
 }
 
+# salvage -- the run ended: when its item is still open with no PR and this checkout holds work the
+# trunk lacks, push it to salvage/<slug> and record it. Says why when it cannot; never fails the run.
+salvage() {
+  local item="${AGENT_QUEUE_ITEM:-}" it branch trunk sha
+  [ -n "$item" ] || return 0
+  it=$(agent-queue show "$item" --json 2>/dev/null) || return 0
+  # A canary replays a merged PR and is scored on its tree, never resumed: nothing of it is kept.
+  jq -e '.state != "done" and (.pr // "") == "" and ((" " + (.tags // "") + " ") | contains(" canary ") | not)' <<<"$it" >/dev/null || return 0
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  branch="salvage/$item"
+  trunk=$(git rev-parse -q --verify refs/remotes/origin/HEAD >/dev/null && echo origin/HEAD || echo origin/main)
+  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    git add -A && git commit -q -m "salvage: $item, left uncommitted when its codex run ended" ||
+      { echo "agent-codex: could not commit the work of $item; nothing salvaged" >&2; return 0; }
+  fi
+  [ -n "$(git rev-list -n 1 HEAD --not "$trunk" 2>/dev/null)" ] || return 0
+  sha=$(git rev-parse HEAD)
+  git push -q origin "HEAD:refs/heads/$branch" ||
+    { echo "agent-codex: could not push the work of $item to $branch" >&2; return 0; }
+  agent-queue set "$item" "salvage=$branch@$sha" >/dev/null ||
+    echo "agent-codex: pushed $branch, but could not record it on $item" >&2
+  printf 'salvaged %s to %s at %s\n' "$item" "$branch" "${sha:0:12}"
+}
+
+# checkout <branch>@<sha> -- this worktree on <branch> at exactly <sha>, fetched from origin. The
+# resumed thread must not redo work it already did, or build on a tree that lacks it.
+checkout() {
+  local branch="${1%@*}" sha="${1##*@}"
+  git fetch -q origin "refs/heads/$branch" &&
+    git switch -q -C "$branch" "$sha" &&
+    [ -z "$(git status --porcelain)" ] ||
+    { echo "agent-codex: this worktree is not $branch at ${sha:0:12}; not resuming" >&2; return 2; }
+}
+
+cmd_run() { local rc=0; stream --json "$@" || rc=$?; salvage; return "$rc"; }
+
+cmd_resume() {
+  local rc=0
+  if [ "${1:-}" = --salvage ]; then checkout "${2:?--salvage needs <branch>@<sha>}"; shift 2; fi
+  [ -n "${1:-}" ] || { echo "agent-codex resume: no thread id" >&2; return 2; }
+  stream resume --json "$@" || rc=$?
+  salvage
+  return "$rc"
+}
+
 case "${1:-}" in
   run) shift; cmd_run "$@" ;;
-  *) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  resume) shift; cmd_resume "$@" ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
