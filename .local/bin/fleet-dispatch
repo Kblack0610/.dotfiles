@@ -128,6 +128,11 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 # Runnable `cleanup` items under which a pass tops cleanup rows up from the board even above the low
 # water: a full queue of other work kept every cleanup row off the board (2026-11-06). 0 turns it off.
 : "${DISPATCH_CLEANUP_FLOOR:=2}"
+# Runnable `requested` items under which a pass tops `#requested` rows up from the board even above
+# the low water: a full queue kept what the human had just asked for on the board until someone
+# promoted it by hand (2026-11-09). Provisional: 4 is a guess at a pass or two of starts, confidence
+# low; revisit when requested items wait over a day with the floor met. 0 turns it off.
+: "${DISPATCH_REQUESTED_FLOOR:=4}"
 # 0 stops reap queueing the phases an approved plan's dead session left (reconcile_plans).
 : "${DISPATCH_PLAN_RECONCILE:=1}"
 # The lowest model-lane lane a started item runs on: every dispatched session lands its own PR,
@@ -879,8 +884,8 @@ judged_keys() {
 
 # cmd_candidates -> one JSON line per open row a worker takes (with SUGGEST=1, every agent row too)
 # that no verdict holds, with its details. A #plan row waits for inbox-plan and is left out; suggest
-# shows it as blocked. CLEANUP_ONLY (fill_day's cleanup floor) reads only the cleanup projects'
-# cleanup rows.
+# shows it as blocked. CLEANUP_ONLY and REQUESTED_ONLY (fill_day's floors) read only their rows
+# (floor_row).
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
   local x planned dj dsig plan off kind board
@@ -895,7 +900,7 @@ cmd_candidates() {
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
-      [ -z "${CLEANUP_ONLY:-}" ] || [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $name "* ]] || continue
+      [ -z "${CLEANUP_ONLY:-}" ] || [ -n "${REQUESTED_ONLY:-}" ] || [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $name "* ]] || continue
       stage=$(stage_of "$sheet")
       dispatchable "$stage" || continue
       pprio=$(prio_of "$sheet")
@@ -915,7 +920,7 @@ cmd_candidates() {
           off=$(row_off "$name" "$stage" "$key" "$text")
           [ -z "$off" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           kind=$(row_kind "$text")
-          [ -z "${CLEANUP_ONLY:-}" ] || [ "$(cleanup_row "$name" "$text")" = 0 ] || continue
+          [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}" ] || floor_row "$name" "$text" || continue
           nobody=''
           if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
             # suggest shows the agent rows no worker takes too, after the ones one does.
@@ -3329,9 +3334,9 @@ cmd_run() {
   # runnable, so the next pass has work before this one runs dry. An item a firing finding holds is
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held
   # unity items kept every pass off the board for 7h: the rows filed to fix the hold never started,
-  # and 220 rows sat unjudged. Above the low water, fewer than DISPATCH_CLEANUP_FLOOR runnable cleanup
-  # items still read the board, for cleanup rows only: a full queue of other work kept cleanup off it.
-  local items rc depth want cdepth only=''; items=$(next_items)
+  # and 220 rows sat unjudged. Above the low water, a floor still reads the board for its own rows
+  # only: DISPATCH_REQUESTED_FLOOR for the human's asks, DISPATCH_CLEANUP_FLOOR for cleanup.
+  local items rc depth want cdepth rdepth only=''; items=$(next_items)
   if [ -n "$items" ]; then
     HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
     if [ -z "$QUEUE_HELD" ]; then
@@ -3340,11 +3345,16 @@ cmd_run() {
       if [ "$depth" -lt "$DISPATCH_LOW_WATER" ]; then
         say "runnable $depth is under the low water $DISPATCH_LOW_WATER, topping the queue up from the board"
       else
-        [ -n "${DISPATCH_CLEANUP_PROJECTS// }" ] && [ "$DISPATCH_CLEANUP_FLOOR" -gt 0 ] || return 0
-        cdepth=$(cleanup_depth)
-        [ "$cdepth" -lt "$DISPATCH_CLEANUP_FLOOR" ] || return 0
-        only=cleanup
-        say "runnable cleanup $cdepth is under the floor $DISPATCH_CLEANUP_FLOOR, topping cleanup up from the board"
+        rdepth=$(item_tag_depth requested); cdepth=$(item_tag_depth cleanup)
+        if [ "$rdepth" -lt "$DISPATCH_REQUESTED_FLOOR" ]; then
+          only=requested
+          say "runnable requested $rdepth is under the floor $DISPATCH_REQUESTED_FLOOR, topping requested rows up from the board"
+        fi
+        if [ -n "${DISPATCH_CLEANUP_PROJECTS// }" ] && [ "$cdepth" -lt "$DISPATCH_CLEANUP_FLOOR" ]; then
+          only="${only:+$only }cleanup"
+          say "runnable cleanup $cdepth is under the floor $DISPATCH_CLEANUP_FLOOR, topping cleanup up from the board"
+        fi
+        [ -n "$only" ] || return 0
       fi
     fi
   fi
@@ -3356,11 +3366,15 @@ cmd_run() {
   fi
   room=$(( room - STARTED ))
   want=$(( DISPATCH_LOW_WATER - ${depth:-0} )); [ "$want" -gt "$room" ] || want=$room
-  [ -z "$only" ] || want=$(( DISPATCH_CLEANUP_FLOOR - cdepth ))
+  if [ -n "$only" ]; then
+    want=0
+    [[ " $only " != *" requested "* ]] || want=$(( DISPATCH_REQUESTED_FLOOR - rdepth ))
+    [[ " $only " != *" cleanup "* ]] || want=$(( want + DISPATCH_CLEANUP_FLOOR - cdepth ))
+  fi
 
   # Unread findings would hold whatever fill promotes, so they stop the pass before the judge.
   load_findings || { settle NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
-  fill_day "$want" $only || { settle FAILED "$(judge_failed)"; return 1; }
+  fill_day "$want" "$only" || { settle FAILED "$(judge_failed)"; return 1; }
   if [ "$DRY" = 1 ]; then [ $(( FILLED + NIGHT_FILLED )) -gt 0 ] || settle_board NOOP "no row qualifies this pass"; return 0; fi
   [ "$room" -gt 0 ] || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.
@@ -3404,11 +3418,12 @@ day_picks() {
 
 # fill_day <room> [cleanup] -- promote up to <room> day_picks into the queue, `from: board:`. A cleanup
 # row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier). With
-# `cleanup` (the floor, over the low water) every scan under it, the judge's included when this pass
-# has not judged yet, reads only the cleanup rows of DISPATCH_CLEANUP_PROJECTS (CLEANUP_ONLY).
+# `cleanup`, `requested` or both (the floors, over the low water) every scan under it, the judge's
+# included when this pass has not judged yet, reads only those rows (floor_row).
 fill_day() {
-  local picked c tags CLEANUP_ONLY=${CLEANUP_ONLY:-}
-  [ "${2:-}" != cleanup ] || CLEANUP_ONLY=1
+  local picked c tags CLEANUP_ONLY=${CLEANUP_ONLY:-} REQUESTED_ONLY=${REQUESTED_ONLY:-}
+  [[ " ${2:-} " != *" cleanup "* ]] || CLEANUP_ONLY=1
+  [[ " ${2:-} " != *" requested "* ]] || REQUESTED_ONLY=1
   FILLED=0
   judge_once || return 1
   picked=$(day_picks "$1")
@@ -3424,8 +3439,15 @@ fill_day() {
   return 0
 }
 
-# cleanup_depth -> the runnable items a cleanup row promoted (tag `cleanup`): what DISPATCH_CLEANUP_FLOOR measures.
-cleanup_depth() { runnable 2>/dev/null | jq -c 'select((" " + (.tags // "") + " ") | contains(" cleanup "))' | grep -c . || true; }
+# item_tag_depth <tag> -> the runnable items carrying <tag>: what a floor (cleanup, requested) measures.
+item_tag_depth() { runnable 2>/dev/null | jq -c --arg t " $1 " 'select((" " + (.tags // "") + " ") | contains($t))' | grep -c . || true; }
+
+# floor_row <project> <row> -> 0 for a row a floor pass may read: a `#requested` row when the
+# requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is.
+floor_row() {
+  [ -n "${REQUESTED_ONLY:-}" ] && [[ "${2%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && return 0
+  [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && [ "$(cleanup_row "$1" "$2")" = 0 ]
+}
 
 # fill_night -- promote tier-3 rows (night_picks) tagged `night`, which run to an open PR only, up to
 # DISPATCH_NIGHT_MAX active at once. A run pass calls it before the queue's depth and the gates:
@@ -3589,7 +3611,7 @@ night_rows() {
       [ -z "$t" ] || [ "$t" = 3 ] || continue
       body=${text#- \[ \] }
       grep -qiE -- "$DISPATCH_NIGHT_SKIP" <<<"${body%%<!--*}" && continue
-      [ -z "${CLEANUP_ONLY:-}" ] || [ "$(cleanup_row "$name" "$text")" = 0 ] || continue
+      [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}" ] || floor_row "$name" "$text" || continue
       [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
       [ -z "$(row_off "$name" "$stage" "$key" "$text")" ] || continue
       line=$(printf '%s' "$text" | sig)

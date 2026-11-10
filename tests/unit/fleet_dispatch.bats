@@ -71,6 +71,7 @@ setup() {
   export FLEET_DISPATCH_DIR="$HOME/.agent/dispatch"
   sandbox_worlds
   export DISPATCH_PROFILES=bnb
+  export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
   export DISPATCH_WORKERS="$SANDBOX/workers.json"
@@ -1953,6 +1954,52 @@ idle_held_machine() {
   [ -n "$f" ] || fail "the floor did not promote the cleanup row"
   assert_equal "$(qfield "$f" title) | $(qfield "$f" priority) | $(qfield "$f" tags)" 'fix(game): crash on load | high | cleanup tier1'
   [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row that is not cleanup"
+}
+
+@test "run over DISPATCH_LOW_WATER still tops #requested rows up to DISPATCH_REQUESTED_FLOOR, on any project, and nothing else" {
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=1
+  project game beta "$SANDBOX/repos/game"
+  row game human 'new map' "- [ ] feat(game): a new map #high $T"
+  row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T"
+  verdict game human 'new map' dispatch S 1 maps
+  verdict game human 'the ask' dispatch S 1 bench
+  agent-queue add --project game --slug one "one"
+  agent-queue add --project game --slug two "two"
+  agent-queue add --project game --slug three "three"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'runnable requested 0 is under the floor 1, topping requested rows up from the board'
+  f=$(qitem queued gm-1)
+  [ -n "$f" ] || fail "the floor did not promote the requested row"
+  assert_equal "$(qfield "$f" title)" 'fix(game): the bench is throwable'
+  [[ " $(qfield "$f" tags) " == *" requested "* ]] || fail "the item lost its requested tag: $(qfield "$f" tags)"
+  [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row nobody requested"
+}
+
+@test "run with DISPATCH_REQUESTED_FLOOR requested items runnable, or the floor at 0, does not read the board" {
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=2
+  project game beta "$SANDBOX/repos/game"
+  row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T"
+  verdict game human 'the ask' dispatch S 1 bench
+  agent-queue add --project game --slug r1 --tags requested "r1"
+  agent-queue add --project game --slug r2 --tags requested "r2"
+  agent-queue add --project game --slug r3 --tags requested "r3"
+  agent-queue add --project game --slug r4 --tags requested "r4"
+  agent-queue add --project game --slug r5 --tags requested "r5"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  # the pass starts r1, which leaves 4 runnable requested items: the floor is met
+  refute_output --partial 'under the floor'
+  assert_not_called 'judge called'
+  [ -z "$(qitem queued gm-1)" ] || fail "the floor read the board with the floor met"
+  export DISPATCH_REQUESTED_FLOOR=0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ -z "$(qitem queued gm-1)" ] || fail "floor 0 read the board"
+  # negative control: with the floor over what is left the next pass promotes the same row
+  export DISPATCH_REQUESTED_FLOOR=5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'runnable requested 2 is under the floor 5'
+  [ -n "$(qitem queued gm-1)" ] || fail "under the floor the requested row was not promoted"
 }
 
 @test "run with DISPATCH_CLEANUP_FLOOR cleanup items already runnable does not read the board, so a fresh cleanup row waits" {

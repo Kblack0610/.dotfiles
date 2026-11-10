@@ -1025,6 +1025,15 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
         let id = ev.id.as_deref().unwrap_or_default();
         let mut detail: Vec<(String, String)> = Vec::new();
         let (attention, head) = match ev.action.as_str() {
+            "split" => (
+                false,
+                format!(
+                    "{at} split in {} into {}: {}",
+                    name(&ev.from, ""),
+                    ev.to,
+                    few(&ev.text)
+                ),
+            ),
             "moved" => {
                 let filed_later = |e: &crate::ingest::Event| {
                     matches!(e.action.as_str(), "filed" | "dup")
@@ -1289,7 +1298,8 @@ const SHEET_ACTIONS_SHOWN: usize = 40;
 /// session's new row on a human sheet, is not told twice here.
 fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
     // A stopped sweep wrote no sheet, and the pipeline line is where it is read.
-    const INTAKE: [&str; 8] = [
+    const INTAKE: [&str; 9] = [
+        "split",
         "moved",
         "filed",
         "dup",

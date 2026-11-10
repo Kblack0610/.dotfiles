@@ -169,6 +169,59 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_output --partial 'old cache'
 }
 
+@test "a pasted list splits into one line per ask, each routes alone, and the heading rides on each with no model" {
+  outbox '- [ ] the game asks #p:scratch\n    - [ ] chore(build): one #low\n    - [ ] chore(build): two #low #p:other\n'
+  run "$TRIAGE"
+  assert_success
+  [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "the model ran for typed lines"
+  run tasks
+  assert_output --partial 'chore(build): one'
+  assert_output --partial 'under: the game asks'
+  refute_output --partial 'two'
+  run grep -c 'chore(build): two' "$PROJ/other/README.md"
+  assert_output 1
+  run grep -c '"action":"split"' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_output 1
+}
+
+@test "a block indented as a whole in an inbox the board counts as empty is read, and a dry run writes nothing" {
+  sheet '    - [ ] chore(build): one #low\n    - [ ] chore(build): two #low\n' ''
+  before="$(cat "$SHEET")"
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_equal "$(cat "$SHEET")" "$before"
+  run "$TRIAGE"
+  assert_success
+  run tasks
+  assert_output --partial 'chore(build): one'
+  assert_output --partial 'chore(build): two'
+}
+
+@test "a list under a typed line stays one item" {
+  sheet '- [ ] chore(build): one job #low\n  - [ ] step one\n  - [ ] step two\n' ''
+  run "$TRIAGE"
+  assert_success
+  [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "the model ran for a typed line"
+  [ "$(tasks | grep -c '^- \[ \] chore')" = 1 ] || fail "$(tasks)"
+  run tasks
+  assert_output --partial '  - [ ] step two'
+}
+
+@test "the lane rule names the projects an untagged agent worker takes, and only with such a worker" {
+  sheet '- the gun sound is off\n' ''
+  answer '{"n": 1, "action": "skip", "why": "test"}'
+  run "$TRIAGE"
+  refute_output --partial 'failed'
+  run grep -c 'agents do the work unattended' "$NOTES_FIXTURE/prompt.txt"
+  assert_output 0
+  echo '{"board": {"lane": "agent", "untagged": true, "projects": ["scratch"]}, "x": {"projects": ["other"]}}' >"$SANDBOX/w.json"
+  export DISPATCH_WORKERS="$SANDBOX/w.json"
+  rm -f "$HOME/.local/state/notes/ingest.jsonl"
+  run "$TRIAGE"
+  run grep -o 'lane is agent unless a step needs a person.*: scratch\.' "$NOTES_FIXTURE/prompt.txt"
+  assert_success
+}
+
 @test "a skipped line, an untyped row and a row the grammar flags all stay in the inbox" {
   sheet '- maybe the boss is too easy?\n- the save button\n- the jump is floaty\n' ''
   answer '{"n": 1, "action": "skip"}' '{"n": 2, "action": "file", "rows": ["make the save button work"]}' \

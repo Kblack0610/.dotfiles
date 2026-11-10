@@ -21,7 +21,7 @@
 //! release, and the current-version views leave it out. A release is a filter, never a section.
 
 use crate::md;
-use crate::projects;
+use crate::{project_tasks, projects};
 
 pub(crate) type V = (u32, u32, u32);
 
@@ -227,9 +227,328 @@ where
     Some((joined, found))
 }
 
+/// Is `l` a whole-line comment, which the inbox grammar reads past?
+fn is_comment(l: &str) -> bool {
+    let t = l.trim();
+    t.starts_with("<!--") && t.ends_with("-->")
+}
+
+/// A `---` or `***` line, a separator and never an item.
+fn is_rule(t: &str) -> bool {
+    t.len() >= 3 && (t.chars().all(|c| c == '-') || t.chars().all(|c| c == '*'))
+}
+
+/// An unticked checkbox with words: what makes a line a list.
+fn is_open_box(t: &str) -> bool {
+    (t.starts_with("- [ ]") || t.starts_with("- [/]")) && !inbox_text(t).is_empty()
+}
+
+fn indent_of(l: &str) -> usize {
+    l.len() - l.trim_start().len()
+}
+
+/// `body` with each run of indented lines no top-level line owns moved left as a run, its own
+/// nesting kept. `lines_in` reads past such a run, so a pasted block indented as a whole would
+/// wait for ever unseen.
+fn dedent_orphans(body: &[&str]) -> Vec<String> {
+    let indented = |l: &str| l.starts_with([' ', '\t']) && !l.trim().is_empty();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < body.len() {
+        if !indented(body[i]) {
+            let end = if body[i].trim().is_empty() {
+                i + 1
+            } else {
+                md::row_block_end(body, i)
+            };
+            out.extend(body[i..end].iter().map(|l| l.to_string()));
+            i = end;
+            continue;
+        }
+        let end = (i..body.len())
+            .find(|&e| !indented(body[e]))
+            .unwrap_or(body.len());
+        let cut = body[i..end].iter().map(|l| indent_of(l)).min().unwrap_or(0);
+        out.extend(
+            body[i..end]
+                .iter()
+                .filter(|l| !is_rule(l.trim()))
+                .map(|l| l[cut..].to_string()),
+        );
+        i = end;
+    }
+    out
+}
+
+/// A heading word every item of its list takes: where it goes, its lane, plan-first, priority.
+fn is_inherited(w: &str) -> bool {
+    md::project_tag_word(w).is_some()
+        || md::agent_tag(w)
+        || w.eq_ignore_ascii_case("#plan")
+        || (w.starts_with('#') && project_tasks::is_priority(w))
+}
+
+/// `words` with each `heading` tag it does not already set, before any marker comment. A `#p:`
+/// or a priority it carries replaces the heading's: the item's own word is the later one.
+fn with_inherited(words: &str, heading: &[&str]) -> String {
+    let (body, mark) = words.split_at(words.find("<!--").unwrap_or(words.len()));
+    let own: Vec<&str> = body.split_whitespace().collect();
+    let sets = |tag: &str| {
+        own.iter().any(|o| {
+            o.eq_ignore_ascii_case(tag)
+                || (md::project_tag_word(o).is_some() && md::project_tag_word(tag).is_some())
+                || (o.starts_with('#')
+                    && project_tasks::is_priority(o)
+                    && project_tasks::is_priority(tag))
+        })
+    };
+    let mut out = own.join(" ");
+    for tag in heading.iter().filter(|t| !sets(t)) {
+        out = format!("{out} {tag}");
+    }
+    if !mark.is_empty() {
+        out = format!("{out} {mark}");
+    }
+    out
+}
+
+/// The lines a list block becomes, or None when it stays one line: a block is a list when it has
+/// two or more open checkboxes directly under its top line (`words - [ ] first` counts its inline
+/// box), unless the top line is a typed row or a `#ask`, which say what they are. Each direct
+/// bullet is an item; a line of words joins the item before it; anything deeper stays that item's
+/// detail, its checkbox off so the item is whole on the next pass. A ticked item is finished.
+fn list_items(block: &[&str]) -> Option<Vec<String>> {
+    let text = inbox_text(block[0]);
+    let text = text[..text.find("<!--").unwrap_or(text.len())].trim();
+    if md::ask_tag(block[0]) || project_tasks::is_typed(text) {
+        return None;
+    }
+    const INLINE: &str = " - [ ] ";
+    let (head, first) = match text.find(INLINE) {
+        Some(at) => (&text[..at], Some(text[at + INLINE.len()..].trim())),
+        None => (text, None),
+    };
+    let direct = block[1..].iter().map(|l| indent_of(l)).min().unwrap_or(0);
+    let boxes = block[1..]
+        .iter()
+        .filter(|l| indent_of(l) == direct && is_open_box(l.trim()))
+        .count();
+    if boxes + usize::from(first.is_some()) < 2 {
+        return None;
+    }
+    let mut items: Vec<(String, Vec<String>)> = first
+        .map(|f| (f.to_string(), Vec::new()))
+        .into_iter()
+        .collect();
+    let mut lead: Vec<String> = Vec::new();
+    let mut finished = false;
+    for l in &block[1..] {
+        let t = l.trim();
+        if indent_of(l) == direct {
+            finished = false;
+            if is_rule(t) {
+                continue;
+            }
+            if t.starts_with("- [x]") || t.starts_with("- [X]") || inbox_text(t).is_empty() {
+                finished = true;
+                continue;
+            }
+            if t.starts_with("- ") || t.starts_with("* ") {
+                items.push((inbox_text(t), Vec::new()));
+                continue;
+            }
+        }
+        if !finished {
+            let words = inbox_text(t);
+            match items.last_mut() {
+                Some((_, details)) => details.push(words),
+                None => lead.push(words),
+            }
+        }
+    }
+    let tags: Vec<&str> = head
+        .split_whitespace()
+        .filter(|w| is_inherited(w))
+        .collect();
+    let words: Vec<&str> = head
+        .split_whitespace()
+        .filter(|w| !is_inherited(w))
+        .collect();
+    let words = words.join(" ");
+    let under = (!words.is_empty()).then_some(words).into_iter().chain(lead);
+    let under: Vec<String> = under.map(|u| format!("under: {u}")).collect();
+    let mut out = Vec::new();
+    for (item, details) in items {
+        out.push(format!("- [ ] {}", with_inherited(&item, &tags)));
+        out.extend(under.iter().chain(&details).map(|d| format!("  {d}")));
+    }
+    Some(out)
+}
+
+/// `content` with each list under `## <heading>` turned into one top-level line per item, and the
+/// list's words and item count for each one split. Everything downstream reads one line as one
+/// item, so a line is what each ask becomes. Run again it changes nothing.
+pub(crate) fn split_lists(content: &str, heading: &str) -> (String, Vec<(String, usize)>) {
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(span) = md::section_span(&lines, heading) else {
+        return (content.to_string(), Vec::new());
+    };
+    let seen = dedent_orphans(&lines[span.clone()]);
+    let seen: Vec<&str> = seen.iter().map(String::as_str).collect();
+    let (mut body, mut lists) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < seen.len() {
+        let l = seen[i];
+        if l.trim().is_empty() || l.starts_with([' ', '\t']) || is_comment(l) {
+            body.push(l.to_string());
+            i += 1;
+            continue;
+        }
+        let end = md::row_block_end(&seen, i);
+        match list_items(&seen[i..end]) {
+            Some(items) => {
+                let n = items.iter().filter(|x| !x.starts_with(' ')).count();
+                lists.push((inbox_text(l), n));
+                body.extend(items);
+            }
+            None => body.extend(seen[i..end].iter().map(|s| s.to_string())),
+        }
+        i = end;
+    }
+    if body
+        .iter()
+        .map(String::as_str)
+        .eq(lines[span.clone()].iter().copied())
+    {
+        return (content.to_string(), Vec::new());
+    }
+    let mut out: Vec<&str> = lines[..span.start].to_vec();
+    out.extend(body.iter().map(String::as_str));
+    out.extend_from_slice(&lines[span.end..]);
+    let mut joined = out.join("\n");
+    if content.ends_with('\n') {
+        joined.push('\n');
+    }
+    (joined, lists)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn split(body: &str) -> (Vec<String>, Vec<(String, usize)>) {
+        let (out, lists) = split_lists(&format!("## Inbox\n{body}"), INBOX);
+        let again = split_lists(&out, INBOX);
+        assert_eq!(
+            again,
+            (out.clone(), Vec::new()),
+            "a second run changes nothing"
+        );
+        (out.lines().skip(1).map(str::to_string).collect(), lists)
+    }
+
+    #[test]
+    fn a_list_under_a_heading_becomes_one_line_per_ask_with_the_heading_on_each() {
+        let (got, lists) = split(
+            "- [ ] look first, dodgeball fixes #urgent #p:dodginballs\n    - [ ] no bench #c1109\n    - when i die i wake in bed\n    - [ ] bigger text #low\n- [ ] other\n",
+        );
+        assert_eq!(
+            got,
+            vec![
+                "- [ ] no bench #c1109 #urgent #p:dodginballs",
+                "  under: look first, dodgeball fixes",
+                "- [ ] when i die i wake in bed #urgent #p:dodginballs",
+                "  under: look first, dodgeball fixes",
+                "- [ ] bigger text #low #p:dodginballs",
+                "  under: look first, dodgeball fixes",
+                "- [ ] other",
+            ]
+        );
+        assert_eq!(
+            lists,
+            vec![(
+                "look first, dodgeball fixes #urgent #p:dodginballs".to_string(),
+                3
+            )]
+        );
+    }
+
+    #[test]
+    fn an_items_own_project_wins_and_agent_and_plan_are_inherited() {
+        let (got, _) = split("- [ ] #agent #plan\n  - [ ] a #p:one\n  - [ ] b\n");
+        assert_eq!(
+            got,
+            vec!["- [ ] a #p:one #agent #plan", "- [ ] b #agent #plan"]
+        );
+    }
+
+    #[test]
+    fn a_block_indented_as_a_whole_is_moved_left_and_then_read() {
+        let (got, lists) = split("    - [ ] one\n    - [ ] two\n      detail\n");
+        assert_eq!(got, vec!["- [ ] one", "- [ ] two", "  detail"]);
+        assert!(
+            lists.is_empty(),
+            "nothing was split, it was only moved left"
+        );
+    }
+
+    #[test]
+    fn an_inline_first_box_counts_and_the_words_before_it_are_the_heading() {
+        let (got, _) = split("once this - [ ] first\n  - [ ] second\n");
+        assert_eq!(
+            got,
+            vec![
+                "- [ ] first",
+                "  under: once this",
+                "- [ ] second",
+                "  under: once this"
+            ]
+        );
+    }
+
+    #[test]
+    fn rules_and_ticked_items_go_and_deeper_lines_stay_details_without_their_box() {
+        let (got, _) = split(
+            "- [ ] h\n  - [ ] a\n    - [ ] sub one\n    - [ ] sub two\n  ---\n  - [x] done\n    gone too\n  - [ ] b\n  words on b\n",
+        );
+        assert_eq!(
+            got,
+            vec![
+                "- [ ] a",
+                "  under: h",
+                "  sub one",
+                "  sub two",
+                "- [ ] b",
+                "  under: h",
+                "  words on b"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_typed_row_a_question_one_box_and_bare_bullets_stay_whole() {
+        for body in [
+            "- [ ] fix(audio): the gun\n  - [ ] step one\n  - [ ] step two\n",
+            "- [ ] #ask why this\n  - [ ] one\n  - [ ] two\n",
+            "- [ ] one job\n  - [ ] one step\n  notes\n",
+            "- [ ] one job\n  - note\n  - note two\n",
+            "- [ ] blank boxes\n  - [ ]\n  - [ ]\n",
+        ] {
+            let (got, lists) = split(body);
+            assert_eq!(got.join("\n") + "\n", body);
+            assert!(lists.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_section_with_nothing_to_split_is_returned_byte_for_byte() {
+        let s = "# a\n\n## Inbox\n<!-- note -->\n\n- [ ] x\n  d\n\n## Tasks\n- [ ] t";
+        assert_eq!(split_lists(s, INBOX), (s.to_string(), Vec::new()));
+        assert_eq!(
+            split_lists("# none\n", INBOX),
+            ("# none\n".to_string(), Vec::new())
+        );
+    }
 
     #[test]
     fn every_top_level_inbox_line_is_waiting_and_indented_ones_are_its_details() {

@@ -12,10 +12,10 @@
 use crate::agent_sheet::Lane;
 use crate::config::Profile;
 use crate::logging::Logger;
-use crate::md;
 use crate::project_sweep;
 use crate::projects;
 use crate::sheet::{self, V};
+use crate::{md, outbox};
 use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -538,7 +538,7 @@ pub(crate) fn inbox_changed(p: &Profile) {
 const WANT_TAG: &str = "#requested";
 
 /// Does `text` open with a well-formed `type(area): ` (README "The task row")?
-fn is_typed(text: &str) -> bool {
+pub(crate) fn is_typed(text: &str) -> bool {
     projects::row_type_area(&format!("- [ ] {text}")).is_some()
 }
 
@@ -627,6 +627,20 @@ pub(crate) fn filed_on(line: &str) -> Option<String> {
 /// `notes ptask <name> inbox [--json]` - the lines waiting in `## Inbox`, oldest first:
 /// TSV `path<TAB>line<TAB>text`, or one JSON array of `{line, raw, text, details, typed}`,
 /// `typed` when the text already reads `type(area): title`.
+/// Turn the lists waiting in this sheet's `## Inbox` into one line per ask
+/// (`sheet::split_lists`), the first step of a triage sweep.
+pub fn inbox_split(p: &Profile, name: &str, lane: Lane) -> Result<i32> {
+    let Some((path, content)) = sheet_and_content(p, name, lane)? else {
+        return Ok(0);
+    };
+    let (out, lists) = sheet::split_lists(&content, sheet::INBOX);
+    if out != content {
+        write_sheet(&path, &out)?;
+    }
+    outbox::record_splits(p, name, &lists);
+    Ok(0)
+}
+
 pub fn inbox(p: &Profile, name: &str, json: bool, lane: Lane) -> Result<i32> {
     let (path, lines) = match sheet_and_content(p, name, lane)? {
         Some((path, content)) => (path, sheet::inbox_lines(&content)),
@@ -1473,7 +1487,7 @@ pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
 }
 
 /// Is `tag` (`#high`, or bare `high`) one of the priority levels?
-fn is_priority(tag: &str) -> bool {
+pub(crate) fn is_priority(tag: &str) -> bool {
     let t = tag.trim_start_matches('#').to_lowercase();
     md::PRIORITIES.iter().any(|(w, _, _)| *w == t)
 }

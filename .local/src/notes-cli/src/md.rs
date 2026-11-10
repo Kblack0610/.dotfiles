@@ -897,7 +897,7 @@ pub fn project_tag(line: &str) -> Option<String> {
 }
 
 /// The project a single `#p:<name>` word names, trailing punctuation off.
-fn project_tag_word(w: &str) -> Option<String> {
+pub(crate) fn project_tag_word(w: &str) -> Option<String> {
     let rest = w.get(..3).filter(|p| p.eq_ignore_ascii_case("#p:"))?;
     let name = w[rest.len()..].trim_end_matches(['.', ',', ';', ':', '-']);
     (!name.is_empty()).then(|| name.to_lowercase())
