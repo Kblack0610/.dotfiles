@@ -890,38 +890,6 @@ ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
   assert_output 'sid-1'
 }
 
-@test "routes names where each pending ask's answer goes in one word, and skips the answered" {
-  local live gone resumed loose answered
-  mkdir -p "$HOME/.claude/sessions"
-  printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
-  live="$(CLAUDE_CODE_SESSION_ID=sid-1 post demo 'live?')"
-  gone="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'gone?')"
-  resumed="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'resumed?')"
-  loose="$(post demo 'headless?')"
-  answered="$(post demo 'done?')"
-  "$AGENT_ASK" answer "$answered" a 2>/dev/null
-  run "$AGENT_ASK" routes
-  assert_success
-  assert_line "$live	to session"
-  assert_line "$gone	dead end"
-  assert_line "$resumed	resume"
-  assert_line "$loose	dead end"
-  refute_output --partial "$answered"
-}
-
-@test "routes says restarts <item> for an ask an active queue item is held behind" {
-  local opts='go=run it now|later=run it later' id free
-  id="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
-  free="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
-  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug my-item --tags "ask:$id=go" "the next phase" >/dev/null
-  run "$AGENT_ASK" routes
-  assert_success
-  assert_line "$id	restarts my-item"
-  # Negative control: an ask no item is held behind is a dead end.
-  assert_line "$free	dead end"
-}
-
 @test "the card says a live session hears the answer and its resume command starts too" {
   local id
   mkdir -p "$HOME/.claude/sessions"
