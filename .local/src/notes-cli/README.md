@@ -90,7 +90,7 @@ This section is the one description of the lab. `~/.notes/lab/README.md`, the `l
 ~/.notes/employment/jobs/<job>/projects/{current,archived}/<name>/   a client profile
 ```
 
-Each profile's projects dir comes from `~/.config/notes/config.toml` (`notes config` prints it). The folder name is the project name, and it must be a key in `project-map.json` (`project-map-doctor` fails otherwise); `~/.agent/{plans,lessons,sessions,asks}/<name>` use the same name. A stage never moves a folder: the stage is the hashtag on the sheet's `Version:` line, and only `projects --archive` moves a folder, to `archived/`.
+Each profile's projects dir comes from `~/.config/notes/config.toml` (`notes config` prints it). The folder name is the project name, and it must be a key in `project-map.json` (`project-map-doctor` fails otherwise); `~/.agent/{plans,lessons,sessions,asks}/<name>` use the same name. A profile with `automation = false` in its `[profile.<name>]` table (a work profile whose tracker lives elsewhere) is left out of every automated pass: no sweep, write-pass, editor save, doctor, migration or triage rewrites its sheets, and `board --json` and `projects --stats --json` mark its rows and projects `"automation": false` so fleet-dispatch and inbox-triage skip them. A stage never moves a folder: the stage is the hashtag on the sheet's `Version:` line, and only `projects --archive` moves a folder, to `archived/`.
 
 Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview; the CLI owns the `## Current` and `## Archived` lanes below it. A lane entry points at the project's `README.md`, never `summary.md`, and its path is relative to that profile's root. Do not hand-edit either half. `~/.notes/lab/projects/index.md` also rolls up every org, and `board.md` / `agent-board.md` beside it are every project's rows for its open version, read-only (`notes board`).
 
@@ -159,7 +159,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | type some words | `ptask <name> propose -- "<text>"` prints the `type(area): title` row for them, tags off and the title cut to 80. Writes nothing; `agent-queue` files its story rows through it |
 | parse rows in a script or prompt | `notes row parse` reads one row or row text per stdin line and prints `type area title ok` (TSV, `ok` 1 when it parses, an empty field as `-`); `notes row types` prints the types a filer may give, `epic` aside. Scripts and model prompts call these instead of keeping their own regex or type list |
 | file an inbox line | `ptask <name> [--exact] file "<query>" --as "<type(area): title #tags>"` (repeat `--as` to split one line into several rows; no `--as` files a line that is typed already as written), with `--project <other>`, `--lane agent`, `--to vX.Y.Z` or `--detail "<line>"`; or `--dup <id>` to add it to the open row it repeats |
-| work a task | `ptask <name> start "<query>"`, then `ptask <name> done "<query>" --proof pr:123` (or `--unverified "<why>"`). `start` sets `[/]` and `unstart` sets `[ ]`; neither toggles, so a second call prints `unchanged` and writes nothing. A query that hits two or more open rows is refused with each row's id; pass the id, or `--exact` with the whole line. Every verb but `list` and `inbox` holds `<state dir>/ptask.lock`, so two writers never mint one id or lose a write |
+| work a task | `ptask <name> start "<query>"`, then `ptask <name> done "<query>" --proof pr:123` (or `--unverified "<why>"`). `start` sets `[/]` (a queue item exists), `run` also adds `run:MMDD` to the marker (the item started; `agent-queue move <slug> running` writes it), and `start` on a running row takes the token off again (a requeue). `unstart` sets `[ ]`, and `unstart`, `done` and `drop` take `run:` off; none of them toggles, so a second call prints `unchanged` and writes nothing. A query that hits two or more open rows is refused with each row's id; pass the id, or `--exact` with the whole line. Every verb but `list` and `inbox` holds `<state dir>/ptask.lock`, so two writers never mint one id or lose a write |
 | aim a task at another release | `ptask <name> move "<query>" --to vX.Y.Z`, `ptask <name> promote\|demote "<query>"` |
 | move a task to another project | `ptask <name> move "<query>" --project <other>`; its detail lines and child rows go with it |
 | tag a task | `ptask <name> tag "<query>" --add=size/s --add=requested --remove=ai`; a row has one size, so a new `size/` replaces the old; a release is `move`'s |
@@ -187,12 +187,12 @@ The sweep lays out `## Tasks` in sections, top to bottom. A section heading show
 | Section | Rows |
 |---|---|
 | `### Epics` | human sheet only: open `epic(` rows |
-| `### Now` | started rows, `[/]` |
-| `### Next up` | the top `next_up` open rows by rank: due date (overdue, today, within 3 days), then `#urgent` `#high` `#low`, then `#requested`, then oldest `#c`. A row aimed at a later release never enters it. To pull a row up, tag it `#urgent` or `#dueMMDD` |
-| `### Backlog` | the rest of the open rows, in the same order |
+| `### Now` | rows whose queue item runs: `[/]` with `run:` in the marker |
+| `### Next up` | rows whose queue item waits its turn: `[/]` with no `run:`, every one of them, so the queue's depth shows |
+| `### Backlog` | open `[ ]` rows, with no queue item |
 | `### Done`, under `---` | rows closed in the last `done_days` days, at most `done_max`, newest first |
 
-An older, undated or dropped closed row rolls into `agent/versions/<open version>.md` (`## Done rows` from the agent board, `## Sheet done rows` from the human sheet), and `projects --release` freezes both with the version. A row aimed at a later release stays on the sheet. The sizes are `[sheet]` in `~/.config/notes/config.toml` (`next_up = 10`, `done_days = 7`, `done_max = 30`).
+An older, undated or dropped closed row rolls into `agent/versions/<open version>.md` (`## Done rows` from the agent board, `## Sheet done rows` from the human sheet), and `projects --release` freezes both with the version. A row aimed at a later release stays on the sheet. Each section is in rank order: due date (overdue, today, within 3 days), then `#urgent` `#high` `#low` (an untagged row ranks as `#high`), then `#requested`, then oldest `#c`. To pull a row up, tag it `#urgent` or `#dueMMDD`; to move it into Next up, queue it. The sizes are `[sheet]` in `~/.config/notes/config.toml` (`done_days = 7`, `done_max = 30`).
 
 The sweep at the end of a `ptask` write only moves rows and never changes a row's bytes, so a UI holding a row's `raw` for `--exact` still finds it. Tag rewrites happen only in the explicit sweeps listed above. A save in nvim also dates a box ticked by hand with `done:<today>`.
 
@@ -210,7 +210,7 @@ Every project sheet, in every project and both lanes, uses one row format. Proje
 | `[ ]` `[/]` `[x]` | yes | open, doing (a queue item exists), closed |
 | `type(area): title` | agent lane yes; human lane at triage | Types: `feat fix perf refactor docs test chore ci` for work, `release` for a timed build and store upload (it runs the `release` skill), `research design market legal` for work whose output is a doc the human reviews (`design` covers architecture and UX), `run decide check` for what only the human can do, `epic` for an outcome made of other rows (human sheet only). A bug is a `fix` row, and its severity is its priority. The area is one lowercase kebab word naming the component. The title is imperative, 80 chars or fewer, and becomes the PR title. |
 | detail lines | no | indented two spaces under the row: evidence, file:line, the human's original words. They move with the row through sweep, move and archive. |
-| priority | yes, exactly one | `#urgent`, `#high` or `#low`; a bare add gets `#high` |
+| priority | yes, exactly one | `#urgent`, `#high` or `#low`. No writer or sweep adds a default: an untagged row is untriaged, `notes doctor --projects` counts it, and `agentctl-inbox-triage --backlog --priority` gives it one |
 | created | yes, stamped | `#cMMDD`, stamped by `ptask add` |
 | id | yes, stamped | `id:<code>-<n>` in the marker, stamped by `ptask add`, or by `ptask start` on a row with none. `code` is the project's `trackers.<name>.code` in the registry (2-4 lowercase letters, unique; `project-map-doctor` checks it). `n` is one past the highest id anywhere under the project dir, both lanes, playtest and `versions/`, and past the high-water kept in `<project>/.ids`, so an id is never reused, even after its row is deleted or moved to another project. A project with no code gets no id, and `ptask add` says so. |
 | size | no | `#size/xs` and `#size/s` (small single PR) weigh 1, `#size/m` (one PR) 3, `#size/l` (needs a plan) 8, `#size/xl` 21 (an epic's size only); an unsized row weighs 1 and is counted as unsized. The scale is one const, `epics::WEIGHTS`. There is no hour estimate and no points |
@@ -237,11 +237,12 @@ Closing: every close says how. `ptask done --proof <ref>` for something checkabl
 
 `notes board --json` prints one object, `{"today": "YYYY-MM-DD", "projects": [...], "rows": [...]}`, covering every project in every profile. It is the one shape the board UIs read. It is a view and nothing more: each call re-reads the sheets, and nothing gets written.
 
-- A project is `{profile, project, dir, version, open, agent_open, playtest_open, inbox}`, `inbox` the lines waiting in the sheet's `## Inbox`. A project with no rows is still listed, so a UI can offer `add` on it.
-- A row is one open task, from the sheet's open version (`lane: "human"`), the agent sheet's open version (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, version, game, state, priority, tier, worker, requested, id, type, area, size, text, tags, marker, since, filed, sheet, line, raw}`.
+- A project is `{profile, project, dir, version, open, agent_open, playtest_open, inbox, automation}`, `inbox` the lines waiting in the sheet's `## Inbox`. A project with no rows is still listed, so a UI can offer `add` on it.
+- A row is one open task, from the sheet's open version (`lane: "human"`), the agent sheet's open version (`"agent"`), `playtest.md` (`"playtest"`), or the `## Focus` section of a profile's today note (`"focus"`). Its fields are `{profile, project, lane, version, game, state, priority, tier, worker, requested, id, type, area, size, text, tags, marker, since, filed, sheet, line, raw, details, automation, untriaged}`.
 - A focus row has `project: null`: Focus belongs to the profile. The feed only reads it; `notes focus` stays its writer.
 - `state` is `open` or `doing` (`[/]`).
-- `priority` is `urgent`, `high` or `low`. An untagged row is `high`.
+- `priority` is `urgent`, `high` or `low`. An untagged row reads `high`, the rank it sorts at, with `untriaged: true`, which `agentctl-inbox-triage --backlog --priority` reads.
+- `automation` is false on every row and project of a profile with `automation = false`.
 - `tier` is the `#tier/N` tag (1 to 3, as `fleet-dispatch` reads it), `worker` the `#worker/<name>` tag, `requested` true for a `#requested` row, and `version` the open version every row on the feed belongs to.
 - `id` is the row's `id:<code>-<n>`, `type` and `area` the split `type(area):` prefix (null on a row without a well-formed one), and `size` the `#size/s|m|l` letter.
 - `tags` holds the hashtags that no other field carries already: not the priority, tier, worker, requested, size, version or created tags.

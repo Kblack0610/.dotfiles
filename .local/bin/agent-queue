@@ -969,6 +969,7 @@ cmd_add() {
   item_event item-added "$f" --to "$state"
   echo "$state $slug -> $f"
   [ -z "$story" ] || echo "story ${story#*$'\t'} on the $project agent board${epic:+, under $epic}"
+  [ -z "$running" ] || mark_row "$f" run
   [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
   exec 8>&-
@@ -1381,11 +1382,26 @@ cmd_move() {
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}"
   echo "$slug: $from -> $to"
   lane_outcome "$run" "$from" "$to" "$status"
+  # The row's section follows the item: Now while it runs or waits on someone, Next up once back in
+  # the queue. waiting and review keep the mark: the item started.
+  case "$to" in running) mark_row "$dest" run ;; queued) mark_row "$dest" start ;; esac
   [ "$to" = done ] && [ "$status" = ok ] || return 0
   local rc=0
   [ "${AGENT_QUEUE_START:-1}" != 1 ] || start_next "$slug" || rc=$?
   close_row_on_item "$slug" "$dest"
   return "$rc"
+}
+
+# mark_row <file> <run|start> -- the item's board row records its queue state, through notes, the rows'
+# one writer: `run` adds run:MMDD (the sweep puts the row in Now), `start` takes it off again (Next up).
+# The item is the state and the row its view, so a row the write cannot reach warns and the move stands.
+mark_row() {
+  local row prof flag=()
+  row="$(fm_get "$1" row)" prof="$(fm_get "$1" profile)"
+  [ -n "$row" ] && command -v notes >/dev/null || return 0
+  case "$(fm_get "$1" lane)" in '' | agent) flag=(--agent) ;; esac
+  notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" "$2" "${row#*:}" >/dev/null 2>&1 ||
+    echo "agent-queue: board row ${row#*:} on ${row%%:*} not marked $2: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} $2 ${row#*:}" >&2
 }
 
 # close_row_on_item <slug> <file> -- an item closed ok with no PR closes its row, the item as proof:
@@ -1552,6 +1568,7 @@ cmd_reopen() {
   fi
   notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1 ||
     die "$slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} start ${row#*:}"
+  mark_row "$dest" run
   echo "$slug: board row ${row#*:} started again"
 }
 

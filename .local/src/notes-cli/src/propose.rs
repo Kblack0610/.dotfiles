@@ -62,7 +62,7 @@ pub(crate) fn proposed_row(text: &str, project: &str) -> String {
 /// row with no type, in every profile. The human sheet takes free text, which triage rewrites.
 pub fn untyped_report() -> Result<Vec<String>> {
     let mut out = Vec::new();
-    for profile in config::all_profile_names()? {
+    for profile in config::managed_profile_names()? {
         let Ok(p) = config::resolve(Some(&profile)) else {
             continue;
         };

@@ -629,7 +629,7 @@ fn new_rows(
     let mut block = Vec::new();
     for (k, text) in texts.iter().enumerate() {
         let mut line = md::stamp_line(
-            &md::with_default_priority(&format!("- [ ] {}", text.trim())),
+            &md::one_priority(&format!("- [ ] {}", text.trim())),
             today,
             today,
         );
@@ -1379,7 +1379,7 @@ pub fn done(
     }
     let on = done_token(day);
     Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
-        let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
+        let ticked = md::add_marker(&closed(l), &on);
         Some(md::add_marker(&ticked, &stamp))
     })?
     .0)
@@ -1674,7 +1674,7 @@ pub fn drop(
     refuse_open_children(p, name, pick, lane, "finish or drop")?;
     Ok(
         edit(p, log, name, pick, "dropped", Some(&stamp), lane, |l| {
-            Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
+            Some(md::add_marker(&closed(l), &stamp))
         })?
         .0,
     )
@@ -1888,13 +1888,42 @@ pub fn retext(
 /// A row going to `[/]` with no id gets one, as [`add`] would have given it: a started row has
 /// a queue item, and the item joins its row by that id, which survives a retext. The new id
 /// goes on its own `  id:<id>` line after the usual output, so `fleet-dispatch` can read it.
+///
+/// A row whose item had started (`run:`) and is queued again loses its `run:`: it is back in
+/// Next up, not Now.
 pub fn start(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> Result<i32> {
+    start_as(p, log, name, pick, lane, false)
+}
+
+/// `notes ptask <name> run <query>` - the row's queue item has started: `[/]` plus a
+/// `run:MMDD` token in the marker, which puts the row in Now (a `[/]` row without it is
+/// queued, in Next up). `agent-queue` writes it on the item's move to running. A row already
+/// running is left as it is.
+pub fn run(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> Result<i32> {
+    start_as(p, log, name, pick, lane, true)
+}
+
+fn start_as(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    pick: &Pick,
+    lane: Lane,
+    running: bool,
+) -> Result<i32> {
     let dir = projects::project_dir(p, name)?;
     let id = crate::registry::Registry::load()
         .and_then(|r| r.code(name))
         .map(|code| next_id(&dir, &code));
-    let (rc, matched) = edit(p, log, name, pick, "started", None, lane, |l| {
-        (!is_started(l)).then(|| started(l, id.as_deref()))
+    let today = chrono::Local::now().format("%m%d").to_string();
+    let verb = if running { "running" } else { "started" };
+    let (rc, matched) = edit(p, log, name, pick, verb, None, lane, |l| {
+        let row = started(l, id.as_deref());
+        match (running, is_running(l)) {
+            (true, false) => Some(md::add_marker(&row, &format!("run:{today}"))),
+            (false, true) => Some(md::remove_marker_token(&row, "run:")),
+            _ => (!is_started(l)).then_some(row),
+        }
     })?;
     if let (Some(line), Some(id)) = (matched, id) {
         let row = started(&line, Some(&id));
@@ -1910,13 +1939,23 @@ pub fn start(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> 
 /// (`[/]` -> `[ ]`). A row not started is left as it is (exit 0, "not started").
 pub fn unstart(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> Result<i32> {
     Ok(edit(p, log, name, pick, "unstarted", None, lane, |l| {
-        is_started(l).then(|| md::set_checkbox(l, ' '))
+        is_started(l).then(|| md::remove_marker_token(&md::set_checkbox(l, ' '), "run:"))
     })?
     .0)
 }
 
 fn is_started(line: &str) -> bool {
     line.trim_start().starts_with("- [/]")
+}
+
+/// A started row whose queue item is running: `[/]` with a `run:` token.
+/// `line` ticked closed. A closed row runs nothing, so its `run:` token goes with the checkbox.
+fn closed(line: &str) -> String {
+    md::set_checkbox(&md::remove_marker_token(line, "run:"), 'x')
+}
+
+pub(crate) fn is_running(line: &str) -> bool {
+    is_started(line) && md::marker_token(line, "run:").is_some()
 }
 
 /// One row through `start`: `[/]`, stamped with `id` when it carries none.
@@ -1978,7 +2017,7 @@ pub fn sheet_sweep(path: &Path, stdin: bool, layout_only: bool, dry_run: bool) -
     } else {
         fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?
     };
-    if !is_sheet_path(path) {
+    if !is_sheet_path(path) || !crate::config::managed_path(path) {
         if stdin {
             print!("{content}");
         }
@@ -2016,7 +2055,7 @@ pub fn sheet_sweep(path: &Path, stdin: bool, layout_only: bool, dry_run: bool) -
 /// what ages the Done window and the due buckets on a night nothing else wrote a sheet.
 pub fn sweep_all(log: &Logger, dry_run: bool) -> Result<i32> {
     let (mut changed, mut archived, mut failed) = (0, 0, 0);
-    for profile in crate::config::all_profile_names()? {
+    for profile in crate::config::managed_profile_names()? {
         let Ok(p) = crate::config::resolve(Some(&profile)) else {
             continue;
         };
@@ -2125,6 +2164,9 @@ pub(crate) fn sweep_file(
     pass: Pass,
     dry_run: bool,
 ) -> Result<Option<Tidied>> {
+    if !crate::config::managed_path(sheet) {
+        return Ok(None);
+    }
     let (lane, dir) = sheet_home(sheet);
     let name = dir
         .file_name()
@@ -3207,7 +3249,7 @@ Version: v0.0.1
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
             board,
-            "# demo - agent board\nVersion: v0.0.1\n\n## Tasks\n### Next up\n- [ ] open row #high\n- [ ] open parent\n  - [x] a done subtask stays with its parent\n- [ ] \n\n---\n### Done\n"
+            "# demo - agent board\nVersion: v0.0.1\n\n## Tasks\n### Backlog\n- [ ] open row #high\n- [ ] open parent\n  - [x] a done subtask stays with its parent\n- [ ] \n\n---\n### Done\n"
         );
         let note = fs::read_to_string(dir.join("agent/versions/v0.3.0.md")).unwrap();
         assert!(
@@ -3274,7 +3316,7 @@ Version: v0.0.1
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
             board,
-            "# demo - agent board\n\n## Tasks\n### Next up\n- [ ] fix(d): wrong #size/m <!-- id:dm-4 -->\n  - a detail under it\n- [ ] fix(a): open #size/s <!-- id:dm-1 -->\n- [ ] fix(b): closed done:2026 #size/s <!-- id:dm-2 -->\n- [ ] \n\n---\n### Done\n"
+            "# demo - agent board\n\n## Tasks\n### Backlog\n- [ ] fix(d): wrong #size/m <!-- id:dm-4 -->\n  - a detail under it\n- [ ] fix(a): open #size/s <!-- id:dm-1 -->\n- [ ] fix(b): closed done:2026 #size/s <!-- id:dm-2 -->\n- [ ] \n\n---\n### Done\n"
         );
         let note = fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap();
         assert_eq!(
@@ -3986,6 +4028,64 @@ mod inbox_tests {
             .map(|e| e.action)
             .collect();
         assert_eq!(ev, ["started", "unstarted"], "a no-op writes no event");
+    }
+
+    // The row records the queue: `run` marks the item started, `start` (a requeue), `unstart`
+    // and `done` take the mark off again, and a second `run` writes nothing.
+    #[test]
+    fn run_marks_a_started_row_and_start_unstart_and_done_clear_it() {
+        let v = vault("runmark", "", "- [ ] fix(ui): flicker <!-- id:sc-1 -->\n");
+        let one = Pick::Id("sc-1".into());
+        let today = chrono::Local::now().format("%m%d").to_string();
+        run(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
+        let ran = v.read();
+        assert!(
+            ran.contains(&format!(
+                "- [/] fix(ui): flicker <!-- id:sc-1 run:{today} -->"
+            )),
+            "{ran}"
+        );
+        assert!(ran.find("### Now") < ran.find("fix(ui): flicker"), "{ran}");
+        run(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
+        assert_eq!(v.read(), ran, "a second run is a no-op");
+        start(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
+        let queued = v.read();
+        assert!(
+            queued.contains("- [/] fix(ui): flicker <!-- id:sc-1 -->"),
+            "{queued}"
+        );
+        assert!(
+            queued.contains("### Next up") && !queued.contains("### Now"),
+            "{queued}"
+        );
+        run(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
+        unstart(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
+        assert!(
+            v.read().contains("- [ ] fix(ui): flicker <!-- id:sc-1 -->"),
+            "{}",
+            v.read()
+        );
+        run(&v.p, &v.log, "scratch", &one, Lane::Human).unwrap();
+        assert_eq!(
+            closed("- [/] a <!-- id:sc-1 run:1109 -->"),
+            "- [x] a <!-- id:sc-1 -->"
+        );
+        assert_eq!(closed("- [/] a <!-- run:1109 -->"), "- [x] a");
+    }
+
+    // A row added with no priority stays untagged: it is untriaged, and a default would hide it.
+    #[test]
+    fn add_writes_no_default_priority() {
+        let v = vault("addprio", "", "");
+        for t in ["fix(ui): new thing", "fix(ui): hot #urgent"] {
+            add(&v.p, &v.log, "scratch", t, &[], None, None, Lane::Human).unwrap();
+        }
+        let out = v.read();
+        assert!(!out.contains("new thing #high"), "{out}");
+        assert!(
+            out.contains("fix(ui): hot") && out.contains("#urgent"),
+            "{out}"
+        );
     }
 
     // nc-47: words on two open rows act on neither; the error names both ids.

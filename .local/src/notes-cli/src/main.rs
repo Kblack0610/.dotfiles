@@ -646,6 +646,12 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
+    /// The matching task's queue item started: `[/]` plus `run:MMDD`, which puts it in Now
+    /// (a started row without it is queued, in Next up); agent-queue writes it
+    Run {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
     /// Put the matching in-progress task back to todo (`[/]` -> `[ ]`); a todo row is left as it is
     Unstart {
         #[arg(required = true, num_args = 1..)]
@@ -1233,6 +1239,9 @@ fn main() -> Result<()> {
                 }
                 Some(PtaskCmd::Start { query }) => {
                     project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
+                }
+                Some(PtaskCmd::Run { query }) => {
+                    project_tasks::run(&prof, &log, &name, &pick(&query)?, lane)?
                 }
                 Some(PtaskCmd::Unstart { query }) => {
                     project_tasks::unstart(&prof, &log, &name, &pick(&query)?, lane)?

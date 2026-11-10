@@ -76,6 +76,9 @@ root = "~/.notes/employment/jobs/AcmeCorp"
 # Work notes link only the schedule in their footer: the personal `fun` backlog is
 # a life thing and does not belong in work notes.
 footer_links = ["schedule"]
+# A job tracked in its own tool (ClickUp, Jira) opts out of board automation: no
+# sweep, save sweep, doctor, triage or dispatch rewrites or reads its sheets.
+# automation = false
 
 # --- Lazer (edubot): client engagement ---------------------------------------
 # Same pattern, rooted in the client dir under jobs/lazer/.

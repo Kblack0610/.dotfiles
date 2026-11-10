@@ -689,3 +689,48 @@ ask_stub() {
   assert_output --regexp 'epic\(ui\): a pause menu mid-match .*#new.*id:sc-2'
   assert_output --regexp 'feat\(ui\): a pause menu with resume and quit .*#of/sc-2.*id:sc-1'
 }
+
+@test "--backlog --priority: each untagged row gets the model's priority through ptask tag, a tagged row is not asked, a bad answer writes nothing" {
+  export INBOX_PRIORITY_CMD=model-stub
+  sheet '' '- [ ] the save is slow <!-- id:sc-4 -->\n- [ ] the menu flickers #requested <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n- [ ] the logo #low <!-- id:sc-7 -->\n'
+  # a profile with automation = false: its rows never reach the model
+  printf '[profile.gig]\nroot = "~/.notes/gig"\nautomation = false\n' >>"$HOME/.config/notes/config.toml"
+  mkdir -p "$HOME/.notes/gig/projects/current/gp"
+  : >"$HOME/.notes/gig/projects/current/gp/summary.md"
+  printf '# gp\n\nVersion: v0.1.0\n\n## Tasks\n- [ ] the gig row <!-- id:gp-1 -->\n' >"$HOME/.notes/gig/projects/current/gp/README.md"
+  gig_before="$(cat "$HOME/.notes/gig/projects/current/gp/README.md")"
+  # rows reach the model in sheet order: sc-4, sc-5, sc-6
+  answer '{"n": 1, "priority": "low"}' '{"n": 2, "priority": "high"}' '{"n": 3, "priority": "medium"}'
+  run "$TRIAGE" --backlog --priority
+  assert_success
+  assert_output --partial 'priority: tagged 2, left 0, refused 0'
+  grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
+  run tasks
+  assert_output --regexp 'the save is slow .*#low.*id:sc-4'
+  assert_output --regexp 'the menu flickers .*#high.*id:sc-5'
+  assert_output --regexp '\[ \] the jump is floaty <!-- id:sc-6 -->'
+  assert_equal "$(cat "$HOME/.notes/gig/projects/current/gp/README.md")" "$gig_before"
+}
+
+@test "--retag-high also asks the #high rows, and a new priority replaces the old one" {
+  export INBOX_PRIORITY_CMD=model-stub
+  sheet '' '- [ ] the save is slow #high <!-- id:sc-4 -->\n- [ ] the menu flickers #high <!-- id:sc-5 -->\n- [ ] the logo #low <!-- id:sc-7 -->\n'
+  answer '{"n": 1, "priority": "high"}' '{"n": 2, "priority": "urgent"}'
+  run "$TRIAGE" --backlog --priority --retag-high --project scratch
+  assert_success
+  assert_output --partial 'priority: tagged 1, left 0'
+  refute grep -q 'logo' "$NOTES_FIXTURE/prompt.txt"
+  run tasks
+  assert_output --regexp 'the save is slow #high <!-- id:sc-4 -->'
+  assert_output --regexp 'the menu flickers #urgent <!-- id:sc-5 -->'
+  refute_output --partial 'flickers #high'
+}
+
+# NEGATIVE CONTROL: --priority alone would run the inbox sweep's model call; it is refused.
+@test "--priority without --backlog is refused and asks no model" {
+  run "$TRIAGE" --priority
+  assert_failure 2
+  assert_output --partial '--priority goes with --backlog'
+  [ ! -e "$NOTES_FIXTURE/model.log" ]
+}
