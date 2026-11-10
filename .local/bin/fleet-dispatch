@@ -71,7 +71,7 @@ unset _k _v
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
-: "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats)
+: "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats), when reap made one of them twice in a row
 : "${DISPATCH_FINDING_FRESH_MIN:=20}"   # two fleet-bench samples: a finding stays open 60 min after it stops firing
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --agent dispatch-judge}"
@@ -255,8 +255,8 @@ pr_repo_dir() {
   [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] || { repo_dir "$2"; return; }
   repo_dir "$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_of_repos_json "${BASH_REMATCH[1]}" | jq -r '.[]')"
 }
-# shellcheck source=../lib/origin-repo.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"   # forge_canonical
+# shellcheck source=../lib/session-outcomes.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"   # forge_canonical (origin-repo.sh), so_forgejo_*
 # shellcheck source=../lib/agent-merge-proof.sh
 . "${MERGE_PROOF_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh}"
 # shellcheck source=../lib/pr-ci.sh
@@ -1141,9 +1141,12 @@ verdict_errors() {
 # 2026-11-06; a needs-person, release, prod-write or decide skip waits on the human, not a plan), that
 # inbox-plan never planned (no `goal:` detail), while fewer than DISPATCH_PLAN_BACKLOG #plan rows
 # are open, then kick inbox-plan. Its plan splits or rewrites the row, so the judge reads it again
-# with the plan. A design or question skip waits on the human, not a plan. Sets PLAN_TAGGED.
+# with the plan. A design or question skip waits on the human, not a plan. A #requested row also
+# gets #go: the judge asked for this plan, not the person, so inbox-plan plans it without holding it
+# for their review. Sets PLAN_TAGGED.
 plan_skips() {
-  local board rows room p prof id raw line dsig dj why size
+  local board rows room p prof id raw line dsig dj why size req
+  local -a add
   PLAN_TAGGED=0
   [ "$DISPATCH_PLAN_BACKLOG" -gt 0 ] || return 0
   board=$(notes board --json 2>/dev/null) || { say "plan_skips: notes board --json failed"; return 0; }
@@ -1160,10 +1163,10 @@ plan_skips() {
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
     | .rows[]? | select(.lane == "agent" and .id != null and (plan_tagged | not) and (planned | not))
     | $by["\(.project)\t\(.id)"] as $d | select($d != null)
-    | "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.why)\t\(.raw)"' <<<"$board")
+    | "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.why)\t\(.requested == true)\t\(.raw)"' <<<"$board")
   # raw last: read hands it the rest of the line; details_json is JSON, with no bare tab. No field
   # is empty: a tab is IFS whitespace, so read would fold an empty one into its neighbour
-  while IFS=$'\t' read -r prof p id line dsig dj why raw; do
+  while IFS=$'\t' read -r prof p id line dsig dj why req raw; do
     [ -n "$id" ] && [ "$room" -gt 0 ] || continue
     if [ "$why" != rule ]; then
       [ "$(cleanup_row "$p" "$raw")" = 0 ] || continue
@@ -1173,7 +1176,8 @@ plan_skips() {
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
     [ "$(printf '%s' "$raw" | sig)" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
-    if np "$prof" ptask "$p" --agent tag --add plan "$id" >/dev/null 2>&1; then
+    add=(--add plan); [ "$req" = true ] && add+=(--add go)
+    if np "$prof" ptask "$p" --agent tag "${add[@]}" "$id" >/dev/null 2>&1; then
       PLAN_TAGGED=$(( PLAN_TAGGED + 1 )); room=$(( room - 1 ))
     else say "plan_skips: could not tag $p $id"; fi
   done <<<"$rows"
@@ -2142,32 +2146,47 @@ settle_row() {
   echo "un-started $project: $key (queue item $1 ended $(jq -r .status <<<"$it")${end:+, $end})"
 }
 
-# PR_STATE_JSON, PR_STATE_JQ -- what one gh read of an item's PR asks for, and the line it prints:
+# PR_STATE_JSON, PR_STATE_JQ -- what one read of an item's PR asks for, and the line it prints:
 # "<state> <merge oid> <head oid> <ci>", - for a missing oid, ci as CI_JQ reads the checks.
 PR_STATE_JSON=state,mergeCommit,headRefOid,statusCheckRollup
 PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"), ci] | join(" ")'
 
-# pr_state <owner/repo#N> -> PR_STATE_JQ's line as gh reads it; fails when gh cannot.
-pr_state() { gh pr view "${1##*#}" -R "${1%#*}" --json "$PR_STATE_JSON" -q "$PR_STATE_JQ" 2>/dev/null; }
+# pr_view <owner/repo#N or N> <checkout> <fields> <jq> -> <jq> over the PR's <fields>, as `gh pr view -q`
+# prints it; fails when its forge cannot be read. A checkout whose canonical forge is Forgejo
+# (forge_canonical; home-config) is read from that forge's API in gh's shape (so_forgejo_pr,
+# so_forgejo_checks): gh sees only its GitHub mirror, which has no PRs, and fix-traefik's reap logged
+# "could not read" on every pass for two days (270 lines, 2026-11-08 to 11-10). There <fields> is
+# fixed: <jq> sees only what so_forgejo_pr gives plus statusCheckRollup. The PR is the number on the
+# checkout's own Forgejo remote: the ref names the GitHub mirror, whose owner may differ. Else gh reads
+# the repo the ref names, or a bare number from the checkout.
+pr_view() {
+  local n=${1##*#} repo pr ci
+  if forge_canonical "$2"; then
+    # Authed in this shell, so the token is read once and both reads below carry it (each $(...) is a subshell).
+    repo=$(so_forgejo_repo "$2") && so_forgejo_auth "$repo" && pr=$(so_forgejo_pr "$repo" "$n" 2>/dev/null) &&
+      ci=$(so_forgejo_checks "$repo" "$(jq -r .headRefOid <<<"$pr")" 2>/dev/null) || return 1
+    jq -r --argjson ci "$ci" ".statusCheckRollup = \$ci | $4" <<<"$pr"
+  elif [[ "$1" == */*#* ]]; then gh pr view "$n" -R "${1%#*}" --json "$3" -q "$4" 2>/dev/null
+  else [ -n "$2" ] && (cd "$2" && gh pr view "$n" --json "$3" -q "$4" 2>/dev/null)
+  fi
+}
 
-# item_pr_state <slug> <item json> -> PR_STATE_JQ's line for the item's PR; fails when gh cannot read
-# it. A bare pr: names no repo and one project spans repos, so it reads from the project's checkout
-# and prints nothing unless a line of the PR's body is exactly the item's `Item:` stamp.
+# item_pr_state <slug> <item json> -> PR_STATE_JQ's line for the item's PR; fails when its forge cannot
+# be read (pr_view). A bare pr: names no repo and one project spans repos, so it reads from the
+# project's checkout and prints nothing unless a line of the PR's body is exactly the item's `Item:` stamp.
 item_pr_state() {
-  local pr dir
-  pr=$(jq -r '.pr // ""' <<<"$2")
-  if [[ "$pr" == */*#* ]]; then pr_state "$pr"; return; fi
-  dir=$(repo_dir "$(jq -r .project <<<"$2")")
-  [ -n "$pr" ] && [ -n "$dir" ] || return 1
-  (cd "$dir" && gh pr view "$pr" --json "$PR_STATE_JSON,body" -q \
-    "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | $PR_STATE_JQ" 2>/dev/null)
+  local pr project
+  IFS=$'\x1f' read -r pr project < <(jq -r '[.pr // "", .project // ""] | join("\u001f")' <<<"$2")
+  [ -n "$pr" ] || return 1
+  if [[ "$pr" == */*#* ]]; then pr_view "$pr" "$(pr_repo_dir "$pr" "$project")" "$PR_STATE_JSON" "$PR_STATE_JQ"; return; fi
+  pr_view "$pr" "$(repo_dir "$project")" "$PR_STATE_JSON,body" \
+    "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | $PR_STATE_JQ"
 }
 
 # land_orphan <slug> -- a started row whose item ended ok before its PR merged (closed by hand
 # before agent-queue refused that): the row goes by that PR, not by the orphan timer. A merged:
-# commit, or a PR gh reads as MERGED (then recorded), goes to close_row; OPEN leaves it started for the
-# merge. Returns 1 when no PR holds the row, so the timer decides: no PR, closed unmerged, or unreadable
-# (a Forgejo PR, which gh cannot see, needs merged: on the item).
+# commit, or a PR its forge reads as MERGED (item_pr_state, then recorded), goes to close_row; OPEN leaves it started for the
+# merge. Returns 1 when no PR holds the row, so the timer decides: no PR, closed unmerged, or unreadable.
 land_orphan() {
   local it oid info state
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 1
@@ -2256,7 +2275,7 @@ item_rollout() {
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
 # Still open, it goes by its PR's state (merged: when the item has one, else item_pr_state): MERGED records merged: and is done ok (and
 # a board row still started closes on merge proof, close_row), OPEN waits in review/ for the merge
-# (where a --pr-only run leaves it; waiting/ is only for an item whose session needs the human), CLOSED is failed; a state gh cannot read, or a bare pr: whose PR
+# (where a --pr-only run leaves it; waiting/ is only for an item whose session needs the human), CLOSED is failed; a state its forge cannot read (pr_view), or a bare pr: whose PR
 # lacks the item's stamp, leaves it for the next pass. No PR but a `report` (a doc+ask kind's
 # doc, a stack-review report) is done ok: that was the deliverable. A waiting or review item with
 # neither stays parked on its blocker, any other item with neither is failed, the reason in note.
@@ -2328,7 +2347,7 @@ settle_item() {
   if [ -n "$pr" ]; then
     case "$state" in
     MERGED)
-      [ -n "$oid" ] || { logline "reaped $2: queue item $1 left: PR $pr merged with no merge commit gh could read"; return 0; }
+      [ -n "$oid" ] || { logline "reaped $2: queue item $1 left: PR $pr merged with no merge commit its forge could read"; return 0; }
       agent-queue set "$1" "merged=$oid" >/dev/null || return 0
       agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
       logline "reaped $2: session gone, queue item $1 done, PR $pr merged"
@@ -2347,7 +2366,7 @@ settle_item() {
       note_add "$1" "$it" "PR $pr closed unmerged; session $2 ended${why:+ (end_reason: $why)}"
       logline "reaped $2: session gone, queue item $1 failed: PR $pr closed unmerged"
       echo "failed queue item $1 (PR $pr closed unmerged)" ;;
-    *) logline "reaped $2: queue item $1 left: gh could not read PR $pr" ;;
+    *) logline "reaped $2: queue item $1 left: could not read PR $pr" ;;
     esac
   elif [ -n "$report" ]; then
     agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
@@ -3373,7 +3392,12 @@ last_run_start() {
 # take, as next_items does) with the high ones counted apart (runnable_high, oldest_high_s); the low water and whether runnable is under it; the present trickle's rate
 # and its starts in the last hour; starved (the queue-starved verdict); the last pass and last run start;
 # reap moves in the last hour, and the items moved
-# DISPATCH_FLAP_MOVES or more times (a session the reap cannot read steadily); the open board rows
+# DISPATCH_FLAP_MOVES or more times where reap made the same move twice in a row with no start
+# logged between: something else undid the first heal (11-04: running -> waiting twice). Moves that
+# alternate follow a session asking and being answered, which is reap working (11-10: two questions
+# in an hour), so a reap misreading the panel the same way is not caught here; a start (hand,
+# run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
+# the open board rows
 # by lane, left out when the board is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 cmd_stats() {
@@ -3394,8 +3418,9 @@ cmd_stats() {
     pass=$(stat -c %Y "$(proof_state_dir)/fleet-dispatch/last-outcome" 2>/dev/null || echo null)
   awk -v since="$since" '
     ($2 " " $3) < since { next }
-    $4 == "reaped" && match($0, /queue item [^ ]+ [a-z]+ -> [a-z]+$/) { split(substr($0, RSTART), w, " "); print "move", w[3]; next }
+    $4 == "reaped" && match($0, /queue item [^ ]+ [a-z]+ -> [a-z]+$/) { split(substr($0, RSTART), w, " "); print "move", w[3], w[4], w[6]; next }
     $4 == "reaped" { print "settle", "-"; next }
+    $4 == "started" && match($0, /queue item [^ ,]+/) { split(substr($0, RSTART, RLENGTH), w, " "); print "start", w[3], "-", "running" }
     $4 == "present" && $5 == "start:" { print "present", "-" }' "$LOG" 2>/dev/null |
     jq -Rsc --argjson now "$now" --slurpfile q <(printf '%s\n' "$q") --argjson starved "$starved" \
       --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" --argjson board "${board:-null}" \
@@ -3406,7 +3431,9 @@ cmd_stats() {
       | ($take | map(select(.priority == "urgent"))) as $u
       | ($take | map(select(.priority == "high"))) as $hi
       | def age(x): if (x | map(.t // empty) | length) == 0 then null else $now - (x | map(.t // empty) | min) end;
-        ($ev | map(select(.[0] == "move") | .[1]) | group_by(.) | map(select(length >= $flap) | .[0])) as $flapping
+        def undone: . as $m | any(range(1; $m | length); $m[.].kind == "move" and $m[.].from == $m[. - 1].from and $m[.].to == $m[. - 1].to);
+        ($ev | map(select(.[0] == "move" or .[0] == "start") | {kind: .[0], slug: .[1], from: .[2], to: .[3]}) | group_by(.slug)
+          | map(select((map(select(.kind == "move")) | length) >= $flap and undone) | .[0].slug)) as $flapping
       | {state: ($q | length), runnable: ($q | length), runnable_urgent: ($u | length), runnable_high: ($hi | length),
          oldest_runnable_s: age($q), oldest_urgent_s: age($u), oldest_high_s: age($hi), starved: $starved,
          last_pass_epoch: $pass, last_run_start_epoch: $start,
