@@ -1,13 +1,14 @@
 #!/usr/bin/env bats
 # notes-roll: the headless version roll (extracted from the retired task cockpit).
 #
-# A wave IS a patch version, so a merged wave rolls itself, and a release tag closing its
-# wave rolls through here too. Everything that makes a roll worth anything -- freezing the
+# A release tag closing its version rolls through here, and so does the cadence cut of a project
+# with no tag (agentctl-wave-roll). Everything that makes a roll worth anything -- freezing the
 # sheet, appending the agent changelog, summarising the frozen note -- has to happen with
 # no TTY to ask.
 #
-# The level argument is where this can go quietly wrong: a wave must only ever roll a
-# PATCH. A minor is a release and a major is a breaking change, and both stay a human act.
+# The level argument is where this can go quietly wrong. With none, notes derives the bump from
+# what the version holds (stages.md, "Versions"); a level given overrides it, and a major is
+# only ever asked for.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -26,21 +27,22 @@ notes_calls() { grep '^notes ' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true; }
 
 # -- the bump level --
 
-@test "a wave's roll defaults to PATCH -- no level flag reaches notes" {
+@test "a roll with no level leaves the bump to notes -- no level flag reaches it" {
   with_frozen
   run "$NOTES_ROLL" personal demoapp
   assert_success
   run notes_calls
   assert_output --partial 'projects --release demoapp'
-  refute_output --partial '--minor'
-  refute_output --partial '--major'
+  refute_output --regexp '--(patch|minor|major)'
 }
 
-@test "minor and major are reachable, but only by asking for them" {
+@test "patch, minor and major are reachable, but only by asking for them" {
   with_frozen
+  "$NOTES_ROLL" personal demoapp patch
   "$NOTES_ROLL" personal demoapp minor
   "$NOTES_ROLL" personal demoapp major
   run notes_calls
+  assert_output --partial 'projects --release demoapp --patch'
   assert_output --partial 'projects --release demoapp --minor'
   assert_output --partial 'projects --release demoapp --major'
 }

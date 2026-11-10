@@ -55,6 +55,10 @@ pub struct Agent {
     pub account: String,
     /// Parked by `claude-acct park`: its claude exited and a ledger holds the resume (`parked.rs`).
     pub parked: bool,
+    /// A Codex run, not a Claude: `codex_agent`. `pid` is its codex process, and `rollout` the
+    /// thread file it writes, which dates its last activity.
+    pub codex: bool,
+    pub rollout: Option<PathBuf>,
 }
 
 impl Agent {
@@ -114,9 +118,13 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
 
     let mut seen = HashSet::new();
     let mut agents = Vec::new();
+    let mut codex = Vec::new();
     for pane in panes {
         let target = tmux::qualify(&pane.server, &pane.session, &pane.window_index);
         let Some(&cpid) = pane_to_claude.get(&pane.pid) else {
+            if let Some(xpid) = procmap.codex_below(pane.pid) {
+                codex.push((pane, target, xpid));
+            }
             continue; // not a Claude agent
         };
         let Some(sess) = sessions.get(&cpid) else {
@@ -173,9 +181,74 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
             attached: pane.attached,
             account: account::of_pid(&proc_root, cpid, &home, &accounts),
             parked: false,
+            codex: false,
+            rollout: None,
         });
     }
+    // After every Claude pane, so a window with a Claude in one split stays that Claude's row.
+    for (pane, target, xpid) in codex {
+        if seen.insert(target.clone()) {
+            agents.push(codex_agent(&pane, target, xpid, &proc_root));
+        }
+    }
     (agents, gaps)
+}
+
+/// A row for a Codex run in `pane` (`xpid` its codex process), so the fleet's views see the other
+/// harness too. Codex keeps no `~/.claude/sessions` file, so the row is read from the process: the
+/// queue item fleet-dispatch launched it for (`AGENT_QUEUE_ITEM` in its environment) and the thread
+/// it writes (its open rollout file, whose id agent-codex claims on that item). It reads as busy, which
+/// is all a running `codex exec` can be; its transcript is not Claude's, so `jsonl` stays empty.
+fn codex_agent(pane: &tmux::Pane, target: String, xpid: u32, proc_root: &Path) -> Agent {
+    let item = account::env_of(proc_root, xpid, "AGENT_QUEUE_ITEM");
+    let rollout = codex_rollout(proc_root, xpid);
+    Agent {
+        glyph: session::glyph("busy"),
+        short_target: render::short_target(&pane.session, &pane.window_index),
+        project: render::project_from_path(&pane.current_path),
+        repo_full: render::basename(&pane.current_path).to_string(),
+        summary: if item.is_empty() { "codex".into() } else { format!("codex: {item}") },
+        tags: pane.tags.clone(),
+        stage: pane.stage.clone(),
+        labels: pane.labels.clone(),
+        pane: format!("{}/{}", pane.server, pane.pane_id),
+        session_id: rollout
+            .as_deref()
+            .and_then(|r| thread_of_rollout(&r.file_name()?.to_string_lossy()))
+            .unwrap_or_default(),
+        cwd: pane.current_path.clone(),
+        status: "busy".into(),
+        server: pane.server.clone(),
+        tmux_session: pane.session.clone(),
+        window_id: pane.window_id.clone(),
+        pid: xpid,
+        attached: pane.attached,
+        account: "codex".into(),
+        codex: true,
+        rollout,
+        target,
+        ..Agent::default()
+    }
+}
+
+/// The rollout file Codex process `pid` holds open (`rollout-<time>-<uuid>.jsonl`, its thread);
+/// None when none is open or its fds cannot be read (no `/proc`, as on macOS).
+fn codex_rollout(proc_root: &Path, pid: u32) -> Option<PathBuf> {
+    fs::read_dir(proc_root.join(pid.to_string()).join("fd"))
+        .ok()?
+        .filter_map(|e| fs::read_link(e.ok()?.path()).ok())
+        .find(|t| t.file_name().is_some_and(|n| thread_of_rollout(&n.to_string_lossy()).is_some()))
+}
+
+/// `rollout-2026-11-09T10-00-00-<uuid>.jsonl` -> the uuid (the last five dash-separated fields).
+fn thread_of_rollout(name: &str) -> Option<String> {
+    let stem = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    let parts: Vec<&str> = stem.rsplitn(6, '-').collect();
+    (parts.len() == 6).then(|| {
+        let mut id: Vec<&str> = parts[..5].to_vec();
+        id.reverse();
+        id.join("-")
+    })
 }
 
 /// The live agents plus a row per parked session, the human's own session first: what a
@@ -450,9 +523,9 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// A read with gaps still prints the rows it has, then names each gap on stderr and exits 3:
 /// a partial list must not pass for a whole one to a caller that reads a missing session as
 /// gone (fleet-dispatch reap, ar-916).
-pub fn run_list(json: bool, parked: bool, needs: bool) -> Result<()> {
+pub fn run_list(json: bool, parked: bool, needs: bool, codex: bool) -> Result<()> {
     let (agents, gaps) = if parked { collect_all_read() } else { collect_read() };
-    for a in agents {
+    for a in agents.into_iter().filter(|a| codex || !a.codex) {
         if !json {
             print!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
             if needs {
@@ -462,15 +535,8 @@ pub fn run_list(json: bool, parked: bool, needs: bool) -> Result<()> {
             continue;
         }
         let (info, mtime) = match &a.jsonl {
-            Some(p) => (
-                jsonl::fleet_info(p),
-                fs::metadata(p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_secs()),
-            ),
-            None => (jsonl::fleet_info(Path::new("")), 0),
+            Some(p) => (jsonl::fleet_info(p), mtime_secs(Some(p))),
+            None => (jsonl::fleet_info(Path::new("")), mtime_secs(a.rollout.as_deref())),
         };
         let idle_since = idle_since(info.last_entry, mtime, a.started_at);
         let row = serde_json::json!({
@@ -503,6 +569,7 @@ pub fn run_list(json: bool, parked: bool, needs: bool) -> Result<()> {
             "parked": a.parked,
             "plan": a.plan_slug,
             "ask": a.ask,
+            "harness": if a.codex { "codex" } else { "claude" },
         });
         println!("{row}");
     }
@@ -514,6 +581,13 @@ pub fn run_list(json: bool, parked: bool, needs: bool) -> Result<()> {
         eprintln!("agent-panel: incomplete read: {g}");
     }
     std::process::exit(3)
+}
+
+/// A file's mtime in epoch seconds; 0 for none or an unreadable one.
+fn mtime_secs(p: Option<&Path>) -> u64 {
+    p.and_then(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs())
 }
 
 /// The last entry's own timestamp; the mtime when no entry carries one; with no transcript at
@@ -614,6 +688,51 @@ fn lookup(map_file: &Path, target: &str) -> render::Facts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rollout_name_gives_its_thread_id_and_nothing_else_does() {
+        assert_eq!(
+            thread_of_rollout("rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.jsonl").as_deref(),
+            Some("01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0")
+        );
+        assert_eq!(thread_of_rollout("rollout-x.jsonl"), None);
+        assert_eq!(thread_of_rollout("abc.jsonl"), None);
+        assert_eq!(thread_of_rollout("rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.json"), None);
+    }
+
+    #[test]
+    fn a_codex_row_is_read_from_its_process_item_and_rollout() {
+        let root = std::env::temp_dir().join(format!("agent-panel-codex-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let fd = root.join("300").join("fd");
+        fs::create_dir_all(&fd).unwrap();
+        fs::write(root.join("300").join("environ"), b"TERM=x\0AGENT_QUEUE_ITEM=codex-parity-p6\0").unwrap();
+        let rollout = root.join("rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.jsonl");
+        fs::write(&rollout, "").unwrap();
+        std::os::unix::fs::symlink("/dev/null", fd.join("0")).unwrap();
+        std::os::unix::fs::symlink(&rollout, fd.join("5")).unwrap();
+        let pane = tmux::Pane {
+            server: "hub".into(),
+            session: "dotfiles-agent-37".into(),
+            window_index: "1".into(),
+            current_path: "/home/u/.worktrees/dotfiles-agent-37".into(),
+            pid: 200,
+            pane_id: "%7".into(),
+            ..tmux::Pane::default()
+        };
+        let a = codex_agent(&pane, "hub/dotfiles-agent-37:1".into(), 300, &root);
+        assert!(a.codex);
+        assert_eq!(a.status, "busy");
+        assert_eq!(a.session_id, "01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0");
+        assert_eq!(a.summary, "codex: codex-parity-p6");
+        assert_eq!((a.pane.as_str(), a.pid, a.account.as_str()), ("hub/%7", 300, "codex"));
+        assert_eq!(a.rollout.as_deref(), Some(rollout.as_path()));
+        assert!(a.jsonl.is_none() && !a.needs_attention());
+        // No fds to read (macOS, or a process gone): still a row, with no thread id.
+        let b = codex_agent(&pane, "hub/dotfiles-agent-37:1".into(), 301, &root);
+        assert_eq!((b.session_id.as_str(), b.summary.as_str()), ("", "codex"));
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn idle_since_prefers_the_entry_then_the_mtime_then_the_process_start() {

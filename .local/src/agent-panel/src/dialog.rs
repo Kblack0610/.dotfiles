@@ -205,9 +205,9 @@ impl Keys for send::TmuxPane<'_> {
     }
 }
 
-/// The live agent at a `<server>/<session>:<window>` target.
+/// The live Claude at a `<server>/<session>:<window>` target: a Codex row has no Claude dialog.
 fn agent(target: &str) -> Result<crate::chooser::Agent> {
-    crate::chooser::collect().into_iter().find(|a| a.target == target).with_context(|| format!("no live agent at {target}"))
+    crate::chooser::collect().into_iter().find(|a| a.target == target && !a.codex).with_context(|| format!("no live agent at {target}"))
 }
 
 /// `agent-panel dialog <target>`: the card for the dialog open in that session, or with

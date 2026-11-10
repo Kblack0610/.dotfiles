@@ -145,6 +145,7 @@ AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finishe
 AQ_EX_HELD=5       # agent-queue add's exit when admission held an automated add (its admit)
 LOG="$DIR/log.md"
 CODEX_SESSIONS="${DISPATCH_CODEX_SESSIONS:-$HOME/.codex/sessions}"             # Codex's rollouts, where item_end reads why a run ended
+DISPATCH_PROC="${DISPATCH_PROC:-/proc}"                                          # where codex_run_live reads a run's environment
 CODEX_ROLLOUT_JQ="${DISPATCH_CODEX_ROLLOUT_JQ:-$HOME/.local/lib/codex-rollout.jq}"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
 IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
@@ -250,6 +251,9 @@ pr_repo_dir() {
   [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] || { repo_dir "$2"; return; }
   repo_dir "$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_of_repos_json "${BASH_REMATCH[1]}" | jq -r '.[]')"
 }
+# forge_canonical <checkout> -- exit 0 when the repo's canonical forge is Forgejo: it commits the
+# mirror workflow, the marker forge-guard.py reads (home-config).
+forge_canonical() { [ -n "$1" ] && { [ -f "$1/.forgejo/workflows/mirror-to-github.yaml" ] || [ -f "$1/.forgejo/workflows/mirror-to-github.yml" ]; }; }
 # shellcheck source=../lib/agent-merge-proof.sh
 . "${MERGE_PROOF_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh}"
 # shellcheck source=../lib/pr-ci.sh
@@ -622,6 +626,33 @@ claude_gone() {
   [ -z "$sids" ] || ! claude_pid_live "$sids"
 }
 
+# codex_gone <slug> <agent> <started> -- exit 0 when the item runs on a Codex launcher, started past
+# DISPATCH_REAP_GRACE ago, and its run is no longer live (codex_run_live). The tmux session is no
+# witness for a Codex item: wt recycles worktree lanes, so a Claude item can take the same session
+# name, and agent-panel lists that Claude, never the Codex run (ar-1087). Like claude_gone it is one
+# witness, and reap settles on it only when the reap before also read it gone (reap_confirm).
+codex_gone() {
+  [ "$(harness_launcher "$2")" = codex ] || return 1
+  past_reap_grace "$3" || return 1
+  ! codex_run_live "$1"
+}
+
+# codex_run_live <slug> -- exit 0 while a process running `agent-codex run` (the launch line's timeout,
+# or agent-codex itself) has AGENT_QUEUE_ITEM=<slug> in its environment. Only the launcher's own
+# processes count: a daemon a Codex command started inherits the variable and may outlive the run. Only
+# this user's processes are read (pgrep -u), and one that exited since pgrep listed it is skipped. A
+# pgrep that fails, or a live process whose environment will not read, cannot tell, and cannot-tell is live.
+codex_run_live() {
+  local pids p
+  pids=$(pgrep -u "$(id -u)" -f 'agent-codex run' 2>/dev/null); [ $? -le 1 ] || return 0
+  for p in $pids; do
+    [ -e "$DISPATCH_PROC/$p" ] || continue
+    [ -r "$DISPATCH_PROC/$p/environ" ] || return 0
+    tr '\0' '\n' <"$DISPATCH_PROC/$p/environ" | grep -qxF "AGENT_QUEUE_ITEM=$1" && return 0
+  done
+  return 1
+}
+
 # claude_pid_live <session ids> -- exit 0 when a Claude process recorded for one of those ids is
 # running: its ~/.claude*/sessions/<pid>.json names the id, the pid is alive and not a zombie, and,
 # when the file records procStart, started when the file says, so a reused pid is not a session.
@@ -644,7 +675,7 @@ claude_pid_live() {
   return 1
 }
 
-# reap_confirm <slug> -- exit 0 when an earlier reap, at least DISPATCH_REAP_CONFIRM seconds before,
+# reap_confirm <slug> [what was missed] -- exit 0 when an earlier reap, at least DISPATCH_REAP_CONFIRM seconds before,
 # also read the item's Claude as gone (claude_gone); else record this miss and exit 1. One agent-panel
 # read is not a witness: on 2026-11-07 (ar-900) a panel at 78% CPU under load 33 left a live session
 # out, and reap failed an urgent item whose re-read a minute later listed it. A reap that does not
@@ -658,7 +689,7 @@ reap_confirm() {
     [ $(( $(date +%s) - first )) -ge "$DISPATCH_REAP_CONFIRM" ]; return
   fi
   mkdir -p "${f%/*}" && date +%s > "$f"
-  logline "reap: queue item $1's Claude is not on agent-panel; a reap ${DISPATCH_REAP_CONFIRM}s or more from now settles it if it still is not"
+  logline "reap: queue item $1's ${2:-Claude is not on agent-panel}; a reap ${DISPATCH_REAP_CONFIRM}s or more from now settles it if it still is not"
   return 1
 }
 reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
@@ -1337,10 +1368,12 @@ gateway_launch() {
       ;;
     codex)
       # The ChatGPT login bills the plan; an API key in the pane's env would bill per token instead.
-      # agent-codex claims the thread id on the item when codex names it.
+      # agent-codex claims the thread id on the item when codex names it. Codex runs only the hooks
+      # it has trusted, and a hooks.json the sync rewrote is trusted no more: the bypass makes a fleet
+      # run fire ~/.codex/hooks.json as written (the guards, and the Stop check that it closed its item).
       cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$slug") env -u LITELLM_MASTER_KEY -u OPENAI_API_KEY -u CODEX_API_KEY"
       cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m agent-codex run -m $(printf '%q' "$id")"
-      cmd="$cmd --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --color never $(printf '%q' "$brief")"
+      cmd="$cmd --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check --color never $(printf '%q' "$brief")"
       ;;
     claude-cloud)
       # A Claude cloud session: a fresh GitHub clone on Anthropic's VM, billed to the plan, with none of
@@ -1375,8 +1408,8 @@ cloud_routed() {
     jq -e '((.agent // "claude") | . == "claude" or . == "claude-cloud") and ((.model // "") | . == "" or . == "cloud") and ((" " + (.tags // "") + " ") | contains(" cloud-ok "))' >/dev/null 2>&1
 }
 
-# headless <harness> -- the harness runs to its end with no slash commands, hooks or human at the pane:
-# its `headless` in the map.
+# headless <harness> -- the harness runs to its end with no slash commands or human at the pane: its
+# `headless` in the map. Codex fires the hooks in ~/.codex/hooks.json; opencode fires none.
 headless() { jq -e --arg h "$1" '.harnesses[$h].headless == true' "$HARNESSES" >/dev/null 2>&1; }
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
@@ -1725,7 +1758,9 @@ ask_decisions() {
 # item and for a tier-3 one, not a red, on a headless harness, which cannot run the red-fix gate's
 # review (route). A kind whose `exit` is doc+ask or proof opens no PR, so its brief ends on that close
 # instead of agent-land (doc_ask_brief, proof_brief). A headless harness (opencode, codex) has no
-# slash commands, hooks or human at the pane, so it reads the skill and closes differently.
+# slash commands or human at the pane, so it reads the skill and closes differently. A repo whose
+# canonical forge is Forgejo (forge_canonical) cannot run agent-land, so its brief names one-shot's
+# Forgejo landing instead.
 # A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief.
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
@@ -1772,6 +1807,8 @@ item_brief() {
     proof_brief "$slug" "$kind" "$row" "$(jq -r .project <<<"$it")" "$harness"
     return
   fi
+  local forgejo=
+  forge_canonical "$(repo_dir "$(jq -r .project <<<"$it")")" && forgejo=1
   if [ -n "$row" ] && [ -n "$pr_only" ]; then
     echo "This is agent-queue item $slug, promoted from a board row that is already started. Open the PR and do not merge: the human's merge closes the row."
     echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug review (fleet-dispatch reap closes it once the PR merges)"
@@ -1780,14 +1817,18 @@ item_brief() {
     echo "When the PR is open: agent-queue set $slug pr=<owner>/<repo>#<N>; agent-queue move $slug review (fleet-dispatch reap closes it once the PR merges)"
   else
     echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, and that item is its record: touch no other board or sheet row."
-    echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
+    if [ -n "$forgejo" ]; then
+      echo "This repo's canonical forge is Forgejo, where agent-land cannot run: land it as ~/.claude/skills/one-shot/references/landing.md \"Forgejo repo\" says, recording the PR and merged: on $slug."
+    else
+      echo "Merge with agent-land <N> (AGENT_QUEUE_ITEM=$slug is set): it records the PR on the item, moves it to done${key:+ and closes the row with the PR as proof}."
+    fi
   fi
   echo "The PR body carries the line \"Item: $slug\"${key:+ and the line \"Task: $key\"}."
   if headless "$harness"; then
-    echo "Right after gh pr create, run: agent-queue set $slug pr=<owner/repo#N>. A run cut off with a PR open then waits for the human instead of reading failed."
-    [ -n "$pr_only" ] || echo "Run agent-land in the foreground: a background command dies when this run exits."
-    echo "Skip what this harness lacks (final-pass, wind-down) and say so in the PR body."
-    no_human
+    echo "Right after the PR opens, run: agent-queue set $slug pr=<owner/repo#N>. A run cut off with a PR open then waits for the human instead of reading failed."
+    [ -n "$pr_only$forgejo" ] || echo "Run agent-land in the foreground: a background command dies when this run exits."
+    echo "Skip wind-down (this run ends when you stop) and any step that needs a Claude slash command, and name what you skipped in the PR body."
+    no_human "$slug"
     return
   fi
   ask_rule
@@ -1807,13 +1848,14 @@ fix_ci_brief() {
   echo "This is agent-queue item $slug. Its PR $pr is red${head:+ at ${head:0:12}} and the session that opened it has ended, so this session owns the red: fix-ci try $n of $DISPATCH_FIX_TRIES."
   echo "Work on the PR's own branch, never a new one: gh pr checkout ${pr##*#}$repo here (when git says another worktree has the branch, work in that one: git worktree list), fix the red checks at their cause as /my:fix-ci says, and push to that branch. Never open a second PR."
   echo "Do not merge, and touch no board or sheet row: when the checks are green, or fix-ci stops on a red it cannot fix and files its row, run agent-queue move $slug review and end. The PR's merge closes the item (fleet-dispatch reap)."
-  if headless "$2"; then no_human; else ask_rule; fi
+  if headless "$2"; then no_human "$slug"; else ask_rule; fi
 }
 
 # ask_rule -- a question blocks only the step that needs it. Reap moves the item to waiting/ once the
 # session stops with its ask pending, so the session never moves it itself.
-# no_human -- the same for a headless harness, where nobody is at the pane to answer.
-no_human() { echo "If it needs a human, say why and stop: nobody watches this run, and it counts as failed."; }
+# no_human <slug> -- the same for a headless harness, whose run ends when it stops: the item goes back
+# in the queue behind the ask, and the answer starts it again with the decision in its brief.
+no_human() { echo "If a step needs a decision from the human, file it with agent-ask post (your recommendation in --recommend), run agent-queue requeue $1 --ask <id>, and stop: the answer starts this item again. Nobody watches this run, and one that stops with its item still running counts as failed."; }
 
 ask_rule() {
   echo "If a step needs a decision from the human, only that step is blocked, not the task: ask it here and file it with agent-ask post (your recommendation in --recommend), build the rest with that step switched off, and end your turn on the question only when nothing else is left, leaving this window open."
@@ -1832,7 +1874,7 @@ proof_brief() {
   echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, a $kind row: it ends on the live proof its skill names, never a PR or agent-land."
   headless "$5" || wd='; then /wind-down auto'
   echo "Close in one turn: agent-queue set $slug note=\"<proof>\"${key:+; notes$pf ptask $project$flag done \"$key\" --proof \"<proof>\"}; agent-queue move $slug done --status ok$wd."
-  if headless "$5"; then no_human; else ask_rule; fi
+  if headless "$5"; then no_human "$slug"; else ask_rule; fi
 }
 
 # doc_ask_brief <slug> <kind> <item_row> <project> -- how a doc+ask kind (kinds.json `exit`, the
@@ -3070,6 +3112,7 @@ cmd_reap() {
     if [ "$live" = 1 ]; then gone=1
     elif [ -n "$host" ]; then continue
     elif claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then reap_confirm "$slug" || continue; gone=1
+    elif codex_gone "$slug" "$agent" "$started"; then reap_confirm "$slug" "Codex run is not live" || continue; gone=1
     else reap_seen "$slug"
     fi
     if [ -n "$gone" ]; then
