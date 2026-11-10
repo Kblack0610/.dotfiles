@@ -27,14 +27,11 @@
 # The linters are pinned, and that is not fussiness: a new shellcheck release finds new
 # things, so an unpinned lint gate goes red on a repo nobody touched. Bumping these is a
 # deliberate, reviewable diff -- which is also when the severity ratchet gets revisited.
-# They come from each project's official image, which is a static binary at /bin for amd64
-# and arm64, pulled from the same registry as the base image below. Not the GitHub release
-# asset: on 2026-11-09 the shellcheck v0.11.0 asset answered 504 to every retry for over two
-# minutes and failed the lint job and the ui tier (run 42566089360).
-ARG SHELLCHECK_REF=v0.11.0
-ARG SHFMT_REF=v3.13.1
-FROM koalaman/shellcheck:${SHELLCHECK_REF} AS shellcheck
-FROM mvdan/shfmt:${SHFMT_REF} AS shfmt
+# Each comes from its project's official image (a static binary at /bin, amd64 and arm64),
+# pinned by digest, from the registry the base image already needs. Not the GitHub release
+# asset: that one can answer 504 for longer than any curl retry waits.
+FROM koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d AS shellcheck
+FROM mvdan/shfmt:v3.13.1@sha256:f22f3936140be1ba02d493b5d2b91d0e8b4af93fd903e7f46c477822bca4a3be AS shfmt
 
 FROM debian:trixie-slim
 
@@ -60,8 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # The tmux and fzf downloads below go to GitHub's release CDN, which answers a 504 now and then,
-# and the image is rebuilt on every CI run with no layer cache, so one 504 failed the ui tier and
-# the lint job together. curl reads this file, so the
+# and the image is rebuilt on every CI run with no layer cache. curl reads this file, so the
 # retry lives in one place and each download keeps its plain `curl -fsSL`.
 RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 
