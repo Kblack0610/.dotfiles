@@ -47,6 +47,9 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
+# A PR's check rollup as NONE, PENDING, FAIL or PASS (ci), and its red job ids (red): CI_JQ.
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/pr-ci.sh"
 # FLEET_MAIN_TTL: seconds a gh answer (pr_states' PR list, sibling_pr's PR view) is reused across passes: every caller
 # (the ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on 2026-10-29 the fleet
 # spent GitHub's 5,000/hr REST limit; a PR's state is no less true five minutes later.
@@ -553,19 +556,6 @@ repo_slug() {
   url="$(git -C "$1" remote get-url origin 2>/dev/null)" || return 1
   printf '%s' "$url" | tr -c 'A-Za-z0-9' _
 }
-
-# A PR's statusCheckRollup -> NONE, PENDING, FAIL or PASS: red only once every check has finished.
-# red: the red checks' Actions job ids, comma-separated, - for one that is not a job (gate_ci reads
-# their steps for a gate-line-only red).
-CI_JQ='def red_re: "FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED";
-  def ci: .statusCheckRollup // [] | map(.conclusion // .state // "") as $c
-  | if ($c | length) == 0 then "NONE"
-    elif any($c[]; test("^$|PENDING|QUEUED|IN_PROGRESS|EXPECTED")) then "PENDING"
-    elif any($c[]; test(red_re)) then "FAIL"
-    else "PASS" end;
-  def red: [.statusCheckRollup // [] | .[] | select((.conclusion // .state // "") | test(red_re))
-            | ((.detailsUrl // "") | capture("/job/(?<j>[0-9]+)") | .j) // "-"]
-          | if length == 0 then "-" else join(",") end;'
 
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids".
 prs_for() {

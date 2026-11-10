@@ -6,6 +6,21 @@ metadata:
   category: ops
   tags: [unity, testing, ci, playground, headless]
   reviewed: 2026-11-06
+  # The hand-typed forms this skill's scripts replace; hand_methods.py denies them.
+  replaces:
+    - match: 'Logs/gate\.txt.*pr-body|pr-body.*Logs/gate\.txt'
+      use: scripts/test/gate-and-land.sh (flags in its header; docs/operations/ci.md step 2)
+      where: unity-core-playground
+      why: the gate line, the PR and the landing are one script; a hand copy drifts from ci.md step 2
+    - match: '-batchmode\b.*\s-runTests\b|\s-runTests\b.*-batchmode\b'
+      use: scripts/test/run.sh --filter <Namespace.Class> (one class; a flag it lacks is added there), or gate-and-land.sh to gate
+      where: unity-core-playground(?!.*asset-library)
+      why: a bare Unity skips the hold and the run slots, and a -host on 7770 joins the human's game
+    - match: '-batchmode\b.*\s-executeMethod\b|\s-executeMethod\b.*-batchmode\b'
+      use: scripts/authoring/unity-method.sh <Namespace.Class.Method>
+      where: unity-core-playground(?!.*asset-library)
+      unless: 'cd [^;&|]*asset-library'
+      why: a bare Unity -batchmode skips the hold and the run slots (slots.sh)
 ---
 
 # Playground headless test
@@ -24,17 +39,16 @@ Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP". 
 
 1. Check holds first: `agent-hold list`. What a `unity` hold pauses and how a run waits it out: the repo's `docs/development/testing.md`, Headless.
 2. Iterate locally on one class at a time:
-   `scripts/test/run.sh --filter <Namespace.Class>` (add `--platform EditMode` for an EditMode class). A fresh worktree seeds `Library/` itself (`scripts/setup/library.sh`). Run it as one foreground call with `timeout: 600000`, unless you have other work to do while it runs: a background run costs a start ack and a wake, and past the timeout the harness moves the call to the background without stopping it. The `block-poll.py` hook denies a foreground wait loop and `gh run watch`.
+   `scripts/test/run.sh --filter <Namespace.Class>` (add `--platform EditMode` for an EditMode class). A fresh worktree seeds `Library/` itself (`scripts/setup/library.sh`). Run it as one foreground call with `timeout: 600000`, unless you have other work to do while it runs: a background run costs a start ack and a wake, and past the timeout the harness moves the call to the background without stopping it. The `block-poll.py` hook denies a foreground wait loop; wait on a workflow run with `gh-run-wait <run-id>` in the background.
 3. Read the counts. `0/0` or no `==> n/m` line means run.sh refused the arguments, not that tests passed. Failure detail is in `Logs/test-runs/<stamp>/results.xml`.
 4. Prove a new check can fail: plant one fault per assertion (a bad asset, an entry removed from an allow list), run, see it red, revert, confirm `git status` is clean in the repo and in `External/asset-library`.
-5. Gate and land with the one background command in `docs/operations/ci.md`, One change, start to finish, committed. It ends in `agent-land`, which waits for Checks, merges and closes the board row, so a green gate wakes you once, already landed. Its Rules decide where it runs, what it picks, when to gate again after merging main, and what a FAIL means; do not pick the place or the classes by hand.
+5. Gate and land in the background with `scripts/test/gate-and-land.sh`, committed, as `docs/operations/ci.md`, One change, start to finish, step 2 says (its flags: the script's header). It ends in `agent-land`, which waits for Checks, merges and closes the board row, so a green gate wakes you once, already landed. Its Rules decide where it runs, what it picks, when to gate again after merging main, and what a FAIL means; do not pick the place or the classes by hand.
 6. At session start, read main's last nightly as `docs/operations/ci.md` rule 10 says.
 
 ## Do NOT
 
 - Do not run the whole PlayMode suite or a player build on the workstation (`docs/operations/ci.md` rule 3).
-- Do not call Unity `-runTests` by hand or use port 7770: a `-host` that cannot bind joins the human's game.
+- Do not call Unity `-runTests` or `-executeMethod` by hand (the guard denies both; an editor method runs through `scripts/authoring/unity-method.sh`) or use port 7770: a `-host` that cannot bind joins the human's game.
 - Do not loop run.sh in zsh with unsplit args; wrap the loop in `bash -c`.
 - Do not stop Unity with `pkill -f` or a `pgrep -f` waiter; they match your own shell. Filter `ps -eo pid,comm,args` on `$2=="Unity"`.
 - Do not touch `External/unity-core` (checkout, merge, commit) while a run uses that tree.
-- If Unity aborts with "Requested file descriptor exceeds maximum", run with `ulimit -n 65536`.
