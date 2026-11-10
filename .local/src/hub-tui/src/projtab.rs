@@ -6,7 +6,7 @@
 //! priority (normal, focus, high, low; from `only` it clears it); app.rs runs the write. This file reads and writes
 //! nothing.
 
-use hub_core::page::Page;
+use hub_core::page::{Page, System};
 use hub_core::projects::{self, Card, Projects, Stats};
 use hub_core::session_actions::Runner;
 use hub_core::tasks::Feed;
@@ -46,6 +46,9 @@ pub struct ProjView {
     pub want: Option<String>,
     /// The opened card's folded sections are open (`F`).
     pub folds: bool,
+    /// The system open under Build by system (`z`), and its epic open to its tasks (`Z`).
+    pub sys: Option<String>,
+    pub epic: Option<String>,
 }
 
 impl ProjView {
@@ -71,6 +74,7 @@ impl ProjView {
         tv.table.clear();
         tv.said = None;
         self.open = true;
+        self.fold_systems(tv);
     }
 
     /// Back to the list, the selection on the row it was on.
@@ -78,6 +82,74 @@ impl ProjView {
         self.open = false;
         tv.prompt = None;
         tv.said = None;
+        self.fold_systems(tv);
+    }
+
+    /// Every system folded, and the rows no longer narrowed to an epic's.
+    fn fold_systems(&mut self, tv: &mut TaskView) {
+        self.sys = None;
+        self.close_epic(tv);
+    }
+
+    /// The open epic folded, and the rows back to the whole project's.
+    pub fn close_epic(&mut self, tv: &mut TaskView) {
+        self.epic = None;
+        if tv.only.take().is_some() {
+            tv.table.sel = 0;
+        }
+    }
+
+    /// `z`: open the next system that has epics, after the last one fold them all.
+    pub fn step_system(&mut self, tv: &mut TaskView, pg: &Page) {
+        let ids: Vec<&str> = pg
+            .systems
+            .iter()
+            .filter(|s| opens(s))
+            .map(|s| s.id.as_str())
+            .collect();
+        self.sys = next_of(&ids, self.sys.as_deref());
+        self.close_epic(tv);
+    }
+
+    /// `Z`: open the open system's next epic, its tasks listed and the rows below narrowed to its
+    /// open ones (every row key works on them); after the last one fold it. With no system open
+    /// it opens the first one with an open epic.
+    pub fn step_epic(&mut self, tv: &mut TaskView, pg: &Page) {
+        if self.sys.is_none() {
+            self.sys = pg
+                .systems
+                .iter()
+                .find(|s| !s.epics.is_empty())
+                .map(|s| s.id.clone());
+        }
+        let Some(sys) = pg.systems.iter().find(|s| Some(&s.id) == self.sys.as_ref()) else {
+            return;
+        };
+        let ids: Vec<&str> = sys.epics.iter().map(|e| e.id.as_str()).collect();
+        self.epic = next_of(&ids, self.epic.as_deref());
+        self.narrow(tv, pg);
+        tv.table.sel = 0;
+    }
+
+    /// The rows narrowed to the open epic's open tasks as `pg` has them, so a re-read page keeps
+    /// them current; an epic the page no longer has folds.
+    pub fn narrow(&mut self, tv: &mut TaskView, pg: &Page) {
+        let Some(want) = self.epic.clone() else {
+            tv.only = None;
+            return;
+        };
+        match pg.systems.iter().flat_map(|s| &s.epics).find(|e| e.id == want) {
+            Some(e) => {
+                tv.only = Some(
+                    e.leaves
+                        .iter()
+                        .filter(|l| !l.done)
+                        .map(|l| l.id.clone())
+                        .collect(),
+                )
+            }
+            None => self.close_epic(tv),
+        }
     }
 
     /// `hub tab projects <name>`: the project of that name, whatever the list's view keeps, else
@@ -120,6 +192,30 @@ impl ProjView {
         }
         true
     }
+}
+
+/// The warning style when `b`, else none.
+fn warn_if(b: bool, p: Palette) -> ratatui::style::Style {
+    if b {
+        p.warn()
+    } else {
+        ratatui::style::Style::default()
+    }
+}
+
+/// A system has something to open: open epics, or a count of closed ones.
+fn opens(s: &System) -> bool {
+    !s.epics.is_empty() || !s.closed.is_empty()
+}
+
+/// The id after `at` in `ids`, the first when `at` is None, None after the last: one key steps
+/// through them and then folds.
+fn next_of(ids: &[&str], at: Option<&str>) -> Option<String> {
+    let i = match at {
+        None => 0,
+        Some(a) => ids.iter().position(|i| *i == a).map_or(0, |i| i + 1),
+    };
+    ids.get(i).map(|s| s.to_string())
 }
 
 const BAR: usize = 20;
@@ -212,19 +308,68 @@ fn fold_head(title: &str, says: &str, folds: bool, p: Palette, w: usize) -> Line
     clip_line(Line::from(spans), w)
 }
 
-/// The opened card, over its rows: the card, its goal and Flow, what needs the human (always
-/// open), then Build by system, Next stage, Shipped, Timeline, In flight and the Agent note as
-/// folded heads with their counts, which `F` opens together. `page` is None while it is read.
+/// Build by system, always open: one line per system with its percent, features and criteria,
+/// a `+` on one that opens (`z`), its open epics with their percents under the open one, and the
+/// open epic's tasks under it (`Z`).
+fn system_lines(pg: &Page, pv: &ProjView, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let keys = if pg.systems.iter().any(opens) {
+        "  z opens a system, Z its epics"
+    } else {
+        ""
+    };
+    let mut out = vec![clip_line(
+        Line::from(vec![
+            Span::styled("BUILD BY SYSTEM", p.head()),
+            Span::styled(format!("  {}{keys}", pg.systems_says), p.dim()),
+        ]),
+        w,
+    )];
+    for s in &pg.systems {
+        let open = pv.sys.as_ref() == Some(&s.id);
+        let mark = match (opens(s), open) {
+            (false, _) => "    ",
+            (true, false) => "  + ",
+            (true, true) => "  - ",
+        };
+        out.extend(wrapped(mark, &s.head, Default::default(), p, w));
+        if !open {
+            continue;
+        }
+        for e in &s.epics {
+            let open = pv.epic.as_ref() == Some(&e.id);
+            let mark = if open { "      - " } else { "      + " };
+            out.extend(wrapped(mark, &e.line, warn_if(e.behind, p), p, w));
+            if open {
+                for l in &e.leaves {
+                    let style = if l.done { p.dim() } else { Default::default() };
+                    out.extend(wrapped("          ", &l.line, style, p, w));
+                }
+                if e.leaves.is_empty() {
+                    out.extend(wrapped("          ", "no tasks yet", p.dim(), p, w));
+                }
+            }
+        }
+        if !s.closed.is_empty() {
+            out.extend(wrapped("        ", &s.closed, p.dim(), p, w));
+        }
+    }
+    out
+}
+
+/// The opened card, over its rows: the card, its goal and Flow, then Build by system (always
+/// open, [`system_lines`]), what needs the human (always open), then Next stage, Shipped,
+/// Timeline, In flight and the Agent note as folded heads with their counts, which `F` opens
+/// together. `page` is None while it is read.
 pub fn open_lines(
     c: &Card,
     page: Option<&Page>,
-    folds: bool,
+    pv: &ProjView,
     p: Palette,
     w: usize,
 ) -> Vec<Line<'static>> {
+    let folds = pv.folds;
     let mut out = vec![head(c, p, w)];
     out.extend(bar_lines(c, p, w));
-    let warn_if = |b: bool| if b { p.warn() } else { Default::default() };
     let (goal, style) = if c.goal.is_empty() {
         ("no goal set", p.dim())
     } else {
@@ -251,6 +396,7 @@ pub fn open_lines(
         out.extend(wrapped("  ", e, p.warn(), p, w));
     }
     out.push(Line::raw(""));
+    out.extend(system_lines(pg, pv, p, w));
     out.push(clip_line(
         Line::from(vec![
             Span::styled("NEEDS YOU", p.head()),
@@ -268,25 +414,13 @@ pub fn open_lines(
     for n in &pg.needs {
         out.extend(wrapped("  ", n, p.warn(), p, w));
     }
-    out.push(fold_head("BUILD BY SYSTEM", &pg.systems_says, folds, p, w));
-    if folds {
-        for s in &pg.systems {
-            out.extend(wrapped("  ", &s.head, Default::default(), p, w));
-            for e in &s.epics {
-                out.extend(wrapped("    ", &e.line, warn_if(e.behind), p, w));
-            }
-            if !s.closed.is_empty() {
-                out.extend(wrapped("    ", &s.closed, p.dim(), p, w));
-            }
-        }
-    }
     out.push(fold_head("NEXT STAGE", &pg.next_says, folds, p, w));
     if folds {
         for r in &pg.next_rows {
             out.extend(wrapped(
                 &format!("  {:<6} ", r.result),
                 &format!("{} ({})", r.requirement, r.stage),
-                warn_if(r.result == "FAIL"),
+                warn_if(r.result == "FAIL", p),
                 p,
                 w,
             ));
@@ -524,16 +658,38 @@ pub(crate) mod tests {
                 "ideas 3 | briefs 1 | plans 1 | epics 2 | rows 5 | landed 1 | verified 0".into(),
             ),
             needs: vec!["verify: Saves (4 of 4 rows landed, no live proof)".into()],
-            systems: vec![hub_core::page::System {
-                id: "ui".into(),
-                head: "ui  criteria 5 of 7".into(),
-                epics: vec![hub_core::page::EpicLine {
-                    line: "Menus  [rows]  brief yes  plan 1 of 3  rows 2 of 4  behind".into(),
-                    behind: true,
-                }],
-                closed: "+1 closed, 1 verified".into(),
-            }],
-            systems_says: "1 systems, 1 open epics (2 rows with no epic)".into(),
+            systems: vec![
+                hub_core::page::System {
+                    id: "ui".into(),
+                    head: "ui  25%  1 feature, 0 done  criteria 5 of 7".into(),
+                    percent: Some(25),
+                    epics: vec![hub_core::page::EpicLine {
+                        id: "gm-1".into(),
+                        line: "Menus  25%  [rows]  brief yes  plan 1 of 3  rows 2 of 4  behind"
+                            .into(),
+                        behind: true,
+                        leaves: vec![
+                            hub_core::page::Leaf {
+                                id: "gm-3".into(),
+                                line: "[x] gm-3  feat: Main menu  m  pr 101".into(),
+                                done: true,
+                            },
+                            hub_core::page::Leaf {
+                                id: "gm-4".into(),
+                                line: "[ ] gm-4  Pause menu".into(),
+                                done: false,
+                            },
+                        ],
+                    }],
+                    closed: "+1 closed, 1 verified".into(),
+                },
+                hub_core::page::System {
+                    id: "ci".into(),
+                    head: "ci  criteria 1 of 2".into(),
+                    ..Default::default()
+                },
+            ],
+            systems_says: "2 systems, 1 open epics (2 rows with no epic)".into(),
             next_says: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet".into(),
             next_rows: vec![hub_core::page::Requirement {
                 stage: "beta".into(),
@@ -561,7 +717,11 @@ pub(crate) mod tests {
         let pr = fixture();
         let np = Palette { no_color: true };
         let draw = |pg: Option<&Page>, folds: bool| -> Vec<String> {
-            open_lines(&pr.cards[0], pg, folds, np, 200)
+            let pv = ProjView {
+                folds,
+                ..Default::default()
+            };
+            open_lines(&pr.cards[0], pg, &pv, np, 200)
                 .iter()
                 .map(plain)
                 .collect()
@@ -575,9 +735,11 @@ pub(crate) mod tests {
         assert_eq!(
             l[6..].to_vec(),
             [
+                "BUILD BY SYSTEM  2 systems, 1 open epics (2 rows with no epic)  z opens a system, Z its epics",
+                "  + ui  25%  1 feature, 0 done  criteria 5 of 7",
+                "    ci  criteria 1 of 2",
                 "NEEDS YOU  1",
                 "  verify: Saves (4 of 4 rows landed, no live proof)",
-                "BUILD BY SYSTEM  1 systems, 1 open epics (2 rows with no epic)  F opens it",
                 "NEXT STAGE  beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet  F opens it",
                 "SHIPPED  none yet  F opens it",
                 "TIMELINE  7d: 1 commit (1 red on CI)  F opens it",
@@ -586,9 +748,8 @@ pub(crate) mod tests {
             ]
         );
         let open = draw(Some(&pg), true).join("\n");
+        assert!(!open.contains("Menus"), "F opens the folds, not a system");
         for s in [
-            "  ui  criteria 5 of 7\n    Menus  [rows]",
-            "    +1 closed, 1 verified",
             "  FAIL   a soak test (beta)",
             "TIMELINE  7d: 1 commit (1 red on CI)\n  PRs: the origin is not GitHub\n  14:02  commit  fix(web): keep the cart (#12)  CI red\n  +3 older",
             "AGENT NOTE  model-written, 2026-11-05\n  landed the cards",
@@ -600,11 +761,93 @@ pub(crate) mod tests {
         assert_eq!(reading.last().unwrap(), "  reading the page...");
         let mut c = pr.cards[0].clone();
         c.goal.clear();
-        let l: Vec<String> = open_lines(&c, None, false, np, 200)
+        let l: Vec<String> = open_lines(&c, None, &ProjView::default(), np, 200)
             .iter()
             .map(plain)
             .collect();
         assert_eq!(l[2], "  goal     no goal set");
+    }
+
+    #[test]
+    fn z_opens_each_system_with_epics_in_turn_and_capital_z_its_epics_and_their_tasks() {
+        let pr = fixture();
+        let np = Palette { no_color: true };
+        let pg = a_page();
+        let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
+        pv.open(&mut tv, Some(&pr.cards[0]));
+        let draw = |pv: &ProjView| -> String {
+            open_lines(&pr.cards[0], Some(&pg), pv, np, 200)
+                .iter()
+                .map(plain)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        pv.step_system(&mut tv, &pg);
+        assert_eq!(pv.sys.as_deref(), Some("ui"));
+        let s = draw(&pv);
+        assert!(
+            s.contains(
+                "  - ui  25%  1 feature, 0 done  criteria 5 of 7\n      + Menus  25%  [rows]"
+            ),
+            "{s}"
+        );
+        assert!(
+            s.contains("        +1 closed, 1 verified\n    ci  criteria"),
+            "{s}"
+        );
+        assert!(!s.contains("gm-3"), "an epic's tasks wait for Z:\n{s}");
+        assert_eq!(tv.only, None);
+
+        tv.table.sel = 3;
+        pv.step_epic(&mut tv, &pg);
+        assert_eq!(pv.epic.as_deref(), Some("gm-1"));
+        assert_eq!(tv.only, Some(vec!["gm-4".to_string()]), "its open tasks");
+        assert_eq!(tv.table.sel, 0);
+        let s = draw(&pv);
+        assert!(
+            s.contains("      - Menus  25%  [rows]  brief yes  plan 1 of 3  rows 2 of 4  behind\n          [x] gm-3  feat: Main menu  m  pr 101\n          [ ] gm-4  Pause menu"),
+            "{s}"
+        );
+
+        // A re-read that drops the epic folds it and widens the rows.
+        let mut gone = a_page();
+        gone.systems[0].epics.clear();
+        pv.narrow(&mut tv, &gone);
+        assert_eq!((pv.epic.as_deref(), tv.only.as_ref()), (None, None));
+        pv.step_epic(&mut tv, &pg);
+        pv.step_epic(&mut tv, &pg);
+        assert_eq!(pv.epic, None, "after the last epic it folds");
+        assert_eq!(tv.only, None);
+
+        pv.step_system(&mut tv, &pg);
+        assert_eq!(pv.sys, None, "ci has nothing to open, so z folds after ui");
+        pv.step_epic(&mut tv, &pg);
+        assert_eq!(
+            (pv.sys.as_deref(), pv.epic.as_deref()),
+            (Some("ui"), Some("gm-1")),
+            "Z with no system open opens the first one's first epic"
+        );
+        pv.close(&mut tv);
+        assert_eq!(
+            (pv.sys.as_ref(), pv.epic.as_ref(), tv.only.as_ref()),
+            (None, None, None)
+        );
+
+        // Z skips a system that has only closed epics to count: there is nothing to narrow to.
+        let mut closed_first = a_page();
+        closed_first.systems.insert(
+            0,
+            hub_core::page::System {
+                id: "save".into(),
+                closed: "+2 closed, 2 verified".into(),
+                ..Default::default()
+            },
+        );
+        pv.step_epic(&mut tv, &closed_first);
+        assert_eq!(
+            (pv.sys.as_deref(), pv.epic.as_deref()),
+            (Some("ui"), Some("gm-1"))
+        );
     }
 
     fn key(c: char) -> KeyEvent {

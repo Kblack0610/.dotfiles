@@ -21,9 +21,10 @@ use crate::rank;
 use crate::sheet::{self, V};
 use crate::sweep::{self, Block};
 
-/// What a sweep lays a sheet out against: the day, the section sizes, and the project's open
-/// version (the human sheet's `Version:`, which an agent board has no line of its own for).
-#[derive(Clone, Copy)]
+/// What a sweep lays a sheet out against: the day, the section sizes, the project's open
+/// version (the human sheet's `Version:`, which an agent board has no line of its own for) and
+/// its systems.
+#[derive(Clone)]
 pub(crate) struct Ctx {
     pub today: NaiveDate,
     pub shape: SheetShape,
@@ -33,6 +34,32 @@ pub(crate) struct Ctx {
     /// because a caller holding a row's bytes (`--exact`) must still find it after another
     /// write; the explicit sweep, the nightly and the editor save turn it on.
     pub rewrite: bool,
+    /// The project's systems in their list's order (`project-stage-check --list`), which
+    /// `### Epics` follows ([`epic_order`]); empty when the project has none.
+    pub systems: Vec<crate::standing::System>,
+}
+
+/// Where an epic row sits in `### Epics`: a `#new` one first, so the human sees what the
+/// triager filed, then by its system in the list's order, an area the list does not name after
+/// those by its word; rank decides within one system, the sort being stable.
+fn epic_order(line: &str, systems: &[crate::standing::System]) -> (bool, usize, String) {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    let new = head.split_whitespace().any(|w| w == "#new");
+    let area = projects::row_type_area(line)
+        .map(|(_, a)| a.to_lowercase())
+        .unwrap_or_default();
+    let at = crate::standing::system_of(systems, &area)
+        .and_then(|id| systems.iter().position(|s| s.id == id))
+        .unwrap_or(systems.len());
+    (
+        !new,
+        at,
+        if at < systems.len() {
+            String::new()
+        } else {
+            area
+        },
+    )
 }
 
 /// One rung of the release ladder from `at`, in `dir` (`-1` sooner, `+1` later). `ladder` is
@@ -224,7 +251,8 @@ fn sections(body: &[&str], ctx: &Ctx) -> Vec<String> {
     for b in open {
         by[section_of(&b[0]) as usize].push(b);
     }
-    let [epic_rows, now, open, backlog] = by;
+    let [mut epic_rows, now, open, backlog] = by;
+    epic_rows.sort_by_cached_key(|b| epic_order(&b[0], &ctx.systems));
     let mut done = tb.done;
     // Newest close first, undated last; equal days keep file order.
     done.sort_by_key(|b| std::cmp::Reverse(crate::project_tasks::done_on(&b[0])));
@@ -343,6 +371,7 @@ Version: v0.12.1
             },
             open: Some((0, 12, 1)),
             rewrite: true,
+            systems: vec![],
         }
     }
 
@@ -423,6 +452,46 @@ Version: v0.12.1
 ### Backlog\n- [ ] fire #urgent\n- [ ] low one #low\n- [ ] later one #v0.12.2\n\
 - [ ] \n\n---\n### Done\n\
 - [x] new close <!-- done:2026-11-08 -->\n- [x] old close <!-- done:2026-11-05 -->\n"
+        );
+    }
+
+    // Epics: a `#new` epic first, then by system in the list's order (an alias counts as its
+    // system), an area the list does not name after those, rank within each; no list orders
+    // by area word alone.
+    #[test]
+    fn epics_follow_the_system_list_with_new_ones_first() {
+        let s = "# d\nVersion: v0.12.1\n\n## Tasks\n\
+- [ ] epic(zeta): off the list #urgent\n\
+- [ ] epic(ui): menus #low\n\
+- [ ] epic(ci): ci to standard #low\n\
+- [ ] epic(hud): health bar #urgent\n\
+- [ ] epic(net): rollback #new\n";
+        let sys = |id: &str, aliases: &[&str]| crate::standing::System {
+            id: id.into(),
+            aliases: aliases.iter().map(|a| a.to_string()).collect(),
+        };
+        let listed = Ctx {
+            systems: vec![sys("ui", &["hud"]), sys("ci", &[]), sys("net", &[])],
+            ..ctx()
+        };
+        let epics = |c: &str| -> Vec<String> {
+            c.lines()
+                .filter(|l| l.starts_with("- [ ] epic("))
+                .map(|l| l.split(')').next().unwrap()[11..].to_string())
+                .collect()
+        };
+        let out = sweep_sheet(s, &listed).unwrap().0;
+        assert_eq!(epics(&out), ["net", "hud", "ui", "ci", "zeta"], "{out}");
+        let out = sweep_sheet(s, &ctx()).unwrap().0;
+        assert_eq!(
+            epics(&out),
+            ["net", "ci", "hud", "ui", "zeta"],
+            "by word:\n{out}"
+        );
+        assert_eq!(
+            sweep_sheet(&sweep_sheet(s, &listed).unwrap().0, &listed),
+            None,
+            "settled"
         );
     }
 

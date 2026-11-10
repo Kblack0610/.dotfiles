@@ -74,6 +74,8 @@ pub struct TaskView {
     pub running: Option<String>,
     /// The last write's answer: notes' output, or why it failed.
     pub said: Option<Result<String, String>>,
+    /// The rows narrowed to these ids: the open tasks of the epic open on the card (projtab.rs).
+    pub only: Option<Vec<String>>,
 }
 
 /// A row's `profile/project`, as a write's label says it.
@@ -81,14 +83,18 @@ fn group(r: &Row) -> String {
     format!("{}/{}", r.profile, r.project.as_deref().unwrap_or_default())
 }
 
-/// The rows of the project in view, before the search and the chip: open by section and rank,
-/// then the closed ones by day.
+/// The rows of the project in view, or its open epic's open tasks, before the search and the
+/// chip: open by section and rank, then the closed ones by day.
 fn scoped<'a>(f: &'a Feed, v: &TaskView) -> Vec<&'a Row> {
-    f.board_rows(
+    let mut rows = f.board_rows(
         v.project
             .as_ref()
             .map(|(profile, project)| (profile.as_str(), project.as_str())),
-    )
+    );
+    if let Some(ids) = &v.only {
+        rows.retain(|r| r.id.as_ref().is_some_and(|id| ids.contains(id)));
+    }
+    rows
 }
 
 /// The rows the view keeps, in the table's order: what j/k move over.
@@ -421,7 +427,16 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
                 } else {
                     "ALL PROJECTS"
                 },
-                format!("  {} of {} rows", rows.len(), all.len()),
+                format!(
+                    "  {} of {} rows{}",
+                    rows.len(),
+                    all.len(),
+                    if v.only.is_some() {
+                        " of the open epic (Esc shows all)"
+                    } else {
+                        ""
+                    }
+                ),
                 p,
             ),
             w,
