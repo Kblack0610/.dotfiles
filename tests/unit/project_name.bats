@@ -669,11 +669,13 @@ EOF
   assert_output ''
 }
 
-@test "project_board: owner, else its own lab, else the first lab project inside it, else none" {
+@test "project_board: owner, else its board, else its own lab, else the first lab project inside it, else none" {
   write_map '{"_comment": "x", "mono": {"owner": "tools"}, "tools": {"repo": "mono", "lab": "personal"},
     "shop": {"lab": "bnb"}, "plat": {}, "app": {"repo": "plat", "lab": "bnb"}, "app2": {"repo": "plat", "lab": "bnb"},
-    "bare": {}}'
+    "bare": {}, "overlay": {"board": "tools"}, "plat2": {"board": "shop"}, "app3": {"repo": "plat2", "lab": "bnb"}}'
   run project_board mono;  assert_output tools
+  run project_board overlay; assert_output tools
+  run project_board plat2; assert_output shop
   run project_board shop;  assert_output shop
   run project_board plat;  assert_output app
   run project_board bare;  assert_success; assert_output ''
