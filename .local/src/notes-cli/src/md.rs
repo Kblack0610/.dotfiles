@@ -755,10 +755,55 @@ pub fn split_due(line: &str) -> (String, Option<String>) {
     (cleaned, found.map(str::to_string))
 }
 
+/// The byte range [`cut_tags`] and [`split_priority`] cut for one tag: `#tag` plus one
+/// neighbouring space, so no double space is left. A trailing `.` is given back: `-` and `/`
+/// are tag noise and go with the tag, but a sentence-final `#high.` keeps its full stop or
+/// stripping the tag rewrites the human's prose. The space before is taken when the previous
+/// cut has not; a tag glued to the word before it (`?)#c1110`) takes no space, so the words
+/// either side stay apart; at the line start, or when the space before is gone, the space
+/// after is taken.
+fn tag_cut(
+    bytes: &[u8],
+    start: usize,
+    spans: &[(usize, usize)],
+    hash_at: usize,
+    k: usize,
+    end: usize,
+) -> (usize, usize) {
+    let mut cut_e = k;
+    while cut_e > end && bytes[cut_e - 1] == b'.' {
+        cut_e -= 1;
+    }
+    let prev_end = spans.last().map_or(0, |&(_, e)| e);
+    let mut cut_s = hash_at;
+    let glued = cut_s > start && bytes[cut_s - 1] != b' ';
+    if cut_s > start && cut_s > prev_end && !glued {
+        cut_s -= 1;
+    } else if !glued && bytes.get(cut_e) == Some(&b' ') {
+        cut_e += 1;
+    }
+    (cut_s, cut_e)
+}
+
+/// `line` with each `(start, end)` span cut out, in order. A repeated tag (`#c1110 #c1110`)
+/// cuts the space the first cut already took, so its span starts before the cursor: clamp it
+/// instead of slicing backwards.
+fn apply_cuts(line: &str, spans: &[(usize, usize)]) -> String {
+    let mut cleaned = String::with_capacity(line.len());
+    let mut cursor = 0;
+    for &(s, e) in spans {
+        let s = s.max(cursor);
+        cleaned.push_str(&line[cursor..s]);
+        cursor = e.max(s);
+    }
+    cleaned.push_str(&line[cursor..]);
+    cleaned
+}
+
 /// Cut every tag `pick` accepts (it is handed the bare tag) out of `line`, collapsing the
 /// space each leaves behind, and return the cleaned line plus the first such tag, bare.
 /// The shared half of [`split_version`], [`split_parent`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
-/// tags instead of taking the first, so it keeps its own loop.
+/// tags instead of taking the first, so it walks them itself and shares only [`tag_cut`] and [`apply_cuts`].
 fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
     let bytes = line.as_bytes();
     let start = scan_start(line);
@@ -771,31 +816,12 @@ fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
         if found.is_none() {
             found = Some(&line[tag_start..end]);
         }
-        // Cut `#tag` plus one neighbouring space so no double space is left. A trailing `.`
-        // is given back for the same reason `split_priority` gives it back: it is the
-        // human's punctuation, not part of the tag.
-        let mut cut_e = k;
-        while cut_e > end && bytes[cut_e - 1] == b'.' {
-            cut_e -= 1;
-        }
-        let mut cut_s = hash_at;
-        if cut_s > start && bytes[cut_s - 1] == b' ' {
-            cut_s -= 1;
-        } else if bytes.get(cut_e) == Some(&b' ') {
-            cut_e += 1;
-        }
-        spans.push((cut_s, cut_e));
+        spans.push(tag_cut(bytes, start, &spans, hash_at, k, end));
     });
     if spans.is_empty() {
         return (line.to_string(), None);
     }
-    let mut cleaned = String::with_capacity(line.len());
-    let mut cursor = 0;
-    for (s, e) in &spans {
-        cleaned.push_str(&line[cursor..*s]);
-        cursor = *e;
-    }
-    cleaned.push_str(&line[cursor..]);
+    let cleaned = apply_cuts(line, &spans);
     (cleaned.trim_end().to_string(), found)
 }
 
@@ -1254,34 +1280,14 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
         else {
             return;
         };
-        // Cut `#tag` plus one neighbouring space so no double space is left. A trailing `.`
-        // is given back: `-` and `/` are tag noise and are cut with the tag, but a
-        // sentence-final `#high.` must keep its full stop or stripping the tag silently
-        // rewrites the human's prose.
-        let mut cut_e = k;
-        while cut_e > end && bytes[cut_e - 1] == b'.' {
-            cut_e -= 1;
-        }
-        let mut cut_s = hash_at;
-        if cut_s > start && bytes[cut_s - 1] == b' ' {
-            cut_s -= 1;
-        } else if bytes.get(cut_e) == Some(&b' ') {
-            cut_e += 1;
-        }
-        spans.push((cut_s, cut_e));
+        spans.push(tag_cut(bytes, start, &spans, hash_at, k, end));
         best = Some(best.map_or(rank, |b| b.min(rank)));
     });
 
     if spans.is_empty() {
         return (line.to_string(), None);
     }
-    let mut cleaned = String::with_capacity(line.len());
-    let mut cursor = 0;
-    for (s, e) in &spans {
-        cleaned.push_str(&line[cursor..*s]);
-        cursor = *e;
-    }
-    cleaned.push_str(&line[cursor..]);
+    let cleaned = apply_cuts(line, &spans);
     (
         cleaned.trim_end().to_string(),
         best.map(|r| PRIORITIES[r].1),
@@ -2726,6 +2732,51 @@ after
             .unwrap()
             .iter()
             .any(|l| *l == "plain"));
+    }
+
+    // A tag glued to the word before it takes no space, so the words either side stay apart,
+    // and no cut reaches back into the one before it (Focus, 2026-11-10).
+    #[test]
+    fn a_glued_tag_keeps_the_words_apart() {
+        assert_eq!(
+            split_created("- [ ] bridge (q?)#c1110 #c1110 #urgent").0,
+            "- [ ] bridge (q?) #urgent"
+        );
+        assert_eq!(split_created("- [ ] (q?)#c1110 rest").0, "- [ ] (q?) rest");
+        assert_eq!(
+            split_created("- [ ] (q?)#c1110 #c1110 rest").0,
+            "- [ ] (q?) rest"
+        );
+        assert_eq!(
+            split_created("- [ ] (q?)#c1110 #c1110 #c1110 rest").0,
+            "- [ ] (q?) rest"
+        );
+        assert_eq!(
+            split_created("- [ ] (q?)#c1110. rest").0,
+            "- [ ] (q?). rest"
+        );
+        assert_eq!(split_created("- [ ] #c1110 #c1110 rest").0, "- [ ] rest");
+        assert_eq!(split_priority("- [ ] #high #low rest").0, "- [ ] rest");
+        assert_eq!(
+            split_priority("- [ ] ask (why?)#high #low"),
+            ("- [ ] ask (why?)".to_string(), Some("#high"))
+        );
+        assert_eq!(split_created("- [ ] a #c1110 b").0, "- [ ] a b");
+        assert_eq!(split_created("- [ ] a #c1110").0, "- [ ] a");
+    }
+
+    #[test]
+    fn split_priority_survives_a_repeated_tag() {
+        let (text, tag) = split_priority("- [ ] ask (q?)#urgent #urgent");
+        assert_eq!(tag, Some("#urgent"));
+        assert_eq!(text, "- [ ] ask (q?)");
+    }
+
+    #[test]
+    fn split_created_survives_a_repeated_tag() {
+        let (text, tag) = split_created("- [ ] ask (q?)#c1110 #c1110 #urgent");
+        assert_eq!(tag.as_deref(), Some("c1110"));
+        assert_eq!(text, "- [ ] ask (q?) #urgent");
     }
 
     #[test]

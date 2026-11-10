@@ -113,7 +113,7 @@ const tblDropdown = (el) => el?.dataset?.tq !== undefined || el?.dataset?.tsv !=
 //   hint   the search box's placeholder; wait: what shows before the first read; chips: false
 //          for a tab whose overview tiles are its chips; days(t): what tblDays draws in the bar
 //   pages  the server caps the rows, so "+N more" reads them again with params asking for all
-//   head, body, tail (t)  the html above the bar, the rows and below them; table(t): the summary
+//   head, body, tail (t)  the html above the bar, the rows and below them; wrap(html): around the bar and rows (Costs' inner tab); table(t): the summary
 //          (data.table); shown(): whether it is on screen (the tab is open)
 //   got(t) after a good read; after(t): after every read, once drawn; reset(t): on a view change
 //   open() the fold map paint keeps (ui.js); draw(html): the whole paint, when it is more than paint(el, html);
@@ -157,7 +157,8 @@ function tblTab(o) {
     paint($(id + "-body"), o.body(t));
     around();
   };
-  t.html = () => part("head", o.head) + tblBar(id, table(), o.hint, o.chips !== false, days()) + part("body", o.body) + part("tail", o.tail);
+  const wrap = o.wrap || ((html) => html);
+  t.html = () => part("head", o.head) + wrap(tblBar(id, table(), o.hint, o.chips !== false, days()) + part("body", o.body)) + part("tail", o.tail);
   t.render = o.render || (() => {
     const el = $(elId), m = open();
     if (!el || !shown()) return;

@@ -306,11 +306,11 @@ test("a burn row carries the 5h window, when it resets and the day's dollars", (
   assert.match(none, /<td class="n">-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/, "the control: no figures, no numbers");
 });
 
-test("the token and Langfuse folds sit between Burn and Sections", () => {
+test("the token and Langfuse folds follow the Spend sections, in the Models inner tab", () => {
   run("cost.open = {}");
   const h = show(board({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }), sections: null }));
   const at = (id) => h.indexOf(`id="${id}"`);
-  assert.ok(at("sec-burn") >= 0 && at("sec-burn") < at("sec-tokens") && at("sec-tokens") < at("sec-langfuse") && at("sec-langfuse") < at("sec-totals"));
+  assert.ok(at("sec-burn") >= 0 && at("sec-burn") < at("sec-totals") && at("sec-totals") < at("sec-tokens") && at("sec-tokens") < at("sec-langfuse"), "the DOM order is the layout order");
   assert.match(show(board()), /id="sec-tokens"><span class="warn">no snapshot|Where the tokens go <span class="warn">no snapshot/);
 });
 
@@ -463,7 +463,7 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
       { name: "lazer-reserve", usd: null, cost: "-", share: "-", basis: "1 session, no price known", detail: null },
     ],
     unpriced: ["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions"],
-    days: "11-07 $1,295  11-08 $738", foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens." };
+    foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens." };
   const h = show(board({ fleet_cost }));
   assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn"), "the whole figure is the first answer");
   assert.match(h, /Fleet cost 24h about \$849 <span class="muted">measured \$310, estimated \$538, as of /);
@@ -472,7 +472,6 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
   assert.match(h, /colspan="3" class="muted wrap">ask-judge \$6\.40, briefing \$2\.90/, "every runner is reachable");
   assert.match(h, /<tr><td>lazer-reserve<\/td><td class="n">-<\/td>/, "nothing priced is unknown, never $0");
   assert.match(h, /not in the total/);
-  assert.match(h, /last days 11-07 \$1,295/);
   assert.match(h, /<th data-role="lead">who<\/th>/, "the table folds to a phone row");
   assert.doesNotMatch(h.slice(h.indexOf('id="sec-fleet"'), h.indexOf("</tr>", h.indexOf('id="sec-fleet"'))), /<th(?![^>]*data-role)/, "no column waits for a tap, so estimated stays on screen");
   assert.match(show(board({ fleet_cost: { ...fleet_cost, stale: true } })), /class="warn">stale, as of /);
@@ -480,4 +479,102 @@ test("the fleet figure leads the tab: every row says measured or estimated and e
   const none = show(board({ fleet_cost: { why: "nothing read: no file", rows: [] } }));
   assert.match(none, /id="sec-fleet">Fleet cost 24h<\/h2><div class="panel"><span class="warn">nothing read: no file/);
   assert.doesNotMatch(none, /% of fleet/);
+});
+
+test("spend history folds to its headline under the fleet figure and lists year, month and day rows", () => {
+  const p = (kind, period, total, days, per_day, vs_prev, est) => ({ kind, period, total, days, per_day, vs_prev, est });
+  const history = { why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-09 $1,312 vs 7d median $1,120 (+17%)",
+    rows: [p("year", "2026", "$61,300", 54, "$1,135", "-", "38%"), p("month", "2026-11", "$14,210", 9, "$1,579", "+43%", "21%"),
+      p("day", "11-09", "$1,312", 1, "$1,312", "+69%", "21%")],
+    older: 3, missing: 2, stale: false, note: "est. is the share priced from tokens" };
+  const h = show(board({ history }));
+  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-burn") && h.indexOf("sec-burn") < h.indexOf("sec-spend"), "history sits in Spend, after the pinned fleet figure");
+  assert.match(h, /<details class="csec" data-k="spend" id="sec-spend"><summary><h2 class="sec">Spend history <span class="muted">Nov \$1,579\/day vs Oct/);
+  assert.match(h, /<tr class="allrow"><td>2026-11<\/td><td class="n">\$14,210<\/td><td class="n">9<\/td><td class="n">\$1,579<\/td><td class="n">\+43%<\/td><td class="n">21%<\/td><\/tr>/);
+  assert.match(h, /<tr class=""><td>11-09<\/td>/);
+  assert.match(h, /\+3 older/);
+  assert.match(h, /2 days in the range have no figure and are not counted/);
+  assert.match(h, /<th data-role="lead">period<\/th>/, "the table folds to a phone row");
+  assert.match(show(board({ history: { ...history, stale: true } })), /class="warn">stale: no snapshot for yesterday/);
+  // negative control: no snapshot says so, never a $0 table
+  const none = show(board({ history: { why: "no snapshot with a fleet figure yet", rows: [] } }));
+  assert.match(none, /id="sec-spend"><h2 class="sec">Spend history <span class="muted">no snapshot with a fleet figure yet/);
+  assert.doesNotMatch(none, /vs prev/);
+});
+
+// Inner tabs: the five behaviours of fleet-platform's device-tabs.test.ts, over hub_core::layout's groups.
+const innerOn = (arg) => { run(`st.arg = ${JSON.stringify(arg)}; st.section = null`); return show(board()); };
+const shown = (h, id) => !new RegExp(`data-in="${id}" hidden`).test(h) && new RegExp(`data-in="${id}"`).test(h);
+
+test("a URL that names an inner tab opens it, and the others stay hidden", () => {
+  assert.equal(ctx.route("#costs/models").arg, "models");
+  const h = innerOn("models");
+  assert.ok(shown(h, "models") && !shown(h, "spend") && !shown(h, "limits"));
+  assert.match(h, /data-itab="models" class="on" aria-selected="true"/);
+  assert.match(h, /data-itab="spend" class="" aria-selected="false"/);
+});
+
+test("a missing, unknown or pinned inner tab opens the first", () => {
+  for (const hash of ["#costs", "#costs/nonsense", "#costs/fleet"]) assert.equal(ctx.route(hash).arg, "", hash);
+  const h = innerOn("");
+  assert.ok(shown(h, "limits") && !shown(h, "spend") && !shown(h, "models"));
+  assert.ok(h.indexOf("sec-fleet") < h.indexOf("data-itab"), "the fleet figure is pinned above the strip");
+  assert.match(h, /id="sec-fleet"/);
+  assert.ok(!/data-in="[a-z]+"[^>]*><h2[^>]*id="sec-fleet"/.test(h), "the pinned section is in no group");
+});
+
+test("an old section link opens the inner tab that holds the section, and still scrolls to it", () => {
+  const burn = ctx.route("#costs/burn");
+  assert.deepEqual([burn.arg, burn.section], ["limits", "burn"]);
+  const tok = ctx.route("#costs/TOKENS");
+  assert.deepEqual([tok.arg, tok.section], ["models", "tokens"]);
+  const moved = ctx.route("#fleet/tokens");
+  assert.deepEqual([moved.tab, moved.arg, moved.section], ["costs", "models", "tokens"]);
+  assert.equal(ctx.route("#fleet/accounts").arg, "limits");
+  // an inner id that is also a section id (spend) is the inner tab holding it
+  assert.equal(ctx.route("#costs/spend").arg, "spend");
+});
+
+test("a count shows beside an inner tab only when above zero", () => {
+  const strip = (amber) => { run("st.arg = ''"); return run(`innerStrip("costs", ${JSON.stringify(amber)})`); };
+  assert.doesNotMatch(strip([]), /pill/);
+  assert.doesNotMatch(run(`innerStrip("costs")`), /pill/);
+  const h = strip(["burn", "tokens", "langfuse"]);
+  assert.match(h, />Limits <span class="pill warn">1<\/span>/);
+  assert.match(h, />Models <span class="pill warn">2<\/span>/);
+  assert.doesNotMatch(h, />Spend <span/);
+});
+
+test("a link can name an inner tab and a section on another one, and the page switches", () => {
+  innerOn("limits");
+  run("st.tab = 'costs'; st.section = 'langfuse'");
+  run("seekSection()");
+  assert.equal(run("st.arg"), "models", "a section on a hidden inner tab opens its tab first");
+  run("st.section = null; st.arg = ''");
+});
+
+test("switching an inner tab flips the groups in place, with no repaint", () => {
+  const mk = (id) => ({ dataset: { in: id }, hidden: id !== "limits" });
+  const groups = ["limits", "spend", "models"].map(mk);
+  const btn = (id) => ({ dataset: { itab: id }, classList: { toggle() {} }, setAttribute() {}, tabIndex: 0 });
+  const board = { querySelectorAll: (q) => (q === "[data-in]" ? groups : q === "[data-itab]" ? ["limits", "spend", "models"].map(btn) : []) };
+  const prev = doc.getElementById;
+  doc.getElementById = (id) => (id === "costs" ? Object.assign(box, board) : prev(id));
+  run("st.tab = 'costs'");
+  run("innerGo('costs', 'models')");
+  doc.getElementById = prev;
+  assert.deepEqual(groups.map((g) => g.hidden), [true, true, false]);
+  assert.equal(run("st.arg"), "models");
+});
+
+test("a tab button brings back the inner tab that tab last showed; a link without one opens the first", () => {
+  run("lastInner.costs = 'models'");
+  run("setTab('costs')");
+  assert.equal(run("st.arg"), "models");
+  run("setTab('costs', '')");
+  assert.equal(run("st.arg"), "", "a link to #costs names no inner tab");
+  run("setTab('costs')");
+  assert.equal(run("st.arg"), "", "and that is what the button brings back");
+  run("setTab('fleet')");
+  assert.equal(run("st.arg"), "", "a tab with no inner tabs keeps no memory");
 });

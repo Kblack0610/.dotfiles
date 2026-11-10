@@ -1767,8 +1767,13 @@ impl App {
             let c = self.costs.as_ref();
             let t = c.and_then(|c| c.tokens.as_ref());
             let keys = c.and_then(|c| c.burn.keys.as_ref());
+            let was = self.cv.inner;
             if let Some(seek) = self.cv.fold(k.code, t, keys) {
                 self.seek = seek;
+                // Another inner tab is another page: it opens at its top, not at this offset.
+                if self.cv.inner != was {
+                    self.scroll = 0;
+                }
                 return;
             }
             if self.cv.key(k.code) {
@@ -3110,7 +3115,7 @@ impl App {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Costs => format!(
-                "b/B cut  w window  / query  s sort  S asc/desc  K keys  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  b/B cut  w window  / query  s sort  S asc/desc  K keys  y spend  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
                 "type a query (kind:session state:failed -who:x), Enter applies, Esc drops it".into()
@@ -5714,9 +5719,30 @@ mod tests {
     }
 
     #[test]
+    fn left_and_right_switch_costs_inner_tabs_and_hub_tab_names_one() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = costs_app(true);
+        assert_eq!(a.cv.inner, "limits");
+        a.handle(k(KeyCode::Right));
+        assert_eq!(a.cv.inner, "spend");
+        assert!(screen(&mut a, 100, 60).contains("window:"));
+        a.handle(k(KeyCode::Left));
+        a.handle(k(KeyCode::Left));
+        assert_eq!(a.cv.inner, "models");
+        // `hub --tab 'costs burn'` and the moved `fleet tokens` land on the holding inner tab
+        let (t, q) = crate::tabreq::parse("costs burn").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!((a.cv.inner, a.seek), ("limits", Some("burn")));
+        let (t, q) = crate::tabreq::parse("fleet tokens").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!((a.cv.inner, a.seek), ("models", Some("tokens")));
+    }
+
+    #[test]
     fn u_opens_the_tokens_fold_on_costs_and_goes_to_it_and_big_u_switches_its_window() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(true);
+        a.cv.inner = "models";
         let s = screen(&mut a, 100, 60);
         assert!(
             s.contains("+ WHERE THE TOKENS GO") && s.contains("u opens it"),
@@ -5742,6 +5768,7 @@ mod tests {
     fn l_opens_the_langfuse_fold_on_costs_and_typing_keeps_u_and_l_as_text() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(true);
+        a.cv.inner = "models";
         a.handle(k(KeyCode::Char('l')));
         assert_eq!(
             a.cv.langfuse,
@@ -5762,6 +5789,7 @@ mod tests {
     fn u_and_l_wait_for_a_snapshot_so_the_first_one_lands_folded() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(false);
+        a.cv.inner = "models";
         a.handle(k(KeyCode::Char('u')));
         a.handle(k(KeyCode::Char('U')));
         a.handle(k(KeyCode::Char('l')));
@@ -5872,7 +5900,7 @@ mod tests {
 
     fn infra_app() -> App {
         let mut a = app(Tab::Home);
-        a.infra = Some(board::tests::fixture());
+        a.infra = Some(board::tests::built(&board::tests::fixture()));
         a.jobs = Some(Jobs {
             at: 0,
             window_secs: 86400,
@@ -5935,14 +5963,14 @@ mod tests {
         a.handle(Msg::Tab(t, q));
         let s = screen(&mut a, 160, 30);
         assert_eq!(a.tab, Tab::Infra);
-        assert!(top(&s).starts_with("CI  running 3"), "{s}");
+        assert!(top(&s).starts_with("CI RUNNERS  2 hosts"), "{s}");
         // Machines the same way, and n/N step between the section headings from there.
         let (t, q) = crate::tabreq::parse("machines").unwrap();
         a.handle(Msg::Tab(t, q));
         let s = screen(&mut a, 160, 30);
         assert!(top(&s).starts_with("MACHINE "), "{s}");
         a.handle(key('n'));
-        assert!(top(&screen(&mut a, 160, 30)).starts_with("CI  running"));
+        assert!(top(&screen(&mut a, 160, 30)).starts_with("CI RUNNERS"));
         a.handle(key('N'));
         assert!(top(&screen(&mut a, 160, 30)).starts_with("MACHINE "));
     }
@@ -5963,7 +5991,7 @@ mod tests {
             "HEALTH",
             "RED NOW",
             "MACHINE ",
-            "CI  running",
+            "CI RUNNERS",
             "JOBS",
             "CLOUD RUNNERS",
             "GOVERNOR",
