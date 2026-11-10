@@ -272,7 +272,8 @@ enum Cmd {
         #[arg(long)]
         archived: bool,
         /// Close a project's open version: its closed rows freeze into versions/ and
-        /// `Version:` moves to the next one. Refused for a project below beta
+        /// `Version:` moves to the next one, at any stage. With no level the bump is derived:
+        /// minor when a feature epic closed on proof in the version, else patch
         #[arg(long, value_name = "NAME")]
         release: Option<String>,
         /// Consolidate a project onto the one version layout: fold changelog/ and loose
@@ -305,8 +306,12 @@ enum Cmd {
         /// With --retire-ai-tag, --migrate-rows or --sweep: report what would change and write nothing
         #[arg(long)]
         dry_run: bool,
+        /// With --release: step the patch (v0.1.2 -> v0.1.3). With no level the bump is
+        /// derived: minor when a feature epic closed on proof in the version, else patch
+        #[arg(long, conflicts_with_all = ["minor", "major"])]
+        patch: bool,
         /// With --release: step the minor (v0.1.2 -> v0.2.0)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "major")]
         minor: bool,
         /// With --release: step the major (v0.1.2 -> v1.0.0)
         #[arg(long)]
@@ -1528,6 +1533,7 @@ fn main() -> Result<()> {
             migrate_rows,
             sweep,
             dry_run,
+            patch,
             minor,
             major,
             force,
@@ -1548,11 +1554,13 @@ fn main() -> Result<()> {
             set,
         } => {
             let level = if major {
-                projects::Bump::Major
+                Some(projects::Bump::Major)
             } else if minor {
-                projects::Bump::Minor
+                Some(projects::Bump::Minor)
+            } else if patch {
+                Some(projects::Bump::Patch)
             } else {
-                projects::Bump::Patch
+                None
             };
             // A whole-vault sweep, so it is handled before the name-keyed match below:
             // an empty NAME means "every project" and must not fall through as a lookup.

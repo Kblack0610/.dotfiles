@@ -113,15 +113,19 @@ pub(crate) fn title(system: &str) -> String {
 /// The id of `system`'s open standing epic on `content` (a human sheet): an open epic row
 /// whose area is `system` and whose title is `<system> to standard`, case aside.
 pub(crate) fn find(content: &str, system: &str) -> Option<String> {
-    let want = format!("{system} to standard");
     content
         .lines()
         .filter(|l| md::is_open_task(l) && epics::is_epic(l))
         .find(|l| {
             projects::row_type_area(l).is_some_and(|(_, a)| a == system)
-                && projects::row_title(l).eq_ignore_ascii_case(&want)
+                && is_standing(system, &projects::row_title(l))
         })
         .and_then(md::row_id)
+}
+
+/// Whether an epic of `system` titled `title` is that system's standing epic, case aside.
+pub(crate) fn is_standing(system: &str, title: &str) -> bool {
+    title.eq_ignore_ascii_case(&format!("{system} to standard"))
 }
 
 #[cfg(test)]
