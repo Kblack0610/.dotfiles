@@ -370,8 +370,10 @@ plan_dialog() {
   printf '%s\n' '{"session_id":"sid-live","target":"hub/demo:2"}' >"$NOTES_FIXTURE/agent-panel.list"
   run "$Q" key g "$live"
   assert_output 'execute-silent(agent-panel jump hub/demo:2)+abort'
+  # sid-gone has no Claude transcript (a Codex thread posts under its own id): no reopen, no
+  # claude --resume hint. The reopen test below covers a transcript whose directory is gone.
   run "$Q" key g "$gone"
-  assert_output 'change-footer~session ended and its directory is gone; resume with claude --resume sid-gone~'
+  assert_output 'change-footer~no Claude conversation sid-gone to reopen; answer it here~'
   run "$Q" key g "$loose"
   assert_output 'change-footer~no session is waiting on this ask; answer it here~'
   # Going nowhere answers nothing.
