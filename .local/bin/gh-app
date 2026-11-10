@@ -17,8 +17,13 @@ CACHE="${GH_APP_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/gh-app}"
 API="${GH_APP_API:-https://api.github.com}"
 TOKEN_REUSE_S=3000 # a token lives 3600 s; leave 10 min for the call that takes it
 INSTALLS_TTL_S=3600
+FAIL_BACKOFF_S=300 # after a failed mint, reads go straight to the user instead of waiting on curl
 
-die() { echo "gh-app: $*" >&2; exit 1; }
+die() {
+  [ ! -d "$CACHE" ] || : > "$CACHE/failed"
+  echo "gh-app: $*" >&2
+  exit 1
+}
 off() { [ -z "${1:-}" ] || echo "gh-app: $1" >&2; exit 2; }
 
 load_config() {
@@ -71,6 +76,10 @@ token() {
   local owner id f out tok sel
   owner=$(printf '%s' "${1:?usage: gh-app token <owner>}" | tr '[:upper:]' '[:lower:]')
   load_config
+  if [ -f "$CACHE/failed" ] && [ "$(age "$CACHE/failed")" -lt "$FAIL_BACKOFF_S" ]; then
+    echo "gh-app: a mint failed under ${FAIL_BACKOFF_S}s ago; gh-app status retries now" >&2
+    exit 1
+  fi
   f="$CACHE/token-$owner"
   if [ -s "$f" ] && [ "$(age "$f")" -lt "$TOKEN_REUSE_S" ]; then
     read -r sel tok < "$f"
@@ -94,6 +103,7 @@ status() {
   local login id tok left
   [ -f "$CONFIG" ] || { echo "off: no $CONFIG (docs/operations/github-app.md)"; return 0; }
   load_config
+  rm -f "$CACHE/failed"
   echo "app $GH_APP_ID, key $GH_APP_KEY_FILE"
   installs | while read -r login id; do
     if tok=$(token "$login" 2>&1); then

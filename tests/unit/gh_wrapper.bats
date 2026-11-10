@@ -17,6 +17,7 @@ setup() {
 #!/usr/bin/env bash
 printf '%s|%s\n' "${GH_TOKEN:-none}" "$*" >> "$BATS_TEST_TMPDIR/real.log"
 case "$*" in *--body-file\ -*) cat >> "$BATS_TEST_TMPDIR/stdin.log" ;; esac
+if [ -n "${DENY:-}" ] && [ "${GH_TOKEN:-}" = tok-acme ]; then echo "HTTP 401: $DENY" >&2; exit 1; fi
 exit "${REAL_RC:-0}"
 SH
   # gh-app: acme has an installation, broken fails to mint, anyone else has none.
@@ -43,7 +44,7 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
 @test "writes, @me and the text views stay on the human's token" {
   for args in 'pr create -R acme/x --title t' 'pr merge 5 -R acme/x --squash' \
     'pr list --author @me -R acme/x --json number' 'pr view 5 -R acme/x' 'issue view 3 -R acme/x' \
-    'search prs --owner acme' 'repo clone acme/x'; do
+    'search prs --owner acme' 'repo clone acme/x' 'pr checks 5 -R acme/x --watch'; do
     # shellcheck disable=SC2086
     "$WRAP" $args
     assert_equal "$(token)" none
@@ -64,6 +65,32 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
     "$WRAP" api $args
     assert_equal "$(token)" none
   done
+}
+
+@test "a GH_HOST other than github.com is never routed" {
+  GH_HOST=ghe.example.com "$WRAP" run view 5 -R acme/x
+  assert_equal "$(token)" none
+}
+
+@test "a read the App's token is refused for reruns on the user and is logged as app-denied; other errors show once" {
+  DENY='Bad credentials' run "$WRAP" run view 5 -R acme/x
+  assert_success
+  assert_equal "$(tail -n 2 "$BATS_TEST_TMPDIR/real.log" | cut -d'|' -f1 | paste -sd,)" tok-acme,none
+  assert_equal "$(bucket)" user:app-denied
+  refute_output --partial 'Bad credentials'
+  REAL_RC=1 run "$WRAP" run view 6 -R acme/x
+  assert_failure 1
+  assert_equal "$(grep -c 'run view 6' "$BATS_TEST_TMPDIR/real.log")" 1
+  assert_equal "$(bucket)" app:acme
+}
+
+@test "the log blanks bodies, fields and headers, keeps only the subcommand of secret, and is yours only" {
+  "$WRAP" secret set TOKEN --body s3cr3t -R acme/x
+  "$WRAP" api -X POST repos/acme/x/issues -f title=hunter2 -Fbody=x -H 'Authorization: token y' --raw-field=k=v
+  "$WRAP" pr create -R acme/x -b 'the body' --title t
+  run cut -f6 "$GH_CALLS_DIR/$(date +%F).tsv"
+  assert_output $'secret set\napi -X POST repos/acme/x/issues -f _ -F_ -H _ --raw-field=_\npr create -R acme/x -b _ --title t'
+  assert_equal "$(stat -c %a "$GH_CALLS_DIR/$(date +%F).tsv")" 600
 }
 
 @test "gh api {owner} placeholders take GH_REPO's owner, as gh fills them" {
@@ -180,9 +207,21 @@ SH
   assert_failure 2
   assert_output --partial 'selected repos only'
   rm -rf "$GH_APP_CACHE"
+  cp "$STUB/curl" "$BATS_TEST_TMPDIR/good-curl"
   printf '#!/bin/sh\nexit 22\n' > "$STUB/curl"
   run "$GHAPP" token acme
   assert_failure 1
+  # inside the backoff a token call fails at once, without curl; status clears it
+  cp "$BATS_TEST_TMPDIR/good-curl" "$STUB/curl"
+  : > "$BATS_TEST_TMPDIR/curl.log"
+  run "$GHAPP" token acme
+  assert_failure 1
+  assert_output --partial 'gh-app status retries now'
+  [ ! -s "$BATS_TEST_TMPDIR/curl.log" ]
+  run "$GHAPP" status
+  run "$GHAPP" token acme
+  assert_success
+  assert_output ghs_one
 }
 
 @test "the wrapper and the real gh-app together: a routed read carries the minted token" {

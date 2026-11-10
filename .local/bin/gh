@@ -7,9 +7,11 @@
 # Routed: run list|view|download, pr list|view with --json, pr checks|diff, issue list|view with
 # --json, workflow list|view, release list|view|download, and `gh api` GETs under repos/<owner>/,
 # when the repo's owner is known (-R, GH_REPO, the api path, or a lone github.com origin). Not
-# routed: writes, @me, graphql, a caller that set GH_TOKEN, or no App configured.
-# Log: GH_CALLS_DIR/<day>.tsv, epoch, bucket (user | app:<owner> | user:app-error | env), rc,
-# caller script, $AGENT_QUEUE_ITEM, command. fleet-assess gh_callers reads it. Kept 7 days.
+# routed: writes, @me, --watch, graphql, a caller that set GH_TOKEN, or no App configured.
+# A read the App's token is refused for reruns on the user's.
+# Log: GH_CALLS_DIR/<day>.tsv, epoch, bucket (user | app:<owner> | user:app-error |
+# user:app-denied | env), rc, caller script, $AGENT_QUEUE_ITEM, the command with values
+# redacted. fleet-assess gh_callers reads it. Kept 7 days, readable by you only.
 # Docs: docs/operations/github-app.md.
 set -u
 
@@ -46,7 +48,9 @@ origin_owner() {
 # route_owner <gh args> -> the owner whose installation token this read-only call can use.
 route_owner() {
   local grp="${1:-}" sub="${2:-}" a repo="${GH_REPO:-}" path="" method="" fields=0 json=0
-  for a in "$@"; do case "$a" in *@me*) return 1 ;; --json | --json=*) json=1 ;; esac; done
+  [ "${GH_HOST:-github.com}" = github.com ] || return 1
+  # --watch: a watch can outlive the token's hour and die with a 401 partway through.
+  for a in "$@"; do case "$a" in *@me* | --watch) return 1 ;; --json | --json=*) json=1 ;; esac; done
   case "$grp $sub" in
     'run list' | 'run view' | 'run download' | 'pr checks' | 'pr diff' | 'workflow list' | 'workflow view' | \
       'release list' | 'release view' | 'release download') ;;
@@ -109,14 +113,32 @@ caller() {
   printf '%s' "${name:--}"
 }
 
+# redact <gh args> -> the command line with bodies, fields and headers blanked, and only the
+# subcommand of secret, variable and auth: the log must not keep a secret for a week.
+redact() {
+  local a out="" skip=0
+  case "${1:-}" in secret | variable | auth) printf '%s %s' "${1:-}" "${2:-}"; return ;; esac
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then a="_"; skip=0; else
+      case "$a" in
+        -b | --body | -f | -F | --field | --raw-field | -H | --header) skip=1 ;;
+        --body=* | --field=* | --raw-field=* | --header=*) a="${a%%=*}=_" ;;
+        -b?* | -f?* | -F?* | -H?*) a="${a:0:2}_" ;;
+      esac
+    fi
+    out="$out${out:+ }$a"
+  done
+  printf '%s' "$out"
+}
+
 log_call() {
-  local dir="${GH_CALLS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/gh-calls}" day f what
-  printf -v day '%(%F)T' -1
-  f="$dir/$day.tsv"
+  local dir="${GH_CALLS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/gh-calls}" f what
+  umask 077
+  f="$dir/$(date +%F).tsv"
   if [ ! -f "$f" ]; then
     mkdir -p "$dir" && find "$dir" -name '*.tsv' -mtime +7 -delete
   fi
-  what="$*"
+  what=$(redact "$@")
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${EPOCHSECONDS:-$(date +%s)}" "$bucket" "$rc" "$(caller)" \
     "${AGENT_QUEUE_ITEM:--}" "${what:0:160}" >> "$f"
 }
@@ -136,10 +158,22 @@ fi
 
 export GH_WRAPPED=1 GH_REAL="$real"
 if [ -n "$tok" ]; then
-  GH_TOKEN="$tok" "$real" "$@"
+  # A refused App token (uninstalled, revoked, a missing permission, its own limit spent) must
+  # not fail the read: rerun it on the user. stderr is held so only the answer that counts shows.
+  err=$(mktemp "${TMPDIR:-/tmp}/gh-err.XXXXXX")
+  GH_TOKEN="$tok" "$real" "$@" 2>"$err"
+  rc=$?
+  if [ "$rc" -ne 0 ] && grep -qE 'HTTP 40[13]|Bad credentials|not accessible by integration' "$err"; then
+    bucket="user:app-denied"
+    "$real" "$@"
+    rc=$?
+  else
+    cat "$err" >&2
+  fi
+  rm -f "$err"
 else
   "$real" "$@"
+  rc=$?
 fi
-rc=$?
 { log_call "$@"; } 2>/dev/null || true
 exit "$rc"

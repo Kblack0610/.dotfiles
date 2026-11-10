@@ -10,9 +10,11 @@ Every agent account runs `gh` as the same GitHub user, so the whole fleet shares
 2. Finds the repo owner from `-R`, `GH_REPO`, a github.com URL argument, the `gh api` path, or the directory's origin when that is its only GitHub remote.
 3. Asks `gh-app token <owner>` for that owner's installation token and runs the real `gh` with `GH_TOKEN` set to it.
 
-Everything else stays on your token: writes (`pr create`, `pr merge`, `pr edit`, `api -X POST`), anything with `@me`, `gh api graphql`, `rate_limit`, an owner with no installation, and a caller that set `GH_TOKEN` itself. PRs and merges keep your name.
+Everything else stays on your token: writes (`pr create`, `pr merge`, `pr edit`, `api -X POST`), anything with `@me`, a `--watch` (it can outlive the token's hour), `gh api graphql`, `rate_limit`, a `GH_HOST` other than github.com, an owner with no installation, and a caller that set `GH_TOKEN` itself. PRs and merges keep your name.
 
-Every call, routed or not, gets one row in `~/.local/state/gh-calls/<YYYY-MM-DD>.tsv`: epoch, bucket (`user`, `app:<owner>`, `user:app-error`, `env`), exit code, caller (the script that ran gh, `zsh` for an agent's own command), `$AGENT_QUEUE_ITEM`, and the command. Files older than 7 days are deleted. When the user budget runs LOW, `fleet-assess` names the top spenders from this log.
+When GitHub refuses the App's token for a read (HTTP 401 or 403, or `Resource not accessible by integration`), the wrapper reruns it on your token, so a broken App slows nothing down. After a failed mint, `gh-app` skips the App for 5 minutes instead of waiting on the network for every call; `gh-app status` clears that.
+
+Every call, routed or not, gets one row in `~/.local/state/gh-calls/<YYYY-MM-DD>.tsv`: epoch, bucket (`user`, `app:<owner>`, `user:app-error`, `user:app-denied`, `env`), exit code, caller (the script that ran gh, `zsh` for an agent's own command), `$AGENT_QUEUE_ITEM`, and the command with bodies, fields and headers blanked (`secret`, `variable` and `auth` keep only their subcommand). The files are mode 600, and files older than 7 days are deleted. When the user budget runs LOW, `fleet-assess` names the top spenders from this log.
 
 With no App configured, the wrapper only logs and passes every call straight through.
 
@@ -48,6 +50,6 @@ awk -F'\t' -v s=$(( $(date +%s) - 3600 )) '$1 >= s && $2 ~ /^user/ { n[$4]++ } E
 |---|---|---|
 | `gh-app status` prints `off` | No `~/.config/gh-app/fleet.env` | Setup step 6 |
 | Log rows read `user:app-error` | Minting failed: wrong App ID, unreadable key, or no network to api.github.com | `gh-app token <owner>` prints the error |
-| A routed read fails with `Resource not accessible by integration` | The App lacks that read permission | Add it as Read-only in the App's settings, then accept the new permission on each installation |
+| Log rows read `user:app-denied` | GitHub refused the App's token (a missing read permission, an uninstalled App, or its own limit spent); the read reran on your token | Add the permission as Read-only in the App's settings and accept it on each installation, or reinstall |
 | An owner's reads stay on `user` | No installation for that owner, or it covers selected repos only | Install on that account with All repositories |
 | A session's `gh` is not the wrapper | `~/.local/bin/gh` is not stowed yet | Re-run the dotfiles deploy so stow links the new file |
