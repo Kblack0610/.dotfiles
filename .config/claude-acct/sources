@@ -4,7 +4,8 @@
 # gateway), litellm-team (ref: a member key file; the team's budget). reserve is the last percent of
 # the window kept for the human (pace.conf RESERVE_PCT when absent), max_live caps the running queue
 # items on the source, parent names the pool a key spends inside: it has room only when the pool does.
-# alert=off leaves a source out of `check pace` (the source-pace watch); dispatch still keeps to its room.
+# alert=off: `check pace` (the source-pace watch) never calls the source over pace, though an unread one
+# still trips; dispatch keeps to its room either way.
 # The Lazer pool and its keys are the test account, so being low there is not a red.
 # The Claude accounts are in `accounts`; each source is in exactly one of the two. harnesses.json
 # ties a harness to its source with `source`. Edited by hand; claude-acct is the only reader.

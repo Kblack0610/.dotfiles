@@ -21,7 +21,7 @@
 #                        # the verdict of one source (a Claude account or a row of the sources file)
 #                        # as one sentence; exit 0 room, 1 refused, 2 unread, 3 no such source
 #   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
-#   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve
+#   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve (one marked alert=off only when unread)
 #   claude-acct check underuse [source...]
 #                        # one line, exit 1 when a paced source resets within UNDERUSE_HOURS with
 #                        # its use UNDERUSE_GAP_PCT points or more under its week gone (pace.conf)
@@ -910,7 +910,7 @@ cmd_room() {
     if (( json )); then
         jq --arg p "$pick" --arg w "$why" '{pick: (if $p == "" then null else $p end), why: (if $w == "" then null else $w end),
             accounts: [.[] | select(.kind == "claude") | {name, dir, state, rank, live, week_used, week_gone, five_hour, room}],
-            sources: [.[] | select(.kind != "claude") | {name, kind, state, rank, live, max_live, week_used, week_gone, room}]}' <<< "$all"
+            sources: [.[] | select(.kind != "claude") | {name, kind, state, rank, live, max_live, alert, week_used, week_gone, room}]}' <<< "$all"
     elif [[ -n "$pick" ]]; then
         echo "claude-acct: room on $pline" >&2
         printf '%s\n' "$pdir"
@@ -937,9 +937,10 @@ cmd_check() {
             # Over pace is the room verdict's own words (pace, reserve, capped), never a second
             # formula. An unread source cannot be told on pace, so it trips too; a Claude account's
             # unread is check usage's (the claude-acct-usage watch), so it is not named twice. A source
-            # marked alert=off (a test pool) is left out: dispatch still keeps to its room.
-            rows=$(all_json nospend | jq -s '[.[] | select(.alert) | {name, unread: (.state == "unread" and .kind != "claude"),
-                over: [(.room.reasons // [])[] | select(. == "pace" or . == "reserve" or . == "capped")]}]')
+            # marked alert=off (a test pool) is never over pace here, though an unread one still trips:
+            # dispatch keeps to its room either way.
+            rows=$(all_json nospend | jq -s '[.[] | {name, unread: (.state == "unread" and .kind != "claude"),
+                over: (if .alert then [(.room.reasons // [])[] | select(. == "pace" or . == "reserve" or . == "capped")] else [] end)}]')
             jq -r '(map(select(.unread) | .name)) as $u | (map(select(.over != [])) | map("\(.name) \(.over | join("+"))")) as $o
                 | if length == 0 then "no sources read"
                   elif $u == [] and $o == [] then "every source on pace (\(length) sources)"

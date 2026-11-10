@@ -1693,11 +1693,19 @@ pro_rollout() {
   sed -i 's/parent=lazer max_live=2$/parent=lazer max_live=2 alert=off/' "$CLAUDE_ACCT_SOURCES"
   run --separate-stderr "$ACCT" check pace
   assert_success
-  assert_output 'every source on pace (4 sources)'
+  assert_output 'every source on pace (5 sources)'
   [[ -z "$stderr" ]] || fail "$stderr"
   run --separate-stderr "$ACCT" room --json
   assert_success
-  [[ "$(jq -r '.sources[] | select(.name == "res") | .room.reason' <<< "$output")" == reserve ]] || fail "$output"
+  [[ "$(jq -r '.sources[] | select(.name == "res") | "\(.room.reason) \(.alert)"' <<< "$output")" == "reserve false" ]] || fail "$output"
+  # a key that cannot be read still trips: muting low is not muting broken
+  rm "$SANDBOX/gw/sk-res.json"
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  assert_output 'unread: res'
+  budget sk-res key 19.5 20
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
   # a value other than on or off is named, and the source trips again
   sed -i 's/alert=off$/alert=maybe/' "$CLAUDE_ACCT_SOURCES"
   run --separate-stderr "$ACCT" check pace
