@@ -861,6 +861,7 @@ cmd_target() {
   [ -n "$sid" ] || { echo "no session is waiting on this ask; answer it here" >&2; return 1; }
   row="$(live_row "$sid")"
   if [ -z "$row" ]; then
+    session_resumable "$sid" || { echo "no Claude conversation $sid to reopen; answer it here" >&2; return 1; }
     [ "$reopen" = 1 ] || { echo "session ended; target --reopen starts it again (claude --resume $sid)" >&2; return 1; }
     reopen_session "$f" "$sid"
     return
@@ -894,6 +895,11 @@ reopen_session() {
 # session_transcript <claude session>: its transcript file. Accounts share the transcripts, so
 # any copy will do.
 session_transcript() { ls "$HOME"/.claude*/projects/*/"$1".jsonl 2>/dev/null | head -1; }
+
+# session_resumable <session id>: claude --resume can open it, because it has a Claude
+# transcript. A headless run that owns an ask under another harness's id (a Codex thread) has
+# none, so nothing offers to reopen it and its answer is given on the card.
+session_resumable() { [ -n "$(session_transcript "$1")" ]; }
 
 # session_cwd <claude session>: the directory the conversation started in, from the first
 # transcript line that records one.
@@ -1032,7 +1038,7 @@ answer_route() {
   else
     echo "  ${who}the answer becomes a row on the ${ASK[project]:-} board"
   fi
-  [ -z "$sid" ] || [ -n "$alive" ] || echo "  g reopens the session"
+  [ -z "$sid" ] || [ -n "$alive" ] || ! session_resumable "$sid" || echo "  g reopens the session"
 }
 
 # render_story <file>: what a panel's card adds under render_ask, one labelled block per line

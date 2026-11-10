@@ -2476,6 +2476,18 @@ SH
   [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]
 }
 
+@test "--write: rows and asks past the 128 KB one-argument cap still build the document" {
+  landed_fixture
+  local doc="$XDG_STATE_HOME/fleet/state.json" q
+  q="$(head -c 70000 /dev/zero | tr '\0' q)"
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 --context "$q" 'ship it?' >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --session s2 --context "$q" 'hold it?' >/dev/null
+  [ "$("$AGENT_ASK" list --all --pending | wc -c)" -gt 131072 ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ "$(jq -r '.asks | length' "$doc")" = 2 ]
+}
+
 @test "--write: a dispatch hold past its limit rides along as the Stopped line; none is an empty list" {
   landed_fixture
   local doc="$XDG_STATE_HOME/fleet/state.json"
