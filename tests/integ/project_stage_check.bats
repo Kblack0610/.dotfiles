@@ -142,6 +142,18 @@ declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "
   assert_output --partial 'is not checked out here'
 }
 
+@test "a missing project folder reports stage gaps without borrowing repo or lab files" {
+  mv "$REPO/Assets/Games/Shooter" "$HOME/moved"
+  printf '# repo\n' > "$REPO/README.md"
+  run "$CHECK" shooter --json
+  assert_success
+  assert_equal "$(jq -c '[.met, .fail, (.requirements | map(.result))]' <<<"$output")" \
+    '[2,1,["PASS","PASS","FAIL"]]'
+  STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --json
+  assert_failure 1
+  assert_equal "$(jq -c '[.fail, .blocks]' <<<"$output")" '[1,true]'
+}
+
 @test "with no repo a repo-file row reads as missing, never as the lab sheet" {
   jq '.trackers.shooter = {lab: "personal", type: "game"}' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.t"
   mv "$PROJECT_MAP_FILE.t" "$PROJECT_MAP_FILE"
@@ -222,6 +234,18 @@ DOC
   assert_line --index 4 'systems: shooter: docs 1/2, netcode 1/2'
   refute_output --partial 'app-only'
   refute_output --partial 'payments'
+}
+
+@test "systems: a missing project folder still evaluates repository criteria and emits JSON" {
+  write_systems_doc
+  mv "$REPO/Assets/Games/Shooter" "$HOME/moved"
+  printf '# repo\n' > "$REPO/README.md"
+  mkdir -p "$REPO/docs"
+  printf '# arch\n' > "$REPO/docs/architecture.md"
+  run "$CHECK" shooter --systems --json
+  assert_failure 1
+  assert_equal "$(jq -c '[.met, .total, [.systems[] | [.id, .met, .fail, .human]]]' <<<"$output")" \
+    '[1,4,[["docs",0,2,0],["netcode",1,0,1]]]'
 }
 
 @test "systems: a project missing docs/architecture.md fails the docs criterion, and adding it passes" {
