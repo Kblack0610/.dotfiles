@@ -167,7 +167,7 @@ fn classify<'a>(text: &'a str, area: &str) -> (&'a str, String, &'a str) {
     (guess(text), area.to_string(), text)
 }
 
-/// The row type a label names: one of the types (an epic is the human's to file), or a near miss.
+/// The row type a label names: one of the filer types (never `epic`), or a near miss.
 fn label_type(word: &str) -> Option<&'static str> {
     let word = word.to_lowercase();
     projects::filer_types()

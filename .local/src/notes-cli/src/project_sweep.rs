@@ -39,8 +39,8 @@ pub(crate) struct Ctx {
     pub systems: Vec<crate::standing::System>,
 }
 
-/// Where an epic row sits in `### Epics`: a `#new` one first, so the human sees what the
-/// triager filed, then by its system in the list's order, an area the list does not name after
+/// Where an epic row sits in `### Epics`: a `#new` one first, so what the triager filed
+/// is seen first, then by its system in the list's order, an area the list does not name after
 /// those by its word; rank decides within one system, the sort being stable.
 fn epic_order(line: &str, systems: &[crate::standing::System]) -> (bool, usize, String) {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);

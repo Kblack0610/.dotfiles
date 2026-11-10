@@ -9,6 +9,7 @@ pub mod briefing;
 pub mod builds;
 pub mod burn;
 pub mod capacity;
+pub mod ci;
 pub mod costs;
 pub mod epics;
 pub mod fleet;

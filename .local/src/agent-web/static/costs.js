@@ -12,7 +12,9 @@ const cost = tblTab({
   state: { open: {}, tokWin: "week" }, open: () => cost.open,
   // The view keys past the table's: the cut, the window and the sessions sort.
   params: (p) => { const v = new URLSearchParams(st.views.costs || ""); for (const k of ["by", "w", "ssort", "sdir"]) if (v.get(k)) p.set(k, v.get(k)); },
-  head: (t) => costsHead(t.data) + `<div id="sec-table">${costsSwitch("window", t.data.windows, t.data.window, "w")}${costsSwitch("by", t.data.cuts, t.data.by, "by")}</div>`,
+  head: (t) => costsHead(t.data),
+  // The table (its bar and rows) belongs to the Spend inner tab, with the switches above it.
+  wrap: (html) => innerWrap("costs", "table", html),
   body: (t) => costsBody(t.data), tail: (t) => costsTail(t.data),
 });
 
@@ -253,10 +255,16 @@ function costsSections(d) {
     `<div class="muted fold">${b.notes.map(esc).join(" ")}</div></details>`;
 }
 
+// The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): the fleet figure
+// pinned above the strip, then each section inside its inner tab's group in the layout's order
+// (Limits: burn; Spend: history, totals, the table; Models: tokens, langfuse, sections).
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : "never"}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
-  let html = `${fleetCostSection(d)}${historySection(d)}${costsBurn(d)}${tokensSection(d)}${langfuseSection(d)}${costsSections(d)}${pfold("cost-totals", `Spend <span class="muted">${(d.totals || []).map((t) => `${esc(t.window)} ${usd(t.usd)}`).join(", ")}</span>`, `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`)}`;
+  const totals = pfold("cost-totals", `Spend <span class="muted">${(d.totals || []).map((t) => `${esc(t.window)} ${usd(t.usd)}`).join(", ")}</span>`, `<h2 class="sec" id="sec-totals">Costs <span class="muted">as of: ${asOf}</span>${g}</h2>${costsTiles(d)}`);
+  const switches = `<div id="sec-table">${costsSwitch("window", d.windows, d.window, "w")}${costsSwitch("by", d.cuts, d.by, "by")}</div>`;
+  let html = fleetCostSection(d) + innerStrip("costs", d.amber) + innerWrap("costs", "burn", costsBurn(d)) +
+    innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "totals", totals) + innerWrap("costs", "table", switches);
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -266,8 +274,11 @@ function costsHead(d) {
 function costsTail(d) {
   const ev = d.by === "model" || d.by === "harness"
     ? ` Landed, redo, rev and $/PR are fleet-bench models${d.eval_days ? ` over ${d.eval_days}d` : ""}, per family (opus), queue items only.` : "";
-  return `<div class="muted fold">${d.unpriced ? `<span class="warn">${esc(d.unpriced)}.</span> ` : ""}Rows: ${esc(d.source)}.${ev} ` +
+  const note = `<div class="muted fold">${d.unpriced ? `<span class="warn">${esc(d.unpriced)}.</span> ` : ""}Rows: ${esc(d.source)}.${ev} ` +
     `${d.table.shown} of ${d.table.total} rows, ${d.unpriced ? "-" : usd(d.shown_usd)}.</div>`;
+  // The Models sections follow the table in the page, as the layout lists them.
+  return innerWrap("costs", "table", note) + innerWrap("costs", "tokens", tokensSection(d)) +
+    innerWrap("costs", "langfuse", langfuseSection(d)) + innerWrap("costs", "sections", costsSections(d));
 }
 
 // A new cut has other columns, so its sort goes back to the cut's own.
