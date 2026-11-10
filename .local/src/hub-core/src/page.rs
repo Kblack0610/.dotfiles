@@ -122,11 +122,6 @@ pub fn next_on(ladder: &[String], stage: &str) -> Option<String> {
     ladder.get(i + 1).cloned()
 }
 
-fn plan_name(path: &str) -> &str {
-    let base = path.rsplit('/').next().unwrap_or(path);
-    base.strip_suffix(".md").unwrap_or(base)
-}
-
 /// The leaves-only weighted done share of `epics`, as `projects::percent` counts a version.
 fn weighted<'a>(epics: impl IntoIterator<Item = &'a Epic>) -> Option<u32> {
     let (done, open) = epics
@@ -233,7 +228,7 @@ pub fn needs(c: &Chain) -> Vec<String> {
         plans
             .iter()
             .take(PLANS_SHOWN)
-            .map(|p| format!("plan with no epic: {}", plan_name(p))),
+            .map(|p| format!("plan with no epic: {}", crate::plans::base(p))),
     );
     if plans.len() > PLANS_SHOWN {
         out.push(format!(

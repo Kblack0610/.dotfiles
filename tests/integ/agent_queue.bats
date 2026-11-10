@@ -1258,12 +1258,12 @@ EOF
   [ "$(field "$f" phases)" = 2 ]
   [ "$(field "$f" priority)" = high ]
   [ "$(field "$f" tags)" = night ]
-  [ "$(field "$f" title)" = "my-plan P2: Second thing: details" ]
+  [ "$(field "$f" title)" = "Second thing: details" ]
   grep -qF "Phase 2 of the plan $SANDBOX/my-plan.md: Second thing. Read the plan whole, then do ONLY this phase, to merged." "$f"
   f="$(item queued my-plan-p4)"
   [ "$(field "$f" after)" = my-plan-p2 ]
   [ "$(field "$f" phases)" = "4 5" ]
-  [ "$(field "$f" title)" = "my-plan P4+5: Fourth thing. More words; Fifth thing: shares the branch of 4" ]
+  [ "$(field "$f" title)" = "Fourth thing. More words; Fifth thing: shares the branch of 4" ]
   grep -qF "Phases 4 and 5 of the plan $SANDBOX/my-plan.md: Fourth thing; Fifth thing. Read the plan whole, then do ONLY these phases, on one branch" "$f"
   [ "$(field "$(item queued my-plan-p6)" after)" = my-plan-p4 ]
   ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
@@ -1852,12 +1852,12 @@ notes --profile bnb ptask level --agent start lv-9'
 @test "a plan item's story takes the plan's epic and a heavy item is sized m" {
   story_notes
   printf '%s\n' 'epic: lv-3' '## Phases' '- [ ] P1 one' > "$SANDBOX/lv.md"
-  echo 'feat(level): lv P1: one' > "$NOTES_FIXTURE/propose.out"
+  echo 'feat(level): one' > "$NOTES_FIXTURE/propose.out"
   run "$AQ" add --plan "$SANDBOX/lv.md" --project game --weight heavy --slug lvp
   assert_success
-  run grep -c -- '--agent propose -- lv P1: P1 one$' "$NOTES_FIXTURE/calls.log"
+  run grep -c -- '--agent propose -- P1 one$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -c -- '--agent add -- feat(level): lv P1: one #size/m #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
+  run grep -c -- '--agent add -- feat(level): one #size/m #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
   [ "$(field "$(item queued lvp-p1)" row)" = level:lv-9 ]
 }

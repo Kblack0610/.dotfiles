@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::boards;
+use crate::plans::Names;
 use crate::queue::{self, Item, State};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
@@ -259,7 +260,13 @@ fn pr_words(item: &Item) -> Vec<&str> {
         .collect()
 }
 
-fn item_row<Tz: TimeZone>(i: &Item, keys: &[String], prs: &HashMap<&str, &Pr>, tz: &Tz) -> Work
+fn item_row<Tz: TimeZone>(
+    i: &Item,
+    keys: &[String],
+    prs: &HashMap<&str, &Pr>,
+    plans: &mut Names,
+    tz: &Tz,
+) -> Work
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -294,7 +301,7 @@ where
         state,
         when,
         project: i.project.trim().to_string(),
-        what: tagged(i.title(), first),
+        what: tagged(i.plan_title(plans).unwrap_or_else(|| i.title()), first),
         kind: i.kind.clone().filter(|k| !k.is_empty()),
         pr: label.map(|l| if more > 0 { format!("{l} +{more}") } else { l }),
         url: first
@@ -358,6 +365,7 @@ where
     }
 
     let mut claims = HashSet::new();
+    let mut plans = Names::default();
     let mut rows: Vec<Work> = items
         .iter()
         .map(|i| {
@@ -365,7 +373,7 @@ where
                 .into_iter()
                 .filter_map(|w| claimed(w, i.project.trim(), &by_number))
                 .collect();
-            let row = item_row(i, &keys, &by_key, tz);
+            let row = item_row(i, &keys, &by_key, &mut plans, tz);
             claims.extend(keys);
             row
         })
@@ -674,6 +682,71 @@ mod tests {
             "trader"
         );
         assert_eq!(canonical(&names, "else".into()), "else");
+    }
+
+    #[test]
+    fn a_plan_item_reads_as_its_plans_name_its_phase_and_the_phases_words() {
+        let dir = std::env::temp_dir().join(format!("worklog-plan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = dir.join("can-we-backfill-snuggly-bachman.md");
+        std::fs::write(
+            &plan,
+            "# Systems you can see, every task under a feature\n\n## Phases\n",
+        )
+        .unwrap();
+        let p = plan.to_str().unwrap();
+        let items = [
+            // Queued before the title was the phase's words: the file-name prefix goes.
+            item(
+                "old-p5",
+                "done",
+                json!({"plan": p, "phases": "5",
+                "title": "can-we-backfill-snuggly-bachman P5: Versions going forward"}),
+            ),
+            item(
+                "new-p4",
+                "queued",
+                json!({"plan": p, "phases": "4 5", "title": "Fourth thing"}),
+            ),
+            // The plan's own label wins over the item's place in the checklist.
+            item(
+                "own-p10",
+                "queued",
+                json!({"plan": p, "phases": "10", "title": "P9 live stage, gated"}),
+            ),
+            // An old-shape title with no plan field reads the same way, its file name kept
+            // when no such plan exists.
+            item(
+                "hand",
+                "queued",
+                json!({"title": "other-plan P2: kept as written"}),
+            ),
+            item(
+                "legacy-row",
+                "queued",
+                json!({"title": "ghost-plan-file P10: P9 live stage"}),
+            ),
+        ];
+        let g = gather(&items, &[], &HashMap::new(), &Utc);
+        let row = |s: &str| {
+            g.rows
+                .iter()
+                .find(|r| r.slug.as_deref() == Some(s))
+                .unwrap()
+        };
+        assert_eq!(
+            row("old-p5").what,
+            "Systems you can see P5: Versions going forward"
+        );
+        assert_eq!(row("new-p4").what, "Systems you can see P4+5: Fourth thing");
+        assert_eq!(
+            row("own-p10").what,
+            "Systems you can see P9: live stage, gated"
+        );
+        assert_eq!(row("hand").what, "other-plan P2: kept as written");
+        // No plan field, a title in the old shape: its own label still wins.
+        assert_eq!(row("legacy-row").what, "ghost-plan-file P9: live stage");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

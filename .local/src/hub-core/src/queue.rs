@@ -290,13 +290,55 @@ impl Item {
     }
 
     /// What the item is in a few words: the `title:` header, else the task's first sentence
-    /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
+    /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars. A plan
+    /// item queued before its title was the phase's own words drops the `<plan file> P<n>: ` it
+    /// was given then: `plan_title` says which plan and phase.
     pub fn title(&self) -> String {
-        if self.title.trim().is_empty() {
+        let t = self.title.trim();
+        let t = match (self.plan(), crate::plans::legacy(t)) {
+            (Some((plan, _)), Some((base, _, rest))) if base == crate::plans::base(plan) => rest,
+            _ => t,
+        };
+        if t.is_empty() {
             headline(&self.task).0
         } else {
-            cap(self.title.trim(), TITLE_MAX)
+            cap(t, TITLE_MAX)
         }
+    }
+
+    /// The plan file and phase numbers (`4 5`) of an item `agent-queue add --plan` queued.
+    pub fn plan(&self) -> Option<(&str, &str)> {
+        Some((self.extra_str("plan")?, self.extra_str("phases")?))
+    }
+
+    /// `P4+5`: the item's phases as its plan numbers them.
+    pub fn phase_tag(&self) -> Option<String> {
+        let (_, phases) = self.plan()?;
+        Some(format!(
+            "P{}",
+            phases.split_whitespace().collect::<Vec<_>>().join("+")
+        ))
+    }
+
+    /// `<plan name> P5: <phase words>`, what a plan item is in a row: the plan by its heading,
+    /// the phase by the plan's own label when its words lead with one (`P9 live stage`, `Phase 5
+    /// Look`), else by its place in the checklist.
+    ///
+    /// An item with no `plan:` whose title still reads `<plan file> P5: ...` (one promoted from
+    /// a board row filed that way) is named the same way, from `~/.claude/plans/<plan file>.md`.
+    pub fn plan_title(&self, names: &mut crate::plans::Names) -> Option<String> {
+        let (plan, tag, words) = match self.plan() {
+            Some((plan, _)) => (plan.to_string(), self.phase_tag()?, self.title()),
+            None => {
+                let (base, tag, rest) = crate::plans::legacy(self.title.trim())?;
+                (crate::plans::path(base), tag.to_string(), rest.to_string())
+            }
+        };
+        let (label, words) = match crate::plans::own_label(&words) {
+            Some((label, rest)) => (label, rest.to_string()),
+            None => (tag, words),
+        };
+        Some(format!("{} {label}: {words}", names.get(&plan)))
     }
 
     /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
