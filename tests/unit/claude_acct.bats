@@ -737,6 +737,30 @@ STUB
   assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 96% of its week used, inside the last 5% kept for the human, lasts to its reset Fri 10:00'
 }
 
+@test "room: with none, an account refused while within its weekly pace is named too, not only the closest" {
+  # 2026-11-10 01:24: the line named bnb, over its pace, and never max4, 15% used with 38% of its week
+  # gone, refused because its 13 live sessions at the fleet's 0.072 an hour emptied it before the reset.
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC CLAUDE_ACCT_SESSION_RATE=0.072
+  week main 77 65    # 61% gone, 11 points past the line, no live sessions: the closest
+  week alt 15 104    # 38% gone, under its line
+  live "$ALT" 13
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00; alt is within its weekly pace but its 13 live sessions use the rest of its week before the reset, runs out Tue 02:48 at this rate'
+  # an account over its pace is not named again: the closest already says what pace refuses
+  rm -rf "${CLAUDE_ACCT_PROC:?}"/*
+  # its 5h window alone: named, with no week clock, which is not what refuses it
+  week alt 15 104
+  printf '%s' "$(jq -c '.five_hour = {utilization: 97}' "$XDG_CACHE_HOME/claude-acct/alt.json")" > "$XDG_CACHE_HOME/claude-acct/alt.json"
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00; alt is within its weekly pace but its 5h window at 97%'
+  week alt 80 104
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 11 points over its weekly pace (77% used, 61% of its week gone, 5 points of slack), lasts to its reset Mon 01:00'
+}
+
 @test "room: the slack is the edge of the pace line" {
   export CLAUDE_ACCT_NOW=$NOW   # pace.conf's 5 of slack
   week main 55 84
