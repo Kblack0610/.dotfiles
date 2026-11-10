@@ -178,8 +178,9 @@ outcome() { cat "$HOME/.local/state/agentctl/inbox-plan/last-outcome"; }
 # lists $NOTES_FIXTURE/queue.jsonl as the open items.
 hold_stubs() {
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$NOTES_FIXTURE/dispatch.log"\nwhile [ $# -gt 0 ]; do [ "$1" = --brief ] && cp "$2" "$NOTES_FIXTURE/brief.md"; shift; done\nexit "${DISPATCH_RC:-0}"\n' >"$SANDBOX/bin/fleet-dispatch"
-  printf '#!/usr/bin/env bash\n[ "${QUEUE_RC:-0}" = 0 ] || exit "$QUEUE_RC"\ncat "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null || true\n' >"$SANDBOX/bin/agent-queue"
-  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-queue"
+  printf '#!/usr/bin/env bash\n[ "${QUEUE_RC:-0}" = 0 ] || exit "$QUEUE_RC"\n[ "$1" = show ] && { cat "$NOTES_FIXTURE/show.json" 2>/dev/null; exit; }\ncat "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null || true\n' >"$SANDBOX/bin/agent-queue"
+  printf '#!/usr/bin/env bash\necho "$*" >> "$NOTES_FIXTURE/systemctl.log"\n' >"$SANDBOX/bin/systemctl"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/systemctl"
 }
 
 @test "hold: a requested #plan row opens a plan-mode session for review, and no model plans it" {
@@ -235,10 +236,38 @@ hold_stubs() {
   QUEUE_RC=1 run "$PLAN"
   assert_failure 1
   assert_output --partial 'agent-queue list failed'
+  assert_output --partial '2 waiting (queue unread)'
   [ ! -e "$NOTES_FIXTURE/dispatch.log" ] || fail "a blind cap started a session"
   INBOX_PLAN_REVIEW_MAX=1 DISPATCH_RC=1 run "$PLAN"
   assert_failure 1
   assert_output --partial 'sc-1: not held'
   assert_equal "$(wc -l <"$NOTES_FIXTURE/dispatch.log")" 1
   grep -q FAILED "$HOME/.local/state/agentctl/inbox-plan/last-outcome"
+}
+
+@test "hold: a row promoted but not started is held as its queued plan item, and the pass works" {
+  hold_stubs
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n'
+  echo '{"slug": "sc-1", "state": "queued", "mode": "plan"}' >"$NOTES_FIXTURE/show.json"
+  DISPATCH_RC=1 run "$PLAN"
+  assert_success
+  assert_output --partial 'sc-1: held as a queued plan item'
+  assert_output --partial 'held 1 for review'
+  grep -q WORKED "$HOME/.local/state/agentctl/inbox-plan/last-outcome"
+}
+
+@test "hold: --kick starts no pass when the only rows waiting are held past the cap, and does with a slot" {
+  hold_stubs
+  echo '{"slug": "a", "mode": "plan", "tags": "requested"}' >"$NOTES_FIXTURE/queue.jsonl"
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n'
+  INBOX_PLAN_REVIEW_MAX=1 run "$PLAN" --kick
+  assert_success
+  [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "a kick with nothing to do started the unit"
+  INBOX_PLAN_REVIEW_MAX=2 run "$PLAN" --kick
+  assert_success
+  grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log" || fail "a free slot did not start the unit"
+  rm "$NOTES_FIXTURE/systemctl.log"
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n- [ ] fix(b): two #plan <!-- id:sc-2 -->\n'
+  INBOX_PLAN_REVIEW_MAX=1 run "$PLAN" --kick
+  grep -q 'agentctl@inbox-plan' "$NOTES_FIXTURE/systemctl.log" || fail "a row to plan did not start the unit"
 }

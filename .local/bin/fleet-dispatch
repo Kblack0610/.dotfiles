@@ -3586,7 +3586,8 @@ promote() {
   # The row's words are the item's title: no checkbox, id comment or #tags.
   local title
   title=$(sed -E 's/^- \[.\] //; s/<!--[^>]*-->//g; s/(^| )#[A-Za-z0-9_/:.-]+//g; s/ +$//' <<<"$line")
-  # AGENT_QUEUE_START=0: add would start a plan item itself, and the caller starts what it promoted.
+  # AGENT_QUEUE_START=0 for every caller: add starts only a plan item itself, and each caller of
+  # promote starts what it promoted (cmd_start) or leaves it queued for a pass, so add never must.
   out=$(AGENT_QUEUE_START=0 agent-queue add --project "$project" --priority "$(row_priority "$line" "$project")" --from "board:$project:$id" --slug "$id" \
       ${qmode:+--mode "$qmode"} ${title:+--title "$title"} ${tags:+--tags "$tags"} ${repeat:+--repeat} -- "$task" 2>&1) || rc=$?
   if [ "$rc" -ne 0 ]; then

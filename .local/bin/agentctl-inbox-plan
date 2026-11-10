@@ -14,8 +14,9 @@
 #
 # A row the person asked for (#requested) is theirs to review: unless it carries #go, it is held
 # instead, `fleet-dispatch start --mode plan` opening a plan-mode session that writes a phased plan
-# and waits on their approval. INBOX_PLAN_REVIEW_MAX such plan items may be open at once; past it the
-# row keeps #plan until one closes. Agent rows and #go rows are planned here, as above.
+# and waits on their approval. INBOX_PLAN_REVIEW_MAX such plan items may be open at once (waiting on
+# the person or building what they approved: each holds a session); past it the row keeps #plan
+# until one closes. Rows nobody asked for, on either board, and #go rows are planned here, as above.
 
 set -uo pipefail
 
@@ -178,6 +179,12 @@ hold_row() {
     "Read the code you need, then write a phased plan to ~/.claude/plans/ that meets ~/.local/src/docs/planning.md, with what only the person can decide asked in it, and call ExitPlanMode: it waits there for their approval. Once approved, build it as ~/.claude/skills/one-shot/SKILL.md does; a plan of more than one phase queues its later phases with agent-queue add --plan." >"$f"
   out="$(fleet-dispatch start ${prof:+--profile "$prof"} --project "$p" "${lanes[@]}" --row "$id" --brief "$f" --mode plan 2>&1)"; rc=$?
   rm -f -- "$f"
+  # Promoted but not started (a busy start lock, no worktree): the plan item is queued and a
+  # dispatch pass starts it, so the row is held all the same.
+  if [ "$rc" != 0 ] && agent-queue show "$id" --json 2>/dev/null | jq -e '.state == "queued" and .mode == "plan"' >/dev/null 2>&1; then
+    say "$p $id: held as a queued plan item; a dispatch pass starts it ($(tail -n 1 <<<"$out" | clean 120))"
+    HELD=$((HELD + 1)); return 0
+  fi
   if [ "$rc" != 0 ]; then
     out="$(tail -n 1 <<<"${out:-no output}" | clean 160)"
     say "$p $id: not held: $out"
@@ -198,7 +205,7 @@ main() {
       *) say "unknown argument: $1"; return 2 ;;
     esac
   done
-  local dir board rows rc=0 r row summary verdict open slots=0 tries=0 holds=0
+  local dir board rows rc=0 r row summary verdict open slots=0 tries=0 holds=0 blind='' want=''
   dir="$(notes config 2>/dev/null | sed -n 's/^state  *//p')"
   [ -n "$dir" ] && RECORD="$dir/ingest.jsonl"
   if ! board="$(notes board --json 2>/dev/null)"; then
@@ -207,9 +214,19 @@ main() {
     return 1
   fi
   rows="$(jq -c --arg only "$ONLY" --argjson seen "$(seen)" "$WAITING_JQ" <<<"$board")"
-  # The unit by name, not $NAME: a caller's AGENTCTL_NAME is its own.
+  if grep -q '"hold":true' <<<"$rows"; then
+    if open="$(agent-queue list --json --state active 2>/dev/null | jq -s "$REVIEWS_JQ" 2>/dev/null)" && [ -n "$open" ]; then
+      slots=$((INBOX_PLAN_REVIEW_MAX - open))
+    else
+      blind=1
+    fi
+  fi
+  # The unit by name, not $NAME: a caller's AGENTCTL_NAME is its own. Held rows past the cap are no
+  # work, so they start no pass; a queue that cannot be read does, and that pass reports it.
   if [ "$KICK" = 1 ]; then
-    [ -n "$rows" ] || return 0
+    grep -q '"hold":false' <<<"$rows" && want=1
+    grep -q '"hold":true' <<<"$rows" && { [ -n "$blind" ] || [ "$slots" -gt 0 ]; } && want=1
+    [ -n "$want" ] || return 0
     systemctl --user start --no-block agentctl@inbox-plan.service || { say "could not start inbox-plan"; return 1; }
     return 0
   fi
@@ -219,12 +236,8 @@ main() {
     proof_why "notes row types failed"; rows='' rc=1
   fi
   # A queue that cannot be read opens no session: the cap would be blind.
-  if grep -q '"hold":true' <<<"$rows"; then
-    if open="$(agent-queue list --json --state active 2>/dev/null | jq -s "$REVIEWS_JQ" 2>/dev/null)" && [ -n "$open" ]; then
-      slots=$((INBOX_PLAN_REVIEW_MAX - open))
-    else
-      say "agent-queue list failed: no row is held this pass"; proof_why "agent-queue list failed"; rc=1
-    fi
+  if [ -n "$blind" ] && grep -q '"hold":true' <<<"$rows"; then
+    say "agent-queue list failed: no row is held this pass"; proof_why "agent-queue list failed"; rc=1
   fi
   while IFS= read -r row; do
     [ -n "$row" ] || continue
@@ -250,7 +263,7 @@ main() {
     [ "$r" = 0 ] || rc=1
   done <<<"$rows"
   summary="planned $PLANNED, split into $SPLIT rows, refused $FAILED"
-  [ "$HELD$KEPT" = 00 ] || summary="$summary, held $HELD for review, $KEPT waiting (cap $INBOX_PLAN_REVIEW_MAX)"
+  [ "$HELD$KEPT" = 00 ] || summary="$summary, held $HELD for review, $KEPT waiting ($([ -n "$blind" ] && echo "queue unread" || echo "cap $INBOX_PLAN_REVIEW_MAX"))"
   say "$summary"
   [ "$DRY" = 1 ] && return "$rc"
   verdict=NOOP
