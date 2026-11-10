@@ -46,7 +46,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    - A repo whose canonical forge is Forgejo (home-config): `agent-land` cannot run there; read `references/landing.md` "Forgejo repo".
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command.
-   - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes and lands on the same gate). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
+   - Exit 3: the branch was behind before the checks, or a base that moved during them does not merge cleanly (a clean one `agent-land` merges, pushes, and lands once that head's checks are green). Merge `origin/<base>` (unity-core-playground: `scripts/git/merge-main.sh`), resolve, push, and start the same command.
    - Exit 1 names the failed step. Fix it and re-run; a PR already merged skips straight to recording.
    - A sheet row the human wrote for this work: also `notes ptask <project> done "<row>" --proof pr:<N>`.
    - Work that can only run after a set time, a day of data or a night's log: land what is done and queue the rest, never `sleep`; read `references/landing.md` "Work that can only run later".

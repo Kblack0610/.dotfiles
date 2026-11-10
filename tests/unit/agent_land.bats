@@ -65,7 +65,10 @@ case "$1 $2" in
 'pr checks')
   case "$*" in
   *--json*) cat "$NOTES_FIXTURE/checks.failed" ;;
-  *) [ ! -f "$NOTES_FIXTURE/checks.out" ] || { cat "$NOTES_FIXTURE/checks.out"; exit 1; } ;;
+  # checks.seq: one watch result per call (green, or the output of a failed watch), popped as read; then checks.out
+  *) q="$NOTES_FIXTURE/checks.seq"
+    if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; [ "$r" = green ] || { echo "$r"; exit 1; }; exit 0; fi
+    [ ! -f "$NOTES_FIXTURE/checks.out" ] || { cat "$NOTES_FIXTURE/checks.out"; exit 1; } ;;
   esac ;;
 esac
 EOF
@@ -92,6 +95,8 @@ worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
 # head.foreign: the PR's head commit is not in this checkout's HEAD
 merge-base) if [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
+# tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
+merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
 esac
 EOF
   # comms-lint: keeps what it was given in linted.txt, prints lint.out and exits lint.rc (0 by default)
@@ -270,22 +275,89 @@ item() {
   assert_output 0
 }
 
-@test "behind after a green gate, base with no protection or rulesets: merged in, pushed, and that head lands with no second checks wait" {
-  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
-  run "$LAND" 42 --item ship
+# second_wait: the catch-up push was followed by a second checks wait, before the merge
+second_wait() {
   assert_success
-  assert_line 'fetch: merged origin/main (1 behind) into the head and pushed it'
-  refute_output --partial 'requires strict checks'
+  assert_line 'checks: waiting on them for the pushed head'
   assert_line 'landed #42'
   run grep -c 'pr checks' "$LOG"
-  assert_output 1
-  run grep -c '^gh api repos/o/r/rules/branches/main$\|^gh api repos/o/r/branches/main/protection$' "$LOG"
   assert_output 2
+  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
+  [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+# moved_again <pushes> <checks>: the base moved on again during the merged-up head's checks; a strict
+# base merges up and waits again (2 pushes, 3 waits), any other lands the green head (1 push, 2 waits)
+moved_again() {
+  assert_success
+  assert_line 'landed #42'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output "$1"
+  run grep -c 'pr checks' "$LOG"
+  assert_output "$2"
+}
+
+@test "behind after a green gate, base with no protection or rulesets: merged in, pushed, and that head lands only once its own checks pass" {
+  printf '0\n1\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: merged origin/main (1 behind) into the head and pushed it'
+  second_wait
+  run grep -c '^gh api repos/o/r/rules/branches/main$\|^gh api repos/o/r/branches/main/protection$' "$LOG"
+  assert_output 0
   run grep -A2 '^git merge -q --no-edit origin/main$' "$LOG"
   assert_line --index 1 'git push -q origin HEAD:refs/heads/pr-42'
   assert_line --index 2 'git rev-parse HEAD'
   run grep -c 'pr merge 42 --squash --match-head-commit 0123456789abcdef' "$LOG"
   assert_output 1
+}
+
+@test "a merged-up head whose own checks go red is never merged (dotfiles #1504)" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' green 'Checks	fail	1m' >"$NOTES_FIXTURE/checks.seq"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'fetch: merged origin/main (1 behind) into the head and pushed it'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "no strict checks and the base moves on again during the merged-up head's checks: that green head lands behind it, no second merge-up" {
+  printf '0\n1\n3\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head; landing that green head behind it (no strict checks on main)'
+  second_wait
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "a pushed head that reports no checks, after the gate's head ran green, is never merged" {
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  printf 'green\n' >"$NOTES_FIXTURE/checks.seq"
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial "though the gate's head ran green"
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "the base moves on again into a conflict: no green head behind it, the merge-up conflicts and exits 3" {
+  printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  : >"$NOTES_FIXTURE/tree.conflicts"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  refute_output --partial 'landing that green head behind it'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "merged up before the gate, then the base moves on twice: one merge-up after the gate, then the green head lands behind it" {
+  printf '2\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_output --partial 'landing that green head behind it'
+  moved_again 2 2
 }
 
 @test "--merge-commit lands a train with a merge commit, never a squash, so its member heads stay reachable" {
@@ -304,57 +376,44 @@ item() {
   assert_output --partial 'gh pr merge 42 --merge --match-head-commit'
 }
 
-# second_wait: the catch-up push was followed by a second checks wait, before the merge
-second_wait() {
-  assert_success
-  assert_line 'checks: origin/main requires strict checks, waiting on them for the pushed head'
-  assert_line 'landed #42'
-  run grep -c 'pr checks' "$LOG"
-  assert_output 2
-  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
-  [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
-}
-
-@test "behind after a green gate, branch protection with strict checks: the pushed head lands once its checks pass again" {
-  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+@test "the base moves on again, branch protection with strict checks: merged up again, and that head lands once its checks pass" {
+  printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   echo '{"required_status_checks":{"strict":true,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
   run "$LAND" 42 --item ship
-  second_wait
+  moved_again 2 3
 }
 
-@test "behind after a green gate, a ruleset with a strict checks policy: the pushed head lands once its checks pass again" {
-  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+@test "the base moves on again, a ruleset with a strict checks policy: merged up again, and that head lands once its checks pass" {
+  printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   echo '[{"type":"deletion"},{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]' >"$NOTES_FIXTURE/rules.json"
   run "$LAND" 42 --item ship
-  second_wait
+  moved_again 2 3
   # a strict ruleset is enough: protection is not read
   run grep -c 'branches/main/protection' "$LOG"
   assert_output 0
 }
 
-@test "behind after a green gate, required checks that are not strict: no second checks wait" {
-  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+@test "the base moves on again, required checks that are not strict: the green merged-up head lands behind it" {
+  printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false}}]' >"$NOTES_FIXTURE/rules.json"
   echo '{"required_status_checks":{"strict":false,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
   run "$LAND" 42 --item ship
-  assert_success
-  refute_output --partial 'requires strict checks'
-  run grep -c 'pr checks' "$LOG"
-  assert_output 1
+  assert_output --partial 'landing that green head behind it'
+  moved_again 1 2
 }
 
-@test "behind after a green gate, protection that cannot be read (not a 404): it waits on the checks again" {
-  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+@test "the base moves on again, protection that cannot be read (not a 404): counted strict, merged up again" {
+  printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   echo 'gh: Must have admin rights to Repository. (HTTP 403)' >"$NOTES_FIXTURE/protection.err"
   run "$LAND" 42 --item ship
-  second_wait
+  moved_again 2 3
 }
 
-@test "behind after a green gate, rulesets that cannot be read: it waits on the checks again" {
-  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+@test "the base moves on again, rulesets that cannot be read: counted strict, merged up again" {
+  printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   touch "$NOTES_FIXTURE/rules.fail"
   run "$LAND" 42 --item ship
-  second_wait
+  moved_again 2 3
 }
 
 @test "strictness is read once per landing, however many catch-up pushes it takes" {
