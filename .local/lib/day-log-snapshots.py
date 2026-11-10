@@ -382,6 +382,9 @@ def ci(a):
         out["repos"][repo] = row
     json.dump(out, sys.stdout)
     print()
+    # stdout is the record; stderr is the runner's log, so a failed nightly says why there too.
+    for reason in out["unreadable"]:
+        print("day-log-snapshots: ci:", " ".join(reason.split()), file=sys.stderr)
     return 1 if out["unreadable"] else 0
 
 
