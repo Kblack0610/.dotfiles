@@ -907,6 +907,8 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         for f in row_findings(&content, label == "agent board") {
             out.push(format!("{label} {f}"));
         }
+        let today = chrono::Local::now().date_naive();
+        out.extend(untriaged_finding(&content, today).map(|f| format!("{label} {f}")));
         let unlinked = if label == "agent board" {
             tree.stories_without_feature(&content)
         } else {
@@ -1197,6 +1199,27 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
     out
 }
 
+/// The sheet's open rows with no priority. No writer defaults one, so an untagged row is one
+/// nobody has ranked yet, and the nightly triage gives it one the same day (human, 2026-11-09).
+/// A doctor finding, never a write refusal: a row may be added untagged.
+pub(crate) fn untriaged_finding(content: &str, today: chrono::NaiveDate) -> Option<String> {
+    let (mut rows, mut old) = (Vec::new(), 0);
+    for (i, line) in content.lines().enumerate() {
+        if line.starts_with("- [") && md::is_open_task(line) && md::task_priority(line).is_none() {
+            rows.push(i + 1);
+            // A row with no created stamp predates the stamps, so it is old by definition.
+            if md::find_created(line, today).is_none_or(|c| c < today) {
+                old += 1;
+            }
+        }
+    }
+    let first = rows.first()?;
+    Some(format!(
+        "{} untriaged open row(s) with no #urgent, #high or #low, {old} older than a day (first: line {first}; `agentctl-inbox-triage --backlog --priority` ranks them)",
+        rows.len()
+    ))
+}
+
 /// A `<!-- ... -->` marker other than the bookkeeping ones (`carried:N`, `ask:<id>`): what
 /// `ptask done --proof`/`--unverified` stamps.
 fn has_proof(line: &str) -> bool {
@@ -1242,7 +1265,7 @@ pub(crate) fn indexed_dirs(p: &Profile) -> Vec<(String, PathBuf)> {
 /// skipped, like [`stats`].
 pub fn shape_report(o: &Overlays) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    for profile in config::all_profile_names()? {
+    for profile in config::managed_profile_names()? {
         let Ok(p) = config::resolve(Some(&profile)) else {
             continue;
         };
@@ -2862,6 +2885,9 @@ fn sheet_counts(content: &str, cur: Option<V>) -> SheetCounts {
 struct ProjectStats {
     profile: String,
     name: String,
+    /// False for a profile with `automation = false`: the stage check, dispatch and triage skip
+    /// it (`config::automation`).
+    automation: bool,
     dir: PathBuf,
     stage: String,
     /// The head's `#prio/<word>` (`focus`, `high`, `low`), empty for normal. JSON only: the
@@ -3260,6 +3286,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     ProjectStats {
         profile: profile.to_string(),
         name: name.to_string(),
+        automation: config::automation(profile),
         dir: dir.to_path_buf(),
         stage: stage_of(dir).unwrap_or_default(),
         prio: prio_of(dir),
@@ -5322,6 +5349,26 @@ mod move_layout_tests {
             3,
             "a human sheet's done rows are closed by hand by design"
         );
+    }
+
+    // An open row with no priority is counted, and one created before today is the overdue
+    // share; tagged, closed, placeholder and child rows are not counted (the negative control).
+    #[test]
+    fn untriaged_counts_open_untagged_rows_and_the_old_ones() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let sheet = "## Tasks\n\
+            - [ ] fine #low #c1101\n\
+            - [ ] new today #c1109\n\
+            - [/] queued, untagged #c1108\n\
+            - [ ] never stamped\n\
+            - [x] closed untagged\n\
+            - [ ] \n\
+            \x20 - [ ] a child row is not a row\n";
+        assert_eq!(
+            untriaged_finding(sheet, today).unwrap(),
+            "3 untriaged open row(s) with no #urgent, #high or #low, 2 older than a day (first: line 3; `agentctl-inbox-triage --backlog --priority` ranks them)"
+        );
+        assert_eq!(untriaged_finding("- [ ] fine #high\n", today), None);
     }
 
     // Each grammar check fires on its bad row; the well-formed rows (the negative control)

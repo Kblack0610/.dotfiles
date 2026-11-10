@@ -98,6 +98,10 @@ file_gaps() {
       | [$t, .stage, .requirement, .check] | @tsv' <<<"$check")"
   fi
 
+  # Each row's priority is its own (no writer defaults one): #high while the gate it fails blocks
+  # the stage, #low for a report-only gap and for a system's.
+  local prio=low
+  [ -z "$SYSTEMS" ] && [ "$(jq -r .blocks <<<"$check")" = true ] && prio=high
   while IFS=$'\t' read -r target area full chk; do
     [ -n "$target" ] || continue
     n=$((n + 1))
@@ -120,7 +124,7 @@ file_gaps() {
     if [ -z "$epic" ]; then
       waiting=$((waiting + 1)); printf 'no epic %-10s  %s\n' "$area" "$title"; continue
     fi
-    row="chore($area): $title #of/$epic #size/s"
+    row="chore($area): $title #of/$epic #size/s #$prio"
     text="from project-stage-check $NAME --file, $( [ -n "$SYSTEMS" ] && echo "systems.md $target" || echo "stages.md #$area" ), check: $chk"
     # A cut title keeps the whole requirement on a detail line.
     if [ "$title" = "$full" ]; then

@@ -344,13 +344,21 @@ board_row() { mkdir -p "$LAB/agent"; printf '# shooter agent\n\n## Tasks\n%s\n' 
 # grammar: that lives in notes-cli alone)
 parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/row.parse"; }
 
+# A gap the gate blocks on is #high; before the Enforced from date it is #low (the test above).
+@test "file: from the Enforced from date a failing row is filed #high" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter, testers"}]'
+  STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s #high --detail'
+}
+
 @test "file: the stage epic names the target, and each FAIL row is filed once under it" {
   epics '[{"id":"sh-1","system":"stage","title":"beta for shooter, testers"}]'
   run "$CHECK" shooter --file
   assert_success
   assert_line --regexp '^filed +beta +A changelog$'
   assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped'
-  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s --detail from project-stage-check shooter --file, stages.md #beta, check: `[ -f CHANGELOG.md ]`'
+  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s #low --detail from project-stage-check shooter --file, stages.md #beta, check: `[ -f CHANGELOG.md ]`'
   # NEGATIVE CONTROL: the row the first run filed is on the board now, so nothing is added.
   : > "$NOTES_FIXTURE/calls.log"
   board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
@@ -405,8 +413,8 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_success
   assert_line --regexp '^filed +docs +An architecture doc$'
   assert_line 'file: shooter systems: 2 failing, 2 filed, 0 already open, 0 closed or dropped'
-  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #of/sh-5 #size/s'
-  assert_called 'add chore(docs): A contributor guide that says how to build, run and test every part of the #of/sh-5 #size/s --detail A contributor guide that says how to build, run and test every part of the project from a fresh clone --detail'
+  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #of/sh-5 #size/s #low'
+  assert_called 'add chore(docs): A contributor guide that says how to build, run and test every part of the #of/sh-5 #size/s #low --detail A contributor guide that says how to build, run and test every part of the project from a fresh clone --detail'
 }
 
 @test "file: --file with --json is refused, and an unknown project exits 2" {

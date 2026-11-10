@@ -1196,18 +1196,14 @@ pub fn default_priority() -> &'static str {
     PRIORITIES[DEFAULT_PRIORITY].1
 }
 
-/// Give a task line the default priority when it carries none. Non-tasks, and the empty
-/// `- [ ] ` placeholder, are returned untouched.
+/// Give a row headed to `## Focus` the Focus default priority when it carries none. Non-tasks,
+/// and the empty `- [ ] ` placeholder, are returned untouched. A sheet row gets no default: an
+/// untagged sheet row is untriaged, and triage gives it a real priority.
 ///
 /// The placeholder is the load-bearing exclusion: the sweep re-emits one every run, so
 /// tagging it would make each sweep differ from the one before it and the file would churn
 /// forever. Prose is excluded for a simpler reason: it is not a task and cannot have a
 /// priority.
-pub fn with_default_priority(line: &str) -> String {
-    with_priority(line, default_priority())
-}
-
-/// [`with_default_priority`] for a row headed to `## Focus`.
 pub fn with_focus_priority(line: &str) -> String {
     with_priority(line, PRIORITIES[FOCUS_DEFAULT_PRIORITY].1)
 }
@@ -1547,6 +1543,29 @@ pub fn marker_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     t[t.rfind("<!--")? + 4..]
         .split_whitespace()
         .find_map(|tok| tok.strip_prefix(key))
+}
+
+/// `line` with every `<key>value` token taken out of its trailing marker, and the comment
+/// itself gone when nothing is left in it. A line without the token comes back as it is.
+pub fn remove_marker_token(line: &str, key: &str) -> String {
+    let trimmed = line.trim_end();
+    let (Some(i), true) = (trimmed.rfind("<!--"), trimmed.ends_with("-->")) else {
+        return line.to_string();
+    };
+    let inner = &trimmed[i + 4..trimmed.len() - 3];
+    if !inner.split_whitespace().any(|t| t.starts_with(key)) {
+        return line.to_string();
+    }
+    let kept: Vec<&str> = inner
+        .split_whitespace()
+        .filter(|t| !t.starts_with(key))
+        .collect();
+    let head = trimmed[..i].trim_end();
+    if kept.is_empty() {
+        head.to_string()
+    } else {
+        format!("{head} <!-- {} -->", kept.join(" "))
+    }
 }
 
 /// True when `s` is shaped like a row id: 2-4 lowercase letters, a hyphen, a number.
@@ -2271,29 +2290,41 @@ after
         assert_eq!(w.as_deref(), Some("#v0.0.2"));
     }
 
-    // Every task carries a priority. The two exclusions are what keep the sweep stable and
+    // Every Focus task carries a priority. The two exclusions are what keep the sweep stable and
     // the untagged bucket alive for lines that cannot have one.
     #[test]
-    fn the_default_applies_to_untagged_tasks_only() {
+    fn remove_marker_token_takes_one_key_and_an_empty_comment() {
         assert_eq!(
-            with_default_priority("- [ ] a thing"),
-            "- [ ] a thing #high"
+            remove_marker_token("- [/] a <!-- id:x-1 run:1109 -->", "run:"),
+            "- [/] a <!-- id:x-1 -->"
         );
+        assert_eq!(
+            remove_marker_token("- [/] a <!-- run:1109 -->", "run:"),
+            "- [/] a"
+        );
+        let none = "- [/] a <!-- id:x-1 -->";
+        assert_eq!(remove_marker_token(none, "run:"), none);
+        assert_eq!(remove_marker_token("- [/] a", "run:"), "- [/] a");
+    }
+
+    #[test]
+    fn the_default_applies_to_untagged_tasks_only() {
+        assert_eq!(with_focus_priority("- [ ] a thing"), "- [ ] a thing #low");
         // an explicit tag is never overwritten, at either end of the range
         assert_eq!(
-            with_default_priority("- [ ] fire #urgent"),
+            with_focus_priority("- [ ] fire #urgent"),
             "- [ ] fire #urgent"
         );
         assert_eq!(
-            with_default_priority("- [ ] someday #low"),
-            "- [ ] someday #low"
+            with_focus_priority("- [ ] someday #high"),
+            "- [ ] someday #high"
         );
         // the placeholder the sweep re-emits: tagging it would churn the file every run
-        assert_eq!(with_default_priority("- [ ] "), "- [ ] ");
-        assert_eq!(with_default_priority("    - [ ] "), "    - [ ] ");
+        assert_eq!(with_focus_priority("- [ ] "), "- [ ] ");
+        assert_eq!(with_focus_priority("    - [ ] "), "    - [ ] ");
         // prose is not a task and cannot carry a priority
-        assert_eq!(with_default_priority("just a line"), "just a line");
-        assert_eq!(with_default_priority("## Tasks"), "## Tasks");
+        assert_eq!(with_focus_priority("just a line"), "just a line");
+        assert_eq!(with_focus_priority("## Tasks"), "## Tasks");
     }
 
     // A row with two priority tags is written with one: the most urgent, which is what every
@@ -2315,7 +2346,7 @@ after
             "- [ ] a #high-priority #c1 #high"
         );
         assert_eq!(
-            with_default_priority("- [ ] new #urgent #low"),
+            with_focus_priority("- [ ] new #urgent #low"),
             "- [ ] new #urgent"
         );
     }
@@ -2325,12 +2356,12 @@ after
     #[test]
     fn a_defaulted_tag_lands_where_a_typed_one_would() {
         assert_eq!(
-            with_default_priority("- [x] shipped <!-- pr:307 -->"),
-            "- [x] shipped #high <!-- pr:307 -->"
+            with_focus_priority("- [x] shipped <!-- pr:307 -->"),
+            "- [x] shipped #low <!-- pr:307 -->"
         );
         assert_eq!(
-            with_default_priority("- [ ] a thing #v0.12.1"),
-            "- [ ] a thing #high #v0.12.1"
+            with_focus_priority("- [ ] a thing #v0.12.1"),
+            "- [ ] a thing #low #v0.12.1"
         );
     }
 

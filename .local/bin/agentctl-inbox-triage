@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agentctl-inbox-triage: route the outbox and file every project sheet's `## Inbox`, in one sweep.
 #
-#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog] [--watch]
+#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag-high]]] [--watch]
 #
 # A pass starts by splitting lists (`notes outbox split`, `notes ptask <p> split`): two or more checkboxes under a line become one line per ask.
 # A `#ask` outbox line is a question: one read-only call answers it into today's notes inbox and the
@@ -12,13 +12,16 @@
 # edits a sheet, and a skipped or refused line stays put, recorded in the ingest record so later
 # sweeps pass it over until its words change. --watch is the runner: a sweep after each save,
 # once INBOX_SWEEP_QUIET seconds pass with no other. --backlog re-triages the rows already on the
-# boards. How it all fits: notes-cli README, "Intake".
+# boards. --backlog --priority gives each open row with no priority tag one, #urgent, #high or
+# #low, from one Sonnet call per batch (the inbox-priority agent); --retag-high also re-judges the
+# #high rows. How it all fits: notes-cli README, "Intake".
 
 set -uo pipefail
 
 NAME="${AGENTCTL_NAME:-inbox-triage}"
 TYPES=""   # the row types from `notes row types`, read once a pass
 : "${INBOX_TRIAGE_CMD:=agentctl-run --agent inbox-triage}"
+: "${INBOX_PRIORITY_CMD:=agentctl-run --agent inbox-priority}"  # --priority: a classify call, so Sonnet (its own conf)
 : "${INBOX_ASK_CMD:=agentctl-run --agent inbox-triage --role observe --max-turns 8}"  # a #ask answer: the observe role may look things up and write nothing
 : "${INBOX_TRIAGE_PASSES:=3}"
 : "${INBOX_TRIAGE_MAX:=40}"   # the most lines one model call carries (route and --backlog); budget_batch sizes each call under it
@@ -43,7 +46,7 @@ LIB="$HERE/../lib"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
-DRY=0; ONLY=""; BACKLOG=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
+DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; RETAG_HIGH=0; TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0
 OUT=""
 FLAG=""; RECORD=""; OUTBOX=""
@@ -52,14 +55,15 @@ say() { printf 'inbox-triage: %s\n' "$*" >&2; }
 # clean <width>: model text as one printable ASCII line, punctuation folded rather than dropped.
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 
-# ask <prompt> <items> <label> [cmd]: one model call over <items> lines or rows, its answer in OUT. A
+# ask <prompt> <items> <label> [cmd [sized]]: one model call over <items> lines or rows, its answer in OUT. A
 # failed call keeps its stderr in the log and its first words (a usage limit, an auth error) as
 # the pass's reason; one stopped at the per-call cap (CALLS_RC_CAPPED) halves the next batch, and
 # a clean one lets it grow. It runs from an empty directory, so no repo's Stop hook answers in
-# place of the model. A call with its own <cmd> (a #ask answer) leaves the route batch size alone.
+# place of the model. A call with its own <cmd> (a #ask answer) leaves the batch size alone, unless
+# it passes sized (a --priority batch).
 ask() {
   local wd err rc first cmd="${4:-$INBOX_TRIAGE_CMD}" sized=1
-  [ -n "${4:-}" ] && sized=0
+  [ -n "${4:-}" ] && [ "${5:-}" != sized ] && sized=0
   wd="$(mktemp -d)"; err="$(mktemp)"
   # shellcheck disable=SC2086 # a word list by design, overridable in tests
   OUT="$(cd "$wd" && $cmd -p <<<"$1" 2>"$err")"; rc=$?
@@ -456,6 +460,7 @@ $listing"
 backlog_pass() {
   local board names homes rc=0 p lane
   board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
+  board="$(managed_board <<<"$board")"
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
   TYPES="$(row_types)" || return 1   # once a pass, read by every backlog_batch
@@ -472,6 +477,80 @@ backlog_pass() {
   return "$rc"
 }
 
+# The rows board automation may touch: none of a profile with `automation = false`.
+managed_board() { jq -c '.rows |= map(select(.automation != false)) | .projects |= map(select(.automation != false))'; }
+
+# One --priority answer line -> n, priority, split by US.
+# shellcheck disable=SC2016 # jq source, not shell
+PRIORITY_JQ='fromjson? | select(type == "object" and (.n | type) == "number")
+  | [(.n | floor | tostring), ((.priority // "") | tostring)] | join("\u001f")'
+
+# priority_batch <project> <lane> <batch json> <epics>: one call gives each row a priority, and
+# `ptask tag` writes each that differs from the row's own (a new priority replaces the old).
+priority_batch() {
+  local p="$1" lane="$2" batch="$3" epics="$4" listing prompt n prio
+  local -a ids cur
+  mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
+  mapfile -t cur < <(jq -r '.[] | if .untriaged then "" else .priority end' <<<"$batch")
+  listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)"' <<<"$batch" | cut -c1-300)"
+  prompt="You set the priority of each row on one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do).
+
+urgent: it breaks or blocks the person or production now.
+high: the project's next release needs it, it belongs to one of the open epics below (#of/<epic id>, or plainly part of one), or the person asked for it (#requested).
+low: everything else, including ideas, polish and cleanup nothing waits on.
+When unsure between two, pick the lower.
+
+For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
+{\"n\": 1, \"priority\": \"low\"}
+
+## Open epics of this project (id, project, title)
+$(epics_of "$p" "$epics")
+## Rows (n. [id] text)
+$listing"
+  ask "$prompt" "${#ids[@]}" "$p ($lane) priority" "$INBOX_PRIORITY_CMD" sized || return
+  answered "$p ($lane) priority" || return 1
+  local -a seen=()
+  while IFS=$'\x1f' read -r n prio; do
+    [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#ids[@]}" ] || continue
+    [ -z "${seen[n]:-}" ] || continue   # one answer per row
+    seen[n]=1
+    case "$prio" in urgent|high|low) ;; *) continue ;; esac
+    [ "$prio" = "${cur[n - 1]}" ] && continue
+    pt "$p" "$lane" tag --add "$prio" "${ids[n - 1]}" && TAGGED=$((TAGGED + 1))
+  done < <(sed -n '/^INBOX-TRIAGE-START$/,/^INBOX-TRIAGE-END$/p' <<<"$OUT" | sed '1d;$d' | jq -rR "$PRIORITY_JQ")
+  for ((n = 1; n <= ${#ids[@]}; n++)); do [ -n "${seen[n]:-}" ] || KEPT=$((KEPT + 1)); done
+  return 0
+}
+
+# The --priority pass: every managed board's open rows with no priority tag (and with
+# --retag-high its #high rows), in batches, the boards with the most such rows first.
+priority_pass() {
+  local board epics rows p lane total off size r rc=0
+  board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
+  board="$(managed_board <<<"$board")"
+  epics="$(epics_open "$board")"
+  # shellcheck disable=SC2016 # jq source, not shell
+  rows="$(jq -c --argjson hi "$RETAG_HIGH" --arg only "$ONLY" '[.rows[]
+    | select((.lane == "human" or .lane == "agent") and .id != null and (.state == "open" or .state == "doing")
+             and ($only == "" or .project == $only) and (.untriaged or ($hi == 1 and .priority == "high")))]' <<<"$board")"
+  while IFS=$'\t' read -r p lane; do
+    [ -n "$p" ] || continue
+    local mine; mine="$(jq -c --arg p "$p" --arg l "$lane" '[.[] | select(.project == $p and .lane == $l)] | sort_by(.line)' <<<"$rows")"
+    total="$(jq length <<<"$mine")"; off=0
+    agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
+    while [ "$off" -lt "$total" ]; do
+      size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+      priority_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$size" '.[$o:$o + $m]' <<<"$mine")" "$epics"; r=$?
+      [ "$r" = "$CALLS_RC_CAPPED" ] && [ "$size" -gt 1 ] && continue
+      [ "$r" = "$EX_BUDGET" ] && break 2
+      [ "$r" = 0 ] || rc=1
+      off=$((off + size))
+    done
+  done < <(jq -r 'group_by([.project, .lane]) | sort_by(-length) | .[] | [.[0].project, .[0].lane] | @tsv' <<<"$rows")
+  [ "$rc" = 0 ] && [ "$BUDGET_STOP" = 1 ] && rc="$EX_BUDGET"
+  return "$rc"
+}
+
 # split_waiting: lists become one line per ask, before anything reads them: everything after this
 # treats one line as one item. Every sheet is asked, not only those the board counts, because a
 # block indented as a whole counts 0 until it is moved left. Writes, so a dry run skips it.
@@ -480,7 +559,7 @@ split_waiting() {
   [ "$DRY" = 1 ] && return 0
   [ -n "$ONLY" ] || notes outbox split >&2 || { say "notes outbox split failed"; proof_why "notes outbox split failed"; rc=1; }
   sheets="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
-  sheets="$(jq -r '.projects[].project' <<<"$sheets" | sort -u)"
+  sheets="$(managed_board <<<"$sheets" | jq -r '.projects[].project' | sort -u)"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     [ -z "$ONLY" ] || [ "$p" = "$ONLY" ] || continue
@@ -529,6 +608,7 @@ pass() {
     | {from: \"outbox\", raw, text, project} | $fresh | .project, \"\u001f\", .raw, \"\u001f\", .text, \"\u0000\"" <<<"$ob")
 
   board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
+  board="$(managed_board <<<"$board")"
   # A `<id>: <words>` line answers its open row, with no model.
   [ -z "$ONLY" ] && while IFS=$'\x1f' read -r -d '' p raw text; do
     answer "$p" "$raw" "$text" "$board" || rc=1
@@ -678,12 +758,28 @@ main() {
       --dry-run) DRY=1; shift ;;
       --project) ONLY="${2:-}"; shift 2 ;;
       --backlog) BACKLOG=1; shift ;;
+      --priority) PRIORITY=1; shift ;;
+      --retag-high) RETAG_HIGH=1; shift ;;
       --watch) WATCH=1; shift ;;
       -h|--help) sed -n '2,4p' "$0"; return 0 ;;
       *) say "unknown argument: $1"; return 2 ;;
     esac
   done
   local rc=0 summary verdict cfg dir
+  [ "$PRIORITY" = 0 ] || [ "$BACKLOG" = 1 ] || { say "--priority goes with --backlog"; return 2; }
+  [ "$RETAG_HIGH" = 0 ] || [ "$PRIORITY" = 1 ] || { say "--retag-high goes with --priority"; return 2; }
+  if [ "$PRIORITY" = 1 ]; then
+    priority_pass; rc=$?
+    summary="priority: tagged $TAGGED, left $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+    say "$summary"
+    [ "$DRY" = 1 ] && return "$rc"
+    verdict=NOOP
+    [ "$TAGGED" -gt 0 ] && verdict=WORKED
+    [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; summary="budget: $summary"; }
+    [ "$rc" = 1 ] && verdict=FAILED
+    proof_report "$NAME" "$verdict" "$summary"
+    return "$rc"
+  fi
   if [ "$BACKLOG" = 1 ]; then
     backlog_pass; rc=$?
     summary="backlog: rewrote $REWROTE, moved $MOVED, dropped $DROPPED, kept $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
