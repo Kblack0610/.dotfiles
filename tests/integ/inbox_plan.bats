@@ -173,3 +173,72 @@ outcome() { cat "$HOME/.local/state/agentctl/inbox-plan/last-outcome"; }
   assert_output --partial 'model call failed'
   assert_equal "$(outcome)" FAILED
 }
+
+# The review hold: a stub fleet-dispatch logs each start and keeps its brief; a stub agent-queue
+# lists $NOTES_FIXTURE/queue.jsonl as the open items.
+hold_stubs() {
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$NOTES_FIXTURE/dispatch.log"\nwhile [ $# -gt 0 ]; do [ "$1" = --brief ] && cp "$2" "$NOTES_FIXTURE/brief.md"; shift; done\nexit "${DISPATCH_RC:-0}"\n' >"$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ "${QUEUE_RC:-0}" = 0 ] || exit "$QUEUE_RC"\ncat "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null || true\n' >"$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-queue"
+}
+
+@test "hold: a requested #plan row opens a plan-mode session for review, and no model plans it" {
+  hold_stubs
+  sheet '- [ ] feat(brand): a brand kit #plan #requested <!-- id:sc-1 -->\n  was: brand kit for the studio\n'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'sc-1: held in a plan session for review'
+  assert_output --partial 'held 1 for review, 0 waiting (cap 3)'
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the model planned a row the person reviews"
+  run cat "$NOTES_FIXTURE/dispatch.log"
+  assert_output --regexp '^start --profile personal --project scratch --row sc-1 --brief .* --mode plan$'
+  run cat "$NOTES_FIXTURE/brief.md"
+  assert_output --partial 'reviews the plan: feat(brand): a brand kit #plan #requested'
+  assert_output --partial 'was: brand kit for the studio'
+  assert_output --partial 'ExitPlanMode'
+  grep -q '#plan' "$SHEET" || fail "the hold edited the row"
+  grep -q WORKED "$HOME/.local/state/agentctl/inbox-plan/last-outcome"
+}
+
+@test "hold: a #go row and a row nobody asked for are planned here, with no session (negative control)" {
+  hold_stubs
+  sheet '- [ ] feat(brand): a brand kit #plan #requested #go <!-- id:sc-1 -->\n- [ ] fix(ui): the menu #plan <!-- id:sc-2 -->\n'
+  answer '{"goal": "one kit", "approach": ["collect"], "checks": ["renders"], "size": "s", "split": []}'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'planned 2'
+  refute_output --partial 'held'
+  [ ! -e "$NOTES_FIXTURE/dispatch.log" ] || fail "a row that needs no review was held: $(cat "$NOTES_FIXTURE/dispatch.log")"
+  assert_equal "$(wc -l <"$NOTES_FIXTURE/model.log")" 2
+}
+
+@test "hold: past the cap of open plan items the row keeps #plan; a dry run starts nothing" {
+  hold_stubs
+  printf '%s\n' '{"slug": "a", "mode": "plan", "tags": "requested"}' '{"slug": "b", "mode": "plan", "tags": "#area/ci"}' \
+    '{"slug": "c", "mode": "oneshot", "tags": "requested"}' >"$NOTES_FIXTURE/queue.jsonl"
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n- [ ] feat(b): two #plan #requested <!-- id:sc-2 -->\n- [ ] feat(c): three #plan #requested <!-- id:sc-3 -->\n'
+  INBOX_PLAN_REVIEW_MAX=2 run "$PLAN" --dry-run
+  assert_success
+  assert_output --partial 'would hold [scratch] sc-1 in a plan session'
+  [ ! -e "$NOTES_FIXTURE/dispatch.log" ] || fail "a dry run started a session"
+  INBOX_PLAN_REVIEW_MAX=2 run "$PLAN"
+  assert_success
+  assert_output --partial 'held 1 for review, 2 waiting (cap 2)'
+  assert_equal "$(wc -l <"$NOTES_FIXTURE/dispatch.log")" 1
+  grep -q -- '--row sc-1 ' "$NOTES_FIXTURE/dispatch.log" || fail "not the oldest row: $(cat "$NOTES_FIXTURE/dispatch.log")"
+  assert_equal "$(grep -c '#plan' "$SHEET")" 3
+}
+
+@test "hold: a queue it cannot read, or a start that fails, holds nothing and fails the pass once" {
+  hold_stubs
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n- [ ] feat(b): two #plan #requested <!-- id:sc-2 -->\n'
+  QUEUE_RC=1 run "$PLAN"
+  assert_failure 1
+  assert_output --partial 'agent-queue list failed'
+  [ ! -e "$NOTES_FIXTURE/dispatch.log" ] || fail "a blind cap started a session"
+  INBOX_PLAN_REVIEW_MAX=1 DISPATCH_RC=1 run "$PLAN"
+  assert_failure 1
+  assert_output --partial 'sc-1: not held'
+  assert_equal "$(wc -l <"$NOTES_FIXTURE/dispatch.log")" 1
+  grep -q FAILED "$HOME/.local/state/agentctl/inbox-plan/last-outcome"
+}

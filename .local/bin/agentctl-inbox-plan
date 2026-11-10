@@ -11,6 +11,11 @@
 # the ingest record, so later passes skip the row until its words change. `--kick` starts this
 # runner's unit, without waiting, when a row waits; the inbox sweep and fleet-dispatch's plan_skips
 # call it after they tag rows. How it all fits: notes-cli README, "Intake".
+#
+# A row the person asked for (#requested) is theirs to review: unless it carries #go, it is held
+# instead, `fleet-dispatch start --mode plan` opening a plan-mode session that writes a phased plan
+# and waits on their approval. INBOX_PLAN_REVIEW_MAX such plan items may be open at once; past it the
+# row keeps #plan until one closes. Agent rows and #go rows are planned here, as above.
 
 set -uo pipefail
 
@@ -18,6 +23,7 @@ NAME="${AGENTCTL_NAME:-inbox-plan}"
 TYPES=""   # the row types from `notes row types`, read once a pass
 : "${INBOX_PLAN_CMD:=agentctl-run --role distill}"
 : "${INBOX_PLAN_MAX:=3}"
+: "${INBOX_PLAN_REVIEW_MAX:=3}"
 
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 LIB="$HERE/../lib"
@@ -32,15 +38,22 @@ LIB="$HERE/../lib"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$HERE/../../.config/shared-hooks/project-name.sh"
 
-DRY=0; ONLY=""; KICK=0; PLANNED=0; SPLIT=0; FAILED=0; RECORD=""
+DRY=0; ONLY=""; KICK=0; PLANNED=0; SPLIT=0; FAILED=0; HELD=0; KEPT=0; RECORD=""
 say() { printf 'inbox-plan: %s\n' "$*" >&2; }
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 
-# The open #plan rows the record has not refused, oldest first, as JSON lines.
+# The open #plan rows the record has not refused, oldest first, as JSON lines, each with hold: true
+# when the person asked for it and gave no #go.
 # shellcheck disable=SC2016 # jq source, not shell
 WAITING_JQ='[.rows[] | select(.state == "open" and .id != null and (.text | test("(^| )#plan( |$)"; "i")))
   | select($only == "" or .project == $only)
-  | select($seen[.project + "\t" + .text] | not)] | sort_by(.since // "") | .[:$max][]'
+  | select($seen[.project + "\t" + .text] | not)
+  | .hold = (.requested == true and (.text | test("(^| )#go( |$)"; "i") | not))] | sort_by(.since // "") | .[]'
+
+# The open plan items of requested rows, each a session that waits on the person or is building
+# what they approved: what INBOX_PLAN_REVIEW_MAX counts.
+# shellcheck disable=SC2016 # jq source, not shell
+REVIEWS_JQ='[.[] | select(.mode == "plan" and ((.tags // "") | test("(^| )#?requested( |$)")))] | length'
 
 # seen: the record's refused rows, by project and words.
 seen() {
@@ -150,6 +163,31 @@ $open"
     || say "$p $id: not recorded as planned"
 }
 
+# hold_row <row json>: start the row as a plan item, for the person to review its plan.
+hold_row() {
+  local row="$1" p id lane prof text details f out rc
+  p="$(jq -r .project <<<"$row")"; id="$(jq -r .id <<<"$row")"; lane="$(jq -r .lane <<<"$row")"
+  prof="$(jq -r '.profile // ""' <<<"$row")"; text="$(jq -r .text <<<"$row")"
+  details="$(jq -r '.details[]?' <<<"$row")"
+  if [ "$DRY" = 1 ]; then printf 'would hold [%s] %s in a plan session: %s\n' "$p" "$id" "$text"; HELD=$((HELD + 1)); return 0; fi
+  local -a lanes=()
+  [ "$lane" = agent ] && lanes=(--agent)
+  f="$(mktemp)"
+  printf '%s\n' "Plan this board row before anything is built. The person asked for it and reviews the plan: $text" \
+    ${details:+"Its detail lines:" "$details"} "" \
+    "Read the code you need, then write a phased plan to ~/.claude/plans/ that meets ~/.local/src/docs/planning.md, with what only the person can decide asked in it, and call ExitPlanMode: it waits there for their approval. Once approved, build it as ~/.claude/skills/one-shot/SKILL.md does; a plan of more than one phase queues its later phases with agent-queue add --plan." >"$f"
+  out="$(fleet-dispatch start ${prof:+--profile "$prof"} --project "$p" "${lanes[@]}" --row "$id" --brief "$f" --mode plan 2>&1)"; rc=$?
+  rm -f -- "$f"
+  if [ "$rc" != 0 ]; then
+    out="$(tail -n 1 <<<"${out:-no output}" | clean 160)"
+    say "$p $id: not held: $out"
+    proof_why "$p $id: not held: $out"
+    FAILED=$((FAILED + 1)); return 1
+  fi
+  say "$p $id: held in a plan session for review"
+  HELD=$((HELD + 1))
+}
+
 main() {
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -160,7 +198,7 @@ main() {
       *) say "unknown argument: $1"; return 2 ;;
     esac
   done
-  local dir board rows rc=0 r row summary verdict
+  local dir board rows rc=0 r row summary verdict open slots=0 tries=0 holds=0
   dir="$(notes config 2>/dev/null | sed -n 's/^state  *//p')"
   [ -n "$dir" ] && RECORD="$dir/ingest.jsonl"
   if ! board="$(notes board --json 2>/dev/null)"; then
@@ -168,7 +206,7 @@ main() {
     [ "$KICK" = 1 ] || [ "$DRY" = 1 ] || { proof_why "notes board --json failed"; proof_report "$NAME" FAILED; }
     return 1
   fi
-  rows="$(jq -c --arg only "$ONLY" --argjson seen "$(seen)" --argjson max "$INBOX_PLAN_MAX" "$WAITING_JQ" <<<"$board")"
+  rows="$(jq -c --arg only "$ONLY" --argjson seen "$(seen)" "$WAITING_JQ" <<<"$board")"
   # The unit by name, not $NAME: a caller's AGENTCTL_NAME is its own.
   if [ "$KICK" = 1 ]; then
     [ -n "$rows" ] || return 0
@@ -180,22 +218,43 @@ main() {
     say "notes row types failed (an old notes? notes-bootstrap --build-only)"
     proof_why "notes row types failed"; rows='' rc=1
   fi
+  # A queue that cannot be read opens no session: the cap would be blind.
+  if grep -q '"hold":true' <<<"$rows"; then
+    if open="$(agent-queue list --json --state active 2>/dev/null | jq -s "$REVIEWS_JQ" 2>/dev/null)" && [ -n "$open" ]; then
+      slots=$((INBOX_PLAN_REVIEW_MAX - open))
+    else
+      say "agent-queue list failed: no row is held this pass"; proof_why "agent-queue list failed"; rc=1
+    fi
+  fi
   while IFS= read -r row; do
     [ -n "$row" ] || continue
+    if [ "$(jq -r .hold <<<"$row")" = true ]; then
+      # A start that fails takes its slot too, so a broken start is tried once a pass, not per row.
+      if [ "$holds" -ge "$slots" ]; then KEPT=$((KEPT + 1)); continue; fi
+      holds=$((holds + 1))
+      agentctl report --name "$NAME" "item=$(jq -r '.project + " " + .id' <<<"$row")" >/dev/null 2>&1 || true
+      hold_row "$row" || rc=1
+      continue
+    fi
+    [ "$tries" -lt "$INBOX_PLAN_MAX" ] || continue
+    tries=$((tries + 1))
     agentctl report --name "$NAME" "item=$(jq -r '.project + " " + .id' <<<"$row")" >/dev/null 2>&1 || true
     plan_row "$row" "$board"; r=$?
-    # The cap refuses every row after this one too. A row that already failed keeps the pass FAILED.
+    # The cap refuses every later plan too, so none is asked for; a hold costs no call and goes on.
+    # A row that already failed keeps the pass FAILED.
     if [ "$r" = "$EX_BUDGET" ]; then
       [ "$rc" != 0 ] || rc="$r"
-      break
+      tries=$INBOX_PLAN_MAX
+      continue
     fi
     [ "$r" = 0 ] || rc=1
   done <<<"$rows"
   summary="planned $PLANNED, split into $SPLIT rows, refused $FAILED"
+  [ "$HELD$KEPT" = 00 ] || summary="$summary, held $HELD for review, $KEPT waiting (cap $INBOX_PLAN_REVIEW_MAX)"
   say "$summary"
   [ "$DRY" = 1 ] && return "$rc"
   verdict=NOOP
-  [ "$PLANNED" -gt 0 ] && verdict=WORKED
+  [ "$PLANNED" -gt 0 ] || [ "$HELD" -gt 0 ] && verdict=WORKED
   # "budget: " is what agentctl-briefing reads on the last outcome line.
   [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; summary="budget: $summary"; }
   [ "$rc" = 1 ] && verdict=FAILED

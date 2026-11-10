@@ -18,7 +18,7 @@
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
-#       (--item SLUG | --brief FILE --row KEY [--cwd REPO]
+#       (--item SLUG | --brief FILE --row KEY [--mode plan] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
 #   fleet-dispatch hosts [--json]    each fleet worker: placed or not, run units, load, and why it takes no session
@@ -1427,7 +1427,8 @@ headless() { jq -e --arg h "$1" '.harnesses[$h].headless == true' "$HARNESSES" >
 #                           the item's `agent:`: claude-lazer and opencode on the eval key, codex on the ChatGPT plan, lazer-reserve
 #                           on the claude-reserve key (where a run pass routes a Sonnet-lane item, start_item).
 #   --brief FILE --row KEY  claim the open row (an id in any case), promote it into a queue item with the brief as
-#                           its task, and start that item as --item does.
+#                           its task, and start that item as --item does. --mode plan makes it a plan item:
+#                           the session opens in plan mode and waits on the human's approval.
 #   --resume ID             a new session --session NAME in --cwd DIR running claude --resume.
 #                           The sheet is not touched: the row was claimed before the reboot.
 #                           --item SLUG re-attaches the started item that session was working;
@@ -1438,15 +1439,16 @@ headless() { jq -e --arg h "$1" '.harnesses[$h].headless == true' "$HARNESSES" >
 #                           a plan item, else bypass.
 cmd_start() {
   local project='' prof='' lane=human key='' server='' model='' brief_file='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' brief cmd label origin acct mode rec size
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' qmode='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
-      --project | --profile | --row | --server | --model | --brief | --resume | --cwd | --session | --window | --area | --item | --harness | --host) ;;
+      --project | --profile | --row | --server | --model | --brief | --resume | --cwd | --session | --window | --area | --item | --harness | --host | --mode) ;;
       *) say "start: unknown argument: $1"; return 2 ;;
     esac
     [ $# -ge 2 ] && [ -n "$2" ] || { say "start: $1 needs a value"; return 2; }
     case "$1" in
+      --mode) qmode=$2 ;;
       --project) project=$2 ;;
       --profile) prof=$2 ;;
       --row) key=$2; if [[ "$key" =~ ^[A-Za-z]{2,4}-[0-9]+$ ]]; then key=${key,,}; fi ;; # ids are written lower-case, typed both ways
@@ -1466,6 +1468,8 @@ cmd_start() {
   done
   [ -z "$harness" ] || [ -z "$resume" ] || { say "start: --harness starts an item; a resume stays on what it ran"; return 2; }
   [ -z "$harness" ] || [ -n "$item" ] || { say "start: --harness needs --item"; return 2; }
+  case "$qmode" in '' | oneshot | plan) ;; *) say "start: --mode is oneshot or plan, not $qmode"; return 2 ;; esac
+  [ -z "$qmode" ] || [ -n "$brief_file" ] || { say "start: --mode sets the item --brief makes; a queued item keeps its own"; return 2; }
   if [ -n "$host" ]; then
     [ -n "$item" ] && [ -z "$resume$brief_file" ] || { say "start: --host starts a queued --item"; return 2; }
     [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: a fleet worker cannot hold lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
@@ -1489,7 +1493,7 @@ cmd_start() {
     # every session. The item's brief adds /one-shot and how to close the row, so a brief that
     # opens with /one-shot is not run through it twice.
     promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" --arg area "$area" \
-      '{profile: $profile, project: $project, lane: $lane, key: $key, area: $area}')" "" "${brief#/one-shot }" >/dev/null || return 1
+      '{profile: $profile, project: $project, lane: $lane, key: $key, area: $area}')" "" "${brief#/one-shot }" "" "$qmode" >/dev/null || return 1
     item=$PROMOTED key=''
   elif [ -z "$item$resume" ]; then
     say "start: give exactly one of --brief, --item or --resume"
@@ -3556,12 +3560,12 @@ fill_night() {
   return "$jrc"
 }
 
-# promote <row> <tags> <task> -- claim the open row on its board, then add it to the queue under its
-# id, at the row's priority; a row that cannot be added is un-started again. The start stamps an id
+# promote <row> <tags> <task> [repeat] [mode] -- claim the open row on its board, then add it to the queue
+# under its id, at the row's priority (as a plan item for mode plan); a row that cannot be added is un-started again. The start stamps an id
 # on a row with none; a row still without one (its project has no code) is refused, since nothing
 # could join an item to it. The new item's slug is left in PROMOTED.
 promote() {
-  local c="$1" tags="$2" task="$3" repeat="${4-}" prof project lane key area line out id slug flag=() rc=0
+  local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
@@ -3582,8 +3586,9 @@ promote() {
   # The row's words are the item's title: no checkbox, id comment or #tags.
   local title
   title=$(sed -E 's/^- \[.\] //; s/<!--[^>]*-->//g; s/(^| )#[A-Za-z0-9_/:.-]+//g; s/ +$//' <<<"$line")
-  out=$(agent-queue add --project "$project" --priority "$(row_priority "$line" "$project")" --from "board:$project:$id" --slug "$id" \
-      ${title:+--title "$title"} ${tags:+--tags "$tags"} ${repeat:+--repeat} -- "$task" 2>&1) || rc=$?
+  # AGENT_QUEUE_START=0: add would start a plan item itself, and the caller starts what it promoted.
+  out=$(AGENT_QUEUE_START=0 agent-queue add --project "$project" --priority "$(row_priority "$line" "$project")" --from "board:$project:$id" --slug "$id" \
+      ${qmode:+--mode "$qmode"} ${title:+--title "$title"} ${tags:+--tags "$tags"} ${repeat:+--repeat} -- "$task" 2>&1) || rc=$?
   if [ "$rc" -ne 0 ]; then
     # The row's own item already finished ok, so its work landed and the row escaped closing. An agent
     # row stays started: the orphan pass closes it on that item's merge proof (land_orphan), or hands it
