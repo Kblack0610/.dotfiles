@@ -2797,8 +2797,13 @@ impl App {
                 } else {
                     n
                 };
+                // Stored clamped, so scrolling back up past the end moves at once.
+                let last = self
+                    .builds
+                    .as_ref()
+                    .map_or(0, |b| b.times.len().saturating_sub(1));
                 bv.times = Some(match c {
-                    KeyCode::PageDown | KeyCode::Char('J') => top + step,
+                    KeyCode::PageDown | KeyCode::Char('J') => (top + step).min(last),
                     _ => top.saturating_sub(step),
                 });
             }

@@ -121,6 +121,8 @@ relst.repaint = () => relRepaint() || bld.repaint() || tst.repaint();
 const BLD_COLS = { started: ["started", "n"], state: ["state"], repo: ["repo"], workflow: ["workflow"], branch: ["branch"], took: ["took", "n"], usual: ["usual", "n"], eta: ["eta", "n"], owner: ["owner"] };
 // A workflow's usual time as "median/p90", "-" below the runs a median needs.
 const usualText = (u) => (u ? `${secs(u.median)}/${secs(u.p90)}` : "-");
+// A running run's expected end, or once passed how far past it (a past clock reads as on time).
+const runEta = (t) => (!t ? "-" : t * 1e3 < Date.now() ? `+${secs(Date.now() / 1e3 - t)}` : when(t));
 $("releases").addEventListener("toggle", (e) => { if (e.target.dataset?.k) REL_OPEN[e.target.dataset.k] = e.target.open; }, true);
 const bldKey = (r) => `${r.forge}|${r.repo}|${r.id}|${r.attempt}`;
 
@@ -130,7 +132,7 @@ function buildRow(r) {
   const row = `<tr class="br${open ? " sel" : ""}" data-bkey="${esc(bldKey(r))}">` +
     `<td class="n">${when(r.started)}</td><td class="${relClass(r.level)}">${esc(r.state)}</td><td>${esc(r.repo)}</td>` +
     `<td class="wrap">${esc(r.workflow)}</td><td class="wrap muted">${esc(r.branch)}</td><td class="n">${wait}</td>` +
-    `<td class="n muted">${usualText(r.usual)}</td><td class="n">${r.eta ? when(r.eta) : "-"}</td>` +
+    `<td class="n muted">${usualText(r.usual)}</td><td class="n">${runEta(r.eta)}</td>` +
     `<td class="muted">${esc(r.owner || "-")}</td></tr>`;
   return open ? row + buildDetail(r) : row;
 }
@@ -158,7 +160,7 @@ function buildTimes(d) {
   if (!t.length) return "";
   const row = (w) => `<tr><td>${esc(w.repo.split("/").pop())}</td><td class="wrap">${esc(w.workflow)}</td><td class="n">${w.runs}</td>` +
     `<td class="n">${w.usual ? secs(w.usual.median) : "-"}</td><td class="n">${w.usual ? secs(w.usual.p90) : "-"}</td>` +
-    `<td class="n">${secs(w.longest)}</td><td class="n">${w.pass}%</td><td class="n">${w.running || ""}</td></tr>`;
+    `<td class="n">${w.runs ? secs(w.longest) : "-"}</td><td class="n">${w.runs ? w.pass + "%" : "-"}</td><td class="n">${w.running || ""}</td></tr>`;
   const head = "<tr><th>repo</th><th>workflow</th><th>runs</th><th>usual</th><th>p90</th><th>longest</th><th>pass</th><th>running</th></tr>";
   return cfold("bld-times", `<b>Run times</b> <span class="muted">${t.length} workflows, 30 days, finished runs (cancelled left out); usual is the median, - under 3 runs</span>`,
     `<div class="panel scroll"><table class="tbl">${head}${t.map(row).join("")}</table></div>`, REL_OPEN);
@@ -170,14 +172,15 @@ function buildsHead(d) {
     (stale ? ` <span class="warn">ledger older than ${dur(d.stale_after / 60)}</span>` : "") + `</h2>`;
   if (bld.err) html += `<div class="panel down">${esc(bld.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
-  return html;
+  // In the head, so a repaint while the search box has focus refreshes it too.
+  return html + buildTimes(d);
 }
 
 // The channels' tail: the Builds block, once it has been read.
 function releaseBuilds() {
   if (!bld.data) return bld.err ? `<div class="panel down">${esc(bld.err)}</div>` : "";
   if (!bld.data.table) return `<div id="bld-head">${buildsHead(bld.data)}</div>`;
-  return `<div data-tbl="${BUILDS_PRE}"><div id="bld-head">${buildsHead(bld.data)}</div>${buildTimes(bld.data)}${tblBar("bld", bld.data.table, BUILDS_HINT)}` +
+  return `<div data-tbl="${BUILDS_PRE}"><div id="bld-head">${buildsHead(bld.data)}</div>${tblBar("bld", bld.data.table, BUILDS_HINT)}` +
     `<div id="bld-body">${buildsBody(bld.data)}</div></div>`;
 }
 

@@ -127,8 +127,8 @@ pub fn log_title(r: &Run) -> String {
     )
 }
 
-const TIMES_HEADER: [&str; 7] = [
-    "REPO", "WORKFLOW", "RUNS", "USUAL", "P90", "LONGEST", "PASS",
+const TIMES_HEADER: [&str; 8] = [
+    "REPO", "WORKFLOW", "RUNS", "USUAL", "P90", "LONGEST", "PASS", "RUNNING",
 ];
 
 /// The Run times pane: each workflow's usual time over the window, `h` lines from line `top`.
@@ -152,10 +152,10 @@ pub fn times(b: &Builds, p: Palette, w: usize, h: usize, top: usize) -> Vec<Line
     let mut table = Table {
         header: TIMES_HEADER.to_vec(),
         rows: b.times.iter().map(time_row).collect(),
-        keep: vec![1, 3, 4, 0, 2, 6, 5],
+        keep: vec![1, 3, 4, 0, 7, 2, 6, 5],
         flex: Some(1),
         flexmin: 12,
-        right: vec![2, 3, 4, 5, 6],
+        right: vec![2, 3, 4, 5, 6, 7],
         cap: vec![(0, 24)],
         ..Default::default()
     }
@@ -176,9 +176,30 @@ fn time_row(t: &RunTime) -> Vec<Cell> {
         t.runs.to_string().into(),
         d(t.usual.map(|u| u.median)).into(),
         d(t.usual.map(|u| u.p90)).into(),
-        d(Some(t.longest)).into(),
-        format!("{}%", t.pass).into(),
+        d((t.runs > 0).then_some(t.longest)).into(),
+        if t.runs > 0 {
+            format!("{}%", t.pass)
+        } else {
+            "-".into()
+        }
+        .into(),
+        if t.running > 0 {
+            t.running.to_string()
+        } else {
+            String::new()
+        }
+        .into(),
     ]
+}
+
+/// A running run's expected end as a clock, or once that has passed, how far past it is
+/// (`+12m`): a clock in the past would read as on time.
+pub fn eta(eta: Option<i64>, now: i64) -> String {
+    match eta {
+        Some(t) if t < now => format!("+{}", dur((now - t) as f64)),
+        Some(t) => clock(t, now),
+        None => "-".into(),
+    }
 }
 
 fn run_row(r: &Run, p: Palette, now: i64) -> Vec<Cell> {
@@ -203,7 +224,7 @@ fn run_row(r: &Run, p: Palette, now: i64) -> Vec<Cell> {
                 format!("{}/{}", dur(u.median as f64), dur(u.p90 as f64))
             })
             .into(),
-        r.eta.map_or("-".into(), |t| clock(t, now)).into(),
+        eta(r.eta, now).into(),
         if r.owner.is_empty() {
             "-".into()
         } else {
@@ -332,6 +353,8 @@ pub mod tests {
         let row = out.iter().find(|r| r.contains("running")).unwrap();
         assert!(row.contains("44m/1h19m"), "{row}");
         assert!(row.contains(&clock(4900, 1300)), "{row}");
+        assert_eq!(eta(Some(1000), 1720), "+12m", "a passed ETA says how late");
+        assert_eq!(eta(None, 1720), "-");
     }
 
     #[test]

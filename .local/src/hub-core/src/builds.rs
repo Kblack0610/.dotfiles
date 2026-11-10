@@ -123,7 +123,7 @@ pub struct RunTime {
     pub repo: String,
     /// The name its runs are timed under (`timed_as`).
     pub workflow: String,
-    /// Finished runs counted: success, failure and timeout.
+    /// Finished runs counted: success, failure and timeout. 0 for a workflow only running.
     pub runs: usize,
     pub usual: Option<Usual>,
     pub longest: i64,
@@ -134,8 +134,13 @@ pub struct RunTime {
 
 impl RunTime {
     pub fn short_repo(&self) -> &str {
-        self.repo.rsplit('/').next().unwrap_or(&self.repo)
+        short_repo(&self.repo)
     }
+}
+
+/// The repo as a person names it: the part after the owner.
+pub fn short_repo(repo: &str) -> &str {
+    repo.rsplit('/').next().unwrap_or(repo)
 }
 
 impl Run {
@@ -153,9 +158,8 @@ impl Run {
         matches!(self.state.as_str(), "green" | "red" | "other")
     }
 
-    /// The repo as a person names it: the part after the owner.
     pub fn short_repo(&self) -> &str {
-        self.repo.rsplit('/').next().unwrap_or(&self.repo)
+        short_repo(&self.repo)
     }
 }
 
@@ -524,7 +528,7 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
     }
     let mut out: Vec<RunTime> = by
         .into_iter()
-        .filter(|(_, (took, _, _))| !took.is_empty())
+        .filter(|(_, (took, _, running))| !took.is_empty() || *running > 0)
         .map(|((forge, repo, workflow), (mut took, green, running))| {
             took.sort_unstable();
             let usual = (took.len() >= USUAL_MIN).then(|| Usual {
@@ -537,18 +541,24 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
                 workflow,
                 runs: took.len(),
                 usual,
-                longest: took[took.len() - 1],
-                pass: (green * 100 / took.len()) as u32,
+                longest: took.last().copied().unwrap_or_default(),
+                pass: (green * 100).checked_div(took.len()).unwrap_or_default() as u32,
                 running,
             }
         })
         .collect();
+    // Total, so the table never reshuffles between reads: the full repo and forge break a tie.
     out.sort_by(|a, b| {
-        (a.short_repo(), std::cmp::Reverse(a.runs), &a.workflow).cmp(&(
-            b.short_repo(),
-            std::cmp::Reverse(b.runs),
-            &b.workflow,
-        ))
+        let k = |t: &RunTime| {
+            (
+                short_repo(&t.repo).to_string(),
+                std::cmp::Reverse(t.runs),
+                t.workflow.clone(),
+                t.repo.clone(),
+                t.forge.clone(),
+            )
+        };
+        k(a).cmp(&k(b))
     });
     let usual: HashMap<Key, Usual> = out
         .iter()
@@ -934,6 +944,12 @@ mod tests {
             (2, None, 1)
         );
         assert!(rows.iter().all(|r| r.usual.is_none() && r.eta.is_none()));
+        let (_, only) = timed_rows(&[running(4, "Brand new", 60)]);
+        assert_eq!(
+            (only[0].runs, only[0].running, only[0].pass),
+            (0, 1, 0),
+            "a workflow only running is still listed"
+        );
     }
 
     #[test]
