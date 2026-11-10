@@ -30,10 +30,12 @@ BATS_FLAGS ?= --print-output-on-failure --timing
 
 # JUNIT=1 (CI sets it) makes each bats run also write a JUnit report.xml under
 # artifacts/junit/<run>/, which tests.yml uploads and its report job draws per test.
+# Any other value, 0 included, leaves it off.
 JUNIT ?=
+junit_on  = $(filter 1,$(JUNIT))
 junit_dir = $(ARTIFACTS)/junit/$(1)
-junit     = $(if $(JUNIT),--report-formatter junit -o $(call junit_dir,$(1)))
-junit_mk  = $(if $(JUNIT),mkdir -p $(call junit_dir,$(1)) &&)
+junit     = $(if $(junit_on),--report-formatter junit -o $(call junit_dir,$(1)))
+junit_mk  = $(if $(junit_on),mkdir -p $(call junit_dir,$(1)) &&)
 
 # Wall-clock cap for the ui tier (seconds). Generous enough for a cold container on a slow
 # runner, short enough that a blocked test fails the job instead of hanging it.
@@ -129,7 +131,8 @@ test-ui-inner: $(BATS)
 	@# failing - one such test wedged a run for 10 minutes before it was caught. Without
 	@# this a hung test burns the whole CI job and reports nothing useful.
 	@$(call junit_mk,ui) timeout --foreground $(UI_TIMEOUT) $(BATS) $(BATS_FLAGS) $(call junit,ui) $(HERE)ui \
-	  || { rc=$$?; [ $$rc -eq 124 ] && echo "ui tier TIMED OUT after $(UI_TIMEOUT)s (a test is probably blocked on an attach)" >&2; exit $$rc; }
+	  || { rc=$$?; [ $$rc -eq 124 ] && { echo "ui tier TIMED OUT after $(UI_TIMEOUT)s (a test is probably blocked on an attach)" >&2; \
+	       $(if $(junit_on),printf '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites><testsuite name="timeout" tests="1" failures="1" errors="0" skipped="0"><testcase classname="ui" name="ui tier timed out after $(UI_TIMEOUT)s"><failure message="timed out; a test is probably blocked on an attach"/></testcase></testsuite></testsuites>\n' >$(call junit_dir,ui)/report.xml;) }; exit $$rc; }
 
 # What the container's default CMD runs: everything, in one pass.
 test-container: test-fast test-ui-inner

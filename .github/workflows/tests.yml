@@ -158,11 +158,12 @@ jobs:
           retention-days: 14
 
   # Draws only: the tier jobs are the gate, so a failed test fails them, not this check.
-  # The token is read-only by default; this job alone may write the check it creates.
+  # The token is read-only by default; this job alone may write the check it creates. A fork
+  # PR's token cannot write checks at all, so the job skips there instead of going red.
   report:
     name: test report
     needs: [fast, ui]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -175,6 +176,15 @@ jobs:
         with:
           pattern: junit-*
           path: junit
+      # bats names a suite by its file's basename, and seven basenames exist in two tiers
+      # (unit/worktree.bats, integ/worktree.bats). The artifact name carries the tier.
+      - name: Name each suite by tier
+        run: |
+          for f in junit/junit-*/*/report.xml; do
+            [ -e "$f" ] || continue
+            tier=$(cut -d- -f2 <<<"${f#junit/}")
+            sed -i "s#<testsuite name=\"#&$tier/#" "$f"
+          done
       - uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
         with:
           name: bats results
