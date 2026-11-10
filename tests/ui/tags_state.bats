@@ -213,3 +213,43 @@ teardown() { ui_teardown; }
   assert_failure
   assert_output --partial 'unknown subcommand'
 }
+
+# ── session favourites ───────────────────────────────────────────────────────
+
+@test "fav toggles the session option, and again clears it" {
+  sess=$(_tm display-message -p -t "${WIN[0]}" '#{session_name}')
+  "$TAGS" fav -t "$sess"
+  run "$TAGS" fav ls
+  assert_output "$sess"
+  "$TAGS" fav -t "$sess"
+  run "$TAGS" fav ls
+  assert_output ''
+}
+
+@test "a favourite is a session option every window of it reads, not a window tag" {
+  # status-left, Prefix+w and agent-panel all read #{@fav} from a window or pane format;
+  # that only works while tmux falls back from the window to its session's options.
+  "$TAGS" fav on -t "${WIN[0]}"
+  run _tm display-message -p -t "${WIN[1]}" '#{?@fav,fav,no}'
+  assert_output 'fav'
+  run "$TAGS" get -t "${WIN[1]}"
+  refute_output --partial 'fav'
+  run _tm show-options -wqv -t "${WIN[1]}" @fav
+  assert_output ''
+}
+
+@test "fav off on a session that is not a favourite succeeds and changes nothing" {
+  run "$TAGS" fav off -t "${WIN[0]}"
+  assert_success
+  run "$TAGS" fav ls
+  assert_output ''
+}
+
+@test "fav refuses a session that does not exist and an unknown verb" {
+  run "$TAGS" fav -t no-such-session
+  assert_failure
+  assert_output --partial 'no such session'
+  run "$TAGS" fav sideways -t "${WIN[0]}"
+  assert_failure
+  assert_output --partial 'usage: fav'
+}
