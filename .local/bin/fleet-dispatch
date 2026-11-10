@@ -3505,7 +3505,7 @@ cmd_reap() {
 # pass. One still open after that shows in plans_unqueued. `- [-]` is how a human drops a phase.
 # They are an automated filer's (`from: auto:plans`), so a queue a day of drain deep holds them
 # (agent-queue admit), and the next pass tries again. They queue at low priority: no one is driving a
-# plan its session left, so its phases never outrank work a human or the board asked for.
+# plan its session left, so its phases rank below every high and urgent item.
 reconcile_plans() {
   [ "$DISPATCH_PLAN_RECONCILE" = 1 ] || return 0
   local orphans c plan project held out rc
