@@ -384,15 +384,16 @@ cmd_link() {
             # temp file over its target, so linking to a stow link would replace that link.
             [[ -e "$MAIN_DIR/$e" ]] || continue
             src="$(readlink -f "$MAIN_DIR/$e")" dst="$dir/$e"
-            if [[ -L "$dst" ]]; then
+            if [[ -L "$dst" && "$(readlink -f "$dst")" == "$src" ]]; then
+                # Already shares main's entry; repoint a two-hop link at the real file.
                 [[ "$(readlink "$dst")" == "$src" ]] || ln -sfn "$src" "$dst"
                 continue
             fi
-            if [[ -d "$dst" && " ${MERGE[*]} " == *" $e "* ]]; then
+            if [[ -d "$dst" && ! -L "$dst" && " ${MERGE[*]} " == *" $e "* ]]; then
                 find "$dst" -mindepth 1 -maxdepth 1 -exec mv -n -t "$src" {} +
                 rmdir "$dst" 2>/dev/null   # anything left (a name clash) is parked below
             fi
-            if [[ -e "$dst" ]]; then
+            if [[ -e "$dst" || -L "$dst" ]]; then
                 # Never delete what an account already had: park it for a manual merge.
                 bk="$dir/.pre-share-$(date +%F)"
                 mkdir -p "$bk"

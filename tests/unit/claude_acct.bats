@@ -179,6 +179,16 @@ creds() {
   assert_output ''
 }
 
+@test "link parks an account's link to somewhere else, never overwrites it" {
+  mkdir -p "$HOME/.claude/sessions" "$SANDBOX/elsewhere"
+  echo alt > "$SANDBOX/elsewhere/200.json"
+  ln -s "$SANDBOX/elsewhere" "$ALT/sessions"
+  run "$ACCT" link
+  assert_success
+  [[ "$(readlink "$ALT/sessions")" == "$(readlink -f "$HOME/.claude/sessions")" ]]
+  [[ "$(readlink "$ALT/.pre-share-$(date +%F)/sessions")" == "$SANDBOX/elsewhere" ]]
+}
+
 @test "link merges an account's live sessions into the shared registry" {
   mkdir -p "$HOME/.claude/sessions" "$ALT/sessions"
   echo main > "$HOME/.claude/sessions/100.json"
