@@ -183,11 +183,13 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
                 Some(_) => lane_of(l), // the tag is the source of truth
                 None => {
                     // Untagged: inherit the lane it was dropped under, else take the
-                    // default. Either way it leaves here TAGGED - an open task with no
-                    // stated priority used to sort above `### Urgent`, so a task nobody had
-                    // thought about outranked one explicitly marked urgent.
+                    // default. A Focus task leaves here TAGGED - an open task with no stated
+                    // priority used to sort above `### Urgent`. A sheet row with no lane over
+                    // it stays untagged: it is untriaged, and a default `#high` would hide that
+                    // (human, 2026-11-09: every row gets a real priority from triage).
                     let i = cur_lane.unwrap_or(default);
-                    open[i].push(if retag {
+                    let tag = retag && (layout == Layout::Focus || cur_lane.is_some());
+                    open[i].push(if tag {
                         md::add_tag(l, md::PRIORITIES[i].1)
                     } else {
                         l.to_string()
