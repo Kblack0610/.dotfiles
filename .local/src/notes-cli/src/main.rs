@@ -694,6 +694,10 @@ enum PtaskCmd {
         /// `was:` detail line, and the old row's own tags (#requested, #tier/N, #size/x) carry over
         #[arg(long, requires = "text")]
         was: bool,
+        /// Link the new text as `add` would: a leaf with no `#of/` whose area is one of the
+        /// project's systems goes under that system's standing epic, filed when missing
+        #[arg(long, requires = "text")]
+        link: bool,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -1314,6 +1318,7 @@ fn main() -> Result<()> {
                     append,
                     detail,
                     was,
+                    link,
                     query,
                 }) => project_tasks::retext(
                     &prof,
@@ -1324,6 +1329,7 @@ fn main() -> Result<()> {
                     append.as_deref(),
                     &detail,
                     was,
+                    link.then_some(standing::SYSTEMS_BIN),
                     lane,
                 )?,
                 Some(PtaskCmd::Promote { query }) => {

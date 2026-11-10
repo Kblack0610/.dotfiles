@@ -1783,6 +1783,9 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
 /// must be `type(area): title`, the old words go first among `details` as `was: <words>`, and
 /// the old text's own tags (`#requested`, `#tier/3`, `#size/m`) carry over unless the new text
 /// sets one of the same name ([`carry_tags`]).
+///
+/// `systems` (`--link`, the triager's backlog link pass) names the systems command, and the new
+/// text then gets the standing-epic default link `add` gives a row ([`link_standing`]).
 #[allow(clippy::too_many_arguments)]
 pub fn retext(
     p: &Profile,
@@ -1793,6 +1796,7 @@ pub fn retext(
     append: Option<&str>,
     details: &[String],
     was: bool,
+    systems: Option<&str>,
     lane: Lane,
 ) -> Result<i32> {
     let (text, append) = (text.map(str::trim), append.map(str::trim));
@@ -1839,6 +1843,15 @@ pub fn retext(
         (Some(rewrite.as_str()), &with_was[..])
     } else {
         (text, details)
+    };
+    let linked;
+    let text = match (text, systems) {
+        (Some(t), Some(bin)) if !t.is_empty() => {
+            let proj_dir = projects::project_dir(p, name)?;
+            linked = link_standing(p, log, name, &proj_dir, &[t.to_string()], bin)?;
+            Some(linked.as_ref().map_or(t, |l| l[0].as_str()))
+        }
+        _ => text,
     };
     let has_details = details.iter().any(|d| !d.trim().is_empty());
     if text.or(append).is_none_or(str::is_empty) && !has_details {
@@ -3469,6 +3482,7 @@ mod inbox_tests {
             None,
             &[],
             false,
+            None,
             Lane::Human,
         )
         .unwrap();
@@ -3482,6 +3496,7 @@ mod inbox_tests {
             None,
             &details,
             false,
+            None,
             Lane::Human,
         )
         .unwrap();
@@ -3991,6 +4006,7 @@ mod inbox_tests {
                 None,
                 &[],
                 true,
+                None,
                 Lane::Human,
             )
         };

@@ -801,3 +801,60 @@ ask_stub() {
   assert_output --partial '--priority goes with --backlog'
   [ ! -e "$NOTES_FIXTURE/model.log" ]
 }
+
+@test "--backlog --link: each unparented row gets the model's system and epic, else its standing epic; a linked row or an epic is not asked" {
+  export INBOX_LINK_CMD=model-stub
+  systems ui:menu docs
+  sheet '' '- [ ] epic(ui): a pause menu mid-match <!-- id:sc-1 -->\n- [ ] fix(sound): resume flickers #size/s <!-- id:sc-2 -->\n- [ ] feat(menu): a quit button #size/s <!-- id:sc-3 -->\n- [ ] fix(ui): the logo blurs #size/s <!-- id:sc-4 -->\n- [ ] fix(ui): the menu lags #size/s #of/sc-1 <!-- id:sc-5 -->\n- [ ] fix(net): the lobby drops #size/s <!-- id:sc-6 -->\n'
+  # rows reach the model in sheet order: sc-2, sc-3, sc-4, sc-6
+  answer '{"n": 1, "system": "ui"}' '{"n": 2, "system": "docs", "of": "sc-1"}' '{"n": 3, "system": "ui", "of": "sc-99"}' '{"n": 4, "system": "netcode"}'
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  assert_output --partial 'link: feature 1, standing 2, new epics 0, left 1, refused 0'
+  grep -qx 'scratch: ui, docs (also: menu=ui)' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  refute grep -q 'menu lags\|^[0-9]*\. \[sc-1\]' "$NOTES_FIXTURE/prompt.txt"
+  run tasks
+  # a free area becomes the system id and goes under the filed standing epic
+  assert_output --regexp 'fix\(ui\): resume flickers #size/s #of/sc-7 <!-- id:sc-2 -->'
+  assert_output --regexp 'epic\(ui\): ui to standard .*id:sc-7'
+  # an alias area stays, and the open epic named is its parent
+  assert_output --regexp 'feat\(menu\): a quit button #size/s #of/sc-1 <!-- id:sc-3 -->'
+  # an epic id the board does not have falls back to the standing epic
+  assert_output --regexp 'fix\(ui\): the logo blurs #size/s #of/sc-7 <!-- id:sc-4 -->'
+  # NEGATIVE CONTROL: a system the project lacks leaves the row as it was
+  assert_output --regexp '\[ \] fix\(net\): the lobby drops #size/s <!-- id:sc-6 -->'
+}
+
+@test "--backlog --link --dry-run writes nothing and keeps its answers; the apply writes them with no model call" {
+  export INBOX_LINK_CMD=model-stub INBOX_LINK_DIR="$NOTES_FIXTURE/link"
+  systems ui
+  sheet '' '- [ ] fix(sound): resume flickers #size/s <!-- id:sc-2 -->\n- [ ] fix(ui): pause menu #size/m <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "system": "ui"}' '{"n": 2, "system": "ui", "epic": "epic(ui): a pause menu mid-match"}'
+  before="$(cat "$SHEET")"
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  assert_output --partial 'would run: notes ptask scratch --exact edit --link --text fix\(ui\):\ resume\ flickers\ #size/s'
+  assert_output --partial 'link: feature 1, standing 1, new epics 1'
+  assert_equal "$(cat "$SHEET")" "$before"
+  [ "$(wc -l <"$NOTES_FIXTURE/link/link-scratch.jsonl")" = 2 ]
+  : >"$NOTES_FIXTURE/model.log"
+  answer '{"n": 1, "system": "docs"}'
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model again"
+  [ ! -e "$NOTES_FIXTURE/link/link-scratch.jsonl" ] || fail "the apply left its cache"
+  run tasks
+  assert_output --regexp 'fix\(ui\): resume flickers #size/s #of/sc-4 <!-- id:sc-2 -->'
+  assert_output --regexp 'epic\(ui\): a pause menu mid-match .*#new.*id:sc-5'
+  assert_output --regexp 'fix\(ui\): pause menu #size/m #of/sc-5 <!-- id:sc-3 -->'
+}
+
+# NEGATIVE CONTROL: --link alone would run the inbox sweep's model call; it is refused.
+@test "--link without --backlog, or with --priority, is refused and asks no model" {
+  run "$TRIAGE" --link
+  assert_failure 2
+  assert_output --partial '--link goes with --backlog'
+  run "$TRIAGE" --backlog --priority --link
+  assert_failure 2
+  [ ! -e "$NOTES_FIXTURE/model.log" ]
+}

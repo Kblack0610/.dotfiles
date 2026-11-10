@@ -483,3 +483,60 @@ fn a_line_filed_from_the_inbox_links_like_an_add() {
     assert!(row.contains("#of/dm-1") && row.contains("id:dm-2"), "{row}");
     assert!(sheet.contains("was: the pause menu feels slow"), "{sheet}");
 }
+
+#[test]
+fn edit_link_puts_an_existing_row_under_its_systems_standing_epic() {
+    let h = Home::new("standing-edit");
+    ok(&agent(
+        &h,
+        &["add", "fix(sound): pause menu is slow #size/s"],
+    ));
+    ok(&agent(&h, &["add", "fix(sound): resume flickers #size/s"]));
+    h.systems(Some(SYSTEMS));
+    // NEGATIVE CONTROL: a plain edit to a system area writes no link.
+    ok(&agent(
+        &h,
+        &["edit", "dm-2", "--text", "fix(ui): resume flickers #size/s"],
+    ));
+    assert!(!h.board().contains("#of/"), "{}", h.board());
+    ok(&agent(
+        &h,
+        &[
+            "edit",
+            "dm-1",
+            "--link",
+            "--text",
+            "fix(menu): pause menu is slow #size/s",
+        ],
+    ));
+    let row = h
+        .board()
+        .lines()
+        .find(|l| l.contains("pause menu is slow"))
+        .map(str::to_string)
+        .unwrap();
+    assert!(
+        row.contains("fix(menu):") && row.contains("#of/dm-3") && row.contains("id:dm-1"),
+        "the row keeps its id and goes under the filed epic: {row}"
+    );
+    assert_eq!(h.sheet().matches("epic(ui): ui to standard").count(), 1);
+    // A free area word stays unlinked under --link too, and files no second epic.
+    ok(&agent(
+        &h,
+        &[
+            "edit",
+            "dm-2",
+            "--link",
+            "--text",
+            "fix(sound): resume flickers #size/s",
+        ],
+    ));
+    assert!(
+        h.board()
+            .lines()
+            .any(|l| l.contains("resume flickers") && !l.contains("#of/")),
+        "{}",
+        h.board()
+    );
+    assert_eq!(h.sheet().matches("to standard").count(), 1, "{}", h.sheet());
+}
