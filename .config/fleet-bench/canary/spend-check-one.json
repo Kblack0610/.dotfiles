@@ -1,0 +1,33 @@
+{
+  "id": "spend-check-one",
+  "project": "dotfiles",
+  "stack": "shell",
+  "pr": "Kblack0610/.dotfiles#1295",
+  "base": "ceb8a5178f4080b26874c89bc440aee41e66dc11",
+  "merge": "82fe8900168f29129ba6eb4ca7947e157205c40d",
+  "task": "chore(cleanup): one spend check behind both claude-spend watches",
+  "accept": [
+    "spend check: under the ceiling exits 0 and names the window and the ceiling",
+    "spend check: over the ceiling exits 1",
+    "spend check: the query carries the window it was given",
+    "spend check: Prometheus unreadable exits 2, so the watch trips instead of going blind",
+    "spend check: a bad window or ceiling is a usage error, not a silent pass",
+    "spend check: an answer that is not a vector of numbers exits 2, never a silent zero",
+    "spend check: no PROM_URL exits 2",
+    "spend check: just over the ceiling prints a figure that shows it"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/agent_usage.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(spend check: under the ceiling exits 0 and names the window and the ceiling|spend check: over the ceiling exits 1|spend check: the query carries the window it was given|spend check: Prometheus unreadable exits 2, so the watch trips instead of going blind|spend check: a bad window or ceiling is a usage error, not a silent pass|spend check: an answer that is not a vector of numbers exits 2, never a silent zero|spend check: no PROM_URL exits 2|spend check: just over the ceiling prints a figure that shows it)$",
+      "tests/unit/agent_usage.bats"
+    ]
+  }
+}

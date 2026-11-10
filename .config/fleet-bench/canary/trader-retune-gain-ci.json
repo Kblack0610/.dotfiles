@@ -1,0 +1,41 @@
+{
+  "id": "trader-retune-gain-ci",
+  "project": "trader",
+  "stack": "python",
+  "pr": "Kblack0610/freqtrade_trading_attempt#30",
+  "base": "22a5800eaa40f91c6175f1e53c97e974923ed24f",
+  "merge": "9b98a78a7439b92d39e28bef354d1fab972f28f2",
+  "task": "fix(suggest): retune needs the tuned gain over as-is to clear zero at its 90% low",
+  "accept": [
+    "pytest: test_diff_ci_straddles_zero_for_one_sample_and_clears_it_for_a_shifted_one",
+    "pytest: test_retune_needs_the_newest_months_beaten_and_a_tuned_interval_above_zero"
+  ],
+  "oracle": {
+    "paths": [
+      "lab/tests/test_metrics.py",
+      "lab/tests/test_suggest.py"
+    ],
+    "cmd": [
+      "uv",
+      "run",
+      "--offline",
+      "--no-project",
+      "--python",
+      "/usr/bin/python3",
+      "--with",
+      "pytest==8.4.2",
+      "--with",
+      "psycopg[binary]==3.2.12",
+      "python",
+      "-m",
+      "pytest",
+      "-q",
+      "-p",
+      "no:cacheprovider",
+      "lab/tests/test_metrics.py",
+      "lab/tests/test_suggest.py",
+      "-k",
+      "test_diff_ci_straddles_zero or test_retune_needs_the_newest_months"
+    ]
+  }
+}

@@ -22,6 +22,9 @@
 #                        # as one sentence; exit 0 room, 1 refused, 2 unread, 3 no such source
 #   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
 #   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve
+#   claude-acct check underuse [source...]
+#                        # one line, exit 1 when a paced source resets within UNDERUSE_HOURS with
+#                        # its use UNDERUSE_GAP_PCT points or more under its week gone (pace.conf)
 #   claude-acct cost     # {"<session id>": dollars} over CLAUDE_ACCT_COST_WINDOW (7d), from
 #                        # Prometheus; exit 2 when it cannot be read. fleet-shepherd's budgets read it
 #   claude-acct link     # share the main ~/.claude setup into every other account dir
@@ -942,7 +945,29 @@ cmd_check() {
                         if $o != [] then "over pace: \($o | join(", "))" else empty end] | join("; ") end' <<< "$rows"
             # no row at all is nothing read, never a quiet green
             [[ "$(jq 'length > 0 and all(.unread == false and .over == [])' <<< "$rows")" == true ]] ;;
-        *) echo "usage: claude-acct check usage|pace" >&2; return 2 ;;
+        underuse)
+            # The other side of pace: a plan source (Codex) whose week resets within UNDERUSE_HOURS
+            # with its use UNDERUSE_GAP_PCT or more points under the week gone loses that use at the
+            # reset. Names the sources to judge (default every paced source); an unread one is
+            # check pace's, and a name not in the sources is nothing read, never a quiet green.
+            local hours gap now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
+            hours=$(pace_get UNDERUSE_HOURS); gap=$(pace_get UNDERUSE_GAP_PCT)
+            [[ -n "$hours" && -n "$gap" ]] || return 2
+            shift
+            rows=$(all_json nospend | jq -s --argjson now "$now" --argjson hours "$hours" --argjson gap "$gap" --args '
+                ($ARGS.positional) as $want
+                | [.[] | select(.kind != "claude" and .paced and (($want == []) or (.name as $n | $want | index($n))))] as $rs
+                | {missing: [$want[] | select(. as $n | $rs | map(.name) | index($n) | not)],
+                   under: [$rs[] | select(.state != "unread" and .resets != null and .week_used != null and .week_gone != null
+                       and (.resets - $now) <= $hours * 3600 and (.week_gone - .week_used) >= $gap)
+                     | "\(.name) \(.week_used | floor)% used, \(.week_gone | floor)% of its week gone, resets in \((.resets - $now) / 3600 | floor)h"],
+                   n: ($rs | length)}' "$@")
+            jq -r 'if .missing != [] then "not a paced source: \(.missing | join(", "))"
+                elif .n == 0 then "no sources read"
+                elif .under != [] then "under-used near its reset: \(.under | join("; "))"
+                else "no source under-used near its reset (\(.n) sources)" end' <<< "$rows"
+            [[ "$(jq '.missing == [] and .n > 0 and .under == []' <<< "$rows")" == true ]] ;;
+        *) echo "usage: claude-acct check usage|pace|underuse [source...]" >&2; return 2 ;;
     esac
 }
 

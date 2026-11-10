@@ -1332,7 +1332,7 @@ harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESS
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -1383,6 +1383,9 @@ gateway_launch() {
         cmd="$cmd run -m $(printf '%q' "$id")"
       fi
       cmd="$cmd --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check"
+      # An item's effort: (a canary lane's, fleet-bench canary queue --effort) overrides config.toml's.
+      effort=$(jq -r '.effort // empty' <<<"$it")
+      [ -z "$effort" ] || cmd="$cmd -c model_reasoning_effort=$(printf '%q' "$effort")"
       [ -n "$thread" ] || cmd="$cmd --color never"   # a resume takes no --color
       cmd="$cmd $(printf '%q' "$brief")"
       ;;

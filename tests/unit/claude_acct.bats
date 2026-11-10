@@ -1641,6 +1641,42 @@ pro_rollout() {
   assert_output 'over pace: codex pace, res reserve'
 }
 
+@test "check underuse: a paced source near its reset with its use far under the week gone trips; far from the reset, or near pace, it is quiet" {
+  src_setup
+  week main 30 84
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  budget sk-res key 5 20
+  # 84h left: half the week gone, 10% used, but the reset is far off
+  rollout 10 0 84
+  run --separate-stderr "$ACCT" check underuse codex
+  assert_success
+  assert_output 'no source under-used near its reset (1 sources)'
+  # 24h left, 85% of the week gone, 10% used: the rest is lost at the reset
+  rollout 10 0 24
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  run --separate-stderr "$ACCT" check underuse codex
+  assert_failure 1
+  assert_output 'under-used near its reset: codex 10% used, 85% of its week gone, resets in 24h'
+  # dollar budgets are not paced, so the default set is codex alone
+  run --separate-stderr "$ACCT" check underuse
+  assert_failure 1
+  assert_output --partial 'codex 10% used'
+  # 24h left and 70% used: within UNDERUSE_GAP_PCT of the week gone
+  rollout 70 0 24
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  run --separate-stderr "$ACCT" check underuse codex
+  assert_success
+  # a name that is no paced source is nothing read; a missing number stops the check
+  run --separate-stderr "$ACCT" check underuse lazer
+  assert_failure 1
+  assert_output 'not a paced source: lazer'
+  grep -v '^UNDERUSE_HOURS=' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$SANDBOX/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$SANDBOX/pace.conf" run --separate-stderr "$ACCT" check underuse codex
+  assert_failure 2
+  [[ "$stderr" == *'UNDERUSE_HOURS is not set to a number'* ]] || fail "$stderr"
+}
+
 @test "check pace: no source at all is nothing read, never a quiet green" {
   src_setup
   : > "$CLAUDE_ACCT_CONFIG"

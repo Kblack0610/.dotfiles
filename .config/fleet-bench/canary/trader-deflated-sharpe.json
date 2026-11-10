@@ -1,0 +1,5 @@
+{"id":"trader-deflated-sharpe","project":"trader","stack":"python","pr":"Kblack0610/freqtrade_trading_attempt#19","base":"69ef535a36b4457008c0e12807133727bc754d3e","merge":"e73517dcbb1073a8788e21841578b66125e3d971",
+ "task":"fix(lab): walk-forward seeds fit optuna, deflated Sharpe uses the null's noise",
+ "accept":["pytest: test_deflated_sharpe_falls_as_trials_grow","pytest: test_deflated_sharpe_clears_a_real_edge_and_not_luck","pytest: test_seeds_fit_the_hyperopt_samplers"],
+ "oracle":{"paths":["lab/tests/test_metrics.py"],
+  "cmd":["uv","run","--offline","--no-project","--python","/usr/bin/python3","--with","pytest==8.4.2","python","-m","pytest","-q","-p","no:cacheprovider","lab/tests/test_metrics.py","-k","test_deflated_sharpe or test_seeds_fit"]}}

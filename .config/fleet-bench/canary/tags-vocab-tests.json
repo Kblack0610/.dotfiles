@@ -1,0 +1,50 @@
+{
+  "id": "tags-vocab-tests",
+  "project": "dotfiles",
+  "stack": "shell",
+  "pr": "Kblack0610/.dotfiles#117",
+  "base": "4a74511d38eeb8e0e1e66d013a437e1136b9b71b",
+  "merge": "7e52b874ea3f5d687588ea8a34b22d1966b747ba",
+  "task": "test(tmux): put the kill-decision path under test - tags.sh and servers.sh",
+  "accept": [
+    "PROTECT_TAGS is exactly pinned and important",
+    "every protect tag is a real tag in the vocabulary",
+    "the documented flag and valued tags are the ones actually defined",
+    "tag_opt maps a flag tag to its option with value 1",
+    "tag_opt maps every flag tag, not just the first",
+    "tag_opt maps a valued tag to its option carrying the value",
+    "tag_opt rejects a value on a flag tag",
+    "tag_opt rejects a valued tag with no value",
+    "tag_opt rejects an unknown tag and names the vocabulary",
+    "tag_opt keeps a value containing a hyphen intact",
+    "tag_opt splits on the FIRST colon, so a value may contain one",
+    "tag_filter on a bare flag tests the option's presence",
+    "tag_filter on a bare valued tag matches any value",
+    "tag_filter on a valued tag with a value pins to that value",
+    "tag_filter rejects an unknown tag rather than matching everything",
+    "any_tag_filter mentions every tag in the vocabulary",
+    "any_tag_filter combines the tags with OR, not AND",
+    "tags_format renders every tag in the vocabulary",
+    "tags_format prints a valued tag as name:value, not a bare 1",
+    "split_target pulls -t out and leaves the rest of the argv",
+    "split_target accepts --target as well as -t",
+    "split_target finds -t wherever it sits in the argv",
+    "split_target leaves TARGET_ARG empty when no target is given",
+    "split_target resets state between calls",
+    "sourcing tags.sh runs no subcommand"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/tags_vocab.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(PROTECT_TAGS is exactly pinned and important|every protect tag is a real tag in the vocabulary|the documented flag and valued tags are the ones actually defined|tag_opt maps a flag tag to its option with value 1|tag_opt maps every flag tag, not just the first|tag_opt maps a valued tag to its option carrying the value|tag_opt rejects a value on a flag tag|tag_opt rejects a valued tag with no value|tag_opt rejects an unknown tag and names the vocabulary|tag_opt keeps a value containing a hyphen intact|tag_opt splits on the FIRST colon, so a value may contain one|tag_filter on a bare flag tests the option's presence|tag_filter on a bare valued tag matches any value|tag_filter on a valued tag with a value pins to that value|tag_filter rejects an unknown tag rather than matching everything|any_tag_filter mentions every tag in the vocabulary|any_tag_filter combines the tags with OR, not AND|tags_format renders every tag in the vocabulary|tags_format prints a valued tag as name:value, not a bare 1|split_target pulls -t out and leaves the rest of the argv|split_target accepts --target as well as -t|split_target finds -t wherever it sits in the argv|split_target leaves TARGET_ARG empty when no target is given|split_target resets state between calls|sourcing tags.sh runs no subcommand)$",
+      "tests/unit/tags_vocab.bats"
+    ]
+  }
+}

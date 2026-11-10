@@ -1286,7 +1286,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model size lane_run end_reason salvage plan pr merged partial closing_pr fix_tries fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed "
+SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage plan pr merged partial closing_pr fix_tries fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -1298,6 +1298,7 @@ cmd_set() {
     case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
     [ "$k" != tags ] || check_tags "${kv#*=}"
     [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
+    [ "$k" != effort ] || [[ "${kv#*=}" =~ ^[a-z]*$ ]] || die "effort is a word such as medium or high, not ${kv#*=}"
     if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then
       die "unknown project: ${kv#*=} (not a canonical project in $AQ_MAP)"
     fi
