@@ -8,7 +8,8 @@
 #   1. the session did real work — an Edit/Write tool call, or a commit/push/PR via Bash
 #   2. no queue item             - no `$AGENT_QUEUE_ITEM` from the dispatcher, and no item
 #                                  whose `sessions:` lists this one
-#   3. the work went untracked   - no `notes ptask` or `agent-queue` write by this session
+#   3. the work went untracked   - no `notes ptask add|start|done|toggle`, `agent-queue
+#                                  add|claim|move|set` or `agent-land` call by this session
 #   4. not already fired         — at most ONCE per session
 #
 # 1 and 3 are read from THIS session's transcript (`transcript_path` in the payload), so
@@ -20,11 +21,12 @@
 # and a concurrent session's write could satisfy your gate. Without a transcript (a
 # non-Claude caller) the old environment checks still run as the fallback.
 #
-# "In progress" is the session's queue item, never a `[/]` checkbox. A `[/]` Focus item used
-# to switch the gate off: it is the human's list, so one started item silenced every agent
-# session until midnight, while a started board row counted for nothing and the gate fired on
-# every new session working it (ar-257). A started board row is tracked by its queue item
-# (`agent-queue add --row` starts the row), and that item is what the checks below read.
+# "In progress" is the session's queue item or its own board write, never a `[/]` checkbox
+# already on a page. A `[/]` Focus item used to switch the gate off: it is the human's list,
+# so one started item silenced every agent session until midnight, while a started board row
+# counted for nothing and the gate fired on every new session working it (ar-257). A started
+# board row is tracked by its queue item (`agent-queue add --row` starts the row), and that
+# item is what the checks below read.
 #
 # Blocks by printing a Stop-hook JSON object on stdout (the protocol the coordinator
 # documents at pre-stop-checks.sh:9) and exiting 0 — NOT by exiting 2. Exit 2 would make
@@ -246,7 +248,7 @@ if [ "$PR_WORK" -eq 1 ]; then
   agent-queue claim <slug>                                                   when an item for it already exists (done or not)
   agent-land <N> --item <slug>                                               merges and closes it
 
-A board write does not count here: they are backlog and the human's list. Fires once per session; CLAUDE_SKIP_FOCUS_GATE=1 disables it."
+A board write or a Focus item does not count here: they are backlog and the human's list. Fires once per session; CLAUDE_SKIP_FOCUS_GATE=1 disables it."
   mkdir -p "$MARKER_DIR" 2>/dev/null && : > "$MARKER"
   save_state
   jq -n --arg r "$REASON" '{decision:"block", reason:$r}'
