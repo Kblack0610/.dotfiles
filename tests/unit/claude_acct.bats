@@ -1534,6 +1534,27 @@ pro_rollout() {
   [ "$(field codex .week_used <<<"$output")" = 70 ]
 }
 
+@test "sources: a codex refusal written since the cached reading is read at once; any other newer rollout waits for the TTL" {
+  src_setup
+  rollout 40 10 84
+  run --separate-stderr "$ACCT" room --source codex
+  assert_success
+  # the cache is written at the real time, before $NOW, so every rollout stamped at $NOW is newer
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  # a newer reading with no refusal keeps the cache, even one that would refuse the start
+  sed -i 's/"used_percent":40/"used_percent":100/' "$d/rollout-a.jsonl"; touch -d "@$NOW" "$d/rollout-a.jsonl"
+  CLAUDE_ACCT_TTL=999999999 run --separate-stderr "$ACCT" room --source codex
+  assert_success
+  CLAUDE_ACCT_TTL=0 run --separate-stderr "$ACCT" room --source codex
+  assert_failure 1
+  rollout 40 10 84; run --separate-stderr "$ACCT" room --source codex; assert_success
+  # a refusal after it does not: the next start sees the source reached
+  printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_complete","error":{"codex_error_info":"usage_limit_exceeded"},"completed_at":%s}}\n' \
+    "$(date -u -d "@$((NOW + 1))" +%FT%T.000Z)" "$((NOW + 1))" > "$d/rollout-c.jsonl"; touch -d "@$((NOW + 1))" "$d/rollout-c.jsonl"
+  CLAUDE_ACCT_TTL=999999999 run --separate-stderr "$ACCT" room --source codex
+  assert_failure 1
+}
+
 @test "sources: a key at its cap has no room" {
   src_setup
   budget sk-lazer key 10 100

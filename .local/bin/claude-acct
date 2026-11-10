@@ -307,10 +307,20 @@ budget_usage() {
              five_hour: null, paced: false, usd_used: .spend, usd_max: .max_budget}'
 }
 
-# fetch_source <name> <kind> <ref> -> the usage JSON of one source, cached for TTL like fetch
+# codex_refused_since <sessions dir> <cache file> -> rc 0 when a rollout written since the cache holds a
+# usage_limit_exceeded refusal: the cached reading predates it, and the next start must see the source
+# reached (ar-1120: six starts in two minutes on 2026-11-08 behind a cached reading). A match is only
+# a reason to read again; read_codex decides from the record.
+codex_refused_since() {
+    [[ -n "$(find "$1" -name 'rollout-*.jsonl' -newer "$2" -exec grep -l -m1 -F '"usage_limit_exceeded"' -- {} + 2>/dev/null)" ]]
+}
+
+# fetch_source <name> <kind> <ref> -> the usage JSON of one source, cached for TTL like fetch, except
+# that a codex refusal written since the cache makes it stale (codex_refused_since)
 fetch_source() {
     local name="$1" kind="$2" ref="$3" cache="$CACHE/$1.json" out tmp info refused
-    if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then cat "$cache"; return 0; fi
+    if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )) &&
+        ! { [[ "$kind" == codex ]] && codex_refused_since "$ref" "$cache"; }; then cat "$cache"; return 0; fi
     case "$kind" in
         codex) out=$(read_codex "$ref") ;;
         litellm-key|litellm-team)

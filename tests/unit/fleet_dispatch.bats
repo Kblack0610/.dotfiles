@@ -4259,15 +4259,23 @@ codex_end_item() {
   agent-queue set cx agent=codex lane_run=r-cx >/dev/null; agent-queue claim cx --sid "$1" >/dev/null
 }
 
-@test "reap: a Codex run that hit its usage limit is failed with end_reason limit, the reap says so, and model-lane gets no outcome" {
+@test "reap: a Codex run that hit its usage limit goes back to the queue with end_reason limit and model-lane gets no outcome" {
   codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
   run cmd_reap
-  assert_output --partial 'failed queue item cx (game-agent-1 ended without closing it, end_reason limit)'
-  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)
-  assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed limit'
-  assert_equal "$(qfield "$f" note)" 'session game-agent-1 ended before it closed the item (end_reason: limit)'
+  assert_output --partial 'requeued queue item cx (game-agent-1 hit the plan'"'"'s usage limit)'
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md 2>/dev/null)" ] || fail "a limit end is not a failure"
+  f=$(ls "$AGENT_QUEUE_DIR"/queued/*-cx.md)
+  assert_equal "$(qfield "$f" end_reason) $(qfield "$f" session)" 'limit '
+  assert_equal "$(qfield "$f" note)" "session game-agent-1 hit the plan's usage limit; requeued (end_reason: limit)"
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
   assert_failure
+}
+
+@test "reap: a Codex run its login refused (unauthorized) still fails: a requeue would only meet the same refusal (negative control)" {
+  codex_end_item th-auth '{"type":"task_complete","error":{"codex_error_info":"unauthorized"}}'
+  run cmd_reap
+  assert_output --partial 'end_reason refused'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" status)" failed
 }
 
 @test "reap: a Codex run that ended its turn clean and never closed is stopped, still failed, and still reported to model-lane (negative control)" {

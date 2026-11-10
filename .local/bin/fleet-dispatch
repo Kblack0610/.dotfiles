@@ -2022,7 +2022,8 @@ item_end() {
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
 # A Codex run that ends without closing also records why (item_end, --end): this is the only writer of
-# end_reason, and the reason is named in the note.
+# end_reason, and the reason is named in the note. One with no PR that ended at the plan's usage limit is
+# requeued, not failed.
 settle_item() {
   local st it pr report info state='' oid head='' ci='' end=() why=''; st=$(item_state "$1")
   # set_end -- why this run ended, asked only by the branches that record it.
@@ -2080,6 +2081,16 @@ settle_item() {
     logline "reaped $2: session gone, queue item $1 done with its report $report"
   else
     set_end
+    # The plan turned the run away at its usage limit: nothing about the item failed, so it goes back
+    # to queued/ and its next start waits on the source's room, which claude-acct holds reached from
+    # the refusal until the window resets (ar-1120). Salvaging a mid-run limit's work is codex-parity P6.
+    if [ "$why" = limit ]; then
+      agent-queue move "$1" queued "${end[@]}" --if "$st" >/dev/null || return 0
+      agent-queue set "$1" "note=session $2 hit the plan's usage limit; requeued (end_reason: limit)" >/dev/null
+      logline "reaped $2: session gone, queue item $1 requeued: end_reason limit"
+      echo "requeued queue item $1 ($2 hit the plan's usage limit)"
+      return 0
+    fi
     agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
     agent-queue set "$1" "note=session $2 ended before it closed the item${why:+ (end_reason: $why)}" >/dev/null
     logline "reaped $2: session gone, queue item $1 failed: no PR${why:+, end_reason $why}"
