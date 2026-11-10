@@ -1658,7 +1658,8 @@ ledger_counts() {
 # names (owner/repo#N, a forge URL, or a bare N by number). board_orphan_started: started agent rows
 # no active item names. merged_open_rows: done items with merge proof whose row is still open.
 # ownerless_running: running or waiting items with no session (reap flags them).
-# epic_linked_share: the agent rows filed under an epic (#of/) in the projects that have one open.
+# epic_linked_share: the agent rows filed under an epic (#of/), over every project automation manages;
+# a project with no epic yet counts, all its rows unlinked, since the link pass gives each row one.
 # landed_unverified: open epics whose every leaf is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
 # dup_pairs: instructions two homes restate, from the newest nightly docs-cleanup night's dups.json
 # (skill-drift --dups); the bound is dup_pairs_max, the same row skill-drift --dups --check holds.
@@ -1899,8 +1900,7 @@ chain_counts() {
             hit: ($c | map(select($refs[itemkey])) | length)} end) as $cov
     | ($b // [] | map(select(.lane == "agent"))) as $agent
     | ($b // [] | map("\(.project):\(.id)") | INDEX(.)) as $open
-    | ($p // [] | map(select((.epics // []) | length > 0) | .name) | INDEX(.)) as $epicked
-    | ($agent | map(select($epicked[.project] and .type != "epic"))) as $linkable
+    | ($agent | map(select(.automation != false and .type != "epic"))) as $linkable
     | "ledger_coverage=\(n(if $cov == null then null else ratio($cov.hit; $cov.total) end))",
       "untracked_merged_prs=\(n(if $cov == null then null else $cov.total - $cov.hit end))",
       "board_orphan_started=\(n(if $a == null or $b == null then null else ($a | map(rowkey | strings) | INDEX(.)) as $live

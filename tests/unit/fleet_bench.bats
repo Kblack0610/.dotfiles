@@ -2662,7 +2662,8 @@ chain_fixture() {
   BJSON="$SANDBOX/board.json" PJSON="$SANDBOX/projects.json"
   jq -cn '{rows: [{project: "game", lane: "agent", state: "doing", id: "g-1", type: "fix", tags: ["of/g-0"]},
                    {project: "game", lane: "human", state: "open", id: "g-0", type: "epic", tags: []},
-                   {project: "tools", lane: "agent", state: "open", id: "t-1", type: "fix", tags: []}],
+                   {project: "tools", lane: "human", state: "open", id: "t-0", type: "epic", tags: []},
+                   {project: "tools", lane: "agent", state: "open", id: "t-1", type: "fix", tags: ["of/t-0"]}],
             projects: [{project: "game", done_old: 0}, {project: "tools", done_old: 0},
                        {project: "off", automation: false, done_old: 5}]}' > "$BJSON"
   # the dispatch judge skipped t-1 for its size a day before T0, under one hour short of next_up_blocked
@@ -2671,7 +2672,7 @@ chain_fixture() {
   printf '#!/usr/bin/env bash\ncat %q\n' "$VERDICTS" > "$SANDBOX/bin/verdicts-stub"
   chmod +x "$SANDBOX/bin/verdicts-stub"
   export BENCH_VERDICTS_CMD=verdicts-stub
-  jq -cn '[{name: "game", epics: [{id: "g-0", open: 1, done: 2}]}, {name: "tools", epics: []}]' > "$PJSON"
+  jq -cn '[{name: "game", epics: [{id: "g-0", open: 1, done: 2}]}, {name: "tools", epics: [{id: "t-0", open: 1, done: 0}]}]' > "$PJSON"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$BJSON" > "$SANDBOX/bin/board-stub"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$PJSON" > "$SANDBOX/bin/projects-stub"
   chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/board-stub" "$SANDBOX/bin/projects-stub"
@@ -2787,10 +2788,13 @@ LIB
   run "$SUBJECT" chain
   assert_line 'ownerless_running: parked'
   check 'ownerless_running 1 (max 0)'
-  # an agent row in a project with an open epic, filed under no epic
+  # agent rows filed under no epic, in a project with an open epic or in one with none yet;
+  # a project automation does not manage is left out
   jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "g-6", type: "fix", tags: []},
-                   {project: "game", lane: "agent", state: "open", id: "g-7", type: "fix", tags: []}]' "$BJSON.ok" > "$BJSON"
-  check 'epic_linked_share 0.333 (min 0.5)'
+                   {project: "new", lane: "agent", state: "open", id: "n-1", type: "fix", tags: []},
+                   {project: "new", lane: "agent", state: "open", id: "n-2", type: "fix", tags: []},
+                   {project: "off", lane: "agent", state: "open", id: "o-1", type: "fix", tags: [], automation: false}]' "$BJSON.ok" > "$BJSON"
+  check 'epic_linked_share 0.4 (min 0.5)'
   # an open epic whose every leaf is done, waiting on proof of its outcome
   jq -c '.[0].epics[0].open = 0' "$PJSON.ok" > "$PJSON"
   check 'landed_unverified 1 (max 0)'
