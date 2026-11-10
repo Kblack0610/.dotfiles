@@ -1171,7 +1171,10 @@ collect() {
   # A pass that could not read a source says so in $CACHE/unreadable, so tick never logs a
   # blink (every session "gone", every PR "-") as a change.
   # Exit 3 (a read with a gap) still prints the rows it read; they are kept, and the pass is named.
-  panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
+  # AGENT_PANEL_CODEX: a Codex run in a pane is a row too (busy, its thread id as session_id, so
+  # item_of joins it by sessions: like a Claude). The env form, not --codex: a binary not yet
+  # rebuilt ignores it instead of refusing the flag and reading as every session gone.
+  panel="$(AGENT_PANEL_CODEX=1 "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
   local PENDING_ASKS
   PENDING_ASKS="$(pending_asks)"
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do

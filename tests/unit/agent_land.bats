@@ -576,6 +576,34 @@ EOF
   assert_output 3
 }
 
+@test "no checks reported on a base whose protection requires checks: stops at checks, never tries the merge" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  echo '{"required_status_checks":{"strict":false,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: none reported on the head, and origin/main requires checks'
+  run grep -c '^gh pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "no checks reported on a base whose ruleset requires checks: stops at checks without reading protection" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"Checks"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'origin/main requires checks, so GitHub would refuse the merge'
+  run grep -c 'branches/main/protection\|^gh pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "no checks reported on a base that requires up-to-date branches but names no check: it lands" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  echo '{"required_status_checks":{"strict":true,"contexts":[],"checks":[]}}' >"$NOTES_FIXTURE/protection.json"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
+  assert_success
+  assert_line --index 1 'checks: none reported'
+}
+
 # The tier-3 gate rides on the item, not on how it was queued: a session's `agent-queue add` on a
 # harness project skips the judge, so its untiered item still needs review and checks that ran.
 @test "tier 3: a hand-added cleanup item on agent-runtime needs a Review: line and green checks to merge" {
