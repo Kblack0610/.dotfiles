@@ -46,7 +46,7 @@
 #                        # (its mode footer), answering the folder trust prompt on the way
 #
 # Accounts: ~/.config/claude-acct/accounts, one `name dir` per line (`-` = default).
-# Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [parent=name]`
+# Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off]`
 # per line, for every source that is not a Claude account (read by this script only; cl and
 # agent-panel read accounts). Kinds: codex (ref: the Codex sessions dir; the plan's rate limits come
 # from the newest rollout), litellm-key (ref: a key file; its budget from /key/info), litellm-team
@@ -100,11 +100,11 @@ accounts() {
     done < "$CONF"
 }
 
-# sources -> "name US kind US ref US reserve US max_live US parent" per line of the sources file. A
+# sources -> "name US kind US ref US reserve US max_live US parent US alert" per line of the sources file. A
 # line that cannot be read says so on stderr and is skipped, so a typo never becomes a silent row.
 sources() {
     [[ -f "$SRC_CONF" ]] || return 0
-    local name kind ref opts opt reserve max_live parent seen=''
+    local name kind ref opts opt reserve max_live parent alert seen=''
     while read -r name kind ref opts; do
         [[ -z "$name" || "$name" == \#* ]] && continue
         if [[ ! "$name" =~ ^[A-Za-z0-9_-]+$ || -z "$kind" || -z "$ref" ]]; then
@@ -117,28 +117,29 @@ sources() {
             echo "claude-acct: $SRC_CONF: $name is listed twice; the later line is skipped" >&2; continue
         fi
         seen+=" $name"
-        reserve='' max_live='' parent=''
+        reserve='' max_live='' parent='' alert=''
         for opt in $opts; do
             case "$opt" in
                 reserve=*) reserve=${opt#reserve=} ;;
                 max_live=*) max_live=${opt#max_live=} ;;
                 parent=*) parent=${opt#parent=} ;;
+                alert=on|alert=off) alert=${opt#alert=} ;;
                 *) echo "claude-acct: $SRC_CONF: $name: unknown option '$opt'" >&2 ;;
             esac
         done
         [[ -z "$reserve" || "$reserve" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "claude-acct: $SRC_CONF: $name: reserve is not a number" >&2; reserve=''; }
         [[ -z "$max_live" || "$max_live" =~ ^[0-9]+$ ]] || { echo "claude-acct: $SRC_CONF: $name: max_live is not a whole number" >&2; max_live=''; }
-        printf '%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent"
+        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent" "$alert"
     done < "$SRC_CONF"
 }
 
-# rows_in -> "name US kind US ref US reserve US max_live US parent" for every row usage_json reads:
+# rows_in -> "name US kind US ref US reserve US max_live US parent US alert" for every row usage_json reads:
 # the Claude accounts (kind claude, ref their dir), then the sources when USAGE_SOURCES=1
 rows_in() {
     local name dir row
     while IFS=$'\037' read -r name dir; do
         usage_wants "$name" || continue
-        printf '%s\037claude\037%s\037\037\037\n' "$name" "$dir"
+        printf '%s\037claude\037%s\037\037\037\037\n' "$name" "$dir"
     done < <(accounts)
     if [[ "${USAGE_SOURCES:-0}" == 1 ]]; then
         while IFS= read -r row; do
@@ -553,7 +554,7 @@ usage_json() {
     now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     if [[ "${1:-}" == nospend ]]; then spend=null; else spend=$(spend_24h); fi
     lives=$(live_of)
-    while IFS=$'\037' read -r name kind dir own_reserve max_live parent; do
+    while IFS=$'\037' read -r name kind dir own_reserve max_live parent alert; do
         case "$kind" in
             claude) json=$(fetch "$name" "$dir"); rc=$?; rate=$(session_rate "${1:-}") ;;
             litellm-*) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$SESSION_RATE ;; # a dollar budget has no pace
@@ -580,7 +581,7 @@ usage_json() {
         row_reserve=$reserve
         [[ -z "$own_reserve" ]] || read -r _ row_reserve < <(level_scale CLAUDE_ACCT_PACE_SLACK_PCT "$PACE_SLACK_PCT" CLAUDE_ACCT_RESERVE_PCT "$own_reserve")
         jq -cn --arg name "$name" --arg dir "$dir" --arg email "$email" --arg state "$state" \
-            --arg kind "$kind" --argjson window "$win" --argjson paced "$paced" --arg parent "$parent" --arg max_live "$max_live" \
+            --arg kind "$kind" --argjson window "$win" --argjson paced "$paced" --arg parent "$parent" --arg max_live "$max_live" --arg alert "$alert" \
             --argjson usage "$json" --arg used "$used" --arg gone "$gone" \
             --arg resets "$resets" --argjson live "${live:-0}" --argjson spend "$spend" \
             --argjson now "$now" --argjson reserve "${own_reserve:-$RESERVE_PCT}" --argjson rate "$rate" \
@@ -662,7 +663,7 @@ usage_json() {
                   else "it has room" end;
             {name: $name, kind: $kind, dir: $dir, email: $email, state: $state,
              paced: $paced, window: $window, plan: ($usage.plan // null), reached: ($usage.reached // false),
-             parent: (if $parent == "" then null else $parent end), max_live: (if $max_live == "" then null else ($max_live | tonumber) end),
+             parent: (if $parent == "" then null else $parent end), alert: ($alert != "off"), max_live: (if $max_live == "" then null else ($max_live | tonumber) end),
              usd_used: ($usage.usd_used // null), usd_max: ($usage.usd_max // null),
              five_hour: ($usage.five_hour.utilization // null),
              five_hour_resets: ($usage.five_hour.resets_at // null | if . == null then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null) end),
@@ -935,8 +936,9 @@ cmd_check() {
         pace)
             # Over pace is the room verdict's own words (pace, reserve, capped), never a second
             # formula. An unread source cannot be told on pace, so it trips too; a Claude account's
-            # unread is check usage's (the claude-acct-usage watch), so it is not named twice.
-            rows=$(all_json nospend | jq -s '[.[] | {name, unread: (.state == "unread" and .kind != "claude"),
+            # unread is check usage's (the claude-acct-usage watch), so it is not named twice. A source
+            # marked alert=off (a test pool) is left out: dispatch still keeps to its room.
+            rows=$(all_json nospend | jq -s '[.[] | select(.alert) | {name, unread: (.state == "unread" and .kind != "claude"),
                 over: [(.room.reasons // [])[] | select(. == "pace" or . == "reserve" or . == "capped")]}]')
             jq -r '(map(select(.unread) | .name)) as $u | (map(select(.over != [])) | map("\(.name) \(.over | join("+"))")) as $o
                 | if length == 0 then "no sources read"
