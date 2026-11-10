@@ -5778,6 +5778,15 @@ cloud_run_ready() {
   assert_called 'agent-queue requeue planned --ask <id> and stop: the answer resumes this run'
   assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it'
   [ -n "$(qitem running planned)" ] || fail "the plan item did not start"
+  # A decided plan item that cannot resume (no rollout) builds on the decision, never plans again.
+  : > "$NOTES_FIXTURE/calls.log"
+  stub agent-ask '[ "$1" = decision ] && echo "Approve the plan for decided? -> approve"; exit 0'
+  agent-queue add --project game --slug decided --mode plan --priority high "Think it through" >/dev/null
+  sed -i '1a tags: ask:pl1' "$(qitem queued decided)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item decided --harness codex --model sol
+  assert_success
+  assert_called 'whose plan, ~/.claude/plans/decided.md, the human has decided on below: build it if they approved it'
+  assert_not_called 'plan first'
   # Negative control: the same map without resume refuses it, as glm and opencode are.
   jq '.harnesses.codex |= del(.resume)' "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"
   agent-queue add --project game --slug planned2 --mode plan --priority high "Think again" >/dev/null
@@ -5806,7 +5815,7 @@ codex_ran() {
   assert_called 'timeout 120m agent-codex resume --salvage salvage/fix-menu@0123456789abcdef0123456789abcdef01234567 th-1 -m gpt-6.1-sol --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --skip-git-repo-check '
   assert_not_called '--color never'
   assert_called "usage limit, and the plan has room again"
-  assert_called 'a new worktree on branch salvage/fix-menu at 0123456789abcdef0123456789abcdef01234567'
+  assert_called 'holds the work your last run left, checked out at 0123456789abcdef0123456789abcdef01234567 (on salvage/fix-menu on origin)'
   assert_called 'agent-queue requeue fix-menu --ask <id>'
   assert_not_called 'Read ~/.claude/skills/one-shot/SKILL.md'
   f=$(qitem running fix-menu)
@@ -5823,7 +5832,7 @@ codex_ran() {
   assert_called 'agent-codex resume th-2 -m gpt-6.1-sol'
   assert_called 'The human already decided this in ask abc, so follow it: Ship it? -> a: ship it'
   assert_called 'stopped before the item closed, and this run takes it up'
-  assert_called 'a new worktree at the trunk: your last run left no work the trunk lacks'
+  assert_called 'Your last run left no work the trunk lacks: start from the current directory'
   # Negative controls: an item with a PR goes to fix-ci, a canary is scored fresh, a lost rollout has nothing to resume.
   for k in pr canary lost; do
     : > "$NOTES_FIXTURE/calls.log"

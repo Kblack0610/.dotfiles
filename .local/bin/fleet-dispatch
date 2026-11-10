@@ -1839,7 +1839,7 @@ item_brief() {
   # A kind that opens no PR has no PR to stop at, and no tier-3 merge gate to name.
   case "$exit_" in doc+ask | proof) nopr=1 pr_only='' ;; esac
   if headless "$harness"; then
-    [ "$mode" != plan ] || plan_stage "$slug"
+    [ "$mode" != plan ] || plan_stage "$slug" "$tags"
     printf 'Read ~/.claude/skills/%s/SKILL.md and follow it%s for this task:\n' "${entry#/}" "${pr_only:+ with$pr_only}"
   elif [ "$mode" != plan ]; then
     printf '%s%s ' "$entry" "$pr_only"
@@ -1887,10 +1887,16 @@ item_brief() {
   ask_rule
 }
 
-# plan_stage <slug> -- what a headless plan item does first: write the plan, post it as an approval
-# ask, requeue behind it and stop. The answer resumes the run (resume_thread) with the decision in its
-# brief, where a Claude plan item waits in its pane at the plan.
+# plan_stage <slug> <tags> -- what a headless plan item does first: write the plan, post it as an
+# approval ask, requeue behind it and stop. The answer resumes the run (resume_thread) with the decision
+# in its brief, where a Claude plan item waits in its pane at the plan. A start that cannot resume, after
+# the human decided, builds on that decision instead of planning again.
 plan_stage() {
+  if [ -n "$(ask_decisions "$2")" ]; then
+    echo "This is a plan item whose plan, ~/.claude/plans/$1.md, the human has decided on below: build it if they approved it, or revise it and post it for approval again if they asked for changes."
+    echo
+    return 0
+  fi
   echo "This is a plan item: plan first, and change nothing in any repo until the human approves the plan. Write it to ~/.claude/plans/$1.md, then post it: agent-ask post --kind approval --options 'approve=build the plan as written|revise=change the plan first' --recommend approve --why \"<one sentence>\" --context \"The plan is ~/.claude/plans/$1.md\" \"Approve the plan for $1?\". Then run agent-queue requeue $1 --ask <id> and stop: the answer resumes this run, and you build only once it approves."
   echo "Once the plan is approved, build it as below."
   echo
@@ -1901,12 +1907,12 @@ plan_stage() {
 salvage_line() {
   local sv; sv=$(jq -r '.salvage // empty' <<<"$1")
   [ -n "$sv" ] || return 0
-  echo "An earlier run of this item left its unfinished work on branch ${sv%@*} at ${sv##*@} on origin: start from it (git fetch origin ${sv%@*} && git switch -C ${sv%@*} ${sv##*@}), not from the trunk, and open the PR from that branch."
+  echo "An earlier run of this item left its unfinished work on branch ${sv%@*} at ${sv##*@} on origin: start from it, not from the trunk (git fetch origin ${sv%@*} && git reset --keep ${sv##*@}, on this worktree's branch). If a PR is already open from ${sv%@*}, push to that branch instead of opening a second one."
 }
 
 # resume_brief <item json> -- the prompt a resumed run (resume_thread) continues on: its thread already
 # holds the first brief, so this says why it stopped, what the human decided since, where its work is
-# now (agent-codex checked out the salvage branch, or it is a fresh worktree) and how to stop again.
+# now (agent-codex checked it out at the salvage sha, or there is none) and how to stop again.
 resume_brief() {
   local slug sv mode end tags
   IFS=$'\x1f' read -r slug sv mode end tags < <(jq -r '[.slug, .salvage // "", .mode // "", .end_reason // "", .tags // ""] | join("\u001f")' <<<"$1")
@@ -1918,9 +1924,9 @@ resume_brief() {
   ask_decisions " $tags "
   [ "$mode" != plan ] || echo "If the human approved your plan, build it now. If they asked for changes, revise the plan and post it for approval again, the same way."
   if [ -n "$sv" ]; then
-    echo "The current directory is a new worktree on branch ${sv%@*} at ${sv##*@}: the work your last run left, committed and pushed when it ended. Work here, not in the worktree your last run used, which another session may have now, and open the PR from this branch."
+    echo "The current directory holds the work your last run left, checked out at ${sv##*@} (on ${sv%@*} on origin): build on it here. If a PR is already open from ${sv%@*}, push to that branch instead of opening a second one."
   else
-    echo "The current directory is a new worktree at the trunk: your last run left no work the trunk lacks. Work here, not in the worktree your last run used, which another session may have now."
+    echo "Your last run left no work the trunk lacks: start from the current directory."
   fi
   echo "Carry on with the task from where you stopped, under the brief you were first given: what it said about the PR, the item and closing still holds."
   no_human "$slug"
