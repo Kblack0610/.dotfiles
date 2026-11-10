@@ -973,8 +973,8 @@ pub fn fixes(
 pub type Section = (&'static str, Vec<Line<'static>>);
 
 /// The Infra page as named sections in `hub_core::layout` order, less `fixes` and `jobs`, which
-/// the app draws from their own reads, and which it shows by inner tab. Exceptions lead: red items, then what runs, waits and failed;
-/// green workflows fold to a line. A failed read is one section with the error and nothing
+/// the app draws from their own reads; the app shows them by inner tab. Exceptions lead: red
+/// items, then what runs, waits and failed; green workflows fold to a line. A failed read is one section with the error and nothing
 /// else: a board never leaves the last (maybe green) numbers up.
 pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) -> Vec<Section> {
     if !infra.ok {
