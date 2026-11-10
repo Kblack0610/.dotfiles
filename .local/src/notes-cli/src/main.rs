@@ -841,12 +841,18 @@ enum OutboxCmd {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
     },
+    /// Take the line that is RAW byte for byte out of the outbox, filing nothing, because the
+    /// person said it needs no row (the sweep's write path for a "drop" answer)
+    Drop {
+        #[arg(required = true, num_args = 1..)]
+        raw: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
 enum IngestCmd {
     /// Record one step the CLI did not make itself: a line the sweep `left` for the human, one
-    /// whose write was `refused`, a row the planner `planned`, or a chain step a shell writer
+    /// it `asked` the human about (`--why` is the ask's id), one whose write was `refused`, a row the planner `planned`, or a chain step a shell writer
     /// made (agent-queue's `item-*`, fleet-dispatch's `started`, `reaped`, `settled`,
     /// agent-land's `merged`, claude-acct's `parked` and `unparked`). An empty flag value is no value.
     Record(Box<RecordArgs>),
@@ -858,7 +864,7 @@ enum IngestCmd {
 #[derive(clap::Args)]
 struct RecordArgs {
     #[arg(long, value_parser = [
-        "left", "refused", "planned", "item-added", "item-moved", "item-set",
+        "left", "asked", "refused", "planned", "item-added", "item-moved", "item-set",
         "item-claimed", "item-cancelled", "started", "reaped", "settled", "merged",
         "parked", "unparked", "land-failed", "sweep-stopped",
     ])]
@@ -1413,6 +1419,7 @@ fn main() -> Result<()> {
                 std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
                 outbox::answer(&prof, &log, &raw.join(" "), &text)?
             }
+            Some(OutboxCmd::Drop { raw }) => outbox::drop_line(&prof, &log, &raw.join(" "))?,
         },
         Cmd::Log {
             steps: true, json, ..

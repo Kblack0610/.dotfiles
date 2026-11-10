@@ -47,7 +47,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub needs --json | --page
        hub briefing --json | --md [--since WHEN]
        hub projects --json
-       hub projects --page NAME
+       hub projects --page NAME | --status NAME
        hub board --json
        hub tabs
   TAB     a tab id (`hub tabs` lists them), or a retired name (hub_core::layout::RETIRED)
@@ -74,6 +74,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   projects --page NAME
           one project's page, what its card shows when opened: the flow line, what needs you,
           the epics by system with each system's criteria, the next stage and shipped versions
+  projects --status NAME
+          the numbers of the project's lab STATUS line, which write-lab-status.sh appends: each
+          system's current wave and its percent, the version and its ETA, the next stage's gate
+          and the playtests waiting. Exits non-zero when a source it says could not be read
   board   the task feed as {today, heads, hints, rows, done, errors}: each open row with its
           forecast day and queue state, one head line per project and the words beside each
           sheet row (what nvim draws as virtual text over a project sheet)
@@ -114,13 +118,17 @@ fn main() {
         it.next();
         let rest: Vec<String> = it.cloned().collect();
         if let [flag, name] = rest.as_slice() {
-            if flag != "--page" {
-                die(USAGE);
-            }
             let sys = hub_core::session_actions::System;
-            match hub_core::page::named(&sys, name, hub_core::jobs::now()) {
-                Ok(p) => println!("{}", hub_core::page::to_json(&p)),
-                Err(e) => die(&format!("hub projects --page: {e}")),
+            let now = hub_core::jobs::now();
+            let out = match flag.as_str() {
+                "--page" => hub_core::page::named(&sys, name, now)
+                    .map(|p| hub_core::page::to_json(&p).to_string()),
+                "--status" => hub_core::page::status(&sys, name, now),
+                _ => die(USAGE),
+            };
+            match out {
+                Ok(s) => println!("{s}"),
+                Err(e) => die(&format!("hub projects {flag}: {e}")),
             }
             return;
         }
