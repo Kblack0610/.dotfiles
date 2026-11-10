@@ -679,7 +679,7 @@ item_json() {
 # is not queued behind the fleet's own housekeeping (the human: games go first).
 ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
     | [splits("\\s+")] | index([$t])) == null;
-  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority] // 1),
+  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority // ""] // 1),
     ($rank[.project // ""] // 2), untagged("cleanup"), .queued)'
 # order_filter -> ORDER with each project's rank bound to $rank, from the `#prio` the human set on
 # its front page (prios_read): only and focus 0, high 1, normal 2, low 3. No prio, or a notes that
@@ -1092,7 +1092,8 @@ add_plan() {
   # A plan is queued once: by its owner, or by hand. The calling session's own item does not count.
   local taken
   taken="$(collect $ACTIVE | jq -r --arg p "$planf" --arg own "${AGENT_QUEUE_ITEM:-}" \
-    "$PLAN_ITEMS_JQ"' .[] | select(.slug != $own and names_plan($p)) | .slug' | paste -sd' ')"
+    "$PLAN_ITEMS_JQ"' .[] | select(.slug != $own and names_plan($p)) | .slug' | paste -sd' ')" ||
+    die "could not read the queue, so nothing was added for $planf"
   [ -z "$taken" ] || die "the phases of $planf are already queued: $taken (nothing was added)"
   local groups
   groups="$(plan_phase_list "$planf" | jq -c '
@@ -1198,7 +1199,9 @@ cmd_list() {
   esac
   lock_read
   # shellcheck disable=SC2086
-  local items; items="$(collect $states ${date:+--date "$date"} ${since:+--since "$since"})"
+  # A queue that cannot be read is a failure, never an empty list: a reader that acts on what is
+  # missing (plans_orphaned) would read every item as gone.
+  local items; items="$(collect $states ${date:+--date "$date"} ${since:+--since "$since"})" || die "could not read the queue"
   if [ -n "$json" ]; then
     jq -c '.[]' <<<"$items"
     return 0

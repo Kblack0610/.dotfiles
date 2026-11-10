@@ -238,6 +238,29 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
 }
 
+@test "list orders an item with no priority line as high, and the rest of the queue still reads" {
+  "$AQ" add --project game --slug a-low --priority low "a"
+  "$AQ" add --project game --slug b-high "b"
+  f="$(item queued b-high)"
+  sed -i '/^priority:/d' "$f"
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  assert_success
+  assert_output $'b-high\na-low'
+}
+
+@test "list fails, never prints an empty queue, when the queue cannot be read" {
+  "$AQ" add --project game --slug a-item "a"
+  # The one read every listing goes through (items_json) fails; every other jq is the real one.
+  real="$(command -v jq)"
+  printf '#!/usr/bin/env bash\n[ "${1:-}" = -Rsc ] && exit 5\nexec %q "$@"\n' "$real" > "$SANDBOX/bin/jq"
+  chmod +x "$SANDBOX/bin/jq"
+  run "$AQ" list --json
+  assert_failure
+  assert_output --partial "could not read the queue"
+  run "$AQ" list
+  assert_failure
+}
+
 @test "a project's #prio ranks its items within a priority, under red and urgent, over cleanup" {
   "$AQ" add --project app --slug a-app "a"
   "$AQ" add --project app --slug b-app-cleanup --tags cleanup "b"
