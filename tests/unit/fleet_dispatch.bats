@@ -160,7 +160,17 @@ case "${args[0]}" in
       if [ -n "$t" ] && jq -e --arg t "$t" 'has($t)' "$DISPATCH_KINDS" >/dev/null 2>&1; then printf '%s\t-\t%s\t1\n' "$t" "$l"
       else printf -- '-\t-\t%s\t0\n' "$l"; fi
     done ;;
-  board) if [ -f "$F/board.rows" ]; then jq -sc '{rows: .}' "$F/board.rows"; else echo '{"rows": []}'; fi ;;
+  board)
+    if [ -f "$F/board.rows" ]; then jq -sc '{rows: .}' "$F/board.rows"
+    else
+      for f in "$F"/rows.*.*; do
+        [ -f "$f" ] || continue
+        p=${f#"$F/rows."}; lane=${p##*.}; p=${p%.*}
+        jq -Rn --arg p "$p" --arg l "$lane" '
+          inputs | split("\t") | {profile: "bnb", project: $p, lane: $l, id: .[0], raw: .[1],
+            state: (if (.[1] | startswith("- [/]")) then "doing" else "open" end)}' < "$f"
+      done | jq -sc '{rows: .}'
+    fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
     case "${args[2]}" in
@@ -4371,6 +4381,58 @@ orphan_seen() {
   grep -qF -- '- [ ] fix x' "$NOTES_FIXTURE/rows.game.agent" || fail "row still started"
   assert_equal "$(jq -r 'select(.key == "gm-1") | .verdict + ": " + .reason' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" 'failed: started 72h with no queue item'
   ! grep -q gm-1 "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "un-started row still tracked"
+}
+
+@test "reap: orphan sweep reads every board profile and routes unstart to the row's profile" {
+  export DISPATCH_NIGHT_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-4 '- [/] outside dispatch <!-- id:gm-4 -->'
+  jq -cn '{rows: [{profile: "extra", project: "game", lane: "agent", id: "gm-4", state: "doing"}]}' > "$SANDBOX/board.json"
+  notes() {
+    if [ "$*" = 'board --json' ]; then cat "$SANDBOX/board.json"
+    else command notes "$@"; fi
+  }
+  run unstart_orphans
+  assert_success
+  grep -qP '^extra\tgame\tgm-4\t[0-9]+$' "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "profile outside dispatch unseen"
+  printf 'extra\tgame\tgm-4\t%s\n' "$(( $(date +%s) - 73 * 3600 ))" > "$FLEET_DISPATCH_DIR/orphans.tsv"
+  run unstart_orphans
+  assert_success
+  assert_output --partial 'un-started game: gm-4'
+  grep -qxF 'notes --profile extra ptask game --agent unstart gm-4' "$NOTES_FIXTURE/calls.log"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "settled orphan still tracked"
+}
+
+@test "reap: a started legacy row without an id keeps its text key" {
+  row game agent 'legacy fix' '- [/] Legacy fix'
+  orphan_seen game 'legacy fix' 73
+  notes() {
+    if [ "$*" = 'board --json' ]; then
+      echo '{"rows":[{"profile":"bnb","project":"game","lane":"agent","id":null,"text":"Legacy fix","state":"doing"}]}'
+    else command notes "$@"; fi
+  }
+  run unstart_orphans
+  assert_success
+  assert_output --partial 'un-started game: legacy fix'
+  grep -qxF 'notes --profile bnb ptask game --agent unstart legacy fix' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "reap: unreadable or malformed board preserves orphan sightings and changes no rows" {
+  orphan_seen game gm-5 96
+  cp "$FLEET_DISPATCH_DIR/orphans.tsv" "$SANDBOX/seen"
+  notes() { return 1; }
+  run unstart_orphans
+  assert_success
+  cmp "$SANDBOX/seen" "$FLEET_DISPATCH_DIR/orphans.tsv"
+  notes() { echo '{"rows": []}'; return 1; }
+  run unstart_orphans
+  assert_success
+  cmp "$SANDBOX/seen" "$FLEET_DISPATCH_DIR/orphans.tsv"
+  notes() { echo '{"rows": null}'; }
+  run unstart_orphans
+  assert_success
+  cmp "$SANDBOX/seen" "$FLEET_DISPATCH_DIR/orphans.tsv"
+  ! grep -q ' unstart ' "$NOTES_FIXTURE/calls.log"
 }
 
 # landed_item <state> [pr] -- pr_item's item closed ok by its own session with no merged: recorded,
