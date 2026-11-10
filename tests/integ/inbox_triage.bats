@@ -553,6 +553,20 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log" || fail "the planner was not started"
 }
 
+@test "outbox: the person's own #plan and #go reach the row when the model drops them; a plain line gets neither" {
+  sheet '' ''
+  outbox '- [ ] other needs a logo #plan #go\n- [ ] other needs a font\n'
+  answer '{"n": 1, "action": "file", "rows": ["feat(brand): a logo #size/m"], "project": "other", "plan": false}' \
+    '{"n": 2, "action": "file", "rows": ["feat(brand): a font #size/s"], "project": "other", "plan": false}'
+  run "$TRIAGE"
+  assert_success
+  grep -qE 'feat\(brand\): a logo #size/m #plan #go .*id:ot-' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+  run grep 'a font' "$PROJ/other/README.md"
+  assert_success
+  refute_output --partial '#plan'
+  refute_output --partial '#go'
+}
+
 @test "outbox: the routing prompt names the homes and the shared-code rule, as --backlog does" {
   echo '{"trackers": {"scratch": {"code": "sc"}, "other": {"code": "ot", "repo": "scratch"}}}' >"$PROJECT_MAP_FILE"
   sheet '' ''
@@ -565,6 +579,8 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial "the shared code under them, belongs on the repo's project"
   assert_output --partial 'a host or the cluster belongs on home-config'
   assert_output --partial 'read each with its neighbours'
+  assert_output --partial 'own is a second, separate answer'
+  assert_output --partial 'A line marked asked before has had its neighbours filed already'
   assert_output --partial '"action": "dup", "line": 4'
 }
 
@@ -625,6 +641,63 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q 'fix(ui): the menu flickers' "$SHEET" || fail "$(cat "$SHEET")"
 }
 
+@test "outbox: a left line records the projects of the nearest lines filed above and below it, once each" {
+  sheet '' ''
+  outbox '- [ ] the scratch lobby is slow\n- [ ] a thought\n- [ ] the other menu is slow\n- [ ] another thought\n- [ ] the other font is small\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(net): the lobby is slow #size/s"], "project": "scratch"}' \
+    '{"n": 2, "action": "skip", "why": "unclear which project"}' \
+    '{"n": 3, "action": "file", "rows": ["fix(ui): the menu is slow #size/s"], "project": "other"}' \
+    '{"n": 4, "action": "skip", "why": "unclear which project"}' \
+    '{"n": 5, "action": "file", "rows": ["fix(ui): the font is small #size/s"], "project": "other"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 3 from the outbox, filed 3, left 2'
+  run jq -r 'select(.action == "left") | "\(.text): \(.near // "")"' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'a thought: scratch,other'
+  assert_line 'another thought: other'
+}
+
+@test "outbox: a line asked again names where its neighbours went, and keeps that when it is left again" {
+  sheet '' ''
+  outbox '- [ ] the menu flickers\n'
+  mkdir -p "$HOME/.local/state/notes"
+  jq -cn '{ts: "2000-01-01T01:00:01.1-08:00", action: "left", from: "outbox", to: "", text: "the menu flickers", why: "unclear which project", near: "scratch,other", stage: "intake"}' >"$HOME/.local/state/notes/ingest.jsonl"
+  answer '{"n": 1, "action": "skip", "why": "still unclear"}'
+  run "$TRIAGE"
+  assert_success
+  run grep -F '1. [outbox] the menu flickers' "$NOTES_FIXTURE/prompt.txt"
+  assert_output '1. [outbox] the menu flickers (asked before: the lines written beside it went to other and scratch)'
+  run jq -r 'select(.action == "left") | .near' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_output $'scratch,other\nother,scratch'
+}
+
+@test "outbox: a line goes where its own words point, over its neighbours' project; empty or unknown own leaves project (negative controls)" {
+  sheet '' ''
+  outbox '- [ ] the scratch lobby is slow\n- [ ] a central bank of money\n- [ ] the scratch font is small\n- [ ] the scratch menu is slow\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(net): the lobby is slow #size/s"], "project": "scratch", "own": "scratch"}' \
+    '{"n": 2, "action": "file", "rows": ["feat(bank): a central bank of money #size/m"], "project": "scratch", "own": "other"}' \
+    '{"n": 3, "action": "file", "rows": ["fix(ui): the font is small #size/s"], "project": "scratch", "own": ""}' \
+    '{"n": 4, "action": "file", "rows": ["fix(ui): the menu is slow #size/s"], "project": "scratch", "own": "nosuchproject"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial "line 2's own words point to other, its neighbours to scratch: filed on other"
+  grep -q 'feat(bank): a central bank of money' "$PROJ/other/README.md" || fail "$(cat "$PROJ/other/README.md")"
+  run grep -c 'bank' "$SHEET"
+  assert_output 0
+  grep -q 'fix(ui): the font is small' "$SHEET" || fail "$(cat "$SHEET")"
+  grep -q 'fix(ui): the menu is slow' "$SHEET" || fail "$(cat "$SHEET")"
+}
+
+@test "outbox: a line never left carries no asked-before mark (negative control)" {
+  sheet '' ''
+  outbox '- [ ] the scratch menu flickers\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the menu flickers #size/s"], "project": "scratch"}'
+  run "$TRIAGE"
+  assert_success
+  run cat "$NOTES_FIXTURE/prompt.txt"
+  refute_output --partial '(asked before:'
+}
+
 @test "outbox: a left record with a bad ts is only asked again itself; a refusal beside it still holds" {
   sheet '' ''
   outbox '- [ ] the scratch menu flickers\n- [ ] a refused line\n'
@@ -636,6 +709,25 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run "$TRIAGE"
   assert_success
   assert_output --partial 'moved 1 from the outbox, filed 1, left 0'
+  run cat "$NOTES_FIXTURE/prompt.txt"
+  refute_output --partial 'a refused line'
+}
+
+@test "outbox: a record line whose near is not a string keeps every other refusal; an empty record says nothing about parsing" {
+  sheet '' ''
+  outbox '- [ ] the scratch menu flickers\n- [ ] a refused line\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the menu flickers #size/s"], "project": "scratch"}'
+  mkdir -p "$HOME/.local/state/notes"
+  : >"$HOME/.local/state/notes/ingest.jsonl"
+  run "$TRIAGE" --dry-run
+  assert_success
+  refute_output --partial 'did not parse'
+  { jq -cn '{ts: "2026-11-09T20:00:00-05:00", action: "left", from: "outbox", to: "", text: "an old line", why: "x", near: 7, stage: "intake"}'
+    jq -cn --arg ts "$(date --iso-8601=seconds)" '{ts: $ts, action: "refused", from: "outbox", to: "", text: "a refused line", why: "x", stage: "intake"}'
+  } >"$HOME/.local/state/notes/ingest.jsonl"
+  run "$TRIAGE"
+  assert_success
+  refute_output --partial 'did not parse'
   run cat "$NOTES_FIXTURE/prompt.txt"
   refute_output --partial 'a refused line'
 }

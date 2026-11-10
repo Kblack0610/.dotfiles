@@ -123,6 +123,7 @@ Media/Music
 !.claude/skills/messaging/work-comms/
 !.claude/skills/messaging/comms-standard/
 !.claude/skills/messaging/catch-up/
+!.claude/skills/messaging/inbox-report/
 !.claude/skills/messaging/work-update/
 !.claude/skills/monitoring/fleet-bench/
 !.claude/skills/monitoring/day-log/
@@ -131,6 +132,7 @@ Media/Music
 !.claude/skills/monitoring/fleet-pace/
 !.claude/skills/monitoring/shepherd/
 !.claude/skills/monitoring/sentinel/
+!.claude/skills/monitoring/night-shift/
 !.claude/skills/monitoring/fix-red/
 !.claude/skills/monitoring/fleet-runners/
 !.claude/skills/monitoring/fleet-asks/

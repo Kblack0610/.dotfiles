@@ -112,7 +112,7 @@ const log = {
   merged: rows(6, (i) => ({ repo: pick(REPOS, i), project: pick(PROJECTS, i), number: 1580 + i, url: "https://github.com/Kblack0610/.dotfiles/pull/1", title: TEXT[i], merged_at: iso(ago(30 + i * 40)), area: pick(["agent-web", "hub", "ci"], i), group: pick(["agent-web", "hub", "ci"], i), scope: pick(["agent-web", "hub"], i), by: "agent" })),
   open: rows(3, (i) => ({ repo: pick(REPOS, i), project: pick(PROJECTS, i), number: 1600 + i, url: "https://github.com/Kblack0610/.dotfiles/pull/2", title: TEXT[i + 2], created_at: iso(ago(90)), draft: false, ci: "green", by: "agent" })),
   projects: [], hours: { hours: [], rows: [] }, usage: [{ project: "TOTAL", sessions: 42 }], waiting: { main: [], needs: [], asks: [] },
-  bench: { headline: "212 merged this week, 52% first try", sessions: rows(3, (i) => ({ target: `agent-${i}`, plan: SLUGS[i], phase: "2/4", working_h: 1.5, waiting_h: 0.2, stalled_h: 0, prs_merged: 2, ci_reds: 1, peak_k: 310, cost_usd: 12.5 })) },
+  bench: { headline: "212 merged this week, 52% first try", sessions: rows(3, (i) => ({ target: `lab/unity-core-playground-agent-${i}:1`, plan: SLUGS[i], name: TEXT[i].slice(0, 48), phase: "2/4", working_h: 1.5, waiting_h: 0.2, stalled_h: 0, prs_merged: 2, ci_reds: 1, peak_k: 310, cost_usd: 12.5 })) },
   timeline: [], unreadable: [],
 };
 const logHistory = rows(5, (i) => ({ date: `2026-11-0${5 - i}`, merged: 40 - i * 3, repos: 4, areas: { "agent-web": 9, hub: 7 } }));

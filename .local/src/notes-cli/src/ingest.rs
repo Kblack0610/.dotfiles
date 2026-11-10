@@ -66,6 +66,10 @@ pub struct Event {
     /// The merge commit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha: Option<String>,
+    /// For a `left` line: the projects the lines written beside it were filed to, which a
+    /// later sweep that asks it again shows the router, since those lines left with their rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near: Option<String>,
 }
 
 /// `v` trimmed, or `None` when that leaves nothing.

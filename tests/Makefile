@@ -28,6 +28,15 @@ ASSERT_REF  := v2.1.0
 
 BATS_FLAGS ?= --print-output-on-failure --timing
 
+# JUNIT=1 (CI sets it) makes each bats run also write a JUnit report.xml under
+# artifacts/junit/<run>/, which tests.yml uploads and its report job draws per test.
+# Any other value, 0 included, leaves it off.
+JUNIT ?=
+junit_on  = $(filter 1,$(JUNIT))
+junit_dir = $(ARTIFACTS)/junit/$(1)
+junit     = $(if $(junit_on),--report-formatter junit -o $(call junit_dir,$(1)))
+junit_mk  = $(if $(junit_on),mkdir -p $(call junit_dir,$(1)) &&)
+
 # Wall-clock cap for the ui tier (seconds). Generous enough for a cold container on a slow
 # runner, short enough that a blocked test fails the job instead of hanging it.
 UI_TIMEOUT  ?= 420
@@ -84,10 +93,10 @@ UNIT_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)
 	@$(if $(UNIT_PAR),echo "==> unit tier: bats $(UNIT_PAR)",echo "==> unit tier: serial (no GNU parallel)")
-	@$(BATS) $(BATS_FLAGS) $(UNIT_PAR) $(HERE)unit
+	@$(call junit_mk,unit) $(BATS) $(BATS_FLAGS) $(UNIT_PAR) $(call junit,unit) $(HERE)unit
 
 test-integ: $(BATS)
-	@$(BATS) $(BATS_FLAGS) $(HERE)integ
+	@$(call junit_mk,integ) $(BATS) $(BATS_FLAGS) $(call junit,integ) $(HERE)integ
 
 # The Stop hook's entry (the files 60-shell-tests.sh picked for the change) and CI's (one shard.sh shard).
 # Unit files run in parallel like test-unit, integ files serially like test-integ; both run
@@ -96,8 +105,8 @@ UNIT_FILES  = $(strip $(foreach f,$(FILES),$(if $(filter unit/%,$(f))$(findstrin
 OTHER_FILES = $(filter-out $(UNIT_FILES),$(FILES))
 test-files: $(BATS)
 	@rc=0; \
-	$(if $(UNIT_FILES),$(BATS) $(BATS_FLAGS) $(UNIT_PAR) $(UNIT_FILES) || rc=1;) \
-	$(if $(OTHER_FILES),$(BATS) $(BATS_FLAGS) $(OTHER_FILES) || rc=1;) \
+	$(if $(UNIT_FILES),$(call junit_mk,unit) $(BATS) $(BATS_FLAGS) $(UNIT_PAR) $(call junit,unit) $(UNIT_FILES) || rc=1;) \
+	$(if $(OTHER_FILES),$(call junit_mk,other) $(BATS) $(BATS_FLAGS) $(call junit,other) $(OTHER_FILES) || rc=1;) \
 	exit $$rc
 
 # Host entry point for the ui tier: hand off to the container. Running bats over ui/ on a
@@ -121,8 +130,9 @@ test-ui-inner: $(BATS)
 	@# attaching code path (`tmux attach` with no terminal) blocks FOREVER rather than
 	@# failing - one such test wedged a run for 10 minutes before it was caught. Without
 	@# this a hung test burns the whole CI job and reports nothing useful.
-	@timeout --foreground $(UI_TIMEOUT) $(BATS) $(BATS_FLAGS) $(HERE)ui \
-	  || { rc=$$?; [ $$rc -eq 124 ] && echo "ui tier TIMED OUT after $(UI_TIMEOUT)s (a test is probably blocked on an attach)" >&2; exit $$rc; }
+	@$(call junit_mk,ui) timeout --foreground $(UI_TIMEOUT) $(BATS) $(BATS_FLAGS) $(call junit,ui) $(HERE)ui \
+	  || { rc=$$?; [ $$rc -eq 124 ] && { echo "ui tier TIMED OUT after $(UI_TIMEOUT)s (a test is probably blocked on an attach)" >&2; \
+	       $(if $(junit_on),printf '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites><testsuite name="timeout" tests="1" failures="1" errors="0" skipped="0"><testcase classname="ui" name="ui tier timed out after $(UI_TIMEOUT)s"><failure message="timed out; a test is probably blocked on an attach"/></testcase></testsuite></testsuites>\n' >$(call junit_dir,ui)/report.xml;) }; exit $$rc; }
 
 # What the container's default CMD runs: everything, in one pass.
 test-container: test-fast test-ui-inner

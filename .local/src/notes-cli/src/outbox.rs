@@ -11,7 +11,7 @@
 //!
 //! A pasted list is split first (`sheet::split_lists`, run by `notes outbox split` at the start of
 //! each sweep): a line with two or more checkboxes directly under it becomes one line per item, so
-//! each ask routes alone, and its heading's words, `#p:`, `#agent`, `#plan` and priority go on each.
+//! each ask routes alone, and its heading's words, `#p:`, `#agent`, `#plan`, `#go` and priority go on each.
 //!
 //! A `#ask` word marks a question: the sweep answers it with one read-only model call and
 //! `notes outbox answer` takes the line out of the outbox and writes the question and answer to
@@ -36,7 +36,7 @@ pub(crate) const EXIT_NO_PROJECT: i32 = 3;
 
 fn skeleton() -> String {
     format!(
-        "# Outbox\n\nOne item per line, for any project. The inbox sweep routes each to its project's inbox and files it there; what went where is on the inbox status page. `#p:<name>` names a project (a name that matches none is left to the sweep's model), `#agent` the agent board, `#plan` a planning pass, `#ask` a quick read-only answer in the inbox.\n\n## {HEADING}\n"
+        "# Outbox\n\nOne item per line, for any project. The inbox sweep routes each to its project's inbox and files it there; what went where is on the inbox status page. `#p:<name>` names a project (a name that matches none is left to the sweep's model), `#agent` the agent board, `#plan` a plan first (held for your review when you asked for it), `#go` no review, `#ask` a quick read-only answer in the inbox.\n\n## {HEADING}\n"
     )
 }
 

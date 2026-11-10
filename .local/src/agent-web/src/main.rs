@@ -34,6 +34,7 @@ mod releases;
 mod schedules;
 mod sessions;
 mod shepherd;
+mod suites;
 mod worklog;
 
 use std::convert::Infallible;
@@ -152,6 +153,8 @@ async fn main() -> Result<()> {
         .route("/api/releases/changelog", get(releases::changelog))
         .route("/api/builds", get(builds_list))
         .route("/api/builds/log", get(build_log))
+        .route("/api/tests", get(tests_list))
+        .route("/api/tests/cases", get(tests_cases))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
@@ -1233,6 +1236,20 @@ async fn build_log(Query(key): Query<hub_core::builds::RunKey>) -> ApiResult<Res
         .await
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
     Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
+}
+
+async fn tests_list(Query(q): Query<suites::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        suites::get(q).await,
+    )
+        .into_response()
+}
+
+/// A suite is named by its run and its place in that run's results, never by a path.
+async fn tests_cases(Query(q): Query<suites::CasesQuery>) -> ApiResult<Response> {
+    let body = suites::cases(q).await.map_err(|(code, e)| bad(code, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
 }
 
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {

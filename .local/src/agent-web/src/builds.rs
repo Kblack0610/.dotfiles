@@ -6,6 +6,8 @@
 use hub_core::builds::{self, Builds, Paths, Run, RunKey, STALE_SECS};
 use hub_core::jobs::{self, now};
 use hub_core::table::{Summary, View};
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{off, ReadCache};
@@ -57,14 +59,17 @@ fn failed(e: String) -> String {
     serde_json::json!({ "rows": [], "errors": [e] }).to_string()
 }
 
+/// The ledger's read, kept a few seconds: the Tests section picks its runs from the same one.
+pub async fn current() -> Result<Arc<Builds>, String> {
+    READ.get((), async {
+        off(|| builds::read(&Paths::from_env(), now())).await
+    })
+    .await
+}
+
 /// The view `q` asks for.
 pub async fn get(q: Query) -> String {
-    let read = READ
-        .get((), async {
-            off(|| builds::read(&Paths::from_env(), now())).await
-        })
-        .await;
-    read.map_or_else(failed, |b| render(&b, &q))
+    current().await.map_or_else(failed, |b| render(&b, &q))
 }
 
 /// Drop the kept read, so the page's refetch after a ledger append sees the append.

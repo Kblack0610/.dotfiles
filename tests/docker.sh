@@ -81,6 +81,8 @@ fi
 # CI turns a missing prerequisite (the agent-panel build session_send.bats drives) from a skip
 # into a failure, so a red cannot hide as a skip there.
 [ -n "${CI:-}" ] && run_args+=(--env "CI=$CI")
+# JUNIT=1 writes the JUnit reports CI uploads (tests/Makefile).
+[ -n "${JUNIT:-}" ] && run_args+=(--env "JUNIT=$JUNIT")
 
 if [ "${1:-}" = "--shell" ]; then
   shift
