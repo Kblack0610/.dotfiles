@@ -540,3 +540,60 @@ fn edit_link_puts_an_existing_row_under_its_systems_standing_epic() {
     );
     assert_eq!(h.sheet().matches("to standard").count(), 1, "{}", h.sheet());
 }
+
+#[test]
+fn closing_an_epics_last_leaf_files_one_verify_row_on_the_human_sheet() {
+    let h = Home::new("verify");
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "add",
+        "epic(ui): the pause menu feels instant",
+    ]));
+    assert!(h.sheet().contains("id:dm-1"), "{}", h.sheet());
+    ok(&agent(
+        &h,
+        &["add", "fix(ui): pause menu is slow #size/s #of/dm-1"],
+    ));
+    ok(&agent(
+        &h,
+        &["add", "feat(ui): a resume button #size/s #of/dm-1"],
+    ));
+    let verify = |h: &Home| {
+        h.sheet()
+            .lines()
+            .filter(|l| l.contains("check(ui): verify dm-1 the pause menu feels instant"))
+            .count()
+    };
+    // NEGATIVE CONTROL: a close that leaves a leaf open asks nothing.
+    ok(&agent(&h, &["done", "dm-2", "--proof", "pr:1"]));
+    assert_eq!(verify(&h), 0, "{}", h.sheet());
+
+    ok(&agent(&h, &["done", "dm-3", "--proof", "pr:2"]));
+    assert_eq!(verify(&h), 1, "{}", h.sheet());
+    let sheet = h.sheet();
+    let row = sheet.lines().find(|l| l.contains("verify dm-1")).unwrap();
+    assert!(row.starts_with("- [ ] ") && row.contains("#high"), "{row}");
+    assert!(
+        !row.contains("#of/"),
+        "the ask is no leaf of the epic: {row}"
+    );
+    assert!(
+        sheet.contains("- [ ] epic(ui): the pause menu feels instant"),
+        "nothing closes the epic: {sheet}"
+    );
+
+    // Ticking the ask finishes nothing again, so it is never filed twice.
+    let id = ids(&sheet).into_iter().find(|i| i != "dm-1").unwrap();
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "done",
+        &id,
+        "--proof",
+        "looked: it opens in 40ms",
+    ]));
+    // A re-close of the finished leaf (a re-run landing) matches no open row, so it files none.
+    let _ = agent(&h, &["done", "dm-3", "--proof", "pr:2"]);
+    assert_eq!(h.sheet().matches("verify dm-1").count(), 1, "{}", h.sheet());
+}

@@ -246,8 +246,9 @@ project_lab_names() {
 }
 
 # project_board <repo or project> -> the notes board its rows go on, or "" when it has none: its
-# `owner` (a repo with no sheet of its own: dotfiles -> agent-runtime), else itself when it has a
-# `lab`, else the first lab project inside it (a monorepo -> its first app with a sheet).
+# `owner` (a repo whose work counts on a project in its checkout: dotfiles -> agent-runtime), else
+# its `board` (a repo with no sheet that files on another's: dotfiles-private -> agent-runtime), else
+# itself when it has a `lab`, else the first lab project inside it (a monorepo -> its first app with a sheet).
 project_board() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
@@ -255,6 +256,7 @@ project_board() {
     (.trackers // {}) as $t
     | (if ($t[$n] | type) == "object" then $t[$n] else {} end) as $own
     | if ($own.owner // "") != "" then $own.owner
+      elif ($own.board // "") != "" then $own.board
       elif ($own.lab // "") != "" then $n
       else [$t | to_entries[] | select(.value | type == "object")
             | select(.value.repo == $n and (.value.lab // "") != "") | .key][0] // empty end

@@ -648,6 +648,64 @@ EOF
 EOF
 }
 
+@test "the plan's rows: close with the PR's proof on its last phase only, each on its own board and lane" {
+  printf '%s\n' '# plan' 'epic: ar-1' 'rows: ucp-134, AR-9 zz-77' '' '## Phases' '' '- [ ] 1. first' '- [ ] 2. last' >"$PLAN"
+  jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"},
+    {profile: "personal", project: "agent-runtime", lane: "agent", id: "ar-9", state: "doing"},
+    {profile: "personal", project: "dotfiles", lane: "agent", id: "ar-1", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  item one 'board:dotfiles:first' agent
+  run "$LAND" 42 --item one --plan "$PLAN" --phase "1. first"
+  assert_success
+  refute_output --partial 'rows:'
+  run grep -c 'done ucp-134\|done ar-9' "$LOG"
+  assert_output 0
+  item two 'board:dotfiles:last' agent
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  : >"$LOG"
+  run "$LAND" 42 --item two --plan "$PLAN" --phase "2. last"
+  assert_success
+  assert_line 'rows: closed ar-9 on agent-runtime'
+  assert_line 'rows: closed ucp-134 on game'
+  assert_line 'rows: zz-77 is not one open row on any board, left as is'
+  assert_line --index -1 'landed #42'
+  run grep -E 'done (ucp-134|ar-9|ar-1)' "$LOG"
+  assert_output - <<'EOF2'
+notes --profile personal ptask agent-runtime --agent done ar-9 --proof pr:42 commit:fedcba987654
+notes --profile bnb ptask game done ucp-134 --proof pr:42 commit:fedcba987654
+EOF2
+}
+
+@test "the plan's rows: a deferred phase leaves them open; --dry-run names them only on the last phase" {
+  printf '%s\n' 'rows: ucp-134' '## Phases' '- [ ] 1. first' '- [ ] 2. last' >"$PLAN"
+  jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "1. first" --dry-run
+  refute_output --partial 'rows:'
+  sed -i 's/^- \[ \] 1. first/- [x] 1. first (#41)/' "$PLAN"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last" --dry-run
+  assert_line 'rows: close ucp-134 with pr:42, the plan'"'"'s last phase'
+  sed -i 's/^- \[x\] 1. first (#41)/- [-] 1. first: deferred, ar-2/' "$PLAN"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last"
+  assert_success
+  assert_line 'rows: left open, the plan deferred a phase: ucp-134'
+  run grep -c 'done ucp-134' "$LOG"
+  assert_output 0
+}
+
+@test "the plan's rows: a board step that fails is a line with the command, and the landing still finishes" {
+  printf '%s\n' 'rows: ucp-134' '## Phases' '- [ ] 6. agent-land' >"$PLAN"
+  jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  cat >"$SANDBOX/bin/notes" <<EOF2
+#!/usr/bin/env bash
+case "\$*" in *'done ucp-134'*) echo 'no open row ucp-134' >&2; exit 1 ;; esac
+exec bash "$REPO_ROOT/tests/helpers/stubs/notes" "\$@"
+EOF2
+  chmod +x "$SANDBOX/bin/notes"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "6. agent-land"
+  assert_success
+  assert_line 'rows: ucp-134 not closed (no open row ucp-134): notes --profile bnb ptask game done ucp-134 --proof pr:42'
+  assert_line --index -1 'landed #42'
+}
+
 @test "a phase that matches no unchecked line is refused before anything runs" {
   run "$LAND" 42 --item ship --plan "$PLAN" --phase "9. missing"
   assert_failure 2
@@ -1034,7 +1092,8 @@ repo_map() {
   grep -qE -- '- \[x\] stop the load crash .*id:gm-1' "$sheet" || fail "the edited row did not close: $(cat "$sheet")"
 }
 
-@test "end to end: a hand item's story is filed started under its epic by add and closed by agent-land" {
+# real_notes_board -- the built notes, and a game project with one epic (gm-1): sets $dir. Skips with no NOTES_BIN.
+real_notes_board() {
   [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
   ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
   dir="$HOME/.notes/lab/projects/current/game"
@@ -1046,6 +1105,10 @@ repo_map() {
   export AGENT_QUEUE_PROJECT_MAP="$PROJECT_MAP_FILE"
   unset NOTES_PROFILE
   jq -n '{paths: {"/x/game": "game"}, trackers: {game: {code: "gm", lab: "personal"}}}' >"$PROJECT_MAP_FILE"
+}
+
+@test "end to end: a hand item's story is filed started under its epic by add and closed by agent-land" {
+  real_notes_board
 
   run agent-queue add --running --project game --epic gm-1 --slug title "feat(menu): the title screen"
   assert_success
@@ -1058,6 +1121,46 @@ repo_map() {
   assert_output --partial 'board: closed "gm-2" with pr:42'
   grep -qE -- '^- \[x\] feat\(menu\): the title screen .*gm-2' "$dir/agent/README.md" ||
     fail "the story did not close: $(cat "$dir/agent/README.md")"
+}
+
+@test "end to end: --row links a filed row, files no second one, and agent-land closes it" {
+  real_notes_board
+  notes --profile personal ptask game --agent add -- 'fix(menu): the back button #size/s' >/dev/null
+  run agent-queue add --running --project game --row gm-2 --slug back "work the filed row"
+  assert_success
+  grep -qE -- '^- \[/\] fix\(menu\): the back button .*id:gm-2' "$dir/agent/README.md" ||
+    fail "the row was not started: $(cat "$dir/agent/README.md")"
+  run "$LAND" 42 --item back
+  assert_success
+  assert_output --partial 'board: closed "gm-2" with pr:42'
+  grep -qE -- '^- \[x\] fix\(menu\): the back button .*gm-2' "$dir/agent/README.md" ||
+    fail "the linked row did not close: $(cat "$dir/agent/README.md")"
+  [ "$(grep -c 'back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed"
+
+  # NEGATIVE CONTROL: the row is closed now, so the real notes refuses it and nothing is written.
+  run agent-queue add --running --project game --row gm-2 --slug again "work it twice"
+  assert_failure
+  assert_output --partial '--row gm-2: not an open row on the game agent board'
+  run agent-queue show again --json
+  assert_failure
+}
+
+@test "end to end: a title naming a filed row works it, and the plan's rows: close with the last phase" {
+  real_notes_board
+  notes --profile personal ptask game --agent add -- 'fix(menu): the back button #size/s' >/dev/null
+  printf '%s\n' '- [ ] feat(menu): a settings page the human asked for #size/s <!-- id:gm-9 -->' >>"$dir/README.md"
+  run agent-queue add --running --project game --slug back "gm-2: fix the back button"
+  assert_success
+  assert_output --partial 'back works row gm-2, which its title names'
+  [ "$(grep -c 'back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed: $(cat "$dir/agent/README.md")"
+  printf '%s\n' '# plan' 'rows: gm-9' '' '## Phases' '' '- [ ] 1. the back button' >"$PLAN"
+  run "$LAND" 42 --item back --plan "$PLAN" --phase "1. the back button"
+  assert_success
+  assert_output --partial 'board: closed "gm-2" with pr:42'
+  assert_line 'rows: closed gm-9 on game'
+  grep -qE -- '^- \[x\] feat\(menu\): a settings page .*gm-9' "$dir/README.md" ||
+    fail "the plan's row did not close: $(cat "$dir/README.md")"
+  grep -qE -- '^- \[ \] epic\(menu\): live menus' "$dir/README.md" || fail "the epic closed: $(cat "$dir/README.md")"
 }
 
 @test "the PR's changed files credit the item to the game whose path owns the most" {
