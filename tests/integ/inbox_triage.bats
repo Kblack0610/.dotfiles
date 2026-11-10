@@ -855,6 +855,24 @@ ask_stub() {
   assert_output --regexp 'fix\(ui\): pause menu #size/m #of/sc-5 <!-- id:sc-3 -->'
 }
 
+# A backlog past the 128 KB one argument holds: the rows and the cache must not go to jq as arguments.
+@test "--backlog --link replays its cache for a backlog past 128 KB" {
+  export INBOX_LINK_CMD=model-stub INBOX_LINK_DIR="$NOTES_FIXTURE/link"
+  systems ui
+  long="$(printf 'x%.0s' {1..70000})"
+  sheet '' "- [ ] fix(ui): pause menu $long #size/s <!-- id:sc-2 -->\n"
+  answer '{"n": 1, "system": "ui"}'
+  run "$TRIAGE" --backlog --link --dry-run --project scratch
+  assert_success
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --backlog --link --project scratch
+  assert_success
+  refute_output --partial 'Argument list too long'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model again"
+  run tasks
+  assert_output --regexp 'fix\(ui\): pause menu x+ #size/s #of/sc-3 <!-- id:sc-2 -->'
+}
+
 # NEGATIVE CONTROL: --link alone would run the inbox sweep's model call; it is refused.
 @test "--link without --backlog, or with --priority, is refused and asks no model" {
   run "$TRIAGE" --link

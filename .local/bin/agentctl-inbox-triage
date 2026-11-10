@@ -674,7 +674,7 @@ $listing"
 # project with the most first. A project with no system list is passed over: there is no
 # standing epic to fall back on.
 link_pass() {
-  local board epics rows p lane tsv cache kept mine cached total off size r rc=0 raw sys of epic
+  local board epics rows p lane tsv cache kept mine total off size r rc=0 raw sys of epic
   board="$(notes board --json 2>/dev/null)" || { say "notes board --json failed"; proof_why "notes board --json failed"; return 1; }
   board="$(managed_board <<<"$board")"
   epics="$(epics_open "$board")"
@@ -688,23 +688,25 @@ link_pass() {
     tsv="$(project-stage-check "$p" --list 2>/dev/null)"
     [ -n "$tsv" ] || { say "$p: no system list, passed over"; continue; }
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
-    cache="$(link_cache "$p")" cached='{}' kept=''
+    cache="$(link_cache "$p")" kept=''
     mkdir -p "$(dirname "$cache")"
     # Answers already given for rows still as they were: the apply writes what the dry run
     # printed, and a dry run stopped at its budget resumes. Only the rest go to the model below.
-    [ -s "$cache" ] && kept="$(jq -cn --argjson rows "$rows" --arg p "$p" '($rows | map(select(.project == $p) | "\(.lane)\u0000\(.raw)") | INDEX(.)) as $live
-      | inputs | select($live["\(.lane)\u0000\(.raw)"])' "$cache")"
+    # The rows go in on stdin and the answers as a file: either can pass the 128 KB an argument holds.
+    # shellcheck disable=SC2016 # jq source, not shell
+    [ -s "$cache" ] && kept="$(jq -c --arg p "$p" --slurpfile c "$cache" '(map(select(.project == $p) | "\(.lane)\u0000\(.raw)") | INDEX(.)) as $live
+      | $c[] | select($live["\(.lane)\u0000\(.raw)"])' <<<"$rows")"
     [ "$DRY" = 1 ] && printf '%s' "${kept:+$kept$'\n'}" >"$cache"
     if [ -n "$kept" ]; then
       while IFS=$'\x1f' read -r lane raw sys of epic; do
         link_row "$p" "$lane" "$raw" "$sys" "$of" "$epic" "$epics" "$tsv"
       done < <(jq -r '[.lane, .raw, .system, .of, .epic] | join("\u001f")' <<<"$kept")
-      cached="$(jq -c '"\(.lane)\u0000\(.raw)"' <<<"$kept" | jq -sc 'INDEX(.)')"
     fi
     for lane in human agent; do
       # shellcheck disable=SC2016 # jq source, not shell
-      mine="$(jq -c --arg p "$p" --arg l "$lane" --argjson have "$cached" \
-        '[.[] | select(.project == $p and .lane == $l and ($have["\(.lane)\u0000\(.raw)"] | not))] | sort_by(.line)' <<<"$rows")"
+      mine="$(jq -c --arg p "$p" --arg l "$lane" --slurpfile have <(printf '%s\n' "$kept") \
+        '($have | map("\(.lane)\u0000\(.raw)") | INDEX(.)) as $h
+        | [.[] | select(.project == $p and .lane == $l and ($h["\(.lane)\u0000\(.raw)"] | not))] | sort_by(.line)' <<<"$rows")"
       total="$(jq length <<<"$mine")"; off=0
       while [ "$off" -lt "$total" ]; do
         size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
