@@ -126,7 +126,10 @@ fn live_waits(state: &mut Value, (agents, gaps): (Vec<Agent>, Gaps)) {
         return;
     };
     for a in &agents {
-        match sessions.iter_mut().find(|s| s["target"] == a.target.as_str()) {
+        match sessions
+            .iter_mut()
+            .find(|s| s["target"] == a.target.as_str())
+        {
             Some(s) if a.at_dialog() && s["bucket"] != "NEEDS" => {
                 s["bucket"] = "NEEDS".into();
                 s["reason"] = AT_PROMPT.into();
@@ -417,8 +420,21 @@ pub fn project_order(rec: &Value, grid: &HourGrid) -> Vec<String> {
 
 /// A day's record as the web Log reads it: every merged and open PR carries its `project`
 /// (`pr_project`, so an older record reads the same), plus `hours` (merges_by_hour) and
-/// `projects` (project_order), so the browser draws the grid and computes neither.
+/// `projects` (project_order), so the browser draws the grid and computes neither. Each bench
+/// session carries `name`, its plan's (`plans::name`), so a row says what the session works on.
 pub fn log_view<Tz: chrono::TimeZone>(mut rec: Value, tz: &Tz) -> Value {
+    let mut names = crate::plans::Names::default();
+    let bench = rec.get_mut("bench").and_then(|b| b.get_mut("sessions"));
+    if let Some(ss) = bench.and_then(Value::as_array_mut) {
+        for s in ss {
+            let name = s["plan"]
+                .as_str()
+                .map(|p| names.get(&crate::plans::path(p)));
+            if let (Some(o), Some(name)) = (s.as_object_mut(), name) {
+                o.insert("name".into(), name.into());
+            }
+        }
+    }
     for k in ["merged", "open"] {
         if let Some(a) = rec[k].as_array_mut() {
             for pr in a {
@@ -760,6 +776,7 @@ mod tests {
                        {"repo": "x", "project": "trader", "merged_at": "2026-11-05T16:00:00Z"}],
             "open": [{"repo": "web"}]});
         let v = log_view(rec, &chrono::Utc);
+        assert_eq!(v["bench"], Value::Null, "a record with no bench gains none");
         assert_eq!(v["merged"][0]["project"], "dotfiles");
         assert_eq!(v["merged"][1]["project"], "trader");
         assert_eq!(v["open"][0]["project"], "web");
@@ -769,6 +786,26 @@ mod tests {
             v["projects"],
             serde_json::json!(["dotfiles", "trader", "web"])
         );
+    }
+
+    #[test]
+    fn each_bench_session_is_named_by_its_plans_heading_else_its_plans_file_name() {
+        let dir = std::env::temp_dir().join(format!("hub-core-bench-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plan = dir.join("ucp-145.md");
+        std::fs::write(
+            &plan,
+            "# ucp-145: first premium sets, Legends and own heroes\n",
+        )
+        .unwrap();
+        let rec = serde_json::json!({"bench": {"sessions": [
+            {"plan": plan.to_str().unwrap()}, {"plan": "/nowhere/quiet-ocean"}, {"target": "a:1"}]}});
+        let v = log_view(rec, &chrono::Utc);
+        let ss = &v["bench"]["sessions"];
+        assert_eq!(ss[0]["name"], "ucp-145: first premium sets");
+        assert_eq!(ss[1]["name"], "quiet-ocean");
+        assert_eq!(ss[2]["name"], Value::Null, "no plan, no name");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1057,7 +1094,11 @@ mod tests {
         let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
         assert_eq!(s["asks"], json!([]));
         assert_eq!(s["unreadable"], json!(["agent-ask"]));
-        std::fs::write(&f, r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#).unwrap();
+        std::fs::write(
+            &f,
+            r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#,
+        )
+        .unwrap();
         let answered = (vec![live("hub/a:1", '~', None)], vec![]);
         let s = state_with(&f, &Fixed(Ok(tsv.into())), &signals, 0, answered);
         assert_eq!(s["sessions"][0]["bucket"], "WORKING");
