@@ -264,7 +264,13 @@ pub fn list(p: &Profile, json: bool) -> Result<i32> {
 /// first, so a failed second write leaves the line in both places (seen twice, and
 /// `inbox_put` does not write it twice) and never in neither. A name that is no project leaves
 /// the line where it is and exits 3 (`EXIT_NO_PROJECT`), so a caller can tell it from a failure.
-pub fn move_line(p: &Profile, log: &Logger, project: &str, raw: &str) -> Result<i32> {
+pub fn move_line(
+    p: &Profile,
+    log: &Logger,
+    project: &str,
+    why: Option<&str>,
+    raw: &str,
+) -> Result<i32> {
     let _lock = lock(p)?;
     // The project sheet is a ptask sheet, so its write holds the ptask lock too (always taken
     // after the outbox's: no ptask verb takes the outbox lock, so the order cannot invert).
@@ -286,7 +292,13 @@ pub fn move_line(p: &Profile, log: &Logger, project: &str, raw: &str) -> Result<
     let sheet = project_tasks::inbox_put(p, &dir, project, &block)?;
     md::write_atomic(&p.outbox, &rest)?;
     let text = md::without_project_tag(&line.text);
-    ingest::record(p, &Event::new("moved", "outbox", project, &text));
+    ingest::record(
+        p,
+        &Event {
+            why: ingest::set(why),
+            ..Event::new("moved", "outbox", project, &text)
+        },
+    );
     log.info("outbox", &format!("moved to {}", sheet.display()));
     // The last line is the line as the inbox now holds it (its `#p:` word is gone), which the
     // sweep needs to file it from there.
@@ -472,7 +484,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            move_line(&p, &log, "demo", "- [ ] loading screen options #p:demo").unwrap(),
+            move_line(
+                &p,
+                &log,
+                "demo",
+                Some("#p: tag"),
+                "- [ ] loading screen options #p:demo"
+            )
+            .unwrap(),
             0
         );
         let sheet = fs::read_to_string(root.join("lab/projects/current/demo/README.md")).unwrap();
@@ -492,6 +511,7 @@ mod tests {
             ),
             ("moved", "outbox", "demo", "loading screen options")
         );
+        assert_eq!(ev[0].why.as_deref(), Some("#p: tag"));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -501,11 +521,11 @@ mod tests {
         add(&p, &log, "a thing").unwrap();
         let before = fs::read_to_string(&p.outbox).unwrap();
         assert_eq!(
-            move_line(&p, &log, "no-such-project", "- [ ] a thing").unwrap(),
+            move_line(&p, &log, "no-such-project", None, "- [ ] a thing").unwrap(),
             EXIT_NO_PROJECT
         );
         assert_eq!(fs::read_to_string(&p.outbox).unwrap(), before);
-        assert_eq!(move_line(&p, &log, "demo", "- [ ] other").unwrap(), 1);
+        assert_eq!(move_line(&p, &log, "demo", None, "- [ ] other").unwrap(), 1);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -554,7 +574,7 @@ mod tests {
         add(&p, &log, "one").unwrap();
         let read_by_page = base(&p);
         // The sweep moves the line while the page is typing.
-        assert_eq!(move_line(&p, &log, "demo", "- [ ] one").unwrap(), 0);
+        assert_eq!(move_line(&p, &log, "demo", None, "- [ ] one").unwrap(), 0);
         let before = fs::read(&p.outbox).unwrap();
         let got = put_items(&p, &read_by_page, "- [ ] one\ntwo").unwrap();
         let Put::Stale(v) = got else {

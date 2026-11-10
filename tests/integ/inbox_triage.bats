@@ -285,10 +285,16 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
 
 @test "a filed want is stamped #requested by the writer on the agent board, and its channel is recorded" {
   sheet '- the gun sound is off\n- the menu is slow\n' ''
-  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"], "lane": "agent"}' \
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"], "lane": "agent", "why": "names the gun"}' \
     '{"n": 2, "action": "file", "rows": ["fix(ui): the menu is slow #high #size/s"]}'
-  run "$TRIAGE"
+  run env -u AGENT_QUEUE_ITEM -u CLAUDE_CODE_SESSION_ID AGENTCTL_NAME=inbox-triage "$TRIAGE"
   assert_success
+  # Each filing names its writer and how it was decided; a sweep that handled lines says so.
+  run jq -r 'select(.action == "filed" or .action == "sweep") | [.action, .by, .why] | join(" | ")' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'filed | inbox-triage | model: names the gun'
+  assert_line 'filed | inbox-triage | model: no why'
+  assert_line --regexp '^sweep \| inbox-triage \| moved 0 from the outbox, filed 2, left 0, refused 0'
+  grep -q 'why: a few words on a file or a dup too' "$NOTES_FIXTURE/prompt.txt" || fail "the prompt asks for no why on a filing"
   grep -qE 'fix\(audio\): the gun sound plays late .*#requested' "$PROJ/scratch/agent/README.md" || fail "$(cat "$PROJ/scratch/agent/README.md")"
   run tasks
   refute_output --partial '#requested'
@@ -451,6 +457,14 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial 'triage kept 1 of 1 as filed (7d)'
   grep -q '"row":"chore(build): drop the old cache"' "$HOME/.local/state/notes/ingest.jsonl" || fail "the filed row's words were not recorded"
   ! grep -q '"action":"sweep-stopped"' "$HOME/.local/state/notes/ingest.jsonl" || fail "a clean sweep recorded a stop"
+  run jq -r 'select(.action == "moved" or .action == "filed") | .action + " " + .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'moved #p: tag'
+  assert_line 'filed typed'
+  # The trace follows the line from the outbox to the row it became.
+  run notes log --trace 'old cache'
+  assert_success
+  assert_line --regexp ' moved outbox -> scratch.*: chore\(build\): drop the old cache.*\[#p: tag\]$'
+  assert_line --regexp ' filed sc-1 scratch.*\[typed\]$'
 }
 
 @test "outbox: a #p: word that names no project goes to the model with the word as a hint, and is routed, not refused" {
