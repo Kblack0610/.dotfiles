@@ -36,6 +36,7 @@ The agent runtime itself: the machinery that takes a piece of agent work from in
 - Sessions: `fleet-sessions` computes each session's bucket and writes the state document every view renders (`fleet-states.md`). `fleet-shepherd` nudges stalled ones.
 - Asks: `agent-ask` is the two-way queue a headless agent uses to ask the human a question and read the answer.
 - Landing: `agent-land <pr>` waits for checks, squash-merges the validated head, records the PR on the queue item and closes its board row.
+- GitHub budget: the `gh` wrapper sends read-only calls out on a GitHub App's installation token (`gh-app`), so they stop spending the one REST budget every account shares, and logs every call to `~/.local/state/gh-calls/` (`operations/github-app.md`).
 - Evals with no model in them: `agentctl-session-outcomes` and `fleet-bench` score sessions from transcript structure, git and gh.
 - Views: the `hub` TUI, `agent-web`, `agent-panel`, waybar chips and a Home Assistant feed (`agent-mqtt-publish`).
 
