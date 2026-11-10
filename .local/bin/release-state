@@ -29,6 +29,8 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
 # shellcheck source=../lib/origin-repo.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
+# shellcheck source=../lib/store-auth.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
 NAME=release-state   # the runner refresh publishes under, never an inherited AGENTCTL_NAME
 
 STATE_DIR="${RELEASE_STATE_DIR:-$HOME/.agent/releases}"
@@ -173,79 +175,24 @@ pinned() {
   fi
 }
 
-# A credential or a token goes to curl on stdin as a config file, so it is never in argv.
-secret_curl() { timeout "$PROBE_TIMEOUT" curl -fsS -g --max-time "$PROBE_TIMEOUT" -K - 2>/dev/null; }
-
-# store_get <url> [bearer-token]
-store_get() {
-  { printf 'url = "%s"\n' "$1"; [ -z "${2:-}" ] || printf 'header = "Authorization: Bearer %s"\n' "$2"; } | secret_curl
-}
-
-b64url() { basenc --base64url -w0 | tr -d '='; }
-
-# openssl signs ECDSA as DER; JOSE wants R and S as two fixed 32-byte integers. RS256 passes through.
-jose_sig() {
-  [ "$1" = ES256 ] || { cat; return; }
-  openssl asn1parse -inform DER 2>/dev/null \
-    | awk '/INTEGER/ { h = $0; sub(/.*:/, "", h); h = sprintf("%64s", h); gsub(/ /, "0", h); printf "%s", substr(h, length(h) - 63) }' \
-    | xxd -r -p
-}
-
-# jwt <RS256|ES256> <header-json> <claims-json> <pem> -> a signed JWT, or nothing. The key reaches
-# openssl through a process substitution: never argv, never a file on disk.
-jwt() {
-  local alg="$1" pem="$4" input sig
-  input="$(printf '%s' "$2" | b64url).$(printf '%s' "$3" | b64url)"
-  sig="$(printf '%s' "$input" | openssl dgst -sha256 -sign <(printf '%s' "$pem") -binary 2>/dev/null | jose_sig "$alg" | b64url)"
-  [ -n "$sig" ] && printf '%s.%s' "$input" "$sig"
-}
-
-rbw_read() { timeout "$PROBE_TIMEOUT" rbw get "$1" </dev/null 2>/dev/null; }
-
-# secret_field <json> <key>: on a pipe, because a here-string can land in a temp file.
-secret_field() { printf '%s' "$1" | jq -r --arg k "$2" '.[$k] // empty' 2>/dev/null; }
-
 play_credentials() {
-  local raw email pem now claims assertion answer
-  raw="$(rbw_read "$RBW_PLAY")" && [ -n "$raw" ] || { PLAY_WHY="no rbw entry $RBW_PLAY"; return; }
-  email="$(secret_field "$raw" client_email)"
-  pem="$(secret_field "$raw" private_key)"
-  [ -n "$email" ] && [ -n "$pem" ] || { PLAY_WHY="rbw entry $RBW_PLAY is not a service account"; return; }
-  now="$(now_epoch)"
-  claims="$(jq -nc --arg iss "$email" --argjson now "$now" \
-    '{iss: $iss, scope: "https://www.googleapis.com/auth/androidpublisher", aud: "https://oauth2.googleapis.com/token", iat: $now, exp: ($now + 600)}')"
-  assertion="$(jwt RS256 '{"alg":"RS256","typ":"JWT"}' "$claims" "$pem")"
-  [ -n "$assertion" ] || { PLAY_WHY="cannot sign with rbw entry $RBW_PLAY"; return; }
-  answer="$(printf 'url = "https://oauth2.googleapis.com/token"\ndata = "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=%s"\n' "$assertion" | secret_curl)" \
-    || { PLAY_WHY="google token request failed"; return; }
-  PLAY_TOKEN="$(printf '%s' "$answer" | jq -r '.access_token // empty' 2>/dev/null)"
-  [ -n "$PLAY_TOKEN" ] || PLAY_WHY="google token answer has no token"
+  store_google_token "$RBW_PLAY" https://www.googleapis.com/auth/androidpublisher
+  PLAY_TOKEN="$STORE_TOKEN" PLAY_WHY="$STORE_WHY"
 }
 
 asc_credentials() {
-  local raw kid iss pem now
-  raw="$(rbw_read "$RBW_ASC")" && [ -n "$raw" ] || { ASC_WHY="no rbw entry $RBW_ASC"; return; }
-  kid="$(secret_field "$raw" key_id)"
-  iss="$(secret_field "$raw" issuer_id)"
-  pem="$(secret_field "$raw" p8 | base64 -d 2>/dev/null)"
-  [ -n "$kid" ] && [ -n "$iss" ] && [ -n "$pem" ] || { ASC_WHY="rbw entry $RBW_ASC needs key_id, issuer_id and p8"; return; }
-  now="$(now_epoch)"
-  ASC_JWT="$(jwt ES256 "$(jq -nc --arg k "$kid" '{alg: "ES256", kid: $k, typ: "JWT"}')" \
-    "$(jq -nc --arg i "$iss" --argjson now "$now" '{iss: $i, iat: $now, exp: ($now + 900), aud: "appstoreconnect-v1"}')" "$pem")"
-  [ -n "$ASC_JWT" ] || ASC_WHY="cannot sign with rbw entry $RBW_ASC"
+  store_asc_jwt "$RBW_ASC"
+  ASC_JWT="$STORE_TOKEN" ASC_WHY="$STORE_WHY"
 }
 
 # store_credentials <targets> -> read once what these targets need. Runs in the main shell because
-# each probe is a subshell. `rbw unlocked` first: a bare `rbw get` on a locked vault raises pinentry
-# on the desktop, and the runner would do that every 15 minutes.
+# each probe is a subshell.
 store_credentials() {
-  local kinds why=""
+  local kinds
   kinds="$(jq -r '.target.live | objects | keys[]' <<<"$1" 2>/dev/null | sort -u)"
   grep -qxE 'steam|play|testflight' <<<"$kinds" || return 0
-  command -v rbw >/dev/null 2>&1 || why="rbw is not installed"
-  [ -n "$why" ] || timeout "$PROBE_TIMEOUT" rbw unlocked </dev/null >/dev/null 2>&1 || why="rbw is locked"
-  if [ -n "$why" ]; then
-    STEAM_WHY="$why" PLAY_WHY="$why" ASC_WHY="$why"
+  if ! store_rbw_ready; then
+    STEAM_WHY="$STORE_WHY" PLAY_WHY="$STORE_WHY" ASC_WHY="$STORE_WHY"
     return 0
   fi
   if grep -qx steam <<<"$kinds"; then

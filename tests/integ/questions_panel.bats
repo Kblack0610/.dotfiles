@@ -48,12 +48,12 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   ask demo hub 'a=the first|b=the second' 'no agent number?' >/dev/null
   run rows
   assert_success
-  assert_line --regexp $'\tucp:60 +[0-9]+m  long project[?]~ +dead end$'
-  assert_line --regexp $'\tdemo:1 +[0-9]+m  short project[?]~ +dead end$'
-  assert_line --regexp $'\tdemo   +[0-9]+m  no agent number[?]~ +dead end$'
+  assert_line --regexp $'\tLIVE ucp:60 +[0-9]+m  long project[?]$'
+  assert_line --regexp $'\tLIVE demo:1 +[0-9]+m  short project[?]$'
+  assert_line --regexp $'\tLIVE demo   +[0-9]+m  no agent number[?]$'
 }
 
-@test "a row's second line says where its answer goes, and what the session is, under the question" {
+@test "a row says LIVE or dead before the name, and what the session is under the question" {
   mkdir -p "$HOME/.claude/sessions" "$HOME/.agent/sessions/demo"
   printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
   printf '%s\n' '{"session_id":"sid-1","title":"live-work"}' '{"session_id":"sid-9","title":""}' \
@@ -65,11 +65,32 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   loose="$(ask demo s 'a=the first|b=the second' 'headless?')"
   run rows
   assert_success
-  # The second line starts under the question: name column (4) + age (3) + three spaces.
-  assert_line --regexp "^$live	demo +[0-9]+m  live[?]~ {10}to session [.] live-work\$"
-  assert_line --regexp "^$ended	demo +[0-9]+m  ended[?]~ {10}dead end [.] tidy-the-board\$"
-  assert_line --regexp "^$untitled	demo +[0-9]+m  untitled[?]~ {10}dead end\$"
-  assert_line --regexp "^$loose	demo +[0-9]+m  headless[?]~ {10}dead end\$"
+  # The second line starts under the question: mark (4) + name column (4) + age (3) + four spaces.
+  assert_line --regexp "^$live	LIVE demo +[0-9]+m  live[?]~ {15}live-work\$"
+  assert_line --regexp "^$ended	dead demo +[0-9]+m  ended[?]~ {15}tidy-the-board\$"
+  assert_line --regexp "^$untitled	dead demo +[0-9]+m  untitled[?]\$"
+  # Negative control: an ask with no session (intake, headless) has nobody gone, so it is LIVE.
+  assert_line --regexp "^$loose	LIVE demo +[0-9]+m  headless[?]\$"
+}
+
+@test "live asks come first oldest first, then the open dialogs, then the dead asks oldest first" {
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
+  local dead_old live_new dead_new live_old
+  dead_old="$(CLAUDE_CODE_SESSION_ID=sid-9 ask demo agent-1 'a=the first|b=the second' 'dead old?')"
+  live_new="$(CLAUDE_CODE_SESSION_ID=sid-1 ask demo agent-2 'a=the first|b=the second' 'live new?')"
+  dead_new="$(CLAUDE_CODE_SESSION_ID=sid-8 ask demo agent-3 'a=the first|b=the second' 'dead new?')"
+  live_old="$(ask demo agent-4 'a=the first|b=the second' 'live old?')"
+  created "$dead_old" 2026-11-01T10:00:00-0800
+  created "$live_new" 2026-11-04T10:00:00-0800
+  created "$dead_new" 2026-11-05T10:00:00-0800
+  created "$live_old" 2026-11-02T10:00:00-0800
+  live_agent hub/demo:2 waiting 90 ExitPlanMode 'Stop issues' >"$NOTES_FIXTURE/agent-panel.list.json"
+  run rows
+  assert_success
+  # The oldest ask is dead, so it sorts below every live row and the dialog.
+  assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live_old $live_new @hub/demo:2 $dead_old $dead_new "
+  assert_line --index 2 --partial $'\tLIVE demo:2'
 }
 
 # The selected row is drawn on colour 8, the grey of the dim colour (and of some themes'
