@@ -292,6 +292,7 @@ fn is_inherited(w: &str) -> bool {
     md::project_tag_word(w).is_some()
         || md::agent_tag(w)
         || w.eq_ignore_ascii_case("#plan")
+        || w.eq_ignore_ascii_case("#go")
         || (w.starts_with('#') && md::is_priority(w))
 }
 
@@ -485,11 +486,11 @@ mod tests {
     }
 
     #[test]
-    fn an_items_own_project_wins_and_agent_and_plan_are_inherited() {
-        let (got, _) = split("- [ ] #agent #plan\n  - [ ] a #p:one\n  - [ ] b\n");
+    fn an_items_own_project_wins_and_agent_plan_and_go_are_inherited() {
+        let (got, _) = split("- [ ] #agent #plan #go\n  - [ ] a #p:one\n  - [ ] b #go\n");
         assert_eq!(
             got,
-            vec!["- [ ] a #p:one #agent #plan", "- [ ] b #agent #plan"]
+            vec!["- [ ] a #p:one #agent #plan #go", "- [ ] b #go #agent #plan"]
         );
     }
 
