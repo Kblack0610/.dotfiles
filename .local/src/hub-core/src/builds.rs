@@ -68,6 +68,8 @@ pub struct Run {
     pub id: u64,
     pub attempt: u32,
     pub workflow: String,
+    /// The workflow's file in the repo (`.github/workflows/tests.yml`), when the forge gives one.
+    pub path: String,
     pub title: String,
     pub branch: String,
     pub event: String,

@@ -18,6 +18,7 @@ pub mod focus;
 pub mod home;
 pub mod infra;
 pub mod jobs;
+pub mod junit;
 pub mod layout;
 pub mod outbox;
 pub mod outcomes;
