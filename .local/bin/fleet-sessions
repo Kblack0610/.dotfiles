@@ -226,7 +226,7 @@ live_wait() {
     pid="${BASH_REMATCH[1]}"
     [ -n "${mine[$pid]:-}" ] || [ "${BASH_REMATCH[2]}" = "$cwd" ] || [[ "${BASH_REMATCH[2]}" == "$cwd"/* ]] || continue
     [ -z "${skip[$pid]:-}" ] || continue
-    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    cmd="$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline")"
     case "$cmd" in "" | *" -c "* | claude" "* | */claude" "*) continue ;; esac
     cmds+=("$cmd")
   done < <(ls -l /proc/[0-9]*/cwd 2>/dev/null)
@@ -1700,9 +1700,11 @@ write_state() {
   # A hold that has stopped every dispatch pass (hub Home's Stopped row); rc 1 is "stopped", not a failure.
   stopped="$(fleet-dispatch stopped --json 2>/dev/null)"
   tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1
+  # The rows and asks go in by file: 77 sessions came to 136 KB, past the kernel's 128 KB cap on one argument.
+  printf '%s' "$json" > "$CACHE/rows" && printf '%s' "$asks" > "$CACHE/asks" || return 1
   if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" \
        --arg order "$BUCKET_ORDER" --arg finished "$BUCKET_FINISHED" --arg progress "$BUCKET_IN_PROGRESS" \
-       --arg asks "$asks" --arg rows "$json" --arg stopped "$stopped" --rawfile eta "$CACHE/eta" '
+       --rawfile asks "$CACHE/asks" --rawfile rows "$CACHE/rows" --arg stopped "$stopped" --rawfile eta "$CACHE/eta" '
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
       | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: {eta: .[1], at: (.[2] // "" | tonumber? // null)}})
          | from_entries) as $e
