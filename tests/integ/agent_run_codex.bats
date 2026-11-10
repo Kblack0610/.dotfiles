@@ -109,3 +109,42 @@ argv() { cat "$SANDBOX/codex-argv.txt"; }
   run argv
   assert_line 'gpt-6-luna'
 }
+
+# room_row <source> <ok> <reason> <reasons json>: the row claude-acct room --source --json prints
+room_row() {
+  printf '{"name":"%s","room":{"ok":%s,"reason":"%s","reasons":%s,"why":"fixture %s"}}\n' "$1" "$2" "$3" "$4" "$3" \
+    > "$NOTES_FIXTURE/room-$1.json"
+}
+
+@test "a codex run checks its source's room: codex by default, the conf's SOURCE when it names one" {
+  room_row codex false reserve '["reserve"]'
+  room_row codex-core true ok '[]'
+  codex_run --role observe -p "x"
+  assert_failure
+  assert_output --partial 'source codex has no room (reserve)'
+  [ ! -e "$SANDBOX/codex-argv.txt" ] || fail "codex ran on a source inside its reserve"
+  SOURCE=codex-core codex_run --role observe -p "x" --explain
+  assert_success
+  assert_output --partial 'source:      codex-core'
+  assert_called 'claude-acct room --source codex-core --json'
+}
+
+@test "a codex run is held by its cap, 5h window or parent, never by pace or live sessions, and an unread source goes through" {
+  room_row codex false pace '["pace","max_live","committed"]'
+  codex_run --role observe -p "x"
+  assert_success
+  for r in capped five_hour parent; do
+    room_row codex false "$r" "[\"pace\",\"$r\"]"
+    codex_run --role observe -p "x"
+    assert_failure
+    assert_output --partial "($r)"
+  done
+  room_row codex false unread '["unread"]'
+  codex_run --role observe -p "x" --explain
+  assert_success
+  assert_output --partial 'source:      codex (unread, let through)'
+  echo missing > "$NOTES_FIXTURE/room-nosuch.json"
+  SOURCE=nosuch codex_run --role observe -p "x"
+  assert_failure
+  assert_output --partial "no claude-acct source 'nosuch'"
+}

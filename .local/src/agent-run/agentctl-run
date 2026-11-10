@@ -75,7 +75,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 
 # --agent <name>: the conf is the definition (lib/agent.sh). Its ROLE, MODEL, ROUTE,
-# DATA_CLASS and HARNESS replace whatever a parent runner's conf left in the environment;
+# DATA_CLASS, SOURCE and HARNESS replace whatever a parent runner's conf left in the environment;
 # only this call's own flags (--role, --route, --data-class, --harness) still win over it.
 if [ -n "$agent" ]; then
   agent_load "$agent"
@@ -83,6 +83,7 @@ if [ -n "$agent" ]; then
   AGENTCTL_MODEL="$AGENT_MODEL"
   ROUTE="$AGENT_ROUTE"
   DATA_CLASS="$AGENT_DATA_CLASS"
+  SOURCE="$AGENT_SOURCE"
   AGENTCTL_ROUTE="" AGENTCTL_DATA_CLASS=""
   [ -n "$AGENT_HARNESS" ] && [ -z "$cli_harness" ] && harness="$AGENT_HARNESS"
   export AGENTCTL_AGENT="$agent" AGENTCTL_NAME="$agent" AGENT_PROMPT AGENT_PROMPT_SHA AGENT_SCHEMA \
