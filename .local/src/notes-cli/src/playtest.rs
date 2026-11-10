@@ -419,11 +419,15 @@ pub(crate) struct Laid {
 
 /// Pure core: lay `content` out. In each game, the open checks grouped under `### PR <n>`,
 /// newest PR first and file order within one, the checks with no PR last under `### No PR`;
-/// then `### Done`, the ticked checks the sheet's Done window keeps, newest first. A ticked check
-/// that is undated, dropped, older than `done_days` or past the `done_max` newest leaves for
-/// [`Laid::old`], the rule [`crate::project_sweep::old_done`] holds a sheet to. A file with no
-/// `## ` heading comes back as it is.
-pub(crate) fn lay_out(content: &str, today: NaiveDate, shape: &crate::config::SheetShape) -> Laid {
+/// then `### Done`, the ticked checks the sheet's Done window keeps
+/// ([`crate::project_sweep::kept_done`]), newest first; the rest leave for [`Laid::old`]. With no
+/// `shape` (a re-sort) every ticked check stays, the undated last. A file with no `## ` heading
+/// comes back as it is.
+pub(crate) fn lay_out(
+    content: &str,
+    today: NaiveDate,
+    shape: Option<&crate::config::SheetShape>,
+) -> Laid {
     let (head, games) = parse(content);
     if games.is_empty() {
         return Laid {
@@ -453,30 +457,26 @@ pub(crate) fn lay_out(content: &str, today: NaiveDate, shape: &crate::config::Sh
             }
             out.extend(b);
         }
-        let day = |b: &Block| {
-            project_tasks::done_on(&b[0])
-                .filter(|_| !md::is_dropped(&b[0]))
-                .filter(|d| (today - *d).num_days() < shape.done_days)
-        };
-        let (mut keep, mut gone): (Vec<(NaiveDate, Block)>, Vec<Block>) = (Vec::new(), Vec::new());
-        for b in g.done {
-            match day(&b) {
-                Some(d) => keep.push((d, b)),
-                None => gone.push(b),
+        let kept = shape.map(|s| {
+            let firsts: Vec<&str> = g.done.iter().map(|b| b[0].as_str()).collect();
+            crate::project_sweep::kept_done(&firsts, today, s)
+        });
+        let (mut keep, mut gone): (Vec<Block>, Vec<Block>) = (Vec::new(), Vec::new());
+        for (i, b) in g.done.into_iter().enumerate() {
+            if kept.as_ref().is_none_or(|k| k.contains(&i)) {
+                keep.push(b);
+            } else {
+                gone.push(b);
             }
         }
-        keep.sort_by_key(|(d, _)| std::cmp::Reverse(*d));
-        gone.extend(
-            keep.split_off(keep.len().min(shape.done_max))
-                .into_iter()
-                .map(|(_, b)| b),
-        );
+        // Stable, so one day's checks keep file order.
+        keep.sort_by_key(|b| std::cmp::Reverse(project_tasks::done_on(&b[0])));
         if !keep.is_empty() {
             if at.is_some() {
                 out.push(String::new());
             }
             out.push("### Done".to_string());
-            out.extend(keep.into_iter().flat_map(|(_, b)| b));
+            out.extend(keep.into_iter().flatten());
         }
         if !gone.is_empty() {
             old.push((g.name, gone));
@@ -508,12 +508,12 @@ pub(crate) fn tidy(
     let laid = lay_out(
         content,
         chrono::Local::now().date_naive(),
-        &crate::config::sheet_shape(),
+        Some(&crate::config::sheet_shape()),
     );
     if laid.content == content {
         return Ok(None);
     }
-    if !dry_run {
+    if !dry_run && !laid.old.is_empty() {
         let cur = project_tasks::open_version_for(dir);
         for (game, rows) in &laid.old {
             project_tasks::archive_blocks(dir, project, cur, &archive_section(game), rows)?;
@@ -557,17 +557,20 @@ pub(crate) fn sheet_sweep(
     layout_only: bool,
     dry_run: bool,
 ) -> Result<i32> {
+    if !crate::config::managed_path(file) {
+        if stdin {
+            print!("{content}");
+        }
+        return Ok(0);
+    }
     let dir = file.parent().unwrap_or(Path::new("."));
     let project = dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     if layout_only {
-        let mut shape = crate::config::sheet_shape();
-        // Nothing rolls off a re-sort: keep every ticked check where the window would.
-        shape.done_days = i64::MAX / 2;
-        shape.done_max = usize::MAX;
-        let laid = lay_out(content, chrono::Local::now().date_naive(), &shape);
+        // Nothing rolls off a re-sort.
+        let laid = lay_out(content, chrono::Local::now().date_naive(), None);
         print!("{}", laid.content);
         return Ok(0);
     }
@@ -727,7 +730,7 @@ mod tests {
         let before = "# Playtest\n\nThe rule.\n\n## G\nplay these first\n- [ ] a <!-- pr:3 -->\n\
                       - [ ] b\n- [ ] c <!-- pr:30 -->\n  a detail under c\n- [ ] d <!-- pr:3 -->\n\n\
                       ## H\n- [ ] e <!-- pr:1 -->\n\n## g\n- [ ] f <!-- pr:30 -->\n";
-        let laid = lay_out(before, day("2026-11-09"), &shape(7, 30));
+        let laid = lay_out(before, day("2026-11-09"), Some(&shape(7, 30)));
         assert_eq!(
             laid.content,
             "# Playtest\n\nThe rule.\n\n## G\nplay these first\n### PR 30\n- [ ] c <!-- pr:30 -->\n\
@@ -735,7 +738,7 @@ mod tests {
              - [ ] d <!-- pr:3 -->\n\n### No PR\n- [ ] b\n\n## H\n### PR 1\n- [ ] e <!-- pr:1 -->\n"
         );
         assert!(laid.old.is_empty());
-        let again = lay_out(&laid.content, day("2026-11-09"), &shape(7, 30));
+        let again = lay_out(&laid.content, day("2026-11-09"), Some(&shape(7, 30)));
         assert_eq!(
             again.content, laid.content,
             "a second sweep changes nothing"
@@ -743,7 +746,7 @@ mod tests {
         // A file with no game heading is left as it is.
         let bare = "# Playtest\n\nnothing yet\n";
         assert_eq!(
-            lay_out(bare, day("2026-11-09"), &shape(7, 30)).content,
+            lay_out(bare, day("2026-11-09"), Some(&shape(7, 30))).content,
             bare
         );
     }
@@ -756,7 +759,7 @@ mod tests {
                       - [x] newest <!-- done:2026-11-09 x -->\n\
                       - [x] undated <!-- x -->\n\
                       - [x] dropped <!-- done:2026-11-09 dropped: stale -->\n";
-        let laid = lay_out(before, day("2026-11-09"), &shape(7, 30));
+        let laid = lay_out(before, day("2026-11-09"), Some(&shape(7, 30)));
         assert_eq!(
             laid.content,
             "# Playtest\n\n## G\n### PR 2\n- [ ] open <!-- pr:2 -->\n\n### Done\n\
@@ -768,8 +771,17 @@ mod tests {
         assert!(gone
             .iter()
             .all(|l| !l.contains("fresh") && !l.contains("newest")));
+        // A re-sort (no shape) rolls nothing off, the undated last.
+        let all = lay_out(before, day("2026-11-09"), None);
+        assert!(all.old.is_empty());
+        assert!(
+            all.content.ends_with("- [x] undated <!-- x -->\n"),
+            "{}",
+            all.content
+        );
+        assert!(all.content.contains("- [x] old"), "{}", all.content);
         // done_max keeps only the newest.
-        let laid = lay_out(before, day("2026-11-09"), &shape(7, 1));
+        let laid = lay_out(before, day("2026-11-09"), Some(&shape(7, 1)));
         assert!(laid.content.contains("newest") && !laid.content.contains("fresh"));
         assert_eq!(laid.old[0].1.len(), 4);
     }
@@ -785,7 +797,7 @@ mod tests {
             stamped.contains("- [x] a <!-- pr:2 done:2026-11-09 -->"),
             "{stamped}"
         );
-        let laid = lay_out(&stamped, day("2026-11-09"), &shape(7, 30));
+        let laid = lay_out(&stamped, day("2026-11-09"), Some(&shape(7, 30)));
         assert!(
             laid.content.contains("### Done\n- [x] a"),
             "{}",

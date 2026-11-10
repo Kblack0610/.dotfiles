@@ -294,26 +294,37 @@ pub(crate) fn old_done(content: &str, ctx: &Ctx) -> Vec<std::ops::Range<usize>> 
         .into_iter()
         .filter(|r| span.contains(&r.start) && !sheet::is_later(lines[r.start], ctx.open))
         .collect();
-    let day = |r: &std::ops::Range<usize>| {
-        crate::project_tasks::done_on(lines[r.start])
-            .filter(|_| !md::is_dropped(lines[r.start]))
-            .filter(|d| (ctx.today - *d).num_days() < ctx.shape.done_days)
-    };
-    let mut kept: Vec<(NaiveDate, usize)> = rows
-        .iter()
-        .enumerate()
-        .filter_map(|(i, r)| day(r).map(|d| (d, i)))
-        .collect();
-    kept.sort_by_key(|(d, i)| (std::cmp::Reverse(*d), *i));
-    let keep: std::collections::HashSet<usize> = kept
-        .into_iter()
-        .take(ctx.shape.done_max)
-        .map(|(_, i)| i)
-        .collect();
+    let firsts: Vec<&str> = rows.iter().map(|r| lines[r.start]).collect();
+    let keep = kept_done(&firsts, ctx.today, &ctx.shape);
     rows.into_iter()
         .enumerate()
         .filter(|(i, _)| !keep.contains(i))
         .map(|(_, r)| r)
+        .collect()
+}
+
+/// Which of `rows` (each a closed row's first line) the Done window keeps: dated, not dropped,
+/// closed under `done_days` ago, and among the `done_max` newest (ties keep file order). The one
+/// window rule, for the sheets and `playtest.md` alike.
+pub(crate) fn kept_done(
+    rows: &[&str],
+    today: NaiveDate,
+    shape: &SheetShape,
+) -> std::collections::HashSet<usize> {
+    let mut kept: Vec<(NaiveDate, usize)> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            crate::project_tasks::done_on(l)
+                .filter(|_| !md::is_dropped(l))
+                .filter(|d| (today - *d).num_days() < shape.done_days)
+                .map(|d| (d, i))
+        })
+        .collect();
+    kept.sort_by_key(|(d, i)| (std::cmp::Reverse(*d), *i));
+    kept.into_iter()
+        .take(shape.done_max)
+        .map(|(_, i)| i)
         .collect()
 }
 

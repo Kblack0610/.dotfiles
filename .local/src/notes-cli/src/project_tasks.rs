@@ -2207,22 +2207,21 @@ fn is_sheet_path(path: &Path) -> bool {
     let named = path
         .file_name()
         .is_some_and(|n| n == "README.md" || n == "tasks.md");
-    named
-        && !path
-            .parent()
-            .into_iter()
-            .flat_map(Path::components)
-            .any(|c| c.as_os_str() == "versions" || c.as_os_str() == "docs")
+    named && outside_frozen_dirs(path)
 }
 
-/// A project's `playtest.md`, outside `versions/` and `docs/` as [`is_sheet_path`] holds a sheet.
+/// No `versions/` or `docs/` above `path`: a note there is history or prose, never swept.
+fn outside_frozen_dirs(path: &Path) -> bool {
+    !path
+        .parent()
+        .into_iter()
+        .flat_map(Path::components)
+        .any(|c| c.as_os_str() == "versions" || c.as_os_str() == "docs")
+}
+
+/// A project's `playtest.md`.
 fn is_playtest_path(path: &Path) -> bool {
-    path.file_name().is_some_and(|n| n == "playtest.md")
-        && !path
-            .parent()
-            .into_iter()
-            .flat_map(Path::components)
-            .any(|c| c.as_os_str() == "versions" || c.as_os_str() == "docs")
+    path.file_name().is_some_and(|n| n == "playtest.md") && outside_frozen_dirs(path)
 }
 
 /// What one [`tidy`] did to a sheet.
