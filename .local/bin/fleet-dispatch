@@ -2626,7 +2626,7 @@ preempt_victims() {
 # pass (PREEMPTED). A dry run names the victim it would park and parks nothing. Rc 0 once one is parked.
 preempt_for() {
   [ "$DISPATCH_PREEMPT" = 1 ] && [ "${PREEMPTED:-0}" = 0 ] || return 1
-  local slug need free v='' server sess out
+  local slug need free v server sess out tried=0
   slug=$(jq -r .slug <<<"$1")
   need=$(weight_units "$(jq -r '.weight // "light"' <<<"$1")")
   free=${UNITS_FREE:-0}; [ "$free" -ge 0 ] || free=0
@@ -2634,6 +2634,7 @@ preempt_for() {
   while read -r v server sess; do
     [ -n "$sess" ] || continue
     ! parked "$sess" && session_live "$sess" "$server" || continue
+    tried=1
     if [ "$DRY" = 1 ]; then say "would preempt $v ($server/$sess) for urgent $slug"; return 1; fi
     if out=$(claude-acct park "$server/$sess" --why preempt --for "$slug" 2>&1); then
       PREEMPTED=1
@@ -2645,7 +2646,7 @@ preempt_for() {
     say "preempt waits: $v: $out"
     logline "preempt waits: $v: $out"
   done < <(preempt_victims $(( need - free )))
-  [ "$DRY" = 1 ] || [ -n "$v" ] || say "preempt: no runner session to park for urgent $slug"
+  [ "$DRY" = 1 ] || [ "$tried" = 1 ] || say "preempt: no runner session to park for urgent $slug"
   return 1
 }
 
