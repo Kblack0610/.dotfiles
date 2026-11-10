@@ -5401,7 +5401,9 @@ harness_ready() {
   assert_called 'pr=<owner/repo#N>'
   assert_called 'Run agent-land in the foreground'
   assert_not_called '/one-shot Fix'
-  assert_not_called 'agent-ask post'
+  # blocked on the human: file the ask and requeue behind it, never "ask it here" in a pane nobody watches
+  assert_called 'run agent-queue requeue fix-menu --ask <id>, and stop'
+  assert_not_called 'ask it here'
 }
 
 @test "--harness claude-lazer runs the wrapper on the eval key with the queue tag, off the account" {
