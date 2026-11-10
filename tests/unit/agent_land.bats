@@ -288,6 +288,22 @@ item() {
   assert_output 1
 }
 
+@test "--merge-commit lands a train with a merge commit, never a squash, so its member heads stay reachable" {
+  run "$LAND" 42 --item ship --merge-commit
+  assert_success
+  assert_line 'landed #42'
+  run grep -c 'pr merge 42 --merge --match-head-commit 0123456789abcdef' "$LOG"
+  assert_output 1
+  run grep -c 'pr merge 42 --squash' "$LOG"
+  assert_output 0
+}
+
+@test "--merge-commit --dry-run names the merge-commit method" {
+  run "$LAND" 42 --item ship --merge-commit --dry-run
+  assert_success
+  assert_output --partial 'gh pr merge 42 --merge --match-head-commit'
+}
+
 # second_wait: the catch-up push was followed by a second checks wait, before the merge
 second_wait() {
   assert_success
@@ -558,6 +574,34 @@ EOF
   assert_line --index 1 'checks: none reported'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 3
+}
+
+@test "no checks reported on a base whose protection requires checks: stops at checks, never tries the merge" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  echo '{"required_status_checks":{"strict":false,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: none reported on the head, and origin/main requires checks'
+  run grep -c '^gh pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "no checks reported on a base whose ruleset requires checks: stops at checks without reading protection" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"Checks"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'origin/main requires checks, so GitHub would refuse the merge'
+  run grep -c 'branches/main/protection\|^gh pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "no checks reported on a base that requires up-to-date branches but names no check: it lands" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  echo '{"required_status_checks":{"strict":true,"contexts":[],"checks":[]}}' >"$NOTES_FIXTURE/protection.json"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
+  assert_success
+  assert_line --index 1 'checks: none reported'
 }
 
 # The tier-3 gate rides on the item, not on how it was queued: a session's `agent-queue add` on a

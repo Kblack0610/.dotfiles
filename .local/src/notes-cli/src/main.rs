@@ -157,7 +157,7 @@ enum Cmd {
         #[arg(long)]
         agent: bool,
         /// Act on the project's `playtest.md`: one row is one thing to play and check off.
-        /// Takes `list`, `add` (with `--game`, `--pr`), `done` and `drop` only
+        /// Takes `list`, `add` (with `--game`, `--pr`), `done`, `drop` and `pass` only
         #[arg(long, conflicts_with = "agent")]
         playtest: bool,
         /// The query is one whole open task line, byte for byte (the `raw` field of
@@ -272,7 +272,8 @@ enum Cmd {
         #[arg(long)]
         archived: bool,
         /// Close a project's open version: its closed rows freeze into versions/ and
-        /// `Version:` moves to the next one. Refused for a project below beta
+        /// `Version:` moves to the next one, at any stage. With no level the bump is derived:
+        /// minor when a feature epic closed on proof in the version, else patch
         #[arg(long, value_name = "NAME")]
         release: Option<String>,
         /// Consolidate a project onto the one version layout: fold changelog/ and loose
@@ -305,8 +306,12 @@ enum Cmd {
         /// With --retire-ai-tag, --migrate-rows or --sweep: report what would change and write nothing
         #[arg(long)]
         dry_run: bool,
+        /// With --release: step the patch (v0.1.2 -> v0.1.3). With no level the bump is
+        /// derived: minor when a feature epic closed on proof in the version, else patch
+        #[arg(long, conflicts_with_all = ["minor", "major"])]
+        patch: bool,
         /// With --release: step the minor (v0.1.2 -> v0.2.0)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "major")]
         minor: bool,
         /// With --release: step the major (v0.1.2 -> v1.0.0)
         #[arg(long)]
@@ -674,6 +679,16 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
+    /// With --playtest: a build is cut, so file one `check(playtest): play build <build>, N
+    /// checks` row on the human sheet, N the open checks. The same build again is exit 3
+    Pass {
+        /// The build to play: a Steam build id, a branch, a tag
+        #[arg(long)]
+        build: String,
+        /// Count only this `## <game>`'s checks, and name it in the row
+        #[arg(long)]
+        game: Option<String>,
+    },
     /// Change the first matching open task's text in place: its place on the sheet,
     /// its checkbox state and its tags stay as they were
     Edit {
@@ -951,7 +966,7 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
-/// The four verbs `ptask --playtest` takes. Everything else acts on releases, which playtest.md
+/// The five verbs `ptask --playtest` takes. Everything else acts on releases, which playtest.md
 /// does not have, so it is refused rather than run against the sheet.
 fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
     Ok(match sub {
@@ -989,8 +1004,9 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             stamp: project_tasks::drop_stamp(why.as_deref(), dup.as_deref())?,
             pick: Pick::new(&query.join(" "), exact)?,
         },
+        Some(PtaskCmd::Pass { build, game }) => playtest::Op::Pass { build, game },
         _ => bail!(
-            "--playtest takes list, add, done and drop only (no releases or details: no --to, --version, --all or --detail)"
+            "--playtest takes list, add, done, drop and pass only (no releases or details: no --to, --version, --all or --detail)"
         ),
     })
 }
@@ -1314,6 +1330,7 @@ fn main() -> Result<()> {
                     dup.as_deref(),
                     lane,
                 )?,
+                Some(PtaskCmd::Pass { .. }) => bail!("pass applies only with --playtest"),
                 Some(PtaskCmd::Edit {
                     text,
                     append,
@@ -1516,6 +1533,7 @@ fn main() -> Result<()> {
             migrate_rows,
             sweep,
             dry_run,
+            patch,
             minor,
             major,
             force,
@@ -1536,11 +1554,13 @@ fn main() -> Result<()> {
             set,
         } => {
             let level = if major {
-                projects::Bump::Major
+                Some(projects::Bump::Major)
             } else if minor {
-                projects::Bump::Minor
+                Some(projects::Bump::Minor)
+            } else if patch {
+                Some(projects::Bump::Patch)
             } else {
-                projects::Bump::Patch
+                None
             };
             // A whole-vault sweep, so it is handled before the name-keyed match below:
             // an empty NAME means "every project" and must not fall through as a lookup.
@@ -1716,7 +1736,7 @@ mod tests {
     }
 
     #[test]
-    fn playtest_takes_four_verbs_and_refuses_the_rest() {
+    fn playtest_takes_five_verbs_and_refuses_the_rest() {
         assert!(matches!(ptask(&[]), Ok(playtest::Op::List)));
         assert!(matches!(ptask(&["list"]), Ok(playtest::Op::List)));
         assert!(matches!(
@@ -1731,6 +1751,10 @@ mod tests {
             ptask(&["drop", "--why", "cut", "arena"]),
             Ok(playtest::Op::Drop { .. })
         ));
+        assert!(matches!(
+            ptask(&["pass", "--build", "b7", "--game", "Dodgeball"]),
+            Ok(playtest::Op::Pass { game: Some(_), .. })
+        ));
         for bad in [
             &["start", "arena"][..],
             &["sweep"],
@@ -1742,7 +1766,7 @@ mod tests {
         ] {
             let e = ptask(bad).err().expect("refused").to_string();
             assert!(
-                e.contains("--playtest takes list, add, done and drop"),
+                e.contains("--playtest takes list, add, done, drop and pass only"),
                 "{bad:?}: {e}"
             );
         }

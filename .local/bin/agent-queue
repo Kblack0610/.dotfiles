@@ -23,7 +23,7 @@
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
-#   requeue <slug> --hold <resource>   a started item back in the queue, held on that agent-hold
+#   requeue <slug> --hold <resource> | --ask <id>   a started item back in the queue, held on that agent-hold or ask
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
@@ -1552,29 +1552,42 @@ check_tags() {
   done
 }
 
-# requeue <slug> --hold <resource> -- put an item back in the queue behind an agent-hold resource,
-# for a session that finds a resource it needs held by another (`agent-hold claim` said busy): it
-# requeues and winds down, and the item starts again once the resource is free. Not a redo: the
-# model did nothing wrong, so its lane run is dropped, not reported to model-lane, as a cancel is.
+# requeue <slug> --hold <resource> | --ask <id>[=<option>] -- put an item back in the queue behind an
+# agent-hold resource, or behind an agent-ask the human has not answered. --hold is for a session that
+# finds a resource it needs held by another (`agent-hold claim` said busy); --ask for a headless run
+# (Codex) that needs the human, whose run ends when it stops: the answer starts it again and its brief
+# carries the decision (fleet-dispatch ask_decisions), where a run left waiting would have no session to
+# hear it. Not a redo: the model did nothing wrong, so its lane run is dropped, not reported to
+# model-lane, as a cancel is.
 cmd_requeue() {
-  local slug="${1:?usage: agent-queue requeue <slug> --hold <resource>}" res="" f tags
+  local usage="usage: agent-queue requeue <slug> --hold <resource> | --ask <id>[=<option>[+<option>]]"
+  local slug="${1:?$usage}" res="" ask="" tag f tags
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
       --hold) res="${2:?--hold needs a resource}"; shift 2 ;;
-      *) die "usage: agent-queue requeue <slug> --hold <resource>" ;;
+      --ask) ask="${2:?--ask needs an ask id}"; shift 2 ;;
+      *) die "$usage" ;;
     esac
   done
-  [ -n "$res" ] || die "usage: agent-queue requeue <slug> --hold <resource>"
-  hold_resource "$res" || die "not an agent-hold resource: $res (letters, digits, . _ -)"
-  # A free resource would restart the item at once: the caller claims it instead.
-  [ -n "$(hold_pending "$res")" ] || die "$res is not held: claim it (agent-hold claim $res) instead of requeueing"
+  [ -n "$res$ask" ] && { [ -z "$res" ] || [ -z "$ask" ]; } || die "$usage"
+  if [ -n "$res" ]; then
+    hold_resource "$res" || die "not an agent-hold resource: $res (letters, digits, . _ -)"
+    # A free resource would restart the item at once: the caller claims it instead.
+    [ -n "$(hold_pending "$res")" ] || die "$res is not held: claim it (agent-hold claim $res) instead of requeueing"
+    tag="hold:$res"
+  else
+    tag="ask:$ask"
+    # An answered or missing ask would release it at once, or never: check_tags says which.
+    check_tags "$tag"
+    [ -n "$(ask_pending "$ask")" ] || die "ask ${ask%%=*} is already answered: read the answer and go on instead of requeueing"
+  fi
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   tags="$(fm_get "$f" tags)"
   case " $tags " in
-    *" hold:$res "*) ;;
-    *) header_set "$f" tags "${tags:+$tags }hold:$res"; item_event item-set "$f" --why "tags=${tags:+$tags }hold:$res" ;;
+    *" $tag "*) ;;
+    *) header_set "$f" tags "${tags:+$tags }$tag"; item_event item-set "$f" --why "tags=${tags:+$tags }$tag" ;;
   esac
   header_del "$f" lane_run
   # The move runs under this lock, so no writer closes or moves the item between the edit and it.
