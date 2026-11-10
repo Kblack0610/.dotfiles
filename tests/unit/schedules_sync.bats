@@ -387,6 +387,16 @@ pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
   assert_output '[["o/empty",50]]'
 }
 
+@test "a rate limit is stored as one short line that reads the same for every repo" {
+  game_files
+  msg='gh: API rate limit exceeded for user ID 1. If you reach out to GitHub Support for help, please include the request ID AB:CD and timestamp 2026-11-10 19:27:27 UTC.'
+  echo "$msg" > "$GHD/fail-o_game"; echo "$msg" > "$GHD/fail-o_empty"
+  run "$SUBJECT"
+  assert_failure 1
+  run jq -c '.repos | map_values(.error)' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output '{"github:o/game":"GitHub API rate limit hit","github:o/empty":"GitHub API rate limit hit"}'
+}
+
 @test "ledger: a run that aged past 30 days is pruned by a rewrite" {
   game_files
   runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1

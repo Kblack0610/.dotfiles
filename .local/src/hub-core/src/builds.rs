@@ -10,7 +10,7 @@
 //! | when it last synced | `sync.json` beside it: its `generated_at` and a `error` per repo |
 //! | the owner session   | fleet-sessions' `state.json`: the live session on the branch    |
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -352,19 +352,33 @@ pub fn owners(state: &Value) -> HashMap<String, String> {
         .collect()
 }
 
-/// `generated_at` of `sync.json` as unix seconds, and `<repo>: <error>` for each repo the last
-/// pass could not read.
+/// `generated_at` of `sync.json` as unix seconds, and one line per distinct error the last pass
+/// hit: `<repo>: <error>` for one repo, `<error> (<n> repos: <names>)` when several share it, so
+/// a rate limit that stops every repo reads once rather than once per repo.
 fn synced(text: &str) -> Result<(i64, Vec<String>), String> {
     let v: Value = serde_json::from_str(text).map_err(|e| format!("sync.json: {e}"))?;
     let at = v["generated_at"]
         .as_str()
         .and_then(crate::fleet::ts)
         .unwrap_or(0);
-    let mut errors: Vec<String> = v["repos"]
-        .as_object()
+    let mut by_error: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (k, r) in v["repos"].as_object().into_iter().flatten() {
+        if let Some(e) = r["error"].as_str() {
+            by_error.entry(e).or_default().push(k);
+        }
+    }
+    let mut errors: Vec<String> = by_error
         .into_iter()
-        .flatten()
-        .filter_map(|(k, r)| Some(format!("{k}: {}", r["error"].as_str()?)))
+        .map(|(e, repos)| match repos[..] {
+            [one] => format!("{one}: {e}"),
+            _ => {
+                let names: Vec<&str> = repos
+                    .iter()
+                    .map(|k| k.rsplit('/').next().unwrap_or(k))
+                    .collect();
+                format!("{e} ({} repos: {})", repos.len(), names.join(", "))
+            }
+        })
         .collect();
     errors.sort();
     Ok((at, errors))
@@ -576,6 +590,24 @@ mod tests {
         assert!(at > 0);
         assert_eq!(errors, ["github:c/d: 403 rate limited"]);
         assert!(synced("nope").is_err());
+    }
+
+    #[test]
+    fn repos_that_share_an_error_read_as_one_line() {
+        let (_, errors) = synced(
+            r#"{"generated_at":"2026-11-08T14:16:22Z","repos":{
+                "github:o/a":{"error":"GitHub API rate limit hit"},
+                "github:p/b":{"error":"GitHub API rate limit hit"},
+                "github:o/c":{"error":"gh api x: HTTP 502"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            errors,
+            [
+                "GitHub API rate limit hit (2 repos: a, b)",
+                "github:o/c: gh api x: HTTP 502"
+            ]
+        );
     }
 
     #[test]
