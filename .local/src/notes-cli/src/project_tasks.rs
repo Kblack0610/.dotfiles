@@ -715,6 +715,8 @@ pub(crate) struct Filing {
     pub lane: Lane,
     /// The channel the line came in by: its agent-lane rows get `#requested`.
     pub want: Option<&'static str>,
+    /// How the sweep decided it (`--why`), on the ingest event.
+    pub why: Option<String>,
     pub how: How,
 }
 
@@ -916,6 +918,7 @@ fn file_via(
     );
     ev.lane = dest_lane.name().into();
     ev.want = how.want.map(str::to_string);
+    ev.why = crate::ingest::set(how.why.as_deref());
     ev.id = match &how.how {
         How::Dup(id) => Some(id.clone()),
         How::Rows { .. } => written
@@ -1899,7 +1902,12 @@ pub fn retext(
             // The row is found first: filing a standing epic for an edit that then matches
             // nothing would leave the epic behind with no row under it.
             let found = sheet_and_content(p, name, lane)?.and_then(|(_, content)| {
-                md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), |l| Some(l.into()))
+                md::edit_first_in_section(
+                    &content,
+                    sheet::TASKS,
+                    |l| pick.hits(l),
+                    |l| Some(l.into()),
+                )
             });
             if found.is_none() {
                 eprintln!("no open task matches '{pick}' in {name}");
@@ -3880,6 +3888,7 @@ mod inbox_tests {
             project: None,
             lane: Lane::Human,
             want: None,
+            why: None,
             how: How::Rows {
                 texts: texts.iter().map(|t| t.to_string()).collect(),
                 to: None,
@@ -4016,6 +4025,7 @@ mod inbox_tests {
             project: None,
             lane: Lane::Human,
             want: None,
+            why: None,
             how: How::Dup(id.into()),
         };
         assert!(file(&v.p, &v.log, "scratch", &pick, &dup("sc-9"), Lane::Human).is_err());

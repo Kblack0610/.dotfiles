@@ -168,9 +168,9 @@ JQ_EVAL="$JQ_EPOCH"'
         | ((.text // "") + " " + (.why // "") | capture("#of/(?<p>[A-Za-z0-9_-]+)").p) as $p | {p: $p, id, e})
       | bykey(.p)) as $kids
    | ($ev | map(select(.action | IN("edited", "dropped", "rehomed", "tagged", "dup"))) | bykey(.id)) as $touch
-   # Triage: each row the triager filed (no session or queue item behind the write), right when
-   # nothing edits, drops, moves or re-tags it for the settle window.
-   | [$ev[] | select(.action == "filed" and ((.by // "human") | . == "" or . == "human")) | . as $f
+   # Triage: each row the triager filed (`by` its runner name, or no writer on events from before
+   # the record named the runner), right when nothing edits, drops, moves or re-tags it for the settle window.
+   | [$ev[] | select(.action == "filed" and ((.by // "human") | IN("", "human", "inbox-triage"))) | . as $f
       | ([($touch[$f.id] // [])[] | select(.e > $f.e and .e <= ($f.e + $settle) and (planner($f.id; .e) | not))] | first) as $t
       | {agent: $by["triage-untouched"], id: $f.id, project: (if ($f.to // "") == "" then $f.from else $f.to end),
          question: ($f.text // ""), rule: "", kind: "answer", want: "untouched",

@@ -17,8 +17,9 @@ use crate::Shared;
 const HOURS_DEFAULT: i64 = 24;
 /// A week: the shepherd log's busiest days hold about 1000 entries.
 const HOURS_MAX: i64 = 168;
-/// The event kinds that mean a ledger this section reads was written.
-const KINDS: [&str; 3] = ["actions", "fleet", "queue"];
+/// The event kinds that mean a ledger this section reads was written (`outbox` is also the
+/// ingest record's).
+const KINDS: [&str; 4] = ["actions", "fleet", "queue", "outbox"];
 /// The backstop for a read no event outdated, should the watcher be down.
 const READ_FOR_SECS: u64 = 15;
 
