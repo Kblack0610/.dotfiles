@@ -204,6 +204,24 @@ wt_is_husk() {
 
 wt_branch_of() { git -C "$1" branch --show-current 2>/dev/null; }
 
+# wt_branch_name <main-repo> <n> -- the branch a cut of slot <n> starts on:
+# `agent-<n>-<UTC yymmdd-HHMMSS>`, a name no earlier cut used, local or on origin (a counter
+# follows when one did, as two cuts of a slot in one second do). The slot number is reused; a
+# branch name never is. GitHub keeps a PR's head after the PR merges or closes, so a reused
+# `agent-N` met an old origin/agent-N: the push was rejected non-fast-forward and
+# `gh pr create` opened a PR on the stale head (dotfiles #1546, #1579, #1650, #1661, #1666;
+# ar-1121).
+wt_branch_name() {
+  local stem b i=1
+  stem="agent-$2-$(date -u +%y%m%d-%H%M%S)"
+  b="$stem"
+  while git -C "$1" show-ref --quiet "refs/heads/$b" "refs/remotes/origin/$b"; do
+    i=$((i + 1))
+    b="$stem-$i"
+  done
+  printf '%s\n' "$b"
+}
+
 # wt_dirty_count <path> -- uncommitted changes that are WORK. One shape is not counted: a
 # submodule left on an older commit after its superproject moved (`SC..`: commit changed,
 # nothing modified or untracked inside, nothing staged) whose checkout is already on one of
@@ -716,13 +734,12 @@ cmd_preview() {
 
 # ── Verbs ────────────────────────────────────────────────────────────────────
 
-# wt_next_slot <repo-name> <main-repo> <base-ref> -- `N<TAB>fresh` or `N<TAB>recycle` for the
+# wt_next_slot <repo-name> <main-repo> -- `N<TAB>fresh` or `N<TAB>recycle` for the
 # lowest agent-N that `new` may take.
 #
-# fresh: the directory is gone and so is the branch -- or the branch is a leftover that is
-# already merged into <base-ref> and checked out nowhere, which `new` then resets with -B.
-# A refused reap or a removal by hand leaves `agent-N` behind; an UNMERGED
-# leftover may be the only copy of a commit, so it still pins its slot.
+# fresh: the directory is gone and no session holds the name. A branch left from an earlier
+# cut does not pin the slot: every cut starts on a new name (wt_branch_name), so nothing
+# here ever resets an old branch, and `wt gc` prunes the merged ones.
 #
 # recycle: the directory is a worktree of THIS repo and wt_reap_reason passes -- clean,
 # landed, no session, no pane. The same predicate that would let `gc` delete it, so reusing
@@ -736,7 +753,7 @@ cmd_preview() {
 # known for plus a Unity reimport, and it was taking hole 15 while 20 and 27 sat idle. Small
 # numbers are nice for agent-panel's `3:1` labels, not worth minutes per agent.
 wt_next_slot() {
-  local repo="$1" main="$2" base="$3" n=1 path owner fresh=''
+  local repo="$1" main="$2" n=1 path owner fresh=''
   while [ "$n" -le 99 ]; do
     path="$WT_ROOT/$repo-agent-$n"
     if [ -e "$path" ]; then
@@ -760,11 +777,7 @@ wt_next_slot() {
       # With no session, a hold that outlived its directory is dropped here: `rm -rf` or a husk
       # reap leaves the entry, and `prune` skips a locked one, so it would pin the slot for good.
       { git -C "$main" worktree unlock "$path" && git -C "$main" worktree remove "$path"; } 2>/dev/null || :
-      if ! git -C "$main" show-ref --verify --quiet "refs/heads/agent-$n" 2>/dev/null ||
-        { git -C "$main" merge-base --is-ancestor "refs/heads/agent-$n" "$base" 2>/dev/null &&
-          ! git -C "$main" worktree list --porcelain | grep -qxF "branch refs/heads/agent-$n"; }; then
-        fresh="$n"
-      fi
+      fresh="$n"
     fi
     n=$((n + 1))
   done
@@ -775,17 +788,18 @@ wt_next_slot() {
   panel_fail "no free slot: $WT_ROOT/$repo-agent-{1..99} are all taken or busy" || return 1
 }
 
-# wt_recycle <path> <n> <base> -- put an idle worktree back on branch agent-<n> at <base>.
+# wt_recycle <path> <n> <base> -- put an idle worktree on a new branch (wt_branch_name) at <base>.
 #
 # In place rather than reap + add: the tree is clean, so a switch loses nothing tracked, and
 # the ignored build state (Unity's Library/, node_modules) survives, which is minutes saved
 # per agent. The branch it was on goes the way `reap` sends it -- `-d`, never `-D`.
 wt_recycle() {
-  local path="$1" branch="agent-$2" base="$3" old main
+  local path="$1" branch base="$3" old main
   wt_end_orphans "$path" || return 1
   old="$(wt_branch_of "$path")"
   main=$(wt_main_repo "$path") || return 1
-  git -C "$path" switch --quiet -C "$branch" "$base" >&2 || return 1
+  branch=$(wt_branch_name "$main" "$2")
+  git -C "$path" switch --quiet -c "$branch" "$base" >&2 || return 1
   # Bring the already-initialised submodules to what <base> records; wt_dirty_count waved
   # through a stale one as idle, so this is where it stops being stale. A failure that leaves a
   # checkout behind (offline, commit not fetchable) leaves the tree usable, so it warns. One
@@ -837,7 +851,7 @@ wt_recycle() {
       git diff --name-only -z --diff-filter=d "$old" HEAD |
         xargs -0 git lfs checkout -- >/dev/null 2>&1 || true' >&2
   fi
-  if [ -n "$old" ] && [ "$old" != "$branch" ]; then
+  if [ -n "$old" ]; then
     git -C "$main" branch -d "$old" >/dev/null 2>&1 ||
       panel_warn "kept branch $old: git will not safely delete it"
   fi
@@ -940,7 +954,7 @@ cmd_new() {
   esac
   [ -d "$dir" ] || panel_die "not a directory: $dir"
 
-  local main repo def base slot n kind path name lock start
+  local main repo def slot n kind path name lock start
   main=$(wt_main_repo "$dir") || panel_die "not inside a git repository: $dir"
   repo=$(wt_repo_name "$main")
 
@@ -959,10 +973,10 @@ cmd_new() {
 
   # The slot is chosen BEFORE the fetch, against the trunk already on disk: that is what makes
   # landing instant. Safe, because the trunk only moves forward -- a worktree landed on the
-  # old tip is landed on the new one, and so is a merged agent-N branch.
+  # old tip is landed on the new one.
   def=$(wt_default_branch "$main") || panel_die "cannot resolve the default branch of $main"
-  base=$(wt_base_ref "$main" "$def") || panel_die "no $def in $main to branch from"
-  slot=$(wt_next_slot "$repo" "$main" "$base") || return 1
+  wt_base_ref "$main" "$def" >/dev/null || panel_die "no $def in $main to branch from"
+  slot=$(wt_next_slot "$repo" "$main") || return 1
   n="${slot%%$PANEL_TAB*}"
   kind="${slot#*$PANEL_TAB}"
   path="$WT_ROOT/$repo-agent-$n"
@@ -1028,8 +1042,9 @@ wt_hold() {
   esac
 }
 
-# wt_prepare <main> <path> <n> <recycle|fresh> -- the slow half of `new`: fetch, then put
-# agent-<n> at the trunk, by resetting the idle worktree in place or cutting a fresh one.
+# wt_prepare <main> <path> <n> <recycle|fresh> -- the slow half of `new`: fetch, then start a
+# new branch (wt_branch_name) at the trunk, by resetting the idle worktree in place or cutting a
+# fresh one.
 wt_prepare() {
   local main="$1" path="$2" n="$3" kind="$4" def base
   # Best-effort: an offline machine still gets a worktree, just off the last-known trunk.
@@ -1042,8 +1057,7 @@ wt_prepare() {
     panel_warn "reusing idle $(basename "$path"), reset onto $base"
   else
     mkdir -p "$WT_ROOT" || panel_fail "cannot create $WT_ROOT" || return 1
-    # -B, not -b: a leftover agent-N branch reaching here was proven merged by wt_next_slot.
-    git -C "$main" worktree add "$path" -B "agent-$n" "$base" >&2 ||
+    git -C "$main" worktree add "$path" -b "$(wt_branch_name "$main" "$n")" "$base" >&2 ||
       panel_fail "git worktree add failed: $path" || return 1
     # A fresh tree leaves its submodules to the repo's own setup, which needs a working URL.
     wt_heal_submodule_urls "$path"
@@ -1154,10 +1168,8 @@ cmd_reap() {
     fi
   fi
 
-  # Take the branch with it, or the slot numbers ratchet forever: wt_next_slot treats an existing
-  # `agent-N` branch as an occupied slot, so four reaped-but-not-deleted worktrees pushed the
-  # next one to agent-5 with nothing on disk. agent-panel renders that number as a row label,
-  # so left alone it grows to two and three digits for no reason.
+  # Take the branch with it: every cut starts a new one (wt_branch_name), so a branch reap
+  # leaves behind is never used again.
   #
   # `-d`, never `-D`. git's own safe-delete refuses a branch that is not merged into HEAD or
   # its upstream -- which is very nearly reap's own "landed" rule, enforced independently by
@@ -1230,7 +1242,8 @@ cmd_done() {
   printf 'done: killing %s, then reaping its worktree unless something still holds it (log: %s)\n' "$name" "$logf"
 }
 
-# wt_prune_branches <main> <dry> -- delete the slot branches (agent-N, worktree-agent-*) that
+# wt_prune_branches <main> <dry> -- delete the slot branches (agent-N, agent-N-<stamp>,
+# worktree-agent-*) that
 # are merged into the trunk and checked out in no worktree, which `reap` leaves when `-d`
 # refused at the time (2026-11-06: 11 in dotfiles, 5 in private). `-d`, never `-D`, so git
 # re-checks every one. Prints one line per branch: "deleted <b>" or "kept <b>".
@@ -1241,7 +1254,9 @@ wt_prune_branches() {
   while IFS=' ' read -r b wtpath; do
     [ -z "$wtpath" ] || continue
     case "$b" in
-    agent-[0-9]* | worktree-agent-*) ;;
+    agent-[0-9] | agent-[0-9][0-9] | worktree-agent-*) ;;
+    agent-[0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]*) ;;
+    agent-[0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]*) ;;
     *) continue ;;
     esac
     if [ "$dry" -eq 1 ]; then

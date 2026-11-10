@@ -380,9 +380,15 @@ cmd_link() {
     while IFS=$'\037' read -r name dir; do
         [[ -n "$dir" && -d "$dir" ]] || continue
         for e in "${SHARED[@]}"; do
-            src="$MAIN_DIR/$e" dst="$dir/$e"
-            [[ -e "$src" ]] || continue
-            [[ -L "$dst" && "$(readlink "$dst")" == "$src" ]] && continue
+            # One hop to the real file: Claude Code follows a single symlink and renames a
+            # temp file over its target, so linking to a stow link would replace that link.
+            [[ -e "$MAIN_DIR/$e" ]] || continue
+            src="$(readlink -f "$MAIN_DIR/$e")" dst="$dir/$e"
+            if [[ -L "$dst" && "$(readlink -f "$dst")" == "$src" ]]; then
+                # Already shares main's entry; repoint a two-hop link at the real file.
+                [[ "$(readlink "$dst")" == "$src" ]] || ln -sfn "$src" "$dst"
+                continue
+            fi
             if [[ -d "$dst" && ! -L "$dst" && " ${MERGE[*]} " == *" $e "* ]]; then
                 find "$dst" -mindepth 1 -maxdepth 1 -exec mv -n -t "$src" {} +
                 rmdir "$dst" 2>/dev/null   # anything left (a name clash) is parked below
