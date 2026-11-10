@@ -858,6 +858,9 @@ struct RecordArgs {
     pr: Option<String>,
     #[arg(long)]
     sha: Option<String>,
+    /// For `left`: the projects the lines written beside it were filed to, comma-separated
+    #[arg(long)]
+    near: Option<String>,
     #[arg(required = true, num_args = 1..)]
     text: Vec<String>,
 }
@@ -1420,6 +1423,7 @@ fn main() -> Result<()> {
                     by,
                     pr,
                     sha,
+                    near,
                     text,
                 } = *r;
                 let set = |v: Option<String>| ingest::set(v.as_deref());
@@ -1438,6 +1442,7 @@ fn main() -> Result<()> {
                 }
                 ev.pr = set(pr);
                 ev.sha = set(sha);
+                ev.near = set(near);
                 ingest::record(&prof, &ev);
                 0
             }
