@@ -98,12 +98,12 @@ function historySection(d) {
   const h = d.history;
   if (!h) return "";
   const title = `<h2 class="sec">Spend history`;
-  if (h.why) return `<div id="sec-history">${title} <span class="muted">${esc(h.why)}</span></h2></div>`;
+  if (h.why) return `<div id="sec-spend">${title} <span class="muted">${esc(h.why)}</span></h2></div>`;
   const stale = h.stale ? ` <span class="warn">stale: no snapshot for yesterday</span>` : "";
   const row = (r) => `<tr class="${r.kind === "day" ? "" : "allrow"}"><td>${esc(r.period)}</td><td class="n">${esc(r.total)}</td><td class="n">${r.days}</td>` +
     `<td class="n">${esc(r.per_day)}</td><td class="n">${esc(r.vs_prev)}</td><td class="n">${esc(r.est)}</td></tr>`;
   const days = h.rows.filter((r) => r.kind === "day").length;
-  return `<details class="csec" data-k="history" id="sec-history"${cost.open.history ? " open" : ""}><summary>${title} <span class="muted">${esc(h.head)}</span>${stale}</h2></summary>` +
+  return `<details class="csec" data-k="spend" id="sec-spend"${cost.open.spend ? " open" : ""}><summary>${title} <span class="muted">${esc(h.head)}</span>${stale}</h2></summary>` +
     `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">period</th><th class="n">total</th><th class="n">days</th><th class="n" data-role="glance" data-named>$/day</th><th class="n" data-role="glance" data-named>vs prev</th><th class="n" data-role="glance" data-named>est.</th></tr>` +
     h.rows.map(row).join("") + `</table>${h.older ? older(h.older) : ""}` +
     (h.missing ? `<div class="warn">${h.missing} days in the range have no figure and are not counted</div>` : "") +

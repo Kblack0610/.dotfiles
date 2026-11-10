@@ -120,7 +120,7 @@ impl CostsView {
                 "ssort" => self.ssort = v.to_string(),
                 "sdir" => self.sasc = v == "asc",
                 _ if word == "sections" => self.sections_open = true,
-                _ if word == "history" => self.history_open = true,
+                _ if word == "spend" => self.history_open = true,
                 _ if word == "tokens" => self.tokens.open = Some(true),
                 _ if word == "langfuse" => self.langfuse = Some(true),
                 _ if hub_core::layout::resolve("costs")
@@ -211,7 +211,7 @@ impl CostsView {
         }
         if code == KeyCode::Char('y') {
             self.history_open = !self.history_open;
-            return Some(self.history_open.then_some("history"));
+            return Some(self.history_open.then_some("spend"));
         }
         if code == KeyCode::Char('K') {
             self.keys = Some(!keys_open(keys?, self.keys));
@@ -261,7 +261,7 @@ impl CostsView {
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let b = self.board(c);
         let mut out = fleet(&b.fleet_cost, p, now, w);
-        let mut at = vec![("fleet", 0), ("history", out.len())];
+        let mut at = vec![("fleet", 0), ("spend", out.len())];
         out.extend(history(&b.history, self.history_open, p, w));
         at.push(("burn", out.len()));
         out.extend(burn(&b.burn, self.keys, p, w));
@@ -632,18 +632,27 @@ fn history(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> 
     let title = Span::styled(format!("{mark} SPEND HISTORY  "), p.head());
     if let Some(why) = &h.why {
         return vec![
-            clip_line(Line::from(vec![title, Span::styled(why.clone(), p.dim())]), w),
+            clip_line(
+                Line::from(vec![title, Span::styled(why.clone(), p.dim())]),
+                w,
+            ),
             Line::raw(""),
         ];
     }
-    let mut head = vec![title, Span::raw(h.head.clone())];
+    // the month and the day halves of the headline on their own lines, so the warning and the key fit 80 columns
+    let (month, day) = h.head.split_once("; ").unwrap_or((&h.head, ""));
+    let mut head = vec![title];
     if h.stale {
-        head.push(Span::styled("  STALE: no snapshot for yesterday", p.warn()));
+        head.push(Span::styled("STALE: no snapshot for yesterday  ", p.warn()));
     }
+    head.push(Span::raw(month.to_string()));
     if !open {
         head.push(Span::styled("   y opens", p.dim()));
     }
     let mut out = vec![clip_line(Line::from(head), w)];
+    if !day.is_empty() {
+        out.push(clip_line(Line::raw(format!("  {day}")), w));
+    }
     if !open {
         out.push(Line::raw(""));
         return out;
@@ -652,10 +661,17 @@ fn history(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> 
         .rows
         .iter()
         .map(|r| {
-            [&r.period, &r.total, &r.days.to_string(), &r.per_day, &r.vs_prev, &r.est]
-                .iter()
-                .map(|c| cell(c.to_string(), Style::new()))
-                .collect()
+            [
+                &r.period,
+                &r.total,
+                &r.days.to_string(),
+                &r.per_day,
+                &r.vs_prev,
+                &r.est,
+            ]
+            .iter()
+            .map(|c| cell(c.to_string(), Style::new()))
+            .collect()
         })
         .collect();
     out.extend(
@@ -674,7 +690,10 @@ fn history(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> 
     if h.missing > 0 {
         out.push(clip_line(
             Line::styled(
-                format!("{} days in the range have no figure and are not counted", h.missing),
+                format!(
+                    "{} days in the range have no figure and are not counted",
+                    h.missing
+                ),
                 p.warn(),
             ),
             w,
@@ -1040,10 +1059,18 @@ mod tests {
     #[test]
     fn history_is_a_headline_until_y_opens_its_rows_within_80_columns() {
         use hub_core::spend_history::{build, Day};
-        let day = |d: &str, usd: f64| Day { date: d.into(), usd, estimated: usd / 4.0 };
+        let day = |d: &str, usd: f64| Day {
+            date: d.into(),
+            usd,
+            estimated: usd / 4.0,
+        };
         let c = Costs {
             history: build(
-                &[day("2026-10-30", 1102.0), day("2026-10-31", 1102.0), day("2026-11-01", 1579.0)],
+                &[
+                    day("2026-10-30", 1102.0),
+                    day("2026-10-31", 1102.0),
+                    day("2026-11-01", 1579.0),
+                ],
                 "2026-11-02",
             ),
             ..burning()
@@ -1059,19 +1086,32 @@ mod tests {
         let mut v = CostsView::default();
         let shut = page(&v);
         assert!(
-            shut.contains("+ SPEND HISTORY  Nov $1,579/day vs Oct $1,102/day (+43%)"),
+            shut.contains("+ SPEND HISTORY  Nov $1,579/day vs Oct $1,102/day (+43%)   y opens\n  11-01 $1,579"),
             "{shut}"
         );
+        assert!(shut.lines().all(|l| l.chars().count() <= 80), "{shut}");
         assert!(!shut.contains("vs prev"), "folded: {shut}");
-        assert_eq!(v.fold(KeyCode::Char('y'), None, None), Some(Some("history")));
+        assert_eq!(v.fold(KeyCode::Char('y'), None, None), Some(Some("spend")));
         let open = page(&v);
         assert!(open.lines().all(|l| l.chars().count() <= 80), "{open}");
         assert!(open.contains("- SPEND HISTORY"), "{open}");
         assert!(open.contains("vs prev"), "{open}");
-        let row = |p: &str| open.lines().find(|l| l.trim_start().starts_with(p)).unwrap().split_whitespace().collect::<Vec<_>>();
-        assert_eq!(row("2026-11"), ["2026-11", "$1,579", "1", "$1,579", "+43%", "25%"]);
+        let row = |p: &str| {
+            open.lines()
+                .find(|l| l.trim_start().starts_with(p))
+                .unwrap()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            row("2026-11"),
+            ["2026-11", "$1,579", "1", "$1,579", "+43%", "25%"]
+        );
         assert_eq!(row("2026 "), ["2026", "$3,783", "3", "$1,261", "-", "25%"]);
-        assert_eq!(row("10-31"), ["10-31", "$1,102", "1", "$1,102", "+0%", "25%"]);
+        assert_eq!(
+            row("10-31"),
+            ["10-31", "$1,102", "1", "$1,102", "+0%", "25%"]
+        );
     }
 
     #[test]

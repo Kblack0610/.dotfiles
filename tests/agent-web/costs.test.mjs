@@ -488,8 +488,8 @@ test("spend history folds to its headline under the fleet figure and lists year,
       p("day", "11-09", "$1,312", 1, "$1,312", "+69%", "21%")],
     older: 3, missing: 2, stale: false, note: "est. is the share priced from tokens" };
   const h = show(board({ history }));
-  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-history") && h.indexOf("sec-history") < h.indexOf("sec-burn"), "history sits under the fleet figure");
-  assert.match(h, /<details class="csec" data-k="history" id="sec-history"><summary><h2 class="sec">Spend history <span class="muted">Nov \$1,579\/day vs Oct/);
+  assert.ok(h.indexOf("sec-fleet") < h.indexOf("sec-spend") && h.indexOf("sec-spend") < h.indexOf("sec-burn"), "history sits under the fleet figure");
+  assert.match(h, /<details class="csec" data-k="spend" id="sec-spend"><summary><h2 class="sec">Spend history <span class="muted">Nov \$1,579\/day vs Oct/);
   assert.match(h, /<tr class="allrow"><td>2026-11<\/td><td class="n">\$14,210<\/td><td class="n">9<\/td><td class="n">\$1,579<\/td><td class="n">\+43%<\/td><td class="n">21%<\/td><\/tr>/);
   assert.match(h, /<tr class=""><td>11-09<\/td>/);
   assert.match(h, /\+3 older/);
@@ -498,6 +498,6 @@ test("spend history folds to its headline under the fleet figure and lists year,
   assert.match(show(board({ history: { ...history, stale: true } })), /class="warn">stale: no snapshot for yesterday/);
   // negative control: no snapshot says so, never a $0 table
   const none = show(board({ history: { why: "no snapshot with a fleet figure yet", rows: [] } }));
-  assert.match(none, /id="sec-history"><h2 class="sec">Spend history <span class="muted">no snapshot with a fleet figure yet/);
+  assert.match(none, /id="sec-spend"><h2 class="sec">Spend history <span class="muted">no snapshot with a fleet figure yet/);
   assert.doesNotMatch(none, /vs prev/);
 });

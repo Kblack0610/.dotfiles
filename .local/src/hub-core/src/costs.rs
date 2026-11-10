@@ -315,7 +315,11 @@ fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
     c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize, &mut c.errors);
     c.tokens = crate::tokens::from_snapshots(&c.snapshots, now);
     let today = chrono::DateTime::from_timestamp(now, 0)
-        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
         .unwrap_or_default();
     c.history = crate::spend_history::build(&crate::spend_history::read(&paths.tokens), &today);
     c.fleet_cost = match crate::fleet_cost::load(&paths.fleet_cost) {
