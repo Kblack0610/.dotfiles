@@ -435,6 +435,43 @@ mod tests {
     }
 
     #[test]
+    fn inner_tabs_are_the_layout() {
+        // Rule 8 for inner tabs: app.js's INNER_TABS is hub_core::layout's groups, as JSON.
+        let mut want = serde_json::Map::new();
+        for t in hub_core::layout::TABS
+            .iter()
+            .filter(|t| !t.inner.is_empty())
+        {
+            let tabs: Vec<serde_json::Value> = t
+                .inner
+                .iter()
+                .map(|i| serde_json::json!([i.id, i.title, i.sections]))
+                .collect();
+            want.insert(
+                t.id.to_string(),
+                serde_json::json!({ "pinned": t.pinned, "tabs": tabs }),
+            );
+        }
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const INNER_TABS = "))
+            .expect("app.js has INNER_TABS");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("INNER_TABS is JSON");
+        assert_eq!(got, serde_json::Value::Object(want));
+        // Every section a group names is one the page draws a board section for.
+        let costs = include_str!("../static/costs.js");
+        for i in hub_core::layout::resolve("costs").expect("costs").inner {
+            for s in i.sections {
+                assert!(
+                    costs.contains(&format!("\"{s}\"")) || costs.contains(&format!("sec-{s}")),
+                    "costs.js never draws {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn log_folds_are_the_layout() {
         // Rule 8 for sections: each folded Log section in hub_core::layout is a `sec-<name>`
         // fold in index.html, in its order. The day and its history are the day view

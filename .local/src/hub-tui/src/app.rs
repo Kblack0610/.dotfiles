@@ -3110,7 +3110,7 @@ impl App {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Costs => format!(
-                "b/B cut  w window  / query  s sort  S asc/desc  K keys  y spend  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  b/B cut  w window  / query  s sort  S asc/desc  K keys  y spend  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Fleet if self.fleet_table.typing.is_some() => {
                 "type a query (kind:session state:failed -who:x), Enter applies, Esc drops it".into()
@@ -5714,9 +5714,30 @@ mod tests {
     }
 
     #[test]
+    fn left_and_right_switch_costs_inner_tabs_and_hub_tab_names_one() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
+        let mut a = costs_app(true);
+        assert_eq!(a.cv.inner, "limits");
+        a.handle(k(KeyCode::Right));
+        assert_eq!(a.cv.inner, "spend");
+        assert!(screen(&mut a, 100, 60).contains("window:"));
+        a.handle(k(KeyCode::Left));
+        a.handle(k(KeyCode::Left));
+        assert_eq!(a.cv.inner, "models");
+        // `hub --tab 'costs burn'` and the moved `fleet tokens` land on the holding inner tab
+        let (t, q) = crate::tabreq::parse("costs burn").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!((a.cv.inner, a.seek), ("limits", Some("burn")));
+        let (t, q) = crate::tabreq::parse("fleet tokens").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!((a.cv.inner, a.seek), ("models", Some("tokens")));
+    }
+
+    #[test]
     fn u_opens_the_tokens_fold_on_costs_and_goes_to_it_and_big_u_switches_its_window() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(true);
+        a.cv.inner = "models";
         let s = screen(&mut a, 100, 60);
         assert!(
             s.contains("+ WHERE THE TOKENS GO") && s.contains("u opens it"),
@@ -5742,6 +5763,7 @@ mod tests {
     fn l_opens_the_langfuse_fold_on_costs_and_typing_keeps_u_and_l_as_text() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(true);
+        a.cv.inner = "models";
         a.handle(k(KeyCode::Char('l')));
         assert_eq!(
             a.cv.langfuse,
@@ -5762,6 +5784,7 @@ mod tests {
     fn u_and_l_wait_for_a_snapshot_so_the_first_one_lands_folded() {
         let k = |c| Msg::Input(Event::Key(KeyEvent::from(c)));
         let mut a = costs_app(false);
+        a.cv.inner = "models";
         a.handle(k(KeyCode::Char('u')));
         a.handle(k(KeyCode::Char('U')));
         a.handle(k(KeyCode::Char('l')));
