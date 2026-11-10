@@ -773,6 +773,7 @@ ask_stub() {
   assert_output --partial 'priority: tagged 2, left 0, refused 0'
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
+  grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
   run tasks
   assert_output --regexp 'the save is slow .*#low.*id:sc-4'
   assert_output --regexp 'the menu flickers .*#high.*id:sc-5'
