@@ -32,9 +32,11 @@
 #                        # exit that target's claude and resume it on the account pick
 #                        # returns (or the one --to names), in the same pane: park, then unpark.
 #                        # A claude on the Lazer gateway moves onto that account too; park refuses one
-#   claude-acct park <target> [--server S] [--stop-shells] [--dry-run]
+#   claude-acct park <target> [--server S] [--why <reason>] [--for <slug>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude so it costs nothing while it waits,
-#                        # keeping the pane; the resume goes to ~/.agent/parked/<key>
+#                        # keeping the pane; the resume goes to ~/.agent/parked/<key>, with
+#                        # why=<reason> (default park; fleet-dispatch's preempt writes preempt)
+#                        # and for=<slug>, the queue item the park made room for
 #   claude-acct unpark <target>|--all
 #                        # resume a parked session in its pane, on the account pick returns now
 #                        # <target> is [server/]session[:window] or a pane id (%N). A session
@@ -1350,7 +1352,9 @@ resume_prompt() {
         p="This session was moved from $old to $3, because $why. Nothing else changed: same conversation, same worktree. Pick up where you left off."
         [[ "$4" == shell ]] && p+=" The move stopped your background shells: restart any you still need."
     else
-        p="This session was parked to save Claude usage: its claude exited while it waited, and it is now resumed on the $3 account. Same conversation, same worktree. Whatever you were waiting on (CI, a PR, a review, a hold) may have moved while you were parked, so re-check it before you carry on."
+        local cause="to save Claude usage: its claude exited while it waited"
+        [[ "$1" == preempt ]] && cause="so an urgent queue item could take its run unit: its claude exited at the end of a turn"
+        p="This session was parked $cause, and it is now resumed on the $3 account. Same conversation, same worktree. Whatever you were waiting on (CI, a PR, a review, a hold) may have moved while you were parked, so re-check it before you carry on."
         [[ "$4" == shell ]] && p+=" Parking stopped your background waits: check what they watched directly instead of restarting them."
     fi
     printf '%s' "$p"
@@ -1381,9 +1385,9 @@ resume_cmd() {
     printf '%s' "$c"
 }
 
-# park_flow <park|move> <target> [--server S] [--to <account>] [--stop-shells] [--dry-run]
+# park_flow <park|move> <target> [--server S] [--to <account>] [--why <reason>] [--for <slug>] [--stop-shells] [--dry-run]
 park_flow() {
-    local verb="$1" what="" session="" window="" pane_t="" key="" server="" dry=0 stop=0 to_name="" to_dir="" srv
+    local verb="$1" what="" session="" window="" pane_t="" key="" server="" dry=0 stop=0 to_name="" to_dir="" srv reason="" for_item=""
     shift
     while (($#)); do
         case "$1" in
@@ -1392,6 +1396,11 @@ park_flow() {
             --to) [[ "$verb" == move ]] || { echo "claude-acct: $verb: --to is for move" >&2; return 2; }
                   [[ -n "${2:-}" ]] || { echo "claude-acct: $verb: --to needs an account name" >&2; return 2; }
                   to_name="$2"; shift 2 ;;
+            --why|--for)
+                [[ "$verb" == park ]] || { echo "claude-acct: $verb: $1 is for park" >&2; return 2; }
+                [[ "${2:-}" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo "claude-acct: $verb: $1 needs a lowercase word" >&2; return 2; }
+                if [[ "$1" == --why ]]; then reason="$2"; else for_item="$2"; fi
+                shift 2 ;;
             --dry-run) dry=1; shift ;;
             --stop-shells) stop=1; shift ;;
             -*) echo "claude-acct: $verb: unknown flag '$1'" >&2; return 2 ;;
@@ -1527,7 +1536,7 @@ park_flow() {
     if ! mkdir -p "$PARKED" || ! tmp=$(mktemp "$PARKED/.$key.XXXXXX"); then refuse "cannot write to $PARKED"; return; fi
     printf '%s\n' "session=$session" "server=$server" "target=$server/$session${win:+:$win}" "pane=$pane" \
         "direct=$direct" "pid=$pid" "session_id=$sid" "cwd=$cwd" "from=$from" "status=$status" \
-        "why=$verb" "parked=$(date +%s)" "resume=$base" "item=$item" > "$tmp"
+        "why=${reason:-$verb}" "for=$for_item" "parked=$(date +%s)" "resume=$base" "item=$item" > "$tmp"
 
     # A fleet-dispatch pane closes with its claude, and with it the session, its @dispatch
     # label and the name its ledger is filed under; held open, it is respawned in place.
@@ -1544,7 +1553,7 @@ park_flow() {
     mv -f "$tmp" "$PARKED/$key"
     if [[ "$verb" == park ]]; then
         echo "claude-acct: parked $key: $PARKED/$key; claude-acct unpark $key resumes it"
-        record "$key" "parked on $(name_of "$from") ($status)" parked "$sid"
+        record "$key" "parked on $(name_of "$from") ($status)${reason:+, $reason}${for_item:+ for $for_item}" parked "$sid"
         return 0
     fi
     unpark_ledger move "$PARKED/$key" "$to" "$name" "$note"

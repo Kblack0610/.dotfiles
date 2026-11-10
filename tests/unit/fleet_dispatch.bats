@@ -2836,6 +2836,164 @@ five_of_six_units() {
   [ -n "$(qitem running small-high)" ] || fail "the light item waited for an urgent item that cannot fit"
 }
 
+# --- preempt: an urgent item takes a runner session's unit (plan urgent-runs-now P2) -----------
+
+# park_stub -- claude-acct park and unpark log to calls.log; park writes the ledger claude-acct would
+# (session, server, why, for), unpark removes it, and park.refuse makes park refuse as a busy session.
+# Every other verb goes to the acct stub.
+park_stub() {
+  mv "$SANDBOX/bin/claude-acct" "$SANDBOX/bin/claude-acct-room"
+  stub claude-acct 'P="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
+case "$1" in
+  park) echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"
+        [ ! -e "$NOTES_FIXTURE/park.refuse" ] || { echo "claude-acct: park ${2#*/}: busy mid-turn; park it once the turn ends" >&2; exit 1; }
+        mkdir -p "$P"; printf "session=%s\nserver=%s\nwhy=%s\nfor=%s\nparked=%s\n" "${2#*/}" "${2%%/*}" "$4" "$6" "$(date +%s)" > "$P/${2#*/}" ;;
+  unpark) echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"; rm -f "$P/$2" ;;
+  *) exec claude-acct-room "$@" ;;
+esac'
+}
+
+# six_of_six_units -- five_of_six_units plus a low light runner session, l2: every unit is held.
+six_of_six_units() {
+  five_of_six_units
+  started_item l2 lab:game-agent-l2 run area-l2
+  sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-l2.md
+  echo game-agent-l2 >> "$NOTES_FIXTURE/tmux.sessions.lab"
+  park_stub
+}
+
+# ledger <session> <why> -- a park ledger as claude-acct writes it, parked at epoch 1.
+ledger() {
+  mkdir -p "$HOME/.agent/parked"
+  printf 'session=%s\nserver=lab\nwhy=%s\nparked=1\n' "$1" "$2" > "$HOME/.agent/parked/$1"
+}
+
+@test "preempt: at 6 of 6 units an urgent item parks the low runner session and starts in the same pass" {
+  six_of_six_units
+  assert_equal "$(live_units)" 6
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'claude-acct park lab/game-agent-l2 --why preempt --for now-one'
+  assert_not_called 'claude-acct park lab/game-agent-l1'
+  [ -n "$(qitem running now-one)" ] || fail "the urgent item did not start after the park"
+  assert_equal "$(outcome)" WORKED
+  grep -q 'preempted l2 (lab/game-agent-l2) for urgent now-one' "$FLEET_DISPATCH_DIR/log.md" || fail "no preempted log line"
+}
+
+@test "preempt: a heavy urgent item among light sessions parks one a pass, lowest priority first, and starts once two are free" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_MAX_LIVE=2
+  started_item l1 lab:game-agent-l1 run area-l1
+  started_item l2 lab:game-agent-l2 run area-l2
+  sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-l1.md
+  printf 'game-agent-l1\ngame-agent-l2\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  park_stub
+  agent-queue add --project game --slug big-now --priority urgent --weight heavy "big now" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'claude-acct park lab/game-agent-l1 --why preempt --for big-now'
+  assert_not_called 'claude-acct park lab/game-agent-l2'
+  [ -n "$(qitem queued big-now)" ] || fail "the heavy item started in one freed unit"
+  # The next pass resumes nothing while big-now waits, parks l2 and starts it.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'claude-acct unpark'
+  assert_called 'claude-acct park lab/game-agent-l2 --why preempt --for big-now'
+  [ -n "$(qitem running big-now)" ] || fail "the heavy item did not start once two units were free"
+}
+
+@test "preempt: a busy victim is not parked, nothing starts, and the next pass tries it again" {
+  six_of_six_units
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  touch "$NOTES_FIXTURE/park.refuse"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'preempt waits: l2: busy mid-turn'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+  [ -n "$(qitem queued now-one)" ] || fail "the urgent item left the queue"
+  # one park a pass: each victim in line was tried once, the low one first
+  assert_equal "$(grep -c 'claude-acct park' "$NOTES_FIXTURE/calls.log")" 4
+  rm -f "$NOTES_FIXTURE/park.refuse"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  [ -n "$(qitem running now-one)" ] || fail "the urgent item did not start once the victim's turn ended"
+}
+
+@test "preempt: with no urgent item, a full fleet parks nothing (negative control)" {
+  six_of_six_units
+  agent-queue add --project game --slug later-one --priority high "later one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'at 6 of 6 run units'
+  assert_not_called 'claude-acct park'
+  assert_equal "$(outcome)" NOOP
+}
+
+@test "preempt: a hand-started session is never a victim, however low its priority" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_MAX_LIVE=1
+  started_item run1 lab:game-agent-run1 run area-run1
+  started_item hand1 lab:game-agent-hand1 hand area-hand1
+  sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-hand1.md
+  printf 'game-agent-run1\ngame-agent-hand1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  park_stub
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'claude-acct park lab/game-agent-hand1'
+  assert_called 'claude-acct park lab/game-agent-run1 --why preempt --for now-one'
+}
+
+@test "preempt: DISPATCH_PREEMPT=0 parks nothing, and a dry run names the victim without parking it" {
+  six_of_six_units
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  DISPATCH_PREEMPT=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 6 of 6 run units'
+  assert_not_called 'claude-acct park'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'would preempt l2 (lab/game-agent-l2) for urgent now-one'
+  assert_not_called 'claude-acct park'
+  [ -n "$(qitem queued now-one)" ] || fail "a dry run started the urgent item"
+}
+
+@test "preempt: a parked runner session holds no run unit" {
+  five_of_six_units
+  assert_equal "$(live_units)" 5
+  ledger game-agent-h1 park
+  assert_equal "$(live_units)" 3
+  rm "$HOME/.agent/parked/game-agent-h1"; mkdir -p "$HOME/.agent/parked"; : > "$HOME/.agent/parked/game-agent-l1:2"
+  assert_equal "$(live_units)" 4
+}
+
+@test "unpark: a preempt ledger is resumed when its units are free and no urgent item waits; a budget park is not" {
+  five_of_six_units
+  park_stub
+  ledger game-agent-l1 preempt
+  ledger game-agent-h1 park
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'claude-acct unpark game-agent-l1'
+  assert_not_called 'claude-acct unpark game-agent-h1'
+}
+
+@test "unpark: a preempt ledger waits while an urgent item is runnable, or while its units are not free" {
+  six_of_six_units
+  ledger game-agent-l2 preempt
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'claude-acct unpark'
+  # l2's parked unit was free, so the urgent item started in it and waits no more
+  [ -n "$(qitem running now-one)" ] || fail "the urgent item did not start"
+  # l2 parked frees its unit, which a new runner session then took: 6 of 6 again
+  started_item l3 lab:game-agent-l3 run area-l3
+  echo game-agent-l3 >> "$NOTES_FIXTURE/tmux.sessions.lab"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'claude-acct unpark'
+}
+
 @test "a heavy item alone at 5 of 6 run units is a full fleet: NOOP, not BLOCKED" {
   project game beta "$SANDBOX/repos/game"
   local s

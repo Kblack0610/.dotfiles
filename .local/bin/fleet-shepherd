@@ -259,8 +259,9 @@ cmd_due() {
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
   # hold is a hold decision; both are the shepherd's step 1. So is a parked session on a CLEAR
   # machine with no hold: nothing else ever resumes it. One the budget checkpoint parked is left
-  # out, since that park pages the human and only they resume it.
-  local verdict holds parked
+  # out, since that park pages the human and only they resume it, and so is one fleet-dispatch
+  # preempted for an urgent item (ledger why=preempt): its own pass resumes it once units free.
+  local verdict holds parked preempt
   verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
   holds="$(agent-hold list 2>/dev/null | cut -f1 | paste -sd, -)"
   if [ -n "$holds" ] && [ "$verdict" = CLEAR ]; then
@@ -268,9 +269,15 @@ cmd_due() {
   elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then
     out+="${out:+$'\n'}pace: machine reads HOLD with no hold set"
   elif [ -z "$holds" ] && [ "$verdict" = CLEAR ]; then
-    parked="$(jq -r --rawfile b <(cat "$BUDGETS" 2>/dev/null) '
+    local f; preempt=""
+    for f in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
+      [ -f "$f" ] && grep -qx 'why=preempt' "$f" && preempt+="$(sed -n 's/^target=//p' "$f")"$'\n'
+    done
+    parked="$(jq -r --rawfile b <(cat "$BUDGETS" 2>/dev/null) --arg pre "$preempt" '
       ($b | split("\n") | map(split("\t")) | map(select(.[2] == "parked") | .[0])) as $budget
+      | ($pre | split("\n")) as $pre
       | [(.sessions // [])[] | select(.bucket == "PARKED" and ((.labels // []) | index("manual") | not)
+          and (.target as $t | $pre | index($t) | not)
           and (((.dispatch // "") | sub("^[^:]*: "; "")) as $slug | $budget | all(. != $slug)))
         | .target] | join(", ")' "$STATE_FILE" 2>/dev/null)"
     [ -z "$parked" ] || out+="${out:+$'\n'}pace: parked $parked while the machine reads CLEAR with no hold; then: claude-acct unpark each"
