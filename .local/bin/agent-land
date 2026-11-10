@@ -69,7 +69,8 @@ lastline() { printf '%s' "$1" | tail -n 1; }
 # Until a CI job starts, a PR reports no checks, and GitHub has no event for the first one: that
 # one state is polled CHECKS_POLL seconds apart. While an Actions run for HEAD is still queued it
 # waits on; with none, it gives up after CHECKS_TRIES polls and lands on the local gate (a repo
-# with no PR checks). `gh pr checks --watch` waits out the rest.
+# with no PR checks), unless the base requires a check, which GitHub would refuse the merge for:
+# that stops at checks. `gh pr checks --watch` waits out the rest.
 CHECKS_POLL="${AGENT_LAND_CHECKS_POLL:-10}"
 CHECKS_TRIES="${AGENT_LAND_CHECKS_TRIES:-12}"
 wait_checks() {
@@ -90,6 +91,9 @@ wait_checks() {
     [ "${queued:-0}" -eq 0 ] || try=0
     [ "$try" -lt "$CHECKS_TRIES" ] || {
       [ "$tier" != 3 ] || fail checks "none reported, and a tier-3 item lands only on checks that ran green"
+      # A Checks run that ends with no job reports no check and has nothing left to wait on (#2141,
+      # 2026-11-09), and GitHub refuses the merge while a required check is missing on the head.
+      ! required_checks || fail checks "none reported on the head, and origin/$base requires checks, so GitHub would refuse the merge: gh run list --commit $(git rev-parse HEAD) shows whether a run exists (none yet: re-run once it does; one that ended with no job never started: gh run rerun it), then re-run"
       echo "checks: none reported"
       return 0
     }
@@ -141,27 +145,31 @@ own_head() {
   fail head "HEAD ${here:0:8} is not the PR's head ${head_oid:0:8}, and no checkout of $head_ref is listed: git switch $head_ref (pushed and current) in a checkout of this repo, then re-run"
 }
 
-# strict_checks: whether <base> refuses a head whose required checks have not run on it: a ruleset's
-# required_status_checks rule with strict_required_status_checks_policy, or branch protection's
-# required_status_checks.strict. Read once. A 404 from the protection call is "not protected"; any
-# other unreadable answer counts as strict, the side that waits instead of being refused.
-strict=''
-strict_checks() {
-  if [ -z "$strict" ]; then
-    local repo="${pr_ref%#*}" out
-    strict=yes
-    if [ "$repo" != "$pr_ref" ] &&
-      out=$(gh api "repos/$repo/rules/branches/$base" 2>/dev/null) &&
-      jq -e 'all(.[]; .type != "required_status_checks" or .parameters.strict_required_status_checks_policy != true)' <<<"$out" >/dev/null 2>&1; then
-      if out=$(gh api "repos/$repo/branches/$base/protection" 2>&1); then
-        jq -e '.required_status_checks.strict == true' <<<"$out" >/dev/null 2>&1 || strict=no
-      else
-        case "$out" in *'(HTTP 404)'*) strict=no ;; esac
-      fi
-    fi
+# checks_policy reads, once, what <base> asks of a head's checks. strict: it refuses a head whose
+# required checks have not run on it (a ruleset's required_status_checks rule with
+# strict_required_status_checks_policy, or branch protection's required_status_checks.strict); any
+# answer but a 404 from the protection call counts as strict, the side that waits instead of being
+# refused. required: it names at least one check a head must pass, so a head with none reported
+# cannot merge; only an answer that says so counts (an unreadable one is no), since a wrong yes would
+# block every landing there.
+strict='' required=''
+checks_policy() {
+  [ -z "$strict" ] || return 0
+  local repo="${pr_ref%#*}" out
+  strict=yes required=no
+  [ "$repo" != "$pr_ref" ] || return 0
+  out=$(gh api "repos/$repo/rules/branches/$base" 2>/dev/null) || return 0
+  ! jq -e 'any(.[]; .type == "required_status_checks" and (.parameters.required_status_checks // [] | length) > 0)' <<<"$out" >/dev/null 2>&1 || required=yes
+  jq -e 'all(.[]; .type != "required_status_checks" or .parameters.strict_required_status_checks_policy != true)' <<<"$out" >/dev/null 2>&1 || return 0
+  if out=$(gh api "repos/$repo/branches/$base/protection" 2>&1); then
+    ! jq -e '(.required_status_checks.contexts // []) + (.required_status_checks.checks // []) | length > 0' <<<"$out" >/dev/null 2>&1 || required=yes
+    jq -e '.required_status_checks.strict == true' <<<"$out" >/dev/null 2>&1 || strict=no
+  else
+    case "$out" in *'(HTTP 404)'*) strict=no ;; esac
   fi
-  [ "$strict" = yes ]
 }
+strict_checks() { checks_policy && [ "$strict" = yes ]; }
+required_checks() { checks_policy && [ "$required" = yes ]; }
 
 # catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
 # the base moved on during the checks; that head keeps the same gate, since a merge of <base> keeps it green. It returns 0 when already
