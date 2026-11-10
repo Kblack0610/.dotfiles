@@ -600,15 +600,20 @@ system_named() {
 # proposed (epic_new), else its system's standing epic through `edit --link`. A row whose system
 # is no system of the project is left as it is.
 link_row() {
-  local p="$1" lane="$2" raw="$3" sys="$4" of="$5" epic="$6" epics="$7" tsv="$8" text area own eid
+  local p="$1" lane="$2" raw="$3" sys="$4" of="$5" epic="$6" epics="$7" tsv="$8" text ty area rest own eid
   text="$(sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//' <<<"$raw")"
-  area="$(sed -nE 's/^[a-z]+\(([^)]*)\):.*/\1/p' <<<"$text")"
+  # The type and area come from the grammar's one home, `notes row parse`.
+  IFS=$'\t' read -r ty area _ < <(notes row parse <<<"$text")
+  [ "$area" = - ] && area=""
   own="$(system_named "$area" "$tsv")"
   if [ -n "$own" ]; then
     sys="$own"
   else
     sys="$(system_named "$sys" "$tsv")"
-    [ -n "$sys" ] && text="$(sed -E "s/^([a-z]+)\([^)]*\):/\1($sys):/" <<<"$text")"
+    if [ -n "$sys" ]; then
+      rest="${text#"$ty${area:+($area)}:"}"
+      text="$ty($sys): ${rest#"${rest%%[! ]*}"}"
+    fi
   fi
   epic_known "$of" "$p" "$epics" || of=""
   # A dry run files no epic, so its row prints under the placeholder `#of/<new>`.
