@@ -48,6 +48,19 @@ pub struct Stats {
     pub progress: Progress,
     pub status: String,
     pub status_date: String,
+    /// The human sheet's epics with their leaf rollup (notes-cli `epics.rs`).
+    pub epics: Vec<EpicRollup>,
+}
+
+/// One epic as `--stats --json` rolls it up: leaves only, by size weight.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct EpicRollup {
+    pub id: String,
+    pub open: u32,
+    pub done: u32,
+    pub open_weight: u32,
+    pub done_weight: u32,
 }
 
 /// The priority after `cur` in the cycle a key steps through: normal, focus, high, low. `only`
@@ -182,6 +195,8 @@ impl crate::table::Row for Card {
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
     const FACETS: &'static [&'static str] = &["profile", "stage"];
+    const LEAD: &'static str = "project";
+    const GLANCE: &'static [&'static str] = &["stage", "open", "doing"];
 
     fn val(&self, col: &str) -> Val {
         let word = |s: &str| {
@@ -266,7 +281,51 @@ pub fn eta_days(p: &Progress) -> Option<u32> {
     if p.open_weight == 0 {
         return Some(0);
     }
-    (p.closed_weight_28d > 0).then(|| (p.open_weight * 28).div_ceil(p.closed_weight_28d))
+    (p.closed_weight_28d > 0).then(|| days_at(p.open_weight, p.closed_weight_28d))
+}
+
+/// Days to close `weight` at `closed_weight_28d` per 28 days, rounded up; the one rate the
+/// version ETA and each row's forecast share. `closed_weight_28d` is above 0.
+fn days_at(weight: u32, closed_weight_28d: u32) -> u32 {
+    (weight * 28).div_ceil(closed_weight_28d)
+}
+
+/// Put a forecast day on each open leaf row of the projects `stats` covers: the day it should
+/// close at the project's 28-day close rate (`eta_days`' rate), after every row ranked ahead of
+/// it, in the sheet's order (section, then rank). `ceil(weight ahead and its own * 28 /
+/// closed_weight_28d)` days from `today`. An epic or a row another row names in `#of/` weighs
+/// what its children weigh, so it adds nothing and gets no day; a playtest check is no work
+/// item. A project with no closes in 28 days gets no day, never a guess.
+pub fn forecast(feed: &mut Feed, stats: &[Stats], today: chrono::NaiveDate) {
+    let parents: std::collections::HashSet<String> =
+        feed.rows.iter().filter_map(|r| r.parent.clone()).collect();
+    let mut order: Vec<usize> = (0..feed.rows.len()).collect();
+    order.sort_by_key(|&i| {
+        let r = &feed.rows[i];
+        (crate::tasks::section_order(r.section.as_deref()), r.rank)
+    });
+    let mut ahead: HashMap<(String, String), u32> = HashMap::new();
+    for i in order {
+        let r = &mut feed.rows[i];
+        r.forecast = None;
+        let leaf = matches!(r.section.as_deref(), Some("now" | "next" | "backlog"))
+            && r.id.as_ref().is_none_or(|id| !parents.contains(id));
+        let Some(project) = r.project.clone().filter(|_| leaf) else {
+            continue;
+        };
+        let Some(rate) = stats
+            .iter()
+            .find(|s| s.name == project && s.profile == r.profile)
+            .map(|s| s.progress.closed_weight_28d)
+            .filter(|w| *w > 0)
+        else {
+            continue;
+        };
+        let sum = ahead.entry((r.profile.clone(), project)).or_default();
+        *sum += r.weight.max(1);
+        let days = days_at(*sum, rate);
+        r.forecast = Some((today + chrono::Days::new(u64::from(days))).to_string());
+    }
 }
 
 /// The lab project an item belongs to, by the rules in the module doc.
@@ -436,15 +495,20 @@ pub fn counts(c: &Card) -> String {
     )
 }
 
+/// The fleet state file as JSON, `Null` when unreadable: what `build` reads beside the stats.
+pub fn fleet_state() -> Value {
+    std::fs::read_to_string(crate::boards::fleet_state())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null)
+}
+
 /// The whole join every surface reads: `notes projects --stats --json`, the inbox feed, fleet
 /// state and the queue, built into cards. agent-web's `/api/projects` and `hub projects --json`
 /// both call this, so the chip, the phone, the web tab and the TUI agree.
 pub fn gather() -> Projects {
     let runner = crate::session_actions::System;
-    let state = std::fs::read_to_string(crate::boards::fleet_state())
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or(Value::Null);
+    let state = fleet_state();
     let queue = Queue::read(&runner);
     let feed = crate::tasks::feed(&runner).ok();
     match stats(&runner) {

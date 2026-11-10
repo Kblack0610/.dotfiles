@@ -12,11 +12,12 @@
 #       An automated add waits while the queue is a day of drain deep: see admit (exit AQ_EX_HELD).
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before
-#   list [--json] [--state queued|running|waiting|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
+#   list [--json] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
 #   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
-#   mine [--session s | --sid id]  the slug of the running or waiting item this session records
+#   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--if <state>]
+#   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource>   a started item back in the queue, held on that agent-hold
@@ -31,7 +32,7 @@
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; reap also waits.
 # Holds: `after <slug>`, and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
-# pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until today's scheduled runs of that repo
+# pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until the scheduled runs of that repo on its at: date, else today,
 # have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until the human answers that agent-ask,
 # with one of those options when named; see ask_pending) and hold:<resource> (while agent-hold holds it; see
 # hold_pending). A start on a later day is the dated form, never a held session.
@@ -65,7 +66,10 @@ AQ_SCHEDULES="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/schedules-sync"
 AQ_ASKS="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
 # A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
 AQ_HOLD="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold"
-ACTIVE="queued running waiting"
+# waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
+# stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
+# only the first.
+ACTIVE="queued running waiting review"
 
 die() { echo "agent-queue: $*" >&2; exit 1; }
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -216,6 +220,21 @@ finished_ok() {
     "$1" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
 }
 
+# finished_row_ok <from> -> why an add from a board row is refused: an item under another slug already
+# finished ok on that row, as finished_ok reads the slug's. finished_ok keys on the slug, and a hand start slugs
+# `<project>-<key>` where promote slugs the row `<key>`, so a done row's refill slipped past it
+# (2026-11-07: trader tr-58 queued again after #635 merged). Refused adds exit AQ_EX_FINISHED.
+finished_row_ok() {
+  local key="${1#board:}" f
+  [ "$key" != "$1" ] || return 0
+  grep -lxF -e "from: board:$key" -e "row: $key" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
+    [ "$(fm_get "$f" status)" = ok ] || continue
+    printf '%s already finished ok on its own item %s (%s%s): pass --repeat to queue it again as new work\n' \
+      "$key" "$(fm_get "$f" slug)" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
+    break
+  done
+}
+
 # Admission (ar-697): an automated filer adds to the queue only while the items that can start now
 # number under a day of measured drain; the board is uncapped and takes the overflow, and dispatch
 # promotes from it as the queue drains. Automated: a `--from research:<facet>` or `auto:<filer>`,
@@ -238,7 +257,7 @@ AQ_ADMISSION_LOG="$AQ_DIR/admission.jsonl"
 # file not written in the window cannot have started in it, so find skips the older done/ days.
 started_from_queue() {
   local x d=()
-  for x in running waiting done; do [ -d "$AQ_DIR/$x" ] && d+=("$AQ_DIR/$x"); done
+  for x in running waiting review done; do [ -d "$AQ_DIR/$x" ] && d+=("$AQ_DIR/$x"); done
   [ "${#d[@]}" -gt 0 ] || { echo 0; return 0; }
   find "${d[@]}" -maxdepth 2 -name '*.md' -mtime -$((AQ_DRAIN_DAYS + 1)) -exec awk -v s="$1" '
     FNR == 1 { q = ""; t = "" }
@@ -361,7 +380,7 @@ after_status() {
 # hold_for <after> <tags> [<project> <priority>] -> sets HOLD to hold_reason's answer for these
 # header values.
 hold_for() {
-  local after="$1" tags="$2" tag now stamp MEMO_V AST
+  local after="$1" tags="$2" tag now stamp nday MEMO_V AST
   HOLD=""
   if [ -n "$after" ]; then
     after_status "$after"
@@ -382,6 +401,9 @@ hold_for() {
   [ -n "$stamp" ] || printf -v stamp '%(%Y-%m-%dT%H:%M)T' -1
   [[ "$stamp" == *T* ]] || { printf -v now '%(%Y-%m-%d)T' -1; stamp="${now}T$stamp"; }
   now="${stamp#*T}"
+  # A nightly: hold judges the night of the item's at: date (nightly_pending), else today's.
+  nday=""
+  for tag in $tags; do [[ "$tag" =~ ^at:([0-9]{4}-[0-9]{2}-[0-9]{2})T ]] && nday="${BASH_REMATCH[1]}"; done
   for tag in $tags; do
     case "$tag" in
       night)
@@ -399,7 +421,7 @@ hold_for() {
           *) HOLD="$tag not merged"; return ;;
         esac ;;
       nightly:?*)
-        memo "nightly:${tag#nightly:}" nightly_pending "${tag#nightly:}" "$stamp"
+        memo "nightly:${tag#nightly:}@$nday" nightly_pending "${tag#nightly:}" "$stamp" "$nday"
         [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; } ;;
       ask:?*)
         memo "$tag" ask_pending "${tag#ask:}"
@@ -457,12 +479,13 @@ ask_options() {
   sed -n 's/^options: *//p' "$f" | head -1 | tr '|' '\n'
 }
 
-# nightly_pending <repo> <local stamp> -> what today's scheduled runs of that repo still wait for, or
-# nothing when every one has finished or passed its slot plus timeout (a missing run is the triage's red).
-# A missing or stale state file, or schedules-sync failing, holds.
+# nightly_pending <repo> <local stamp> [<day>] -> what that day's scheduled runs of that repo still wait
+# for (day: the item's at: date, else the stamp's), or nothing when every one has finished or passed its
+# slot plus timeout (a missing run is the triage's red). A missing or stale state file, or schedules-sync
+# failing, holds. The day is the at: date so a finished night stays released after midnight.
 nightly_pending() {
   local out
-  out="$(SCHEDULES_NOW="$(date -d "${2/T/ }" +%s)" "$AQ_SCHEDULES" pending "$1" 2>/dev/null)" && return 0
+  out="$(SCHEDULES_NOW="$(date -d "${2/T/ }" +%s)" "$AQ_SCHEDULES" pending "$1" ${3:+--day "$3"} 2>/dev/null)" && return 0
   printf '%s\n' "${out:-schedules state unreadable}"
 }
 
@@ -771,7 +794,8 @@ project_board() {
 # the item closes on merge, or nothing. An item not promoted from the board is still a story on its
 # project's agent board, so a task shows under its feature the moment it is added: one `[/]` row
 # through `notes ptask` (the rows' one writer), `#of/<epic>` when the item names an epic of this
-# project (--epic, or its plan's `epic:` line), `#size/s` for a light item and `#size/m` for a
+# project (--epic, or its plan's `epic:` line), else the standing epic of its area's system, which
+# `notes ptask` links, `#size/s` for a light item and `#size/m` for a
 # heavy one, at the item's priority. Started, so dispatch never promotes it a second time. An open
 # row with the same text is linked instead of written twice. A project with no lab sheet or no row
 # code files nothing, and a failed write never stops the add: the item is the record, the row its credit.
@@ -923,6 +947,7 @@ cmd_add() {
   local why
   # Checked before slug is reused below: an explicit --slug is the same work by name.
   [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}")"
+  [ -n "$repeat" ] || [ -n "${why:-}" ] || why="$(finished_row_ok "$from")"
   [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
   # Under the lock, so two filers at once cannot both pass on the same count.
   if [ -n "$auto" ] && [ -z "$running" ] && [ -z "${AQ_ADMITTED:-}" ]; then
@@ -977,6 +1002,7 @@ cmd_add() {
   item_event item-added "$f" --to "$state"
   echo "$state $slug -> $f"
   [ -z "$story" ] || echo "story ${story#*$'\t'} on the $project agent board${epic:+, under $epic}"
+  [ -z "$running" ] || mark_row "$f" run
   [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
   exec 8>&-
@@ -1091,10 +1117,10 @@ cmd_list() {
   done
   local states
   case "$state" in
-    active) states="waiting running queued" ;;
-    all) states="waiting running queued done" ;;
-    queued | running | waiting | done) states="$state" ;;
-    *) die "--state is queued, running, waiting, done, active or all" ;;
+    active) states="waiting review running queued" ;;
+    all) states="waiting review running queued done" ;;
+    queued | running | waiting | review | done) states="$state" ;;
+    *) die "--state is queued, running, waiting, review, done, active or all" ;;
   esac
   lock_read
   # shellcheck disable=SC2086
@@ -1103,9 +1129,9 @@ cmd_list() {
     jq -c '.[]' <<<"$items"
     return 0
   fi
-  [ "$(jq length <<<"$items")" -gt 0 ] || { echo "queue: nothing ${state/active/queued, running or waiting}"; return 0; }
+  [ "$(jq length <<<"$items")" -gt 0 ] || { echo "queue: nothing ${state/active/queued, running, waiting or review}"; return 0; }
   # Grouped by state in this order, queue order inside each group.
-  jq -r '(["waiting","running","queued","done"]) as $o
+  jq -r '(["waiting","review","running","queued","done"]) as $o
     | sort_by(.state as $s | $o | index($s)) | .[]
     | [.state, .priority, .slug, .project, .mode,
        (.hold // .status // .session // ""), (.tags // ""), .from] | map(if . == "" then "-" else . end) | @tsv' <<<"$items"
@@ -1145,7 +1171,7 @@ cmd_mine() {
   [ "$only" -eq 1 ] || sid="$(claude_sid)" || sid=""
   lock_read
   if [ -z "$session" ] && [ -n "$sid" ]; then
-    slugs="$(collect running waiting | jq -r --arg s "$sid" '.[] | select((.sessions // "") | split(" ") | index($s)) | .slug')"
+    slugs="$(collect running waiting review | jq -r --arg s "$sid" '.[] | select((.sessions // "") | split(" ") | index($s)) | .slug')"
   fi
   [ "$only" -eq 0 ] || [ -n "${slugs:-}" ] || return 1
   if [ -z "${slugs:-}" ]; then
@@ -1227,7 +1253,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting finished session window account model size lane_run plan pr merged partial closing_pr cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed "
+SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model size lane_run plan pr merged partial closing_pr fix_tries fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -1258,6 +1284,25 @@ cmd_set() {
   done
   item_event item-set "$f" --why "$*"
   echo "$slug: $*"
+}
+
+# retask <slug> [task...] -- replace a queued item's task, from args or stdin like add: the correction
+# for a task that holds a wrong fact, since the task is what its session is briefed with. A started
+# item is refused: its session already has the brief, so tell the session instead. The header stays
+# as filed (its row, title and holds); `set type= area=` when the correction changes the item's kind.
+cmd_retask() {
+  local slug="${1:?usage: agent-queue retask <slug> [task...]}" f text tmp was
+  shift
+  if [ $# -gt 0 ]; then text="$*"; elif [ ! -t 0 ]; then text="$(cat)"; fi
+  [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  [ "$(state_of "$f")" = queued ] || die "$slug is $(state_of "$f"): its session already has the brief; tell the session"
+  was="$(fm_body "$f" | head -1)"
+  tmp="$(mktemp "$(dirname "$f")/.retask.XXXXXX")" || die "cannot write in $(dirname "$f")"
+  { awk '{ print } $0 == "---" { exit }' "$f"; printf '%s\n' "$text"; } > "$tmp" && mv -- "$tmp" "$f"
+  item_event item-set "$f" --why "task rewritten, was: $was"
+  echo "$slug: task rewritten"
 }
 
 # attribute <slug> -- credit an item by the files its PR changed, repo-relative paths on stdin.
@@ -1324,7 +1369,7 @@ cmd_move() {
       *) die "usage: agent-queue move <slug> <state> [--status s] [--if state]" ;;
     esac
   done
-  case "$to" in queued | running | waiting | done) ;; *) die "state is queued, running, waiting or done, not $to" ;; esac
+  case "$to" in queued | running | waiting | review | done) ;; *) die "state is queued, running, waiting, review or done, not $to" ;; esac
   if [ "$to" = "done" ]; then
     case "$status" in ok | failed | cancelled) ;; *) die "move to done needs --status ok, failed or cancelled" ;; esac
   fi
@@ -1339,7 +1384,7 @@ cmd_move() {
   # Done ok with a PR means merged: an ok close with the PR still open strands it, since nothing
   # reads that item again and its after: items start on work that never landed (#1145, #1146).
   if [ "$to" = done ] && [ "$status" = ok ] && [ -n "$(fm_get "$f" pr)" ] && [ -z "$(fm_get "$f" merged)" ]; then
-    die "$slug has pr:$(fm_get "$f" pr) and no merged:, so done ok would close it with the PR open: land it with agent-land <N>, which records the merge, or move it to waiting until the PR merges (fleet-dispatch reap closes it then)"
+    die "$slug has pr:$(fm_get "$f" pr) and no merged:, so done ok would close it with the PR open: land it with agent-land <N>, which records the merge, or move it to review until the PR merges (fleet-dispatch reap closes it then)"
   fi
   # The items after: this one, named before it closes, since an ok close starts them (start_next).
   if [ "$to" = done ] && [ "$status" = ok ]; then
@@ -1353,7 +1398,7 @@ cmd_move() {
     # that no longer works it. `sessions:` stays: it is the history of who worked the item.
     # lane_run goes too: the next start logs a run of its own, and host: too, since the next start
     # may run it here.
-    queued) header_del "$f" session window started waiting origin lane_run host ;;
+    queued) header_del "$f" session window started waiting review origin lane_run host ;;
     running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)"
       # A hold: tag gates one start: once running, the item's own session may claim that resource,
       # and a tag left on would hold the item behind its own claim if it is ever requeued.
@@ -1363,14 +1408,59 @@ cmd_move() {
         if [ -n "$tags" ]; then header_set "$f" tags "$tags"; else header_del "$f" tags; fi ;;
       esac ;;
     waiting) header_set "$f" waiting "$(now_utc)" ;;
+    review) header_set "$f" review "$(now_utc)" ;;
     done) header_set "$f" status "$status"; header_set "$f" finished "$(now_utc)" ;;
   esac
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}"
   echo "$slug: $from -> $to"
   lane_outcome "$run" "$from" "$to" "$status"
-  [ "$to" = done ] && [ "$status" = ok ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
-  start_next "$slug"
+  # The row's section follows the item: Now while it runs or waits on someone, Next up once back in
+  # the queue. waiting and review keep the mark: the item started.
+  case "$to" in running) mark_row "$dest" run ;; queued) mark_row "$dest" start ;; esac
+  [ "$to" = done ] && [ "$status" = ok ] || return 0
+  local rc=0
+  [ "${AGENT_QUEUE_START:-1}" != 1 ] || start_next "$slug" || rc=$?
+  close_row_on_item "$slug" "$dest"
+  return "$rc"
+}
+
+# mark_row <file> <run|start> -- the item's board row records its queue state, through notes, the rows'
+# one writer: `run` adds run:MMDD (the sweep puts the row in Now), `start` takes it off again (Next up).
+# The item is the state and the row its view, so a row the write cannot reach warns and the move stands.
+mark_row() {
+  local row prof flag=()
+  row="$(fm_get "$1" row)" prof="$(fm_get "$1" profile)"
+  [ -n "$row" ] && command -v notes >/dev/null || return 0
+  case "$(fm_get "$1" lane)" in '' | agent) flag=(--agent) ;; esac
+  notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" "$2" "${row#*:}" >/dev/null 2>&1 ||
+    echo "agent-queue: board row ${row#*:} on ${row%%:*} not marked $2: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} $2 ${row#*:}" >&2
+}
+
+# close_row_on_item <slug> <file> -- an item closed ok with no PR closes its row, the item as proof:
+# its session's close is the claim, as the merge is for an item with a PR (agent-land, or
+# fleet-dispatch close_row when its session died first). Its sessions read the move as closing the
+# row, and a row left started reads as an orphan. A row already closed (a doc kind closes its own
+# with doc: proof) is left as it is; a close that fails warns unless the board shows the row closed.
+# After start_next, which scans the queue under the lock: this frees it before calling notes.
+close_row_on_item() {
+  local slug=$1 row prof lane pr flag=() out key board
+  IFS=$'\x1f' read -r row prof lane pr < <(item_json "$2" |
+    jq -r '[.row // "", .profile // "", .lane // "", .pr // ""] | join("\u001f")')
+  [ -n "$row" ] && [ -z "$pr" ] || return 0
+  case "$lane" in '' | agent) flag=(--agent) ;; esac
+  [ -n "${AQ_LOCKED-}" ] || exec 8>&-
+  key="${row#*:}"
+  if out="$(notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" done "$key" --proof "item:$slug" 2>&1)"; then
+    echo "$slug: board row $key closed"
+    return 0
+  fi
+  # Quiet only when the board reads and its open rows no longer hold this one (by id: lv-9 is not lv-90).
+  [[ "$key" =~ ^[a-z]{2,4}-[0-9]+$ ]] && key="id:$key"
+  if board="$(notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" list 2>/dev/null)" && ! grep -qwF -- "$key" <<<"$board"; then
+    return 0
+  fi
+  echo "agent-queue: $slug is done, but its board row ${row#*:} on ${row%%:*} may still be open (${out##*$'\n'}): notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} done ${row#*:} --proof item:$slug" >&2
 }
 
 # check_tags <tags> -- die on a hold tag the queue could not read, so a gate is never silently
@@ -1511,6 +1601,7 @@ cmd_reopen() {
   fi
   notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" start "${row#*:}" >/dev/null 2>&1 ||
     die "$slug is $to, but its board row ${row#*:} on ${row%%:*} could not be started again: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} start ${row#*:}"
+  mark_row "$dest" run
   echo "$slug: board row ${row#*:} started again"
 }
 
@@ -1525,7 +1616,7 @@ lane_outcome() {
   case "$3:$4" in
     done:ok) o=ok ;;
     done:failed) o=failed ;;
-    queued:) case "$2" in running | waiting) o=redo ;; esac ;;
+    queued:) case "$2" in running | waiting | review) o=redo ;; esac ;;
   esac
   [ -z "$o" ] || model-lane outcome "$1" "$o" >/dev/null 2>&1 || echo "agent-queue: model-lane outcome $1 $o failed" >&2
 }
@@ -1654,11 +1745,11 @@ cmd_stats() {
        # Per local day, the day day-log keeps: each item counts on the day it reached that stage.
        # .waiting is the last move to waiting, so an item that waited twice counts on the later day.
        flow: (if $flow | not then null else (stage("queued"; .queued) + stage("started"; .started) + stage("waiting"; .waiting)
-           + ($done | stage("done"; .finished)))
+           + stage("review"; .review) + ($done | stage("done"; .finished)))
          | map(select(.day >= $since)) | group_by(.day)
          | map(at("done") as $fin | at("started") as $went | {key: .[0].day, value: {
              queued: (at("queued") | length), started: ($went | length), waiting: (at("waiting") | length),
-             done: ($fin | length), ok: ($fin | map(select(.status == "ok")) | length),
+             review: (at("review") | length), done: ($fin | length), ok: ($fin | map(select(.status == "ok")) | length),
              failed: ($fin | map(select(.status == "failed")) | length),
              cancelled: ($fin | map(select(.status == "cancelled")) | length),
              lead_minutes: ([$fin[] | mins(.queued; .finished)] | spread),
@@ -1692,11 +1783,11 @@ cmd_stats() {
 if [ -n "${AGENT_STATE_HOST:-}" ]; then
   # shellcheck source=../lib/fleet-hosts.sh
   . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
-  state_forward agent-queue "add attribute credit-of" "$@"
+  state_forward agent-queue "add retask attribute credit-of" "$@"
 fi
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | bump | set | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;

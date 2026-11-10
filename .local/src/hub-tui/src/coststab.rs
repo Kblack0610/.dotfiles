@@ -1,21 +1,23 @@
 //! The Costs tab: `hub_core::costs::board`, the same view agent-web draws. `b`/`B` step the cut,
 //! `w` the window, `/` types the query (the shared table's grammar), `s` sorts by the cut's next
-//! column, `S` flips it, `x` clears; `o` opens the Grafana trends. Burn has one row per Claude
-//! account (the Fleet tab's accounts table until 2026-11-07). Under it the token folds
+//! column, `S` flips it, `x` clears; `o` opens the Grafana trends. Burn has one row per source
+//! (the Fleet tab's accounts table until 2026-11-07), and `K` opens the keys folded under their
+//! pool. Under it the token folds
 //! (tokens.rs): `u` opens where the tokens go, `U` its window, `l` what Langfuse sees. The
 //! Sections block is folded to its headline: `e` opens it, `t` steps its sort column and `T`
 //! flips it.
 
-use hub_core::burn::{self, Burn};
+use hub_core::burn::{self, Account, Burn, Keys};
 use hub_core::costs::{self, Board, Costs};
+use hub_core::fleet_cost::FleetCost;
 use hub_core::sections::{self, Block};
 use hub_core::table::Val;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::Palette;
+use crate::fit::{cell, clip_line, wrap, Cell, Table};
+use crate::fmt::{clock, Palette};
 use crate::tokens::{self, TokensView};
 
 pub struct CostsView {
@@ -35,6 +37,8 @@ pub struct CostsView {
     pub tokens: TokensView,
     /// The Langfuse fold (`l`); None while it follows its amber state.
     pub langfuse: Option<bool>,
+    /// The keys fold under the pool (`K`); None while it follows its amber state.
+    pub keys: Option<bool>,
 }
 
 impl Default for CostsView {
@@ -51,6 +55,7 @@ impl Default for CostsView {
             sasc: false,
             tokens: TokensView::default(),
             langfuse: None,
+            keys: None,
         }
     }
 }
@@ -75,7 +80,7 @@ pub fn header(col: &str) -> &'static str {
         "calls" => "CALLS",
         "tokens" => "TOKENS",
         "cost" => "COST",
-        "share" => "SHARE",
+        "share" => "OF TABLE",
         "landed" => "LANDED",
         "redo" => "REDO",
         "reverts" => "REV",
@@ -185,16 +190,21 @@ impl CostsView {
         true
     }
 
-    /// The token folds' keys: `u` opens or folds where the tokens go, `U` switches its window,
-    /// `l` opens or folds what Langfuse sees. None leaves the key to `key`; Some carries the
-    /// section to scroll to (a fold that opened), or None for one that shut.
+    /// The folds' keys: `K` opens or folds the keys under the pool, `u` where the tokens go, `U`
+    /// switches its window, `l` opens or folds what Langfuse sees. None leaves the key to `key`;
+    /// Some carries the section to scroll to (a fold that opened), or None for one that shut.
     pub fn fold(
         &mut self,
         code: KeyCode,
         t: Option<&hub_core::tokens::Tokens>,
+        keys: Option<&Keys>,
     ) -> Option<Option<&'static str>> {
         if self.typing.is_some() {
             return None;
+        }
+        if code == KeyCode::Char('K') {
+            self.keys = Some(!keys_open(keys?, self.keys));
+            return Some(None);
         }
         let t = t?;
         match code {
@@ -239,8 +249,10 @@ impl CostsView {
         w: usize,
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let b = self.board(c);
-        let mut out = burn(&b.burn, p, w);
-        let mut at = vec![("burn", 0), ("tokens", out.len())];
+        let mut out = fleet(&b.fleet_cost, p, now, w);
+        let mut at = vec![("fleet", 0), ("burn", out.len())];
+        out.extend(burn(&b.burn, self.keys, p, w));
+        at.push(("tokens", out.len()));
         out.extend(tokens::tokens(b.tokens.as_ref(), self.tokens, p, now, w));
         at.push(("langfuse", out.len()));
         out.extend(tokens::langfuse(b.tokens.as_ref(), self.langfuse, p, w));
@@ -324,7 +336,15 @@ impl CostsView {
 
 /// The Burn section, first on the tab: the headline coloured by `level`, the drip and its hold
 /// badge, when each account is back on pace, and one row per source claude-acct reads.
-fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
+/// Amber starts open (dashboards rule 4); the reader's `K` wins after that.
+fn keys_open(k: &Keys, set: Option<bool>) -> bool {
+    set.unwrap_or(k.level != "ok")
+}
+
+/// Cells of the usage bar, brackets apart.
+const BAR_CELLS: usize = 10;
+
+fn burn(b: &Burn, keys_set: Option<bool>, p: Palette, w: usize) -> Vec<Line<'static>> {
     let dim = |s: &str| Span::styled(s.to_string(), p.dim());
     if b.accounts.is_empty() {
         return vec![clip_line(
@@ -345,76 +365,91 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
             p.warn(),
         ));
     }
-    let mut out = vec![
-        clip_line(
-            Line::from(vec![dim("BURN  "), Span::styled(b.head.clone(), style)]),
-            w,
-        ),
+    // The headline wraps between its clauses, never inside one, so a narrow pane keeps all of it.
+    let parts: Vec<&str> = b.head.split(", ").collect();
+    let mut out: Vec<Line<'static>> = crate::fit::wrap(&parts, ", ", w.saturating_sub(6))
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let lead = if i == 0 {
+                dim("BURN  ")
+            } else {
+                Span::raw("      ")
+            };
+            clip_line(Line::from(vec![lead, Span::styled(l, style)]), w)
+        })
+        .collect();
+    out.extend([
         clip_line(Line::from(drip), w),
         clip_line(
             Line::from(vec![dim("BACK ON PACE  "), Span::raw(b.pace_text(&time))]),
             w,
         ),
-    ];
-    // An unreadable or idle account has no figures: a line of its own, so its words do not
-    // widen the table's columns.
-    let mut notes = vec![];
-    let rows = b
-        .accounts
+    ]);
+    // A source with no figures has a line of its own, so its words do not widen the columns.
+    let note = |a: &&Account| {
+        let (text, style) = match a.state {
+            "unreadable" => ("usage unreadable", p.bad()),
+            "stale" => (burn::STALE_NOTE, p.bad()),
+            "idle" => (burn::idle_note(&a.kind), p.dim()),
+            _ => return None,
+        };
+        Some(clip_line(
+            Line::from(vec![
+                Span::styled(a.name.clone(), p.head()),
+                Span::raw("  "),
+                Span::styled(text.to_string(), style),
+            ]),
+            w,
+        ))
+    };
+    let has_figures = |a: &&&Account| a.state == "ok";
+    let name = |a: &Account| cell(a.name.clone(), p.head());
+    let pc = |v: Option<f64>| v.map_or("-".to_string(), |v| format!("{}%", v.floor()));
+    // Fill is the share used, the tick the share of the week gone; a dollar budget has no week.
+    let usage = |a: &Account| {
+        let gone = a.gone.filter(|_| !a.unpaced).map(|g| g as u32);
+        let (on, off) = crate::fmt::bar(a.used.map(|u| u as u32), gone, BAR_CELLS);
+        Cell::from(format!("[{on}{off}]"))
+    };
+    let room = |a: &Account| match &a.room {
+        Some(r) => cell(r.text.clone(), if r.ok { p.good() } else { p.bad() }),
+        None => cell("-", p.dim()),
+    };
+    let (top, nested): (Vec<&Account>, Vec<&Account>) = b.accounts.iter().partition(|a| !a.nested);
+    let rows = top
         .iter()
-        .filter_map(|a| {
-            let n = || cell(a.name.clone(), p.head());
-            let note = |text: &str, style| {
-                clip_line(
-                    Line::from(vec![
-                        Span::styled(a.name.clone(), p.head()),
-                        Span::raw("  "),
-                        Span::styled(text.to_string(), style),
-                    ]),
-                    w,
-                )
-            };
-            match a.state {
-                "unreadable" => notes.push(note("usage unreadable", p.bad())),
-                "stale" => notes.push(note(burn::STALE_NOTE, p.bad())),
-                "idle" => notes.push(note(burn::idle_note(&a.kind), p.dim())),
-                _ => {
-                    let pc = |v: Option<f64>| v.map_or("-".into(), |v| format!("{}%", v.floor()));
-                    let rate = |v: Option<f64>| v.map_or("-".into(), |v| format!("{v:.2}"));
-                    // A dollar budget has no pace line, so its pace cells say nothing.
-                    let paced = |s: String| if a.unpaced { "-".into() } else { s };
-                    return Some(vec![
-                        n(),
-                        a.kind.clone().into(),
-                        a.live.to_string().into(),
-                        a.used_text.clone().into(),
-                        pc(a.gone).into(),
-                        pc(a.reserve).into(),
-                        match &a.room {
-                            Some(r) => cell(r.text.clone(), if r.ok { p.good() } else { p.bad() }),
-                            None => cell("-", p.dim()),
-                        },
-                        cell(
-                            paced(rate(Some(a.burn))),
-                            if !a.unpaced && a.is_over() {
-                                p.warn()
-                            } else {
-                                Style::new()
-                            },
-                        ),
-                        paced(rate(a.sustain)).into(),
-                        paced(a.on_pace(a.burn_at, b.at, &time)).into(),
-                        paced(a.on_pace(a.idle_at, b.at, &time)).into(),
-                        a.run_out.map_or("-".into(), time).into(),
-                        a.resets.map_or("-".into(), time).into(),
-                        pc(a.five_hour).into(),
-                        a.five_hour_resets.map_or("-".into(), time).into(),
-                        costs::usd(a.cost_24h).into(),
-                        a.parent.clone().unwrap_or("-".into()).into(),
-                    ]);
-                }
-            }
-            None
+        .filter(has_figures)
+        .map(|a| {
+            let rate = |v: Option<f64>| v.map_or("-".into(), |v| format!("{v:.2}"));
+            // A dollar budget has no pace line, so its pace cells say nothing.
+            let paced = |s: String| if a.unpaced { "-".into() } else { s };
+            vec![
+                name(a),
+                a.kind.clone().into(),
+                a.live.to_string().into(),
+                usage(a),
+                a.used_text.clone().into(),
+                pc(a.gone).into(),
+                pc(a.reserve).into(),
+                room(a),
+                cell(
+                    paced(rate(Some(a.burn))),
+                    if !a.unpaced && a.is_over() {
+                        p.warn()
+                    } else {
+                        Style::new()
+                    },
+                ),
+                paced(rate(a.sustain)).into(),
+                paced(a.on_pace(a.burn_at, b.at, &time)).into(),
+                paced(a.on_pace(a.idle_at, b.at, &time)).into(),
+                a.run_out.map_or("-".into(), time).into(),
+                a.resets.map_or("-".into(), time).into(),
+                pc(a.five_hour).into(),
+                a.five_hour_resets.map_or("-".into(), time).into(),
+                costs::usd(a.cost_24h).into(),
+            ]
         })
         .collect::<Vec<_>>();
     out.extend(
@@ -423,6 +458,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
                 "SOURCE",
                 "KIND",
                 "LIVE",
+                "BAR",
                 "USED",
                 "GONE",
                 "RESERVE",
@@ -436,24 +472,63 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
                 "5H",
                 "5H RESETS",
                 "$24H",
-                "POOL",
             ],
             rows,
             // The 5h window and the day's dollars were Fleet's accounts table's; $24H goes first.
-            keep: vec![0, 6, 3, 1, 7, 8, 2, 13, 9, 10, 4, 5, 16, 11, 12, 14, 15],
-            right: vec![2, 3, 4, 5, 7, 8, 13, 15],
+            keep: vec![0, 7, 4, 1, 8, 9, 2, 14, 10, 11, 3, 5, 6, 12, 13, 15, 16],
+            right: vec![2, 4, 5, 6, 8, 9, 14, 16],
             ..Default::default()
         }
         .fit(w, p.head()),
     );
-    out.extend(notes);
-    out.push(clip_line(
-        Line::styled(
-            "BURN/H: last 6h rate per session. KEEPS/H: what the week can carry.",
-            p.dim(),
-        ),
-        w,
-    ));
+    out.extend(top.iter().filter_map(note));
+    if let Some(k) = &b.keys {
+        let open = keys_open(k, keys_set);
+        let head = if k.level == "ok" { p.dim() } else { p.warn() };
+        out.push(clip_line(
+            Line::from(vec![
+                dim(if open { "- KEYS  " } else { "+ KEYS  " }),
+                Span::styled(k.head.clone(), head),
+                dim("   K folds"),
+            ]),
+            w,
+        ));
+        if open {
+            let rows = nested
+                .iter()
+                .filter(has_figures)
+                .map(|a| {
+                    vec![
+                        name(a),
+                        a.live.to_string().into(),
+                        usage(a),
+                        a.used_text.clone().into(),
+                        pc(a.reserve).into(),
+                        room(a),
+                        a.resets.map_or("-".into(), time).into(),
+                        costs::usd(a.cost_24h).into(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            out.extend(
+                Table {
+                    header: vec![
+                        "SOURCE", "LIVE", "BAR", "USED", "RESERVE", "ROOM", "RESETS", "$24H",
+                    ],
+                    rows,
+                    keep: vec![0, 5, 3, 1, 6, 4, 7, 2],
+                    right: vec![1, 3, 4, 7],
+                    ..Default::default()
+                }
+                .fit(w, p.head()),
+            );
+            out.extend(nested.iter().filter_map(note));
+        }
+    }
+    let terms: Vec<String> = b.legend.iter().map(|(t, d)| format!("{t}: {d}.")).collect();
+    for l in crate::fit::wrap(&terms, " ", w) {
+        out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
     out.push(Line::raw(""));
     out
 }
@@ -537,7 +612,75 @@ fn sections(b: &Block, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// The window's spend from the outcomes rows, then what Prometheus says now.
+/// The whole fleet's 24h cost: `hub_core::fleet_cost` builds every row and word, this draws them.
+fn fleet(f: &FleetCost, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let title = Span::styled("FLEET COST 24H  ", p.head());
+    if let Some(why) = &f.why {
+        return vec![
+            clip_line(
+                Line::from(vec![title, Span::styled(why.clone(), p.warn())]),
+                w,
+            ),
+            Line::raw(""),
+        ];
+    }
+    let as_of = f.as_of.map_or("-".into(), |t| clock(t, now));
+    let (age, style) = if f.stale {
+        (format!("STALE, as of {as_of}"), p.warn())
+    } else {
+        (format!("as of {as_of}"), p.dim())
+    };
+    let mut out = vec![
+        clip_line(
+            Line::from(vec![
+                title,
+                Span::raw(format!("{}  ", f.usd)),
+                Span::styled(
+                    format!("measured {}  estimated {}  ", f.measured, f.estimated),
+                    p.dim(),
+                ),
+                Span::styled(age, style),
+            ]),
+            w,
+        ),
+        clip_line(Line::styled(f.coverage.clone(), p.dim()), w),
+    ];
+    for r in &f.rows {
+        out.push(clip_line(
+            Line::from(vec![
+                Span::raw(format!("  {:<19} {:>7} {:>4}  ", r.name, r.cost, r.share)),
+                Span::styled(r.basis.clone(), p.dim()),
+            ]),
+            w,
+        ));
+        if let Some(d) = &r.detail {
+            let items: Vec<&str> = d.split(", ").collect();
+            for l in wrap(&items, ", ", w.saturating_sub(4)) {
+                out.push(clip_line(Line::styled(format!("    {l}"), p.dim()), w));
+            }
+        }
+    }
+    for u in &f.unpriced {
+        let words: Vec<&str> = u.split(' ').collect();
+        for l in wrap(&words, " ", w.saturating_sub(2)) {
+            out.push(clip_line(Line::styled(format!("  {l}"), p.warn()), w));
+        }
+    }
+    if !f.days.is_empty() {
+        out.push(clip_line(
+            Line::styled(format!("last days  {}", f.days), p.dim()),
+            w,
+        ));
+    }
+    let foot: Vec<&str> = f.foot.split(' ').collect();
+    for l in wrap(&foot, " ", w) {
+        out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
+    out.push(Line::raw(""));
+    out
+}
+
+/// The window's spend from the outcomes rows.
 fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
     let mut s = vec![];
     for t in &b.totals {
@@ -550,8 +693,7 @@ fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
         s.push(Span::styled(label, style));
         s.push(Span::raw(format!("{}  ", costs::usd(Some(t.usd)))));
     }
-    s.push(Span::styled("LIVE 24H ", p.dim()));
-    s.push(Span::raw(format!("{}  ", costs::usd(b.live.claude_24h))));
+    s.push(Span::styled(b.totals_note, p.dim()));
     s
 }
 
@@ -765,19 +907,69 @@ mod tests {
         let mut age = series("", "textfile_age_seconds", 120.0);
         age.labels.remove("account");
         all.push(age);
+        // claude-acct's fleet sum of the three accounts
+        for (k, v) in [
+            ("live_sessions", 39.0),
+            ("burn_points_per_hour", 4.52),
+            ("sustain_points_per_hour", 1.37),
+            ("session_rate_points_per_hour", 0.116),
+        ] {
+            all.push(hub_core::prom::Series {
+                labels: [("__name__".to_string(), format!("claude_fleet_{k}"))].into(),
+                value: Some(v),
+                points: vec![],
+            });
+        }
         let drip = hub_core::burn::Drip {
             hour: 15,
             day: 349,
             held: Some("fleet-assess says HOLD".into()),
         };
         Costs {
-            burn: burn::build(&all, Some(0.116), drip, 1_000_000),
+            burn: burn::build(&all, drip, 1_000_000),
+            fleet_cost: fleet_block(),
             ..costs()
         }
     }
 
+    fn fleet_block() -> FleetCost {
+        let row = |name: &str, cost: &str, share: &str, basis: &str, detail: Option<&str>| {
+            hub_core::fleet_cost::Row {
+                name: name.into(),
+                usd: Some(1.0),
+                cost: cost.into(),
+                share: share.into(),
+                basis: basis.into(),
+                detail: detail.map(str::to_string),
+            }
+        };
+        FleetCost {
+            usd: "about $849".into(),
+            measured: "$310".into(),
+            estimated: "$538".into(),
+            as_of: Some(1_000_000),
+            coverage: "71% of tokens estimated: 280 of 458 sessions have no cost telemetry".into(),
+            rows: vec![
+                row("queue items", "$260", "31%", "30 sessions, $214 measured, $46 estimated", None),
+                row("shepherd", "$44", "5%", "61 sessions, measured", None),
+                row("dream", "$20", "2%", "22 sweeps, measured", None),
+                row(
+                    "other runners",
+                    "$30",
+                    "4%",
+                    "139 sessions, $12 measured, $18 estimated",
+                    Some("ask-judge $6.40, knowledge-engine $4.10, dispatch-judge $3.20, briefing $2.90, sentinel-diagnose $2.10, inbox-triage $1.80, $9.50 with no runner name"),
+                ),
+            ],
+            unpriced: vec!["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions".into()],
+            days: "11-07 $1,295  11-08 $738".into(),
+            foot: hub_core::fleet_cost::FOOT,
+            ..FleetCost::default()
+        }
+    }
+
     #[test]
-    fn the_burn_section_leads_and_fits_80_columns() {
+    fn the_fleet_figure_leads_then_the_burn_section_and_all_fits_80_columns() {
         let s = CostsView::default()
             .lines(&burning(), Palette::default(), 1_000_000, 80)
             .0
@@ -786,13 +978,30 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
-        let first = s.lines().next().unwrap();
         assert!(
-            first.starts_with("BURN  4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live"),
+            s.starts_with("FLEET COST 24H  about $849  measured $310  estimated $538  as of "),
+            "{s}"
+        );
+        assert!(
+            s.contains("  shepherd                $44   5%  61 sessions, measured\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("  dream                   $20   2%  22 sweeps, measured\n"),
+            "{s}"
+        );
+        assert!(
+            s.contains("sentinel-diagnose $2.10"),
+            "every runner is reachable: {s}"
+        );
+        assert!(s.contains("estimated\" is priced from tokens"), "{s}");
+        let burn = s.lines().find(|l| l.starts_with("BURN")).unwrap();
+        assert!(
+            burn.starts_with("BURN  4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live"),
             "{s}"
         );
         assert!(s.contains("DRIP  15 started in 1h, 349 in 24h"), "{s}");
-        assert!(s.contains("dispatch held -> 5 Sessions"), "{s}");
+        assert!(s.contains("dispatch held -> 4 Sessions"), "{s}");
         assert!(
             s.contains("BACK ON PACE  at this burn: not before the reset; if idle: all by"),
             "{s}"
@@ -805,6 +1014,33 @@ mod tests {
             s.find("BURN").unwrap() < s.find("window:").unwrap(),
             "burn is above the spend tiles"
         );
+        // a narrow pane wraps the headline between clauses instead of cutting its last one
+        let narrow = CostsView::default()
+            .lines(&burning(), Palette::default(), 1_000_000, 50)
+            .0
+            .iter()
+            .map(crate::fit::plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            narrow.contains("\n      39 live, carries ~11\n"),
+            "{narrow}"
+        );
+        // every term on the section is defined under it, wrapped to the width
+        for t in ["pts/h: ", "GONE: ", "AT BURN: ", "IF IDLE: ", "$24H: "] {
+            assert!(s.contains(t), "{t} undefined: {s}");
+        }
+        // and every term the legend defines, bar the headline's unit, is a column the table prints
+        let wide = CostsView::default()
+            .lines(&burning(), Palette::default(), 1_000_000, 400)
+            .0
+            .iter()
+            .map(crate::fit::plain)
+            .find(|l| l.trim_start().starts_with("SOURCE"))
+            .unwrap();
+        for (t, _) in burn::LEGEND.iter().filter(|(t, _)| *t != "pts/h") {
+            assert!(wide.contains(t), "{t} is not a column: {wide}");
+        }
     }
 
     #[test]
@@ -972,7 +1208,7 @@ mod tests {
     #[test]
     fn no_claude_acct_data_says_so_and_still_shows_the_spend() {
         let s = screen(&CostsView::default(), 80);
-        assert!(s.starts_with("BURN  no data from claude-acct"), "{s}");
+        assert!(s.contains("\nBURN  no data from claude-acct"), "{s}");
         assert!(s.contains("window:"), "{s}");
     }
 
@@ -1028,7 +1264,83 @@ mod tests {
     }
 
     #[test]
-    fn a_dollar_source_is_a_burn_row_with_its_kind_dollars_reserve_and_pool() {
+    fn the_keys_fold_under_their_pool_and_k_opens_them_in_80_columns() {
+        let mut all = vec![];
+        for (n, kind, used) in [
+            ("lazer", "litellm-team", 90.0),
+            ("glm", "litellm-key", 96.0),
+        ] {
+            for (k, v) in [("week_used_percent", used), ("paced", 0.0)] {
+                let mut s = series(n, k, v);
+                s.labels.insert("kind".into(), kind.into());
+                all.push(s);
+            }
+        }
+        let mut parent = series("glm", "parent", 1.0);
+        parent.labels.insert("kind".into(), "litellm-key".into());
+        parent.labels.insert("parent".into(), "lazer".into());
+        all.push(parent);
+        let mut age = series("", "textfile_age_seconds", 120.0);
+        age.labels.remove("account");
+        all.push(age);
+        let c = Costs {
+            burn: burn::build(&all, Default::default(), 1_000_000),
+            ..costs()
+        };
+        let screen = |v: &CostsView, w: usize| {
+            v.lines(&c, Palette::default(), 1_000_000, w)
+                .0
+                .iter()
+                .map(crate::fit::plain)
+                .collect::<Vec<_>>()
+        };
+        let mut v = CostsView::default();
+        let shut = screen(&v, 200);
+        assert!(
+            shut.iter().any(|l| l.starts_with("lazer")),
+            "the pool is a row: {shut:?}"
+        );
+        assert!(
+            !shut.iter().any(|l| l.starts_with("glm")),
+            "the key is not: {shut:?}"
+        );
+        assert!(
+            shut.iter()
+                .any(|l| l.starts_with("+ KEYS  1 in lazer, 0 live, tightest glm 96%")),
+            "{shut:?}"
+        );
+        assert_eq!(
+            v.fold(KeyCode::Char('K'), None, c.burn.keys.as_ref()),
+            Some(None),
+            "K works with no tokens snapshot"
+        );
+        let open = screen(&v, 200);
+        let row = open.iter().find(|l| l.starts_with("glm")).unwrap();
+        assert!(
+            row.contains("[##########]") && !row.contains('|'),
+            "a dollar budget has no tick: {row}"
+        );
+        assert!(open.iter().any(|l| l.starts_with("- KEYS")), "{open:?}");
+        assert!(
+            screen(&v, 80).iter().all(|l| l.chars().count() <= 80),
+            "the open fold fits"
+        );
+    }
+
+    #[test]
+    fn a_warn_fold_starts_open_and_k_still_folds_it() {
+        let k = Keys {
+            head: "1 in lazer".into(),
+            level: "warn",
+        };
+        assert!(keys_open(&k, None));
+        assert!(!keys_open(&k, Some(false)));
+        let quiet = Keys { level: "ok", ..k };
+        assert!(!keys_open(&quiet, None), "negative control");
+    }
+
+    #[test]
+    fn a_dollar_source_is_a_burn_row_with_its_kind_dollars_and_reserve() {
         let mut all = vec![];
         let mut kinded = |n: &str, kind: &str, k: &str, v: f64| {
             let mut s = series(n, k, v);
@@ -1061,7 +1373,7 @@ mod tests {
         age.labels.remove("account");
         all.push(age);
         let c = Costs {
-            burn: burn::build(&all, None, Default::default(), 1_000_000),
+            burn: burn::build(&all, Default::default(), 1_000_000),
             ..costs()
         };
         let wide = CostsView::default()
@@ -1071,18 +1383,17 @@ mod tests {
             .map(crate::fit::plain)
             .collect::<Vec<_>>();
         let head = wide.iter().find(|l| l.starts_with("SOURCE")).unwrap();
-        for col in ["KIND", "RESERVE", "POOL"] {
+        for col in ["KIND", "RESERVE", "BAR"] {
             assert!(head.contains(col), "{col} missing from {head}");
         }
+        assert!(!head.contains("POOL"), "nesting says it now: {head}");
         let row = wide.iter().find(|l| l.starts_with("reserve")).unwrap();
         assert!(
             row.contains("litellm-key") && row.contains("41% $41/$100"),
             "{row}"
         );
-        assert!(
-            row.contains("15%") && row.trim_end().ends_with("lazer"),
-            "{row}"
-        );
+        assert!(row.contains("15%"), "{row}");
+        assert!(row.contains("[#####.....]"), "41% rounds up: {row}");
         // negative control: a dollar budget has no pace line, so its 9 pts/h burn is not printed
         assert!(!row.contains("9.00") && !row.contains("on pace"), "{row}");
         let codex = wide.iter().find(|l| l.starts_with("codex")).unwrap();

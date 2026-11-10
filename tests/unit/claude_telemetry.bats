@@ -201,3 +201,42 @@ connectors_env() {
   run connectors_env 1 CLAUDE_CODE_ARTIFACT=1
   assert_output 'connectors=false artifact=1'
 }
+
+# The launch-line prefix for a claude started as a tmux pane command, from a pristine env.
+launch_env() {
+  printf '#!/bin/sh\nexit %s\n' "$1" > "$FAKEBIN/getent"
+  chmod +x "$FAKEBIN/getent"
+  env -i HOME="$HOME" PATH="$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin" bash -c ". '$SNIP' >/dev/null 2>&1; claude_launch_env"
+}
+
+@test "claude_launch_env carries every variable the file exports, on the LAN" {
+  # Its list is a second copy of the exports; this keeps the two from drifting.
+  run launch_env 0
+  assert_success
+  local v
+  for v in $(grep -oE '^ *export [A-Z_]+' "$SNIP" | awk '{ print $2 }'); do
+    # Written per launch below, and read by the launcher, not claude, in that order.
+    case $v in OTEL_RESOURCE_ATTRIBUTES | CLAUDE_AUTO_DROP_TOOLS) continue ;; esac
+    assert_output --partial " $v="
+  done
+  assert_output --partial 'OTEL_RESOURCE_ATTRIBUTES='
+}
+
+@test "claude_launch_env off the LAN carries no telemetry, and drops a parent Claude session's identity either way" {
+  run launch_env 1
+  assert_success
+  refute_output --partial 'OTEL_'
+  refute_output --partial 'CLAUDE_CODE_ENABLE_TELEMETRY'
+  assert_output --partial 'ENABLE_CLAUDEAI_MCP_SERVERS=false'
+  assert_output --partial '-u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ATTENDED'
+}
+
+@test "claude_launch_env's prefix runs a command with the parent's identity gone and the export set" {
+  printf '#!/bin/sh\nexit 0\n' > "$FAKEBIN/getent"
+  chmod +x "$FAKEBIN/getent"
+  run env CLAUDE_CODE_SESSION_ID=parent CLAUDE_CODE_CHILD_SESSION=1 bash -c "eval \"\$(env -i HOME='$HOME' PATH='$FAKEBIN:$TIMEOUT_DIR:/usr/bin:/bin' bash -c \". '$SNIP' >/dev/null 2>&1; claude_launch_env\") printenv\""
+  assert_success
+  refute_output --partial 'CLAUDE_CODE_SESSION_ID='
+  refute_output --partial 'CLAUDE_CODE_CHILD_SESSION='
+  assert_output --partial 'OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318'
+}

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# agentctl-skill-toggle - the nightly skill-usage toggle: land the skillOverrides that keep
+# agentctl-skill-toggle - the nightly skill-usage toggle: open a PR for the skillOverrides that keep
 # "name-only" on the skills used in 5 or fewer sessions in 30 days, listed again past 10
 # (skill-drift --overrides).
 #
-#   agentctl-skill-toggle [--dry-run]     agentctl: skill-toggle.conf; --dry-run prints the change, lands nothing
+#   agentctl-skill-toggle [--dry-run]     agentctl: skill-toggle.conf; --dry-run prints the change, opens nothing
 #
 # No model runs. `skill-drift --overrides` diffs origin/main's .claude/settings.json against
-# six-signal use; a change lands as a queue item, a worktree, one commit, a PR and agent-land,
-# because the file is tracked and stowed and an in-place write would dirty the main checkout.
+# six-signal use; a change is a queue item, a worktree, one commit and a PR, because the file is
+# tracked and stowed and an in-place write would dirty the main checkout. It stops at the PR: the
+# change is tier 3 (.config/fleet-dispatch/policy.md), and a runner with no model cannot write the
+# Review: line agent-land requires, so a session reviews and lands it and reap closes the item.
 # An earlier toggle PR still open stops the run, so one change waits for the human at a time.
-# Verdict: WORKED landed a change, NOOP none needed, BLOCKED an earlier PR is open, FAILED otherwise.
+# Verdict: NOOP none needed, BLOCKED a PR is open and waits for review, FAILED otherwise.
 set -uo pipefail
 # The user manager's PATH has no ~/.local/bin, where skill-drift, agent-queue and agent-land live.
 PATH="$HOME/.local/bin:$PATH"
@@ -53,7 +55,7 @@ if [ -z "$hide$restore" ]; then
 fi
 title="chore(skills): name-only at ${max} sessions or fewer in ${days} days, hide $nh, restore $nr"
 if [ "$DRY" = 1 ]; then
-    echo "skill-toggle: would land: $title: $summary"
+    echo "skill-toggle: would open a PR: $title: $summary"
     exit 0
 fi
 
@@ -77,7 +79,7 @@ git -C "$REPO" worktree add -q "$wt" -b "$branch" origin/main || fail "git workt
 made=1
 jq --argjson p "$plan" '.skillOverrides = $p.skillOverrides' "$wt/.claude/settings.json" > "$wt/.claude/settings.json.new" &&
     mv "$wt/.claude/settings.json.new" "$wt/.claude/settings.json" || fail "could not write $wt/.claude/settings.json"
-body="The nightly skill-usage toggle: skillOverrides keeps name-only on the skills used in ${max} or fewer sessions in ${days} days, and lists one again past $((max * 2)) (Skill calls, typed commands, skill bodies, SKILL.md reads, script runs, CLI runs; \`skill-drift --overrides\`). A skill another skill or a CLAUDE.md layer routes to is never hidden.
+body="The nightly skill-usage toggle: skillOverrides keeps name-only on the skills used in ${max} or fewer sessions in ${days} days, and lists one again past $((max * 2)) (Skill calls, typed commands, skill bodies, SKILL.md reads, script runs, CLI runs; \`skill-drift --overrides\`). A skill another skill, a global doc or a runner routes to is never hidden.
 
 - Hidden: ${hide:-none}
 - Listed again: ${restore:-none}
@@ -89,9 +91,8 @@ pushed=1
 url=$(cd "$wt" && gh pr create --base main --head "$branch" --title "$title" --body "$body") || fail "gh pr create failed for $branch"
 n="${url##*/}"
 repo=$(origin_repo "$wt") && agent-queue set "$slug" "pr=$repo#$n" >/dev/null ||
-    echo "agentctl-skill-toggle: PR #$n is not recorded on $slug; agent-land records it" >&2
-(cd "$wt" && agent-land "$n" --item "$slug") || fail "agent-land $n failed; PR #$n stays open with worktree $wt, and reap closes $slug when it merges ($summary)"
+    echo "agentctl-skill-toggle: PR #$n is not recorded on $slug; land it with --item $slug" >&2
 git -C "$REPO" worktree remove "$wt" && git -C "$REPO" branch -q -D "$branch" ||
-    echo "agentctl-skill-toggle: landed, but $wt was not removed" >&2
-report WORKED "landed #$n: $summary"
-echo "skill-toggle: landed #$n: $summary"
+    echo "agentctl-skill-toggle: PR #$n is open, but $wt was not removed" >&2
+report BLOCKED "PR #$n waits for review and merge: $summary"
+echo "skill-toggle: opened #$n for review: $summary"

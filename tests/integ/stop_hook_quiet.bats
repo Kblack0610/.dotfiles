@@ -183,7 +183,7 @@ stderr() { cat "$ERRF"; }
   run_hook
   assert_equal "$STATUS" 0
   assert_equal "$(stderr)" ""
-  run cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"
+  run cat "$HOME"/.cache/claude-stop-hook/ci-result-alpha-*.txt  # any date: a run across midnight wrote yesterday's
   assert_output --partial "note=no executable checks"
 }
 
@@ -191,7 +191,7 @@ stderr() { cat "$ERRF"; }
   dirty
   check green 0
   run_hook
-  run cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"
+  run cat "$HOME"/.cache/claude-stop-hook/ci-result-alpha-*.txt
   assert_output --partial "status=PASS"
   assert_output --partial "note=all checks passed"
 }
@@ -208,7 +208,7 @@ stderr() { cat "$ERRF"; }
   run stderr
   assert_output ""
   refute_output --partial "green"
-  run cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"
+  run cat "$HOME"/.cache/claude-stop-hook/ci-result-alpha-*.txt
   assert_output --partial "note=hang=timeout"
   assert_output --partial "status=SKIPPED"
   [ -z "$(find "$HOME/.cache/claude-stop-hook" -name 'pass-fp-*' -print)" ]
@@ -269,13 +269,13 @@ run_session() {
   cp "$REPO_ROOT/.claude/hooks/stop-post.d/95-wind-down.sh" "$HOOK_DIR/stop-post.d/"
   echo 'target=%1' > "$spin/alpha__old.request"
   touch -d '2 days ago' "$spin/alpha__old.request"
-  echo 'target=%2' > "$spin/alpha__aaa.request"
+  echo 'target=%2' > "$spin/aaa.request"
   dirty
   check red 2
   run_session aaa
   [ ! -e "$spin/alpha__old.request" ]
   # Its own checks failed, so the request waits for a clean Stop.
-  [ -e "$spin/alpha__aaa.request" ]
+  [ -e "$spin/aaa.request" ]
   run stderr
   assert_output --partial "wind-down deferred"
 }
@@ -293,7 +293,7 @@ counted() {
   chmod +x "$f"
 }
 runs() { wc -l < "$SANDBOX/$1.runs" 2>/dev/null | tr -d ' ' || echo 0; }
-ci_result() { cat "$HOME/.cache/claude-stop-hook/ci-result-alpha-$(date +%Y-%m-%d).txt"; }
+ci_result() { cat "$HOME"/.cache/claude-stop-hook/ci-result-alpha-*.txt; }
 
 @test "a dirty tree unchanged since a passing run skips the checks on the next Stop" {
   dirty

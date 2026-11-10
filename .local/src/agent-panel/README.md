@@ -3,7 +3,8 @@
 A cross-platform tmux chooser for running Claude / AI agents. Lists every tmux
 window running an agent, grouped by project, with a live status glyph and a
 preview pane — pick one with fzf and jump to it. A magenta `P` after the glyph
-marks an agent in plan mode, read from the transcript's latest `permissionMode`.
+marks an agent in plan mode, read from the transcript's latest `permissionMode`;
+a bold white `M` in the same column marks manual (`default`) mode, which `manual-mode-investigate.sh` makes investigate-only, so that tab answers and does no work on its own. The preview's status line says `plan mode` or `manual mode` the same way.
 A blue `A` beside it marks an agent with a pending ask: a file under
 `~/.agent/asks/<project>/` (or `$AGENT_ASK_DIR`) with `status: pending` whose
 `claude_session` is this agent's session id. That is the same rule as `asks_for` in
@@ -37,18 +38,19 @@ Bound in `~/.tmux.conf`:
   prompt (`!`) or holding a pending ask (`A`)
 - `Prefix + y` - the questions panel: every pending question, its card, answered in place (`.local/src/tmux/questions.sh`)
 
-The chooser preview shows the same card under `needs you`.
+The chooser's status line says `needs you` (amber) for a session with a pending ask; its card is in Prefix+y.
 
 In the chooser:
 
 - The shepherd sits in its own `shepherd` group above every project: the agent in the shepherd's window (`FLEET_SHEPHERD_SESSION`:`FLEET_SHEPHERD_WINDOW`, default `hub:shepherd`, where every pass runs), or any agent holding the live shepherd lease. A pass idle past its lease stays pinned.
 - `C-y` lists only the sessions waiting on you (a pending ask or a prompt), and again lists every session; the prompt reads `Asking only >` while it is on, and the label keys keep the view.
 - `C-s` goes to the shepherd pass running now, through `fleet-shepherd open` (the same as `Prefix o`).
-- Each row shows how long the session has been open (`45m`, ` 3h`, ` 2d`: since its claude process started, so a resume restarts it; blank on a parked row) before its target. Typing filters on everything a row shows.
+- Each row shows how long the session has been open (`45m`, ` 3h`, ` 2d`: since its claude process started, so a resume restarts it; blank on a parked row) before its target.
+- Typing finds a session by what it has been about, not only its row: every typed word must appear in the row, the project, or the session's past titles, first and last prompt, branch and touched files from the sessions index (`~/.agent/sessions/index.tsv`, the one Prefix+R searches), case-insensitive. A word that names a topic in `~/.config/agent-panel/topics.conf` also matches that topic's words, so `audio` finds the session that only said `music`. The panel matches (`src/search.rs`), not fzf, so there is no fuzzy match and fzf's `!`, `^` and `$` operators do not apply. `A-n` jumps to the next agent needing attention (a bare key would not type into the search). Opening the panel refreshes the index in the background, so titles from since the last open are searchable on the next one.
 - `C-o` steps the sort: by project (grouped, the default), longest open first, needs you first, stalled first. Any sort but project is one flat list, each target led by its project. `A-o` reverses the sort. The panel reopens in the sort it was left in, saved in `${XDG_STATE_HOME:-~/.local/state}/panels/agent-panel.sort` (`src/sort.rs`).
 - The list is on top at full width and the preview below it. `C-/` steps stacked -> side by side -> hidden -> stacked, and the panel reopens in the layout `C-/` last left it in, hidden included. The layout is `panel_fzf_layout` in `../tmux/panel-lib.sh`, shared with every other panel: agent-panel runs `~/.local/src/tmux/panel-layout.sh args agent-panel` for its fzf arguments, and `tests/shared_layout.rs` checks they reach fzf as printed.
 - The preview scrolls on the keys every panel shares, from that same layout: `C-d`/`C-u` half a page, `PgDn`/`PgUp` a page, and fzf's own `S-Down`/`S-Up` and the mouse wheel.
-- The preview reads summary first (`render::preview`), each part under a bold title and a dim rule: one status line (target, worktree, status, plan mode, how long open, account) and the pane title; `needs you` (amber, the only colour) with the same card the questions panel shows, the ask's (`agent-ask card`) and the open plan or question dialog's (`agent-panel dialog`); the last tool call on one line; the last message in full as plain text (`agent-panel plain`); last the bottom 8 pane lines above Claude Code's input box and status bar, for a permission prompt or a live spinner. When a dialog card shows, the pane part is left out: it is the same dialog. Changed 2026-11-07 (ar-690, ar-691): the `question` title is now `needs you` and also carries an open dialog; the last tool moved above the last message; the pane tail went from 12 lines with colour and chrome to 8 plain lines without them.
+- The preview is the session's own pane (`render::preview`): one status line pinned at the top (amber `needs you` when it holds a pending ask or waits at a prompt or dialog, then target, worktree, status, plan mode, how long open, account and the pane title, cut to one row), then the pane in colour with 2000 lines of scrollback, opened at the bottom (`follow`) and wrapped at words; those flags are `panel_preview_extra agent-panel` in `../tmux/panel-lib.sh`, so every `C-/` step keeps them. `render::clean_pane` cuts Claude Code's input box and status bar (only at the pane's foot, never under an open prompt), trims trailing spaces, folds blank runs to one line and shortens full-width rules to the preview's width. Lines Claude Code wrapped at its own pane's width stay broken where it broke them. Changed 2026-11-09: the summary preview (ask and dialog cards, last tool, last message, an 8-line plain tail; 2026-11-07, ar-690/ar-691) went back to the whole pane; the summary of an ask is the questions panel's job.
 
 ## Why a binary (replacing the old bash scripts)
 
@@ -76,6 +78,7 @@ string rather than `claude` (observed on macOS).
 | `agent-panel next` | Jump to the next agent that needs you: `!` (a dialog or prompt open, a plan to approve included) or `A`. Plan mode alone waits on nothing, as `fleet-sessions` reads it. With none, says `no session needs you` and stays put |
 | `agent-panel asks-human <transcript>` | Exit 0 when the transcript's last word asks the human something, else 1 (the Stop check `88-ask-filed.sh`) |
 | `agent-panel list` | One TSV row per agent: `target glyph project summary`. Exit 3, after the rows it could read, when the read had a gap (a live tmux server's `list-panes`, `ps`, or a live claude's session file failed; each named on stderr): the list may miss a live session, so a caller must not read a missing session as gone |
+| `agent-panel list --needs` | The same with a fifth column, `1` when the agent needs the human now (a dialog or a pending ask), else `0`: what the tmux status line counts |
 | `agent-panel list --json` | One JSON object per agent: target, pane, status, cwd, session_id, plan_mode, idle_since (the newest transcript entry timestamp, the file mtime only when none has one), context_tokens, model, plan_file (its plan-mode `planFilePath`, else the plan it last wrote by Write, Edit or a shell redirect, `tee`, `sed -i` or `agent-land --plan` into `~/.claude*/plans`, else one its prompt named before its first reply; a plan it only read or quoted is not its plan), edited_files (paths changed through Edit, Write, MultiEdit, NotebookEdit) (read by `fleet-sessions`), and what an action needs: server, tmux_session, window_id, pid, account (claude-acct's name for the claude's `CLAUDE_CONFIG_DIR`), attached, parked, plan (the plan slug), ask (the pending ask id or null). `--parked` adds a row per `claude-acct park` ledger whose session has no live claude, and puts the attached sessions first |
 | `agent-panel jump <target>` | Jump to a `list` target (same-server switch or cross-server hop) |
 | `agent-panel said <transcript> --around <ask id>` | JSON `{first, prompt, said}` for the turn whose tool result printed the ask id on its own line: the session's first typed prompt, the prompt that turn answered, and its own text blocks, oldest first. Exit 1 when no turn printed the id. The question card's story (`agent-ask card`) |
@@ -100,10 +103,10 @@ which owns the detach-and-attach hop.
 - `procmap.rs` — `ps`-based process table + pane→Claude pid mapping (the `/proc` replacement)
 - `tmux.rs` — `tmux` CLI wrappers per server (list-panes, capture-pane, jump)
 - `session.rs` — read `~/.claude/sessions/<pid>.json`; status glyph; at-the-prompt test; JSONL path
-- `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, the last message for the preview
+- `jsonl.rs` — tail the transcript; row summary, plan mode, a closing question, an open plan for the dialog card
 - `dialog.rs` - read an open plan or question dialog off a pane capture, and answer it with keys
 - `asks.rs` — which Claude sessions own a pending ask (`agent-ask`)
-- `render.rs` — project grouping, ANSI fzf rows, preview formatting
+- `render.rs` — project grouping, ANSI fzf rows, the preview's status line and pane cleaning
 - `md.rs` - markdown to plain text at a width (`agent-panel plain`)
 - `sort.rs` - the sort keys, their order and the saved sort
 - `fzf.rs` — spawn fzf with the rows + preview/next callbacks, and the shared preview layout from `panel-layout.sh`

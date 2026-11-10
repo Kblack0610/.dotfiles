@@ -24,6 +24,9 @@ setup() {
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
   export BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
+  export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
+  export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json"   # nor the real estimator
+  export BENCH_RELEASES_CMD=false BENCH_RELEASED_CMD=false   # nor the real release-state: request_to_live_h reads ?
   # nor the real roadmaps, the whole queue or the real plans (fleet-bench epics)
   export BENCH_ROADMAP_CMD=false BENCH_ALL_ITEMS_CMD=true BENCH_PLAN_DIRS="$SANDBOX/no-plans"
   SNAP="$SANDBOX/snap.jsonl"
@@ -215,6 +218,7 @@ agent_bench_improve{state="unproven"} 0
 # TYPE agent_chain_wip gauge
 agent_chain_wip{step="queued"} 0
 agent_chain_wip{step="running"} 0
+agent_chain_wip{step="review"} 0
 agent_chain_wip{step="waiting"} 0
 # HELP agent_chain_age_minutes Minutes the items at each step have sat there, p50 and p90.
 # TYPE agent_chain_age_minutes gauge
@@ -235,6 +239,44 @@ PROM
   run sample_at 0
   assert_success
   [ ! -e "$PROM_TEXTFILE_DIR" ]
+}
+
+@test "sample writes the fleet estimate, skips it inside its interval, and a failed run keeps the last one" {
+  brow a lab/game-agent-1:1 WORKING > "$SNAP"
+  BENCH_FLEET_COST_CMD="echo {\"total\":{\"usd\":1}}" run sample_at 0
+  assert_success
+  run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
+  assert_output 1
+  BENCH_FLEET_COST_CMD="echo {\"total\":{\"usd\":2}}" sample_at 600
+  run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
+  assert_output 1
+  touch -d '1 hour ago' "$BENCH_FLEET_COST_FILE"
+  run sample_at 1200   # BENCH_FLEET_COST_CMD=false from setup
+  assert_success
+  assert_output --partial 'fleet-cost: the estimate failed; the last one stays'
+  run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
+  assert_output 1
+  run compgen -G "$BENCH_FLEET_COST_FILE.*tmp"
+  assert_failure
+  # the failure waits its interval too, so an outage is one attempt per interval
+  BENCH_FLEET_COST_CMD="echo {\"total\":{\"usd\":3}}" sample_at 1500
+  run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
+  assert_output 1
+  touch -d '1 hour ago' "$BENCH_FLEET_COST_FILE"
+  BENCH_FLEET_COST_CMD="echo {\"total\":{\"usd\":2}}" sample_at 1800
+  run jq -c .total.usd "$BENCH_FLEET_COST_FILE"
+  assert_output 2
+}
+
+@test "chain: estimated_token_share reads the estimate, and an estimate that stopped reads as unknown" {
+  kpi_setup
+  t=$(date +%s)
+  jq -cn --argjson e "$t" '{as_of_epoch: $e, coverage: {estimated_token_share: 0.7}}' > "$BENCH_FLEET_COST_FILE"
+  BENCH_NOW=$t run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '.estimated_token_share["7d"]' <<<"$output")" 0.7
+  jq -cn --argjson e "$((t - 7300))" '{as_of_epoch: $e, coverage: {estimated_token_share: 0.7}}' > "$BENCH_FLEET_COST_FILE"
+  BENCH_NOW=$t run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '.estimated_token_share["7d"]' <<<"$output")" null
 }
 
 @test "ETA comes from the session's own measured phases once two phase starts were sampled" {
@@ -1121,6 +1163,9 @@ case "$4" in
        printf -- '- [ ] %s <!-- id:ar-9%s -->\n' "$5" "$(wc -l < "$B")" ;;
   edit) [ "$6" = --text ] || exit 8
         awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+  done) [ "$6" = --proof ] || exit 8
+        [ ! -e "$B.done-fails" ] || exit 1
+        awk -F'\t' -v q="$5" 'index($3, q) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
 esac
 NS
   chmod +x "$SANDBOX/bin/notes"
@@ -1506,7 +1551,8 @@ watch() {
   assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
   assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
   assert_equal "$(grep -c . <<<"$output")" 4
-  [ ! -s "$NLOG" ]
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
   run "$SUBJECT" triage
   assert_success
   run grep -c 'fix(runner): alpha is\|fix(runner): beta is\|fix(unit): app-picom\|check(watch): spend' "$BOARD"
@@ -1522,15 +1568,150 @@ watch() {
   assert_output NOOP
 }
 
-@test "triage: nothing at fault is a NOOP that never reads the board" {
+@test "triage: nothing at fault is a NOOP that writes nothing to the board" {
   triage_setup
   watch drift OK -90000 normal
   run "$SUBJECT" triage
   assert_success
   assert_output --partial 'no runner, unit, watch or log error at fault'
-  [ ! -s "$NLOG" ]
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
   run "$SUBJECT" triage --bogus
   assert_failure 2
+}
+
+# board_row <state> <text>: an open row on the agent board, as `notes ptask --agent list` prints it
+board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOARD"; }
+
+@test "triage: a recovered watch or hold row closes with a run proof; dry run names it and writes nothing" {
+  triage_setup
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  board_row ' ' 'fix(hold): liveness-179 went red after cleanup merges nc-76 (pr 1 at abc)'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: check(watch): drift tripped since'
+  assert_line 'retire: fix(hold): liveness-179 went red'
+  run grep -vc -- '--agent list' "$NLOG"
+  assert_output 0
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'tripped since\|went red' "$BOARD"
+  assert_output 0
+  run grep -c -- '--agent done .* --proof run:fleet-bench-triage-' "$NLOG"
+  assert_output 2
+  run outcome
+  assert_output WORKED
+}
+
+@test "triage: a tripped watch keeps its row whatever its age, a started row is left, other rows are not touched" {
+  triage_setup
+  watch spend TRIP -600 normal      # inside the flap window: no new row, but still red
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): spend tripped since 2026-11-01, expected: spend is healthy.'
+  board_row '/' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  board_row ' ' 'check(watch): re-run the runner-score probe now the judge is typed'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c -- '--agent done' "$NLOG"
+  assert_output 0
+  run grep -c 'check(watch)' "$BOARD"
+  assert_output 3
+}
+
+@test "triage: a queue that cannot be read closes no row: unknown is not recovered" {
+  triage_setup
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  export TRIAGE_ITEMS_CMD=false
+  : > "$NLOG"
+  run "$SUBJECT" triage
+  run grep -c -- '--agent done' "$NLOG"
+  assert_output 0
+  run grep -c 'check(watch): drift' "$BOARD"
+  assert_output 1
+}
+
+@test "triage: a watch at ERROR keeps its row: a probe that could not run is not a recovery" {
+  triage_setup
+  watch drift ERROR -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  run "$SUBJECT" triage
+  run grep -c -- '--agent done' "$NLOG"
+  assert_output 0
+}
+
+@test "triage: a row in no shape triage writes stays open, however close its words" {
+  triage_setup
+  watch drift OK -90000 normal
+  board_row ' ' 'check(watch): drift went red again after the deploy, look at the logs'
+  board_row ' ' 'fix(hold): drift tripped since yesterday'
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'retire:'
+}
+
+@test "triage: a row that will not close is said, and new reds are still filed" {
+  triage_setup
+  watch drift OK -90000 normal
+  watch spend TRIP -90000 normal
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  touch "$BOARD.done-fails"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'retire: could not close check(watch): drift tripped since'
+  run grep -c 'check(watch): spend' "$BOARD"
+  assert_output 1
+}
+
+@test "triage: a dry run with an unreadable board records no outcome" {
+  triage_setup
+  BENCH_NOTES_CMD=false run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'agent board unreadable'
+  run outcome
+  refute_output FAILED
+}
+
+@test "triage: a ci hold row closes only while its merge is still in the window hold_reds reads" {
+  hold_setup
+  cleanup kept -3600 5 aaa11111 .local/bin/tool
+  ci 1 success aaa11111 -3000
+  board_row ' ' 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge kept (PR 5 at aaa11111): shell tests red'
+  board_row ' ' 'fix(hold): ci-bbb22222-shell-tests went red after cleanup merge expired (PR 6 at bbb22222): shell tests red'
+  run "$SUBJECT" triage --dry-run
+  assert_line 'retire: fix(hold): ci-aaa11111-shell-tests went red'
+  refute_line 'retire: fix(hold): ci-bbb22222-shell-tests went red'
+}
+
+@test "triage: a repo that cannot be read keeps every hold row and still retires watch rows" {
+  hold_setup
+  watch drift OK -90000 normal
+  cleanup kept -3600 5 aaa11111 .local/bin/tool
+  ci 1 success aaa11111 -3000
+  board_row ' ' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy.'
+  board_row ' ' 'fix(hold): liveness-179 went red after cleanup merges kept (pr 5 at aaa11111)'
+  for state in unsynced down; do
+    touch "$GHD/$state"
+    run "$SUBJECT" triage --dry-run
+    assert_line 'retire: check(watch): drift tripped since'
+    refute_line 'retire: fix(hold): liveness-179 went red'
+    rm "$GHD/$state"
+  done
+  run "$SUBJECT" triage --dry-run
+  assert_line 'retire: fix(hold): liveness-179 went red'
+}
+
+@test "triage: a red whose failed log cannot be read keeps every hold row" {
+  hold_setup
+  cleanup before -7200 5 aaa11111 .local/bin/tool
+  cleanup inrange -3600 6 bbb22222 .local/bin/other
+  ci 1 success aaa11111 -7201; ci 2 failure bbb22222 -3601
+  board_row ' ' 'fix(hold): ci-ccc33333-shell-tests went red after cleanup merge inrange (PR 6 at ccc33333): shell tests red'
+  run "$SUBJECT" triage --dry-run
+  refute_line 'retire: fix(hold): ci-ccc33333-shell-tests went red'
+  echo 'lint failed' > "$GHD/log.2"
+  run "$SUBJECT" triage --dry-run
+  assert_line 'retire: fix(hold): ci-ccc33333-shell-tests went red'
 }
 
 @test "kpi: failed_unexplained counts the last 24h of failures with no reason, not reasoned or older ones" {
@@ -2005,6 +2186,7 @@ hold_setup() {
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
   cat >> "$SCHEDULES_SYNC" <<'SS'
 [ -e "$D/down" ] && exit 1
+[ -e "$D/unsynced" ] && exit 3
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
 jq -c 'map({id, event, workflow: .name, path: "shell.yml", status, conclusion, sha: .head_sha, created_at})' "$D/runs"
 SS
@@ -2038,6 +2220,19 @@ cleanup() {
 failed() {
   local id=$1 f; shift
   for f; do printf 'fast tier\tFast tier\t2026-11-06T17:49:03Z #  in test file %s, line 60)\n' "$f"; done > "$GHD/log.$id"
+}
+
+@test "hold: a repo day-log-ci lists on Forgejo with another base is read under that name and base" {
+  hold_setup
+  export SCHEDULES_REPOS="$SANDBOX/day-log-ci"
+  printf '# watched\nforgejo:git.example.test/O/R master\n' > "$SCHEDULES_REPOS"
+  sed -i 's|\[ "$1 $3 $4" = "runs --branch main" \]|[ "$1 $2 $3 $4" = "runs forgejo:o/r --branch master" ]|' "$SCHEDULES_SYNC"
+  cleanup hit -7200 5 aaa11111 .local/bin/tool
+  ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'is not in the run ledger'
+  assert_output --partial 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge hit'
 }
 
 @test "hold: main going red on a merge's area test names that merge, and only that one" {
@@ -2395,7 +2590,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   run grep -c '^| output | merged_prs ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output 1
   source "$SUBJECT"
-  BENCH_VITALS='q1=revert_rate q2=sessions,nope' run bench_prom "$T0"
+  BENCH_VITALS='q1=revert_rate q2=sessions,nope' run bench_prom "$T0" '{"steps": []}'
   assert_line 'agent_bench_vital{question="q1",kpi="revert_rate"} 0'
   assert_line 'agent_bench_vital{question="q2",kpi="sessions"} 1'
   assert_line 'agent_bench_vital{question="q2",kpi="nope"} 2'
@@ -2435,7 +2630,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
 }
 
 # chain_fixture: a work chain where every link holds. Two PRs merged this week, each named by an
-# item (one repo-qualified, one bare); every started agent row has an active item; the one done
+# item (the owner's case differs on one); every started agent row has an active item; the one done
 # item's row is closed; the running item has a session; the one agent row in a project with an
 # open epic is filed under it, and that epic still has an open leaf; the doctor passed.
 chain_fixture() {
@@ -2450,7 +2645,7 @@ chain_fixture() {
   export BENCH_ADMISSION_CMD="echo {\"held_7d\":0}"
   items_stub "$(item run running high board:game:g-1 '{"session":"lab:game-agent-1","pr":"o/r#7"}')"
   DONE="$SANDBOX/done.jsonl"
-  item fin done high board:game:g-2 '{"pr":"9","merged":"abc123"}' > "$DONE"
+  item fin done high board:game:g-2 '{"pr":"o/other#9","merged":"abc123"}' > "$DONE"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ncat "%s"\n' "$DONE" "$DONE" > "$SANDBOX/bin/done-stub"
   BJSON="$SANDBOX/board.json" PJSON="$SANDBOX/projects.json"
   jq -cn '{rows: [{project: "game", lane: "agent", state: "doing", id: "g-1", type: "fix", tags: ["of/g-0"]},
@@ -2479,11 +2674,12 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
-  assert_output "$(printf -- '--since %s\n' "$(date -d "@$((T0 - 8 * 86400))" +%F)" "$(date -d "@$((T0 - 86400))" +%F)")"
+  # and request_to_live_h reads BENCH_LEAD_DAYS (28) back, so a merge released this week counts
+  assert_output "$(printf -- '--since %s\n' "$(date -d "@$((T0 - 28 * 86400))" +%F)" "$(date -d "@$((T0 - 8 * 86400))" +%F)" "$(date -d "@$((T0 - 86400))" +%F)")"
 }
 
 @test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {
@@ -2496,6 +2692,9 @@ chain_fixture() {
   ci_row '{repo: "o/r", number: 8, session_id: "h1", merged_epoch: ($t - 3600), ci_red: 0}'
   check "$(printf '%s\n' 'ledger_coverage 0.667 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
   sed -i '$d' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  # a bare number names no repo, so it credits nothing
+  sed -i 's|o/other#9|9|' "$DONE"
+  check "$(printf '%s\n' 'ledger_coverage 0.5 (min 0.95)' 'untracked_merged_prs 1 (max 0)')"
   # a started row no active item names
   jq -c '.rows += [{project: "game", lane: "agent", state: "doing", id: "g-5", type: "fix", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
   check 'board_orphan_started 1 (max 0)'
@@ -2520,6 +2719,69 @@ chain_fixture() {
   # the doctor failed a check
   printf 'PASS  map is valid JSON\nFAIL  line 4: an epic belongs on the human sheet\n' > "$BENCH_DOCTOR_LAST"
   check 'doctor_fail 1 (max 0)'
+}
+
+# lead_fixture: on the clean chain, five items the human asked for and two that do not count. game
+# has no release-state row, so its merge is live: 48h and 12h. web has one, so live is the first
+# tag holding the merge: c went out in a tag 2 days ago, 192h after its request; d is in no tag
+# yet; the checkout lacks e. Outside the count: a merge 9 days ago, a shepherd item, an unmerged one.
+lead_fixture() {
+  chain_fixture
+  iso() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
+  lead() { jq -cn --arg s "$1" --arg p "$2" --arg f "$3" --arg q "$(iso "$4")" --arg d "$(iso "$5")" --arg m "$6" \
+    '{slug: $s, state: "done", priority: "high", from: $f, project: $p, queued: $q, finished: $d} + (if $m == "" then {} else {merged: $m} end)'; }
+  {
+    lead a game human 259200 86400 aaa1111
+    lead b game human 172800 129600 bbb2222
+    lead c web human 864000 777600 ccc3333
+    lead d web human 172800 86400 ddd4444
+    lead e web human 172800 86400 eee5555
+    lead old game human 1036800 777600 fff6666
+    lead bot game shepherd 172800 86400 abc7777
+    lead open game human 172800 86400 ''
+  } >> "$DONE"
+  export BENCH_RELEASES_CMD=releases-stub BENCH_RELEASED_CMD=released-stub
+  printf '#!/usr/bin/env bash\necho %s\n' "'{\"rows\":[{\"project\":\"web\"},{\"project\":\"web\"}]}'" > "$SANDBOX/bin/releases-stub"
+  jq -cn --argjson t "$T0" '{sha: "ccc3333", tag: "web-v1.1.0", at: ($t - 172800)}, {sha: "ddd4444", tag: null, at: null},
+    {sha: "eee5555", tag: null, at: null, error: "commit not in the checkout"}' > "$SANDBOX/released.jsonl"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s.calls"\ncat "%s"\n' "$SANDBOX/released" "$SANDBOX/released.jsonl" > "$SANDBOX/bin/released-stub"
+  chmod +x "$SANDBOX/bin/releases-stub" "$SANDBOX/bin/released-stub"
+}
+
+@test "chain: request_to_live_h is the p50 hours from request to live, the merge with no release row, else the first tag" {
+  lead_fixture
+  run "$SUBJECT" chain --json
+  assert_success
+  assert_equal "$(jq -c '.request_to_live_h | [.["7d"], .now]' <<<"$output")" '[48,true]'
+  # only a project with a release row asks release-state, once, with every merged commit
+  run cat "$SANDBOX/released.calls"
+  assert_output 'web ccc3333 ddd4444 eee5555'
+  run "$SUBJECT" chain
+  assert_line 'request_to_live_h: p50 48h over 3 live in 7d (2 on merge, 1 in a tag); of those merged in 28d, 1 in no tag yet, 1 unknown'
+}
+
+@test "chain: request_to_live_h reads ? while a trust KPI is under its bound, and its note says which" {
+  # NEGATIVE CONTROL: the same fixture with the gate off reads 48, so the ? below is the gate
+  lead_fixture
+  ci_row '{repo: "o/r", number: 8, session_id: "h1", merged_epoch: ($t - 3600), ci_red: 0}'
+  BENCH_LEAD_TRUST= run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '.request_to_live_h["7d"]' <<<"$output")" 48
+  run "$SUBJECT" chain --json
+  assert_success
+  assert_equal "$(jq -c '.request_to_live_h["7d"]' <<<"$output")" null
+  run "$SUBJECT" chain
+  assert_line 'request_to_live_h: p50 48h over 3 live in 7d (2 on merge, 1 in a tag); of those merged in 28d, 1 in no tag yet, 1 unknown; reads ? until ledger_coverage 0.667 (min 0.95)'
+  # a trust KPI with no bound is not trusted either
+  sed -i '/^epic_linked_share_min=/d' "$KPI_THRESHOLDS"
+  sed -i '$d' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  run "$SUBJECT" chain
+  assert_line --partial '; reads ? until epic_linked_share 1 (no min)'
+  # the release snapshot unreadable: ? with the gate open, and the note says so
+  export BENCH_RELEASES_CMD=false BENCH_LEAD_TRUST=
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -c '.request_to_live_h["7d"]' <<<"$output")" null
+  run "$SUBJECT" chain
+  assert_line 'request_to_live_h: the done items or the release-state snapshot unreadable'
 }
 
 @test "chain: dup_pairs reads the newest nightly dups.json against dup_pairs_max; no snapshot reads ?" {
@@ -2585,7 +2847,7 @@ chain_fixture() {
 
 # pipeline_fixture: one item at each queue step, one open agent row waiting and one the queued item
 # started, three inbox lines, two items finished (one inside 24h), and a record that holds each
-# item where the queue folders do. Ages: queued 2h, running 1h, waiting 10m, the row 3 days and 4h.
+# item where the queue folders do. Ages: queued 2h, running 1h, on a PR 30m, waiting 10m, the row 3 days and 4h.
 pipeline_fixture() {
   kpi_setup
   at() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
@@ -2595,7 +2857,8 @@ pipeline_fixture() {
   Q=$(item q1 queued high board:game:g-2 "{\"queued\":\"$(at 7200)\"}")
   R=$(item r1 running high human "{\"queued\":\"$(at 10000)\",\"started\":\"$(at 3600)\"}")
   W=$(item w1 waiting high human "{\"queued\":\"$(at 20000)\",\"started\":\"$(at 9000)\",\"waiting\":\"$(at 600)\"}")
-  items_stub "$Q" "$R" "$W"
+  V=$(item v1 review high human "{\"queued\":\"$(at 30000)\",\"started\":\"$(at 20000)\",\"review\":\"$(at 1800)\"}")
+  items_stub "$Q" "$R" "$V" "$W"
   DONE="$SANDBOX/done.jsonl" BJSON="$SANDBOX/board.json" RJSON="$SANDBOX/steps.json"
   { item d1 done high human "{\"finished\":\"$(at 1800)\"}"; item d0 done high human "{\"finished\":\"$(at 90000)\"}"; } > "$DONE"
   jq -cn --arg d "$(date -u -d "@$((T0 - 3 * 86400))" +%F)" '{rows: [
@@ -2608,6 +2871,7 @@ pipeline_fixture() {
     {step: "backlog", in_1h: 0, out_1h: 1, in_24h: 3, out_24h: 1, items: []},
     {step: "queued", in_1h: 1, out_1h: 0, in_24h: 2, out_24h: 1, dwell_p50_min: 16, dwell_p90_min: 20, items: ["q1"]},
     {step: "running", in_1h: 1, out_1h: 1, in_24h: 2, out_24h: 1, items: ["r1"]},
+    {step: "review", in_1h: 1, out_1h: 0, in_24h: 1, out_24h: 0, items: ["v1"]},
     {step: "waiting", in_1h: 1, out_1h: 0, in_24h: 1, out_24h: 0, items: ["w1"]},
     {step: "done", in_1h: 1, out_1h: 0, in_24h: 1, out_24h: 0, items: []}]}' > "$RJSON"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$DONE" > "$SANDBOX/bin/done-stub"
@@ -2621,12 +2885,12 @@ pipeline_fixture() {
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.steps[] | [.step, .wip, .age_p90_min, .in_1h, .out_24h, .ratio]], .drift, .bottleneck' <<<"$output"
-  assert_output "$(printf '%s\n' '[["inbox",3,null,2,4,null],["backlog",1,4560,0,1,null],["queued",1,120,1,1,0.67],["running",1,60,1,1,0.5],["waiting",1,10,1,0,null],["done",1,null,1,0,null]]' 0 null)"
+  assert_output "$(printf '%s\n' '[["inbox",3,null,2,4,null],["backlog",1,4560,0,1,null],["queued",1,120,1,1,0.67],["running",1,60,1,1,0.5],["review",1,30,1,0,null],["waiting",1,10,1,0,null],["done",1,null,1,0,null]]' 0 null)"
   run "$SUBJECT" pipeline
   assert_success
   assert_line 'queued       1        2h    2h      2h         1/0         2/1        16m   20m      3h'
   assert_line 'bottleneck: none, every step with a bound is inside it'
-  assert_line 'growing over 24h: inbox +1, backlog +2, queued +1, running +1, waiting +1'
+  assert_line 'growing over 24h: inbox +1, backlog +2, queued +1, running +1, review +1, waiting +1'
   assert_line "drift: 0 queue items the record and the queue folders place apart (it sees queue items from $(at 86400))"
   run "$SUBJECT" chain --check
   assert_success
@@ -2645,7 +2909,7 @@ pipeline_fixture() {
 @test "pipeline: a move the record missed is drift, and chain --check trips on it" {
   # NEGATIVE CONTROL: r1 finished, but its move to done never reached the record
   pipeline_fixture
-  items_stub "$Q" "$W"
+  items_stub "$Q" "$V" "$W"
   run "$SUBJECT" pipeline --json
   assert_success
   [ "$(jq '.drift' <<<"$output")" = 1 ]
@@ -2654,7 +2918,7 @@ pipeline_fixture() {
   assert_output 'chain_drift 1 (max 0)'
   # an item queued after the record began to see queue items, with no event of it, is drift too;
   # one queued before that is older than the record, not missed
-  items_stub "$Q" "$W" "$(item new queued high human "{\"queued\":\"$(at 60)\"}")" "$(item old queued high human "{\"queued\":\"$(at 100000)\"}")"
+  items_stub "$Q" "$V" "$W" "$(item new queued high human "{\"queued\":\"$(at 60)\"}")" "$(item old queued high human "{\"queued\":\"$(at 100000)\"}")"
   run "$SUBJECT" pipeline --json
   [ "$(jq '.drift' <<<"$output")" = 2 ]
 }
@@ -2665,7 +2929,7 @@ pipeline_fixture() {
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.drift, .since, (.steps[] | [.wip, .in_1h])]' <<<"$output"
-  assert_output '[null,null,[3,null],[1,null],[1,null],[1,null],[1,null],[1,null]]'
+  assert_output '[null,null,[3,null],[1,null],[1,null],[1,null],[1,null],[1,null],[1,null]]'
   run "$SUBJECT" chain --check
   assert_success
   # the line-per-step shape notes printed before items_since is not a record either
@@ -2675,10 +2939,59 @@ pipeline_fixture() {
   [ "$(jq '.drift' <<<"$output")" = null ]
 }
 
+@test "pipeline: a step carries the record's problems, and queued says why dispatch stopped" {
+  pipeline_fixture
+  jq -c '(.steps[] | select(.step == "running")) += {problems_n: 1, problems: [{ts: "t", subject: "r1", kind: "failed", why: "died", n: 1}]}' "$RJSON" > "$RJSON.new"
+  mv "$RJSON.new" "$RJSON"
+  export BENCH_STOPPED_CMD="echo {\"line\":\"Dispatch\\u0020stopped\"}"
+  run "$SUBJECT" pipeline --json
+  assert_success
+  run jq -c '[.steps[] | [.step, .problems_n, (.problems | length), .blocked]]' <<<"$output"
+  assert_output '[["inbox",null,0,null],["backlog",null,0,null],["queued",null,0,"Dispatch stopped"],["running",1,1,null],["review",null,0,null],["waiting",null,0,null],["done",null,0,null]]'
+  run "$SUBJECT" pipeline
+  assert_line 'blocked at queued: Dispatch stopped'
+  assert_line 'problems over 24h: running 1'
+}
+
+@test "pipeline: a tick writes the snapshot before the gauges, even with no session progress" {
+  pipeline_fixture
+  source "$SUBJECT"
+  [ ! -s "$PROGRESS" ]
+  publish_window "$T0"
+  run jq -c '[.as_of, (.steps | length)]' "$PIPELINE_SNAPSHOT"
+  assert_output "[$T0,7]"
+}
+
+@test "pipeline: no problems and no stop leave a clean snapshot, and a failed write keeps the last one" {
+  pipeline_fixture
+  source "$SUBJECT"
+  publish_window "$T0"
+  run jq -c '[.steps[] | select((.problems | length) > 0 or .blocked)] | length' "$PIPELINE_SNAPSHOT"
+  assert_output 0
+  before=$(cat "$PIPELINE_SNAPSHOT")
+  chmod a-w "${PIPELINE_SNAPSHOT%/*}"
+  run pipeline_snapshot '{"new":true}'
+  chmod u+w "${PIPELINE_SNAPSHOT%/*}"
+  assert_failure
+  [ "$(cat "$PIPELINE_SNAPSHOT")" = "$before" ]
+}
+
+@test "pipeline: a rollup that fails leaves the last snapshot, as_of and all" {
+  pipeline_fixture
+  source "$SUBJECT"
+  publish_window "$T0"
+  before=$(cat "$PIPELINE_SNAPSHOT")
+  pipeline_json() { return 1; }
+  run publish_window "$((T0 + 600))"
+  assert_success
+  assert_output --partial "the rollup failed"
+  [ "$(cat "$PIPELINE_SNAPSHOT")" = "$before" ]
+}
+
 @test "pipeline: the gauges carry WIP, age, moves, dwell and drift per step" {
   pipeline_fixture
   source "$SUBJECT"
-  run bench_prom "$T0"
+  run bench_prom "$T0" "$(pipeline_json "$T0")"
   assert_success
   assert_line 'agent_chain_wip{step="backlog"} 1'
   assert_line 'agent_chain_age_minutes{step="queued",quantile="p90"} 120'
@@ -2917,7 +3230,7 @@ check_fixture() {
   kpi_setup; kpi_fixture; check_fixture
   "$SUBJECT" retro
   source "$SUBJECT"
-  run bench_prom "$T0"
+  run bench_prom "$T0" '{"steps": []}'
   assert_success
   assert_line 'agent_bench_improve{state="live"} 3'
   assert_line 'agent_bench_improve{state="improved"} 2'
@@ -3443,7 +3756,8 @@ esac'
   assert_equal "$(jq -c '.models[] | [.model, .landed, .ci_prs, .ci_red_per_pr, .first_pass_share, .points, .points_per_pr]' <<<"$output")" \
     '["opus",3,2,1.5,1,14,4.67]'
   run "$SUBJECT" models
-  assert_line '| opus | claude | 3 | 3 | 1 | 0 | 0 | 0 | $0 | $0 | list | 1.5 | 1 | 14 | 4.67 |'
+  # these sessions have no cost_usd: an unpriced PR reads -, never $0 at a list price
+  assert_line '| opus | claude | 3 | 3 | 1 | 0 | 0 | 0 | $0 | - | - | 1.5 | 1 | 14 | 4.67 |'
 }
 
 # merge_repo <dir> <epoch>...: a clone of a local remote holding one commit per epoch
@@ -3737,22 +4051,23 @@ items_stub() {
     '{"slug":"q3","project":"game","mode":"oneshot","state":"queued","tags":"night","hold":"night (22:00-06:00)"}' \
     '{"slug":"q4","project":"game","mode":"oneshot","state":"queued","after":"gone","hold":"after gone"}' \
     '{"slug":"w1","project":"game","mode":"plan","state":"waiting"}' \
+    '{"slug":"v1","project":"game","mode":"oneshot","state":"review","pr":"o/r#1"}' \
     '{"slug":"q5","project":"game","mode":"oneshot","state":"queued","after":"w1","hold":"after w1"}'
   # 3 slots: r0 (agent-1, already on the schedule, ends at its own ETA T0+1h) and r1 hold two,
   # so q1 starts now; q2 waits for q1 even though a slot frees at T0+1h. 60 min a phase.
   BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast --json
   assert_success
-  run jq -c '.items | {count, running, queued, waiting, on_schedule, phases, slots, finish: (.finish_p50 - '"$T0"'),
+  run jq -c '.items | {count, running, queued, review, waiting, on_schedule, phases, slots, finish: (.finish_p50 - '"$T0"'),
       rows: [.schedule[] | [.slug, .start - '"$T0"', .p50 - '"$T0"']], not: (.not_scheduled | map("\(.slug) \(.why)") | sort)}' <<<"$output"
-  assert_output '{"count":8,"running":2,"queued":5,"waiting":1,"on_schedule":1,"phases":3,"slots":3,"finish":7800,"rows":[["r1",0,3600],["q1",600,4200],["q2",4200,7800]],"not":["q3 held: night (22:00-06:00)","q4 after gone, which did not finish ok","q5 behind an item that is not scheduled","w1 waiting on you"]}'
+  assert_output '{"count":9,"running":2,"queued":5,"review":1,"waiting":1,"on_schedule":1,"phases":3,"slots":3,"finish":7800,"rows":[["r1",0,3600],["q1",600,4200],["q2",4200,7800]],"not":["q3 held: night (22:00-06:00)","q4 after gone, which did not finish ok","q5 behind an item that is not scheduled","v1 on a PR","w1 waiting on you"]}'
   # 1 slot: r0 holds it to T0+1h, so q1 and q2 run one after the other behind it, and r1 too
   BENCH_QUEUE_SLOTS=1 BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast --json
   run jq -c '[.items.schedule[] | [.slug, .start - '"$T0"']]' <<<"$output"
   assert_output '[["r1",0],["q1",3600],["q2",7200]]'
   BENCH_ITEMS_CMD=items-stub BENCH_NOW=$((T0 + 600)) run "$SUBJECT" forecast
-  assert_line --partial 'agent queue: 8 items (2 running, 5 queued, 1 waiting on you), 3 phases on 3 dispatch slots'
+  assert_line --partial 'agent queue: 9 items (2 running, 5 queued, 1 on a PR, 1 waiting on you), 3 phases on 3 dispatch slots'
   assert_line --partial '(1 running already counted above)'
-  assert_line --partial 'not scheduled: 4: '
+  assert_line --partial 'not scheduled: 5: '
   assert_line --partial 'queue:game  q2'
 }
 
@@ -4930,6 +5245,29 @@ start_rows() {
   BENCH_NOW=$((T0 + 60)) run "$SUBJECT" kpi --check '^startup_'
   assert_failure 1
   assert_line 'startup_ready_ms_p50 9000 (max 5000)'
+}
+
+@test "canary dream: the sweeps compare by model over the window; a sweep with no cost still counts; no file is an empty answer" {
+  export TZ=UTC DREAM_TRIAL_FILE="$SANDBOX/trial.tsv" BENCH_NOW=$(date -d 2026-11-20T12:00:00Z +%s)
+  run "$SUBJECT" canary dream --json
+  assert_success
+  assert_output --partial 'no sweeps recorded yet'
+  printf '%s\n' \
+    $'2026-11-18\ta\topus\ts1\t2.0\tWORKED\t2\t0' \
+    $'2026-11-19\tb\topus\ts2\t1.0\tSTALLED\t0\t1' \
+    $'2026-11-19\tc\tsonnet\ts3\t0.5\tWORKED\t1\t0' \
+    $'2026-11-19\td\tsonnet\t-\t-\tFAILED\t-\t-' \
+    $'2026-10-01\te\tsonnet\ts0\t9\tWORKED\t9\t9' > "$DREAM_TRIAL_FILE"
+  run "$SUBJECT" canary dream --json
+  assert_success
+  assert_equal "$(jq -sc . <<<"$output")" '[{"model":"opus","sweeps":2,"costed":2,"cost_per_sweep":1.5,"lessons_per_sweep":1,"refused_share":0.5,"stalled_share":0.5},{"model":"sonnet","sweeps":2,"costed":1,"cost_per_sweep":0.5,"lessons_per_sweep":0.5,"refused_share":0,"stalled_share":0.5}]'
+  run "$SUBJECT" canary dream
+  assert_line $'sonnet\t2 sweeps\t$0.5/sweep over 1\tlessons/sweep 0.5\trefused 0\tfailed or stalled 0.5'
+  # Negative control: the old row is outside 14 days and counts only when asked
+  run "$SUBJECT" canary dream --days 90 --json
+  assert_equal "$(jq -s 'map(select(.model == "sonnet")) | .[0].sweeps' <<<"$output")" 3
+  run "$SUBJECT" canary dream --days x
+  assert_failure 2
 }
 
 @test "canary shepherd: the shepherd's pass lanes compare by model over the window, from passes.tsv's lane columns" {

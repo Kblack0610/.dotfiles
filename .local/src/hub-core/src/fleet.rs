@@ -62,6 +62,8 @@ pub struct Paths {
     pub state: PathBuf,
     /// agentctl's `lanes.tsv`: what each KIND in the table means, the legend above it.
     pub lanes: PathBuf,
+    /// `agent-usage fleet-cost`'s file: COST 24H per runner.
+    pub fleet_cost: PathBuf,
 }
 
 impl Paths {
@@ -81,6 +83,7 @@ impl Paths {
             notes_state: home.join(".local/state/notes"),
             state: crate::boards::fleet_state(),
             lanes: home.join(".config/agentctl/lanes.tsv"),
+            fleet_cost: crate::boards::fleet_cost(),
         }
     }
 }
@@ -132,6 +135,10 @@ pub struct Worker {
     pub called_by: Option<String>,
     /// What the row opens to: how the runner is defined and what its calls did.
     pub registry: Registry,
+    /// Its cost over the last 24h, `fleet_cost`'s by_runner; None when it has no priced sessions there.
+    pub cost_24h: Option<f64>,
+    /// Part of `cost_24h` is estimated from tokens.
+    pub cost_estimated: bool,
     /// Its lane's counted score from judge-eval; None when judge-eval lists no such lane.
     pub score: Option<RunnerScore>,
     /// The extras block its page draws, the conf's `DETAIL=` (`runner::DETAILS`); empty for none.
@@ -414,8 +421,27 @@ pub fn files(paths: &Paths) -> Fleet {
         .iter()
         .map(|c| (c.name.clone(), registry(c, &roles, &calls, &evals)))
         .collect();
+    // The file Costs' fleet figure reads, so a runner's dollars match there.
+    let spent = crate::fleet_cost::load(&paths.fleet_cost)
+        .inspect(|f| {
+            if f.stale(at) {
+                errors.push(format!(
+                    "cost 24h: stale, the figures are {}h old",
+                    (at - f.as_of_epoch) / 3600
+                ));
+            }
+        })
+        .map(|f| f.by_runner)
+        .unwrap_or_else(|e| {
+            errors.push(format!("cost 24h: {e}"));
+            Default::default()
+        });
     let mut workers = workers(confs, &runs, &activity, &timers, at);
     for w in &mut workers {
+        if let Some(c) = spent.get(&w.name) {
+            w.cost_24h = c.priced();
+            w.cost_estimated = c.estimated >= 0.005;
+        }
         // A runner no timer starts can name its own next try (inbox-triage's retry).
         w.next = w
             .next
@@ -439,7 +465,8 @@ pub fn files(paths: &Paths) -> Fleet {
         }
     };
     let who = who::build(&workers, &sessions, at);
-    let legend = who::legend(&paths.lanes);
+    let mut legend = who::legend(&paths.lanes);
+    legend.push(crate::fleet_cost::FLEET_LEGEND.into());
     let dispatch = read_dispatch(&paths.dispatch, at, &mut errors);
     Fleet {
         at,

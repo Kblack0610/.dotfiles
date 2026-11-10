@@ -1,5 +1,5 @@
 //! Tail a Claude transcript JSONL: a one-line summary for the chooser row and
-//! the last message for the preview pane.
+//! the row marks.
 
 use std::fs;
 use std::path::Path;
@@ -45,8 +45,8 @@ fn read(path: &Path) -> String {
 pub struct RowInfo {
     /// One-line summary of the most recent turn.
     pub summary: String,
-    /// The session is in plan mode.
-    pub plan: bool,
+    /// The permission mode it shows: plan, manual or neither.
+    pub mode: Mode,
     /// The plan it works: the stem of `plan_file` (`new-curious-garden`), empty for none.
     pub plan_slug: String,
 }
@@ -55,7 +55,7 @@ pub fn row_info(path: &Path) -> RowInfo {
     let text = read(path);
     RowInfo {
         summary: last_event_in(&text),
-        plan: permission_mode(&text).as_deref() == Some("plan"),
+        mode: Mode::of(permission_mode(&text).as_deref()),
         plan_slug: plan_slug(&plan_file(&text)),
     }
 }
@@ -862,6 +862,44 @@ fn last_event_in(text: &str) -> String {
     }
 }
 
+/// The permission mode a row marks. Manual is Claude's `default` mode, which
+/// `manual-mode-investigate.sh` makes investigate-only: the session answers and changes nothing,
+/// so a tab left in it does no work on its own. `acceptEdits`, bypass and the rest are `Other`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Other,
+    Plan,
+    Manual,
+}
+
+impl Mode {
+    pub fn of(permission_mode: Option<&str>) -> Mode {
+        match permission_mode {
+            Some("plan") => Mode::Plan,
+            Some("default") => Mode::Manual,
+            _ => Mode::Other,
+        }
+    }
+
+    /// Its one-letter mark (`P`, `M`), empty for `Other`; also its map-file field.
+    pub fn mark(self) -> &'static str {
+        match self {
+            Mode::Plan => "P",
+            Mode::Manual => "M",
+            Mode::Other => "",
+        }
+    }
+
+    pub fn from_mark(mark: &str) -> Mode {
+        match mark {
+            "P" => Mode::Plan,
+            "M" => Mode::Manual,
+            _ => Mode::Other,
+        }
+    }
+}
+
 /// The session's current permission mode (`plan`, `default`, `bypassPermissions`,
 /// ...): the last line carrying one. `~/.claude/sessions/<pid>.json` does not
 /// record it, but Claude writes a `permission-mode` entry with every turn's
@@ -900,22 +938,6 @@ fn summarize(v: &Value) -> String {
     }
 }
 
-/// What the preview shows of a session's transcript, from one read of it.
-#[derive(Debug, Default, PartialEq)]
-pub struct Preview {
-    /// Its last message in full, line breaks kept; empty when it wrote none.
-    pub message: String,
-    /// Its last tool call (`doing_said`'s `doing`); empty when it made none.
-    pub tool: String,
-    /// The plan of the ExitPlanMode call its turn ended on, when that is still open.
-    pub plan: Option<String>,
-}
-
-pub fn preview_info(path: &Path) -> Preview {
-    let text = read(path);
-    Preview { message: last_message(&text), tool: doing_said(&text).0, plan: open_plan(&text) }
-}
-
 /// The plan text of the open ExitPlanMode call, when the turn ended on one.
 pub fn open_plan_at(path: &Path) -> Option<String> {
     open_plan(&read(path))
@@ -924,30 +946,6 @@ pub fn open_plan_at(path: &Path) -> Option<String> {
 fn open_plan(text: &str) -> Option<String> {
     let (_, input) = open_dialog(text).filter(|(n, _)| n == "ExitPlanMode")?;
     input.get("plan")?.as_str().map(str::to_string)
-}
-
-/// The newest main-thread assistant text, whole: the session's last word to the human.
-fn last_message(text: &str) -> String {
-    for line in text.lines().rev() {
-        if !line.contains("\"type\":\"assistant\"") {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        if !own_turn(&v) {
-            continue;
-        }
-        let Some(blocks) = v.pointer("/message/content").and_then(Value::as_array) else { continue };
-        if let Some(t) = blocks
-            .iter()
-            .rev()
-            .filter(|c| c.get("type").and_then(Value::as_str) == Some("text"))
-            .filter_map(|c| c.get("text").and_then(Value::as_str))
-            .find(|t| !t.trim().is_empty())
-        {
-            return t.trim().to_string();
-        }
-    }
-    String::new()
 }
 
 /// The turn that posted an ask, for its card: the prompt the human typed to start that turn and
@@ -1408,25 +1406,6 @@ mod tests {
     }
 
     #[test]
-    fn preview_shows_the_last_own_message_whole() {
-        let p = tmpfile("lastmsg", &[
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"line one\n\nline two?"},{"type":"tool_use","name":"Bash","input":{"description":"run it"}}]}}"#,
-            r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"subagent"}]}}"#,
-            r#"{"type":"user","message":{"content":"ok"}}"#,
-        ]);
-        let got = preview_info(&p);
-        assert_eq!(got.message, "line one\n\nline two?");
-        assert_eq!(got.tool, "Bash: run it");
-        assert_eq!(got.plan, None);
-        fs::remove_file(&p).ok();
-        // Negative control: no assistant text at all -> nothing.
-        let q = tmpfile("nomsg", &[r#"{"type":"user","message":{"content":"hi"}}"#]);
-        assert_eq!(preview_info(&q), Preview::default());
-        fs::remove_file(&q).ok();
-    }
-
-    #[test]
     fn summarizes_text_and_missing() {
         let p = tmpfile("text", &[r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello  world"}]}}"#]);
         assert_eq!(last_event(&p), "say: hello world");
@@ -1442,7 +1421,7 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}"#,
         ]);
         let info = row_info(&p);
-        assert!(info.plan);
+        assert_eq!(info.mode, Mode::Plan);
         assert_eq!(info.summary, "tool: Read");
         fs::remove_file(&p).ok();
 
@@ -1451,10 +1430,21 @@ mod tests {
             r#"{"type":"permission-mode","permissionMode":"plan"}"#,
             r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
         ]);
-        assert!(!row_info(&p).plan);
+        assert_eq!(row_info(&p).mode, Mode::Other);
         fs::remove_file(&p).ok();
 
-        assert!(!row_info(Path::new("/no/such/file.jsonl")).plan);
+        // Shift+Tab back to manual (`default`) marks it manual; acceptEdits is not manual.
+        let p = tmpfile("manual", &[
+            r#"{"type":"permission-mode","permissionMode":"bypassPermissions"}"#,
+            r#"{"type":"permission-mode","permissionMode":"default"}"#,
+        ]);
+        assert_eq!(row_info(&p).mode, Mode::Manual);
+        fs::remove_file(&p).ok();
+        let p = tmpfile("edits", &[r#"{"type":"permission-mode","permissionMode":"acceptEdits"}"#]);
+        assert_eq!(row_info(&p).mode, Mode::Other);
+        fs::remove_file(&p).ok();
+
+        assert_eq!(row_info(Path::new("/no/such/file.jsonl")).mode, Mode::Other);
     }
 
     #[test]

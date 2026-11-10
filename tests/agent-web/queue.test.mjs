@@ -15,10 +15,10 @@ const el = () => new Proxy({}, {
 });
 const on = {};
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } });
+const box = Object.assign(part(), { addEventListener: (ev, f) => { (on[ev] ||= []).push(f); }, querySelectorAll: (q) => (q.includes("sec-") ? [parts["sec-candidates"]] : []) });
 const fire = (ev, e) => (on[ev] || []).forEach((f) => f(e));
 let scrolled = 0;
-const parts = { "sec-candidates": { tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
+const parts = { "sec-candidates": { id: "sec-candidates", tagName: "DETAILS", open: false, scrollIntoView() { scrolled++; } }, "qt-head": part(), "qt-facets": part(), "qt-chips": part(), "qt-body": part(), "q-list": part() };
 const doc = { getElementById: (id) => (id === "queue" ? box : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 let asked = [];
 let reply = {};
@@ -32,52 +32,66 @@ const ctx = vm.createContext({
   setTimeout: () => 0,
   location: { pathname: "/", hash: "" },
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
-  fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (typeof reply === "function" ? reply(url) : reply) }; },
+  fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (url.startsWith("/api/flow") ? { line: rail(), grafana: null } : typeof reply === "function" ? reply(url) : reply) }; },
 });
 for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "flow.js", "jobs.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const settle = () => new Promise((r) => setImmediate(r));
 
-const chips = (over = {}) => [
-  { key: "inbox", label: "inbox", value: "4", hot: false, to: null },
-  { key: "board", label: "board", value: "312", hot: false, to: { tab: "projects", state: "" } },
-  { key: "queued", label: "queued", value: "3 (2 ready)", hot: false, to: { tab: "queue", state: "up next" } },
-  { key: "running", label: "running", value: "5", hot: false, to: { tab: "queue", state: "running" } },
-  { key: "needs", label: "needs you", value: "2", hot: true, to: { tab: "queue", state: "needs you" } },
-  { key: "done", label: "done 24h", value: "9", hot: false, to: { tab: "queue", state: "done" } },
-  { key: "drain", label: "drain", value: "6h +4/-9 shrinking", hot: false, to: { tab: "queue", state: "" } },
-].map((c) => ({ ...c, ...(over[c.key] || {}) }));
-const drawStrip = (strip, grafana = null) => vm.runInContext(`qfl.data = ${JSON.stringify(strip && { flow: strip, grafana })}; qfl.err = null; qStrip()`, ctx);
+// The shape hub_core::flow::Rail serializes to.
+const node = (key, label, o = {}) => ({ key, label, count: "4", sub: "p90 2h", hot: false, stopped: false, to: null, stop: null, facts: [], problems_n: 0, problems: [], gap: null, elsewhere: null, ...o });
+const nodes = (over = {}) => [
+  node("inbox", "inbox", { count: "1", sub: "ok" }),
+  node("board", "board", { count: "312" }),
+  node("queued", "queued", { count: "272", hot: true, stopped: true, stop: "Dispatch stopped 9h50m", facts: ["272 items, bound 12h (5.7x)"], to: { tab: "queue", state: "up next" } }),
+  node("running", "running", { count: "9", problems_n: 11, problems: [{ text: "01:16  ucp-412  failed  died", item: "ucp-412" }, { text: "00:01  a line  refused  no", item: null }], to: { tab: "queue", state: "running" } }),
+  node("needs", "needs you", { count: "2", hot: true }),
+  node("done", "done 24h", { count: "9" }),
+].map((n) => ({ ...n, ...(over[n.key] || {}) }));
+const rail = ({ nodes: over, ...o } = {}) => ({ nodes: nodes(over), worst: 2, as_of: "10:20", stale: false, reading: false, error: null, absent: false, ...o });
+const drawStrip = (line, grafana = null, picked = "") => vm.runInContext(`qfl.data = ${JSON.stringify(line && { line, grafana })}; qfl.err = null; qfl.node = ${JSON.stringify(picked)}; qStrip()`, ctx);
 
-test("the strip draws every chip as a link to the Queue on its filter, the board to Projects", () => {
-  const html = drawStrip({ chips: chips(), bottleneck: "bottleneck: waiting, age p90 9h (bound 4h)", as_of: "10:20", error: null }, "https://g.example");
-  assert.match(html, /<a class="cchip fchip" href="#queue\?s=up%20next" data-flow="queued">queued 3 \(2 ready\)<\/a>/);
-  assert.match(html, /href="#queue\?s=running" data-flow="running">running 5</);
-  assert.match(html, /href="#queue\?s=needs%20you"[^>]*>needs you 2</);
-  assert.match(html, /href="#queue" data-flow="drain">drain 6h \+4\/-9 shrinking</);
-  assert.match(html, /href="#projects" data-flow="board">board 312</);
-  assert.match(html, /<span class="cchip fchip" data-flow="inbox">inbox 4<\/span>/);
-});
-
-test("only the chip of a step past its bound is amber, and the bottleneck and graph link show", () => {
-  const html = drawStrip({ chips: chips(), bottleneck: "bottleneck: waiting, age p90 9h (bound 4h)", as_of: "10:20", error: null }, "https://g.example");
-  assert.equal((html.match(/fchip warn/g) || []).length, 1);
-  assert.match(html, /fchip warn" href="#queue\?s=needs%20you"/);
-  assert.match(html, /<div class="qwarn">! bottleneck: waiting, age p90 9h \(bound 4h\)<\/div>/);
-  assert.match(html, /inbox, board as of 10:20/);
+test("the line draws a point per step with the worst step's detail open", () => {
+  const html = drawStrip(rail(), "https://g.example");
+  assert.equal((html.match(/data-rail="/g) || []).length, 6);
+  assert.match(html, /class="rnode stopped sel" data-rail="queued"/);
+  assert.match(html, /<div class="rstop">Stopped: Dispatch stopped 9h50m<\/div>/);
+  assert.match(html, /272 items, bound 12h \(5\.7x\)/);
+  assert.match(html, /as of 10:20/);
   assert.match(html, /href="https:\/\/g\.example\/d\/kb-agents-overview"/);
+  assert.equal((html.match(/rdetail/g) || []).length, 1);
 });
 
-test("negative control: absent gauges draw inbox - and board - , never 0, with no amber or link", () => {
-  const html = drawStrip({ chips: chips({ inbox: { value: null }, board: { value: null }, needs: { hot: false } }), bottleneck: null, as_of: null, error: null, absent: true });
-  assert.match(html, />inbox -</);
-  assert.match(html, />board -</);
-  assert.doesNotMatch(html, /inbox 0|board 0|fchip warn|qwarn|href="https:/);
-  assert.match(html, /inbox, board: no gauges/);
+test("amber is a step past its bound, red one nothing can leave, and a problem alone is neither", () => {
+  const html = drawStrip(rail());
+  assert.match(html, /class="rnode hot" data-rail="needs"/);
+  assert.match(html, /class="rnode stopped sel" data-rail="queued"/);
+  assert.match(html, /class="rnode" data-rail="running"/);
 });
 
-test("a failed read says why beside the strip, and no data yet says reading", () => {
-  assert.match(drawStrip({ chips: chips({ inbox: { value: null }, board: { value: null } }), bottleneck: null, as_of: null, error: "no prom" }), /inbox, board: no prom/);
+test("a picked step opens its problems, and one that names an item links it", () => {
+  const html = drawStrip(rail(), null, "running");
+  assert.match(html, /class="rnode sel" data-rail="running"/);
+  assert.match(html, /Problems, 24h: 11/);
+  assert.match(html, /<a class="rprob" href="#queue\?q=ucp-412">01:16  ucp-412  failed  died<\/a>/);
+  assert.match(html, /<span class="rprob">00:01  a line  refused  no<\/span>/);
+  fire("click", { target: { id: "", closest: (q) => (q === "[data-rail]" ? { dataset: { rail: "needs" } } : null) } });
+  assert.equal(run("qfl.node"), "needs");
+  assert.match(drawStrip(rail(), null, "gone"), /class="rnode stopped sel" data-rail="queued"/, "a step no longer there falls back to the worst");
+});
+
+test("negative control: no snapshot draws inbox - and board -, never 0, and says so", () => {
+  const html = drawStrip(rail({ as_of: null, absent: true, nodes: { inbox: { count: null }, board: { count: null } } }));
+  assert.match(html, /<span class="rcount">-<\/span><span class="rlabel">inbox/);
+  assert.match(html, /<span class="rcount">-<\/span><span class="rlabel">board/);
+  assert.match(html, /inbox, board: no snapshot/);
+  assert.doesNotMatch(html, /href="https:/);
+});
+
+test("a stale or ageless snapshot is red, a failed read says why, and no data yet says reading", () => {
+  assert.match(drawStrip(rail({ stale: true })), /<span class="rstop">as of 10:20 \(stale\)<\/span>/);
+  assert.match(drawStrip(rail({ stale: true, as_of: null })), /<span class="rstop">age unknown<\/span>/);
+  assert.match(drawStrip(rail({ error: "snapshot cannot be read", as_of: null })), /inbox, board: snapshot cannot be read/);
   assert.match(drawStrip(null), /class="flow muted">reading</);
 });
 
@@ -127,30 +141,20 @@ test("the Queue is one table with the server's chips and every header a sort but
 test("a sorted header says its direction, and the number columns are n", () => {
   load({ ...data, table: { ...table, sort: "run", dir: "desc", columns: table.columns.map((c) => (c.key === "run" ? { ...c, sort: "desc", next_dir: "asc", next_sort: "run" } : c)) } });
   const h = draw();
-  assert.match(h, /<th class="n qx" aria-sort="descending"><button class="thsort" data-tsort="run" data-tdir="asc" title="sort by run">run v<\/button><\/th>/);
-  assert.match(h, /<th class="n"><button[^>]*>in<\/button><\/th>/);
+  assert.match(h, /<th class="n" aria-sort="descending" data-role="" data-label="run"><button class="thsort" data-tsort="run" data-tdir="asc" title="sort by run">run v<\/button><\/th>/);
+  assert.match(h, /<th class="n"[^>]*><button[^>]*>in<\/button><\/th>/);
 });
 
 test("in, wait and run are the server's timing minutes, and no timing reads -", () => {
   load();
   let h = draw();
-  assert.match(h, /<td class="n">2h10<\/td><td class="n qx">5m<\/td><td class="n qx">1h10<\/td>/);
-  assert.match(h, /<td class="n">42m<\/td><td class="n qx">3m<\/td><td class="n qx">42m<\/td>/);
+  assert.match(h, /<td class="n">2h10<\/td><td class="n">5m<\/td><td class="n">1h10<\/td>/);
+  assert.match(h, /<td class="n">42m<\/td><td class="n">3m<\/td><td class="n">42m<\/td>/);
   // Negative control: a running item with only stamps, no timing, works out nothing.
   load({ ...data, items: [item("n1", { state: "running", started: "2026-11-06T11:00:00Z", queued: "2026-11-06T10:00:00Z" })] });
   h = draw();
-  assert.match(h, /<td class="n">-<\/td><td class="n qx">-<\/td><td class="n qx">-<\/td>/);
+  assert.match(h, /<td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td>/);
   assert.doesNotMatch(h, /<td class="n">\d/);
-});
-
-test("phone width drops all but state, in, project and title by class", () => {
-  load();
-  const h = draw();
-  const heads = [...h.matchAll(/<th( class="([^"]*)")?>/g)].map((m) => (m[2] || "").split(" "));
-  const kept = ["state", "in", "project", "title"];
-  assert.equal(heads.filter((c) => !c.includes("qx")).length, kept.length);
-  assert.match(h, /<td class="qx">feat<\/td>/);
-  assert.ok(run("Q_COLS").pr[1].includes("qx") && !run("Q_COLS").title[1]);
 });
 
 test("a state cell says what the item is, and how a done one ended", () => {
@@ -208,7 +212,7 @@ test("a new section id scrolls to its section, not into the filter", async () =>
   load();
   reply = data;
   scrolled = 0;
-  run("st.arg = 'candidates'; st.views.queue = ''; st.section = null");
+  run("st.tab = 'queue'; st.arg = 'candidates'; st.views.queue = ''; st.section = null");
   run("refreshQueue()");
   await settle();
   assert.equal(scrolled, 1, "the page scrolled to Candidates once it drew");
@@ -285,5 +289,5 @@ test("a PR with no recorded merge says so, and a bare older number keeps its wor
 
 test("a row with a PR links it in the PR cell", () => {
   load();
-  assert.match(draw(), /<td class="qx"><a href="https:\/\/github\.com\/o\/r\/pull\/7"[^>]*>r#7<\/a><\/td>/);
+  assert.match(draw(), /<td><a href="https:\/\/github\.com\/o\/r\/pull\/7"[^>]*>r#7<\/a><\/td>/);
 });

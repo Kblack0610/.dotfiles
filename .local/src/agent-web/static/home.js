@@ -107,8 +107,8 @@ function propBody(h) {
 
 function propSection(h) {
   const t = h.proposals_table;
-  if (!t.total) return `<h2 class="sec">Proposals</h2><div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
-  return `<h2 class="sec">Proposals <span class="muted">${esc(h.proposals_head)}</span></h2>` +
+  if (!t.total) return `<h2 class="sec" id="sec-proposals">Proposals</h2><div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
+  return `<h2 class="sec" id="sec-proposals">Proposals <span class="muted">${esc(h.proposals_head)}</span></h2>` +
     tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${propBody(h)}</div>`;
 }
 
@@ -200,7 +200,7 @@ function healthHtml(chips) {
     ` <span class="muted">${chips.length - bad.length} green</span>`;
 }
 
-const sec = (title, n, body, extra = "") => `<h2 class="sec">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}${extra}</h2>${body}`;
+const sec = (title, n, body, extra = "") => `<h2 class="sec" id="sec-${title.split(" ")[0].toLowerCase()}">${title}${n != null ? ` <span class="muted">${n}</span>` : ""}${extra}</h2>${body}`;
 const needsHead = (t) => sec("Needs you", t.shown === t.total ? t.total : `${t.shown} of ${t.total}`, "");
 
 // Since last night: the briefing's areas that are not ok, each linking to the tab that owns
@@ -216,7 +216,7 @@ function nightRow(r) {
 
 function nightSection() {
   const n = hst.night;
-  const head = (extra) => `<h2 class="sec">Since last night${extra ? ` <span class="muted">${extra}</span>` : ""}</h2>`;
+  const head = (extra) => `<h2 class="sec" id="sec-night">Since last night${extra ? ` <span class="muted">${extra}</span>` : ""}</h2>`;
   if (!n) return head("") + `<div class="${hst.nightErr ? "cline warn" : "empty"}">${esc(hst.nightErr || "Reading...")}</div>`;
   const errs = [hst.nightErr, ...n.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
   const ok = n.ok_line ? `<div class="cline muted">${esc(n.ok_line)}</div>` : "";
@@ -248,12 +248,18 @@ function drawHome() {
   const counts = h.sessions ? ` <span class="muted"><a href="#sessions">sessions</a>: ${esc(h.sessions)}</span>` : "";
   const running = sec("Running", h.running.length, capped("home-running", h.running, runningCard, "more", "Nothing running from the queue."), counts);
   const spend = h.spend ? sec("Spend", null, `<div class="cline">${esc(h.spend)} <a href="#costs">Costs</a></div>`) : "";
+  const vitals = h.vitals ? sec("Vitals", esc(h.vitals.head), h.vitals.all_ok ? "" : h.vitals.rows.map((r) =>
+    `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join(""),
+    h.grafana ? ` <a class="glink" href="${esc(h.grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "") : "";
   const t = h.table;
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
   const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${needsBody(h)}</div></div>`;
-  // The flow strip, health and spend lead, so a long Needs list never buries them.
-  paint(el, errs + sec("Flow", null, flowHtml(h.flow, h.grafana)) +
-    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + spend + needs + nightSection() + propSection(h) + running, askst.open);
+  // Wide, the flow strip, health, spend and vitals lead, so a long Needs list never buries them.
+  // On a phone they are one line saying whether anything is wrong, so Needs you comes first.
+  const warn = (t) => `<span class="warn">${esc(t)}</span>`;
+  const status = [healthHtml(h.health), h.flow?.bottleneck && warn(h.flow.bottleneck), h.vitals && !h.vitals.all_ok && warn(h.vitals.head)].filter(Boolean).join(" ");
+  paint(el, errs + pfold("home-status", status, sec("Flow", null, flowHtml(h.flow, h.grafana)) +
+    sec("Health", null, `<div class="cline">${healthHtml(h.health)}</div>`) + spend + vitals) + needs + nightSection() + propSection(h) + running, askst.open);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.

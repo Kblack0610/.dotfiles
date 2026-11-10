@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 /// The prompt says which rows are listed; ctrl-y flips it, and every reload reads it back.
 const PROMPT_ALL: &str = "Select agent > ";
 const PROMPT_ASKING: &str = "Asking only > ";
-const HEADER: &str = "Enter=jump  n=next-attention  C-s shepherd  C-t manual  C-l labels  C-n new agent  C-y asking  C-o sort  A-o reverse  C-/ layout  C-d/C-u pgup/pgdn scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
+const HEADER: &str = "Enter=jump  A-n next-attention  C-s shepherd  C-t manual  C-l labels  C-n new agent  C-y asking  C-o sort  A-o reverse  C-/ layout  C-d/C-u pgup/pgdn scroll  ·  \x1b[1;31m!\x1b[0m input  \x1b[1;33m~\x1b[0m busy  \x1b[1;32m✓\x1b[0m idle";
 
 /// The preview layout every panel shares, from its one source: `panel-layout.sh args agent-panel`
 /// (`.local/src/tmux/`, beside panel-lib.sh) prints the `--preview-window` to open with, which is
@@ -62,7 +62,8 @@ pub fn run(rows: &str, map_file: &Path, restore_line: Option<usize>, query: Opti
 /// fzf's arguments: layout, the preview and reload callbacks into `exe`, and the key binds.
 fn args(exe: &str, map: &str, restore_line: Option<usize>, query: Option<&str>, layout: &[String]) -> Vec<String> {
     let preview_cmd = format!("{exe} preview --map-file '{map}' {{}}");
-    let next_bind = format!("n:execute-silent({exe} next)+abort");
+    // A chord, never a bare letter: a bare key is not typed into the search box.
+    let next_bind = format!("alt-n:execute-silent({exe} next)+abort");
     // `fleet-shepherd open` is the one way to the running pass (Prefix o too): it hops worlds.
     let shepherd_bind = "ctrl-s:execute-silent(fleet-shepherd open)+abort".to_string();
     // A new agent beside the selected one: wt hops to the new session, so the panel closes.
@@ -70,7 +71,10 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, query: Option<&str>, 
     // Label keys write through fleet-sessions (the labels' one home), then reload the rows in
     // place. {1} is the row's full target; on a project header it is empty and the label fails.
     // The prompt is the asking-only state (ctrl-y), so a reload from a label key keeps the view.
-    let rows = format!("{exe} rows --map-file '{map}'");
+    // fzf runs --disabled: the panel matches typed words against each row's search note
+    // (`search`), so every reload passes the search box and prints only the matching rows.
+    let rows = format!("{exe} rows --map-file '{map}' --query={{q}}");
+    let match_bind = format!("change:reload({exe} match --map-file '{map}' --query={{q}})");
     let asking_arg = format!("$([ \"$FZF_PROMPT\" = '{PROMPT_ASKING}' ] && echo --asking)");
     let reload = format!("reload({rows} {asking_arg})");
     // C-o steps the sort key and A-o flips it; rows saves the sort, so the panel reopens in it.
@@ -95,6 +99,7 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, query: Option<&str>, 
         format!("--header={HEADER}"),
         "--ansi".into(),
         "--no-sort".into(),
+        "--disabled".into(),
         "--delimiter=\t".into(),
         "--with-nth=2..".into(),
         "--preview".into(),
@@ -102,6 +107,8 @@ fn args(exe: &str, map: &str, restore_line: Option<usize>, query: Option<&str>, 
     ];
     args.extend(layout.iter().cloned());
     args.extend([
+        "--bind".into(),
+        match_bind,
         "--bind".into(),
         next_bind,
         "--bind".into(),
@@ -143,7 +150,7 @@ mod tests {
     fn label_keys_write_through_fleet_sessions_and_reload_in_place() {
         let stacked = ["--preview-window=down".to_string(), "--bind=ctrl-/:x".to_string()];
         let a = args("/bin/ap", "/tmp/m.map", Some(3), None, &stacked);
-        let reload = "reload(/bin/ap rows --map-file '/tmp/m.map' $([ \"$FZF_PROMPT\" = 'Asking only > ' ] && echo --asking))";
+        let reload = "reload(/bin/ap rows --map-file '/tmp/m.map' --query={q} $([ \"$FZF_PROMPT\" = 'Asking only > ' ] && echo --asking))";
         let manual = format!("ctrl-t:execute-silent(fleet-sessions label {{1}} ^manual)+{reload}");
         assert!(a.contains(&manual), "{a:?}");
         let l = a
@@ -156,11 +163,11 @@ mod tests {
         assert!(a.contains(&"ctrl-s:execute-silent(fleet-shepherd open)+abort".to_string()), "{a:?}");
         assert!(HEADER.contains("C-s shepherd") && HEADER.contains("C-y asking"));
         let y = a.iter().find(|x| x.starts_with("ctrl-y:")).expect("ctrl-y bind");
-        assert!(y.contains("change-prompt(Asking only > )+reload(/bin/ap rows --map-file '/tmp/m.map' --asking)"), "{y}");
-        assert!(y.contains("change-prompt(Select agent > )+reload(/bin/ap rows --map-file '/tmp/m.map')\""), "{y}");
+        assert!(y.contains("change-prompt(Asking only > )+reload(/bin/ap rows --map-file '/tmp/m.map' --query={q} --asking)"), "{y}");
+        assert!(y.contains("change-prompt(Select agent > )+reload(/bin/ap rows --map-file '/tmp/m.map' --query={q})\""), "{y}");
         // C-o and A-o move the saved sort, keeping the asking-only view like every reload.
         let asking = "$([ \"$FZF_PROMPT\" = 'Asking only > ' ] && echo --asking)";
-        let rows = "/bin/ap rows --map-file '/tmp/m.map'";
+        let rows = "/bin/ap rows --map-file '/tmp/m.map' --query={q}";
         assert!(a.contains(&format!("ctrl-o:reload({rows} --sort next {asking})")), "{a:?}");
         assert!(a.contains(&format!("alt-o:reload({rows} --sort reverse {asking})")), "{a:?}");
         assert!(HEADER.contains("C-o sort") && HEADER.contains("A-o reverse"));
@@ -176,6 +183,12 @@ mod tests {
         assert!(a.contains(&"--query='dotfiles".to_string()), "{a:?}");
         assert!(a.contains(&"ctrl-n:execute-silent(/bin/ap new-agent {1})+abort".to_string()), "{a:?}");
         assert!(HEADER.contains("C-n new agent"));
+        // fzf does not match: typing reloads the rows the panel matched (`search`).
+        assert!(a.contains(&"--disabled".to_string()), "{a:?}");
+        assert!(a.contains(&"change:reload(/bin/ap match --map-file '/tmp/m.map' --query={q})".to_string()), "{a:?}");
+        // Every letter types into the search box: no bind is a bare printable key.
+        assert!(a.contains(&"alt-n:execute-silent(/bin/ap next)+abort".to_string()), "{a:?}");
+        assert!(!a.iter().any(|x| x.len() > 2 && x.as_bytes()[1] == b':' && x.as_bytes()[0].is_ascii_alphanumeric()), "{a:?}");
         // Negative control: no query asked for, none passed.
         assert!(!args("/bin/ap", "/tmp/m.map", None, None, &[]).iter().any(|x| x.starts_with("--query")));
     }

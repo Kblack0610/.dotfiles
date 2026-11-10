@@ -34,9 +34,11 @@ mod project_sweep;
 mod project_tasks;
 mod projects;
 mod propose;
+mod rank;
 mod registry;
 mod sheet;
 mod show;
+mod standing;
 mod status;
 mod steps;
 mod summarize;
@@ -177,6 +179,11 @@ enum Cmd {
         /// profiles. READ-ONLY. The feed the board UIs read; the row shape is in the README
         #[arg(long, conflicts_with = "agent")]
         json: bool,
+        /// With --json: the feed's `done` lists the rows closed in the last N days, the
+        /// ones already rolled into `agent/versions/` included. Without it, `done` is each
+        /// sheet's `### Done` as the sweep left it
+        #[arg(long, value_name = "N", requires = "json")]
+        done_days: Option<i64>,
         /// Print the agent-lane rows as `<project>\t<text>` instead of writing the board.
         /// READ-ONLY: this path never touches board.md. Exits 0 even with no rows —
         /// "nothing queued for the agent" is a valid answer, not an error, and the
@@ -291,7 +298,11 @@ enum Cmd {
         /// Exact duplicates are reported, never removed. Idempotent
         #[arg(long)]
         migrate_rows: bool,
-        /// With --retire-ai-tag or --migrate-rows: report what would change and write nothing
+        /// Sweep every project sheet and agent board, in every profile, into Now / Next up /
+        /// Backlog / Done, rolling closed rows past the `[sheet]` window into versions notes
+        #[arg(long)]
+        sweep: bool,
+        /// With --retire-ai-tag, --migrate-rows or --sweep: report what would change and write nothing
         #[arg(long)]
         dry_run: bool,
         /// With --release: step the minor (v0.1.2 -> v0.2.0)
@@ -385,6 +396,20 @@ enum Cmd {
     Clickup {
         #[command(subcommand)]
         sub: ClickupCmd,
+    },
+    /// Sweep one sheet file by path into Now / Next up / Backlog / Done (the editor's save hook)
+    SheetSweep {
+        /// The sheet: a project README.md or its agent/README.md
+        path: std::path::PathBuf,
+        /// Read the buffer from stdin and print the swept buffer; the file is not written
+        #[arg(long)]
+        stdin: bool,
+        /// With --stdin: only re-sort the sections, stamping and rolling off nothing
+        #[arg(long, requires = "stdin")]
+        layout_only: bool,
+        /// Report what would change and write nothing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Diagnose the notes system (config, dirs, gaps, sync, dead links)
     Doctor {
@@ -626,6 +651,12 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
+    /// The matching task's queue item started: `[/]` plus `run:MMDD`, which puts it in Now
+    /// (a started row without it is queued, in Next up); agent-queue writes it
+    Run {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+    },
     /// Put the matching in-progress task back to todo (`[/]` -> `[ ]`); a todo row is left as it is
     Unstart {
         #[arg(required = true, num_args = 1..)]
@@ -678,8 +709,8 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Sort the section by priority, done at the foot, and drop release tags the sheet
-    /// has passed
+    /// Lay the sheet out in Epics, Now, Next up, Backlog and Done, roll closed rows past the
+    /// Done window into versions/, and drop release tags the sheet has passed
     Sweep {
         /// Print what would change and leave the sheet alone
         #[arg(long = "dry-run")]
@@ -692,6 +723,8 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
         text: Vec<String>,
     },
+    /// Turn each list waiting in `## Inbox` into one line per ask. A triage sweep's first step
+    Split,
     /// List the lines waiting in `## Inbox`, oldest first (TSV `path<TAB>line<TAB>text`)
     Inbox {
         /// One JSON array of `{line, raw, text, details}` instead
@@ -738,6 +771,8 @@ enum PtaskCmd {
 
 #[derive(Subcommand)]
 enum OutboxCmd {
+    /// Turn each list waiting in the outbox into one line per ask. A triage sweep's first step
+    Split,
     /// The lines waiting, oldest first (TSV `line<TAB>text`)
     List {
         /// One JSON array of `{line, raw, text, details, project}` instead
@@ -792,7 +827,7 @@ struct RecordArgs {
     #[arg(long, value_parser = [
         "left", "refused", "planned", "item-added", "item-moved", "item-set",
         "item-claimed", "item-cancelled", "started", "reaped", "settled", "merged",
-        "parked", "unparked",
+        "parked", "unparked", "land-failed", "sweep-stopped",
     ])]
     action: String,
     /// `outbox`, or the project whose inbox holds the line (whose board holds the row)
@@ -1214,10 +1249,14 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Start { query }) => {
                     project_tasks::start(&prof, &log, &name, &pick(&query)?, lane)?
                 }
+                Some(PtaskCmd::Run { query }) => {
+                    project_tasks::run(&prof, &log, &name, &pick(&query)?, lane)?
+                }
                 Some(PtaskCmd::Unstart { query }) => {
                     project_tasks::unstart(&prof, &log, &name, &pick(&query)?, lane)?
                 }
                 Some(PtaskCmd::Inbox { json }) => project_tasks::inbox(&prof, &name, json, lane)?,
+                Some(PtaskCmd::Split) => project_tasks::inbox_split(&prof, &name, lane)?,
                 Some(PtaskCmd::Propose { text }) => {
                     println!("{}", propose::proposed_row(&text.join(" "), &name));
                     0
@@ -1303,6 +1342,7 @@ fn main() -> Result<()> {
         }
         Cmd::Board {
             json,
+            done_days,
             agent,
             version,
             projects,
@@ -1310,7 +1350,7 @@ fn main() -> Result<()> {
             if let Some(v) = version {
                 board::print_version(&v, &projects)?
             } else if json {
-                board::print_json()?
+                board::print_json(done_days)?
             } else if agent {
                 board::print_agent(&projects)?
             } else {
@@ -1320,6 +1360,7 @@ fn main() -> Result<()> {
         Cmd::Outbox { sub } => match sub {
             None => outbox::list(&prof, false)?,
             Some(OutboxCmd::List { json }) => outbox::list(&prof, json)?,
+            Some(OutboxCmd::Split) => outbox::split(&prof)?,
             Some(OutboxCmd::Show { json }) => outbox::show(&prof, json)?,
             Some(OutboxCmd::Put { base }) => {
                 let mut text = String::new();
@@ -1466,6 +1507,7 @@ fn main() -> Result<()> {
             to_profile,
             retire_ai_tag,
             migrate_rows,
+            sweep,
             dry_run,
             minor,
             major,
@@ -1499,6 +1541,14 @@ fn main() -> Result<()> {
                 let which = if n.is_empty() { None } else { Some(n.as_str()) };
                 projects::retire_ai_tag(&prof, &log, which, dry_run)?;
                 std::process::exit(0);
+            }
+            if sweep {
+                // Exits 1 when a sheet failed, so the nightly runner reads the failure.
+                let rc = project_tasks::sweep_all(&log, dry_run)?;
+                if !dry_run {
+                    lab_refresh::kick();
+                }
+                std::process::exit(rc);
             }
             if migrate_rows {
                 migrate_rows::run(&log, dry_run)?;
@@ -1610,6 +1660,17 @@ fn main() -> Result<()> {
             ClickupCmd::Sync => clickup::sync(&prof, &log)?,
             ClickupCmd::Push => clickup::push(&prof, &log)?,
         },
+        Cmd::SheetSweep {
+            path,
+            stdin,
+            layout_only,
+            dry_run,
+        } => std::process::exit(project_tasks::sheet_sweep(
+            &path,
+            stdin,
+            layout_only,
+            dry_run,
+        )?),
         Cmd::Doctor { untyped: true, .. } => doctor::untyped()?,
         Cmd::Doctor { projects: true, .. } => doctor::projects()?,
         Cmd::Doctor {

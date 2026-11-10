@@ -17,6 +17,10 @@ const LOCAL_FRESH: &str =
 
 /// The board's queries, by name. All but `OPTIONAL` must answer or the tab shows the
 /// error instead of numbers: a board blanks rather than leave stale values up.
+/// fleet-bench's gauges, in one query so `vitals::fetch` can ask for them alone.
+pub const BENCH_QUERY: &str =
+    r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|vital)"}"#;
+
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
         ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_cores_.+"}"#.into()),
@@ -53,14 +57,12 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("failed", format!("{W} (github_run_failed)")),
         ("local_hourly", format!("sum by (hour, result) (fleet_local_gate_by_hour {LOCAL_FRESH})")),
         ("local_failed", format!("sum by (hour, repo, branch, platform, result) (fleet_local_gate_failed {LOCAL_FRESH})")),
-        // Recent runs, one series per run: the value is when it finished, or how long it took.
-        ("recent", format!("{W} (github_actions_run_recent)")),
-        ("recent_dur", format!("{W} (github_actions_run_recent_duration_seconds)")),
         // What is red right now, one row per item: the home-config `cc:red_now` recording rule,
         // which the dashboard's "What is red" table and the waybar day chip also read.
         ("red", "cc:red_now".into()),
-        // fleet-bench's window and KPIs, as it judged them: the phone's agent lines.
-        ("bench", r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past)"}"#.into()),
+        // fleet-bench's window and KPIs, as it judged them, and which of them are the vitals: the
+        // phone's agent lines and Home's Vitals.
+        ("bench", BENCH_QUERY.into()),
     ]
 }
 pub const OPTIONAL: &[&str] = &[
@@ -73,8 +75,6 @@ pub const OPTIONAL: &[&str] = &[
     "withheld",
     "power",
     "governor",
-    "recent",
-    "recent_dur",
 ];
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -354,9 +354,7 @@ mod tests {
                 "runner_cores",
                 "withheld",
                 "power",
-                "governor",
-                "recent",
-                "recent_dur"
+                "governor"
             ]
         );
     }

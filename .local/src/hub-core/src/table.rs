@@ -54,6 +54,10 @@ pub trait Row {
     /// A chip no row is under is left out, unless it is the one in force: for a table with
     /// more kinds than usually have a row.
     const HIDE_EMPTY: bool = false;
+    /// The column a phone row leads with, full width and wrapping. Empty keeps the plain table.
+    const LEAD: &'static str = "";
+    /// The few columns under the lead on a phone; the rest wait for a tap.
+    const GLANCE: &'static [&'static str] = &[];
 
     fn val(&self, col: &str) -> Val;
     /// Whether the row is under the chip `state`, one of `STATES` past the first.
@@ -87,6 +91,8 @@ impl<T: Row> Row for &T {
     const COLUMNS: &'static [&'static str] = T::COLUMNS;
     const STATES: &'static [&'static str] = T::STATES;
     const FACETS: &'static [&'static str] = T::FACETS;
+    const LEAD: &'static str = T::LEAD;
+    const GLANCE: &'static [&'static str] = T::GLANCE;
 
     fn val(&self, col: &str) -> Val {
         (*self).val(col)
@@ -242,6 +248,64 @@ pub struct Column {
     pub sort: Option<Dir>,
     pub next_sort: String,
     pub next_dir: Dir,
+    /// How a phone draws it: `lead`, `glance`, or empty for a column that waits for a tap.
+    pub role: &'static str,
+}
+
+/// One table's phone layout: what the render harness draws its fixtures with.
+#[derive(Serialize, Debug)]
+pub struct PhoneTable {
+    pub columns: &'static [&'static str],
+    pub lead: &'static str,
+    pub glance: &'static [&'static str],
+}
+
+/// How a phone draws the column `key` of a table with this lead and glance.
+pub fn role_of(key: &str, lead: &str, glance: &[&str]) -> &'static str {
+    if key == lead {
+        "lead"
+    } else if glance.contains(&key) {
+        "glance"
+    } else {
+        ""
+    }
+}
+
+fn phone_table<R: Row>() -> PhoneTable {
+    PhoneTable {
+        columns: R::COLUMNS,
+        lead: R::LEAD,
+        glance: R::GLANCE,
+    }
+}
+
+/// Every table that names a phone layout, each Costs cut being one of its own.
+pub fn phone_tables() -> Vec<PhoneTable> {
+    let cuts = crate::costs::CUTS.iter().map(|cut| {
+        let columns = crate::costs::columns(cut);
+        PhoneTable {
+            columns,
+            lead: columns[0],
+            glance: crate::costs::CUT_GLANCE,
+        }
+    });
+    let rows = [
+        phone_table::<crate::home::Need>(),
+        phone_table::<crate::proposals::Proposal>(),
+        phone_table::<crate::queue::QueueRow<'static>>(),
+        phone_table::<crate::tasks::Row>(),
+        phone_table::<crate::projects::Card>(),
+        phone_table::<crate::session_table::SessionRow>(),
+        phone_table::<crate::jobs::Job>(),
+        phone_table::<crate::actions::Action>(),
+        phone_table::<crate::fleet::who::Who>(),
+        phone_table::<crate::schedules::Schedule>(),
+        phone_table::<crate::releases::Release>(),
+        phone_table::<crate::builds::Run>(),
+        phone_table::<crate::sections::Section>(),
+        phone_table::<crate::worklog::Work>(),
+    ];
+    rows.into_iter().chain(cuts).collect()
 }
 
 /// One dropdown value: how many rows it would show and the whole query that picks it.
@@ -468,6 +532,7 @@ impl View {
                     sort: (self.sort == *key).then_some(self.dir),
                     next_sort,
                     next_dir,
+                    role: role_of(key, R::LEAD, R::GLANCE),
                 }
             })
             .collect();
@@ -494,6 +559,17 @@ fn next_of(list: &[&str], cur: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn phone_roles_name_real_columns() {
+        for t in super::phone_tables() {
+            assert!(t.columns.contains(&t.lead), "lead {}", t.lead);
+            assert!(t.glance.len() <= 3, "{} glances at too much", t.lead);
+            for g in t.glance {
+                assert!(t.columns.contains(g) && *g != t.lead, "glance {g}");
+            }
+        }
+    }
+
     use super::*;
 
     struct T {

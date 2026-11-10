@@ -2252,6 +2252,11 @@ SH
   printf 'status: answered\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/d.md"
   run asks_for sid-asker
   assert_output a
+  # A pass's one read of the store is the answer, an empty read included.
+  PENDING_ASKS=$'sid-asker\tother' run asks_for sid-asker
+  assert_output other
+  PENDING_ASKS='' run asks_for sid-asker
+  assert_output ''
 }
 
 @test "--write: the state document holds the --json rows, their activity, and pending asks" {

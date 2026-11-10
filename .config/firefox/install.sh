@@ -115,9 +115,17 @@ install_policies() {
     # etc.): deep-merged over the public base, which cannot name LAN hosts.
     local overlay="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}/.config/firefox/policies.local.json"
     if [[ -f "$overlay" ]]; then
-        # @HOME@ lets the overlay name a file:/// install_url on any machine.
-        jq -s '.[0] * (.[1] | del(._comment))' "$SCRIPT_DIR/policies.json" "$overlay" \
-            | sed "s|@HOME@|$HOME|g" \
+        # @HOME@ lets the overlay name a file:/// install_url on any machine. @KARAKEEP_KEY@ is
+        # Tab Keeper's Karakeep key, read from rbw so no repo holds it.
+        local karakeep_key=""
+        if grep -q '@KARAKEEP_KEY@' "$overlay"; then
+            karakeep_key=$(rbw get karakeep_api_key 2>/dev/null) || karakeep_key=""
+            [[ -n "$karakeep_key" ]] || echo "Warning: Tab Keeper gets no Karakeep key: rbw unlock, then rerun install.sh"
+        fi
+        jq -s --arg home "$HOME" --arg key "$karakeep_key" \
+            '.[0] * (.[1] | del(._comment))
+             | walk(if type == "string" then (if . == "@KARAKEEP_KEY@" then $key else gsub("@HOME@"; $home) end) else . end)' \
+            "$SCRIPT_DIR/policies.json" "$overlay" \
             | sudo tee "$dist_dir/policies.json" >/dev/null
         echo "  - Installed policies.json (+ $overlay) to $dist_dir"
     else

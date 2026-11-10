@@ -65,6 +65,10 @@
 #              still spends its description tokens in every session. This is a
 #              SIGNAL, not a verdict: a release runbook fires per release and is
 #              supposed to look idle.
+#   RETIRE     UNUSED, and the skill declares metadata.replaces and nobody typed any of
+#              those forms either: nobody does the work at all. Reported instead of UNUSED.
+#   BYPASSED   sessions typed a form the skill's metadata.replaces names without using the
+#              skill (claude-recall's bypass kind; the rows are hand_methods.py's).
 #   LISTBUDGET every listed skill and command together are over the shared listing
 #              budget, so the last ones arrive as a bare name. A skill with `paths:`
 #              or `disable-model-invocation: true` is not listed. Needs both repos
@@ -120,7 +124,7 @@
 #                                `paths:` or disable-model-invocation skill is never toggled,
 #                                nor is an override value other than "name-only".
 #                                Prints the hide and restore lists; --json adds the object. The
-#                                nightly skill-toggle runner lands it (agentctl-skill-toggle).
+#                                nightly skill-toggle runner opens the PR (agentctl-skill-toggle).
 #                                Exit 2 when no use is counted at all: no transcripts is not
 #                                "nothing used".
 #   skill-drift --docs [--json]  DEADPATH and NOCMD over the GLOBAL docs instead of
@@ -172,6 +176,8 @@ USE_KINDS=skill,slash,body,read,script,mention
 # The one usage counter, by path beside this script: a worktree run uses the worktree's copy.
 # It honours CLAUDE_TRANSCRIPTS itself.
 RECALL="${CLAUDE_RECALL:-$(dirname "$(readlink -f "$0")")/claude-recall}"
+# The owner of metadata.replaces (the hand-typed forms a skill retires): rows, row check, match.
+HAND_METHODS="$(dirname "$(readlink -f "$0")")/../../.claude/hooks/hand_methods.py"
 
 # The known categories. A skill outside this set is a typo or a taxonomy that
 # grew without anyone deciding to grow it; either way it should be a review
@@ -572,23 +578,68 @@ check_stale() {
 # A SIGNAL, not a verdict. A release runbook is supposed to look idle between
 # releases; what this is for is finding the ones that are idle because the router
 # never picks them, which is the overlap problem skill-refine has had no data for.
-declare -A USED=()
-# load_usage [days]: every skill with a use in the window (default USAGE_DAYS) into USED, as the
-# number of sessions that used it by any of USE_KINDS.
+declare -A USED=() BYPASS=() BYPASS_COVERED=() DENIED=() REPLACES=()
+# load_usage [days] [bypass]: every skill with a use in the window (default USAGE_DAYS) into USED,
+# as the number of sessions that used it by any of USE_KINDS. With "bypass" the same scan fills
+# BYPASS (sessions with a call matching the skill's metadata.replaces) and BYPASS_COVERED (those
+# of them that used the skill too), and DENIED (sessions a hook refused such a call in).
 load_usage() {
-  local s n
+  local s n c kinds="$USE_KINDS" json
+  [ "${2:-}" = bypass ] && kinds="$kinds,bypass,denied"
+  json="$("$RECALL" stats --days "${1:-$USAGE_DAYS}" --kind "$kinds" --top 0 --json 2>/dev/null)"
   while IFS=$'\t' read -r s n; do
     [ -n "$s" ] && USED[$s]=$n
-  done < <("$RECALL" stats --days "${1:-$USAGE_DAYS}" --kind "$USE_KINDS" --top 0 --json 2>/dev/null \
-             | jq -r '.skill_sessions // {} | to_entries[] | select(.value > 0) | "\(.key)\t\(.value)"' 2>/dev/null)
+  done < <(jq -r '.skill_sessions // {} | to_entries[] | select(.value > 0) | "\(.key)\t\(.value)"' <<<"$json" 2>/dev/null)
+  while IFS=$'\t' read -r s n c; do
+    [ -n "$s" ] && BYPASS[$s]=$n BYPASS_COVERED[$s]=$c
+  done < <(jq -r '.rows[]? | select(.kind == "bypass") | "\(.key)\t\(.sessions)\t\(.covered_sessions // 0)"' <<<"$json" 2>/dev/null)
+  while IFS=$'\t' read -r s n; do
+    [ -n "$s" ] && DENIED[$s]=$n
+  done < <(jq -r '.rows[]? | select(.kind == "denied") | "\(.key)\t\(.sessions)"' <<<"$json" 2>/dev/null)
   return 0
 }
 
+# load_replaces: the deployed skills that declare metadata.replaces, into REPLACES (row count).
+# hand_methods.py owns the rows; this only asks it.
+load_replaces() {
+  local id
+  while IFS=$'\t' read -r id _; do
+    [ -n "$id" ] && REPLACES[${id%#*}]=$(( ${REPLACES[${id%#*}]:-0} + 1 ))
+  done < <(CLAUDE_SKILLS="$SKILLS" python3 "$HAND_METHODS" --list 2>/dev/null)
+  return 0
+}
+
+# A skill that declares the hand forms it replaces, with no use and no hand-typed form in the
+# window, ran or denied, is RETIRE: nobody does that work at all. That says more than UNUSED, so
+# it replaces it. A denied form is demand the guard redirected, never a reason to retire.
 check_unused() {
   local skill="$1"
   # No transcripts at all means we cannot tell, which is not the same as unused.
   [ ${#USED[@]} -gt 0 ] || return 0
-  [ "${USED[$skill]:-0}" -gt 0 ] || add UNUSED "$skill" "${USAGE_DAYS}d" "no use in the last ${USAGE_DAYS}d of transcripts"
+  [ "${USED[$skill]:-0}" -gt 0 ] && return 0
+  if [ -n "${REPLACES[$skill]:-}" ] && [ "${BYPASS[$skill]:-0}" -eq 0 ] && [ "${DENIED[$skill]:-0}" -eq 0 ]; then
+    add RETIRE "$skill" "${USAGE_DAYS}d" "no use and no hand-typed form of its work in the last ${USAGE_DAYS}d"
+  else
+    add UNUSED "$skill" "${USAGE_DAYS}d" "no use in the last ${USAGE_DAYS}d of transcripts"
+  fi
+  return 0
+}
+
+# BYPASSED: sessions typed a form the skill's metadata.replaces names and never used the skill.
+check_bypass() {
+  local skill="$1" n="${BYPASS[$1]:-0}" cov="${BYPASS_COVERED[$1]:-0}"
+  [ $(( n - cov )) -gt 0 ] || return 0
+  add BYPASSED "$skill" "${USAGE_DAYS}d" "$(( n - cov )) of $n sessions typed a form its metadata.replaces names, without the skill"
+  return 0
+}
+
+# metadata.replaces rows the guard would skip are a lint finding here, not a silent no-op there.
+check_replaces() {
+  local skill="$1" f="$2" line
+  grep -q '^  replaces:' "$f" || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] && add BADMETA "$skill" replaces "${line//|//}"
+  done < <(python3 "$HAND_METHODS" --check "$f" 2>&1)
   return 0
 }
 
@@ -687,6 +738,7 @@ run_static() {
       check_desc_len "$s" "$m"
       check_ascii    "$s" "$m"
       check_heading  "$s" "$m"
+      check_replaces "$s" "$m"
     done < <(find_skills "$root")
   done
   # A category directory that shares a name with a skill: comms/comms/ makes
@@ -754,7 +806,7 @@ doc_set() {
 
 # --- --overrides: the skill-usage toggle --------------------------------------
 #
-# A route (another skill or a CLAUDE.md layer naming the skill) is how a reader gets to it, so
+# A route (another skill, a global doc or a runner conf naming the skill) is how a reader gets to it, so
 # whether a routed skill is listed stays the human's call: the count never hides one. The name
 # matches whole (no letter, digit, - or _ beside it). A one-word name like scope matches prose
 # too, which errs on the side that leaves a skill alone.
@@ -768,7 +820,9 @@ if [ "$MODE" = overrides ]; then
   cur=$(jq -c '.skillOverrides // {}' "$SETTINGS") || { echo "skill-drift --overrides: $SETTINGS does not parse" >&2; exit 2; }
   load_usage "$TOGGLE_DAYS"
   [ ${#USED[@]} -gt 0 ] || { echo "skill-drift --overrides: no use counted in ${TOGGLE_DAYS}d of transcripts, which is not the same as nothing used" >&2; exit 2; }
-  mapfile -t ROUTE_DOCS < <(for f in "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" "$SKILLS"/*/SKILL.md; do [ -f "$f" ] && printf '%s\n' "$f"; done)
+  # Where a reader or a runner is sent to a skill. Not lessons, anchors or memory: they are history, and a skill named in prose there is not routed.
+  AC="$HOME/.config/agentctl"
+  mapfile -t ROUTE_DOCS < <(for f in "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" "$SKILLS"/*/SKILL.md "$HOME"/.local/src/docs/*.md "$AC"/*.md "$AC"/triage-routes "$AC"/agents/*.conf "$AC"/roles/* "$AC"/prompts/*; do [ -f "$f" ] && printf '%s\n' "$f"; done)
   declare -A STATE=()
   while IFS=$'\t' read -r s v; do STATE[$s]=$v; done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"$cur")
   # A paths-scoped or model-disabled skill has its own listing rule; the toggle leaves it alone.
@@ -973,7 +1027,8 @@ else
   run_static full "$PUB/.claude/skills" "$PRIV/.claude/skills"
   run_entries "$PUB" "$PRIV"
 
-  load_usage
+  load_usage "$USAGE_DAYS" bypass
+  load_replaces
   for d in "$SKILLS"/*/; do
     [ -e "$d/SKILL.md" ] || continue
     s="$(basename "$d")"
@@ -981,6 +1036,7 @@ else
     check_cmds   "$s" "$d/SKILL.md"
     check_stale  "$s" "$d/SKILL.md"
     check_unused "$s"
+    check_bypass "$s"
   done
 
   check_undeployed "$PUB"  public
@@ -1137,6 +1193,11 @@ cat <<'EOF'
                 Bumping the date without checking is worse than leaving it stale.
   UNUSED     -> a signal, not a verdict. A release runbook is meant to look idle;
                 a skill the router never picks is the one to look at
+  RETIRE     -> no use and no hand-typed form of its work: propose retiring it with
+                `/skill-refine`; the human says yes before anything is deleted
+  BYPASSED   -> sessions did the skill's work by hand (`claude-recall stats --kind bypass`
+                shows one). A deny row: widen its match. A report row: script the form
+                and make the row deny, or fix the step that sends sessions around it
   LISTBUDGET -> shorten descriptions, or give a domain skill `paths:` so it is listed
                 only where it applies
 

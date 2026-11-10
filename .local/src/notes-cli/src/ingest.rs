@@ -15,7 +15,7 @@ use std::path::PathBuf;
 pub struct Event {
     /// RFC 3339, local time.
     pub ts: String,
-    /// Intake: `moved` (outbox or Focus -> an inbox), `filed`, `dup`, `planned`, `left` (waits
+    /// Intake: `split` (a list became one line per ask, `why` its size), `moved` (outbox or Focus -> an inbox), `filed`, `dup`, `planned`, `left` (waits
     /// for the human) or `refused` (a write the CLI turned down). A verb's write to a row:
     /// `added`, `edited`, `detailed`, `tagged`, `started`, `unstarted`, `toggled` (a Focus row), `done`, `dropped`, `placed` (another
     /// version on the same sheet), `rehomed` (another project), `removed` (left Focus undone),
@@ -34,7 +34,7 @@ pub struct Event {
     /// The row id it was filed as, or the open row it joined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Why it stayed, for `left` and `refused`.
+    /// Why it stayed, for `left` and `refused`; a `split`'s line count.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// For `filed`: the first row's words as filed ([`row_words`]), which [`kept`] compares
@@ -153,6 +153,21 @@ const KEEP_DAYS: i64 = 30;
 
 /// Append `ev`. Best effort, like the inbox flag: a record that cannot be written must not
 /// fail the move it describes, so the error goes to stderr and the write stands.
+/// One `split` event for each list `from` had split, its size in `why`, and a line on stdout.
+pub fn record_splits(p: &Profile, from: &str, lists: &[(String, usize)]) {
+    for (text, n) in lists {
+        let why = Some(format!("{n} lines"));
+        record(
+            p,
+            &Event {
+                why,
+                ..Event::new("split", from, "", text)
+            },
+        );
+        println!("{from}: split into {n} lines: {text}");
+    }
+}
+
 pub fn record(p: &Profile, ev: &Event) {
     let path = path(p);
     let res = (|| -> std::io::Result<()> {

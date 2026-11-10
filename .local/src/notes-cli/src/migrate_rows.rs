@@ -451,7 +451,7 @@ pub fn run(log: &Logger, dry_run: bool) -> Result<()> {
     let mut total = Tally::default();
     let (mut sheets, mut dups) = (0, 0);
     let mut uncoded = Vec::new();
-    for profile in config::all_profile_names()? {
+    for profile in config::managed_profile_names()? {
         let Ok(p) = config::resolve(Some(&profile)) else {
             continue;
         };

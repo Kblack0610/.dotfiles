@@ -9,42 +9,29 @@ get_session_status() {
 
     # Where an agent stands is decided once, elsewhere (.local/src/docs/fleet-states.md):
     # agent-panel's live glyph (! prompt or dialog waiting, ~ busy or on a background shell,
-    # check = idle) and the bucket in the fleet state document, joined by target. A session
-    # with an open ask or a question left for the human is bucket NEEDS even while its pane
-    # looks idle or busy, so NEEDS counts as "needs you" here. This script reads both and
-    # classifies nothing from pane text.
+    # check = idle) and its needs column (a dialog or a pending ask, even while the pane looks
+    # idle or busy). This script classifies nothing from pane text.
     #
-    # awk and a tagged stream, NOT an associative array: tmux runs status-left through its
-    # own environment, so on macOS this gets /bin/bash 3.2 (no `declare -A`), and the status
-    # bar once rendered a `declare: -A: invalid option` error instead of the glyphs.
-    local server state counts max_age="${FLEET_STATE_MAX_AGE:-300}"
+    # awk, NOT an associative array: tmux runs status-left through its own environment, so on
+    # macOS this gets /bin/bash 3.2 (no `declare -A`), and the status bar once rendered a
+    # `declare: -A: invalid option` error instead of the glyphs.
+    local server counts
     server=$(tmux display-message -p '#{socket_path}' 2>/dev/null)
     server="${server##*/}"
-    state="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 
     # agent-panel targets are <server>/<session>:<window>; only this tmux server's rows count.
     counts=$(
-        {
-            # A stale document, or one written by a pass that could not read agent-panel, is
-            # ignored whole: window indexes get reused, so an old NEEDS row would mark a live
-            # window. Same trust rule and limit as _fleet_load in servers.sh.
-            jq -r --argjson max "$max_age" '
-                select((.unreadable // []) | index("agent-panel") | not)
-                | select(now - (.generated_epoch // 0) <= $max)
-                | .sessions[]? | [.target, .bucket] | @tsv' "$state" 2>/dev/null | awk '{ print "B\t" $0 }'
-            agent-panel list 2>/dev/null | awk '{ print "R\t" $0 }'
-        } | awk -F'\t' -v srv="$server" -v want="$target_session" '
-            $1 == "B" { bucket[$2] = $3; next }
-            $1 == "R" {
-                t = $2; rest = t; tsrv = ""
+        agent-panel list --needs 2>/dev/null | awk -F'\t' -v srv="$server" -v want="$target_session" '
+            {
+                t = $1; rest = t; tsrv = ""
                 if (i = index(t, "/")) { tsrv = substr(t, 1, i - 1); rest = substr(t, i + 1) }
                 if (srv != "" && tsrv != "" && tsrv != srv) next
                 sess = rest; sub(/:[^:]*$/, "", sess)
                 if (want != "" && sess != want) next
                 total++
-                if ($3 == "!" || bucket[t] == "NEEDS") attention++
-                else if ($3 == "~") working++
-                else if ($3 == "✓") idle++
+                if ($5 == 1) attention++
+                else if ($2 == "~") working++
+                else if ($2 == "✓") idle++
             }
             END { print total + 0, attention + 0, working + 0, idle + 0 }'
     )

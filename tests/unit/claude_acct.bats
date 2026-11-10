@@ -84,11 +84,11 @@ creds() {
   export CLAUDE_ACCT_NOW=1800000000
   r1=$(date -u -d @$((1800000000 + 2 * 3600)) +%Y-%m-%dT%H:%M:%S+00:00)
   r2=$(date -u -d @$((1800000000 + 6 * 86400)) +%Y-%m-%dT%H:%M:%S+00:00)
-  usage main 90 75 "$r1"
+  usage main 97 75 "$r1"
   usage alt 10 70 "$r2"
   run "$ACCT" pick
   assert_line "$ALT"
-  usage main 84 75 "$r1"
+  usage main 94 75 "$r1"
   run --separate-stderr "$ACCT" pick
   assert_output ''
 }
@@ -352,8 +352,11 @@ src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
   assert_output --partial 'moved from the main Claude account to alt'
   run resume_cmd 0 "/w t" "" 'claude --resume s1' 'hi there'
   assert_output "cd /w\\ t && env -u CLAUDE_CONFIG_DIR claude --resume s1 hi\\ there"
-  run resume_cmd 1 /w /a 'claude --resume s1' hi
-  assert_output 'CLAUDE_CONFIG_DIR=/a claude --resume s1 hi'
+  # A pane that is its claude gets the launch env; with no claude-telemetry.sh it says so, and still
+  # carries the queue item.
+  run resume_cmd 1 /w /a 'claude --resume s1' hi fix-menu
+  assert_line --index 0 --partial 'no launch env from'
+  assert_line --index 1 'CLAUDE_CONFIG_DIR=/a AGENT_QUEUE_ITEM=fix-menu claude --resume s1 hi'
 }
 
 # week <account> <used%> <hours-until-reset> -- a fresh answer with a weekly window, now at NOW
@@ -367,24 +370,32 @@ week() {
 # field <name> <jq>: from status --json's rows or room --json's accounts
 field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | .[] | select(.name == \$a) | $2"; }
 
-@test "status --json: half the week gone, used under it, is under pace and lasts to the reset" {
-  export CLAUDE_ACCT_NOW=$NOW
+@test "status --json: run_out is when the live sessions empty the week at their burn now" {
+  # 2026-11-09: a straight line from the week start said main ran out Tue 21:12; its burn then ran
+  # it out Wed night to Thu morning (backtest: .59 points/h off over 6h, live x rate .32).
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
   week main 30 84
   week alt 80 84
+  live "$ALT" 10   # 1 point an hour, 20 left
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field main .week_gone <<<"$output")" = 50 ]
   [ "$(field main .room.ok <<<"$output")" = true ]
+  # no live sessions, no burn: it lasts to the reset
   [ "$(field main .run_out <<<"$output")" = null ]
   [ "$(field alt .room.reason <<<"$output")" = pace ]
-  # 84h gone for 80%, so 100% lands 21h from now
-  [ "$(field alt .run_out <<<"$output")" = "$((NOW + 21 * 3600))" ]
+  [ "$(field alt .run_out <<<"$output")" = "$((NOW + 20 * 3600))" ]
+  # Negative control: a burn that lasts past the reset is null, not a time after it.
+  live "" 1        # 0.1 an hour, 70 left: 700h, past the reset in 84h
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field main .run_out <<<"$output")" = null ]
 }
 
 @test "status --json: the first hour of a week, and an account past its limit" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 0 167
   week alt 104 10
+  live "$ALT" 1
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field main .room.ok <<<"$output")" = true ]
@@ -674,23 +685,30 @@ STUB
 
 @test "room: with none, the line names the closest account, how far past its pace, and when it runs out" {
   # 2026-11-05 12:33: alt 15% used with 9% of its week gone, 1 point past the 5 of slack; bnb (here
-  # main) at 88%, inside its reserve. "no account has room" alone read as every account full.
+  # main) at 96%, inside its reserve. "no account has room" alone read as every account full.
   export CLAUDE_ACCT_NOW=$NOW TZ=UTC
-  week main 88 50
+  week main 96 50
   week alt 15 152
+  # Running out before the reset at its burn is committed too, so both carry 10 live (1 point an
+  # hour) and alt, with 85 left against main's 4, stays the closest.
+  export CLAUDE_ACCT_SESSION_RATE=0.1
+  live "" 10
+  live "$ALT" 10
   run --separate-stderr "$ACCT" room
   assert_failure 1
   assert_output ''
-  assert_equal "$stderr" 'claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Tue 02:40 at this rate'
+  assert_equal "$stderr" 'claude-acct: no account has room; alt is the closest, 1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack), runs out Mon 21:00 at this rate'
   # the same row status prints
   run "$ACCT" status
-  assert_line --regexp '^alt +- +15% +9% +Tue 02:40 '
+  assert_line --regexp '^alt +- +15% +9% +Mon 21:00 '
   # the reserve, when that is what refuses the closest one; it lasts to its reset
-  week main 88 2
-  week alt 90 100
+  # no live sessions from here: a row with no burn lasts to its reset
+  rm -rf "${CLAUDE_ACCT_PROC:?}"/*
+  week main 96 2
+  week alt 97 100
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 88% of its week used, inside the last 15% kept for the human, lasts to its reset Fri 10:00'
+  assert_equal "$stderr" 'claude-acct: no account has room; main is the closest, 96% of its week used, inside the last 5% kept for the human, lasts to its reset Fri 10:00'
 }
 
 @test "room: the slack is the edge of the pace line" {
@@ -707,7 +725,7 @@ STUB
 
 @test "room: the machine-mode level scales slack and reserve; pick, which cl uses, does not move" {
   export CLAUDE_ACCT_NOW=$NOW TZ=UTC
-  week main 88 50
+  week main 96 50
   week alt 15 152   # 1 point past mid's 5 of slack
   run --separate-stderr "$ACCT" pick
   local mid_pick="$output"
@@ -720,24 +738,24 @@ STUB
   assert_output "$ALT"
   run --separate-stderr "$ACCT" pick
   assert_output "$mid_pick"
-  echo MACHINE_MODE=reserved > "$HOME/.agent/machine-mode.env"   # low: 1 of slack, 20 kept back
+  echo MACHINE_MODE=reserved > "$HOME/.agent/machine-mode.env"   # low: 1 of slack, 7 kept back
   run --separate-stderr "$ACCT" room
   assert_failure 1
   [[ "$stderr" == *'5 points over its weekly pace (15% used, 9% of its week gone, 1 point of slack)'* ]] || fail "$stderr"
-  week main 82 2
-  week alt 90 100
+  week main 94 2
+  week alt 97 100
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  [[ "$stderr" == *'82% of its week used, inside the last 20% kept for the human'* ]] || fail "$stderr"
+  [[ "$stderr" == *'94% of its week used, inside the last 7% kept for the human'* ]] || fail "$stderr"
 }
 
 @test "room: the reserve holds late in the week, even under pace" {
   export CLAUDE_ACCT_NOW=$NOW
-  week main 85 2
-  week alt 90 2
+  week main 95 2
+  week alt 97 2
   run --separate-stderr "$ACCT" room
   assert_failure 1
-  week main 84 2
+  week main 94 2
   run --separate-stderr "$ACCT" room
   assert_success
   assert_output ''
@@ -747,7 +765,7 @@ STUB
   export CLAUDE_ACCT_NOW=$NOW
   week main 10 84
   week alt 20 84
-  printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
+  printf '%s' "$(jq -c '.five_hour = {utilization: 97}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
   run --separate-stderr "$ACCT" room
   assert_success
   assert_output "$ALT"
@@ -877,15 +895,15 @@ seen_claude() {
   [ "$(field main .on_pace_idle <<<"$output")" = "$NOW" ]
   [ "$(field main .on_pace_burn <<<"$output")" = "$NOW" ]
   [ "$(field alt .on_pace_burn <<<"$output")" = null ]
-  # 30 points at 100 a week is 50.4h
-  [ "$(field alt .on_pace_idle <<<"$output")" = "$((NOW + 181440))" ]
+  # 25 points past the 5 of slack at 100 a week is 42h
+  [ "$(field alt .on_pace_idle <<<"$output")" = "$((NOW + 151200))" ]
   [ "$(field alt '.sustain * 84 | round' <<<"$output")" = 20 ]
 }
 
 @test "back on pace: a burn under the line closes the gap, and one that closes after the reset says null" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
-  week main 55 84   # 5 points over
-  week alt 80 84    # 30 points over: 101.6h at this burn, past the reset in 84h
+  week main 60 84   # 10 points over, 5 past the slack
+  week alt 80 84    # 25 past the slack: 84.7h at this burn, past the reset in 84h
   live "" 3
   live "$ALT" 3     # 0.3 an hour: the gap closes at 0.295 an hour
   run --separate-stderr "$ACCT" status --json
@@ -893,6 +911,21 @@ seen_claude() {
   # 5 / (100/168 - 0.3) = 16.935h
   [ "$(field main '.on_pace_burn - '$NOW' | . >= 60960 and . <= 60970' <<<"$output")" = true ]
   [ "$(field alt .on_pace_burn <<<"$output")" = null ]
+}
+
+@test "back on pace: is when room drops pace, so inside the slack is on pace now" {
+  # 2026-11-09: on_pace compared used with gone and ignored the slack, so ON-PACE read about 16h
+  # after the gate would let dispatch start on alt again.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 55 84   # 5 points over: inside the slack
+  week alt 56 84    # 6 over: one point past it
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field main .room.reasons <<<"$output" | jq -c .)" = '[]' ]
+  [ "$(field main .on_pace_idle <<<"$output")" = "$NOW" ]
+  [ "$(field alt .room.reason <<<"$output")" = pace ]
+  # 1 point at 100 a week is 1.68h
+  [ "$(field alt .on_pace_idle <<<"$output")" = "$((NOW + 6048))" ]
 }
 
 @test "status: the fleet line sums live, burn and what the weeks carry, and names the first back on pace" {
@@ -928,7 +961,7 @@ seen_claude() {
 
 @test "room object: the reserve, the capped week and the live sessions each get their own reason" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
-  week main 87 2
+  week main 97 2
   week alt 100 2
   run --separate-stderr "$ACCT" room --json
   assert_failure 1
@@ -948,7 +981,7 @@ seen_claude() {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
   week main 22 141   # 1 point past its line and nothing else
   week alt 22 141
-  printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/alt.json")" > "$XDG_CACHE_HOME/claude-acct/alt.json"
+  printf '%s' "$(jq -c '.five_hour = {utilization: 97}' "$XDG_CACHE_HOME/claude-acct/alt.json")" > "$XDG_CACHE_HOME/claude-acct/alt.json"
   run --separate-stderr "$ACCT" room --json
   assert_failure 1
   [[ "$(field main '.room.reasons | join(",")' <<< "$output")" == pace ]]
@@ -964,10 +997,10 @@ seen_claude() {
   [[ "$(jq -r .why <<< "$output")" == 'no account has room; main is the closest, 1 point over its weekly pace (22% used, 16% of its week gone, 5 points of slack)'* ]]
   assert_equal "$stderr" ''
   # early in the week the reserve is past the line too, and both are named
-  week main 87 141
+  week main 97 141
   run --separate-stderr "$ACCT" room --json
   [[ "$(field main '.room.reasons | join(",")' <<< "$output")" == reserve,pace ]]
-  [[ "$(field main .room.why <<< "$output")" == '87% of its week used, inside the last 15% kept for the human' ]]
+  [[ "$(field main .room.why <<< "$output")" == '97% of its week used, inside the last 5% kept for the human' ]]
   week main 10 84
   run --separate-stderr "$ACCT" room --json
   assert_success
@@ -982,7 +1015,7 @@ seen_claude() {
   CLAUDE_ACCT_PACE_SLACK_PCT=100 CLAUDE_ACCT_RESERVE_PCT=0 run --separate-stderr "$ACCT" room --json
   assert_failure 1
   [[ "$(field main .room.slack <<< "$output")" == 5 ]]
-  [[ "$(field main .room.reserve <<< "$output")" == 15 ]]
+  [[ "$(field main .room.reserve <<< "$output")" == 5 ]]
   run grep -nE 'CLAUDE_ACCT_(PACE_SLACK|RESERVE)_PCT:-' "$ACCT"
   assert_failure
 }
@@ -1002,7 +1035,7 @@ seen_claude() {
   assert_equal "$(jq -r '"\(.pick) \(.why)"' <<< "$output")" 'null no account has room and one cannot be read'
   week main 10 84
   week alt 20 84
-  printf '%s' "$(jq -c '.five_hour = {utilization: 90}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
+  printf '%s' "$(jq -c '.five_hour = {utilization: 97}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
   run --separate-stderr "$ACCT" room --json
   assert_success
   [[ "$(field main .room.reason <<< "$output")" == five_hour ]]
@@ -1118,11 +1151,27 @@ EOS
   chmod +x "$SANDBOX/bin/curl"
   export SANDBOX
 }
+# codex_log [-a] <rollout file> [epoch] -- write (or append) stdin to a rollout stamped at that time
+# ($NOW by default), since only rollouts written within the week of now are read, and drop the
+# cached codex reading.
+codex_log() {
+  local append=; [[ "$1" == -a ]] && { append=1; shift; }
+  if [[ -n "$append" ]]; then cat >> "$1"; else cat > "$1"; fi
+  touch -d "@${2:-$NOW}" "$1"
+  rm -f "$XDG_CACHE_HOME/claude-acct/codex.json"
+}
+# codex_refused <file> <epoch> -- a run refused at the usage limit at that time, in the shape of the
+# real one of 2026-11-08 16:18: a windowless record, then a task_complete whose error carries
+# codex_error_info usage_limit_exceeded
+codex_refused() {
+  printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"premium","limit_name":null,"primary":null,"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"individual_limit":null,"spend_control_reached":null,"plan_type":null,"rate_limit_reached_type":null}}}\n{"timestamp":"%s","type":"event_msg","payload":{"type":"task_complete","last_agent_message":null,"error":{"message":"You have hit your usage limit.","codex_error_info":"usage_limit_exceeded"},"started_at":%s,"completed_at":%s,"duration_ms":1673}}\n' \
+    "$(date -u -d "@$2" +%FT%T.000Z)" "$(date -u -d "@$2" +%FT%T.000Z)" "$2" "$2" | codex_log "$1" "$2"
+}
 # rollout <week-used%> <5h-used%> <hours-until-week-reset>
 rollout() {
   local reset=$((NOW + $3 * 3600)) short=$((NOW + 3600))
   printf '{"payload":{"type":"token_count","rate_limits":{"plan_type":"plus","primary":{"used_percent":%s,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":%s,"window_minutes":10080,"resets_at":%s},"rate_limit_reached_type":null}}}\n' \
-    "$2" "$short" "$1" "$reset" > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+    "$2" "$short" "$1" "$reset" | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
 }
 # budget <file> <key|team> <spend> <max>
 budget() {
@@ -1174,6 +1223,46 @@ budget() {
   [ "$(field codex .room.reason <<<"$output")" = reserve ]
 }
 
+@test "sources: the fleet line sums Claude accounts only, a codex point is another budget" {
+  # 2026-11-09: codex in the sum read 1.6/h vs 1.7/h, carries ~52; Claude alone was 1.3 vs 1.15.
+  src_setup
+  week main 80 84   # 20 left over 84h: 0.24 an hour
+  rollout 1 0 84    # codex: 99 left, 1.18 an hour, which the old sum added
+  run --separate-stderr "$ACCT" status
+  assert_success
+  assert_line --regexp '^codex '
+  assert_line --regexp '^fleet: 0 live, burn 0/h vs 0\.2/h sustainable'
+}
+
+@test "sources: the textfile publishes the fleet line's own sum, and no burn when no Claude row is read" {
+  # ar-1149: hub-core burn.rs re-summed the rows with its own copy of this filter; it reads these now.
+  src_setup
+  export CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 80 84   # 20 left over 84h: 0.24 an hour
+  rollout 1 0 84    # codex: 99 left, 1.18 an hour, another budget
+  live "" 3
+  live "$ALT" 2     # alt has no usage read: its sessions are live, its burn is not summed
+  rm -f "$XDG_CACHE_HOME/claude-acct/alt.json"
+  mkdir -p "$SANDBOX/prom"
+  "$ACCT" textfile "$SANDBOX/prom"
+  run cat "$SANDBOX/prom/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="alt",kind="claude"} 0'
+  assert_line 'claude_fleet_live_sessions 5'
+  assert_line 'claude_fleet_session_rate_points_per_hour 0.1'
+  assert_line --regexp '^claude_fleet_burn_points_per_hour 0\.3(0000|$)'
+  assert_line --regexp '^claude_fleet_sustain_points_per_hour 0\.238'
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: 5 live, burn 0\.3/h vs 0\.2/h sustainable'
+  # negative control: with no Claude account read, live stays and burn and sustain are not written
+  rm -f "$XDG_CACHE_HOME/claude-acct/main.json" "$HOME/.claude/.credentials.json"
+  "$ACCT" textfile "$SANDBOX/prom"
+  run cat "$SANDBOX/prom/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="main",kind="claude"} 0'
+  assert_line 'claude_fleet_live_sessions 5'
+  refute_line --partial 'claude_fleet_burn'
+  refute_line --partial 'claude_fleet_sustain'
+}
+
 @test "sources: a week whose reset has passed reads as unused" {
   src_setup
   rollout 100 0 -2
@@ -1182,11 +1271,78 @@ budget() {
   [ "$(field codex .room.ok <<<"$output")" = true ]
 }
 
+# The shape of a real Pro rollout (2026-11-09 12:29, plan_type prolite): the week is primary and
+# there is no 5h window. pro_rollout <week-used%> <hours-until-week-reset> [window minutes]
+pro_rollout() {
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":%s,"window_minutes":%s,"resets_at":%s},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"plan_type":"prolite","rate_limit_reached_type":null}}}\n' \
+    "$1" "${3:-10080}" "$((NOW + $2 * 3600))" | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+}
+
+@test "sources: a Pro rollout's primary week reads as the week, with no 5h window" {
+  src_setup
+  pro_rollout 30 84
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .plan <<<"$output")" = prolite ]
+  [ "$(field codex .week_used <<<"$output")" = 30 ]
+  [ "$(field codex .five_hour <<<"$output")" = null ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+  # negative control: past its pace line, the week is paced (before, it sat under 5H, never paced)
+  pro_rollout 90 84
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .room.ok <<<"$output")" = false ]
+  [ "$(field codex '.room.reasons | index("pace") != null' <<<"$output")" = true ]
+}
+
+@test "sources: a codex window of a length it does not know is unread, not guessed" {
+  src_setup
+  pro_rollout 30 84 1440
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = unread ]
+  [ "$(field codex .room.ok <<<"$output")" = false ]
+}
+
+@test "sources: a codex week logged as 10081 minutes is still the week" {
+  src_setup
+  pro_rollout 30 84 10081
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 30 ]
+}
+
+@test "sources: a codex window with no length is unread, and the stderr names it" {
+  src_setup
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":10,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":40,"resets_at":%s}}}}\n' \
+    "$((NOW + 3600))" "$((NOW + 84 * 3600))" | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = unread ]
+  [[ "$stderr" == *"unknown length [300,null]"* ]]
+}
+
+@test "sources: a codex record with only a 5h window has no week reading" {
+  src_setup
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":20,"window_minutes":300,"resets_at":%s},"secondary":null}}}\n' \
+    "$((NOW + 3600))" | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .five_hour <<<"$output")" = 20 ]
+  [ "$(field codex .week_used <<<"$output")" = null ]
+}
+
+@test "sources: a windowed record of another limit_id is not the plan's usage" {
+  src_setup
+  rollout 40 10 84
+  printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","plan_type":"plus","primary":{"used_percent":95,"window_minutes":300,"resets_at":%s},"secondary":null,"rate_limit_reached_type":null}}}\n' \
+    "$((NOW + 3600))" | codex_log -a "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+  [ "$(field codex .five_hour <<<"$output")" = 10 ]
+}
+
 @test "sources: codex reads the last record with a window, past a windowless premium one" {
   src_setup
   rollout 40 10 84
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","plan_type":"plus","primary":null,"secondary":null,"rate_limit_reached_type":null}}}\n' \
-    >> "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+    | codex_log -a "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field codex .state <<<"$output")" = ok ]
@@ -1198,22 +1354,22 @@ budget() {
   rollout 40 10 84
   local d="$BATS_TEST_TMPDIR/codex/2026/11"
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n{"payload":{"rate_limits":{"prim' \
-    > "$d/rollout-b.jsonl"
-  touch -d '-1 hour' "$d/rollout-a.jsonl"
+    | codex_log "$d/rollout-b.jsonl"
+  touch -d "@$((NOW - 3600))" "$d/rollout-a.jsonl"
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field codex .state <<<"$output")" = ok ]
   [ "$(field codex .week_used <<<"$output")" = 40 ]
 }
 
-@test "sources: codex reads past a run of refused rollouts, however long" {
+@test "sources: codex reads past a run of windowless rollouts, however long" {
   src_setup
   rollout 40 10 84
   local d="$BATS_TEST_TMPDIR/codex/2026/11" i
-  touch -d '-2 hours' "$d/rollout-a.jsonl"
+  touch -d "@$((NOW - 7200))" "$d/rollout-a.jsonl"
   for i in $(seq 1 25); do
     printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n' \
-      > "$d/rollout-refused-$i.jsonl"
+      | codex_log "$d/rollout-windowless-$i.jsonl"
   done
   run --separate-stderr "$ACCT" status --json
   assert_success
@@ -1224,9 +1380,158 @@ budget() {
 @test "sources: codex with no windowed record in any rollout is unread" {
   src_setup
   printf '{"payload":{"type":"token_count","rate_limits":{"limit_id":"premium","primary":null,"secondary":null}}}\n' \
-    > "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+    | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
   run --separate-stderr "$ACCT" status --json
   [ "$(field codex .state <<<"$output")" = unread ]
+}
+
+@test "sources: codex reads only rollouts of the last week, and an idle one reads unused" {
+  src_setup
+  rollout 40 10 84
+  local f="$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  touch -d "@$((NOW - 604800 - 60))" "$f"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 0 ]
+  [ "$(field codex .plan <<<"$output")" = null ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+  # negative control: the same rollout a minute inside the week is read
+  touch -d "@$((NOW - 604800 + 60))" "$f"
+  rm -f "$XDG_CACHE_HOME/claude-acct/codex.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+}
+
+@test "sources: codex with no sessions dir is unread" {
+  src_setup
+  rm -rf "$BATS_TEST_TMPDIR/codex"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = unread ]
+}
+
+@test "sources: a refusal newer than the reading fills the 5h window until its reset" {
+  src_setup
+  rollout 40 10 84
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  touch -d "@$((NOW - 7200))" "$d/rollout-a.jsonl"
+  codex_refused "$d/rollout-b.jsonl" $((NOW - 3600))
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .five_hour <<<"$output")" = 100 ]
+  [ "$(field codex .five_hour_resets <<<"$output")" = $((NOW + 3600)) ]
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+  [ "$(field codex .reached <<<"$output")" = true ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+  # negative control: a refusal older than the reading changes nothing
+  codex_refused "$d/rollout-b.jsonl" $((NOW - 3 * 3600))
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .five_hour <<<"$output")" = 10 ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+}
+
+@test "sources: a codex refusal holds until its window can reset, then the next run is the probe" {
+  src_setup
+  rollout 40 10 84                       # the 5h window resets at NOW+1h
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  touch -d "@$((NOW - 7200))" "$d/rollout-a.jsonl"
+  codex_refused "$d/rollout-b.jsonl" $((NOW - 3600))
+  # past that reset, the refusal is spent and the window reads unused
+  CLAUDE_ACCT_NOW=$((NOW + 7200)) run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .five_hour <<<"$output")" = 0 ]
+  [ "$(field codex .reached <<<"$output")" = false ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+  # refused again after that reset: no logged reset follows it, so it holds one 5h window
+  codex_refused "$d/rollout-b.jsonl" $((NOW + 5400))
+  CLAUDE_ACCT_NOW=$((NOW + 7200)) run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .five_hour <<<"$output")" = 100 ]
+  [ "$(field codex .five_hour_resets <<<"$output")" = $((NOW + 5400 + 18000)) ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+}
+
+@test "sources: a Pro refusal holds the week, its only window" {
+  src_setup
+  pro_rollout 60 84
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  touch -d "@$((NOW - 7200))" "$d/rollout-a.jsonl"
+  codex_refused "$d/rollout-b.jsonl" $((NOW - 3600))
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 100 ]
+  [ "$(field codex .five_hour <<<"$output")" = null ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+}
+
+@test "sources: codex refusals with no reading in the week read reached, not unread" {
+  src_setup
+  codex_refused "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl" $((NOW - 600))
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .reached <<<"$output")" = true ]
+  [ "$(field codex .week_used <<<"$output")" = null ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+}
+
+@test "sources: codex refusals with no reading lapse after the shortest window, and an undated one is unread" {
+  src_setup
+  codex_refused "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl" $((NOW - 5 * 3600 - 60))
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .reached <<<"$output")" = false ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+  # a refusal Codex logged with no time cannot be held to any reset, so it blocks
+  printf '{"payload":{"type":"task_complete","error":{"codex_error_info":"usage_limit_exceeded"}}}\n' \
+    | codex_log "$BATS_TEST_TMPDIR/codex/2026/11/rollout-b.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = unread ]
+  [[ "$stderr" == *"a refusal with no time"* ]]
+}
+
+@test "sources: a codex refusal in an older file still counts when it is newer than the reading" {
+  # Two concurrent runs: A is refused at NOW-1h and stops; B logged its last reading at NOW-2h and
+  # kept writing other events, so its file is the newer one.
+  src_setup
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  codex_refused "$d/rollout-a.jsonl" $((NOW - 3600))
+  printf '{"timestamp":"%s","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","plan_type":"plus","primary":{"used_percent":10,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":40,"window_minutes":10080,"resets_at":%s},"rate_limit_reached_type":null}}}\n{"timestamp":"x","payload":{"type":"agent_message"}}\n' \
+    "$(date -u -d "@$((NOW - 7200))" +%FT%T.000Z)" $((NOW + 3600)) $((NOW + 84 * 3600)) | codex_log "$d/rollout-b.jsonl" $((NOW - 600))
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .five_hour <<<"$output")" = 100 ]
+  [ "$(field codex .room.reason <<<"$output")" = capped ]
+}
+
+@test "sources: a torn last line does not hide the codex reading before it" {
+  src_setup
+  rollout 40 10 84
+  printf '{"payload":{"rate_limits":{"prim' | codex_log -a "$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .state <<<"$output")" = ok ]
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+}
+
+@test "sources: a codex sessions tree that cannot be listed is unread, never idle" {
+  src_setup
+  local d="$BATS_TEST_TMPDIR/codex/2026/11"
+  rollout 40 10 84
+  chmod 000 "$d"
+  run --separate-stderr "$ACCT" status --json
+  chmod 755 "$d"
+  [ "$(field codex .state <<<"$output")" = unread ]
+}
+
+@test "sources: the codex reading is cached for the TTL like every other kind" {
+  src_setup
+  rollout 40 10 84
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+  # a newer rollout behind the cache's back is not read until the cache is older than the TTL
+  local f="$BATS_TEST_TMPDIR/codex/2026/11/rollout-a.jsonl"
+  sed -i 's/"used_percent":40/"used_percent":70/' "$f"
+  touch -d "@$NOW" "$f"    # sed restamps it at the real time, outside the week of $NOW
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 40 ]
+  CLAUDE_ACCT_TTL=0 run --separate-stderr "$ACCT" status --json
+  [ "$(field codex .week_used <<<"$output")" = 70 ]
 }
 
 @test "sources: a key at its cap has no room" {
@@ -1305,7 +1610,7 @@ budget() {
   assert_output 'every source on pace (5 sources)'
   # the same sources with codex well past its weekly line and the key inside its reserve
   rollout 90 0 84
-  budget sk-res key 18 20
+  budget sk-res key 19.5 20
   rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
   run --separate-stderr "$ACCT" check pace
   assert_failure 1
@@ -1367,6 +1672,41 @@ budget() {
   [ "$(field bogus .state <<<"$output")" = unread ]
   run --separate-stderr "$ACCT" room --source nosuch
   assert_failure 3
+}
+
+# Reads the shipped sources file on purpose: parallel codex starts drain a plan window, so the shipped
+# codex row must carry a live cap. The number is provisional (rules.jsonl), so this reads it.
+@test "sources: the shipped codex row caps live starts at its max_live" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources"
+  export CLAUDE_ACCT_HARNESSES="$SANDBOX/harnesses.json"
+  echo '{"gateway":{"url":"http://gw.test"},"harnesses":{"codex":{"source":"codex"}}}' > "$CLAUDE_ACCT_HARNESSES"
+  mkdir -p "$HOME/.codex/sessions/2026/11"
+  printf '{"payload":{"type":"token_count","rate_limits":{"plan_type":"plus","primary":{"used_percent":1,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":1,"window_minutes":10080,"resets_at":%s},"rate_limit_reached_type":null}}}\n' \
+    $((NOW + 3600)) $((NOW + 84 * 3600)) | codex_log "$HOME/.codex/sessions/2026/11/rollout-a.jsonl"
+  week main 30 84
+  # agent-queue answers only the call source_live makes, with n running codex items
+  queue_running() {
+    printf '#!/usr/bin/env bash\n[[ "$*" == "list --json --state running" ]] || exit 2\nfor i in $(seq 1 %s); do echo "{\\"slug\\":\\"c$i\\",\\"agent\\":\\"codex\\"}"; done\n' "$1" > "$SANDBOX/bin/agent-queue"
+    chmod +x "$SANDBOX/bin/agent-queue"
+  }
+  queue_running 1
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  cap=$(field codex .max_live <<<"$output")
+  [[ "$cap" =~ ^[1-9][0-9]*$ ]]
+  # one under the cap: the next start has room
+  queue_running $((cap - 1))
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .live <<<"$output")" = $((cap - 1)) ]
+  [ "$(field codex .room.ok <<<"$output")" = true ]
+  # at the cap: the next start waits, with weeks of allowance left
+  queue_running "$cap"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field codex .live <<<"$output")" = "$cap" ]
+  [ "$(field codex .room.ok <<<"$output")" = false ]
+  [ "$(field codex '.room.reasons | index("max_live") != null' <<<"$output")" = true ]
 }
 
 # refused <key> <message>: what the gateway answers that key's free budget probe

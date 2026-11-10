@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # install.sh on a stowed profile: it must reach the system steps, keep Firefox's own
-# containers.json, and fill @HOME@ in the private overlay. sudo is stubbed, so nothing leaves $HOME.
+# containers.json, and fill @HOME@ and @KARAKEEP_KEY@ in the private overlay. sudo is stubbed, so nothing leaves $HOME.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -45,6 +45,26 @@ STUB
   run bash "$REPO/.config/firefox/install.sh"
   assert_success
   jq -e --arg want "file://$HOME/a.xpi" '.policies.ExtensionSettings["x@y"].install_url == $want' "$FIREFOX_DIR/distribution/policies.json"
+}
+
+@test "Tab Keeper's policy settings pass through and its key comes from rbw" {
+  echo '{"policies":{"3rdparty":{"Extensions":{"t@k":{"config":{"dryRun":false},"karakeepKey":"@KARAKEEP_KEY@"}}}}}' >"$DOTFILES_PRIVATE/.config/firefox/policies.local.json"
+  printf '#!/usr/bin/env bash\necho "k|ey&1"\n' >"$HOME/bin/rbw"
+  chmod +x "$HOME/bin/rbw"
+  run bash "$REPO/.config/firefox/install.sh"
+  assert_success
+  refute_output --partial "no Karakeep key"
+  jq -e '.policies["3rdparty"].Extensions["t@k"] | .config.dryRun == false and .karakeepKey == "k|ey&1"' "$FIREFOX_DIR/distribution/policies.json"
+}
+
+@test "a locked rbw leaves Tab Keeper's key empty and says so" {
+  echo '{"policies":{"3rdparty":{"Extensions":{"t@k":{"karakeepKey":"@KARAKEEP_KEY@"}}}}}' >"$DOTFILES_PRIVATE/.config/firefox/policies.local.json"
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$HOME/bin/rbw"
+  chmod +x "$HOME/bin/rbw"
+  run bash "$REPO/.config/firefox/install.sh"
+  assert_success
+  assert_output --partial "no Karakeep key"
+  jq -e '.policies["3rdparty"].Extensions["t@k"].karakeepKey == ""' "$FIREFOX_DIR/distribution/policies.json"
 }
 
 @test "a macOS profile under Application Support is installed" {

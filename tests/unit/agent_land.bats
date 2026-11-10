@@ -130,6 +130,8 @@ EOF
 
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
 board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' || true; }
+# not_recorded -> the call log without the chain's record lines, which a stopped landing writes too
+not_recorded() { grep -v '^notes ingest record ' "$LOG" || true; }
 
 # item <slug> [from] [lane] [profile] -> a running queue item, on project $ITEM_PROJECT (dotfiles)
 item() {
@@ -152,7 +154,9 @@ item() {
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial "head failed: HEAD 01234567 is not the PR's head aaaaaaaa: run from the PR's checkout: /srv/wt/r-pr-42"
-  run grep -c 'git fetch\|pr edit\|pr checks\|pr merge\|^notes' "$LOG"
+  run grep -c -- '--action land-failed' "$LOG"
+  assert_output 0
+  run grep -c 'git fetch\|pr edit\|pr checks\|pr merge\|^notes' <(not_recorded)
   assert_output 0
 }
 
@@ -196,7 +200,7 @@ item() {
   assert_output --partial "head failed: HEAD 01234567 is origin's pr-42, but the PR still reads aaaaaaaa after 3 polls"
   run grep -c 'pr view 42 --json headRefOid -q .headRefOid' "$LOG"
   assert_output 3
-  run grep -c 'pr edit\|pr checks\|pr merge\|^notes' "$LOG"
+  run grep -c 'pr edit\|pr checks\|pr merge\|^notes' <(not_recorded)
   assert_output 0
 }
 
@@ -389,7 +393,7 @@ second_wait() {
   assert_output --partial 'behind origin/main by 1 and merging it conflicts'
   run grep -c '^git merge --abort$' "$LOG"
   assert_output 1
-  run grep -c 'git push\|pr merge\|^notes' "$LOG"
+  run grep -c 'git push\|pr merge\|^notes' <(not_recorded)
   assert_output 0
 }
 
@@ -398,7 +402,7 @@ second_wait() {
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'merge failed: #42 reads OPEN, not MERGED'
-  run grep -c '^notes' "$LOG"
+  run grep -c '^notes' <(not_recorded)
   assert_output 0
 }
 
@@ -497,7 +501,7 @@ EOF
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'item-line failed: gh pr edit: HTTP 403'
-  run grep -c 'pr checks\|pr merge\|^notes' "$LOG"
+  run grep -c 'pr checks\|pr merge\|^notes' <(not_recorded)
   assert_output 0
 }
 
@@ -519,13 +523,29 @@ EOF
   assert_output 0
 }
 
+@test "a stopped landing is on the record with its step and cause; a refusal and a dry run are not" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  run grep -- '--action land-failed' "$LOG"
+  assert_success
+  assert_output --partial '--item ship --pr o/r#42 --why checks: Checks'
+  : >"$LOG"
+  run "$LAND" 42 --item ship --dry-run --no-such-flag
+  assert_failure 2
+  run "$LAND" 42 --item ship --dry-run
+  run grep -c -- '--action land-failed' "$LOG"
+  assert_output 0
+}
+
 @test "a failing PR check stops before the second fetch and the merge, naming the check" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
   printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'checks failed: Checks'
-  run grep -c 'pr merge\|^notes' "$LOG"
+  run grep -c 'pr merge\|^notes' <(not_recorded)
   assert_output 0
   run grep -c '^git fetch' "$LOG"
   assert_output 1
@@ -738,7 +758,7 @@ repo_map() {
   assert_failure 2
   assert_output --partial '#42 is in o/r (tools), and store, taken from $AGENT_QUEUE_ITEM, is a level item in game'
   assert_output --partial 'Pass --item store if this PR is that item'
-  run grep -c 'pr edit\|pr checks\|pr merge\|^notes' "$LOG"
+  run grep -c 'pr edit\|pr checks\|pr merge\|^notes' <(not_recorded)
   assert_output 0
   run agent-queue show store --json
   assert_equal "$(jq -r '.state + " " + (.pr // "")' <<<"$output")" 'running '
@@ -864,7 +884,7 @@ repo_map() {
   assert_failure 1
   assert_output --partial 'match failed: #595 (o/r#595, from agent-7) is merged, and nothing ties it to p3'
   assert_output --partial 'with --repo <owner>/<repo>'
-  run grep -c '^gh pr edit\|^notes\|^dotfiles-autopull' "$LOG"
+  run grep -c '^gh pr edit\|^notes\|^dotfiles-autopull' <(not_recorded)
   assert_output 0
   run agent-queue show p3 --json
   assert_equal "$(jq -r '"\(.state) \(.pr // "-")"' <<<"$output")" 'running -'
@@ -941,7 +961,9 @@ repo_map() {
   run "$LAND" 42 --item fix
   assert_failure 1
   assert_output --partial 'proof failed: merge_proof: REFUSING'
-  run grep -c '^notes' "$LOG"
+  run grep -- '--action land-failed' "$LOG"
+  assert_output --partial '--why merged, but proof: merge_proof: REFUSING'
+  run grep -c '^notes' <(not_recorded)
   assert_output 0
   run agent-queue show fix --json
   assert_equal "$(jq -r '"\(.state) \(.merged // "-")"' <<<"$output")" 'running -'

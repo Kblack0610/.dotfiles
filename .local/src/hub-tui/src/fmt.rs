@@ -22,6 +22,18 @@ pub fn pct(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("{:.0}%", v * 100.0))
 }
 
+/// A bar's two runs, `width` cells in all: `#` for `percent` (rounded up, so any use shows), then
+/// `.`. `mark` puts a `|` in the cell that percent falls in. The caller adds brackets and styles.
+pub fn bar(percent: Option<u32>, mark: Option<u32>, width: usize) -> (String, String) {
+    let on = percent.map_or(0, |pc| (pc as usize * width).div_ceil(100).min(width));
+    let at = mark.map(|m| (m as usize * width / 100).min(width.saturating_sub(1)));
+    let cell = |i: usize, c: char| if at == Some(i) { '|' } else { c };
+    (
+        (0..on).map(|i| cell(i, '#')).collect(),
+        (on..width).map(|i| cell(i, '.')).collect(),
+    )
+}
+
 /// A count as 2.3M, 12k or 512.
 pub fn kilo(n: u64) -> String {
     match n {

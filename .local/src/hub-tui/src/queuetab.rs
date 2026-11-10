@@ -1,15 +1,15 @@
 //! The Queue tab: agent-queue's items as one table on the shared data-table component, the
 //! Infra Jobs style, read through `hub_core::queue`, the same reader and the same `QueueRow` as
-//! agent-web's Queue tab. Its sections are `flow` (the strip), `table` and `candidates`.
+//! agent-web's Queue tab. Its sections are `flow` (the pipeline line, `flowline`), `table` and `candidates`.
 //! `/ f s S x` are the shared table's keys; j/k pick a row (a done one too), Enter opens its
 //! detail, `c` arms a cancel that waits on y and `+`/`-` move its priority one step, both for an
-//! active item only. Below the table the Candidates fold (`hub_core::queue::candidates`,
-//! `fleet-dispatch suggest`): `C` opens it, j/k carry on into its rows, and `p` starts the
-//! selected one through the Projects tab's Start (`fleet-dispatch promote`). Every write goes
-//! through hub-core.
+//! active item only. Below the table the Candidates fold (`hub_core::queue::candidates`, the
+//! snapshot each `fleet-dispatch run` writes, `as of` its time): `C` opens it, j/k carry on into
+//! its rows, and `p` starts the selected one through the Projects tab's Start (`fleet-dispatch
+//! promote`). Every write goes through hub-core.
 
 use chrono::{DateTime, Utc};
-use hub_core::flow::Strip;
+use hub_core::flow::Rail;
 use hub_core::queue::{
     money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing, TABLE_OPEN_ROWS,
 };
@@ -19,7 +19,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::flowstrip;
+use crate::flowline::{self, LineView};
 use crate::fmt::{clock, Palette};
 
 /// What a key on the Queue tab asks the app to do.
@@ -43,6 +43,8 @@ pub struct QueueView {
     /// The selected row's detail replaces the table.
     pub detail: bool,
     pub cands_open: bool,
+    /// The step and problem picked on the pipeline line.
+    pub line: LineView,
     /// The slug a cancel waits on y for.
     pub confirm: Option<String>,
     /// The action now running, as "cancel <slug>".
@@ -246,6 +248,7 @@ fn state(i: &Item, p: Palette) -> Cell {
     match i.state {
         State::Waiting => cell("needs you", p.warn()),
         State::Running => cell("running", p.good()),
+        State::Review => "on a PR".into(),
         State::Queued if i.hold.is_some() => cell("held", p.warn()),
         State::Queued => "ready".into(),
         State::Done => {
@@ -419,12 +422,12 @@ pub fn page(
     q: &Queue,
     v: &QueueView,
     cands: Option<&Result<Candidates, String>>,
-    flow: (&Strip, bool, bool),
+    flow: (&Rail, bool),
     p: Palette,
     now: i64,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let mut out = flowstrip::lines(flow.0, flow.1, flow.2, p, w);
+    let mut out = flowline::lines(flow.0, &v.line, flow.1, p, w);
     for e in &q.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
@@ -490,9 +493,15 @@ fn candidates(
         "C opens"
     };
     let (count, hint) = match cands {
-        None => (String::new(), "reading fleet-dispatch suggest"),
-        Some(Err(_)) => (String::new(), ""),
-        Some(Ok(c)) => (format!(" ({}, {} auto)", c.total, c.auto), hint),
+        None => (String::new(), "reading".to_string()),
+        Some(Err(_)) => (String::new(), String::new()),
+        Some(Ok(c)) => (
+            format!(" ({}, {} auto)", c.total, c.auto),
+            match c.as_of.as_str() {
+                "" => hint.into(),
+                t => format!("as of {t}  {hint}"),
+            },
+        ),
     };
     let mut out = vec![clip_line(
         heading(
@@ -652,7 +661,7 @@ pub(crate) mod tests {
             q,
             v,
             c,
-            (&Strip::build(Some(q)), false, false),
+            (&Rail::build(Some(q), None, now()), false),
             Palette { no_color: true },
             now(),
             w,
@@ -732,7 +741,7 @@ pub(crate) mod tests {
         let done = line(&s, "Landed");
         assert!(done.contains("ok") && done.contains("#812"), "{done}");
         assert!(
-            s.contains("all 5  needs you 1  running 1  up next 2  done 1    5 of 5"),
+            s.contains("all 5  needs you 1  running 1  on a PR 0  up next 2  done 1    5 of 5"),
             "{s}"
         );
         assert!(
@@ -788,9 +797,10 @@ pub(crate) mod tests {
         press(&mut v, &q, &[], 'j');
         press(&mut v, &q, &[], 'j');
         assert_eq!(v.table.sel, 2);
-        let want: [(&str, &[&str]); 5] = [
+        let want: [(&str, &[&str]); 6] = [
             ("needs you", &["pick-sides"]),
             ("running", &["fix-menu"]),
+            ("on a PR", &[]),
             ("up next", &["next-up", "night-sweep"]),
             ("done", &["landed"]),
             (
@@ -1117,9 +1127,16 @@ pub(crate) mod tests {
         );
         assert!(!s.contains("bar-17"), "no row shows while folded\n{s}");
         assert!(text(&q, &QueueView::default(), 200).contains("+ CANDIDATES  reading"));
-        let err = Err("fleet-dispatch: unknown command suggest".to_string());
+        let err = Err("no snapshot yet, the next dispatch pass writes one".to_string());
         assert!(text_with(&q, &QueueView::default(), Some(&err), 200)
-            .contains("No candidates: fleet-dispatch: unknown command suggest"));
+            .contains("No candidates: no snapshot yet, the next dispatch pass writes one"));
+        let mut stamped = cands();
+        stamped.as_of = "08:07".into();
+        let s = text_with(&q, &QueueView::default(), Some(&Ok(stamped)), 200);
+        assert!(
+            s.contains("+ CANDIDATES (3, 2 auto)  as of 08:07  C opens"),
+            "{s}"
+        );
     }
 
     #[test]

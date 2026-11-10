@@ -121,6 +121,8 @@ impl Row for SessionRow {
     const STATES: &'static [&'static str] =
         &["all", "running", "needs you", "stalled", "done today"];
     const FACETS: &'static [&'static str] = &["project", "harness"];
+    const LEAD: &'static str = "task";
+    const GLANCE: &'static [&'static str] = &["bucket", "project", "idle"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| {

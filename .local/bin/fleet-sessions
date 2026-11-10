@@ -47,6 +47,9 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
+# A PR's check rollup as NONE, PENDING, FAIL or PASS (ci), and its red job ids (red): CI_JQ.
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/pr-ci.sh"
 # FLEET_MAIN_TTL: seconds a gh answer (pr_states' PR list, sibling_pr's PR view) is reused across passes: every caller
 # (the ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on 2026-10-29 the fleet
 # spent GitHub's 5,000/hr REST limit; a PR's state is no less true five minutes later.
@@ -519,13 +522,23 @@ tmux_labels() {
 # session open that way. An ask with no owner blocks nobody; the state document still
 # lists it under `asks`.
 asks_for() {
-  local f
   [ -n "$1" ] || return 0
-  for f in "$ASK_ROOT"/*/*.md; do
-    [ -f "$f" ] || continue
-    grep -q '^status: pending$' "$f" || continue
-    grep -qxF "claude_session: $1" "$f" && basename "$f" .md
-  done
+  # The store keeps every ask ever filed, so collect reads it once for its whole pass.
+  awk -F'\t' -v s="$1" '$1 == s { print $2 }' <<<"${PENDING_ASKS-$(pending_asks)}"
+}
+
+# pending_asks -> "<claude session>\t<ask id>" per pending ask in the store, per owner line.
+pending_asks() {
+  awk '
+    function flush(   i, id) {
+      id = file; sub(/.*\//, "", id); sub(/\.md$/, "", id)
+      if (pending) for (i = 1; i <= n; i++) print owner[i] "\t" id
+      pending = 0; n = 0
+    }
+    FNR == 1 { if (file != "") flush(); file = FILENAME }
+    $0 == "status: pending" { pending = 1 }
+    /^claude_session: ./ { owner[++n] = substr($0, 17) }
+    END { if (file != "") flush() }' "$ASK_ROOT"/*/*.md 2>/dev/null
 }
 
 # Panes (<server>/<pane id>, agent-panel's .pane) holding a heavy process, one per line, from
@@ -543,19 +556,6 @@ repo_slug() {
   url="$(git -C "$1" remote get-url origin 2>/dev/null)" || return 1
   printf '%s' "$url" | tr -c 'A-Za-z0-9' _
 }
-
-# A PR's statusCheckRollup -> NONE, PENDING, FAIL or PASS: red only once every check has finished.
-# red: the red checks' Actions job ids, comma-separated, - for one that is not a job (gate_ci reads
-# their steps for a gate-line-only red).
-CI_JQ='def red_re: "FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED";
-  def ci: .statusCheckRollup // [] | map(.conclusion // .state // "") as $c
-  | if ($c | length) == 0 then "NONE"
-    elif any($c[]; test("^$|PENDING|QUEUED|IN_PROGRESS|EXPECTED")) then "PENDING"
-    elif any($c[]; test(red_re)) then "FAIL"
-    else "PASS" end;
-  def red: [.statusCheckRollup // [] | .[] | select((.conclusion // .state // "") | test(red_re))
-            | ((.detailsUrl // "") | capture("/job/(?<j>[0-9]+)") | .j) // "-"]
-          | if length == 0 then "-" else join(",") end;'
 
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids".
 prs_for() {
@@ -1086,7 +1086,7 @@ item_of() {
     {
       bysid = (sid != "" && mine_sid($3)); bysess = (solo == 1 && $2 == me && $3 == "-")
       if (!bysid && !bysess) next
-      if (($1 == "running" || $1 == "waiting") && ($2 == me || ($2 == "-" && bysid))) {
+      if (($1 == "running" || $1 == "waiting" || $1 == "review") && ($2 == me || ($2 == "-" && bysid))) {
         if ($1 == "running") own = own (own == "" ? "" : ",") $4
         if (hereslug == "") hereslug = $4
         here = 1; next
@@ -1172,6 +1172,8 @@ collect() {
   # blink (every session "gone", every PR "-") as a change.
   # Exit 3 (a read with a gap) still prints the rows it read; they are kept, and the pass is named.
   panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || echo agent-panel >> "$CACHE/unreadable"
+  local PENDING_ASKS
+  PENDING_ASKS="$(pending_asks)"
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do
     [ -n "$line" ] || continue
     local target pane status plan sid cwd since ctx planf tsess idle asks ownask hv bucket fact edited \

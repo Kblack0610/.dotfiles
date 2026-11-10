@@ -71,6 +71,7 @@ setup() {
   export FLEET_DISPATCH_DIR="$HOME/.agent/dispatch"
   sandbox_worlds
   export DISPATCH_PROFILES=bnb
+  export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
   export DISPATCH_WORKERS="$SANDBOX/workers.json"
@@ -113,6 +114,8 @@ echo "cpu  $((u + a)) $((n + b)) $((s + c)) $((i + d)) 0 0 0 0 0 0" > "$DISPATCH
   cp "$REPO_ROOT/.config/shared-hooks/claude-telemetry.sh" "$HOME/.config/shared-hooks/"
   stub getent 'exit 2'
   unset CLAUDE_AUTO_DROP_TOOLS
+  # The prefix every launch line starts with (claude_launch_env, tested in claude_telemetry.bats).
+  LAUNCH_ENV=$(bash -c '. "$HOME/.config/shared-hooks/claude-telemetry.sh" && claude_launch_env' 2>/dev/null)
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-dispatch"
 }
@@ -211,14 +214,25 @@ project() {
 
 row() { printf '%s\t%s\n' "$3" "$4" >> "$NOTES_FIXTURE/rows.$1.$2"; }
 
-# board_row <project> <lane> <id> <tags json> <details json> -- that fixture row as `notes board
-# --json` gives it (its raw line from rows.<project>.<lane>), with tags and details
+# board_row <project> <lane> <id> <tags json> <details json> [rank] -- that fixture row as `notes board
+# --json` gives it (its raw line from rows.<project>.<lane>), with tags, details and its feed rank (null by default)
 board_row() {
-  jq -cn --arg p "$1" --arg l "$2" --arg i "$3" --argjson t "$4" --argjson d "$5" \
+  jq -cn --arg p "$1" --arg l "$2" --arg i "$3" --argjson t "$4" --argjson d "$5" --argjson r "${6:-null}" \
     --arg raw "$(awk -F'\t' -v k="$3" '$1 == k { print $2; exit }' "$NOTES_FIXTURE/rows.$1.$2")" \
-    '{profile: "bnb", project: $p, lane: $l, id: $i, state: "open", tags: $t, details: $d, raw: $raw, text: $raw}' \
+    '{profile: "bnb", project: $p, lane: $l, id: $i, state: "open", tags: $t, details: $d, raw: $raw, text: $raw, rank: $r}' \
     >> "$NOTES_FIXTURE/board.rows"
 }
+
+# fk <due 0-3> <prio 0 urgent|1 high|2 low> <req 0|1> [created YYYY-MM-DD] -> the feed `rank` notes-cli
+# prints for such a row (src/rank.rs Rank::key), so a fixture states what the board would say
+fk() {
+  local day=0
+  [ -z "${4:-}" ] || day=$(( $(date -ud "$4" +%s) / 86400 ))
+  echo $(( (($1 * 3 + $2) * 2 + $3) * 1000000 + day ))
+}
+
+# ranked <project> <lane> <id> <rank> -- the feed row of a fixture row, with that rank
+ranked() { board_row "$1" "$2" "$3" '[]' '[]' "$4"; }
 
 # A tagged row the fleet worker may take.
 T='#worker/fleet #tier/1'
@@ -566,9 +580,9 @@ board_workers() {
 
 # --- picks -------------------------------------------------------------------------------
 
-@test "picks: only S or M, clear, agent-only dispatch verdicts, several per project, urgent then prod first" {
-  c() { jq -cn --arg p "$1" --arg s "$2" --arg k "$3" --argjson pr "$4" \
-        '{profile: "bnb", project: $p, stage: $s, lane: "human", key: $k, prio: $pr, tier: 1, line: ""}'; }
+@test "picks: only S or M, clear, agent-only dispatch verdicts, several per project, sooner feed rank then prod first" {
+  c() { jq -cn --arg p "$1" --arg s "$2" --arg k "$3" --argjson fr "$4" \
+        '{profile: "bnb", project: $p, stage: $s, lane: "human", key: $k, frank: $fr, tier: 1, line: ""}'; }
   cands=$(c alpha1 alpha a 0; c beta1 beta b 1; c beta1 beta b2 1; c prod1 prod p 1; c skipme prod s 0; c big prod L 0)
   verdict alpha1 human a dispatch
   verdict beta1 human b dispatch
@@ -588,10 +602,10 @@ board_workers() {
   assert_equal "$(jq -r .key <<<"$output")" k
 }
 
-# c_area <key> <prio>: a candidate on project game
-c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "game", stage: "beta", lane: "agent", key: $k, prio: $pr, tier: 2, line: ""}'; }
+# c_area <key> <feed rank>: a candidate on project game
+c_area() { jq -cn --arg k "$1" --argjson fr "$2" '{profile: "bnb", project: "game", stage: "beta", lane: "agent", key: $k, frank: $fr, tier: 2, line: ""}'; }
 
-@test "picks: never two on one area in a pass, the more urgent wins, whatever the case" {
+@test "picks: never two on one area in a pass, the sooner feed rank wins, whatever the case" {
   cands=$(c_area low 3; c_area top 0; c_area other 3)
   verdict game agent low dispatch S 1 wilds
   verdict game agent top dispatch S 1 Wilds
@@ -624,9 +638,9 @@ c_area() { jq -cn --arg k "$1" --argjson pr "$2" '{profile: "bnb", project: "gam
   assert_output ''
 }
 
-@test "picks: an ask outranks a more urgent row of a later worker" {
-  c() { jq -cn --arg k "$1" --argjson w "$2" --argjson pr "$3" '{project: "game", stage: "beta", lane: "agent", key: $k, wrank: $w, prio: $pr, tier: 2, line: ""}'; }
-  cands=$(c urgent 2 0; c theask 0 3)
+@test "picks: at one feed rank, an ask outranks a row of a later worker" {
+  c() { jq -cn --arg k "$1" --argjson w "$2" --argjson fr "$3" '{project: "game", stage: "beta", lane: "agent", key: $k, wrank: $w, frank: $fr, tier: 2, line: ""}'; }
+  cands=$(c urgent 2 5; c theask 0 5)
   verdict game agent urgent dispatch
   verdict game agent theask dispatch
   run picks "$cands" 1
@@ -712,12 +726,14 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   row app agent 'app docs' "- [ ] docs(app): explain the sweep #urgent"
   row app agent 'app split' "- [ ] refactor(app): split the loader #urgent"
   row app agent 'app delete' "- [ ] refactor(app): delete the old loader #low"
+  for k in 'game fix' 'app feat' 'app docs' 'app split'; do ranked "${k%% *}" agent "$k" "$(fk 3 0 1)"; done
+  for k in 'app fix' 'app stale' 'app delete'; do ranked app agent "$k" "$(fk 3 2 1)"; done
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'app fix app stale app delete game fix app feat app docs app split'
   assert_equal "$(jq -r 'select(.key == "app fix") | .why' <<<"$output")" 'cleanup, personal, #low, bug, beta'
   assert_equal "$(jq -r 'select(.key == "game fix") | .cleanup' <<<"$output")" 1
-  # Empty scope turns it off: back to row priority.
+  # Empty scope turns it off: back to the feed rank.
   DISPATCH_CLEANUP_PROJECTS="" run cmd_suggest --json
   assert_equal "$(jq -r .key <<<"$output" | paste -sd' ')" 'game fix app feat app docs app split app fix app stale app delete'
 }
@@ -730,15 +746,19 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   assert_equal "$(row_priority '- [ ] chore(app): prune the cache #low')" low
 }
 
-@test "rank: cleanup goes first, then due and #requested rows; a lookalike tag is not #requested" {
-  c() { jq -cn --arg k "$1" --argjson pr "$2" --argjson cl "$3" --arg t "$4" \
-    "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, cleanup: $cl, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05"; "")'; }
-  cands=$(c urgent 0 1 '#urgent'; c cleanup 1 0 '#low'; c asked 3 1 '#low #requested'; c due 1 1 '#high #due1105'
-    c lookalike 1 1 '#requested-ish')
+@test "rank: cleanup goes first, then the feed rank; why names due and #requested, and a lookalike tag is not #requested" {
+  c() { jq -cn --arg k "$1" --argjson fr "$2" --argjson cl "$3" --arg t "$4" --argjson pr "$5" \
+    "$RANK_JQ"'{key: $k, wrank: 0, prio: $pr, frank: $fr, cleanup: $cl, stage: "beta", text: "- [ ] \($k) \($t)"} | rank_fields("2026-11-05"; "")'; }
+  cands=$(c urgent "$(fk 3 0 1)" 1 '#urgent' 0; c cleanup "$(fk 3 2 1)" 0 '#low' 3; c asked "$(fk 3 2 0)" 1 '#low #requested' 3
+    c due "$(fk 1 1 1)" 1 '#high #due1105' 1; c lookalike "$(fk 3 1 1)" 1 '#requested-ish' 1)
   run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
-  assert_output 'cleanup due asked urgent lookalike'
+  assert_output 'cleanup due urgent lookalike asked'
   run jq -sr "$RANK_JQ"'rank[] | select(.key == "asked") | .why' <<<"$cands"
   assert_output 'requested, #low, beta'
+  run jq -sr "$RANK_JQ"'rank[] | select(.key == "due") | .why' <<<"$cands"
+  assert_output 'due today, #high, beta'
+  run jq -sr "$RANK_JQ"'rank[] | select(.key == "lookalike") | .why' <<<"$cands"
+  assert_output '#high, beta'
   run jq -sr "$RANK_JQ"'rank[] | select(.key == "cleanup") | .why' <<<"$cands"
   assert_output --regexp '^cleanup, '
 }
@@ -753,7 +773,7 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   assert_output ''
 }
 
-@test "rank: project priority, then due date, then worker, row priority, stage and age, each named in why" {
+@test "rank: project priority, then the feed rank (due, priority, age), each named in why" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
   sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/game/README.md"
@@ -764,6 +784,11 @@ man   unjudged  app app row  [#high, alpha]  blocked: no worker covers app"
   row game agent 'game low' "- [ ] game low #low $T #c1101"
   row game agent 'game high new' "- [ ] game high new #high $T #c1104"
   row game agent 'game high' "- [ ] game high #high $T #c1020"
+  ranked app agent 'app urgent' "$(fk 3 0 1)"
+  ranked app agent 'app due' "$(fk 1 1 1)"
+  ranked game agent 'game low' "$(fk 3 2 1 2026-11-01)"
+  ranked game agent 'game high new' "$(fk 3 1 1 2026-11-04)"
+  ranked game agent 'game high' "$(fk 3 1 1 2026-10-20)"
   run cmd_candidates
   assert_success
   run jq -sr "$RANK_JQ"'rank[] | "\(.key): \(.why)"' <<<"$output"
@@ -774,15 +799,15 @@ app due: due today, fleet, #high, alpha
 app urgent: fleet, #urgent, alpha"
 }
 
-@test "rank: with no project priority, due or created date, the order is worker, row priority, stage" {
+@test "rank: at one feed rank, the order is worker, then stage; the row's own tags decide nothing" {
   c() { jq -cn --arg k "$1" --argjson w "$2" --argjson pr "$3" --arg st "$4" \
-    "$RANK_JQ"'{key: $k, wrank: $w, prio: $pr, stage: $st, text: "- [ ] \($k)"} | rank_fields("2026-11-05"; "")'; }
+    "$RANK_JQ"'{key: $k, wrank: $w, prio: $pr, frank: 21000000, stage: $st, text: "- [ ] \($k)"} | rank_fields("2026-11-05"; "")'; }
   cands=$(c alpha-urgent 1 0 alpha; c prod-high 1 1 prod; c beta-high 1 1 beta; c asked 0 2 alpha)
   run jq -sr "$RANK_JQ"'rank | map(.key) | join(" ")' <<<"$cands"
-  assert_output 'asked alpha-urgent prod-high beta-high'
-  # A low project's urgent row waits behind a normal project's normal row.
+  assert_output 'asked prod-high beta-high alpha-urgent'
+  # A low project's sooner row waits behind a normal project's later row: #prio comes first.
   run jq -sr "$RANK_JQ"'[.[] | rank_fields("2026-11-05"; if .k == "l" then "low" else "" end)] | rank | map(.k) | join(" ")' \
-    <<<'{"k":"l","wrank":0,"prio":0,"stage":"prod"} {"k":"n","wrank":1,"prio":2,"stage":"alpha"}'
+    <<<'{"k":"l","wrank":0,"frank":19000000,"stage":"prod"} {"k":"n","wrank":1,"frank":23000000,"stage":"alpha"}'
   assert_output 'n l'
 }
 
@@ -814,29 +839,56 @@ kinds_match() {
   assert_failure
 }
 
-@test "rank: a fix row goes before a feat row of the same priority, and why calls it a bug" {
+@test "rank: at one feed rank a fix row goes before a feat row, and why calls it a bug" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
-  row game agent 'game feat' "- [ ] feat(game): a new mode #high $T #c1020"
+  row game agent 'game feat' "- [ ] feat(game): a new mode #high $T #c1104"
   row game agent 'game fix' "- [ ] fix(game): the score is wrong #high $T #c1104"
   row game agent 'game urgent feat' "- [ ] feat(game): the menu #urgent $T #c1104"
+  ranked game agent 'game feat' "$(fk 3 1 1 2026-11-04)"
+  ranked game agent 'game fix' "$(fk 3 1 1 2026-11-04)"
+  ranked game agent 'game urgent feat' "$(fk 3 0 1 2026-11-04)"
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game urgent feat,game fix,game feat'
   assert_equal "$(jq -r 'select(.key == "game fix") | .why' <<<"$output")" 'fleet, #high, bug, beta, 1d old'
-  assert_equal "$(jq -r 'select(.key == "game feat") | .why' <<<"$output")" 'fleet, #high, beta, 16d old'
+  assert_equal "$(jq -r 'select(.key == "game feat") | .why' <<<"$output")" 'fleet, #high, beta, 1d old'
 }
 
-@test "rank: a row with no priority tag ranks as #high, by age among them" {
+@test "rank: a row with no priority tag, which the feed ranks as #high, reads as #high in why and priority" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"
   row game agent 'game high' "- [ ] game high #high $T #c1104"
   row game agent 'game bare' "- [ ] game bare $T #c1001"
   row game agent 'game low' "- [ ] game low #low $T #c0901"
+  ranked game agent 'game high' "$(fk 3 1 1 2026-11-04)"
+  ranked game agent 'game bare' "$(fk 3 1 1 2026-10-01)"
+  ranked game agent 'game low' "$(fk 3 2 1 2026-09-01)"
   run cmd_suggest --json
   assert_success
   assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game bare,game high,game low'
   assert_equal "$(jq -r 'select(.key == "game bare") | "\(.why) \(.priority)"' <<<"$output")" 'fleet, #high, beta, 35d old high'
+}
+
+@test "rank: within a project the feed's rank decides, even against the row's own tags; a row the feed does not rank goes last" {
+  export DISPATCH_TODAY=2026-11-05
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'game low' "- [ ] game low #low $T #c1104"
+  row game agent 'game urgent' "- [ ] game urgent #urgent #due1105 $T #c1001"
+  row game agent 'game unranked' "- [ ] game unranked #urgent #due1101 $T #c0901"
+  # The feed puts the #low row first: dispatch reads that, it does not re-derive one from the tags.
+  ranked game agent 'game low' 5
+  ranked game agent 'game urgent' 7
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r '"\(.key)=\(.frank)"' <<<"$output" | paste -sd,)" 'game low=5,game urgent=7,game unranked=null'
+  # Negative control: swap the feed's ranks and the order follows them, text unchanged.
+  : > "$NOTES_FIXTURE/board.rows"
+  ranked game agent 'game low' 7
+  ranked game agent 'game urgent' 5
+  ranked game agent 'game unranked' 6
+  run cmd_suggest --json
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game urgent,game unranked,game low'
 }
 
 @test "candidates: a kind that is off, off in the project or not at the stage, and a parent row, never reach the judge; suggest says why" {
@@ -1138,19 +1190,19 @@ EOF
   [ ! -e "$cwd" ]
 }
 
-@test "judge sends rows in rank order when the batch is capped: prod before alpha at one priority, an urgent alpha first" {
+@test "judge sends rows in rank order when the batch is capped: prod before alpha at one feed rank, a sooner alpha first" {
   stub judge-stub 'printf "%s" "$2" > "$NOTES_FIXTURE/prompt"
     printf "%s\n" "{\"verdicts\":[{\"project\":\"p\",\"lane\":\"human\",\"key\":\"p1\",\"verdict\":\"skip\",\"rule\":\"unclear\"}]}"'
-  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":2}
-{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":2}'
+  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","frank":21000000}
+{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","frank":21000000}'
   assert_success
   run grep -c '"project":"p"' "$NOTES_FIXTURE/prompt"
   assert_output 1
   run grep -c '"project":"a"' "$NOTES_FIXTURE/prompt"
   assert_output 0
-  # The same cap picks the picks order, not a second one: row priority comes before stage.
-  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","prio":0}
-{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","prio":2}'
+  # The same cap picks the picks order, not a second one: the feed rank comes before stage.
+  DISPATCH_JUDGE_MAX=1 run judge '{"project":"a","stage":"alpha","lane":"human","key":"a1","text":"- [ ] a1","frank":19000000}
+{"project":"p","stage":"prod","lane":"human","key":"p1","text":"- [ ] p1","frank":21000000}'
   run grep -c '"project":"a"' "$NOTES_FIXTURE/prompt"
   assert_output 1
 }
@@ -1306,12 +1358,13 @@ game_ready() {
 
 @test "promote: a row whose item already finished ok is never queued again; a human row goes back recorded failed" {
   project game beta "$SANDBOX/repos/game"
-  row game human 'landed one' '- [ ] landed one <!-- id:gm-7 -->'
-  row game agent 'landed two' '- [ ] landed two <!-- id:gm-8 -->'
   for k in gm-7 gm-8; do
     agent-queue add --project game --from "board:game:$k" --slug "$k" "x" >/dev/null
     agent-queue move "$k" done --status ok >/dev/null
   done
+  # Rows written after the close: an ok close now closes its row, and these model rows left open before it did.
+  row game human 'landed one' '- [ ] landed one <!-- id:gm-7 -->'
+  row game agent 'landed two' '- [ ] landed two <!-- id:gm-8 -->'
   run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human", key: "gm-7"}')" "" task
   assert_failure
   assert_output --partial 'row un-started, recorded failed: gm-7 already finished ok'
@@ -1323,6 +1376,30 @@ game_ready() {
   assert_output --partial 'row left started for the orphan pass: gm-8 already finished ok'
   grep -qF -- '- [/] landed two' "$NOTES_FIXTURE/rows.game.agent" || fail "agent row un-started"
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished row was queued again"
+}
+
+@test "promote: a row whose item finished ok under another slug is not queued again" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --from "board:game:gm-9" --slug game-gm-9 "x" >/dev/null
+  agent-queue move game-gm-9 done --status ok >/dev/null
+  # Written after the close, which now closes its row: a row left open before it did.
+  row game agent 'landed three' '- [ ] landed three <!-- id:gm-9 -->'
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-9"}')" "" task
+  assert_failure
+  assert_output --partial 'gm-9 already finished ok on its own item game-gm-9'
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a finished row was queued again"
+}
+
+@test "promote: a failed item, or an ok one on a row with a longer key, leaves the row to be queued" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'retry' '- [ ] retry <!-- id:gm-9 -->'
+  agent-queue add --project game --from "board:game:gm-9" --slug game-gm-9 "x" >/dev/null
+  agent-queue move game-gm-9 done --status failed >/dev/null
+  agent-queue add --project game --from "board:game:gm-9x" --slug game-gm-9x "x" >/dev/null
+  agent-queue move game-gm-9x done --status ok >/dev/null
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-9"}')" "" task
+  assert_success
+  assert_output --partial 'queued game: gm-9'
 }
 
 @test "fleet-dispatch promote: the human's Start queues a row whose item finished ok, as a repeat" {
@@ -1541,6 +1618,8 @@ room_on_floor() {
     acct "alt:$r:/home/u/.claude-personal"
     run "$REPO_ROOT/.local/bin/fleet-dispatch" run
     assert_output --partial 'no account has room; alt is the closest'
+    # ar-1073: the hold says why the open floor could not lift it
+    assert_output --partial 'the run floor lifts an account refused for its pace alone, and every one past its pace has another refusal'
     assert_not_called 'wt new'
   done
   # Negative control: the same account refused for its pace alone starts on the floor.
@@ -1692,6 +1771,19 @@ idle_held_machine() {
   assert_output --partial 'started queue item a1 on the project floor (DISPATCH_PROJECT_FLOOR=1)'
   refute_output --partial 'started queue item g2'
   refute_output --partial 'started queue item a2'
+}
+
+@test "project floor: an item parked on its PR keeps its project busy, as a running one does" {
+  idle_held_machine
+  export DISPATCH_PROJECT_FLOOR=1
+  agent-queue add --project game --slug parked "game work" >/dev/null
+  agent-queue move parked review >/dev/null
+  agent-queue add --project game --slug g2 "more game work" >/dev/null
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item a1 on the project floor'
+  refute_output --partial 'started queue item g2'
 }
 
 @test "project floor: one start a project even with room for more" {
@@ -1911,6 +2003,52 @@ idle_held_machine() {
   [ -n "$f" ] || fail "the floor did not promote the cleanup row"
   assert_equal "$(qfield "$f" title) | $(qfield "$f" priority) | $(qfield "$f" tags)" 'fix(game): crash on load | high | cleanup tier1'
   [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row that is not cleanup"
+}
+
+@test "run over DISPATCH_LOW_WATER still tops #requested rows up to DISPATCH_REQUESTED_FLOOR, on any project, and nothing else" {
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=1
+  project game beta "$SANDBOX/repos/game"
+  row game human 'new map' "- [ ] feat(game): a new map #high $T"
+  row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T"
+  verdict game human 'new map' dispatch S 1 maps
+  verdict game human 'the ask' dispatch S 1 bench
+  agent-queue add --project game --slug one "one"
+  agent-queue add --project game --slug two "two"
+  agent-queue add --project game --slug three "three"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'runnable requested 0 is under the floor 1, topping requested rows up from the board'
+  f=$(qitem queued gm-1)
+  [ -n "$f" ] || fail "the floor did not promote the requested row"
+  assert_equal "$(qfield "$f" title)" 'fix(game): the bench is throwable'
+  [[ " $(qfield "$f" tags) " == *" requested "* ]] || fail "the item lost its requested tag: $(qfield "$f" tags)"
+  [ -z "$(qitem queued gm-2)" ] || fail "the floor promoted a row nobody requested"
+}
+
+@test "run with DISPATCH_REQUESTED_FLOOR requested items runnable, or the floor at 0, does not read the board" {
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=2
+  project game beta "$SANDBOX/repos/game"
+  row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T"
+  verdict game human 'the ask' dispatch S 1 bench
+  agent-queue add --project game --slug r1 --tags requested "r1"
+  agent-queue add --project game --slug r2 --tags requested "r2"
+  agent-queue add --project game --slug r3 --tags requested "r3"
+  agent-queue add --project game --slug r4 --tags requested "r4"
+  agent-queue add --project game --slug r5 --tags requested "r5"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  # the pass starts r1, which leaves 4 runnable requested items: the floor is met
+  refute_output --partial 'under the floor'
+  assert_not_called 'judge called'
+  [ -z "$(qitem queued gm-1)" ] || fail "the floor read the board with the floor met"
+  export DISPATCH_REQUESTED_FLOOR=0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ -z "$(qitem queued gm-1)" ] || fail "floor 0 read the board"
+  # negative control: with the floor over what is left the next pass promotes the same row
+  export DISPATCH_REQUESTED_FLOOR=5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'runnable requested 2 is under the floor 5'
+  [ -n "$(qitem queued gm-1)" ] || fail "under the floor the requested row was not promoted"
 }
 
 @test "run with DISPATCH_CLEANUP_FLOOR cleanup items already runnable does not read the board, so a fresh cleanup row waits" {
@@ -2695,6 +2833,24 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   [ -n "$(qitem running p)" ] && [ -n "$(qitem running q)" ] || fail "an answered session stayed waiting"
 }
 
+@test "reap leaves a live session's item in review while it works at its PR, and moves it to waiting only when it asks the human" {
+  project game beta "$SANDBOX/repos/game"
+  started_item v lab:game-agent-1 '' '' human review
+  started_item w lab:game-agent-2 '' '' human review
+  sed -i "s/^started: .*/&\nreview: 2026-11-03T11:00:00Z/" "$AGENT_QUEUE_DIR"/review/*-w.md
+  printf 'game-agent-%s\n' 1 2 > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'for x in 1:idle 2:waiting; do echo "{\"target\":\"lab/game-agent-${x%:*}:1\",\"status\":\"${x#*:}\"}"; done'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem review v)" ] || fail "a session idle at its PR left review"
+  [ -n "$(qitem waiting w)" ] || fail "a session on a PR that asks the human is not waiting"
+  stub agent-panel 'for x in 1:idle 2:idle; do echo "{\"target\":\"lab/game-agent-${x%:*}:1\",\"status\":\"${x#*:}\"}"; done'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem review w)" ] || fail "an answered session on a PR did not go back to review"
+}
+
 # 2026-11-05: about a fifth of running items were dead: a shell kept the tmux session after claude
 # exited, or a hub-window item had no session of its own, and reap read both as live forever.
 @test "reap settles an item whose claude exited though its tmux session lives; a parked pane, another agent and a fresh start are kept" {
@@ -2776,7 +2932,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   sed -i '/^session: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
   run cmd_reap
   assert_success
-  [ -n "$(qitem waiting fix-crash)" ] || fail "an open PR did not park it in waiting"
+  [ -n "$(qitem review fix-crash)" ] || fail "an open PR did not park it in review"
   assert_output --partial 'flagged queue item fix-crash (no session recorded (PR o/game#12)'
   # Parked on its open PR, later passes neither flag it again nor record another reap.
   run cmd_reap
@@ -2891,7 +3047,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
 
 # Confirmed gone stays gone: settle_item leaves an item whose PR is open waiting, and it must not
 # re-enter the mark-then-confirm cycle, logging a fresh miss and settling half as often.
-@test "reap keeps a confirmed miss for an item it leaves waiting on its open PR" {
+@test "reap keeps a confirmed miss for an item it parks in review on its open PR" {
   pr_item OPEN
   agent-queue move fix-crash waiting >/dev/null
   sed -i 's/^agent: claude$/agent: claude\nsessions: old-1/' "$AGENT_QUEUE_DIR"/waiting/*-fix-crash.md
@@ -2900,7 +3056,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   stub agent-ask 'exit 0'
   export DISPATCH_REAP_CONFIRM=0
   for _ in 1 2 3 4; do cmd_reap >/dev/null; done
-  [ -n "$(qitem waiting fix-crash)" ] || fail "the item left waiting"
+  [ -n "$(qitem review fix-crash)" ] || fail "the item did not park in review"
   [ -e "$FLEET_DISPATCH_DIR/reap-miss/fix-crash" ] || fail "the confirmed mark was dropped"
   run grep -c 'is not on agent-panel' "$FLEET_DISPATCH_DIR/log.md"
   assert_output 1
@@ -2974,7 +3130,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game \
     --server default --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "tmux -L default new-session -d -s fix-crash -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called "tmux -L default new-session -d -s fix-crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
   assert_called 'tmux -L default set-option -t =fix-crash: @dispatch game: resumed'
   assert_not_called 'start fix crash'
   assert_not_called 'wt new'
@@ -3025,7 +3181,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default \
     --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "fix-crash -c $SANDBOX/repos/game CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called "fix-crash -c $SANDBOX/repos/game ${LAUNCH_ENV}CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --permission-mode bypassPermissions --resume abc-123"
 }
 
 @test "start --resume never lands in a session that already exists on that server" {
@@ -3743,10 +3899,10 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   for s in a n p; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
   mask_sid "$NOTES_FIXTURE/cmds.log"
   run cat "$NOTES_FIXTURE/cmds.log"
-  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=a env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode bypassPermissions'
+  assert_line --index 0 --partial "AGENT_QUEUE_ITEM=a ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode bypassPermissions"
   assert_output --partial '/one-shot do a'
   assert_output --partial '/one-shot --pr-only do n'
-  assert_output --partial 'AGENT_QUEUE_ITEM=p env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode plan --allow-dangerously-skip-permissions'
+  assert_output --partial "AGENT_QUEUE_ITEM=p ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode plan --allow-dangerously-skip-permissions"
   refute_output --partial '/one-shot plan p'
   # An item with no board row still names itself in its PR body, and names no Task line.
   assert_output --partial 'The PR body carries the line "Item: a".'
@@ -3822,6 +3978,33 @@ qitem() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md 2>/dev/null; }
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" status)" failed
 }
 
+@test "reap: a waiting item without a PR stays waiting with a note after its session ends" {
+  project game beta "$SANDBOX/repos/game"
+  started_item blocked lab:game-agent-1 run '' human waiting
+  started_item no-note lab:game-agent-2 run '' human waiting
+  agent-queue set blocked 'note=waiting for the human to answer ask abc' lane_run=trial-1 >/dev/null
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+
+  run cmd_reap
+  assert_success
+  refute_output --partial 'failed queue item'
+  assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
+  assert_equal "$(qfield "$(qitem waiting blocked)" note)" 'waiting for the human to answer ask abc'
+  assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
+  assert_equal "$(qfield "$(qitem waiting no-note)" note)" 'session game-agent-2 ended; waiting without a PR'
+  assert_not_called 'model-lane'
+  mtime=$(stat -c %y "$(qitem waiting blocked)")
+  dispatch_event() { echo "$*" >> "$NOTES_FIXTURE/events.log"; }
+
+  run cmd_reap
+  assert_success
+  assert [ ! -e "$NOTES_FIXTURE/events.log" ]
+  assert_equal "$(stat -c %y "$(qitem waiting blocked)")" "$mtime"
+  assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
+  assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
+  assert_not_called 'model-lane'
+}
+
 # pr_item <state> -- a board item on a gone session, its PR o/game#12 in <state> per the gh stub,
 # its row started, and the project's checkout a real clone whose origin/main holds one commit (OID).
 pr_item() {
@@ -3867,15 +4050,90 @@ OUT
   grep -q 'row left started, no merge proof' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
 }
 
-@test "reap: a gone session's open PR moves its item to waiting once, row untouched" {
+@test "reap: a gone session's open PR moves its item to review once, row untouched" {
   pr_item OPEN
   run cmd_reap
-  assert_output --partial 'waiting queue item fix-crash (PR o/game#12 open'
-  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
   run cmd_reap
-  refute_output --partial 'waiting queue item'
-  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  refute_output --partial 'review queue item'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row moved"
+}
+
+# fix_ended <head> <ci> -- the fix-crash item's PR now reads OPEN at <head> with checks <ci>, and the
+# item is back in review/ with a session that is gone, as a fix-ci session leaves it when it ends.
+fix_ended() {
+  printf 'OPEN - %s %s\n' "$1" "$2" > "$NOTES_FIXTURE/pr.state"
+  [ "$(agent-queue show fix-crash --json | jq -r .state)" = review ] && return 0
+  agent-queue move fix-crash running >/dev/null
+  agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
+  agent-queue move fix-crash review >/dev/null
+}
+
+# 2026-11-09: 16 of 20 PRs parked in review were red and nothing restarted them.
+@test "reap: a red PR parked in review gets a fix-ci owner twice per head, then one human-sheet row; a new head starts again" {
+  local h1=1111111111111111111111111111111111111111 h2=2222222222222222222222222222222222222222
+  pr_item OPEN
+  run cmd_reap
+  assert_output --partial 'review queue item fix-crash'
+  # checks still running or green: it stays parked, no owner
+  for ci in PENDING PASS NONE; do
+    fix_ended "$h1" "$ci"
+    run cmd_reap
+    assert_success
+    assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  done
+  fix_ended "$h1" FAIL
+  agent-queue set fix-crash mode=plan >/dev/null
+  run cmd_reap
+  assert_success
+  assert_output --partial "fix-ci queue item fix-crash (PR o/game#12 red at ${h1:0:12}, try 1 of 2)"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_tries, .mode] | join("|")')" "queued|1 $h1|oneshot"
+  # its brief is the fix, on the PR's own branch, and it never merges
+  run item_brief "$(agent-queue show fix-crash --json)"
+  assert_line --index 0 '/my:fix-ci o/game#12'
+  assert_output --partial 'gh pr checkout 12 -R o/game'
+  assert_output --partial 'fix-ci try 1 of 2'
+  assert_output --partial 'run agent-queue move fix-crash review'
+  refute_output --partial 'agent-land'
+  echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
+  run item_brief "$(agent-queue show fix-crash --json)" opencode
+  assert_line --index 0 'Read ~/.claude/commands/my/fix-ci.md and follow it for PR o/game#12.'
+  # the fix session pushed and it is red again: the second try
+  fix_ended "$h2" FAIL
+  run cmd_reap
+  assert_output --partial 'try 2 of 2'
+  # spent: one row on the project's human sheet and one page, the item left parked on its PR
+  fix_ended "$h2" FAIL
+  run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, on the game sheet)'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human] | join("|")')" "review|$h2"
+  assert_called "notes --profile bnb ptask game add fix(ci): PR o/game#12 is red at ${h2:0:12} after 2 fix-ci tries"
+  run cmd_reap
+  refute_output --partial 'fix-crash'
+  assert_equal "$(grep -c 'ptask game add fix(ci)' "$NOTES_FIXTURE/calls.log")" 1
+  assert_equal "$(grep -c "agent-notify .*PR o/game#12 red" "$NOTES_FIXTURE/calls.log")" 1
+  # the human pushed a new head and it is red: the count starts again
+  fix_ended "$h1" FAIL
+  run cmd_reap
+  assert_output --partial 'try 1 of 2'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
+}
+
+@test "reap: a red PR in review waits for admission, and an item with no session recorded never reads as gone" {
+  pr_item OPEN
+  run cmd_reap
+  fix_ended 1111111111111111111111111111111111111111 FAIL
+  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_tries // ""] | join("|")')" "review|"
+  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  assert_equal "$(grep -c 'fix-crash: PR o/game#12 red at 111111111111; fix-ci held by admission' "$FLEET_DISPATCH_DIR"/log.md)" 1
+  # no session recorded (a cloud run): settle_sessionless keeps it parked, never requeued
+  sed -i '/^session: /d; /^sessions: /d' "$(qitem review fix-crash)"
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
 }
 
 # 2026-11-07: ar-255 sat waiting on its open PR, its lane got a new Claude, and reap read that one
@@ -3911,7 +4169,7 @@ OUT
   # a running item whose lane went to another Claude settles on its open PR: the passes above missed it once already
   agent-queue move fix-crash running >/dev/null
   DISPATCH_REAP_CONFIRM=0 run cmd_reap
-  assert_output --partial 'waiting queue item fix-crash (PR o/game#12 open'
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
   # its own Claude back on the panel: running is left alone
   agent-queue move fix-crash running >/dev/null
   stub agent-panel 'echo "{\"target\":\"hub/dotfiles:3\",\"status\":\"busy\",\"session_id\":\"old-1\"}"'
@@ -3920,17 +4178,27 @@ OUT
   [ -n "$(qitem running fix-crash)" ] || fail "reaped an item whose own Claude is live"
 }
 
-@test "reap: a --pr-only item its session left waiting closes ok with merged: once the PR merges" {
+@test "reap: an item an older pass parked waiting on its open PR moves to review, and closes ok with merged: once the PR merges" {
   pr_item OPEN
   agent-queue move fix-crash waiting >/dev/null
   run cmd_reap
-  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
   printf 'MERGED %s\n' "$OID" > "$NOTES_FIXTURE/pr.state"
   run cmd_reap
   assert_success
   assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
+}
+
+@test "reap: a gone session's waiting item that names a pending ask stays waiting on its open PR" {
+  pr_item OPEN
+  agent-queue move fix-crash waiting >/dev/null
+  agent-queue set fix-crash ask=PfpYTR >/dev/null
+  run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" waiting
 }
 
 @test "reap: a gone session's closed PR fails its item and hands the row back" {
@@ -3986,12 +4254,16 @@ orphan_seen() {
 
 # landed_item <state> [pr] -- pr_item's item closed ok by its own session with no merged: recorded,
 # as a --pr-only run left it before agent-queue refused that close (the store still holds those):
-# the row stays started and no active item names it.
+# the row stays started and no active item names it. The row file and calls.log are put back after the
+# move, which now closes the row of an ok close with no PR.
 landed_item() {
   export DISPATCH_NIGHT_PROFILE=bnb
   pr_item "$1"
   agent-queue set fix-crash pr= >/dev/null
+  cp "$NOTES_FIXTURE/rows.game.agent" "$SANDBOX/rows.kept"
   agent-queue move fix-crash done --status ok >/dev/null
+  mv "$SANDBOX/rows.kept" "$NOTES_FIXTURE/rows.game.agent"
+  sed -i '/--proof item:fix-crash/d' "$NOTES_FIXTURE/calls.log"
   agent-queue set fix-crash "pr=${2:-o/game#12}" >/dev/null
 }
 
@@ -4072,7 +4344,7 @@ landed_item() {
 bare_pr() {
   landed_item MERGED 12
   jq -n --arg o "$OID" --arg b "$1" '{state: "MERGED", mergeCommit: {oid: $o}, body: $b}' > "$NOTES_FIXTURE/pr.json"
-  stub gh 'printf "gh %s in %s\n" "$*" "$PWD" >> "$NOTES_FIXTURE/calls.log"; jq -r "${@: -1}" "$NOTES_FIXTURE/pr.json"'
+  stub gh 'printf "gh %s in %s\n" "$(tr "\n" " " <<<"$*")" "$PWD" >> "$NOTES_FIXTURE/calls.log"; jq -r "${@: -1}" "$NOTES_FIXTURE/pr.json"'
 }
 
 @test "reap: a bare pr: reads the project's checkout and counts a PR whose body has the item's stamp" {
@@ -4509,6 +4781,51 @@ board_item() {
   assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'
 }
 
+@test "suggest --write: a real pass stores what suggest --json prints; a dry pass writes none; a failed read, or an empty one with notes down, keeps the last" {
+  echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'game row' "- [ ] game row #high $T"
+  verdict game agent 'game row' skip   # cached, so the pass calls no judge and promotes nothing
+  snap="$HOME/.local/state/agentctl/dispatch/candidates.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  [ ! -e "$snap" ] || fail "a dry pass wrote the candidates snapshot"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(jq -r .key "$snap")" "game row"
+  run cmd_suggest --json
+  assert_equal "$(cat "$snap")" "$output"
+  before=$(cat "$snap")
+  cmd_suggest() { echo partial; return 1; }
+  run candidates_write
+  assert_failure
+  assert_equal "$(cat "$snap")" "$before"
+  cmd_suggest() { :; }
+  notes() { return 1; }
+  run candidates_write
+  assert_failure
+  assert_output --partial 'notes did not answer'
+  assert_equal "$(cat "$snap")" "$before"
+  [ -z "$(ls "${snap%/*}" | grep -v '^candidates.jsonl$')" ] || fail "a temp file was left behind"
+  unset -f notes
+  run candidates_write
+  assert_success
+  [ -e "$snap" ] && [ ! -s "$snap" ] || fail "an empty list with notes up did not clear the snapshot"
+}
+
+@test "promote: the promoted row leaves the candidates snapshot at once, every other row stays" {
+  project game beta "$SANDBOX/repos/game"
+  row game human 'urgent one' '- [ ] urgent one #urgent <!-- id:gm-7 -->'
+  mkdir -p "${CANDIDATES%/*}"
+  printf '%s\n' '{"project":"game","lane":"human","key":"gm-7"}' '{"project":"game","lane":"agent","key":"gm-7"}' \
+    '{"project":"game","lane":"human","key":"gm-8"}' > "$CANDIDATES"
+  touch -d '2026-11-09 08:07' "$CANDIDATES"
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human", key: "gm-7"}')" "" task
+  assert_success
+  assert_equal "$(jq -r '.lane + ":" + .key' "$CANDIDATES" | paste -sd' ')" "agent:gm-7 human:gm-8"
+  assert_equal "$(date -r "$CANDIDATES" +%H:%M)" 08:07   # `as of` stays the pass's time
+}
+
 @test "stats: open board rows by lane; an unreadable board leaves them out, never 0" {
   queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
@@ -4544,6 +4861,34 @@ board_item() {
   assert_called 'project=game'
 }
 
+@test "a started session's launch line exports telemetry and drops a parent Claude session's identity" {
+  # The pane runs no rc file and gets the tmux server's environment; a server started from inside a
+  # Claude session held no endpoint and that session's id and flags (16 of 16 queue sessions, 2026-11-08).
+  project game beta "$SANDBOX/repos/game"
+  transcript abc-123 '{"permissionMode":"plan"}'
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  stub getent 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
+    --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called 'OTEL_EXPORTER_OTLP_ENDPOINT=http://hp-victus:4318'
+  assert_called 'OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=cumulative'
+  assert_called '-u CLAUDE_CODE_SESSION_ID'
+  assert_called '-u CLAUDE_CODE_SESSION_ATTENDED'
+}
+
+@test "off the LAN a started session's launch line exports no telemetry, and still drops the parent's identity" {
+  project game beta "$SANDBOX/repos/game"
+  transcript abc-123 '{"permissionMode":"plan"}'
+  printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
+  stub getent 'exit 2'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
+    --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called '-u CLAUDE_CODE_SESSION_ID'
+  assert_not_called 'OTEL_'
+}
+
 @test "start --resume --window opens a window of a live session, keeps a plan mode, and leaves its label alone" {
   project game beta "$SANDBOX/repos/game"
   transcript abc-123 '{"permissionMode":"plan"}'
@@ -4551,7 +4896,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
     --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "new-window -d -P -F #{pane_id} -t =dotfiles: -n crash -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume abc-123"
+  assert_called "new-window -d -P -F #{pane_id} -t =dotfiles: -n crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume abc-123"
   assert_not_called 'new-session'
   assert_not_called 'set-option'
 }
@@ -4564,7 +4909,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session planned \
     --cwd "$SANDBOX/repos/game" --resume conv-plan
   assert_success
-  assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
+  assert_called "-c $SANDBOX/repos/game AGENT_QUEUE_ITEM=plan-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
   assert_called 'set-option -t =planned: @dispatch game: plan-work'
   f=$(qitem running plan-work)
   assert_equal "$(qfield "$f" session) $(qfield "$f" origin)" 'default:planned resume'
@@ -4575,7 +4920,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --server default --session planned2 \
     --cwd "$SANDBOX/repos/game" --resume conv-plan
   assert_success
-  assert_called "AGENT_QUEUE_ITEM=plan-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-plan"
+  assert_called "AGENT_QUEUE_ITEM=plan-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-plan"
 }
 
 @test "start --resume refuses a conversation still running, and one two items list without --item" {
@@ -4602,7 +4947,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s3 \
     --cwd "$SANDBOX/repos/game" --resume conv-two
   assert_success
-  assert_called "-s s3 -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-two"
+  assert_called "-s s3 -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-two"
 }
 
 @test "start --resume --window makes the session when it is not there yet, named as asked" {
@@ -4611,7 +4956,7 @@ board_item() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session dotfiles \
     --window crash --cwd "$SANDBOX/repos/game" --resume abc-123
   assert_success
-  assert_called "new-session -d -s dotfiles -n crash -c $SANDBOX/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
+  assert_called "new-session -d -s dotfiles -n crash -c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume abc-123"
 }
 
 # world <instance> <pane lines...> -- what a stub server answers; no instance is a server that is down.
@@ -4727,14 +5072,14 @@ restore_setup() {
   transcript conv-plan '{"permissionMode":"bypassPermissions"}
 {"type":"permission-mode","permissionMode":"plan"}'
   transcript conv-work '{"permissionMode":"bypassPermissions"}'
-  : > "$HOME/.agent/spin-down/game__conv-armed.request"
-  : > "$HOME/.agent/spin-down/game__conv-closed.fired"
+  : > "$HOME/.agent/spin-down/conv-armed.request"
+  : > "$HOME/.agent/spin-down/conv-closed.fired"
   printf '{"pid":%s,"sessionId":"conv-alive"}' "$$" > "$HOME/.claude/sessions/$$.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
   assert_called 'tmx ensure hub'
-  assert_called "-n planned -c $G env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
-  assert_called "-n working -c $G env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-work"
+  assert_called "-n planned -c $G ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
+  assert_called "-n working -c $G ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-work"
   for skipped in conv-armed conv-closed conv-alive conv-moved; do assert_not_called "--resume $skipped"; done
   assert_output --partial 'hub:dotfiles:armed: wound down on purpose, skipped'
   assert_output --partial 'hub:dotfiles:closed: wound down on purpose, skipped'
@@ -4756,7 +5101,7 @@ restore_setup() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
   assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work'
-  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item"
+  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item"
   f=$(qitem running hub-work)
   assert_equal "$(qfield "$f" origin)" resume
   assert_equal "$(qfield "$f" session)" ''
@@ -4898,9 +5243,9 @@ harness_ready() {
   mask_sid "$NOTES_FIXTURE/cmds.log"
   run cat "$NOTES_FIXTURE/cmds.log"
   # The default is claude-telemetry.sh's, the one list every automated start reads.
-  assert_line --index 0 --partial 'AGENT_QUEUE_ITEM=plain env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode'
+  assert_line --index 0 --partial "AGENT_QUEUE_ITEM=plain ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID --permission-mode"
   [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "only plain drops tools: $(cat "$NOTES_FIXTURE/cmds.log")"
-  assert_line --index 4 --partial 'AGENT_QUEUE_ITEM=off env -u CLAUDE_CONFIG_DIR claude --model opus --session-id SID --permission-mode'
+  assert_line --index 4 --partial "AGENT_QUEUE_ITEM=off ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --session-id SID --permission-mode"
   # A value that is not a list of tool names never reaches the command line.
   agent-queue add --project game --slug bad "fix the header" >/dev/null
   CLAUDE_AUTO_DROP_TOOLS='Bash(rm:*);x' run cmd_start --item bad
@@ -4927,7 +5272,7 @@ harness_ready() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s2 \
     --cwd "$SANDBOX/repos/game" --resume def-456
   assert_success
-  assert_called '-c '"$SANDBOX"'/repos/game env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume def-456'
+  assert_called "-c $SANDBOX/repos/game ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume def-456"
 }
 
 # --- lane sandbox: DISPATCH_SANDBOX_PROFILE (the pattern is tests/integ/agent_run_sandbox.bats) ---
@@ -5168,15 +5513,15 @@ cloud_run_ready() {
   export CLOUD_POLL_SEC=0 CLAUDE_BIN=claude
 }
 
-@test "claude-cloud-run records the session URL, finds the PR by its exact Item line, and parks the item waiting on it" {
+@test "claude-cloud-run records the session URL, finds the PR by its exact Item line, and parks the item in review on it" {
   cloud_run_ready
   printf '%s\n' '[{"number": 7, "createdAt": "2000-01-01T00:00:00Z", "body": "Item: cloud-fix"}, {"number": 8, "createdAt": "2099-01-01T00:00:00Z", "body": "Item: cloud-fix-extra"}, {"number": 9, "createdAt": "2099-01-01T00:00:00Z", "body": "text\r\nItem: cloud-fix\r\nmore"}]' > "$NOTES_FIXTURE/prs.json"
   run "$REPO_ROOT/.local/bin/claude-cloud-run" cloud-fix acme/game "do the task"
   assert_success
   assert_called 'claude --cloud do the task'
   assert_called 'gh pr list --repo acme/game --state all --search "Item: cloud-fix" in:body'
-  f=$(qitem waiting cloud-fix)
-  [ -n "$f" ] || fail "the item is not waiting"
+  f=$(qitem review cloud-fix)
+  [ -n "$f" ] || fail "the item is not in review"
   assert_equal "$(qfield "$f" pr)" 'acme/game#9'
   grep -q 'https://claude.ai/code/session_01AbC' "$f" || fail "the session URL is not on the item"
 }
@@ -5421,7 +5766,7 @@ case "$1" in log) echo run-9 ;; classify)
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item ci-first on codex (sol), routed by model-lane'
   assert_called 'Read ~/.claude/skills/one-shot/SKILL.md and follow it with --pr-only'
-  assert_called 'agent-queue move ci-first waiting'
+  assert_called 'agent-queue move ci-first review'
   assert_not_called 'Run agent-land in the foreground'
   assert_not_called 'merges only behind the red-fix gate'
 }
@@ -5950,10 +6295,56 @@ demand_of() {
   run cmd_reap
   assert_success
   run agent-queue show fix-crash --json
-  assert_equal "$(jq -r '.state + " " + .partial' <<<"$output")" 'waiting yes'
+  assert_equal "$(jq -r '.state + " " + .partial' <<<"$output")" 'review yes'
   run cmd_reap
   assert_success
   run agent-queue show next --json
   assert_equal "$(jq -r .hold <<<"$output")" 'after fix-crash'
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail 'partial row closed'
+}
+
+@test "start: a hand start takes the account room names, not the one pick would (ar-275)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'tidy the loader' '- [ ] tidy the loader'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  # main is over its pace, bnb has room: pick (the stub prints nothing) would be main.
+  acct main:pace bnb:ok:/acct/bnb
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
+    --row 'tidy the loader' --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_called 'CLAUDE_CONFIG_DIR=/acct/bnb claude --model'
+  assert_not_called 'env -u CLAUDE_CONFIG_DIR claude --model'
+}
+
+@test "start: a hand start with no account having room still goes ahead, on pick's account (ar-275)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'tidy the loader' '- [ ] tidy the loader'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  acct main:pace bnb:pace:/acct/bnb
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
+    --row 'tidy the loader' --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_called 'env -u CLAUDE_CONFIG_DIR'
+  assert_called 'claude --model'
+  assert_not_called 'CLAUDE_CONFIG_DIR=/acct/bnb'
+  assert_output --partial "no account has room ("
+}
+
+@test "start: a hand start on room's main pick runs with the config dir unset (ar-275)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'tidy the loader' '- [ ] tidy the loader'
+  printf 'brief\n' > "$SANDBOX/brief.md"
+  acct main:ok bnb:pace:/acct/bnb
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --agent \
+    --row 'tidy the loader' --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_called 'env -u CLAUDE_CONFIG_DIR'
+  assert_not_called 'CLAUDE_CONFIG_DIR=1'
+  assert_not_called 'CLAUDE_CONFIG_DIR=/acct/bnb'
 }

@@ -81,7 +81,7 @@ test("the head asks the tab's question, counts the channels and says the snapsho
   assert.match(h, /What is building, and what is live where\?/);
   assert.match(h, /3 channels: 1 drift, 2 ok/);
   assert.match(h, /refreshed .* \(2m ago\)/);
-  assert.doesNotMatch(h, /class="warn"/);
+  assert.doesNotMatch(h, /class="warn">refreshed/);
 });
 
 test("a snapshot older than the collector's cadence is amber", () => {
@@ -100,7 +100,7 @@ test("a row draws its cells and colours drift and a tripped watch red", () => {
   const b = box.innerHTML;
   assert.match(b, /prod binks-prod/);
   assert.match(b, /<td class="bad">v1<\/td><td class="bad">drift<\/td>/);
-  assert.match(b, /<td class="opt bad">0\/1<\/td>/);
+  assert.match(b, /<td class="bad">0\/1<\/td>/);
 });
 
 test("the fold is one line, and clicking it is the green chip's view", () => {
@@ -297,7 +297,7 @@ test("a row says what came before and how the last deploy ended, and opens on it
   show();
   const closed = box.innerHTML;
   assert.match(closed, />v0<\/td>/);
-  assert.match(closed, /class="opt warn">11-06 15:00 fail</);
+  assert.match(closed, /class="warn">11-06 15:00 fail</);
   relst.sel = "binks|binks-prod";
   run("relst.render()");
   const open = box.innerHTML;

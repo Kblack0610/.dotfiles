@@ -262,6 +262,63 @@ DOC
   assert_output --partial 'a Criteria row names unknown system "ghost"'
 }
 
+@test "systems: --list prints the doc systems for base and the type, then the project's own" {
+  write_systems_doc
+  run "$CHECK" shooter --list
+  assert_success
+  assert_line --index 0 "$(printf 'docs\tdoc\t\tThe docs')"
+  assert_line --index 1 "$(printf 'netcode\tdoc\t\tMultiplayer')"
+  refute_output --partial 'payments'
+  jq '.trackers.shooter.systems = {netcode: {aliases: ["mp", "lobby"]}, dispatch: {is: "The queue", aliases: ["queue"]}}' \
+    "$PROJECT_MAP_FILE" > "$HOME/map.tmp" && mv "$HOME/map.tmp" "$PROJECT_MAP_FILE"
+  run "$CHECK" shooter --list
+  assert_success
+  assert_line --index 1 "$(printf 'netcode\tdoc\tmp,lobby\tMultiplayer')"
+  assert_line --index 2 "$(printf 'dispatch\town\tqueue\tThe queue')"
+  run "$CHECK" shooter --list --json
+  assert_success
+  assert_equal "$(jq -c '[.[] | [.id, .source, (.aliases | length)]]' <<<"$output")" '[["docs","doc",0],["netcode","doc",2],["dispatch","own",1]]'
+}
+
+@test "systems: an own entry cannot pull in another type's system or reuse an alias, --list needs no checkout, and takes no --file" {
+  write_systems_doc
+  setmap() { jq ".trackers.shooter.systems = $1" "$PROJECT_MAP_FILE" > "$HOME/map.tmp" && mv "$HOME/map.tmp" "$PROJECT_MAP_FILE"; }
+  setmap '{payments: {aliases: ["iap"]}}'
+  run "$CHECK" shooter --list
+  assert_failure 2
+  assert_output --partial 'payments does not apply to a game project'
+  setmap '{netcode: {aliases: ["queue"]}, dispatch: {is: "The queue", aliases: ["queue"]}}'
+  run "$CHECK" shooter --list
+  assert_failure 2
+  assert_output --partial 'an alias names two systems or is itself a system id: queue'
+  setmap '{dispatch: {is: "The queue", aliases: ["docs"]}}'
+  run "$CHECK" shooter --list
+  assert_failure 2
+  assert_output --partial 'is itself a system id: docs'
+  setmap '{dispatch: {is: "The queue", aliases: ["queue"]}}'
+  mv "$REPO" "$HOME/gone"
+  run "$CHECK" shooter --list
+  assert_success
+  assert_line --index 2 "$(printf 'dispatch\town\tqueue\tThe queue')"
+  run "$CHECK" shooter --list --file
+  assert_failure 2
+  assert_output --partial '--list takes only --json'
+}
+
+@test "systems: a malformed own entry exits 2 and names it, never an empty list" {
+  write_systems_doc
+  for bad in '{netcode: "mp"}' '{netcode: {aliases: "mp"}}' '{Dispatch: {is: "x"}}' '"dispatch"'; do
+    jq ".trackers.shooter.systems = $bad" "$PROJECT_MAP_FILE" > "$HOME/map.tmp" && mv "$HOME/map.tmp" "$PROJECT_MAP_FILE"
+    run "$CHECK" shooter --list
+    assert_failure 2
+    assert_output --partial 'cannot read the systems of "shooter"'
+  done
+  jq '.trackers.shooter.systems = {dispatch: {aliases: ["queue"]}}' "$PROJECT_MAP_FILE" > "$HOME/map.tmp" && mv "$HOME/map.tmp" "$PROJECT_MAP_FILE"
+  run "$CHECK" shooter --list
+  assert_failure 2
+  assert_output --partial 'own systems need an "is" line: dispatch'
+}
+
 @test "a stage row can require a system by calling the checker, so the predicate lives in one doc" {
   write_systems_doc
   cat >> "$STAGES_DOC" <<'EOF2'
@@ -287,13 +344,21 @@ board_row() { mkdir -p "$LAB/agent"; printf '# shooter agent\n\n## Tasks\n%s\n' 
 # grammar: that lives in notes-cli alone)
 parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/row.parse"; }
 
+# A gap the gate blocks on is #high; before the Enforced from date it is #low (the test above).
+@test "file: from the Enforced from date a failing row is filed #high" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter, testers"}]'
+  STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s #high --detail'
+}
+
 @test "file: the stage epic names the target, and each FAIL row is filed once under it" {
   epics '[{"id":"sh-1","system":"stage","title":"beta for shooter, testers"}]'
   run "$CHECK" shooter --file
   assert_success
   assert_line --regexp '^filed +beta +A changelog$'
   assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped'
-  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s --detail from project-stage-check shooter --file, stages.md #beta, check: `[ -f CHANGELOG.md ]`'
+  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s #low --detail from project-stage-check shooter --file, stages.md #beta, check: `[ -f CHANGELOG.md ]`'
   # NEGATIVE CONTROL: the row the first run filed is on the board now, so nothing is added.
   : > "$NOTES_FIXTURE/calls.log"
   board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
@@ -348,8 +413,8 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_success
   assert_line --regexp '^filed +docs +An architecture doc$'
   assert_line 'file: shooter systems: 2 failing, 2 filed, 0 already open, 0 closed or dropped'
-  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #of/sh-5 #size/s'
-  assert_called 'add chore(docs): A contributor guide that says how to build, run and test every part of the #of/sh-5 #size/s --detail A contributor guide that says how to build, run and test every part of the project from a fresh clone --detail'
+  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #of/sh-5 #size/s #low'
+  assert_called 'add chore(docs): A contributor guide that says how to build, run and test every part of the #of/sh-5 #size/s #low --detail A contributor guide that says how to build, run and test every part of the project from a fresh clone --detail'
 }
 
 @test "file: --file with --json is refused, and an unknown project exits 2" {
