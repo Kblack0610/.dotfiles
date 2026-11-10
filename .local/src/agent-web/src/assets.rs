@@ -13,7 +13,8 @@ use axum::response::{IntoResponse, Response};
 
 const INDEX: &str = include_str!("index.html");
 pub const LOGIN: &str = include_str!("login.html");
-/// Where the page and app.css name the asset version.
+/// Where the page and every CSS file name the asset version: web-kit's tokens.css versions the
+/// fonts with it (`css_names_the_fonts_at_the_current_version`).
 const VERSION_MARK: &str = "{{v}}";
 /// Where the page takes its tab list.
 const NAV_MARK: &str = "{{nav}}";
@@ -22,10 +23,15 @@ const JS: &str = "text/javascript; charset=utf-8";
 const CSS: &str = "text/css; charset=utf-8";
 const WOFF2: &str = "font/woff2";
 
-/// `(name, content type, body)`. ui.js is the shared helpers, md.js the markdown renderer,
+/// `(name, content type, body)`. tokens.css, shell.css, kb-shell.js and the fonts are web-kit's
+/// (`../../web-kit`, shared with every kblab site), served flat beside agent-web's own.
+/// ui.js is the shared helpers, md.js the markdown renderer,
 /// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
+    ("tokens.css", CSS, include_bytes!("../../web-kit/tokens.css")),
+    ("shell.css", CSS, include_bytes!("../../web-kit/shell.css")),
+    ("kb-shell.js", JS, include_bytes!("../../web-kit/kb-shell.js")),
     ("app.css", CSS, include_bytes!("../static/app.css")),
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
@@ -57,12 +63,12 @@ const FILES: &[(&str, &str, &[u8])] = &[
     (
         "inter.woff2",
         WOFF2,
-        include_bytes!("../static/fonts/inter.woff2"),
+        include_bytes!("../../web-kit/inter.woff2"),
     ),
     (
         "jetbrains-mono.woff2",
         WOFF2,
-        include_bytes!("../static/fonts/jetbrains-mono.woff2"),
+        include_bytes!("../../web-kit/jetbrains-mono.woff2"),
     ),
 ];
 
@@ -119,7 +125,7 @@ fn nav_html() -> String {
     for t in &hub_core::layout::TABS {
         if t.group != group {
             group = t.group;
-            html += &format!("<div class=\"navg\">{group}</div>\n");
+            html += &format!("<div class=\"kb-group\">{group}</div>\n");
         }
         let badge = match t.id {
             "home" => "<span id=\"ask-badge\"></span>",
@@ -540,12 +546,13 @@ mod tests {
 
     #[test]
     fn css_names_the_fonts_at_the_current_version() {
+        // web-kit's tokens.css names the fonts relative to itself, so they resolve under /static/.
         let b = built();
-        let css = b.files.iter().find(|(n, _, _)| *n == "app.css").unwrap();
+        let css = b.files.iter().find(|(n, _, _)| *n == "tokens.css").unwrap();
         let css = std::str::from_utf8(&css.2).unwrap();
         assert!(!css.contains(VERSION_MARK));
-        assert!(css.contains(&format!("/static/inter.woff2?v={}", b.version)));
-        assert!(css.contains(&format!("/static/jetbrains-mono.woff2?v={}", b.version)));
+        assert!(css.contains(&format!("url(inter.woff2?v={})", b.version)));
+        assert!(css.contains(&format!("url(jetbrains-mono.woff2?v={})", b.version)));
     }
 
     #[test]
