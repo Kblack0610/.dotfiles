@@ -44,11 +44,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ncurses-term supplies the xterm-256color terminfo entry the harness pins TERM to; without
 # it tmux falls back and the rendered grid differs. `column` comes from bsdextrautils on
 # trixie (it moved out of bsdmainutils), and fleet.sh shells out to it.
+# nodejs runs tab_keeper.bats (`node --test`); openssl and xxd sign release-state's store JWTs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates coreutils curl gawk git jq less procps sed tar xz-utils \
       ncurses-base ncurses-bin ncurses-term bsdextrautils \
       libevent-dev libncurses-dev bison pkg-config make gcc \
-      python3 python3-yaml sqlite3 nodejs xxd \
+      python3 python3-yaml sqlite3 nodejs openssl xxd \
     && rm -rf /var/lib/apt/lists/*
 
 # Every download below (tmux, fzf, shellcheck, shfmt) goes to GitHub's release CDN, which answers a
@@ -68,10 +69,6 @@ RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 # DRIFT sweep runs every tier inside this image, so the failure surfaced once a week in a
 # job nobody was watching, and both PR-gating tiers stayed green. A gate that runs weekly
 # and is never read is the same as no gate.
-#
-# nodejs and xxd are runtime dependencies of the same kind, and the weekly sweep found them the
-# same way: tab_keeper.bats runs `node --test` on the Tab Keeper rules, and release-state's
-# jose_sig turns an ES256 signature's hex back into bytes with `xxd -r -p`.
 
 # tmux from source. Debian trixie ships 3.5a; the author's machine runs 3.8 with the patch in
 # .local/src/tmux/patched, which is this image's build context, so what is tested is what runs.
