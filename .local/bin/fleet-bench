@@ -246,6 +246,7 @@ set -uo pipefail
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
+: "${BENCH_PROFILE:=}"                             # the profile board_open counts; empty asks `notes config`
 : "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile (board_open reads one: board_open_count)
 : "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
 : "${BENCH_DOCS_CLEANUP_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/docs-cleanup}"   # the nightly docs-cleanup baselines, one dated dir each
@@ -1561,10 +1562,9 @@ scheduled_runner() {
 # so a second profile's boards do not add to it. A project with automation off is left out; ?
 # when the feed or the profile cannot be read.
 board_open_count() {
-  local p="${BENCH_PROFILE:-}"
-  [ -n "$p" ] || p=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
-  [ -n "$p" ] || { echo '?'; return; }
-  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$p" '.rows | if type == "array" then . else error("no rows") end
+  [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
+  [ -n "$BENCH_PROFILE" ] || { echo '?'; return; }
+  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" '.rows | if type == "array" then . else error("no rows") end
     | map(select(.profile == $p and .lane == "agent" and (.state == "open" or .state == "doing") and .automation != false)) | length' 2>/dev/null || echo '?'
 }
 

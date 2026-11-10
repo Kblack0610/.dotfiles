@@ -755,6 +755,21 @@ pub fn split_due(line: &str) -> (String, Option<String>) {
     (cleaned, found.map(str::to_string))
 }
 
+/// `line` with each `(start, end)` span cut out, in order. A repeated tag (`#c1110 #c1110`)
+/// cuts the space the first cut already took, so its span starts before the cursor: clamp it
+/// instead of slicing backwards.
+fn apply_cuts(line: &str, spans: &[(usize, usize)]) -> String {
+    let mut cleaned = String::with_capacity(line.len());
+    let mut cursor = 0;
+    for &(s, e) in spans {
+        let s = s.max(cursor);
+        cleaned.push_str(&line[cursor..s]);
+        cursor = e.max(s);
+    }
+    cleaned.push_str(&line[cursor..]);
+    cleaned
+}
+
 /// Cut every tag `pick` accepts (it is handed the bare tag) out of `line`, collapsing the
 /// space each leaves behind, and return the cleaned line plus the first such tag, bare.
 /// The shared half of [`split_version`], [`split_parent`], [`split_created`] and [`split_due`]; [`split_priority`] ranks its
@@ -789,16 +804,7 @@ fn cut_tags(line: &str, pick: impl Fn(&str) -> bool) -> (String, Option<&str>) {
     if spans.is_empty() {
         return (line.to_string(), None);
     }
-    let mut cleaned = String::with_capacity(line.len());
-    let mut cursor = 0;
-    for (s, e) in &spans {
-        // A repeated tag (`#c1110 #c1110`) cuts the space the first cut already took, so
-        // its span starts before `cursor`: clamp it instead of slicing backwards.
-        let s = (*s).max(cursor);
-        cleaned.push_str(&line[cursor..s]);
-        cursor = (*e).max(s);
-    }
-    cleaned.push_str(&line[cursor..]);
+    let cleaned = apply_cuts(line, &spans);
     (cleaned.trim_end().to_string(), found)
 }
 
@@ -1278,13 +1284,7 @@ fn split_priority(line: &str) -> (String, Option<&'static str>) {
     if spans.is_empty() {
         return (line.to_string(), None);
     }
-    let mut cleaned = String::with_capacity(line.len());
-    let mut cursor = 0;
-    for (s, e) in &spans {
-        cleaned.push_str(&line[cursor..*s]);
-        cursor = *e;
-    }
-    cleaned.push_str(&line[cursor..]);
+    let cleaned = apply_cuts(line, &spans);
     (
         cleaned.trim_end().to_string(),
         best.map(|r| PRIORITIES[r].1),
@@ -2729,6 +2729,13 @@ after
             .unwrap()
             .iter()
             .any(|l| *l == "plain"));
+    }
+
+    #[test]
+    fn split_priority_survives_a_repeated_tag() {
+        let (text, tag) = split_priority("- [ ] ask (q?)#urgent #urgent");
+        assert_eq!(tag, Some("#urgent"));
+        assert_eq!(text, "- [ ] ask (q?)");
     }
 
     #[test]
