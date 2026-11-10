@@ -14,10 +14,10 @@ A `.route` file answers *whose wire, whose money, whose data*, orthogonal to a
 
 **A route that names a host, a payer relationship, or a client tier lives in the
 private overlay.** This repo is public, and a pre-commit hook enforces it -- it
-is what stopped `free-local.route` landing here with an internal address in it.
+is what keeps a route with an internal address out of here.
 
 That split has a useful property beyond secrecy: a machine with no private
-overlay resolves `subscription` and then refuses `client` or `free-local` **by
+overlay resolves `subscription` and then refuses `client` or `gateway-fast` **by
 name**, rather than silently doing something else. An unknown route is a loud
 failure; a wrong route is a quiet one.
 
@@ -28,7 +28,7 @@ failure; a wrong route is a quiet one.
 | `subscription` | `anthropic-native` | the personal Max seat, OAuth, no host to name. The built-in default. |
 | `chatgpt` | `openai-native` | the ChatGPT plan seat through the Codex CLI login (`HARNESS=codex`). Personal data refused until the human says otherwise. |
 
-Site-specific routes (`free-local`, `client`, ...) are in the overlay. Run
+Site-specific routes (`gateway-fast`, `client`, ...) are in the overlay. Run
 `agentctl-run --explain <r>` to see which one resolves and from where --
 it costs no tokens and prints the provenance, not just the value.
 
