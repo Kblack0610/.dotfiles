@@ -654,7 +654,8 @@ ask_stub() {
   assert_output --regexp 'epic\(ui\): ui to standard .*id:sc-1'
   assert_output --regexp 'fix\(ui\): the pause menu opens slowly .*#of/sc-1'
   # NEGATIVE CONTROL: an area that is no system stays unlinked.
-  assert_output --regexp 'fix\(audio\): the gun sound is off [^/]*id:'
+  assert_output --regexp 'fix\(audio\): the gun sound is off [^<]*<!-- id:'
+  refute_line --regexp 'gun sound is off .*#of/'
   [ "$(grep -c 'to standard' "$SHEET")" = 1 ] || fail "$(cat "$SHEET")"
 }
 
@@ -673,7 +674,8 @@ ask_stub() {
   refute_output --partial 'ui to standard'
   # credits is no system of scratch: no epic, the row filed as it came.
   refute_output --partial 'epic(credits)'
-  assert_output --regexp 'feat\(credits\): roll the credits [^/]*id:'
+  assert_output --regexp 'feat\(credits\): roll the credits [^<]*<!-- id:'
+  refute_line --regexp 'roll the credits .*#of/'
 }
 
 @test "--backlog: a rewrite may carry a new epic, filed #new before the row goes under it" {
