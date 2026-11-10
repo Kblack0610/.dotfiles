@@ -550,6 +550,52 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial 'other (in scratch)'
   assert_output --partial "the shared code under them, belongs on the repo's project"
   assert_output --partial 'a host or the cluster belongs on home-config'
+  assert_output --partial 'read each with its neighbours'
+  assert_output --partial '"action": "dup", "line": 4'
+}
+
+@test "outbox: a repeat of a line above joins the row that line filed, even when its answer comes first" {
+  sheet '' ''
+  outbox '- [ ] the bench can be picked up\n- [ ] make the bench not throwable\n'
+  answer '{"n": 2, "action": "dup", "line": 1}' \
+    '{"n": 1, "action": "file", "rows": ["fix(room): the bench cannot be picked up or thrown #size/s"], "project": "scratch"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 2 from the outbox, filed 2, left 0, refused 0'
+  [ "$(grep -c 'id:sc-' "$SHEET")" = 1 ] || fail "one row expected: $(cat "$SHEET")"
+  grep -qx '  was: the bench can be picked up' "$SHEET" || fail "$(cat "$SHEET")"
+  grep -qx '  was: make the bench not throwable' "$SHEET" || fail "the repeat did not join the row: $(cat "$SHEET")"
+  run jq -r '[.action, .from, .to, .id // "", .text] | join(" ")' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'dup scratch scratch sc-1 make the bench not throwable'
+}
+
+@test "outbox: a repeat of a line that filed no row is left, saying so (negative control)" {
+  sheet '' ''
+  outbox '- [ ] a thought\n- [ ] the same thought\n'
+  answer '{"n": 1, "action": "skip", "why": "a thought"}' '{"n": 2, "action": "dup", "line": 1}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 0 from the outbox, filed 0, left 2'
+  run jq -r 'select(.action == "left") | .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'dup of line 1, which filed no row'
+}
+
+@test "outbox: a line left before the triager last changed is asked again; one left since is not" {
+  sheet '' ''
+  outbox '- [ ] the scratch menu flickers\n'
+  mkdir -p "$HOME/.local/state/notes"
+  rec() { jq -cn --arg ts "$1" '{ts: $ts, action: "left", from: "outbox", to: "", text: "the scratch menu flickers", why: "unclear which project", stage: "intake"}' >"$HOME/.local/state/notes/ingest.jsonl"; }
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the menu flickers #size/s"], "project": "scratch"}'
+  rec "$(date -d '+1 day' --iso-8601=seconds)"
+  run "$TRIAGE"
+  assert_success
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "a line left after the triager changed was asked again"
+  grep -q 'the scratch menu flickers' "$HOME/.notes/outbox.md" || fail "the line moved"
+  rec '2000-01-01T00:00:00.5-08:00'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'moved 1 from the outbox, filed 1'
+  grep -q 'fix(ui): the menu flickers' "$SHEET" || fail "$(cat "$SHEET")"
 }
 
 @test "--watch: a sweep at start and one after a burst of saves, and inotifywait ending ends the runner" {
