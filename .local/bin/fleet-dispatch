@@ -3504,7 +3504,8 @@ cmd_reap() {
 # plan the queue has held before is its items' to finish, or a failing phase would re-queue every
 # pass. One still open after that shows in plans_unqueued. `- [-]` is how a human drops a phase.
 # They are an automated filer's (`from: auto:plans`), so a queue a day of drain deep holds them
-# (agent-queue admit), and the next pass tries again.
+# (agent-queue admit), and the next pass tries again. They queue at low priority: no one is driving a
+# plan its session left, so its phases never outrank work a human or the board asked for.
 reconcile_plans() {
   [ "$DISPATCH_PLAN_RECONCILE" = 1 ] || return 0
   local orphans c plan project held out rc
@@ -3514,7 +3515,7 @@ reconcile_plans() {
   while IFS= read -r c; do
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
     grep -qxF -- "$plan" <<<"$held" && continue
-    out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --tags night --from auto:plans 2>&1); rc=$?
+    out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --priority low --tags night --from auto:plans 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       logline "queued the open phases of $(basename "$plan") for the night: its session is gone"
     elif [ "$rc" -ne "$AQ_EX_HELD" ]; then
